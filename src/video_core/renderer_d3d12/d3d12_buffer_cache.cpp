@@ -291,7 +291,8 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
                                                     : TracedBuffer::Kind::Index,
                                   .buffer = &buffer, .offset = offset, .size = size,
                                   .stride = IndexSize(format),
-                                  .device_addr = buffer.CpuAddr() + offset});
+                                  .device_addr = buffer.CpuAddr() + offset,
+                                  .resource = ComPtr<ID3D12Resource>{buffer.Handle()}});
     }
     if (!IsEmulatedTopology(topology) && format != IndexFormat::UnsignedByte) {
         buffer.Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
@@ -359,6 +360,12 @@ void BufferCacheRuntime::BindRewrittenIndices(std::span<const u32> indices, bool
             out += sizeof(narrow);
         }
     }
+    if (trace_buffers) {
+        trace_buffers->push_back({.kind = TracedBuffer::Kind::RewrittenIndex,
+                                  .offset = static_cast<u32>(upload.offset), .size = static_cast<u32>(bytes),
+                                  .stride = static_cast<u32>(index_size), .mapped = upload.mapped_span.data(),
+                                  .resource = ComPtr<ID3D12Resource>{upload.buffer}});
+    }
     pending_index = D3D12_INDEX_BUFFER_VIEW{
         .BufferLocation = upload.buffer->GetGPUVirtualAddress() + upload.offset,
         .SizeInBytes = static_cast<UINT>(bytes),
@@ -371,7 +378,8 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, Buffer& buffer, u32 offset,
     if (trace_buffers) {
         trace_buffers->push_back({.kind = TracedBuffer::Kind::Vertex, .slot = index,
                                   .buffer = &buffer, .offset = offset, .size = size,
-                                  .stride = stride, .device_addr = buffer.CpuAddr() + offset});
+                                  .stride = stride, .device_addr = buffer.CpuAddr() + offset,
+                                  .resource = ComPtr<ID3D12Resource>{buffer.Handle()}});
     }
     buffer.Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
     BindVertexBuffer(index, buffer.Handle(), offset, size, stride);
@@ -381,6 +389,13 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, ID3D12Resource* buffer, u32
                                           u32 size, u32 stride) {
     if (index >= VideoCommon::NUM_VERTEX_BUFFERS || !buffer) {
         return;
+    }
+    if (trace_buffers && (trace_buffers->empty() || trace_buffers->back().kind != TracedBuffer::Kind::Vertex ||
+                          trace_buffers->back().slot != index || trace_buffers->back().resource.Get() != buffer ||
+                          trace_buffers->back().offset != offset)) {
+        trace_buffers->push_back({.kind = TracedBuffer::Kind::Vertex, .slot = index,
+                                  .offset = offset, .size = size, .stride = stride,
+                                  .resource = ComPtr<ID3D12Resource>{buffer}});
     }
     pending_vertex[index] = D3D12_VERTEX_BUFFER_VIEW{
         .BufferLocation = buffer->GetGPUVirtualAddress() + offset,
@@ -445,7 +460,8 @@ void BufferCacheRuntime::BindUniformBuffer(Buffer& buffer, u32 offset, u32 size)
                                   .slot = traced_uniforms++, .buffer = fits ? &buffer : nullptr,
                                   .offset = offset, .size = size,
                                   .stride = static_cast<u32>(buffer.SizeBytes()),
-                                  .device_addr = buffer.CpuAddr() + offset});
+                                  .device_addr = buffer.CpuAddr() + offset,
+                                  .resource = fits ? ComPtr<ID3D12Resource>{buffer.Handle()} : ComPtr<ID3D12Resource>{}});
     }
     if (!fits) {
         VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::CbvNull, 1);
@@ -468,6 +484,12 @@ void BufferCacheRuntime::BindStorageBuffer(Buffer& buffer, u32 offset, u32 size,
                                  : D3D12_RESOURCE_STATE_GENERIC_READ);
     const u64 available = buffer.SizeBytes() > offset ? buffer.SizeBytes() - offset : 0;
     const u32 clamped = static_cast<u32>(std::min<u64>(size, available));
+    if (trace_buffers) {
+        trace_buffers->push_back({.kind = TracedBuffer::Kind::Storage, .slot = traced_storage++,
+                                  .offset = offset, .size = clamped,
+                                  .device_addr = buffer.CpuAddr() + offset,
+                                  .resource = clamped ? ComPtr<ID3D12Resource>{buffer.Handle()} : ComPtr<ID3D12Resource>{}});
+    }
     descriptor_queue->AddStorageBuffer(clamped != 0 ? buffer.Handle() : nullptr, offset, clamped);
 }
 

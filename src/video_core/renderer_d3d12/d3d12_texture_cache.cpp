@@ -22,6 +22,7 @@
 #include "common/settings.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_blit_image.h"
+#include "video_core/renderer_d3d12/d3d12_astc_guest.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/surface.h"
@@ -506,6 +507,13 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
     : device{device_}, scheduler{scheduler_}, staging{staging_}, view_descriptors{views},
       sampler_descriptors{samplers}, rtv_descriptors{rtvs}, dsv_descriptors{dsvs},
       texture_allocator{device_, scheduler_} {
+    astc_null_srv = view_descriptors.Allocate();
+    const D3D12_SHADER_RESOURCE_VIEW_DESC astc_null{
+        .Format = DXGI_FORMAT_R32G32B32A32_UINT, .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
+        .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+        .Buffer = {.NumElements = 1},
+    };
+    device.Get()->CreateShaderResourceView(nullptr,&astc_null,astc_null_srv);
     null_rtv = rtv_descriptors.Allocate();
     const D3D12_RENDER_TARGET_VIEW_DESC null_desc{
         .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -523,8 +531,10 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
 }
 
 TextureCacheRuntime::~TextureCacheRuntime() {
-    scheduler.Finish();
-    scheduler.CollectGarbage();
+    if (AstcGuestSamplingEnabled()) ReportAstcGuest();
+    scheduler.DrainForShutdown();
+    if (astc_null_srv.ptr) view_descriptors.Free(astc_null_srv);
+    if (astc_draw_srv.ptr) view_descriptors.Free(astc_draw_srv);
     LOG_INFO(Render, "D3D12: {}", texture_allocator.Report());
     LOG_INFO(Render, "D3D12: GC readbacks queued {}, ready {}, stale {}, sync {}, pending {} KiB, peak {} KiB",
              gc_queued, gc_ready, gc_stale, gc_sync, gc_pending_bytes / 1024,
@@ -594,6 +604,27 @@ void TextureCacheRuntime::EnsureAstcBc3Scratch(u64 size) {
 }
 StagingBufferRef TextureCacheRuntime::UploadStagingBuffer(size_t size, bool deferred) {
     return staging.Request(size, MemoryUsage::Upload, deferred);
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE TextureCacheRuntime::AstcDrawBuffer(std::span<const AstcDrawMetadata> metadata) {
+    auto map = UploadStagingBuffer(metadata.size_bytes());
+    std::memcpy(map.mapped_span.data(), metadata.data(), metadata.size_bytes());
+    if (!astc_draw_srv.ptr) astc_draw_srv = view_descriptors.Allocate();
+    const D3D12_SHADER_RESOURCE_VIEW_DESC desc{
+        .Format = DXGI_FORMAT_R32_TYPELESS, .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
+        .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+        .Buffer = {.FirstElement = map.offset / 4, .NumElements = static_cast<u32>(metadata.size_bytes() / 4),
+                   .Flags = D3D12_BUFFER_SRV_FLAG_RAW},
+    };
+    device.Get()->CreateShaderResourceView(map.buffer, &desc, astc_draw_srv);
+    return astc_draw_srv;
+}
+
+void TextureCacheRuntime::ReportAstcGuest() {
+    const auto memory = device.QueryCacheMemoryPressure();
+    LOG_INFO(Render,"D3D12: ASTC guest memory live_images={} payload={} guest_padded={} metadata={} raw_alloc={} baseline_native_alloc={} fallback_native_alloc={} direct_bindings={} native_bindings={} app_used={} app_limit={} dxgi_used={} dxgi_budget={} bytes; baseline is counterfactual, excludes driver/retired resources/heap slack",
+             astc_live_images,astc_live_payload,astc_live_guest,astc_live_metadata,astc_live_alloc,astc_live_baseline,astc_live_fallback,
+             astc_direct_bindings,astc_native_bindings,memory.app_used,memory.app_limit,memory.gpu_used,memory.gpu_budget);
 }
 StagingBufferRef TextureCacheRuntime::DownloadStagingBuffer(size_t size, bool deferred) {
     return staging.Request(size, MemoryUsage::Download, deferred);
@@ -725,6 +756,7 @@ void TextureCacheRuntime::CompleteGcDownload(Image& image) {
     image.gc_readback.reset();
 }
 void TextureCacheRuntime::TickFrame() {
+    if (AstcGuestSamplingEnabled() && (++astc_frame % 60 == 0)) ReportAstcGuest();
     staging.TickFrame();
     if (!pressure_sampled) {
         pressure_snapshot = device.QueryCacheMemoryPressure();
@@ -801,9 +833,14 @@ bool TextureCacheRuntime::SupportsView(DXGI_FORMAT format, D3D12_FORMAT_SUPPORT1
 }
 
 Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_, GPUVAddr gpu_addr_,
-             VAddr cpu_addr_)
+             VAddr cpu_addr_, bool force_native)
     : VideoCommon::ImageBase{info_, gpu_addr_, cpu_addr_}, runtime{&runtime_},
       format{runtime_.Format(info_.format)} {
+    if (GpuDiagnosticsEnabled()) {
+        TraceGpuOperation(fmt::format("image guestVA={:x} format={} size={}x{}x{} layers={} mips={} force_native={}",
+            gpu_addr_, static_cast<u32>(info_.format), info_.size.width, info_.size.height,
+            info_.size.depth, info_.resources.layers, info_.resources.levels, force_native));
+    }
     if (decode_bc_arrays.load(std::memory_order_relaxed) && info_.type == ImageType::e2D &&
         info_.resources.layers > 1 && info_.num_samples == 1) {
         if (const std::optional<FormatInfo> decoded = DecodedBcFormat(info_.format)) {
@@ -870,6 +907,71 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
         .SampleDesc = {.Count = info_.num_samples, .Quality = 0},
         .Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN, .Flags = resource_flags,
     };
+    if (!force_native && AstcGuestSamplingEnabled() &&
+        VideoCore::Surface::IsPixelFormatASTC(info.format) &&
+        info.type == ImageType::e2D && info.size.depth == 1 && info.num_samples == 1 &&
+        gpu_decoded && runtime->blit_helper && runtime->blit_helper->CanDecodeAstc() &&
+        (format.copy_format != PixelFormat::BC3_UNORM || runtime->blit_helper->CanEncodeBc3())) {
+        astc_original = astc_valid = true;
+        astc_native_desc = desc;
+        astc_header_bytes = Common::AlignUp<u64>(16 + u64(info.resources.levels) * 48, 16);
+        const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+        const D3D12_RESOURCE_DESC buffer_desc{
+            .Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
+            .Width = Common::AlignUp<u64>(astc_header_bytes + guest_size_bytes, 16),
+            .Height = 1, .DepthOrArraySize = 1, .MipLevels = 1,
+            .Format = DXGI_FORMAT_UNKNOWN, .SampleDesc = {.Count = 1},
+            .Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+        };
+        ThrowIfFailed(runtime->device.Get()->CreateCommittedResource(
+            &heap, D3D12_HEAP_FLAG_NONE, &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr, IID_PPV_ARGS(&resource)), "ASTC guest original buffer");
+        state = D3D12_RESOURCE_STATE_COPY_DEST;
+        astc_allocation_bytes = runtime->device.Get()->GetResourceAllocationInfo(0,1,&buffer_desc).SizeInBytes;
+        astc_expected_native_bytes = runtime->device.Get()->GetResourceAllocationInfo(0,1,&desc).SizeInBytes;
+        astc_srv = runtime->view_descriptors.Allocate();
+        const D3D12_SHADER_RESOURCE_VIEW_DESC srv{
+            .Format = DXGI_FORMAT_R32G32B32A32_UINT, .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
+            .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+            .Buffer = {.FirstElement = 0, .NumElements = static_cast<u32>(buffer_desc.Width / 16)},
+        };
+        runtime->device.Get()->CreateShaderResourceView(resource.Get(), &srv, astc_srv);
+        auto header = runtime->UploadStagingBuffer(static_cast<size_t>(astc_header_bytes));
+        std::memset(header.mapped_span.data(), 0, static_cast<size_t>(astc_header_bytes));
+        auto* words = reinterpret_cast<u32*>(header.mapped_span.data());
+        words[0] = info.resources.levels; words[1] = static_cast<u32>(astc_header_bytes / 16);
+        words[2] = guest_size_bytes / 16; words[3] = 0x41535443;
+        for (const auto& swizzle : VideoCommon::FullUploadSwizzles(info)) {
+            const auto params = VideoCommon::Accelerated::MakeBlockLinearSwizzle2DParams(swizzle,info);
+            const size_t base = 4 + size_t(swizzle.level) * 12;
+            words[base] = std::max(1u,info.size.width >> swizzle.level);
+            words[base+1] = std::max(1u,info.size.height >> swizzle.level);
+            words[base+2] = info.resources.layers;
+            words[base+4] = static_cast<u32>(swizzle.buffer_offset);
+            words[base+5] = params.layer_stride; words[base+6] = params.block_size;
+            words[base+7] = params.x_shift; words[base+8] = params.block_height;
+            words[base+9] = params.block_height_mask;
+        }
+        runtime->scheduler.CommandList()->CopyBufferRegion(resource.Get(),0,header.buffer,header.offset,astc_header_bytes);
+        gpu_decoded = true;
+        flags |= VideoCommon::ImageFlagBits::AcceleratedUpload;
+        // The generic accelerated-upload accounting must count this compressed backing, not RGBA8.
+        converted_size_bytes = guest_size_bytes;
+        footprint_format = desc.Format;
+        for (u32 l=0;l<static_cast<u32>(info.resources.levels);++l)
+            astc_payload_bytes += u64(Common::DivCeil(std::max(1u,info.size.width>>l),VideoCore::Surface::DefaultBlockWidth(info.format))) *
+                Common::DivCeil(std::max(1u,info.size.height>>l),VideoCore::Surface::DefaultBlockHeight(info.format)) * info.resources.layers * 16;
+        ++runtime->astc_live_images;
+        runtime->astc_live_payload += astc_payload_bytes;
+        runtime->astc_live_guest += guest_size_bytes;
+        runtime->astc_live_metadata += astc_header_bytes;
+        runtime->astc_live_alloc += astc_allocation_bytes;
+        runtime->astc_live_baseline += astc_expected_native_bytes;
+        LOG_INFO(Render, "D3D12: ASTC guest backing {}x{} layers {} levels {}: guest {} metadata {} allocated {} baseline-native {} bytes",
+                 info.size.width,info.size.height,info.resources.layers,info.resources.levels,guest_size_bytes,
+                 astc_header_bytes,astc_allocation_bytes,astc_expected_native_bytes);
+        return;
+    }
     {
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::ResourceCreateUs,
                                            VideoCore::Perf::Counter::ResourcesCreated};
@@ -899,11 +1001,53 @@ Image::GcReadback::~GcReadback() {
     if (runtime) runtime->ReleaseGcReadback(map);
 }
 
-Image::Image(Image&&) noexcept = default;
+Image::Image(Image&& other) noexcept : Image{VideoCommon::NullImageParams{}} {
+    *this = std::move(other);
+}
+
+void Image::UploadAstcOriginal(const StagingBufferRef& map) {
+    if (!map.buffer || map.offset + guest_size_bytes > map.buffer->GetDesc().Width)
+        throw std::runtime_error("ASTC original upload outside staging buffer");
+    auto* commands = runtime->scheduler.CommandList();
+    if (state != D3D12_RESOURCE_STATE_COPY_DEST) {
+        TransitionBuffer(commands, resource.Get(), state, D3D12_RESOURCE_STATE_COPY_DEST);
+    }
+    commands->CopyBufferRegion(resource.Get(),astc_header_bytes,map.buffer,map.offset,guest_size_bytes);
+    state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    TransitionBuffer(commands,resource.Get(),D3D12_RESOURCE_STATE_COPY_DEST,state);
+    astc_valid = true;
+    if (astc_native) {
+        const auto swizzles = VideoCommon::FullUploadSwizzles(info);
+        runtime->AccelerateImageUpload(*astc_native,map,std::span{swizzles.data(),swizzles.size()},0,0);
+    }
+}
+
+void Image::EnsureAstcNative() {
+    if (!astc_original || astc_native) return;
+    astc_native = std::make_unique<Image>(*runtime,info,gpu_addr,cpu_addr,true);
+    const auto swizzles = VideoCommon::FullUploadSwizzles(info);
+    const StagingBufferRef map{.buffer=resource.Get(),.offset=astc_header_bytes};
+    runtime->AccelerateImageUpload(*astc_native,map,std::span{swizzles.data(),swizzles.size()},0,0);
+    astc_fallback_bytes = astc_expected_native_bytes;
+    runtime->astc_live_fallback += astc_fallback_bytes;
+    LOG_INFO(Render, "D3D12: ASTC guest native fallback {}x{} layers {}: additional {} bytes",
+             info.size.width,info.size.height,info.resources.layers,astc_fallback_bytes);
+}
 
 Image::~Image() {
+    if (runtime && astc_srv.ptr) runtime->view_descriptors.Free(astc_srv);
     if (runtime && resource) {
-        runtime->texture_allocator.DeferRelease(
+        if (astc_original) {
+            --runtime->astc_live_images;
+            runtime->astc_live_payload -= astc_payload_bytes;
+            runtime->astc_live_guest -= guest_size_bytes;
+            runtime->astc_live_metadata -= astc_header_bytes;
+            runtime->astc_live_alloc -= astc_allocation_bytes;
+            runtime->astc_live_baseline -= astc_expected_native_bytes;
+            runtime->astc_live_fallback -= astc_fallback_bytes;
+        }
+        if (astc_original) runtime->scheduler.DeferRelease(std::move(resource));
+        else runtime->texture_allocator.DeferRelease(
             {std::move(resource), std::move(resource_allocation), resource_allocation != nullptr});
     }
     if (runtime && slice_array) {
@@ -912,13 +1056,27 @@ Image::~Image() {
     if (runtime && reinterpreted) {
         runtime->scheduler.DeferRelease(std::move(reinterpreted));
     }
+    if (runtime) {
+        for (auto& copy : additional_reinterpreted)
+            runtime->scheduler.DeferRelease(std::move(copy.resource));
+    }
 }
 
 Image& Image::operator=(Image&& other) noexcept {
     if (this != &other) {
         gc_readback.reset();
+        if (runtime && astc_srv.ptr) runtime->view_descriptors.Free(astc_srv);
         if (runtime && resource) {
-            runtime->texture_allocator.DeferRelease(
+            if (astc_original) {
+                --runtime->astc_live_images;
+                runtime->astc_live_payload -= astc_payload_bytes;
+                runtime->astc_live_guest -= guest_size_bytes;
+                runtime->astc_live_metadata -= astc_header_bytes;
+                runtime->astc_live_alloc -= astc_allocation_bytes;
+                runtime->astc_live_baseline -= astc_expected_native_bytes;
+                runtime->astc_live_fallback -= astc_fallback_bytes;
+                runtime->scheduler.DeferRelease(std::move(resource));
+            } else runtime->texture_allocator.DeferRelease(
                 {std::move(resource), std::move(resource_allocation),
                  resource_allocation != nullptr});
         }
@@ -928,9 +1086,23 @@ Image& Image::operator=(Image&& other) noexcept {
         if (runtime && reinterpreted) {
             runtime->scheduler.DeferRelease(std::move(reinterpreted));
         }
+        if (runtime) {
+            for (auto& copy : additional_reinterpreted)
+                runtime->scheduler.DeferRelease(std::move(copy.resource));
+        }
         static_cast<VideoCommon::ImageBase&>(*this) = std::move(other);
         allocation_tick = other.allocation_tick;
         runtime = other.runtime;
+        astc_original = other.astc_original;
+        astc_valid = other.astc_valid;
+        astc_native = std::move(other.astc_native);
+        astc_native_desc = other.astc_native_desc;
+        astc_srv = std::exchange(other.astc_srv, {});
+        astc_header_bytes = other.astc_header_bytes;
+        astc_allocation_bytes = other.astc_allocation_bytes;
+        astc_expected_native_bytes = other.astc_expected_native_bytes;
+        astc_payload_bytes = other.astc_payload_bytes;
+        astc_fallback_bytes = other.astc_fallback_bytes;
         gc_readback = std::move(other.gc_readback);
         resource = std::move(other.resource);
         resource_allocation = std::move(other.resource_allocation);
@@ -948,6 +1120,8 @@ Image& Image::operator=(Image&& other) noexcept {
         reinterpreted_state = other.reinterpreted_state;
         reinterpreted_version = other.reinterpreted_version;
         reinterpreted_ahead = other.reinterpreted_ahead;
+        additional_reinterpreted = std::move(other.additional_reinterpreted);
+        other.runtime = nullptr;
     }
     return *this;
 }
@@ -985,6 +1159,15 @@ u32 Image::Subresource(s32 level, s32 layer, u32 plane) const noexcept {
 }
 
 void Image::Transition(D3D12_RESOURCE_STATES next) {
+    if (astc_original) {
+        constexpr auto reads = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        if ((next & ~reads) != 0) {
+            EnsureAstcNative();
+            if (next & (D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_UNORDERED_ACCESS | D3D12_RESOURCE_STATE_RENDER_TARGET)) astc_valid = false;
+        }
+        if (astc_native) astc_native->Transition(next);
+        return;
+    }
     if (!resource) return;
     if (reinterpreted_ahead) {
         WriteBackReinterpreted();
@@ -1053,9 +1236,12 @@ ID3D12Resource* Image::SliceArray() {
 }
 
 ID3D12Resource* Image::Reinterpreted(DXGI_FORMAT family) {
-    if (reinterpreted) {
-        return reinterpreted->GetDesc().Format == family ? reinterpreted.Get() : nullptr;
-    }
+    if (astc_original) return NativeImage().Reinterpreted(family);
+    if (reinterpreted && reinterpreted->GetDesc().Format == family)
+        return reinterpreted.Get();
+    for (const auto& copy : additional_reinterpreted)
+        if (copy.resource->GetDesc().Format == family)
+            return copy.resource.Get();
     if (!resource) {
         return nullptr;
     }
@@ -1066,19 +1252,44 @@ ID3D12Resource* Image::Reinterpreted(DXGI_FORMAT family) {
     desc.Format = family;
     desc.Flags &= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+    ComPtr<ID3D12Resource> created;
     ThrowIfFailed(runtime->device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                  D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&reinterpreted)),
+                  D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&created)),
                   "Create reinterpreted image");
     CheckRemovedAfter(runtime->device.Get(), [&] {
         return fmt::format("creating the DXGI {} copy of image {}", static_cast<u32>(family),
                            info.format);
     });
-    reinterpreted_state = D3D12_RESOURCE_STATE_COMMON;
-    reinterpreted_version = 0;
-    reinterpreted_ahead = false;
+    ID3D12Resource* const result = created.Get();
+    if (reinterpreted) {
+        additional_reinterpreted.push_back({std::move(created)});
+    } else {
+        reinterpreted = std::move(created);
+        reinterpreted_state = D3D12_RESOURCE_STATE_COMMON;
+        reinterpreted_version = 0;
+        reinterpreted_ahead = false;
+    }
     LOG_INFO(Render, "D3D12: image {} {}x{} @{:x} viewed as DXGI {} through a copy", info.format,
              desc.Width, desc.Height, gpu_addr, static_cast<u32>(family));
-    return reinterpreted.Get();
+    return result;
+}
+
+void Image::SelectReinterpreted(ID3D12Resource* copy) {
+    if (!copy || copy == reinterpreted.Get())
+        return;
+    for (auto& candidate : additional_reinterpreted) {
+        if (candidate.resource.Get() != copy)
+            continue;
+        // Only the active copy can be ahead. Publish its writes to the original before
+        // another family is refreshed; no descriptor resource is replaced or destroyed.
+        if (reinterpreted_ahead)
+            WriteBackReinterpreted();
+        reinterpreted.Swap(candidate.resource);
+        std::swap(reinterpreted_state, candidate.state);
+        std::swap(reinterpreted_version, candidate.version);
+        return;
+    }
+    throw std::runtime_error("D3D12: unknown reinterpreted image copy");
 }
 
 void Image::RefreshReinterpreted() {
@@ -1101,7 +1312,9 @@ void Image::WriteBackReinterpreted() {
     reinterpreted_version = write_version;
 }
 
-void Image::ReadReinterpreted() {
+void Image::ReadReinterpreted(ID3D12Resource* copy) {
+    if (astc_original) { NativeImage().ReadReinterpreted(copy); return; }
+    SelectReinterpreted(copy);
     if (!reinterpreted) {
         return;
     }
@@ -1110,7 +1323,13 @@ void Image::ReadReinterpreted() {
                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 }
 
-void Image::RenderToReinterpreted() {
+void Image::RenderToReinterpreted(ID3D12Resource* copy) {
+    if (astc_original) {
+        astc_valid = false;
+        NativeImage().RenderToReinterpreted(copy);
+        return;
+    }
+    SelectReinterpreted(copy);
     if (!reinterpreted) {
         return;
     }
@@ -1604,6 +1823,11 @@ void Image::UploadMemory(ID3D12Resource* buffer, size_t base_offset,
 
 void Image::UploadMemoryImpl(ID3D12Resource* buffer, size_t base_offset, u8* mapped_at_base,
                              std::span<const BufferImageCopy> copies) {
+    if (astc_original) {
+        astc_valid = false;
+        NativeImage().UploadMemoryImpl(buffer,base_offset,mapped_at_base,copies);
+        return;
+    }
     if (!CanTransfer() || copies.empty()) {
         return;
     }
@@ -1731,6 +1955,7 @@ void Image::DownloadMemory(ID3D12Resource* buffer, size_t offset,
 
 void Image::DownloadMemory(std::span<ID3D12Resource*> buffers, std::span<size_t> offsets,
                            std::span<const BufferImageCopy> copies) {
+    if (astc_original) { NativeImage().DownloadMemory(buffers,offsets,copies); return; }
     if (!CanTransfer() || copies.empty()) {
         return;
     }
@@ -1863,6 +2088,11 @@ void Image::DownloadMemory(const StagingBufferRef& map, std::span<const BufferIm
 }
 
 void TextureCacheRuntime::CopyImage(Image& dst, Image& src, std::span<const ImageCopy> copies) {
+    if (dst.IsAstcOriginal() || src.IsAstcOriginal()) {
+        dst.astc_valid = false;
+        CopyImage(dst.NativeImage(),src.NativeImage(),copies);
+        return;
+    }
     if (&dst == &src) {
         // Whole-resource state tracking cannot hold COPY_SOURCE and COPY_DEST at once.
         WarnOnce(logged_self_copy, "copies within one image are not supported yet; skipped");
@@ -2084,6 +2314,7 @@ void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
 void TextureCacheRuntime::AccelerateImageUpload(
     Image& image, const StagingBufferRef& map,
     std::span<const VideoCommon::SwizzleParameters> swizzles, u32, u32) {
+    if (image.IsAstcOriginal()) { image.UploadAstcOriginal(map); return; }
     if (!CanAccelerateImageUpload(image) || !image.Handle()) {
         return;
     }
@@ -2264,7 +2495,7 @@ void TextureCacheRuntime::AccelerateImageUpload(
             TransitionBuffer(commands, astc_bc3_scratch.Get(), astc_bc3_state,
                              D3D12_RESOURCE_STATE_COPY_SOURCE);
             astc_bc3_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
-            if (first_y == 0 && gpu_astc_verify.fetch_sub(1, std::memory_order_relaxed) > 0) {
+            if (first_y == 0 && !map.mapped_span.empty() && gpu_astc_verify.fetch_sub(1, std::memory_order_relaxed) > 0) {
                 // Deliberately synchronous and opt-in: compare the actual GPU bytes with the
                 // established CPU ASTC->BC3 path before the destination texture can hide whether
                 // a mismatch came from encoding or CopyTextureRegion.
@@ -2510,6 +2741,8 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
                      ImageId image_id_, Image& source)
     : VideoCommon::ImageViewBase{info, source.info, image_id_, source.gpu_addr}, runtime{&runtime_},
       image{source.Handle()} {
+    astc_unmaterialized = source.IsAstcOriginal() && !source.HasAstcNative();
+    if (source.IsAstcOriginal() && info.IsRenderTarget()) { source.EnsureAstcNative(); image = source.Handle(); astc_unmaterialized = false; }
     if (!image) {
         return;
     }
@@ -2533,7 +2766,7 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
             return s == Tegra::Texture::SwizzleSource::G ? Tegra::Texture::SwizzleSource::R : s;
         });
     }
-    const D3D12_RESOURCE_DESC resource_desc = image->GetDesc();
+    const D3D12_RESOURCE_DESC resource_desc = source.NativeDescription();
     const u32 resource_levels = resource_desc.MipLevels;
     const u32 resource_array = resource_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
                                    ? 1U
@@ -2715,7 +2948,7 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
             uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
             uav_desc.Texture2DArray = {base_level, base_layer, layers, 0};
         }
-        runtime->device.Get()->CreateUnorderedAccessView(image, nullptr, &uav_desc, uav);
+        runtime->device.Get()->CreateUnorderedAccessView(source.IsAstcOriginal() && !source.HasAstcNative() ? nullptr : image, nullptr, &uav_desc, uav);
         CheckRemovedAfterDescriptor(runtime->device.Get(), [&] {
             return fmt::format("UAV of {} (format {} dim {} level {} layers {}+{})", info.format,
                                static_cast<u32>(uav_desc.Format),
@@ -2913,7 +3146,8 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::CreateSrv(Shader::TextureType texture_typ
                            static_cast<u32>(texture_type));
     });
     const D3D12_CPU_DESCRIPTOR_HANDLE handle = runtime->view_descriptors.Allocate();
-    runtime->device.Get()->CreateShaderResourceView(override_resource ? override_resource :
+    Image* const source = SourceImage();
+    runtime->device.Get()->CreateShaderResourceView(astc_unmaterialized ? nullptr : override_resource ? override_resource :
                                                     srv_resource ? srv_resource : image, &desc,
                                                     handle);
     CheckRemovedAfterDescriptor(runtime->device.Get(), [&] {
@@ -2937,7 +3171,7 @@ void ImageView::TransitionImage(D3D12_RESOURCE_STATES state) const {
         // texels back and take the copy out of its readable state.
         if (srv_resource && srv_resource != image &&
             (state & D3D12_RESOURCE_STATE_UNORDERED_ACCESS) == 0) {
-            (*slot_images)[image_id].ReadReinterpreted();
+            (*slot_images)[image_id].ReadReinterpreted(srv_resource);
             return;
         }
         (*slot_images)[image_id].Transition(state);
@@ -2947,7 +3181,7 @@ void ImageView::TransitionImage(D3D12_RESOURCE_STATES state) const {
 void ImageView::PrepareRender() const {
     if (Image* const source = SourceImage()) {
         if (rtv_on_copy) {
-            source->RenderToReinterpreted();
+            source->RenderToReinterpreted(srv_resource);
         } else {
             source->Transition(D3D12_RESOURCE_STATE_RENDER_TARGET);
         }
@@ -2955,9 +3189,26 @@ void ImageView::PrepareRender() const {
 }
 
 void ImageView::PrepareRead(Shader::TextureType texture_type) const {
+    if (Image* const source = SourceImage(); source && source->IsAstcOriginal()) {
+        ++runtime->astc_native_bindings;
+        source->EnsureAstcNative();
+        if (image != source->Handle()) {
+            auto* self = const_cast<ImageView*>(this);
+            for (auto& srv : self->srvs) { if (srv.ptr) runtime->view_descriptors.Free(srv); srv = {}; }
+            self->image = self->srv_resource = source->Handle();
+            self->astc_unmaterialized = false;
+            if (self->uav.ptr) {
+                const D3D12_UNORDERED_ACCESS_VIEW_DESC desc{
+                    .Format = source->ViewFormat(), .ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY,
+                    .Texture2DArray = {.MipSlice = srv_params.base_level, .FirstArraySlice = srv_params.base_layer, .ArraySize = srv_params.layers},
+                };
+                runtime->device.Get()->CreateUnorderedAccessView(self->image,nullptr,&desc,self->uav);
+            }
+        }
+    }
     if (srv_resource && srv_resource != image) {
         if (Image* const source = SourceImage()) {
-            source->ReadReinterpreted();
+            source->ReadReinterpreted(srv_resource);
         }
     }
     if (texture_type == Shader::TextureType::ColorArray2D &&
@@ -2966,6 +3217,30 @@ void ImageView::PrepareRead(Shader::TextureType texture_type) const {
             source->RefreshSliceArray();
         }
     }
+}
+
+bool ImageView::PrepareAstcRead(Shader::TextureType texture_type, const Sampler& sampler, AstcDrawMetadata& metadata) const {
+    Image* source = SourceImage();
+    if (!source || !source->IsAstcOriginal() || !source->AstcOriginalValid() ||
+        (texture_type != Shader::TextureType::Color2D && texture_type != Shader::TextureType::ColorArray2D) ||
+        !VideoCore::Surface::IsPixelFormatASTC(format) ||
+        srv_params.dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return false;
+    const auto& s = sampler.Description();
+    if (D3D12_DECODE_MIN_FILTER(s.Filter) != D3D12_DECODE_MAG_FILTER(s.Filter)) return false;
+    if (D3D12_DECODE_IS_ANISOTROPIC_FILTER(s.Filter) || D3D12_DECODE_FILTER_REDUCTION(s.Filter) != D3D12_FILTER_REDUCTION_TYPE_STANDARD ||
+        s.AddressU > D3D12_TEXTURE_ADDRESS_MODE_BORDER || s.AddressV > D3D12_TEXTURE_ADDRESS_MODE_BORDER) return false;
+    metadata[0] = {1,srv_params.base_level,srv_params.levels,srv_params.base_layer};
+    metadata[1] = {srv_params.layers,VideoCore::Surface::DefaultBlockWidth(source->info.format),
+                   VideoCore::Surface::DefaultBlockHeight(source->info.format),srv_params.mapping};
+    metadata[2] = {static_cast<u32>(s.AddressU),static_cast<u32>(s.AddressV),
+                   D3D12_DECODE_MIN_FILTER(s.Filter) == D3D12_FILTER_TYPE_LINEAR,
+                   D3D12_DECODE_MAG_FILTER(s.Filter) == D3D12_FILTER_TYPE_LINEAR};
+    metadata[3] = {D3D12_DECODE_MIP_FILTER(s.Filter) == D3D12_FILTER_TYPE_LINEAR,
+                   std::bit_cast<u32>(s.MipLODBias),std::bit_cast<u32>(s.MinLOD),std::bit_cast<u32>(s.MaxLOD)};
+    for (size_t i=0;i<4;++i) metadata[4][i]=std::bit_cast<u32>(s.BorderColor[i]);
+    metadata[5] = {VideoCore::Surface::IsPixelFormatSRGB(format),0,0,0};
+    if (++runtime->astc_direct_bindings == 1) runtime->ReportAstcGuest();
+    return true;
 }
 
 void ImageView::Release() {
@@ -2987,11 +3262,11 @@ void ImageView::Release() {
     runtime = nullptr;
 }
 ImageView::ImageView(ImageView&& other) noexcept : VideoCommon::ImageViewBase{std::move(other)}, runtime{std::exchange(other.runtime, nullptr)},
-    slot_images{other.slot_images}, image{other.image}, srv_resource{other.srv_resource}, srv_params{other.srv_params}, natural_type{other.natural_type},
+    slot_images{other.slot_images}, image{other.image}, astc_unmaterialized{other.astc_unmaterialized}, srv_resource{other.srv_resource}, srv_params{other.srv_params}, natural_type{other.natural_type},
     srvs{std::exchange(other.srvs, {})}, depth_feedback_srvs{std::move(other.depth_feedback_srvs)}, uav{other.uav}, rtv{other.rtv}, rtv_on_copy{other.rtv_on_copy}, dsv{other.dsv}, dsv_read_only{other.dsv_read_only}, buffer_size{other.buffer_size} {}
 ImageView& ImageView::operator=(ImageView&& other) noexcept {
     if (this != &other) { Release(); static_cast<VideoCommon::ImageViewBase&>(*this) = std::move(other);
-        runtime = std::exchange(other.runtime, nullptr); slot_images = other.slot_images; image = other.image; srv_resource = other.srv_resource;
+        runtime = std::exchange(other.runtime, nullptr); slot_images = other.slot_images; image = other.image; astc_unmaterialized = other.astc_unmaterialized; srv_resource = other.srv_resource;
         srv_params = other.srv_params; natural_type = other.natural_type; srvs = std::exchange(other.srvs, {});
         depth_feedback_srvs = std::move(other.depth_feedback_srvs);
         uav = other.uav; rtv = other.rtv; rtv_on_copy = other.rtv_on_copy; dsv = other.dsv; dsv_read_only = other.dsv_read_only; buffer_size = other.buffer_size; }
@@ -3091,6 +3366,7 @@ Framebuffer::Framebuffer(TextureCacheRuntime& runtime, std::span<ImageView*, NUM
         color_images[index] = view->image_id;
         if (view->RenderTargetOnCopy()) {
             copy_colors |= 1U << index;
+            color_copies[index] = view->srv_resource;
         }
         color_formats[index] = runtime.Format(view->format).view;
         color_bases[index] = view->range.base;
@@ -3140,7 +3416,7 @@ void Framebuffer::PrepareAttachments(bool depth_sampled) const {
         }
         Image& image = (*images)[color_images[index]];
         if ((copy_colors >> index) & 1) {
-            image.RenderToReinterpreted();
+            image.RenderToReinterpreted(color_copies[index]);
         } else {
             image.Transition(D3D12_RESOURCE_STATE_RENDER_TARGET);
         }
@@ -3335,6 +3611,114 @@ void TextureCacheRuntime::RunSelfTest() {
         LOG_INFO(Render, "D3D12: texture cache round-trip passed ({}x{} RGBA8 unaligned rows, SRV/UAV/RTV/DSV, null views, sampler, framebuffer)", width, height);
     } catch (const std::exception& error) {
         LOG_ERROR(Render, "D3D12: texture cache self-test failed: {}", error.what());
+    }
+}
+
+bool TextureCacheRuntime::RunReinterpretationSelfTest() {
+    try {
+        constexpr u32 width = 13, height = 7, bytes = width * height * 4;
+        VideoCommon::ImageInfo info{};
+        info.format = PixelFormat::B10G11R11_FLOAT;
+        info.type = ImageType::e2D;
+        info.resources = {.levels = 1, .layers = 1};
+        info.size = {width, height, 1};
+        Image source{*this, info, 0, 0};
+        const BufferImageCopy upload_copy{.buffer_offset = 0, .buffer_size = bytes,
+            .buffer_row_length = width, .buffer_image_height = height, .image_subresource = {},
+            .image_offset = {}, .image_extent = {width, height, 1}};
+        auto upload = UploadStagingBuffer(bytes);
+        for (u32 i = 0; i < bytes; ++i)
+            upload.mapped_span[i] = static_cast<u8>(i * 29 + 7);
+        const std::vector<u8> expected(upload.mapped_span.begin(), upload.mapped_span.begin() + bytes);
+        source.UploadMemory(upload, std::span{&upload_copy, 1});
+        auto pinned = DownloadStagingBuffer(bytes, true);
+        source.DownloadMemory(pinned, std::span{&upload_copy, 1});
+        staging.ReclaimForCompiler();
+        if (!std::equal(expected.begin(), expected.end(), pinned.mapped_span.begin()))
+            throw std::runtime_error("compiler staging reclaim lost pinned readback or upload");
+        FreeDeferredStagingBuffer(pinned);
+        // The original ring reference is invalid after reclamation; request fresh storage.
+        upload = UploadStagingBuffer(bytes);
+        std::copy(expected.begin(), expected.end(), upload.mapped_span.begin());
+        auto* const rgba = source.Reinterpreted(DXGI_FORMAT_R8G8B8A8_TYPELESS);
+        auto* const scalar = source.Reinterpreted(DXGI_FORMAT_R32_TYPELESS);
+        if (!rgba || !scalar || rgba == scalar)
+            throw std::runtime_error("reinterpretation family resources missing");
+        const auto verify = [&](ID3D12Resource* copy, const u8* pattern, bool repeated_word) {
+            source.ReadReinterpreted(copy);
+            source.TransitionReinterpreted(D3D12_RESOURCE_STATE_COPY_SOURCE);
+            const auto desc = copy->GetDesc();
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+            u64 total{};
+            device.Get()->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr, &total);
+            auto readback = DownloadStagingBuffer(total, true);
+            footprint.Offset += readback.offset;
+            const D3D12_TEXTURE_COPY_LOCATION dst{.pResource = readback.buffer,
+                .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, .PlacedFootprint = footprint};
+            const D3D12_TEXTURE_COPY_LOCATION src{.pResource = copy,
+                .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = 0};
+            scheduler.CommandList()->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+            FreeDeferredStagingBuffer(readback);
+            Finish();
+            for (u32 y = 0; y < height; ++y)
+                for (u32 x = 0; x < width * 4; ++x)
+                    if (readback.mapped_span[y * footprint.Footprint.RowPitch + x] !=
+                        pattern[repeated_word ? x % 4 : y * width * 4 + x])
+                        throw std::runtime_error("reinterpretation family bytes mismatch");
+        };
+        verify(rgba, expected.data(), false);
+        verify(scalar, expected.data(), false);
+        const auto clear = [&](ID3D12Resource* copy, DXGI_FORMAT typed, const std::array<float, 4>& color) {
+            const auto rtv = rtv_descriptors.Allocate();
+            const D3D12_RENDER_TARGET_VIEW_DESC desc{.Format = typed,
+                .ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D, .Texture2D = {0, 0}};
+            device.Get()->CreateRenderTargetView(copy, &desc, rtv);
+            source.RenderToReinterpreted(copy);
+            scheduler.CommandList()->ClearRenderTargetView(rtv, color.data(), 0, nullptr);
+            Finish();
+            rtv_descriptors.Free(rtv);
+        };
+        clear(rgba, DXGI_FORMAT_R8G8B8A8_UNORM, {0.25f, 0.5f, 0.75f, 1.0f});
+        const std::array<u8, 4> rgba_word{64, 128, 191, 255};
+        verify(scalar, rgba_word.data(), true);
+        clear(scalar, DXGI_FORMAT_R32_FLOAT, {1.0f, 0, 0, 0});
+        const std::array<u8, 4> scalar_word{0, 0, 128, 63};
+        verify(rgba, scalar_word.data(), true);
+        Image moved{std::move(source)};
+        source = std::move(moved);
+        source.UploadMemory(upload, std::span{&upload_copy, 1});
+        verify(scalar, expected.data(), false);
+        verify(rgba, expected.data(), false);
+        if (source.Reinterpreted(DXGI_FORMAT_R32_TYPELESS) != scalar ||
+            source.Reinterpreted(DXGI_FORMAT_R8G8B8A8_TYPELESS) != rgba)
+            throw std::runtime_error("reinterpretation descriptor resources changed");
+        LOG_INFO(Render, "D3D12: texture reinterpretation gate PASS: B10/R32/RGBA8, "
+                        "unaligned rows, writes both directions, original upload, move, stable resources, "
+                        "compiler staging reclaim, pinned readback");
+        return true;
+    } catch (const std::exception& error) {
+        LOG_ERROR(Render, "D3D12: texture reinterpretation gate FAIL: {}", error.what());
+        return false;
+    }
+}
+
+bool RunTextureReinterpretationProbe() {
+    try {
+        Device device;
+        Scheduler scheduler{device};
+        StagingBufferPool staging{device, scheduler};
+        CpuDescriptorAllocator views{device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV};
+        CpuDescriptorAllocator samplers{device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER};
+        CpuDescriptorAllocator rtvs{device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV};
+        CpuDescriptorAllocator dsvs{device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV};
+        TextureCacheRuntime runtime{device, scheduler, staging, views, samplers, rtvs, dsvs};
+        const bool passed = runtime.RunReinterpretationSelfTest();
+        scheduler.Finish();
+        device.LogDebugMessages();
+        return passed && SUCCEEDED(device.Get()->GetDeviceRemovedReason());
+    } catch (const std::exception& error) {
+        LOG_ERROR(Render, "D3D12: texture reinterpretation probe failed: {}", error.what());
+        return false;
     }
 }
 

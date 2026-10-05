@@ -4,6 +4,7 @@
 #pragma once
 
 #include <mutex>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -64,6 +65,13 @@ public:
         u16 y_flip_mask = 0;
         u16 z_flip_mask = 0;
         dxil_spirv_sysval_type first_vertex_and_base_instance = DXIL_SPIRV_SYSVAL_TYPE_ZERO;
+        /// Scheduling only, never part of the linked shader key. The caller must verify that
+        /// no Direct decoder was imported and at least 4 GiB of app headroom is available.
+        bool parallel_native_astc_experiment = false;
+        /// Admission control only, excluded from the shader key. Never change the sampling path.
+        const Device* astc_budget_device = nullptr;
+        u32 astc_decoder_calls = 5;
+        const std::function<void()>* astc_reclaim = nullptr;
     };
 
     /// Translates, links and signs the stages of one pipeline, given in pipeline order. Returns

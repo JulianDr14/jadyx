@@ -58,7 +58,7 @@ private:
 
 /// A buffer bound for a traced draw (RasterizerD3D12::SetDrawTrace), checked against guest memory.
 struct TracedBuffer {
-    enum class Kind { Uniform, NullUniform, StreamedUniform, Vertex, Index, RewrittenIndex };
+    enum class Kind { Uniform, NullUniform, StreamedUniform, Vertex, Index, RewrittenIndex, Storage };
     Kind kind{};
     u32 slot{};
     Buffer* buffer{}; ///< null for staging memory and null bindings
@@ -67,6 +67,7 @@ struct TracedBuffer {
     u32 stride{}; ///< vertex stride or index size
     DAddr device_addr{};
     const u8* mapped{}; ///< what the GPU reads of a streamed cbuf
+    ComPtr<ID3D12Resource> resource; ///< Pins the resource selected at binding, even if caches merge.
 };
 
 class BufferCacheRuntime {
@@ -85,6 +86,7 @@ public:
     void SetTraceBuffers(std::vector<TracedBuffer>* out) noexcept {
         trace_buffers = out;
         traced_uniforms = 0;
+        traced_storage = 0;
     }
 
     void TickFrame(Common::SlotVector<Buffer>& buffers) noexcept;
@@ -168,6 +170,7 @@ private:
     GuestDescriptorQueue* descriptor_queue{};
     std::vector<TracedBuffer>* trace_buffers{};
     u32 traced_uniforms{};
+    u32 traced_storage{};
 
     std::optional<D3D12_INDEX_BUFFER_VIEW> pending_index;
     std::array<D3D12_VERTEX_BUFFER_VIEW, VideoCommon::NUM_VERTEX_BUFFERS> pending_vertex{};

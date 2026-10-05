@@ -1726,14 +1726,15 @@ static u16 HalfToClampedByte(u16 half_bits) {
     return static_cast<u16>(clamped * 255.0f + 0.5f);
 }
 
-static void FillError(std::span<u32> outBuf, u32 blockWidth, u32 blockHeight) {
+static void FillError(std::span<u32> outBuf, u32 blockWidth, u32 blockHeight, bool spec_ldr = false) {
     for (u32 j = 0; j < blockHeight; j++) {
         for (u32 i = 0; i < blockWidth; i++) {
-            outBuf[j * blockWidth + i] = 0x00000000;
+            outBuf[j * blockWidth + i] = spec_ldr ? 0xFFFF00FF : 0x00000000;
         }
     }
 }
 
+template <bool spec_ldr = false, bool srgb = false>
 static void DecompressBlock(std::span<const u8, 16> inBuf, const u32 blockWidth,
                             const u32 blockHeight, std::span<u32, 12 * 12> outBuf) {
     InputBitStream strm(inBuf);
@@ -1741,37 +1742,57 @@ static void DecompressBlock(std::span<const u8, 16> inBuf, const u32 blockWidth,
 
     // Was there an error?
     if (weightParams.m_bError) {
-        assert(false && "Invalid block mode");
-        FillError(outBuf, blockWidth, blockHeight);
+        if constexpr (!spec_ldr) {
+            assert(false && "Invalid block mode");
+        }
+        FillError(outBuf, blockWidth, blockHeight, spec_ldr);
         return;
     }
 
     if (weightParams.m_bVoidExtentLDR) {
+        if constexpr (spec_ldr) {
+            auto extent_stream = strm;
+            std::array<u32, 4> extent{};
+            for (auto& value : extent) value = extent_stream.ReadBits<13>();
+            if (extent != std::array<u32,4>{8191,8191,8191,8191} &&
+                (extent[0] >= extent[1] || extent[2] >= extent[3])) {
+                FillError(outBuf, blockWidth, blockHeight, true);
+                return;
+            }
+        }
         FillVoidExtentLDR(strm, outBuf, blockWidth, blockHeight);
         return;
     }
 
     if (weightParams.m_bVoidExtentHDR) {
-        assert(false && "HDR void extent blocks are unsupported!");
-        FillError(outBuf, blockWidth, blockHeight);
+        if constexpr (!spec_ldr) {
+            assert(false && "HDR void extent blocks are unsupported!");
+        }
+        FillError(outBuf, blockWidth, blockHeight, spec_ldr);
         return;
     }
 
     if (weightParams.m_Width > blockWidth) {
-        assert(false && "Texel weight grid width should be smaller than block width");
-        FillError(outBuf, blockWidth, blockHeight);
+        if constexpr (!spec_ldr) {
+            assert(false && "Texel weight grid width should be smaller than block width");
+        }
+        FillError(outBuf, blockWidth, blockHeight, spec_ldr);
         return;
     }
 
     if (weightParams.m_Height > blockHeight) {
-        assert(false && "Texel weight grid height should be smaller than block height");
-        FillError(outBuf, blockWidth, blockHeight);
+        if constexpr (!spec_ldr) {
+            assert(false && "Texel weight grid height should be smaller than block height");
+        }
+        FillError(outBuf, blockWidth, blockHeight, spec_ldr);
         return;
     }
 
     if (weightParams.GetNumWeightValues() > 64) {
-        assert(false && "Too many weights in the weight grid");
-        FillError(outBuf, blockWidth, blockHeight);
+        if constexpr (!spec_ldr) {
+            assert(false && "Too many weights in the weight grid");
+        }
+        FillError(outBuf, blockWidth, blockHeight, spec_ldr);
         return;
     }
 
@@ -1780,8 +1801,10 @@ static void DecompressBlock(std::span<const u8, 16> inBuf, const u32 blockWidth,
     assert(nPartitions <= 4);
 
     if (nPartitions == 4 && weightParams.m_bDualPlane) {
-        assert(false && "Dual plane mode is incompatible with four partition blocks");
-        FillError(outBuf, blockWidth, blockHeight);
+        if constexpr (!spec_ldr) {
+            assert(false && "Dual plane mode is incompatible with four partition blocks");
+        }
+        FillError(outBuf, blockWidth, blockHeight, spec_ldr);
         return;
     }
 
@@ -1812,8 +1835,10 @@ static void DecompressBlock(std::span<const u8, 16> inBuf, const u32 blockWidth,
     // Remaining bits are color endpoint data...
     u32 nWeightBits = weightParams.GetPackedBitSize();
     if (nWeightBits < 24 || nWeightBits > 96) {
-        assert(false && "Invalid weight bit count");
-        FillError(outBuf, blockWidth, blockHeight);
+        if constexpr (!spec_ldr) {
+            assert(false && "Invalid weight bit count");
+        }
+        FillError(outBuf, blockWidth, blockHeight, spec_ldr);
         return;
     }
     s32 remainingBits = 128 - nWeightBits - static_cast<int>(strm.GetBitsRead());
@@ -1895,6 +1920,21 @@ static void DecompressBlock(std::span<const u8, 16> inBuf, const u32 blockWidth,
         assert(colorEndpointMode[i] < 16);
     }
     assert(strm.GetBitsRead() + weightParams.GetPackedBitSize() == 128);
+
+    if (spec_ldr) {
+        u32 endpoint_values = 0;
+        for (u32 part = 0; part < nPartitions; ++part) {
+            if (IsHDRColorEndpointMode(colorEndpointMode[part])) {
+                FillError(outBuf, blockWidth, blockHeight, true);
+                return;
+            }
+            endpoint_values += ((colorEndpointMode[part] >> 2) + 1) * 2;
+        }
+        if (ASTC_ENCODINGS_VALUES[5].GetBitLength(endpoint_values) > colorDataBits) {
+            FillError(outBuf, blockWidth, blockHeight, true);
+            return;
+        }
+    }
 
     // Decode both color data and texel weight data
     u32 colorValues[32]; // Four values, two endpoints, four maximum partitions
@@ -1983,10 +2023,12 @@ static void DecompressBlock(std::span<const u8, 16> inBuf, const u32 blockWidth,
                     const u16 half_bits = (Cf >= 0x7C00) ? u16{0x7BFF} : static_cast<u16>(Cf);
                     p.Component(c) = HalfToClampedByte(half_bits);
                 } else {
-                    C0 = ReplicateByteTo16(C0);
-                    C1 = ReplicateByteTo16(C1);
+                    C0 = srgb ? (C0 << 8) | 0x80 : ReplicateByteTo16(C0);
+                    C1 = srgb ? (C1 << 8) | 0x80 : ReplicateByteTo16(C1);
                     const u32 C = (C0 * (64 - weight) + C1 * weight + 32) / 64;
-                    if (C == 65535) {
+                    if (spec_ldr) {
+                        p.Component(c) = static_cast<u16>(C >> 8);
+                    } else if (C == 65535) {
                         p.Component(c) = 255;
                     } else {
                         double Cf = static_cast<double>(C);
@@ -1999,8 +2041,9 @@ static void DecompressBlock(std::span<const u8, 16> inBuf, const u32 blockWidth,
         }
 }
 
-void Decompress(std::span<const uint8_t> data, uint32_t width, uint32_t height, uint32_t depth,
-                uint32_t block_width, uint32_t block_height, std::span<uint8_t> output) {
+template <bool spec_ldr, bool srgb>
+static void DecompressImpl(std::span<const uint8_t> data, uint32_t width, uint32_t height, uint32_t depth,
+                           uint32_t block_width, uint32_t block_height, std::span<uint8_t> output) {
     const u32 rows = Common::DivideUp(height, block_height);
     const u32 cols = Common::DivideUp(width, block_width);
 
@@ -2020,7 +2063,7 @@ void Decompress(std::span<const uint8_t> data, uint32_t width, uint32_t height, 
 
                     // Blocks can be at most 12x12
                     std::array<u32, 12 * 12> uncompData;
-                    DecompressBlock(blockPtr, block_width, block_height, uncompData);
+                    DecompressBlock<spec_ldr, srgb>(blockPtr, block_width, block_height, uncompData);
 
                     u32 decompWidth = (std::min)(block_width, width - x);
                     u32 decompHeight = (std::min)(block_height, height - y);
@@ -2035,6 +2078,21 @@ void Decompress(std::span<const uint8_t> data, uint32_t width, uint32_t height, 
             workers.QueueWork(std::move(decompress_stride));
         }
         workers.WaitForRequests();
+    }
+}
+
+void Decompress(std::span<const uint8_t> data, uint32_t width, uint32_t height, uint32_t depth,
+                uint32_t block_width, uint32_t block_height, std::span<uint8_t> output) {
+    DecompressImpl<false, false>(data, width, height, depth, block_width, block_height, output);
+}
+
+void DecompressForSamplingProbe(std::span<const uint8_t> data, uint32_t width, uint32_t height,
+                                uint32_t depth, uint32_t block_width, uint32_t block_height,
+                                std::span<uint8_t> output, bool srgb) {
+    if (srgb) {
+        DecompressImpl<true, true>(data, width, height, depth, block_width, block_height, output);
+    } else {
+        DecompressImpl<true, false>(data, width, height, depth, block_width, block_height, output);
     }
 }
 

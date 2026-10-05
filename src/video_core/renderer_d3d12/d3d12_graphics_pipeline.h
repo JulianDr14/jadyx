@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
+#include <unordered_set>
 
 #include <array>
 #include <atomic>
@@ -9,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <type_traits>
 #include <vector>
 
@@ -100,6 +102,7 @@ struct PipelineBindings {
     std::vector<std::string>* trace_filters{};
     /// With trace_views: the Shader::TextureType each texture is declared as.
     std::vector<u32>* trace_types{};
+    std::vector<AstcDrawMetadata>* capture_astc_metadata{};
     /// A texture of the draw is the bound depth buffer: bind it read-only (DEPTH_SAMPLED_STATE).
     bool depth_sampled{};
 };
@@ -118,7 +121,7 @@ public:
                      VideoCore::ShaderNotify* shader_notify, Common::ThreadWorker* worker_thread,
                      const GraphicsPipelineCacheKey& key, std::function<SharedDxilStages(u64)> compile_dxil,
                      const std::array<const Shader::Info*, NUM_STAGES>& infos,
-                     const PipelineLayout& layout);
+                     const PipelineLayout& layout, std::unordered_set<u32> astc_bindings = {});
     ~GraphicsPipeline();
 
     GraphicsPipeline(const GraphicsPipeline&) = delete;
@@ -162,8 +165,14 @@ public:
         return has_stage[stage];
     }
 
+    [[nodiscard]] size_t AstcBindingCount() const noexcept { return astc_bindings.size(); }
+
     [[nodiscard]] const GraphicsPipelineCacheKey& Key() const noexcept {
         return key;
+    }
+
+    [[nodiscard]] std::span<const u8> ShaderBytecode(size_t stage) const noexcept {
+        return dxil && stage < NUM_STAGES ? std::span<const u8>{(*dxil)[stage]} : std::span<const u8>{};
     }
 
     /// Port of Vulkan's ConfigureImpl: synchronizes and binds the guest's buffers and textures,
@@ -175,6 +184,7 @@ public:
 private:
     void Build(const TextureCacheRuntime& texture_runtime);
 
+    std::unordered_set<u32> astc_bindings;
     const Device& device;
     const GraphicsPipelineCacheKey key;
     const PipelineLayout& layout;

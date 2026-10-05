@@ -17,9 +17,11 @@
 # The log is left in %LOCALAPPDATA%\Packages\<family>\LocalState\eden\log\eden_log.txt (path
 # printed at the end).
 
+[CmdletBinding()]
 param([int] $TimeoutSec = 75, [switch] $NoBuild, [string] $BootNro, [int] $RunSeconds = 0,
       [switch] $DebugLayer, [string] $Game, [string[]] $BootCfg = @(),
-      [ValidateRange(0, 1048576)] [int] $MemoryLimitMiB = 5120, [switch] $Library)
+      [ValidateRange(0, 1048576)] [int] $MemoryLimitMiB = 5120, [switch] $Library,
+      [string] $AstcCacheSeed, [string] $AstcDrawReplaySeed)
 $ErrorActionPreference = 'Stop'
 if ($MemoryLimitMiB -gt 0) {
     . (Join-Path $PSScriptRoot 'process-memory-limit.ps1')
@@ -45,7 +47,8 @@ Get-Process -Name eden-uwp -ErrorAction SilentlyContinue | Stop-Process -Force
 Push-Location $r
 try {
     & "$r\tools\xbox\package-appx.ps1" -BootNro $BootNro -RunSeconds $RunSeconds `
-        -DebugLayer:$DebugLayer -Game $Game -BootCfg $BootCfg *> $null
+        -DebugLayer:$DebugLayer -Game $Game -BootCfg $BootCfg `
+        -AstcCacheSeed $AstcCacheSeed -AstcDrawReplaySeed $AstcDrawReplaySeed -OutDir 'build-uwp\package' *> $null
 } finally {
     Pop-Location
 }

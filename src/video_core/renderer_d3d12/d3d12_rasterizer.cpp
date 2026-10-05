@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <bit>
 #include <cstring>
@@ -34,6 +35,8 @@
 namespace D3D12 {
 
 namespace {
+
+std::atomic<u64> astc_capture_ps{};
 
 /// Guest query types the D3D12 query cache counts on the host (see d3d12_query_cache.cpp); the
 /// rest are written by QueryFallback. Same mapping as the OpenGL backend.
@@ -169,6 +172,8 @@ u32 DumpTexelBytes(DXGI_FORMAT format) {
 }
 } // Anonymous namespace
 
+void SetAstcDrawCapture(u64 pixel_shader) { astc_capture_ps.store(pixel_shader); }
+
 RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
                                  Tegra::MaxwellDeviceMemoryManager& device_memory_,
                                  const Device& device, Scheduler& scheduler_,
@@ -189,6 +194,13 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
       fence_manager{*this, gpu_, texture_cache, buffer_cache, query_cache, scheduler_} {
     buffer_runtime.SetDescriptorQueue(&descriptor_queue);
     scheduler.RegisterOnReset([this] { InvalidateCommandListState(); });
+    pipeline_cache.SetAstcCompilerReclaim([this] {
+        // ASTC variants compile synchronously on the recording thread, before Configure.
+        // No bindings for this draw exist yet; Finish retires previous ring references.
+        std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
+        this->staging.ReclaimForCompiler();
+        ApplyPendingStateInvalidation();
+    });
     LOG_INFO(Render, "D3D12: rasterizer active (draws, clears, caches, DMA and pipelines)");
 }
 
@@ -207,7 +219,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     ApplyPendingStateInvalidation();
 
     GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
-    if (!pipeline) {
+    if (!pipeline || !pipeline->Handle()) {
         if (trace_draws) {
             TraceDraw("draw skipped (no pipeline)", nullptr, nullptr, {}, 0, 0);
         }
@@ -220,11 +232,15 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     std::vector<std::string> traced_filters;
     std::vector<u32> traced_types;
     std::vector<TracedBuffer> traced_buffers;
-    if (trace_draws) {
+    std::vector<AstcDrawMetadata> astc_metadata;
+    const bool capture = astc_capture_count < 4 && pipeline->AstcBindingCount() != 0 &&
+                         astc_capture_ps.load() != 0 && pipeline->Key().unique_hashes[5] == astc_capture_ps.load();
+    if (capture) bindings.capture_astc_metadata = &astc_metadata;
+    if (trace_draws || capture) {
         bindings.trace_views = &traced_views;
         bindings.trace_filters = &traced_filters;
         bindings.trace_types = &traced_types;
-        if (trace_dumps) {
+        if (trace_dumps || capture) {
             buffer_runtime.SetTraceBuffers(&traced_buffers);
         }
     }
@@ -274,7 +290,14 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
         }
         return;
     }
+    if (capture) {
+        CaptureAstcDraw(*pipeline, bindings, *framebuffer, params, traced_buffers, traced_views, astc_metadata);
+    }
     RecordDraw(*pipeline, bindings, *framebuffer, params, draw_state.topology);
+    if (capture) {
+        LOG_INFO(Render, "D3D12 ASTC capture {} RecordDraw returned (completion requires checkpoint DONE)",
+                 astc_capture_count - 1);
+    }
     if (trace_draws) {
         if (!traced_filters.empty()) {
             LOG_INFO(Render, "D3D12 trace #{} samplers: {} types: {}", trace_index,
@@ -324,7 +347,7 @@ void RasterizerD3D12::DrawIndirect() {
     ApplyPendingStateInvalidation();
 
     GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
-    if (!pipeline) {
+    if (!pipeline || !pipeline->Handle()) {
         return;
     }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
@@ -400,6 +423,7 @@ void RasterizerD3D12::DrawIndirect() {
     };
     BindDrawState(*pipeline, bindings, *framebuffer, draw_params,
                   maxwell3d->draw_manager.draw_state.topology);
+    if (GpuDiagnosticsEnabled()) TraceGpuOperation(fmt::format("indirect draw tick={} VS={:016x} PS={:016x} count={} ASTC={}", scheduler.CurrentTick(), pipeline->Key().unique_hashes[1], pipeline->Key().unique_hashes[5], draw_count, pipeline->AstcBindingCount()));
     scheduler.CommandList()->ExecuteIndirect(signature, draw_count, range.buffer, range.offset,
                                              params.include_count ? range.buffer : nullptr,
                                              params.include_count ? count_offset : 0);
@@ -458,6 +482,17 @@ void RasterizerD3D12::RecordDraw(const GraphicsPipeline& pipeline,
                                  const PipelineBindings& bindings, const Framebuffer& framebuffer,
                                  const DrawParams& params,
                                  Maxwell::PrimitiveTopology topology) {
+    const bool checkpoint = GpuDiagnosticsEnabled() && pipeline.AstcBindingCount() != 0;
+    if (GpuDiagnosticsEnabled()) {
+        TraceGpuOperation(fmt::format("draw tick={} VS={:016x} PS={:016x} ASTC={} vertices={} instances={} indexed={}",
+            scheduler.CurrentTick(), pipeline.Key().unique_hashes[1], pipeline.Key().unique_hashes[5],
+            pipeline.AstcBindingCount(), params.num_vertices, params.num_instances, params.is_indexed));
+    }
+    if (checkpoint) {
+        LOG_WARNING(Render, "GPU checkpoint BEFORE ASTC draw tick={} VS={:016x} PS={:016x} bindings={}",
+            scheduler.CurrentTick(), pipeline.Key().unique_hashes[1], pipeline.Key().unique_hashes[5], pipeline.AstcBindingCount());
+        scheduler.Finish(); // Prove all prior uploads/dispatches completed before isolating this draw.
+    }
     BindDrawState(pipeline, bindings, framebuffer, params, topology);
     ID3D12GraphicsCommandList* const cmd = scheduler.CommandList();
     VideoCore::Perf::Add(VideoCore::Perf::Counter::Draws, 1);
@@ -467,6 +502,12 @@ void RasterizerD3D12::RecordDraw(const GraphicsPipeline& pipeline,
     } else {
         cmd->DrawInstanced(params.num_vertices, params.num_instances, params.base_vertex,
                            params.base_instance);
+    }
+    if (checkpoint) {
+        const u64 tick = scheduler.CurrentTick();
+        LOG_WARNING(Render, "GPU checkpoint RECORDED ASTC draw tick={} PS={:016x}", tick, pipeline.Key().unique_hashes[5]);
+        scheduler.Finish();
+        LOG_WARNING(Render, "GPU checkpoint DONE ASTC draw tick={} completed={}", tick, scheduler.KnownGpuTick());
     }
 }
 
@@ -859,7 +900,7 @@ void RasterizerD3D12::DispatchCompute() {
     ApplyPendingStateInvalidation();
 
     ComputePipeline* const pipeline = pipeline_cache.CurrentComputePipeline();
-    if (!pipeline) {
+    if (!pipeline || !pipeline->Handle()) {
         return;
     }
     std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
@@ -933,6 +974,7 @@ void RasterizerD3D12::DispatchCompute() {
     if (layout.SamplerTableIndex() != PipelineLayout::NO_TABLE) {
         cmd->SetComputeRootDescriptorTable(layout.SamplerTableIndex(), bindings.sampler_table);
     }
+    if (GpuDiagnosticsEnabled()) TraceGpuOperation(fmt::format("dispatch tick={} shader={:016x} groups={}x{}x{} indirect={}", scheduler.CurrentTick(), pipeline->ShaderHash(), dim[0], dim[1], dim[2], indirect_range.has_value()));
     VideoCore::Perf::Add(VideoCore::Perf::Counter::Dispatches, 1);
     if (indirect_range) {
         cmd->ExecuteIndirect(layout.DispatchSignature(), 1, indirect_range->buffer,
@@ -1136,6 +1178,7 @@ void RasterizerD3D12::FlushCommands() {
     scheduler.Flush();
 }
 void RasterizerD3D12::FlushIfUploadHeavy() {
+    if (removal_tripwire::removal_tripped.load(std::memory_order_relaxed)) return;
     // A loading frame may upload more textures than the 128 MiB staging stream holds within one
     // command list (151 MiB in Game C), and the stream only reuses submitted regions. The
     // reset callback invalidates cached state, so submitting between draws is safe.
@@ -1237,6 +1280,121 @@ void RasterizerD3D12::DumpTextureNonFinite(const Image& image) {
              image.info.type == VideoCommon::ImageType::e3D ? image.info.size.depth : layers,
              levels, image.gpu_addr, static_cast<u32>(image.flags), total, bad);
 }
+void RasterizerD3D12::CaptureAstcDraw(
+    const GraphicsPipeline& pipeline, const PipelineBindings& bindings,
+    const Framebuffer& framebuffer, const DrawParams& params,
+    std::span<const TracedBuffer> buffers, std::span<const VideoCommon::ImageViewId> views,
+    std::span<const AstcDrawMetadata> metadata) {
+    const u32 capture_id = astc_capture_count++;
+    const std::string prefix = fmt::format("astc-capture-{:016x}-draw{}",
+                                          pipeline.Key().unique_hashes[5], capture_id);
+    const auto directory = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir);
+    try {
+        std::ofstream manifest(directory / (prefix + ".txt"), std::ios::trunc);
+        manifest.exceptions(std::ios::badbit | std::ios::failbit);
+        manifest << "format=1\nstatus=CAPTURING\n";
+        manifest << fmt::format("PS={:016x}\nVS={:016x}\nkey_hash={:016x}\n",
+                                pipeline.Key().unique_hashes[5], pipeline.Key().unique_hashes[1],
+                                pipeline.Key().Hash());
+        manifest << fmt::format("indexed={} count={} instances={} first_index={} base_vertex={} base_instance={}\n",
+                                params.is_indexed, params.num_vertices, params.num_instances,
+                                params.first_index, static_cast<s32>(params.base_vertex), params.base_instance);
+        manifest << "limits: buffer-prefix=2MiB buffer-total=8MiB raw-total=64MiB readback=512KiB\n"
+                    "Not a full graphics replay: native textures, RT/depth contents and interpolated coordinates absent.\n";
+        const auto write_blob = [&](const std::string& label, const void* bytes, size_t size) {
+            std::ofstream file(directory / (prefix + "-" + label + ".bin"), std::ios::binary | std::ios::trunc);
+            file.exceptions(std::ios::badbit | std::ios::failbit);
+            if (size) file.write(static_cast<const char*>(bytes), static_cast<std::streamsize>(size));
+            manifest << label << " bytes=" << size << '\n';
+        };
+        write_blob("registers", maxwell3d->regs.reg_array.data(), sizeof(maxwell3d->regs.reg_array));
+        write_blob("key", &pipeline.Key(), sizeof(pipeline.Key()));
+        write_blob("push", bindings.push_constants.data(), sizeof(bindings.push_constants));
+        write_blob("metadata", metadata.data(), metadata.size_bytes());
+        std::array<D3D12_VIEWPORT, Maxwell::NumViewports> viewports{};
+        const auto viewport_state = ComputeViewports(viewports);
+        manifest << fmt::format("framebuffer={}x{} viewport={}x{} flip_mask={}\n",
+                                framebuffer.Extent().width, framebuffer.Extent().height,
+                                viewport_state.width, viewport_state.height, viewport_state.yz_flip_mask);
+        write_blob("viewports", viewports.data(), sizeof(viewports));
+        std::array<D3D12_RECT, Maxwell::NumViewports> scissors{};
+        for (size_t i = 0; i < scissors.size(); ++i) scissors[i] = ScissorRect(i);
+        write_blob("scissors", scissors.data(), sizeof(scissors));
+        for (size_t stage = 0; stage < GraphicsPipeline::NUM_STAGES; ++stage) {
+            const auto code = pipeline.ShaderBytecode(stage);
+            if (!code.empty()) write_blob(fmt::format("stage{}-dxil", stage), code.data(), code.size());
+        }
+        // Finish makes all DEFAULT buffers decay to COMMON. COPY_SOURCE is promotable;
+        // UPLOAD buffers already have GENERIC_READ. Never transition an ASTC Image here:
+        // that would materialize its expanded native companion.
+        scheduler.Finish();
+        auto readback = staging.Request(512U << 10, MemoryUsage::Download, true);
+        SCOPE_EXIT { staging.FreeDeferred(readback); };
+        const auto copy_buffer = [&](const std::string& label, ID3D12Resource* resource,
+                                     u64 offset, u64 requested, u64 limit) -> u64 {
+            if (!resource) return 0;
+            const auto desc = resource->GetDesc();
+            if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || offset > desc.Width) return 0;
+            const u64 size = std::min({requested, limit, desc.Width - offset});
+            std::ofstream file(directory / (prefix + "-" + label + ".bin"), std::ios::binary | std::ios::trunc);
+            file.exceptions(std::ios::badbit | std::ios::failbit);
+            u64 hash = 14695981039346656037ULL;
+            for (u64 at = 0; at < size;) {
+                const u64 chunk = std::min<u64>(size - at, readback.mapped_span.size());
+                if (!chunk) throw std::runtime_error("ASTC capture empty readback");
+                scheduler.CommandList()->CopyBufferRegion(readback.buffer, readback.offset,
+                                                          resource, offset + at, chunk);
+                scheduler.Finish();
+                for (u64 i = 0; i < chunk; ++i) {
+                    hash ^= readback.mapped_span[i];
+                    hash *= 1099511628211ULL;
+                }
+                file.write(reinterpret_cast<const char*>(readback.mapped_span.data()),
+                           static_cast<std::streamsize>(chunk));
+                at += chunk;
+            }
+            manifest << fmt::format("{} offset={} requested={} captured={} truncated={} fnv1a64={:016x}\n",
+                                    label, offset, requested, size, size != requested, hash);
+            LOG_INFO(Render, "D3D12 ASTC capture {} {} bytes={} truncated={} fnv1a64={:016x}",
+                     capture_id, label, size, size != requested, hash);
+            return size;
+        };
+        u64 budget = 8U << 20;
+        for (size_t i = 0; i < buffers.size(); ++i) {
+            const auto& b = buffers[i];
+            const auto label = fmt::format("buffer{}-kind{}-slot{}", i, static_cast<u32>(b.kind), b.slot);
+            manifest << fmt::format("{} guestVA={:x} stride={} bound_size={}\n", label, b.device_addr, b.stride, b.size);
+            if (b.mapped && b.kind == TracedBuffer::Kind::StreamedUniform) {
+                const size_t size = static_cast<size_t>(std::min<u64>(b.size, budget));
+                write_blob(label, b.mapped, size);
+                budget -= size;
+            } else {
+                budget -= copy_buffer(label, b.resource.Get(), b.offset, b.size,
+                                      std::min<u64>(budget, 2U << 20));
+            }
+        }
+        budget = 64U << 20;
+        std::vector<const Image*> captured;
+        for (size_t i = 0; i < views.size(); ++i) {
+            const auto* image = texture_cache.GetImageView(views[i]).SourceImage();
+            if (!image || !image->AstcRawResource() || std::find(captured.begin(), captured.end(), image) != captured.end()) continue;
+            captured.push_back(image);
+            const auto label = fmt::format("raw-view{}", i);
+            manifest << fmt::format("{} guestVA={:x} width={} height={} depth={} layers={} levels={}\n",
+                                    label, image->gpu_addr, image->info.size.width, image->info.size.height,
+                                    image->info.size.depth, image->info.resources.layers, image->info.resources.levels);
+            auto* resource = image->AstcRawResource();
+            budget -= copy_buffer(label, resource, 0, resource->GetDesc().Width, budget);
+        }
+        manifest << "status=PREPARED\n";
+        manifest.flush();
+        LOG_INFO(Render, "D3D12 ASTC capture {} PREPARED {}.txt", capture_id, prefix);
+    } catch (const std::exception& error) {
+        if (removal_tripwire::removal_tripped.load()) throw;
+        LOG_WARNING(Render, "D3D12 ASTC capture {} failed: {}", capture_id, error.what());
+    }
+}
+
 void RasterizerD3D12::CheckTracedBuffers(std::span<const TracedBuffer> buffers,
                                          const DrawParams& params, bool verbose) {
     using Kind = TracedBuffer::Kind;
@@ -1260,6 +1418,8 @@ void RasterizerD3D12::CheckTracedBuffers(std::span<const TracedBuffer> buffers,
                 return "index";
             case Kind::RewrittenIndex:
                 return "index rewritten";
+            case Kind::Storage:
+                return "storage";
             }
             return "?";
         }();

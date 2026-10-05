@@ -6,6 +6,7 @@
 #include <exception>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -14,6 +15,7 @@
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "video_core/renderer_d3d12/d3d12_astc_guest.h"
 #include "common/settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/environment.h"
@@ -23,6 +25,9 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/frame_trace.h"
+#include "video_core/gpu_thread.h"
+#include "video_core/memory_manager.h"
+#include "video_core/texture_cache/format_lookup_table.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
@@ -284,7 +289,8 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                              VideoCore::ShaderNotify& shader_notify_)
     : VideoCommon::ShaderCache{device_memory_}, device{device_}, compiler{compiler_},
       texture_runtime{texture_runtime_}, shader_notify{shader_notify_},
-      use_asynchronous_shaders{Settings::values.use_asynchronous_shaders.GetValue()},
+      use_asynchronous_shaders{Settings::values.use_asynchronous_shaders.GetValue() &&
+                               !AstcGuestSamplingEnabled()},
       root_signatures{device_},
       workers(GetTotalPipelineWorkers(), "D3D12PipelineBuilder", {},
               Common::ThreadPlacement::Background),
@@ -384,6 +390,8 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
 PipelineCache::~PipelineCache() = default;
 
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
+    if (VideoCommon::GPUThread::HasExceptionReported())
+        return nullptr;
     if (!RefreshStages(graphics_key.unique_hashes)) {
         current_pipeline = nullptr;
         return nullptr;
@@ -406,6 +414,8 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
 }
 
 ComputePipeline* PipelineCache::CurrentComputePipeline() {
+    if (VideoCommon::GPUThread::HasExceptionReported())
+        return nullptr;
     const VideoCommon::ShaderInfo* const shader{ComputeShader()};
     if (!shader) {
         return nullptr;
@@ -432,7 +442,7 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
                                            VideoCore::Perf::Counter::PipelineStalls};
         pipeline->WaitBuilt();
     }
-    return pipeline.get();
+    return SelectAstcVariant(pipeline.get(), key, shader);
 }
 
 void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
@@ -445,22 +455,52 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }
     const auto shader_dir{Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir)};
     const auto base_dir{shader_dir / fmt::format("{:016x}", title_id)};
+    const auto seed_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) /
+        "astc-seed-v1" / "shader" / fmt::format("{:016x}", title_id);
     if (!Common::FS::CreateDir(shader_dir) || !Common::FS::CreateDir(base_dir)) {
         LOG_ERROR(Common_Filesystem, "Failed to create pipeline cache directories");
         return;
     }
     pipeline_cache_filename = base_dir / "d3d12.bin";
+    const bool astc_experiment = AstcGuestSamplingEnabled();
+    if (astc_experiment) {
+        astc_guest_warm_filename = base_dir / "astc_guest_warm.txt";
+        astc_variant_warm_filename = base_dir / "astc_variants_v1.bin";
+        std::ifstream variants(astc_variant_warm_filename, std::ios::binary);
+        astc_variant_warm = ReadAstcWarm<GraphicsPipelineCacheKey>(variants);
+        std::ifstream seed_variants(seed_dir / "astc_variants_v1.bin", std::ios::binary);
+        for (auto& hint : ReadAstcWarm<GraphicsPipelineCacheKey>(seed_variants)) {
+            if (astc_variant_warm.size() >= AstcWarmLimit) break;
+            const bool known = std::ranges::any_of(astc_variant_warm, [&](const auto& local) {
+                return local.key == hint.key && local.descriptors == hint.descriptors;
+            });
+            if (!known) astc_variant_warm.push_back(std::move(hint));
+        }
+        LOG_INFO(Render, "D3D12: ASTC Direct precache selection: {} exact key/mask hints",
+                 astc_variant_warm.size());
+        std::ifstream warm(astc_guest_warm_filename);
+        u64 vs{}, ps{};
+        while (astc_guest_warm_shaders.size() < 128 && (warm >> std::hex >> vs >> ps)) {
+            astc_guest_warm_shaders.emplace(vs, ps);
+        }
+        std::ifstream seed_warm(seed_dir / "astc_guest_warm.txt");
+        while (astc_guest_warm_shaders.size() < 128 && (seed_warm >> std::hex >> vs >> ps))
+            astc_guest_warm_shaders.emplace(vs, ps);
+        LOG_INFO(Render, "D3D12: ASTC guest precache restricted to {} previously encountered VS/PS pairs (128 pair / 256 pipeline cap)", astc_guest_warm_shaders.size());
+    }
 
     struct {
         std::mutex mutex;
         size_t total{};
         size_t built{};
+        size_t speculative_variants{};
         bool has_loaded{};
     } state;
 
     const auto load_compute{[&](std::ifstream& file, FileEnvironment env) {
         ComputePipelineCacheKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
+        if (astc_experiment) return;
 
         workers.QueueWork([this, key, env_ = std::move(env), &state, &callback]() mutable {
             ShaderPools pools;
@@ -479,8 +519,19 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     const auto load_graphics{[&](std::ifstream& file, std::vector<FileEnvironment> envs) {
         GraphicsPipelineCacheKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
+        if (astc_experiment) {
+            if (graphics_cache.contains(key)) return;
+            const bool has_variant = std::ranges::any_of(astc_variant_warm,
+                [&](const auto& hint) { return hint.key == key; });
+            const bool has_related_variant = state.speculative_variants < 128 &&
+                std::ranges::any_of(astc_variant_warm, [&](const auto& hint) {
+                    return hint.key.unique_hashes[5] == key.unique_hashes[5];
+                });
+            if (!has_variant && !has_related_variant && (state.total >= 256 ||
+                !astc_guest_warm_shaders.contains({key.unique_hashes[1], key.unique_hashes[5]}))) return;
+        }
 
-        workers.QueueWork([this, key, envs_ = std::move(envs), &state, &callback]() mutable {
+        auto build = [this, key, envs_ = std::move(envs), &state, &callback, astc_experiment]() mutable {
             ShaderPools pools;
             boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
             for (auto& env : envs_) {
@@ -488,19 +539,51 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             }
             auto pipeline{CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), false)};
 
+            // Direct mode runs this task inline, before Run/JIT prewarm and with no live
+            // guest bindings. Known masks also prepare bounded candidates for the same PS;
+            // runtime selection still requires the exact key/mask and real bound TICs.
+            std::map<std::vector<u32>, std::unique_ptr<GraphicsPipeline>> variants;
+            if (astc_experiment && pipeline && pipeline->Handle()) {
+                for (const auto& hint : astc_variant_warm) {
+                    const bool exact = hint.key == key;
+                    if ((!exact && (hint.key.unique_hashes[5] != key.unique_hashes[5] ||
+                                    state.speculative_variants >= 128)) ||
+                        variants.contains(hint.descriptors)) continue;
+                    const std::unordered_set<u32> selected(hint.descriptors.begin(),
+                                                           hint.descriptors.end());
+                    pools.ReleaseContents();
+                    auto direct = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), false,
+                                                          &selected);
+                    if (direct && direct->Handle()) {
+                        variants.emplace(hint.descriptors, std::move(direct));
+                        state.speculative_variants += !exact;
+                        LOG_INFO(Render, "D3D12: ASTC Direct variant precached: PS={:016x} "
+                                         "bound_astc_descriptors={} exact_key={}",
+                                 key.unique_hashes[5], hint.descriptors.size(), exact);
+                    }
+                }
+            }
+
             std::scoped_lock lock{state.mutex};
             if (pipeline) {
-                graphics_cache.emplace(key, std::move(pipeline));
+                auto [entry, inserted] = graphics_cache.emplace(key, std::move(pipeline));
+                if (inserted && !variants.empty())
+                    astc_graphics_variants.emplace(entry->second.get(), std::move(variants));
             }
             ++state.built;
             if (state.has_loaded) {
                 callback(VideoCore::LoadCallbackStage::Build, state.built, state.total);
             }
-        });
+        };
+        if (astc_experiment) build();
+        else workers.QueueWork(std::move(build));
         ++state.total;
     }};
     VideoCommon::LoadPipelines(stop_loading, pipeline_cache_filename, CACHE_VERSION, load_compute,
                                load_graphics);
+    if (astc_experiment && Common::FS::Exists(seed_dir / "d3d12.bin"))
+        VideoCommon::LoadPipelines(stop_loading, seed_dir / "d3d12.bin", CACHE_VERSION,
+                                   load_compute, load_graphics);
 
     LOG_INFO(Render, "D3D12: {} pipelines in the disk cache", state.total);
 
@@ -516,6 +599,18 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     const auto [pair, is_new]{graphics_cache.try_emplace(graphics_key)};
     auto& pipeline{pair->second};
     if (is_new) {
+        if (AstcGuestSamplingEnabled() && !astc_guest_warm_filename.empty() &&
+            astc_guest_warm_shaders.size() < 128) {
+            const auto shaders = std::pair{graphics_key.unique_hashes[1], graphics_key.unique_hashes[5]};
+            if (astc_guest_warm_shaders.insert(shaders).second) {
+                // Persist before translation: a failed/OOM compile must be warmed before guest
+                // DRAM fills on the next experiment. This is only a selection hint; the normal
+                // cache still supplies and validates the actual guest shader environments.
+                std::ofstream warm(astc_guest_warm_filename, std::ios::app);
+                warm << std::hex << shaders.first << ' ' << shaders.second << '\n';
+                LOG_INFO(Render, "D3D12: ASTC guest encountered VS {:016x} PS {:016x}", shaders.first, shaders.second);
+            }
+        }
         // Translating the shaders runs here, on the GPU thread, before the build is queued.
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PipelineStallUs};
         pipeline = CreateGraphicsPipeline();
@@ -530,9 +625,9 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     return BuiltPipeline(current_pipeline);
 }
 
-GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const noexcept {
+GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
     if (pipeline->IsBuilt()) {
-        return pipeline;
+        return SelectAstcVariant(pipeline);
     }
     // Small draws are usually full-screen passes that build textures once: skipping them would
     // lose the texture, so wait for those like Vulkan does.
@@ -542,14 +637,128 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PipelineStallUs,
                                            VideoCore::Perf::Counter::PipelineStalls};
         pipeline->WaitBuilt();
-        return pipeline;
+        return SelectAstcVariant(pipeline);
     }
     return nullptr;
 }
 
+namespace {
+template <typename CbufAddress, typename ReadTic>
+std::vector<u32> BoundAstcDescriptors(const Shader::Info& info, Tegra::MemoryManager& memory,
+                                     bool via_header, CbufAddress&& cbuf_address, ReadTic&& read_tic) {
+    std::vector<u32> selected;
+    for (u32 index = 0; index < info.texture_descriptors.size(); ++index) {
+        const auto& d = info.texture_descriptors[index];
+        if (d.count != 1 || d.is_integer || d.is_multisample ||
+            (d.type != Shader::TextureType::Color2D && d.type != Shader::TextureType::ColorArray2D))
+            continue;
+        u32 raw = memory.Read<u32>(cbuf_address(d.cbuf_index) + d.cbuf_offset);
+        if (d.has_secondary) {
+            raw = (raw << d.shift_left) |
+                  (memory.Read<u32>(cbuf_address(d.secondary_cbuf_index) + d.secondary_cbuf_offset)
+                   << d.secondary_shift_left);
+        }
+        const auto pair = Tegra::Texture::TexturePair(raw, via_header);
+        const auto tic = read_tic(pair.first);
+        if (!tic)
+            continue;
+        const auto format = VideoCommon::PixelFormatFromTextureInfo(
+            tic->format, tic->r_type, tic->g_type, tic->b_type, tic->a_type, tic->srgb_conversion);
+        if (VideoCore::Surface::IsPixelFormatASTC(format))
+            selected.push_back(index);
+    }
+    return selected;
+}
+} // namespace
+
+GraphicsPipeline* PipelineCache::SelectAstcVariant(GraphicsPipeline* pipeline) {
+    if (!AstcGuestSamplingEnabled() || !pipeline->HasStage(4))
+        return pipeline;
+    const auto& regs = maxwell3d->regs;
+    const auto& cbufs = maxwell3d->state.shader_stages[4].const_buffers;
+    const auto mask = BoundAstcDescriptors(
+        pipeline->StageInfo(4), *gpu_memory,
+        regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding,
+        [&](u32 index) { return cbufs.at(index).address; },
+        [&](u32 index) -> std::optional<Tegra::Texture::TICEntry> {
+            if (index > regs.tex_header.limit)
+                return std::nullopt;
+            Tegra::Texture::TICEntry tic{};
+            gpu_memory->ReadBlockUnsafe(regs.tex_header.Address() +
+                                           u64(index) * sizeof(Tegra::Texture::TICEntry),
+                                       &tic, sizeof(tic));
+            return tic;
+        });
+    if (mask.empty())
+        return pipeline;
+    auto [entry, inserted] = astc_graphics_variants[pipeline].try_emplace(mask);
+    if (inserted) {
+        RememberAstcVariant(pipeline->Key(), mask);
+        GraphicsEnvironments environments;
+        GetGraphicsEnvironments(environments, pipeline->Key().unique_hashes);
+        main_pools.ReleaseContents();
+        const std::unordered_set<u32> selected(mask.begin(), mask.end());
+        entry->second = CreateGraphicsPipeline(main_pools, pipeline->Key(), environments.Span(),
+                                                false, &selected);
+        LOG_INFO(Render, "D3D12: ASTC graphics runtime variant: PS={:016x} bound_astc_descriptors={} "
+                         "native_base_retained=yes synchronous=yes",
+                 pipeline->Key().unique_hashes[5], mask.size());
+    }
+    return entry->second.get();
+}
+
+void PipelineCache::RememberAstcVariant(const GraphicsPipelineCacheKey& key,
+                                        const std::vector<u32>& mask) {
+    if (astc_variant_warm_filename.empty() || astc_variant_warm.size() >= AstcWarmLimit) return;
+    for (const auto& hint : astc_variant_warm)
+        if (hint.key == key && hint.descriptors == mask) return;
+    astc_variant_warm.push_back({key, mask});
+    // Record before compilation: even a refused shader can be prepared with startup headroom
+    // on the next run. Interrupted/corrupt hints are rejected; they never supply shader code.
+    std::ofstream out(astc_variant_warm_filename, std::ios::binary | std::ios::trunc);
+    if (!WriteAstcWarm<GraphicsPipelineCacheKey>(out, astc_variant_warm))
+        LOG_WARNING(Render, "D3D12: could not save ASTC Direct variant selection");
+}
+
+ComputePipeline* PipelineCache::SelectAstcVariant(ComputePipeline* pipeline,
+                                                 const ComputePipelineCacheKey& key,
+                                                 const VideoCommon::ShaderInfo* shader) {
+    if (!AstcGuestSamplingEnabled())
+        return pipeline;
+    const auto& qmd = kepler_compute->launch_description;
+    const auto mask = BoundAstcDescriptors(
+        pipeline->Info(), *gpu_memory, qmd.linked_tsc != 0,
+        [&](u32 index) { return qmd.const_buffer_config.at(index).Address(); },
+        [&](u32 index) -> std::optional<Tegra::Texture::TICEntry> {
+            if (index > kepler_compute->regs.tic.limit)
+                return std::nullopt;
+            Tegra::Texture::TICEntry tic{};
+            gpu_memory->ReadBlockUnsafe(kepler_compute->regs.tic.Address() +
+                                           u64(index) * sizeof(Tegra::Texture::TICEntry),
+                                       &tic, sizeof(tic));
+            return tic;
+        });
+    if (mask.empty())
+        return pipeline;
+    auto [entry, inserted] = astc_compute_variants[pipeline].try_emplace(mask);
+    if (inserted) {
+        const GPUVAddr program_base = kepler_compute->regs.code_loc.Address();
+        ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
+        env.SetCachedSize(shader->size_bytes);
+        main_pools.ReleaseContents();
+        const std::unordered_set<u32> selected(mask.begin(), mask.end());
+        entry->second = CreateComputePipeline(main_pools, key, env, false, &selected);
+        LOG_INFO(Render, "D3D12: ASTC compute runtime variant: shader={:016x} "
+                         "bound_astc_descriptors={} native_base_retained=yes synchronous=yes",
+                 key.unique_hash, mask.size());
+    }
+    return entry->second.get();
+}
+
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     ShaderPools& pools, const GraphicsPipelineCacheKey& key,
-    std::span<Shader::Environment* const> envs, bool build_in_parallel) try {
+    std::span<Shader::Environment* const> envs, bool build_in_parallel,
+    const std::unordered_set<u32>* astc_descriptors) try {
     size_t env_index{0};
     std::array<Shader::IR::Program, Maxwell::MaxShaderProgram> programs;
     const bool uses_vertex_a{key.unique_hashes[0] != 0};
@@ -597,6 +806,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
     const Shader::IR::Program* previous_stage{};
     Shader::Backend::Bindings binding;
+    std::unordered_set<u32> astc_bindings;
+    u32 astc_decoder_calls{};
     for (size_t index = uses_vertex_a && uses_vertex_b ? 1 : 0; index < Maxwell::MaxShaderProgram;
          ++index) {
         const bool is_emulated_stage = layer_source_program != nullptr &&
@@ -614,7 +825,18 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
         const auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage)};
         ConvertLegacyToGeneric(program, runtime_info);
+        const u32 first_binding = binding.unified;
         spirv[stage_index] = EmitSPIRV(profile, runtime_info, program, binding);
+        // The shader's sampling path must not change with transient compiler memory usage. A
+        // native fallback here can allocate hundreds of MiB precisely when memory is scarce.
+        if (AstcGuestSamplingEnabled() && (stage_index == 4)) {
+            const std::unordered_set<u32> native_only;
+            auto patched = PatchAstcGuestShader(spirv[stage_index], program.info, first_binding, true,
+                                                astc_descriptors ? astc_descriptors : &native_only);
+            spirv[stage_index] = std::move(patched.code);
+            astc_decoder_calls += patched.decoder_calls;
+            astc_bindings.insert(patched.bindings.begin(),patched.bindings.end());
+        }
         stage_indices.push_back(stage_index);
         previous_stage = &program;
     }
@@ -623,7 +845,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     // SPIR-V to DXIL goes with the PSO build, on a worker: done here it stalled the GPU thread for
     // 150-490 ms per 300 frames when entering new areas (0.2.59 profile). Translating the guest
     // shaders stays here, since it reads guest memory through the environments.
-    auto compile_dxil = [this, spirv = std::move(spirv), stage_indices](u64 trace_pipeline) {
+    auto compile_dxil = [this, spirv = std::move(spirv), stage_indices,
+                         uses_direct_astc = !astc_bindings.empty(),
+                         decoder_calls = astc_decoder_calls](u64 trace_pipeline) {
         boost::container::static_vector<ShaderCompiler::PipelineStage, Maxwell::MaxShaderStage>
             stages;
         for (const size_t stage_index : stage_indices) {
@@ -636,6 +860,11 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         const ShaderCompiler::PipelineOptions options{
             .yz_flip = DXIL_SPIRV_YZ_FLIP_CONDITIONAL,
             .first_vertex_and_base_instance = DXIL_SPIRV_SYSVAL_TYPE_RUNTIME_DATA,
+            .parallel_native_astc_experiment = AstcGuestSamplingEnabled() && !uses_direct_astc &&
+                device.QueryCacheMemoryPressure().AppFree() >= 4ULL * 1024 * 1024 * 1024,
+            .astc_budget_device = decoder_calls ? &device : nullptr,
+            .astc_decoder_calls = decoder_calls,
+            .astc_reclaim = &astc_compiler_reclaim,
         };
         boost::container::static_vector<LinkedShaderStage, Maxwell::MaxShaderStage> key_stages;
         for (const auto& stage : stages) {
@@ -665,10 +894,11 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         return cached.value;
     };
 
-    Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
+    Common::ThreadWorker* const thread_worker{
+        build_in_parallel && !AstcGuestSamplingEnabled() ? &workers : nullptr};
     return std::make_unique<GraphicsPipeline>(device, texture_runtime, &shader_notify,
                                               thread_worker, key, std::move(compile_dxil), infos,
-                                              layout);
+                                              layout, std::move(astc_bindings));
 
 } catch (const Shader::Exception& exception) {
     LOG_ERROR(Render, "D3D12: recompiling VS {:016x} PS {:016x} failed: {}", key.unique_hashes[1],
@@ -725,25 +955,42 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
 
 std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     ShaderPools& pools, const ComputePipelineCacheKey& key, Shader::Environment& env,
-    bool build_in_parallel) try {
+    bool build_in_parallel, const std::unordered_set<u32>* astc_descriptors) try {
     Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
     if (Settings::values.dump_guest_shaders) {
         env.Dump(key.Hash(), key.unique_hash);
     }
     auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
-    const std::vector<u32> code{EmitSPIRV(profile, program)};
+    std::vector<u32> code{EmitSPIRV(profile, program)};
+    std::unordered_set<u32> astc_bindings;
+    u32 astc_decoder_calls{};
+    if (AstcGuestSamplingEnabled()) {
+        const std::unordered_set<u32> native_only;
+        auto patched = PatchAstcGuestShader(code, program.info, 0, false,
+                                            astc_descriptors ? astc_descriptors : &native_only);
+        code = std::move(patched.code); astc_bindings = std::move(patched.bindings);
+        astc_decoder_calls = patched.decoder_calls;
+    }
 
     const std::array<ShaderCompiler::PipelineStage, 1> stages{{
         {.spirv = code, .stage = DXIL_SPIRV_SHADER_COMPUTE},
     }};
-    auto compiled = compiler.CompilePipeline(stages, {});
+    const ShaderCompiler::PipelineOptions options{
+        .parallel_native_astc_experiment = AstcGuestSamplingEnabled() && astc_bindings.empty() &&
+            device.QueryCacheMemoryPressure().AppFree() >= 4ULL * 1024 * 1024 * 1024,
+        .astc_budget_device = astc_decoder_calls ? &device : nullptr,
+        .astc_decoder_calls = astc_decoder_calls,
+        .astc_reclaim = &astc_compiler_reclaim,
+    };
+    auto compiled = compiler.CompilePipeline(stages, options);
     const std::array<const Shader::Info*, 1> infos{&program.info};
     const PipelineLayout& layout = root_signatures.Get(infos, true);
 
-    Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
+    Common::ThreadWorker* const thread_worker{
+        build_in_parallel && !AstcGuestSamplingEnabled() ? &workers : nullptr};
     return std::make_unique<ComputePipeline>(device, &shader_notify, thread_worker,
                                              key.unique_hash, std::move(compiled[0].dxil),
-                                             program.info, layout);
+                                             program.info, layout, std::move(astc_bindings));
 
 } catch (const Shader::Exception& exception) {
     LOG_ERROR(Render, "D3D12: recompiling compute {:016x} failed: {}", key.unique_hash,
@@ -752,6 +999,8 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
 } catch (const std::exception& exception) {
     LOG_ERROR(Render, "D3D12: building compute pipeline {:016x} failed: {}", key.unique_hash,
               exception.what());
+    if (AstcGuestSamplingEnabled())
+        VideoCommon::GPUThread::ReportException(exception.what());
     return nullptr;
 }
 

@@ -542,6 +542,28 @@ void ArmDynarmic64::LoadPrewarmProfile() {
                 LOG_WARNING(Core, "JIT profile core {}: incompatible or corrupt, learning again", p.core);
             }
         }
+        // Optional packaged records supplement an incomplete local profile. They contain
+        // descriptors/hashes, never host code; title/BuildId/core and RX/code checks still apply.
+        if (p.loaded.size() < JitPrewarm::MaxRecords) {
+            const auto seed_path = Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) /
+                "astc-seed-v1" / "jit-profile" / fmt::format("{:016x}", p.title) /
+                fmt::format("core-{}.bin", p.core);
+            std::error_code seed_ec;
+            const auto seed_bytes = std::filesystem::file_size(seed_path, seed_ec);
+            if (!seed_ec) {
+                std::ifstream seed_file{seed_path, std::ios::binary};
+                std::vector<JitPrewarm::Record> seed;
+                if (JitPrewarm::Read(seed_file, seed_bytes, p.title, p.build, p.core, seed)) {
+                    const auto local_count = p.loaded.size();
+                    const auto seed_count = seed.size();
+                    JitPrewarm::Merge(seed, p.loaded); // Local fingerprints/priority win.
+                    seed.shrink_to_fit();
+                    p.loaded = std::move(seed);
+                    LOG_INFO(Core, "JIT profile core {}: seed {} records, local {} preserved, "
+                                   "merged {}", p.core, seed_count, local_count, p.loaded.size());
+                }
+            }
+        }
         p.status.assign(p.loaded.size(), JitPrewarm::WarmStatus::RecordOnly);
         p.catalog = JitPrewarm::application_catalog;
         if (JitPrewarm::application_catalog) {

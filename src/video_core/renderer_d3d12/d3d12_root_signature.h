@@ -69,6 +69,7 @@ public:
     u32 NumResourceDescriptors() const noexcept {
         return num_resources;
     }
+    u32 AstcMetadataSlots() const noexcept { return astc_metadata_slots; }
     u32 NumSamplerDescriptors() const noexcept {
         return num_samplers;
     }
@@ -97,6 +98,7 @@ private:
     u32 sampler_table_index{NO_TABLE};
     u32 num_resources{};
     u32 num_samplers{};
+    u32 astc_metadata_slots{};
 };
 
 /// Builds and deduplicates guest root signatures. Thread-safe: pipelines are built on workers.

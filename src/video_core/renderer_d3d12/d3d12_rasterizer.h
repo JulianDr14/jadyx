@@ -30,6 +30,9 @@ struct FramebufferConfig;
 
 namespace D3D12 {
 
+/// Opt-in bounded input capture; zero disables it. Configured before starting the renderer.
+void SetAstcDrawCapture(u64 pixel_shader);
+
 class AccelerateDMA final : public Tegra::Engines::AccelerateDMAInterface {
 public:
     AccelerateDMA(BufferCache& buffer_cache, TextureCache& texture_cache);
@@ -148,6 +151,11 @@ private:
     void RecordDraw(const GraphicsPipeline& pipeline, const PipelineBindings& bindings,
                     const Framebuffer& framebuffer, const DrawParams& params,
                     Maxwell::PrimitiveTopology topology);
+    void CaptureAstcDraw(const GraphicsPipeline& pipeline, const PipelineBindings& bindings,
+                         const Framebuffer& framebuffer, const DrawParams& params,
+                         std::span<const TracedBuffer> buffers,
+                         std::span<const VideoCommon::ImageViewId> views,
+                         std::span<const AstcDrawMetadata> metadata);
     /// RecordDraw without the draw (ExecuteIndirect replaces it).
     void BindDrawState(const GraphicsPipeline& pipeline, const PipelineBindings& bindings,
                        const Framebuffer& framebuffer, const DrawParams& params,
@@ -237,6 +245,7 @@ private:
     bool trace_draws{};
     /// Draws, clears and dispatches since the last FlushCommands submission.
     u32 draw_counter{};
+    u32 astc_capture_count{};
     bool trace_dumps{};
     u32 trace_index{};
     /// Color targets then depth of the framebuffer the traced draws go to (ids, not the

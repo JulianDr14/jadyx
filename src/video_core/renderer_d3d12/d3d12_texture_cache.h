@@ -35,6 +35,7 @@ class Image;
 class ImageView;
 class Framebuffer;
 class Sampler;
+using AstcDrawMetadata = std::array<std::array<u32, 4>, 6>;
 
 /// A depth buffer bound read-only while shaders sample it: D3D12 cannot read a resource in
 /// DEPTH_WRITE (the reads return garbage, zeros on the PC), so both uses share this state.
@@ -72,6 +73,7 @@ public:
     ~TextureCacheRuntime();
 
     void RunSelfTest();
+    bool RunReinterpretationSelfTest();
     void Finish();
 
     /// Where shader blits go (set by the renderer once the helper exists; null means skip).
@@ -121,6 +123,9 @@ public:
     void FlushDeferredClear() {}
     bool CanDownloadMsaa(const VideoCommon::ImageInfo&) const noexcept { return false; }
     void TransitionImageLayout(Image& image);
+    D3D12_CPU_DESCRIPTOR_HANDLE AstcNullBuffer() const noexcept { return astc_null_srv; }
+    D3D12_CPU_DESCRIPTOR_HANDLE AstcDrawBuffer(std::span<const AstcDrawMetadata> metadata);
+    void ReportAstcGuest();
     bool HasBrokenTextureViewFormats() const noexcept { return false; }
     bool HasNativeBgr() const noexcept { return true; }
     bool HasNativeASTC() const noexcept { return false; }
@@ -138,6 +143,8 @@ public:
 
 private:
     void EnsureAstcRgbaScratch(u32 width, u32 height);
+    u64 astc_live_images{}, astc_live_guest{}, astc_live_payload{}, astc_live_metadata{}, astc_live_alloc{}, astc_live_baseline{}, astc_live_fallback{};
+    u64 astc_direct_bindings{}, astc_native_bindings{};
     void EnsureAstcBc3Scratch(u64 size);
 
     const Device& device;
@@ -169,6 +176,8 @@ private:
     /// creating such a sampler there removes the device (DXGI_ERROR_INVALID_CALL).
     bool supports_min_max_filter{};
     u64 depth_feedback_copies{};
+    D3D12_CPU_DESCRIPTOR_HANDLE astc_null_srv{}, astc_draw_srv{};
+    u64 astc_frame{};
     /// FORMAT_SUPPORT answers by format, each logged once (see SupportsView).
     mutable std::mutex format_support_mutex;
     mutable std::unordered_map<DXGI_FORMAT, D3D12_FEATURE_DATA_FORMAT_SUPPORT> format_support;
@@ -178,7 +187,7 @@ class Image : public VideoCommon::ImageBase {
     friend TextureCacheRuntime;
 public:
     Image(TextureCacheRuntime& runtime, const VideoCommon::ImageInfo& info, GPUVAddr gpu_addr,
-          VAddr cpu_addr);
+          VAddr cpu_addr, bool force_native = false);
     explicit Image(const VideoCommon::NullImageParams& params);
     /// The resource outlives the Image until the GPU is done with it.
     ~Image();
@@ -199,7 +208,19 @@ public:
     void DownloadMemory(const StagingBufferRef& map,
                         std::span<const VideoCommon::BufferImageCopy> copies);
 
-    [[nodiscard]] ID3D12Resource* Handle() const noexcept { return resource.Get(); }
+    [[nodiscard]] ID3D12Resource* Handle() const noexcept {
+        return astc_native ? astc_native->Handle() : resource.Get();
+    }
+    bool IsAstcOriginal() const noexcept { return astc_original; }
+    bool HasAstcNative() const noexcept { return astc_native != nullptr; }
+    bool AstcOriginalValid() const noexcept { return astc_original && astc_valid; }
+    D3D12_CPU_DESCRIPTOR_HANDLE AstcBufferView() const noexcept { return astc_srv; }
+    /// Diagnostic access to the original backing, never materializes the native companion.
+    ID3D12Resource* AstcRawResource() const noexcept { return astc_original ? resource.Get() : nullptr; }
+    D3D12_RESOURCE_DESC NativeDescription() const { return astc_original ? astc_native_desc : resource->GetDesc(); }
+    void EnsureAstcNative();
+    Image& NativeImage() { EnsureAstcNative(); return astc_native ? *astc_native : *this; }
+    void UploadAstcOriginal(const StagingBufferRef& map);
     [[nodiscard]] DXGI_FORMAT ResourceFormat() const noexcept { return format.resource; }
     [[nodiscard]] DXGI_FORMAT ViewFormat() const noexcept { return format.view; }
     /// Format of plane 0's copy footprints (the resource format, typeless included).
@@ -249,14 +270,14 @@ public:
     /// This image's texels in another typeless family of the same texel size, for views D3D12
     /// cannot cast to (the guest reads and renders an R32 image as R16G16, Game C's world
     /// map). A copy through a buffer, created on first use; null when it cannot be made
-    /// (multisampled, or the image already has one in another family).
+    /// (multisampled). Each family keeps its own copy and stable descriptor resource.
     [[nodiscard]] ID3D12Resource* Reinterpreted(DXGI_FORMAT family);
     /// Brings the copy up to date and makes it readable; call before a draw or dispatch that
     /// samples Reinterpreted().
-    void ReadReinterpreted();
+    void ReadReinterpreted(ID3D12Resource* copy = nullptr);
     /// Brings the copy up to date and makes it a render target. The copy then holds the newest
     /// texels until the image itself is used again (any Transition copies them back).
-    void RenderToReinterpreted();
+    void RenderToReinterpreted(ID3D12Resource* copy = nullptr);
 
     u64 allocation_tick{};
 
@@ -292,6 +313,7 @@ private:
     void RecordGcDownload(const StagingBufferRef& map, std::span<const GcCopy> plan);
     /// Copies the texels between the image and its reinterpreted copy through a buffer.
     void RefreshReinterpreted();
+    void SelectReinterpreted(ID3D12Resource* copy);
     void WriteBackReinterpreted();
     void CopyThroughBuffer(ID3D12Resource* src, ID3D12Resource* dst);
     void TransitionReinterpreted(D3D12_RESOURCE_STATES next);
@@ -317,6 +339,12 @@ private:
                               std::span<const VideoCommon::BufferImageCopy> copies);
 
     TextureCacheRuntime* runtime{};
+    bool astc_original{}, astc_valid{};
+    D3D12_CPU_DESCRIPTOR_HANDLE astc_srv{};
+    D3D12_RESOURCE_DESC astc_native_desc{};
+    u64 astc_header_bytes{}, astc_allocation_bytes{}, astc_expected_native_bytes{}, astc_fallback_bytes{};
+    u64 astc_payload_bytes{};
+    std::unique_ptr<Image> astc_native;
     ComPtr<ID3D12Resource> resource;
     std::shared_ptr<TextureResourceAllocator::Allocation> resource_allocation;
     FormatInfo format{};
@@ -335,6 +363,12 @@ private:
     u64 reinterpreted_version{};
     /// The copy was rendered to and the image does not have those texels yet.
     bool reinterpreted_ahead{};
+    struct ReinterpretedCopy {
+        ComPtr<ID3D12Resource> resource;
+        D3D12_RESOURCE_STATES state{D3D12_RESOURCE_STATE_COMMON};
+        u64 version{};
+    };
+    std::vector<ReinterpretedCopy> additional_reinterpreted;
 };
 
 class ImageView : public VideoCommon::ImageViewBase {
@@ -386,6 +420,8 @@ public:
     /// Records what reading Handle(texture_type) needs first (a 3D image read as a 2D array
     /// refreshes its slice copy); call before the draw or dispatch, outside any other copy.
     void PrepareRead(Shader::TextureType texture_type) const;
+    bool PrepareAstcRead(Shader::TextureType type, const Sampler& sampler,
+                         AstcDrawMetadata& metadata) const;
 
     /// Same format, swizzle and subresources as Handle(), on the prepared depth snapshot.
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE DepthFeedbackHandle(
@@ -411,6 +447,7 @@ private:
     TextureCacheRuntime* runtime{};
     SlotVector<Image>* slot_images{};
     ID3D12Resource* image{};
+    bool astc_unmaterialized{};
     /// The resource the SRVs read: image, or the image's reinterpreted copy.
     ID3D12Resource* srv_resource{};
     SrvParams srv_params{};
@@ -461,6 +498,7 @@ public:
     [[nodiscard]] u64 Key() const noexcept { return key; }
     /// The D3D12 filter it was created with (draw trace).
     [[nodiscard]] D3D12_FILTER Filter() const noexcept { return filter; }
+    [[nodiscard]] const D3D12_SAMPLER_DESC& Description() const noexcept { return desc; }
     /// Everything it was created with, for the draw trace.
     [[nodiscard]] std::string Describe() const;
 
@@ -523,6 +561,7 @@ public:
 private:
     std::array<D3D12_CPU_DESCRIPTOR_HANDLE, NUM_RT> colors{};
     std::array<ImageId, NUM_RT> color_images{};
+    std::array<ID3D12Resource*, NUM_RT> color_copies{};
     std::array<DXGI_FORMAT, NUM_RT> color_formats{};
     std::array<VideoCommon::SubresourceBase, NUM_RT> color_bases{};
     ImageId depth_image{};

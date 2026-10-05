@@ -12,6 +12,7 @@
 #include "common/cityhash.h"
 #include "common/logging.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
+#include "video_core/renderer_d3d12/d3d12_astc_guest.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
 
 namespace D3D12 {
@@ -25,7 +26,7 @@ struct TableRanges {
     u32 num_resources{};
     u32 num_samplers{};
 
-    void Add(D3D12_DESCRIPTOR_RANGE_TYPE type, u32 reg, u32 count) {
+    void Add(D3D12_DESCRIPTOR_RANGE_TYPE type, u32 reg, u32 count, u32 space = 0) {
         const bool sampler = type == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
         u32& offset = sampler ? num_samplers : num_resources;
         (sampler ? samplers : resources)
@@ -33,7 +34,7 @@ struct TableRanges {
                 .RangeType = type,
                 .NumDescriptors = count,
                 .BaseShaderRegister = reg,
-                .RegisterSpace = 0,
+                .RegisterSpace = space,
                 .OffsetInDescriptorsFromTableStart = offset,
             });
         offset += count;
@@ -64,7 +65,14 @@ void AddStage(const Shader::Info& info, u32& binding, TableRanges& ranges) {
     }
     // Profile::descriptor_arrays_use_count: a texture array takes one binding per element.
     for (const auto& desc : info.texture_descriptors) {
-        ranges.Add(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, binding, desc.count);
+        if (AstcGuestSamplingEnabled()) {
+            for (u32 index = 0; index < desc.count; ++index) {
+                ranges.Add(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, binding + index, 1);
+                ranges.Add(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, ASTC_GUEST_BINDING_OFFSET + binding + index, 1);
+            }
+        } else {
+            ranges.Add(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, binding, desc.count);
+        }
         ranges.Add(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, binding, desc.count);
         binding += desc.count;
     }
@@ -85,6 +93,7 @@ void AppendKey(std::vector<u32>& key, std::span<const D3D12_DESCRIPTOR_RANGE> ra
         key.push_back(static_cast<u32>(range.RangeType));
         key.push_back(range.NumDescriptors);
         key.push_back(range.BaseShaderRegister);
+        key.push_back(range.RegisterSpace);
     }
 }
 
@@ -141,7 +150,9 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             AddStage(*info, binding, ranges);
         }
     }
-    std::vector<u32> key{is_compute ? 1u : 0u};
+    const u32 astc_slots = AstcGuestSamplingEnabled() && ranges.num_samplers ? binding : 0;
+    if (astc_slots) ranges.Add(D3D12_DESCRIPTOR_RANGE_TYPE_SRV,0,1,ASTC_GUEST_METADATA_SPACE);
+    std::vector<u32> key{is_compute ? 1u : 0u, astc_slots};
     AppendKey(key, ranges.resources);
     AppendKey(key, ranges.samplers);
     const u64 hash = Common::CityHash64(reinterpret_cast<const char*>(key.data()),
@@ -160,6 +171,7 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
         static_cast<u32>((is_compute ? sizeof(dxil_spirv_compute_runtime_data)
                                      : sizeof(dxil_spirv_vertex_runtime_data)) /
                          sizeof(u32));
+    layout->astc_metadata_slots = astc_slots;
     layout->num_resources = ranges.num_resources;
     layout->num_samplers = ranges.num_samplers;
 

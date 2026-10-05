@@ -12,12 +12,14 @@
 
 #include "common/cityhash.h"
 #include "common/logging.h"
+#include "video_core/renderer_d3d12/d3d12_astc_guest.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "video_core/frame_trace.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
+#include "video_core/gpu_thread.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
@@ -333,8 +335,8 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
                                    const GraphicsPipelineCacheKey& key_,
                                    std::function<SharedDxilStages(u64)> compile_dxil,
                                    const std::array<const Shader::Info*, NUM_STAGES>& infos,
-                                   const PipelineLayout& layout_)
-    : device{device_}, key{key_}, layout{layout_} {
+                                   const PipelineLayout& layout_, std::unordered_set<u32> astc_bindings_)
+    : astc_bindings{std::move(astc_bindings_)}, device{device_}, key{key_}, layout{layout_} {
     if (shader_notify) {
         shader_notify->MarkShaderBuilding();
     }
@@ -362,6 +364,8 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
             dxil = compile_dxil(trace_pipeline);
             compiled = true;
         } catch (const std::exception& exception) {
+            if (!astc_bindings.empty())
+                VideoCommon::GPUThread::ReportException(exception.what());
             // Handle() stays null: draws with this pipeline are skipped.
             LOG_ERROR(Render, "D3D12: building the pipeline for VS {:016x} PS {:016x} failed: {}",
                       key.unique_hashes[1], key.unique_hashes[5], exception.what());
@@ -547,6 +551,8 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     // uniform, storage and texel buffers from the buffer cache, then textures and images.
     GuestDescriptorQueue& queue = context.descriptor_queue;
     queue.Acquire(layout.NumResourceDescriptors());
+    std::vector<AstcDrawMetadata> astc_metadata(layout.AstcMetadataSlots());
+    u32 astc_binding = 0;
     boost::container::small_vector<D3D12_CPU_DESCRIPTOR_HANDLE, 32> sampler_handles;
     boost::container::small_vector<u64, 32> sampler_keys;
     // Views whose images get transitioned once every copy of this draw has been recorded.
@@ -560,12 +566,26 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
         }
         buffer_cache.BindHostStageBuffers(stage);
         const Shader::Info& info = stage_infos[stage];
+        astc_binding += Shader::NumDescriptors(info.constant_buffer_descriptors) + Shader::NumDescriptors(info.storage_buffers_descriptors)
+                        + static_cast<u32>(info.texture_buffer_descriptors.size()+info.image_buffer_descriptors.size());
         views_it += Shader::NumDescriptors(info.texture_buffer_descriptors);
         views_it += Shader::NumDescriptors(info.image_buffer_descriptors);
         for (const auto& desc : info.texture_descriptors) {
             for (u32 index = 0; index < desc.count; ++index) {
                 const VideoCommon::ImageViewId view_id = (views_it++)->id;
                 const ImageView& image_view = texture_cache.GetImageView(view_id);
+                const Sampler& sampler = texture_cache.GetSampler(*(samplers_it++));
+                const bool astc_direct = !astc_metadata.empty() && astc_bindings.contains(astc_binding) &&
+                    image_view.PrepareAstcRead(desc.type,sampler,astc_metadata[astc_binding]);
+                if (astc_direct && GpuDiagnosticsEnabled() && key.unique_hashes[5] == 0x9112b4082b675746ULL) {
+                    const auto& m = astc_metadata[astc_binding];
+                    const auto* source = image_view.SourceImage();
+                    TraceGpuOperation(fmt::format(
+                        "ASTC suspect binding={} guestVA={:x} size={}x{} layers={} view_mip={} mips={} base_layer={} view_layers={} block={}x{} address={}/{} filters={}/{} mip_linear={} lod_bits={:x}/{:x}/{:x}",
+                        astc_binding, source->gpu_addr, source->info.size.width, source->info.size.height,
+                        source->info.resources.layers, m[0][1], m[0][2], m[0][3], m[1][0], m[1][1], m[1][2],
+                        m[2][0], m[2][1], m[2][2], m[2][3], m[3][0], m[3][1], m[3][2], m[3][3]));
+                }
                 const bool aliases_depth = depth_image != VideoCommon::ImageId{} &&
                                            image_view.image_id == depth_image;
                 if (aliases_depth && writable_depth && !depth_feedback_attempted) {
@@ -575,10 +595,11 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                 if (aliases_depth && depth_feedback_ready) {
                     queue.AddCopy(image_view.DepthFeedbackHandle(desc.type));
                 } else {
-                    image_view.PrepareRead(desc.type);
+                    if (!astc_direct) image_view.PrepareRead(desc.type);
                     queue.AddCopy(image_view.Handle(desc.type));
                 }
-                const Sampler& sampler = texture_cache.GetSampler(*(samplers_it++));
+                if (!astc_metadata.empty()) queue.AddCopy(astc_direct ? image_view.SourceImage()->AstcBufferView() : texture_cache.GetRuntime().AstcNullBuffer());
+                ++astc_binding;
                 sampler_handles.push_back(sampler.Handle());
                 sampler_keys.push_back(sampler.Key());
                 image_transitions.emplace_back(view_id, false);
@@ -600,6 +621,8 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
             if (desc.is_written) {
                 texture_cache.MarkModification(image_view.image_id);
             }
+            ++astc_binding;
+            image_view.PrepareRead(desc.type);
             queue.AddCopy(image_view.StorageView(desc.type, desc.format));
             queue.AddCopy(image_view.Handle(desc.type));
             image_transitions.emplace_back(view_id, true);
@@ -637,6 +660,8 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     }
     lap.Lap(VideoCore::Perf::Counter::DrawTargetsNs);
 
+    if (out.capture_astc_metadata) *out.capture_astc_metadata = astc_metadata;
+    if (!astc_metadata.empty()) queue.AddCopy(texture_cache.GetRuntime().AstcDrawBuffer(astc_metadata));
     out.resource_table = queue.Table();
     out.sampler_table = {};
     if (!sampler_handles.empty()) {
@@ -804,7 +829,11 @@ void GraphicsPipeline::Build(const TextureCacheRuntime& texture_runtime) {
                   elements.size(), num_attachments, static_cast<u32>(desc.RTVFormats[0]),
                   static_cast<u32>(desc.DSVFormat), ShaderFeatureFlags(stages[0]),
                   ShaderFeatureFlags(stages[4]));
-        DiagnoseFailedPipeline(device.Get(), desc);
+        if (hr == E_OUTOFMEMORY) {
+            VideoCommon::GPUThread::ReportException("D3D12 graphics PSO allocation exhausted memory");
+        } else {
+            DiagnoseFailedPipeline(device.Get(), desc);
+        }
         pipeline_state.Reset();
         return;
     }

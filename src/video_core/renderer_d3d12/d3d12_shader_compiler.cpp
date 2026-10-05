@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
+#include <chrono>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -13,6 +16,8 @@
 
 #include "common/logging.h"
 #include "video_core/frame_trace.h"
+#include "video_core/gpu_thread.h"
+#include "video_core/renderer_d3d12/d3d12_astc_guest.h"
 
 namespace D3D12 {
 
@@ -22,6 +27,7 @@ namespace {
 constexpr dxil_shader_model SHADER_MODEL = SHADER_MODEL_6_4;
 /// Validator rules the translator targets; dxil.dll only has to be at least this new.
 constexpr dxil_validator_version VALIDATOR_VERSION = DXIL_VALIDATOR_1_4;
+std::mutex astc_guest_compile_mutex;
 
 /// Minimal IDxcBlob over caller-owned memory, so the validator can sign a buffer in place.
 class BorrowedBlob final : public IDxcBlob {
@@ -138,12 +144,62 @@ std::vector<u8> ShaderCompiler::Compile(std::span<const u32> spirv, dxil_spirv_s
 }
 
 std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
-    std::span<const PipelineStage> stages, const PipelineOptions& options, u64 trace_pipeline) const {
+    std::span<const PipelineStage> stages, const PipelineOptions& options,
+    u64 trace_pipeline) const {
+    // Imported decoders retain the transient-memory guard. With ample app headroom, shaders
+    // kept on native sampling can use the existing workers even while Direct is enabled.
+    std::unique_lock astc_lock{astc_guest_compile_mutex, std::defer_lock};
+    if (AstcGuestSamplingEnabled() && !options.parallel_native_astc_experiment)
+        astc_lock.lock();
+    constexpr std::array<u64, 5> site_headroom_mib{192, 256, 384, 576, 768};
+    const u64 required_headroom =
+        site_headroom_mib[std::clamp(options.astc_decoder_calls, 1u, 5u) - 1] * 1024 * 1024;
+    if (options.astc_budget_device &&
+        options.astc_budget_device->QueryCacheMemoryPressure().AppFree() < required_headroom) {
+        if (options.astc_reclaim && *options.astc_reclaim) {
+            const auto before = options.astc_budget_device->QueryCacheMemoryPressure();
+            (*options.astc_reclaim)();
+            const auto after = options.astc_budget_device->QueryCacheMemoryPressure();
+            LOG_INFO(Render,
+                     "D3D12: ASTC compiler cache reclaim: app_before={} app_after={} "
+                     "free_after={} required={}",
+                     before.app_used, after.app_used, after.AppFree(), required_headroom);
+        }
+    }
+    if (options.astc_budget_device &&
+        options.astc_budget_device->QueryCacheMemoryPressure().AppFree() < required_headroom) {
+        // Translation frees many small NIR allocations. Ask LFH to decommit unused caches before
+        // refusing a shader; this does not evict live textures, JIT blocks, or shader bytecode.
+        const auto before = options.astc_budget_device->QueryCacheMemoryPressure();
+        HEAP_OPTIMIZE_RESOURCES_INFORMATION optimize{
+            .Version = HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION, .Flags = 0};
+        const auto begin = std::chrono::steady_clock::now();
+        const BOOL success =
+            HeapSetInformation(nullptr, HeapOptimizeResources, &optimize, sizeof(optimize));
+        const DWORD error = success ? ERROR_SUCCESS : GetLastError();
+        const auto after = options.astc_budget_device->QueryCacheMemoryPressure();
+        LOG_INFO(Render,
+                 "D3D12: ASTC compiler heap reclaim: success={} error={} app_before={} "
+                 "app_after={} free_after={} elapsed_us={}",
+                 success != FALSE, error, before.app_used, after.app_used, after.AppFree(),
+                 std::chrono::duration_cast<std::chrono::microseconds>(
+                     std::chrono::steady_clock::now() - begin)
+                     .count());
+        if (after.AppFree() < required_headroom) {
+            const auto message =
+                fmt::format("ASTC Direct compiler needs {} MiB transient headroom "
+                            "for {} decoder sites; refusing expansion fallback",
+                            required_headroom / (1024 * 1024), options.astc_decoder_calls);
+            VideoCommon::GPUThread::ReportException(message.c_str());
+            throw std::runtime_error(message);
+        }
+    }
     if (!available) {
         throw std::runtime_error("D3D12: the shader path is unavailable");
     }
     if (stages.empty() || stages.size() > EDEN_SPIRV_TO_DXIL_MAX_STAGES) {
-        throw std::runtime_error(fmt::format("D3D12: invalid pipeline of {} stages", stages.size()));
+        throw std::runtime_error(
+            fmt::format("D3D12: invalid pipeline of {} stages", stages.size()));
     }
     // The last stage before the fragment one owns the clip-space position the flip applies to.
     size_t flip_stage = stages.size();
@@ -221,15 +277,17 @@ dxil_spirv_runtime_conf ShaderCompiler::MakeConf() const {
 }
 
 void ShaderCompiler::Sign(std::vector<u8>& dxil, u64 trace_pipeline) const {
-    // The runtime refuses unsigned DXIL outside developer mode; the validator writes the hash in place.
+    // The runtime refuses unsigned DXIL outside developer mode; the validator writes the hash in
+    // place.
     BorrowedBlob blob{dxil.data(), dxil.size()};
     ComPtr<IDxcOperationResult> result;
     VideoCore::FrameTrace::ScopedSpan lock_span{
-        VideoCore::FrameTrace::Event::PipelineValidatorLockLong, trace_pipeline, trace_pipeline != 0};
+        VideoCore::FrameTrace::Event::PipelineValidatorLockLong, trace_pipeline,
+        trace_pipeline != 0};
     std::scoped_lock lock{validator_mutex};
     lock_span.Finish();
-    VideoCore::FrameTrace::ScopedSpan sign_span{
-        VideoCore::FrameTrace::Event::PipelineSignLong, trace_pipeline, trace_pipeline != 0};
+    VideoCore::FrameTrace::ScopedSpan sign_span{VideoCore::FrameTrace::Event::PipelineSignLong,
+                                                trace_pipeline, trace_pipeline != 0};
     ThrowIfFailed(validator->Validate(&blob, DxcValidatorFlags_InPlaceEdit, &result),
                   "IDxcValidator::Validate");
     HRESULT status = E_FAIL;

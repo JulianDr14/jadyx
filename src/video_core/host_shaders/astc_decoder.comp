@@ -6,6 +6,11 @@
 
 #version 450
 
+#ifdef D3D12_ASTC_SAMPLE
+#extension GL_GOOGLE_include_directive : require
+#endif
+
+#ifndef D3D12_ASTC_SAMPLE
 #ifdef VULKAN
 
 #define BEGIN_PUSH_CONSTANTS layout(push_constant) uniform PushConstants {
@@ -51,6 +56,14 @@ layout(binding = BINDING_INPUT_BUFFER, std430) readonly restrict buffer InputBuf
 layout(binding = BINDING_OUTPUT_IMAGE) uniform writeonly restrict image2DArray dest_image;
 #else
 layout(binding = BINDING_OUTPUT_IMAGE, rgba8) uniform writeonly restrict image2DArray dest_image;
+#endif
+
+#else
+#ifdef D3D12_ASTC_GUEST
+#include "d3d12_astc_guest.glsl"
+#else
+#include "d3d12_astc_sampling.glsl"
+#endif
 #endif
 
 const uint GOB_SIZE_X_SHIFT = 6;
@@ -153,7 +166,12 @@ uint ReplicateBits(uint value, uint num_bits, uint to_bit) {
     const uint v = value & uint((1 << num_bits) - 1);
     uint res = v;
     uint reslen = num_bits;
+#ifdef D3D12_ASTC_SAMPLE
+    // Output widths are at most 16; a one-bit source needs at most 15 repetitions.
+    for (uint iteration = 0u; iteration < 16u && reslen < to_bit; ++iteration) {
+#else
     while (reslen < to_bit) {
+#endif
         const uint num_dst_bits_to_shift_up = min(num_bits, to_bit - reslen);
         const uint num_src_bits_to_shift_down = num_bits - num_dst_bits_to_shift_up;
 
@@ -275,6 +293,11 @@ uint Select2DPartition(uint seed, uint x, uint y, uint partition_count) {
 }
 
 uint ExtractBits(uvec4 payload, int offset, int bits) {
+#ifdef D3D12_ASTC_SAMPLE
+    // Tail trit/quint groups may read padding. Never index outside the 128-bit payload.
+    if (offset < 0 || offset >= 128) return 0u;
+    bits = min(bits, 128 - offset);
+#endif
     if (bits <= 0) {
         return 0;
     }
@@ -439,11 +462,23 @@ void DecodeTritBlock(uint num_bits) {
 }
 
 void DecodeIntegerSequence(uint max_range, uint num_values) {
+#ifdef D3D12_ASTC_SAMPLE
+    if (max_range >= uint(encoding_values.length()) || num_values > MAX_WEIGHT_VALUES) {
+        result_limit_reached = true;
+        return;
+    }
+#endif
     EncodingData val = EncodingData(encoding_values[max_range]);
     const uint encoding = Encoding(val);
     const uint num_bits = NumBits(val);
     uint vals_decoded = 0;
+#ifdef D3D12_ASTC_SAMPLE
+    // Each legal iteration emits at least one value; ASTC allows at most 64 weights.
+    for (uint iteration = 0u; iteration < MAX_WEIGHT_VALUES; ++iteration) {
+        if (vals_decoded >= num_values || result_limit_reached) break;
+#else
     while (vals_decoded < num_values && !result_limit_reached) {
+#endif
         switch (encoding) {
         case QUINT:
             DecodeQuintBlock(num_bits);
@@ -458,6 +493,12 @@ void DecodeIntegerSequence(uint max_range, uint num_values) {
             ResultEmplaceBack(val);
             vals_decoded++;
             break;
+#ifdef D3D12_ASTC_SAMPLE
+        default:
+            // Do not leave a data-dependent loop without progress on an invalid encoding.
+            result_limit_reached = true;
+            return;
+#endif
         }
     }
 }
@@ -470,7 +511,11 @@ void DecodeColorValues(uvec4 modes, uint num_partitions, uint color_data_bits, o
     // Find the largest encoding that's within color_data_bits
     // TODO(ameerj): profile with binary search
     int range = 0;
+#ifdef D3D12_ASTC_SAMPLE
+    for (range = 1; range < encoding_values.length(); ++range) {
+#else
     while (++range < encoding_values.length()) {
+#endif
         const uint bit_length = GetBitLength(num_values, range);
         if (bit_length > color_data_bits) {
             break;
@@ -1005,7 +1050,14 @@ void UnquantizeTexelWeights(uvec2 size, bool is_dual_plane) {
 
 uint GetUnquantizedTexelWeight(uint offset_base, uint plane, bool is_dual_plane) {
     const uint offset = is_dual_plane ? 2 * offset_base + plane : offset_base;
+#ifdef D3D12_ASTC_SAMPLE
+    if (offset >= MAX_WEIGHT_VALUES || offset >= uint(result_index)) return 0u;
+    // The direct sampler consumes only four interpolation neighbors per plane. Keep the
+    // decoded integer sequence intact and unquantize those entries on demand.
+    return UnquantizeTexelWeight(GetEncodingFromVector(offset));
+#else
     return result_vector[offset];
+#endif
 }
 
 uvec4 GetUnquantizedWeightVector(uint t, uint s, uvec2 size, uint plane_index, bool is_dual_plane) {
@@ -1031,6 +1083,21 @@ uvec4 GetUnquantizedWeightVector(uint t, uint s, uvec2 size, uint plane_index, b
     uvec4 p0 = uvec4(0);
     uvec4 p1 = uvec4(0);
 
+#ifdef D3D12_ASTC_SAMPLE
+    // One unquantization call site: duplicating it per neighbor greatly inflates DXIL
+    // after Mesa inlines the helper. Both loops have fixed upper bounds.
+    const uvec4 offsets = uvec4(v0, v0 + 1u, v0 + size.x, v0 + size.x + 1u);
+    for (uint plane = 0u; plane < 2u; ++plane) {
+        if (plane != 0u && !is_dual_plane) break;
+        uvec4 neighbors = uvec4(0);
+        for (uint neighbor = 0u; neighbor < 4u; ++neighbor) {
+            if (offsets[neighbor] < area)
+                neighbors[neighbor] = GetUnquantizedTexelWeight(offsets[neighbor], plane, is_dual_plane);
+        }
+        if (plane == 0u) p0 = neighbors;
+        else p1 = neighbors;
+    }
+#else
     if (v0 < area) {
         const uint offset_base = v0;
         p0.x = GetUnquantizedTexelWeight(offset_base, 0, is_dual_plane);
@@ -1051,6 +1118,8 @@ uvec4 GetUnquantizedWeightVector(uint t, uint s, uvec2 size, uint plane_index, b
         p0.w = GetUnquantizedTexelWeight(offset_base, 0, is_dual_plane);
         p1.w = GetUnquantizedTexelWeight(offset_base, 1, is_dual_plane);
     }
+
+#endif
 
     const uint primary_weight = (uint(dot(p0, w)) + 8) >> 4;
 
@@ -1099,11 +1168,15 @@ int FindLayout(uint mode) {
 
 
 void FillError(ivec3 coord) {
+#ifdef D3D12_ASTC_SAMPLE
+    sampled_color = vec4(1.0, 0.0, 1.0, 1.0);
+#else
     for (uint j = 0; j < block_dims.y; j++) {
         for (uint i = 0; i < block_dims.x; i++) {
             imageStore(dest_image, coord + ivec3(i, j, 0), vec4(0.0, 0.0, 0.0, 0.0));
         }
     }
+#endif
 }
 
 void FillVoidExtentLDR(ivec3 coord) {
@@ -1116,11 +1189,15 @@ void FillVoidExtentLDR(ivec3 coord) {
     const float r = float(r_u) / 65535.0f;
     const float g = float(g_u) / 65535.0f;
     const float b = float(b_u) / 65535.0f;
+#ifdef D3D12_ASTC_SAMPLE
+    sampled_color = vec4(r_u >> 8, g_u >> 8, b_u >> 8, a_u >> 8) / 255.0;
+#else
     for (uint j = 0; j < block_dims.y; j++) {
         for (uint i = 0; i < block_dims.x; i++) {
             imageStore(dest_image, coord + ivec3(i, j, 0), vec4(r, g, b, a));
         }
     }
+#endif
 }
 
 bool IsError(uint mode) {
@@ -1132,6 +1209,13 @@ bool IsError(uint mode) {
         if ((mode & 0x400) == 0 || StreamBits(1) == 0) {
             return true;
         }
+#ifdef D3D12_ASTC_SAMPLE
+        const uvec4 extent = uvec4(ExtractBits(local_buff, 12, 13), ExtractBits(local_buff, 25, 13),
+                                   ExtractBits(local_buff, 38, 13), ExtractBits(local_buff, 51, 13));
+        if (!all(equal(extent, uvec4(8191))) && (extent.x >= extent.y || extent.z >= extent.w)) {
+            return true;
+        }
+#endif
         return false;
     }
     if ((mode & 0xf) == 0) {
@@ -1240,6 +1324,13 @@ void DecompressBlock(ivec3 coord) {
     }
     const uint base_mode = base_cem & 3;
     const uint max_weight = DecodeMaxWeight(mode);
+#ifdef D3D12_ASTC_SAMPLE
+    if (size_params.x == 0u || size_params.y == 0u ||
+        max_weight >= uint(encoding_values.length())) {
+        FillError(coord);
+        return;
+    }
+#endif
     const uint weight_bits = GetPackedBitSize(size_params, dual_plane, max_weight);
     if (weight_bits < 24 || weight_bits > 96) {
         FillError(coord);
@@ -1274,7 +1365,11 @@ void DecompressBlock(ivec3 coord) {
     }
     // Read color data...
     const uint color_data_bits = remaining_bits;
+#ifdef D3D12_ASTC_SAMPLE
+    for (uint word = 0u; word < 4u && remaining_bits > 0u; ++word) {
+#else
     while (remaining_bits > 0) {
+#endif
         const int nb = int(min(remaining_bits, 32U));
         const uint b = StreamBits(nb);
         color_endpoint_data[ced_pointer] = uint(bitfieldExtract(b, 0, nb));
@@ -1310,6 +1405,22 @@ void DecompressBlock(ivec3 coord) {
             color_endpoint_mode[i] = cem;
         }
     }
+
+#ifdef D3D12_ASTC_SAMPLE
+    uint endpoint_values = 0u;
+    for (uint part = 0u; part < num_partitions; ++part) {
+        if (IsHDRColorEndpointMode(color_endpoint_mode[part])) {
+            FillError(coord);
+            return;
+        }
+        endpoint_values += ((color_endpoint_mode[part] >> 2u) + 1u) * 2u;
+    }
+    // ASTC LDR requires at least the six-value endpoint quantization range.
+    if (GetBitLength(endpoint_values, 5u) > color_data_bits) {
+        FillError(coord);
+        return;
+    }
+#endif
 
     uvec4 endpoints0[4];
     uvec4 endpoints1[4];
@@ -1350,9 +1461,20 @@ void DecompressBlock(ivec3 coord) {
     }
     DecodeIntegerSequence(max_weight, GetNumWeightValues(size_params, dual_plane));
 
+#ifndef D3D12_ASTC_SAMPLE
     UnquantizeTexelWeights(size_params, dual_plane);
+#endif
+#ifdef D3D12_ASTC_SAMPLE
+    // Decode the endpoint/weight stream once, but interpolate only the requested texel.
+    // No decoded block or expanded texture is written to device memory.
+    {
+        const uint j = requested_texel.y;
+        {
+            const uint i = requested_texel.x;
+#else
     for (uint j = 0; j < block_dims.y; j++) {
         for (uint i = 0; i < block_dims.x; i++) {
+#endif
             uint local_partition = 0;
             if (num_partitions > 1) {
                 local_partition = Select2DPartition(partition_index, i, j, num_partitions);
@@ -1385,18 +1507,31 @@ void DecompressBlock(ivec3 coord) {
                     p.x = float(Ca) / 65535.0f;
                 }
             } else {
+#ifdef D3D12_ASTC_SAMPLE
+                const uvec4 C0 = decoder_srgb ? (endpoints0[local_partition] << 8u) | uvec4(128u)
+                                             : ReplicateByteTo16(endpoints0[local_partition]);
+                const uvec4 C1 = decoder_srgb ? (endpoints1[local_partition] << 8u) | uvec4(128u)
+                                             : ReplicateByteTo16(endpoints1[local_partition]);
+                p = vec4(((C0 * (uvec4(64) - weight_vec) + C1 * weight_vec + uvec4(32)) / 64u) >> 8u) / 255.0;
+#else
                 const uvec4 C0 = ReplicateByteTo16(endpoints0[local_partition]);
                 const uvec4 C1 = ReplicateByteTo16(endpoints1[local_partition]);
                 const vec4 Cf =
                     vec4((C0 * (uvec4(64) - weight_vec) + C1 * weight_vec + uvec4(32)) / 64);
                 p = Cf / 65535.0f;
+#endif
             }
 
+#ifdef D3D12_ASTC_SAMPLE
+            sampled_color = clamp(p, 0.0f, 1.0f).gbar;
+#else
             imageStore(dest_image, coord + ivec3(i, j, 0), clamp(p, 0.0f, 1.0f).gbar);
+#endif
         }
     }
 }
 
+#ifndef D3D12_ASTC_SAMPLE
 uint SwizzleOffset(uvec2 pos) {
     return ((pos.x & 32u) << 3u) |
            ((pos.y & 6u)  << 5u) |
@@ -1437,3 +1572,10 @@ void main() {
     local_buff = astc_data[offset / 16];
     DecompressBlock(coord);
 }
+#else
+#ifdef D3D12_ASTC_GUEST
+#include "d3d12_astc_guest_impl.glsl"
+#else
+#include "d3d12_astc_sampling_impl.glsl"
+#endif
+#endif

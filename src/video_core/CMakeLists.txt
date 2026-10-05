@@ -474,6 +474,12 @@ endif()
 
 if (ENABLE_D3D12)
     target_sources(video_core PRIVATE
+        renderer_d3d12/d3d12_astc_probe.cpp
+        renderer_d3d12/d3d12_astc_draw_replay.cpp
+        renderer_d3d12/d3d12_astc_probe.h
+        renderer_d3d12/d3d12_astc_guest.cpp
+        renderer_d3d12/d3d12_astc_guest.h
+        renderer_d3d12/d3d12_astc_warm.h
         renderer_d3d12/d3d12_blit_image.cpp
         renderer_d3d12/d3d12_blit_image.h
         renderer_d3d12/d3d12_buffer_cache.cpp

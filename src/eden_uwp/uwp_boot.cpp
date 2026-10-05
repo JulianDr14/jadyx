@@ -40,6 +40,8 @@
 #include "core/arm/jit_prewarm.h"
 #include "core/core.h"
 #include "core/cpu_manager.h"
+#include "video_core/host1x/host1x.h"
+#include "video_core/host1x/syncpoint_manager.h"
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
@@ -51,6 +53,7 @@
 #include "hid_core/hid_core.h"
 #include "video_core/frame_trace.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_thread.h"
 #include "video_core/perf_counters.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
@@ -60,8 +63,12 @@
 #include "eden_uwp/uwp_controllers.h"
 #include "eden_uwp/keyboard_bindings.h"
 #include "eden_uwp/uwp_library.h"
+#include "eden_uwp/uwp_rom_storage.h"
 
 namespace D3D12 {
+bool RunAstcSamplingProbe(bool compiler_pressure_only = false); // d3d12_astc_probe.h
+bool RunAstcDrawReplay();
+bool RunTextureReinterpretationProbe(); // d3d12_texture_cache.cpp, isolated opt-in
 // renderer_d3d12.h; its includes need Mesa's headers, which only video_core sees.
 void SetTracedFrame(u32 frame);
 void SetFrameDiagnostics(bool enabled);
@@ -70,13 +77,16 @@ void ShowCpuLoadProgress(VideoCore::RendererBase& renderer, size_t done, size_t 
 void ShowGameMenu(VideoCore::RendererBase& renderer, std::string_view title,
                   std::span<const std::string> items, size_t selected, std::string_view hint);
 void HideGameMenu(VideoCore::RendererBase& renderer);
+void RemoveDeviceForProbe(VideoCore::RendererBase& renderer);
 void SetBcArrayDecode(bool enabled); // d3d12_texture_cache.h
+void SetAstcGuestSampling(bool enabled);
 void SetAstcGpuDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuVerify(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuSync(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuFresh(bool enabled); // d3d12_texture_cache.h
 void SetGpuBasedValidation(bool enabled); // d3d12_device.h
 void SetDredEnabled(bool enabled);         // d3d12_device.h
+void SetAstcDrawCapture(u64 pixel_shader); // d3d12_rasterizer.h
 void SetDescriptorRemovalChecks(bool enabled); // d3d12_device.h
 using AppMemoryQuery = bool (*)(u64& used, u64& limit); // d3d12_device.h
 void SetAppMemoryQuery(AppMemoryQuery query);            // d3d12_device.h
@@ -92,6 +102,7 @@ void SetAstcArrayRecompression(bool enabled) noexcept; // texture_cache/util.h
 
 namespace {
 std::atomic<u64> g_test_memory_limit{};
+std::atomic<bool> g_gpu_command_failed{};
 /// The PC window's mode. ApplicationView belongs to the UI thread: it publishes the state here and
 /// applies the changes the in-game menu asks for (1 full screen, 0 windowed, -1 none).
 std::atomic<bool> g_can_fullscreen{};
@@ -175,6 +186,7 @@ struct BootConfig {
     bool gpu_validation{};
     /// DRED breadcrumbs and page-fault tracking ("dred=1"); diagnostic and deliberately opt-in.
     bool dred{};
+    u64 astc_draw_capture_ps{};
     /// Look for a removed device after every descriptor a draw writes ("descriptor_checks=1"), to
     /// name the view that removed it; costs a kernel call per descriptor.
     bool descriptor_checks{};
@@ -204,6 +216,15 @@ struct BootConfig {
     /// reference path and "cpu" expands every image to RGBA8.
     enum class Astc { Bc3, Gpu, GpuRgba, Cpu } astc{Astc::Gpu};
     bool astc_verify{};
+    bool gpu_failure_probe{};
+    bool gpu_removal_probe{};
+    bool shader_precache{true};
+    bool astc_sampling_probe{};
+    bool astc_draw_replay{};
+    bool astc_compiler_pressure_probe{};
+    bool texture_reinterpret_probe{};
+    unsigned rom_storage_checks{}; // 1=record token, 2=restore after a process restart
+    bool astc_guest_sampling{};
     bool astc_sync{};
     bool astc_fresh{};
     /// Played by hand ("play=1"): runs until the app is closed, without frame dumps or draw trace.
@@ -228,6 +249,8 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         Settings::values.log_filter = config.log_filter;
     }
     Common::Log::Initialize();
+    if (config.rom_storage_checks)
+        return RunRomStorageGate(config.rom_storage_checks == 2, WriteDiag) ? 0 : 15;
     // As yuzu_cmd: the default 15.6 ms timer resolution makes the emulated vsync (and any sleep in
     // the core) tick every 15.6 ms and drop one frame in ten, visible as a stutter.
     const auto timer_resolution = Common::Windows::SetCurrentTimerResolutionToMaximum();
@@ -282,11 +305,13 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     // corruption or hangs. "astc=bc3" brings back the CPU path.
     D3D12::SetAstcGpuDecode(config.astc == BootConfig::Astc::Gpu ||
                             config.astc == BootConfig::Astc::GpuRgba);
+    D3D12::SetAstcGuestSampling(config.astc_guest_sampling);
     D3D12::SetAstcGpuVerify(config.astc_verify);
     D3D12::SetAstcGpuSync(config.astc_sync);
     D3D12::SetAstcGpuFresh(config.astc_fresh);
     D3D12::SetDescriptorRemovalChecks(config.descriptor_checks);
     D3D12::SetDredEnabled(config.dred);
+    D3D12::SetAstcDrawCapture(config.astc_draw_capture_ps);
     VideoCore::Perf::SetDetailedGpuProfile(config.gpu_profile);
     VideoCore::Perf::SetForceSwapIntervalOne(config.force_swap_interval_one);
     if (config.debug_layer) {
@@ -300,7 +325,30 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
                         "x" + std::to_string(surface.height) + " CoreWindow"
                   : std::string("step: logging up, renderer Null"));
 
+    if (config.texture_reinterpret_probe) {
+        WriteDiag("step: isolated texture reinterpretation probe (no guest)");
+        const bool passed = D3D12::RunTextureReinterpretationProbe();
+        WriteDiag(passed ? "Texture reinterpretation probe PASS" : "Texture reinterpretation probe FAIL");
+        return passed ? 0 : 14;
+    }
+    if (config.astc_draw_replay) {
+        WriteDiag("step: controlled ASTC captured draw replay (no guest)");
+        const bool passed = D3D12::RunAstcDrawReplay();
+        WriteDiag(passed ? "ASTC draw replay PASS" : "ASTC draw replay FAIL");
+        return passed ? 0 : 14;
+    }
+    if (config.astc_sampling_probe) {
+        WriteDiag("step: isolated ASTC sampling probe (no guest)");
+        const bool passed = D3D12::RunAstcSamplingProbe(config.astc_compiler_pressure_probe);
+        WriteDiag(passed ? "ASTC sampling probe PASS" : "ASTC sampling probe FAIL");
+        return passed ? 0 : 14;
+    }
+
     Core::System system{};
+    g_gpu_command_failed.store(false, std::memory_order_release);
+    VideoCommon::GPUThread::SetExceptionObserver([](const char*) {
+        g_gpu_command_failed.store(true, std::memory_order_release);
+    });
     WriteDiag("step: Core::System constructed");
     system.Initialize();
     WriteDiag("step: system.Initialize() done");
@@ -313,10 +361,21 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     GamepadInput input{config.input_script};
     system.HIDCore().ReloadInputDevices();
     const auto shutdown = [&] {
+        if (config.gpu_failure_probe) WriteDiag("GPU recovery shutdown: input.Stop");
         input.Stop();
         Kernel::Svc::SetDebugStringObserver(nullptr); // detach before teardown
+        if (g_gpu_command_failed.load(std::memory_order_acquire)) {
+            // A discarded GPU batch may never signal a guest syncpoint. Release CPU owners
+            // before Pause waits for them; Core shutdown repeats this idempotent cancellation.
+            WriteDiag("GPU recovery shutdown: cancel waits before Pause");
+            system.Host1x().GetSyncpointManager().CancelWaits();
+            system.GPU().NotifyShutdown();
+        }
+        if (config.gpu_failure_probe) WriteDiag("GPU recovery shutdown: system.Pause");
         void(system.Pause());
+        if (config.gpu_failure_probe) WriteDiag("GPU recovery shutdown: ShutdownMainProcess");
         system.ShutdownMainProcess();
+        if (config.gpu_failure_probe) WriteDiag("GPU recovery shutdown: HID unload");
         system.HIDCore().UnloadInputDevices();
         WriteDiag("step: shutdown complete");
     };
@@ -329,7 +388,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     system.SetContentProvider(std::make_unique<FileSys::ContentProviderUnion>());
     system.RegisterContentProvider(FileSys::ContentProviderUnionSlot::FrontendManual,
                                    &manual_provider);
-    system.SetFilesystem(std::make_shared<FileSys::RealVfsFilesystem>());
+    system.SetFilesystem(MakeUwpFilesystem());
     system.GetFileSystemController().CreateFactories(*system.GetFilesystem());
     system.GetUserChannel().clear();
     if (const auto file = system.GetFilesystem()->OpenFile(nro_path, FileSys::OpenMode::Read);
@@ -380,11 +439,11 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     WriteDiag("step: GPU host thread started");
     system.GetCpuManager().OnGpuReady();
 
-    if (Settings::values.use_disk_shader_cache.GetValue()) {
+    if (Settings::values.use_disk_shader_cache.GetValue() && config.shader_precache) {
         // As yuzu_cmd: build the pipelines earlier sessions saved (LocalState/eden/shader/<title>/
         // d3d12.bin) before the guest runs, so they do not stutter in; the ones the game meets
         // later are appended to the file. The renderer shows the progress on screen.
-        WriteDiag("step: building the disk shader cache | " + MemoryReport());
+        WriteDiag(std::string(config.astc_guest_sampling ? "step: warming only previously encountered ASTC guest shader pairs | " : "step: building the disk shader cache | ") + MemoryReport());
         VideoCore::RendererBase& renderer = system.Renderer();
         renderer.ReadRasterizer()->LoadDiskResources(
             system.GetApplicationProcessProgramID(), std::stop_token{},
@@ -411,6 +470,27 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     // Run the guest. CpuManager spins up guest threads; dynarmic compiles + executes their code.
     void(system.Run());
     input.Start(system.HIDCore());
+    if (config.gpu_failure_probe) {
+        WriteDiag("GPU recovery probe: injecting callback failure");
+        system.GPU().RunOnGpuThread([&] {
+            if (config.gpu_removal_probe) {
+                D3D12::RemoveDeviceForProbe(system.Renderer());
+            }
+            throw std::runtime_error("injected GPU allocation failure for recovery gate");
+        });
+        WriteDiag("GPU recovery probe: failed callback waiter released");
+        // Completion of a second request also proves that the failed GPU thread can drain host
+        // sync work after its observer has run, without racing that observer's notification.
+        system.GPU().RunOnGpuThread([] {});
+        WriteDiag("GPU recovery probe: second callback completed");
+        if (!g_gpu_command_failed.load(std::memory_order_acquire)) {
+            throw std::runtime_error("GPU exception recovery probe did not notify frontend");
+        }
+        WriteDiag("GPU recovery probe: starting shutdown");
+        shutdown();
+        WriteDiag("GPU failure recovery probe PASS: host waiter released and shutdown completed");
+        return 0;
+    }
 
     if (config.play) {
         // Played by hand: the guest runs until the app is closed from the console, which ends the
@@ -433,6 +513,11 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         constexpr u32 TICKS_PER_MINUTE = 3000;
         for (u32 tick = 1;; ++tick) {
             std::this_thread::sleep_for(TICK);
+            if (g_gpu_command_failed.load(std::memory_order_acquire)) {
+                WriteDiag("GPU command failed; shutting down game for library recovery | " + MemoryReport());
+                shutdown();
+                return 15;
+            }
             if (EdenXbox::QuitRequested()) {
                 WriteDiag("step: Q pressed after " + std::to_string(tick / 50) +
                           " s, shutting down | " + MemoryReport());
@@ -496,6 +581,11 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
                   " s | " + MemoryReport());
         for (u32 second = 1; second <= config.run_seconds; ++second) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (g_gpu_command_failed.load(std::memory_order_acquire)) {
+                WriteDiag("GPU command failed during timed gate | " + MemoryReport());
+                shutdown();
+                return 15;
+            }
             if (second % 10 == 0) {
                 WriteDiag("step: running, " + std::to_string(second) + " s | " + MemoryReport());
                 if (second % 30 == 0) {
@@ -1126,7 +1216,7 @@ void InstallCrashHandlers() {
 //   userdata\games\*     -> LocalState\games
 // A file is copied when it is missing or its size differs.
 void SeedDirectory(const std::filesystem::path& from, const std::filesystem::path& to,
-                   const char* what) {
+                   const char* what, bool refresh_baseline = false) {
     namespace fs = std::filesystem;
     std::error_code ec;
     if (!fs::is_directory(from, ec)) {
@@ -1144,7 +1234,8 @@ void SeedDirectory(const std::filesystem::path& from, const std::filesystem::pat
         const fs::path target = to / entry.path().filename();
         const u64 size = entry.file_size(ec);
         std::error_code size_ec;
-        if (fs::exists(target, size_ec) && fs::file_size(target, size_ec) == size && !size_ec) {
+        if (!refresh_baseline && fs::exists(target, size_ec) &&
+            fs::file_size(target, size_ec) == size && !size_ec) {
             ++kept;
             continue;
         }
@@ -1169,6 +1260,21 @@ void SeedUserData(const std::filesystem::path& install, const std::filesystem::p
     SeedDirectory(userdata / "firmware", local / "eden" / "nand" / "system" / "Contents" / "registered",
                   "firmware");
     SeedDirectory(userdata / "games", local / "games", "games");
+    // A separate baseline supplements existing learned caches; never replace user profiles.
+    for (const char* kind : {"shader", "jit-profile"}) {
+        const auto source = userdata / "astc-seed-v1" / kind;
+        std::error_code ec;
+        if (!std::filesystem::is_directory(source, ec)) continue;
+        for (const auto& title : std::filesystem::directory_iterator(source, ec)) {
+            const auto name = title.path().filename().string();
+            if (!title.is_directory(ec) || name.size() != 16 ||
+                !std::ranges::all_of(name, [](char c) {
+                    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                })) continue;
+            SeedDirectory(title.path(), local / "eden" / "cache" / "astc-seed-v1" / kind / name,
+                          "ASTC startup baseline", true);
+        }
+    }
 }
 
 struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
@@ -1262,6 +1368,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
 
         // "Back to the library" in the in-game menu shuts the game down inside this process and
         // comes back here: restarting the app is slow and awkward on the console.
+        std::string library_error;
         for (u32 session = 1;; ++session) {
             std::optional<std::string> library_game;
             bool show_library = false;
@@ -1286,13 +1393,15 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     WriteDiag("library: scanning LocalState/games; waiting for user selection");
                     library_game = EdenXbox::ShowGameLibrary(surface.core_window, surface.width,
                         surface.height, local / L"games", [install, local] { SeedUserData(install, local); },
-                        session <= 2 ? std::string_view{library_pick} : std::string_view{});
+                        session <= 2 && library_error.empty() ? std::string_view{library_pick} : std::string_view{},
+                        library_error);
                     library_active = false;
                     if (!library_game) {
                         WriteDiag("library: closed by user");
                         return;
                     }
                     WriteDiag("library: selected " + *library_game);
+                    library_error.clear();
                 }
             } catch (const std::exception& e) {
                 WriteDiag(std::string("library: failed: ") + e.what());
@@ -1325,6 +1434,10 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "descriptor_checks=1") {
                             config.descriptor_checks = true;
                             WriteDiag("boot.cfg: device removal checks after every draw descriptor");
+                        } else if (line.starts_with("astc_draw_capture=")) {
+                            const auto value = line.substr(18);
+                            config.astc_draw_capture_ps = value == "1" ? 0x9112b4082b675746ULL : std::stoull(value, nullptr, 16);
+                            WriteDiag("boot.cfg: bounded ASTC draw input capture, PS=" + value);
                         } else if (line == "dred=1") {
                             config.dred = true;
                             WriteDiag("boot.cfg: DRED breadcrumbs and page-fault tracking enabled");
@@ -1395,6 +1508,28 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "astc_sync=1") {
                             config.astc_sync = true;
                             WriteDiag("boot.cfg: wait for the GPU after every GPU ASTC upload");
+                        } else if (line == "astc_guest_sampling=1") {
+                            config.astc_guest_sampling = true;
+                        } else if (line == "astc_draw_replay=1") {
+                            config.astc_draw_replay = true;
+                        } else if (line == "astc_sampling_probe=1") {
+                            config.astc_sampling_probe = true;
+                        } else if (line == "astc_sampling_probe=pressure") {
+                            config.astc_sampling_probe = config.astc_compiler_pressure_probe = true;
+                        } else if (line == "texture_reinterpret_probe=1") {
+                            config.texture_reinterpret_probe = true;
+                        } else if (line == "gpu_failure_probe=removed") {
+                            config.gpu_failure_probe = true;
+                            config.gpu_removal_probe = true;
+                        } else if (line == "gpu_failure_probe=1") {
+                            config.gpu_failure_probe = true;
+                        } else if (line == "shader_precache=0") {
+                            config.shader_precache = false;
+                            WriteDiag("shader precache disabled for cold-boot gate; files retained");
+                        } else if (line == "rom_storage_checks=record") {
+                            config.rom_storage_checks = 1;
+                        } else if (line == "rom_storage_checks=restore") {
+                            config.rom_storage_checks = 2;
                         } else if (line == "astc_verify=1") {
                             config.astc_verify = true;
                             WriteDiag("boot.cfg: verify first GPU BC3 upload against CPU");
@@ -1438,12 +1573,11 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     SeedUserData(std::filesystem::path{winrt::to_hstring(install_path).c_str()},
                                  std::filesystem::path{winrt::to_hstring(local_path).c_str()});
                     if (library_game) {
-                        config.game = *library_game;
                         config.play = true;
                         config.run_seconds = 0;
                     }
-                    if (!config.game.empty()) {
-                        nro_path = local_path + "\\games\\" + config.game;
+                    if (library_game || !config.game.empty()) {
+                        nro_path = library_game ? *library_game : local_path + "\\games\\" + config.game;
                         if (config.run_seconds == 0 && !config.play) {
                             config.run_seconds = EdenXbox::DEFAULT_GAME_RUN_SECONDS;
                         }
@@ -1485,6 +1619,16 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 }
             }
             worker.join();
+            if (show_library && boot_status.load() == 2) {
+                library_error = "No se pudo cargar el juego. Comprueba el USB, los permisos y los datos del juego.";
+                WriteDiag("boot load failed; returning to library for recovery");
+                continue;
+            }
+            if (show_library && boot_status.load() == 15) {
+                library_error = "El juego se detuvo por un fallo de gráficos o falta de memoria.";
+                WriteDiag("GPU failure handled; returning to library for recovery");
+                continue;
+            }
             if (show_library && boot_status.load() == EdenXbox::RETURN_TO_LIBRARY) {
                 WriteDiag("boot worker joined; back to the library");
                 continue;

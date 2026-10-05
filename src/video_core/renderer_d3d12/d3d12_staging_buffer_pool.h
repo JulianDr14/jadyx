@@ -60,6 +60,9 @@ public:
     /// Frame boundary only, with both texture and buffer cache mutexes held.
     /// Reclaims retired resources; deferred readbacks remain pinned until their owner releases them.
     [[nodiscard]] bool GuardMemory(const CacheMemorySnapshot& snapshot);
+    /// Recording thread, before acquiring any references for the next draw/dispatch.
+    /// Both cache mutexes must be held. Drains GPU references, retains pinned readbacks.
+    void ReclaimForCompiler();
 
     /// Upload bytes requested for the command list being recorded (stream and dedicated).
     [[nodiscard]] u64 PendingUploadBytes() const noexcept;

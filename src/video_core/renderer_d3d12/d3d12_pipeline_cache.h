@@ -5,6 +5,8 @@
 
 #include <filesystem>
 #include <memory>
+#include <map>
+#include <set>
 #include <span>
 #include <stop_token>
 
@@ -15,6 +17,7 @@
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/host_translate_info.h"
 #include "shader_recompiler/object_pool.h"
+#include "video_core/renderer_d3d12/d3d12_astc_warm.h"
 #include "shader_recompiler/profile.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/rasterizer_interface.h"
@@ -62,6 +65,9 @@ public:
                   const ShaderCompiler& compiler, const TextureCacheRuntime& texture_runtime,
                   VideoCore::ShaderNotify& shader_notify);
     ~PipelineCache();
+    void SetAstcCompilerReclaim(std::function<void()> callback) {
+        astc_compiler_reclaim = std::move(callback);
+    }
 
     void GuardMemory(const CacheMemorySnapshot& snapshot) {
         // Shrink this optional cache once per game; no cache mutex is acquired on normal frames.
@@ -83,13 +89,20 @@ public:
 private:
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipelineSlowPath();
 
-    [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline) const noexcept;
+    [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline);
+
+    GraphicsPipeline* SelectAstcVariant(GraphicsPipeline* pipeline);
+    void RememberAstcVariant(const GraphicsPipelineCacheKey& key, const std::vector<u32>& mask);
+    ComputePipeline* SelectAstcVariant(ComputePipeline* pipeline,
+                                      const ComputePipelineCacheKey& key,
+                                      const VideoCommon::ShaderInfo* shader);
 
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline();
 
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
         ShaderPools& pools, const GraphicsPipelineCacheKey& key,
-        std::span<Shader::Environment* const> envs, bool build_in_parallel);
+        std::span<Shader::Environment* const> envs, bool build_in_parallel,
+        const std::unordered_set<u32>* astc_descriptors = nullptr);
 
     std::unique_ptr<ComputePipeline> CreateComputePipeline(const ComputePipelineCacheKey& key,
                                                            const VideoCommon::ShaderInfo* shader);
@@ -97,7 +110,8 @@ private:
     std::unique_ptr<ComputePipeline> CreateComputePipeline(ShaderPools& pools,
                                                            const ComputePipelineCacheKey& key,
                                                            Shader::Environment& env,
-                                                           bool build_in_parallel);
+                                                           bool build_in_parallel,
+                                                           const std::unordered_set<u32>* astc_descriptors = nullptr);
 
     const Device& device;
     const ShaderCompiler& compiler;
@@ -115,6 +129,13 @@ private:
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>>
         graphics_cache;
 
+    // Runtime ASTC masks are separate from the disk key. Re-read the bound TICs every use; the
+    // same guest shader can alternate between ordinary and ASTC textures without invalidation.
+    std::map<GraphicsPipeline*,
+        std::map<std::vector<u32>, std::unique_ptr<GraphicsPipeline>>> astc_graphics_variants;
+    std::map<ComputePipeline*,
+        std::map<std::vector<u32>, std::unique_ptr<ComputePipeline>>> astc_compute_variants;
+
     ShaderPools main_pools;
 
     Shader::Profile profile;
@@ -123,8 +144,13 @@ private:
     Vulkan::DynamicFeatures dynamic_features{};
 
     std::filesystem::path pipeline_cache_filename;
+    std::filesystem::path astc_guest_warm_filename;
+    std::filesystem::path astc_variant_warm_filename;
+    std::vector<AstcWarmRecord<GraphicsPipelineCacheKey>> astc_variant_warm;
+    std::set<std::pair<u64, u64>> astc_guest_warm_shaders;
 
     LinkedShaderCache<GraphicsPipeline::DxilStages> linked_shaders;
+    std::function<void()> astc_compiler_reclaim;
     bool memory_guard_trimmed{};
 
     // Last, so they are joined before the pipelines they build are destroyed.

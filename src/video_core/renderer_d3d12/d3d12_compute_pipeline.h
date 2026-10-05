@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
+#include <unordered_set>
 
 #include <array>
 #include <atomic>
@@ -74,7 +75,7 @@ class ComputePipeline {
 public:
     ComputePipeline(const Device& device, VideoCore::ShaderNotify* shader_notify,
                     Common::ThreadWorker* worker_thread, u64 unique_hash, std::vector<u8> dxil,
-                    const Shader::Info& info, const PipelineLayout& layout);
+                    const Shader::Info& info, const PipelineLayout& layout, std::unordered_set<u32> astc_bindings = {});
     ~ComputePipeline();
 
     ComputePipeline(const ComputePipeline&) = delete;
@@ -95,6 +96,8 @@ public:
         return layout;
     }
 
+    [[nodiscard]] u64 ShaderHash() const noexcept { return unique_hash; }
+
     [[nodiscard]] const Shader::Info& Info() const noexcept {
         return info;
     }
@@ -107,6 +110,7 @@ public:
 private:
     void Build();
 
+    std::unordered_set<u32> astc_bindings;
     const Device& device;
     const u64 unique_hash;
     const PipelineLayout& layout;

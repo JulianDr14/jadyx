@@ -10,10 +10,12 @@
 
 #include "common/cityhash.h"
 #include "common/logging.h"
+#include "video_core/renderer_d3d12/d3d12_astc_guest.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_d3d12/d3d12_compute_pipeline.h"
+#include "video_core/gpu_thread.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/shader_notify.h"
@@ -63,8 +65,8 @@ bool ComputePipelineCacheKey::operator==(const ComputePipelineCacheKey& rhs) con
 ComputePipeline::ComputePipeline(const Device& device_, VideoCore::ShaderNotify* shader_notify,
                                  Common::ThreadWorker* worker_thread, u64 unique_hash_,
                                  std::vector<u8> dxil_, const Shader::Info& info_,
-                                 const PipelineLayout& layout_)
-    : device{device_}, unique_hash{unique_hash_}, layout{layout_}, dxil{std::move(dxil_)},
+                                 const PipelineLayout& layout_, std::unordered_set<u32> astc_bindings_)
+    : astc_bindings{std::move(astc_bindings_)}, device{device_}, unique_hash{unique_hash_}, layout{layout_}, dxil{std::move(dxil_)},
       info{info_} {
     std::ranges::copy(info.constant_buffer_used_sizes, uniform_buffer_sizes.begin());
     if (shader_notify) {
@@ -192,6 +194,9 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
     // buffer cache binds them, then textures and images.
     GuestDescriptorQueue& queue = context.descriptor_queue;
     queue.Acquire(layout.NumResourceDescriptors());
+    std::vector<AstcDrawMetadata> astc_metadata(layout.AstcMetadataSlots());
+    u32 astc_binding = Shader::NumDescriptors(info.constant_buffer_descriptors) + Shader::NumDescriptors(info.storage_buffers_descriptors)
+                      + static_cast<u32>(info.texture_buffer_descriptors.size()+info.image_buffer_descriptors.size());
     buffer_cache.BindHostComputeBuffers();
 
     boost::container::small_vector<D3D12_CPU_DESCRIPTOR_HANDLE, 32> sampler_handles;
@@ -205,9 +210,13 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
         for (u32 index = 0; index < desc.count; ++index) {
             const VideoCommon::ImageViewId view_id = (views_it++)->id;
             const ImageView& image_view = texture_cache.GetImageView(view_id);
-            image_view.PrepareRead(desc.type);
-            queue.AddCopy(image_view.Handle(desc.type));
             const Sampler& sampler = texture_cache.GetSampler(*(samplers_it++));
+            const bool astc_direct = !astc_metadata.empty() && astc_bindings.contains(astc_binding) &&
+                image_view.PrepareAstcRead(desc.type,sampler,astc_metadata[astc_binding]);
+            if (!astc_direct) image_view.PrepareRead(desc.type);
+            queue.AddCopy(image_view.Handle(desc.type));
+            if (!astc_metadata.empty()) queue.AddCopy(astc_direct ? image_view.SourceImage()->AstcBufferView() : texture_cache.GetRuntime().AstcNullBuffer());
+            ++astc_binding;
             sampler_handles.push_back(sampler.Handle());
             sampler_keys.push_back(sampler.Key());
             image_transitions.emplace_back(view_id, false);
@@ -220,6 +229,8 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
         if (desc.is_written) {
             texture_cache.MarkModification(image_view.image_id);
         }
+        image_view.PrepareRead(desc.type);
+        ++astc_binding;
         queue.AddCopy(image_view.StorageView(desc.type, desc.format));
         queue.AddCopy(image_view.Handle(desc.type));
         image_transitions.emplace_back(view_id, true);
@@ -231,6 +242,7 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
                        : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     }
 
+    if (!astc_metadata.empty()) queue.AddCopy(texture_cache.GetRuntime().AstcDrawBuffer(astc_metadata));
     out.resource_table = queue.Table();
     out.sampler_table = {};
     if (!sampler_handles.empty()) {
@@ -261,6 +273,8 @@ void ComputePipeline::Build() {
                            static_cast<u32>(hr));
     });
     if (FAILED(hr)) {
+        if (hr == E_OUTOFMEMORY)
+            VideoCommon::GPUThread::ReportException("D3D12 compute PSO allocation exhausted memory");
         LOG_ERROR(Render, "D3D12: CreateComputePipelineState failed (HRESULT 0x{:08X}) for {:016x}",
                   static_cast<u32>(hr), unique_hash);
         pipeline_state.Reset();

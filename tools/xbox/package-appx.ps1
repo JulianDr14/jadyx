@@ -6,7 +6,7 @@
 #
 #   .\tools\xbox\package-appx.ps1 -BootNro C:\path\to\boot.nro
 #
-# Produces build-uwp\package\eden-xbox.appx plus the .cer you must install on the console.
+# Produces build-uwp\series\eden-xbox.appx plus its version and current symbols.
 
 [CmdletBinding()]
 param(
@@ -28,6 +28,13 @@ param(
     [string] $Game,
     # Folder library for PC/Series; game files live under the app's LocalState\games.
     [switch] $Library,
+    # User-owned dumps to include in the library without selecting an automatic boot game.
+    [string[]] $LibraryGames = @(),
+    # Local untracked selection/JIT records and guest shader environments.
+    # Copied to a separate baseline; existing console caches remain authoritative.
+    [string] $AstcCacheSeed,
+    # Private captured draw inputs for the isolated replay, never added to the repository.
+    [string] $AstcDrawReplaySeed,
     # Extra boot.cfg lines for diagnosis: "log_filter=*:Info HW.GPU:Debug", "renderer=null".
     [string[]] $BootCfg = @(),
     # Must match Identity/@Publisher in dist/uwp/AppxManifest.xml, character for character.
@@ -35,7 +42,7 @@ param(
     # Mesa's SPIR-V -> DXIL translator for the D3D12 renderer, built by build-spirv-to-dxil.ps1.
     # Without it the renderer still presents, through its CPU fallback.
     [string] $SpirvToDxil = "..\mesa-build\build-uwp\src\microsoft\spirv_to_dxil\spirv_to_dxil.dll",
-    [string] $OutDir = "build-uwp\package"
+    [string] $OutDir = "build-uwp\series"
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,7 +75,17 @@ Write-Host "exe      : $exe"
 
 # --- 2. stage the package layout ---------------------------------------------------------
 $layout = Join-Path $repo "$OutDir\layout"
-if (Test-Path $layout) { Remove-Item $layout -Recurse -Force }
+$taskOutputRoot = [IO.Path]::GetFullPath((Join-Path $repo $OutDir))
+$layout = [IO.Path]::GetFullPath($layout)
+if (-not $layout.StartsWith($taskOutputRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Package layout escapes the requested output directory.'
+}
+if (Test-Path $layout) {
+    if ((Get-Item -LiteralPath $layout).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'Package layout is a filesystem link; refusing recursive cleanup.'
+    }
+    Remove-Item -LiteralPath $layout -Recurse -Force
+}
 New-Item -ItemType Directory -Path $layout -Force | Out-Null
 
 Copy-Item $exe $layout
@@ -110,6 +127,56 @@ if ($Game) {
         Write-Host "game     : $Game"
     } else {
         Write-Host "game     : $gameName (expected already in LocalState\games)"
+    }
+}
+foreach ($libraryGame in $LibraryGames) {
+    if (-not (Test-Path -LiteralPath $libraryGame -PathType Leaf)) {
+        throw "Library game not found: $libraryGame"
+    }
+    $libraryGameName = Split-Path -Leaf $libraryGame
+    New-Item -ItemType Directory -Force "$userdata\games" | Out-Null
+    Copy-Item -LiteralPath $libraryGame -Destination (Join-Path "$userdata\games" $libraryGameName)
+    Write-Host "library  : $libraryGame"
+}
+if ($AstcCacheSeed) {
+    $seedRoot = (Resolve-Path -LiteralPath $AstcCacheSeed).Path
+    foreach ($kind in @('shader','jit-profile')) {
+        $kindRoot = Join-Path $seedRoot $kind
+        if (-not (Test-Path -LiteralPath $kindRoot)) { continue }
+        foreach ($title in Get-ChildItem -LiteralPath $kindRoot -Directory) {
+            if ($title.Name -cnotmatch '^[0-9a-f]{16}$') { throw 'Invalid cache seed title id.' }
+            $destination = Join-Path $userdata ('astc-seed-v1\'+$kind+'\'+$title.Name)
+            New-Item -ItemType Directory -Force $destination | Out-Null
+            $allowed = if ($kind -eq 'shader') {
+                @('d3d12.bin','astc_guest_warm.txt','astc_variants_v1.bin')
+            } else { @('core-0.bin','core-1.bin','core-2.bin','core-3.bin') }
+            foreach ($file in Get-ChildItem -LiteralPath $title.FullName -File) {
+                if ($file.Name -notin $allowed) { continue }
+                Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $destination $file.Name)
+            }
+        }
+    }
+    Write-Host "ASTC seed: separate baseline from $seedRoot (no ROMs or host code)"
+}
+
+if ($AstcDrawReplaySeed) {
+    $replaySource = (Resolve-Path -LiteralPath $AstcDrawReplaySeed).Path
+    $replayAssets = Join-Path $layout 'astc-replay'
+    New-Item -ItemType Directory -Path $replayAssets -Force | Out-Null
+    $replayLabels = @('key','stage0-dxil','stage4-dxil','metadata','viewports','scissors','push',
+        'buffer0-kind4-slot0','buffer1-kind3-slot0','buffer2-kind3-slot1',
+        'buffer3-kind2-slot0','buffer4-kind2-slot1','buffer5-kind2-slot2','buffer6-kind2-slot3',
+        'buffer7-kind2-slot4','buffer8-kind2-slot5','buffer9-kind2-slot6','buffer10-kind6-slot0','raw-view3')
+    $replayNames = @($replayLabels | ForEach-Object { "astc-capture-9112b4082b675746-draw3-$_.bin" })
+    $replayNames += 'astc-capture-9112b4082b675746-draw2-buffer4-kind2-slot1.bin'
+    foreach ($replayName in $replayNames) {
+        $replayMatches = @(Get-ChildItem -LiteralPath $replaySource -File |
+            Where-Object { $_.Name.EndsWith($replayName) })
+        if ($replayMatches.Count -eq 0 -and $replayName.EndsWith('-raw-view3.bin')) {
+            $replayMatches = @(Get-ChildItem -LiteralPath $replaySource -Filter '*-raw-atlas.bin' -File)
+        }
+        if ($replayMatches.Count -ne 1) { throw "Replay input missing or ambiguous: $replayName" }
+        Copy-Item -LiteralPath $replayMatches[0].FullName -Destination (Join-Path $replayAssets $replayName)
     }
 }
 
@@ -201,6 +268,17 @@ if ($vclibs) {
 }
 
 Write-Host ""
+if ($OutDir -eq 'build-uwp\series' -or $OutDir -eq 'build-uwp/series') {
+    Copy-Item -LiteralPath $exe -Destination $taskOutputRoot -Force
+    $pdb = [IO.Path]::ChangeExtension($exe, '.pdb')
+    if (Test-Path -LiteralPath $pdb) {
+        Copy-Item -LiteralPath $pdb -Destination $taskOutputRoot -Force
+    }
+    [IO.File]::WriteAllText((Join-Path $taskOutputRoot 'version.txt'),
+                          "$($mf.Package.Identity.Version)`n")
+    # The signed APPX is the Series deliverable; staging is only needed by local-run.
+    Remove-Item -LiteralPath $layout -Recurse -Force
+}
 Write-Host "package  : $appx"
 Write-Host "cert     : $cer"
 if ($vclibs) { Write-Host "framework: $vcOut  (upload as a dependency package)" }

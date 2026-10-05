@@ -123,6 +123,28 @@ void StagingBufferPool::TickFrame() {
     ReleaseLevel(download_cache, current_delete_level);
 }
 
+void StagingBufferPool::ReclaimForCompiler() {
+    scheduler.Finish();
+    if (stream_buffer &&
+        *std::max_element(sync_ticks.begin(), sync_ticks.end()) <= scheduler.KnownGpuTick()) {
+        const auto released = stream_buffer_size;
+        stream_buffer.Reset();
+        stream_pointer = {};
+        stream_buffer_size = region_size = iterator = 0;
+        sync_ticks.fill(0);
+        stream_retiring = false;
+        // Avoid immediately reoccupying the compiler's reclaimed headroom. The normal
+        // guard still chooses the target; its existing pressure reductions are preserved.
+        ring_retry_frames = 120;
+        LOG_INFO(Render, "D3D12: ASTC compiler staging reclaim: ring={} MiB, GPU drained",
+                 released / 1_MiB);
+    }
+    for (size_t level = 0; level < NUM_LEVELS; ++level) {
+        ReleaseLevel(upload_cache, level);
+        ReleaseLevel(download_cache, level);
+    }
+}
+
 bool StagingBufferPool::GuardMemory(const CacheMemorySnapshot& snapshot) {
     bool released_ring = false;
     if (ring_retry_frames) {

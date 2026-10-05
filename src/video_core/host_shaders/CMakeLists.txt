@@ -41,6 +41,7 @@ set(SHADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_depth_stencil_merge.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_depth_stencil_split.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_bc3_encoder.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_astc_probe.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/full_screen_triangle.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/fxaa.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/fxaa.vert
@@ -221,6 +222,62 @@ add_custom_command(
     MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/astc_decoder.comp
 )
 set(SHADER_HEADERS ${SHADER_HEADERS} ${D3D12_ASTC_HEADER})
+
+# Opt-in standalone sampler probe; the normal decoder's ABI and shader stay unchanged.
+foreach(PROBE_VARIANT IN ITEMS sample reference native)
+    set(PROBE_FLAGS -DD3D12_ASTC_SAMPLE=1)
+    if(PROBE_VARIANT STREQUAL reference)
+        list(APPEND PROBE_FLAGS -DD3D12_ASTC_REFERENCE=1)
+    elseif(PROBE_VARIANT STREQUAL native)
+        list(APPEND PROBE_FLAGS -DD3D12_ASTC_NATIVE=1 -DD3D12_ASTC_REFERENCE=1)
+    endif()
+    string(TOUPPER D3D12_ASTC_${PROBE_VARIANT}_COMP_SPV PROBE_VARIABLE)
+    set(PROBE_HEADER ${SHADER_DIR}/d3d12_astc_${PROBE_VARIANT}_comp_spv.h)
+    add_custom_command(OUTPUT ${PROBE_HEADER}
+        COMMAND ${GLSLANGVALIDATOR} -V ${QUIET_FLAG} ${PROBE_FLAGS}
+            -I${CMAKE_CURRENT_SOURCE_DIR} --variable-name ${PROBE_VARIABLE}
+            -o ${PROBE_HEADER} ${CMAKE_CURRENT_SOURCE_DIR}/astc_decoder.comp
+            --target-env ${SPIR_V_VERSION}
+        MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/astc_decoder.comp
+        DEPENDS d3d12_astc_sampling.glsl d3d12_astc_sampling_impl.glsl)
+    list(APPEND SHADER_HEADERS ${PROBE_HEADER})
+    set(PROBE_FRAGMENT_HEADER ${SHADER_DIR}/d3d12_astc_${PROBE_VARIANT}_frag_spv.h)
+    string(TOUPPER D3D12_ASTC_${PROBE_VARIANT}_FRAG_SPV PROBE_FRAGMENT_VARIABLE)
+    add_custom_command(OUTPUT ${PROBE_FRAGMENT_HEADER}
+        COMMAND ${GLSLANGVALIDATOR} -V ${QUIET_FLAG} -S frag ${PROBE_FLAGS} -DD3D12_ASTC_FRAGMENT=1
+            -I${CMAKE_CURRENT_SOURCE_DIR} --variable-name ${PROBE_FRAGMENT_VARIABLE}
+            -o ${PROBE_FRAGMENT_HEADER} ${CMAKE_CURRENT_SOURCE_DIR}/astc_decoder.comp
+            --target-env ${SPIR_V_VERSION}
+        MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/astc_decoder.comp
+        DEPENDS d3d12_astc_sampling.glsl d3d12_astc_sampling_impl.glsl)
+    list(APPEND SHADER_HEADERS ${PROBE_FRAGMENT_HEADER})
+endforeach()
+
+if(ENABLE_D3D12)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    foreach(GUEST_STAGE IN ITEMS comp frag)
+        set(GUEST_FLAGS -DD3D12_ASTC_SAMPLE=1 -DD3D12_ASTC_GUEST=1)
+        if(GUEST_STAGE STREQUAL frag)
+            list(APPEND GUEST_FLAGS -DD3D12_ASTC_FRAGMENT=1)
+            set(GUEST_SYMBOL fragment)
+        else()
+            set(GUEST_SYMBOL compute)
+        endif()
+        set(GUEST_BINARY ${SHADER_DIR}/d3d12_astc_guest_${GUEST_STAGE}.spv)
+        set(GUEST_HEADER ${SHADER_DIR}/d3d12_astc_guest_${GUEST_STAGE}_spv.h)
+        add_custom_command(OUTPUT ${GUEST_HEADER}
+            COMMAND ${GLSLANGVALIDATOR} -V ${QUIET_FLAG} -S ${GUEST_STAGE} ${GUEST_FLAGS}
+                -I${CMAKE_CURRENT_SOURCE_DIR} --target-env ${SPIR_V_VERSION}
+                -o ${GUEST_BINARY} ${CMAKE_CURRENT_SOURCE_DIR}/astc_decoder.comp
+            COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/xbox/embed-astc-guest.py
+                ${GUEST_BINARY} ${SPIRV-Headers_SOURCE_DIR}/include/spirv/unified1/spirv.core.grammar.json
+                ${GUEST_HEADER} ${GUEST_SYMBOL}
+            MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/astc_decoder.comp
+            DEPENDS d3d12_astc_guest.glsl d3d12_astc_guest_impl.glsl
+                ${PROJECT_SOURCE_DIR}/tools/xbox/embed-astc-guest.py)
+        list(APPEND SHADER_HEADERS ${GUEST_HEADER})
+    endforeach()
+endif()
 
 foreach(FILEPATH IN ITEMS ${FIDELITYFX_FILES})
     get_filename_component(FILENAME ${FILEPATH} NAME)

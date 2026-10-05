@@ -685,3 +685,455 @@ AyudaExplorar/Elegir muestra cruceta ystick L monocromos. Gameplay no cambiado.
 Harnessdesktop drift/histéresis/diagonal/repetición/inversión/modal/stall/NaN PASS,
 buildincremental4ops/diffcheckcorrectos. Usuario cerró anterior, relanzado
 PID14084 biblioteca/Job5120; gate navegaciónmanual ySeries pendientes,sincommit.
+
+
+ASTC sampler original2oct: prototipo opt-in `astc_sampling_probe=1`, aislado antes
+de Core::System, sin integración guest. SPIR-V->DXIL SM6.4, buffers raw agrupados,
+texel solicitado/point/bilinear/mips, arrays/cube y3D mediante slices ASTC2D.
+PC AppContainer AMD5300M:60717 consultas CPU/direct/raw compute+fragment y22369
+nativeRGBA pasan, errores máximos0,000000298/0,005099639 (precisión filtros native),
+14footprints/particiones/dual-plane/sRGB/invalidos/mips/costuras, retorno0 yRender0.
+Payload717328bytes=×1, buffersorigen+metadata786432=×1,096335; esto NO incluye
+PSO/driver/scratch ni certifica sampler total≤×2. Timestamps4096queries muestran
+16,547–369,313x coste frenteRGBA nativo en corpus sintético: no integrable default,
+noFPS gameplay. Pico proceso normal732,875MiB; arranque más lento1797,4MiB.
+Buildincremental ySPIRV normal idéntico sinrecordsdebug pasan. Consola0.2.71.0
+empaquetada en build-uwp/astc-probe-series, símbolos archivados; Series pendiente.
+JIT115/core,Job5120 ypolíticasguest intactas. Sincommit. Diseño/fuentes/resultados
+en [`docs/xbox_astc_sampling.md`](docs/xbox_astc_sampling.md). GBV/smoke autónomos
+se registran al cerrar el gate; no certificarlos sin PASS.
+
+
+Cierre GBV ASTC2oct: real900s agotado, ambas validaciones60717/22369 pasan sin
+mismatches/RenderError, pero solo20/32 benchmarks ysin cierre/retorno0/PASS: gate
+incompleto, NO certificadoGBV. Pico5116,48MiB casiJob5120 sin cambiarpresupuesto.
+Ensayo240s también timeout. Datos archivados194240-gbv/193600-gbv; tiempos
+instrumentados no son evidenciaFPS. El gate completo debug sinGBV sí pasa.
+
+
+Smoke normal ASTC2oct: opción ausente, homebrew/PID23340/Job5120/debug, sentinel,
+framebuffer y cierreautomático13,203s/retorno0. Renderer/bootPASS, RenderError y
+Critical0; logglobal tiene1084Input+3Core metadatosNRO+3BSD, ruidoheadless conocido
+yarchivado sin ocultar. No gameplay/FPS ni gatevisualmanual. Appx no importa en
+pwsh7 de esta shell; repetir scripts con WindowsPowerShell5/powershell.exe.
+DiseñoASTC actualizado, paqueteSeries0.2.71.0 separado ysincommit. Sinapp viva.
+
+
+ASTC guest experimental2oct: usuario autoriza integración y Game D con Job5120.
+Gate PC integrado debug pasa60717+22369 consultas anteriores y7168 por etapa
+compute/fragment,7mips/8capas/GOB0--3/SRV RGBA nulo,0discrepancias. astc_guest_sampling=1
+opt-in;float2D/arrays PS/CS, fallback nativo para operaciones incompatibles. Conserva
+padding guest y buffers committed: no hereda x1,096 del gate agrupado. Cuenta
+raw/metadatos/compañeras ybaseline contrafactual, no ahorro total ni Series.
+Smoke default retorna0/Render0. Importador omite BuiltInWorkgroupSize dummy que
+sustituía LocalSize. Primer Game D abortado antesRun:13256pipelines antiguas alcanzan
+cap5120 al recompilar; experimento ahora omite solo precarga shader y compila a
+demanda. RelanzadoPID19896/play1,Job5120 verificado,prewarm115/staging256/T480 intactos,
+monitor RAM activo. Calidadguest general/LOD implícito/gameplay/Q/Series pendientes.
+Sincommit; fuentes,diseño,evidencia y límites en docs/xbox_astc_sampling.md.
+Cierre ASTC guest2oct: última Game D PID9520/Job5120/play1 duró348,782s, salida menú
+volver biblioteca, retorno10 (noQ/0), RenderError/Critical0. Array de carga raw40,6875
+frente650,375MiB nativo contrafactual evitó609,6875MiB; tras su GC predominó fallback
+con raw+compañera:1--1,4375MiB EXTRA en recursos vivos. No ahorro RAM total demostrado,
+sin A/B/Series/FPS/visual certificados. Diag muestra hasta5063MiB commit; monitor
+externo incompleto tras1muestra, no pico global. Perfil shader experimental acotado,
+<=4samples/fetch y margen1GiB al preparar; fallback preservado. Prewarm115/staging256/
+Job5120/T480 intactos. Corrige propiedad descriptor/compañera al mover Image y
+File.Replace PowerShell NullString; build incremental pasa, smoke normal debug
+retorno0/Render0, monitor22muestras/182lecturas concurrentes y running=false final.
+Último cambio ownership aún sin nuevo Game D; sinapp viva/sincommit. Estas notas
+sustituyen estado previo PID19896 pendiente. Informe completo y evidencia en
+`docs/xbox_astc_sampling.md`, `build-uwp/astc-game-d-results/20261002-222748-bounded/`.
+Comparación ASTC solicitada2oct sin cap: predeterminada peakcommit7341,371MiB vs
+primer prototipo7658,629 (+317,258/+4,32% observado), no ahorroRAMtotal. Últimas
+ventanas27,86/29,99 vs12,68/13,81FPS; prototipo258,761s pipeline stalls/386,323s
+ventanas, duración/caches/compilación impiden atribuir causalidad a ASTC puro.
+Último conjuntoASTC raw+compañera49MiB extra vsbaseline, ahorro609,6875 transitorio
+no sostenido. DefaultQ/retorno0; prototipo sinQ/0confirmado. RenderError0 en ambos,
+un DebugCriticalFSA escrituraactual0 en cada uno. Repeticiónprecarga128pares/256PSOs,
+computeademanda, falla gatecaliente por stalls persistentes; registrado como fallo
+porusuario. No appviva ni nuevos límites/cambiosrenderer/commit. Evidencia
+astc-ab/comparison-observed.json y detalle en docs/xbox_astc_sampling.md.
+Velocidad ASTC Directo3oct: pipelines sin decoder importado recuperan4workers si
+AppFree>=4GiB; decoder importado/bajo margen siguen serializados por memoria.
+Gate referencia384,633->135,798ms(2,832x), DXIL idéntico; no es mejora decode/FPS.
+Cache/pesos parciales/quad2x2/mip innecesario/constantes dieron mejoras puntuales
+pero regresiones GPU o compilación1,16->3,8s: rechazados, decoder original retenido.
+Probe final-safe/20261003-001213-debug pasa CS/PS23552queries extra por etapa,
+60717aisladas/22369nativas/7168guest,32benches+4constantes,Render0/retorno0/Job5120.
+Corregido lifetime de recursos al cambiar corpus (anteserror921/devicehung en
+constant-before); copias terminan antes de reemplazar. Timings separan translate/
+sign de PSO; labelrgba_native eshelper importado enGuestIntegration. Shaderrestore
+requieremtimeactualizado paraNinja; after8stale no certifica variante. Sin ahorroRAM
+nuevo ni mejora decode general/Series certificada; sincommit. Detalle y resultados
+en docs/xbox_astc_sampling.md, conservaJIT115/staging256 yA/B sinlímite anterior.
+Gate final Nativo: build incremental correcto, SPIR-V no-debug del decoder normal
+idéntico, smoke homebrew debug11,516s/retorno0/Render0/Job5120 y sin app viva.
+Artefactos final-default-smoke-{launcher,log,diag}.txt en astc-direct-speed.
+Paquete Series ASTC Directo3oct solicitado: rama xbox-d3d12-astc-directo,
+versión0.2.72.0, biblioteca/play1, Game D Game E y Game G
+Game G incluidos desde los dumps locales. Nuevo parámetro -LibraryGames permite
+incluir varios juegos sin game= ni selección automática. Config: astc=gpu,
+astc_guest_sampling1, memory_limit_mib5120 (presupuesto caches; el límite OS de
+Series lo impone la consola), jit_prewarm1, fastmem0/cpu_profile0/hotkeys0;
+sin debug_layer, probe, duración ni entradas programadas. Build al día (no work).
+MakeAppx y firma SignTool correctos, APPX22011659592B (~22GB/20,50GiB), certificado
+yVCLibs junto al paquete en build-uwp/package-series-astc-directo-0.2.72.0/.
+Inspección ZIP verifica2NSP, versión/config/DLLs/firma presente y hash del EXE
+idéntico a los símbolos archivados build-uwp/symbols/0.2.72.0/. Informe package-info.json.
+Keys/firmware/juegos solo dentro del paquete local ignorado, nada añadido a Git.
+No instalación automática ni gate gameplay/Series: pendiente prueba humana con
+modo Game en Device Portal. Sin commit ni push; no afirmar mejora RAM/FPS.
+ROMs externas3oct: usuario rechaza APPX22GB con Game D/Game G. Investigación
+primariaDolphinUWP(pickers/ruta),PPSSPP(pickers/FutureAccessList/StorageManager),
+RetroArch(VFSFromApp) yMicrosoftdocumentada en docs/xbox_rom_storage.md.
+Distribuciónpropuesta appseparada, internaLocalState/games yaenumerada yUSBNTFS
+seleccionado/recordado sincopiar. ActualSeedUserData duplica20,132GiBjuegos en
+primera instalación; no confundirSSD/RAM. Coreusa_wfopen: picker/tokenno certifica
+acceso porruta; requeriráadapterFromApp/streamVFS ygateoffsets>4GiB/Series/permisos.
+MicrosoftbroadFileSystemAccessnoXbox; no dependerdesktop-onlyhandleinterop.
+SinimplementaciónUSB, sinpaquetenuevo/commit/push; artefacto0.2.72conservado.
+
+ImplementaciónROMexterna3oct: bibliotecaAgregarcarpeta(Xmando/Oteclado/ratón),
+FolderPickerasyncUI/FutureAccessList,16fuentes/paginación64/cap10000externas/depth5.
+Identidadtoken+ruta evita colisiones; metadata/boot usanVFSUWP read-onlyFromApp
+confallbackIRandomAccessStream,offset64bits/chunks1MiB/scratchacotado/TLSMTA.
+Preflight yLoadfallido vuelvenbiblioteca; sincopiar juegos ni cambiar renderer.
+IncrementalUWP/testsparser+scanner ygateAppContainer2procesosPASS:fixtureNTFSsparse
+4297064705B,bytesreferencia/cruce4GiB/EOF/256readsconcurrentes/reauthorización/
+tokenrestaurado/catalog72/NROloader enFromApp+WinRTforzado,retorno0/commit25MiB.
+APPX0.2.73.0firmado13848490B,sinjuegos/keys/firmware/fixtures,en
+build-uwp/package-series-usb-0.2.73.0;EXE/PDBarchivados/hashverificado.
+ASTCDirecto/prewarm115/5120/fastmem0/libraryplay1conservados;0.2.72gigantepreservado.
+Pickerexterno/USBNTFSACL/desconexión/gameplay/Seriespendientes;fixtureLocalState
+no certificaUSBfísico. Sincommit/push;diseño/evidencia en docs/xbox_rom_storage.md.
+Series Game D0.2.73/USB3oct: Load0/Run sí pasan; abort+144,390s porruntime_error
+Create committed texture fallback0x8007000E trasCreateHeapOOM. ASTCshader5/13calls
+superacap4; a142,494s crea compañera650,4375MiB paraarray1024/121capas/raw40,6875MiB,
+luego guardmemoria conserva shadersnativos. Últimoheartbeat3994/5120MiB antes
+ese salto, no pico fatal. Siguientearray512/121 raw10,44MiB/baseline166,4375MiB
+precedeOOM; no se confirmó creación de esa segunda compañera. Excepción sale de
+hilo1648 yabort: gateSeriesfallido, no fallo inicialROM/USB ni×1general demostrado.
+Evidencia astc-series-results/20261003-0.2.73-game-d-oom; diagnóstico detallado en
+xbox_astc_sampling.md. Pendiente cobertura/fallbackmemoria/manejoOOM sincrash;
+este turno solo diagnóstico, sin cambiosruntime/paquete/commit.
+
+Pausa usuario4oct: conservar JIT115MiB/core; desactivarlo no cumple jugabilidad.
+ASTCDirecto selecciona bindings reales; arrayfont40,7MiB evita compañera650,4MiB.
+Copias reinterpretadas porfamilia y reclaimstaging pasan gatesGPU de datos; Game D
+warm libera256MiBring pero falla siguiente compilación con~304MiB libres frente
+336 exigidos. Corrida automatizada colgada al cerrar archivada y terminada; se
+retiró omisión de submissions y se añadió cancelación GPU antes de Pause en fallo.
+Candidato192/256/384/576/768MiB y gatepresión1/2sitios compilan; NO ejecutados aún,
+cierre corregido pendiente. Sin builds/juego activos, cambios sincommit en rama
+xbox-d3d12-astc-directo. Paquete0.2.74 desactualizado, no entregar; Series y Game D
+con115/core bajo5120 no certificados. Detalle en xbox_astc_sampling.md.
+Gatearranque4oct: ASTCDirecto precarga variantes porclave/máscara y combina
+baseline separada con entornos guest/perfilesJIT validados; mantiene115MiB/core.
+PC menú120s/retorno0/Render0 conJob5120, incluso cachés normales vacías:52variantes,
+0imports nuevos duranteRun, pico5049,512MiB/margen70,488. Cachés originales
+restauradas/hashidéntico. NoFPS/gameplay/Series certificados. Atlas evita610,31MiB
+contrafactual transitorios, final0,625MiB; noA/B ahorroproceso. SmokeNativo y
+GPUrecovery/refreshbaseline pasan. Baselineactualizada aparte de cache aprendido,
+111MiB disco/62msPC; perfileslocales preservados, cap262144 y115 intactos.
+Paquete finalfirmado0.2.75.0/43,8MiB bibliotecaUSB+baselineGame D listo en
+build-uwp/package-series-astc-startup-0.2.75.0, sinROM/keys/fw/debug/timer;
+EXE/símbolos/seedSHA verificados.0.2.74 viejo no entregar. Series modoGame/logs y
+escenas nuevas pendientes, margenpequeño. Sincommit/push; docs ASTC/cuaderno.
+Series0.2.75 revisada4oct: preflight/Load/precache52/JIT115core pasan, Run134,4s.
+Atlas40,6875MiB sincompañera650,4375 evita609,75MiB contrafactual; noA/B.
+12variantesruntime nuevas; DEVICE_HUNG0x887A0006 a193,883s, DREDoff.
+Después creacióntextura0x887A0005/excepciónescapa/abort194,766s; recovery incompleto.
+NoE_OUTOFMEMORY enlogs, memoriareportada4852/5120 trasfallo noespicoOS.
+GateSeriesFALLIDO, menú/gameplaynocertificados. Evidencia20261004-0.2.75-game-d-device-hung.
+Solo revisión/docs, sinbuild/renderer/paquete/commit; preservarJIT115.
+
+### Paquete diagnóstico DRED0.2.76 (4 octubre 2026)
+Usuario solicita compilación Series con DRED. Ruta ya implementada: boot.cfg dred=1
+activa AutoBreadcrumbs y PageFault antes de D3D12CreateDevice. Sin cambiosruntime
+ni rebuild innecesario, EXE idéntico0.2.75; manifiesto sube0.2.76.0 para instalar.
+Paquete build-uwp/package-series-astc-dred-0.2.76.0/eden-xbox.appx firmado correcto,
+45976024bytes, bibliotecaUSB/play1/ASTCDirecto/prewarm115/5120/fastmem0 y baseline6files.
+SinROM/keys/fw/debug_layer/probes/timer. ZIP confirma dred1/config/versiónsinBOM,
+firma presente,6seeds idénticos al snapshot, EXE igualbuild y símbolos0.2.76.0.
+package-info.json registraSHA2569c4f08097a53602dc47ed67c341dfd03ced73e4389585416518c301295e0d300.
+CER/VCLibs al lado. Usuario instala modoGame y devuelve logs: buscar DREDon o
+notavailable y breadcrumbs/pagefaults en siguiente fallo; soporte efectivoSeries
+pendiente. No promete identificar shader exacto ni corrigeGPUhang/abortpor sísolo.
+No lanzamientoPC/instalaciónautomática/commit/push. Baseline no aprende las12
+variantesSeries únicamente desde log: faltan entornos/claves completas.
+### Series0.2.76 DRED y carpeta única (4 octubre 2026)
+Nuevoslogs archivados como astc-series-results/0.2.76-dred-{log,diag}.txt.
+DREDon confirmado pero NO hay volcado: detección por CheckRemovedAfter/ReportRemovedAfter
+no llama Device::ReportDeviceRemoved (solo scheduler lo hace). Abort en creación
+recurso evita llegar al scheduler; activarDRED solo no bastó. Es fallo nuestro de
+instrumentación.96variantes precalentadas desdecacheSeries aprendido,0runtime,
+JIT115 cada core yRun193937ms. Atlasraw40,6875MiB/fallback0. DEVICE_HUNG detectado
+229,302s del log alcrearimagen51 DXGI27/Texture2D1600x900 mip1 sample1 RTflag1,
+NO prueba de causalidad de esa imagen. Committedfallback0x887A0005/excepciónescapa/
+abort230391ms frontend. Últimomuestreo4887MiB no pico, sin0x8007000E.
+La compilaciónruntime última deltrialanterior no es condición necesaria delhang:
+esta vez0runtime y vuelveafallar. No concluir decoder culpable sintrazas.
+Usuario exigeuna sola carpeta compilaciónSeries: build-uwp/series conAPPX/CER/
+VCLibs/version.txt/EXE/PDBactual0.2.76; copiaAPPXhashverificada. Packagerdefaultseries,
+local-run explícitamente mantienepackage (layoutPC registrado necesario), futuros
+paquetesSeries reemplazanactual y eliminanstaging despuésfirma. Sinrebuild/runtimefix.
+Limpieza recursiva de paquetesSeriesanteriores ysymbols rechazada porpolítica del
+entorno; carpetasviejas siguenpresentes, no afirmar liberación deespacio. No intentar
+eludir rechazo. Pendiente conectarvolcadoDRED a ruta detección recurso yrecovery.
+### Repetición Series DRED14:27 (4 octubre 2026)
+Descargas ahora eden_log (1).txt/eden_uwp_diag (1).txt; archivados planos como
+astc-series-results/0.2.76-dred-retry-{log,diag}.txt sincarpeta compilaciónnueva.
+DREDon yesta vez Device::ReportDeviceRemoved síse ejecuta: 0commandlists recorded,
+0unfinished, sinpagefault reportado. No concluirGPUinocente/CPUcausa porlistavacía:
+no tenemosbreadcrumbs útilesni garantíacobertura runtimeSeries enestacaptura.
+Run206468ms, JIT115/core intacto. DEVICE_HUNG243,838s dellog alcrearbuffer655360B,
+justodespuésatlas512x512/121capas raw10944512B/baseline174522368B. Punto detección
+varía (antesimagen1600x900), nocausa probada. Recovery ahorallegaGPUjoin/servicios/
+kernelcores/GPUdestruction, peroClose decommandlist falla0x80004005 durantedestrucción:
+std::terminate/abort245453ms enfrontend. Sigue gateFALLIDO, sinretorno0.
+Appmem4918/5120 trasfallo (201MiB libres reportados), sinpicoOSniOOM explícito.
+Siguiente diagnostico requiere trazapropia comandos/shaders/resources ysubmit/fence
+paraacotarúltimotrabajo; DREDvacío noidentifica comando. Cierre enerror debeevitar
+Close/Finish normales sobredeviceperdido. Solo revisión/docs, sinbuild/runtimechanges.
+### Diagnóstico activo Series: checkpoints ASTC y cierre con dispositivo perdido (4 octubre 2026)
+Se implementa con dred=1 (off normalmente) un historial circular de128 operaciones
+host: draw/indirect con VS/PS, ASTCbindings yvertices/instancias; dispatch conshader/
+grupos; creaciónimagen conguestVA/formato/dimensiones/capas/mips; submit conPSO/tick
+/fencecompletado; waitbegin/end. Es historia de registro/submission, NO ejecución
+completada de cadaoperación. Se vuelca una vez antepérdida, incluso cuando eltripwire
+detecta encreación de recurso, juntoaDRED. NoDXIL/PSOcache nativo persistido.
+DREDvacío deja de interpretarse comoGPUinocente (comentario incorrecto eliminado).
+
+Draw directo convariantASTC: BEFORE registraVS/PS yFinish drena trabajo previo;
+RECORDED se escribe después de registrar eldraw; segundoFinish espera su fence;
+DONE confirma tickcompletado. FalloantesRECORDED apuntaaltrabajoprevio/preparación;
+RECORDEDsinDONE acota draw+bindings/barreras/queries/timestamps de esasubmission,
+NO prueba por sísolo decoder culpable. Indirectdraws/dispatches solo historiaCPU,
+no checkpointsindividuales; copiasinternas no quedan etiquetadas porrecurso todavía.
+Sin shader/device feature nuevo, SM6.4/JIT115/5120 conservados. Historiabounded128
+entradas; stringsdeformatosacotados. Checkpoints ylog porASTCdraw alteransync/coste:
+prueba exclusiva diagnóstico, NO usarFPSdeesta corrida para medirrendimiento.
+
+Cierre: DrainForShutdown noClose/Signal/Finish sobredeviceperdido ycapturaerrores
+enruta sana; aplicadoRenderer/Scheduler/TextureCache/QueryCache. Device destructor
+noWaitIdle si removido. QueryCache terminaqueries soloenDevice sano ylimpiacallbacks.
+Flush detectapérdida antescallback/Close; scope-exit deDraw noFlushIfUploadHeavy
+trasnotificación removido, evitando segundaexcepción enunwind. Tripwire reinicializa
+porDevice, permitevolver biblioteca yabrir otrojuego. No suprimirsubmissions sanas
+ni relajar fences/ownership; nofallback RGBAgigante. Siguependiente Seriesreal.
+
+GatePC realdevice-removal: opciónsoloautotest gpu_failure_probe=removed usa
+ID3D12Device5::RemoveDevice enGPUthread, reporta razón0x887A0005/historial, observer
+libera waiter ysegundo callback, shutdowncompleta/retorno0/workerjoined2,656s.
+Esperados RenderCritical/Error porfalloinyectado; noASSERT/terminate/abort niClose
+fallido. Artefactos build-uwp/gpu-removal-gate-{log,diag,launcher}.txt. NoOOMreal ni
+DEVICE_HUNG causal certificado: prueba retiroexplícito conhomebrew, sinworking
+setGame D. Hookrequiere rendererD3D12, interfazconsultada, disabled enpaquete.
+
+GateGame DPC diagnóstico: Job5120 verificado PID20060, JIT115 cada core, 120s Run,
+menú frame_3.bmp visualverificado; 17843 BEFORE/RECORDED/DONE (todoscompletados),
+0runtimeimports Directo, RenderError/Critical0, shutdown/retorno0/workerjoined153,219s.
+PicoOS5314715648bytes=5068,5078125MiB, margen51,4921875MiB. Monitor iniciótarde62
+muestras peroPeakPagedMemorySize es máximohistóricoOS deproceso; dedicadoGPUfuera
+Job. No mejoraFPS/ahorroABySeries certificados. Logdiagnóstico~9,76MB. Evidencia
+game-d-checkpoint-gate-{log,diag,launcher}.txt yseries-memory/memory-summary.json.
+Primercandidato fallóbuild pordevice inexistente enRasterizer, corregido aguard
+atómicotripwire; frontend tampoco puede incluirRendererD3D12/Mesa (headerssolo
+video_core), hookusa wrapperdeclarado siguiendo frontendexistente. Buildfinal5ops PASS.
+
+Paquete actual build-uwp/series/eden-xbox.appx reemplazado0.2.77.0 firmado,
+45981851bytes; SHA256b8800d90ecd33fe401ddb85c031a4e7f9e366157db65727209aed31eae745cbe.
+Configlibrary/play1/ASTCDirecto/dred1/prewarm115/5120/fastmem0, 6seedfilesGame D,
+sinROM/keys/fw/debug_layer/gpu_failure_probe/run_seconds. ZIP/seed/EXE/PDB/versión
+sinBOM/firma presente verificados; version.txt ysymbolsactuales enmisma carpeta,
+layouttransitorio eliminado. package-info.json actualizado. SinSeries install/
+commit/push, sinapp ni buildvivos al terminar. Usuario instala modoGame ydevuelve
+logs paraacotarGPUhang. Documentaciónprimaria:
+https://learn.microsoft.com/windows/win32/direct3d12/use-dred
+https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/dxgi-error
+Noafirmar causaexacta ni cierreSeriescorregido hasta repeticiónreal.
+### Series0.2.77: submission aislada que no termina (4 octubre 2026, logs15:05)
+Archivados planos astc-series-results/0.2.77-checkpoint-{log,diag}.txt.
+15 BEFORE/RECORDED,14DONE. ÚltimoDONEtick1531 a234,877911s conPS19ca3fdc7777ba0c.
+SiguienteBEFOREtick1532 VSb4cf3ca379e7cfbe/PS9112b4082b675746, ASTCbindings1,
+315vertices indexed/1instance. Finishprevio confirma fence1532. RECORDEDtick1533
+a234,879074s; submitted1533 completed1532, waitBEGIN1533; NO DONE1533.
+A245,089034s DEVICE_HUNG0x887A0006; fenceUINT64_MAX confirma dispositivo perdido,
+NO finalización (waitEND no demuestra éxito). Intervalo10,20996s desdeRECORDED.
+Ahora se acota la submission1533: BindDrawState/barreras/query/timestamps ydrawASTC,
+con todo trabajo previo completado. Fuerte sospecha ruta de estePS, no prueba de
+que ASTCdecoder sea la única causa: falta aislarbindings/descriptor/operaciones
+auxiliares. HistoriaCPUdrawtick1532 se registra antes delFinishprevio: drawreal
+estáen1533, no confundir ticks. 0compilacionesruntimeASTC. DREDcontinúa0listas.
+JIT115/core conservado. Memoriareportada4787/5120 (332MiB margen) antes/trasfallo,
+no picoOSniOOM explícito. Próximo foco PS9112b4082b675746, 2decoder_calls en logs
+anteriores: identificaroperaciones/bindings yreproducir contenido/input exacto en
+probe; contraste ruta decoder yvalidación acceso, sin fallback650MiB indiscriminado.
+CierreSeries esta vezcorrecto: shutdowncomplete249266ms, retorno15(recuperación),
+volver biblioteca249375ms con633MiB; sinCRASH/abort/terminate. Retorno15 esperable
+falloGPU manejado, NO gateGame DPASS. Logsplaytimefile/nvmapwarning aparte no son
+causaGPUhang. Solo revisión/archivo/docs, paqueteactual0.2.77 sinmodificación.
+Matiz clave0.2.77: mismoPS9112b4082b675746 ya completó ticks1509 y1511.
+Por tanto no falla todaejecución delshader: investigar diferencia de datos/binding/
+coordenadas/estado en draw1533. No concluir simplemente shaderincompatibleSeries.
+
+### Candidato decoder acotado y pesos bajo demanda (4 octubre 2026)
+La submission1533/PS9112b4082b675746 de Series0.2.77 sigue siendo la última
+localización, NO una causa exacta demostrada. El mismo PS terminó dos draws antes.
+ASTC Nativo expande una vez y luego muestrea con hardware; Directo repite el decoder
+por texel/tap. Un DEVICE_HUNG puede depender de coste/datos/binding, sin OOM explícito.
+Se acota exclusivamente D3D12_ASTC_SAMPLE: ExtractBits evita índices fuera de los
+128bits (padding de grupos trit/quint=0); DecodeIntegerSequence valida tabla/cantidad,
+limita64 iteraciones y tiene default con salida; ReplicateBits16; lectura de color4
+words; selección de rango finita; lectura de pesos valida result_index/64. Metadatos
+GuestLoad validan footprint/dimensiones/mips/tamaño de buffer antes de división;
+coordenadas no finitas y LOD NaN devuelven0. LOD infinito sigue clamp del sampler.
+Bucles mip/taps tienen máximos2/4. Estas defensas no prueban que el dato de Game D
+fuera inválido ni que un bucle infinito fuera la causa. Semántica completa para
+coordenadas no finitas y LOD implícito degenerado no certificada por estos cambios.
+
+Gate aislado PC con solo defensas: build19+6 operaciones PASS; probe274,453s,
+RunHeadlessBoot0/workerjoined, RenderError/Critical0. 60717 queries contra CPU,
+22369 referencia sampler, guest7168/stage y extended17images23552/stage, todos
+mismatches0. Gates llamadas5/13, masks2/1/3/0 y presión de compilación1/2 sitios
+con256/288MiB libres pasan.32 benchmarks. Artefactos planos
+build-uwp/astc-bounded-probe-{log,diag,launcher}.txt; build-uwp/astc-bounded-build.txt.
+No gate Series ni ahorro/FPS demostrados por este probe.
+
+Segundo cambio candidato: Directo conserva la secuencia de pesos codificados y
+UnquantizeTexelWeight se ejecuta solo al leer los cuatro vecinos necesarios por
+plano (hasta8 con dual-plane), en vez de recorrer hasta64 pesos por texel. El segundo
+plano no se calcula en bloques single-plane. DecodeIntegerSequence todavía decodifica
+la secuencia completa; no afirmar que solo se leen cuatro valores del bitstream.
+No caché RGBA adicional ni pérdida de calidad intencional. Native mantiene recorrido
+original. Build18 operaciones PASS; probe completo posterior en curso, no certificado.
+Header SPIR-V del decoder Nativo SHA256 idéntico antes/después de ambos cambios:
+54b4dfa264e3c82e8ee3c2059e963e6b83b64999a62e8ec466414ccebf98817a.
+Con dred1, PS9112 registra en historia circular textura guestVA/dimensiones/capas,
+viewmip/base_layer/footprint y filtros/direcciones/LOD del binding Directo. Su volcado
+al fallo permite comparar draws sanos y fallido si siguen dentro de128 entradas.
+JIT115/core, presupuesto5120 y arquitecturaSM6.4 conservados. Sincommit/push.
+Iteración pesos bajo demanda: primera versión pasó probe completo359,047s/retorno0,
+colores/gates/presión correctos, sin RenderError/Critical; al cerrar después de
+workerjoined hay FIRST-CHANCE0x80010012, no CRASH ni fallo de prueba registrado.
+Bench sintético compara solo defensas vs pesos bajo demanda: mediana guest
+1,171x compute/1,154x fragment (16casos/stage), pero ruta aislada0,870x/0,705x.
+DXIL aislado559124->718792bytes (+28,56%) y mayor compilación; no mejora general
+ni FPS demostrados. No se entrega esta forma: unquantización con un único callsite
+mediante vecinos4 y planos2 acotados para evitar duplicación al inline de Mesa.
+La fuente actual ya tiene ese bucle; build18 operaciones PASS y NativeSPIRV hash
+idéntico. Probe completo final en curso. Artefactos intermedios planos
+astc-selective-probe-{log,diag,launcher}.txt, final astc-weight-loop-*.txt.
+Gate final pesos4/8 con un callsite: probe292,031s/retorno0/workerjoined,32 benches,
+60717CPU+22369sampler+7168guest/stage+23552extended/stage, mismatches0; llamadas5/13,
+masks2/1/3/0 y presión1/2 sitios256/288MiB pasan; RenderError/Critical0. Header
+NativeSPIRV SHA anterior idéntico. DXIL compute aislado556436bytes vs559124 solo
+protecciones y718792 primera versión on-demand. Comparación sintética de16casos
+porstage: guest mediana1,19955x compute/1,20206x fragment; aislado1,16526x/1,03077x.
+Referencia es decoder con defensas y pesos completos, NO versión0.2.77 sin defensas.
+No garantía para otras cargas, FPS ni Series. Estadísticas astc-weight-loop-gates.json.
+
+Game D PC PID6216, Job5120 verificado, 120s Run sin gameplay automatizado;
+167,109s retorno0/workerjoined/shutdown completo;18102 BEFORE/RECORDED/DONE iguales,
+RenderError/Critical0. Menú verificado en frame_1.bmp NUEVO de15:39:12, archivado
+game-d-weight-loop-menu.bmp. frame_3.bmp de14:41:11 es de prueba anterior: NO usarlo
+como evidencia de esta corrida. FIRST-CHANCE0x80010012 posterior a joined no CRASH.
+JIT115MiB por core0/1/2, core3 sin perfil; code115,00 en los tres, 6717/6129/3684
+bloques omitidos por presupuesto, precarga~19,94s. Presupuesto conservado, no afirmar
+cobertura completa. PS9112b4082b675746 no aparece en este log PC: menú/cierre pasan,
+pero NO se reproduce/certifica la submission específica de Series en PC.
+
+Monitor297 muestras terminó sinapp: picoOS5366136832B=5117,546875MiB, margen2,453125;
+maxsample5110558720B=4873,80859375MiB. PicoOS puede estar entre muestras; no sustituir
+por máximo muestreado. Margen muy reducido, NO certificación de memoria estable;
+GPU dedicada fueraJob y SeriesUMA diferente. Nada demuestra ahorro global A/B.
+Artefactos planos game-d-weight-loop-gate-{log,diag,launcher,memory}.txt/json y
+astc-weight-loop-probe-{log,diag,launcher}.txt; app/monitor ya terminaron.
+Manifest pasa0.2.78.0 sinBOM; preparación de único paquete actual en build-uwp/series
+en curso. DRED/checkpoints/binding sospechoso siguen activos, configuración misma;
+Series pendiente, NO declarar cuelgue resuelto antes de probarla. Sincommit/push.
+Entrega0.2.78.0: build-uwp/series/eden-xbox.appx firmado45982323bytes, SHA256
+35f755d38f62a51ff2eb65f7967bc8a5d2b4b312eb635fa41af50720f52395f3;
+EXEee76134bf00f0bcad07e98ff42b3c4ae6a2d5ca7beab7fc450c4ae5d97fa2dd8.
+Audit ZIP/config/6seeds/EXE/PDB/versiónsinBOM/firma presente PASS. Única carpeta
+actualseries con version.txt ysymbolsactuales, sinlayouttransitorio. Configlibrary/
+play1/dred1/ASTCDirecto/prewarm115/5120, sinprobe/debuglayer/timer/ROM/keys/fw.
+Paquete candidato para probar enSeries, NO fixSeriesdemostrado. Metadata incluye
+flagsdecoder_bounded/selective_weights/single_call_site ySeries_testedfalse.
+No app/monitor/build activo al terminar; sincommit/push. Install modoGame yrevisar
+checkpointdelPS9112/bindings al devolverlogs. MargenPC2,45MiB sigue riesgomaterial;
+no ahorro globalni estabilidad prolongada certificados.
+### Series0.2.78: continúa DEVICE_HUNG, nuevo draw acotado (4 octubre 2026, Descargas16:36)
+Diag confirma instalación0.2.78.0; archivos archivados planos en
+build-uwp/astc-series-results/0.2.78-checkpoint-{log,diag}.txt y0.2.78-review.json.
+16 BEFORE/RECORDED,15DONE. PS9112b4082b675746 completa1554/1556/1583; cuarto
+RECORDED1585 a265,928864s noDONE. BEFORE1584 acaba todo trabajo previo:
+submit1584 completed1583; submit1585 completed1584, waitBEGIN1585, waitEND con
+UINT64_MAX. Primer DEVICE_HUNG0x887A0006 a271,065484s,5,136620s despuésRECORDED.
+Acota draw+BindDrawState/barreras/queries/timestamps de1585, NO decoder único probado.
+0.2.77 terminaba dos draws conesePS yfallaba tercero;0.2.78 terminatres yfallacuarto.
+Counts/orden sugieren avance puntual, NO mejora causal/coste/FPS ni fix demostrado;
+no garantizar igualdad de geometría/UV/contenido entre corridas por conteo de índices.
+
+Historia ahora identifica binding11, guestVA601ecd000, atlas1024x1024/121capas,
+11mips, viewmip0/base_layer0/viewlayers121, ASTC8x8. AddressU/V1/1=WRAP,
+min/maglinear1/1, miplinear0, bias0/minLOD0/maxLOD13 (bits41500000).
+Draw1583 sano y1585 fallido: mismos VSb4cf3ca379e7cfbe/PS9112,315índices/1instancia
+ymetadatos de textura/sampler iguales. NO certifica mismo contenido/coords/capa/
+vertexbuffer/constantbuffers/estadoRT. Sano1583 termina~0,986ms trasRECORDED; fallo
+no termina. Siguiente foco datos/coords/capas/estado efectivo entre ambos draws y
+replay de entrada exacta, no simplemente asumir shader incompatible o bucle infinito.
+Protecciones ypesos bajo demanda NO resuelven cuelgue Series; no revertirni crear
+nuevo paquete sin candidato razonado/prueba. DRED otra vez0listas/0unfinished:
+no breadcrumbs para identificar instrucción/pagefault. SinOOM0x8007000E explícito.
+
+RAM reportada enfallo4794MiB de5120,325MiB libres; no picoOS ni A/B de ahorro.
+Rawatlas42663936B contra baselineNative682033152B (609,75MiB contrafactual recurso
+noexpandido), no ahorroglobalmedido. JIT115 cada core0/1/2,~18,025s workers,
+255312/256037/258485 aceptados,6832/6107/3659 omitidos por presupuesto, core3sinperfil.
+Shaderwarm~207,125s, Run233985ms frontend. Recoverypasa: Shutdown275313ms,
+retorno15 a275407ms, biblioteca275453ms/678MiB, sinCRASH/abort/terminate.
+Retorno15 es errorGPU manejado, NO Game DPASS. playtime/nvmap/hresultUI no identifican
+causaGPU, aparecen aparte/postfallo. Solo revisión/archivo/docs/metadata; sinbuild,
+ni ejecuciónPC, ni cambiosrenderer, ni commit/push. Paqueteactual0.2.78 permanece.
+Gate diagnóstico ASTC Directo 0.2.79 (4oct): captura opt-in de primeros4 draws PS9112,
+inputsGPU/rawASTC/metadata/DXIL/registros, readback512KiB; sin expansión ni cambio
+al decoder. PC120s/retorno0/menú,17639 checkpoints completos,4 capturas verificadas,
+RenderError0,Job5120/JIT115 conservados. PCusaPS6224 distinto; Series pendiente.
+Paquete actual único build-uwp/series firmado0.2.79. Se necesitan log/diag y archivos
+astc-capture-9112b4082b675746-* (.txt/.bin) para comparar inputs del draw que cuelga.
+0.2.78 sigue DEVICE_HUNG, causa raíz sin confirmar; StateBefore promotable sobreCOMMON
+está permitido por Microsoft y no demuestra error de barrier. Sincommit; detalle
+completo en docs/xbox_astc_sampling.md y cuaderno.
+Series0.2.79 captura recibida:16BEFORE/RECORDED,15DONE; cuartoPS9112/tick1872
+DEVICE_HUNG. Cuatro snapshots completos: entre tercero sano y cuarto fallido SOLO
+cambia cbuf streamed slot1 de48B/12floats finitos, aspecto matriz3x4 aúninferido.
+Resto capturadoidéntico (shaders/key/registros/meta/rawASTC/geometry/otroscbuf/SSBO).
+Índices0..121+base329 caben hasta450 enambosVB. No prueba causa ni descartaRT/texturas
+nativas/driver nocapturados. Siguienteexperimento replay variandoese cbuf. Recovery
+retorno15/biblioteca647MiB pasa; RAMfallo4798/5120,margen321. Paqueteactual marcado
+FAIL, sinbuild/paquetenuevo/commit. Evidencia0.2.79-* plana astc-series-results;
+una solacopia raw40,65MiB por hashes idénticos. Detalle en diseño/cuaderno.
+0.2.80 diagnóstico opt-in astc_draw_replay1: GPUusaVS/PS capturados, matrices48B
+alternadas, referencia expandida antesDirecto, mismas capturas existentes/sindumps.
+PC16draws/8comparaciones/retorno0/GBV limpio. PS242/138,clip69/105: no cobertura
+enorme. Native t8/9/10NULL,RT/depth/cull controlados: NO replaycompleto/causa probada.
+Diferencias salida26/37bytes,max2/3LSB pendientes; PASS es ejecución, no calidadexacta.
+Paqueteúnico actualseries0.2.80 automático; actualizar sin desinstalar(conserva capturas)
+y devolver2logs. Seriespendiente, decoder/JIT115/caches normales intactos,sincommit.
+0.2.80Series falló antesdel draw porcapturasLocalState ausentes(retorno14), noGPUhang.
+0.2.81 replay autocontenido20assets/atlasúnico enappx actualSeries; PCpackaged16draws
+retorno0/Render0/Job5120, audit/firma/símbolos correctos. Seriespendiente, sincommit.
+
+## Series 0.2.81: replay completado, calidad fallida (4 oct 2026)
+Descargas eden_log.txt/eden_uwp_diag.txt: fuente packaged self-contained captures,
+16 draws y ocho comparaciones completadas; retorno 0 y joined/exiting a 18,906 s.
+No DEVICE_HUNG ni errores Render. PASS significa completion, no exactitud visual.
+Draw2: 714 bytes distintos, error max147/255; draw3: 397--398, max187/255.
+Referencia expandida ~9--10 us/draw; Directo ~867--937 us/draw. Son draws aislados,
+no FPS de gameplay. La discrepancia Series es mucho mayor que PC (max2/3 LSB).
+El replay sustituye t8/t9/t10 por NULL y controla RT/depth/cull; no reproduce todo
+el estado del juego ni identifica la causa original del cuelgue de Game D.
+Usuario decide conservar el prototipo en commit local, sin push, y volver a xbox
+con USB y recuperación de fallos del juego. Sin nuevas copias de logs/capturas.
