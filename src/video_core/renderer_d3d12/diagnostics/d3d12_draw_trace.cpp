@@ -1713,6 +1713,10 @@ void RasterizerD3D12::TraceDraw(std::string_view what, const GraphicsPipeline* p
         const GraphicsPipelineCacheKey& key = pipeline->Key();
         line += fmt::format(" | VS {:016x} PS {:016x} blend0 {:08x}", key.unique_hashes[1],
                             key.unique_hashes[5], key.state.attachments[0].raw);
+        const auto& helpers = pipeline->GetFragmentHelpers();
+        line += fmt::format(" helpers={} quad={} deriv={}",
+                            Shader::Optimization::Name(helpers.demote_return),
+                            helpers.quad_shuffles ? 1 : 0, helpers.derivatives ? 1 : 0);
         const auto& dynamic = key.state.dynamic_state;
         line += fmt::format(" PSO={} key={:016x} targets={:x} topology={} bias enable={} "
                             "guest={:.6g} host={} clamp={:.6g} slope={:.6g}",

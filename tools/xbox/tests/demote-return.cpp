@@ -86,9 +86,12 @@ int main(int argc, char** argv) try {
             if (!depth) for (unsigned i = 0; i < count; ++i) f.Arm(0, 1);
             else f.Arm(depth, count);
             f.Finish();
-            const auto changed = Optimization::DemoteReturnPass(f.p);
+            Optimization::DemoteReturnVerdict verdict{};
+            const auto changed = Optimization::DemoteReturnPass(f.p, &verdict);
             Require(changed == count);
-            Require(Optimization::DemoteReturnPass(f.p) == 0);
+            Require(verdict == Optimization::DemoteReturnVerdict::Merged);
+            Require(Optimization::DemoteReturnPass(f.p, &verdict) == 0);
+            Require(verdict == Optimization::DemoteReturnVerdict::NoTerminalArm);
             Profile profile;
             profile.support_demote_to_helper_invocation = true;
             profile.support_derivative_control = true;
@@ -152,8 +155,15 @@ int main(int argc, char** argv) try {
         if (kind == 10) f.p.syntax_list.erase(f.p.syntax_list.begin() + 1); // Missing If.
         if (kind == 11) f.p.shared_memory_size = 4;
         const auto before = f.p.syntax_list.size();
-        Require(Optimization::DemoteReturnPass(f.p) == 0);
+        Optimization::DemoteReturnVerdict verdict{};
+        Require(Optimization::DemoteReturnPass(f.p, &verdict) == 0);
         Require(before == f.p.syntax_list.size());
+        using V = Optimization::DemoteReturnVerdict;
+        constexpr V expected[]{V::NoTerminalArm, V::RejectedSubgroup, V::RejectedMemory,
+                               V::RejectedMemory, V::NotNeeded, V::NotNeeded, V::RejectedLoop,
+                               V::RejectedPhi, V::RejectedSubgroup, V::RejectedSideEffect,
+                               V::RejectedUnstructured, V::RejectedMemory};
+        Require(verdict == expected[kind]);
         ++cases;
     }
     spvContextDestroy(validator);

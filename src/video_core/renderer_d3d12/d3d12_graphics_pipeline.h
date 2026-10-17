@@ -19,6 +19,7 @@
 
 #include "common/memory_ledger.h"
 #include "common/thread_worker.h"
+#include "shader_recompiler/ir_opt/demote_return_pass.h"
 #include "shader_recompiler/shader_info.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
@@ -242,6 +243,21 @@ public:
         return lower_noperspective_mask;
     }
 
+    /// How the fragment shader keeps the helper lanes of its derivatives, for draw traces.
+    struct FragmentHelpers {
+        Shader::Optimization::DemoteReturnVerdict demote_return{};
+        bool quad_shuffles{};
+        bool derivatives{};
+    };
+
+    void SetFragmentHelpers(const FragmentHelpers& helpers) noexcept {
+        fragment_helpers = helpers;
+    }
+
+    [[nodiscard]] const FragmentHelpers& GetFragmentHelpers() const noexcept {
+        return fragment_helpers;
+    }
+
     /// Opt-in isolated float output probe. Preserves linked VS, input layout and rasterization.
     ComPtr<ID3D12PipelineState> CreateMaterialProbePipeline(
         std::span<const u8> pixel_shader, std::span<const u8> geometry_shader = {},
@@ -266,6 +282,7 @@ private:
     const u64 key_hash;
     const PipelineLayout& layout;
     const u32 lower_noperspective_mask;
+    FragmentHelpers fragment_helpers{};
     SharedDxilStages dxil; ///< Immutable linked bytecode shared across fixed-state PSOs.
     std::array<bool, NUM_STAGES> has_stage{};
     std::array<std::shared_ptr<const StageBindings>, NUM_STAGES> stage_infos;

@@ -864,6 +864,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
     const Shader::IR::Program* previous_stage{};
     Shader::Backend::Bindings binding;
+    GraphicsPipeline::FragmentHelpers fragment_helpers{};
     for (size_t index = uses_vertex_a && uses_vertex_b ? 1 : 0; index < Maxwell::MaxShaderProgram;
          ++index) {
         const bool is_emulated_stage = layer_source_program != nullptr &&
@@ -890,10 +891,26 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage)};
         runtime_info.lower_noperspective_mask = lower_noperspective_mask;
         ConvertLegacyToGeneric(program, runtime_info);
-        const auto merged_demote_returns = Shader::Optimization::DemoteReturnPass(program);
+        Shader::Optimization::DemoteReturnVerdict demote_return{};
+        const auto merged_demote_returns =
+            Shader::Optimization::DemoteReturnPass(program, &demote_return);
         if (merged_demote_returns && IsDumpedShader(key.unique_hashes[index])) {
             LOG_INFO(Render, "D3D12 helper-preserving discard: PS={:016x} terminal_returns={} (compile-time)",
                      key.unique_hashes[index], merged_demote_returns);
+        }
+        if (program.stage == Shader::Stage::Fragment) {
+            fragment_helpers = {demote_return, program.info.uses_quad_shuffles,
+                                program.info.uses_derivatives};
+            // A terminal discard the pass cannot rewrite stops its lanes before the derivatives
+            // of their quad neighbours: wrong mips or normals along triangle edges.
+            if (Shader::Optimization::IsRejected(demote_return)) {
+                BUG_TRACK_KEY(UnsupportedState, key.unique_hashes[index],
+                              "PS {:016x} keeps a terminal discard return ({}): helper lanes "
+                              "end before derivatives (quad_shuffles={} derivatives={})",
+                              key.unique_hashes[index],
+                              Shader::Optimization::Name(demote_return),
+                              program.info.uses_quad_shuffles, program.info.uses_derivatives);
+            }
         }
         spirv[stage_index] = EmitSPIRV(profile, runtime_info, program, binding);
         if (IsDumpedShader(key.unique_hashes[index])) [[unlikely]] {
@@ -961,10 +978,12 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     };
 
     Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
-    return std::make_unique<GraphicsPipeline>(device, texture_runtime, &shader_notify,
-                                              thread_worker, key, std::move(compile_dxil), infos,
-                                              layout, build_pso, &graphics_psos,
-                                              lower_noperspective_mask);
+    auto pipeline = std::make_unique<GraphicsPipeline>(device, texture_runtime, &shader_notify,
+                                                       thread_worker, key, std::move(compile_dxil),
+                                                       infos, layout, build_pso, &graphics_psos,
+                                                       lower_noperspective_mask);
+    pipeline->SetFragmentHelpers(fragment_helpers);
+    return pipeline;
 
 } catch (const Shader::Exception& exception) {
     BUG_TRACK_KEY(ShaderCompile, key.unique_hashes[1] ^ std::rotl(key.unique_hashes[5], 1),
