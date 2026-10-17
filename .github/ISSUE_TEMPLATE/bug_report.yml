@@ -53,6 +53,6 @@ body:
     id: log
     attributes:
       label: Diagnostics
-      description: Attach `jadyx_diag.txt` and `eden\log\eden_log.txt` from the package's `LocalState` folder (Device Portal file explorer on the console, `%LOCALAPPDATA%\Packages\<package family>\LocalState` on PC).
+      description: Attach `jadyx_diag.txt` and `jadyx_log.txt` from the package's `LocalState\jadyx\log` folder (Device Portal file explorer on the console, `%LOCALAPPDATA%\Packages\<package family>\LocalState\jadyx\log` on PC).
     validations:
       required: true

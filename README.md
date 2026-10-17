@@ -486,7 +486,7 @@ moment, instead of booting it from the start. The library marks a game with a sa
   finishes. A session belongs to the build that saved it; after an update it is kept but
   not resumed. Sessions live in `LocalState\jadyx\pulse\sessions` with a 20 GiB quota, and can be
   turned off in **Settings > System > Pulse sessions** or discarded per game from its options.
-- **Its own log.** `LocalState\jadyx_pulse.txt` records every save, resume and refusal, and the frames
+- **Its own log.** `LocalState\jadyx\log\jadyx_pulse.txt` records every save, resume and refusal, and the frames
   shown in each of the first 30 seconds after a resume.
 
 Design, phases and evidence: [docs/xbox/xbox_pulse.md](docs/xbox/xbox_pulse.md) (in Spanish).
@@ -504,7 +504,7 @@ Requirements: an Xbox Series X|S in Developer Mode, the package you built (see
 5. Add games: copy them to the app's `LocalState\games` folder with the Device Portal file explorer,
    or add an external folder from the library.
 
-If something fails, `jadyx_diag.txt` (in `LocalState`) and `jadyx\log\jadyx_log.txt` describe what
+If something fails, `jadyx_diag.txt` and `jadyx_log.txt` in `LocalState\jadyx\log` describe what
 happened. The diagnostic switches are listed in [docs/xbox/xbox_deploy.md](docs/xbox/xbox_deploy.md).
 
 ## Building

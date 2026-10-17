@@ -64,7 +64,7 @@ foreach ($phase in @('record', 'restore')) {
     & (Join-Path $PSScriptRoot 'local-run.ps1') -NoBuild -TimeoutSec 75 -BootCfg "rom_storage_checks=$phase" |
         Tee-Object -FilePath (Join-Path $output "$phase-launcher.txt")
     $local = Split-Path -Parent $gateDir
-    $diag = Join-Path $local 'jadyx_diag.txt'
+    $diag = Join-Path $local 'jadyx\log\jadyx_diag.txt'
     Copy-Item -LiteralPath $diag -Destination (Join-Path $output "$phase-diag.txt")
     $log = Join-Path $local 'jadyx\log\jadyx_log.txt'
     if (Test-Path -LiteralPath $log) { Copy-Item -LiteralPath $log -Destination (Join-Path $output "$phase-log.txt") }

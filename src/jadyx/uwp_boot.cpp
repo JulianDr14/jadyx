@@ -1337,15 +1337,24 @@ unsigned long long ElapsedMs() {
     return GetTickCount64() - start;
 }
 
+// LocalState\jadyx\log, next to jadyx_log.txt. Created here: the diag starts before Eden's
+// logging creates the folder.
+std::string LogFilePath(const char* name) {
+    const std::filesystem::path dir =
+        std::filesystem::path{std::wstring{Windows::Storage::ApplicationData::Current().LocalFolder().Path()}} /
+        L"jadyx" / L"log";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return winrt::to_string((dir / name).wstring());
+}
+
 void WriteDiag(const std::string& msg) {
     const std::string line = "[jadyx] [+" + std::to_string(ElapsedMs()) + "ms] " + msg + "\n";
     OutputDebugStringA(line.c_str());
     try {
         std::scoped_lock lock{g_diag_mutex};
         if (g_diag_path.empty()) {
-            g_diag_path =
-                winrt::to_string(Windows::Storage::ApplicationData::Current().LocalFolder().Path()) +
-                "\\jadyx_diag.txt";
+            g_diag_path = LogFilePath("jadyx_diag.txt");
         }
         std::ofstream f(g_diag_path, std::ios::app);
         f << line;
@@ -1360,9 +1369,7 @@ void WritePulseLog(const std::string& msg) {
     try {
         std::scoped_lock lock{g_pulse_mutex};
         if (g_pulse_path.empty()) {
-            g_pulse_path =
-                winrt::to_string(Windows::Storage::ApplicationData::Current().LocalFolder().Path()) +
-                "\\jadyx_pulse.txt";
+            g_pulse_path = LogFilePath("jadyx_pulse.txt");
         }
         std::ofstream f(g_pulse_path, std::ios::app);
         f << TakePulseRepeats() << line;

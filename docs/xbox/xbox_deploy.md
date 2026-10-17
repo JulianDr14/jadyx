@@ -98,8 +98,8 @@ is lost, the game must continue at normal speed using the silent paced fallback.
 
 ## Reading the result
 
-The boot writes two things into the app's **LocalFolder**, pullable through the Device Portal's file
-explorer:
+The boot writes two things into the app's **LocalFolder** under `jadyx\log`, pullable through the
+Device Portal's file explorer:
 
 - **`jadyx_diag.txt`** — coarse startup breadcrumbs written before Eden's logging is up
   (`BootView::Run entered`, the resolved NRO path, `RunHeadlessBoot returned <rc>`, or the exception

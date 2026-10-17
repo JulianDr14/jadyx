@@ -59,7 +59,7 @@ Add-AppxPackage -Register "$r\build-uwp\package\layout\AppxManifest.xml" -ForceA
 
 $pkg = Get-AppxPackage -Name Jadyx
 $local = Join-Path $env:LOCALAPPDATA "Packages\$($pkg.PackageFamilyName)\LocalState"
-$diag = Join-Path $local 'jadyx_diag.txt'
+$diag = Join-Path $local 'jadyx\log\jadyx_diag.txt'
 Remove-Item -LiteralPath $diag -ErrorAction SilentlyContinue
 Start-Process "shell:AppsFolder\$($pkg.PackageFamilyName)!App"
 
