@@ -36,6 +36,33 @@ Los detalles siguientes conservan la cronología y las hipótesis pendientes en
 cada momento. Esas notas históricas no sustituyen este estado final. No se ha
 medido una mejora FPS ni se afirma una certificación de todos los shaders/juegos.
 
+### 16 oct 2026: bordes punteados en una superficie de agua
+
+Mismo juego, nueva escena: segmentos oscuros de ~2 px sobre las aristas de la
+malla del agua, interior de los triángulos correcto. Es la firma de cuads con
+helpers muertos, como en los tubos. DemoteReturnPass rechaza en silencio bucles,
+phis, subgrupos/quad shuffles, memoria y brazos que no sabe reescribir, así que
+ahora informa un veredicto (`DemoteReturnVerdict`):
+
+- `jadyx_graphics_bugs.log` (UnsupportedState): un PS por hash cuyo lane
+  descartado retorna antes de las derivadas, con el motivo y `quad_shuffles`/
+  `derivatives`.
+- Cada draw de la captura del menú (`-GraphicsCapture`, F7 en PC) añade
+  `helpers=<veredicto> quad=<0|1> deriv=<0|1>` tras el PS.
+
+Resultado en consola (0.2.92.5): el agua es una sola draw (VS 281455ade4744d76,
+PS 174cae0243dcad86, 9480 vértices, 3 RT, escribe profundidad) tras la luz
+diferida, con `helpers=no_terminal_arm quad=0 deriv=0`. Ninguna draw del frame
+tiene un veredicto rechazado: los 12 PS `rejected_subgroup` son del G-buffer y no
+se dibujan ahí. DemoteReturnPass no es la causa.
+
+En el present los segmentos son cuads 2x2 alineados a coordenadas pares, y la
+profundidad en esos píxeles es continua: el PS cubre el píxel pero calcula un
+color más oscuro en los cuads que cruzan una arista. Quedan dos sospechosos:
+helpers con atributos extrapolados que producen NaN/inf en las derivadas
+implícitas, o la traducción del demote a mitad del shader. Siguiente paso:
+`dump_shader=` con ambos hashes para leer IR, SPIR-V y DXIL.
+
 
 ## Reproducción y evidencia
 
