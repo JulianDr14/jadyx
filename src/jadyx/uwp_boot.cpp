@@ -2123,6 +2123,9 @@ void SeedDirectory(const std::filesystem::path& from, const std::filesystem::pat
 
 void SeedUserData(const std::filesystem::path& install, const std::filesystem::path& local) {
     const std::filesystem::path userdata = install / "userdata";
+    // The data folders the core writes into without creating them (play_time, ...), as the
+    // desktop frontends do at startup.
+    Common::FS::CreateEdenPaths();
     // Through the path manager, which knows the data folder.
     const auto data = Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir);
     SeedDirectory(userdata / "keys", data / "keys", "keys");
