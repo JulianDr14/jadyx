@@ -17,7 +17,6 @@ enum class DemoteReturnVerdict : std::uint8_t {
     RejectedLoop,
     RejectedPhi,
     RejectedSubgroup,
-    RejectedMemory,
     RejectedSideEffect,
     RejectedArm,    ///< A demoted lane returns early from an arm the pass cannot rewrite.
     RejectedUnstructured,
@@ -30,7 +29,8 @@ enum class DemoteReturnVerdict : std::uint8_t {
 }
 
 // Emission-time canonicalization for hosts with native helper-preserving demote.
-// Only terminal discard arms containing identities/output writes are eligible.
+// Eligible: terminal arms with identities/output writes whose lanes are demoted, in the
+// arm or by an earlier arm with the same predicate (guest @P KIL ... @P EXIT).
 // Returns the number of early returns removed; zero leaves the program untouched.
 std::size_t DemoteReturnPass(IR::Program& program, DemoteReturnVerdict* verdict = nullptr);
 }

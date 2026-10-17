@@ -63,6 +63,51 @@ helpers con atributos extrapolados que producen NaN/inf en las derivadas
 implícitas, o la traducción del demote a mitad del shader. Siguiente paso:
 `dump_shader=` con ambos hashes para leer IR, SPIR-V y DXIL.
 
+**Causa (dump del PS 174cae0243dcad86):** el guest descarta con `@P KIL ... @P EXIT`,
+así que el IR tiene el demote y el retorno en dos If distintos con el mismo
+predicado: `if (c) { demote }`, movs predicados, `if (c) { outputs; epilogue;
+return }`. Hay tres pares así (máscara muestreada con LOD explícito). El DXIL
+sale por el retorno antes de las 12 muestras de LOD implícito, que quedan en
+flujo no uniforme: en los cuads parciales de las aristas los helpers ya no están
+y RDNA2 da derivadas basura, que se ven como cuads 2x2 oscuros. El pass lo
+reportaba como `no_terminal_arm` porque solo buscaba el demote en el mismo brazo
+que el retorno. Además rechazaba cualquier programa con un bucle o un phi en
+cualquier sitio, y este PS tiene un raymarch acotado.
+
+**Arreglo (0.2.92.7):** un brazo que termina en Return sin demote cuenta como
+demotado si un brazo anterior del mismo constructo tiene el mismo predicado SSA
+(tras quitar Identity y pares de LogicalNot) y hace demote. Ese brazo admite
+además operaciones puras, como el BitCast que alimenta las salidas. Las
+comprobaciones de bucle y phi pasan a ser por brazo: `rejected_loop` si el
+brazo está dentro de un Loop (sin el retorno, el lane correría el resto de la
+iteración) y `rejected_phi` si el merge del brazo tiene phis. Un bucle en otra
+parte del shader ya no bloquea el pass: los helpers ya ejecutan esos bucles en
+el guest.
+
+Pruebas: demote-return pasa con 68 casos. Añade cuatro casos del patrón dividido:
+fusionado, predicado distinto, phi en el merge y bucle en otra parte. Las
+exclusiones por bucle y por phi ahora se prueban por brazo. También pasan
+demote-helper, el oráculo GPU (7200 visibles y 7104 descartados, error máximo
+2,6e-7), dxil-probe y dxil-branches.
+
+**0.2.92.7 en Series no lo arregló:** la draw del agua siguió con
+`helpers=no_terminal_arm`. El frontend envuelve la condición de cada If en su
+propio `ConditionRef` (structured_control_flow.cpp), así que dos If nunca
+comparten instrucción, aunque detrás haya el mismo `LogicalNot(%157)`. El
+fixture usaba la condición sin envolver y por eso pasaba. En 0.2.92.8 `Resolve`
+también salta `ConditionRef`, y el fixture del patrón dividido envuelve sus
+condiciones igual que el frontend.
+
+**0.2.92.8 en Series:** ya reconoce el patrón, pero da `rejected_memory`. El PS
+no tiene ninguna instrucción de memoria (solo cbufs y muestras): el rechazo salía
+de metadatos (`local_memory_size`, `uses_global_memory` o descriptores). En
+0.2.92.9 se quita ese rechazo y el veredicto `RejectedMemory`. En SPIR-V, las
+escrituras y atómicas de un helper no tienen efecto en memoria (salvo
+Function/Private, que son de cada lane), y las escrituras reales siguen rechazadas
+como efecto secundario. Los casos de memoria declarada del fixture ahora se
+fusionan. Confirmado en Series (0.2.92.9): la draw del agua da `helpers=merged`
+y los bordes punteados desaparecen.
+
 
 ## Reproducción y evidencia
 
