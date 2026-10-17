@@ -145,7 +145,20 @@ def verdict(c, frames, avg):
                  f"{shares['fence'] * 100:.0f}% waiting on the GPU fence, "
                  f"{shares['flush'] * 100:.0f}% in guest readback flushes, "
                  f"{shares['pipeline'] * 100:.0f}% waiting for pipelines.")
-    if shares["gpu"] >= 0.85:
+    # Steady frames on a multiple of the 60 Hz refresh: the game waits for vsync (or its own frame
+    # cap), so the idle shares above are that wait, not a limit.
+    refresh = 1000 / 60
+    vsyncs = round(avg / refresh)
+    locked = vsyncs >= 1 and abs(avg - vsyncs * refresh) < 0.3 and max(c.frames) - min(c.frames) < 1.0
+    if locked and vsyncs == 1:
+        cause = "**Nothing limits this capture**: every frame lands on the 60 Hz refresh, so the " \
+                "waits above are vsync. Capture again during a slowdown; the tables below still " \
+                "show what the frame costs."
+    elif locked:
+        cause = f"**Locked to {60 / vsyncs:.0f} FPS**: steady frames on {vsyncs} refreshes. If the " \
+                "game targets that rate this is its cap, not a bottleneck; otherwise the shares " \
+                "above say which side is slow."
+    elif shares["gpu"] >= 0.85:
         cause = "**GPU-bound**: the GPU is busy almost all the time. Cut GPU work (passes and " \
                 "pipelines with most GPU ms below), not draw count alone."
     elif shares["idle"] >= 0.30:
