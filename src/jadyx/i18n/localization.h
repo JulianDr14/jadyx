@@ -574,6 +574,17 @@ enum class Text : std::uint16_t {
     ImportTitle,
     ImportTitleHint,
     Import,
+    MenuQuick,
+    MenuPaused,
+    MenuSession,
+    MenuScreenshot,
+    MenuScreenshotWhere,
+    MenuScreenshotSaved,
+    MenuScreenshotFailed,
+    MenuController,
+    MenuDisplay,
+    MenuStatsShort,
+    MenuBackTo,
 
 
     Count

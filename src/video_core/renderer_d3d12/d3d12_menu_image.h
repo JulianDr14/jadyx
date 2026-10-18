@@ -40,4 +40,9 @@ void ShowGameMenu(VideoCore::RendererBase& renderer, MenuImage image);
 /// Removes the menu and presents the guest frame again. GPU thread only.
 void HideGameMenu(VideoCore::RendererBase& renderer);
 
+/// The paused game's last frame as the screen shows it (upscaling included) but without the HUD
+/// or the menu: RGBA at the back buffer's size. Empty unless the renderer is the D3D12 one and
+/// that frame is a GPU image. GPU thread only, with the guest paused.
+[[nodiscard]] MenuImage CaptureGameFrame(VideoCore::RendererBase& renderer);
+
 } // namespace D3D12

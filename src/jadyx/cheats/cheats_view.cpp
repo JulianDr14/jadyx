@@ -10,9 +10,7 @@
 #include "jadyx/storage/utf8.h"
 
 namespace Jadyx::Cheats {
-namespace {
 using I18n::Text;
-using L = CheatsLayout;
 
 std::wstring_view CategoryName(CheatCategory category) {
     switch (category) {
@@ -32,6 +30,9 @@ std::wstring_view SourceText(CheatSource source) {
     }
     return {};
 }
+
+namespace {
+using L = CheatsLayout;
 
 /// Tabs with how many of their cheats are on; LB and RB beside them when there is a choice.
 void DrawTabs(UiPainter& paint, const CheatCatalog& catalog, CheatCategory current, float x, float y) {

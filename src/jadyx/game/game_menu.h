@@ -4,10 +4,12 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 #include "jadyx/input/controller_style.h"
 #include "jadyx/ui/ui_actions.h"
+#include "jadyx/ui/ui_icon.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/ui/ui_text.h"
 #include "jadyx/settings/upscaling.h"
@@ -102,6 +104,8 @@ struct GameMenuSettings {
     bool material_capture{};
     /// Opt-in diagnostic package ("hunt=1"): bottleneck capture of the next frames.
     bool performance_capture{};
+    /// The paused frame was read back: the menu can save it as a screenshot.
+    bool screenshot{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -111,35 +115,43 @@ enum class GameMenuResult : std::uint8_t {
     LibraryWithoutSession,
     CaptureGraphics,
     CapturePerformance,
+    Screenshot,
 };
 
-/// One row as drawn: a label, and the value of a setting (changed with left/right) or of a page.
+/// One row as drawn: a label, a line under it, and the value of a setting (changed with
+/// left/right) or of a page.
 struct GameMenuRow {
-    enum class Kind : std::uint8_t { Action, Choice, Page };
+    /// Info: it only tells something (no button does anything on it).
+    enum class Kind : std::uint8_t { Action, Choice, Page, Info };
     std::wstring label;
     std::wstring value;
     Kind kind{Kind::Action};
+    std::wstring detail;            ///< Under the label: what the row holds or did.
+    std::optional<UiIcon> icon{};   ///< The quick menu's rows have one; a page's settings none.
 };
 
-/// The menu's items and cursor, with texts in the interface language.
+/// The menu's pages, items and cursor, with texts in the interface language. The quick menu
+/// lists actions and opens the controller's and the display's settings as pages of their own.
 class GameMenu {
 public:
     enum Item : std::size_t {
         Continue, Cheats, Mods, Style, FaceButtons, Deadzone, FullScreen, ImageUpscaling, PerformanceStats, Library,
-        CaptureGraphics, CapturePerformance,
+        CaptureGraphics, CapturePerformance, Screenshot, ControllerPage, DisplayPage,
     };
+    enum class Page : std::uint8_t { Quick, Controller, Display };
 
     /// `cheats`: the game can have cheats (it has a title id), so the menu offers them.
     explicit GameMenu(GameMenuSettings settings_, bool cheats = false) : settings{settings_} {
-        items = {Continue};
-        if (cheats) items.push_back(Cheats);
-        items.insert(items.end(), {Style, FaceButtons, Deadzone});
-        if (settings.can_fullscreen) items.push_back(FullScreen);
-        items.push_back(ImageUpscaling);
-        items.push_back(PerformanceStats);
-        if (settings.material_capture) items.push_back(CaptureGraphics);
-        if (settings.performance_capture) items.push_back(CapturePerformance);
-        items.push_back(Library);
+        quick = {Continue};
+        if (settings.screenshot) quick.push_back(Screenshot);
+        if (cheats) quick.push_back(Cheats);
+        quick.insert(quick.end(), {ControllerPage, DisplayPage});
+        if (settings.material_capture) quick.push_back(CaptureGraphics);
+        if (settings.performance_capture) quick.push_back(CapturePerformance);
+        quick.push_back(Library);
+        controller = {Style, FaceButtons, Deadzone};
+        display = {ImageUpscaling, PerformanceStats};
+        if (settings.can_fullscreen) display.push_back(FullScreen);
     }
 
     /// How many cheats are on, shown on the Cheats row.
@@ -149,17 +161,29 @@ public:
     /// and a game reads them when it boots.
     void SetModsOn(std::size_t count) {
         mods_on = count;
-        const auto found = std::find(items.begin(), items.end(), Mods);
-        if (count == 0 || found != items.end()) return;
-        const auto after = std::find(items.begin(), items.end(), Cheats);
-        items.insert(after != items.end() ? after + 1 : items.begin() + 1, Mods);
+        const auto found = std::find(quick.begin(), quick.end(), Mods);
+        if (count == 0 || found != quick.end()) return;
+        const auto cheats = std::find(quick.begin(), quick.end(), Cheats);
+        const auto after = cheats != quick.end() ? cheats : std::find(quick.begin(), quick.end(), ControllerPage) - 1;
+        quick.insert(after + 1, Mods);
     }
 
+    /// What the last screenshot did, under its row (empty: where they go).
+    void SetScreenshotNote(std::wstring note) { screenshot_note = std::move(note); }
+
     GameMenuResult Apply(MenuAction action) {
+        const auto& items = Items();
         switch (action) {
         case MenuAction::Toggle:
-        case MenuAction::Back:
             return GameMenuResult::Resume;
+        case MenuAction::Back:
+            if (page == Page::Quick) return GameMenuResult::Resume;
+            // Back on the page's own row.
+            selected = static_cast<std::size_t>(
+                std::find(quick.begin(), quick.end(), page == Page::Controller ? ControllerPage : DisplayPage) -
+                quick.begin());
+            page = Page::Quick;
+            return GameMenuResult::None;
         case MenuAction::Up:
             selected = (selected + items.size() - 1) % items.size();
             return GameMenuResult::None;
@@ -179,44 +203,72 @@ public:
         return GameMenuResult::None;
     }
 
+    /// The rows of the page shown.
     [[nodiscard]] std::vector<GameMenuRow> Rows() const {
         std::vector<GameMenuRow> rows;
-        for (const Item item : items) rows.push_back(Row(item));
+        for (const Item item : Items()) rows.push_back(Row(item));
         return rows;
     }
 
+    [[nodiscard]] Page CurrentPage() const { return page; }
+    /// The page's title and icon, as its header shows them.
+    [[nodiscard]] std::wstring PageTitle() const {
+        using I18n::Text;
+        return Tr(page == Page::Controller ? Text::MenuController : page == Page::Display ? Text::MenuDisplay
+                                                                                          : Text::MenuQuick);
+    }
     /// Row of the cursor, as drawn.
     [[nodiscard]] std::size_t Selected() const { return selected; }
-    [[nodiscard]] Item SelectedItem() const { return items[selected]; }
+    [[nodiscard]] Item SelectedItem() const { return Items()[selected]; }
     [[nodiscard]] const GameMenuSettings& Settings() const { return settings; }
 
 private:
     static std::wstring Tr(I18n::Text id) { return std::wstring{I18n::Tr(id)}; }
 
+    [[nodiscard]] const std::vector<Item>& Items() const {
+        return page == Page::Controller ? controller : page == Page::Display ? display : quick;
+    }
+
     GameMenuRow Row(Item item) const {
         using I18n::Text;
         constexpr auto Choice = GameMenuRow::Kind::Choice;
+        constexpr auto Page = GameMenuRow::Kind::Page;
+        constexpr auto Action = GameMenuRow::Kind::Action;
         switch (item) {
         case Continue:
-            return {Tr(Text::MenuResume)};
+            return {Tr(Text::MenuResume), {}, Action, {}, UiIcon::Play};
+        case Screenshot:
+            return {Tr(Text::MenuScreenshot), {}, Action,
+                    screenshot_note.empty() ? Tr(Text::MenuScreenshotWhere) : screenshot_note, UiIcon::Camera};
         case CaptureGraphics:
-            return {Tr(Text::MenuCaptureGraphics)};
+            return {Tr(Text::MenuCaptureGraphics), {}, Action, {}, UiIcon::Archive};
         case CapturePerformance:
-            return {Tr(Text::MenuCapturePerformance)};
+            return {Tr(Text::MenuCapturePerformance), {}, Action, {}, UiIcon::Archive};
         case Cheats:
-            return {Tr(Text::CheatsTitle), I18n::Plural(Text::CheatsOnOne, Text::CheatsOnOther, cheats_on),
-                    GameMenuRow::Kind::Page};
+            return {Tr(Text::CheatsTitle), {}, Page, I18n::Plural(Text::CheatsOnOne, Text::CheatsOnOther, cheats_on),
+                    UiIcon::Cheats};
         case Mods:
-            return {Tr(Text::ModsTitle), I18n::Plural(Text::ModsActiveOne, Text::ModsActiveOther, mods_on) +
-                                             L" · " + Tr(Text::MenuModsAtBoot)};
+            return {Tr(Text::ModsTitle), {}, GameMenuRow::Kind::Info,
+                    I18n::Plural(Text::ModsActiveOne, Text::ModsActiveOther, mods_on) + L" · " +
+                        Tr(Text::MenuModsAtBoot),
+                    UiIcon::Mods};
+        case ControllerPage:
+            return {Tr(Text::MenuController), {}, Page,
+                    Tr(ControllerStyleText(settings.style)) + L" · " +
+                        Tr(settings.swap_face_buttons ? Text::ByPosition : Text::ByLetter) + L" · " + DeadzoneText(),
+                    UiIcon::Controller};
+        case DisplayPage: {
+            std::wstring detail = Tr(UpscalingText(settings.upscaling));
+            if (settings.show_performance_stats) detail += L" · " + Tr(Text::MenuStatsShort);
+            return {Tr(Text::MenuDisplay), {}, Page, detail, UiIcon::Display};
+        }
         case Style:
             return {Tr(Text::ControllerSeenAs), Tr(ControllerStyleText(settings.style)), Choice};
         case FaceButtons:
             return {Tr(Text::FaceButtons), Tr(settings.swap_face_buttons ? Text::ByPosition : Text::ByLetter),
                     Choice};
         case Deadzone:
-            return {Tr(Text::DeadZone), std::to_wstring(static_cast<int>(settings.deadzone * 100 + 0.5f)) + L"%",
-                    Choice};
+            return {Tr(Text::DeadZone), DeadzoneText(), Choice};
         case ImageUpscaling:
             return {Tr(Text::Upscaling), Tr(UpscalingText(settings.upscaling)), Choice};
         case PerformanceStats:
@@ -224,29 +276,43 @@ private:
         case FullScreen:
             return {Tr(Text::MenuFullScreen), Tr(settings.fullscreen ? Text::Yes : Text::No), Choice};
         case Library:
-            if (!settings.pulse_sessions) return {Tr(Text::MenuBackToHome)};
-            return {Tr(Text::MenuBackToHome), Tr(keep_session ? Text::MenuKeepSession : Text::MenuSkipSession),
-                    Choice};
+            if (!settings.pulse_sessions) return {Tr(Text::MenuBackToHome), {}, Action, {}, UiIcon::Exit};
+            return {Tr(Text::MenuBackToHome), {}, Choice,
+                    Tr(keep_session ? Text::MenuKeepSession : Text::MenuSkipSession), UiIcon::Exit};
         }
         return {};
     }
 
+    std::wstring DeadzoneText() const {
+        return std::to_wstring(static_cast<int>(settings.deadzone * 100 + 0.5f)) + L"%";
+    }
+
     GameMenuResult Change(MenuAction action) {
         const bool back = action == MenuAction::Left;
+        const bool confirm = action == MenuAction::Confirm;
         switch (SelectedItem()) {
         case Continue:
-            return action == MenuAction::Confirm ? GameMenuResult::Resume : GameMenuResult::None;
+            return confirm ? GameMenuResult::Resume : GameMenuResult::None;
+        case Screenshot:
+            return confirm ? GameMenuResult::Screenshot : GameMenuResult::None;
         case CaptureGraphics:
-            return action == MenuAction::Confirm ? GameMenuResult::CaptureGraphics : GameMenuResult::None;
+            return confirm ? GameMenuResult::CaptureGraphics : GameMenuResult::None;
         case CapturePerformance:
-            return action == MenuAction::Confirm ? GameMenuResult::CapturePerformance : GameMenuResult::None;
+            return confirm ? GameMenuResult::CapturePerformance : GameMenuResult::None;
         case Cheats:
-            return action == MenuAction::Confirm ? GameMenuResult::Cheats : GameMenuResult::None;
+            return confirm ? GameMenuResult::Cheats : GameMenuResult::None;
         case Mods:
             return GameMenuResult::None;
+        case ControllerPage:
+        case DisplayPage:
+            // A and Right open the page, as a row with ">" does elsewhere.
+            if (back) return GameMenuResult::None;
+            page = SelectedItem() == ControllerPage ? Page::Controller : Page::Display;
+            selected = 0;
+            return GameMenuResult::None;
         case Library:
-            if (action != MenuAction::Confirm) {
-                keep_session = !keep_session;
+            if (!confirm) {
+                if (settings.pulse_sessions) keep_session = !keep_session;
                 return GameMenuResult::None;
             }
             return !settings.pulse_sessions || keep_session ? GameMenuResult::Library
@@ -279,10 +345,12 @@ private:
     }
 
     GameMenuSettings settings;
-    std::vector<Item> items;
+    std::vector<Item> quick, controller, display;
+    Page page{Page::Quick};
     std::size_t selected{};
     std::size_t cheats_on{};
     std::size_t mods_on{};
+    std::wstring screenshot_note;
     bool keep_session{true};
 };
 } // namespace Jadyx

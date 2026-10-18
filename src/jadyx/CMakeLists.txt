@@ -75,6 +75,8 @@ add_executable(jadyx WIN32
     ui/tween.h
     game/game_menu_surface.cpp
     game/game_menu_surface.h
+    game/game_screenshot.cpp
+    game/game_screenshot.h
     # Per-game options and cheats: local files, the online database, hot changes in game.
     content/content_model.h
     content/content_inspector.cpp

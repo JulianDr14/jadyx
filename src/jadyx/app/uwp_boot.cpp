@@ -87,6 +87,7 @@
 #include "jadyx/cheats/cheats_page.h"
 #include "jadyx/cheats/cheats_view.h"
 #include "jadyx/game/game_menu_surface.h"
+#include "jadyx/game/game_screenshot.h"
 #include "jadyx/app/headless_emu_window.h"
 #include "jadyx/app/prewarm_budget.h"
 #include "jadyx/pulse/pulse_gate.h"
@@ -836,6 +837,16 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         Cheats::CheatsPage cheats_page;
         std::wstring cheats_notice;
         std::wstring game_title;
+        // Beside the menu: the game's maker and version, and how long this session has run.
+        std::wstring game_details;
+        const auto session_start = std::chrono::steady_clock::now();
+        std::wstring session_text;
+        // The paused frame while the menu is open: behind it, and what a screenshot saves.
+        D3D12::MenuImage game_frame;
+        const auto capture_frame = [&] {
+            system.GPU().RunOnGpuThread([&] { game_frame = D3D12::CaptureGameFrame(system.Renderer()); });
+            if (menu_surface) menu_surface->SetBackdrop(game_frame);
+        };
         const Cheats::CheatGame cheat_game{program_id, system.GetApplicationProcessBuildID()};
         const auto cheats_on = [&](const Cheats::CheatCatalog& catalog) {
             std::size_t count = 0;
@@ -850,9 +861,10 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
             D3D12::MenuImage image;
             try {
                 menu_surface->SetPromptMapping(input.MenuPromptMapping());
+                const GameMenuScene scene{game_title, game_details, session_text};
                 image = cheats ? menu_surface->DrawCheats({*cheats, cheats_page, game_title, cheats_notice, true},
-                                                          screen)
-                        : menu ? menu_surface->DrawMenu(*menu, game_title, screen)
+                                                          scene, screen)
+                        : menu ? menu_surface->DrawMenu(*menu, scene, screen)
                                : menu_surface->DrawKeyboard(game_keyboard.View(), game_keyboard.CanCancel(), screen);
             } catch (const winrt::hresult_error& e) {
                 WriteDiag("menu: not drawn: " + winrt::to_string(e.message()));
@@ -987,6 +999,22 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
                     input.SetMenuOpen(true);
                     SetTextEntryActive(false); // The real keyboard drives the menu.
                     const ControllerOptions options = input.Options();
+                    {
+                        const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                                                 std::chrono::steady_clock::now() - session_start)
+                                                 .count();
+                        wchar_t text[24]{};
+                        std::swprintf(text, std::size(text), L"%lld:%02lld:%02lld",
+                                      static_cast<long long>(seconds / 3600),
+                                      static_cast<long long>(seconds / 60 % 60), static_cast<long long>(seconds % 60));
+                        session_text = text;
+                    }
+                    try {
+                        menu_surface.emplace();
+                    } catch (const winrt::hresult_error& e) {
+                        WriteDiag("menu: no surface: " + winrt::to_string(e.message()));
+                    }
+                    capture_frame();
                     // Upscaling as this boot applied it (a boot.cfg override included); only the
                     // GPU thread writes it while the game runs, and it is paused now.
                     menu.emplace(GameMenuSettings{options.style, options.swap_face_buttons,
@@ -995,22 +1023,26 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
                                                   pulse_identity.has_value(),
                                                   FromSettings(Settings::values.scaling_filter.GetValue(),
                                                                Settings::values.fsr_sharpening_slider.GetValue()),
-                                                  config.material_capture_menu, config.hunt_menu},
+                                                  config.material_capture_menu, config.hunt_menu,
+                                                  !game_frame.pixels.empty()},
                                  program_id != 0);
                     if (game_title.empty()) {
                         std::string title;
                         void(system.GetAppLoader().ReadTitle(title));
                         game_title = Utf8ToUtf16(title);
+                        FileSys::NACP nacp;
+                        if (system.GetAppLoader().ReadControlData(nacp) == Loader::ResultStatus::Success) {
+                            const std::string developer = nacp.GetDeveloperName();
+                            const std::string version = nacp.GetVersionString();
+                            game_details = Utf8ToUtf16(developer);
+                            if (!version.empty())
+                                game_details += (game_details.empty() ? L"v" : L" · v") + Utf8ToUtf16(version);
+                        }
                     }
                     if (program_id != 0) {
                         menu->SetCheatsOn(cheats_on(Cheats::LoadCatalog(
                             Cheats::TitleLoadDirectory(program_id), cheat_game.build_id)));
                         menu->SetModsOn(Mods::ActiveMods(Mods::DefaultModPaths(), program_id));
-                    }
-                    try {
-                        menu_surface.emplace();
-                    } catch (const winrt::hresult_error& e) {
-                        WriteDiag("menu: no surface: " + winrt::to_string(e.message()));
                     }
                     WriteDiag("menu: opened, guest paused | " + MemoryReport());
                     if (menu_surface) draw_menu();
@@ -1022,7 +1054,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
                     if (!pressed) continue;
                     cheats_notice.clear();
                     const CheatsEffect effect = Cheats::HandleCheatsInput(cheats_page, *cheats, *pressed,
-                                                                          Cheats::CheatsLayout::VisibleRows);
+                                                                          GameMenuSurface::CheatRows);
                     if (effect == CheatsEffect::Changed) {
                         // Hot: the engine (created now if the game booted without cheats) runs
                         // the new list from its next tick.
@@ -1122,13 +1154,31 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
                     cheats.emplace(cheat_game);
                     cheats->Poll();
                     cheats_page = {};
-                    Cheats::ClampCheatsPage(cheats_page, cheats->Catalog(), Cheats::CheatsLayout::VisibleRows);
+                    Cheats::ClampCheatsPage(cheats_page, cheats->Catalog(), GameMenuSurface::CheatRows);
                     cheats_notice.clear();
+                }
+                if (result == GameMenuResult::Screenshot) {
+                    try {
+                        const auto folder = std::filesystem::path{std::wstring{
+                                                winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()}} /
+                                            L"jadyx" / L"captures";
+                        if (const auto name = SaveScreenshot(game_frame, folder)) {
+                            menu->SetScreenshotNote(I18n::Format(I18n::Text::MenuScreenshotSaved, {*name}));
+                            WriteDiag("menu: screenshot saved as " + I18n::ToUtf8(*name));
+                        } else {
+                            menu->SetScreenshotNote(std::wstring{I18n::Tr(I18n::Text::MenuScreenshotFailed)});
+                            WriteDiag("menu: screenshot could not be saved");
+                        }
+                    } catch (const winrt::hresult_error& e) {
+                        menu->SetScreenshotNote(std::wstring{I18n::Tr(I18n::Text::MenuScreenshotFailed)});
+                        WriteDiag("menu: screenshot failed: " + winrt::to_string(e.message()));
+                    }
                 }
                 if (result == GameMenuResult::Resume || result == GameMenuResult::CaptureGraphics ||
                     result == GameMenuResult::CapturePerformance) {
                     menu.reset();
                     cheats.reset();
+                    game_frame = {};
                     if (game_keyboard.IsOpen() && menu_surface) {
                         // The game's keyboard was under the menu: it comes back.
                         SetTextEntryActive(true);
@@ -1174,6 +1224,9 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
                     // Written where the present reads it; draw_menu below presents the paused
                     // frame again with it.
                     system.GPU().RunOnGpuThread([upscaling] { ApplyUpscaling(upscaling); });
+                    // The display page shows the game sharp behind it: read it again with the
+                    // new filter, so the change is seen at once.
+                    capture_frame();
                     WriteDiag("menu: upscaling " + I18n::ToUtf8(I18n::Tr(UpscalingText(upscaling))));
                 }
                 if (result == GameMenuResult::FullScreen) {
@@ -1184,7 +1237,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
             }
             // Cheats the database sent while the page is open join the list.
             if (cheats && cheats->Poll()) {
-                Cheats::ClampCheatsPage(cheats_page, cheats->Catalog(), Cheats::CheatsLayout::VisibleRows);
+                Cheats::ClampCheatsPage(cheats_page, cheats->Catalog(), GameMenuSurface::CheatRows);
                 if (menu_surface) draw_menu();
             }
             if (config.memory_audit && tick % (10 * TICKS_PER_SECOND) == 0) {

@@ -354,6 +354,27 @@ void UiPainter::Icon(UiIcon icon, float x, float y, unsigned color, float size) 
         circle(16, 16, 12);
         line(16, 16, 16, 8); line(16, 16, 22, 19);
         break;
+    case UiIcon::Play:
+        line(10, 6, 26, 16); line(26, 16, 10, 26); line(10, 26, 10, 6);
+        break;
+    case UiIcon::Camera:
+        // A body with its viewfinder hump and the lens.
+        surface->DrawRoundedRectangle(D2D1::RoundedRect(
+            D2D1::RectF(x + 2, y + 9, x + 30, y + 28), 4, 4), brush.Get(), 2);
+        line(10, 9, 12, 5); line(12, 5, 20, 5); line(20, 5, 22, 9);
+        circle(16, 18, 5.5f);
+        break;
+    case UiIcon::Display:
+        // A screen on its stand.
+        surface->DrawRoundedRectangle(D2D1::RoundedRect(
+            D2D1::RectF(x + 2, y + 5, x + 30, y + 23), 3, 3), brush.Get(), 2);
+        line(16, 23, 16, 28); line(10, 28, 22, 28);
+        break;
+    case UiIcon::Exit:
+        // An open door frame and the arrow leaving through it.
+        line(18, 5, 6, 5); line(6, 5, 6, 27); line(6, 27, 18, 27);
+        line(13, 16, 29, 16); line(29, 16, 24, 11); line(29, 16, 24, 21);
+        break;
     }
 }
 

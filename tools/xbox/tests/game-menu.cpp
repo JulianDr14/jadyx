@@ -66,60 +66,96 @@ int main() {
         check(delivered);
     }
 
-    // Menu model, in Spanish.
+    // Quick menu, in Spanish: actions, and a page each for the controller and the display.
     I18n::SetUiLanguage(*I18n::FindUiLanguage(L"es"));
     GameMenu menu{{ConsoleControllerStyle::Auto, false, 0.12f}};
-    check(menu.Rows().size() == 7 && menu.SelectedItem() == GameMenu::Continue);
+    check(menu.CurrentPage() == GameMenu::Page::Quick && menu.PageTitle() == L"Menú rápido");
+    check(menu.Rows().size() == 4 && menu.SelectedItem() == GameMenu::Continue);
+    check(menu.Rows()[0].kind == GameMenuRow::Kind::Action && menu.Rows()[0].icon == UiIcon::Play);
     check(menu.Apply(MenuAction::Confirm) == GameMenuResult::Resume);
     check(menu.Apply(MenuAction::Back) == GameMenuResult::Resume);
     check(menu.Apply(MenuAction::Toggle) == GameMenuResult::Resume);
     check(menu.Apply(MenuAction::Up) == GameMenuResult::None && menu.SelectedItem() == GameMenu::Library);
     check(menu.Apply(MenuAction::Confirm) == GameMenuResult::Library);
     check(menu.Apply(MenuAction::Down) == GameMenuResult::None && menu.SelectedItem() == GameMenu::Continue);
+    // The controller's page: left does nothing on its row, A opens it, B comes back to the row.
     menu.Apply(MenuAction::Down);
+    check(menu.SelectedItem() == GameMenu::ControllerPage && menu.Rows()[1].kind == GameMenuRow::Kind::Page);
+    check(menu.Rows()[1].detail.find(L"12%") != std::wstring::npos);
+    check(menu.Apply(MenuAction::Left) == GameMenuResult::None && menu.CurrentPage() == GameMenu::Page::Quick);
+    check(menu.Apply(MenuAction::Confirm) == GameMenuResult::None);
+    check(menu.CurrentPage() == GameMenu::Page::Controller && menu.PageTitle() == L"Mando");
+    check(menu.Rows().size() == 3 && menu.SelectedItem() == GameMenu::Style && !menu.Rows()[0].icon);
     check(menu.Apply(MenuAction::Right) == GameMenuResult::SettingsChanged);
     check(menu.Settings().style == ConsoleControllerStyle::Pro);
     check(menu.Apply(MenuAction::Left) == GameMenuResult::SettingsChanged);
     check(menu.Apply(MenuAction::Left) == GameMenuResult::SettingsChanged);
     check(menu.Settings().style == ConsoleControllerStyle::RightJoycon);
-    check(menu.Rows()[1].label == L"La consola lo ve como");
-    check(menu.Rows()[1].kind == GameMenuRow::Kind::Choice);
-    check(menu.Rows()[1].value.find(L"Joy-Con derecho") != std::wstring::npos);
+    check(menu.Rows()[0].label == L"La consola lo ve como");
+    check(menu.Rows()[0].kind == GameMenuRow::Kind::Choice);
+    check(menu.Rows()[0].value.find(L"Joy-Con derecho") != std::wstring::npos);
     menu.Apply(MenuAction::Down);
     check(menu.Apply(MenuAction::Confirm) == GameMenuResult::SettingsChanged && menu.Settings().swap_face_buttons);
     menu.Apply(MenuAction::Down);
     check(menu.Apply(MenuAction::Right) == GameMenuResult::SettingsChanged && menu.Settings().deadzone > 0.15f);
     check(menu.Apply(MenuAction::Right) == GameMenuResult::SettingsChanged && menu.Settings().deadzone < 0.10f);
-    check(menu.Rows()[3].value == L"8%");
-    check(menu.Rows()[0].kind == GameMenuRow::Kind::Action && menu.Rows()[0].value.empty());
+    check(menu.Rows()[2].value == L"8%");
+    check(menu.Apply(MenuAction::Down) == GameMenuResult::None && menu.SelectedItem() == GameMenu::Style);
+    check(menu.Apply(MenuAction::Back) == GameMenuResult::None);
+    check(menu.CurrentPage() == GameMenu::Page::Quick && menu.SelectedItem() == GameMenu::ControllerPage);
+    check(menu.Rows()[1].detail.find(L"8%") != std::wstring::npos);
     // Presses the menu's own rows ignore.
     for (const auto action : {MenuAction::Alternate, MenuAction::Refresh, MenuAction::PreviousTab,
                               MenuAction::NextTab})
         check(menu.Apply(action) == GameMenuResult::None);
 
-    // A game with a title id offers its cheats, second, with how many are on.
-    GameMenu with_cheats{{ConsoleControllerStyle::Auto, false, 0.12f}, true};
+    // A game with a title id offers its cheats after the screenshot, with how many are on.
+    GameMenuSettings shot_settings{};
+    shot_settings.screenshot = true;
+    GameMenu with_cheats{shot_settings, true};
     with_cheats.SetCheatsOn(3);
-    check(with_cheats.Rows().size() == 8);
-    check(with_cheats.Rows()[1].kind == GameMenuRow::Kind::Page && with_cheats.Rows()[1].value == L"3 activos");
+    check(with_cheats.Rows().size() == 6);
+    check(with_cheats.Rows()[1].label == L"Captura de pantalla" && with_cheats.Rows()[1].icon == UiIcon::Camera);
+    check(with_cheats.Rows()[2].kind == GameMenuRow::Kind::Page && with_cheats.Rows()[2].detail == L"3 activos");
+    with_cheats.Apply(MenuAction::Down);
+    check(with_cheats.Apply(MenuAction::Confirm) == GameMenuResult::Screenshot);
+    with_cheats.SetScreenshotNote(L"Guardada: x.png");
+    check(with_cheats.Rows()[1].detail == L"Guardada: x.png");
     check(with_cheats.Apply(MenuAction::Down) == GameMenuResult::None && with_cheats.SelectedItem() == GameMenu::Cheats);
     check(with_cheats.Apply(MenuAction::Right) == GameMenuResult::None);
     check(with_cheats.Apply(MenuAction::Confirm) == GameMenuResult::Cheats);
     with_cheats.SetCheatsOn(1);
-    check(with_cheats.Rows()[1].value == L"1 activo");
+    check(with_cheats.Rows()[2].detail == L"1 activo");
+    // Mods only inform, after the cheats: no button does anything on them.
+    with_cheats.SetModsOn(2);
+    check(with_cheats.Rows().size() == 7 && with_cheats.Rows()[3].kind == GameMenuRow::Kind::Info);
+    with_cheats.Apply(MenuAction::Down);
+    check(with_cheats.SelectedItem() == GameMenu::Mods && with_cheats.Apply(MenuAction::Confirm) == GameMenuResult::None);
+    GameMenu mods_only{{}};
+    mods_only.SetModsOn(1);
+    check(mods_only.Rows().size() == 5);
+    mods_only.Apply(MenuAction::Down);
+    check(mods_only.SelectedItem() == GameMenu::Mods);
 
-    // PC: full screen sits above the display rows and "back to the library"; the Series menu never
-    // shows it.
+    // PC: full screen on the display page; the Series menu never shows it.
     GameMenu pc{{ConsoleControllerStyle::Auto, false, 0.12f, true, false}};
-    check(pc.Rows().size() == 8 && pc.Rows()[4].label == L"Pantalla completa" && pc.Rows()[4].value == L"No");
-    for (int i = 0; i < 4; ++i) pc.Apply(MenuAction::Up);
-    check(pc.SelectedItem() == GameMenu::FullScreen && pc.Selected() == 4);
+    while (pc.SelectedItem() != GameMenu::DisplayPage) pc.Apply(MenuAction::Down);
+    check(pc.Apply(MenuAction::Right) == GameMenuResult::None && pc.CurrentPage() == GameMenu::Page::Display);
+    check(pc.Rows().size() == 3 && pc.Rows()[2].label == L"Pantalla completa" && pc.Rows()[2].value == L"No");
+    pc.Apply(MenuAction::Up);
+    check(pc.SelectedItem() == GameMenu::FullScreen && pc.Selected() == 2);
     check(pc.Apply(MenuAction::Confirm) == GameMenuResult::FullScreen && pc.Settings().fullscreen);
     check(pc.Apply(MenuAction::Right) == GameMenuResult::FullScreen && !pc.Settings().fullscreen);
-    for (const auto& row : menu.Rows()) check(row.label != L"Pantalla completa");
+    GameMenu series{{}};
+    series.Apply(MenuAction::Down);
+    series.Apply(MenuAction::Down);
+    series.Apply(MenuAction::Confirm);
+    check(series.CurrentPage() == GameMenu::Page::Display && series.Rows().size() == 2);
+    for (const auto& row : series.Rows()) check(row.label != L"Pantalla completa");
     // The same menu follows the interface language.
     I18n::SetUiLanguage(*I18n::FindUiLanguage(L"en"));
-    check(pc.Rows()[0].label == L"Resume" && pc.Rows()[4].label == L"Full screen" && pc.Rows()[4].value == L"No");
+    check(pc.PageTitle() == L"Display" && pc.Rows()[2].label == L"Full screen" && pc.Rows()[2].value == L"No");
+    check(pc.Apply(MenuAction::Back) == GameMenuResult::None && pc.Rows()[0].label == L"Resume");
     // Both entry points start off and toggle the same persisted setting model.
     SystemPage system_page;
     check(!system_page.settings.show_performance_stats);
@@ -130,10 +166,14 @@ int main() {
     check(!system_page.settings.show_performance_stats);
     check(SystemPageLayout::RowTop + (SystemPage::RowCount - 1) * SystemPageLayout::RowStride +
           SystemPageLayout::RowHeight < SystemPageLayout::Notice);
+    const auto open_display = [&](GameMenu& m) {
+        while (m.SelectedItem() != GameMenu::DisplayPage) m.Apply(MenuAction::Down);
+        m.Apply(MenuAction::Confirm);
+    };
     GameMenu stats_menu{{}};
     check(!stats_menu.Settings().show_performance_stats);
-    stats_menu.Apply(MenuAction::Up);
-    stats_menu.Apply(MenuAction::Up);
+    open_display(stats_menu);
+    stats_menu.Apply(MenuAction::Down);
     check(stats_menu.SelectedItem() == GameMenu::PerformanceStats);
     check(stats_menu.Apply(MenuAction::Confirm) == GameMenuResult::PerformanceStatsChanged);
     check(stats_menu.Settings().show_performance_stats);
@@ -143,10 +183,10 @@ int main() {
     check(stats_menu.Apply(MenuAction::Right) == GameMenuResult::PerformanceStatsChanged);
     check(!stats_menu.Settings().show_performance_stats);
 
-    // Image upscaling: above the statistics, a choice that steps both ways and wraps around.
+    // Image upscaling: first on the display page, a choice that steps both ways and wraps around.
     I18n::SetUiLanguage(*I18n::FindUiLanguage(L"es"));
     GameMenu scaling_menu{{}};
-    for (int i = 0; i < 3; ++i) scaling_menu.Apply(MenuAction::Up);
+    open_display(scaling_menu);
     check(scaling_menu.SelectedItem() == GameMenu::ImageUpscaling);
     const auto scaling_row = [&] { return scaling_menu.Rows()[scaling_menu.Selected()]; };
     check(scaling_row().label == L"Escalado de imagen" && scaling_row().value == L"Bilineal");
@@ -188,5 +228,6 @@ int main() {
     I18n::SetUiLanguage(*I18n::FindUiLanguage(L"en"));
     check(hunt.Rows()[hunt.Selected()].label == L"Capture performance and resume");
     for (const auto& row : normal_rows) check(row.label != L"Capture performance and resume");
-    std::puts("game menu: controller combo, navigation, settings, upscaling, cheats and opt-in capture PASS");
+    std::puts("game menu: controller combo, pages, navigation, settings, upscaling, cheats, screenshot and "
+              "opt-in capture PASS");
 }

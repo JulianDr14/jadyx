@@ -25,6 +25,11 @@ struct CheatsView {
     bool running{};           ///< In the in-game menu: changes apply on resume.
 };
 
+/// A category's name, as its tab shows it.
+std::wstring_view CategoryName(CheatCategory category);
+/// Where the cheats came from, or why there are none from the database.
+std::wstring_view SourceText(CheatSource source);
+
 /// Draws the page in the CheatsLayout panel, offset by (x, y).
 void DrawCheatsPanel(UiPainter& paint, const CheatsView& view, float x = 0, float y = 0);
 

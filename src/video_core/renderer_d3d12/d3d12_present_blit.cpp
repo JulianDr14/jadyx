@@ -181,6 +181,9 @@ void RendererD3D12::RecordComposite(PresentFrame& frame, const CompositeSource& 
         BeginComposite(cmd, frame);
         RecordBlit(cmd, source, source_table, sampler_table);
     }
+    if (bare_composite) {
+        return;
+    }
     // After the scaling, as ffx_fsr1.h asks of the UI.
     DrawShaderIndicator(cmd, frame.rtv);
     DrawPerformanceOverlay(cmd, frame.rtv);

@@ -295,6 +295,13 @@ void HideGameMenu(VideoCore::RendererBase& renderer) {
     }
 }
 
+MenuImage CaptureGameFrame(VideoCore::RendererBase& renderer) {
+    if (Settings::values.renderer_backend.GetValue() != Settings::RendererBackend::Direct3D12) {
+        return {};
+    }
+    return static_cast<RendererD3D12&>(renderer).CaptureFrame();
+}
+
 void ShowCpuLoadProgress(VideoCore::RendererBase& renderer, size_t done, size_t total) {
     if (Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Direct3D12) {
         static_cast<RendererD3D12&>(renderer).ShowLoadProgress(done, total, "CPU JIT");
@@ -366,6 +373,39 @@ void RendererD3D12::ShowGameMenu(std::optional<MenuImage> menu) {
         Present(std::move(frame));
     } catch (const std::exception& e) {
         LOG_ERROR(Render, "D3D12: game menu not shown: {}", e.what());
+    }
+}
+
+MenuImage RendererD3D12::CaptureFrame() {
+    if (present_failed || !blit_ready || !last_framebuffer) {
+        return {};
+    }
+    try {
+        // A frame of the ring, composited and read back but given back unpresented: the screen
+        // keeps what it shows.
+        FrameLease frame = present_manager.AcquireFrame();
+        bare_composite = true;
+        const bool drawn = CompositeAccelerated(*last_framebuffer, *frame);
+        bare_composite = false;
+        if (!drawn) {
+            return {};
+        }
+        StagingBufferRef readback = RecordFrameReadback(*frame);
+        scheduler.Finish();
+        MenuImage image{swapchain.Width(), swapchain.Height(), {}};
+        const size_t row_bytes = static_cast<size_t>(image.width) * 4;
+        image.pixels.resize(row_bytes * image.height);
+        for (u32 y = 0; y < image.height; ++y) {
+            std::memcpy(image.pixels.data() + y * row_bytes,
+                        readback.mapped_span.data() + static_cast<size_t>(y) * footprint.Footprint.RowPitch,
+                        row_bytes);
+        }
+        staging_pool.FreeDeferred(readback);
+        return image;
+    } catch (const std::exception& e) {
+        bare_composite = false;
+        LOG_ERROR(Render, "D3D12: game frame not captured: {}", e.what());
+        return {};
     }
 }
 

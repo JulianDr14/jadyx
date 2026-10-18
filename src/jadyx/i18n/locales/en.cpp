@@ -549,5 +549,16 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::ImportTitle, L"Import title"},
     {Text::ImportTitleHint, L"File manager"},
     {Text::Import, L"Import"},
+    {Text::MenuQuick, L"Quick menu"},
+    {Text::MenuPaused, L"PAUSED"},
+    {Text::MenuSession, L"Session {0}"},
+    {Text::MenuScreenshot, L"Screenshot"},
+    {Text::MenuScreenshotWhere, L"PNG in LocalState\\jadyx\\captures"},
+    {Text::MenuScreenshotSaved, L"Saved: {0}"},
+    {Text::MenuScreenshotFailed, L"The screenshot could not be saved."},
+    {Text::MenuController, L"Controller"},
+    {Text::MenuDisplay, L"Display"},
+    {Text::MenuStatsShort, L"Statistics"},
+    {Text::MenuBackTo, L"Back · {0}"},
 });
 } // namespace Jadyx::I18n
