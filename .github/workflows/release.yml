@@ -130,7 +130,7 @@ jobs:
         run: |
           version="${TAG#v}"
           title="Jadyx $version"
-          if [ "${version%%.*}" = "0" ]; then title="$title Alpha"; fi
+          if [ "${version%%.*}" = "0" ]; then title="$title Beta"; fi
           flags=(--latest)
           if [ "$PRERELEASE" = "true" ]; then flags=(--prerelease --latest=false); fi
           gh release create "$TAG" out/* --title "$title" --notes-file "$RUNNER_TEMP/notes.md" \
