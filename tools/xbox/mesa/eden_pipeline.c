@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+ * SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
  * SPDX-License-Identifier: MIT
  *
  * Linked-pipeline variant of spirv_to_dxil() for Jadyx. build-spirv-to-dxil.ps1

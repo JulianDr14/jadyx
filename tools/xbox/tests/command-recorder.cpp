@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // CommandRecorder gate (the D3D12 command list recording thread): commands and their arrays

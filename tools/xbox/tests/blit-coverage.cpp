@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The rule that lets a Fermi2D blit skip uploading its destination: the blit must rewrite every
 // texel of the target. Every texel it leaves alone would show stale contents instead of guest data.

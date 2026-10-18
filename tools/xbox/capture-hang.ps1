@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Capture thread stacks/metadata of a live, stuck PC session. No full guest memory dump.
 param([int] $TargetProcessId = 0,

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+  SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
   SPDX-License-Identifier: GPL-3.0-or-later
 
   Package manifest for the Phase-2 / GATE-2 headless boot appx (src/jadyx).

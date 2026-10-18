@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <unordered_map>
 #include "core/hle/kernel/pulse_wait_graph.h"

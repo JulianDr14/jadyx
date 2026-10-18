@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+ * SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
  * SPDX-License-Identifier: MIT
  *
  * Linked-pipeline entry point Jadyx adds to Mesa's spirv_to_dxil.dll

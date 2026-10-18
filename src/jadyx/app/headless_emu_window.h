@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Minimal, SDL-free, headless EmuWindow for the Xbox/UWP headless boot (Phase 2, toward GATE 2).

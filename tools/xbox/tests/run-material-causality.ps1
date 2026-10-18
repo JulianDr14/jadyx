@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 $ErrorActionPreference = 'Stop'
 $causalGate = New-Item -ItemType Directory -Force build-uwp/material-causality-gate

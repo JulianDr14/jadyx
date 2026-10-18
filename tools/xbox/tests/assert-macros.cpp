@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Behaviour of the assert macros (common/assert.h): single evaluation, messages, expression use,

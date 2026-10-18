@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Standalone host-key/single-flight gate and D3D12 microbenchmark; no game data needed.
 $ErrorActionPreference = 'Stop'

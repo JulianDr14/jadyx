@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Malformed-input gate for the process coordinator's sections (core/pulse_process_state.h): every
 // truncation, every single-byte corruption and every hand-made inconsistency must either decode

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Logs appended across launches stay bounded: past the cap the log becomes its .old copy and a new
 // file starts; below it nothing moves.

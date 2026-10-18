@@ -1,4 +1,4 @@
-/* SPDX-FileCopyrightText: Copyright 2026 JulianDr14 */
+/* SPDX-FileCopyrightText: Copyright 2026 Jadyx Project */
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 /* libarchive's config.h for MSVC on Windows 10 (desktop and UWP alike). It is what libarchive's own

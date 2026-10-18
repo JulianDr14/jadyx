@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Project captured geometry using its actual vertex IR position slice.
 

@@ -1,5 +1,5 @@
 @echo off
-REM SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+REM SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 REM SPDX-License-Identifier: GPL-3.0-or-later
 REM Desktop SDL frontend, same fork/core, separate from the Store-CRT Xbox build.
 setlocal

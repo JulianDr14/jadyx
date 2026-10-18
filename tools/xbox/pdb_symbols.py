@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Resolves jadyx.exe RVAs to functions and source lines with the build's PDB, through the
 Windows SDK's dbghelp.dll. Shared by resolve-rva.py and profile-report.py."""

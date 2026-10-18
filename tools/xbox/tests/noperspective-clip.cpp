@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Native differential probe, no guest shader or game data embedded.
 // Input: float4 clip position + float4 affine screen attributes per triangle vertex.

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Same-fork desktop Vulkan comparison; gameplay ends only when the user closes it.
 param([string] $Game = 'game.nsp', [ValidateRange(1, 1048576)] [int] $MemoryLimitMiB = 5120)

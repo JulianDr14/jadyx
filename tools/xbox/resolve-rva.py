@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Resolves the jadyx.exe+0xRVA (or bare +0xRVA) frames of the diag (crash stacks, alloc watch) to functions and
 source lines with the build's PDB, through the Windows SDK's dbghelp.dll.

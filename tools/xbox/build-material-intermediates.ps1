@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 $ErrorActionPreference='Stop'
 $probeDxc=Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter dxc.exe -Recurse | Where-Object {$_.Directory.Name -eq 'x64'} | Sort-Object FullName -Descending | Select-Object -First 1

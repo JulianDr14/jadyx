@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Bottleneck report from a hunt capture ("Capture performance" in the game menu of a package
 built with package-appx.ps1 -Hunt, or F8 with developer hotkeys).

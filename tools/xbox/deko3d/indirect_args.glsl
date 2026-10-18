@@ -1,5 +1,5 @@
 #version 460
-// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Example 11 (tools/xbox/deko3d/Example11_EdenIndirect.cpp): writes the arguments of the indirect

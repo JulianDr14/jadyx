@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Standalone gates for CB_DATA runs, blit destination discards and log rotation; no game data.
 $ErrorActionPreference = 'Stop'

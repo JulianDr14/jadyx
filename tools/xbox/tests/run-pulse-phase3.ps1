@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Run from the repo root after building the changed UWP objects. These are component gates;
 # they do not certify DSP/GPU/kernel restoration or a persistent homebrew session.

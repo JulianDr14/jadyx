@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Creates a >4GiB NTFS sparse fixture in the app's test folder, then exercises
 # both UWP readers and persisted permission across two process launches.

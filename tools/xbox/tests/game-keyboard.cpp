@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Build with src/jadyx/i18n/localization.cpp and src/jadyx/i18n/locales/*.cpp.
 #include <cstdio>

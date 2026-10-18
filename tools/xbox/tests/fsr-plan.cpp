@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Build (Developer Command Prompt, from the repo root):
 //   cl /std:c++20 /EHsc /Zc:preprocessor /utf-8 /W4 /Isrc /Iexternals\FidelityFX-FSR\ffx-fsr

@@ -1,5 +1,5 @@
 @echo off
-REM SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+REM SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 REM SPDX-License-Identifier: GPL-3.0-or-later
 REM
 REM Sets up a UWP/Store-CRT build environment for the uwp-x64 preset, then runs whatever you pass

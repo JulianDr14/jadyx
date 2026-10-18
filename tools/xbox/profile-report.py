@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Turns the in-process sampling profile (boot.cfg "profile=1", LocalState/jadyx/log/jadyx_profile.txt)
 into a bottleneck report, with the build's PDB.

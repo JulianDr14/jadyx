@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Builds Mesa's spirv_to_dxil.dll as a UWP (Store CRT, AppContainer) DLL for the D3D12 renderer's

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 // cl /nologo /std:c++20 /EHsc /DNOMINMAX /I src tools\xbox\tests\hunt-capture.cpp
 #include "video_core/renderer_d3d12/diagnostics/hunt_capture.h"

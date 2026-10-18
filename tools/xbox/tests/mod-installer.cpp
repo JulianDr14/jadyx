@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Build with src/jadyx/mods/{mod_installer,mod_archive,mod_layout,mod_manifest}.cpp, libarchive's
 // reader (externals/libarchive) and nlohmann_json's include folder.

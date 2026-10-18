@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Standalone gate and microbenchmark of the D3D12 index rewrite cache; no game data needed.
 $ErrorActionPreference = 'Stop'

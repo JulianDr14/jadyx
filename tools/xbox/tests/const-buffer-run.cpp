@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 JulianDr14
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 // CB_DATA runs: DmaPusher's word-by-word loop and the same loop with ConstBufferRunLength must
 // leave identical registers, shadow RAM, constant buffer memory and DMA state, for every packet

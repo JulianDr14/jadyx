@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Execute the straight-line regression modules, poisoning GS outputs at EmitVertex.
 This is a deliberately small semantic oracle, not a general SPIR-V implementation.
