@@ -23,6 +23,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/perf_counters.h"
 #include "video_core/frame_trace.h"
+#include "video_core/texture_cache/blit_coverage.h"
 #include "video_core/texture_cache/gc_policy.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/samples_helper.h"
@@ -872,7 +873,11 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
     const ImageId src_id = images.src_id;
 
     PrepareImage(src_id, false, false);
-    PrepareImage(dst_id, true, false);
+    const bool discard_dst = BlitOverwritesDestination(images, src, copy);
+    // What the destination was before the skipped upload, to return to if the blit draws nothing.
+    const ImageFlagBits dst_flags = slot_images[dst_id].flags;
+    const u64 dst_tick = slot_images[dst_id].modification_tick;
+    PrepareImage(dst_id, true, discard_dst);
 
     Image& dst_image = slot_images[dst_id];
     Image& src_image = slot_images[src_id];
@@ -951,8 +956,28 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
         // Provide a framebuffer in case it's necessary
         ImageView& dst_view = slot_image_views[dst_view_id];
         ImageView& src_view = slot_image_views[src_view_id];
-        runtime.BlitImage(dst_framebuffer, dst_view, src_view, dst_region, src_region, copy.filter,
-                          copy.operation);
+        if constexpr (requires(const Image& image) {
+                          runtime.BlitCanReplaceDestination(image, image, images.dst_format,
+                                                            images.src_format);
+                      }) {
+            static_assert(std::is_same_v<decltype(runtime.BlitImage(
+                                             dst_framebuffer, dst_view, src_view, dst_region,
+                                             src_region, copy.filter, copy.operation)),
+                                         bool>,
+                          "a backend that lets blits replace their destination reports each one");
+            const bool drawn = runtime.BlitImage(dst_framebuffer, dst_view, src_view, dst_region,
+                                                 src_region, copy.filter, copy.operation);
+            if (discard_dst && !drawn) {
+                RestoreBlitDestination(dst_id, dst_flags, dst_tick);
+            } else if (discard_dst && True(dst_flags & ImageFlagBits::CpuModified)) {
+                VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::BlitUploadsSkipped, 1);
+                VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::BlitUploadBytesSkipped,
+                                             slot_images[dst_id].guest_size_bytes);
+            }
+        } else {
+            runtime.BlitImage(dst_framebuffer, dst_view, src_view, dst_region, src_region,
+                              copy.filter, copy.operation);
+        }
     }
     return true;
 }
@@ -1976,6 +2001,58 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         RegisterImage(new_image_id);
     }
     return new_image_id;
+}
+
+template <class P>
+bool TextureCache<P>::BlitOverwritesDestination(const BlitImages& images,
+                                                const Tegra::Engines::Fermi2D::Surface& src,
+                                                const Tegra::Engines::Fermi2D::Config& copy) {
+    if constexpr (requires(const Image& image) {
+                      runtime.BlitCanReplaceDestination(image, image, images.dst_format,
+                                                        images.src_format);
+                  }) {
+        if (images.dst_id == images.src_id) {
+            return false;
+        }
+        const Image& dst_image = slot_images[images.dst_id];
+        const Image& src_image = slot_images[images.src_id];
+        // One plain subresource with nothing aliasing it: the blit rectangle is all there is.
+        // Equal scales keep BlitImage from rescaling, so the rectangle reaches the backend as is.
+        if (dst_image.info.type != ImageType::e2D || dst_image.info.resources.levels != 1 ||
+            dst_image.info.resources.layers != 1 || !dst_image.aliased_images.empty() ||
+            True(dst_image.flags & ImageFlagBits::Rescaled) !=
+                True(src_image.flags & ImageFlagBits::Rescaled)) {
+            return false;
+        }
+        const std::optional src_base = src_image.TryFindBase(src.Address());
+        if (!src_base) {
+            return false;
+        }
+        const u32 src_width = (std::max)(1U, src_image.info.size.width >> src_base->level);
+        const u32 src_height = (std::max)(1U, src_image.info.size.height >> src_base->level);
+        const BlitRect src_rect{copy.src_x0, copy.src_y0, copy.src_x1, copy.src_y1};
+        const BlitRect dst_rect{copy.dst_x0, copy.dst_y0, copy.dst_x1, copy.dst_y1};
+        return BlitRewritesTarget(src_rect, dst_rect, src_width, src_height,
+                                  dst_image.info.size.width, dst_image.info.size.height) &&
+               runtime.BlitCanReplaceDestination(dst_image, src_image, images.dst_format,
+                                                 images.src_format);
+    } else {
+        return false;
+    }
+}
+
+template <class P>
+void TextureCache<P>::RestoreBlitDestination(ImageId image_id, ImageFlagBits flags, u64 tick) {
+    // The backend drew nothing, so guest memory still holds what the skipped upload would have
+    // sent: put back the modified state and the page tracking that goes with it.
+    Image& image = slot_images[image_id];
+    if (False(flags & ImageFlagBits::Tracked) && True(image.flags & ImageFlagBits::Tracked)) {
+        UntrackImage(image, image_id);
+    }
+    constexpr ImageFlagBits contents = ImageFlagBits::CpuModified | ImageFlagBits::GpuModified;
+    image.flags = (image.flags & ~contents) | (flags & contents);
+    image.modification_tick = tick;
+    VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::BlitDiscardsRestored, 1);
 }
 
 template <class P>

@@ -362,6 +362,16 @@ private:
         const Tegra::Engines::Fermi2D::Surface& dst, const Tegra::Engines::Fermi2D::Surface& src,
         const Tegra::Engines::Fermi2D::Config& copy);
 
+    /// True when the blit rewrites the whole destination, which then needs no upload. Only
+    /// backends that report whether each blit drew (Runtime::BlitCanReplaceDestination and a bool
+    /// BlitImage) take part.
+    [[nodiscard]] bool BlitOverwritesDestination(const BlitImages& images,
+                                                 const Tegra::Engines::Fermi2D::Surface& src,
+                                                 const Tegra::Engines::Fermi2D::Config& copy);
+
+    /// Undoes BlitOverwritesDestination's skipped upload after a blit that drew nothing.
+    void RestoreBlitDestination(ImageId image_id, ImageFlagBits flags, u64 tick);
+
     /// Find or create a sampler from a guest descriptor sampler
     [[nodiscard]] SamplerId FindSampler(const TSCEntry& config, bool compute);
 

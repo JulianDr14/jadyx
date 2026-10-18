@@ -261,12 +261,12 @@ void BlitImageHelper::Begin(ID3D12PipelineState* pipeline, const Target& target,
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 }
 
-void BlitImageHelper::Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
+bool BlitImageHelper::Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
                            const Sampling& sampler, const VideoCommon::Region2D& dst_region,
                            const VideoCommon::Region2D& src_region,
                            const VideoCommon::Extent2D& src_size) {
     if (!available || src_size.width == 0 || src_size.height == 0) {
-        return;
+        return false;
     }
     // As Vulkan's BindBlitState: the destination is the region's bounding box (a mirrored
     // destination is not mirrored); a mirrored source is, through a negative scale.
@@ -277,11 +277,11 @@ void BlitImageHelper::Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HA
         .bottom = std::max(dst_region.start.y, dst_region.end.y),
     };
     if (rect.right <= rect.left || rect.bottom <= rect.top) {
-        return;
+        return false;
     }
     ID3D12PipelineState* const pipeline = Pipeline(kind, dst, 0, false);
     if (!pipeline) {
-        return;
+        return false;
     }
     // Descriptors first: a full ring or sampler heap flushes the command list.
     const D3D12_GPU_DESCRIPTOR_HANDLE srv_table = descriptor_ring.Upload({&src_srv, 1});
@@ -305,20 +305,21 @@ void BlitImageHelper::Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HA
     cmd->SetGraphicsRootDescriptorTable(SRV_TABLE_PARAM, srv_table);
     cmd->SetGraphicsRootDescriptorTable(SAMPLER_TABLE_PARAM, sampler_table);
     cmd->DrawInstanced(3, 1, 0, 0);
+    return true;
 }
 
-void BlitImageHelper::BlitColor(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
+bool BlitImageHelper::BlitColor(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
                                 const Sampling& sampler, const VideoCommon::Region2D& dst_region,
                                 const VideoCommon::Region2D& src_region,
                                 const VideoCommon::Extent2D& src_size) {
-    Blit(Kind::BlitColor, dst, src_srv, sampler, dst_region, src_region, src_size);
+    return Blit(Kind::BlitColor, dst, src_srv, sampler, dst_region, src_region, src_size);
 }
 
-void BlitImageHelper::BlitDepth(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
+bool BlitImageHelper::BlitDepth(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
                                 const VideoCommon::Region2D& dst_region,
                                 const VideoCommon::Region2D& src_region,
                                 const VideoCommon::Extent2D& src_size) {
-    Blit(Kind::BlitDepth, dst, src_srv, nearest_sampler, dst_region, src_region, src_size);
+    return Blit(Kind::BlitDepth, dst, src_srv, nearest_sampler, dst_region, src_region, src_size);
 }
 
 void BlitImageHelper::ClearColor(const Target& dst, u8 color_mask, const std::array<f32, 4>& color,

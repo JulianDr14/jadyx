@@ -126,12 +126,13 @@ public:
     }
 
     /// Draws src_region of a 2D color SRV (src_size texels) into dst_region of a color target.
-    void BlitColor(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv, const Sampling& sampler,
+    /// Every blit returns whether it drew: false leaves the target untouched.
+    bool BlitColor(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv, const Sampling& sampler,
                    const VideoCommon::Region2D& dst_region,
                    const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size);
 
     /// Same for depth: the source's depth (its SRV's red channel) becomes the target's depth.
-    void BlitDepth(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
+    bool BlitDepth(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
                    const VideoCommon::Region2D& dst_region,
                    const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size);
 
@@ -187,7 +188,7 @@ private:
     /// Binds the root signature, the PSO, the target and the viewport and scissor of rect.
     void Begin(ID3D12PipelineState* pipeline, const Target& target, bool is_depth,
                const D3D12_RECT& rect);
-    void Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
+    bool Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
               const Sampling& sampler, const VideoCommon::Region2D& dst_region,
               const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size);
     /// Builds the pack root signature and both compute pipelines; throws on failure.

@@ -513,7 +513,18 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src, std::span<con
 void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView&, ImageView&) {
     LOG_WARNING(Render, "D3D12: shader texture conversion is deferred to phase 5");
 }
-void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src,
+bool TextureCacheRuntime::BlitCanReplaceDestination(const Image& dst, const Image& src,
+                                                    PixelFormat dst_format,
+                                                    PixelFormat src_format) const noexcept {
+    // BlitImage either copies, draws the whole region or skips. Only a depth-stencil target is
+    // drawn in part (depth without stencil), and its stencil must keep the guest's bytes.
+    const SurfaceType dst_type = VideoCore::Surface::GetFormatType(dst_format);
+    const SurfaceType src_type = VideoCore::Surface::GetFormatType(src_format);
+    return &dst != &src && dst.info.num_samples == 1 && src.info.num_samples == 1 &&
+           (dst_type == SurfaceType::ColorTexture || dst_type == SurfaceType::Depth) &&
+           (src_type == SurfaceType::ColorTexture) == (dst_type == SurfaceType::ColorTexture);
+}
+bool TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src,
                                     const Region2D& dst_region, const Region2D& src_region,
                                     Tegra::Engines::Fermi2D::Filter filter,
                                     Tegra::Engines::Fermi2D::Operation) {
@@ -521,15 +532,15 @@ void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
     Image* const dst_image = dst.SourceImage();
     Image* const src_image = src.SourceImage();
     if (!dst_image || !src_image || !dst_image->Handle() || !src_image->Handle()) {
-        return;
+        return false;
     }
     if (dst_image == src_image) {
         BlitWithinImage(dst, src, dst_region, src_region, filter);
-        return;
+        return false;
     }
     if (dst_image->info.num_samples > 1 || src_image->info.num_samples > 1) {
         WarnOnce(logged_msaa_blit, "MSAA blits and resolves need phase 5; skipped");
-        return;
+        return false;
     }
     const SurfaceType src_type = VideoCore::Surface::GetFormatType(src.format);
     const SurfaceType dst_type = VideoCore::Surface::GetFormatType(dst.format);
@@ -537,7 +548,7 @@ void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
     if (src_color != (dst_type == SurfaceType::ColorTexture)) {
         WarnOnce(logged_mixed_blit, "blit between color and depth ({} -> {}) skipped", src.format,
                  dst.format);
-        return;
+        return false;
     }
     const s32 dst_width = dst_region.end.x - dst_region.start.x;
     const s32 dst_height = dst_region.end.y - dst_region.start.y;
@@ -548,7 +559,7 @@ void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
         if (!Image::AreCopyCompatible(*src_image, *dst_image)) {
             WarnOnce(logged_decoded_copy, "copy between a host-decoded and a compressed image ({} "
                      "-> {}) skipped", src.format, dst.format);
-            return;
+            return false;
         }
         // An unscaled copy: exact for every format, integers included.
         src_image->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -566,11 +577,11 @@ void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
         scheduler.CommandList()->CopyTextureRegion(&target, static_cast<u32>(dst_region.start.x),
                                                    static_cast<u32>(dst_region.start.y), 0,
                                                    &source, &box);
-        return;
+        return true;
     }
     if (!blit_helper || !blit_helper->IsAvailable()) {
         WarnOnce(logged_no_blit_helper, "scaled blits need the shader path; skipped");
-        return;
+        return false;
     }
     const VideoCommon::Extent2D src_size{src.size.width, src.size.height};
     if (src_color) {
@@ -579,28 +590,27 @@ void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
             // The blit shader samples and writes floats.
             WarnOnce(logged_integer_blit, "scaled blits of integer formats ({} -> {}) skipped",
                      src.format, dst.format);
-            return;
+            return false;
         }
         if (!dst.RenderTarget().ptr) {
             WarnOnce(logged_blit_target, "blit target format {} cannot be rendered to; skipped",
                      dst.format);
-            return;
+            return false;
         }
         src_image->Transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         src.PrepareRead(Shader::TextureType::Color2D);
         dst.PrepareRender();
         const bool linear = filter == Tegra::Engines::Fermi2D::Filter::Bilinear;
-        blit_helper->BlitColor({dst.RenderTarget(), Format(dst.format).view, 1},
-                               src.Handle(Shader::TextureType::Color2D),
-                               linear ? blit_helper->LinearSampler()
-                                      : blit_helper->NearestSampler(),
-                               dst_region, src_region, src_size);
-        return;
+        return blit_helper->BlitColor({dst.RenderTarget(), Format(dst.format).view, 1},
+                                      src.Handle(Shader::TextureType::Color2D),
+                                      linear ? blit_helper->LinearSampler()
+                                             : blit_helper->NearestSampler(),
+                                      dst_region, src_region, src_size);
     }
     if (!dst.DepthStencil().ptr) {
         WarnOnce(logged_blit_target, "blit target format {} cannot be rendered to; skipped",
                  dst.format);
-        return;
+        return false;
     }
     if (dst_type == SurfaceType::DepthStencil) {
         // Writing stencil from a shader needs SV_StencilRef, which the Series lacks.
@@ -608,9 +618,10 @@ void TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
     }
     src_image->Transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     dst_image->Transition(D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    blit_helper->BlitDepth({dst.DepthStencil(), Format(dst.format).dsv, 1},
-                           src.Handle(Shader::TextureType::Color2D), dst_region, src_region,
-                           src_size);
+    const bool drawn = blit_helper->BlitDepth({dst.DepthStencil(), Format(dst.format).dsv, 1},
+                                              src.Handle(Shader::TextureType::Color2D),
+                                              dst_region, src_region, src_size);
+    return drawn && dst_type == SurfaceType::Depth;
 }
 void TextureCacheRuntime::BlitWithinImage(ImageView& dst, ImageView& src,
                                           const Region2D& dst_region, const Region2D& src_region,

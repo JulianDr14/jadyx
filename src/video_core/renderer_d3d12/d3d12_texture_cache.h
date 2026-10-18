@@ -132,8 +132,17 @@ public:
     void ReinterpretImage(Image& dst, Image& src,
                           std::span<const VideoCommon::ImageCopy> copies);
     void ConvertImage(Framebuffer*, ImageView&, ImageView&);
-    void BlitImage(Framebuffer*, ImageView&, ImageView&, const Region2D&, const Region2D&,
+    /// Returns whether it drew the whole destination region; false when it drew nothing or,
+    /// for depth-stencil targets, only depth.
+    bool BlitImage(Framebuffer*, ImageView&, ImageView&, const Region2D&, const Region2D&,
                    Tegra::Engines::Fermi2D::Filter, Tegra::Engines::Fermi2D::Operation);
+    /// True when every path BlitImage may take between these images, seen through views of these
+    /// formats, either rewrites the destination region whole or draws nothing at all. The texture
+    /// cache then skips uploading a destination the blit covers, and puts the upload back when
+    /// BlitImage reports it drew nothing.
+    bool BlitCanReplaceDestination(const Image& dst, const Image& src,
+                                   VideoCore::Surface::PixelFormat dst_format,
+                                   VideoCore::Surface::PixelFormat src_format) const noexcept;
 
     bool CanAccelerateImageUpload(Image& image) const noexcept;
     bool CanUploadMSAA() const noexcept { return false; }
