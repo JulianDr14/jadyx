@@ -11,6 +11,7 @@
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/buffer_cache/memory_tracker_base.h"
 #include "video_core/buffer_cache/usage_tracker.h"
+#include "video_core/renderer_d3d12/d3d12_index_rewrite_cache.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
 #include "video_core/renderer_d3d12/d3d12_staging_buffer_pool.h"
 #include "video_core/renderer_d3d12/d3d12_transfer_buffer_pool.h"
@@ -55,8 +56,16 @@ public:
     void Transition(D3D12_RESOURCE_STATES next);
     [[nodiscard]] D3D12_RESOURCE_STATES State() const noexcept { return state; }
 
+    /// Unique among the buffers of a runtime, never 0 (IndexRewriteCache keys).
+    [[nodiscard]] u64 Id() const noexcept { return id; }
+    /// Bumped by every write to the buffer: uploads, copies and UAV use (Transition to a write
+    /// state), so an unchanged generation means unchanged contents.
+    [[nodiscard]] u64 Generation() const noexcept { return generation; }
+
 private:
     Scheduler* scheduler{};
+    u64 id{};
+    u64 generation{};
     ComPtr<ID3D12Resource> buffer;
     D3D12_GPU_VIRTUAL_ADDRESS address{};
     VideoCommon::UsageTracker tracker;
@@ -173,7 +182,7 @@ public:
 
 private:
     /// Uploads indices to staging memory and binds them as a 32-bit or 16-bit index buffer.
-    void BindRewrittenIndices(std::span<const u32> indices, bool wide);
+    void BindRewrittenIndices(IndexRewriteCache::Entry& entry);
     ComPtr<ID3D12Resource> CreateDefaultBuffer(u64 size);
     void Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src, ID3D12Resource* src_raw,
               std::span<const VideoCommon::BufferCopy> copies);
@@ -195,6 +204,8 @@ private:
     u32 pending_vertex_mask{};
     std::optional<u32> rewritten_count;
     std::vector<u32> rewrite_scratch;
+    IndexRewriteCache rewrite_cache;
+    u64 next_buffer_id{1};
     std::vector<u8> guest_indices;
     bool logged_rewrite{};
     bool logged_inline_rewrite{};

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
 #include <utility>
@@ -128,11 +129,12 @@ u32 IndexSize(IndexFormat format) {
 
 Buffer::Buffer(BufferCacheRuntime& runtime, VideoCommon::NullBufferParams params)
     : VideoCommon::BufferBase(params), scheduler{&runtime.scheduler},
-      buffer{runtime.CreateDefaultBuffer(4)}, address{buffer ? buffer->GetGPUVirtualAddress() : 0},
+      id{runtime.next_buffer_id++}, buffer{runtime.CreateDefaultBuffer(4)}, address{buffer ? buffer->GetGPUVirtualAddress() : 0},
       tracker{4096}, charge{Common::MemoryAccount::BufferCache, 4} {}
 
 Buffer::Buffer(BufferCacheRuntime& runtime, VAddr cpu_addr, u64 size_bytes, bool)
     : VideoCommon::BufferBase(cpu_addr, size_bytes), scheduler{&runtime.scheduler},
+      id{runtime.next_buffer_id++},
       // Whole 256-byte blocks: a guest cbuf ending with the buffer still fits a CBV.
       buffer{runtime.CreateDefaultBuffer(
           Common::AlignUp(size_bytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT))},
@@ -153,6 +155,8 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
         }
         static_cast<VideoCommon::BufferBase&>(*this) = std::move(other);
         scheduler = other.scheduler;
+        id = other.id;
+        generation = other.generation;
         buffer = std::move(other.buffer);
         address = std::exchange(other.address, 0);
         tracker = std::move(other.tracker);
@@ -166,6 +170,9 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
 void Buffer::Transition(D3D12_RESOURCE_STATES next) {
     if (!scheduler || !buffer) {
         return;
+    }
+    if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS || next == D3D12_RESOURCE_STATE_COPY_DEST) {
+        ++generation;
     }
     const u64 tick = scheduler->CurrentTick();
     const D3D12_RESOURCE_STATES current = state_tick == tick ? state : D3D12_RESOURCE_STATE_COMMON;
@@ -356,7 +363,8 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
         return;
     }
     // D3D12 has neither these topologies nor 8-bit indices: rewrite the guest's indices on the
-    // CPU from guest memory (the Vulkan backend uses compute passes instead).
+    // CPU from guest memory (the Vulkan backend uses compute passes instead), remembering the
+    // rewrite: most draws repeat every frame with the same indices.
     // TODO: inline index draws (inline_index_draw_indexes) never reach guest memory.
     if (!logged_rewrite) {
         LOG_INFO(Render, "D3D12: rewriting indexed draws on the CPU (topology {}, format {})",
@@ -364,57 +372,92 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
         logged_rewrite = true;
     }
     const u32 index_size = IndexSize(format);
+    const u64 byte_offset = offset + static_cast<u64>(first) * index_size;
+    const IndexRewriteCache::Key key{.buffer_id = buffer.Id(), .offset = byte_offset,
+                                     .count = num_indices, .format = static_cast<u8>(index_size),
+                                     .topology = static_cast<u8>(topology)};
+    IndexRewriteCache::Entry* entry = rewrite_cache.Find(key);
+    if (entry && entry->generation == buffer.Generation()) {
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::IndexRewriteReuses, 1);
+        BindRewrittenIndices(*entry);
+        return;
+    }
+    const auto start = std::chrono::steady_clock::now();
     guest_indices.resize(static_cast<size_t>(num_indices) * index_size);
-    device_memory.ReadBlockUnsafe(buffer.CpuAddr() + offset + static_cast<u64>(first) * index_size,
-                                  guest_indices.data(), guest_indices.size());
-    const auto read = [&](u32 i) -> u32 {
-        const u8* const data = guest_indices.data() + static_cast<size_t>(i) * index_size;
-        switch (index_size) {
-        case 1:
-            return data[0];
-        case 2: {
-            u16 value;
-            std::memcpy(&value, data, sizeof(value));
-            return value;
-        }
-        default: {
-            u32 value;
-            std::memcpy(&value, data, sizeof(value));
-            return value;
-        }
-        }
-    };
-    AssembleTopology(topology, num_indices, read, rewrite_scratch);
-    BindRewrittenIndices(rewrite_scratch, format == IndexFormat::UnsignedInt);
+    device_memory.ReadBlockUnsafe(buffer.CpuAddr() + byte_offset, guest_indices.data(),
+                                  guest_indices.size());
+    if (entry && entry->source == guest_indices) {
+        // Another part of the buffer was written, not these indices.
+        entry->generation = buffer.Generation();
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::IndexRewriteRechecks, 1);
+    } else {
+        const auto read = [&](u32 i) -> u32 {
+            const u8* const data = guest_indices.data() + static_cast<size_t>(i) * index_size;
+            switch (index_size) {
+            case 1:
+                return data[0];
+            case 2: {
+                u16 value;
+                std::memcpy(&value, data, sizeof(value));
+                return value;
+            }
+            default: {
+                u32 value;
+                std::memcpy(&value, data, sizeof(value));
+                return value;
+            }
+            }
+        };
+        AssembleTopology(topology, num_indices, read, rewrite_scratch);
+        entry = &rewrite_cache.Obtain(key);
+        entry->generation = buffer.Generation();
+        entry->source.assign(guest_indices.begin(), guest_indices.end());
+        entry->SetRewrite(rewrite_scratch, format == IndexFormat::UnsignedInt);
+        rewrite_cache.Account();
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::IndexRewrites, 1);
+    }
+    VideoCore::Perf::Add(VideoCore::Perf::Counter::IndexRewriteNs,
+                         static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::steady_clock::now() - start)
+                                              .count()));
+    BindRewrittenIndices(*entry);
 }
 
 void BufferCacheRuntime::EmulateTopology(PrimitiveTopology topology, u32 first, u32 count) {
-    AssembleTopology(topology, count, [first](u32 i) { return first + i; }, rewrite_scratch);
-    BindRewrittenIndices(rewrite_scratch, first + count > 0xFFFF);
+    // A generated list depends on nothing but the draw: no generation, no source bytes.
+    const IndexRewriteCache::Key key{.buffer_id = 0, .offset = first, .count = count,
+                                     .format = 0, .topology = static_cast<u8>(topology)};
+    IndexRewriteCache::Entry* entry = rewrite_cache.Find(key);
+    if (entry) {
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::IndexRewriteReuses, 1);
+    } else {
+        AssembleTopology(topology, count, [first](u32 i) { return first + i; }, rewrite_scratch);
+        entry = &rewrite_cache.Obtain(key);
+        entry->SetRewrite(rewrite_scratch, first + count > 0xFFFF);
+        rewrite_cache.Account();
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::IndexRewrites, 1);
+    }
+    BindRewrittenIndices(*entry);
 }
 
-void BufferCacheRuntime::BindRewrittenIndices(std::span<const u32> indices, bool wide) {
-    rewritten_count = static_cast<u32>(indices.size());
-    if (indices.empty()) {
+void BufferCacheRuntime::BindRewrittenIndices(IndexRewriteCache::Entry& entry) {
+    rewritten_count = entry.count;
+    if (entry.count == 0) {
         return;
     }
-    const size_t index_size = wide ? sizeof(u32) : sizeof(u16);
-    const size_t bytes = indices.size() * index_size;
-    const StagingBufferRef upload = staging.Request(bytes, MemoryUsage::Upload);
-    if (wide) {
-        std::memcpy(upload.mapped_span.data(), indices.data(), bytes);
-    } else {
-        u8* out = upload.mapped_span.data();
-        for (const u32 index : indices) {
-            const u16 narrow = static_cast<u16>(index);
-            std::memcpy(out, &narrow, sizeof(narrow));
-            out += sizeof(narrow);
-        }
+    const u64 tick = scheduler.CurrentTick();
+    if (entry.upload_tick != tick) {
+        // Staging memory of an earlier list may be recycled by now. Within one list, every draw
+        // of these indices shares one upload.
+        const StagingBufferRef upload = staging.Request(entry.rewrite.size(), MemoryUsage::Upload);
+        std::memcpy(upload.mapped_span.data(), entry.rewrite.data(), entry.rewrite.size());
+        entry.upload_tick = tick;
+        entry.upload_address = upload.buffer->GetGPUVirtualAddress() + upload.offset;
     }
     pending_index = D3D12_INDEX_BUFFER_VIEW{
-        .BufferLocation = upload.buffer->GetGPUVirtualAddress() + upload.offset,
-        .SizeInBytes = static_cast<UINT>(bytes),
-        .Format = wide ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT,
+        .BufferLocation = entry.upload_address,
+        .SizeInBytes = static_cast<UINT>(entry.rewrite.size()),
+        .Format = entry.wide ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT,
     };
 }
 

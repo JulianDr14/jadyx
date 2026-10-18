@@ -483,6 +483,7 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_blit_image.h
         renderer_d3d12/d3d12_buffer_cache.cpp
         renderer_d3d12/d3d12_buffer_cache.h
+        renderer_d3d12/d3d12_index_rewrite_cache.h
         renderer_d3d12/d3d12_command_recorder.h
         renderer_d3d12/d3d12_command_stream.h
         renderer_d3d12/d3d12_compute_pipeline.cpp
