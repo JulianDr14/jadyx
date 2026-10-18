@@ -28,6 +28,8 @@ struct LibraryEntry {
     bool pulse_current{};     ///< That session was made by this build, so it can resume.
     std::uint64_t play_seconds{}; ///< Time played (play_history.h); counted only with play time on.
     std::int64_t last_played{};   ///< Unix seconds of the last launch; 0 = never played.
+    std::int64_t added{};         ///< Unix seconds the file arrived (its creation); 0 = unknown.
+    bool pinned{};                ///< Pinned by the player (favorites.h).
 };
 struct LibraryScan {
     std::vector<LibraryEntry> entries;

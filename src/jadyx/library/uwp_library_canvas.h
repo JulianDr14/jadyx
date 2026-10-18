@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <memory>
+#include <vector>
 #include "jadyx/content/content_session.h"
 #include <string_view>
 #include "jadyx/cheats/cheat_session.h"
 #include "jadyx/cheats/cheats_page.h"
 #include "jadyx/library/game_library.h"
 #include "jadyx/library/game_options_page.h"
+#include "jadyx/library/library_layout.h"
 #include "jadyx/mods/mod_session.h"
 #include "jadyx/mods/mods_page.h"
 #include "jadyx/settings/system_page.h"
@@ -26,6 +28,13 @@ struct GameOptionsView {
     const Mods::ModSession* mods{};      ///< The open mods page's.
     const Mods::ModsPage* mods_page{};
 };
+/// The active controller's battery, as Windows.Gaming.Input reports it; unknown when it does not.
+struct ControllerBattery {
+    bool known{};
+    float level{};   ///< 0..1, remaining over full capacity.
+    bool charging{};
+    bool operator==(const ControllerBattery&) const = default;
+};
 /// Everything one frame of the library shows.
 struct LibraryView {
     const LibraryScan& scan;
@@ -40,6 +49,20 @@ struct LibraryView {
     const SystemPage& system;
     const GameOptionsView& game_options;
     bool missing_content{};
+    bool rail{}; ///< The focus is in the played games' row (library_layout.h).
+    LibraryLayout::LibraryTab tab{};
+    LibraryLayout::Filter filter{};
+    const std::vector<std::size_t>* shelf{}; ///< The Library tab's entries, filtered (LibraryLayout::Shelf).
+    std::size_t shelf_focus{};               ///< In `shelf`; its size is the import tile.
+    bool filter_focus{};                     ///< The Library tab's focus is on the filter bar.
+    ControllerBattery battery{};
+};
+/// What the pointer can press on the library screen.
+enum class LibraryHit : unsigned { None, Controller, Play, Options, Tab, Filter, RailTile, Tile, ShelfTile, Import };
+/// A press: what, and which (the tab, the filter, the entry or the shelf position).
+struct LibraryTarget {
+    LibraryHit hit{};
+    std::size_t index{};
 };
 class LibraryCanvas {
 public:
@@ -48,6 +71,10 @@ public:
     /// Drops decoded covers, e.g. after the library cache is cleared.
     void InvalidateCovers();
     void Draw(const LibraryView& view);
+    /// A transition is under way: draw again next frame even if nothing changed.
+    bool Animating() const;
+    /// What is under (x, y) in layout units, as the last frame drew it.
+    LibraryTarget HitAt(float x, float y) const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;

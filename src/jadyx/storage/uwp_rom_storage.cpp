@@ -335,6 +335,9 @@ void ScanFolder(StorageFolder folder, const std::string& token, const std::wstri
                 LibraryEntry entry{p, p.stem().wstring()};
                 entry.launch_path = MakeStoragePath(token, child);
                 entry.source_name = source;
+                // Enumerated items carry their dates: no extra call per file.
+                try { entry.added = static_cast<std::int64_t>(winrt::clock::to_time_t(item.DateCreated())); }
+                catch (const winrt::hresult_error&) {}
                 scan.entries.push_back(std::move(entry));
             }
             if (scan.limited) return;

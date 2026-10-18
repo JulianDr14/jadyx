@@ -546,6 +546,32 @@ enum class Text : std::uint16_t {
     PlayTimeSorted,
     LastPlayedSorted,
 
+    // Tabs, sections and filters
+    TabHome,
+    TabLibrary,
+    TabSettings,
+    Tabs,
+    RecentAndPinned,
+    FullCollection,
+    TitlesCountOne,
+    TitlesCountOther,
+    InProgress,
+    Pin,
+    Unpin,
+    PinSaveFailed,
+    Filter,
+    FilterAll,
+    FilterPlayed,
+    FilterAlphabetical,
+    FilterPinned,
+    FilterRecent,
+    FilterPulse,
+    FilterEmpty,
+    FilterPinnedEmpty,
+    ImportTitle,
+    ImportTitleHint,
+    Import,
+
 
     Count
 };

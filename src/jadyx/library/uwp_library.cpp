@@ -4,6 +4,8 @@
 #include "jadyx/input/stick_navigation.h"
 #include "jadyx/input/controller_catalog.h"
 #include "jadyx/ui/text_entry_input.h"
+#include "jadyx/library/favorites.h"
+#include "jadyx/library/library_layout.h"
 #include "jadyx/library/uwp_library_canvas.h"
 #include "jadyx/storage/uwp_rom_storage.h"
 #include "jadyx/storage/storage_path.h"
@@ -13,8 +15,11 @@
 #include <chrono>
 #include <future>
 #include <thread>
+#include <windows.h>
 #include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Devices.Power.h>
 #include <winrt/Windows.Gaming.Input.h>
+#include <winrt/Windows.System.Power.h>
 #include <winrt/Windows.UI.Core.h>
 #include <winrt/Windows.UI.Input.h>
 #include <winrt/Windows.System.h>
@@ -52,8 +57,6 @@ using winrt::Windows::System::VirtualKey;
 using I18n::Tr;
 using T = I18n::Text;
 
-/// Games per row of the grid; the metadata window is the visible page and both neighbours.
-constexpr size_t PageSize = 5;
 /// Background batches stay short so a page change never waits long behind them: games opened
 /// through the loaders per fill batch, cache records read per names batch.
 constexpr size_t FillBatch = 6;
@@ -73,6 +76,19 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     auto canvas = std::make_unique<LibraryCanvas>(core_window, width, height);
     LibraryScan scan;
     size_t selected = 0;
+    bool rail = false; // The focus is in the played games' rail (library_layout.h).
+    // The screen's tabs; Settings is the configuration panel, shown as a page.
+    using LibraryLayout::LibraryTab;
+    using LibraryLayout::Filter;
+    LibraryTab tab = LibraryTab::Home;
+    Filter filter = Filter::All;
+    std::vector<size_t> shelf;   // The Library tab's entries (LibraryLayout::Shelf).
+    size_t shelf_focus = 0;      // In `shelf`; shelf.size() is the import tile.
+    bool filter_focus = false;   // The Library tab's focus is on the filter bar.
+    Favorites favorites = LoadFavorites();
+    WORD shown_minute = 0xFFFF;  // The header's clock.
+    ControllerBattery battery;   // The header's battery, read every few seconds.
+    auto battery_read_at = std::chrono::steady_clock::time_point{};
     bool dirty = true, loading = true, settings = false;
     ConfigurationPanel configuration;
     SystemPage system_page;
@@ -141,9 +157,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     size_t names_cursor = 0; // Next game whose title is looked up in the cache, after a scan.
     size_t fill_cursor = 0;  // Next game the background fill reads into the cache.
     unsigned actions = 0;
+    std::optional<LibraryTab> pressed_tab; // A tab the pointer chose.
     enum : unsigned { Up = 1, Down = 2, Play = 4, Quit = 8, Swap = 16, Zone = 32,
                       Refresh = 64, Panel = 128, Left = 256, Right = 512, AddFolder = 1024,
-                      Options = 2048, PreviousTab = 4096, NextTab = 8192 };
+                      Options = 2048, PreviousTab = 4096, NextTab = 8192, Pin = 16384 };
     using winrt::Windows::Storage::StorageFolder;
     winrt::Windows::Foundation::IAsyncOperation<StorageFolder> picker{nullptr};
     std::future<std::string> validation;
@@ -235,8 +252,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         case VirtualKey::Escape: actions |= Quit; break;
         case VirtualKey::Enter: actions |= Play; break;
         case VirtualKey::X: actions |= Swap; break;
-        case VirtualKey::Y:
         case VirtualKey::R: actions |= Refresh; break;
+        case VirtualKey::F: actions |= Pin; break;
         case VirtualKey::O: actions |= AddFolder; break;
         case VirtualKey::F2: actions |= Options; break;
         case VirtualKey::Q: actions |= PreviousTab; break;
@@ -263,12 +280,23 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             e.Handled(true);
             return;
         }
+        // The header's tabs and controller work over every page that is not a dialog.
+        if (!settings && !panel.keyboard.open && !game_options.open && !missing_content && !configuration.busy) {
+            const auto target = canvas->HitAt(x, y);
+            if (target.hit == LibraryHit::Tab) {
+                pressed_tab = static_cast<LibraryTab>(target.index);
+                e.Handled(true);
+                return;
+            }
+            if (target.hit == LibraryHit::Controller && !configuration.open) {
+                actions |= Panel;
+                e.Handled(true);
+                return;
+            }
+        }
         if (system_page.open && configuration.open && !settings) {
             using L = SystemPageLayout;
-            if (y >= L::Footer - 7 && y < L::Footer + 40 && x >= L::RowX + L::RowWidth - 230 &&
-                x < L::RowX + L::RowWidth) {
-                actions |= Quit;
-            } else if (x >= L::RowX && x < L::RowX + L::RowWidth && y >= L::RowTop) {
+            if (x >= L::RowX && x < L::RowX + L::RowWidth && y >= L::RowTop) {
                 const auto row = static_cast<size_t>((y - L::RowTop) / L::RowStride);
                 if (row < SystemPage::RowCount && y < L::RowTop + row * L::RowStride + L::RowHeight) {
                     system_page.selected = row;
@@ -281,9 +309,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         }
         if (configuration.open && !settings && !content_session) {
             const auto layout = GetConfigurationLayout(configuration);
-            if (y >= layout.footer - 7 && y < layout.footer + 40 &&
-                x >= layout.x + layout.width - 230 && x < layout.x + layout.width) actions |= Quit;
-            else if (!configuration.busy && x >= layout.x && x < layout.x + layout.width && y >= layout.top) {
+            if (!configuration.busy && x >= layout.x && x < layout.x + layout.width && y >= layout.top) {
                 const auto row = static_cast<size_t>((y - layout.top) / layout.stride);
                 const auto choice = ConfigurationFirstRow(configuration) + row;
                 if (row < 5 && y < layout.top + row * layout.stride + layout.row_height &&
@@ -339,13 +365,43 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 setting_row = static_cast<unsigned>((y - ControllerRowTop) / ControllerRowHeight);
                 actions |= Play;
             }
-        } else if (x >= 839 && x < 1064 && y >= 43 && y < 87) actions |= AddFolder;
-        else if (x >= 1080 && x < 1226 && y >= 43 && y < 87) actions |= Panel;
-        else if (!loading && x >= 320 && x < 504 && y >= 334 && y < 380) actions |= Play;
-        else if (!loading && x >= 520 && x < 720 && y >= 334 && y < 380) actions |= Options;
-        else if (!loading && x >= 58 && x < 1226 && y >= 444 && y < 635) {
-            const size_t index = selected / PageSize * PageSize + static_cast<size_t>((x - 58) / 232);
-            if (index < scan.entries.size()) { selected = index; dirty = true; }
+        } else if (const auto target = canvas->HitAt(x, y); !loading) {
+            switch (target.hit) {
+            case LibraryHit::Play: actions |= Play; break;
+            case LibraryHit::Options: actions |= Options; break;
+            case LibraryHit::Filter:
+                filter = static_cast<Filter>(target.index);
+                filter_focus = true;
+                shelf = LibraryLayout::Shelf(scan.entries, filter);
+                shelf_focus = 0;
+                dirty = true;
+                break;
+            case LibraryHit::RailTile:
+            case LibraryHit::Tile:
+                if (target.index < scan.entries.size()) {
+                    selected = target.index;
+                    rail = target.hit == LibraryHit::RailTile;
+                    dirty = true;
+                }
+                break;
+            case LibraryHit::ShelfTile:
+                if (target.index < shelf.size()) {
+                    // A second press on the focused game plays it.
+                    if (!filter_focus && shelf_focus == target.index) actions |= Play;
+                    shelf_focus = target.index;
+                    selected = shelf[target.index];
+                    filter_focus = false;
+                    dirty = true;
+                }
+                break;
+            case LibraryHit::Import:
+                shelf_focus = shelf.size();
+                filter_focus = false;
+                actions |= Play;
+                dirty = true;
+                break;
+            default: break;
+            }
         }
         e.Handled(true);
     });
@@ -405,17 +461,64 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             const auto found = history.find(entry.launch_path);
             entry.play_seconds = found == history.end() ? 0 : found->second.seconds;
             entry.last_played = found == history.end() ? 0 : found->second.last_played;
+            entry.pinned = favorites.contains(entry.launch_path);
         }
         play_order = system_page.settings.track_play_time;
         OrderLibrary(scan.entries, history, play_order);
+        // Pinned games lead, in the order the history gives them.
+        std::stable_partition(scan.entries.begin(), scan.entries.end(), [](const auto& e) { return e.pinned; });
         selected = 0;
         for (size_t i = 0; i < scan.entries.size(); ++i)
             if (!keep.empty() && scan.entries[i].launch_path == keep) selected = i;
+        // The last game played opens in the rail, where the played games are.
+        rail = selected < LibraryLayout::RailCount(scan.entries);
+        shelf = LibraryLayout::Shelf(scan.entries, filter);
+        shelf_focus = 0;
+        for (size_t i = 0; i < shelf.size(); ++i)
+            if (shelf[i] == selected) shelf_focus = i;
         // Covers and background reads follow positions: start them over for the new order.
         metadata_dirty = true;
         retained_page = SIZE_MAX;
         names_cursor = fill_cursor = 0;
         dirty = true;
+    };
+    // The entries whose covers the current tab may show, nearest first, and a key that changes
+    // when they do.
+    struct Covers {
+        std::vector<size_t> order;
+        std::vector<bool> shown;
+        size_t key{};
+    };
+    auto covers_for_tab = [&] {
+        Covers result;
+        result.shown.assign(scan.entries.size(), false);
+        const auto add = [&](size_t index) {
+            if (index < scan.entries.size() && !result.shown[index]) {
+                result.shown[index] = true;
+                result.order.push_back(index);
+            }
+        };
+        if (tab == LibraryTab::Library) {
+            using LibraryLayout::Columns;
+            const size_t row = std::min(shelf_focus, shelf.empty() ? 0 : shelf.size() - 1) / Columns;
+            const size_t first = (row > 0 ? row - 1 : 0) * Columns;
+            const size_t end = std::min(shelf.size(), (row + 3) * Columns);
+            // The focused row, the ones below, then the one above.
+            for (size_t i = row * Columns; i < end; ++i) add(shelf[i]);
+            for (size_t i = first; i < std::min(end, row * Columns); ++i) add(shelf[i]);
+            result.key = (first + end * 65536) * 16 + 8 + static_cast<size_t>(filter);
+        } else {
+            const auto window = LibraryLayout::CoversAround({selected, rail}, scan.entries.size(),
+                                                            LibraryLayout::RailCount(scan.entries));
+            const size_t row = rail ? 0 : selected / LibraryLayout::Columns * LibraryLayout::Columns;
+            for (size_t i = row; i < std::min(row + LibraryLayout::Columns, window.end); ++i) add(i);
+            for (size_t i = row + LibraryLayout::Columns; i < window.end; ++i) add(i);
+            for (size_t i = 0; i < window.rail; ++i) add(i);
+            for (size_t i = window.first; i < row; ++i) add(i);
+            // Rows 0 and 1 share a first entry: the key is both ends of the window.
+            result.key = (window.first + window.end * 65536) * 16;
+        }
+        return result;
     };
     auto start_scan = [&](StorageFolder added = nullptr) {
         loading = dirty = true;
@@ -439,6 +542,15 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 const auto path = (root / entry.relative_path).u8string();
                 entry.launch_path.assign(reinterpret_cast<const char*>(path.data()), path.size());
                 entry.source_name = internal;
+                // When the file arrived: copies keep the source's write time but not its creation.
+                WIN32_FILE_ATTRIBUTE_DATA data{};
+                if (GetFileAttributesExW((root / entry.relative_path).c_str(), GetFileExInfoStandard, &data)) {
+                    const auto ticks = (static_cast<std::uint64_t>(data.ftCreationTime.dwHighDateTime) << 32) |
+                                       data.ftCreationTime.dwLowDateTime;
+                    // 100 ns ticks since 1601 to Unix seconds.
+                    if (ticks > 116444736000000000ULL)
+                        entry.added = static_cast<std::int64_t>((ticks - 116444736000000000ULL) / 10000000ULL);
+                }
             }
             try {
                 if (added) RememberGameFolder(added);
@@ -515,6 +627,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         if (!options_notice.empty() && now >= options_notice_until) {
             options_notice.clear(); dirty = true;
         }
+        SYSTEMTIME clock{};
+        GetLocalTime(&clock);
+        if (clock.wMinute != shown_minute) { shown_minute = clock.wMinute; dirty = true; }
         if (panel.keyboard.capturing && now >= capture_until) {
             panel.keyboard.capturing = false; dirty = true;
         }
@@ -537,6 +652,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         if (bool(pad) != bool(next) || (pad && next &&
             (pad->id != next->id || pad->pad != next->pad || pad->pro != next->pro))) {
             previous = {}; stick_navigation.Reset();
+            battery_read_at = {}; // Another controller: read its battery now.
         }
         if (catalog_changed || !pad || !next || pad->id != next->id)
             pad = next ? std::optional<ControllerDevice>{*next} : std::nullopt;
@@ -607,11 +723,15 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     if (!panel.keyboard.open) {
                         actions |= directions;
                         if (hit(GamepadButtons::A)) actions |= Play;
+                        // On the library X rescans and Y pins; the pages keep their own X and Y.
+                        const bool library = !settings && !configuration.open && !game_options.open &&
+                                             !missing_content;
                         if (hit(GamepadButtons::X)) {
                             if (settings || content_session || missing_content) actions |= Swap;
+                            else if (library) actions |= Refresh;
                             else if (!configuration.open) actions |= AddFolder;
                         }
-                        if (hit(GamepadButtons::Y)) actions |= Refresh;
+                        if (hit(GamepadButtons::Y)) actions |= library ? Pin : Refresh;
                         if (hit(GamepadButtons::Menu)) actions |= Options;
                         if (hit(GamepadButtons::View)) actions |= Panel;
                         if (hit(GamepadButtons::LeftShoulder)) actions |= PreviousTab;
@@ -622,6 +742,27 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 controllers.ReadFailed();
                 pad.reset(); previous = {}; stick_navigation.Reset();
             }
+        }
+        // The battery changes slowly and its report is a driver call: a few times a minute.
+        if (now >= battery_read_at) {
+            battery_read_at = now + std::chrono::seconds{20};
+            ControllerBattery read;
+            try {
+                if (pad && pad->pad) {
+                    const auto report = pad->pad.TryGetBatteryReport();
+                    using winrt::Windows::System::Power::BatteryStatus;
+                    if (report && report.Status() != BatteryStatus::NotPresent) {
+                        const auto remaining = report.RemainingCapacityInMilliwattHours();
+                        const auto full = report.FullChargeCapacityInMilliwattHours();
+                        if (remaining && full && full.Value() > 0) {
+                            read.known = true;
+                            read.level = std::clamp(static_cast<float>(remaining.Value()) / full.Value(), 0.0f, 1.0f);
+                            read.charging = report.Status() == BatteryStatus::Charging;
+                        }
+                    }
+                }
+            } catch (...) {}
+            if (!(read == battery)) { battery = read; dirty = true; }
         }
         if (window_closed || QuitRequested()) return std::nullopt;
         if (finish_name_editor) {
@@ -708,6 +849,43 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 dirty = true;
             }
         }
+        // Switching tabs: the bumpers (Q/E) at the top level, or a press on the header.
+        const auto switch_tab = [&](LibraryTab to) {
+            if (to == tab) return;
+            if (tab == LibraryTab::Settings) {
+                system_page.open = false;
+                configuration.open = configuration.files = false;
+            }
+            tab = to;
+            if (to == LibraryTab::Settings) {
+                configuration.open = true; configuration.files = false; configuration.selected = HomeSystem;
+                configuration.notice.clear(); refresh_setup();
+            }
+            if (to == LibraryTab::Library) {
+                // The shelf opens on the game Home had focused.
+                shelf = LibraryLayout::Shelf(scan.entries, filter);
+                shelf_focus = 0;
+                for (size_t i = 0; i < shelf.size(); ++i)
+                    if (shelf[i] == selected) shelf_focus = i;
+            }
+            filter_focus = false;
+            dirty = true;
+        };
+        const bool top_level = !settings && !system_page.open && !configuration.files && !configuration.busy &&
+                               !picker && !validation.valid() && !game_options.open && !missing_content;
+        if (pressed_tab) {
+            if (top_level || *pressed_tab == LibraryTab::Settings || tab == LibraryTab::Settings) {
+                if (!configuration.busy && !picker && !validation.valid()) switch_tab(*pressed_tab);
+            }
+            pressed_tab.reset();
+        }
+        if (top_level && (actions & (PreviousTab | NextTab))) {
+            constexpr auto count = static_cast<unsigned>(LibraryTab::Count);
+            const auto current = static_cast<unsigned>(tab);
+            const auto to = actions & PreviousTab ? (current + count - 1) % count : (current + 1) % count;
+            switch_tab(static_cast<LibraryTab>(to));
+            actions &= ~(PreviousTab | NextTab);
+        }
         if (system_page.open && configuration.open && !settings) {
             // The name editor takes its input in the handlers above; the page waits behind it.
             if (!system_page.name_editor && actions) {
@@ -724,7 +902,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             }
             actions = 0;
         }
-        if (actions & Options && !game_options.open && !settings && !configuration.open &&
+        const bool on_game = tab == LibraryTab::Home ||
+                             (tab == LibraryTab::Library && !filter_focus && shelf_focus < shelf.size());
+        if (actions & Options && on_game && !game_options.open && !settings && !configuration.open &&
             !panel.keyboard.open && !loading && !picker && !validation.valid() && !scan.entries.empty()) {
             game_options = {true, selected};
             options_notice.clear();
@@ -1018,13 +1198,24 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 else configuration.open = false;
                 dirty = true; actions &= ~Quit;
             }
+            else if (tab == LibraryTab::Library) { switch_tab(LibraryTab::Home); actions &= ~Quit; }
             else return std::nullopt;
         }
         if (actions & Panel && !configuration.open) { settings = !settings; panel.keyboard.open = panel.keyboard.capturing = false; panel.expanded = false; dirty = true; }
-        if (actions & AddFolder && !settings && !picker && !configuration.busy && !validation.valid()) {
-            configuration.open = true; configuration.files = false; configuration.selected = HomeSystem;
-            configuration.notice.clear(); refresh_setup(); dirty = true;
+        if (actions & AddFolder && !settings && !picker && !configuration.busy && !validation.valid() &&
+            !configuration.open)
+            switch_tab(LibraryTab::Settings);
+        // The import tile opens the file manager on the Settings tab.
+        if (actions & Play && tab == LibraryTab::Library && !filter_focus && shelf_focus >= shelf.size() &&
+            LibraryLayout::HasImportTile(filter) && !settings && !configuration.open && !picker &&
+            !validation.valid()) {
+            switch_tab(LibraryTab::Settings);
+            configuration.files = true;
+            configuration.selected = 0;
+            actions &= ~Play;
         }
+        // The configuration closed itself (Back): its tab goes with it.
+        if (tab == LibraryTab::Settings && !configuration.open && !settings) { tab = LibraryTab::Home; dirty = true; }
         if (configuration.open && !settings && !picker && !configuration.busy) {
             const auto count = ConfigurationRowCount(configuration);
             if (actions & Up) configuration.selected = (configuration.selected + count - 1) % count;
@@ -1106,7 +1297,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 }
             }
         }
-        if (actions & Play && !configuration.open && !settings && !panel.keyboard.open && !loading && !scan.entries.empty()) {
+        if (actions & Play && on_game && !configuration.open && !settings && !panel.keyboard.open && !loading &&
+            !scan.entries.empty()) {
             selected_path = scan.entries[selected].launch_path;
             notice = Tr(T::CheckingGame);
             dirty = true;
@@ -1177,10 +1369,62 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             }
         } else {
             actions &= ~(Swap | Zone);
-            if (actions & Left && selected) { --selected; dirty = true; }
-            if (actions & Right && selected + 1 < scan.entries.size()) { ++selected; dirty = true; }
-            if (actions & Up && selected >= PageSize) { selected -= PageSize; dirty = true; }
-            if (actions & Down && selected + PageSize < scan.entries.size()) { selected += PageSize; dirty = true; }
+            using LibraryLayout::Move;
+            const auto move = [&](Move direction) {
+                const auto moved = LibraryLayout::Moved({selected, rail}, direction, scan.entries.size(),
+                                                        LibraryLayout::RailCount(scan.entries));
+                if (moved.selected == selected && moved.rail == rail) return;
+                selected = moved.selected;
+                rail = moved.rail;
+                dirty = true;
+            };
+            if (tab == LibraryTab::Home) {
+                if (actions & Left) move(Move::Left);
+                if (actions & Right) move(Move::Right);
+                if (actions & Up) move(Move::Up);
+                if (actions & Down) move(Move::Down);
+            } else if (tab == LibraryTab::Library && !loading) {
+                const size_t count = shelf.size() + (LibraryLayout::HasImportTile(filter) ? 1 : 0);
+                if (filter_focus) {
+                    if (actions & (Left | Right)) {
+                        constexpr auto filters = static_cast<unsigned>(LibraryLayout::FilterCount);
+                        const auto current = static_cast<unsigned>(filter);
+                        filter = static_cast<Filter>(actions & Left ? (current + filters - 1) % filters
+                                                                    : (current + 1) % filters);
+                        shelf = LibraryLayout::Shelf(scan.entries, filter);
+                        shelf_focus = 0;
+                        dirty = true;
+                    }
+                    if (actions & Down && count) { filter_focus = false; dirty = true; }
+                } else {
+                    const auto shelf_move = [&](Move direction) {
+                        const auto moved = LibraryLayout::ShelfMoved(shelf_focus, direction, count);
+                        if (moved != shelf_focus) { shelf_focus = moved; dirty = true; }
+                    };
+                    if (actions & Up && shelf_focus < LibraryLayout::Columns) { filter_focus = true; dirty = true; }
+                    else if (actions & Up) shelf_move(Move::Up);
+                    if (actions & Down) shelf_move(Move::Down);
+                    if (actions & Left) shelf_move(Move::Left);
+                    if (actions & Right) shelf_move(Move::Right);
+                }
+                if (shelf_focus < shelf.size()) selected = shelf[shelf_focus];
+            }
+        }
+        // Pinning the focused game: first in Home's rail and under the Pinned filter.
+        if (actions & Pin && on_game && !settings && !configuration.open && !game_options.open && !loading &&
+            selected < scan.entries.size()) {
+            auto& entry = scan.entries[selected];
+            entry.pinned = !entry.pinned;
+            if (entry.pinned) favorites.insert(entry.launch_path);
+            else favorites.erase(entry.launch_path);
+            if (!SaveFavorites(favorites)) notice = Tr(T::PinSaveFailed);
+            const auto focused_shelf = shelf_focus;
+            refresh_play(std::string{entry.launch_path});
+            // On a filtered shelf the focus stays where it was, not where the game moved.
+            if (tab == LibraryTab::Library) {
+                shelf_focus = std::min(focused_shelf, shelf.empty() ? 0 : shelf.size() - 1);
+                if (shelf_focus < shelf.size()) selected = shelf[shelf_focus];
+            }
         }
         if (actions & Swap) { options.swap_face_buttons = !options.swap_face_buttons; dirty = true; }
         if (actions & Zone) {
@@ -1200,8 +1444,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 auto batch = metadata.get();
                 if (batch.generation == generation) {
                     // Merge field by field: a names-only batch must not drop icons already shown.
-                    const size_t page = selected / PageSize * PageSize;
-                    const size_t window_first = page >= PageSize ? page - PageSize : 0;
+                    const auto covers = covers_for_tab();
                     for (auto& entry : batch.entries) {
                         auto found = std::find_if(scan.entries.begin(), scan.entries.end(), [&](const auto& e) {
                             return e.launch_path == entry.launch_path;
@@ -1222,7 +1465,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         }
                         found->title_loaded |= entry.title_loaded;
                         // The player may have paged on meanwhile: keep icons only inside the window.
-                        if (batch.icons && index >= window_first && index < page + 2 * PageSize)
+                        if (batch.icons && covers.shown[index])
                             found->icon = std::move(entry.icon);
                     }
                     dirty = true;
@@ -1231,8 +1474,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         }
         // Metadata, one worker at a time and in priority order: the covers around the cursor, then
         // every title the cache already has, then the rest of the library into the cache.
-        const size_t page = selected / PageSize * PageSize;
-        // The player moved to another page: background work yields to its covers.
+        const auto covers = covers_for_tab();
+        const size_t page = covers.key;
+        // The player moved to other rows: background work yields to its covers.
         if (metadata.valid() && metadata_background && (metadata_dirty || retained_page != page))
             metadata_worker.request_stop();
         if (!content_session && !validation.valid() && !missing_content && !configuration.open && !loading && !metadata.valid() && !scan.entries.empty()) {
@@ -1241,27 +1485,21 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (metadata_dirty || retained_page != page) {
                 metadata_dirty = false;
                 retained_page = page;
-                const size_t window_first = page >= PageSize ? page - PageSize : 0;
-                const size_t window_end = std::min(page + 2 * PageSize, scan.entries.size());
                 for (size_t i = 0; i < scan.entries.size(); ++i) {
                     auto& entry = scan.entries[i];
-                    if ((i < window_first || i >= window_end) && entry.metadata_loaded) {
+                    if (!covers.shown[i] && entry.metadata_loaded) {
                         std::vector<unsigned char>{}.swap(entry.icon);
                         entry.metadata_loaded = false;
                     }
                 }
-                // The visible page first, then the next one (where the player usually goes), then the previous.
-                const auto want = [&](size_t first, size_t last) {
-                    for (size_t i = first; i < std::min(last, scan.entries.size()); ++i) {
-                        auto& entry = scan.entries[i];
-                        if (entry.metadata_loaded) continue;
-                        entry.metadata_loaded = true;
-                        requested.push_back(entry);
-                    }
-                };
-                want(page, page + PageSize);
-                want(page + PageSize, page + 2 * PageSize);
-                want(window_first, page);
+                // The focused row first, then the next ones (where the player usually goes), the
+                // rail, and the row above.
+                for (const size_t i : covers.order) {
+                    auto& entry = scan.entries[i];
+                    if (entry.metadata_loaded) continue;
+                    entry.metadata_loaded = true;
+                    requested.push_back(entry);
+                }
                 request.icons = true;
             } else {
                 // Titles without icons: what the grid and the cache need, never a cover's bytes.
@@ -1302,16 +1540,29 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             resize = false;
             dirty = true;
         }
-        if (dirty) {
+        if (dirty || canvas->Animating()) {
             const GameOptionsView options_view{
                 game_options, game_options.open && game_options.game < scan.entries.size() ? &scan.entries[game_options.game] : nullptr,
                 cheat_session ? &*cheat_session : nullptr, cheats_page, options_notice, content_session.get(),
                 mod_session.get(), &mods_page};
+            // Titles, Pulse sessions and plays arrive after the shelf was made: keep it current,
+            // the focus on the same game.
+            if (tab == LibraryTab::Library && !loading) {
+                const auto focused = shelf_focus < shelf.size() ? shelf[shelf_focus] : SIZE_MAX;
+                shelf = LibraryLayout::Shelf(scan.entries, filter);
+                const size_t count = shelf.size() + (LibraryLayout::HasImportTile(filter) ? 1 : 0);
+                shelf_focus = std::min(shelf_focus, count ? count - 1 : 0);
+                for (size_t i = 0; i < shelf.size(); ++i)
+                    if (shelf[i] == focused) shelf_focus = i;
+                if (shelf_focus < shelf.size()) selected = shelf[shelf_focus];
+            }
             canvas->Draw({scan, selected, loading, settings, setting_row, options, notice, panel,
-                          configuration, system_page, options_view, missing_content});
+                          configuration, system_page, options_view, missing_content, rail, tab, filter,
+                          &shelf, shelf_focus, filter_focus, battery});
             dirty = false;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds{16});
+        // While something moves, Present(1) paces the loop to the display; otherwise poll gently.
+        if (!canvas->Animating()) std::this_thread::sleep_for(std::chrono::milliseconds{16});
     }
 }
 } // namespace Jadyx

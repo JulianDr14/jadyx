@@ -12,6 +12,8 @@ add_executable(jadyx WIN32
     pulse/pulse_gate.h
     pulse/pulse_sessions.cpp
     pulse/pulse_sessions.h
+    library/favorites.cpp
+    library/favorites.h
     library/play_history.cpp
     library/play_history.h
     pulse/pulse_screen.cpp
@@ -27,6 +29,7 @@ add_executable(jadyx WIN32
     library/uwp_library_canvas.h
     library/uwp_library.h
     library/game_library.h
+    library/library_layout.h
     library/uwp_library_metadata.cpp
     library/uwp_library_metadata.h
     storage/uwp_rom_storage.cpp
