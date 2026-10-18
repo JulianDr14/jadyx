@@ -30,5 +30,25 @@ int main() {
     check(input.Update(-1, 0, at(9000)) == StickDirection::None);
     check(input.Update(std::numeric_limits<double>::quiet_NaN(), 1, at(9100)) == StickDirection::None);
     check(input.Update(1, 0, at(9101)) == StickDirection::None);
+    StickNavigation manager{milliseconds{280}, milliseconds{80}};
+    check(manager.Update(0, -1, at(0)) == StickDirection::Down);
+    check(manager.Update(0, -1, at(279)) == StickDirection::None);
+    check(manager.Update(0, -1, at(280)) == StickDirection::Down);
+    check(manager.Update(0, -1, at(359)) == StickDirection::None);
+    check(manager.Update(0, -1, at(360)) == StickDirection::Down);
+    TriggerTabs triggers;
+    check(triggers.Update(.54, 0) == 0);
+    check(triggers.Update(.55, 0) == 1);
+    check(triggers.Update(1, 0) == 0);
+    check(triggers.Update(.4, 0) == 0);
+    check(triggers.Update(.35, 0) == 0);
+    check(triggers.Update(.6, 0) == 1);
+    triggers.Reset();
+    check(triggers.Update(1, 1) == 0); // held across a page transition
+    check(triggers.Update(0, 0) == 0);
+    check(triggers.Update(1, 1) == 0); // simultaneous presses cancel
+    check(triggers.Update(0, 0) == 0);
+    check(triggers.Update(0, 1) == 2);
+    check(triggers.Update(0, 1) == 0);
     std::puts("stick navigation: drift/hysteresis/diagonal/repeat/reversal/modal/stall/invalid PASS");
 }
