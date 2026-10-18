@@ -37,6 +37,7 @@
 #include "video_core/textures/astc.h"
 #include "video_core/textures/bcn.h"
 #include "video_core/textures/decoders.h"
+#include "video_core/textures/etc2.h"
 
 namespace VideoCommon {
 
@@ -65,6 +66,31 @@ using VideoCore::Surface::IsViewCompatible;
 using VideoCore::Surface::PixelFormatFromDepthFormat;
 using VideoCore::Surface::PixelFormatFromRenderTargetFormat;
 using VideoCore::Surface::SurfaceType;
+
+std::optional<Tegra::Texture::ETC2::Kind> Etc2Kind(PixelFormat format) {
+    using Tegra::Texture::ETC2::Kind;
+    switch (format) {
+    case PixelFormat::ETC2_RGB_UNORM:
+    case PixelFormat::ETC2_RGB_SRGB:
+        return Kind::Rgb;
+    case PixelFormat::ETC2_RGB_PTA_UNORM:
+    case PixelFormat::ETC2_RGB_PTA_SRGB:
+        return Kind::RgbPunchthrough;
+    case PixelFormat::ETC2_RGBA_UNORM:
+    case PixelFormat::ETC2_RGBA_SRGB:
+        return Kind::Rgba;
+    case PixelFormat::EAC_R11_UNORM:
+        return Kind::R11;
+    case PixelFormat::EAC_R11_SNORM:
+        return Kind::R11Signed;
+    case PixelFormat::EAC_R11G11_UNORM:
+        return Kind::Rg11;
+    case PixelFormat::EAC_R11G11_SNORM:
+        return Kind::Rg11Signed;
+    default:
+        return std::nullopt;
+    }
+}
 
 struct LevelInfo {
     Extent3D size;
@@ -1016,6 +1042,13 @@ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8
                 (aligned_plane_dim * copy.image_extent.depth * copy.image_subresource.num_layers) /
                 bpp_div;
             output_offset += static_cast<u32>(copy.buffer_size);
+        } else if (const auto etc = Etc2Kind(info.format)) {
+            const u32 slices = copy.image_subresource.num_layers * copy.image_extent.depth;
+            Tegra::Texture::ETC2::Decompress(*etc, input_offset, copy.image_extent.width,
+                                             copy.image_extent.height, slices,
+                                             output.subspan(output_offset));
+            output_offset += copy.image_extent.width * copy.image_extent.height * slices *
+                             ConvertedBytesPerBlock(info.format);
         } else {
             DecompressBCn(input_offset, output.subspan(output_offset), copy, info.format);
             output_offset += copy.image_extent.width * copy.image_extent.height *

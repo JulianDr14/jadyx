@@ -119,6 +119,33 @@ FormatInfo AstcFormat(PixelFormat format, Settings::AstcRecompression recompress
     return info;
 }
 
+/// No ETC2/EAC in D3D12: the CPU decodes them on upload (VideoCommon::ConvertImage). Color to
+/// RGBA8; EAC to 16-bit channels, which keep all 11 bits where 8-bit ones would band.
+FormatInfo Etc2Format(PixelFormat format) {
+    const auto make = [](DXGI_FORMAT resource, DXGI_FORMAT view, PixelFormat copy_format) {
+        return FormatInfo{.resource = resource, .view = view, .srv = view, .converted = true,
+                          .copy_format = copy_format};
+    };
+    switch (format) {
+    case PixelFormat::EAC_R11_UNORM:
+        return make(DXGI_FORMAT_R16_TYPELESS, DXGI_FORMAT_R16_UNORM, PixelFormat::R16_UNORM);
+    case PixelFormat::EAC_R11_SNORM:
+        return make(DXGI_FORMAT_R16_TYPELESS, DXGI_FORMAT_R16_SNORM, PixelFormat::R16_SNORM);
+    case PixelFormat::EAC_R11G11_UNORM:
+        return make(DXGI_FORMAT_R16G16_TYPELESS, DXGI_FORMAT_R16G16_UNORM,
+                    PixelFormat::R16G16_UNORM);
+    case PixelFormat::EAC_R11G11_SNORM:
+        return make(DXGI_FORMAT_R16G16_TYPELESS, DXGI_FORMAT_R16G16_SNORM,
+                    PixelFormat::R16G16_SNORM);
+    default:
+        return VideoCore::Surface::IsPixelFormatSRGB(format)
+                   ? make(DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+                          PixelFormat::A8B8G8R8_SRGB)
+                   : make(DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM,
+                          PixelFormat::A8B8G8R8_UNORM);
+    }
+}
+
 FormatInfo NativeFormat(PixelFormat format) {
     FormatInfo info = BaseFormat(format);
     info.copy_format = format;
@@ -127,6 +154,9 @@ FormatInfo NativeFormat(PixelFormat format) {
     }
     if (VideoCore::Surface::IsPixelFormatASTC(format)) {
         return AstcFormat(format, Settings::values.astc_recompression.GetValue());
+    }
+    if (VideoCore::Surface::IsPixelFormatETC2(format)) {
+        return Etc2Format(format);
     }
     // Formats without a DXGI mapping yet: keep an image so the cache works, never transfer data
     // into it (its bytes would not match the resource layout).
