@@ -72,7 +72,6 @@ struct GameMenuSurface::Impl : UiPainter {
         target->Clear(D2D1::ColorF(Palette::Panel));
         target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
         draw();
-        Round(0, 0, width, 4, 0, Palette::Accent);
         winrt::check_hresult(target->EndDraw());
         return Pixels();
     }

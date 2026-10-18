@@ -16,11 +16,11 @@ void DrawTextEntryPanel(UiPainter& painter, const TextEntryPanelView& view, floa
     const auto& entry = view.entry;
     const float left = x + K::Left;
     painter.Text(view.title, left, y + 26, 28, Palette::Text, K::BoxWidth, 44, true);
-    if (!view.hint.empty()) painter.Text(view.hint, left, y + 70, 16, 0x91a3b8, K::BoxWidth, 26);
+    if (!view.hint.empty()) painter.Text(view.hint, left, y + 70, 16, Palette::TextSecondary, K::BoxWidth, 26);
 
     // The text box: value, caret after it, and how much room is left. A text wider than the box
     // shows its end, where the caret is.
-    painter.Round(left, y + 114, K::BoxWidth, 64, 14, 0x182331);
+    painter.Round(left, y + 114, K::BoxWidth, 64, 14, Palette::Row);
     painter.Round(left, y + 176, K::BoxWidth, 2, 1, Palette::Accent);
     const std::wstring shown = view.masked ? std::wstring(entry.Value().size(), L'•') : entry.Value();
     const float text_width = K::BoxWidth - 172;
@@ -30,7 +30,7 @@ void DrawTextEntryPanel(UiPainter& painter, const TextEntryPanelView& view, floa
     const float caret = left + 22 + std::min(measured, text_width);
     painter.Round(caret + 2, y + 129, 2, 34, 1, Palette::Accent);
     painter.Text(std::to_wstring(entry.Value().size()) + L" / " + std::to_wstring(entry.MaxLength()),
-                 left + K::BoxWidth - 142, y + 132, 18, 0x91a3b8, 120, 30, false, false, false, true);
+                 left + K::BoxWidth - 142, y + 132, 18, Palette::TextSecondary, 120, 30, false, false, false, true);
     if (!view.notice.empty())
         painter.Text(view.notice, left, y + 192, 16, Palette::Warning, K::BoxWidth, 48, false, true);
 
@@ -38,9 +38,9 @@ void DrawTextEntryPanel(UiPainter& painter, const TextEntryPanelView& view, floa
         for (std::size_t column = 0; column < TextEntry::Columns; ++column) {
             const bool active = entry.Row() == row && entry.Column() == column;
             const float key_x = x + K::KeyX(column), key_y = y + K::KeyY(row);
-            painter.Round(key_x, key_y, K::KeyWidth, K::KeyHeight, 10, active ? Palette::Accent : 0x1b2736);
+            painter.Round(key_x, key_y, K::KeyWidth, K::KeyHeight, 10, active ? Palette::Accent : Palette::Graphite);
             painter.Text(std::wstring(1, entry.Character(row, column)), key_x, key_y, 22,
-                         active ? Palette::OnAccent : 0xe3eaf2, K::KeyWidth, K::KeyHeight, true, false, true);
+                         active ? Palette::OnAccent : Palette::TextHint, K::KeyWidth, K::KeyHeight, true, false, true);
         }
     }
     for (std::size_t key = 0; key < TextEntry::ActionCount; ++key) {
@@ -50,7 +50,7 @@ void DrawTextEntryPanel(UiPainter& painter, const TextEntryPanelView& view, floa
                              (action == TextEntry::Action::Symbols && entry.ShowingSymbols());
         const float key_x = x + K::KeyX(key * 2), key_y = y + K::KeyY(TextEntry::CharacterRows);
         const float width = K::KeyWidth * 2 + K::Gap;
-        const unsigned idle = action == TextEntry::Action::Done ? 0x20342f : latched ? 0x304c46 : 0x263445;
+        const unsigned idle = action == TextEntry::Action::Done ? Palette::RowActive : latched ? Palette::RowActive : Palette::Graphite;
         painter.Round(key_x, key_y, width, K::KeyHeight, 10, active ? Palette::Accent : idle);
         Text label = Text::DoneKey;
         switch (action) {
@@ -60,7 +60,7 @@ void DrawTextEntryPanel(UiPainter& painter, const TextEntryPanelView& view, floa
         case TextEntry::Action::Delete:  label = Text::DeleteKey; break;
         case TextEntry::Action::Done:    label = Text::DoneKey; break;
         }
-        painter.Text(I18n::Tr(label), key_x, key_y, 18, active ? Palette::OnAccent : latched ? 0x95ebca : 0xe3eaf2,
+        painter.Text(I18n::Tr(label), key_x, key_y, 18, active ? Palette::OnAccent : latched ? Palette::Text : Palette::TextHint,
                      width, K::KeyHeight, true, false, true);
     }
 }

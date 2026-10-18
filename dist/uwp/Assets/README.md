@@ -11,3 +11,6 @@ The `.scale-200` suffix is the file's real size (200% of the base size the manif
 `tools/xbox/package-appx.ps1` builds the `resources.pri` that maps one to the other.
 
 `InputPrompts/` is third-party; see its own README.
+
+`Fonts/` holds [Inter](https://rsms.me/inter/) by Rasmus Andersson (Regular, Medium, SemiBold,
+Bold), under the SIL Open Font License 1.1; see `Fonts/OFL.txt`.
