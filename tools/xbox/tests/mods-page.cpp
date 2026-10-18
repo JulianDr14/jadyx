@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include "jadyx/mods/mods_page.h"
+#include "jadyx/library/game_options_page.h"
 
 namespace {
 using namespace Jadyx::Mods;
@@ -23,12 +24,27 @@ bool Is(const ModsCommand& command, Kind kind, std::size_t index = 0, std::size_
 } // namespace
 
 int main() {
+    using Shell = Jadyx::GameOptionsLayout;
+    static_assert(ModsLayout::Columns * ModsLayout::CardWidth + (ModsLayout::Columns - 1) * ModsLayout::CardGapX <=
+        ModsLayout::Width - 2 * ModsLayout::Margin);
+    static_assert(ModsLayout::TabsTop - 4 >= Shell::BodyTop);
+    static_assert(ModsLayout::GridTop - Shell::HeroCollapse + ModsLayout::CardHeight <= Shell::GridBottom);
+    static_assert(ModsLayout::RowTop - Shell::HeroCollapse +
+        (ModsLayout::VisibleRows - 1) * ModsLayout::RowStride + ModsLayout::RowHeight <= Shell::ListBottom);
+    {
+        ModsPage page;
+        ModsCounts long_list{.installed = ModsLayout::VisibleRows + 3};
+        HandleModsInput(page, long_list, In::Up);
+        Check(page.selected == long_list.installed - 1 && page.first == 3, "long list follows last item");
+        HandleModsInput(page, long_list, In::Down);
+        Check(page.selected == 0 && page.first == 0, "long list wraps to first screen");
+    }
     ModsCounts counts{.installed = 8, .files = 3};
     {
         // Installed: the cursor wraps, the window follows it, A toggles the row.
         ModsPage page;
         Check(Is(HandleModsInput(page, counts, In::Up), Kind::Moved) && page.selected == 7, "wrap up");
-        Check(page.first == 2, "window follows");
+        Check(page.first == (8 > ModsLayout::VisibleRows ? 8 - ModsLayout::VisibleRows : 0), "window follows");
         Check(Is(HandleModsInput(page, counts, In::Confirm), Kind::Toggle, 7), "toggle");
         Check(Is(HandleModsInput(page, counts, In::Back), Kind::Close), "close");
     }
@@ -128,15 +144,16 @@ int main() {
               "back from the update");
     }
     {
-        // Explore: a grid of four columns; the cursor stays inside it and reports where it is.
+        // Explore: the four-column TV grid scrolls through a partial final row.
         ModsPage page;
         page.tab = ModsTab::Explore;
         ModsCounts store = counts;
         store.cards = 10;
         Check(Is(HandleModsInput(page, store, In::Left), Kind::None), "left edge");
         Check(Is(HandleModsInput(page, store, In::Right), Kind::Want, 1), "right");
-        Check(Is(HandleModsInput(page, store, In::Down), Kind::Want, 5), "down a row");
-        Check(Is(HandleModsInput(page, store, In::Down), Kind::Want, 9) && page.card_first == 4,
+        Check(Is(HandleModsInput(page, store, In::Down), Kind::Want, 5) && page.card_first == 4,
+              "down a row and scroll the large-card viewport");
+        Check(Is(HandleModsInput(page, store, In::Down), Kind::Want, 9) && page.card_first == 8,
               "down to the short last row; the grid scrolls");
         Check(Is(HandleModsInput(page, store, In::Down), Kind::None), "bottom edge");
         Check(Is(HandleModsInput(page, store, In::Up), Kind::Want, 5), "up");

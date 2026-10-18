@@ -408,6 +408,25 @@ void UiPainter::ScrollIndicator(float x, float y, float height, std::size_t firs
     Round(x - 2, track_y + (track_h - thumb_h) * position, 4, thumb_h, 2, Palette::Text, 0.85f);
 }
 
+void UiPainter::SelectionCard(float x, float y, float w, float h, bool focused, float radius) {
+    Round(x, y, w, h, radius, focused ? Palette::RowActive : Palette::Surface);
+    Outline(x + 0.5f, y + 0.5f, w - 1, h - 1, radius, Palette::Text,
+            focused ? 0.9f : 0.08f, focused ? 2.0f : 1.0f);
+}
+
+void UiPainter::PushClip(float x, float y, float w, float h) {
+    surface->PushAxisAlignedClip(D2D1::RectF(x, y, x + w, y + h), D2D1_ANTIALIAS_MODE_ALIASED);
+}
+
+void UiPainter::PopClip() {
+    surface->PopAxisAlignedClip();
+}
+
+void UiPainter::ManagementSurface(float x, float y, float w, float h, float footer) {
+    Round(x, y, w, h, 24, Palette::Canvas);
+    Round(x + 40, y + footer - 12, w - 80, 1, 0, Palette::Graphite);
+}
+
 void UiPainter::RowFrame(float x, float y, float width, float height, bool active, UiIcon icon) {
     // Idle rows sit flush with a hairline under them; the focused one lifts into a white 8% bar.
     if (active) {

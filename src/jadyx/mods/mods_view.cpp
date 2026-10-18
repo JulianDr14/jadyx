@@ -147,50 +147,35 @@ std::wstring DownloadLine(const std::vector<DownloadStatus>& downloads) {
     return line;
 }
 
-void DrawHeader(UiPainter& paint, const ModsView& view, float x, float y) {
-    const auto& snapshot = view.session.View();
-    const auto& mods = snapshot.mods;
-    paint.PageHeader(x + L::Margin, y + 26, UiIcon::Mods, Tr(Text::ModsTitle), view.game);
-    const float right = x + L::Width - L::Margin;
-    std::wstring summary;
-    unsigned color = Palette::Accent;
-    if (const auto active = ActiveCount(mods)) {
-        summary = I18n::Plural(Text::ModsActiveOne, Text::ModsActiveOther, active);
-        if (const auto conflicts = ConflictCount(mods)) {
-            summary += Dot;
-            summary += I18n::Plural(Text::ModsConflictsOne, Text::ModsConflictsOther, conflicts);
-            color = Palette::Warning;
-        }
-    }
-    if (const auto updates = view.session.Store().updates.size()) {
-        if (!summary.empty()) summary += Dot;
-        summary += I18n::Plural(Text::ModsUpdatesOne, Text::ModsUpdatesOther, updates);
-    }
-    if (!summary.empty())
-        paint.Text(summary, right - 460, y + 32, 20, color, 460, 30, true, false, false, true);
-    if (snapshot.loaded)
-        paint.Text(I18n::Format(Text::ModsUsage, {Size(snapshot.mods_bytes), Size(snapshot.free_space)}),
-                   right - 460, y + 64, 14, Palette::TextSecondary, 460, 22, false, false, false, true);
-}
-
 void DrawTabs(UiPainter& paint, const ModsView& view, float x, float y) {
+    paint.Round(x + L::Margin, y - 4, L::Width - 2 * L::Margin, L::TabHeight + 8, 24, Palette::Surface);
     float left = x + L::Margin;
-    paint.ButtonGlyph(L"LB", left, y + 3, ButtonColor::Neutral);
+    paint.Badge(view.previous_tab, left + 18, y + L::TabHeight / 2, Palette::Text);
     left += 50;
     const std::wstring labels[ModsTabCount] = {
         std::wstring{Tr(Text::ModsTabInstalled)} + L"  " + std::to_wstring(view.session.View().mods.size()),
         std::wstring{Tr(Text::ModsTabExplore)}, std::wstring{Tr(Text::ModsTabFiles)}};
     for (std::size_t i = 0; i < ModsTabCount; ++i) {
         const bool active = static_cast<std::size_t>(view.page.tab) == i;
-        const float width = paint.MeasureText(labels[i], 17, true) + 36;
-        paint.Round(left, y, width, L::TabHeight, L::TabHeight / 2, active ? Palette::Accent : Palette::Row);
-        paint.Text(labels[i], left, y, 17, active ? Palette::OnAccent : Palette::TextSecondary, width,
-                   L::TabHeight, true, false, true);
+        const float width = paint.MeasureType(labels[i], TypeRole::LabelLarge) + 36;
+        paint.Round(left, y, width, L::TabHeight, L::TabHeight / 2, active && view.tabs_focused ? Palette::Accent : Palette::Row);
+        paint.Type(labels[i], TypeRole::LabelLarge, left, y + 6, width,
+                   active && view.tabs_focused ? Palette::OnAccent : active ? Palette::Text : Palette::TextSecondary,
+                   1, TextAlign::Center);
+        paint.Target(UiTarget::ManagerTab, i, left, y, width, L::TabHeight);
         left += width + 10;
     }
-    paint.ButtonGlyph(L"RB", left + 2, y + 3, ButtonColor::Neutral);
+    paint.Badge(view.next_tab, left + 20, y + L::TabHeight / 2, Palette::Text);
     // Downloads keep going on the other tabs: their progress stays in sight.
     const auto downloads = view.session.Downloads();
+    if (downloads.empty() && view.page.tab == ModsTab::Installed) {
+        const auto& mods = view.session.View().mods;
+        auto summary = I18n::Plural(Text::ModsActiveOne, Text::ModsActiveOther, ActiveCount(mods));
+        const auto conflicts = ConflictCount(mods);
+        if (conflicts) summary += Dot + I18n::Plural(Text::ModsConflictsOne, Text::ModsConflictsOther, conflicts);
+        paint.Type(summary, TypeRole::Label, x + L::Width - L::Margin - 360, y + 7,
+                   360, conflicts ? Palette::Warning : Palette::TextHint, 1, TextAlign::Trailing);
+    }
     if (!downloads.empty() && view.page.tab != ModsTab::Explore) {
         const auto& first = downloads.front();
         std::wstring text = I18n::Plural(Text::ModsDownloadsOne, Text::ModsDownloadsOther, downloads.size());
@@ -200,9 +185,20 @@ void DrawTabs(UiPainter& paint, const ModsView& view, float x, float y) {
     }
 }
 
+constexpr float ListHeight = L::VisibleRows * L::RowStride - (L::RowStride - L::RowHeight);
+
 void DrawScrollMarks(UiPainter& paint, std::size_t first, std::size_t count, float x, float y) {
-    paint.ScrollIndicator(x + L::Width - L::Margin + 14, y + L::RowTop,
-                          L::VisibleRows * L::RowStride - 6, first, L::VisibleRows, count);
+    paint.ScrollIndicator(x + L::Width - L::Margin + 14, y + L::RowTop, ListHeight, first, L::VisibleRows, count);
+}
+
+/// The list's first row as drawn: eased between windows while the window moves.
+float ListFirst(const ModsView& view) {
+    return view.scroll < 0 ? static_cast<float>(view.page.first) : view.scroll;
+}
+
+/// Rows glide under the tabs: the list is clipped to its own band.
+void BeginList(UiPainter& paint, float x, float y) {
+    paint.PushClip(x, y + L::RowTop - 4, L::Width, ListHeight + 8);
 }
 
 void DrawMessage(UiPainter& paint, UiIcon icon, std::wstring_view message, float x, float y) {
@@ -228,26 +224,27 @@ void DrawInstalled(UiPainter& paint, const ModsView& view, float x, float y) {
         return;
     }
     const auto& page = view.page;
-    const std::size_t end = std::min(mods.size(), page.first + L::VisibleRows);
-    for (std::size_t i = page.first; i < end; ++i) {
+    const float first = ListFirst(view);
+    const std::size_t end = std::min(mods.size(), static_cast<std::size_t>(first) + L::VisibleRows + 1);
+    BeginList(paint, x, y);
+    for (std::size_t i = static_cast<std::size_t>(first); i < end; ++i) {
         const auto& mod = mods[i];
-        const float top = y + L::RowTop + static_cast<float>(i - page.first) * L::RowStride;
+        const float top = y + L::RowTop + (static_cast<float>(i) - first) * L::RowStride;
         const float left = x + L::Margin;
-        const bool active = i == page.selected;
+        const bool active = i == page.selected && view.content_focused;
         const bool on = mod.record.enabled;
         // A mod being moved is lifted: an accent rim around its row.
         if (active && page.moving) paint.Round(left - 3, top - 3, RowWidth + 6, L::RowHeight + 6, 15, Palette::Accent);
-        paint.Round(left, top, RowWidth, L::RowHeight, 12, active ? Palette::RowActive : Palette::Row);
-        if (active && !page.moving) paint.Round(left, top + 12, 3, L::RowHeight - 24, 1.5f, Palette::Accent);
+        paint.SelectionCard(left, top, RowWidth, L::RowHeight, active, 12);
         // Its place in the order: 1 wins over 2.
-        paint.Round(left + 16, top + 14, 28, 28, 14, on ? Palette::Track : Palette::Row);
-        paint.Text(std::to_wstring(i + 1), left + 16, top + 14, 14, on ? Palette::Text : Palette::TextSecondary,
+        paint.Round(left + 16, top + 6, 28, 28, 14, on ? Palette::Track : Palette::Row);
+        paint.Text(std::to_wstring(i + 1), left + 16, top + 6, 14, on ? Palette::Text : Palette::TextSecondary,
                    28, 28, true, false, true);
-        paint.Text(Utf8ToUtf16(mod.record.name), left + 60, top + 5, 19,
-                   on || active ? Palette::Text : Palette::TextHint, RowWidth - 170, 28, active);
+        paint.Text(Utf8ToUtf16(mod.record.name), left + 60, top + 2, 17,
+                   on || active ? Palette::Text : Palette::TextHint, RowWidth - 170, 24, active);
         std::wstring detail = on ? Parts(mod.contents.parts) : std::wstring{Tr(Text::ModsOff)};
         const float detail_width = paint.MeasureText(detail, 14, false);
-        paint.Text(detail, left + 60, top + 31, 14, Palette::TextSecondary, RowWidth - 170, 22);
+        paint.Text(detail, left + 60, top + 24, 12, Palette::TextSecondary, RowWidth - 170, 16);
         // What needs the player's eye, after the parts: a problem first, then an update.
         std::wstring flag;
         unsigned flag_color = Palette::Warning;
@@ -259,10 +256,12 @@ void DrawInstalled(UiPainter& paint, const ModsView& view, float x, float y) {
             flag_color = Palette::Accent;
         }
         if (!flag.empty())
-            paint.Text(L"·  " + flag, left + 68 + detail_width, top + 31, 14, flag_color,
-                       RowWidth - 180 - detail_width, 22);
-        paint.Switch(left + RowWidth - 76, top + 14, on, active);
+            paint.Text(L"·  " + flag, left + 68 + detail_width, top + 24, 12, flag_color,
+                       RowWidth - 180 - detail_width, 16);
+        paint.Switch(left + RowWidth - 76, top + 6, on, active);
+        paint.Target(UiTarget::ManagerRow, i, left, top, RowWidth, L::RowHeight);
     }
+    paint.PopClip();
     DrawScrollMarks(paint, page.first, mods.size(), x, y);
 }
 
@@ -272,7 +271,7 @@ void DrawInstalledDetail(UiPainter& paint, const ModsView& view, float x, float 
     const float left = x + L::Margin;
     const float top = y + L::Detail;
     if (view.page.moving) {
-        paint.Text(Tr(Text::ModsMovingHint), left, top, 16, Palette::Accent, RowWidth, 24);
+        paint.Text(Tr(Text::ModsMovingHint), left, top, 14, Palette::Accent, RowWidth, 20);
         return;
     }
     if (view.page.selected >= mods.size()) return;
@@ -299,11 +298,11 @@ void DrawInstalledDetail(UiPainter& paint, const ModsView& view, float x, float 
     }
     // Then what it changes, which the conflicts already speak of when there are some.
     if (const auto changes = ChangesLine(mod.contents); !changes.empty() && (line.empty() || color == Palette::Accent)) {
-        const float status = line.empty() ? 0 : paint.MeasureText(line + Dot, 16, false);
-        if (!line.empty()) paint.Text(line + Dot, left, top, 16, color, RowWidth, 24);
-        paint.Text(changes, left + status, top, 16, Palette::Text, RowWidth - status, 24);
+        const float status = line.empty() ? 0 : paint.MeasureText(line + Dot, 14, false);
+        if (!line.empty()) paint.Text(line + Dot, left, top, 14, color, RowWidth, 20);
+        paint.Text(changes, left + status, top, 14, Palette::TextHint, RowWidth - status, 20);
     } else {
-        paint.Text(line, left, top, 16, color, RowWidth, 24);
+        paint.Text(line, left, top, 14, color, RowWidth, 20);
     }
     std::wstring origin = Origin(mod.record.source);
     if (!mod.record.source.version.empty() && mod.record.source.kind == SourceKind::GameBanana)
@@ -311,7 +310,7 @@ void DrawInstalledDetail(UiPainter& paint, const ModsView& view, float x, float 
     origin += Dot + Size(mod.contents.bytes);
     const bool notice = !view.notice.empty();
     paint.Text(notice ? std::wstring{view.notice} : origin + std::wstring{Dot} + std::wstring{Tr(Text::ModsAppliesAtBoot)},
-               left, top + 28, 14, notice ? Palette::Warning : Palette::TextSecondary, RowWidth, 22);
+               left, top + 20, 13, notice ? Palette::Warning : Palette::TextSecondary, RowWidth, 18);
 }
 
 void DrawFiles(UiPainter& paint, const ModsView& view, float x, float y) {
@@ -321,36 +320,41 @@ void DrawFiles(UiPainter& paint, const ModsView& view, float x, float y) {
         DrawMessage(paint, UiIcon::Archive, Tr(Text::ModsFolderEmpty), x, y);
     } else {
         const auto& page = view.page;
-        const std::size_t end = std::min(rows.size(), page.first + L::VisibleRows);
-        for (std::size_t i = page.first; i < end; ++i) {
+        const float first = ListFirst(view);
+        const std::size_t end = std::min(rows.size(), static_cast<std::size_t>(first) + L::VisibleRows + 1);
+        BeginList(paint, x, y);
+        for (std::size_t i = static_cast<std::size_t>(first); i < end; ++i) {
             const auto& row = rows[i];
-            const float top = y + L::RowTop + static_cast<float>(i - page.first) * L::RowStride;
-            const bool active = i == page.selected;
+            const float top = y + L::RowTop + (static_cast<float>(i) - first) * L::RowStride;
+            const bool active = i == page.selected && view.content_focused;
             const UiIcon icon = row.kind == FileRow::Kind::Archive ? UiIcon::Archive : UiIcon::Folder;
-            paint.RowFrame(x + L::Margin, top, RowWidth, L::RowHeight, active, icon);
+            paint.Target(UiTarget::ManagerRow, i, x + L::Margin, top, RowWidth, L::RowHeight);
+            paint.SelectionCard(x + L::Margin, top, RowWidth, L::RowHeight, active, 12);
+            paint.Icon(icon, x + L::Margin + 20, top + (L::RowHeight - 32) / 2, Palette::TextSecondary);
             const unsigned color = row.kind == FileRow::Kind::AddFolder ? Palette::Accent : Palette::Text;
-            paint.Text(row.name, x + L::Margin + 68, top + 14, 19, color, RowWidth - 120, 28, active);
+            paint.Type(row.name, TypeRole::BodyLarge, x + L::Margin + 68, top + 7, RowWidth - 120, color);
             if (row.kind != FileRow::Kind::Archive)
                 paint.Chevron(x + L::Margin + RowWidth - 28, top + L::RowHeight / 2,
                               active ? Palette::Accent : Palette::TextSecondary);
         }
+        paint.PopClip();
         DrawScrollMarks(paint, page.first, rows.size(), x, y);
     }
-    const float top = y + L::Detail;
-    const std::wstring where = snapshot.folder.empty() ? std::wstring{Tr(Text::ModsSourcesHint)} : snapshot.folder_name;
-    paint.Text(where, x + L::Margin, top, 15, Palette::TextHint, RowWidth, 44, false, true);
-    if (!view.notice.empty())
-        paint.Text(view.notice, x + L::Margin, top + 30, 15, Palette::Warning, RowWidth, 22);
+
 }
 
 // Explore.
 
+constexpr float RowPitch = L::CardHeight + L::CardGapY;
+
 float CardX(std::size_t column, float x) {
-    return x + L::Margin + static_cast<float>(column) * (L::CardWidth + L::CardGapX);
+    return x + L::Margin + (RowWidth - L::Columns * L::CardWidth - (L::Columns - 1) * L::CardGapX) / 2 +
+           static_cast<float>(column) * (L::CardWidth + L::CardGapX);
 }
 
-float CardY(std::size_t row, float y) {
-    return y + L::GridTop + static_cast<float>(row) * (L::CardHeight + L::CardGapY);
+/// `row` counts from the first row shown, which may be part-way scrolled.
+float CardY(float row, float y) {
+    return y + L::GridTop + row * RowPitch;
 }
 
 /// The store's picture for `url` in the rectangle, or a tile with `icon` while it downloads.
@@ -362,28 +366,60 @@ void DrawPicture(UiPainter& paint, const ModSession& session, const std::string&
     paint.Icon(icon, x + w / 2 - 16, y + h / 2 - 16, Palette::TextSecondary);
 }
 
+/// A label that stays legible over any picture: dark, or white for what stands out.
+float OverlayChip(UiPainter& paint, std::wstring_view text, float x, float y, bool light = false) {
+    const float width = paint.MeasureType(text, TypeRole::Label) + 20;
+    paint.Round(x, y, width, 24, 12, light ? Palette::Text : 0x000000, light ? 1.0f : 0.62f);
+    paint.Type(text, TypeRole::Label, x + 10, y + 4, width - 18, light ? Palette::OnAccent : Palette::Text);
+    return width;
+}
+
+/// A mod as the store shows it: the picture with its numbers over the bottom edge, the name,
+/// who made it and its category; the focused card offers its button.
 void DrawCard(UiPainter& paint, const ModsView& view, const StoreCard& card, bool active, bool installed,
               float x, float y) {
-    const float w = L::CardWidth;
-    if (active) paint.Round(x - 4, y - 4, w + 8, L::CardHeight + 8, 16, Palette::Accent);
-    paint.Round(x, y, w, L::CardHeight, 12, active ? Palette::RowActive : Palette::Row);
+    constexpr float w = L::CardWidth, h = L::CardHeight, ph = L::PictureHeight, pad = 16;
+    const unsigned surface = active ? Palette::RowActive : Palette::Surface;
+    paint.Round(x, y, w, h, 16, surface);
     const UiIcon icon = card.translation ? UiIcon::Language : UiIcon::Mods;
-    DrawPicture(paint, view.session, card.thumbnail, icon, x, y, w, L::PictureHeight);
-    if (card.sensitive) Chip(paint, Tr(Text::ModsSensitive), x + 8, y + 8, Palette::Warning, Palette::OnAccent);
+    DrawPicture(paint, view.session, card.thumbnail, icon, x, y, w, ph + 16);
+    // The text sits on the card itself: square off the picture's lower corners under it.
+    paint.Round(x, y + ph, w, h - ph, 16, surface);
+    paint.Round(x, y + ph, w, 16, 0, surface);
+    const bool gamebanana = view.session.Store().source == StoreSource::GameBanana;
+    if (gamebanana) {
+        // A soft shade under the numbers over the picture.
+        paint.Round(x, y + ph - 44, w, 44, 0, 0x000000, 0.18f);
+        paint.Round(x, y + ph - 28, w, 28, 0, 0x000000, 0.28f);
+        paint.Type(L"♥ " + Count(card.likes), TypeRole::LabelLarge, x + pad, y + ph - 24, w / 2 - pad,
+                   Palette::Text);
+        paint.Type(I18n::Format(Text::ModsViews, {Count(card.views)}), TypeRole::LabelLarge, x + w / 2,
+                   y + ph - 24, w / 2 - pad, Palette::Text, 1, TextAlign::Trailing);
+    }
+    if (card.sensitive) OverlayChip(paint, Tr(Text::ModsSensitive), x + 10, y + 10);
     if (installed) {
         const auto label = Tr(Text::ModsInstalledBadge);
-        Chip(paint, label, x + w - 24 - paint.MeasureText(label, 13, true), y + 8, Palette::Accent, Palette::OnAccent);
+        OverlayChip(paint, label, x + w - 30 - paint.MeasureType(label, TypeRole::Label), y + 10, true);
     }
-    paint.Text(Utf8ToUtf16(card.name), x + 12, y + L::PictureHeight + 8, 16, Palette::Text, w - 24, 24, true);
-    std::wstring meta;
-    if (view.session.Store().source == StoreSource::Cnx) {
-        meta = std::wstring{Tr(card.translation ? Text::ModsCnxTranslation : Text::ModsCnxModification)};
-        if (!card.size.empty()) meta += Dot + Utf8ToUtf16(card.size);
+    paint.Type(Utf8ToUtf16(card.name), TypeRole::HeadlineSmall, x + pad, y + ph + 12, w - 2 * pad, Palette::Text);
+    std::wstring by;
+    if (gamebanana) {
+        if (!card.author.empty()) by = I18n::Format(Text::ModsBy, {Utf8ToUtf16(card.author)});
     } else {
-        meta = L"♥ " + Count(card.likes) + Dot + I18n::Format(Text::ModsViews, {Count(card.views)});
-        if (!card.author.empty()) meta += Dot + Utf8ToUtf16(card.author);
+        by = std::wstring{Tr(card.translation ? Text::ModsCnxTranslation : Text::ModsCnxModification)};
     }
-    paint.Text(meta, x + 12, y + L::PictureHeight + 32, 13, Palette::TextSecondary, w - 24, 20);
+    paint.Type(by, TypeRole::Label, x + pad, y + ph + 46, w - 2 * pad, Palette::TextSecondary);
+    const std::wstring kind = gamebanana ? Utf8ToUtf16(card.category) : Utf8ToUtf16(card.size);
+    const float row = y + ph + 70;
+    float kind_width = w - 2 * pad;
+    if (active) {
+        const auto open = Tr(Text::ModsPromptOpen);
+        const float pill = paint.PillWidth(open, view.confirm);
+        paint.PillButton(open, view.confirm, view.confirm_color, x + w - pad - pill, row, true, 30);
+        kind_width -= pill + 12;
+    }
+    paint.Type(kind, TypeRole::LabelLarge, x + pad, row + 6, kind_width, Palette::TextHint);
+    if (active) paint.Outline(x + 0.5f, y + 0.5f, w - 1, h - 1, 16, Palette::Text, 0.9f, 2);
 }
 
 void DrawExplore(UiPainter& paint, const ModsView& view, float x, float y) {
@@ -392,24 +428,25 @@ void DrawExplore(UiPainter& paint, const ModsView& view, float x, float y) {
     if (store.cards.empty()) {
         switch (store.status) {
         case StoreStatus::Offline:
-            DrawMessage(paint, UiIcon::Mods, I18n::Format(Text::ModsStoreOffline, {Tr(SourceText(store.source))}), x, y);
+            DrawMessage(paint, UiIcon::Mods, I18n::Format(Text::ModsStoreOffline, {Tr(SourceText(store.source))}), x, y + 40);
             return;
         case StoreStatus::Empty:
             DrawMessage(paint, UiIcon::Mods,
                         Tr(store.search.empty() && store.category.empty() && !store.adult ? Text::ModsStoreEmpty
                                                                                            : Text::ModsStoreNoResults),
-                        x, y);
+                        x, y + 40);
             return;
         case StoreStatus::NoGame:
-            DrawMessage(paint, UiIcon::Game, I18n::Format(Text::ModsStoreNoGame, {view.game}), x, y);
+            DrawMessage(paint, UiIcon::Game, I18n::Format(Text::ModsStoreNoGame, {view.game}), x, y + 40);
             return;
         default:
             // Cards to come: their outlines, so the grid does not jump when they arrive.
-            for (std::size_t i = 0; i < L::Columns * L::GridRows; ++i) {
-                const float cx = CardX(i % L::Columns, x), cy = CardY(i / L::Columns, y);
-                paint.Round(cx, cy, L::CardWidth, L::CardHeight, 12, Palette::Row);
-                paint.Round(cx, cy, L::CardWidth, L::PictureHeight, 12, Palette::Track);
-                paint.Round(cx + 12, cy + L::PictureHeight + 12, L::CardWidth * 0.6f, 12, 6, Palette::Track);
+            for (std::size_t i = 0; i < L::Columns * 2; ++i) {
+                const float cx = CardX(i % L::Columns, x), cy = CardY(static_cast<float>(i / L::Columns), y);
+                paint.Round(cx, cy, L::CardWidth, L::CardHeight, 16, Palette::Surface);
+                paint.Round(cx, cy, L::CardWidth, L::PictureHeight, 16, Palette::Track);
+                paint.Round(cx + 16, cy + L::PictureHeight + 18, L::CardWidth * 0.6f, 14, 7, Palette::Track);
+                paint.Round(cx + 16, cy + L::PictureHeight + 46, L::CardWidth * 0.35f, 10, 5, Palette::Track);
             }
             return;
         }
@@ -419,53 +456,73 @@ void DrawExplore(UiPainter& paint, const ModsView& view, float x, float y) {
     for (const auto& mod : view.session.View().mods)
         if (mod.record.source.kind == SourceKind::GameBanana) installed.insert(mod.record.source.mod_id);
     const bool gamebanana = store.source == StoreSource::GameBanana;
-    const std::size_t end = std::min(store.cards.size(), page.card_first + L::Columns * L::GridRows);
-    for (std::size_t i = page.card_first; i < end; ++i) {
-        const std::size_t slot = i - page.card_first;
-        const auto& card = store.cards[i];
-        DrawCard(paint, view, card, i == page.card, gamebanana && installed.contains(card.id),
-                 CardX(slot % L::Columns, x), CardY(slot / L::Columns, y));
+    const float first = view.grid_scroll < 0 ? static_cast<float>(page.card_first / L::Columns) : view.grid_scroll;
+    const std::size_t rows = (store.cards.size() + L::Columns - 1) / L::Columns;
+    const std::size_t begin = static_cast<std::size_t>(first);
+    // The rows glide under the filters; the next row peeks under the focused one.
+    paint.PushClip(x, y + L::GridTop - 6, L::Width, L::Height - L::GridTop + 6);
+    for (std::size_t row = begin; row < std::min(rows, begin + 3); ++row) {
+        const float top = CardY(static_cast<float>(row) - first, y);
+        for (std::size_t column = 0; column < L::Columns; ++column) {
+            const std::size_t i = row * L::Columns + column;
+            if (i >= store.cards.size()) break;
+            const auto& card = store.cards[i];
+            paint.Target(UiTarget::ManagerCard, i, CardX(column, x), top, L::CardWidth, L::CardHeight);
+            DrawCard(paint, view, card, i == page.card && view.content_focused,
+                     gamebanana && installed.contains(card.id), CardX(column, x), top);
+        }
     }
-    paint.ScrollIndicator(x + L::Width - L::Margin + 14, y + L::GridTop,
-                          L::GridRows * L::CardHeight + (L::GridRows - 1) * L::CardGapY, page.card_first,
-                          L::Columns * L::GridRows, store.cards.size(), store.loading_more);
+    paint.PopClip();
+    // The whole height the grid shows, down to the footer.
+    paint.ScrollIndicator(x + L::Width - L::Margin + 14, y + L::GridTop, view.grid_bottom - 8 - L::GridTop,
+                          page.card_first / L::Columns, 1, rows, store.loading_more);
 }
 
-/// Under the grid: where the mods come from and how they are filtered, then the downloads.
-void DrawExploreFooter(UiPainter& paint, const ModsView& view, float x, float y) {
+/// Over the grid: what the store lists (category, order, search) and where it comes from.
+void DrawExploreFilters(UiPainter& paint, const ModsView& view, float x, float y) {
     const auto& store = view.session.Store();
-    const float left = x + L::Margin;
-    const float top = y + L::Detail;
-    std::wstring line{Tr(SourceText(store.source))};
+    const float left = x + L::Margin, top = y + L::FilterTop + 2;
+    float chip = left;
     if (store.source == StoreSource::GameBanana) {
-        if (store.game) line += Dot + Utf8ToUtf16(store.game->name);
-        if (store.adult || !store.category.empty()) line += Dot + CategoryLabel(store);
-        line += Dot;
-        line += Tr(SortText(store.sort));
+        const bool filtered = store.adult || !store.category.empty();
+        chip += paint.Chip(CategoryLabel(store), chip, top, filtered ? Palette::Text : Palette::TextHint) + 8;
+        chip += paint.Chip(Tr(SortText(store.sort)), chip, top, Palette::TextHint) + 8;
     }
-    if (!store.search.empty()) line += Dot + L"“" + Utf8ToUtf16(store.search) + L"”";
-    if (store.hidden) line += Dot + I18n::Plural(Text::ModsHiddenOne, Text::ModsHiddenOther, store.hidden);
-    if (store.loading_more) line += Dot + std::wstring{Tr(Text::ModsLoadingMore)};
-    paint.Text(line, left, top, 15, Palette::TextHint, RowWidth, 24);
+    if (!store.search.empty())
+        chip += paint.Chip(L"“" + Utf8ToUtf16(store.search) + L"”", chip, top, Palette::Text) + 8;
+    const float right = left + RowWidth;
     const auto downloads = view.session.Downloads();
     if (!downloads.empty()) {
-        paint.Text(DownloadLine(downloads), left, top + 24, 14, Palette::Accent, RowWidth, 22);
+        // The downloads, with the first one's bar at the end of the line.
+        constexpr float bar = 160;
         const auto& first = downloads.front();
-        Bar(paint, left, top + 48, RowWidth, first.done, first.total);
-    } else if (!view.notice.empty()) {
-        paint.Text(view.notice, left, top + 26, 15, Palette::Warning, RowWidth, 22);
+        Bar(paint, right - bar, top + 11, bar, first.done, first.total);
+        paint.Type(DownloadLine(downloads), TypeRole::Label, chip + 16, top + 6, right - bar - 16 - chip - 16,
+                   Palette::Text, 1, TextAlign::Trailing);
+        return;
     }
+    std::wstring line;
+    if (!view.notice.empty()) {
+        line = view.notice;
+    } else {
+        line = Tr(SourceText(store.source));
+        if (store.source == StoreSource::GameBanana && store.game) line += Dot + Utf8ToUtf16(store.game->name);
+        if (store.hidden) line += Dot + I18n::Plural(Text::ModsHiddenOne, Text::ModsHiddenOther, store.hidden);
+        if (store.loading_more) line += Dot + std::wstring{Tr(Text::ModsLoadingMore)};
+    }
+    paint.Type(line, TypeRole::Label, chip + 16, top + 6, right - chip - 16,
+               view.notice.empty() ? Palette::TextSecondary : Palette::Warning, 1, TextAlign::Trailing);
 }
 
 /// A card over the dimmed page.
 void Sheet(UiPainter& paint, float x, float y, float width, float height) {
-    paint.Round(x, y, L::Width, L::Height, 24, 0x0b111a);
-    paint.Round(x + (L::Width - width) / 2, y + (L::Height - height) / 2, width, height, 20, Palette::Panel);
+    paint.Round(x, y, L::Width, L::Height, 24, Palette::Canvas);
+    paint.Round(x + (L::Width - width) / 2, y + std::max(104.0f, (L::Height - height) / 2), width, height, 20, Palette::Panel);
 }
 
 void DrawDetail(UiPainter& paint, const ModsView& view, float x, float y) {
     const auto& store = view.session.Store();
-    paint.Round(x, y, L::Width, L::Height, 24, Palette::Panel);
+    paint.ManagementSurface(x, y, L::Width, L::Height, L::Footer);
     if (!store.detail) {
         const auto text = store.detail_failed ? I18n::Format(Text::ModsStoreOffline, {Tr(Text::ModsSourceGameBanana)})
                                               : std::wstring{Tr(Text::ModsDetailLoading)};
@@ -477,7 +534,7 @@ void DrawDetail(UiPainter& paint, const ModsView& view, float x, float y) {
     const auto& page = view.page;
     // Left: the pictures and the numbers.
     const float left = x + L::Margin;
-    const float top = y + 36;
+    const float top = y + 108;
     constexpr float picture_w = 480, picture_h = 270;
     const auto& images = detail.images;
     const std::string url = images.empty() ? std::string{} : images[std::min(page.image, images.size() - 1)];
@@ -486,10 +543,10 @@ void DrawDetail(UiPainter& paint, const ModsView& view, float x, float y) {
     if (images.size() > 1) {
         const auto count = std::to_wstring(std::min(page.image, images.size() - 1) + 1) + L" / " +
                            std::to_wstring(images.size());
-        paint.ButtonGlyph(L"LB", left, top + picture_h + 10, ButtonColor::Neutral);
+        paint.ButtonGlyph(view.previous_tab, left, top + picture_h + 10, ButtonColor::Neutral);
         paint.Text(count, left + 44, top + picture_h + 12, 16, Palette::TextSecondary, picture_w - 88, 28, false,
                    false, true);
-        paint.ButtonGlyph(L"RB", left + picture_w - 38, top + picture_h + 10, ButtonColor::Neutral);
+        paint.ButtonGlyph(view.next_tab, left + picture_w - 38, top + picture_h + 10, ButtonColor::Neutral);
     }
     float line_y = top + picture_h + 52;
     const auto stat_line = [&](const std::wstring& text, unsigned color) {
@@ -575,7 +632,7 @@ void DrawStoreMenu(UiPainter& paint, const ModsView& view, float x, float y) {
     const float height = 90 + static_cast<float>(actions.size()) * 62;
     Sheet(paint, x, y, width, height);
     const float left = x + (L::Width - width) / 2 + 30;
-    const float top = y + (L::Height - height) / 2 + 24;
+    const float top = y + std::max(104.0f, (L::Height - height) / 2) + 24;
     const float inner = width - 60;
     paint.Text(Tr(Text::ModsStoreMenuTitle), left, top, 22, Palette::Text, inner, 32, true);
     for (std::size_t i = 0; i < actions.size(); ++i) {
@@ -623,13 +680,13 @@ void DrawStoreMenu(UiPainter& paint, const ModsView& view, float x, float y) {
 void DrawKeyboard(UiPainter& paint, const ModsView& view, float x, float y) {
     if (!view.page.keyboard) return;
     using K = TextEntryPanelLayout;
-    paint.Round(x, y, L::Width, L::Height, 24, 0x0b111a);
+    paint.Round(x, y, L::Width, L::Height, 24, Palette::Canvas);
     const float left = x + (L::Width - K::Width) / 2;
-    paint.Round(left, y, K::Width, 600, 22, 0x111923);
+    paint.Round(left, y + 104, K::Width, K::Height, 22, Palette::Surface);
     const bool search = view.page.keyboard_for == KeyboardFor::Search;
     DrawTextEntryPanel(paint, {*view.page.keyboard, Tr(search ? Text::ModsSearchTitle : Text::ModsGameTitle),
                                Tr(search ? Text::ModsSearchHint : Text::ModsGameHint), {}},
-                       left, y);
+                       left, y + 104);
 }
 
 void DrawGames(UiPainter& paint, const ModsView& view, float x, float y) {
@@ -637,7 +694,7 @@ void DrawGames(UiPainter& paint, const ModsView& view, float x, float y) {
     constexpr float width = 760, height = 520;
     Sheet(paint, x, y, width, height);
     const float left = x + (L::Width - width) / 2 + 30;
-    const float top = y + (L::Height - height) / 2 + 24;
+    const float top = y + std::max(104.0f, (L::Height - height) / 2) + 24;
     const float inner = width - 60;
     paint.Text(Tr(Text::ModsGamesTitle), left, top, 22, Palette::Text, inner, 32, true);
     if (store.searching_games || store.games.empty()) {
@@ -666,7 +723,7 @@ void DrawActions(UiPainter& paint, const ModsView& view, float x, float y) {
     const float height = 122 + static_cast<float>(actions.size()) * 64;
     Sheet(paint, x, y, width, height);
     const float left = x + (L::Width - width) / 2 + 30;
-    const float top = y + (L::Height - height) / 2 + 26;
+    const float top = y + std::max(104.0f, (L::Height - height) / 2) + 26;
     paint.Text(Utf8ToUtf16(mods[view.page.selected].record.name), left, top, 22, Palette::Text, width - 60, 32, true);
     for (std::size_t i = 0; i < actions.size(); ++i) {
         const float row = top + 56 + static_cast<float>(i) * 64;
@@ -693,7 +750,7 @@ void DrawContents(UiPainter& paint, const ModsView& view, float x, float y) {
     constexpr float width = 900, height = 600;
     Sheet(paint, x, y, width, height);
     const float left = x + (L::Width - width) / 2 + 30;
-    const float top = y + (L::Height - height) / 2 + 24;
+    const float top = y + std::max(104.0f, (L::Height - height) / 2) + 24;
     const float inner = width - 60;
     paint.Text(Utf8ToUtf16(mod.record.name), left, top, 22, Palette::Text, inner, 32, true);
     paint.Text(I18n::Plural(Text::ModsFilesOne, Text::ModsFilesOther, listing.size()) + Dot + Size(mod.contents.bytes),
@@ -725,7 +782,7 @@ void DrawCategories(UiPainter& paint, const ModsView& view, float x, float y) {
     constexpr float width = 760, height = 600;
     Sheet(paint, x, y, width, height);
     const float left = x + (L::Width - width) / 2 + 30;
-    const float top = y + (L::Height - height) / 2 + 24;
+    const float top = y + std::max(104.0f, (L::Height - height) / 2) + 24;
     const float inner = width - 60;
     std::wstring title{Tr(Text::ModsCategoriesTitle)};
     for (const auto& category : store.browse) title += L" › " + Utf8ToUtf16(category.name);
@@ -793,7 +850,7 @@ void DrawRemove(UiPainter& paint, const ModsView& view, float x, float y) {
     constexpr float width = 640, height = 180;
     Sheet(paint, x, y, width, height);
     const float left = x + (L::Width - width) / 2 + 30;
-    const float top = y + (L::Height - height) / 2 + 30;
+    const float top = y + std::max(104.0f, (L::Height - height) / 2) + 30;
     paint.Icon(UiIcon::Remove, left, top + 6, Palette::Warning);
     paint.Text(I18n::Format(Text::ModsRemoveConfirm, {Utf8ToUtf16(mods[view.page.selected].record.name)}),
                left + 48, top, 20, Palette::Text, width - 110, 120, false, true);
@@ -806,7 +863,7 @@ void DrawVariants(UiPainter& paint, const ModsView& view, float x, float y) {
     constexpr float width = 860, height = 540;
     Sheet(paint, x, y, width, height);
     const float left = x + (L::Width - width) / 2 + 30;
-    const float top = y + (L::Height - height) / 2 + 24;
+    const float top = y + std::max(104.0f, (L::Height - height) / 2) + 24;
     const float inner = width - 60;
     paint.Icon(UiIcon::Archive, left, top + 2, Palette::Accent);
     paint.Text(snapshot.archive, left + 46, top, 22, Palette::Text, inner - 46, 34, true);
@@ -894,8 +951,8 @@ void DrawModsPanel(UiPainter& paint, const ModsView& view, float x, float y) {
         DrawDetail(paint, view, x, y);
         return;
     }
-    paint.Round(x, y, L::Width, L::Height, 24, Palette::Panel);
-    DrawHeader(paint, view, x, y);
+    // The game options' shell draws the footer's hairline: this surface moves with the header.
+    paint.Round(x, y, L::Width, L::Height, 24, Palette::Canvas);
     DrawTabs(paint, view, x, y + L::TabsTop);
     if (view.session.Busy()) {
         DrawBusy(paint, view, x, y);
@@ -904,11 +961,12 @@ void DrawModsPanel(UiPainter& paint, const ModsView& view, float x, float y) {
     switch (view.page.tab) {
     case ModsTab::Installed:
         DrawInstalled(paint, view, x, y);
-        DrawInstalledDetail(paint, view, x, y);
+
         break;
     case ModsTab::Explore:
+        DrawExploreFilters(paint, view, x, y);
         DrawExplore(paint, view, x, y);
-        DrawExploreFooter(paint, view, x, y);
+
         break;
     case ModsTab::Files:
         DrawFiles(paint, view, x, y);
@@ -924,6 +982,23 @@ void DrawModsPanel(UiPainter& paint, const ModsView& view, float x, float y) {
     case ModsScreen::Contents: DrawContents(paint, view, x, y); break;
     case ModsScreen::Categories: DrawCategories(paint, view, x, y); break;
     case ModsScreen::Detail: case ModsScreen::List: break;
+    }
+}
+
+void DrawModsStatus(UiPainter& paint, const ModsView& view, float x, float y) {
+    if (view.session.Busy() || view.page.screen != ModsScreen::List) return;
+    switch (view.page.tab) {
+    case ModsTab::Installed: DrawInstalledDetail(paint, view, x, y); break;
+    case ModsTab::Explore: break; // Its status shares the filters' line.
+    case ModsTab::Files: {
+        const auto& snapshot = view.session.View();
+    const float top = y + L::Detail;
+    const std::wstring where = snapshot.folder.empty() ? std::wstring{Tr(Text::ModsSourcesHint)} : snapshot.folder_name;
+    paint.Text(where, x + L::Margin, top, 14, Palette::TextHint, RowWidth, 20);
+    if (!view.notice.empty())
+        paint.Text(view.notice, x + L::Margin, top + 20, 13, Palette::Warning, RowWidth, 18);
+        break;
+    }
     }
 }
 

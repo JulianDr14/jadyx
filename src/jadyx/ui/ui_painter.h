@@ -8,6 +8,7 @@
 // look the same from one implementation.
 
 #include <cstdint>
+#include <cstddef>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -59,9 +60,15 @@ enum class TypeRole : unsigned {
 
 enum class TextAlign : unsigned { Leading, Center, Trailing };
 
+/// Semantic targets emitted at the same place and size that a manager draws its controls.
+enum class UiTarget : unsigned { ManagerTab, ManagerRow, ManagerCard };
+
 class UiPainter {
 public:
     virtual ~UiPainter() = default;
+    virtual void Target(UiTarget kind, std::size_t index, float x, float y, float w, float h) {
+        (void)kind, (void)index, (void)x, (void)y, (void)w, (void)h;
+    }
 
     /// Draws on `target` from now on; texts are laid out by `write`.
     void Attach(ID2D1RenderTarget* target, IDWriteFactory* write);
@@ -74,6 +81,13 @@ public:
                  float stroke = 1);
     /// A dialog or card surface: Surface with a white hairline at 8%.
     void Card(float x, float y, float w, float h, float radius = 16);
+    /// Game-management cards share a quiet surface and a thin white focus ring.
+    void SelectionCard(float x, float y, float w, float h, bool focused, float radius = 16);
+    /// Clips what is drawn to the rectangle until PopClip (lists that scroll under a fixed edge).
+    void PushClip(float x, float y, float w, float h);
+    void PopClip();
+    /// Page chrome shared by mods, cheats and installed content; coordinates stay local.
+    void ManagementSurface(float x, float y, float w, float h, float footer);
     /// Text in the type scale, clipped to `width` and at most `lines` lines (ellipsis after).
     /// Returns the height it took.
     float Type(std::wstring_view text, TypeRole role, float x, float y, float width, unsigned color,

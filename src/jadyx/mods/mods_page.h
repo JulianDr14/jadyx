@@ -30,15 +30,17 @@ namespace Jadyx::Mods {
 
 /// Geometry of the page's panel, from its top-left corner (layout units of the 1280x720 screen).
 struct ModsLayout {
-    static constexpr float Width = 1060, Height = 650, Margin = 40;
-    static constexpr float TabsTop = 112, TabHeight = 38;
-    static constexpr float RowTop = 166, RowStride = 62, RowHeight = 56;
-    static constexpr std::size_t VisibleRows = 6;
-    static constexpr float Detail = 546, Footer = 606;
-    // Explore's grid: four cards a row, two rows on screen.
-    static constexpr std::size_t Columns = 4, GridRows = 2;
-    static constexpr float GridTop = 164, CardWidth = 233, CardHeight = 182, CardGapX = 16, CardGapY = 14;
-    static constexpr float PictureHeight = 131;
+    static constexpr float Width = 1280, Height = 720, Margin = 56;
+    static constexpr float TabsTop = 214, TabHeight = 30;
+    static constexpr float RowTop = 260, RowStride = 46, RowHeight = 40;
+    static constexpr std::size_t VisibleRows = 9;
+    static constexpr float Detail = 626, Footer = 676;
+    // Explore: the filters, then four cards a row; the focused row is whole and the next one
+    // peeks under it.
+    static constexpr float FilterTop = 258, FilterHeight = 30;
+    static constexpr std::size_t Columns = 4, GridRows = 1;
+    static constexpr float GridTop = 300, CardGapX = 16, CardGapY = 16;
+    static constexpr float CardWidth = 280, CardHeight = 270, PictureHeight = 156;
     /// The text entry panel, drawn over the page.
     static constexpr std::size_t SearchLength = 40;
     /// Rows the contents and categories sheets show at once.

@@ -35,45 +35,56 @@ namespace {
 using L = CheatsLayout;
 
 /// Tabs with how many of their cheats are on; LB and RB beside them when there is a choice.
-void DrawTabs(UiPainter& paint, const CheatCatalog& catalog, CheatCategory current, float x, float y) {
+void DrawTabs(UiPainter& paint, const CheatCatalog& catalog, CheatCategory current, float x, float y, bool focused, std::wstring_view previous, std::wstring_view next) {
     std::array<CheatCategory, CategoryCount> storage;
     const auto tabs = CheatTabs(catalog, storage);
+    paint.Round(x + L::Margin, y - 4, L::Width - 2 * L::Margin, L::TabHeight + 8, 24, Palette::Surface);
     float left = x + L::Margin;
     if (tabs.size() > 1) {
-        paint.ButtonGlyph(L"LB", left, y + 3, ButtonColor::Neutral);
+        paint.Badge(previous, left + 18, y + L::TabHeight / 2, Palette::Text);
         left += 50;
     }
+    std::size_t tab_index = 0;
     for (const CheatCategory category : tabs) {
         const std::wstring label = std::wstring{CategoryName(category)} + L"  " +
                                    std::to_wstring(catalog.EnabledCount(category)) + L"/" +
                                    std::to_wstring(catalog.Cheats(category).size());
         const bool active = category == current;
-        const float width = paint.MeasureText(label, 17, true) + 36;
-        paint.Round(left, y, width, L::TabHeight, L::TabHeight / 2, active ? Palette::Accent : Palette::Row);
-        paint.Text(label, left, y, 17, active ? Palette::OnAccent : Palette::TextSecondary, width,
-                   L::TabHeight, true, false, true);
+        const float width = paint.MeasureType(label, TypeRole::LabelLarge) + 36;
+        paint.Round(left, y, width, L::TabHeight, L::TabHeight / 2, active && focused ? Palette::Accent : Palette::Row);
+        paint.Type(label, TypeRole::LabelLarge, left, y + 6, width,
+                   active && focused ? Palette::OnAccent : active ? Palette::Text : Palette::TextSecondary,
+                   1, TextAlign::Center);
+        paint.Target(UiTarget::ManagerTab, tab_index++, left, y, width, L::TabHeight);
         left += width + 10;
     }
-    if (tabs.size() > 1) paint.ButtonGlyph(L"RB", left + 2, y + 3, ButtonColor::Neutral);
+    if (tabs.size() > 1) paint.Badge(next, left + 20, y + L::TabHeight / 2, Palette::Text);
 }
 
-void DrawList(UiPainter& paint, const CheatCatalog& catalog, const CheatsPage& page, float x, float y) {
+void DrawList(UiPainter& paint, const CheatCatalog& catalog, const CheatsPage& page, float x, float y, bool focused,
+              float scroll) {
     const auto cheats = catalog.Cheats(page.category);
     const float row_width = L::Width - 2 * L::Margin;
-    const std::size_t end = std::min(cheats.size(), page.first + L::VisibleRows);
-    for (std::size_t i = page.first; i < end; ++i) {
-        const float top = y + L::RowTop + static_cast<float>(i - page.first) * L::RowStride;
+    const float first = scroll < 0 ? static_cast<float>(page.first) : scroll;
+    const float height = L::VisibleRows * L::RowStride - (L::RowStride - L::RowHeight);
+    // Rows glide between windows; the clip keeps them under the tabs.
+    paint.PushClip(x, y + L::RowTop - 4, L::Width, height + 8);
+    const std::size_t begin = static_cast<std::size_t>(first);
+    const std::size_t end = std::min(cheats.size(), begin + L::VisibleRows + 1);
+    for (std::size_t i = begin; i < end; ++i) {
+        const float top = y + L::RowTop + (static_cast<float>(i) - first) * L::RowStride;
         const float left = x + L::Margin;
-        const bool active = i == page.selected;
+        const bool active = i == page.selected && focused;
         const bool on = catalog.Enabled(cheats[i]);
-        paint.Round(left, top, row_width, L::RowHeight, 12, active ? Palette::RowActive : Palette::Row);
-        if (active) paint.Round(left, top + 12, 3, L::RowHeight - 24, 1.5f, Palette::Accent);
-        paint.Text(Utf8ToUtf16(catalog.Name(cheats[i])), left + 24, top + 9, 19,
-                   on || active ? Palette::Text : Palette::TextHint, row_width - 130, 30, active);
-        paint.Switch(left + row_width - 76, top + 9, on, active);
+        paint.SelectionCard(left, top, row_width, L::RowHeight, active, 12);
+        paint.Type(Utf8ToUtf16(catalog.Name(cheats[i])), TypeRole::BodyLarge, left + 24, top + 6,
+                   row_width - 130, on || active ? Palette::Text : Palette::TextHint);
+        paint.Switch(left + row_width - 76, top + 5, on, active);
+        if (i >= page.first && i < page.first + L::VisibleRows)
+            paint.Target(UiTarget::ManagerRow, i, left, top, row_width, L::RowHeight);
     }
-    paint.ScrollIndicator(x + L::Width - L::Margin + 14, y + L::RowTop,
-                          L::VisibleRows * L::RowStride - (L::RowStride - L::RowHeight),
+    paint.PopClip();
+    paint.ScrollIndicator(x + L::Width - L::Margin + 14, y + L::RowTop, height,
                           page.first, L::VisibleRows, cheats.size());
 }
 
@@ -102,47 +113,48 @@ void DrawStatus(UiPainter& paint, const CheatsView& view, float x, float y) {
     const float left = x + L::Margin;
     const float right = x + L::Width - L::Margin;
     // The cheat engine's room: what the enabled cheats take of the VM's program.
-    paint.Text(I18n::Format(Text::CheatsBudget, {std::to_wstring(used), std::to_wstring(WordBudget)}),
-               left, y + L::Status, 15, Palette::TextSecondary, 320, 22);
-    constexpr float BarWidth = 300;
+    const auto budget = I18n::Format(Text::CheatsBudget, {std::to_wstring(used), std::to_wstring(WordBudget)});
+    const float budget_width = paint.MeasureType(budget, TypeRole::Label);
+    paint.Type(budget, TypeRole::Label, left, y + L::Status, budget_width + 4, Palette::TextSecondary);
+    constexpr float BarWidth = 160;
+    const float bar = left + budget_width + 14;
     const float filled = BarWidth * static_cast<float>(std::min(used, WordBudget)) / WordBudget;
-    paint.Round(left, y + L::Status + 26, BarWidth, 8, 4, Palette::Track);
+    paint.Round(bar, y + L::Status + 5, BarWidth, 6, 3, Palette::Track);
     if (filled > 0)
-        paint.Round(left, y + L::Status + 26, std::max(filled, 8.0f), 8, 4,
-                    used * 5 > WordBudget * 4 ? Palette::Warning : Palette::Accent);
-    // Where the cheats came from, and who made them.
-    paint.Text(SourceText(session.Source()), left + 340, y + L::Status, 15,
-               session.Source() == CheatSource::Online ? Palette::Accent : Palette::Warning,
-               right - left - 340, 22, false, false, false, true);
+        paint.Round(bar, y + L::Status + 5, std::max(filled, 6.0f), 6, 3,
+                    used * 5 > WordBudget * 4 ? Palette::Warning : Palette::Text);
+    // Where the cheats came from, and who made them, on the right of both lines.
+    paint.Type(SourceText(session.Source()), TypeRole::Label, bar + BarWidth + 24, y + L::Status,
+               right - bar - BarWidth - 24, session.Source() == CheatSource::Online ? Palette::TextHint : Palette::Warning,
+               1, TextAlign::Trailing);
     std::wstring credit{I18n::Tr(Text::CheatsCredit)};
     for (std::size_t i = 0; i < std::min<std::size_t>(session.Credits().size(), 3); ++i)
         credit += (i ? L", " : L" · ") + Utf8ToUtf16(session.Credits()[i]);
-    paint.Text(credit, left + 340, y + L::Status + 20, 13, Palette::TextSecondary, right - left - 340,
-               20, false, false, false, true);
     // The last press's outcome, or when changes take effect.
     const bool notice = !view.notice.empty();
     const std::wstring_view note = notice ? view.notice
                                    : I18n::Tr(view.running ? Text::CheatsAppliesNow : Text::CheatsAppliesAtBoot);
-    paint.Text(note, left, y + L::Note, 15, notice ? Palette::Warning : Palette::TextHint, right - left, 22);
+    const float note_width = std::min(paint.MeasureType(note, TypeRole::Label) + 4, (right - left) / 2);
+    paint.Type(note, TypeRole::Label, left, y + L::Note, note_width, notice ? Palette::Warning : Palette::TextSecondary);
+    paint.Type(credit, TypeRole::Label, left + note_width + 24, y + L::Note, right - left - note_width - 24,
+               Palette::TextSecondary, 1, TextAlign::Trailing);
 }
 } // namespace
 
 void DrawCheatsPanel(UiPainter& paint, const CheatsView& view, float x, float y) {
     const CheatCatalog& catalog = view.session.Catalog();
-    paint.Round(x, y, L::Width, L::Height, 24, Palette::Panel);
-    paint.PageHeader(x + L::Margin, y + 26, UiIcon::Cheats, I18n::Tr(Text::CheatsTitle), view.game);
-    std::size_t on = 0;
-    for (const auto category : {CheatCategory::Gameplay, CheatCategory::Graphics, CheatCategory::Mine})
-        on += catalog.EnabledCount(category);
-    if (on)
-        paint.Text(I18n::Plural(Text::CheatsOnOne, Text::CheatsOnOther, on), x + L::Width - 300 - L::Margin,
-                   y + 40, 20, Palette::Accent, 300, 30, true, false, false, true);
+    // The game options' shell draws the footer's hairline: this surface moves with the header.
+    paint.Round(x, y, L::Width, L::Height, 24, Palette::Canvas);
     if (catalog.Empty()) {
         DrawEmpty(paint, view.session, x, y);
     } else {
-        DrawTabs(paint, catalog, view.page.category, x, y + L::TabsTop);
-        DrawList(paint, catalog, view.page, x, y);
+        DrawTabs(paint, catalog, view.page.category, x, y + L::TabsTop, view.tabs_focused, view.previous_tab, view.next_tab);
+        DrawList(paint, catalog, view.page, x, y, view.content_focused, view.scroll);
     }
+
+}
+
+void DrawCheatsStatus(UiPainter& paint, const CheatsView& view, float x, float y) {
     DrawStatus(paint, view, x, y);
 }
 

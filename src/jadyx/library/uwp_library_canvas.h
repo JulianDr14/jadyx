@@ -60,6 +60,7 @@ struct LibraryView {
 /// What the pointer can press on the library screen.
 enum class LibraryHit : unsigned {
     None, Controller, Play, Options, Tab, Filter, RailTile, Tile, ShelfTile, Import,
+    GameOptionSelect, ManagerTab, ManagerRow, ManagerCard,
     Category,   ///< A settings category (ConfigurationHomeRow).
     SettingRow, ///< A row of the settings category shown.
 };

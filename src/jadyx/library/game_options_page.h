@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// The selected game's options, opened from the library with Menu: a list of what can be set for
-// that one game. Each option is a page of its own; adding one (per-game mods, per-game settings)
-// is an enum value, its texts and icon below, and the page it opens.
+// The selected game's management tabs. Selecting a category activates its pane directly;
+// Down moves into the pane; its hero can fold while both navigation bars remain visible.
 
 #include <array>
 #include <cstddef>
@@ -18,8 +17,7 @@
 
 namespace Jadyx {
 
-/// Pulse is not a page: its row says what session the game keeps, and A discards it after a
-/// second press confirms (the library acts on GameOptionsPage::discard).
+/// Pulse's pane shows the kept session; discarding still requires a second confirmation.
 enum class GameOption : std::uint8_t { Cheats, Mods, Updates, Dlc, Pulse };
 
 /// The options shown, in order.
@@ -62,27 +60,54 @@ inline UiIcon GameOptionIcon(GameOption option) {
     return UiIcon::Settings;
 }
 
+enum class GameOptionsFocus : std::uint8_t { Sections, ManagerTabs, Content };
+
 struct GameOptionsPage {
     bool open{};
     std::size_t game{};     ///< The library entry the options are for.
-    std::size_t selected{}; ///< Row in GameOptions().
-    std::optional<GameOption> page; ///< The option page open over the list.
+    std::size_t selected{}; ///< Active category in GameOptions().
+    std::optional<GameOption> page; ///< Selected manager; Pulse has its own pane in the shell.
     bool confirm_discard{}; ///< A was pressed once on the Pulse row; a second press discards.
     bool discard{};         ///< Confirmed: the library discards the game's session.
+    GameOptionsFocus focus{GameOptionsFocus::Sections};
+    bool activate{true};    ///< The coordinator initializes the selected manager once.
 };
+
+inline void SelectGameOption(GameOptionsPage& options, std::size_t index) {
+    if (index >= GameOptions().size()) return;
+    options.selected = index;
+    options.page = GameOptions()[index] == GameOption::Pulse ? std::nullopt :
+                   std::optional{GameOptions()[index]};
+    options.confirm_discard = options.discard = false;
+    options.focus = GameOptionsFocus::Sections;
+    options.activate = true;
+}
+
+/// Navigation has three explicit levels; entering one never recreates its manager.
+inline void EnterGameOptionsPane(GameOptionsPage& options, bool has_tabs) {
+    options.confirm_discard = false;
+    options.focus = options.focus == GameOptionsFocus::Sections && has_tabs ?
+        GameOptionsFocus::ManagerTabs : GameOptionsFocus::Content;
+}
+
+inline void LeaveGameOptionsPane(GameOptionsPage& options, bool has_tabs) {
+    options.confirm_discard = false;
+    options.focus = options.focus == GameOptionsFocus::Content && has_tabs ?
+        GameOptionsFocus::ManagerTabs : GameOptionsFocus::Sections;
+}
 
 enum class GameOptionsInput : std::uint8_t { Up, Down, Confirm, Back };
 
-/// Applies one press to the list (an open option page takes its own input).
+/// Pure tab/pane navigation; managers handle their own content inputs.
 inline void HandleGameOptionsInput(GameOptionsPage& options, GameOptionsInput input) {
     const std::size_t count = GameOptions().size();
     const bool confirming = std::exchange(options.confirm_discard, false);
     switch (input) {
     case GameOptionsInput::Up:
-        options.selected = (options.selected + count - 1) % count;
+        SelectGameOption(options, (options.selected + count - 1) % count);
         break;
     case GameOptionsInput::Down:
-        options.selected = (options.selected + 1) % count;
+        SelectGameOption(options, (options.selected + 1) % count);
         break;
     case GameOptionsInput::Confirm:
         if (GameOptions()[options.selected] == GameOption::Pulse) {
@@ -90,7 +115,7 @@ inline void HandleGameOptionsInput(GameOptionsPage& options, GameOptionsInput in
             options.discard = confirming;
             break;
         }
-        options.page = GameOptions()[options.selected];
+        EnterGameOptionsPane(options, false);
         break;
     case GameOptionsInput::Back:
         options.open = false;
@@ -99,10 +124,16 @@ inline void HandleGameOptionsInput(GameOptionsPage& options, GameOptionsInput in
 }
 
 /// Geometry shared by the canvas and pointer hit tests (1280x720 layout units).
+/// The game's line (cover, title, developer, version, build) folds away while the content has
+/// the focus; the two tab bars move up with it and stay in sight.
 struct GameOptionsLayout {
-    static constexpr float PanelX = 140, PanelY = 72, PanelWidth = 1000, PanelHeight = 612;
-    static constexpr float RowX = 180, RowWidth = 920, RowTop = 200, RowStride = 74, RowHeight = 66;
-    static constexpr float Footer = 630;
+    static constexpr float GlobalHeaderBottom = 94;
+    static constexpr float HeroTop = 100, HeroHeight = 48, HeroClipBottom = 152;
+    static constexpr float SectionsTop = 156, SectionsHeight = 44;
+    static constexpr float HeroCollapse = HeroClipBottom - GlobalHeaderBottom;
+    static constexpr float BodyTop = 210, ListBottom = 620, GridBottom = 656;
+    /// One or two lines about the selection, then a hairline and the button prompts.
+    static constexpr float Status = 626, FooterLine = 664, Footer = 676;
 };
 
 } // namespace Jadyx

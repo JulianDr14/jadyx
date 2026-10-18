@@ -94,6 +94,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     SystemPage system_page;
     // The selected game's options (Menu), and its cheats page while open.
     GameOptionsPage game_options;
+    std::optional<std::size_t> requested_game_option;
+    std::optional<std::size_t> requested_manager_tab;
     std::unique_ptr<Content::ContentSession> content_session;
     bool missing_content = false;
     std::optional<Cheats::CheatSession> cheat_session;
@@ -160,7 +162,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     std::optional<LibraryTab> pressed_tab; // A tab the pointer chose.
     enum : unsigned { Up = 1, Down = 2, Play = 4, Quit = 8, Swap = 16, Zone = 32,
                       Refresh = 64, Panel = 128, Left = 256, Right = 512, AddFolder = 1024,
-                      Options = 2048, PreviousTab = 4096, NextTab = 8192, Pin = 16384 };
+                      Options = 2048, PreviousTab = 4096, NextTab = 8192, Pin = 16384, PreviousManagerTab = 32768, NextManagerTab = 65536 };
     using winrt::Windows::Storage::StorageFolder;
     winrt::Windows::Foundation::IAsyncOperation<StorageFolder> picker{nullptr};
     std::future<std::string> validation;
@@ -189,7 +191,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         e.Handled(true);
     });
     auto keyboard = window.KeyDown(winrt::auto_revoke, [&](auto&&, KeyEventArgs const& e) {
-        if (e.KeyStatus().WasKeyDown) return;
+        if (e.KeyStatus().WasKeyDown && e.VirtualKey() != VirtualKey::Up &&
+            e.VirtualKey() != VirtualKey::Down && e.VirtualKey() != VirtualKey::Left &&
+            e.VirtualKey() != VirtualKey::Right) return;
         if (system_page.name_editor) {
             using Command = TextEntry::Command;
             std::optional<Command> command;
@@ -256,6 +260,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         case VirtualKey::F: actions |= Pin; break;
         case VirtualKey::O: actions |= AddFolder; break;
         case VirtualKey::F2: actions |= Options; break;
+        case VirtualKey::PageUp: actions |= PreviousManagerTab; break;
+        case VirtualKey::PageDown: actions |= NextManagerTab; break;
         case VirtualKey::Q: actions |= PreviousTab; break;
         case VirtualKey::E: actions |= NextTab; break;
         default: break;
@@ -276,6 +282,53 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 if (editor.Press() == TextEntry::Result::Done) finish_name_editor = true;
                 system_page.editor_notice.clear();
                 dirty = true;
+            }
+            e.Handled(true);
+            return;
+        }
+        if (game_options.open && y < 94) {
+            const auto target = canvas->HitAt(x, y);
+            if (target.hit == LibraryHit::Tab) {
+                pressed_tab = static_cast<LibraryTab>(target.index);
+                dirty = true;
+            } else if (target.hit == LibraryHit::Controller && !game_options.page && !content_session) {
+                game_options = {};
+                actions |= Panel;
+                dirty = true;
+            }
+            e.Handled(true);
+            return;
+        }
+        if (game_options.open && canvas->HitAt(x, y).hit == LibraryHit::GameOptionSelect) {
+            const auto target = canvas->HitAt(x, y);
+            if (target.hit == LibraryHit::GameOptionSelect && target.index < GameOptions().size()) {
+                requested_game_option = target.index;
+                dirty = true;
+            }
+            e.Handled(true);
+            return;
+        }
+        if (game_options.open) {
+            const auto target = canvas->HitAt(x, y);
+            if (target.hit == LibraryHit::ManagerTab) {
+                requested_manager_tab = target.index;
+                game_options.focus = GameOptionsFocus::ManagerTabs;
+                dirty = true;
+            } else if (target.hit == LibraryHit::ManagerRow) {
+                if (game_options.page == GameOption::Mods && mod_session) {
+                    const auto count = mods_page.tab == Mods::ModsTab::Installed ?
+                        mod_session->View().mods.size() : mod_session->View().files.size();
+                    if (target.index < count) { mods_page.selected = target.index; actions |= Play; }
+                } else if (game_options.page == GameOption::Cheats && cheat_session && target.index < cheat_session->Catalog().Cheats(cheats_page.category).size()) {
+                    cheats_page.selected = target.index; actions |= Play;
+                }
+                game_options.focus = GameOptionsFocus::Content;
+                dirty = true;
+            } else if (target.hit == LibraryHit::ManagerCard && mod_session &&
+                       target.index < mod_session->Store().cards.size()) {
+                mods_page.card = target.index;
+                game_options.focus = GameOptionsFocus::Content;
+                actions |= Play; dirty = true;
             }
             e.Handled(true);
             return;
@@ -409,6 +462,13 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         e.Handled(true);
     });
     auto wheel = window.PointerWheelChanged(winrt::auto_revoke, [&](auto&&, PointerEventArgs const& e) {
+        if (game_options.open && !configuration.open) {
+            const int delta = e.CurrentPoint().Properties().MouseWheelDelta();
+            if (delta) { actions |= delta > 0 ? Up : Down; dirty = true; }
+            e.Handled(true);
+            return;
+        }
+
         if (settings && panel.expanded && !panel.keyboard.open) {
             const int delta = e.CurrentPoint().Properties().MouseWheelDelta();
             const size_t count = panel.devices.size() + 2;
@@ -612,6 +672,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     start_scan();
     GamepadButtons previous{};
     StickNavigation stick_navigation;
+    StickNavigation manager_dpad{std::chrono::milliseconds{280}, std::chrono::milliseconds{80}};
+    TriggerTabs trigger_tabs;
     unsigned navigation_context = 0;
     std::optional<ControllerDevice> pad;
     ControllerCatalog<ControllerDevice> controllers;
@@ -654,16 +716,16 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         const auto next = controllers.Select(options.controller_id);
         if (bool(pad) != bool(next) || (pad && next &&
             (pad->id != next->id || pad->pad != next->pad || pad->pro != next->pro))) {
-            previous = {}; stick_navigation.Reset();
+            previous = {}; stick_navigation.Reset(); manager_dpad.Reset(); trigger_tabs.Reset();
             battery_read_at = {}; // Another controller: read its battery now.
         }
         if (catalog_changed || !pad || !next || pad->id != next->id)
             pad = next ? std::optional<ControllerDevice>{*next} : std::nullopt;
-        const unsigned context = game_options.open ? (cheat_session ? 8 : mod_session ? 9 : 7) :
+        const unsigned context = game_options.open ? (7 + static_cast<unsigned>(game_options.selected) * 3 + static_cast<unsigned>(game_options.focus)) :
             system_page.name_editor ? 6 : system_page.open ? 5 :
             panel.keyboard.open ? 3 : panel.expanded ? 2 : settings ? 1 : configuration.open ? 4 : 0;
         if (context != navigation_context) {
-            stick_navigation.Reset(); navigation_context = context;
+            stick_navigation.Reset(); manager_dpad.Reset(); trigger_tabs.Reset(); navigation_context = context;
         }
         if (pad) {
             try {
@@ -679,20 +741,38 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 constexpr auto dpad = GamepadButtons::DPadUp | GamepadButtons::DPadDown |
                                       GamepadButtons::DPadLeft | GamepadButtons::DPadRight;
                 unsigned directions = 0;
-                if ((buttons & dpad) != GamepadButtons::None) stick_navigation.Reset();
-                else {
-                    switch (stick_navigation.Update(reading.LeftThumbstickX, reading.LeftThumbstickY, now)) {
+                if (game_options.open) {
+                    const double dx = ((buttons & GamepadButtons::DPadRight) != GamepadButtons::None ? 1.0 : 0.0) -
+                                      ((buttons & GamepadButtons::DPadLeft) != GamepadButtons::None ? 1.0 : 0.0);
+                    const double dy = ((buttons & GamepadButtons::DPadUp) != GamepadButtons::None ? 1.0 : 0.0) -
+                                      ((buttons & GamepadButtons::DPadDown) != GamepadButtons::None ? 1.0 : 0.0);
+                    switch (manager_dpad.Update((buttons & dpad) != GamepadButtons::None ? dx : reading.LeftThumbstickX,
+                                                (buttons & dpad) != GamepadButtons::None ? dy : reading.LeftThumbstickY, now)) {
                     case StickDirection::Up: directions |= Up; break;
                     case StickDirection::Down: directions |= Down; break;
                     case StickDirection::Left: directions |= Left; break;
                     case StickDirection::Right: directions |= Right; break;
                     case StickDirection::None: break;
                     }
+                    const auto triggers = trigger_tabs.Update(reading.LeftTrigger, reading.RightTrigger);
+                    if (triggers == 1) actions |= PreviousManagerTab;
+                    if (triggers == 2) actions |= NextManagerTab;
+                } else {
+                    if ((buttons & dpad) != GamepadButtons::None) stick_navigation.Reset();
+                    else {
+                        switch (stick_navigation.Update(reading.LeftThumbstickX, reading.LeftThumbstickY, now)) {
+                        case StickDirection::Up: directions |= Up; break;
+                        case StickDirection::Down: directions |= Down; break;
+                        case StickDirection::Left: directions |= Left; break;
+                        case StickDirection::Right: directions |= Right; break;
+                        case StickDirection::None: break;
+                        }
+                    }
+                    if (hit(GamepadButtons::DPadUp)) directions |= Up;
+                    if (hit(GamepadButtons::DPadDown)) directions |= Down;
+                    if (hit(GamepadButtons::DPadLeft)) directions |= Left;
+                    if (hit(GamepadButtons::DPadRight)) directions |= Right;
                 }
-                if (hit(GamepadButtons::DPadUp)) directions |= Up;
-                if (hit(GamepadButtons::DPadDown)) directions |= Down;
-                if (hit(GamepadButtons::DPadLeft)) directions |= Left;
-                if (hit(GamepadButtons::DPadRight)) directions |= Right;
                 if (system_page.name_editor) {
                     // Like the console's keyboard: A types, X deletes, Y adds a space, Menu (or RB)
                     // is done, View (or LB) is Shift and B leaves without saving. The bumpers are
@@ -743,7 +823,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 }
             } catch (...) {
                 controllers.ReadFailed();
-                pad.reset(); previous = {}; stick_navigation.Reset();
+                pad.reset(); previous = {}; stick_navigation.Reset(); manager_dpad.Reset(); trigger_tabs.Reset();
             }
         }
         // The battery changes slowly and its report is a driver call: a few times a minute.
@@ -803,7 +883,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 }
                 picker = nullptr;
                 previous = {};
-                stick_navigation.Reset();
+                stick_navigation.Reset(); manager_dpad.Reset(); trigger_tabs.Reset();
             }
         }
         if (missing_content) {
@@ -879,8 +959,27 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         const bool top_level = !settings && !system_page.open && !configuration.files && !configuration.busy &&
                                !picker && !validation.valid() && !game_options.open && !missing_content;
         if (pressed_tab) {
+            // A primary tab pops idle management pages. Never interrupt an import/install.
+            if (game_options.open && (!content_session || !content_session->Busy()) &&
+                (!mod_session || (!mod_session->Busy() && mod_session->Downloads().empty()))) {
+                const bool changed = content_session && content_session->Changed();
+                content_session.reset();
+                mod_session.reset();
+                cheat_session.reset();
+                game_options = {};
+                if (changed) {
+                    mod_session.reset(); cheat_session.reset();
+                    cache.Clear(); metadata = {}; ++generation;
+                    for (auto& entry : scan.entries) {
+                        entry.title_loaded = entry.metadata_loaded = false;
+                        entry.build_id = {}; entry.display_version.clear();
+                    }
+                    metadata_dirty = true; names_cursor = fill_cursor = 0;
+                }
+                switch_tab(*pressed_tab);
+            }
             if (top_level || *pressed_tab == LibraryTab::Settings || tab == LibraryTab::Settings) {
-                if (!configuration.busy && !picker && !validation.valid()) switch_tab(*pressed_tab);
+                if (!game_options.open && !configuration.busy && !picker && !validation.valid()) switch_tab(*pressed_tab);
             }
             pressed_tab.reset();
         }
@@ -918,6 +1017,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         if (actions & Options && on_game && !game_options.open && !settings && !configuration.open &&
             !panel.keyboard.open && !loading && !picker && !validation.valid() && !scan.entries.empty()) {
             game_options = {true, selected};
+            requested_game_option = 0;
             options_notice.clear();
             actions = 0;
             dirty = true;
@@ -928,8 +1028,99 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 game_options = {};
                 cheat_session.reset();
                 mod_session.reset();
+                actions = 0; dirty = true;
+                continue;
+            }
+            const bool mods_active = game_options.page == GameOption::Mods && mod_session;
+            const bool cheats_active = game_options.page == GameOption::Cheats && cheat_session;
+            const bool can_switch = !configuration.open && !picker && (!content_session || !content_session->Busy()) &&
+                (!mods_active || (!mod_session->Busy() && mod_session->Downloads().empty()));
+            const bool has_manager_tabs = mods_active ||
+                (cheats_active && Cheats::CheatTabCount(cheat_session->Catalog()) > 0);
+            const bool manager_busy = (mods_active && mod_session->Busy()) ||
+                (content_session && content_session->Busy());
+            const bool manager_modal = mods_active && mods_page.screen != Mods::ModsScreen::List;
+            if (actions & (PreviousTab | NextTab)) {
+                if (can_switch && !manager_modal) {
+                    requested_game_option = actions & PreviousTab ?
+                        (game_options.selected + GameOptions().size() - 1) % GameOptions().size() :
+                        (game_options.selected + 1) % GameOptions().size();
+                    dirty = true;
+                }
+                actions &= ~(PreviousTab | NextTab);
+            }
+            if ((actions & (PreviousManagerTab | NextManagerTab)) && !manager_busy && !manager_modal && has_manager_tabs) {
+                if (game_options.focus == GameOptionsFocus::Sections)
+                    game_options.focus = GameOptionsFocus::ManagerTabs;
+                dirty = true;
+            }
+            if (game_options.focus == GameOptionsFocus::Sections) {
+                if (!can_switch) actions &= Quit;
+                else {
+                    if (actions) dirty = true;
+                    if (actions & (Left | PreviousTab)) requested_game_option =
+                        (game_options.selected + GameOptions().size() - 1) % GameOptions().size();
+                    if (actions & (Right | NextTab)) requested_game_option =
+                        (game_options.selected + 1) % GameOptions().size();
+                    if (actions & (Down | Play)) EnterGameOptionsPane(game_options, has_manager_tabs);
+                    actions &= ~(Left | Right | PreviousTab | NextTab | Up | Down | Play);
+                }
+            } else if (!configuration.open && !manager_busy) {
+                if (game_options.focus == GameOptionsFocus::ManagerTabs) {
+                    if (actions & (Up | Quit)) {
+                        LeaveGameOptionsPane(game_options, has_manager_tabs);
+                        actions &= ~(Up | Quit); dirty = true;
+                    } else if (actions & (Down | Play)) {
+                        EnterGameOptionsPane(game_options, has_manager_tabs);
+                        actions &= ~(Down | Play); dirty = true;
+                    }
+                    actions &= Left | Right | PreviousManagerTab | NextManagerTab;
+                } else {
+                    const bool manager_root = (mods_active && mods_page.screen == Mods::ModsScreen::List && !mods_page.moving) ||
+                        cheats_active || (content_session && content_session->View().screen == Content::Screen::Manager) ||
+                        GameOptions()[game_options.selected] == GameOption::Pulse;
+                    const bool first = (mods_active && (mods_page.tab == Mods::ModsTab::Explore ?
+                        mods_page.card < Mods::ModsLayout::Columns : mods_page.selected == 0)) ||
+                        (cheats_active && cheats_page.selected == 0) ||
+                        (content_session && content_session->View().selected == 0) ||
+                        GameOptions()[game_options.selected] == GameOption::Pulse;
+                    if (manager_root && ((actions & Quit) || ((actions & Up) && first))) {
+                        LeaveGameOptionsPane(game_options, has_manager_tabs);
+                        actions &= ~(Up | Quit); dirty = true;
+                    }
+                }
+            }
+            if (requested_game_option == game_options.selected && !game_options.activate && can_switch) {
+                game_options.focus = GameOptionsFocus::Sections;
+                game_options.confirm_discard = false;
+                requested_game_option.reset(); options_notice.clear(); dirty = true;
+            }
+            if (requested_game_option && can_switch) {
+                const bool changed = content_session && content_session->Changed();
+                content_session.reset(); requested_manager_tab.reset();
+                SelectGameOption(game_options, *requested_game_option);
+                requested_game_option.reset(); options_notice.clear();
+                if (changed) {
+                    mod_session.reset(); cheat_session.reset();
+                    cache.Clear(); metadata = {}; ++generation;
+                    for (auto& entry : scan.entries) {
+                        entry.title_loaded = entry.metadata_loaded = false;
+                        entry.build_id = {}; entry.display_version.clear();
+                    }
+                    metadata_dirty = true; names_cursor = fill_cursor = 0;
+                }
+                dirty = true;
+            } else if (requested_game_option) {
+                requested_game_option.reset(); // Busy jobs retain their page and selection.
             }
             if (cheat_session && cheat_session->Poll()) {
+                std::size_t entries = 0;
+                for (const auto category : {Cheats::CheatCategory::Gameplay, Cheats::CheatCategory::Graphics, Cheats::CheatCategory::Mine})
+                    entries += cheat_session->Catalog().Cheats(category).size();
+                LOG_INFO(Frontend, "Cheats manager: title={:016X} build={} entries={} source={}",
+                         cheat_session->Game().title_id, Cheats::HexId(cheat_session->Game().build_id),
+                         entries, static_cast<unsigned>(cheat_session->Source()));
+                Common::Log::Stop();
                 Cheats::ClampCheatsPage(cheats_page, cheat_session->Catalog(), Cheats::CheatsLayout::VisibleRows);
                 dirty = true;
             }
@@ -937,15 +1128,76 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 options_notice = Tr(text);
                 options_notice_until = now + std::chrono::seconds{4};
             };
+            if (game_options.activate && !configuration.open &&
+                scan.entries[game_options.game].title_loaded) {
+                game_options.activate = false;
+                game_options.page = GameOptions()[game_options.selected] == GameOption::Pulse ? std::nullopt :
+                    std::optional{GameOptions()[game_options.selected]};
+                if (game_options.page == GameOption::Updates || game_options.page == GameOption::Dlc) {
+                    const auto& game = scan.entries[game_options.game];
+                    if (!game.title_loaded || !game.program_id) {
+                        notify(T::CheatsUnavailable); game_options.page.reset();
+                    } else {
+                        std::vector<std::uint64_t> bases;
+                        for (const auto& e : scan.entries) if (e.program_id) bases.push_back(FileSys::GetBaseTitleID(e.program_id));
+                        metadata_worker.request_stop();
+                        content_session = std::make_unique<Content::ContentSession>(game.program_id, game.launch_path,
+                            *game_options.page == GameOption::Updates ? Content::Kind::Update : Content::Kind::Dlc,
+                            std::move(bases), std::move(metadata_worker));
+                        metadata = {};
+                    }
+                }
+                if (game_options.page == GameOption::Mods && !mod_session) {
+                    // Mods are kept per title id; the build id (of the version that boots, update
+                    // included) tells which mods' patches fit it.
+                    const auto& game = scan.entries[game_options.game];
+                    if (game.title_loaded && game.program_id == 0) {
+                        notify(T::ModsHomebrew);
+                        game_options.page.reset();
+                    } else if (!game.title_loaded) {
+                        notify(T::CheatsUnavailable);
+                        game_options.page.reset();
+                    } else {
+                        std::string build_id;
+                        if (std::any_of(game.build_id.begin(), game.build_id.end(), [](std::uint8_t b) { return b != 0; }))
+                            for (const auto b : game.build_id) build_id += fmt::format("{:02X}", b);
+                        // The store and the installs log what went wrong; the log opens with the page.
+                        if (!logging_ready) { Common::Log::Initialize(); logging_ready = true; }
+                        mod_session = std::make_unique<Mods::ModSession>(game.program_id, std::move(build_id),
+                                                                         game.launch_path, I18n::ToUtf8(game.name),
+                                                                         system_page.settings.show_adult_mods);
+                        mods_page = {};
+                        options_notice.clear();
+                    }
+                }
+                if (game_options.page == GameOption::Cheats && !cheat_session) {
+                    // Cheat files are named after the game's title and main build ids, which the
+                    // library reads with the title (uwp_library_metadata.cpp).
+                    const auto& game = scan.entries[game_options.game];
+                    const bool known = std::any_of(game.build_id.begin(), game.build_id.end(),
+                                                   [](std::uint8_t b) { return b != 0; });
+                    if (game.title_loaded && game.program_id == 0) {
+                        notify(T::CheatsHomebrew);
+                        game_options.page.reset();
+                    } else if (!game.title_loaded || !known) {
+                        notify(T::CheatsUnavailable);
+                        game_options.page.reset();
+                    } else {
+                        Cheats::CheatGame cheat_game{game.program_id};
+                        std::copy(game.build_id.begin(), game.build_id.end(), cheat_game.build_id.begin());
+                        cheat_session.emplace(cheat_game);
+                        cheats_page = {};
+                        options_notice.clear();
+                    }
+                }
+            }
             if (content_session) {
                 dirty |= content_session->Poll();
                 if (content_session->Busy()) dirty = true;
                 const auto send = [&](unsigned bits, Content::Input input) {
                     if ((actions & bits) && content_session && content_session->Handle(input)) {
                         const bool changed = content_session->Changed();
-                        const bool overview = configuration.open;
-                        content_session.reset(); game_options.page.reset();
-                        if (overview) game_options = {};
+                        content_session.reset(); game_options = {};
                         if (changed) {
                             cache.Clear(); metadata = {}; ++generation;
                             for (auto& e : scan.entries) { e.title_loaded = false; e.metadata_loaded = false; e.build_id = {}; e.display_version.clear(); }
@@ -955,7 +1207,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 };
                 send(Up, Content::Input::Up); send(Down, Content::Input::Down);
                 send(Play, Content::Input::Confirm); send(Swap | AddFolder, Content::Input::Import);
-                send(PreviousTab | NextTab, Content::Input::Storage); send(Refresh, Content::Input::Refresh);
+                send(PreviousManagerTab | NextManagerTab, Content::Input::Storage); send(Refresh, Content::Input::Refresh);
                 send(Quit, Content::Input::Back);
                 if (content_session && content_session->TakeAuthorizeRequest() && !picker) {
                     try {
@@ -966,7 +1218,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     } catch (...) { options_notice = Tr(T::PickerOpenFailed); }
                 }
                 dirty |= actions != 0;
-            } else if (mod_session) {
+            } else if (game_options.page == GameOption::Mods && mod_session) {
                 using Kind = Mods::ModsCommand::Kind;
                 using Mods::ModJob;
                 const ModJob finished = mod_session->Poll();
@@ -1007,7 +1259,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 if (mod_session->Busy()) dirty = true; // The progress moves.
                 const std::wstring mods_game = scan.entries[game_options.game].name;
                 const auto send = [&](unsigned bits, Mods::ModsInput input) {
-                    if (!(actions & bits) || !mod_session) return;
+                    if ((bits && !(actions & bits)) || !mod_session) return;
                     const auto counts = Mods::CountsFor(*mod_session, mods_page, mods_game);
                     const auto command = Mods::HandleModsInput(mods_page, counts, input);
                     switch (command.kind) {
@@ -1056,19 +1308,28 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     case Kind::PickCategory: mod_session->PickCategory(command.index); break;
                     case Kind::Close:
                         mod_session.reset();
-                        game_options.page.reset();
+                        game_options = {};
                         break;
                     case Kind::None:
                     case Kind::Moved:
                         break;
                     }
                 };
+                if (requested_manager_tab) {
+                    if (*requested_manager_tab < Mods::ModsTabCount && mods_page.screen == Mods::ModsScreen::List) {
+                        const auto steps = (*requested_manager_tab + Mods::ModsTabCount -
+                            static_cast<std::size_t>(mods_page.tab)) % Mods::ModsTabCount;
+                        for (std::size_t i = 0; i < steps; ++i) send(0, Mods::ModsInput::NextTab);
+                    }
+                    requested_manager_tab.reset();
+                }
                 send(Up, Mods::ModsInput::Up);
                 send(Down, Mods::ModsInput::Down);
-                send(Left, Mods::ModsInput::Left);
-                send(Right, Mods::ModsInput::Right);
-                send(PreviousTab, Mods::ModsInput::PreviousTab);
-                send(NextTab, Mods::ModsInput::NextTab);
+                const bool sub_tabs = game_options.focus == GameOptionsFocus::ManagerTabs;
+                send(Left, sub_tabs ? Mods::ModsInput::PreviousTab : Mods::ModsInput::Left);
+                send(Right, sub_tabs ? Mods::ModsInput::NextTab : Mods::ModsInput::Right);
+                send(PreviousManagerTab, Mods::ModsInput::PreviousTab);
+                send(NextManagerTab, Mods::ModsInput::NextTab);
                 send(Play, Mods::ModsInput::Confirm);
                 send(Swap | AddFolder, Mods::ModsInput::Alternate);
                 send(Refresh, Mods::ModsInput::Menu);
@@ -1084,10 +1345,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     } catch (...) { options_notice = Tr(T::PickerOpenFailed); }
                 }
                 dirty |= actions != 0;
-            } else if (cheat_session && actions) {
+            } else if (game_options.page == GameOption::Cheats && cheat_session && (actions || requested_manager_tab)) {
                 using Cheats::CheatsEffect;
                 const auto send = [&](unsigned bits, MenuAction action) {
-                    if (!(actions & bits)) return;
+                    if (bits && !(actions & bits)) return;
                     const auto input = Cheats::CheatsInputForAction(action);
                     if (!input) return;
                     switch (Cheats::HandleCheatsInput(cheats_page, *cheat_session, *input,
@@ -1100,17 +1361,26 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     case CheatsEffect::Refresh: cheat_session->Retry(); break;
                     case CheatsEffect::Back:
                         cheat_session.reset();
-                        game_options.page.reset();
+                        game_options = {};
                         break;
                     case CheatsEffect::None:
                     case CheatsEffect::Moved:
                         break;
                     }
                 };
+                if (requested_manager_tab) {
+                    std::array<Cheats::CheatCategory, Cheats::CategoryCount> storage;
+                    const auto tabs = Cheats::CheatTabs(cheat_session->Catalog(), storage);
+                    if (*requested_manager_tab < tabs.size()) {
+                        for (std::size_t i = 0; i < tabs.size() && cheats_page.category != tabs[*requested_manager_tab]; ++i)
+                            send(0, MenuAction::NextTab);
+                    }
+                    requested_manager_tab.reset();
+                }
                 send(Up, MenuAction::Up);
                 send(Down, MenuAction::Down);
-                send(Left | PreviousTab, MenuAction::PreviousTab);
-                send(Right | NextTab, MenuAction::NextTab);
+                send(Left | PreviousManagerTab, MenuAction::PreviousTab);
+                send(Right | NextManagerTab, MenuAction::NextTab);
                 send(Play, MenuAction::Confirm);
                 send(Swap | AddFolder, MenuAction::Alternate);
                 send(Refresh, MenuAction::Refresh);
@@ -1120,9 +1390,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 const auto send = [&](unsigned bit, GameOptionsInput input) {
                     if (actions & bit) HandleGameOptionsInput(game_options, input);
                 };
-                send(Up, GameOptionsInput::Up);
-                send(Down, GameOptionsInput::Down);
-                send(Play, GameOptionsInput::Confirm);
+
+                if (GameOptions()[game_options.selected] == GameOption::Pulse) send(Play, GameOptionsInput::Confirm);
                 send(Quit, GameOptionsInput::Back);
                 if (game_options.confirm_discard || game_options.discard) {
                     auto& game = scan.entries[game_options.game];
@@ -1139,66 +1408,12 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 } else if (options_notice == Tr(T::PulseDiscardConfirm)) {
                     options_notice.clear();
                 }
-                if (game_options.page == GameOption::Updates || game_options.page == GameOption::Dlc) {
-                    const auto& game = scan.entries[game_options.game];
-                    if (!game.title_loaded || !game.program_id) {
-                        notify(T::CheatsUnavailable); game_options.page.reset();
-                    } else {
-                        std::vector<std::uint64_t> bases;
-                        for (const auto& e : scan.entries) if (e.program_id) bases.push_back(FileSys::GetBaseTitleID(e.program_id));
-                        metadata_worker.request_stop();
-                        content_session = std::make_unique<Content::ContentSession>(game.program_id, game.launch_path,
-                            *game_options.page == GameOption::Updates ? Content::Kind::Update : Content::Kind::Dlc,
-                            std::move(bases), std::move(metadata_worker));
-                        metadata = {};
-                    }
-                }
-                if (game_options.page == GameOption::Mods) {
-                    // Mods are kept per title id; the build id (of the version that boots, update
-                    // included) tells which mods' patches fit it.
-                    const auto& game = scan.entries[game_options.game];
-                    if (game.title_loaded && game.program_id == 0) {
-                        notify(T::ModsHomebrew);
-                        game_options.page.reset();
-                    } else if (!game.title_loaded) {
-                        notify(T::CheatsUnavailable);
-                        game_options.page.reset();
-                    } else {
-                        std::string build_id;
-                        if (std::any_of(game.build_id.begin(), game.build_id.end(), [](std::uint8_t b) { return b != 0; }))
-                            for (const auto b : game.build_id) build_id += fmt::format("{:02X}", b);
-                        // The store and the installs log what went wrong; the log opens with the page.
-                        if (!logging_ready) { Common::Log::Initialize(); logging_ready = true; }
-                        mod_session = std::make_unique<Mods::ModSession>(game.program_id, std::move(build_id),
-                                                                         game.launch_path, I18n::ToUtf8(game.name),
-                                                                         system_page.settings.show_adult_mods);
-                        mods_page = {};
-                        options_notice.clear();
-                    }
-                }
-                if (game_options.page == GameOption::Cheats) {
-                    // Cheat files are named after the game's title and main build ids, which the
-                    // library reads with the title (uwp_library_metadata.cpp).
-                    const auto& game = scan.entries[game_options.game];
-                    const bool known = std::any_of(game.build_id.begin(), game.build_id.end(),
-                                                   [](std::uint8_t b) { return b != 0; });
-                    if (game.title_loaded && game.program_id == 0) {
-                        notify(T::CheatsHomebrew);
-                        game_options.page.reset();
-                    } else if (!game.title_loaded || !known) {
-                        notify(T::CheatsUnavailable);
-                        game_options.page.reset();
-                    } else {
-                        Cheats::CheatGame cheat_game{game.program_id};
-                        std::copy(game.build_id.begin(), game.build_id.end(), cheat_game.build_id.begin());
-                        cheat_session.emplace(cheat_game);
-                        cheats_page = {};
-                        options_notice.clear();
-                    }
-                }
                 dirty = true;
             }
             actions = 0;
+        }
+        if (!game_options.open && !content_session) {
+            mod_session.reset(); cheat_session.reset(); requested_manager_tab.reset();
         }
         if (actions & Quit) {
             if (panel.keyboard.open) { panel.keyboard.open = panel.keyboard.capturing = false; dirty = true; actions &= ~Quit; }
@@ -1256,6 +1471,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         configuration.selected == 3 ? Content::Kind::Update : Content::Kind::Dlc,
                         std::move(bases), std::move(metadata_worker));
                     metadata = {}; game_options.open = true; game_options.game = 0;
+                    game_options.activate = false; game_options.focus = GameOptionsFocus::Content;
                 }
                 else if (configuration.selected >= 5) {
                     try {
@@ -1562,9 +1778,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             resize = false;
             dirty = true;
         }
-        if (dirty || canvas->Animating()) {
+        const bool draw = dirty || canvas->Animating();
+        if (draw) {
             const GameOptionsView options_view{
-                game_options, game_options.open && game_options.game < scan.entries.size() ? &scan.entries[game_options.game] : nullptr,
+                game_options, game_options.open && !configuration.open && game_options.game < scan.entries.size() ? &scan.entries[game_options.game] : nullptr,
                 cheat_session ? &*cheat_session : nullptr, cheats_page, options_notice, content_session.get(),
                 mod_session.get(), &mods_page};
             // Titles, Pulse sessions and plays arrive after the shelf was made: keep it current,
@@ -1583,8 +1800,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                           &shelf, shelf_focus, filter_focus, battery});
             dirty = false;
         }
-        // While something moves, Present(1) paces the loop to the display; otherwise poll gently.
-        if (!canvas->Animating()) std::this_thread::sleep_for(std::chrono::milliseconds{16});
+        // A drawn frame already waited for the display in Present(1); sleeping after it too made
+        // every press answer a frame late. Idle, poll the pad every half frame.
+        if (!draw) std::this_thread::sleep_for(std::chrono::milliseconds{8});
     }
 }
 } // namespace Jadyx

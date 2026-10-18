@@ -37,6 +37,8 @@ CheatSet Set(std::string mod, int count, int words = 1) {
 } // namespace
 
 int main() {
+    static_assert(CheatsLayout::RowTop - GameOptionsLayout::HeroCollapse +
+        (CheatsLayout::VisibleRows - 1) * CheatsLayout::RowStride + CheatsLayout::RowHeight <= GameOptionsLayout::ListBottom);
     if (CheatsInputForAction(MenuAction::Toggle) ||
         CheatsInputForAction(MenuAction::Left) != CheatsInput::PreviousCategory ||
         CheatsInputForAction(MenuAction::PreviousTab) != CheatsInput::PreviousCategory ||
@@ -103,17 +105,58 @@ int main() {
     check(HandleCheatsInput(none, empty, CheatsInput::Toggle, rows) == CheatsEffect::None);
     check(HandleCheatsInput(none, empty, CheatsInput::NextCategory, rows) == CheatsEffect::None);
 
-    // The game options list opens its option's page and closes with Back.
+    // Selecting a category activates its manager without an intermediate Open action.
     GameOptionsPage options{true, 7};
     HandleGameOptionsInput(options, GameOptionsInput::Up);
     check(options.selected == GameOptions().size() - 1); // the list wraps
     HandleGameOptionsInput(options, GameOptionsInput::Down);
     HandleGameOptionsInput(options, GameOptionsInput::Down);
     check(GameOptions()[options.selected] == GameOption::Cheats); // Mods, then Cheats
+    check(options.page == GameOption::Cheats && options.activate && (options.focus == GameOptionsFocus::Sections));
     HandleGameOptionsInput(options, GameOptionsInput::Confirm);
-    check(options.page == GameOption::Cheats && options.open);
+    check(options.page == GameOption::Cheats && options.open && !(options.focus == GameOptionsFocus::Sections));
     HandleGameOptionsInput(options, GameOptionsInput::Back);
     check(!options.open);
+
+    // Sections -> manager tabs -> content, and back: neither focus change reopens the manager.
+    SelectGameOption(options, 0);
+    options.activate = false; // The coordinator finished initializing Mods.
+    const auto active_page = options.page;
+    EnterGameOptionsPane(options, true);
+    check(options.focus == GameOptionsFocus::ManagerTabs && !options.activate);
+    EnterGameOptionsPane(options, true);
+    check(options.focus == GameOptionsFocus::Content && options.page == active_page);
+    LeaveGameOptionsPane(options, true);
+    check(options.focus == GameOptionsFocus::ManagerTabs && !options.activate);
+    LeaveGameOptionsPane(options, true);
+    check(options.focus == GameOptionsFocus::Sections && options.page == active_page);
+    EnterGameOptionsPane(options, false);
+    check(options.focus == GameOptionsFocus::Content);
+    options.confirm_discard = true;
+    LeaveGameOptionsPane(options, false);
+    check(options.focus == GameOptionsFocus::Sections && !options.confirm_discard);
+
+    // Pulse still requires two confirms; changing category cancels it.
+    options = {true, 7};
+    HandleGameOptionsInput(options, GameOptionsInput::Up);
+    check(GameOptions()[options.selected] == GameOption::Pulse);
+    HandleGameOptionsInput(options, GameOptionsInput::Confirm);
+    check(options.confirm_discard && !options.discard);
+    HandleGameOptionsInput(options, GameOptionsInput::Down);
+    check(!options.confirm_discard && !options.discard);
+    HandleGameOptionsInput(options, GameOptionsInput::Up);
+    HandleGameOptionsInput(options, GameOptionsInput::Confirm);
+    HandleGameOptionsInput(options, GameOptionsInput::Confirm);
+    check(options.discard && !options.confirm_discard && !options.page);
+
+    for (std::size_t i = 0; i < GameOptions().size(); ++i) {
+        SelectGameOption(options, i);
+        check(options.selected == i && options.activate && (options.focus == GameOptionsFocus::Sections));
+        check(!options.discard && !options.confirm_discard);
+        check(GameOptions()[i] == GameOption::Pulse ? !options.page : options.page == GameOptions()[i]);
+    }
+    SelectGameOption(options, GameOptions().size());
+    check(options.selected == GameOptions().size() - 1); // invalid pointer index is ignored
 
     std::puts("cheats page: tabs, scrolling, toggles, all on/off, budget and game options PASS");
     return 0;

@@ -21,11 +21,11 @@ namespace Jadyx::Cheats {
 
 /// Geometry of the page's panel, from its top-left corner (layout units of the 1280x720 screen).
 struct CheatsLayout {
-    static constexpr float Width = 1060, Height = 650, Margin = 40;
-    static constexpr float TabsTop = 112, TabHeight = 38;
-    static constexpr float RowTop = 166, RowStride = 52, RowHeight = 46;
-    static constexpr std::size_t VisibleRows = 7;
-    static constexpr float Status = 538, Note = 578, Footer = 606;
+    static constexpr float Width = 1280, Height = 720, Margin = 56;
+    static constexpr float TabsTop = 214, TabHeight = 30;
+    static constexpr float RowTop = 260, RowStride = 42, RowHeight = 38;
+    static constexpr std::size_t VisibleRows = 10;
+    static constexpr float Status = 626, Note = 646, Footer = 676;
 };
 
 struct CheatsPage {

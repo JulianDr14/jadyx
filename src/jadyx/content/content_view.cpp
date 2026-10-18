@@ -54,12 +54,18 @@ void DrawMissingContent(UiPainter& paint) {
     paint.Prompt(L"X", ButtonColor::X, Tr(T::ContentLaunchWithout), 430, 435);
     paint.Prompt(L"B", ButtonColor::B, Tr(T::Cancel), 980, 435);
 }
-void DrawContentPanel(UiPainter& paint, const ContentSession& session, std::wstring_view game) {
+namespace {
+/// Under the game's tab bars, as the other option pages; the prompts sit on the shared footer line.
+constexpr float Top = 214, Rows = 260, RowStride = 48, Status = 626, Footer = 676;
+constexpr std::size_t VisibleRows = 7;
+} // namespace
+void DrawContentPanel(UiPainter& paint, const ContentSession& session, std::wstring_view game, const Keys& keys) {
     const auto& view = session.View();
     paint.Round(0, 0, 1280, 720, 0, Palette::Backdrop);
-    paint.Round(100, 30, 1080, 660, 24, Palette::Panel);
-    paint.PageHeader(140, 58, UiIcon::Folder,
-        Tr(session.Category() == Kind::Update ? T::ContentUpdates : T::ContentDlc), game);
+    paint.ManagementSurface(0, 0, 1280, 720, Footer);
+    const auto title = Tr(session.Category() == Kind::Update ? T::ContentUpdates : T::ContentDlc);
+    paint.Type(title, TypeRole::LabelLarge, 56, 100, 700, Palette::TextHint);
+    paint.Type(game, TypeRole::HeadlineMedium, 56, 124, 1168, Palette::Text, 1, TextAlign::Leading, 2);
     const auto storage = Tr(session.CopyInternal() ? T::ContentInternal : T::ContentUsb);
     std::wstring header;
     switch (view.screen) {
@@ -77,25 +83,25 @@ void DrawContentPanel(UiPainter& paint, const ContentSession& session, std::wstr
         break;
     }
     }
-    paint.Text(header, 145, 130, 17, Palette::TextHint, 980, 43, false, true);
+    paint.Round(56, Top, 1168, 34, 17, Palette::Surface);
+    paint.Type(header, TypeRole::LabelLarge, 80, Top + 8, 1120, Palette::TextHint);
     if (session.Busy()) {
-        paint.Text(Tr(view.screen == Screen::ConfirmImport ? (session.CopyInternal() ? T::ContentAddingInternal : T::ContentAddingUsb) : T::ContentWorking), 145, 210, 23, Palette::Text, 980, 55, true);
-        paint.Round(145, 290, 980, 12, 6, Palette::Track);
+        paint.Text(Tr(view.screen == Screen::ConfirmImport ? (session.CopyInternal() ? T::ContentAddingInternal : T::ContentAddingUsb) : T::ContentWorking), 145, Rows + 16, 23, Palette::Text, 980, 55, true);
+        paint.Round(145, Rows + 86, 980, 12, 6, Palette::Track);
         if (session.Total()) {
             const auto fraction = std::min(1.0, static_cast<double>(session.Done()) / session.Total());
-            paint.Round(145, 290, static_cast<float>(980 * fraction), 12, 6, Palette::Accent);
+            paint.Round(145, Rows + 86, static_cast<float>(980 * fraction), 12, 6, Palette::Text);
             paint.Text(std::to_wstring(session.Done() / (1024 * 1024)) + L" / " +
-                std::to_wstring(session.Total() / (1024 * 1024)) + L" MiB", 145, 315, 19, Palette::TextHint, 980);
+                std::to_wstring(session.Total() / (1024 * 1024)) + L" MiB", 145, Rows + 112, 19, Palette::TextHint, 980);
         }
-        paint.Prompt(L"B", ButtonColor::B, Tr(T::Cancel), 145, 635); return;
+        paint.Prompt(keys.back.letters, keys.back.color, Tr(T::Cancel), 56, Footer); return;
     }
     if (view.screen == Screen::ConfirmImport || view.screen == Screen::ConfirmRemove) {
         paint.Text(Tr(view.screen == Screen::ConfirmImport ? T::ContentConfirmImport : T::ContentConfirmRemove),
-                   145, 225, 23, Palette::Warning, 980, 170, true, true);
+                   145, Rows + 16, 23, Palette::Warning, 980, 100, true, true);
         if (view.screen == Screen::ConfirmImport) {
-            paint.Text(storage, 145, 185, 22, Palette::Accent, 980, 36, true);
             paint.Text(Tr(session.CopyInternal() ? T::ContentInternalHint : T::ContentUsbHint),
-                       145, 410, 19, Palette::Text, 980, 75, false, true);
+                       145, Rows + 126, 19, Palette::Text, 980, 75, false, true);
             if (session.CopyInternal()) {
                 std::uint64_t required{};
                 for (size_t i = 0; i < view.preview.size(); ++i)
@@ -103,11 +109,11 @@ void DrawContentPanel(UiPainter& paint, const ContentSession& session, std::wstr
                         required += view.preview[i].revision.bytes;
                 paint.Text(std::to_wstring(required / (1024*1024)) + L" MiB  ·  " +
                     I18n::Format(T::ContentFreeSpace, {std::to_wstring(view.available / (1024*1024))}),
-                    145, 515, 18, Palette::TextHint, 980, 35);
+                    145, Rows + 206, 18, Palette::TextHint, 980, 35);
             }
         }
-        paint.Prompt(L"A", ButtonColor::A, Tr(view.screen == Screen::ConfirmImport ? T::ContentImportSelected : T::Yes), 145, 635);
-        paint.Prompt(L"B", ButtonColor::B, Tr(T::Cancel), 900, 635); return;
+        paint.Prompt(keys.confirm.letters, keys.confirm.color, Tr(view.screen == Screen::ConfirmImport ? T::ContentImportSelected : T::Yes), 56, Footer);
+        paint.Prompt(keys.back.letters, keys.back.color, Tr(T::Cancel), 1100, Footer); return;
     }
     struct Row { std::wstring name, detail; bool checked{}; };
     std::vector<Row> rows;
@@ -160,25 +166,52 @@ void DrawContentPanel(UiPainter& paint, const ContentSession& session, std::wstr
     }
     default: break;
     }
-    const size_t first = view.selected / 6 * 6;
-    for (size_t i = first; i < std::min(rows.size(), first + 6); ++i) {
-        const float y = 183 + static_cast<float>(i - first) * 64;
-        paint.RowFrame(140, y, 1000, 58, i == view.selected, rows[i].checked ? UiIcon::Game : UiIcon::Folder);
-        paint.Text((rows[i].checked ? L"[X] " : L"") + rows[i].name, 210, y + 4, 20, Palette::Text, 890, 29, true);
-        paint.Text(rows[i].detail, 210, y + 31, 14, Palette::TextHint, 890, 24);
+    const bool manager = view.screen == Screen::Manager;
+    const float row_width = manager ? 744.0f : 1168.0f;
+    if (manager) {
+        constexpr float card = Rows, shift = Rows - 354;
+        paint.Card(824, card, 400, (VisibleRows - 1) * RowStride + 44, 24);
+        paint.Icon(UiIcon::Folder, 848, 370 + shift, Palette::Text);
+        paint.Type(title, TypeRole::HeadlineSmall, 848, 408 + shift, 352, Palette::Text);
+        paint.Round(848, 450 + shift, 352, 1, 0, Palette::Graphite);
+        std::uint64_t bytes{};
+        for (const auto& revision : view.rows) bytes += revision.bytes;
+        paint.Type(std::to_wstring(view.rows.size()) + L"  ·  " +
+                   std::to_wstring(bytes / (1024 * 1024)) + L" MiB",
+                   TypeRole::HeadlineMedium, 848, 468 + shift, 352, Palette::Text);
+        if (view.selected > 0 && view.selected <= view.rows.size()) {
+            const auto& revision = view.rows[view.selected - 1];
+            paint.Type(Label(revision), TypeRole::BodyLarge, 848, 512 + shift, 352,
+                       Palette::Text, 1, TextAlign::Leading, 2);
+            paint.Type(Detail(revision, view.row_errors[view.selected - 1]), TypeRole::Body,
+                       848, 572 + shift, 352, Palette::TextHint, 1, TextAlign::Leading, 3);
+        } else {
+            paint.Type(Tr(T::ContentInstallHint), TypeRole::BodyLarge, 848, 512 + shift, 352,
+                       Palette::TextHint, 1, TextAlign::Leading, 4);
+        }
     }
-    paint.ScrollIndicator(1154, 183, 5 * 64 + 58, first,
-                          6, rows.size());
-    if (rows.empty()) paint.Text(Tr(T::ContentEmpty), 145, 215, 22, Palette::TextHint, 980);
-    if (view.error != Error::None) paint.Text(Tr(ErrorText(view.error)), 145, 580, 17, Palette::Warning, 980, 45, false, true);
-    paint.Prompt(L"A", ButtonColor::A, Tr(view.screen == Screen::Result ? T::ContentReturnManager : T::Select), 145, 635);
+    const size_t first = view.selected / VisibleRows * VisibleRows;
+    for (size_t i = first; i < std::min(rows.size(), first + VisibleRows); ++i) {
+        const float y = Rows + static_cast<float>(i - first) * RowStride;
+        paint.SelectionCard(56, y, row_width, 44, i == view.selected, 12);
+        paint.Icon(rows[i].checked ? UiIcon::Game : UiIcon::Folder, 76, y + 8,
+                   rows[i].checked ? Palette::Text : Palette::TextSecondary);
+        paint.Text(rows[i].name, 126, y + 2, 17, Palette::Text, row_width - 94, 24, true);
+        paint.Text(rows[i].detail, 126, y + 26, 12, Palette::TextHint, row_width - 94, 16);
+    }
+    paint.ScrollIndicator(56 + row_width + 14, Rows, (VisibleRows - 1) * RowStride + 44, first,
+                          VisibleRows, rows.size());
+    if (rows.empty()) paint.Text(Tr(T::ContentEmpty), 80, Rows + 16, 22, Palette::TextHint, row_width - 48);
+    if (view.error != Error::None) paint.Text(Tr(ErrorText(view.error)), 56, Status, 17, Palette::Warning, 1168, 32);
+    float next = 56;
+    next += paint.Prompt(keys.confirm.letters, keys.confirm.color, Tr(view.screen == Screen::Result ? T::ContentReturnManager : T::Select), next, Footer);
     if (view.screen == Screen::Browser || view.screen == Screen::Preview)
-        paint.Prompt(L"X", ButtonColor::X, Tr(T::ContentImportSelected), 450, 635);
-    if (view.screen == Screen::Browser) paint.Prompt(L"Y", ButtonColor::Y, Tr(T::ContentMarkFile), 680, 635);
+        next += paint.Prompt(keys.primary.letters, keys.primary.color, Tr(T::ContentImportSelected), next, Footer);
+    if (view.screen == Screen::Browser) paint.Prompt(keys.secondary.letters, keys.secondary.color, Tr(T::ContentMarkFile), next, Footer);
     if (view.screen == Screen::Browser)
-        paint.Text(I18n::Format(T::ContentContinueFiles, {std::to_wstring(view.selected_files.size())}), 145, 553, 17, Palette::Accent, 980, 26);
+        paint.Text(I18n::Format(T::ContentContinueFiles, {std::to_wstring(view.selected_files.size())}), 56, Status, 17, Palette::Text, 1168, 26);
     if (view.screen == Screen::Result && view.error == Error::None)
-        paint.Text(Tr(T::ContentFinished), 145, 553, 18, Palette::Accent, 980, 26, true);
-    paint.Prompt(L"B", ButtonColor::B, Tr(T::Back), 1000, 635);
+        paint.Text(Tr(T::ContentFinished), 56, Status, 18, Palette::Text, 1168, 26, true);
+    paint.Prompt(keys.back.letters, keys.back.color, Tr(T::Back), 1100, Footer);
 }
 } // namespace Jadyx::Content

@@ -6,6 +6,15 @@
 namespace Jadyx { class UiPainter; }
 namespace Jadyx::Content {
 I18n::Text ErrorText(Error error);
-void DrawContentPanel(UiPainter& painter, const ContentSession& session, std::wstring_view game);
+/// A button's letters and their color, as the controller in use shows them.
+struct Key {
+    std::wstring_view letters;
+    unsigned color;
+};
+/// The buttons the pane's prompts name: confirm, back, and the two face buttons for actions.
+struct Keys {
+    Key confirm, back, primary, secondary;
+};
+void DrawContentPanel(UiPainter& painter, const ContentSession& session, std::wstring_view game, const Keys& keys);
 void DrawMissingContent(UiPainter& painter);
 } // namespace Jadyx::Content

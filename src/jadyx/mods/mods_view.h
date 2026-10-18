@@ -25,10 +25,20 @@ struct ModsView {
     const ModsPage& page;
     std::wstring_view game;   ///< The game's name, under the title.
     std::wstring_view notice; ///< What the last action did, if it needs saying.
+    bool content_focused{true};
+    bool tabs_focused{};
+    std::wstring_view previous_tab{L"LT"}, next_tab{L"RT"};
+    std::wstring_view confirm{L"A"}; ///< The button that opens the focused card.
+    unsigned confirm_color{0xf5f5f7};
+    float scroll{-1};      ///< The first list row shown, eased; below 0, page.first.
+    float grid_scroll{-1}; ///< The first row of cards shown, eased; below 0, page.card_first's row.
+    float grid_bottom{656}; ///< Where the grid's view ends in the panel; lower as the header folds.
 };
 
 /// Draws the page in the ModsLayout panel, offset by (x, y).
 void DrawModsPanel(UiPainter& paint, const ModsView& view, float x = 0, float y = 0);
+
+void DrawModsStatus(UiPainter& paint, const ModsView& view, float x = 0, float y = 0);
 
 I18n::Text ErrorText(ModError error);
 

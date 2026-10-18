@@ -130,13 +130,16 @@ public:
         last_played = nullptr;
         if (const auto last = LibraryLayout::LastPlayed(scan.entries); !view.loading && last < scan.entries.size())
             last_played = &scan.entries[last];
-        // The focused game's backdrop is rendered off-screen, before this frame starts.
-        UpdateBackdrop(game, now);
+        const bool management = view.game_options.game || view.game_options.content;
+        // Only the active library content prepares and draws its backdrop.
+        if (!management) UpdateBackdrop(game, now);
         hits.clear();
         target->BeginDraw();
         target->Clear(D2D1::ColorF(Palette::Canvas));
-        DrawBackdrop(now);
-        if (view.tab == LibraryTab::Settings) {
+        if (!management) DrawBackdrop(now);
+        if (management) {
+            rows_shown = false;
+        } else if (view.tab == LibraryTab::Settings) {
             rows_shown = false;
             // Settings dims the art further: its own page, not a dialog over the library.
             Round(0, 0, 1280, 720, 0, Palette::Canvas, 0.62f);
@@ -158,20 +161,29 @@ public:
                 Type(view.notice, TypeRole::Body, LibraryLayout::Margin, 430, 1000, Palette::Warning,
                      1, TextAlign::Leading, 2);
         }
-        DrawHeader(view, now);
-        DrawFooter(view);
+        if (!management) {
+            DrawHeader(view, now);
+            DrawFooter(view);
+        }
         // On the Settings tab the controller's rows are its page; only the device list floats.
         if (view.controller_panel && view.tab != LibraryTab::Settings) DrawControllerPanel(view);
         else if (view.controller_panel && panel.expanded) DrawControllerChoices(view, true);
         if (panel.keyboard.open) DrawKeyboard(panel.keyboard);
         if (configuration.open && view.system.open && view.system.name_editor) DrawNameEditor(view.system);
-        if (view.game_options.game || view.game_options.content) DrawGameOptions(view.game_options);
+        if (management) {
+            DrawGameOptions(view.game_options);
+            // The library owns the header. Pages replace its content, never its chrome.
+            Round(0, 0, 1280, 94, 0, Palette::Canvas);
+            DrawHeader(view, now);
+        }
+        if (!view.game_options.game) management_collapse.Snap(0);
         if (view.missing_content) Content::DrawMissingContent(*this);
         winrt::check_hresult(target->EndDraw());
         winrt::check_hresult(swapchain->Present(1, 0));
         animating = scroll.Running(now) || focus_in.Running(now) || focus_out.Running(now) ||
                     hero.Running(now) || backdrop_fade.Running(now) || tab_slide.Running(now) ||
-                    filter_slide.Running(now);
+                    filter_slide.Running(now) || management_collapse.Running(now) ||
+                    list_scroll.Running(now) || grid_scroll.Running(now);
     }
     void InvalidateCovers() { covers.clear(); pictures.clear(); backdrops.clear(); backdrop_now.clear(); backdrop_before.clear(); }
     bool Animating() const { return animating; }
@@ -183,6 +195,23 @@ public:
         return {};
     }
 private:
+    bool manager_targets{};
+    float manager_offset{};
+    float manager_bottom{GameOptionsLayout::ListBottom};
+    bool manager_clip{};
+    void Target(UiTarget kind, std::size_t index, float x, float y, float w, float h) override {
+        if (!manager_targets) return;
+        const auto hit = kind == UiTarget::ManagerTab ? LibraryHit::ManagerTab :
+                         kind == UiTarget::ManagerRow ? LibraryHit::ManagerRow : LibraryHit::ManagerCard;
+        y -= manager_offset;
+        if (manager_clip) {
+            const float bottom = std::min(y + h, manager_bottom);
+            y = std::max(y, GameOptionsLayout::BodyTop - manager_offset);
+            h = bottom - y;
+            if (h <= 0) return;
+        }
+        AddHit(x, y, w, h, hit, index);
+    }
     void AddHit(float x, float y, float w, float h, LibraryHit hit, std::size_t index = 0) {
         hits.push_back({D2D1::RectF(x, y, x + w, y + h), {hit, index}});
     }
@@ -245,8 +274,11 @@ private:
         const bool nintendo = prompt_family == PromptFamily::Nintendo;
         const std::wstring_view previous = keyboard ? L"Q" : nintendo ? L"L" : L"LB";
         const std::wstring_view next = keyboard ? L"E" : nintendo ? L"R" : L"RB";
-        Badge(previous, left - 10 - BadgeWidth(previous) / 2, middle, Palette::TextSecondary);
-        Badge(next, left + width + 10 + BadgeWidth(next) / 2, middle, Palette::TextSecondary);
+        // On a management page bumpers belong to its categories, as in the reference.
+        if (!view.game_options.game && !view.game_options.content) {
+            Badge(previous, left - 10 - BadgeWidth(previous) / 2, middle, Palette::TextSecondary);
+            Badge(next, left + width + 10 + BadgeWidth(next) / 2, middle, Palette::TextSecondary);
+        }
         // Right to left: the user, a hairline, the time and the controller (pressing it opens its panel).
         const std::wstring_view name = view.system.settings.user_name.empty()
                                            ? DefaultUserName
@@ -1165,6 +1197,13 @@ private:
         default: return {xbox ? L"LB" : L"L", ButtonColor::Neutral};
         }
     }
+    Content::Keys ContentKeys() const {
+        const auto key = [&](Navigation action) {
+            const auto face = PromptKey(action);
+            return Content::Key{face.letters, face.color};
+        };
+        return {key(Navigation::Play), key(Navigation::Back), key(Navigation::AddFolder), key(Navigation::Refresh)};
+    }
     /// A prompt's label after its badges; returns the label's width.
     float PromptLabel(std::wstring_view label, float x, float y) {
         const float width = MeasureType(label, TypeRole::LabelLarge);
@@ -1196,39 +1235,113 @@ private:
         const auto key = PromptKey(action);
         return Prompt(key.letters, key.color, label, x, y);
     }
+    /// Eases `tween` toward the row `first`; a jump of more than a page (a new tab) lands at once.
+    static float FollowRow(Tween& tween, std::size_t first, float page, Tween::Clock::time_point now) {
+        const float target = static_cast<float>(first);
+        if (std::abs(target - tween.Value(now)) > page) tween.Snap(target);
+        else tween.Set(target, now);
+        return tween.Value(now);
+    }
     /// The game's options, and the option page open over them.
     void DrawGameOptions(const GameOptionsView& view) {
-        if (view.content) { Content::DrawContentPanel(*this, *view.content, view.game ? view.game->name : Tr(T::ContentOverview)); return; }
+        hits.clear();
+        manager_targets = (view.page.page == GameOption::Cheats && view.cheats) ||
+            (view.page.page == GameOption::Mods && view.mods && view.mods_page &&
+            view.mods_page->screen == Mods::ModsScreen::List && !view.mods->Busy());
+        if (view.content && !view.game) {
+            Content::DrawContentPanel(*this, *view.content, Tr(T::ContentOverview), ContentKeys());
+            return;
+        }
         const LibraryEntry& game = *view.game;
+        const bool modal = view.page.page == GameOption::Mods && view.mods_page &&
+                           view.mods_page->screen != Mods::ModsScreen::List;
+        const bool expandable = view.page.page == GameOption::Mods || view.page.page == GameOption::Cheats;
+        const float body_bottom = view.page.page == GameOption::Mods && view.mods_page &&
+            view.mods_page->tab == Mods::ModsTab::Explore ? GameOptionsLayout::GridBottom : GameOptionsLayout::ListBottom;
+        const auto now = Tween::Clock::now();
+        management_collapse.Set(expandable && view.page.focus == GameOptionsFocus::Content ? GameOptionsLayout::HeroCollapse : 0.0f, now);
+        const float offset = expandable && !modal ? management_collapse.Value(now) : 0;
+        const bool keyboard = prompt_family == PromptFamily::Keyboard;
+        const bool nintendo = prompt_family == PromptFamily::Nintendo;
+        const std::wstring_view previous_tab = keyboard ? L"PgUp" : nintendo ? L"ZL" : L"LT";
+        const std::wstring_view next_tab = keyboard ? L"PgDn" : nintendo ? L"ZR" : L"RT";
+        constexpr float footer = GameOptionsLayout::Footer;
+        // B, the way out, always ends the bar at the right margin.
+        const auto back_prompt = [&](std::wstring_view label) {
+            const float width = BadgeWidth(PromptKey(Navigation::Back).letters) + 8 +
+                                MeasureType(label, TypeRole::LabelLarge);
+            ControlPrompt(Navigation::Back, label, 1224 - width, footer);
+        };
+        D2D1_MATRIX_3X2_F base_transform;
+        target->GetTransform(&base_transform);
+        const auto begin_body = [&] {
+            if (modal) return;
+            target->PushAxisAlignedClip(D2D1::RectF(0, GameOptionsLayout::BodyTop - offset, 1280, body_bottom), D2D1_ANTIALIAS_MODE_ALIASED);
+            target->SetTransform(D2D1::Matrix3x2F::Translation(0, -offset) * base_transform);
+            manager_offset = offset;
+            manager_bottom = body_bottom;
+            manager_clip = true;
+        };
+        const auto end_body = [&] {
+            if (modal) return;
+            target->SetTransform(base_transform);
+            target->PopAxisAlignedClip();
+            manager_offset = 0;
+            manager_clip = false;
+        };
+        // The triggers move between the page's own tabs; the bumpers between the game's options.
+        const auto internal_prompt = [&](std::wstring_view label, float left) {
+            const float first = BadgeWidth(previous_tab);
+            Badge(previous_tab, left + first / 2, footer + 16, Palette::Text);
+            return first + 6 + Prompt(next_tab, Palette::Text, label, left + first + 6, footer);
+        };
+
         Round(0, 0, 1280, 720, 0, Palette::Canvas, 0.86f);
         if (view.page.page == GameOption::Cheats && view.cheats) {
             using L = Cheats::CheatsLayout;
-            constexpr float x = (1280 - L::Width) / 2, y = 30;
-            Cheats::DrawCheatsPanel(*this, {*view.cheats, view.cheats_page, game.name, view.notice, false}, x, y);
-            const float footer = y + L::Footer;
-            ControlPrompt(Navigation::Play, Tr(T::ToggleCheat), x + L::Margin, footer);
-            ControlPrompt(Navigation::AddFolder, Tr(T::AllCheats), x + L::Margin + 170, footer);
-            float next = x + L::Margin + 330;
-            if (Cheats::CheatTabCount(view.cheats->Catalog()) > 1) {
-                ControlPrompt(Navigation::Tabs, Tr(T::Category), next, footer);
-                next += 250;
+            constexpr float x = (1280 - L::Width) / 2, y = (720 - L::Height) / 2;
+            const Cheats::CheatsView manager{*view.cheats, view.cheats_page, game.name, view.notice, false,
+                view.page.focus == GameOptionsFocus::Content, view.page.focus == GameOptionsFocus::ManagerTabs,
+                previous_tab, next_tab, FollowRow(list_scroll, view.cheats_page.first, L::VisibleRows, now)};
+            begin_body();
+            Cheats::DrawCheatsPanel(*this, manager, x, y);
+            end_body();
+            Round(0, body_bottom, 1280, 720 - body_bottom, 0, Palette::Canvas);
+            Round(40, GameOptionsLayout::FooterLine, 1200, 1, 0, Palette::Graphite);
+            Cheats::DrawCheatsStatus(*this, manager, x, y);
+            if (view.page.focus == GameOptionsFocus::Content) {
+                float next = 56;
+                next += ControlPrompt(Navigation::Play, Tr(T::ToggleCheat), next, footer);
+                next += ControlPrompt(Navigation::AddFolder, Tr(T::AllCheats), next, footer);
+                if (Cheats::CheatTabCount(view.cheats->Catalog()) > 1)
+                    next += internal_prompt(Tr(T::Category), next);
+                ControlPrompt(Navigation::Refresh, Tr(T::Refresh), next, footer);
+                back_prompt(Tr(T::Back));
             }
-            ControlPrompt(Navigation::Refresh, Tr(T::Refresh), next, footer);
-            ControlPrompt(Navigation::Back, Tr(T::Back), x + L::Width - L::Margin - 150, footer);
-            return;
-        }
-        if (view.page.page == GameOption::Mods && view.mods && view.mods_page) {
+        } else if (view.page.page == GameOption::Mods && view.mods && view.mods_page) {
             using L = Mods::ModsLayout;
             using Button = Mods::ModsPrompt::Button;
-            constexpr float x = (1280 - L::Width) / 2, y = 30;
-            Mods::DrawModsPanel(*this, {*view.mods, *view.mods_page, game.name, view.notice}, x, y);
-            const float footer = y + L::Footer;
-            float next = x + L::Margin;
+            constexpr float x = (1280 - L::Width) / 2, y = (720 - L::Height) / 2;
+            const Mods::ModsView manager{*view.mods, *view.mods_page, game.name, view.notice,
+                view.page.focus == GameOptionsFocus::Content, view.page.focus == GameOptionsFocus::ManagerTabs,
+                previous_tab, next_tab, PromptKey(Navigation::Play).letters, PromptKey(Navigation::Play).color,
+                FollowRow(list_scroll, view.mods_page->first, L::VisibleRows, now),
+                FollowRow(grid_scroll, view.mods_page->card_first / L::Columns, 2, now), body_bottom + offset};
+            begin_body();
+            Mods::DrawModsPanel(*this, manager, x, y);
+            end_body();
+            if (!modal) {
+                Round(0, body_bottom, 1280, 720 - body_bottom, 0, Palette::Canvas);
+                Round(40, GameOptionsLayout::FooterLine, 1200, 1, 0, Palette::Graphite);
+                Mods::DrawModsStatus(*this, manager, x, y);
+            }
+            float next = 56;
             for (const auto& prompt : Mods::ModsPrompts(*view.mods, *view.mods_page)) {
+                // On the tab bars, the bars' own prompts below speak instead.
+                if (!modal && view.page.focus != GameOptionsFocus::Content) break;
                 const auto label = Tr(prompt.label);
-                // B, the way out, always sits at the right end.
                 if (prompt.button == Button::B) {
-                    ControlPrompt(Navigation::Back, label, x + L::Width - L::Margin - 170, footer);
+                    back_prompt(label);
                     continue;
                 }
                 const Navigation action = prompt.button == Button::A      ? Navigation::Play
@@ -1236,30 +1349,90 @@ private:
                                           : prompt.button == Button::Y    ? Navigation::Refresh
                                           : prompt.button == Button::Menu ? Navigation::Options
                                                                           : Navigation::Tabs;
-                next += ControlPrompt(action, label, next, footer);
+                next += action == Navigation::Tabs ? internal_prompt(label, next) :
+                    ControlPrompt(action, label, next, footer);
             }
-            return;
+        } else if (view.content) {
+            Content::DrawContentPanel(*this, *view.content, game.name, ContentKeys());
+        } else {
+            ManagementSurface(0, 0, 1280, 720, GameOptionsLayout::Footer);
+            if (GameOptions()[view.page.selected] == GameOption::Pulse) {
+                Card(56, 214, 1168, 264, 24);
+                Icon(UiIcon::Archive, 80, 240, Palette::Text);
+                Type(Tr(T::PulseSession), TypeRole::HeadlineMedium, 132, 234, 1056, Palette::Text);
+                const auto pulse = game.pulse_saved.empty() ? std::wstring{Tr(T::PulseNone)} :
+                    I18n::Format(game.pulse_current ? T::PulseSavedOn : T::PulseSavedOther, {game.pulse_saved});
+                Type(pulse, TypeRole::BodyLarge, 80, 298, 1120, Palette::TextHint, 1, TextAlign::Leading, 3);
+                if (!game.pulse_saved.empty()) {
+                    const auto key = PromptKey(Navigation::Play);
+                    Prompt(key.letters, Palette::Text, Tr(T::PulseDiscardConfirm), 80, 404);
+                }
+            } else {
+                Type(view.notice.empty() ? Tr(T::CheckingGame) : view.notice, TypeRole::BodyLarge, 56, 230, 1168, Palette::TextHint,
+                     1, TextAlign::Leading, 3);
+            }
         }
-        using L = GameOptionsLayout;
-        Round(L::PanelX, L::PanelY, L::PanelWidth, L::PanelHeight, 24, Palette::Panel);
-        PageHeader(L::RowX, 99, UiIcon::Game, Tr(T::GameOptionsTitle),
-                   I18n::Format(T::GameOptionsSubtitle, {game.name}));
-        Cover(game, L::RowX + L::RowWidth - 72, 92, 72);
+        if (view.mods_page && view.page.page == GameOption::Mods &&
+            view.mods_page->screen != Mods::ModsScreen::List) return; // A modal covers the game content.
+        // The global header stays fixed; the game's line folds up behind it.
+        using G = GameOptionsLayout;
+        Round(0, G::GlobalHeaderBottom, 1280, G::BodyTop - G::GlobalHeaderBottom - offset, 0, Palette::Canvas);
+        if (offset < G::HeroCollapse) {
+            target->PushAxisAlignedClip(D2D1::RectF(0, G::GlobalHeaderBottom, 1280, G::HeroClipBottom - offset),
+                                        D2D1_ANTIALIAS_MODE_ALIASED);
+            const float top = G::HeroTop - offset;
+            Cover(game, 56, top, G::HeroHeight);
+            const float title_left = 56 + G::HeroHeight + 16;
+            const float title_width = std::min(MeasureType(game.name, TypeRole::HeadlineMedium), 640.0f);
+            Type(game.name, TypeRole::HeadlineMedium, title_left, top + 6, title_width + 4, Palette::Text);
+            // Who made it, its version and its build, on the title's line.
+            std::wstring about = game.developer;
+            const auto add = [&](std::wstring_view part) {
+                if (part.empty()) return;
+                if (!about.empty()) about += L"  \u00b7  ";
+                about += part;
+            };
+            add(game.display_version);
+            if (std::any_of(game.build_id.begin(), game.build_id.end(), [](auto byte) { return byte != 0; })) {
+                std::wstring build = L"Build ";
+                constexpr wchar_t hex[] = L"0123456789ABCDEF";
+                for (auto byte : game.build_id) { build += hex[byte >> 4]; build += hex[byte & 15]; }
+                add(build);
+            }
+            const float about_left = title_left + title_width + 20;
+            Type(about, TypeRole::Label, about_left, top + 17, 1224 - about_left, Palette::TextHint);
+            target->PopAxisAlignedClip();
+        }
         const auto options = GameOptions();
+        const float sections = G::SectionsTop - offset;
+        Round(56, sections, 1168, G::SectionsHeight, G::SectionsHeight / 2, Palette::Surface);
+        Badge(keyboard ? L"Q" : nintendo ? L"L" : L"LB", 80, sections + G::SectionsHeight / 2, Palette::Text);
+        Badge(keyboard ? L"E" : nintendo ? L"R" : L"RB", 1200, sections + G::SectionsHeight / 2, Palette::Text);
+        constexpr float tab_width = 216;
         for (std::size_t i = 0; i < options.size(); ++i) {
-            const float y = L::RowTop + static_cast<float>(i) * L::RowStride;
+            const float left = 100 + static_cast<float>(i) * tab_width;
             const bool active = i == view.page.selected;
-            RowFrame(L::RowX, y, L::RowWidth, L::RowHeight, active, GameOptionIcon(options[i]));
-            Text(Tr(GameOptionTitle(options[i])), L::RowX + 72, y + 6, 22, Palette::Text, L::RowWidth - 135, 32, true);
-            std::wstring hint{Tr(GameOptionHint(options[i]))};
-            if (options[i] == GameOption::Pulse && !game.pulse_saved.empty())
-                hint = I18n::Format(game.pulse_current ? T::PulseSavedOn : T::PulseSavedOther, {game.pulse_saved});
-            Text(hint, L::RowX + 72, y + 36, 16, Palette::TextHint, L::RowWidth - 135, 26);
-            Chevron(L::RowX + L::RowWidth - 28, y + L::RowHeight / 2, active ? Palette::Accent : Palette::TextSecondary);
+            if (active) Round(left, sections + 4, tab_width - 4, 36, 18,
+                (view.page.focus == GameOptionsFocus::Sections) ? Palette::Accent : Palette::RowActive);
+            Type(Tr(GameOptionTitle(options[i])), TypeRole::LabelLarge, left + 6, sections + 12,
+                tab_width - 16, active && (view.page.focus == GameOptionsFocus::Sections) ? Palette::OnAccent :
+                active ? Palette::Text : Palette::TextHint, 1, TextAlign::Center);
+            AddHit(left, sections + 4, tab_width - 4, 36, LibraryHit::GameOptionSelect, i);
         }
-        if (!view.notice.empty()) Text(view.notice, L::RowX + 4, L::Footer - 44, 16, Palette::Warning, L::RowWidth - 20, 28);
-        ControlPrompt(Navigation::Play, Tr(T::Open), L::RowX + 4, L::Footer);
-        ControlPrompt(Navigation::Back, Tr(T::Back), L::RowX + L::RowWidth - 230, L::Footer);
+        if (!view.notice.empty() && view.page.page != GameOption::Mods && view.page.page != GameOption::Cheats)
+            Type(view.notice, TypeRole::Label, 56, G::Status, 1168, Palette::Warning);
+        if (view.page.focus != GameOptionsFocus::Content) {
+            // On the bars: switching tabs, then the way down, up and out, over the pane's own.
+            Round(0, G::FooterLine + 1, 1280, 720 - G::FooterLine - 1, 0, Palette::Canvas);
+            float next = 56;
+            next += view.page.focus == GameOptionsFocus::ManagerTabs ? internal_prompt(Tr(T::Category), next) :
+                ControlPrompt(Navigation::Tabs, Tr(T::Category), next, footer);
+            next += Prompt(L"\u2193", Palette::Text, Tr(T::Select), next, footer);
+            if (view.page.focus == GameOptionsFocus::ManagerTabs)
+                Prompt(L"\u2191", Palette::Text, Tr(T::GameOptionsTitle), next, footer);
+            back_prompt(Tr(T::Back));
+        }
+
     }
     /// The entry's icon decoded to 256x256, or nullptr while it is not read (or not a picture).
     ID2D1Bitmap1* CoverBitmap(const LibraryEntry& entry) {
@@ -1555,6 +1728,10 @@ private:
     bool rows_shown{};
     bool animating{};
     std::string hero_path;
+    Tween management_collapse{0, std::chrono::milliseconds{180}, EaseFocus};
+    /// The first row of a manager's list and of the store's grid, gliding between rows.
+    Tween list_scroll{0, std::chrono::milliseconds{160}, EaseFocus};
+    Tween grid_scroll{0, std::chrono::milliseconds{220}, EaseFocus};
     Tween scroll{0, std::chrono::milliseconds{320}, EaseFocus};
     Tween focus_in{1, std::chrono::milliseconds{220}, EaseFocus};
     Tween focus_out{0, std::chrono::milliseconds{220}, EaseFocus};
