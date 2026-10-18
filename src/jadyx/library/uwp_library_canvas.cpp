@@ -19,6 +19,7 @@
 #include <winrt/Windows.Gaming.Input.h>
 #include <winrt/Windows.ApplicationModel.h>
 #include <winrt/Windows.Storage.h>
+#include "common/logging.h"
 #include "jadyx/cheats/cheats_view.h"
 #include "jadyx/library/game_library.h"
 #include "jadyx/library/play_history.h"
@@ -178,7 +179,13 @@ public:
         }
         if (!view.game_options.game) management_collapse.Snap(0);
         if (view.missing_content) Content::DrawMissingContent(*this);
-        winrt::check_hresult(target->EndDraw());
+        // A text whose fallback font the system cannot read (0x8007067D, now and then on the
+        // console) fails the frame, not the library: the next frame draws again.
+        if (const HRESULT drawn = target->EndDraw(); FAILED(drawn)) {
+            if (drawn == D2DERR_RECREATE_TARGET) winrt::throw_hresult(drawn);
+            if (drawn != last_draw_error) LOG_WARNING(Frontend, "Library: frame failed: {:08X}", static_cast<u32>(drawn));
+            last_draw_error = drawn;
+        }
         winrt::check_hresult(swapchain->Present(1, 0));
         animating = scroll.Running(now) || focus_in.Running(now) || focus_out.Running(now) ||
                     hero.Running(now) || backdrop_fade.Running(now) || tab_slide.Running(now) ||
@@ -1712,6 +1719,7 @@ private:
     std::array<ComPtr<ID2D1PathGeometry>, 5> controller_paths;
     ComPtr<ID2D1PathGeometry> pad_outline; ///< The header's controller (DrawPadGlyph).
     PromptFamily prompt_family{PromptFamily::Keyboard};
+    HRESULT last_draw_error{S_OK}; ///< Logged once, not every frame.
     bool swap_prompt_faces{};
     std::filesystem::path asset_root;
     std::wstring version_text;

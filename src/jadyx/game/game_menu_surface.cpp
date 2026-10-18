@@ -148,7 +148,8 @@ struct GameMenuSurface::Impl : UiPainter {
         target->Clear(D2D1::ColorF(Palette::Panel));
         target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
         draw();
-        winrt::check_hresult(target->EndDraw());
+        // A text the system's fallback font cannot draw spoils the frame, not the game.
+        (void)target->EndDraw();
         return Pixels();
     }
 
@@ -177,7 +178,8 @@ struct GameMenuSurface::Impl : UiPainter {
         target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) *
                              D2D1::Matrix3x2F::Translation((w - 1280 * scale) / 2, (h - 720 * scale) / 2));
         draw();
-        winrt::check_hresult(target->EndDraw());
+        // A text the system's fallback font cannot draw spoils the frame, not the game.
+        (void)target->EndDraw();
         auto image = Pixels();
         image.fill_screen = true;
         image.fill = Palette::Canvas;

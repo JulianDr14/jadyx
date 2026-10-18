@@ -2371,7 +2371,10 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 WriteDiag(std::string("library: failed: ") + e.what());
                 return;
             } catch (const winrt::hresult_error& e) {
-                WriteDiag("library: failed: " + winrt::to_string(e.message()));
+                // The code first: the message can be a stale error the platform recorded earlier.
+                char code[16];
+                std::snprintf(code, sizeof(code), "%08X", static_cast<unsigned>(e.code().value));
+                WriteDiag(std::string("library: failed: ") + code + " " + winrt::to_string(e.message()));
                 return;
             }
 
