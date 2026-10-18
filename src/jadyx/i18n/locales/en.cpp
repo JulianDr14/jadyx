@@ -507,5 +507,18 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::UpscalingFsrSharp, L"FSR 1 · sharp"},
     {Text::UpscalingFsrBalanced, L"FSR 1 · balanced"},
     {Text::UpscalingFsrSoft, L"FSR 1 · soft"},
+    {Text::PlayTimeTracking, L"Play time"},
+    {Text::PlayTimeTrackingHint, L"Counts how long you play each game and puts your most played first"},
+    {Text::PlayTimeUnderMinute, L"Under a minute"},
+    {Text::PlayTimeMinutes, L"{0} min"},
+    {Text::PlayTimeHours, L"{0} h"},
+    {Text::PlayTimeHoursMinutes, L"{0} h {1} min"},
+    {Text::PlayedToday, L"Today"},
+    {Text::PlayedYesterday, L"Yesterday"},
+    {Text::PlayedDaysAgo, L"{0} days ago"},
+    {Text::PlayedOnDate, L"{1}/{0}/{2}"},
+    {Text::LastPlayed, L"Last played {0}"},
+    {Text::PlayTimeSorted, L"Most played"},
+    {Text::LastPlayedSorted, L"Recently played"},
 });
 } // namespace Jadyx::I18n

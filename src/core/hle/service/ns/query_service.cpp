@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+
 #include "common/logging.h"
 #include "common/uuid.h"
 #include "core/hle/service/cmif_serialization.h"
@@ -54,14 +56,19 @@ IQueryService::~IQueryService() = default;
 
 Result IQueryService::QueryPlayStatisticsByApplicationIdAndUserAccountId(
     Out<PlayStatistics> out_play_statistics, bool unknown, u64 application_id, Uid account_id) {
-    // TODO(German77): Read statistics of the game
+    // Play time is not tracked per user, so every account sees the console's totals.
+    play_time_manager->Reload();
+    const auto minutes = static_cast<u32>(
+        std::min<u64>(play_time_manager->GetPlayTime(application_id) / 60, UINT32_MAX));
     *out_play_statistics = {
         .application_id = application_id,
-        .total_launches = 1,
+        .play_time_in_minutes = minutes,
+        .total_launches = static_cast<u32>(
+            std::clamp<u64>(Core::LaunchTimestampCache::GetLaunchCount(application_id), 1, UINT32_MAX)),
     };
 
-    LOG_WARNING(Service_NS, "(STUBBED) called. unknown={}. application_id={:016X}, account_id={}",
-                unknown, application_id, account_id.uuid.FormattedString());
+    LOG_DEBUG(Service_NS, "called. unknown={}. application_id={:016X}, account_id={}, minutes={}",
+              unknown, application_id, account_id.uuid.FormattedString(), minutes);
     R_SUCCEED();
 }
 
@@ -78,6 +85,7 @@ Result IQueryService::QueryApplicationPlayStatisticsForSystem(
     Out<s32> out_entries, u8 flag,
     OutArray<ApplicationPlayStatistics, BufferAttr_HipcMapAlias> out_stats,
     InArray<u64, BufferAttr_HipcMapAlias> application_ids) {
+    play_time_manager->Reload();
     const size_t count = std::min(out_stats.size(), application_ids.size());
     s32 written = 0;
     for (size_t i = 0; i < count; ++i) {

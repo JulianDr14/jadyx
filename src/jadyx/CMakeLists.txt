@@ -12,6 +12,8 @@ add_executable(jadyx WIN32
     pulse/pulse_gate.h
     pulse/pulse_sessions.cpp
     pulse/pulse_sessions.h
+    library/play_history.cpp
+    library/play_history.h
     pulse/pulse_screen.cpp
     pulse/pulse_screen.h
     pulse/pulse_store_gate.cpp

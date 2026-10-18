@@ -532,6 +532,19 @@ enum class Text : std::uint16_t {
     UpscalingFsrSharp,
     UpscalingFsrBalanced,
     UpscalingFsrSoft,
+    PlayTimeTracking,
+    PlayTimeTrackingHint,
+    PlayTimeUnderMinute,
+    PlayTimeMinutes,
+    PlayTimeHours,
+    PlayTimeHoursMinutes,
+    PlayedToday,
+    PlayedYesterday,
+    PlayedDaysAgo,
+    PlayedOnDate,
+    LastPlayed,
+    PlayTimeSorted,
+    LastPlayedSorted,
 
 
     Count

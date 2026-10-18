@@ -30,6 +30,7 @@
 #include "jadyx/mods/mod_web.h"
 #include "jadyx/mods/mods_page.h"
 #include "jadyx/mods/mods_view.h"
+#include "jadyx/library/play_history.h"
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/library/library_cache.h"
 #include "jadyx/i18n/localization.h"
@@ -127,6 +128,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         }
         dirty = true;
     };
+    bool play_order = system_page.settings.track_play_time; // What the list is ordered by.
     auto begin_capture = [&] {
         panel.keyboard.notice.clear();
         panel.keyboard.capturing = true;
@@ -395,6 +397,26 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         names_cursor = fill_cursor = 0;
         dirty = true;
     };
+    // Each game's play time and last play, and the library's order (play_history.h). `keep` stays
+    // selected where it lands; otherwise the first game (the last one played) is.
+    auto refresh_play = [&](std::string_view keep) {
+        const auto history = LoadPlayHistory();
+        for (auto& entry : scan.entries) {
+            const auto found = history.find(entry.launch_path);
+            entry.play_seconds = found == history.end() ? 0 : found->second.seconds;
+            entry.last_played = found == history.end() ? 0 : found->second.last_played;
+        }
+        play_order = system_page.settings.track_play_time;
+        OrderLibrary(scan.entries, history, play_order);
+        selected = 0;
+        for (size_t i = 0; i < scan.entries.size(); ++i)
+            if (!keep.empty() && scan.entries[i].launch_path == keep) selected = i;
+        // Covers and background reads follow positions: start them over for the new order.
+        metadata_dirty = true;
+        retained_page = SIZE_MAX;
+        names_cursor = fill_cursor = 0;
+        dirty = true;
+    };
     auto start_scan = [&](StorageFolder added = nullptr) {
         loading = dirty = true;
         ++generation;
@@ -452,6 +474,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 title_language = resolved.game_language;
                 reload_metadata();
             }
+            if (system_page.settings.track_play_time != play_order && !loading)
+                refresh_play(selected < scan.entries.size() ? scan.entries[selected].launch_path : std::string{});
             break;
         }
         case SystemPageEffect::ClearCache: {
@@ -1053,13 +1077,15 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         if (!settings) panel.notice.clear();
         if (!panel.keyboard.open) panel.keyboard.notice.clear();
         if (loading && future.wait_for(std::chrono::seconds{0}) == std::future_status::ready) {
+            // A rescan keeps the game the player was on; the first scan starts at the last one played.
+            const auto kept = selected < scan.entries.size() ? scan.entries[selected].launch_path : std::string{};
             try { scan = future.get(); }
             catch (const std::exception& e) { scan.error = e.what(); }
             catch (const winrt::hresult_error& e) { scan.error = winrt::to_string(e.message()); }
             loading = false;
+            refresh_play(kept);
             refresh_pulse();
             if (!configuration.busy) refresh_setup();
-            selected = std::min(selected, scan.entries.empty() ? 0 : scan.entries.size() - 1);
             notice = Wide(scan.error);
             if (notice.empty() && !initial_notice.empty()) notice = Wide(initial_notice);
             initial_notice = {};

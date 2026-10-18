@@ -32,6 +32,8 @@ public:
     YUZU_NON_MOVEABLE(PlayTimeManager);
 
     u64 GetPlayTime(u64 program_id) const;
+    /// Reads the database again, for play time saved by another instance since.
+    void Reload();
     void ResetProgramPlayTime(u64 program_id);
     void SetProgramId(u64 program_id);
     void SetPlayTime(u64 program_id, u64 play_time);

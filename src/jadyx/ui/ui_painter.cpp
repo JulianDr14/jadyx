@@ -74,7 +74,15 @@ float UiPainter::MeasureText(std::wstring_view text, float size, bool bold) {
     return metrics.widthIncludingTrailingWhitespace;
 }
 
-void UiPainter::Icon(UiIcon icon, float x, float y, unsigned color) {
+void UiPainter::Icon(UiIcon icon, float x, float y, unsigned color, float size) {
+    if (size != 32) {
+        D2D1_MATRIX_3X2_F previous;
+        surface->GetTransform(&previous);
+        surface->SetTransform(D2D1::Matrix3x2F::Scale(size / 32, size / 32, D2D1::Point2F(x, y)) * previous);
+        Icon(icon, x, y, color);
+        surface->SetTransform(previous);
+        return;
+    }
     brush->SetColor(D2D1::ColorF(color));
     const auto line = [&](float ax, float ay, float bx, float by) {
         surface->DrawLine(D2D1::Point2F(x + ax, y + ay), D2D1::Point2F(x + bx, y + by), brush.Get(), 2);
@@ -161,6 +169,10 @@ void UiPainter::Icon(UiIcon icon, float x, float y, unsigned color) {
             D2D1::RectF(x + 6, y + 3, x + 26, y + 29), 3, 3), brush.Get(), 2);
         for (float p : {6.0f, 12.0f}) { line(14, p, 16, p); line(16, p + 3, 18, p + 3); }
         surface->DrawRectangle(D2D1::RectF(x + 13, y + 18, x + 19, y + 25), brush.Get(), 2);
+        break;
+    case UiIcon::Clock:
+        circle(16, 16, 12);
+        line(16, 16, 16, 8); line(16, 16, 22, 19);
         break;
     }
 }

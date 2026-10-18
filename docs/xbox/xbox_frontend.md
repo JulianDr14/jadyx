@@ -934,3 +934,49 @@ conservada. Visual/mando/hotplug/gameplay/Series pendientes; sin FPS medidos.
 Guardado frontend solicitado14oct: commits separados por catálogo, acciones,
 captura modal, listas, asignaciones y pruebas; documentación aparte. Autor
 JulianDr14, sin coautoría automática ni push. Hashes en xbox_frontend_refactor.md.
+
+# Tiempo de juego y orden de la biblioteca (17 oct 2026)
+
+## El error de los logs
+
+En los logs de la Series salía al cerrar cada juego:
+`play_time_manager.cpp: Failed to open play time file: ...\LocalState\eden\play_time\playtime.bin`
+y `Failed to update play time database!`. Eran dos fallos de Eden que se juntaban:
+
+- La carpeta `play_time` nunca se creaba en UWP. Ahora `WritePlayTimeFile` crea la carpeta antes de
+  escribir.
+- `pdm:qry` (`IQueryService`) tiene su propio `PlayTimeManager`, y el destructor de ese manager
+  volvía a guardar la base tal como la leyó al arrancar, borrando lo que otro hubiera sumado. Cada
+  cambio ya se guarda al hacerlo, así que el destructor ya no guarda. El servicio relee el archivo
+  (`Reload`) en cada consulta.
+- `QueryPlayStatisticsByApplicationIdAndUserAccountId` era un stub (`LOG_WARNING (STUBBED)` en cada
+  llamada). Ahora devuelve los minutos reales y el número de lanzamientos, y registra en DEBUG.
+
+## Historial de juego (`play_history.h/.cpp`)
+
+- Un registro por archivo de juego (`launch_path`): segundos jugados, último lanzamiento (Unix),
+  sesiones y program id. Se guarda en `LocalState\jadyx\play_history.txt` como texto (cabecera
+  `jadyx-play-history 1` y campos separados por tabuladores), con escritura atómica.
+- `PlaySession` vive en el bucle de juego de `uwp_boot.cpp`. Al empezar guarda el lanzamiento, aunque
+  la medición esté apagada, porque el orden lo necesita. Después cuenta el tiempo solo mientras el
+  juego corre: con el menú abierto no cuenta. Cada paso suma como mucho 1 s, así que una consola
+  suspendida no cuenta como juego. Guarda cada minuto (cerrar desde el dashboard mata el proceso
+  sin aviso) y al salir. Ese mismo tiempo se suma al `playtime.bin` de Eden, que es lo que
+  `pdm:qry` reporta a los juegos.
+
+## Ajuste y orden
+
+- Configuración > Sistema > **Tiempo de juego** (Sí/No, activado por defecto, clave
+  `system_track_play_time`). Con 9 filas, la página usa filas de 45 px con un paso de 47 px.
+- Orden (`OrderLibrary`): el último juego jugado va siempre primero. Con la medición activada
+  siguen los más jugados (en empate, el más reciente). Con la medición apagada siguen los jugados
+  más recientemente. Los juegos nunca jugados van al final, por ruta. Al cambiar el ajuste, la
+  lista se reordena en el momento y conserva el juego seleccionado. Al volver de un juego, la
+  biblioteca abre en el primero, que es el que se acaba de jugar.
+- Interfaz: al lado de "LISTO PARA JUGAR" aparece un reloj pequeño con "12 h 30 min · Ayer". Con la
+  medición apagada dice "Jugado: Ayer". Junto a "Tus juegos" se indica el criterio ("Más jugados" o
+  "Jugados recientemente"). En la línea de cada tarjeta se ve el tiempo en forma corta ("12 h",
+  "45 min").
+
+Pruebas: `play-history` (archivo, orden, textos y reloj) y `system-settings`, que ahora incluye
+la fila nueva y corrige el nombre por defecto ("Jadyx").

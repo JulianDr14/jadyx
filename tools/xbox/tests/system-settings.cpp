@@ -73,7 +73,7 @@ int main() {
     SystemPage page;
     page.open = true;
     page.locale = locale(L"es-CO", L"CO");
-    check(SystemRowValue(page, SystemPage::UserName) == L"Eden");
+    check(SystemRowValue(page, SystemPage::UserName) == L"Jadyx");
     check(SystemRowValue(page, SystemPage::InterfaceLanguage) == L"Automático · Español");
     check(SystemRowValue(page, SystemPage::GameLanguage) == L"Automático · Español (Latinoamérica)");
     check(SystemRowValue(page, SystemPage::Region) == L"Automático · América");
@@ -98,6 +98,14 @@ int main() {
           !page.settings.pulse_sessions);
     check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::Changed &&
           page.settings.pulse_sessions);
+    // Play time is on unless the player turns it off.
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
+          page.selected == SystemPage::PlayTime && page.settings.track_play_time);
+    check(SystemRowValue(page, SystemPage::PlayTime) == L"Sí");
+    check(HandleSystemInput(page, SystemInput::Left) == SystemPageEffect::Changed &&
+          !page.settings.track_play_time && SystemRowValue(page, SystemPage::PlayTime) == L"No");
+    check(HandleSystemInput(page, SystemInput::Right) == SystemPageEffect::Changed &&
+          page.settings.track_play_time);
     check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
           page.selected == SystemPage::ClearCache);
     check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::ClearCache);

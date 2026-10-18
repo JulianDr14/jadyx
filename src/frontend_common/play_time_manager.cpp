@@ -74,6 +74,12 @@ std::optional<std::filesystem::path> GetCurrentUserPlayTimePath() {
         return false;
     }
 
+    // The folder does not exist on a fresh install (UWP never creates it up front).
+    if (!Common::FS::CreateParentDirs(filename.value())) {
+        LOG_ERROR(Frontend, "Failed to create the play time folder");
+        return false;
+    }
+
     Common::FS::IOFile file{filename.value(), Common::FS::FileAccessMode::Write,
                             Common::FS::FileType::BinaryFile};
     if (!file.IsOpen()) {
@@ -102,8 +108,14 @@ PlayTimeManager::PlayTimeManager() : running_program_id() {
     }
 }
 
-PlayTimeManager::~PlayTimeManager() {
-    Save();
+// Every change is saved when it is made. Saving here again would write back the database as it
+// was read, losing play time another instance (the frontend's or the pdm:qry service's) added.
+PlayTimeManager::~PlayTimeManager() = default;
+
+void PlayTimeManager::Reload() {
+    if (!ReadPlayTimeFile(database)) {
+        LOG_ERROR(Frontend, "Failed to read play time database!");
+    }
 }
 
 void PlayTimeManager::SetProgramId(u64 program_id) {

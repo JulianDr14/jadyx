@@ -51,7 +51,8 @@ public:
               bool trailing = false);
     float MeasureText(std::wstring_view text, float size, bool bold);
     /// Native vector strokes: no texture loads, font glyphs or geometry allocation.
-    void Icon(UiIcon icon, float x, float y, unsigned color);
+    /// Draws `icon` in a `size` box (the icons are drawn for 32).
+    void Icon(UiIcon icon, float x, float y, unsigned color, float size = 32);
     /// The ">" at the end of a row that opens a page.
     void Chevron(float cx, float cy, unsigned color, bool left = false);
     /// A selectable row: background, accent bar when active and the icon in its tile.

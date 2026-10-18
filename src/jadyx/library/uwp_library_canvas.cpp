@@ -17,6 +17,7 @@
 #include <winrt/Windows.Storage.h>
 #include "jadyx/cheats/cheats_view.h"
 #include "jadyx/library/game_library.h"
+#include "jadyx/library/play_history.h"
 #include "jadyx/library/game_options_page.h"
 #include "jadyx/content/content_view.h"
 #include "jadyx/mods/mods_view.h"
@@ -141,8 +142,18 @@ public:
         } else {
             const auto& game = scan.entries[selected];
             Cover(game, 64, 148, 220);
-            Text(Tr(configuration.status.keys_ready ? T::ReadyToPlay : T::ImportKeysFirst),
-                 320, 149, 16, 0x77e3bd, 700);
+            const std::wstring ready{Tr(configuration.status.keys_ready ? T::ReadyToPlay : T::ImportKeysFirst)};
+            Text(ready, 320, 149, 16, 0x77e3bd, 700);
+            // Play time and last play, quietly beside the status: "12 h 30 min · Yesterday".
+            if (game.last_played > 0) {
+                const bool timed = view.system.settings.track_play_time && game.play_seconds > 0;
+                const auto when = FormatLastPlayed(game.last_played, UnixNow(), LocalUtcOffset());
+                const auto played = timed ? FormatPlayTime(game.play_seconds) + L" · " + when
+                                          : I18n::Format(T::LastPlayed, {when});
+                const float x = 320 + MeasureText(ready, 16, false) + 22;
+                Icon(UiIcon::Clock, x, 150, Palette::TextSecondary, 18);
+                Text(played, x + 25, 149, 16, Palette::TextSecondary, 960 - x - 25);
+            }
             if (!game.display_version.empty())
                 Text(L"v" + game.display_version, 990, 149, 19, Palette::Accent, 200, 30, true);
             Text(game.name, 320, 184, 42, 0xf4f7fa, 866, 110, true, true);
@@ -159,6 +170,10 @@ public:
                 Text(I18n::Format(T::PulseBadge, {game.pulse_saved}), 810, 344, 18,
                      game.pulse_current ? Palette::Accent : Palette::TextSecondary, 400);
             Text(Tr(T::YourGames), 64, 402, 24, 0xe5edf5, 950, 36, true);
+            // How the row is ordered, once anything has been played.
+            if (scan.entries.front().last_played > 0)
+                Text(Tr(view.system.settings.track_play_time ? T::PlayTimeSorted : T::LastPlayedSorted),
+                     64 + MeasureText(Tr(T::YourGames), 24, true) + 16, 409, 16, Palette::TextSecondary, 400);
             Text(std::to_wstring(selected + 1) + L" / " + std::to_wstring(scan.entries.size()),
                  1100, 405, 19, 0x9ba9ba, 120);
             const size_t first = selected / 5 * 5;
@@ -170,6 +185,10 @@ public:
                 Text(scan.entries[i].name, x + 3, 586, 19, 0xf4f7fa, 197, 25, true);
                 const auto& tile = scan.entries[i];
                 std::wstring under = tile.display_version.empty() ? L"" : L"v" + tile.display_version;
+                if (view.system.settings.track_play_time && tile.play_seconds >= 60) {
+                    if (!under.empty()) under += L" · ";
+                    under += FormatPlayTimeShort(tile.play_seconds);
+                }
                 if (!tile.pulse_saved.empty()) under += under.empty() ? L"Pulse" : L" · Pulse";
                 if (!under.empty()) Text(under, x + 3, 611, 14, Palette::Accent, 197, 19);
             }
@@ -468,20 +487,20 @@ private:
         static constexpr std::array<ConfigurationIcon, SystemPage::RowCount> icons{
             ConfigurationIcon::User, ConfigurationIcon::Language, ConfigurationIcon::Controller,
             ConfigurationIcon::Region, ConfigurationIcon::Mods, ConfigurationIcon::Settings, ConfigurationIcon::Archive,
-            ConfigurationIcon::Cache};
+            ConfigurationIcon::Clock, ConfigurationIcon::Cache};
         for (size_t i = 0; i < SystemPage::RowCount; ++i) {
             const auto row = static_cast<SystemPage::Row>(i);
             const float y = L::RowTop + static_cast<float>(i) * L::RowStride;
             const bool active = i == page.selected;
             RowFrame(L::RowX, y, L::RowWidth, L::RowHeight, active, icons[i]);
             Text(Tr(SystemRowTitle(row)), L::RowX + 72, y + 4, 20, 0xf4f7fa, 420, 30, true);
-            Text(Tr(SystemRowHint(row)), L::RowX + 72, y + 28, 15, 0xb5c2d0, 440, 22);
+            Text(Tr(SystemRowHint(row)), L::RowX + 72, y + 26, 15, 0xb5c2d0, 440, 22);
             const unsigned accent = active ? 0x77e3bd : 0x9ba9ba;
             const float right = L::RowX + L::RowWidth - 28;
             const float middle = y + L::RowHeight / 2;
             const bool choice = row == SystemPage::InterfaceLanguage || row == SystemPage::GameLanguage ||
                                 row == SystemPage::Region || row == SystemPage::AdultMods || row == SystemPage::PerformanceStats ||
-                                row == SystemPage::PulseSessions;
+                                row == SystemPage::PulseSessions || row == SystemPage::PlayTime;
             if (choice) {
                 // "< value >": arrows say left/right changes it, as in the controller panel.
                 Chevron(L::RowX + 486, middle, accent, true);

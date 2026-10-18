@@ -90,6 +90,7 @@
 #include "jadyx/app/prewarm_budget.h"
 #include "jadyx/pulse/pulse_gate.h"
 #include "jadyx/pulse/pulse_screen.h"
+#include "jadyx/library/play_history.h"
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/pulse/pulse_store_gate.h"
 #include "jadyx/input/uwp_input.h"
@@ -809,6 +810,9 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         // Q on a keyboard (the PC) ends the session cleanly instead, so the run can be told apart
         // from a crash.
         WriteDiag("step: system.Run() issued, playing until the app is closed | " + MemoryReport());
+        // Play history (play_history.h): the launch is recorded now, play time while the guest runs
+        // (never with the menu open), saved each minute since the dashboard can end the process.
+        PlaySession play_session{nro_path, program_id};
         // In-game menu (game_menu.h): the guest pauses while it is open. The frontend draws it with
         // real text (game_menu_surface.h) and the renderer copies it over the last frame. Its
         // cheats page changes the running game's cheats at once: the engine reloads them on its
@@ -905,6 +909,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         u64 resume_frames = 0;
         for (u32 tick = 1;; ++tick) {
             std::this_thread::sleep_for(TICK);
+            play_session.Tick(!menu);
             if (u64 used{}, limit{}; config.memory_audit && tick % 10 == 0 &&
                                      QueryAppMemory(used, limit)) {
                 const u64 headroom = limit > used ? limit - used : 0;
