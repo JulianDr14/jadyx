@@ -680,10 +680,11 @@ private:
             const bool shelf = view.tab == LibraryTab::Library;
             const bool import = shelf && view.shelf && view.shelf_focus >= view.shelf->size();
             if (!(shelf && view.filter_focus)) {
+                // On Home the hero's pills already show Play and Options with their buttons.
                 if (import) x += ControlPrompt(Navigation::Play, Tr(T::Import), x, y);
-                else if (game) x += ControlPrompt(Navigation::Play, Tr(T::Play), x, y);
+                else if (game && shelf) x += ControlPrompt(Navigation::Play, Tr(T::Play), x, y);
                 if (game && !import) {
-                    x += ControlPrompt(Navigation::Options, Tr(T::Options), x, y);
+                    if (shelf) x += ControlPrompt(Navigation::Options, Tr(T::Options), x, y);
                     x += ControlPrompt(Navigation::Pin, Tr(entries[view.selected].pinned ? T::Unpin : T::Pin), x, y);
                 }
             }
