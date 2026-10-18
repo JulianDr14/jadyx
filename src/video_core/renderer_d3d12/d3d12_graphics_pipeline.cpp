@@ -97,6 +97,32 @@ D3D12_SHADER_BYTECODE Bytecode(const std::vector<u8>& code) {
             .BytecodeLength = code.size()};
 }
 
+/// True when some drawn target's color equation reads the blend constant and every such read is
+/// a constant-alpha factor. A mix of constant color and constant alpha cannot share D3D12's single
+/// constant; it keeps the color (the draw's RGB) and is reported.
+bool ReadsOnlyConstantAlpha(const FixedPipelineState& state, u8 drawn_targets) {
+    using MaxwellToD3D12::BlendConstantRead;
+    bool alpha = false;
+    bool color = false;
+    for (size_t index = 0; index < NumAttachments(state); ++index) {
+        const auto& blend = state.attachments[index];
+        if (blend.enable == 0 || (drawn_targets & (1U << index)) == 0) {
+            continue;
+        }
+        for (const auto factor : {blend.SourceRGBFactor(), blend.DestRGBFactor()}) {
+            const BlendConstantRead read = MaxwellToD3D12::ColorBlendConstantRead(factor);
+            alpha |= read == BlendConstantRead::Alpha;
+            color |= read == BlendConstantRead::Color;
+        }
+    }
+    if (alpha && color) {
+        BUG_TRACK(UnsupportedState, "constant color and constant alpha blend factors in one "
+                                    "pipeline; constant alpha reads the color");
+        return false;
+    }
+    return alpha;
+}
+
 D3D12_DEPTH_STENCILOP_DESC StencilFace(const auto& face) {
     return {
         .StencilFailOp = MaxwellToD3D12::StencilOp(face.ActionStencilFail()),
@@ -218,6 +244,9 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
     if (!bound_color_targets && valid_targets) {
         bound_color_targets = valid_targets & static_cast<u8>(-valid_targets);
     }
+    depth_bounds = device.SupportsDepthBounds() && key.state.depth_enabled != 0 &&
+                   key.state.dynamic_state.depth_bounds_enable != 0;
+    blend_constant_alpha = ReadsOnlyConstantAlpha(key.state, bound_color_targets);
     if (shader_notify) {
         shader_notify->MarkShaderBuilding();
     }
@@ -664,7 +693,7 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
         desc.DSVFormat = texture_runtime.Format(PixelFormatFromDepthFormat(depth_format)).dsv;
     }
     const bool has_depth = desc.DSVFormat != DXGI_FORMAT_UNKNOWN;
-    if (dynamic.depth_bounds_enable != 0) {
+    if (dynamic.depth_bounds_enable != 0 && !depth_bounds) {
         WarnOnce(warned_depth_bounds, "the depth bounds test");
     }
     desc.DepthStencilState = {
@@ -766,15 +795,105 @@ ComPtr<ID3D12PipelineState> GraphicsPipeline::CreateMaterialProbePipeline(
     return result;
 }
 
+namespace {
+template <D3D12_PIPELINE_STATE_SUBOBJECT_TYPE Type, typename T>
+struct alignas(void*) Subobject {
+    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type = Type;
+    T value{};
+};
+
+/// The description as a pipeline state stream, with DEPTH_STENCIL1 to enable the depth bounds
+/// test (D3D12_GRAPHICS_PIPELINE_STATE_DESC has no field for it). Same state otherwise.
+HRESULT CreateWithDepthBounds(ID3D12Device2* device, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,
+                              ComPtr<ID3D12PipelineState>& out) {
+    struct Stream {
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE, ID3D12RootSignature*> root;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS, D3D12_SHADER_BYTECODE> vs;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS, D3D12_SHADER_BYTECODE> ps;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS, D3D12_SHADER_BYTECODE> ds;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS, D3D12_SHADER_BYTECODE> hs;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS, D3D12_SHADER_BYTECODE> gs;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_STREAM_OUTPUT, D3D12_STREAM_OUTPUT_DESC> so;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND, D3D12_BLEND_DESC> blend;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK, UINT> sample_mask;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER, D3D12_RASTERIZER_DESC> raster;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1, D3D12_DEPTH_STENCIL_DESC1>
+            depth;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT, D3D12_INPUT_LAYOUT_DESC> input;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_IB_STRIP_CUT_VALUE,
+                  D3D12_INDEX_BUFFER_STRIP_CUT_VALUE>
+            strip_cut;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY,
+                  D3D12_PRIMITIVE_TOPOLOGY_TYPE>
+            topology;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS, D3D12_RT_FORMAT_ARRAY>
+            rtvs;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT, DXGI_FORMAT> dsv;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC, DXGI_SAMPLE_DESC> samples;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_NODE_MASK, UINT> node_mask;
+        Subobject<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS, D3D12_PIPELINE_STATE_FLAGS> flags;
+    } stream;
+    stream.root.value = desc.pRootSignature;
+    stream.vs.value = desc.VS;
+    stream.ps.value = desc.PS;
+    stream.ds.value = desc.DS;
+    stream.hs.value = desc.HS;
+    stream.gs.value = desc.GS;
+    stream.so.value = desc.StreamOutput;
+    stream.blend.value = desc.BlendState;
+    stream.sample_mask.value = desc.SampleMask;
+    stream.raster.value = desc.RasterizerState;
+    const D3D12_DEPTH_STENCIL_DESC& depth = desc.DepthStencilState;
+    stream.depth.value = {
+        .DepthEnable = depth.DepthEnable,
+        .DepthWriteMask = depth.DepthWriteMask,
+        .DepthFunc = depth.DepthFunc,
+        .StencilEnable = depth.StencilEnable,
+        .StencilReadMask = depth.StencilReadMask,
+        .StencilWriteMask = depth.StencilWriteMask,
+        .FrontFace = depth.FrontFace,
+        .BackFace = depth.BackFace,
+        .DepthBoundsTestEnable = TRUE,
+    };
+    stream.input.value = desc.InputLayout;
+    stream.strip_cut.value = desc.IBStripCutValue;
+    stream.topology.value = desc.PrimitiveTopologyType;
+    stream.rtvs.value.NumRenderTargets = desc.NumRenderTargets;
+    std::copy(std::begin(desc.RTVFormats), std::end(desc.RTVFormats),
+              std::begin(stream.rtvs.value.RTFormats));
+    stream.dsv.value = desc.DSVFormat;
+    stream.samples.value = desc.SampleDesc;
+    stream.node_mask.value = desc.NodeMask;
+    stream.flags.value = desc.Flags;
+    const D3D12_PIPELINE_STATE_STREAM_DESC stream_desc{.SizeInBytes = sizeof(stream),
+                                                       .pPipelineStateSubobjectStream = &stream};
+    return device->CreatePipelineState(&stream_desc, IID_PPV_ARGS(&out));
+}
+} // Anonymous namespace
+
 void GraphicsPipeline::Build() try {
     const auto& stages = *dxil;
     std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
     auto desc = Describe(elements);
     const size_t num_attachments = desc.NumRenderTargets;
+    // Only with a depth target: without one there is nothing to test against.
+    const bool bounds_test = depth_bounds && desc.DSVFormat != DXGI_FORMAT_UNKNOWN;
     auto host_key = MakeGraphicsPsoKey(desc, dxil);
+    host_key.state.push_back(bounds_test ? 1U : 0U);
     const u64 index_bytes = sizeof(GraphicsPsoCache::Entry) + 128 +
                             host_key.state.capacity() * sizeof(u32);
     HRESULT hr = S_OK;
+    const auto create_pso = [&](ComPtr<ID3D12PipelineState>& handle) {
+        if (bounds_test) {
+            const HRESULT stream_hr = CreateWithDepthBounds(device.Get2(), desc, handle);
+            if (SUCCEEDED(stream_hr)) {
+                return stream_hr;
+            }
+            // The option bit is not a promise the driver takes the stream: draw without the test.
+            WarnOnce(warned_depth_bounds, "the depth bounds test (pipeline stream rejected)");
+        }
+        return device.Get()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&handle));
+    };
     const auto create = [&] {
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PsoCreateUs};
         VideoCore::Perf::Add(VideoCore::Perf::Counter::PsoCreates, 1);
@@ -786,12 +905,12 @@ void GraphicsPipeline::Build() try {
         if (pso_probe_enabled.load(std::memory_order_relaxed)) {
             std::scoped_lock probe_lock{pso_probe_mutex};
             const s64 before = PrivateCommit();
-            hr = device.Get()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&result.handle));
+            hr = create_pso(result.handle);
             if (SUCCEEDED(hr) && before != 0) {
                 pso_probe_samples.push_back(PrivateCommit() - before);
             }
         } else {
-            hr = device.Get()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&result.handle));
+            hr = create_pso(result.handle);
         }
         // Failed entries must not poison the index. All current waiters receive the HRESULT.
         if (FAILED(hr)) {

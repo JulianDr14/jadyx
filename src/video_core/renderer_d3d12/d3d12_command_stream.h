@@ -181,6 +181,16 @@ public:
         recorder.Record(
             [copy](List* list) { list->OMSetBlendFactor(copy ? copy->data() : nullptr); });
     }
+    /// Needs ID3D12GraphicsCommandList1; callers set it only when a pipeline tests the bounds
+    /// and the values change, so the interface query stays off the per-draw path.
+    void OMSetDepthBounds(FLOAT min, FLOAT max) {
+        recorder.Record([min, max](List* list) {
+            ComPtr<ID3D12GraphicsCommandList1> list1;
+            if (SUCCEEDED(list->QueryInterface(IID_PPV_ARGS(&list1)))) {
+                list1->OMSetDepthBounds(min, max);
+            }
+        });
+    }
     void OMSetStencilRef(UINT reference) {
         recorder.Record([reference](List* list) { list->OMSetStencilRef(reference); });
     }

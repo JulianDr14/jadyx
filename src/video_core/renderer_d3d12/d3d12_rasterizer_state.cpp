@@ -173,12 +173,30 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
     if (!command_state.valid || state_tracker.TouchScissors()) {
         UpdateScissors(cmd);
     }
-    const std::array blend_factor{regs.blend_color.r, regs.blend_color.g, regs.blend_color.b,
-                                  regs.blend_color.a};
+    // Constant-alpha factors in the color equation read the constant's RGB on D3D12.
+    const std::array blend_factor =
+        pipeline.BlendConstantAlpha()
+            ? std::array{regs.blend_color.a, regs.blend_color.a, regs.blend_color.a,
+                         regs.blend_color.a}
+            : std::array{regs.blend_color.r, regs.blend_color.g, regs.blend_color.b,
+                         regs.blend_color.a};
     if (!command_state.valid || state_tracker.TouchBlendConstants() ||
         command_state.blend_factor != blend_factor) {
         cmd->OMSetBlendFactor(blend_factor.data());
         command_state.blend_factor = blend_factor;
+    }
+    if (pipeline.DepthBounds()) {
+        // D3D12 requires 0 <= min <= max <= 1; a NaN bound opens that side of the range.
+        const auto clamp = [](float value, float fallback) {
+            return std::isnan(value) ? fallback : std::clamp(value, 0.0f, 1.0f);
+        };
+        const float min = clamp(regs.depth_bounds[0], 0.0f);
+        const float max = std::max(min, clamp(regs.depth_bounds[1], 1.0f));
+        const std::array bounds{min, max};
+        if (!command_state.valid || command_state.depth_bounds != bounds) {
+            cmd->OMSetDepthBounds(min, max);
+            command_state.depth_bounds = bounds;
+        }
     }
     // D3D12 has a single reference for both faces.
     if (!command_state.valid || state_tracker.TouchStencilReference() ||

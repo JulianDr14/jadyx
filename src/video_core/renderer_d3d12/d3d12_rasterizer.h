@@ -262,6 +262,7 @@ private:
         u32 num_color_targets{};
         SIZE_T depth_target{};
         std::array<float, 4> blend_factor{};
+        std::array<float, 2> depth_bounds{0.0f, 1.0f};
         u32 stencil_ref{};
         D3D12_PRIMITIVE_TOPOLOGY topology{D3D_PRIMITIVE_TOPOLOGY_UNDEFINED};
         ViewportState viewport{};

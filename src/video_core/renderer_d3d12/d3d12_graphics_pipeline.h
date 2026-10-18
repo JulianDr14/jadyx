@@ -239,6 +239,17 @@ public:
         return bound_color_targets;
     }
 
+    /// The PSO runs the depth bounds test; the draw sets the bounds (OMSetDepthBounds).
+    [[nodiscard]] bool DepthBounds() const noexcept {
+        return depth_bounds;
+    }
+
+    /// The color equations read only the blend constant's alpha (constant-alpha factors), so
+    /// the draw sets the D3D12 blend factor to the guest's alpha in all four channels.
+    [[nodiscard]] bool BlendConstantAlpha() const noexcept {
+        return blend_constant_alpha;
+    }
+
     [[nodiscard]] u32 LoweredNoPerspectiveMask() const noexcept {
         return lower_noperspective_mask;
     }
@@ -290,6 +301,8 @@ private:
     VideoCommon::UniformBufferSizes uniform_buffer_sizes{};
     bool has_images{};
     u8 bound_color_targets{}; ///< Computed once from the immutable PSO write masks.
+    bool depth_bounds{};
+    bool blend_constant_alpha{};
 
     std::vector<GraphicsPipelineCacheKey> transition_keys;
     std::vector<GraphicsPipeline*> transitions;

@@ -125,6 +125,14 @@ public:
     const std::string& AdapterName() const {
         return adapter_name;
     }
+    /// Null when the runtime lacks ID3D12Device2 (pipeline state streams).
+    ID3D12Device2* Get2() const {
+        return device2.Get();
+    }
+    /// The depth bounds test (pipeline stream DEPTH_STENCIL1 plus OMSetDepthBounds).
+    [[nodiscard]] bool SupportsDepthBounds() const {
+        return depth_bounds;
+    }
 
     /// Local (device) memory budget and usage; zeroes if the adapter cannot report them.
     [[nodiscard]] DXGI_QUERY_VIDEO_MEMORY_INFO QueryVideoMemory() const;
@@ -165,6 +173,8 @@ private:
     ComPtr<IDXGIAdapter1> adapter;
     ComPtr<IDXGIAdapter3> adapter3; ///< same adapter; null if it lacks IDXGIAdapter3
     ComPtr<ID3D12Device> device;
+    ComPtr<ID3D12Device2> device2;
+    bool depth_bounds{};
     ComPtr<ID3D12InfoQueue> info_queue; ///< debug layer only
     u32 debug_messages_logged{};
     u64 null_rtv_format_reports{};

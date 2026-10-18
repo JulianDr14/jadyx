@@ -311,6 +311,11 @@ Device::Device() {
 
     CreateBreadcrumbBuffer(device.Get());
     LogCapabilities();
+    if (SUCCEEDED(device.As(&device2))) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS2 options2{};
+        depth_bounds = Query(device.Get(), D3D12_FEATURE_D3D12_OPTIONS2, options2) &&
+                       options2.DepthBoundsTestSupported;
+    }
     initial_budget = QueryVideoMemory().Budget;
     // On a unified architecture (the Xbox) texture and buffer heaps are app commit too.
     D3D12_FEATURE_DATA_ARCHITECTURE1 arch{};

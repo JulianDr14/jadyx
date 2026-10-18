@@ -280,8 +280,8 @@ D3D12_BLEND BlendFactor(Maxwell::Blend::Factor factor, bool for_alpha) {
     case F::OneMinusSource1Alpha_D3D:
     case F::OneMinusSource1Alpha_GL:
         return D3D12_BLEND_INV_SRC1_ALPHA;
-    // D3D12 has a single blend factor for color and alpha: the constant-alpha variants read
-    // its alpha only in the alpha equation. Close enough until a game needs the difference.
+    // In the color equation the constant-alpha variants need the constant's alpha in RGB; the
+    // draw puts it there (ColorBlendConstantRead). The alpha equation reads .a either way.
     case F::BlendFactor_D3D:
     case F::ConstantColor_GL:
     case F::BothSourceAlpha_D3D:
@@ -298,6 +298,24 @@ D3D12_BLEND BlendFactor(Maxwell::Blend::Factor factor, bool for_alpha) {
     const Common::BugTracker::TapMute bug_tracker_mute;
     LOG_ERROR(Render, "D3D12: unknown blend factor {}", static_cast<u32>(factor));
     return D3D12_BLEND_ONE;
+}
+
+BlendConstantRead ColorBlendConstantRead(Maxwell::Blend::Factor factor) {
+    using F = Maxwell::Blend::Factor;
+    switch (factor) {
+    case F::BlendFactor_D3D:
+    case F::ConstantColor_GL:
+    case F::OneMinusBlendFactor_D3D:
+    case F::OneMinusConstantColor_GL:
+        return BlendConstantRead::Color;
+    case F::BothSourceAlpha_D3D:
+    case F::ConstantAlpha_GL:
+    case F::OneMinusBothSourceAlpha_D3D:
+    case F::OneMinusConstantAlpha_GL:
+        return BlendConstantRead::Alpha;
+    default:
+        return BlendConstantRead::None;
+    }
 }
 
 D3D12_CULL_MODE CullMode(bool enabled, Maxwell::CullFace face) {
