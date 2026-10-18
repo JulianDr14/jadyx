@@ -63,6 +63,7 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::SettingsSaved, L"Configuración guardada"},
     {Text::ControllerSaveFailed, L"No se pudo guardar el mando"},
     {Text::ControllerGeneric, L"Mando"},
+    {Text::ControllerXbox, L"Mando Xbox"},
     {Text::ControllerNumbered, L"Mando {0}"},
     {Text::NoController, L"Sin mando conectado"},
     {Text::ChosenControllerMissing, L"Mando elegido desconectado"},

@@ -82,6 +82,7 @@ enum class Text : std::uint16_t {
     SettingsSaved,
     ControllerSaveFailed,
     ControllerGeneric,
+    ControllerXbox,
     ControllerNumbered,
     NoController,
     ChosenControllerMissing,

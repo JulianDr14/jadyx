@@ -169,6 +169,9 @@ std::vector<ControllerDevice> EnumerateControllers() {
             // library and gameplay.
             if (pro_controller && !pro.empty()) continue;
             device.name = pro_controller ? L"Nintendo Switch Pro Controller" : raw.DisplayName().c_str();
+            // The console can report the name pseudo-localized: then the maker names it.
+            if (PseudoLocalized(device.name))
+                device.name = raw.HardwareVendorId() == 0x045e ? I18n::Tr(I18n::Text::ControllerXbox) : L"";
             if (device.name.empty()) device.name = I18n::Tr(I18n::Text::ControllerGeneric);
             device.wireless = raw.IsWireless();
             device.pad = Gamepad::FromGameController(raw);

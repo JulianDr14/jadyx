@@ -12,6 +12,11 @@ int main() {
     using Jadyx::SelectControllerDevice;
     auto check = [](bool ok) { if (!ok) std::abort(); };
     check(SelectControllerDevice(devices, L"") == 1);
+    // The console's pseudo-localized "Xbox One Game Controller", and real names.
+    check(Jadyx::PseudoLocalized(L"Xвöx Őŋě Ĝâme €ò\"ŧřõĵļëř"));
+    check(!Jadyx::PseudoLocalized(L"Xbox Wireless Controller"));
+    check(!Jadyx::PseudoLocalized(L"Mando Número 1"));
+    check(!Jadyx::PseudoLocalized(L"Геймпад"));
     check(SelectControllerDevice(devices, L"wireless-pad") == 2);
     std::reverse(devices.begin(), devices.end());
     check(SelectControllerDevice(devices, L"wireless-pad") == 0);

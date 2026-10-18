@@ -63,6 +63,7 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::SettingsSaved, L"Settings saved"},
     {Text::ControllerSaveFailed, L"Couldn't save the controller settings"},
     {Text::ControllerGeneric, L"Controller"},
+    {Text::ControllerXbox, L"Xbox Controller"},
     {Text::ControllerNumbered, L"Controller {0}"},
     {Text::NoController, L"No controller connected"},
     {Text::ChosenControllerMissing, L"Selected controller disconnected"},
