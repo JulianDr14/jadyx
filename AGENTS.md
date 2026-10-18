@@ -1074,3 +1074,16 @@ pero3516vs2890draws-frame ychurn2524->1025 impidenatribuirmejoraFPScausal.
 Confirmado1301596consultasTSCevitadas/3138836(41,467%), no41%deCPUdraw.
 Firstchance0x80010012 trasexitingregistrada. Opcionesdefaultoff, normalA/B,
 separacióncandidatos ySeriespendientes. Evidencia/informe draw_preparation.
+
+Preferencia versionado usuario18oct2026: para instalar una actualización en Series,
+subir siempre la versión de entrega. Parches incrementan el cuarto componente
+(ejemplo0.2.97.0->0.2.97.1); funciones nuevas incrementan el tercero y reinician
+el cuarto (siguiente0.2.98.0). No reutilizar versión para una entrega nueva a consola.
+
+
+Frontend 0.2.98.0 (18 oct 2026): LB/RB principal y LT/RT interno, hero del juego
+plegable al bajar a Mods/Cheats conservando header general, tarjetas cuadradas y
+nueve filas. Metadatos junto al título; repetición UI y contadores/layouts Cheats
+optimizados. Build incremental y gates de navegación/catálogo/geometría pasan;
+arranque biblioteca PC correcto. Fluidez y visual Series pendientes; captura PC
+falló en Computer Use (timeout). Paquete único y símbolos de 0.2.98.0; sin commit.

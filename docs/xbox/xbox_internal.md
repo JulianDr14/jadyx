@@ -3770,3 +3770,78 @@ Series pendientes. Experimento CopyDescriptorsSimple descartado por resultados
 mixtos en RadeonPro5300M; no reemplazar batch por recomendación genérica.
 Parser ahora admite ventanas sinprofiling con Draw=null y fixtures pasan.
 Detalle/fuentes/evidencia en xbox_draw_preparation.md. Sincommit.
+
+## UI de opciones por juego — 18 octubre 2026
+
+Migrados los renders de Descargas a la UI UWP: cabecera y tarjetas de opciones,
+superficie/foco compartidos Mods/Cheats/Updates/DLC; catálogo de mods de tres
+columnas con navegación/scroll de fila incompleta verificados. Solo funciones
+existentes, confirmado por usuario; no datos ni servicios ficticios del render.
+Se conservan modelos, persistencia, workers y operaciones de contenido.
+Build incremental/link y harness mods-page/cheats-page/localization-catalogs pasan.
+No nueva versión ni commit; gate visual y Series pendientes. Paquete ruta única.
+Detalle, fuentes y alcance: xbox_frontend.md, sección migración 18oct.
+Trampa: Appx no carga desde PowerShell7 (0x80131539); local-run debe ejecutarse
+mediante System32/WindowsPowerShell/v1.0/powershell.exe (Windows PowerShell5.1).
+
+
+18oct UI, corrección solicitada tras captura: descartada la primera composición.
+El header global se reutiliza, no se copia; los gestores sustituyen el contenido
+inferior de biblioteca, sin dibujar la biblioteca detrás. La barra bajo carátula
+activa directamente Mods/Cheats/Updates/DLC/Pulse; eliminadas tarjetas y Abrir
+redundantes, Pulse único. Foco barra/gestor separado, Up devuelve desde primera
+fila; mismos modelos de instalación, toggles y doble confirmación Pulse. No
+abandonar trabajos/descargas activos, conservar invalidación de contenido al salir.
+Harness de selección directa/cinco categorías y listas pasan; enlace UWP pasa.
+Captura Windows falla timeout; visual final/Series pendientes, no certificar por
+compilar. Sin commit/versionado automático; detalle actual en xbox_frontend.md.
+
+Entrega Series18oct0.2.97.1: usuario exige nueva versión por entrega; parche en
+cuarto componente, siguiente función nueva0.2.98.0. Manifiesto sinBOM, mismo EXE
+incremental sin recompilar por versión; APPX firmado en package/jadyx.appx y
+EXE/PDB archivados en symbols/0.2.97.1. CRC/versión/identidadEXE/config correctos.
+Incluye clics reales Mods/Cheats y foco explícito Sections/ManagerTabs/Content,
+sesiones conservadas entre categorías y contadores de carga. Harness y build
+pasan. Prueba PC: juego de prueba installed0/error0, cheats0 paraB5C39B5B7C62A88E(1.0.0);
+archivos locales para2C336A9BCF79C304, no cargar cheats incompatibles. Evidencia
+build-uwp/test-results/frontend-management-20261018. Captura automática detenida
+porEsc delusuario; catálogo online/visual/Series pendientes. Sin commit/push.
+
+
+## Opciones del juego: espacio y controles por nivel (18 oct 2026, 0.2.98.0)
+
+- LB/RB (Q/E) seleccionan la categoría principal desde sus tres niveles de foco.
+  LT/RT (PgUp/PgDn) controlan las pestañas del gestor; los gatillos usan flanco
+  con histéresis y requieren liberación tras cambiar de contexto. Los diálogos y
+  operaciones ocupadas conservan sus restricciones. En el detalle de un mod,
+  LT/RT cambian sus imágenes; en el teclado virtual realizan sus acciones locales.
+- Al bajar de la barra principal a Mods o Cheats, el hero del juego se desplaza
+  156 unidades durante 180 ms. El header general reutilizado permanece visible;
+  también permanecen las dos barras. Subir hasta la barra principal restaura el
+  hero. La rueda sigue el mismo recorrido de foco. Los targets del puntero usan
+  el mismo desplazamiento y recorte que los elementos dibujados.
+- Desarrollador, versión efectiva y Build ID real se reúnen bajo el título.
+  Se elimina la versión bajo la carátula y el Build ID repetido en Cheats.
+  El catálogo usa tarjetas cuadradas de 352 × 352 con imágenes de 222 de alto;
+  la selección de filas admite nueve visibles al plegar el hero. Estados y
+  prompts inferiores permanecen fijos y separados del contenido desplazado.
+- Navegación: se admiten repeticiones de flechas del teclado; cruceta/stick del
+  gestor repiten tras 280 ms y luego cada 80 ms, sin cambiar la entrada del juego.
+  Cheats dibuja filas/pestañas/estados con layouts de texto cacheados y obtiene
+  contadores de habilitados/palabras VM cacheados en vez de recorrer todo el
+  catálogo en cada dibujo. Persistencia y compatibilidad por Build ID se conservan.
+- Gates: build incremental UWP correcto; stick-navigation, mods-page,
+  cheats-page y cheat-catalog pasan. Se comprueban histéresis, pulsación sostenida,
+  listas largas, encaje del grid/listas y 10.000 ediciones con contadores
+  contrastados contra el programa VM real. Esto no certifica fluidez medida ni
+  validación visual en Series; ambas quedan pendientes del dispositivo.
+- Versión 0.2.98.0 por nueva interacción, según la regla indicada por el usuario.
+  Entrega única en build-uwp/package/jadyx.appx; sin commit.
+
+  Cierre adicional: el catálogo mantiene también el número de entradas activas
+  por archivo; actualizar una entrada/código maestro es O(1) y una categoría es
+  O(n), sin los recorridos anidados anteriores. El gate de 10.000 ediciones
+  contrasta el maestro contra SyncMasterCheat y pasa junto a presupuesto/categorías.
+  La biblioteca de esta versión arranca en PC. Captura visual no disponible:
+  Computer Use devolvió FrameArrived timed out y window capture timed out tras
+  recuperar la ventana y reintentar. No se certifica visualmente con esa herramienta.

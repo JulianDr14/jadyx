@@ -1,5 +1,60 @@
 # Biblioteca y mando UWP (1 oct 2026)
 
+## Migración de opciones del juego — 18 oct 2026
+
+Referencias locales revisadas: `Downloads/stitch_jadyx_minimal_console_interface_opciones_juego/`
+y `Downloads/stitch_jadyx_minimal_console_interface_mods/`, ambos `screen.png`, con
+su vocabulario monocromo. El usuario confirma limitar la migración a funciones existentes.
+No se incorporan nube, actualizaciones online, integridad SHA-256 ni datos ficticios
+del render. La composición se adapta a 1280×720 y al modelo de navegación actual.
+
+- Opciones: el header principal se reutiliza desde `LibraryCanvas::DrawHeader`.
+  Debajo permanecen carátula/título/desarrollador/versión y la barra de categorías.
+  Cada selección activa directamente su gestor: no hay tarjetas de navegación,
+  botón «Abrir» ni columna contextual duplicada. Pulse tiene un único panel real y
+  mantiene la doble confirmación de descarte. El desarrollador sigue al alto real
+  del título, sin reservar dos líneas vacías.
+- Mods: pestañas en cápsula, foco blanco fino, tarjetas de catálogo en tres columnas
+  con títulos de hasta dos líneas y metadatos reales; vista previa del resultado
+  enfocado, sin destacado ficticio. Navegación y scroll consumen
+  la misma geometría. Se mantienen fuentes, búsqueda, categorías, orden, archivos,
+  variantes, reordenación, conflictos, descargas e instalación existentes.
+- Cheats: misma superficie, cápsulas y foco de tarjeta, con categorías, switches,
+  presupuesto, procedencia y créditos conservados. El menú en juego mantiene su vista propia.
+- Updates/DLC: superficie y tarjetas compartidas, sin cambiar importación, revisión,
+  activación, verificación, traslado ni borrado del contenido.
+
+`UiPainter::SelectionCard` y `ManagementSurface` centralizan el estilo. Se reutilizan
+brushes, formatos, caché de layouts y carátulas existentes; no se añade red, efectos
+de blur, bitmaps ni recursos GPU por tarjeta. No hay medición que certifique una
+mejora de rendimiento. Referencias técnicas: [reutilización de recursos y layouts
+Direct2D](https://learn.microsoft.com/en-us/windows/win32/direct2d/improving-direct2d-performance)
+y [foco/navegación con mando UWP](https://learn.microsoft.com/en-us/windows/uwp/ui-input/gamepad-and-remote-interactions).
+
+Controles: en la barra, izquierda/derecha o Q/E (LB/RB) cambia de gestor en el
+mismo sitio; Down/Enter entra en sus controles, sin abrir otra página. Up desde
+el primer elemento devuelve el foco a la barra. Dentro del gestor, sus propios
+controles de categorías, listas y acciones siguen funcionando. Los cambios de
+sección no interrumpen instalaciones, importaciones ni descargas activas; volver
+con B conserva el comportamiento de cancelación del gestor. Las pestañas globales
+pueden abandonar un gestor inactivo, respetando invalidación de metadatos.
+
+Gates: harness mods-page y cheats-page pasan, incluida activación directa de las
+cinco categorías, cancelación de confirmación de Pulse al cambiar y scroll de
+una fila de tres tarjetas grandes. Build incremental Release UWP/enlace pasan;
+`git diff --check` pasa. Un aviso C5245 al retirar el encabezado anterior se
+resolvió conservando los contadores reales de activos/conflictos en el gestor.
+Sin cambio de versión ni commit. La primera adaptación fue rechazada visualmente
+por el usuario; la captura posterior identificó redundancia de tarjetas/pestañas,
+corregida por petición explícita. Revisión visual del flujo final y Series pendientes:
+la captura automática de Windows falla con `window capture timed out`, también
+tras activar/reintentar la ventana. No certificar fidelidad por el build.
+Entrega única en `build-uwp/package/jadyx.appx`.
+
+Trampa de ejecución: `local-run.ps1` desde PowerShell 7 empaqueta, pero falla al
+cargar `Appx` con 0x80131539; registrar/abrir mediante Windows PowerShell 5.1:
+`& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File tools\xbox\local-run.ps1 -NoBuild -Library -TimeoutSec 15 -BootCfg jit_prewarm=1`.
+
 Primera biblioteca del frontend compartido por PC y Xbox Series en Dev Mode.
 Se activa con `library=1` en `boot.cfg`; `-Library` en los scripts lo escribe.
 El arranque directo mediante `-Game` y los gates de homebrew se conservan.
@@ -980,3 +1035,47 @@ y `Failed to update play time database!`. Eran dos fallos de Eden que se juntaba
 
 Pruebas: `play-history` (archivo, orden, textos y reloj) y `system-settings`, que ahora incluye
 la fila nueva y corrige el nombre por defecto ("Jadyx").
+
+Gate de arranque de la migración18oct: Windows PowerShell5.1 registra y abre
+biblioteca, PID22808 Responding; diag indica scanning/waiting for user selection.
+APPX preparado en ruta única. Arranque no equivale a validación visual de páginas
+ni prueba física de mando; se deja abierto para revisión manual, sin gameplay.
+
+
+## Opciones del juego: espacio y controles por nivel (18 oct 2026, 0.2.98.0)
+
+- LB/RB (Q/E) seleccionan la categoría principal desde sus tres niveles de foco.
+  LT/RT (PgUp/PgDn) controlan las pestañas del gestor; los gatillos usan flanco
+  con histéresis y requieren liberación tras cambiar de contexto. Los diálogos y
+  operaciones ocupadas conservan sus restricciones. En el detalle de un mod,
+  LT/RT cambian sus imágenes; en el teclado virtual realizan sus acciones locales.
+- Al bajar de la barra principal a Mods o Cheats, el hero del juego se desplaza
+  156 unidades durante 180 ms. El header general reutilizado permanece visible;
+  también permanecen las dos barras. Subir hasta la barra principal restaura el
+  hero. La rueda sigue el mismo recorrido de foco. Los targets del puntero usan
+  el mismo desplazamiento y recorte que los elementos dibujados.
+- Desarrollador, versión efectiva y Build ID real se reúnen bajo el título.
+  Se elimina la versión bajo la carátula y el Build ID repetido en Cheats.
+  El catálogo usa tarjetas cuadradas de 352 × 352 con imágenes de 222 de alto;
+  la selección de filas admite nueve visibles al plegar el hero. Estados y
+  prompts inferiores permanecen fijos y separados del contenido desplazado.
+- Navegación: se admiten repeticiones de flechas del teclado; cruceta/stick del
+  gestor repiten tras 280 ms y luego cada 80 ms, sin cambiar la entrada del juego.
+  Cheats dibuja filas/pestañas/estados con layouts de texto cacheados y obtiene
+  contadores de habilitados/palabras VM cacheados en vez de recorrer todo el
+  catálogo en cada dibujo. Persistencia y compatibilidad por Build ID se conservan.
+- Gates: build incremental UWP correcto; stick-navigation, mods-page,
+  cheats-page y cheat-catalog pasan. Se comprueban histéresis, pulsación sostenida,
+  listas largas, encaje del grid/listas y 10.000 ediciones con contadores
+  contrastados contra el programa VM real. Esto no certifica fluidez medida ni
+  validación visual en Series; ambas quedan pendientes del dispositivo.
+- Versión 0.2.98.0 por nueva interacción, según la regla indicada por el usuario.
+  Entrega única en build-uwp/package/jadyx.appx; sin commit.
+
+  Cierre adicional: el catálogo mantiene también el número de entradas activas
+  por archivo; actualizar una entrada/código maestro es O(1) y una categoría es
+  O(n), sin los recorridos anidados anteriores. El gate de 10.000 ediciones
+  contrasta el maestro contra SyncMasterCheat y pasa junto a presupuesto/categorías.
+  La biblioteca de esta versión arranca en PC. Captura visual no disponible:
+  Computer Use devolvió FrameArrived timed out y window capture timed out tras
+  recuperar la ventana y reintentar. No se certifica visualmente con esa herramienta.
