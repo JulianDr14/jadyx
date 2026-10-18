@@ -116,6 +116,8 @@ public:
     void Icon(UiIcon icon, float x, float y, unsigned color, float size = 32);
     /// The ">" at the end of a row that opens a page.
     void Chevron(float cx, float cy, unsigned color, bool left = false);
+    /// A small "v" telling that a page goes on below what it shows.
+    void MoreBelow(float cx, float cy, float alpha = 1);
     /// A selectable row: background, accent bar when active and the icon in its tile.
     /// Passive list position: track/thumb and available directions, hidden when everything fits.
     void ScrollIndicator(float x, float y, float height, std::size_t first,

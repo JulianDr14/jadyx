@@ -535,6 +535,9 @@ private:
         }
         for (const auto& tile : lifted)
             if (tile.entry) DrawTile(view, *tile.entry, tile.x, tile.y, tile.amount, tile.alpha);
+        // The last row's covers end under the prompts: say there is more down there.
+        if (rows && RowTop + RowContentTop(rows - 1, rail) - offset + Tile > FooterTop)
+            MoreBelow(1280 - Margin / 2, FooterTop - 20, 0.8f);
     }
     /// Rows settle at RowTop; above it they fade out before reaching the hero's actions.
     static float RowAlpha(float top) {
@@ -629,6 +632,9 @@ private:
         }
         for (const auto& tile : lifted)
             if (tile.entry) DrawTile(view, *tile.entry, tile.x, tile.y, tile.amount, tile.alpha);
+        // The last row's covers end under the prompts: say there is more down there.
+        if (ShelfTop + static_cast<float>((count - 1) / Columns) * ShelfRowHeight - offset + Tile > FooterTop)
+            MoreBelow(1280 - Margin / 2, FooterTop - 20, 0.8f);
     }
     /// The collection's last tile: opens the file manager to add games.
     void DrawImportTile(float x, float y, float amount, float alpha) {

@@ -385,6 +385,12 @@ void UiPainter::Chevron(float cx, float cy, unsigned color, bool left) {
     surface->DrawLine(D2D1::Point2F(cx + 1 * d, cy), D2D1::Point2F(cx - 4 * d, cy + 5), brush.Get(), 2);
 }
 
+void UiPainter::MoreBelow(float cx, float cy, float alpha) {
+    brush->SetColor(D2D1::ColorF(Palette::TextSecondary, alpha));
+    surface->DrawLine(D2D1::Point2F(cx - 6, cy - 3), D2D1::Point2F(cx, cy + 3), brush.Get(), 2);
+    surface->DrawLine(D2D1::Point2F(cx, cy + 3), D2D1::Point2F(cx + 6, cy - 3), brush.Get(), 2);
+}
+
 void UiPainter::ScrollIndicator(float x, float y, float height, std::size_t first,
                                 std::size_t visible, std::size_t count, bool more_below) {
     if (height < 48 || !visible || (!more_below && count <= visible)) return;
