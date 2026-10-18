@@ -533,7 +533,6 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::FullCollection, L"Colección completa"},
     {Text::TitlesCountOne, L"{0} título"},
     {Text::TitlesCountOther, L"{0} títulos"},
-    {Text::InProgress, L"En curso"},
     {Text::Pin, L"Anclar"},
     {Text::Unpin, L"Desanclar"},
     {Text::PinSaveFailed, L"No se pudieron guardar los juegos anclados."},

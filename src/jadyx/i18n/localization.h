@@ -558,7 +558,6 @@ enum class Text : std::uint16_t {
     FullCollection,
     TitlesCountOne,
     TitlesCountOther,
-    InProgress,
     Pin,
     Unpin,
     PinSaveFailed,

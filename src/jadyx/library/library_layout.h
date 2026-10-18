@@ -49,15 +49,6 @@ inline std::size_t RailCount(const std::vector<LibraryEntry>& entries) {
     return count;
 }
 
-/// The game played last, which wears the "in progress" badge; entries.size() when none was.
-inline std::size_t LastPlayed(const std::vector<LibraryEntry>& entries) {
-    std::size_t found = entries.size();
-    for (std::size_t i = 0; i < entries.size(); ++i)
-        if (entries[i].last_played > 0 && (found == entries.size() || entries[i].last_played > entries[found].last_played))
-            found = i;
-    return found;
-}
-
 enum class LibraryTab : unsigned { Home, Library, Settings, Count };
 
 /// The focus: an entry, and whether it is focused in the rail (the same game also has a place

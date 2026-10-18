@@ -128,9 +128,6 @@ public:
             shown_tab = view.tab;
             rows_shown = false;
         }
-        last_played = nullptr;
-        if (const auto last = LibraryLayout::LastPlayed(scan.entries); !view.loading && last < scan.entries.size())
-            last_played = &scan.entries[last];
         const bool management = view.game_options.game || view.game_options.content;
         // Only the active library content prepares and draws its backdrop.
         if (!management) UpdateBackdrop(game, now);
@@ -552,12 +549,6 @@ private:
         const float top = y + (Tile - size) / 2 - 8 * amount;
         FocusGlow(left, top, size, size, 12, amount * alpha);
         Cover(entry, left, top, size, alpha);
-        if (&entry == last_played) {
-            const auto badge = Upper(Tr(T::InProgress));
-            const float width = MeasureType(badge, TypeRole::Caps) + 16;
-            Round(left + 8, top + 8, width, 20, 10, Palette::Accent, alpha);
-            Type(badge, TypeRole::Caps, left + 8, top + 10, width, Palette::OnAccent, alpha, TextAlign::Center);
-        }
         if (entry.pinned) {
             // A pin's head: a white dot in a graphite disc, at the top right.
             const float cx = left + size - 18, cy = top + 18;
@@ -1762,7 +1753,6 @@ private:
     std::vector<Hit> hits;
     LibraryLayout::LibraryTab shown_tab{LibraryLayout::LibraryTab::Count};
     bool header_shown{};
-    const LibraryEntry* last_played{}; ///< Wears the "in progress" badge.
     TileKey focused_tile, left_tile;
     bool rows_shown{};
     bool animating{};

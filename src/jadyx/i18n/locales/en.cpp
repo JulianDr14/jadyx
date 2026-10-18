@@ -533,7 +533,6 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::FullCollection, L"Full collection"},
     {Text::TitlesCountOne, L"{0} title"},
     {Text::TitlesCountOther, L"{0} titles"},
-    {Text::InProgress, L"In progress"},
     {Text::Pin, L"Pin"},
     {Text::Unpin, L"Unpin"},
     {Text::PinSaveFailed, L"Could not save your pinned games."},
