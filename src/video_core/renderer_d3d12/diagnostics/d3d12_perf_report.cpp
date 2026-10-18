@@ -173,7 +173,8 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         "backend {:.1f} ms | DMA: "
         "puller {} / {:.1f} ms, macros {} / {:.1f} ms, Maxwell {} / {:.1f} ms, compute {} / "
         "{:.1f} ms, copies {} / {:.1f} ms, other {} / {:.1f} ms | Maxwell dirty: {} changed, "
-        "{} identical skipped",
+        "{} identical skipped | index rewrites: {} new, {} reused, {} rechecked, {:.1f} ms | "
+        "CB_DATA blocks: {} ({} words) | blit uploads skipped: {} ({} KiB, {} put back)",
         draw_ms, per_draw(Counter::DrawNs), per_draw(Counter::DrawTexturesNs),
         per_draw(Counter::DrawBuffersNs), per_draw(Counter::DrawDescriptorsNs),
         per_draw(Counter::DrawTargetsNs), per_draw(Counter::DrawUpdateTargetsNs),
@@ -205,7 +206,12 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         ns_ms(Counter::DmaMacroNs), get(Counter::DmaMaxwellCalls), ns_ms(Counter::DmaMaxwellNs),
         get(Counter::DmaComputeCalls), ns_ms(Counter::DmaComputeNs), get(Counter::DmaCopyCalls),
         ns_ms(Counter::DmaCopyNs), get(Counter::DmaOtherCalls), ns_ms(Counter::DmaOtherNs),
-        get(Counter::MaxwellDirtyChanged), get(Counter::MaxwellDirtyUnchanged));
+        get(Counter::MaxwellDirtyChanged), get(Counter::MaxwellDirtyUnchanged),
+        get(Counter::IndexRewrites), get(Counter::IndexRewriteReuses),
+        get(Counter::IndexRewriteRechecks), ns_ms(Counter::IndexRewriteNs),
+        get(Counter::ConstBufferRuns), get(Counter::ConstBufferRunWords),
+        get(Counter::BlitUploadsSkipped), get(Counter::BlitUploadBytesSkipped) / 1024,
+        get(Counter::BlitDiscardsRestored));
 }
 
 std::string DescribeGuestWaitSites() {

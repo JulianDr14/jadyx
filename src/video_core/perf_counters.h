@@ -123,6 +123,15 @@ enum class Counter : size_t {
     MaxwellDirtyUnchanged,
     ClearNs,
     DispatchNs,
+    IndexRewrites,         ///< index lists converted (quads, fans, loops, u8) and cached
+    IndexRewriteReuses,    ///< draws that bound a cached conversion without reading the guest
+    IndexRewriteRechecks,  ///< cached conversions confirmed by comparing the guest bytes
+    IndexRewriteNs,        ///< time spent finding, checking and converting index lists
+    ConstBufferRuns,       ///< CB_DATA packets stored as one block instead of word by word
+    ConstBufferRunWords,   ///< words those packets carried
+    BlitUploadsSkipped,    ///< CPU-modified blit destinations not uploaded: the blit rewrote them
+    BlitUploadBytesSkipped,
+    BlitDiscardsRestored,  ///< skipped uploads put back because the backend drew nothing
     GuestGpuWaits,         ///< guest fence waits (nvhost_ctrl events) that the GPU signalled later
     GuestGpuWaitUs,        ///< time from each of those waits to its signal; waits can overlap
     // The frame chain: game -> GPU thread -> composite -> vsync.
