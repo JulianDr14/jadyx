@@ -138,6 +138,9 @@ public:
         target->BeginDraw();
         target->Clear(D2D1::ColorF(Palette::Canvas));
         if (!management) DrawBackdrop(now);
+        // The backdrop moves on its own while it shows (AmbientDue).
+        ambient = !management && !backdrop_now.empty();
+        last_frame = now;
         if (management) {
             rows_shown = false;
         } else if (view.tab == LibraryTab::Settings) {
@@ -193,7 +196,9 @@ public:
                     list_scroll.Running(now) || grid_scroll.Running(now);
     }
     void InvalidateCovers() { covers.clear(); pictures.clear(); backdrops.clear(); backdrop_now.clear(); backdrop_before.clear(); }
-    bool Animating() const { return animating; }
+    bool Animating() const {
+        return animating || (ambient && Tween::Clock::now() - last_frame >= AmbientFrame);
+    }
     LibraryTarget HitAt(float x, float y) const {
         // Drawn last is on top: the header over the rows scrolling under it.
         for (auto hit = hits.rbegin(); hit != hits.rend(); ++hit)
@@ -1598,10 +1603,27 @@ private:
     /// The backdrops (crossfading), then the scrims that keep text legible over any art.
     void DrawBackdrop(Tween::Clock::time_point now) {
         const float t = backdrop_fade.Value(now);
+        // A slow drift: the art breathes and wanders, and a larger, fainter copy of it flows the
+        // other way. The periods share no factor, so the motion never visibly repeats; each copy
+        // is scaled enough that its edges stay off screen. Two quads of the cached bitmap a frame.
+        constexpr float Tau = 6.2831853f;
+        const float s = std::chrono::duration<float>(now - ambient_epoch).count();
+        const auto rect = [](float scale, float dx, float dy) {
+            const float w = 640 * scale, h = 360 * scale;
+            return D2D1::RectF(640 - w + dx, 360 - h + dy, 640 + w + dx, 360 + h + dy);
+        };
+        const auto art = rect(1.2f + 0.08f * std::sin(Tau * s / 17), 60 * std::sin(Tau * s / 19),
+                              36 * std::sin(Tau * s / 13 + 1.3f));
+        const auto glow = rect(1.7f + 0.15f * std::sin(Tau * s / 23 + 2), -100 * std::sin(Tau * s / 17 + 0.7f),
+                               60 * std::sin(Tau * s / 11));
+        // The flowing copy also swells and fades, as light passing over the art.
+        const float shine = 0.3f + 0.2f * std::sin(Tau * s / 9 + 0.4f);
         const auto layer = [&](const std::string& key, float opacity) {
             if (key.empty() || opacity <= 0.002f) return;
-            if (auto* bitmap = FindBackdrop(key))
-                target->DrawBitmap(bitmap, D2D1::RectF(0, 0, 1280, 720), opacity, D2D1_INTERPOLATION_MODE_LINEAR);
+            if (auto* bitmap = FindBackdrop(key)) {
+                target->DrawBitmap(bitmap, art, opacity, D2D1_INTERPOLATION_MODE_LINEAR);
+                target->DrawBitmap(bitmap, glow, opacity * shine, D2D1_INTERPOLATION_MODE_LINEAR);
+            }
         };
         layer(backdrop_before, BackdropOpacity * (1 - t));
         layer(backdrop_now, BackdropOpacity * t);
@@ -1710,6 +1732,9 @@ private:
     static constexpr size_t MaxBackdrops = 8;
     static constexpr unsigned BackdropWidth = 320, BackdropHeight = 180;
     static constexpr float BackdropOpacity = 0.58f;
+    /// The backdrop's drift moves a pixel or so a frame over blurred art: 30 frames a second show
+    /// it as smooth as 60, at half the redraws of an idle library. Presses still draw at once.
+    static constexpr auto AmbientFrame = std::chrono::milliseconds{30};
     /// Two screens of the grid and a mod's gallery: 640 px wide at most, ~0.6 MiB each.
     static constexpr size_t MaxPictures = 48;
     ComPtr<ID3D11DeviceContext> context;
@@ -1735,6 +1760,8 @@ private:
     TileKey focused_tile, left_tile;
     bool rows_shown{};
     bool animating{};
+    bool ambient{}; ///< The backdrop shows, so it drifts.
+    Tween::Clock::time_point ambient_epoch{Tween::Clock::now()}, last_frame{};
     std::string hero_path;
     Tween management_collapse{0, std::chrono::milliseconds{180}, EaseFocus};
     /// The first row of a manager's list and of the store's grid, gliding between rows.
