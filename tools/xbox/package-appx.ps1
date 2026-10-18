@@ -104,9 +104,6 @@ New-Item -ItemType Directory -Path $layout -Force | Out-Null
 Copy-Item $exe $layout
 Copy-Item (Join-Path $repo "dist\uwp\AppxManifest.xml") $layout
 Copy-Item (Join-Path $repo "dist\uwp\Assets") $layout -Recurse
-# Use Eden's existing artwork in the launcher, preserving the upstream asset.
-Copy-Item -LiteralPath (Join-Path $repo 'dist\qt_themes\default\icons\256x256\eden.png') `
-    -Destination (Join-Path $layout 'Assets\EdenLogo.png')
 
 # Any runtime DLLs the link produced land next to the exe; carry them along.
 Get-ChildItem (Split-Path $exe) -Filter *.dll -ErrorAction SilentlyContinue |
@@ -199,6 +196,27 @@ if ($BootNro -or $gameName -or $BootCfg.Count -gt 0) {
 if ($mf.Package.Identity.Publisher -ne $PublisherCN) {
     throw "Publisher mismatch: manifest has '$($mf.Package.Identity.Publisher)' but signing with '$PublisherCN'."
 }
+
+# The tile/splash files carry their real scale (Square150x150Logo.scale-200.png is 300x300) while
+# the manifest names the base file; resources.pri maps one to the other. Index a copy of Assets
+# alone so a bundled game dump never goes through MakePri.
+$makepri = Find-SdkTool "MakePri.exe"
+$priRoot = Join-Path $repo "$OutDir\pri"
+if (Test-Path $priRoot) { Remove-Item $priRoot -Recurse -Force }
+New-Item -ItemType Directory -Path $priRoot -Force | Out-Null
+Copy-Item (Join-Path $layout "Assets") $priRoot -Recurse
+$priConfig = Join-Path $repo "$OutDir\priconfig.xml"
+& $makepri createconfig /cf $priConfig /dq en-US /pv 10.0.0 /o | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "MakePri createconfig failed ($LASTEXITCODE)." }
+# The default config splits scales into resources.scale-200.pri for a bundle's resource packages;
+# a lone appx needs every candidate in its main resources.pri.
+[xml]$priXml = Get-Content $priConfig -Raw
+$priPackaging = $priXml.SelectSingleNode("//packaging")
+if ($priPackaging) { [void]$priPackaging.ParentNode.RemoveChild($priPackaging) }
+$priXml.Save($priConfig)
+& $makepri new /pr $priRoot /cf $priConfig /mn (Join-Path $layout "AppxManifest.xml") `
+    /of (Join-Path $layout "resources.pri") /o | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "MakePri failed ($LASTEXITCODE)." }
 
 # --- 3. pack -----------------------------------------------------------------------------
 $makeappx = Find-SdkTool "MakeAppx.exe"

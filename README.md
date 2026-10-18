@@ -4,7 +4,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 
 <p align="center">
-  <img src="dist/qt_themes/default/icons/256x256/eden.png" alt="Eden logo" width="128">
+  <img src="dist/uwp/Assets/JadyxLogo.png" alt="Jadyx logo" width="128">
 </p>
 
 <h1 align="center">Jadyx</h1>
@@ -546,6 +546,8 @@ This fork stands on other people's work:
   this fork started from.
 - [Mesa](https://gitlab.freedesktop.org/mesa/mesa): `spirv_to_dxil` and the NIR passes behind
   the shader translation.
+- [@dramon8945](https://www.instagram.com/dramon8945/): the Jadyx logo, tiles and splash screen
+  (`dist/uwp/Assets/`).
 - yuzu, Ryujinx, Sudachi, Citron, Torzu, Suyu and Ryubing, and everyone who worked on the projects
   Eden comes from.
 

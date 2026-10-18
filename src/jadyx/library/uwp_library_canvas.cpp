@@ -95,7 +95,7 @@ public:
         try {
             asset_root = std::filesystem::path{
                 winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path().c_str()} / L"Assets";
-            logo = LoadAssetBitmap(L"EdenLogo.png");
+            logo = LoadAssetBitmap(L"JadyxLogo.png");
         } catch (const winrt::hresult_error&) { /* Wordmark remains available. */ }
         const float scale = std::min(width / 1280.0f, height / 720.0f);
         target->SetTransform(D2D1::Matrix3x2F::Scale(std::max(scale, 0.01f), std::max(scale, 0.01f)) *
