@@ -55,10 +55,30 @@ param(
     # Sidecars expose original CFG intermediates instead of the authored kernels.
     [switch] $MaterialProbeOriginalCfg,
     [switch] $MaterialProbeBranchControls,
-    [string] $OutDir = "build-uwp\package"
+    [string] $OutDir = "build-uwp\package",
+    # Public release (.github/workflows/release.yml): the plain library package. Refuses every
+    # payload, user-data and diagnostic option, and fails instead of warning when a runtime piece
+    # (shader DLLs, VCLibs) is missing.
+    [switch] $Release,
+    # Package version for the staged manifest (MAJOR.MINOR.BUILD.REVISION). The manifest in the
+    # repo is left as it is.
+    [string] $Version,
+    # Signing certificate as a PFX file (CI), its password in $env:JADYX_PFX_PASSWORD. Without it
+    # the CurrentUser\My certificate for $PublisherCN is used, or minted.
+    [string] $PfxPath
 )
 
 $ErrorActionPreference = "Stop"
+if ($Release) {
+    if ($BootNro -or $Game -or $StageScript -or $Profile -or $Hunt -or $GraphicsCapture -or
+        $DebugLayer -or $MaterialProbeShaders -or $RunSeconds -gt 0 -or $BootCfg.Count -gt 0) {
+        throw 'A release package takes no payload, user data or diagnostic options'
+    }
+    $Library = [switch]$true
+}
+if ($Version -and $Version -notmatch '^\d{1,5}\.\d{1,5}\.\d{1,5}\.\d{1,5}$') {
+    throw "Invalid package version '$Version': expected MAJOR.MINOR.BUILD.REVISION"
+}
 if ($MaterialProbeOriginalCfg -and (!$MaterialProbeShaders -or $MaterialProbeShaderCount -ne 8)) {
     throw 'Original CFG diagnosis requires eight explicit sidecars'
 }
@@ -120,9 +140,11 @@ if (Test-Path $s2d) {
         Copy-Item $dxil $layout
         Write-Host "signing  : $dxil"
     } catch {
+        if ($Release) { throw "dxil.dll not found in the Windows SDK: a release needs the GPU shader path." }
         Write-Warning "dxil.dll not found in the Windows SDK: the D3D12 renderer will present through the CPU."
     }
 } else {
+    if ($Release) { throw "spirv_to_dxil.dll not found ($s2d): a release needs the GPU shader path." }
     Write-Warning "spirv_to_dxil.dll not found ($s2d): the D3D12 renderer will present through the CPU."
 }
 
@@ -187,6 +209,11 @@ if ($BootNro -or $gameName -or $BootCfg.Count -gt 0) {
     if ($cfg) {
         [IO.File]::WriteAllText((Join-Path $layout "boot.cfg"), $cfg)
     }
+    # Every diagnostic (DRED, profilers, capture menus, debug layer) is a boot.cfg line and off
+    # without it; the bug tracker is on by default. A release carries the library and nothing else.
+    if ($Release -and $cfg -ne "library=1`nplay=1`n") {
+        throw "A release boot.cfg must hold only library=1 and play=1, not:`n$cfg"
+    }
 } else {
     Write-Warning "No -BootNro given. The app will activate, fail to load the NRO and log status 2 to jadyx_diag.txt."
 }
@@ -196,6 +223,11 @@ if ($BootNro -or $gameName -or $BootCfg.Count -gt 0) {
 if ($mf.Package.Identity.Publisher -ne $PublisherCN) {
     throw "Publisher mismatch: manifest has '$($mf.Package.Identity.Publisher)' but signing with '$PublisherCN'."
 }
+if ($Version) {
+    $mf.Package.Identity.Version = $Version
+    $mf.Save((Join-Path $layout "AppxManifest.xml"))
+}
+Write-Host "version  : $($mf.Package.Identity.Version)"
 
 # The tile/splash files carry their real scale (Square150x150Logo.scale-200.png is 300x300) while
 # the manifest names the base file; resources.pri maps one to the other. Index a copy of Assets
@@ -229,25 +261,39 @@ if (Test-Path "$userdata\games") { $packArgs += "/nc" }
 if ($LASTEXITCODE -ne 0) { throw "MakeAppx failed ($LASTEXITCODE)." }
 
 # --- 4. sign -----------------------------------------------------------------------------
-# Reuse a matching cert if one is already in the user store, else mint a self-signed one.
-$cert = Get-ChildItem Cert:\CurrentUser\My |
-        Where-Object { $_.Subject -eq $PublisherCN -and $_.NotAfter -gt (Get-Date) } |
-        Select-Object -First 1
-if (-not $cert) {
-    Write-Host "minting a self-signed code-signing cert for $PublisherCN"
-    $cert = New-SelfSignedCertificate -Type Custom -Subject $PublisherCN `
-        -KeyUsage DigitalSignature -FriendlyName "Jadyx sideload" `
-        -CertStoreLocation "Cert:\CurrentUser\My" `
-        -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
-}
-
 $signtool = Find-SdkTool "SignTool.exe"
-& $signtool sign /fd SHA256 /sha1 $cert.Thumbprint /t http://timestamp.digicert.com $appx
-if ($LASTEXITCODE -ne 0) { throw "SignTool failed ($LASTEXITCODE)." }
-
-# The console must trust the signer: upload this .cer alongside the appx in the Device Portal.
 $cer = Join-Path $repo "$OutDir\jadyx.cer"
-Export-Certificate -Cert $cert -FilePath $cer -Type CERT | Out-Null
+if ($PfxPath) {
+    # CI: the project's certificate comes from a secret, so every release has the same signer.
+    if (-not $env:JADYX_PFX_PASSWORD) { throw "JADYX_PFX_PASSWORD is not set for $PfxPath." }
+    $cert = New-Object Security.Cryptography.X509Certificates.X509Certificate2(
+        (Resolve-Path $PfxPath).Path, $env:JADYX_PFX_PASSWORD)
+    if ($cert.Subject -ne $PublisherCN) {
+        throw "The PFX is issued to '$($cert.Subject)', not '$PublisherCN'."
+    }
+    & $signtool sign /fd SHA256 /f (Resolve-Path $PfxPath).Path /p $env:JADYX_PFX_PASSWORD `
+        /t http://timestamp.digicert.com $appx
+    if ($LASTEXITCODE -ne 0) { throw "SignTool failed ($LASTEXITCODE)." }
+    [IO.File]::WriteAllBytes($cer, $cert.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+} else {
+    # Reuse a matching cert if one is already in the user store, else mint a self-signed one.
+    $cert = Get-ChildItem Cert:\CurrentUser\My |
+            Where-Object { $_.Subject -eq $PublisherCN -and $_.NotAfter -gt (Get-Date) } |
+            Select-Object -First 1
+    if (-not $cert) {
+        Write-Host "minting a self-signed code-signing cert for $PublisherCN"
+        $cert = New-SelfSignedCertificate -Type Custom -Subject $PublisherCN `
+            -KeyUsage DigitalSignature -FriendlyName "Jadyx sideload" `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+    }
+
+    & $signtool sign /fd SHA256 /sha1 $cert.Thumbprint /t http://timestamp.digicert.com $appx
+    if ($LASTEXITCODE -ne 0) { throw "SignTool failed ($LASTEXITCODE)." }
+
+    # The console must trust the signer: upload this .cer alongside the appx in the Device Portal.
+    Export-Certificate -Cert $cert -FilePath $cer -Type CERT | Out-Null
+}
 
 # --- 5. the VCLibs framework package ------------------------------------------------------
 # The exe hard-imports the Store CRT, which lives in the Microsoft.VCLibs.140.00 framework
@@ -264,6 +310,7 @@ if ($vclibs) {
     $vcOut = Join-Path $repo "$OutDir\Microsoft.VCLibs.x64.14.00.appx"
     Copy-Item -LiteralPath $vclibs -Destination $vcOut -Force
 } else {
+    if ($Release) { throw "Microsoft.VCLibs.x64.14.00.appx not found: a release must ship it." }
     Write-Warning ("Microsoft.VCLibs.x64.14.00.appx not found. The app will FAIL TO ACTIVATE on-console " +
                    "without it. Install the VS component Microsoft.VisualStudio.ComponentGroup.UWP.VC.")
 }

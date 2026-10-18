@@ -1,0 +1,209 @@
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Builds the UWP app and Mesa's spirv_to_dxil.dll, and optionally packs and signs the appx the
+# same way tools/xbox/package-appx.ps1 -Library does on a PC. Called by ci.yml and release.yml.
+
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: Also make the signed appx (needs the signing secrets)
+        type: boolean
+        default: false
+      package_version:
+        description: Package version for a release (MAJOR.MINOR.BUILD.REVISION); empty keeps the manifest's
+        type: string
+        default: ""
+    secrets:
+      JADYX_PFX_BASE64:
+        required: false
+      JADYX_PFX_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  mesa:
+    name: spirv_to_dxil
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # The DLL only depends on the Mesa version and our patches, all of which live in these files.
+      - name: Restore the built DLL
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: mesa-out
+          key: spirv-to-dxil-${{ hashFiles('tools/xbox/build-spirv-to-dxil.ps1', 'tools/xbox/mesa/**', 'externals/spirv-to-dxil/include/**') }}
+
+      - name: Build spirv_to_dxil.dll
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          $work = Join-Path $env:RUNNER_TEMP "mesa-build"
+          & tools\xbox\build-spirv-to-dxil.ps1 -WorkDir $work
+          New-Item -ItemType Directory -Force mesa-out | Out-Null
+          Copy-Item (Join-Path $work "build-uwp\src\microsoft\spirv_to_dxil\spirv_to_dxil.dll") mesa-out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spirv-to-dxil
+          path: mesa-out/spirv_to_dxil.dll
+          if-no-files-found: error
+          retention-days: 7
+
+  emulator:
+    name: jadyx (UWP x64)
+    runs-on: windows-2025
+    timeout-minutes: 240
+    env:
+      # sccache keeps its objects in one directory, saved as a single cache archive.
+      SCCACHE_DIR: ${{ github.workspace }}\.cache\sccache
+      SCCACHE_CACHE_SIZE: 4G
+    steps:
+      - uses: actions/checkout@v4
+
+      # build-env.bat picks these up from C:\glslang\bin and C:\Program Files\NASM, as on a PC.
+      - name: Host tools (glslang, NASM)
+        shell: powershell
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "glslang.zip"
+          Invoke-WebRequest "https://github.com/KhronosGroup/glslang/releases/download/16.6.0/glslang-16.6.0-windows-x86_64-release.zip" -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "82BF434E69B9BB4829DE7E2B4BC2C5E7A7861E53D66CF75E5CC70F5F694A8D9B") {
+              throw "glslang checksum mismatch"
+          }
+          Expand-Archive $zip C:\glslang -Force
+          Copy-Item C:\glslang\bin\glslang.exe C:\glslang\bin\glslangValidator.exe
+          if (-not (Test-Path "C:\Program Files\NASM\nasm.exe")) { choco install nasm -y --no-progress }
+          if (-not (Test-Path "C:\Strawberry\perl\bin\perl.exe")) { throw "Strawberry Perl is missing from the runner" }
+
+      - name: Restore CPM sources
+        id: cpm
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/cpm
+          key: cpm-${{ hashFiles('cpmfile.json', '**/cpmfile.json') }}
+
+      - name: Restore compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/sccache
+          key: sccache-uwp-${{ github.run_id }}
+          restore-keys: sccache-uwp-
+
+      - uses: mozilla-actions/sccache-action@v0.0.11
+
+      # sccache cannot share a /Zi program database between parallel compilers: embed the debug
+      # info (/Z7) instead. The link still writes jadyx.pdb.
+      - name: Configure
+        shell: cmd
+        run: >
+          tools\xbox\build-env.bat cmake --preset uwp-x64
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+
+      - name: Build
+        shell: cmd
+        run: tools\xbox\build-env.bat cmake --build --preset uwp-x64 --target jadyx
+
+      - name: Compiler cache stats
+        if: always()
+        continue-on-error: true
+        run: |
+          sccache --show-stats
+          sccache --stop-server
+
+      - name: Save CPM sources
+        if: always() && steps.cpm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/cpm
+          key: ${{ steps.cpm.outputs.cache-primary-key }}
+
+      - name: Save compiler cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/sccache
+          key: sccache-uwp-${{ github.run_id }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jadyx-build
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            build-uwp/bin/jadyx.exe
+            build-uwp/bin/jadyx.pdb
+            build-uwp/bin/*.dll
+
+  package:
+    name: appx
+    if: inputs.package
+    needs: [mesa, emulator]
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: jadyx-build
+          path: build-uwp/bin
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: spirv-to-dxil
+          path: ${{ runner.temp }}/mesa
+
+      - name: Pack and sign
+        shell: powershell
+        env:
+          JADYX_PFX_BASE64: ${{ secrets.JADYX_PFX_BASE64 }}
+          JADYX_PFX_PASSWORD: ${{ secrets.JADYX_PFX_PASSWORD }}
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Every package carries the project's certificate, so the console updates in place.
+          if (-not $env:JADYX_PFX_BASE64 -or -not $env:JADYX_PFX_PASSWORD) {
+              throw "The JADYX_PFX_BASE64 / JADYX_PFX_PASSWORD secrets are not set"
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "jadyx.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:JADYX_PFX_BASE64))
+          $params = @{
+              Release     = $true
+              PfxPath     = $pfx
+              SpirvToDxil = Join-Path $env:RUNNER_TEMP "mesa\spirv_to_dxil.dll"
+          }
+          if ($env:PACKAGE_VERSION) { $params.Version = $env:PACKAGE_VERSION }
+          try { & tools\xbox\package-appx.ps1 @params } finally { Remove-Item $pfx -Force }
+
+          [xml]$mf = Get-Content build-uwp\package\layout\AppxManifest.xml -Raw
+          $version = $mf.Package.Identity.Version
+          $out = New-Item -ItemType Directory -Force out
+          Copy-Item build-uwp\package\jadyx.appx "out\Jadyx_${version}_x64.appx"
+          Copy-Item build-uwp\package\jadyx.cer out\Jadyx.cer
+          Copy-Item build-uwp\package\Microsoft.VCLibs.x64.14.00.appx out\
+          Compress-Archive build-uwp\bin\jadyx.pdb "out\Jadyx_${version}_symbols.zip"
+          [ordered]@{
+              version = $version
+              commit  = $env:GITHUB_SHA
+              run     = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          } | ConvertTo-Json | Set-Content -Encoding ascii out\build-info.json
+          Get-ChildItem out -File | Sort-Object Name | ForEach-Object {
+              "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content -Encoding ascii out\SHA256SUMS.txt
+          Get-ChildItem out | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jadyx-package
+          path: out/*
+          if-no-files-found: error
+          retention-days: 14

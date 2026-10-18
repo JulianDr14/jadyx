@@ -1,0 +1,137 @@
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Publishes a release: Actions -> Release -> Run workflow (on main) with a version like 0.3.0.
+# It checks the version, builds and signs the appx, then commits the manifest bump, tags it
+# vMAJOR.MINOR.PATCH and creates the GitHub release with the package and the changelog. Nothing
+# is committed, tagged or published unless the build succeeds.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish, MAJOR.MINOR.PATCH (e.g. 0.3.0)
+        required: true
+        type: string
+      highlights:
+        description: Optional text shown above the changelog
+        required: false
+        type: string
+      prerelease:
+        description: Mark as a pre-release (not shown as Latest)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One release at a time; a release never cancels another.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      package_version: ${{ steps.check.outputs.package_version }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - name: Only from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Releases are made from main, not ${GITHUB_REF_NAME}"
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - run: python3 tools/xbox/tests/release.py
+
+      - name: Check the version
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          python3 tools/xbox/release.py version "$VERSION" --manifest dist/uwp/AppxManifest.xml \
+              --releases "$RUNNER_TEMP/releases.json" | tee -a "$GITHUB_OUTPUT"
+          tag="v${VERSION#v}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+              echo "::error::The tag $tag already exists"
+              exit 1
+          fi
+
+  build:
+    needs: version
+    uses: ./.github/workflows/build.yml
+    with:
+      package: true
+      package_version: ${{ needs.version.outputs.package_version }}
+    secrets: inherit
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.version.outputs.tag }}
+      PACKAGE_VERSION: ${{ needs.version.outputs.package_version }}
+      HIGHLIGHTS: ${{ inputs.highlights }}
+      PRERELEASE: ${{ inputs.prerelease }}
+    steps:
+      # The commit that was built, with full history and tags for the changelog.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: jadyx-package
+          path: out
+
+      - name: Commit the version and tag it
+        run: |
+          previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)
+          echo "PREVIOUS=$previous" >> "$GITHUB_ENV"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 tools/xbox/release.py bump "$PACKAGE_VERSION" --manifest dist/uwp/AppxManifest.xml
+          git commit -am "chore(uwp): bump version to $PACKAGE_VERSION"
+          git tag -a "$TAG" -m "Jadyx ${TAG#v}"
+          # Atomic: if main moved since the build started, neither the commit nor the tag lands.
+          git push --atomic origin HEAD:main "$TAG"
+
+      - name: Write the release notes
+        run: |
+          {
+              if [ -n "$HIGHLIGHTS" ]; then printf '%s\n\n' "$HIGHLIGHTS"; fi
+              python3 tools/xbox/release.py notes --tag "$TAG" --previous "$PREVIOUS" --repo "$GITHUB_REPOSITORY"
+              cat <<EOF
+
+          ## Install
+
+          On an Xbox Series X|S in Dev Mode, open Device Portal (\`https://<xbox-ip>:11443\`) and choose
+          **Add**. Pick \`Jadyx_${PACKAGE_VERSION}_x64.appx\`, add \`Microsoft.VCLibs.x64.14.00.appx\` as a
+          dependency and \`Jadyx.cer\` as the certificate, then set the app to **Game** mode. A newer
+          version installs over the previous one and keeps your games and saves.
+
+          No keys, firmware or games are included: you need your own dumps.
+          EOF
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Publish
+        run: |
+          version="${TAG#v}"
+          title="Jadyx $version"
+          if [ "${version%%.*}" = "0" ]; then title="$title Alpha"; fi
+          flags=(--latest)
+          if [ "$PRERELEASE" = "true" ]; then flags=(--prerelease --latest=false); fi
+          gh release create "$TAG" out/* --title "$title" --notes-file "$RUNNER_TEMP/notes.md" \
+              --verify-tag "${flags[@]}"

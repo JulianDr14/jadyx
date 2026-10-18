@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Every pull request and every push to main must build. Run it by hand (Actions -> CI -> Run
+# workflow, on any branch) to also get a signed test appx as a 14-day artifact.
+
+name: CI
+
+on:
+  pull_request:
+    paths-ignore: ["docs/**", "**/*.md"]
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**/*.md"]
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Also make a signed test appx
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scripts:
+    name: release scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/xbox/tests/release.py
+
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      package: ${{ github.event_name == 'workflow_dispatch' && inputs.package }}
+    secrets: inherit
