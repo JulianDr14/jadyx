@@ -139,9 +139,8 @@ public:
         if (view.tab == LibraryTab::Settings) {
             rows_shown = false;
             // Settings dims the art further: its own page, not a dialog over the library.
-            Round(0, 0, 1280, 720, 0, Palette::Canvas, 0.55f);
-            if (view.system.open) DrawSystemPage(view.system, true);
-            else DrawConfiguration(configuration, true);
+            Round(0, 0, 1280, 720, 0, Palette::Canvas, 0.62f);
+            DrawSettings(view);
         } else if (game) {
             if (view.tab == LibraryTab::Home) {
                 DrawRows(view, now);
@@ -161,7 +160,9 @@ public:
         }
         DrawHeader(view, now);
         DrawFooter(view);
-        if (view.controller_panel) DrawControllerPanel(view);
+        // On the Settings tab the controller's rows are its page; only the device list floats.
+        if (view.controller_panel && view.tab != LibraryTab::Settings) DrawControllerPanel(view);
+        else if (view.controller_panel && panel.expanded) DrawControllerChoices(view, true);
         if (panel.keyboard.open) DrawKeyboard(panel.keyboard);
         if (configuration.open && view.system.open && view.system.name_editor) DrawNameEditor(view.system);
         if (view.game_options.game || view.game_options.content) DrawGameOptions(view.game_options);
@@ -615,8 +616,25 @@ private:
         // the header) go without saying.
         if (view.tab == LibraryTab::Settings) {
             const auto& configuration = view.configuration;
-            x += ControlPrompt(Navigation::Play, Tr(view.system.open ? T::Change : T::Open), x, y);
+            const bool change = view.system.open || view.controller_panel;
+            x += ControlPrompt(Navigation::Play, Tr(change ? T::Change : T::Open), x, y);
             ControlPrompt(Navigation::Back, Tr(configuration.busy ? T::Cancel : T::Back), x, y);
+            // The version is on the page's kicker; its notices take the corner.
+            std::wstring notice;
+            unsigned color = Palette::TextHint;
+            if (configuration.busy) {
+                notice = I18n::Format(T::Importing, {std::to_wstring(configuration.completed),
+                                                     std::to_wstring(configuration.total)});
+            } else if (view.system.open && !view.system.notice.empty()) {
+                notice = view.system.notice;
+            } else if (view.controller_panel && !view.panel.notice.empty()) {
+                notice = view.panel.notice;
+            } else if (!configuration.notice.empty()) {
+                notice = configuration.notice;
+                color = Palette::Warning;
+            }
+            Type(notice, TypeRole::Label, 1280 - Margin - 600, y + 8, 600, color, 1, TextAlign::Trailing);
+            return;
         } else {
             const bool shelf = view.tab == LibraryTab::Library;
             const bool import = shelf && view.shelf && view.shelf_focus >= view.shelf->size();
@@ -677,7 +695,13 @@ private:
         ControlPrompt(Navigation::Play, Tr(T::Change), 658, 551);
         ControlPrompt(Navigation::Back, Tr(T::Back), 1018, 551);
         if (!panel.notice.empty()) Text(panel.notice, 658, 594, 16, Palette::Accent, 515, 25);
-        if (panel.expanded) {
+        if (panel.expanded) DrawControllerChoices(view, false);
+    }
+    /// The controllers to choose from; `dim` darkens what is under it.
+    void DrawControllerChoices(const LibraryView& view, bool dim) {
+        const auto& panel = view.panel;
+        if (dim) Round(0, 0, 1280, 720, 0, Palette::Canvas, 0.6f);
+        {
             const size_t first = ControllerChoiceFirst(panel);
             const size_t count = panel.devices.size() + 2;
             const size_t end = std::min(count, first + ControllerVisibleChoices);
@@ -833,112 +857,252 @@ private:
     /// Pin and Rescan are the library's Y and X (Refresh and AddFolder elsewhere).
     enum class Navigation : unsigned { Play, Explore, Settings, Options, Back, AddFolder, Space, Refresh, Tabs, Pin, Rescan };
     using ConfigurationIcon = UiIcon;
-    /// The settings home or its file manager; as a `page` (the Settings tab) it leaves the
-    /// background and the prompts to the screen.
-    void DrawConfiguration(const ConfigurationPanel& panel, bool page = false) {
-        if (!page) Round(0, 0, 1280, 720, 0, Palette::Canvas, 0.86f);
-        const float panel_alpha = page ? 0.82f : 1.0f;
-        const auto layout = GetConfigurationLayout(panel);
-        if (panel.files) {
-            Round(90, 80, 1100, page ? 560.0f : 590.0f, 24, Palette::Surface, panel_alpha);
-            Round(130, 108, 48, 48, 12, Palette::RowActive);
-            Icon(ConfigurationIcon::Folder, 138, 116, Palette::Accent);
-            Text(Tr(T::FileManager), 194, 108, 32, Palette::Text, 850, 50, true);
-            Text(std::wstring{Tr(panel.status.keys_ready ? T::KeysReady : T::KeysMissing)} + L"  ·  " +
-                 I18n::Format(T::FirmwareFiles, {std::to_wstring(panel.status.firmware_files)}),
-                 130, 168, 18, Palette::Accent, 950);
-            Text(Tr(T::FilesSubtitle), 130, 201, 16, Palette::TextSecondary, 950);
-        } else {
-            Round(140, 100, 1000, 540, 24, Palette::Surface, panel_alpha);
-            PageHeader(180, 131, ConfigurationIcon::Settings, Tr(T::SettingsTitle), Tr(T::SettingsSubtitle));
-        }
-        const auto count = ConfigurationRowCount(panel);
-        const auto first = ConfigurationFirstRow(panel);
-        for (size_t i = first; i < std::min(first + 5, count); ++i) {
-            const float y = layout.top + static_cast<float>(i - first) * layout.stride;
-            const bool active = i == panel.selected;
-            ConfigurationIcon icon;
-            std::wstring title, hint;
-            if (!panel.files) {
-                icon = i == HomeFiles ? ConfigurationIcon::Folder :
-                       i == HomeControllers ? ConfigurationIcon::Controller : ConfigurationIcon::Language;
-                title = Tr(i == HomeFiles ? T::FileManager : i == HomeControllers ? T::ControllersAndKeyboard : T::System);
-                hint = Tr(i == HomeFiles ? T::FileManagerHint : i == HomeControllers ? T::ControllersHint : T::SystemHint);
-            } else {
-                icon = i == 0 ? ConfigurationIcon::Folder : i == 1 ? ConfigurationIcon::Key :
-                       i == 2 ? ConfigurationIcon::Firmware : i < 5 ? ConfigurationIcon::Folder : ConfigurationIcon::Remove;
-                if (i == 0) title = Tr(T::AddGamesFolder);
-                else if (i == 1) title = Tr(T::ImportKeys);
-                else if (i == 2) title = Tr(T::ImportFirmware);
-                else if (i == 3) title = Tr(T::ContentUpdates);
-                else if (i == 4) title = Tr(T::ContentDlc);
-                else title = I18n::Format(T::RemoveFolder, {panel.status.sources[i - 5].name});
-            }
-            RowFrame(layout.x, y, layout.width, layout.row_height, active, icon);
-            Text(title, layout.x + 72, y + (panel.files ? 10.0f : 12.0f), panel.files ? 20.0f : 22.0f,
-                 Palette::Text, layout.width - 135, 32, !panel.files);
-            if (!hint.empty()) Text(hint, layout.x + 72, y + 44, 16, Palette::TextHint, layout.width - 135, 26);
-            Chevron(layout.x + layout.width - 28, y + layout.row_height / 2, active ? Palette::Accent : Palette::TextSecondary);
-        }
-        ScrollIndicator(layout.x + layout.width + 14, layout.top,
-                        5 * layout.stride - (layout.stride - layout.row_height), first,
-                        5, count);
-        if (!panel.files) {
-            Text(Tr(T::EmulatorData), 180, 511, 12, Palette::TextSecondary, 190, 26, true);
-            Text(Tr(panel.status.keys_ready ? T::KeysReady : T::KeysMissing), 380, 506, 16,
-                 panel.status.keys_ready ? Palette::Accent : Palette::Warning, 260);
-            Text(I18n::Format(T::FirmwareFiles, {std::to_wstring(panel.status.firmware_files)}),
-                 680, 506, 16, Palette::TextSecondary, 350);
-        }
-        if (panel.busy) Text(I18n::Format(T::Importing, {std::to_wstring(panel.completed), std::to_wstring(panel.total)}),
-                             130, 565, 18, Palette::Accent, 990);
-        else Text(panel.notice, layout.x + 4, panel.files ? 561.0f : 538.0f, 16, Palette::Warning,
-                  layout.width - 20, panel.files ? 40.0f : 28.0f, false, true);
-        if (page) return;
-        ControlPrompt(Navigation::Play, Tr(T::Open), layout.x + 4, layout.footer);
-        ControlPrompt(Navigation::Back, Tr(panel.busy ? T::Cancel : T::Back),
-                      layout.x + layout.width - 230, layout.footer);
+    /// One row of a settings category, as the right side of the Settings tab shows it.
+    struct SettingsRow {
+        enum class Kind { Open, Choice, Toggle, Segments, Value } kind{};
+        std::wstring title, hint, value;
+        bool on{};                          ///< Toggle.
+        std::vector<std::wstring> segments; ///< Segments, with `on_segment` the chosen one.
+        std::size_t on_segment{};
+        bool warning{};                     ///< The value needs the player's attention.
+    };
+    /// The category the Settings tab shows: the open one, or the focused one in the list.
+    static std::size_t SettingsCategory(const LibraryView& view) {
+        if (view.system.open) return HomeSystem;
+        if (view.configuration.files) return HomeFiles;
+        if (view.controller_panel) return HomeControllers;
+        return std::min<std::size_t>(view.configuration.selected, HomeRowCount - 1);
     }
-    void DrawSystemPage(const SystemPage& page, bool full_page = false) {
-        using L = SystemPageLayout;
-        if (!full_page) Round(0, 0, 1280, 720, 0, Palette::Canvas, 0.86f);
-        // As the Settings tab's page it ends above the screen's prompts, which replace its own.
-        Round(L::PanelX, L::PanelY, L::PanelWidth, full_page ? 568.0f : L::PanelHeight, 24, Palette::Surface,
-              full_page ? 0.82f : 1.0f);
-        PageHeader(L::RowX, 99, ConfigurationIcon::Language, Tr(T::SystemTitle), Tr(T::SystemSubtitle));
-        static constexpr std::array<ConfigurationIcon, SystemPage::RowCount> icons{
-            ConfigurationIcon::User, ConfigurationIcon::Language, ConfigurationIcon::Controller,
-            ConfigurationIcon::Region, ConfigurationIcon::Mods, ConfigurationIcon::Settings, ConfigurationIcon::Archive,
-            ConfigurationIcon::Clock, ConfigurationIcon::Cache};
-        for (size_t i = 0; i < SystemPage::RowCount; ++i) {
-            const auto row = static_cast<SystemPage::Row>(i);
-            const float y = L::RowTop + static_cast<float>(i) * L::RowStride;
-            const bool active = i == page.selected;
-            RowFrame(L::RowX, y, L::RowWidth, L::RowHeight, active, icons[i]);
-            Text(Tr(SystemRowTitle(row)), L::RowX + 72, y + 4, 20, Palette::Text, 420, 30, true);
-            Text(Tr(SystemRowHint(row)), L::RowX + 72, y + 26, 15, Palette::TextHint, 440, 22);
-            const unsigned accent = active ? Palette::Accent : Palette::TextSecondary;
-            const float right = L::RowX + L::RowWidth - 28;
-            const float middle = y + L::RowHeight / 2;
-            const bool choice = row == SystemPage::InterfaceLanguage || row == SystemPage::GameLanguage ||
-                                row == SystemPage::Region || row == SystemPage::AdultMods || row == SystemPage::PerformanceStats ||
-                                row == SystemPage::PulseSessions || row == SystemPage::PlayTime;
-            if (choice) {
-                // "< value >": arrows say left/right changes it, as in the controller panel.
-                Chevron(L::RowX + 486, middle, accent, true);
-                Chevron(right, middle, accent);
-            } else {
-                Chevron(right, middle, accent);
+    std::vector<SettingsRow> SettingsRows(const LibraryView& view, std::size_t category) {
+        using Kind = SettingsRow::Kind;
+        std::vector<SettingsRow> rows;
+        if (category == HomeSystem) {
+            for (std::size_t i = 0; i < SystemPage::RowCount; ++i) {
+                const auto row = static_cast<SystemPage::Row>(i);
+                const auto& settings = view.system.settings;
+                SettingsRow item{Kind::Choice, std::wstring{Tr(SystemRowTitle(row))},
+                                 std::wstring{Tr(SystemRowHint(row))}, SystemRowValue(view.system, row)};
+                switch (row) {
+                case SystemPage::UserName: item.kind = Kind::Open; break;
+                case SystemPage::ClearCache: item.kind = Kind::Open; break;
+                case SystemPage::AdultMods: item.kind = Kind::Toggle; item.on = settings.show_adult_mods; break;
+                case SystemPage::PerformanceStats: item.kind = Kind::Toggle; item.on = settings.show_performance_stats; break;
+                case SystemPage::PulseSessions: item.kind = Kind::Toggle; item.on = settings.pulse_sessions; break;
+                case SystemPage::PlayTime: item.kind = Kind::Toggle; item.on = settings.track_play_time; break;
+                default: break;
+                }
+                rows.push_back(std::move(item));
             }
-            const auto value = SystemRowValue(page, row);
-            if (!value.empty())
-                Text(value, L::RowX + 500, y + (L::RowHeight - 30) / 2, 19, active ? Palette::Text : Palette::TextHint,
-                     right - 22 - (L::RowX + 500), 30, active, false, false, true);
+        } else if (category == HomeControllers) {
+            // As the controller panel: [device (PC)], type, A/B/X/Y, dead zone, [keyboard (PC)].
+            const auto& options = view.options;
+            const auto& panel = view.panel;
+            if (!panel.xbox) {
+                const auto label = ControllerLabel(panel.devices, options.controller_id);
+                rows.push_back({Kind::Open, std::wstring{Tr(T::ControllerDevice)}, {},
+                                options.controller_id.empty() ? I18n::Format(T::AutomaticValue, {label}) : label});
+            }
+            rows.push_back({Kind::Choice, std::wstring{Tr(T::ControllerSeenAs)}, {},
+                            std::wstring{Tr(ControllerStyleText(options.style))}});
+            const auto active = SelectController(panel.devices, options.controller_id);
+            if (active && panel.devices[*active].nintendo) {
+                rows.push_back({Kind::Value, std::wstring{Tr(T::FaceButtons)}, {},
+                                std::wstring{Tr(T::NintendoFaceButtons)}});
+            } else {
+                SettingsRow face{Kind::Segments, std::wstring{Tr(T::FaceButtons)}};
+                face.segments = {std::wstring{Tr(T::ByLetter)}, std::wstring{Tr(T::ByPosition)}};
+                face.on_segment = options.swap_face_buttons ? 1 : 0;
+                rows.push_back(std::move(face));
+            }
+            // The dead zone's three steps (uwp_library.cpp, Zone).
+            SettingsRow zone{Kind::Segments, std::wstring{Tr(T::DeadZone)}};
+            zone.segments = {L"8%", L"12%", L"18%"};
+            zone.on_segment = options.deadzone < 0.10f ? 0 : options.deadzone < 0.15f ? 1 : 2;
+            rows.push_back(std::move(zone));
+            if (!panel.xbox) rows.push_back({Kind::Open, std::wstring{Tr(T::SetUpKeyboard)}});
+        } else {
+            const auto& status = view.configuration.status;
+            rows.push_back({Kind::Open, std::wstring{Tr(T::AddGamesFolder)}});
+            SettingsRow keys{Kind::Open, std::wstring{Tr(T::ImportKeys)}, {},
+                             std::wstring{Tr(status.keys_ready ? T::KeysReady : T::KeysMissing)}};
+            keys.warning = !status.keys_ready;
+            rows.push_back(std::move(keys));
+            rows.push_back({Kind::Open, std::wstring{Tr(T::ImportFirmware)}, {},
+                            I18n::Format(T::FirmwareFiles, {std::to_wstring(status.firmware_files)})});
+            rows.push_back({Kind::Open, std::wstring{Tr(T::ContentUpdates)}});
+            rows.push_back({Kind::Open, std::wstring{Tr(T::ContentDlc)}});
+            for (const auto& source : status.sources)
+                rows.push_back({Kind::Open, I18n::Format(T::RemoveFolder, {source.name})});
         }
-        if (!page.notice.empty()) Text(page.notice, L::RowX + 4, L::Notice, 16, Palette::Accent, L::RowWidth - 20, 28);
-        if (full_page) return;
-        ControlPrompt(Navigation::Play, Tr(T::Change), L::RowX + 4, L::Footer);
-        ControlPrompt(Navigation::Back, Tr(T::Back), L::RowX + L::RowWidth - 230, L::Footer);
+        return rows;
+    }
+    static constexpr float SettingsListX = LibraryLayout::Margin, SettingsListWidth = 360;
+    static constexpr float SettingsListTop = 132, SettingsListStride = 66, SettingsListHeight = 58;
+    static constexpr float SettingsPaneX = SettingsListX + SettingsListWidth + 40;
+    static constexpr float SettingsPaneWidth = 1280 - LibraryLayout::Margin - SettingsPaneX;
+    static constexpr float SettingsRowsTop = 226, SettingsRowStride = 58, SettingsRowHeight = 52;
+    static constexpr std::size_t SettingsVisibleRows = 7;
+    /// The Settings tab: the categories at the left with the emulator's data under them, and the
+    /// rows of the focused category at the right, live while the list has the focus.
+    void DrawSettings(const LibraryView& view) {
+        using namespace LibraryLayout;
+        const auto& configuration = view.configuration;
+        const auto& status = configuration.status;
+        const std::size_t category = SettingsCategory(view);
+        const bool in_pane = view.system.open || configuration.files || view.controller_panel;
+        // The page's kicker: what it is and which build is installed.
+        const auto kicker = Upper(Tr(T::SettingsTitle));
+        const float kicker_width = MeasureType(kicker, TypeRole::Caps);
+        Type(kicker, TypeRole::Caps, Margin, 92, kicker_width + 4, Palette::TextSecondary);
+        Type(L"·", TypeRole::Label, Margin + kicker_width + 12, 92, 12, Palette::TextSecondary, 0.6f);
+        Type(L"Jadyx " + version_text, TypeRole::Label, Margin + kicker_width + 28, 92, 300, Palette::TextHint);
+        // The categories.
+        static constexpr std::array<ConfigurationIcon, HomeRowCount> icons{
+            ConfigurationIcon::Settings, ConfigurationIcon::Controller, ConfigurationIcon::Folder};
+        static constexpr std::array<T, HomeRowCount> titles{T::System, T::ControllersAndKeyboard, T::FileManager};
+        for (std::size_t i = 0; i < HomeRowCount; ++i) {
+            const float x = SettingsListX, y = SettingsListTop + i * SettingsListStride;
+            const float w = SettingsListWidth, h = SettingsListHeight;
+            const bool chosen = i == category;
+            if (chosen && !in_pane) {
+                FocusGlow(x, y, w, h, 14, 1);
+                Round(x, y, w, h, 14, 0x333537);
+            } else if (chosen) {
+                Round(x, y, w, h, 14, Palette::RowActive, 0.9f);
+            }
+            std::wstring summary;
+            if (i == HomeSystem) {
+                summary = SystemRowValue(view.system, SystemPage::UserName) + L" · " +
+                          SystemRowValue(view.system, SystemPage::InterfaceLanguage);
+            } else if (i == HomeControllers) {
+                const auto label = ControllerLabel(view.panel.devices, view.options.controller_id);
+                summary = view.options.controller_id.empty() ? I18n::Format(T::AutomaticValue, {label}) : label;
+            } else {
+                summary = std::wstring{Tr(status.keys_ready ? T::KeysReady : T::KeysMissing)} + L" · " +
+                          I18n::Format(T::FirmwareFiles, {std::to_wstring(status.firmware_files)});
+            }
+            const unsigned color = chosen ? Palette::Text : Palette::TextSecondary;
+            Icon(icons[i], x + 18, y + (h - 22) / 2, color, 22);
+            // Focus only brightens the entry: its text keeps its size and place.
+            Type(Tr(titles[i]), TypeRole::LabelLarge, x + 56, y + 10, w - 92, chosen ? Palette::Text : Palette::TextHint);
+            Type(summary, TypeRole::Label, x + 56, y + 31, w - 92, chosen ? Palette::TextHint : Palette::TextSecondary,
+                 chosen ? 0.85f : 0.7f);
+            Chevron(x + w - 22, y + h / 2, color);
+            AddHit(x, y, w, h, LibraryHit::Category, i);
+        }
+        // The emulator's data: what the files on the console add up to.
+        {
+            const float x = SettingsListX, w = SettingsListWidth;
+            const float y = SettingsListTop + static_cast<float>(HomeRowCount) * SettingsListStride + 18;
+            Round(x, y, w, 176, 18, Palette::Surface, 0.82f);
+            Outline(x + 0.5f, y + 0.5f, w - 1, 175, 18, 0xffffff, 0.06f);
+            Type(Tr(T::EmulatorData), TypeRole::Caps, x + 20, y + 20, 200, Palette::TextSecondary);
+            const auto keys = Tr(status.keys_ready ? T::KeysReady : T::KeysMissing);
+            const float chip = MeasureType(keys, TypeRole::Label) + 24;
+            Chip(keys, x + w - 20 - chip, y + 15, status.keys_ready ? Palette::Text : Palette::Warning);
+            const float tile_w = (w - 40 - 12) / 2;
+            const auto tile = [&](float tx, std::wstring_view label, std::size_t count) {
+                Round(tx, y + 54, tile_w, 68, 12, Palette::Canvas, 0.7f);
+                Type(label, TypeRole::Label, tx + 12, y + 64, tile_w - 24, Palette::TextSecondary);
+                Type(std::to_wstring(count), TypeRole::HeadlineSmall, tx + 12, y + 84, tile_w - 24, Palette::Text);
+            };
+            tile(x + 20, Tr(T::SettingsFirmwareFiles), status.firmware_files);
+            tile(x + 20 + tile_w + 12, Tr(T::SettingsGameFolders), status.sources.size());
+            Type(Tr(T::SettingsLibraryGames), TypeRole::Label, x + 20, y + 140, w - 120, Palette::TextSecondary);
+            Type(view.loading ? std::wstring{L"…"} : std::to_wstring(view.scan.entries.size()), TypeRole::Label,
+                 x + w - 120, y + 140, 100, Palette::Text, 1, TextAlign::Trailing);
+        }
+        // The category's page.
+        static constexpr std::array<T, HomeRowCount> pages{T::SystemTitle, T::ControllersAndKeyboard, T::FileManager};
+        static constexpr std::array<T, HomeRowCount> about{T::SystemSubtitle, T::ControllerSubtitle, T::FilesSubtitle};
+        const float px = SettingsPaneX, pw = SettingsPaneWidth;
+        Type(Tr(pages[category]), TypeRole::HeadlineLarge, px, 122, pw, Palette::Text);
+        Type(Tr(about[category]), TypeRole::Body, px, 176, pw, Palette::TextSecondary);
+        const auto rows = SettingsRows(view, category);
+        if (rows.empty()) return;
+        const std::size_t selected = !in_pane ? SIZE_MAX :
+            category == HomeSystem ? view.system.selected :
+            category == HomeFiles ? configuration.selected : view.controller_row;
+        const std::size_t visible = std::min(rows.size(), SettingsVisibleRows);
+        const std::size_t first = selected != SIZE_MAX && selected >= visible ? selected - visible + 1 : 0;
+        const float card_h = visible * SettingsRowStride - (SettingsRowStride - SettingsRowHeight) + 24;
+        Round(px, SettingsRowsTop - 12, pw, card_h, 18, Palette::Surface, 0.82f);
+        Outline(px + 0.5f, SettingsRowsTop - 11.5f, pw - 1, card_h - 1, 18, 0xffffff, 0.06f);
+        for (std::size_t i = first; i < first + visible; ++i) {
+            const float y = SettingsRowsTop + (i - first) * SettingsRowStride;
+            DrawSettingsRow(rows[i], px + 12, y, pw - 24, SettingsRowHeight, i == selected, in_pane ? 1.0f : 0.75f);
+            AddHit(px + 12, y, pw - 24, SettingsRowHeight, LibraryHit::SettingRow, i);
+        }
+        ScrollIndicator(px + pw + 8, SettingsRowsTop, card_h - 24, first, visible, rows.size());
+    }
+    void DrawSettingsRow(const SettingsRow& row, float x, float y, float w, float h, bool focused, float alpha) {
+        using Kind = SettingsRow::Kind;
+        if (focused) {
+            FocusGlow(x, y, w, h, 12, 1);
+            Round(x, y, w, h, 12, 0x333537);
+        } else {
+            Round(x, y, w, h, 12, Palette::Canvas, 0.55f);
+        }
+        const float middle = y + h / 2;
+        float right = x + w - 16;
+        // The control at the right, drawn first: the texts take the room it leaves.
+        switch (row.kind) {
+        case Kind::Toggle:
+            right -= 52;
+            Switch(right, middle - 14, row.on, focused);
+            break;
+        case Kind::Segments: {
+            constexpr float pad = 14, inset = 3, height = 32;
+            float width = 2 * inset;
+            for (const auto& label : row.segments) width += MeasureType(label, TypeRole::LabelLarge) + 2 * pad;
+            right -= width;
+            Round(right, middle - height / 2, width, height, 9, Palette::Graphite, 0.9f);
+            float cursor = right + inset;
+            for (std::size_t i = 0; i < row.segments.size(); ++i) {
+                const float segment = MeasureType(row.segments[i], TypeRole::LabelLarge) + 2 * pad;
+                const bool on = i == row.on_segment;
+                if (on) Round(cursor, middle - height / 2 + inset, segment, height - 2 * inset, 7, Palette::Accent);
+                Type(row.segments[i], TypeRole::LabelLarge, cursor, middle - 10, segment,
+                     on ? Palette::OnAccent : Palette::TextSecondary, alpha, TextAlign::Center);
+                cursor += segment;
+            }
+            break;
+        }
+        case Kind::Choice: {
+            // A capsule with the value; the arrows say left and right change it.
+            const float text = std::min(MeasureType(row.value, TypeRole::LabelLarge) + 4, w * 0.45f);
+            const float width = text + 2 * 30;
+            right -= width;
+            Round(right, middle - 16, width, 32, 9, Palette::Graphite, 0.9f);
+            Type(row.value, TypeRole::LabelLarge, right + 30, middle - 10, text, Palette::Text, alpha);
+            const unsigned arrows = focused ? Palette::Text : Palette::TextSecondary;
+            Chevron(right + 16, middle, arrows, true);
+            Chevron(right + width - 14, middle, arrows);
+            break;
+        }
+        case Kind::Open:
+        case Kind::Value: {
+            if (row.kind == Kind::Open) {
+                Chevron(right - 4, middle, focused ? Palette::Text : Palette::TextSecondary);
+                right -= 22;
+            }
+            if (!row.value.empty()) {
+                const float text = std::min(MeasureType(row.value, TypeRole::LabelLarge) + 4, w * 0.5f);
+                right -= text;
+                Type(row.value, TypeRole::LabelLarge, right, middle - 10, text,
+                     row.warning ? Palette::Warning : focused ? Palette::Text : Palette::TextHint, alpha);
+            }
+            break;
+        }
+        }
+        const float text_w = right - (x + 18) - 20;
+        if (row.hint.empty()) {
+            Type(row.title, TypeRole::LabelLarge, x + 18, middle - 10, text_w, Palette::Text, alpha);
+        } else {
+            Type(row.title, TypeRole::LabelLarge, x + 18, y + 7, text_w, Palette::Text, alpha);
+            Type(row.hint, TypeRole::Label, x + 18, y + 28, text_w, focused ? Palette::TextHint : Palette::TextSecondary,
+                 alpha);
+        }
     }
     void DrawNameEditor(const SystemPage& page) {
         using L = SystemPageLayout;

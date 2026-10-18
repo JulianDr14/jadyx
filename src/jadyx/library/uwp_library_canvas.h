@@ -58,8 +58,12 @@ struct LibraryView {
     ControllerBattery battery{};
 };
 /// What the pointer can press on the library screen.
-enum class LibraryHit : unsigned { None, Controller, Play, Options, Tab, Filter, RailTile, Tile, ShelfTile, Import };
-/// A press: what, and which (the tab, the filter, the entry or the shelf position).
+enum class LibraryHit : unsigned {
+    None, Controller, Play, Options, Tab, Filter, RailTile, Tile, ShelfTile, Import,
+    Category,   ///< A settings category (ConfigurationHomeRow).
+    SettingRow, ///< A row of the settings category shown.
+};
+/// A press: what, and which (the tab, the filter, the entry, the shelf position or the row).
 struct LibraryTarget {
     LibraryHit hit{};
     std::size_t index{};

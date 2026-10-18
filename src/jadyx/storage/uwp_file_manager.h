@@ -32,14 +32,6 @@ inline size_t ConfigurationRowCount(const ConfigurationPanel& panel) {
 inline size_t ConfigurationFirstRow(const ConfigurationPanel& panel) {
     return (panel.selected / 5) * 5;
 }
-// Share geometry between painting and pointer hit testing.
-struct ConfigurationLayout {
-    float x, width, top, stride, row_height, footer;
-};
-inline ConfigurationLayout GetConfigurationLayout(const ConfigurationPanel& panel) {
-    return panel.files ? ConfigurationLayout{126, 1028, 246, 62, 54, 622}
-                       : ConfigurationLayout{180, 920, 226, 92, 80, 584};
-}
 enum class FileImport { Keys, Firmware };
 struct FileImportProgress {
     std::atomic<unsigned> completed{};

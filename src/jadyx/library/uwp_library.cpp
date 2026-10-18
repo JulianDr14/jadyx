@@ -281,7 +281,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             return;
         }
         // The header's tabs and controller work over every page that is not a dialog.
-        if (!settings && !panel.keyboard.open && !game_options.open && !missing_content && !configuration.busy) {
+        if ((!settings || configuration.open) && !panel.keyboard.open && !panel.expanded && !game_options.open &&
+            !missing_content && !configuration.busy) {
             const auto target = canvas->HitAt(x, y);
             if (target.hit == LibraryHit::Tab) {
                 pressed_tab = static_cast<LibraryTab>(target.index);
@@ -294,28 +295,30 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 return;
             }
         }
-        if (system_page.open && configuration.open && !settings) {
-            using L = SystemPageLayout;
-            if (x >= L::RowX && x < L::RowX + L::RowWidth && y >= L::RowTop) {
-                const auto row = static_cast<size_t>((y - L::RowTop) / L::RowStride);
-                if (row < SystemPage::RowCount && y < L::RowTop + row * L::RowStride + L::RowHeight) {
-                    system_page.selected = row;
-                    actions |= Play;
-                    dirty = true;
-                }
-            }
-            e.Handled(true);
-            return;
-        }
-        if (configuration.open && !settings && !content_session) {
-            const auto layout = GetConfigurationLayout(configuration);
-            if (!configuration.busy && x >= layout.x && x < layout.x + layout.width && y >= layout.top) {
-                const auto row = static_cast<size_t>((y - layout.top) / layout.stride);
-                const auto choice = ConfigurationFirstRow(configuration) + row;
-                if (row < 5 && y < layout.top + row * layout.stride + layout.row_height &&
-                    choice < ConfigurationRowCount(configuration)) {
-                    configuration.selected = choice; actions |= Play; dirty = true;
-                }
+        if (configuration.open && !content_session && !panel.keyboard.open && !panel.expanded) {
+            const auto target = canvas->HitAt(x, y);
+            const bool in_page = system_page.open || configuration.files || settings;
+            const size_t shown = system_page.open ? HomeSystem : configuration.files ? HomeFiles :
+                                 settings ? HomeControllers : configuration.selected;
+            auto category = target.hit == LibraryHit::Category ? std::optional<size_t>{target.index} :
+                            target.hit == LibraryHit::Controller ? std::optional<size_t>{HomeControllers} :
+                            std::nullopt;
+            // A row of the category the list has focused opens it, like A would.
+            if (target.hit == LibraryHit::SettingRow && !in_page) category = shown;
+            if (configuration.busy || picker != nullptr) {
+            } else if (category && !(in_page && *category == shown)) {
+                // Another category: leave the open page and enter it.
+                system_page.open = configuration.files = settings = return_to_configuration = false;
+                panel.notice.clear();
+                configuration.selected = *category;
+                actions |= Play;
+                dirty = true;
+            } else if (target.hit == LibraryHit::SettingRow) {
+                if (system_page.open) system_page.selected = target.index;
+                else if (configuration.files) configuration.selected = target.index;
+                else setting_row = static_cast<unsigned>(target.index);
+                actions |= Play;
+                dirty = true;
             }
             e.Handled(true);
             return;
@@ -855,6 +858,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (tab == LibraryTab::Settings) {
                 system_page.open = false;
                 configuration.open = configuration.files = false;
+                settings = return_to_configuration = false;
+                panel.expanded = panel.keyboard.open = panel.keyboard.capturing = false;
             }
             tab = to;
             if (to == LibraryTab::Settings) {
@@ -879,7 +884,11 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             }
             pressed_tab.reset();
         }
-        if (top_level && (actions & (PreviousTab | NextTab))) {
+        const bool settings_page = tab == LibraryTab::Settings && (settings || system_page.open || configuration.files) &&
+                                   !panel.keyboard.open && !panel.expanded && !system_page.name_editor &&
+                                   !configuration.busy && !picker && !validation.valid() && !game_options.open &&
+                                   !missing_content;
+        if ((top_level || settings_page) && (actions & (PreviousTab | NextTab))) {
             constexpr auto count = static_cast<unsigned>(LibraryTab::Count);
             const auto current = static_cast<unsigned>(tab);
             const auto to = actions & PreviousTab ? (current + count - 1) % count : (current + 1) % count;
@@ -894,7 +903,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 };
                 send(Up, SystemInput::Up);
                 send(Down, SystemInput::Down);
-                send(Left, SystemInput::Left);
+                const bool opens = system_page.selected == SystemPage::UserName ||
+                                   system_page.selected == SystemPage::ClearCache;
+                send(Left, opens ? SystemInput::Back : SystemInput::Left);
                 send(Right, SystemInput::Right);
                 send(Play, SystemInput::Confirm);
                 send(Quit, SystemInput::Back);
@@ -1221,11 +1232,13 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (actions & Up) configuration.selected = (configuration.selected + count - 1) % count;
             if (actions & Down) configuration.selected = (configuration.selected + 1) % count;
             if (actions & (Up | Down)) dirty = true;
-            if (actions & Play) {
+            if (configuration.files && actions & Left) {
+                configuration.files = false; configuration.selected = HomeFiles; dirty = true;
+            } else if (actions & Play || (!configuration.files && actions & Right)) {
                 if (!configuration.files) {
                     switch (configuration.selected) {
                     case HomeFiles: configuration.files = true; configuration.selected = 0; break;
-                    case HomeControllers: settings = true; return_to_configuration = true; break;
+                    case HomeControllers: settings = true; return_to_configuration = true; setting_row = 0; break;
                     default:
                         system_page.open = true;
                         system_page.selected = SystemPage::UserName;
@@ -1352,7 +1365,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 if (actions & Up) setting_row = (setting_row + rows - 1) % rows;
                 if (actions & Down) setting_row = (setting_row + 1) % rows;
                 if (actions & (Up | Down)) dirty = true;
-                if (actions & (Play | Left | Right)) {
+                const bool opens = !panel.xbox && (setting_row == 0 || setting_row == 4);
+                if (opens && actions & Left && !(actions & (Play | Right))) {
+                    if (configuration.open) { settings = return_to_configuration = false; dirty = true; }
+                } else if (actions & (Play | Left | Right)) {
                     if (!panel.xbox && setting_row == 4) {
                         panel.keyboard.open = true; panel.keyboard.capturing = false; dirty = true;
                     } else if (!panel.xbox && setting_row == 0) {
@@ -1364,7 +1380,13 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     } else if (setting_row == offset) {
                         options.style = StepConsoleControllerStyle(options.style, (actions & Left) != 0);
                         device_changed = true; dirty = true;
-                    } else actions |= setting_row == offset + 1 ? Swap : Zone;
+                    } else if (setting_row == offset + 1) {
+                        actions |= Swap;
+                    } else if (actions & Left) {
+                        // Back along the 8 / 12 / 18 % segments; A and Right go forward.
+                        options.deadzone = options.deadzone < 0.10f ? 0.18f : options.deadzone < 0.15f ? 0.08f : 0.12f;
+                        device_changed = true; dirty = true;
+                    } else actions |= Zone;
                 }
             }
         } else {
