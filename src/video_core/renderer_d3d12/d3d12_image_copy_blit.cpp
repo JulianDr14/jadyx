@@ -513,6 +513,48 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src, std::span<con
 void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView&, ImageView&) {
     LOG_WARNING(Render, "D3D12: shader texture conversion is deferred to phase 5");
 }
+namespace {
+/// Where a copy through a view lands in its image.
+struct CopyPlace {
+    u32 subresource;
+    u32 z;      ///< depth slice of a 3D image, 0 otherwise
+    s32 width;  ///< of the level, in texels (whole blocks for a block-compressed resource)
+    s32 height;
+};
+
+/// The view's first level and layer, clamped to its image as the view's descriptors are. A guest
+/// view may reach past the image, and a subresource index past the resource is an invalid call
+/// that fails Close of the whole command list.
+CopyPlace ViewCopyPlace(const Image& image, const ImageView& view) {
+    const D3D12_RESOURCE_DESC desc = image.Handle()->GetDesc();
+    const bool is_3d = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+    const u32 layers = is_3d ? 1U : desc.DepthOrArraySize;
+    const u32 level = std::min(static_cast<u32>(std::max(view.range.base.level, 0)),
+                               static_cast<u32>(desc.MipLevels) - 1);
+    const u32 layer = static_cast<u32>(std::max(view.range.base.layer, 0));
+    const u32 depth = is_3d ? std::max(1U, static_cast<u32>(desc.DepthOrArraySize) >> level) : 1U;
+    u64 width = std::max<u64>(1, desc.Width >> level);
+    u32 height = std::max(1U, desc.Height >> level);
+    const DXGI_FORMAT format = desc.Format;
+    if ((format >= DXGI_FORMAT_BC1_TYPELESS && format <= DXGI_FORMAT_BC5_SNORM) ||
+        (format >= DXGI_FORMAT_BC6H_TYPELESS && format <= DXGI_FORMAT_BC7_UNORM_SRGB)) {
+        width = Common::AlignUp(width, 4);
+        height = Common::AlignUp(height, 4U);
+    }
+    return {
+        .subresource = level + (is_3d ? 0U : std::min(layer, layers - 1) * desc.MipLevels),
+        .z = is_3d ? std::min(layer, depth - 1) : 0U,
+        .width = static_cast<s32>(width),
+        .height = static_cast<s32>(height),
+    };
+}
+
+bool InsideLevel(const CopyPlace& place, const Region2D& region) {
+    return region.start.x >= 0 && region.start.y >= 0 && region.end.x <= place.width &&
+           region.end.y <= place.height;
+}
+} // namespace
+
 bool TextureCacheRuntime::BlitCanReplaceDestination(const Image& dst, const Image& src,
                                                     PixelFormat dst_format,
                                                     PixelFormat src_format) const noexcept {
@@ -555,7 +597,11 @@ bool TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
     const bool same_extent = dst_width > 0 && dst_height > 0 &&
                              dst_width == src_region.end.x - src_region.start.x &&
                              dst_height == src_region.end.y - src_region.start.y;
-    if (src_color && same_extent && src.format == dst.format) {
+    const CopyPlace src_place = ViewCopyPlace(*src_image, src);
+    const CopyPlace dst_place = ViewCopyPlace(*dst_image, dst);
+    // A box past either level is an invalid copy; the shader path clamps it instead.
+    if (src_color && same_extent && src.format == dst.format &&
+        InsideLevel(src_place, src_region) && InsideLevel(dst_place, dst_region)) {
         if (!Image::AreCopyCompatible(*src_image, *dst_image)) {
             WarnOnce(logged_decoded_copy, "copy between a host-decoded and a compressed image ({} "
                      "-> {}) skipped", src.format, dst.format);
@@ -566,17 +612,17 @@ bool TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
         dst_image->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
         const D3D12_TEXTURE_COPY_LOCATION source{
             .pResource = src_image->Handle(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-            .SubresourceIndex = src_image->Subresource(src.range.base.level, src.range.base.layer)};
+            .SubresourceIndex = src_place.subresource};
         const D3D12_TEXTURE_COPY_LOCATION target{
             .pResource = dst_image->Handle(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-            .SubresourceIndex = dst_image->Subresource(dst.range.base.level, dst.range.base.layer)};
+            .SubresourceIndex = dst_place.subresource};
         const D3D12_BOX box{static_cast<u32>(src_region.start.x),
-                            static_cast<u32>(src_region.start.y), 0,
+                            static_cast<u32>(src_region.start.y), src_place.z,
                             static_cast<u32>(src_region.end.x),
-                            static_cast<u32>(src_region.end.y), 1};
+                            static_cast<u32>(src_region.end.y), src_place.z + 1};
         scheduler.CommandList()->CopyTextureRegion(&target, static_cast<u32>(dst_region.start.x),
-                                                   static_cast<u32>(dst_region.start.y), 0,
-                                                   &source, &box);
+                                                   static_cast<u32>(dst_region.start.y),
+                                                   dst_place.z, &source, &box);
         return true;
     }
     if (!blit_helper || !blit_helper->IsAvailable()) {
@@ -666,14 +712,21 @@ void TextureCacheRuntime::BlitWithinImage(ImageView& dst, ImageView& src,
         }
     }
     // The source rectangle, flips undone, clamped to its level.
-    const s32 level = src.range.base.level;
-    const s32 level_width = static_cast<s32>(std::max(1U, image.info.size.width >> level));
-    const s32 level_height = static_cast<s32>(std::max(1U, image.info.size.height >> level));
-    const s32 left = std::clamp(std::min(src_region.start.x, src_region.end.x), 0, level_width);
-    const s32 top = std::clamp(std::min(src_region.start.y, src_region.end.y), 0, level_height);
-    const s32 right = std::clamp(std::max(src_region.start.x, src_region.end.x), 0, level_width);
-    const s32 bottom = std::clamp(std::max(src_region.start.y, src_region.end.y), 0, level_height);
+    const CopyPlace src_place = ViewCopyPlace(image, src);
+    const CopyPlace dst_place = ViewCopyPlace(image, dst);
+    const s32 left = std::clamp(std::min(src_region.start.x, src_region.end.x), 0, src_place.width);
+    const s32 top = std::clamp(std::min(src_region.start.y, src_region.end.y), 0, src_place.height);
+    const s32 right = std::clamp(std::max(src_region.start.x, src_region.end.x), 0, src_place.width);
+    const s32 bottom =
+        std::clamp(std::max(src_region.start.y, src_region.end.y), 0, src_place.height);
     if (right <= left || bottom <= top) {
+        return;
+    }
+    if (copy && !InsideLevel(dst_place, {.start = dst_region.start,
+                                         .end = {dst_region.start.x + right - left,
+                                                 dst_region.start.y + bottom - top}})) {
+        WarnOnce(logged_self_blit, "blit within one {} image reaches past its level; skipped",
+                 image_format);
         return;
     }
     const u32 width = static_cast<u32>(right - left);
@@ -684,7 +737,7 @@ void TextureCacheRuntime::BlitWithinImage(ImageView& dst, ImageView& src,
     TransitionSelfBlitScratch(D3D12_RESOURCE_STATE_COPY_DEST);
     const D3D12_TEXTURE_COPY_LOCATION image_source{
         .pResource = image.Handle(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-        .SubresourceIndex = image.Subresource(level, src.range.base.layer)};
+        .SubresourceIndex = src_place.subresource};
     const D3D12_TEXTURE_COPY_LOCATION scratch{
         .pResource = self_blit_scratch.Get(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
         .SubresourceIndex = 0};
@@ -697,7 +750,7 @@ void TextureCacheRuntime::BlitWithinImage(ImageView& dst, ImageView& src,
         image.Transition(D3D12_RESOURCE_STATE_COPY_DEST);
         const D3D12_TEXTURE_COPY_LOCATION target{
             .pResource = image.Handle(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-            .SubresourceIndex = image.Subresource(dst.range.base.level, dst.range.base.layer)};
+            .SubresourceIndex = dst_place.subresource};
         const D3D12_BOX scratch_box{0, 0, 0, width, height, 1};
         commands->CopyTextureRegion(&target, static_cast<u32>(dst_region.start.x),
                                     static_cast<u32>(dst_region.start.y), 0, &scratch,

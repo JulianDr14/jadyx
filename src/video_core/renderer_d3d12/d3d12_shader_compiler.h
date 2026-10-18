@@ -71,6 +71,8 @@ public:
         u16 y_flip_mask = 0;
         u16 z_flip_mask = 0;
         dxil_spirv_sysval_type first_vertex_and_base_instance = DXIL_SPIRV_SYSVAL_TYPE_ZERO;
+        /// Turns every branch of the vertex stage into selects (EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX).
+        bool flatten_vertex = false;
     };
 
     /// Translates, links and signs the stages of one pipeline, given in pipeline order. Returns
@@ -91,6 +93,7 @@ private:
     PFN_spirv_to_dxil translate{};
     PFN_spirv_to_dxil_free free_dxil{};
     PFN_eden_spirv_to_dxil_pipeline translate_pipeline{};
+    decltype(&::eden_spirv_to_dxil_pipeline_v3) translate_pipeline_v3{};
     ComPtr<IDxcValidator> validator;
     /// The validator is shared by the pipeline workers.
     mutable std::mutex validator_mutex;

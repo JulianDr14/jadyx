@@ -69,6 +69,10 @@ Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
 Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
     "    eden_spirv_to_dxil_pipeline`n" `
     "    eden_spirv_to_dxil_pipeline`n    eden_spirv_to_dxil_pipeline_v2`n"
+# v3: translation flags (EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX).
+Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
+    "    eden_spirv_to_dxil_pipeline_v2`n" `
+    "    eden_spirv_to_dxil_pipeline_v2`n    eden_spirv_to_dxil_pipeline_v3`n"
 Patch-File "src\microsoft\spirv_to_dxil\meson.build" `
     "      'spirv_to_dxil.h',`n" `
     "      'spirv_to_dxil.h',`n      'eden_pipeline.c',`n      'eden_spirv_to_dxil.h',`n"

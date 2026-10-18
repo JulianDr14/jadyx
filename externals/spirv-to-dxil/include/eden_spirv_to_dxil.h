@@ -64,6 +64,18 @@ eden_spirv_to_dxil_pipeline_v2(const struct eden_spirv_to_dxil_stage *stages, un
                              const struct dxil_spirv_logger *logger,
                              struct dxil_spirv_object *out);
 
+/* v3: v2 plus translation flags. 0 is the same as v2. */
+/* Every branch of the vertex stage becomes selects, storage buffer loads included. Works around
+ * the Xbox Series' shader compiler faulting on some vertex shaders; results are unchanged. */
+#define EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX (1u << 0)
+
+bool
+eden_spirv_to_dxil_pipeline_v3(const struct eden_spirv_to_dxil_stage *stages, unsigned count,
+                               enum dxil_validator_version validator_version_max,
+                               const struct dxil_spirv_debug_options *debug_options,
+                               const struct dxil_spirv_logger *logger, uint32_t flags,
+                               struct dxil_spirv_object *out);
+
 #ifdef __cplusplus
 }
 #endif

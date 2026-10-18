@@ -927,7 +927,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     auto compile_dxil = [this, spirv = std::move(spirv), stage_indices, dumps_dxil,
                          vertex_shader = key.unique_hashes[1],
                          fragment_shader = key.unique_hashes[5],
-                         pipeline_key = key.Hash()](u64 trace_pipeline) {
+                         pipeline_key = key.Hash()](u64 trace_pipeline, bool flatten_vertex) {
         boost::container::static_vector<ShaderCompiler::PipelineStage, Maxwell::MaxShaderStage>
             stages;
         for (const size_t stage_index : stage_indices) {
@@ -940,14 +940,16 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         const ShaderCompiler::PipelineOptions options{
             .yz_flip = DXIL_SPIRV_YZ_FLIP_CONDITIONAL,
             .first_vertex_and_base_instance = DXIL_SPIRV_SYSVAL_TYPE_RUNTIME_DATA,
+            .flatten_vertex = flatten_vertex,
         };
         boost::container::static_vector<LinkedShaderStage, Maxwell::MaxShaderStage> key_stages;
         for (const auto& stage : stages) {
             key_stages.push_back({stage.spirv, static_cast<u32>(stage.stage)});
         }
-        const std::array<u32, 4> key_options{
+        const std::array<u32, 5> key_options{
             static_cast<u32>(options.yz_flip), options.y_flip_mask, options.z_flip_mask,
-            static_cast<u32>(options.first_vertex_and_base_instance)};
+            static_cast<u32>(options.first_vertex_and_base_instance),
+            static_cast<u32>(options.flatten_vertex)};
         auto key = MakeLinkedShaderKey(std::span(key_stages.data(), key_stages.size()), key_options);
         const auto cached = linked_shaders.Get(std::move(key), [&] {
             auto compiled = compiler.CompilePipeline(std::span(stages.data(), stages.size()), options,

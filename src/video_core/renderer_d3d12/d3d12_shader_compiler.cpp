@@ -83,6 +83,8 @@ ShaderCompiler::ShaderCompiler() {
     }
     if (spirv_to_dxil_library.GetSymbol("eden_spirv_to_dxil_pipeline_v2", &translate_pipeline)) {
         lowers_integer_sampling = true;
+        // Optional: only pipelines the console's driver faults on need it.
+        (void)spirv_to_dxil_library.GetSymbol("eden_spirv_to_dxil_pipeline_v3", &translate_pipeline_v3);
     } else if (!spirv_to_dxil_library.GetSymbol("eden_spirv_to_dxil_pipeline",
                                                 &translate_pipeline)) {
         LOG_WARNING(Render, "D3D12: spirv_to_dxil.dll cannot link stages (rebuild it with "
@@ -194,7 +196,16 @@ std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
     std::array<dxil_spirv_object, EDEN_SPIRV_TO_DXIL_MAX_STAGES> objects{};
     VideoCore::FrameTrace::ScopedSpan translate_span{
         VideoCore::FrameTrace::Event::PipelineTranslateLong, trace_pipeline, trace_pipeline != 0};
-    if (translate_pipeline) {
+    if (options.flatten_vertex) {
+        if (!translate_pipeline_v3) {
+            throw std::runtime_error("D3D12: spirv_to_dxil.dll lacks eden_spirv_to_dxil_pipeline_v3");
+        }
+        if (!translate_pipeline_v3(inputs.data(), static_cast<unsigned>(stages.size()),
+                                   VALIDATOR_VERSION, &debug_options, &logger,
+                                   EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX, objects.data())) {
+            throw std::runtime_error("D3D12: eden_spirv_to_dxil_pipeline_v3 failed");
+        }
+    } else if (translate_pipeline) {
         if (!translate_pipeline(inputs.data(), static_cast<unsigned>(stages.size()),
                                 VALIDATOR_VERSION, &debug_options, &logger, objects.data())) {
             throw std::runtime_error("D3D12: eden_spirv_to_dxil_pipeline failed");

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <span>
 #include <vector>
 
 #include <d3d12.h>
@@ -20,5 +21,9 @@ namespace D3D12 {
 /// simplified at a time: the variants that build point at the part the driver rejects. Only the
 /// first few failures are diagnosed.
 void DiagnoseFailedPipeline(ID3D12Device* device, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc);
+
+/// Writes the DXIL of a pipeline the driver faulted on next to the log, for the first few.
+void DumpFaultedPipeline(u64 vertex_shader, u64 fragment_shader,
+                         std::span<const std::vector<u8>> stages);
 
 } // namespace D3D12

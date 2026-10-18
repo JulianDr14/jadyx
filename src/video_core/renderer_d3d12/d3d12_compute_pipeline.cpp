@@ -18,6 +18,7 @@
 #include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
 #include "video_core/renderer_d3d12/d3d12_compute_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
+#include "video_core/renderer_d3d12/d3d12_driver_guard.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_helper.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
@@ -181,7 +182,18 @@ void ComputePipeline::Build() {
         .CachedPSO = {},
         .Flags = D3D12_PIPELINE_STATE_FLAG_NONE,
     };
-    const HRESULT hr = device.Get()->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline_state));
+    ID3D12Device* const raw = device.Get();
+    DWORD fault = 0;
+    const HRESULT hr = CallDriverGuarded(
+        [&] { return raw->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline_state)); },
+        fault);
+    if (hr == DRIVER_FAULT_HRESULT) {
+        pipeline_state.Detach(); // whatever the driver left there is not an object to release
+        BUG_TRACK_KEY(PipelineRejected, unique_hash,
+                      "the driver faulted (0x{:08X}) building compute pipeline {:016x}; its "
+                      "dispatches are skipped",
+                      static_cast<u32>(fault), unique_hash);
+    }
     CheckRemovedAfter(device.Get(), [&] {
         return fmt::format("compute PSO for {:016x} (HRESULT 0x{:08X})", unique_hash,
                            static_cast<u32>(hr));

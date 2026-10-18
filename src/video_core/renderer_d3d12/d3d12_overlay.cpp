@@ -99,9 +99,13 @@ void AppendText(std::vector<D3D12_RECT>& rects, std::string_view text, LONG x, L
 
 void ClearRects(CommandStream* cmd, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
                 const std::array<float, 4>& color, std::span<const D3D12_RECT> rects) {
-    if (!rects.empty()) {
-        cmd->ClearRenderTargetView(rtv, color.data(), static_cast<UINT>(rects.size()),
-                                   rects.data());
+    // The console keeps only part of one clear with a few hundred rects (the HUD showed its last
+    // line alone), so the text goes in small batches, as the indicators always did.
+    constexpr size_t BATCH = 64;
+    for (size_t first = 0; first < rects.size(); first += BATCH) {
+        const size_t count = std::min(BATCH, rects.size() - first);
+        cmd->ClearRenderTargetView(rtv, color.data(), static_cast<UINT>(count),
+                                   rects.data() + first);
     }
 }
 

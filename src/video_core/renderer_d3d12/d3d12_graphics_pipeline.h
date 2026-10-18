@@ -151,12 +151,14 @@ public:
     static constexpr size_t NUM_STAGES = Maxwell::MaxShaderStage;
     using DxilStages = std::array<std::vector<u8>, NUM_STAGES>;
     using SharedDxilStages = std::shared_ptr<const DxilStages>;
+    /// (trace id, flatten the vertex stage's branches) -> linked DXIL.
+    using CompileDxil = std::function<SharedDxilStages(u64, bool)>;
 
     /// compile_dxil (SPIR-V to DXIL, the costly part of a new pipeline) runs with the PSO build,
     /// on the worker when one is given; it throws std::exception when the pipeline cannot be made.
     GraphicsPipeline(const Device& device, const TextureCacheRuntime& texture_runtime,
                      VideoCore::ShaderNotify* shader_notify, Common::ThreadWorker* worker_thread,
-                     const GraphicsPipelineCacheKey& key, std::function<SharedDxilStages(u64)> compile_dxil,
+                     const GraphicsPipelineCacheKey& key, CompileDxil compile_dxil,
                      const std::array<const Shader::Info*, NUM_STAGES>& infos,
                      const PipelineLayout& layout, bool build_pso = true,
                      GraphicsPsoCache* pso_cache = nullptr, u32 lower_noperspective_mask = 0);
@@ -282,7 +284,9 @@ public:
     void Configure(bool is_indexed, const PipelineBindContext& context, PipelineBindings& out);
 
 private:
-    void Build();
+    /// flatten_on_fault: on a driver fault, leave the failure to the caller (flatten_retry) instead
+    /// of reporting it, since it can retranslate the shaders.
+    void Build(bool flatten_on_fault = false);
     D3D12_GRAPHICS_PIPELINE_STATE_DESC Describe(std::vector<D3D12_INPUT_ELEMENT_DESC>& elements) const;
 
     void Publish(State next);
@@ -300,6 +304,8 @@ private:
     std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
     VideoCommon::UniformBufferSizes uniform_buffer_sizes{};
     bool has_images{};
+    bool flatten_retry{};    ///< Build(true) hit a driver fault: retry with flattened branches.
+    bool flattened_vertex{}; ///< dxil holds the flattened vertex stage.
     u8 bound_color_targets{}; ///< Computed once from the immutable PSO write masks.
     bool depth_bounds{};
     bool blend_constant_alpha{};

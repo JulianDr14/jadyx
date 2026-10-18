@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # SPDX-FileCopyrightText: 2018 yuzu Emulator Project
@@ -486,6 +486,8 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_index_rewrite_cache.h
         renderer_d3d12/d3d12_command_recorder.h
         renderer_d3d12/d3d12_command_stream.h
+        renderer_d3d12/d3d12_command_validation.cpp
+        renderer_d3d12/d3d12_command_validation.h
         renderer_d3d12/d3d12_compute_pipeline.cpp
         renderer_d3d12/d3d12_compute_pipeline.h
         renderer_d3d12/d3d12_conditional_rendering.cpp
@@ -531,6 +533,8 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_present_fsr.h
         renderer_d3d12/d3d12_device.cpp
         renderer_d3d12/d3d12_device.h
+        renderer_d3d12/d3d12_driver_guard.cpp
+        renderer_d3d12/d3d12_driver_guard.h
         renderer_d3d12/d3d12_scheduler.cpp
         renderer_d3d12/d3d12_scheduler.h
         renderer_d3d12/d3d12_query_cache.cpp

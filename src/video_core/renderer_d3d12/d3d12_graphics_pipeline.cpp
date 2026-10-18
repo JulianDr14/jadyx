@@ -9,6 +9,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <boost/container/small_vector.hpp>
@@ -26,6 +27,7 @@
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_draw_targets.h"
 #include "video_core/renderer_d3d12/d3d12_draw_metrics.h"
+#include "video_core/renderer_d3d12/d3d12_driver_guard.h"
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_log.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
@@ -222,7 +224,7 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
                                    VideoCore::ShaderNotify* shader_notify,
                                    Common::ThreadWorker* worker_thread,
                                    const GraphicsPipelineCacheKey& key_,
-                                   std::function<SharedDxilStages(u64)> compile_dxil,
+                                   CompileDxil compile_dxil,
                                    const std::array<const Shader::Info*, NUM_STAGES>& infos,
                                    const PipelineLayout& layout_, bool build_pso,
                                    GraphicsPsoCache* pso_cache_, u32 lower_noperspective_mask_)
@@ -271,7 +273,7 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
         bool compiled = false;
         try {
             FT::ScopedSpan dxil_span{FT::Event::PipelineDxilLong, trace_pipeline};
-            dxil = compile_dxil(trace_pipeline);
+            dxil = compile_dxil(trace_pipeline, false);
             compiled = true;
         } catch (const std::exception& exception) {
             // Handle() stays null: draws with this pipeline are skipped.
@@ -283,7 +285,35 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
                       key.unique_hashes[1], key.unique_hashes[5], exception.what());
         }
         if (compiled && build_pso) {
-            Build();
+            Build(true);
+        }
+        if (flatten_retry) {
+            // The console's shader compiler faults on some vertex shaders with large branches
+            // around the position, and builds them once every branch is a select. A pipeline
+            // first built by Wake() has no SPIR-V left to retry with: its draws are skipped for
+            // this session, but trying to draw it makes it one of the pipelines built at boot.
+            flatten_retry = false;
+            try {
+                dxil = compile_dxil(trace_pipeline, true);
+                flattened_vertex = true;
+            } catch (const std::exception& exception) {
+                BUG_TRACK_KEY(PipelineRejected, key.Hash(),
+                              "the driver faulted building the pipeline of VS {:016x} PS {:016x} "
+                              "and flattening its vertex shader failed: {}",
+                              key.unique_hashes[1], key.unique_hashes[5], exception.what());
+                const Common::BugTracker::TapMute bug_tracker_mute;
+                LOG_ERROR(Render, "D3D12: flattening VS {:016x} failed: {}", key.unique_hashes[1],
+                          exception.what());
+            }
+            if (flattened_vertex) {
+                Build();
+                if (pipeline_state) {
+                    LOG_INFO(Render,
+                             "D3D12: pipeline for VS {:016x} PS {:016x} built with the vertex "
+                             "shader's branches flattened (the driver faulted on the original)",
+                             key.unique_hashes[1], key.unique_hashes[5]);
+                }
+            }
         }
         FT::Mark(FT::Event::PipelineBuildDone, trace_pipeline, pipeline_state.Get() != nullptr);
         // Without a PSO yet, a pipeline whose DXIL failed is still ready: its draws are skipped.
@@ -869,9 +899,16 @@ HRESULT CreateWithDepthBounds(ID3D12Device2* device, const D3D12_GRAPHICS_PIPELI
                                                        .pPipelineStateSubobjectStream = &stream};
     return device->CreatePipelineState(&stream_desc, IID_PPV_ARGS(&out));
 }
+/// Whether a pipeline with this key fails for the first time.
+bool FirstFailure(u64 key_hash) {
+    static std::mutex mutex;
+    static std::unordered_set<u64> failed;
+    std::scoped_lock lock{mutex};
+    return failed.insert(key_hash).second;
+}
 } // Anonymous namespace
 
-void GraphicsPipeline::Build() try {
+void GraphicsPipeline::Build(bool flatten_on_fault) try {
     const auto& stages = *dxil;
     std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
     auto desc = Describe(elements);
@@ -883,16 +920,39 @@ void GraphicsPipeline::Build() try {
     const u64 index_bytes = sizeof(GraphicsPsoCache::Entry) + 128 +
                             host_key.state.capacity() * sizeof(u32);
     HRESULT hr = S_OK;
+    const bool may_flatten = flatten_on_fault && !flattened_vertex;
+    const auto log_driver_fault = [&](DWORD code, ComPtr<ID3D12PipelineState>& handle) {
+        handle.Detach(); // whatever the driver left there is not an object to release
+        if (may_flatten) {
+            return; // the caller retries with flattened branches
+        }
+        BUG_TRACK_KEY(PipelineRejected, key.Hash(),
+                      "the driver faulted (0x{:08X}) building the pipeline of VS {:016x} PS "
+                      "{:016x}; its draws are skipped",
+                      static_cast<u32>(code), key.unique_hashes[1], key.unique_hashes[5]);
+    };
     const auto create_pso = [&](ComPtr<ID3D12PipelineState>& handle) {
+        DWORD fault = 0;
         if (bounds_test) {
-            const HRESULT stream_hr = CreateWithDepthBounds(device.Get2(), desc, handle);
+            const HRESULT stream_hr = CallDriverGuarded(
+                [&] { return CreateWithDepthBounds(device.Get2(), desc, handle); }, fault);
             if (SUCCEEDED(stream_hr)) {
+                return stream_hr;
+            }
+            if (stream_hr == DRIVER_FAULT_HRESULT) {
+                log_driver_fault(fault, handle);
                 return stream_hr;
             }
             // The option bit is not a promise the driver takes the stream: draw without the test.
             WarnOnce(warned_depth_bounds, "the depth bounds test (pipeline stream rejected)");
         }
-        return device.Get()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&handle));
+        ID3D12Device* const raw = device.Get();
+        const HRESULT plain_hr = CallDriverGuarded(
+            [&] { return raw->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&handle)); }, fault);
+        if (plain_hr == DRIVER_FAULT_HRESULT) {
+            log_driver_fault(fault, handle);
+        }
+        return plain_hr;
     };
     const auto create = [&] {
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PsoCreateUs};
@@ -950,6 +1010,15 @@ void GraphicsPipeline::Build() try {
         return fmt::format("graphics PSO for VS {:016x} PS {:016x} (HRESULT 0x{:08X})",
                            key.unique_hashes[1], key.unique_hashes[5], static_cast<u32>(hr));
     });
+    if (hr == DRIVER_FAULT_HRESULT && may_flatten) {
+        LOG_INFO(Render, "D3D12: the driver faulted building the pipeline for VS {:016x} PS "
+                         "{:016x}; retrying with the vertex shader's branches flattened",
+                 key.unique_hashes[1], key.unique_hashes[5]);
+        flatten_retry = true;
+        pipeline_state.Reset();
+        shared_pso.reset();
+        return;
+    }
     if (FAILED(hr)) {
         BUG_TRACK_KEY(PipelineRejected, key.Hash(),
                       "CreateGraphicsPipelineState failed (HRESULT 0x{:08X}) for VS {:016x} PS "
@@ -967,7 +1036,11 @@ void GraphicsPipeline::Build() try {
                   ShaderFeatureFlags(stages[4]));
         if (hr == E_OUTOFMEMORY) {
             VideoCommon::GPUThread::ReportException("D3D12 graphics PSO allocation exhausted memory");
-        } else {
+        } else if (FirstFailure(key.Hash())) {
+            // Every pipeline object with these shaders fails again; diagnose the first.
+            if (hr == DRIVER_FAULT_HRESULT) {
+                DumpFaultedPipeline(key.unique_hashes[1], key.unique_hashes[5], stages);
+            }
             DiagnoseFailedPipeline(device.Get(), desc);
         }
         pipeline_state.Reset();

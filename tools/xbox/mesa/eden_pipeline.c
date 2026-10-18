@@ -47,12 +47,55 @@ mark_alu_exact(nir_builder *b, nir_instr *instr, void *data)
    return true;
 }
 
+/* The Xbox Series' shader compiler faults (access violation inside CreateGraphicsPipelineState)
+ * on some vertex shaders whose position comes out of a large if/else (an early "invisible" exit
+ * next to the full transform). The same shaders build once every branch is turned into selects,
+ * so the renderer retranslates a faulting pipeline with EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX.
+ *
+ * Storage buffers are bound through descriptor tables, where an out-of-range read returns zero:
+ * loading one on a path that would not have run is harmless, so the loads may leave their branch.
+ * Without that, nir_opt_peephole_select keeps every branch holding one. */
+static bool
+speculate_ssbo_loads(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   (void)b;
+   (void)data;
+   if (intr->intrinsic != nir_intrinsic_load_ssbo)
+      return false;
+   const enum gl_access_qualifier access =
+      nir_intrinsic_access(intr) | ACCESS_CAN_REORDER | ACCESS_CAN_SPECULATE;
+   if (access == nir_intrinsic_access(intr))
+      return false;
+   nir_intrinsic_set_access(intr, access);
+   return true;
+}
+
+static void
+flatten_branches(nir_shader *s)
+{
+   NIR_PASS(_, s, nir_shader_intrinsics_pass, speculate_ssbo_loads, nir_metadata_all, NULL);
+   /* limit ~0 is the "no control flow hardware" mode: every if without a jump becomes selects. */
+   const nir_opt_peephole_select_options options = {
+      .limit = ~0u,
+      .indirect_load_ok = true,
+      .expensive_alu_ok = true,
+   };
+   bool progress;
+   do {
+      progress = false;
+      NIR_PASS(progress, s, nir_opt_peephole_select, &options);
+      NIR_PASS(progress, s, nir_opt_remove_phis);
+      NIR_PASS(progress, s, nir_opt_dce);
+      NIR_PASS(progress, s, nir_opt_dead_cf);
+   } while (progress);
+}
+
 static bool
 translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count,
                    enum dxil_validator_version validator_version_max,
                    const struct dxil_spirv_debug_options *debug_options,
                    const struct dxil_spirv_logger *logger, struct dxil_spirv_object *out,
-                   bool lower_integer_sampling)
+                   bool lower_integer_sampling, uint32_t flags)
 {
    if (count == 0 || count > EDEN_SPIRV_TO_DXIL_MAX_STAGES)
       return false;
@@ -134,6 +177,9 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
       if (debug_options->dump_nir)
          nir_print_shader(nir[i], stderr);
 
+      if (nir[i]->info.stage == MESA_SHADER_VERTEX && (flags & EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX))
+         flatten_branches(nir[i]);
+
       /* lower_int16: widen every 16-bit ALU op to 32 bits. The Xbox Series has no native 16-bit
        * shader ops, and NIR still makes 16-bit ops out of mediump (RelaxedPrecision) code even
        * with the recompiler's fp16/int16 off; the console driver then rejects the pixel shader
@@ -173,7 +219,7 @@ eden_spirv_to_dxil_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsig
                             struct dxil_spirv_object *out)
 {
    return translate_pipeline(stages, count, validator_version_max, debug_options, logger, out,
-                             false);
+                             false, 0);
 }
 
 /* Integer textures sampled through the b0 space 29 table (eden_integer_sampler_state). */
@@ -185,5 +231,16 @@ eden_spirv_to_dxil_pipeline_v2(const struct eden_spirv_to_dxil_stage *stages, un
                                struct dxil_spirv_object *out)
 {
    return translate_pipeline(stages, count, validator_version_max, debug_options, logger, out,
-                             true);
+                             true, 0);
+}
+
+bool
+eden_spirv_to_dxil_pipeline_v3(const struct eden_spirv_to_dxil_stage *stages, unsigned count,
+                               enum dxil_validator_version validator_version_max,
+                               const struct dxil_spirv_debug_options *debug_options,
+                               const struct dxil_spirv_logger *logger, uint32_t flags,
+                               struct dxil_spirv_object *out)
+{
+   return translate_pipeline(stages, count, validator_version_max, debug_options, logger, out,
+                             true, flags);
 }
