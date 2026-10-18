@@ -20,6 +20,29 @@ namespace D3D12 {
 
 using namespace TextureDetail;
 
+namespace {
+/// CopyTextureRegion copies a depth-stencil or multisampled subresource only whole: offsets 0
+/// and no source box (its documented remarks). Anything else invalidates the command list.
+bool CopiedWhole(const Image& image) {
+    const D3D12_RESOURCE_DESC desc = image.Handle()->GetDesc();
+    return (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0 ||
+           desc.SampleDesc.Count > 1;
+}
+
+/// Whether copy covers its whole source and destination subresources.
+bool CoversSubresources(const Image& dst, const Image& src, const ImageCopy& copy) {
+    const auto covers = [&copy](const Image& image, s32 level,
+                                 const VideoCommon::Offset3D& offset) {
+        const D3D12_RESOURCE_DESC desc = image.Handle()->GetDesc();
+        return offset.x == 0 && offset.y == 0 && offset.z == 0 &&
+               copy.extent.width == std::max<u64>(1, desc.Width >> level) &&
+               copy.extent.height == std::max(1U, desc.Height >> level);
+    };
+    return covers(src, copy.src_subresource.base_level, copy.src_offset) &&
+           covers(dst, copy.dst_subresource.base_level, copy.dst_offset);
+}
+} // namespace
+
 void TextureCacheRuntime::CopyImage(Image& dst, Image& src, std::span<const ImageCopy> copies) {
     if (std::ranges::any_of(copies, [](const ImageCopy& copy) { return copy.extent_in_blocks; })) {
         // Normalize only alias copies. Guessing units from alignment would corrupt ordinary
@@ -99,7 +122,20 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src, std::span<const Imag
         CopyThroughBuffer(dst, src, copies);
         return;
     }
+    if (src.Handle()->GetDesc().Dimension != dst.Handle()->GetDesc().Dimension) {
+        // Layers of a 2D image to slices of a 3D one, or back: copying between dimensions needs
+        // TextureCopyBetweenDimensionsSupported, which the Series runtime lacks (Close fails
+        // with E_INVALIDARG). Through a buffer, a slice at a time.
+        CopyThroughBuffer(dst, src, copies);
+        return;
+    }
+    const bool whole_only = CopiedWhole(src) || CopiedWhole(dst);
     for (const auto& copy : copies) {
+        if (whole_only && !CoversSubresources(dst, src, copy)) {
+            // Part of a depth or multisampled subresource: picked out through a buffer.
+            CopyThroughBuffer(dst, src, std::span{&copy, 1});
+            continue;
+        }
         const u32 depth = src.info.type == ImageType::e3D ? copy.extent.depth : 1U;
         for (s32 layer = 0; layer < copy.src_subresource.num_layers; ++layer) {
             D3D12_TEXTURE_COPY_LOCATION source{.pResource = src.Handle(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
@@ -270,45 +306,169 @@ void TextureCacheRuntime::CopyThroughBuffer(Image& dst, Image& src,
                  src.info.format, dst.info.format);
         return;
     }
+    // A buffer holds no multisampled texels, and the two planes of a depth-stencil image have
+    // their own path (CopyDepthStencilFrom).
+    if (src.info.num_samples > 1 || dst.info.num_samples > 1 || src.IsDepthStencilPlanar() ||
+        dst.IsDepthStencilPlanar()) {
+        WarnOnce(logged_reinterpret_copy,
+                 "copy of part of a multisampled or depth-stencil image ({} -> {}) skipped",
+                 src.info.format, dst.info.format);
+        return;
+    }
+    // A depth side goes to or from the buffer whole (see CopiedWhole); the region is picked
+    // out of the buffer instead.
+    const bool src_whole = CopiedWhole(src);
+    const bool dst_whole = CopiedWhole(dst);
+    const u32 block_w = VideoCore::Surface::DefaultBlockWidth(src.TransferFormat().copy_format);
+    const u32 block_h = VideoCore::Surface::DefaultBlockHeight(src.TransferFormat().copy_format);
+    const bool src_3d = src.info.type == ImageType::e3D;
+    const bool dst_3d = dst.info.type == ImageType::e3D;
+    ID3D12Device* const d3d = device.Get();
+    const D3D12_RESOURCE_DESC src_desc = src.Handle()->GetDesc();
+    const D3D12_RESOURCE_DESC dst_desc = dst.Handle()->GetDesc();
+    const auto whole_footprint = [d3d](const D3D12_RESOURCE_DESC& desc, u32 subresource,
+                                       u64& bytes) {
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+        d3d->GetCopyableFootprints(&desc, subresource, 1, 0, &footprint, nullptr, nullptr,
+                                   &bytes);
+        return footprint;
+    };
     auto* const commands = scheduler.CommandList();
     for (const auto& copy : copies) {
-        const u32 depth = src.info.type == ImageType::e3D ? std::max(1U, copy.extent.depth) : 1U;
-        const u32 row_pitch = AlignPitch(copy.extent.width * texel_bytes);
-        const u64 size = static_cast<u64>(row_pitch) * copy.extent.height * depth;
-        if (size == 0) {
+        // One slice at a time: a 2D image's layers are a 3D image's depth slices.
+        const s32 slices = src_3d ? static_cast<s32>(std::max(1U, copy.extent.depth))
+                                  : copy.src_subresource.num_layers;
+        // Whole blocks, also on the 2x2 and 1x1 levels of a block-compressed image.
+        const u32 width = Common::AlignUp(copy.extent.width, block_w);
+        const u32 height = Common::AlignUp(copy.extent.height, block_h);
+        const u32 row_bytes = width / block_w * texel_bytes;
+        const u32 rows = height / block_h;
+        if (row_bytes == 0 || rows == 0) {
             continue;
         }
-        for (s32 layer = 0; layer < copy.src_subresource.num_layers; ++layer) {
-            ComPtr<ID3D12Resource> transfer = transfer_buffers.Acquire(size);
-            D3D12_TEXTURE_COPY_LOCATION footprint{.pResource = transfer.Get(),
-                                                  .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
-            footprint.PlacedFootprint.Footprint = {.Format = src.FootprintFormat(),
-                                                   .Width = copy.extent.width,
-                                                   .Height = copy.extent.height,
-                                                   .Depth = depth,
-                                                   .RowPitch = row_pitch};
+        for (s32 slice = 0; slice < slices; ++slice) {
+            const u32 src_subresource =
+                src.Subresource(copy.src_subresource.base_level,
+                                src_3d ? 0 : copy.src_subresource.base_layer + slice);
+            const u32 dst_subresource =
+                dst.Subresource(copy.dst_subresource.base_level,
+                                dst_3d ? 0 : copy.dst_subresource.base_layer + slice);
+            const u32 src_z = src_3d ? static_cast<u32>(copy.src_offset.z + slice) : 0U;
+            const u32 dst_z = dst_3d ? static_cast<u32>(copy.dst_offset.z + slice) : 0U;
+            // Source to buffer: the region alone, or the whole subresource with the region at
+            // region_offset.
+            D3D12_TEXTURE_COPY_LOCATION staged{.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+            u64 staged_bytes{};
+            u64 region_offset = 0;
+            if (src_whole) {
+                staged.PlacedFootprint = whole_footprint(src_desc, src_subresource, staged_bytes);
+                region_offset = static_cast<u64>(copy.src_offset.y) / block_h *
+                                    staged.PlacedFootprint.Footprint.RowPitch +
+                                static_cast<u64>(copy.src_offset.x) / block_w * texel_bytes;
+            } else {
+                staged.PlacedFootprint.Footprint = {.Format = src.FootprintFormat(),
+                                                    .Width = width,
+                                                    .Height = height,
+                                                    .Depth = 1,
+                                                    .RowPitch = AlignPitch(row_bytes)};
+                staged_bytes = static_cast<u64>(staged.PlacedFootprint.Footprint.RowPitch) * rows;
+            }
+            const u32 staged_pitch = staged.PlacedFootprint.Footprint.RowPitch;
+            ComPtr<ID3D12Resource> transfer = transfer_buffers.Acquire(staged_bytes);
+            staged.pResource = transfer.Get();
             const D3D12_TEXTURE_COPY_LOCATION source{
                 .pResource = src.Handle(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                .SubresourceIndex = src.Subresource(copy.src_subresource.base_level,
-                                                    copy.src_subresource.base_layer + layer)};
-            const D3D12_BOX box{static_cast<u32>(copy.src_offset.x),
-                                static_cast<u32>(copy.src_offset.y),
-                                static_cast<u32>(copy.src_offset.z),
-                                static_cast<u32>(copy.src_offset.x) + copy.extent.width,
-                                static_cast<u32>(copy.src_offset.y) + copy.extent.height,
-                                static_cast<u32>(copy.src_offset.z) + depth};
-            commands->CopyTextureRegion(&footprint, 0, 0, 0, &source, &box);
+                .SubresourceIndex = src_subresource};
+            if (src_whole) {
+                commands->CopyTextureRegion(&staged, 0, 0, 0, &source, nullptr);
+            } else {
+                const D3D12_BOX box{static_cast<u32>(copy.src_offset.x),
+                                    static_cast<u32>(copy.src_offset.y), src_z,
+                                    static_cast<u32>(copy.src_offset.x) + width,
+                                    static_cast<u32>(copy.src_offset.y) + height, src_z + 1};
+                commands->CopyTextureRegion(&staged, 0, 0, 0, &source, &box);
+            }
             TransitionBuffer(commands, transfer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                              D3D12_RESOURCE_STATE_COPY_SOURCE);
-            // Same bytes, described in the destination's format.
-            footprint.PlacedFootprint.Footprint.Format = dst.FootprintFormat();
             const D3D12_TEXTURE_COPY_LOCATION target{
                 .pResource = dst.Handle(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                .SubresourceIndex = dst.Subresource(copy.dst_subresource.base_level,
-                                                    copy.dst_subresource.base_layer + layer)};
-            commands->CopyTextureRegion(&target, copy.dst_offset.x, copy.dst_offset.y,
-                                        copy.dst_offset.z, &footprint, nullptr);
+                .SubresourceIndex = dst_subresource};
+            u64 dst_bytes{};
+            const D3D12_PLACED_SUBRESOURCE_FOOTPRINT dst_footprint =
+                dst_whole ? whole_footprint(dst_desc, dst_subresource, dst_bytes)
+                          : D3D12_PLACED_SUBRESOURCE_FOOTPRINT{};
+            const bool covers_dst = !dst_whole || (copy.dst_offset.x == 0 &&
+                                                   copy.dst_offset.y == 0 &&
+                                                   width == dst_footprint.Footprint.Width &&
+                                                   height == dst_footprint.Footprint.Height);
+            if (covers_dst && region_offset % D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT == 0) {
+                // The destination reads the region where it lies in the buffer: the same
+                // bytes, described in the destination's format.
+                D3D12_TEXTURE_COPY_LOCATION region = staged;
+                region.PlacedFootprint.Offset = region_offset;
+                region.PlacedFootprint.Footprint = {
+                    .Format = dst_whole ? dst_footprint.Footprint.Format : dst.FootprintFormat(),
+                    .Width = width,
+                    .Height = height,
+                    .Depth = 1,
+                    .RowPitch = staged_pitch};
+                if (dst_whole) {
+                    commands->CopyTextureRegion(&target, 0, 0, 0, &region, nullptr);
+                } else {
+                    commands->CopyTextureRegion(&target, copy.dst_offset.x, copy.dst_offset.y,
+                                                dst_z, &region, nullptr);
+                }
+                transfer_buffers.Release(std::move(transfer));
+                continue;
+            }
+            // Otherwise the rows move to a second buffer laid out for the destination: its whole
+            // subresource (read back first when the copy does not cover it), or the region.
+            D3D12_TEXTURE_COPY_LOCATION placed{.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+            u64 placed_offset = 0;
+            if (dst_whole) {
+                placed.PlacedFootprint = dst_footprint;
+                placed_offset = static_cast<u64>(copy.dst_offset.y) / block_h *
+                                    dst_footprint.Footprint.RowPitch +
+                                static_cast<u64>(copy.dst_offset.x) / block_w * texel_bytes;
+            } else {
+                placed.PlacedFootprint.Footprint = {.Format = dst.FootprintFormat(),
+                                                    .Width = width,
+                                                    .Height = height,
+                                                    .Depth = 1,
+                                                    .RowPitch = AlignPitch(row_bytes)};
+                dst_bytes = static_cast<u64>(placed.PlacedFootprint.Footprint.RowPitch) * rows;
+            }
+            const u32 placed_pitch = placed.PlacedFootprint.Footprint.RowPitch;
+            ComPtr<ID3D12Resource> repacked = transfer_buffers.Acquire(dst_bytes);
+            placed.pResource = repacked.Get();
+            if (!covers_dst) {
+                dst.Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
+                commands->CopyTextureRegion(&placed, 0, 0, 0, &target, nullptr);
+                dst.Transition(D3D12_RESOURCE_STATE_COPY_DEST);
+            }
+            if (covers_dst && staged_pitch == placed_pitch) {
+                // Nothing between the rows to keep: one copy.
+                commands->CopyBufferRegion(repacked.Get(), placed_offset, transfer.Get(),
+                                           region_offset,
+                                           static_cast<u64>(rows - 1) * staged_pitch + row_bytes);
+            } else {
+                for (u32 row = 0; row < rows; ++row) {
+                    commands->CopyBufferRegion(
+                        repacked.Get(), placed_offset + static_cast<u64>(row) * placed_pitch,
+                        transfer.Get(), region_offset + static_cast<u64>(row) * staged_pitch,
+                        row_bytes);
+                }
+            }
+            TransitionBuffer(commands, repacked.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                             D3D12_RESOURCE_STATE_COPY_SOURCE);
+            if (dst_whole) {
+                commands->CopyTextureRegion(&target, 0, 0, 0, &placed, nullptr);
+            } else {
+                commands->CopyTextureRegion(&target, copy.dst_offset.x, copy.dst_offset.y, dst_z,
+                                            &placed, nullptr);
+            }
             transfer_buffers.Release(std::move(transfer));
+            transfer_buffers.Release(std::move(repacked));
         }
     }
 }
@@ -517,6 +677,8 @@ namespace {
 /// Where a copy through a view lands in its image.
 struct CopyPlace {
     u32 subresource;
+    u32 level;
+    u32 layer;  ///< array layer of a 2D image, 0 otherwise
     u32 z;      ///< depth slice of a 3D image, 0 otherwise
     s32 width;  ///< of the level, in texels (whole blocks for a block-compressed resource)
     s32 height;
@@ -543,6 +705,8 @@ CopyPlace ViewCopyPlace(const Image& image, const ImageView& view) {
     }
     return {
         .subresource = level + (is_3d ? 0U : std::min(layer, layers - 1) * desc.MipLevels),
+        .level = level,
+        .layer = is_3d ? 0U : std::min(layer, layers - 1),
         .z = is_3d ? std::min(layer, depth - 1) : 0U,
         .width = static_cast<s32>(width),
         .height = static_cast<s32>(height),
@@ -610,6 +774,24 @@ bool TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
         // An unscaled copy: exact for every format, integers included.
         src_image->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
         dst_image->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
+        if (TypelessFamily(src_image->ResourceFormat()) !=
+            TypelessFamily(dst_image->ResourceFormat())) {
+            // One view format over resources of two families (R11G11B10 over R32...):
+            // CopyTextureRegion between them fails the list. The bytes go through a buffer.
+            const ImageCopy copy{
+                .src_subresource = {.base_level = static_cast<s32>(src_place.level),
+                                    .base_layer = static_cast<s32>(src_place.layer)},
+                .dst_subresource = {.base_level = static_cast<s32>(dst_place.level),
+                                    .base_layer = static_cast<s32>(dst_place.layer)},
+                .src_offset = {src_region.start.x, src_region.start.y,
+                               static_cast<s32>(src_place.z)},
+                .dst_offset = {dst_region.start.x, dst_region.start.y,
+                               static_cast<s32>(dst_place.z)},
+                .extent = {static_cast<u32>(dst_width), static_cast<u32>(dst_height), 1},
+            };
+            CopyThroughBuffer(*dst_image, *src_image, std::span{&copy, 1});
+            return true;
+        }
         const D3D12_TEXTURE_COPY_LOCATION source{
             .pResource = src_image->Handle(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
             .SubresourceIndex = src_place.subresource};
