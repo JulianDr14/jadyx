@@ -119,15 +119,17 @@ jobs:
           sccache --show-stats
           sccache --stop-server
 
+      # Only main saves: a PR's cache is visible to that PR alone, and its saves would evict main's
+      # from the repo's 10 GB. PRs restore main's cache, which is all they need.
       - name: Save CPM sources
-        if: always() && steps.cpm.outputs.cache-hit != 'true'
+        if: always() && github.ref == 'refs/heads/main' && steps.cpm.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .cache/cpm
           key: ${{ steps.cpm.outputs.cache-primary-key }}
 
       - name: Save compiler cache
-        if: always()
+        if: always() && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
           path: .cache/sccache
