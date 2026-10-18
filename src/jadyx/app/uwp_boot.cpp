@@ -40,6 +40,7 @@
 
 #include "common/bug_tracker.h"
 #include "common/fs/path_util.h"
+#include "common/log_rotation.h"
 #include "common/host_memory.h"
 #include "common/logging.h"
 #include "common/pulse_diagnostics.h"
@@ -1343,14 +1344,18 @@ unsigned long long ElapsedMs() {
 }
 
 // LocalState\jadyx\log, next to jadyx_log.txt. Created here: the diag starts before Eden's
-// logging creates the folder.
+// logging creates the folder. These logs append across launches, so one past 8 MiB moves to its
+// .old copy first instead of growing without end.
 std::string LogFilePath(const char* name) {
+    constexpr std::uintmax_t MAX_LOG_BYTES = 8ULL << 20;
     const std::filesystem::path dir =
         std::filesystem::path{std::wstring{Windows::Storage::ApplicationData::Current().LocalFolder().Path()}} /
         L"jadyx" / L"log";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    return winrt::to_string((dir / name).wstring());
+    const std::filesystem::path path = dir / name;
+    Common::RotateLogIfLarger(path, MAX_LOG_BYTES);
+    return winrt::to_string(path.wstring());
 }
 
 void WriteDiag(const std::string& msg) {
