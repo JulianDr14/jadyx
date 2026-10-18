@@ -107,6 +107,33 @@ int main() {
               "https://raw.githubusercontent.com/sthetix/nx-cheats-db/main/cheats_gfx/0100000000010000.json");
     }
 
+    // Cached totals must match the real VM program through arbitrary edits and copies.
+    {
+        CheatCatalog catalog{{set("Online cheats", "{M}\n00000001 00000002\n[A]\n00000003\n[B]\n00000004\n"),
+                              set("Online graphics", "[FPS]\n00000005\n"),
+                              set("Mine", "[Mine]\n00000006\n")}};
+        unsigned seed = 4123;
+        for (int iteration = 0; iteration < 10000; ++iteration) {
+            seed = seed * 1664525u + 1013904223u;
+            const auto category = static_cast<CheatCategory>((seed >> 8) % CategoryCount);
+            const auto refs = catalog.Cheats(category);
+            if (seed & 1) catalog.Toggle(refs[(seed >> 16) % refs.size()]);
+            else catalog.SetCategory(category, (seed & 2) != 0);
+            check(catalog.UsedWords() == Core::Memory::EnabledOpcodeCount(catalog.Program()));
+            for (const auto& file : catalog.Sets()) {
+                auto reference = file.cheats;
+                Core::Memory::SyncMasterCheat(reference);
+                check(reference[0].enabled == file.cheats[0].enabled);
+            }
+            for (std::size_t index = 0; index < CategoryCount; ++index) {
+                const auto cat = static_cast<CheatCategory>(index);
+                std::size_t enabled = 0;
+                for (const auto ref : catalog.Cheats(cat)) enabled += catalog.Enabled(ref);
+                check(catalog.EnabledCount(cat) == enabled);
+            }
+            if (iteration % 100 == 0) { auto copy = catalog; catalog = std::move(copy); }
+        }
+    }
     std::puts("cheat-catalog PASS");
     return 0;
 }

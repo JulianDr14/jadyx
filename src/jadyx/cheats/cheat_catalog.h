@@ -66,10 +66,15 @@ class CheatCatalog {
 public:
     CheatCatalog() = default;
     explicit CheatCatalog(std::vector<CheatSet> sets_) : sets{std::move(sets_)} {
+        set_enabled.resize(sets.size());
         for (std::uint32_t set = 0; set < sets.size(); ++set) {
             auto& list = refs[static_cast<std::size_t>(sets[set].category)];
             for (std::uint32_t entry = 1; entry < sets[set].cheats.size(); ++entry)
                 list.push_back({set, entry});
+            used_words += Core::Memory::EnabledOpcodeCount(sets[set].cheats);
+            for (std::size_t entry = 1; entry < sets[set].cheats.size(); ++entry)
+                set_enabled[set] += sets[set].cheats[entry].enabled;
+            enabled_counts[static_cast<std::size_t>(sets[set].category)] += set_enabled[set];
         }
     }
 
@@ -88,16 +93,12 @@ public:
     }
     [[nodiscard]] bool Enabled(CheatRef ref) const { return Entry(ref).enabled; }
     [[nodiscard]] std::size_t EnabledCount(CheatCategory category) const {
-        std::size_t count = 0;
-        for (const CheatRef ref : Cheats(category)) count += Enabled(ref) ? 1 : 0;
-        return count;
+        return enabled_counts[static_cast<std::size_t>(category)];
     }
 
     /// VM words the enabled cheats take, master cheats included.
     [[nodiscard]] std::size_t UsedWords() const {
-        std::size_t words = 0;
-        for (const CheatSet& set : sets) words += Core::Memory::EnabledOpcodeCount(set.cheats);
-        return words;
+        return used_words;
     }
     /// Words turning `ref` on adds: its own, plus its set's master cheat if that was off.
     [[nodiscard]] std::size_t AddedWords(CheatRef ref) const {
@@ -111,8 +112,19 @@ public:
         auto& cheats = sets[ref.set].cheats;
         if (cheats[ref.entry].enabled == enabled) return ToggleResult::Unchanged;
         if (enabled && UsedWords() + AddedWords(ref) > WordBudget) return ToggleResult::OverBudget;
+        // Only this entry and its master can change the VM budget. Maintaining the
+        // per-file count also keeps "all on/off" linear in the number of entries.
+        const std::size_t before = (cheats[ref.entry].enabled ? cheats[ref.entry].definition.num_opcodes : 0) +
+                                   (cheats[0].enabled ? cheats[0].definition.num_opcodes : 0);
+        auto& file_count = set_enabled[ref.set];
+        auto& category_count = enabled_counts[static_cast<std::size_t>(sets[ref.set].category)];
+        if (enabled) { ++file_count; ++category_count; }
+        else { --file_count; --category_count; }
         cheats[ref.entry].enabled = enabled;
-        Core::Memory::SyncMasterCheat(cheats);
+        cheats[0].enabled = file_count > 0 && cheats[0].definition.num_opcodes > 0;
+        const std::size_t after = (enabled ? cheats[ref.entry].definition.num_opcodes : 0) +
+                                  (cheats[0].enabled ? cheats[0].definition.num_opcodes : 0);
+        used_words = used_words - before + after;
         return ToggleResult::Changed;
     }
     ToggleResult Toggle(CheatRef ref) { return Set(ref, !Enabled(ref)); }
@@ -142,6 +154,9 @@ private:
 
     std::vector<CheatSet> sets;
     std::array<std::vector<CheatRef>, CategoryCount> refs;
+    std::array<std::size_t, CategoryCount> enabled_counts{};
+    std::vector<std::size_t> set_enabled;
+    std::size_t used_words{};
 };
 
 /// `toggles.txt` for `cheats`, keeping the toggles in `existing` of cheats it does not have (those
