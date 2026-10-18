@@ -198,6 +198,13 @@ else()
             $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-error=unused-command-line-argument>
         )
     endif()
+    # CI builds through sccache with embedded debug info (/Z7). sirit hard-codes /Zi, which makes
+    # its parallel compiles share one PDB and fail with C1041 under sccache.
+    if (MSVC AND CMAKE_MSVC_DEBUG_INFORMATION_FORMAT STREQUAL "Embedded")
+        get_target_property(_sirit_options siritobj COMPILE_OPTIONS)
+        list(REMOVE_ITEM _sirit_options /Zi)
+        set_target_properties(siritobj PROPERTIES COMPILE_OPTIONS "${_sirit_options}")
+    endif()
 endif()
 
 # reshadefx
