@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2026 JulianDr14
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Build with src/jadyx/library_cache.cpp and /DJADYX_NO_WINRT.
+// Build with src/jadyx/library/library_cache.cpp and /DJADYX_NO_WINRT.
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
-#include "jadyx/library_cache.h"
+#include "jadyx/library/library_cache.h"
 
 int main() {
     using namespace Jadyx;

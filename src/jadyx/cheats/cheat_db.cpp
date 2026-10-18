@@ -8,7 +8,7 @@
 #include <functional>
 
 #include "jadyx/cheats/cheat_catalog.h"
-#include "jadyx/utf8.h"
+#include "jadyx/storage/utf8.h"
 
 namespace Jadyx::Cheats {
 namespace {

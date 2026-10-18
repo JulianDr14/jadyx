@@ -5,7 +5,7 @@
 #undef NDEBUG
 #include <cassert>
 #include <iostream>
-#include "jadyx/prewarm_budget.h"
+#include "jadyx/app/prewarm_budget.h"
 
 namespace {
 using Jadyx::PrewarmBudget;

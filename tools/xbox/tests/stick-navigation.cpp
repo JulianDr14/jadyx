@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <limits>
-#include "jadyx/stick_navigation.h"
+#include "jadyx/input/stick_navigation.h"
 int main() {
     using namespace Jadyx;
     using namespace std::chrono;

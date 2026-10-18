@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include "jadyx/cheats/cheats_page.h"
-#include "jadyx/game_options_page.h"
+#include "jadyx/library/game_options_page.h"
 
 namespace {
 using namespace Jadyx;

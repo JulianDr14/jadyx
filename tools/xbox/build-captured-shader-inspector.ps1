@@ -15,7 +15,7 @@ if (!$inspectorIncludes -or !$inspectorLibs) { throw 'Configured UWP Ninja libra
 $inspectorVs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (!$inspectorVs) { throw 'MSVC not found' }
 $inspectorCommand = 'cl /nologo /O2 /MD /Gy /std:c++20 /Zc:preprocessor /EHsc /utf-8 /DNOMINMAX /DBOOST_CONTAINER_NO_LIB /DBOOST_CONTAINER_STATIC_LINK ' +
-    $inspectorIncludes + ' "' + $inspectorRepo + '\tools\xbox\inspect-captured-shader.cpp" src\jadyx\CMakeFiles\jadyx.dir\vma_impl.cpp.obj /Fo:shader-inspector\ /Fe:shader-inspector\inspect-captured-shader.exe /link /OPT:REF /NODEFAULTLIB:libcmt d3dcompiler.lib ' + $inspectorLibs
+    $inspectorIncludes + ' "' + $inspectorRepo + '\tools\xbox\inspect-captured-shader.cpp" src\jadyx\CMakeFiles\jadyx.dir\app\vma_impl.cpp.obj /Fo:shader-inspector\ /Fe:shader-inspector\inspect-captured-shader.exe /link /OPT:REF /NODEFAULTLIB:libcmt d3dcompiler.lib ' + $inspectorLibs
 $inspectorCommands = @('@echo off', ('call "' + $inspectorVs + '\VC\Auxiliary\Build\vcvarsall.bat" x64'),
     'if errorlevel 1 exit /b 1', ('cd /d "' + $inspectorBuild + '"'), $inspectorCommand)
 Set-Content -LiteralPath (Join-Path $inspectorOut 'build.cmd') -Value $inspectorCommands -Encoding ascii

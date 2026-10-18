@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2026 JulianDr14
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Build with src/jadyx/localization.cpp and src/jadyx/locales/*.cpp.
+// Build with src/jadyx/i18n/localization.cpp and src/jadyx/i18n/locales/*.cpp.
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <vector>
-#include "jadyx/localization.h"
+#include "jadyx/i18n/localization.h"
 
 int main() {
     using namespace Jadyx::I18n;

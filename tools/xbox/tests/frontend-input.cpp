@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <cassert>
 #include <stdexcept>
-#include "jadyx/controller_catalog.h"
-#include "jadyx/menu_input_capture.h"
-#include "jadyx/list_navigation.h"
-#include "jadyx/text_entry_input.h"
+#include "jadyx/input/controller_catalog.h"
+#include "jadyx/input/menu_input_capture.h"
+#include "jadyx/ui/list_navigation.h"
+#include "jadyx/ui/text_entry_input.h"
 
 struct Device {
     std::wstring id;

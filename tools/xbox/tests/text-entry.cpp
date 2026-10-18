@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <cstdio>
 #include <cstdlib>
-#include "jadyx/text_entry.h"
+#include "jadyx/ui/text_entry.h"
 
 int main() {
     using namespace Jadyx;

@@ -3,8 +3,8 @@
 #include "jadyx/content/content_view.h"
 #include <iomanip>
 #include <sstream>
-#include "jadyx/ui_painter.h"
-#include "jadyx/utf8.h"
+#include "jadyx/ui/ui_painter.h"
+#include "jadyx/storage/utf8.h"
 
 namespace Jadyx::Content {
 using T = I18n::Text;

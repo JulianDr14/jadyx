@@ -19,7 +19,7 @@
 #include <winrt/Windows.Web.Http.h>
 
 #include "common/logging.h"
-#include "jadyx/atomic_file.h"
+#include "jadyx/storage/atomic_file.h"
 
 namespace Jadyx::Mods::Web {
 namespace {

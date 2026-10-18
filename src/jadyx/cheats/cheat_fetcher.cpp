@@ -16,7 +16,7 @@
 #include <winrt/Windows.Web.Http.h>
 
 #include "common/logging.h"
-#include "jadyx/atomic_file.h"
+#include "jadyx/storage/atomic_file.h"
 #include "jadyx/cheats/cheat_db.h"
 
 namespace Jadyx::Cheats {

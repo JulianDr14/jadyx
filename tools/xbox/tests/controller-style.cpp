@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <cstdio>
 #include <cstdlib>
-#include "jadyx/controller_style.h"
+#include "jadyx/input/controller_style.h"
 
 int main() {
     using namespace Jadyx;

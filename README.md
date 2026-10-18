@@ -409,8 +409,8 @@ changes, or after **Settings > System > Clear library cache**. One background wo
 cache in priority order: the visible page and its neighbours first, then every title already
 cached, then the remaining games in short batches that give way as soon as the player changes page.
 
-**Languages.** Every visible string has an id (`src/jadyx/localization.h`), and each language is
-one catalog in `src/jadyx/locales/`. Catalogs are built at compile time: a missing, repeated or
+**Languages.** Every visible string has an id (`src/jadyx/i18n/localization.h`), and each language is
+one catalog in `src/jadyx/i18n/locales/`. Catalogs are built at compile time: a missing, repeated or
 empty translation stops the build, so a half-translated screen cannot ship. Placeholders are
 positional (`{0}`), plurals follow the language's CLDR rule, and the interface language is picked
 from Windows' preferred languages with BCP 47 fallback (`es-CO` → `es` → English). English and

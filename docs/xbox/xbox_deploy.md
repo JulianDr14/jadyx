@@ -123,7 +123,7 @@ in it are load-bearing:
   A mismatch is the most common sideload rejection; `package-appx.ps1` checks it before packing.
 
 `EntryPoint="Jadyx.App"` is the conventional moniker for a plain C++/WinRT `CoreApplication` app
-(`wWinMain` + `IFrameworkView`, see [`src/jadyx/uwp_boot.cpp`](../../src/jadyx/uwp_boot.cpp));
+(`wWinMain` + `IFrameworkView`, see [`src/jadyx/app/uwp_boot.cpp`](../../src/jadyx/app/uwp_boot.cpp));
 there is no activatable WinRT class to name.
 
 ## When it does not activate

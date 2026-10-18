@@ -6,7 +6,7 @@
 #include <future>
 #include <thread>
 #include "jadyx/content/content_service.h"
-#include "jadyx/uwp_rom_storage.h"
+#include "jadyx/storage/uwp_rom_storage.h"
 
 namespace Jadyx::Content {
 enum class Screen { Manager, Storage, Sources, Browser, Preview, Actions, ConfirmRemove, ConfirmImport, Result };

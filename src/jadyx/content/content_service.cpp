@@ -3,7 +3,7 @@
 #include "jadyx/content/content_service.h"
 #include <mutex>
 #include <fstream>
-#include "jadyx/uwp_rom_storage.h"
+#include "jadyx/storage/uwp_rom_storage.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "core/file_sys/common_funcs.h"

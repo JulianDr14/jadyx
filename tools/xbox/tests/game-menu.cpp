@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2026 JulianDr14
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Build with src/jadyx/localization.cpp and src/jadyx/locales/*.cpp.
+// Build with src/jadyx/i18n/localization.cpp and src/jadyx/i18n/locales/*.cpp.
 #include <cstdio>
 #include <cstdlib>
-#include "jadyx/game_menu.h"
-#include "jadyx/system_page.h"
+#include "jadyx/game/game_menu.h"
+#include "jadyx/settings/system_page.h"
 
 int main() {
     using namespace Jadyx;

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <cassert>
 #include <string>
-#include "jadyx/storage_path.h"
+#include "jadyx/storage/storage_path.h"
 
 int main() {
     using namespace Jadyx;

@@ -10,15 +10,15 @@
 #include "common/logging.h"
 #include "core/file_sys/vfs/vfs.h"
 #include "jadyx/cheats/cheat_catalog.h"
-#include "jadyx/localization.h"
+#include "jadyx/i18n/localization.h"
 #include "jadyx/mods/archive_volumes.h"
 #include "jadyx/mods/game_romfs.h"
 #include "jadyx/mods/mod_inspect.h"
 #include "jadyx/mods/mod_settings.h"
 #include "jadyx/mods/mod_web.h"
-#include "jadyx/storage_path.h"
-#include "jadyx/utf8.h"
-#include "jadyx/uwp_rom_storage.h"
+#include "jadyx/storage/storage_path.h"
+#include "jadyx/storage/utf8.h"
+#include "jadyx/storage/uwp_rom_storage.h"
 
 namespace Jadyx::Mods {
 namespace {

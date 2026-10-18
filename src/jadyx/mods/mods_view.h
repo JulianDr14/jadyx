@@ -10,7 +10,7 @@
 #include <string_view>
 #include <vector>
 
-#include "jadyx/localization.h"
+#include "jadyx/i18n/localization.h"
 #include "jadyx/mods/mod_session.h"
 #include "jadyx/mods/mods_page.h"
 

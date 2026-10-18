@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <cstdio>
 #include <cstdlib>
-#include "jadyx/keyboard_bindings.h"
+#include "jadyx/input/keyboard_bindings.h"
 int main() {
     using namespace Jadyx;
     auto check = [](bool ok) { if (!ok) std::abort(); };

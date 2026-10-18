@@ -8,7 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "common/logging.h"
-#include "jadyx/atomic_file.h"
+#include "jadyx/storage/atomic_file.h"
 #include "jadyx/mods/mod_web.h"
 
 namespace Jadyx::Mods {

@@ -4,7 +4,7 @@
 #include <chrono>
 #include <fstream>
 #include <iostream>
-#include "jadyx/game_library.h"
+#include "jadyx/library/game_library.h"
 
 int main() {
     namespace fs = std::filesystem;

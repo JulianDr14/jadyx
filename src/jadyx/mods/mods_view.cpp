@@ -8,9 +8,9 @@
 #include <set>
 #include <string>
 
-#include "jadyx/text_entry_panel.h"
-#include "jadyx/ui_painter.h"
-#include "jadyx/utf8.h"
+#include "jadyx/ui/text_entry_panel.h"
+#include "jadyx/ui/ui_painter.h"
+#include "jadyx/storage/utf8.h"
 
 namespace Jadyx::Mods {
 namespace {

@@ -8,7 +8,7 @@
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/settings.h"
-#include "jadyx/atomic_file.h"
+#include "jadyx/storage/atomic_file.h"
 #include "jadyx/mods/mod_manifest.h"
 
 namespace Jadyx::Mods {

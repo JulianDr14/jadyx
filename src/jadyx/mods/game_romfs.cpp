@@ -13,9 +13,9 @@
 #include "core/file_sys/romfs.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/loader/loader.h"
-#include "jadyx/atomic_file.h"
-#include "jadyx/uwp_file_manager.h"
-#include "jadyx/uwp_rom_storage.h"
+#include "jadyx/storage/atomic_file.h"
+#include "jadyx/storage/uwp_file_manager.h"
+#include "jadyx/storage/uwp_rom_storage.h"
 
 namespace Jadyx::Mods {
 namespace {

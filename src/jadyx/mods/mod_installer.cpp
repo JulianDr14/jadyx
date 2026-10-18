@@ -7,7 +7,7 @@
 #include <chrono>
 #include <cstdio>
 
-#include "jadyx/atomic_file.h"
+#include "jadyx/storage/atomic_file.h"
 #include "jadyx/mods/mod_manifest.h"
 
 namespace Jadyx::Mods {

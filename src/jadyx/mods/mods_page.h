@@ -23,8 +23,8 @@
 #include <string_view>
 #include <vector>
 
-#include "jadyx/list_navigation.h"
-#include "jadyx/text_entry.h"
+#include "jadyx/ui/list_navigation.h"
+#include "jadyx/ui/text_entry.h"
 
 namespace Jadyx::Mods {
 

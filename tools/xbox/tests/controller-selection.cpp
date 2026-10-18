@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
-#include "jadyx/controller_selection.h"
+#include "jadyx/input/controller_selection.h"
 
 int main() {
     struct Device { std::wstring_view id; bool pad; explicit operator bool() const { return pad; } };

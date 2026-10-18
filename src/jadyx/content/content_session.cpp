@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/content/content_session.h"
 #include <winrt/base.h>
-#include "jadyx/uwp_file_manager.h"
-#include "jadyx/storage_path.h"
+#include "jadyx/storage/uwp_file_manager.h"
+#include "jadyx/storage/storage_path.h"
 #include "core/file_sys/common_funcs.h"
 
 namespace Jadyx::Content {

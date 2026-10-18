@@ -6,67 +6,67 @@
 # homebrew NRO through the JIT. Only built for the WindowsStore (UWP) target.
 
 add_executable(jadyx WIN32
-    headless_emu_window.h
-    uwp_boot.cpp
-    pulse_gate.cpp
-    pulse_gate.h
-    pulse_sessions.cpp
-    pulse_sessions.h
-    pulse_screen.cpp
-    pulse_screen.h
-    pulse_store_gate.cpp
-    pulse_store_gate.h
-    alloc_watch.cpp
-    alloc_watch.h
-    uwp_input.cpp
-    uwp_input.h
-    uwp_library.cpp
-    uwp_library_canvas.cpp
-    uwp_library_canvas.h
-    uwp_library.h
-    game_library.h
-    uwp_library_metadata.cpp
-    uwp_library_metadata.h
-    uwp_rom_storage.cpp
-    uwp_rom_storage.h
-    uwp_file_manager.cpp
-    uwp_file_manager.h
-    storage_path.h
-    uwp_pro_controller.cpp
-    uwp_controllers.cpp
-    uwp_controllers.h
-    vma_impl.cpp
+    app/headless_emu_window.h
+    app/uwp_boot.cpp
+    pulse/pulse_gate.cpp
+    pulse/pulse_gate.h
+    pulse/pulse_sessions.cpp
+    pulse/pulse_sessions.h
+    pulse/pulse_screen.cpp
+    pulse/pulse_screen.h
+    pulse/pulse_store_gate.cpp
+    pulse/pulse_store_gate.h
+    app/alloc_watch.cpp
+    app/alloc_watch.h
+    input/uwp_input.cpp
+    input/uwp_input.h
+    library/uwp_library.cpp
+    library/uwp_library_canvas.cpp
+    library/uwp_library_canvas.h
+    library/uwp_library.h
+    library/game_library.h
+    library/uwp_library_metadata.cpp
+    library/uwp_library_metadata.h
+    storage/uwp_rom_storage.cpp
+    storage/uwp_rom_storage.h
+    storage/uwp_file_manager.cpp
+    storage/uwp_file_manager.h
+    storage/storage_path.h
+    input/uwp_pro_controller.cpp
+    input/uwp_controllers.cpp
+    input/uwp_controllers.h
+    app/vma_impl.cpp
     # Interface languages: one catalog per language under locales/ (localization.h).
-    localization.cpp
-    localization.h
-    locales/catalogs.h
-    locales/registry.cpp
-    locales/en.cpp
-    locales/es.cpp
-    ui_text.h
+    i18n/localization.cpp
+    i18n/localization.h
+    i18n/locales/catalogs.h
+    i18n/locales/registry.cpp
+    i18n/locales/en.cpp
+    i18n/locales/es.cpp
+    ui/ui_text.h
     # Settings > System and the library's on-disk metadata cache.
-    system_settings.h
-    system_page.h
-    upscaling.h
-    text_entry.h
-    text_entry_panel.cpp
-    text_entry_panel.h
+    settings/system_settings.h
+    settings/system_page.h
+    settings/upscaling.h
+    ui/text_entry.h
+    ui/text_entry_panel.cpp
+    ui/text_entry_panel.h
     # The keyboard games open to ask for text, over the running game.
-    game_keyboard.h
-    uwp_software_keyboard.cpp
-    uwp_software_keyboard.h
-    uwp_system_settings.cpp
-    uwp_system_settings.h
-    library_cache.cpp
-    library_cache.h
-    atomic_file.h
-    utf8.h
+    game/game_keyboard.h
+    game/uwp_software_keyboard.cpp
+    game/uwp_software_keyboard.h
+    settings/uwp_system_settings.cpp
+    settings/uwp_system_settings.h
+    library/library_cache.cpp
+    library/library_cache.h
+    storage/atomic_file.h
+    storage/utf8.h
     # Drawing shared by the library and the in-game menu (real text over the paused game).
-    ui_icon.h
-    ui_painter.cpp
-    ui_painter.h
-    game_menu_surface.cpp
-    game_menu_surface.h
+    ui/ui_icon.h
+    ui/ui_painter.cpp
+    ui/ui_painter.h
+    game/game_menu_surface.cpp
+    game/game_menu_surface.h
     # Per-game options and cheats: local files, the online database, hot changes in game.
     content/content_model.h
     content/content_inspector.cpp
@@ -74,7 +74,7 @@ add_executable(jadyx WIN32
     content/content_service.cpp
     content/content_session.cpp
     content/content_view.cpp
-    game_options_page.h
+    library/game_options_page.h
     cheats/cheat_catalog.h
     cheats/cheat_db.cpp
     cheats/cheat_db.h

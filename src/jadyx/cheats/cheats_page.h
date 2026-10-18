@@ -14,8 +14,8 @@
 #include <optional>
 
 #include "jadyx/cheats/cheat_catalog.h"
-#include "jadyx/list_navigation.h"
-#include "jadyx/ui_actions.h"
+#include "jadyx/ui/list_navigation.h"
+#include "jadyx/ui/ui_actions.h"
 
 namespace Jadyx::Cheats {
 

@@ -10,7 +10,7 @@
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/memory/dmnt_cheat_vm.h"
-#include "jadyx/atomic_file.h"
+#include "jadyx/storage/atomic_file.h"
 #include "jadyx/mods/mod_settings.h"
 
 namespace Jadyx::Cheats {

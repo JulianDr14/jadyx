@@ -5,9 +5,9 @@
 #include <algorithm>
 #include <string>
 
-#include "jadyx/localization.h"
-#include "jadyx/ui_painter.h"
-#include "jadyx/utf8.h"
+#include "jadyx/i18n/localization.h"
+#include "jadyx/ui/ui_painter.h"
+#include "jadyx/storage/utf8.h"
 
 namespace Jadyx::Cheats {
 namespace {

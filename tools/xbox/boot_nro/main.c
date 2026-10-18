@@ -9,7 +9,7 @@
 // everything it calls.
 //
 // 1. GATE 2 (JIT liveness): runs a small loop, checks the answer, and only then emits the
-//    sentinel that src/jadyx/uwp_boot.cpp watches for through Kernel::Svc::SetDebugStringObserver.
+//    sentinel that src/jadyx/app/uwp_boot.cpp watches for through Kernel::Svc::SetDebugStringObserver.
 // 2. GATE 3 (first pixels): draws an animated test pattern with the CPU into a libnx framebuffer
 //    for a few seconds - no GPU commands, so it only needs the renderer's present path - then
 //    emits the GFX_DONE sentinel so the frontend knows the loop ran to the end.
