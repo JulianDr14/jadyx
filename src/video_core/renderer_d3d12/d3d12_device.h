@@ -91,6 +91,35 @@ void WriteGpuBreadcrumb(ID3D12GraphicsCommandList* list, D3D12_GPU_VIRTUAL_ADDRE
 class CommandStream;
 void MarkGpuCommands(CommandStream* cmd, const char* kind, u64 first, u64 second);
 void DumpDeviceDiagnostics(ID3D12Device* device);
+/// With dred=1, logs the last `count` recorded command details: what the list held when its
+/// Close failed, which the debug layer would name on PC.
+void DumpRecentGpuDetails(u64 count);
+
+/// boot.cfg "close_probe=1": every command CommandStream records also goes to two scratch lists,
+/// one closed every few commands and one closed just before the real list, so a failing Close
+/// is narrowed to the commands that cause it, logged with their arguments, including the calls
+/// DRED does not trace. Slow: diagnostic only.
+void SetCloseProbeEnabled(bool enabled);
+bool CloseProbeEnabled();
+/// Runs run(ctx, scratch) on the scratch lists, on the recording worker after the real call.
+void ProbeAppend(ID3D12GraphicsCommandList* list,
+                 void (*run)(void* ctx, ID3D12GraphicsCommandList* scratch), void* ctx,
+                 const char* call, std::string arguments);
+/// The real list is about to close: closes the scratch lists.
+void ProbeBeforeClose();
+/// Logs how the real list's Close went next to the scratch lists'.
+void ProbeReportClose(bool real_failed);
+/// The state the real list has when a probed call runs, set again on a scratch list when it
+/// starts: root arguments are only checked against a bound root signature, tables against
+/// bound heaps.
+void ProbeTrackHeaps(UINT count, ID3D12DescriptorHeap* const* heaps);
+void ProbeTrackRootSignature(bool compute, ID3D12RootSignature* signature);
+void ProbeTrackPipeline(ID3D12PipelineState* pipeline);
+/// Pairs the real list's BeginQuery/EndQuery and logs a query begun twice, ended without a
+/// begin, or still open when the list closes.
+void ProbeTrackQuery(bool begin, ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, UINT index);
+/// The real list was reset: it starts with no state again.
+void ProbeResetState();
 
 /// The app's memory in use and its limit, false when unknown. On the Xbox the GPU allocates from
 /// the same 5 GiB budget as the rest of the process, which DXGI does not show.

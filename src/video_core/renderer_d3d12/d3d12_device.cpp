@@ -522,6 +522,257 @@ void Device::ReportDeviceRemoved() {
     Common::BugTracker::RequestFlush();
 }
 
+void DumpRecentGpuDetails(u64 count) {
+    if (!dred_enabled) {
+        return;
+    }
+    std::scoped_lock lock{diagnostic_mutex};
+    const u64 first = detail_sequence > count ? detail_sequence - count : 0;
+    const Common::BugTracker::TapMute detail_mute;
+    for (u64 i = first; i < detail_sequence; ++i) {
+        LOG_CRITICAL(Render, "D3D12 recorded command: seq={} {}", i,
+                     diagnostic_details[i % diagnostic_details.size()].data());
+    }
+}
+
+namespace {
+std::atomic<bool> close_probe_enabled{false};
+std::mutex probe_mutex;
+/// Commands per window: a failing window is logged whole, so it stays short.
+constexpr size_t PROBE_WINDOW = 32;
+/// How many failing windows are logged with their commands.
+constexpr u64 PROBE_WINDOW_LOGS = 6;
+struct ProbeState {
+    std::array<ID3D12DescriptorHeap*, 2> heaps{};
+    UINT heap_count{};
+    ID3D12RootSignature* graphics{};
+    ID3D12RootSignature* compute{};
+    ID3D12PipelineState* pipeline{};
+} probe_state;
+/// A scratch direct list the real list's commands are mirrored to.
+struct ProbeList {
+    ComPtr<ID3D12CommandAllocator> allocator;
+    ComPtr<ID3D12GraphicsCommandList> list;
+    bool open{};
+};
+/// window: the last PROBE_WINDOW commands, closed when full. whole: the real list's commands
+/// since its Reset, closed just before it. Which of them fails with the real list says whether
+/// the invalid call depends on the commands near it, on the whole list, or on neither (on what
+/// happens between recording and Close, such as a resource released too early).
+ProbeList probe_window;
+ProbeList probe_whole;
+std::vector<std::string> window_calls;
+u64 window_index{};
+u64 window_failures{};
+u64 probed_calls{};
+bool whole_failed{};
+
+bool OpenProbe(ID3D12GraphicsCommandList* real, ProbeList& probe) {
+    if (probe.open) {
+        return true;
+    }
+    if (!probe.list) {
+        ComPtr<ID3D12Device> device;
+        if (FAILED(real->GetDevice(IID_PPV_ARGS(&device))) ||
+            FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                  IID_PPV_ARGS(&probe.allocator))) ||
+            FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                             probe.allocator.Get(), nullptr,
+                                             IID_PPV_ARGS(&probe.list)))) {
+            LOG_ERROR(Render, "D3D12 close probe: could not create a scratch list");
+            close_probe_enabled.store(false, std::memory_order_relaxed);
+            return false;
+        }
+    } else if (FAILED(probe.allocator->Reset()) ||
+               FAILED(probe.list->Reset(probe.allocator.Get(), nullptr))) {
+        return false;
+    }
+    probe.open = true;
+    // The state the real list has here, which the commands are checked against.
+    if (probe_state.heap_count != 0) {
+        probe.list->SetDescriptorHeaps(probe_state.heap_count, probe_state.heaps.data());
+    }
+    if (probe_state.graphics) {
+        probe.list->SetGraphicsRootSignature(probe_state.graphics);
+    }
+    if (probe_state.compute) {
+        probe.list->SetComputeRootSignature(probe_state.compute);
+    }
+    if (probe_state.pipeline) {
+        probe.list->SetPipelineState(probe_state.pipeline);
+    }
+    return true;
+}
+
+bool CloseProbe(ProbeList& probe) {
+    if (!probe.open) {
+        return true;
+    }
+    probe.open = false;
+    if (SUCCEEDED(probe.list->Close())) {
+        return true;
+    }
+    // A list whose Close failed cannot be reset on the console: start a new one.
+    probe.list.Reset();
+    probe.allocator.Reset();
+    return false;
+}
+
+/// Queries the real list has begun and not ended, by heap and index.
+struct OpenQuery {
+    ID3D12QueryHeap* heap;
+    UINT index;
+    D3D12_QUERY_TYPE type;
+    u64 call;
+};
+std::vector<OpenQuery> open_queries;
+u64 list_query_errors{};
+u64 total_query_errors{};
+
+void QueryError(std::string_view what) {
+    ++list_query_errors;
+    ++total_query_errors;
+    if (total_query_errors <= 16 || (total_query_errors & (total_query_errors - 1)) == 0) {
+        LOG_CRITICAL(Render, "D3D12 close probe: query error #{}: {}", total_query_errors, what);
+    }
+}
+
+void CloseWindow() {
+    if (window_calls.empty()) {
+        return;
+    }
+    const u64 index = window_index++;
+    if (!CloseProbe(probe_window)) {
+        ++window_failures;
+        if (window_failures <= PROBE_WINDOW_LOGS) {
+            LOG_CRITICAL(Render, "D3D12 close probe: window {} fails Close ({} commands):", index,
+                         window_calls.size());
+            for (const std::string& call : window_calls) {
+                LOG_CRITICAL(Render, "D3D12 close probe:   {}", call);
+            }
+        } else if ((window_failures & (window_failures - 1)) == 0) {
+            LOG_CRITICAL(Render, "D3D12 close probe: {} windows failed Close so far",
+                         window_failures);
+        }
+    }
+    window_calls.clear();
+}
+} // Anonymous namespace
+
+void ProbeTrackHeaps(UINT count, ID3D12DescriptorHeap* const* heaps) {
+    std::scoped_lock lock{probe_mutex};
+    probe_state.heap_count = std::min<UINT>(count, static_cast<UINT>(probe_state.heaps.size()));
+    std::copy_n(heaps, probe_state.heap_count, probe_state.heaps.begin());
+}
+
+void ProbeTrackRootSignature(bool compute, ID3D12RootSignature* signature) {
+    std::scoped_lock lock{probe_mutex};
+    (compute ? probe_state.compute : probe_state.graphics) = signature;
+}
+
+void ProbeTrackPipeline(ID3D12PipelineState* pipeline) {
+    std::scoped_lock lock{probe_mutex};
+    probe_state.pipeline = pipeline;
+}
+
+void ProbeResetState() {
+    std::scoped_lock lock{probe_mutex};
+    probe_state = {};
+}
+
+void SetCloseProbeEnabled(bool enabled) {
+    close_probe_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool CloseProbeEnabled() {
+    return close_probe_enabled.load(std::memory_order_relaxed);
+}
+
+void ProbeTrackQuery(bool begin, ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, UINT index) {
+    std::scoped_lock lock{probe_mutex};
+    if (type == D3D12_QUERY_TYPE_TIMESTAMP) {
+        return;
+    }
+    // Tracked right after the call, which ProbeAppend has numbered already.
+    const u64 seq = probed_calls == 0 ? 0 : probed_calls - 1;
+    const auto it = std::find_if(open_queries.begin(), open_queries.end(), [&](const auto& q) {
+        return q.heap == heap && q.index == index;
+    });
+    if (begin) {
+        if (it != open_queries.end()) {
+            QueryError(fmt::format("BeginQuery #{} on heap={} index={} type={}, already begun "
+                                   "by #{} and not ended",
+                                   seq, static_cast<void*>(heap), index,
+                                   static_cast<u32>(type), it->call));
+            return;
+        }
+        open_queries.push_back({heap, index, type, seq});
+        return;
+    }
+    if (it == open_queries.end()) {
+        QueryError(fmt::format("EndQuery #{} on heap={} index={} type={}, not begun in this list",
+                               seq, static_cast<void*>(heap), index,
+                               static_cast<u32>(type)));
+        return;
+    }
+    if (it->type != type) {
+        QueryError(fmt::format("EndQuery #{} type={} on heap={} index={} begun by #{} as type={}",
+                               seq, static_cast<u32>(type), static_cast<void*>(heap),
+                               index, it->call, static_cast<u32>(it->type)));
+    }
+    open_queries.erase(it);
+}
+
+void ProbeAppend(ID3D12GraphicsCommandList* list,
+                 void (*run)(void* ctx, ID3D12GraphicsCommandList* scratch), void* ctx,
+                 const char* call, std::string arguments) {
+    std::scoped_lock lock{probe_mutex};
+    if (!close_probe_enabled.load(std::memory_order_relaxed)) {
+        return;
+    }
+    if (OpenProbe(list, probe_whole)) {
+        run(ctx, probe_whole.list.Get());
+    }
+    // Begin and End fall in different windows: ProbeTrackQuery pairs them over the whole list.
+    const std::string_view name{call};
+    if (name == "BeginQuery" || name == "EndQuery") {
+        ++probed_calls;
+        return;
+    }
+    if (!OpenProbe(list, probe_window)) {
+        return;
+    }
+    run(ctx, probe_window.list.Get());
+    window_calls.push_back(fmt::format("#{} {} {}", probed_calls++, call, arguments));
+    if (window_calls.size() >= PROBE_WINDOW) {
+        CloseWindow();
+    }
+}
+
+void ProbeBeforeClose() {
+    std::scoped_lock lock{probe_mutex};
+    CloseWindow();
+    whole_failed = !CloseProbe(probe_whole);
+    for (const OpenQuery& query : open_queries) {
+        QueryError(fmt::format("query heap={} index={} type={} begun by #{} still open at Close",
+                               static_cast<void*>(query.heap), query.index,
+                               static_cast<u32>(query.type), query.call));
+    }
+    open_queries.clear();
+}
+
+void ProbeReportClose(bool real_failed) {
+    std::scoped_lock lock{probe_mutex};
+    if (real_failed || whole_failed) {
+        LOG_CRITICAL(Render,
+                     "D3D12 close probe: real list Close {}, mirrored whole list Close {}, "
+                     "{} of {} windows failed so far, {} query errors in this list",
+                     real_failed ? "FAILED" : "ok", whole_failed ? "FAILED" : "ok",
+                     window_failures, window_index, list_query_errors);
+    }
+    list_query_errors = 0;
+}
+
 void DumpDeviceDiagnostics(ID3D12Device* device) {
     removal_tripwire::removal_tripped.store(true);
     if (diagnostic_dumped.test_and_set()) return;

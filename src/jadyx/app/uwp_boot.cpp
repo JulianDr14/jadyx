@@ -138,6 +138,7 @@ void SetAstcGpuFresh(bool enabled); // d3d12_texture_cache.h
 void SetGpuBasedValidation(bool enabled); // d3d12_device.h
 void SetDredEnabled(bool enabled);         // d3d12_device.h
 void SetGpuBreadcrumbsEnabled(bool enabled); // d3d12_device.h
+void SetCloseProbeEnabled(bool enabled);     // d3d12_device.h
 void SetPipelineEviction(bool enabled);      // d3d12_pipeline_cache.h
 void SetDescriptorRemovalChecks(bool enabled); // d3d12_device.h
 void SetUniformUploadCopy(bool enabled);
@@ -284,6 +285,9 @@ struct BootConfig {
     /// GPU-written breadcrumbs around every command ("gpu_breadcrumbs=1", turns dred on): a hang
     /// report names the command the GPU never finished. Slows the GPU down.
     bool gpu_breadcrumbs{};
+    /// Each command also closed alone on a scratch list ("close_probe=1"): names the call that
+    /// fails a command list's Close. Slow, diagnostic only.
+    bool close_probe{};
     /// Release idle pipelines' PSOs ("pso_eviction=0" keeps them unless memory nearly runs out).
     bool pso_eviction{true};
     /// Look for a removed device after every descriptor a draw writes ("descriptor_checks=1"), to
@@ -492,6 +496,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     D3D12::SetDescriptorRemovalChecks(config.descriptor_checks);
     D3D12::SetDredEnabled(config.dred);
     D3D12::SetGpuBreadcrumbsEnabled(config.gpu_breadcrumbs);
+    D3D12::SetCloseProbeEnabled(config.close_probe);
     D3D12::SetPipelineEviction(config.pso_eviction);
     VideoCore::Perf::SetDetailedGpuProfile(config.gpu_profile);
     VideoCore::Perf::SetForceSwapIntervalOne(config.force_swap_interval_one);
@@ -2347,6 +2352,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.dred = true;
                             config.gpu_breadcrumbs = true;
                             WriteDiag("boot.cfg: GPU breadcrumbs around every command (and DRED)");
+                        } else if (line == "close_probe=1") {
+                            config.close_probe = true;
+                            WriteDiag("boot.cfg: every command also closed alone on a scratch list");
                         } else if (line == "pso_eviction=0") {
                             config.pso_eviction = false;
                             WriteDiag("boot.cfg: idle pipelines keep their PSOs");

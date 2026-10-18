@@ -252,9 +252,19 @@ u64 Scheduler::Flush() {
 }
 
 void Scheduler::SubmitRecorded(ID3D12GraphicsCommandList* list, u64 tick) {
-    if (const HRESULT closed = list->Close(); FAILED(closed)) {
-        // An invalid command was recorded; the debug layer (PC) says which before the throw.
+    const bool probing = CloseProbeEnabled();
+    if (probing) {
+        ProbeBeforeClose();
+    }
+    const HRESULT closed = list->Close();
+    if (probing) {
+        ProbeReportClose(FAILED(closed));
+    }
+    if (FAILED(closed)) {
+        // An invalid command was recorded; the debug layer (PC) says which before the throw. On
+        // the console, dred=1 leaves the commands recorded before it.
         device.LogDebugMessages();
+        DumpRecentGpuDetails(4096);
         ThrowIfFailed(closed, "ID3D12GraphicsCommandList::Close");
     }
     ID3D12CommandList* const lists[] = {list};
@@ -276,6 +286,9 @@ void Scheduler::SubmitRecorded(ID3D12GraphicsCommandList* list, u64 tick) {
     current_allocator = AcquireAllocator();
     ThrowIfFailed(list->Reset(current_allocator.Get(), nullptr),
                   "ID3D12GraphicsCommandList::Reset");
+    if (CloseProbeEnabled()) {
+        ProbeResetState();
+    }
 }
 
 void Scheduler::ReleaseWaitersAfterError() noexcept {
