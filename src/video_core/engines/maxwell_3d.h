@@ -3138,6 +3138,13 @@ public:
     /// Write multiple values to the register identified by method.
     void CallMultiMethod(Core::System& system, u32 method, const u32* base_start, u32 amount, u32 methods_pending) override;
 
+    /// False while a macro runs: its argument writes take the word-by-word path.
+    [[nodiscard]] bool CanStoreConstBufferRun() const noexcept;
+
+    /// Stores a run of CB_DATA words (see ConstBufferRunLength) with one memory write. Registers,
+    /// shadow RAM and memory end as CallMethod word by word would leave them, in every shadow mode.
+    void StoreConstBufferRun(u32 method, const u32* words, u32 amount, bool increment_once);
+
     bool ShouldExecute() const {
         return execute_on;
     }

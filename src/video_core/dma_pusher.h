@@ -149,6 +149,9 @@ private:
 
     void CallMethod(u32 argument);
     void CallMultiMethod(const u32* base_start, u32 num_methods);
+    /// Writes the leading CB_DATA words of the current packet as one block; returns how many it
+    /// took, 0 to leave them to CallMethod.
+    u32 CallConstBufferRun(std::span<const CommandHeader> pending, size_t index);
 
 public:
     Common::ScratchBuffer<CommandHeader> command_headers; ///< Buffer for list of commands fetched at once

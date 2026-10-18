@@ -7,6 +7,7 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "video_core/dma_pusher.h"
+#include "video_core/engines/const_buffer_run.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
 #include "video_core/guest_memory.h"
@@ -124,6 +125,10 @@ void DmaPusher::ProcessCommands(std::span<const CommandHeader> commands) {
             dma_state.is_last_call = true;
             index += max_write;
         } else if (dma_state.method_count) {
+            if (const u32 words = CallConstBufferRun(commands.subspan(index), index); words != 0) {
+                index += words;
+                continue;
+            }
             auto const command_header = commands[index]; //can copy
             dma_state.dma_word_offset = u32(index * sizeof(u32));
             dma_state.is_last_call = dma_state.method_count <= 1;
@@ -222,6 +227,41 @@ void DmaPusher::CallMethod(u32 argument) {
             subchannel->CallMethod(system, dma_state.method, argument, dma_state.is_last_call);
         }
     }
+}
+
+u32 DmaPusher::CallConstBufferRun(std::span<const CommandHeader> pending, size_t index) {
+    if (subchannel_type[dma_state.subchannel] != Engines::EngineTypes::Maxwell3D) {
+        return 0;
+    }
+    // Only the incrementing branch calls this, so dma_increment_once marks the first word of an
+    // IncreaseOnce packet.
+    constexpr u32 first_cb_data =
+        u32(offsetof(Engines::Maxwell3D::Regs, const_buffer.buffer) / sizeof(u32));
+    const u32 words = Engines::ConstBufferRunLength(first_cb_data, dma_state.method,
+                                                    dma_state.method_count, pending.size(),
+                                                    dma_increment_once);
+    auto* const maxwell = static_cast<Engines::Maxwell3D*>(subchannels[dma_state.subchannel]);
+    if (words == 0 || !maxwell || !maxwell->CanStoreConstBufferRun()) {
+        return 0;
+    }
+    VideoCore::Perf::ScopedNsTimer timer{VideoCore::Perf::Counter::DmaMaxwellNs};
+    VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::DmaMaxwellCalls, 1);
+    VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::ConstBufferRuns, 1);
+    VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::ConstBufferRunWords, words);
+    dma_state.dma_word_offset = u32(index * sizeof(u32));
+    maxwell->ConsumeSink(system);
+    maxwell->current_dma_segment = dma_state.dma_get + dma_state.dma_word_offset;
+    maxwell->StoreConstBufferRun(dma_state.method, &pending[0].argument, words,
+                                 dma_increment_once);
+    if (dma_increment_once) {
+        dma_state.method++;
+        dma_state.non_incrementing = true;
+    } else {
+        dma_state.method += words;
+    }
+    dma_state.method_count -= words;
+    dma_state.is_last_call = dma_state.method_count == 0;
+    return words;
 }
 
 void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {

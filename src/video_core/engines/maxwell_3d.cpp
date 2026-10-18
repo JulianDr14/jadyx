@@ -632,6 +632,33 @@ void Maxwell3D::ProcessCBMultiData(const u32* start_base, u32 amount) {
     regs.const_buffer.offset += static_cast<u32>(copy_size);
 }
 
+bool Maxwell3D::CanStoreConstBufferRun() const noexcept {
+    return executing_macro == 0;
+}
+
+void Maxwell3D::StoreConstBufferRun(u32 method, const u32* words, u32 amount, bool increment_once) {
+    // Memory receives what each word's register received: under Replay that is the shadow value,
+    // not the pushbuffer's. IncreaseOnce passes only its first word through a register; the rest
+    // reach CallMultiMethod, which stores them as they are.
+    if (increment_once) {
+        const u32 first = ProcessShadowRam(method, words[0]);
+        ProcessDirtyRegisters(method, first);
+        if (first == words[0]) {
+            ProcessCBMultiData(words, amount);
+        } else {
+            ProcessCBMultiData(&first, 1);
+            ProcessCBMultiData(words + 1, amount - 1);
+        }
+        return;
+    }
+    std::array<u32, 16> values; // ConstBufferRunLength never spans more than the 16 registers
+    for (u32 i = 0; i < amount; ++i) {
+        values[i] = ProcessShadowRam(method + i, words[i]);
+        ProcessDirtyRegisters(method + i, values[i]);
+    }
+    ProcessCBMultiData(values.data(), amount);
+}
+
 void Maxwell3D::ProcessCBData(u32 value) {
     ProcessCBMultiData(&value, 1);
 }
