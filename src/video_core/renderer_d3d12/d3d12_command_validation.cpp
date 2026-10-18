@@ -170,6 +170,17 @@ void Report(const std::string& what) {
     }
 }
 
+/// At most one write state, and then no read state (DEPTH_WRITE with DEPTH_READ included).
+bool ValidStates(D3D12_RESOURCE_STATES states) {
+    constexpr u32 write_states =
+        D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+        D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_STREAM_OUT |
+        D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_RESOLVE_DEST;
+    const u32 bits = static_cast<u32>(states);
+    const u32 writes = bits & write_states;
+    return writes == 0 || (writes == bits && (writes & (writes - 1)) == 0);
+}
+
 } // Anonymous namespace
 
 bool ValidCopyTextureRegion(const D3D12_TEXTURE_COPY_LOCATION& dst, UINT x, UINT y, UINT z,
@@ -304,6 +315,16 @@ bool ValidBarrier(const D3D12_RESOURCE_BARRIER& barrier) {
         Report("transition: null resource");
         return false;
     }
+    if (!ValidStates(transition.StateBefore) || !ValidStates(transition.StateAfter) ||
+        transition.StateBefore == transition.StateAfter) {
+        const D3D12_RESOURCE_DESC desc = transition.pResource->GetDesc();
+        Report(fmt::format("transition: states {:#x} -> {:#x} (dim {} {}x{}x{} format {})",
+                           static_cast<u32>(transition.StateBefore),
+                           static_cast<u32>(transition.StateAfter),
+                           static_cast<u32>(desc.Dimension), desc.Width, desc.Height,
+                           desc.DepthOrArraySize, static_cast<u32>(desc.Format)));
+        return false;
+    }
     if (transition.Subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES) {
         return true;
     }
@@ -314,6 +335,125 @@ bool ValidBarrier(const D3D12_RESOURCE_BARRIER& barrier) {
                            transition.Subresource, count, static_cast<u32>(desc.Dimension),
                            desc.Width, desc.Height, desc.DepthOrArraySize, desc.MipLevels,
                            static_cast<u32>(desc.Format)));
+        return false;
+    }
+    return true;
+}
+
+bool ValidCopyResource(ID3D12Resource* dst, ID3D12Resource* src) {
+    if (!dst || !src || dst == src) {
+        Report("CopyResource: null or identical resources");
+        return false;
+    }
+    const D3D12_RESOURCE_DESC d = dst->GetDesc();
+    const D3D12_RESOURCE_DESC s = src->GetDesc();
+    if (d.Dimension != s.Dimension || d.Width != s.Width || d.Height != s.Height ||
+        d.DepthOrArraySize != s.DepthOrArraySize || d.MipLevels != s.MipLevels ||
+        d.SampleDesc.Count != s.SampleDesc.Count) {
+        Report(fmt::format("CopyResource: dim {} {}x{}x{} levels {} samples {} format {} from "
+                           "dim {} {}x{}x{} levels {} samples {} format {}",
+                           static_cast<u32>(d.Dimension), d.Width, d.Height, d.DepthOrArraySize,
+                           d.MipLevels, d.SampleDesc.Count, static_cast<u32>(d.Format),
+                           static_cast<u32>(s.Dimension), s.Width, s.Height, s.DepthOrArraySize,
+                           s.MipLevels, s.SampleDesc.Count, static_cast<u32>(s.Format)));
+        return false;
+    }
+    return true;
+}
+
+bool ValidClearRects(const char* call, D3D12_CPU_DESCRIPTOR_HANDLE target, UINT rect_count,
+                     const D3D12_RECT* rects) {
+    if (target.ptr == 0) {
+        Report(fmt::format("{}: null descriptor", call));
+        return false;
+    }
+    if (rect_count != 0 && !rects) {
+        Report(fmt::format("{}: {} rects without an array", call, rect_count));
+        return false;
+    }
+    for (UINT i = 0; i < rect_count; ++i) {
+        const D3D12_RECT& rect = rects[i];
+        if (rect.left < 0 || rect.top < 0 || rect.left > rect.right || rect.top > rect.bottom) {
+            Report(fmt::format("{}: rect {},{}-{},{}", call, rect.left, rect.top, rect.right,
+                               rect.bottom));
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ValidRenderTargets(UINT count, const D3D12_CPU_DESCRIPTOR_HANDLE* targets) {
+    if (count > D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT || (count != 0 && !targets)) {
+        Report(fmt::format("OMSetRenderTargets: {} targets{}", count,
+                           targets ? "" : " without an array"));
+        return false;
+    }
+    return true;
+}
+
+bool ValidPredication(ID3D12Resource* buffer, UINT64 offset) {
+    if (!buffer) {
+        return true;
+    }
+    const D3D12_RESOURCE_DESC desc = buffer->GetDesc();
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || offset % 8 != 0 ||
+        offset + 8 > desc.Width) {
+        Report(fmt::format("SetPredication: offset {} in a resource of dim {} and {} bytes",
+                           offset, static_cast<u32>(desc.Dimension), desc.Width));
+        return false;
+    }
+    return true;
+}
+
+bool ValidExecuteIndirect(ID3D12CommandSignature* signature, ID3D12Resource* arguments,
+                          UINT64 arguments_offset, ID3D12Resource* count, UINT64 count_offset) {
+    if (!signature || !arguments) {
+        Report("ExecuteIndirect: null signature or argument buffer");
+        return false;
+    }
+    const u64 arguments_size = arguments->GetDesc().Width;
+    if (arguments_offset % 4 != 0 || arguments_offset >= arguments_size) {
+        Report(fmt::format("ExecuteIndirect: arguments at {} of {} bytes", arguments_offset,
+                           arguments_size));
+        return false;
+    }
+    if (count) {
+        const u64 count_size = count->GetDesc().Width;
+        if (count_offset % 4 != 0 || count_offset + 4 > count_size) {
+            Report(fmt::format("ExecuteIndirect: count at {} of {} bytes", count_offset,
+                               count_size));
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ValidQuery(const char* call, ID3D12QueryHeap* heap) {
+    if (!heap) {
+        Report(fmt::format("{}: null query heap", call));
+        return false;
+    }
+    return true;
+}
+
+bool ValidResolveQueryData(ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, UINT count,
+                           ID3D12Resource* dst, UINT64 dst_offset) {
+    if (!heap || !dst) {
+        Report("ResolveQueryData: null heap or destination");
+        return false;
+    }
+    u64 result_size = 8;
+    if (type == D3D12_QUERY_TYPE_PIPELINE_STATISTICS) {
+        result_size = sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS);
+    } else if (type >= D3D12_QUERY_TYPE_SO_STATISTICS_STREAM0 &&
+               type <= D3D12_QUERY_TYPE_SO_STATISTICS_STREAM3) {
+        result_size = sizeof(D3D12_QUERY_DATA_SO_STATISTICS);
+    }
+    const D3D12_RESOURCE_DESC desc = dst->GetDesc();
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || dst_offset % 8 != 0 ||
+        dst_offset + result_size * count > desc.Width) {
+        Report(fmt::format("ResolveQueryData: {} results of type {} at {} of {} bytes", count,
+                           static_cast<u32>(type), dst_offset, desc.Width));
         return false;
     }
     return true;
