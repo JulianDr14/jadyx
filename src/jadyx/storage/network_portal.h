@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include "jadyx/storage/nsp_upload.h"
+#include "jadyx/storage/system_upload.h"
 
 namespace Jadyx {
 
@@ -28,12 +29,13 @@ struct PortalStatus {
     std::string code; ///< Local UI only; never returned by HTTP or logged.
     PortalError error{};
     UploadSnapshot transfer;
+    SystemUploadStatus system;
 };
 
 /// Library-owned HTTP server. Destruction stops and joins all network workers before launch.
 class NetworkPortal {
 public:
-    explicit NetworkPortal(std::filesystem::path games = {});
+    explicit NetworkPortal(std::filesystem::path games = {}, SystemImportBackend system_backend = {});
     ~NetworkPortal();
     NetworkPortal(const NetworkPortal&) = delete;
     NetworkPortal& operator=(const NetworkPortal&) = delete;
@@ -47,6 +49,7 @@ public:
     bool BlockForLocalOperation();
     std::string FinalizeGame(const NspValidator& validate);
     void CancelTransfer();
+    std::string RunSystemImport(std::stop_token stop);
 
 private:
     struct Impl;
