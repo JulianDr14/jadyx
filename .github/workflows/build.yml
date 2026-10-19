@@ -177,7 +177,9 @@ jobs:
               throw "The JADYX_PFX_BASE64 / JADYX_PFX_PASSWORD secrets are not set"
           }
           $pfx = Join-Path $env:RUNNER_TEMP "jadyx.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:JADYX_PFX_BASE64))
+          # A secret piped in from PowerShell can carry a BOM or line breaks; keep only base64.
+          $base64 = $env:JADYX_PFX_BASE64 -replace '[^A-Za-z0-9+/=]', ''
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($base64))
           $params = @{
               Release     = $true
               PfxPath     = $pfx
