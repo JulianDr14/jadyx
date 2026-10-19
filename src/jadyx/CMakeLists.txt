@@ -43,6 +43,8 @@ add_executable(jadyx WIN32
     storage/nsp_upload.h
     storage/nsp_import.cpp
     storage/nsp_import.h
+    storage/network_import_gate.cpp
+    storage/network_import_gate.h
     storage/storage_path.h
     input/uwp_pro_controller.cpp
     input/uwp_controllers.cpp

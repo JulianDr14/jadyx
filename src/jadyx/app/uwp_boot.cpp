@@ -105,6 +105,7 @@
 #include "jadyx/content/content_service.h"
 #include "jadyx/mods/mod_settings.h"
 #include "jadyx/storage/uwp_file_manager.h"
+#include "jadyx/storage/network_import_gate.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/game/uwp_software_keyboard.h"
 #include "jadyx/settings/uwp_system_settings.h"
@@ -377,6 +378,7 @@ struct BootConfig {
     bool gpu_removal_probe{};
     unsigned rom_storage_checks{}; // 1=record token, 2=restore after a process restart
     bool file_manager_gate{};
+    bool network_import_gate{};
     bool astc_sync{};
     bool astc_fresh{};
     /// Played by hand ("play=1"): runs until the app is closed, without frame dumps or draw trace.
@@ -425,6 +427,9 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     if (config.rom_storage_checks)
         return RunRomStorageGate(config.rom_storage_checks == 2, WriteDiag) ? 0 : 15;
     if (config.file_manager_gate) return RunFileManagerGate(WriteDiag) ? 0 : 15;
+    if (config.network_import_gate) return RunNetworkImportGate(
+        std::filesystem::path{std::wstring{winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()}},
+        WriteDiag) ? 0 : 15;
     // As yuzu_cmd: the default 15.6 ms timer resolution makes the emulated vsync (and any sleep in
     // the core) tick every 15.6 ms and drop one frame in ten, visible as a stutter.
     const auto timer_resolution = Common::Windows::SetCurrentTimerResolutionToMaximum();
@@ -2646,6 +2651,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.rom_storage_checks = 1;
                         } else if (line == "file_manager_gate=1") {
                             config.file_manager_gate = true;
+                        } else if (line == "network_import_gate=1") {
+                            config.network_import_gate = true;
                         } else if (line == "rom_storage_checks=restore") {
                             config.rom_storage_checks = 2;
                         } else if (line == "astc_verify=1") {
