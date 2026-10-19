@@ -124,6 +124,7 @@ private:
     std::shared_ptr<QueryPool> pool;
     QueryPool::Slot slot;
     mutable u64 tick{};
+    u64 begin_tick{}; ///< the command list the query was begun in
     bool ended{};
 };
 

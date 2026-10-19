@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <atomic>
 #include <cstddef>
 #include <cstring>
 
@@ -132,12 +133,30 @@ HostCounter::HostCounter(QueryCache& cache_, std::shared_ptr<HostCounter> depend
                          VideoCore::QueryType type_)
     : HostCounterBase{std::move(dependency_)}, cache{cache_}, type{type_},
       query_type{GetQueryInfo(type_).query}, pool{cache_.GetPool()}, slot{pool->Reserve(type_)} {
+    begin_tick = cache.GetScheduler().CurrentTick();
     cache.GetScheduler().CommandList()->BeginQuery(slot.heap, query_type, slot.index);
 }
 
 HostCounter::~HostCounter() {
-    // An open query cannot begin again; the streams end every counter before dropping it, so
-    // an unended slot is only left behind at teardown.
+    // The streams end every counter before dropping it (CounterStreamBase::Start). One dropped
+    // with its query open would leave a Begin without End and the list's Close would fail with
+    // E_FAIL: end it while its list is still the one recording. A list already submitted closed
+    // fine without it, so the slot is just not reused then.
+    if (!ended) {
+        static std::atomic_bool reported{};
+        if (!reported.exchange(true, std::memory_order_relaxed)) {
+            LOG_WARNING(Render, "D3D12: a counter (type {}) was dropped with its query open",
+                        static_cast<u32>(type));
+        }
+        try {
+            Scheduler& scheduler = cache.GetScheduler();
+            if (scheduler.IsRecordingThread() && scheduler.CurrentTick() == begin_tick) {
+                EndQuery();
+            }
+        } catch (const std::exception& exception) {
+            LOG_ERROR(Render, "D3D12: ending a dropped query: {}", exception.what());
+        }
+    }
     if (ended) {
         pool->Release(type, slot, tick);
     }
