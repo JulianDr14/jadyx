@@ -3994,3 +3994,53 @@ make_preferred antes del broker. Catálogos, navegador simulado y TCP autenticad
 Entrega0.3.4.3 solicitada, paquete biblioteca firmado y símbolos archivados; Series pendiente.
 Evidencia/comandos y límites en xbox_network_portal.md. Usuario confirma misma velocidad
 0.3.4.1 que0.3.4.0 (~14.8MiB/s), ambos extremos Wi-Fi; ninguna mejora Series demostrada.
+
+## Investigación memoria Hyrule — 19 octubre 2026
+
+En `feature/hyrule-crash-memory`, comparación de logs0.3.0.0/0.3.4.7 sitúa
+crashes en spirv_to_dxil bajo presión: bad_alloc antiguo, reserva staging64MiB
+rechazada/reintentada reciente, último commit5045/5120MiB. PDB0.3.4.7 resuelve
+DispatchCompute -> CreateComputePipeline -> CompilePipeline -> Mesa; falta DLL
+simbolizada/reproducción para demostrar asignación interna NULL. No fuga probada.
+Investigación Microsoft/Mesa/D3D12MA/Xenia/Dolphin/RPCS3 y gates en
+[xbox_hyrule_crash.md](xbox_hyrule_crash.md). Huecos: guard64MiB de staging no
+impone admisión tras recuperación insuficiente, compute inline sin guard Mesa,
+temporales concurrentes y cargas entre frames. Propuesta: admisión coordinada,
+uploads acotados por fence, recuperación efectiva y heaps sensibles a presupuesto;
+no cambiar DRAM/cuota/JIT ni continuar silenciosamente saltando dispatches.
+Solo documentación; implementación, reproducción y Series pendientes.
+
+Prioridad revisada por usuario19oct: recuperación anticipada real y reservas
+ajustadas primero; admisiónMesa/capuploads aplazados. Log confirmaUMA/cachecoherent
+yes y DXGI4147MiB, app5120 (no sumar). GCya inicia768/384/192MiBfree: investigar
+retención8ticks en sentenced_images antes del retiroD3D12 y falta de mantenimiento
+durante cargas, no solo adelantar umbrales. Allocator best-fit abrebase64MiB sin
+selección anticipada por presupuesto; comparar menorheap/committed exacto bajo
+presión conservando poolingnormal. FuentesXboxUWP/D3D12 y gatesR1/R2 en
+xbox_hyrule_crash.md; sin cambiosfuncionales/build/paquete.
+
+Candidato19oct implementado: allocator D3D12 recoge retiros antesdecrecer,
+rebusca/reserva bajo lock, espera tickanterior solo recordingthread/pendientes
+yuna vezportick; trimvacíos y nueva muestra app/DXGI. Bajo presión proyectada
+eligeheapmínimoalineado envezdebase64MiB, normalconservapool. MSAAheapalineado4MiB
+ycompatible. Logscomparanapp/heaps/pending ycapacidadevitada(noahorrocommit).
+38136policy/1248000packing yGPUdesktopdebug6formatos/31052bytesexactos pasan;
+objetoUWPpasa. GateGPU noinstanciaallocatorcompleto; integración/Series/Hyrule,
+ringgenérico8frames/scratch ychurnpendientes. Sinlink/paquete/commit.
+TrampaharnessWindows: macro`small` colisionaconidentificador; usacompact_size.
+Comandos/evidencia/límites en xbox_hyrule_crash.md.
+
+Entrega0.3.4.8 solicitada19oct: buildincremental/linkUWPcorrectos; biblioteca
+normalfirmada en build-uwp/package/jadyx.appx, símbolos0.3.4.8. Verificación
+CRC/34archivos/735bloquesCMSmath/exebuild-símbolos idénticos correcta. Sinpayload
+usuario/gates/debug. Cierra linkpaquete; HyruleSeries/ahorromemoria/churn pendientes,
+sincrashresueltocertificado ni commit/push. Hashes/evidencia en xbox_hyrule_crash.md.
+
+LogsSeries.8:3sesionesHyrule/retorno10biblioteca, tramo.8sinCRASH/badalloc;
+RenderError/Critical/OOM/assert0. Últimaappmaxmuestreada4741/5120(margen379),
+19heapsajustados/37,0625MiBtotal ejercitados;19recoveriesconpending0/reused0/
+trim0: recuperación efectiva no demostrada. Heaps933MiB/33,picolive895; avoided1178
+escontadorpordecisión,noahorronetocontrabaselinepooling. Pulse reanudado yDRAM2153
+vs3063previa impidenA/Bcausal/crashresueltocertificado.86FFmpegInvalidData ythrows
+Pulsecontrolados(guardadofinalsaved11,333s) separados. Detalles/evidencia en
+xbox_hyrule_crash.md ytest-results/hyrule-memory/series-0.3.4.8-20261019.

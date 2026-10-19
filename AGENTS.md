@@ -1,5 +1,26 @@
 # AGENTS.md: guía para agentes de IA en Jadyx (fork de JulianDr14)
 
+Investigación Hyrule19oct2026: rama feature/hyrule-crash-memory. Primer candidato
+recoge retiros antes de ampliar heaps y usa capacidad mínima alineada bajo
+presión app/DXGI; pooling64MiB normal conservado. Policy38136/packing1248000 y
+GPUdesktopdebug6recursos/31052bytes pasan; objetoUWPcorrecto. Link integrado,
+gateallocator completo, cargaHyrule/Series y memoria/FPS pendientes. No drenaje
+del ringgenérico8frames ni cambiosMesa/staging/JIT/DRAM/cuota5120; sinpaquete/commit.
+Detalle y límites: docs/xbox/xbox_hyrule_crash.md.
+
+Entrega solicitada0.3.4.8: buildUWP/link incremental correctos, APPX normalbiblioteca
+firmado en build-uwp/package/jadyx.appx, símbolos0.3.4.8 archivados. CRCZIP/735
+bloques/firmamatemáticaCMS y exeidénticoalbuild/símbolos correctos; sinpayloadusuario
+nidiagnósticos. Incluye candidatoheaps anterior; cargaHyrule/ahorroreal/Series
+pendientes, sincertificarcrashresuelto. Sincommit/push.
+
+GateSeries.8logs:3Hyrule/retorno10biblioteca sincrashnuevo/OOM/RenderError. Última
+appmaxmuestreada4741MiB/margen379;19heapscompactos confirmados, recuperaciones19
+sinbytesliberados/pending0/reused0/trim0. NoA/B: Pulse/DRAMdistintos; no declarar
+crashresuelto ni1178MiBahorroneto(contadorporreserva). FFmpegInvalidData yPulse
+throwscontrolados separados; últimoguardadoéxito11,333s. Ver xbox_hyrule_crash.md.
+
+
 Índice de documentación Xbox/UWP: [`docs/xbox/README.md`](docs/xbox/README.md).
 
 Léelo entero antes de tocar nada. Resume qué hacemos, en qué punto estamos y cómo trabajamos. El
