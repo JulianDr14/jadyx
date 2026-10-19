@@ -64,7 +64,7 @@ $pw = Read-Host -AsSecureString "PFX password"
 $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object Subject -eq 'CN=JadyxDev' | Select-Object -First 1
 Export-PfxCertificate -Cert $cert -FilePath jadyx.pfx -Password $pw
 [IO.File]::WriteAllText("$PWD\jadyx.b64", [Convert]::ToBase64String([IO.File]::ReadAllBytes("$PWD\jadyx.pfx")))
-cmd /c "gh secret set JADYX_PFX_BASE64 < jadyx.b64"
+gh secret set JADYX_PFX_BASE64 --body (Get-Content -Raw jadyx.b64)
 gh secret set JADYX_PFX_PASSWORD   # la escribe en el prompt, la misma de arriba
 Remove-Item jadyx.pfx, jadyx.b64
 ```
