@@ -22,6 +22,12 @@ on:
         required: false
       JADYX_PFX_PASSWORD:
         required: false
+      SCCACHE_R2_ACCOUNT_ID:
+        required: false
+      SCCACHE_R2_ACCESS_KEY_ID:
+        required: false
+      SCCACHE_R2_SECRET_ACCESS_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -63,7 +69,8 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 240
     env:
-      # sccache keeps its objects in one directory, saved as a single cache archive.
+      # Without the R2 bucket, sccache keeps its objects in one directory, saved as a single cache
+      # archive.
       SCCACHE_DIR: ${{ github.workspace }}\.cache\sccache
       SCCACHE_CACHE_SIZE: 4G
     steps:
@@ -96,7 +103,35 @@ jobs:
           path: .cache/cpm
           key: cpm-${{ hashFiles('cpmfile.json', '**/cpmfile.json') }}
 
+      # GitHub's cache is scoped: what a pull request saves is seen by that PR alone, so every new
+      # PR started from main's last save. One Cloudflare R2 bucket is shared by every PR, main and
+      # Release, like the compiler cache of a PC. Without its secrets (a fork's PR) the build falls
+      # back to GitHub's cache. The bucket expires objects after 14 days.
+      - name: Compiler cache backend
+        id: backend
+        shell: powershell
+        env:
+          R2_ACCOUNT: ${{ secrets.SCCACHE_R2_ACCOUNT_ID }}
+          R2_KEY: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          R2_SECRET: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+        run: |
+          if ($env:R2_ACCOUNT -and $env:R2_KEY -and $env:R2_SECRET) {
+              @(
+                  "SCCACHE_BUCKET=jadyx-sccache"
+                  "SCCACHE_ENDPOINT=https://$env:R2_ACCOUNT.r2.cloudflarestorage.com"
+                  "SCCACHE_REGION=auto"
+                  "SCCACHE_S3_KEY_PREFIX=uwp-x64"
+                  "AWS_ACCESS_KEY_ID=$env:R2_KEY"
+                  "AWS_SECRET_ACCESS_KEY=$env:R2_SECRET"
+              ) | Add-Content $env:GITHUB_ENV
+              "remote=true" >> $env:GITHUB_OUTPUT
+              "Compiler cache: R2 bucket jadyx-sccache"
+          } else {
+              "Compiler cache: GitHub Actions cache (no R2 secrets)"
+          }
+
       - name: Restore compiler cache
+        if: steps.backend.outputs.remote != 'true'
         uses: actions/cache/restore@v6
         with:
           path: .cache/sccache
@@ -143,9 +178,9 @@ jobs:
           $fence = '```'
           "### sccache`n$fence`n$($stats -join "`n")`n$fence" >> $env:GITHUB_STEP_SUMMARY
 
-      # Every run saves what it compiled. A PR's caches are visible to that PR alone, so its next
-      # push starts warm; main's (Release and manual runs) seed every new PR. The repo keeps 10 GB
-      # and evicts the least recently used first, and every PR reads main's, so they stay.
+      # Every run saves what it built. A PR's GitHub caches are visible to that PR alone, so its
+      # next push starts warm; main's (Release and manual runs) seed every new PR. The repo keeps
+      # 10 GB and evicts the least recently used first, and every PR reads main's, so they stay.
       - name: Save CPM sources
         if: always() && steps.cpm.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
@@ -161,7 +196,7 @@ jobs:
           key: ${{ steps.openssl.outputs.cache-primary-key }}
 
       - name: Save compiler cache
-        if: always()
+        if: always() && steps.backend.outputs.remote != 'true'
         uses: actions/cache/save@v6
         with:
           path: .cache/sccache
