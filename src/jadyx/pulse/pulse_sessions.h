@@ -53,10 +53,11 @@ std::string Save(Core::System& system, const Common::Pulse::Identity& identity,
                  const std::function<std::uint64_t()>& headroom,
                  const std::function<void(const char*)>& phase = {});
 
-/// What the library shows for a game file: the newest session kept for it.
+/// What the library shows for a game file: the newest session kept for it. Sessions of a Pulse
+/// version this build no longer reads are discarded on the way.
 struct Kept {
     std::filesystem::file_time_type saved{};
-    bool current{}; ///< Made by this build; otherwise it cannot be resumed.
+    bool current{}; ///< Of a Pulse version this build reads; otherwise it cannot be resumed.
 };
 std::optional<Kept> Find(std::string_view launch_path);
 /// The player discards the game's sessions. Normal saves are never touched.

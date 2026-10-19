@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common/pulse_archive.h"
+#include "common/pulse_version.h"
 
 #include <algorithm>
 #include <condition_variable>
@@ -412,7 +413,9 @@ Identity ReadHeader(std::istream& stream) {
 void Read(std::istream& stream, const Identity& expected, std::uint64_t max_decoded,
           const WriteBlock& write, std::stop_token stop, Progress progress) {
     CheckStop(stop);
-    if (ReadHeader(stream) != expected) throw Failure{Error::Incompatible, "Pulse identity mismatch"};
+    if (!Compatible(ReadHeader(stream), expected)) {
+        throw Failure{Error::Incompatible, "Pulse identity mismatch"};
+    }
     struct Stored {
         std::vector<std::uint8_t> raw, packed;
         std::uint64_t count{}, stored{}, codec{}, checksum{};

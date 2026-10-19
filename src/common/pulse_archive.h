@@ -18,8 +18,9 @@ inline constexpr std::uint64_t DefaultQuota = 20ULL << 30;
 inline constexpr std::uint64_t FreeReserve = 1ULL << 30;
 inline constexpr std::uint64_t TransferBudget = 32ULL << 20;
 
-// Caller computes cryptographic fingerprints over canonical effective content/settings,
-// emulator revision and savedata. No paths or host pointers are archive identities.
+// Caller computes cryptographic fingerprints over canonical effective content/settings and
+// savedata; revision holds the Pulse version (pulse_version.h). No paths or host pointers are
+// archive identities.
 struct Identity {
     std::uint64_t program_id{};
     std::array<std::uint8_t, 16> user{};
@@ -70,7 +71,8 @@ private:
     bool failed{};
 };
 
-// Scan first with no consumer to validate every checksum/limit before rebuilding.
+// Scan first with no consumer to validate every checksum/limit before rebuilding. The stored
+// identity must be Compatible (pulse_version.h) with `expected`, not equal to it.
 // Use a fresh, stopped system for the second pass; never load into a live guest.
 // max_decoded is a trusted caller limit, not a value taken from the file.
 void Read(std::istream& stream, const Identity& expected, std::uint64_t max_decoded,

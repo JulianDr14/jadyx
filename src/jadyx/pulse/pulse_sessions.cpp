@@ -16,7 +16,7 @@
 
 #include "common/fs/path_util.h"
 #include "common/pulse_store.h"
-#include "common/scm_rev.h"
+#include "common/pulse_version.h"
 #include "core/core.h"
 #include "core/pulse_checkpoint.h"
 #include "jadyx/i18n/localization.h"
@@ -57,10 +57,9 @@ std::array<std::uint8_t, 32> Sha256(std::string_view text) {
     return Sha256({reinterpret_cast<const std::uint8_t*>(text.data()), text.size()});
 }
 
+// The Pulse version, not the build: a new build keeps the sessions it still reads.
 std::array<std::uint8_t, 32> Revision() {
-    static const auto revision =
-        Sha256(std::string{Common::g_scm_rev} + Common::g_build_fullname);
-    return revision;
+    return Common::Pulse::RevisionOf(Common::Pulse::CurrentVersion);
 }
 
 // One slot per game file: the library's homebrew have no title id, and two dumps of one game are
@@ -127,7 +126,7 @@ bool CanResume(const Common::Pulse::Identity& identity) {
     const auto key = Common::Pulse::StorageKey(identity);
     for (const auto& entry : Sessions().List()) {
         if (entry.key == key && entry.state == Common::Pulse::EntryState::Available &&
-            entry.header_valid && entry.identity == identity) {
+            entry.header_valid && Common::Pulse::Compatible(entry.identity, identity)) {
             return true;
         }
     }
@@ -189,8 +188,20 @@ std::optional<Kept> Find(std::string_view launch_path) {
                 entry.identity.program_id != slot) {
                 continue;
             }
+            const auto version = Common::Pulse::VersionOf(entry.identity.revision);
+            const bool readable =
+                version && Common::Pulse::Compatible(*version, Common::Pulse::CurrentVersion);
+            if (!readable) {
+                // An older major.minor (or a build hash from before the version): no build will
+                // resume it again. A failed discard keeps it listed, as not resumable.
+                try {
+                    Sessions().Discard(entry.key);
+                    continue;
+                } catch (...) {
+                }
+            }
             if (kept && kept->saved >= entry.modified) continue;
-            kept = Kept{entry.modified, entry.identity.revision == Revision()};
+            kept = Kept{entry.modified, readable};
         }
     } catch (...) {
         return std::nullopt; // An unreadable folder shows no session; nothing is deleted.

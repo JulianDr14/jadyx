@@ -43,6 +43,7 @@ add_library(
     pulse_store.cpp
     pulse_diagnostics.h
     pulse_store.h
+    pulse_version.h
     concepts.h
     container_hash.h
     demangle.cpp

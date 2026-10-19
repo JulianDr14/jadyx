@@ -20,7 +20,7 @@
 
 #include "common/fs/path_util.h"
 #include "common/pulse_store.h"
-#include "common/scm_rev.h"
+#include "common/pulse_version.h"
 #include "core/core.h"
 #include "core/cpu_manager.h"
 #include "core/file_sys/registered_cache.h"
@@ -169,7 +169,6 @@ int RunPulseGate(const std::string& nro_path, const PulseGateOptions& options) {
                            std::ios::binary};
         const std::vector<u8> nro{std::istreambuf_iterator<char>{file}, {}};
         if (nro.empty()) throw std::runtime_error("Pulse gate: cannot read the homebrew");
-        const std::string revision = std::string{Common::g_scm_rev} + Common::g_build_fullname;
 
         Common::Pulse::Store store{Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) / "pulse" /
                                    "gate"};
@@ -178,7 +177,7 @@ int RunPulseGate(const std::string& nro_path, const PulseGateOptions& options) {
         Common::Pulse::Identity identity{};
         identity.program_id = session->system->GetApplicationProcessProgramID();
         identity.content = Sha256(nro);
-        identity.revision = Sha256({reinterpret_cast<const u8*>(revision.data()), revision.size()});
+        identity.revision = Common::Pulse::RevisionOf(Common::Pulse::CurrentVersion);
         const auto key = Common::Pulse::StorageKey(identity);
         void(session->system->Run());
         if (!heartbeats.WaitFor(4)) throw std::runtime_error("Pulse gate: no heartbeat after boot");
