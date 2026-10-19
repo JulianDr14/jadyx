@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <fstream>
 #include <mutex>
 #include <stdexcept>
@@ -16,6 +17,10 @@
 namespace Jadyx {
 namespace {
 using Json = nlohmann::json;
+using Clock = std::chrono::steady_clock;
+std::uint64_t Elapsed(Clock::time_point start) {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now()-start).count());
+}
 namespace fs = std::filesystem;
 constexpr std::uint64_t Reserve = 64ULL << 20;
 
@@ -58,14 +63,15 @@ fs::path Filename(const std::string& name) {
     return fs::path{std::u8string{name.begin(), name.end()}};
 }
 
-bool ValidName(const std::string& name) {
+bool ValidName(const std::string& name, bool system_files = false) {
     if (name.size() < 5 || name.size() > 200 || name.back() == ' ' || name.back() == '.') return false;
     for (const unsigned char c : name)
         if (c < 32 || std::string_view{"/\\:<>\"|?*"}.find(static_cast<char>(c)) != std::string_view::npos) return false;
     if (name.find("..") != std::string::npos) return false;
     auto lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (!lower.ends_with(".nsp")) return false;
+    if (system_files ? !(lower.ends_with(".zip") || lower.ends_with(".nca") || lower=="prod.keys" || lower=="title.keys") :
+                       !lower.ends_with(".nsp")) return false;
     const auto stem = lower.substr(0, lower.find('.'));
     if (stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" ||
         (stem.size() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) && stem[3] >= '0' && stem[3] <= '9')) return false;
@@ -100,9 +106,11 @@ struct NspUpload::Impl {
     std::uint64_t generation{}, file_id{};
     DWORD volume{};
     std::stop_source cancellation;
+    bool system_files{};
 
-    explicit Impl(fs::path games_) : games{std::move(games_)},
-        folder{games.parent_path() / "jadyx/transfers/nsp"}, payload{folder / "payload.part"} {
+    explicit Impl(fs::path games_, bool system_files_, fs::path temporary) : games{std::move(games_)},
+        folder{temporary.empty() ? games.parent_path() / "jadyx/transfers/nsp" : std::move(temporary)},
+        payload{folder / "payload.part"}, system_files{system_files_} {
         fs::create_directories(games);
         fs::create_directories(folder);
         Recover();
@@ -133,7 +141,7 @@ struct NspUpload::Impl {
                 const auto filename = json.at("name").get<std::string>();
                 const auto id = json.at("id").get<std::string>();
                 const auto fingerprint = json.at("fingerprint").get<std::string>();
-                if (json.at("version") != 1 || next <= generation || !ValidName(filename) ||
+                if (json.at("version") != 1 || next <= generation || !ValidName(filename,system_files) ||
                     !Hex(id, 32) || !Hex(fingerprint, 64) || !length || length > MaxLength || offset > length) continue;
                 const auto identity = json.at("file_id").get<std::uint64_t>();
                 const auto serial = json.at("volume").get<DWORD>();
@@ -167,7 +175,8 @@ struct NspUpload::Impl {
     }
 };
 
-NspUpload::NspUpload(fs::path games) : impl{std::make_unique<Impl>(std::move(games))} {}
+NspUpload::NspUpload(fs::path games, bool system_files, fs::path temporary) :
+    impl{std::make_unique<Impl>(std::move(games),system_files,std::move(temporary))} {}
 NspUpload::~NspUpload() { Cancel(); }
 
 UploadSnapshot NspUpload::Snapshot() const {
@@ -204,7 +213,7 @@ void NspUpload::Resume() {
 }
 
 UploadResult NspUpload::Create(std::string name, std::string fingerprint, std::uint64_t length) {
-    if (!ValidName(name) || !Hex(fingerprint, 64) || !length || length > MaxLength) return {400, "file"};
+    if (!ValidName(name,impl->system_files) || !Hex(fingerprint, 64) || !length || length > MaxLength) return {400, "file"};
     std::unique_lock operation{impl->operation, std::try_to_lock};
     if (!operation.owns_lock()) return {409, "busy"};
     std::lock_guard lock{impl->mutex};
@@ -240,6 +249,8 @@ UploadResult NspUpload::Append(const std::string& id, std::uint64_t offset, std:
         if (offset != impl->info.offset || length > impl->info.length - offset) return {409, "offset"};
         impl->info.busy=true; impl->info.phase="receiving"; impl->info.error.clear();
     }
+    const auto started=Clock::now();
+    UploadPerformance performance;
     std::string error;
     try {
         if (Free(impl->games) < length + Reserve) throw std::runtime_error("space");
@@ -249,25 +260,37 @@ UploadResult NspUpload::Append(const std::string& id, std::uint64_t offset, std:
         std::vector<char> buffer(1 << 20);
         std::size_t buffered{};
         std::uint64_t received{};
+        const auto write=[&](const char* bytes,std::size_t count) {
+            const auto at=Clock::now(); file.Write(bytes,count);
+            performance.write_us+=Elapsed(at);
+        };
         const bool read = reader([&](const char* bytes, std::size_t count) {
+            ++performance.reader_calls;
             if (impl->cancellation.stop_requested() || count > length - received) return false;
             received += count;
             while (count) {
                 const auto n = (std::min)(count, buffer.size() - buffered);
                 std::copy_n(bytes, n, buffer.data() + buffered);
                 bytes += n; count -= n; buffered += n;
-                if (buffered == buffer.size()) { file.Write(buffer.data(), buffered); buffered=0; }
+                if (buffered == buffer.size()) { write(buffer.data(), buffered); buffered=0; }
             }
             { std::lock_guard lock{impl->mutex}; impl->info.received=offset+received; }
             return true;
         });
         if (!read || received != length || impl->cancellation.stop_requested()) throw std::runtime_error("interrupted");
-        if (buffered) file.Write(buffer.data(), buffered);
+        if (buffered) write(buffer.data(), buffered);
+        const auto flush_at=Clock::now();
         file.Flush(); // Once per HTTP chunk, not per network packet. Checkpoint never leads data.
+        performance.flush_us=Elapsed(flush_at);
         std::lock_guard lock{impl->mutex};
         impl->info.offset = offset + length;
+        const auto checkpoint_at=Clock::now();
         try { impl->Checkpoint(); }
         catch (...) { impl->info.offset=offset; throw; }
+        performance.checkpoint_us=Elapsed(checkpoint_at);
+        performance.total_us=Elapsed(started);
+        performance.bytes=length; performance.confirmed_offset=offset+length;
+        impl->info.performance=performance;
         return {};
     } catch (const std::exception& e) { error=e.what(); }
     catch (...) { error="disk"; }
@@ -313,7 +336,7 @@ UploadResult NspUpload::Ready(const std::string& id) {
     return {};
 }
 UploadResult NspUpload::Rename(const std::string& id, std::string name) {
-    if (!ValidName(name)) return {400, "file"};
+    if (!ValidName(name,impl->system_files)) return {400, "file"};
     std::unique_lock operation{impl->operation, std::try_to_lock};
     if (!operation.owns_lock()) return {409, "busy"};
     std::lock_guard lock{impl->mutex};
