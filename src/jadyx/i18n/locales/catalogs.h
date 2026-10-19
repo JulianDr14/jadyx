@@ -7,4 +7,5 @@
 namespace Jadyx::I18n {
 extern const Catalog EnglishCatalog;
 extern const Catalog SpanishCatalog;
+extern const Catalog PortugueseBrazilCatalog;
 } // namespace Jadyx::I18n

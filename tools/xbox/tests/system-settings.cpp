@@ -32,6 +32,10 @@ int main() {
     check(GameLanguageForLocale(locale(L"ja-JP")) == L::Japanese);
     check(GameLanguageForLocale(locale(L"sv-SE")) == L::EnglishBritish);
     check(GameLanguageForLocale({}) == L::EnglishAmerican);
+    // The first language in the list that a Switch has, not just the first one.
+    check(GameLanguageForLocale(SystemLocale{{L"ca-ES", L"es-ES"}, {}}) == L::Spanish);
+    check(GameLanguageForLocale(SystemLocale{{L"sv-SE", L"pt-BR", L"en-US"}, {}}) == L::PortugueseBrazilian);
+    check(GameLanguageForLocale(SystemLocale{{L"sv-SE", L"fi-FI"}, {}}) == L::EnglishBritish);
 
     // Region: home region first, else the language's region; Europe for the rest of the world.
     check(RegionForLocale(locale(L"es-ES", L"CO")) == R::Usa);

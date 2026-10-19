@@ -15,7 +15,7 @@
 namespace Jadyx {
 namespace {
 constexpr std::uint32_t Magic = 0x434C5845; // "EXLC"
-constexpr std::uint32_t Version = 3;
+constexpr std::uint32_t Version = 4;       // 4: titles read in the language each game runs in.
 constexpr std::uint32_t MaxText = 512;      // UTF-16 units; NACP names are at most 512 bytes.
 
 struct Header {

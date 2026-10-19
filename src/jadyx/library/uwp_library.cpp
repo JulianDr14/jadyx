@@ -628,6 +628,11 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             std::error_code ec;
             std::filesystem::create_directories(root, ec);
             auto result = ScanGameLibrary(root, stop);
+            // The filesystem's own text is English whatever the interface language: log it only.
+            if (!result.error.empty()) {
+                LOG_WARNING(Frontend, "Library scan: internal folder: {}", result.error);
+                result.error = I18n::ToUtf8(Tr(T::LibraryScanFailed));
+            }
             const std::wstring internal{Tr(T::SourceInternal)};
             for (auto& entry : result.entries) {
                 const auto path = (root / entry.relative_path).u8string();
@@ -655,7 +660,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     std::make_move_iterator(external.entries.begin()), std::make_move_iterator(external.entries.end()));
             } catch (const winrt::hresult_error& e) {
                 result.error = I18n::ToUtf8(I18n::Format(T::FolderAuthFailed, {e.message()}));
-            } catch (const std::exception& e) { result.error = e.what(); }
+            } catch (const std::exception& e) {
+                LOG_WARNING(Frontend, "Library scan: external folders: {}", e.what());
+                result.error = I18n::ToUtf8(Tr(T::LibraryScanFailed));
+            }
             std::sort(result.entries.begin(), result.entries.end(), [](const auto& a, const auto& b) {
                 return a.launch_path < b.launch_path;
             });
@@ -982,7 +990,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     if (error.empty()) return selected_path;
                     if (error == "content-missing") missing_content = true;
                     else notice = Wide(error);
-                } catch (const std::exception& e) { notice = Wide(e.what()); }
+                } catch (const std::exception& e) {
+                    LOG_WARNING(Frontend, "Game check failed: {}", e.what());
+                    notice = Tr(T::GameLoadFailed);
+                }
                 dirty = true;
             }
         }
@@ -1635,8 +1646,14 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             // A rescan keeps the game the player was on; the first scan starts at the last one played.
             const auto kept = selected < scan.entries.size() ? scan.entries[selected].launch_path : std::string{};
             try { scan = future.get(); }
-            catch (const std::exception& e) { scan.error = e.what(); }
-            catch (const winrt::hresult_error& e) { scan.error = winrt::to_string(e.message()); }
+            catch (const std::exception& e) {
+                LOG_WARNING(Frontend, "Library scan failed: {}", e.what());
+                scan.error = I18n::ToUtf8(Tr(T::LibraryScanFailed));
+            } catch (const winrt::hresult_error& e) {
+                LOG_WARNING(Frontend, "Library scan failed: {:08X} {}", static_cast<std::uint32_t>(e.code()),
+                            winrt::to_string(e.message()));
+                scan.error = I18n::ToUtf8(Tr(T::LibraryScanFailed));
+            }
             loading = false;
             refresh_play(kept);
             refresh_pulse();

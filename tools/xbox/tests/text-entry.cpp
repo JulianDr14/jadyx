@@ -42,7 +42,8 @@ int main() {
     check(entry.ShowingSymbols() && entry.Character(0, 0) == L'á');
     entry.Focus(4, 0); // Shift
     entry.Press();
-    check(entry.Character(0, 0) == L'Á' && entry.Character(1, 0) == L'!');
+    check(entry.Character(0, 0) == L'Á' && entry.Character(0, 3) == L'Ã' &&
+          entry.Character(0, 9) == L'Õ' && entry.Character(1, 2) == L'Ç' && entry.Character(1, 5) == L'!');
     entry.Focus(4, 8);
     check(entry.Press() == TextEntry::Result::Done);
 

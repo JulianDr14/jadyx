@@ -24,6 +24,7 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::FolderAuthFailed, L"No se pudo autorizar o recuperar la carpeta: {0}"},
     {Text::GameLoadFailed, L"No se pudo cargar el juego. Comprueba el USB, los permisos y los datos del juego."},
     {Text::GameStoppedGpu, L"El juego se detuvo por un fallo de gráficos o falta de memoria."},
+    {Text::LibraryScanFailed, L"No se pudieron leer algunas carpetas de juegos. Comprueba el USB y sus permisos."},
 
     // Prompts and common actions
     {Text::Play, L"Jugar"},

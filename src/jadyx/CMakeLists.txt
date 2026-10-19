@@ -56,9 +56,11 @@ add_executable(jadyx WIN32
     i18n/locales/registry.cpp
     i18n/locales/en.cpp
     i18n/locales/es.cpp
+    i18n/locales/pt_br.cpp
     ui/ui_text.h
     # Settings > System and the library's on-disk metadata cache.
     settings/system_settings.h
+    settings/nacp_language.h
     settings/system_page.h
     settings/upscaling.h
     ui/text_entry.h

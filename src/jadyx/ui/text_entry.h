@@ -111,8 +111,9 @@ public:
     [[nodiscard]] wchar_t Character(std::size_t r, std::size_t c) const {
         static constexpr std::array<std::wstring_view, CharacterRows> letters{
             L"1234567890", L"qwertyuiop", L"asdfghjklñ", L"zxcvbnm-_."};
+        // Accents for Spanish and Portuguese (ã õ â ê ô) first, then the usual punctuation.
         static constexpr std::array<std::wstring_view, CharacterRows> symbol_rows{
-            L"áéíóúüçàèò", L"!?¡¿@#$%&*", L"()[]{}<>/\\", L"+=:;'\",~^|"};
+            L"áàâãéêíóôõ", L"úüçèò!?¡¿@", L"#$%&*()/\\'", L"\":;,+=<>[]"};
         if (r >= CharacterRows || c >= Columns) return 0;
         const wchar_t ch = (symbols ? symbol_rows : letters)[r][c];
         if (!shift) return ch;
@@ -120,13 +121,18 @@ public:
         switch (ch) {
         case L'ñ': return L'Ñ';
         case L'á': return L'Á';
+        case L'à': return L'À';
+        case L'â': return L'Â';
+        case L'ã': return L'Ã';
         case L'é': return L'É';
+        case L'ê': return L'Ê';
         case L'í': return L'Í';
         case L'ó': return L'Ó';
+        case L'ô': return L'Ô';
+        case L'õ': return L'Õ';
         case L'ú': return L'Ú';
         case L'ü': return L'Ü';
         case L'ç': return L'Ç';
-        case L'à': return L'À';
         case L'è': return L'È';
         case L'ò': return L'Ò';
         default:   return ch;

@@ -31,8 +31,22 @@ progress{width:100%;height:10px;accent-color:#f5f5f7}#job,#message{white-space:p
 <p id="message" role="alert"></p><p id="privacy">Local network · HTTP connection without encryption.</p>
 <script>
 'use strict';
-const $=id=>document.getElementById(id),es=navigator.language.toLowerCase().startsWith('es');
-const words=es?{
+const $=id=>document.getElementById(id),lang=navigator.language.toLowerCase(),es=lang.startsWith('es'),pt=lang.startsWith('pt');
+const words=pt?{
+ title:'Conecte-se ao seu console',intro:'Digite o código temporário que o Jadyx mostra. Mantenha o app aberto na biblioteca.',label:'Código de conexão',connect:'Conectar',
+ uploadtitle:'Importar jogos NSP',uploadintro:'Somente jogos base. Os arquivos são copiados para o armazenamento interno do console.',fileslabel:'Selecionar arquivos NSP',
+ namelabel:'Nome de destino (um único arquivo)',send:'Enviar / retomar',rename:'Renomear arquivo pendente',pause:'Pausar',discard:'Apagar arquivo parcial',
+ privacy:'Rede local · Conexão HTTP sem criptografia.',ok:'Conexão estabelecida.',bad:'Código incorreto ou expirado. Gere outro no Jadyx.',
+ lost:'A conexão foi encerrada. Conecte-se de novo pelo Jadyx; o progresso confirmado é mantido.',free:'Espaço livre',confirmed:'Confirmado',
+ speed:'Velocidade',eta:'Tempo restante',queue:'Na fila',choose:'Selecione um ou mais arquivos NSP.',same:'Há outro arquivo pendente. Selecione o mesmo arquivo para retomá-lo ou apague a transferência parcial.',
+ receiving:'Recebendo',paused:'Pausado. Selecione o mesmo arquivo para continuar.',ready:'Aguardando validação',validating:'Validando NSP',publishing:'Adicionando à biblioteca',complete:'Instalado na biblioteca',
+ busy:'Aguarde o fim da operação no Jadyx.',exists:'Esse nome já existe. Altere o nome de destino e tente de novo.',space:'Não há espaço suficiente.',
+ file:'Nome ou arquivo inválido. Selecione um NSP.',base:'Somente jogos base são aceitos; não atualizações, DLC nem pacotes mistos.',
+ nsp:'A estrutura do NSP é inválida.',incomplete:'O NSP está incompleto.',keys:'Não foi possível ler os metadados. Verifique as chaves do seu console e o arquivo NSP.',
+ disk:'Não foi possível gravar ou publicar o arquivo.',interrupted:'Transferência interrompida. Você pode retomar a partir do progresso confirmado.',
+ partial:'Há uma transferência pendente. Retome ou apague.',recovery:'Não foi possível recuperar o arquivo parcial. Apague-o antes de iniciar outro.',unavailable:'A importação não está disponível no momento.',
+ attempts:'Tentativas demais. Aguarde um minuto.',version:'Versão de transferência incompatível. Recarregue a página.',idle:'Pronto para importar.'
+}:es?{
  title:'Conecta con tu consola',intro:'Introduce el código temporal que muestra Jadyx. Mantén la app abierta en la biblioteca.',label:'Código de conexión',connect:'Conectar',
  uploadtitle:'Importar juegos NSP',uploadintro:'Solo juegos base. Los archivos se copian al almacenamiento interno de la consola.',fileslabel:'Seleccionar archivos NSP',
  namelabel:'Nombre de destino (un solo archivo)',send:'Subir / reanudar',rename:'Renombrar archivo pendiente',pause:'Pausar',discard:'Eliminar archivo parcial',
@@ -56,7 +70,7 @@ const words=es?{
  interrupted:'Transfer interrupted. You can resume from confirmed progress.',partial:'An upload is pending. Resume or discard it.',
  recovery:'Cannot recover the partial file. Discard it before starting another.',unavailable:'Import is currently unavailable.',
  attempts:'Too many attempts. Wait one minute.',version:'Incompatible upload version. Reload this page.',idle:'Ready to import.'};
-if(es){document.documentElement.lang='es';for(const id of ['title','intro','label','connect','uploadtitle','uploadintro','fileslabel','namelabel','send','rename','pause','discard','privacy'])$(id).textContent=words[id];}
+if(es||pt){document.documentElement.lang=pt?'pt-BR':'es';for(const id of ['title','intro','label','connect','uploadtitle','uploadintro','fileslabel','namelabel','send','rename','pause','discard','privacy'])$(id).textContent=words[id];}
 const selectedChunk=Number(new URLSearchParams(location.search).get('chunk'));
 const chunk=(selectedChunk===4||selectedChunk===16||selectedChunk===64?selectedChunk:16)*1048576;
 let session='',timer,state={},running=false,stopped=false,currentXHR=null,currentId='',rates=[];

@@ -24,6 +24,7 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::FolderAuthFailed, L"Couldn't authorize or recover the folder: {0}"},
     {Text::GameLoadFailed, L"The game couldn't be loaded. Check the USB drive, permissions and game data."},
     {Text::GameStoppedGpu, L"The game stopped because of a graphics failure or lack of memory."},
+    {Text::LibraryScanFailed, L"Some game folders couldn't be read. Check the USB drive and its permissions."},
 
     // Prompts and common actions
     {Text::Play, L"Play"},

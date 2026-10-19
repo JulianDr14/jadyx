@@ -480,7 +480,10 @@ std::string CheckExternalGame(std::string_view path) {
         LOG_INFO(Frontend, "ROM storage: preflight passed size={} path={}", size, path);
         return {};
     } catch (const winrt::hresult_error& e) { return ErrorText(e); }
-      catch (const std::exception& e) { return e.what(); }
+      catch (const std::exception& e) {
+        LOG_WARNING(Frontend, "ROM storage: preflight failed path={}: {}", path, e.what());
+        return I18n::ToUtf8(I18n::Tr(I18n::Text::GameReadFailed));
+    }
 }
 
 bool RunRomStorageGate(bool restore, const std::function<void(std::string)>& diagnostic) {

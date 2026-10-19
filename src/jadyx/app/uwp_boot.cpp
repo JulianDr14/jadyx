@@ -108,6 +108,7 @@
 #include "jadyx/storage/network_import_gate.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/game/uwp_software_keyboard.h"
+#include "jadyx/settings/nacp_language.h"
 #include "jadyx/settings/uwp_system_settings.h"
 #include "video_core/performance_overlay.h"
 #include "jadyx/storage/utf8.h"
@@ -222,35 +223,6 @@ static void ApplyHeadlessBootSettings(const BootSurface& surface) {
     // DRAM clamp is a separate reservation follow-up, not here.
 }
 
-/// The NACP's supported-language bit for a system language (as NACP::GetLanguageEntry maps them).
-static u32 NacpLanguageBit(Settings::Language language) {
-    using FileSys::Language;
-    const auto bit = [](Language nacp) { return u32{1} << static_cast<u32>(nacp); };
-    switch (language) {
-    case Settings::Language::Japanese:            return bit(Language::Japanese);
-    case Settings::Language::EnglishAmerican:     return bit(Language::AmericanEnglish);
-    case Settings::Language::EnglishBritish:      return bit(Language::BritishEnglish);
-    case Settings::Language::French:              return bit(Language::French);
-    case Settings::Language::FrenchCanadian:      return bit(Language::CanadianFrench);
-    case Settings::Language::German:              return bit(Language::German);
-    case Settings::Language::Italian:             return bit(Language::Italian);
-    case Settings::Language::Spanish:             return bit(Language::Spanish);
-    case Settings::Language::SpanishLatin:        return bit(Language::LatinAmericanSpanish);
-    case Settings::Language::Dutch:               return bit(Language::Dutch);
-    case Settings::Language::Portuguese:          return bit(Language::Portuguese);
-    case Settings::Language::PortugueseBrazilian: return bit(Language::BrazilianPortuguese);
-    case Settings::Language::Russian:             return bit(Language::Russian);
-    case Settings::Language::Korean:              return bit(Language::Korean);
-    case Settings::Language::Chinese:
-    case Settings::Language::ChineseSimplified:   return bit(Language::SimplifiedChinese);
-    case Settings::Language::Taiwanese:
-    case Settings::Language::ChineseTraditional:  return bit(Language::TraditionalChinese);
-    case Settings::Language::Polish:              return bit(Language::Polish);
-    case Settings::Language::Thai:                return bit(Language::Thai);
-    }
-    return 0;
-}
-
 /// Many games read the system language directly and fall back to English on their own when they
 /// lack it, even when they ship a close variant (Spain's Spanish but not es-419). Give them the
 /// closest language they declare instead (PickGameLanguage: variant, then English, then any).
@@ -259,14 +231,12 @@ static void ApplyGameLanguage(Core::System& system) {
     if (system.GetAppLoader().ReadControlData(nacp) != Loader::ResultStatus::Success) {
         return;
     }
-    const u32 supported = nacp.GetSupportedLanguages();
     const auto preferred = Settings::values.language_index.GetValue();
-    const auto language = PickGameLanguage(preferred, [supported](Settings::Language language) {
-        return (supported & NacpLanguageBit(language)) != 0;
-    });
+    const auto language = PickNacpLanguage(preferred, nacp);
     Settings::values.language_index = language;
     LOG_INFO(Frontend, "Headless boot: game languages {:08X}, preferred {}, system language {}",
-             supported, Settings::CanonicalizeEnum(preferred), Settings::CanonicalizeEnum(language));
+             nacp.GetSupportedLanguages(), Settings::CanonicalizeEnum(preferred),
+             Settings::CanonicalizeEnum(language));
 }
 
 /// Optional boot.cfg next to boot.nro (written by package-appx.ps1 -RunSeconds).
