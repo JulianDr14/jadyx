@@ -68,9 +68,12 @@ Audio works in every game tested. None has been played from start to finish, so 
 | App memory | A memory guard that shrinks the caches as the 5120 MiB limit nears, and a ledger of who owns each MiB | See [The memory guard](#the-memory-guard) and [The memory wall](#the-memory-wall) |
 | Textures | ASTC decoded on the GPU into BC3, or BC1 when the texture has no alpha; arrays included | `astc=bc3` keeps the CPU path, `astc_opaque=bc3` keeps every ASTC texture as BC3, `astc_arrays=rgba` keeps arrays in RGBA8 |
 | Audio | XAudio2 2.9 | Same path on PC and Series |
-| Front end | Game library with cover art cached on disk, in-game menu (View + Menu held), settings with a System page (user name, languages, region), per-game options | English and Spanish interface; imports keys and firmware from a folder; games from `LocalState\games` or external folders and USB drives. See [The front end](#the-front-end) |
+| Front end | Home, Library and Settings tabs; library with cover art cached on disk, filters and pinned games; full-screen in-game menu (View + Menu held) with screenshots | English and Spanish interface; imports keys and firmware from a folder; games from `LocalState\games` or external folders and USB drives. See [The front end](#the-front-end) |
+| Game options | Mods, Cheats, Updates, DLC and Pulse for each game, opened from the library | Cheats also change from the in-game menu, while playing. See [Game options](#game-options) |
+| Mods | Installed in priority order; browsed and downloaded from GameBanana or the CNX index, or installed from archives on disk | `.zip`, `.7z` and `.rar`; an archive with several variants lets you pick. See [Mods](#mods) |
 | Cheats | Atmosphere cheats from the game's files and the online nx-cheats-db, turned on before playing or while playing | See [Cheats](#cheats) |
-| Input | Xbox controllers, keyboard on PC with rebindable keys | Emulated controller type (Pro, Joy-Cons, handheld) chosen per game; a chosen pad that disconnects is never silently replaced |
+| Updates and DLC | Imported from NSP or XCI, verified, kept in internal storage or read in place from USB | Several versions kept; one active at a time. See [Updates and DLC](#updates-and-dlc) |
+| Input | Xbox controllers, keyboard on PC with rebindable keys | Emulated controller type (Pro, Joy-Cons, handheld) chosen per game; a chosen pad that disconnects is never silently replaced; held directions repeat in menus |
 | Recovery | A GPU failure returns to the library instead of killing the app | Still being validated on the Series |
 | Sessions (Pulse) | **Back to home** saves the running game; picking it again resumes it where it was | 64-bit and 32-bit games save and resume on the Series and on PC. See [Pulse: resume where you left off](#pulse-resume-where-you-left-off) |
 
@@ -141,8 +144,9 @@ flowchart TB
 
     subgraph front["jadyx · front end"]
         direction LR
-        lib["Library<br/>cover art · USB and external folders"]
-        menu["In-game menu<br/>configuration panel"]
+        lib["Home · Library · Settings<br/>cover art · USB and external folders"]
+        opts["Game options<br/>mods · cheats · updates · DLC"]
+        menu["In-game menu<br/>screenshots · configuration panel"]
         input["Controllers · keyboard<br/>emulated pad type per game"]
     end
 
@@ -200,7 +204,8 @@ Where things live:
 
 | Path | What |
 | --- | --- |
-| `src/jadyx/` | Front end: CoreWindow boot, library and its metadata cache, in-game menu, settings, interface languages (`locales/`), controllers and keyboard, file import, external storage, `jadyx_diag.txt` |
+| `src/jadyx/` | Front end: CoreWindow boot (`app/`), library and its metadata cache (`library/`), in-game menu (`game/`), settings, interface languages (`i18n/locales/`), controllers and keyboard (`input/`), shared drawing and design tokens (`ui/`), file import and external storage (`storage/`), `jadyx_diag.txt` |
+| `src/jadyx/mods/`, `cheats/`, `content/` | The game options: the mods manager and its store, cheats, the updates and DLC manager |
 | `src/dynarmic/` | The JIT, with W^X for the AppContainer, the warm-up profiles and compact block metadata |
 | `src/common/` | Shared pieces this port added to: the memory ledger, the spin-then-block core wait, fiber stacks that grow on demand, Pulse's archive format |
 | `src/core/pulse_*` | Pulse: capture and restore of the guest process (threads, memory, kernel objects) and of each HLE service's state; the sessions in the library live in `src/jadyx/pulse_sessions.*` |
@@ -208,7 +213,7 @@ Where things live:
 | `src/shader_recompiler/` | Eden's shader recompiler, with the adjustments the D3D12 profile needs |
 | `tools/xbox/mesa/` | Our additions to Mesa's `spirv_to_dxil` (pipeline linking, integer sampling) |
 | `tools/xbox/` | Build, packaging, local run, Mesa build and crash symbolication scripts |
-| `tools/xbox/tests/` | Standalone tests of the pure policies: memory guard, PSO residency, JIT warm-up, controllers, library, languages, system settings, on-screen keyboard, cheats |
+| `tools/xbox/tests/` | Standalone tests of the pure policies: memory guard, PSO residency, JIT warm-up, controllers, library, languages, system settings, on-screen keyboard, cheats, mods |
 | `dist/uwp/` | App manifest and package assets |
 
 Two runtime DLLs are loaded from the package root: `spirv_to_dxil.dll` (built from Mesa by
@@ -404,6 +409,25 @@ turns the tracker off. To get the files off a console, use the Device Portal fil
 
 The library, settings and in-game menu are drawn with Direct2D, without XAML: the library on the
 app's own swapchain, the in-game menu on a CPU bitmap the renderer copies over the paused game.
+Everything is laid out for a controller across a room, with the [Inter](https://rsms.me/inter/)
+typeface, one set of design tokens and eased transitions. A frame that fails to draw is skipped; it
+never closes the library or the game.
+
+**Home, Library and Settings.** Three tabs, switched with the bumpers (Q and E on a keyboard),
+under a header with the controller's battery, the clock and the user. The selected game's cover,
+blurred, fills the background.
+- *Home*: a rail of the pinned and the recently played games.
+- *Library*: every game in a grid, filtered by all, played, A–Z, pinned, recently added or with a
+  Pulse session. **Y** pins a game, **X** scans the folders again, **Menu** opens its
+  [options](#game-options).
+- *Settings*: one page with a list of sections on the left (System, Controllers and keyboard,
+  Files) beside a card with the emulator's data.
+
+**The in-game menu.** View + Menu held pauses the game and opens a full-screen menu over the
+blurred frame: the game's title and how long this session has run, quick actions (continue,
+[cheats](#cheats), **Back to home**), and pages for the controller (style, face buttons, dead zone)
+and the display (upscaling, statistics). **Screenshot**
+saves the paused frame as a PNG in `LocalState\jadyx\captures`.
 
 **Cover art and titles are cached.** Reading a game's title and icon means opening the NSP or XCI
 through Eden's loaders, and before that building a `Core::System`. The library used to do it for
@@ -444,11 +468,46 @@ instead behaves the same on the Series and the PC, works with a controller, a mo
 keyboard, and is a pure class with its own tests. Controls follow the console keyboard: A types,
 X deletes, Y adds a space, View is Shift, Menu confirms and B cancels.
 
+### Game options
+
+**Menu** on a game in the library opens its options, a bar of categories: **Mods**, **Cheats**,
+**Updates**, **DLC** and **Pulse**. Mods, updates and DLC change in the library and apply the next
+time the game boots; cheats can also change while playing.
+
+### Mods
+
+The mods page has three tabs:
+- **Installed**: the game's mods in priority order. **A** turns one on or off, **X** picks it up to
+  move it (the higher one wins the files both change), **Y** shows its files, updates, moves or
+  uninstalls it.
+- **Explore**: the game's mods on [GameBanana](https://gamebanana.com/), or on the CNX index of
+  fan translations and modifications, as a grid of pictures. A mod's page shows its pictures,
+  description and files; **A** downloads one. Search, categories and sort order are at hand, and
+  mods rated for adults stay hidden unless turned on. The game is matched to GameBanana by its
+  name, and the match can be changed by hand.
+- **Files**: the `.zip`, `.7z` and `.rar` archives in the folders you gave the app, internal
+  storage first. When an archive holds several mods (variants), you tick which to install.
+
+Mods install where Eden's loader reads them (`load/<title id>/<mod>`), so they work as in any other
+Eden build. An install extracts into a staging folder and renames the finished folder into place,
+and an uninstall renames it away before deleting it: a game never boots with half a mod, even after
+a crash. Downloads run in the background while you browse, and the page tells when a newer version
+of an installed mod is out. Mods belong to their authors.
+
+### Updates and DLC
+
+**Updates** and **DLC** import a game's update or additional content from a complete NSP or XCI.
+Each package is checked before it replaces anything: that it belongs to this game, that your keys
+can read it, that its contents and sizes are complete, and optionally its full integrity. You pick
+where it lives: copied to internal storage, or read in place from the USB drive or folder it came
+from, with no copy. Several versions of an update are kept and one is active; DLC can be turned on
+and off. If content on a USB drive is missing at launch, the app asks to reconnect it or to launch
+without it for that session. Removing content never touches the base game or its saves.
+
 ### Cheats
 
-**Menu** on a game in the library opens its options; **Cheats** is the first. The in-game menu
-(View + Menu held) has the same page, and there a change takes effect as soon as the game resumes,
-with no restart, even for a game that booted without cheats.
+In the in-game menu, a change to the cheats takes effect as soon as the game resumes, with no
+restart, even for a game that booted without cheats.
 
 - **Where they come from.** The game's own cheat folders (`load/<title id>/<mod>/cheats/<build
   id>.txt`, as on Atmosphere) and [nx-cheats-db](https://github.com/sthetix/nx-cheats-db) by
@@ -509,7 +568,10 @@ Requirements: an Xbox Series X|S in Developer Mode, the package from the
    lower than the 5120 MiB the emulator expects.
 4. Start the app. In the configuration panel, import keys and firmware from a folder.
 5. Add games: copy them to the app's `LocalState\games` folder with the Device Portal file explorer,
-   or add an external folder from the library.
+   or add an external folder or USB drive from the library.
+
+To update Jadyx, install the new package over the old one. Do not uninstall first: that deletes
+the keys, firmware, saves and games stored in the app.
 
 If something fails, `jadyx_diag.txt` and `jadyx_log.txt` in `LocalState\jadyx\log` describe what
 happened. Help and compatibility reports live on [Discord](https://discord.gg/3BhyyXGxpd); bugs go to
@@ -556,6 +618,12 @@ This fork stands on other people's work:
   the shader translation.
 - [@dramon8945](https://www.instagram.com/dramon8945/): the Jadyx logo, tiles and splash screen
   (`dist/uwp/Assets/`).
+- [Inter](https://rsms.me/inter/) by Rasmus Andersson, the interface typeface, under the SIL Open
+  Font License 1.1 (`dist/uwp/Assets/Fonts/`).
+- [Kenney's Input Prompts](https://kenney.nl/assets/input-prompts), the controller and keyboard
+  button glyphs, CC0 (`dist/uwp/Assets/InputPrompts/`).
+- [nx-cheats-db](https://github.com/sthetix/nx-cheats-db) by sthetix, [GameBanana](https://gamebanana.com/)
+  and the CNX index, and the people who write the cheats and mods they collect.
 - yuzu, Ryujinx, Sudachi, Citron, Torzu, Suyu and Ryubing, and everyone who worked on the projects
   Eden comes from.
 
