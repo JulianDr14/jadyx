@@ -10,7 +10,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 <h1 align="center">Jadyx</h1>
 
 <p align="center">
-  Eden, the Nintendo Switch emulator, rebuilt as a UWP app for <b>Xbox Series X|S in Developer Mode</b>,<br>
+  A Nintendo Switch emulator for <b>Xbox Series X|S in Developer Mode</b>, based on Eden,<br>
   with a <b>native Direct3D 12 renderer</b> written for this port.<br>
 </p>
 
