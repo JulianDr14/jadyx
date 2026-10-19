@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <winrt/Windows.Storage.h>
+#include "jadyx/storage/network_portal.h"
 
 namespace Jadyx {
 struct GameFolderSource { std::string token; std::wstring name; };
@@ -23,11 +24,17 @@ struct ConfigurationPanel {
     FileSetupStatus status;
     std::wstring notice;
     unsigned completed{}, total{};
+    PortalStatus network;
+    bool network_screen{};
+    size_t network_action{};
+    std::vector<PortalAddress> network_addresses;
+    size_t network_selected{};
 };
 /// Rows of the settings home, in order.
 enum ConfigurationHomeRow : size_t { HomeSystem, HomeControllers, HomeFiles, HomeRowCount };
+enum FileManagerNetworkRow : size_t { FilesNetwork = 5, FilesNetworkAddress, FilesNetworkCode, FilesSources };
 inline size_t ConfigurationRowCount(const ConfigurationPanel& panel) {
-    return panel.files ? 5 + panel.status.sources.size() : HomeRowCount;
+    return panel.files ? FilesSources + panel.status.sources.size() : HomeRowCount;
 }
 inline size_t ConfigurationFirstRow(const ConfigurationPanel& panel) {
     return (panel.selected / 5) * 5;

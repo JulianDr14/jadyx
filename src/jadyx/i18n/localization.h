@@ -43,6 +43,7 @@ enum class Text : std::uint16_t {
     FolderAuthFailed,
     GameLoadFailed,
     GameStoppedGpu,
+    LibraryScanFailed,
 
     // Prompts and common actions
     Play,
@@ -194,6 +195,23 @@ enum class Text : std::uint16_t {
     KeysMissing,
     FirmwareFiles,
     FilesSubtitle,
+    NetworkConnection,
+    NetworkOpenHint,
+    NetworkCodeLabel,
+    NetworkBusy,
+    NetworkUploading,
+    NetworkValidating,
+    NetworkStart,
+    NetworkStop,
+    NetworkAdapter,
+    NetworkCode,
+    NetworkCodeHint,
+    NetworkCodeExpired,
+    NetworkPaired,
+    NetworkUnavailable,
+    NetworkBindFailed,
+    NetworkStartFailed,
+    NetworkStopped,
     AddGamesFolder,
     ImportKeys,
     ImportFirmware,
@@ -617,14 +635,23 @@ consteval Catalog MakeCatalog(const Entry (&entries)[N], bool partial = false) {
     return catalog;
 }
 
-/// CLDR plural categories; English and Spanish only use these two.
-enum class PluralForm : std::uint8_t { One, Other };
+/// CLDR plural categories. English, Spanish and Portuguese only use One and Other.
+enum class PluralForm : std::uint8_t { Zero, One, Two, Few, Many, Other };
+
+/// A plural form beyond one/other ("few" in Polish, "many" in Russian...), keyed by the text's
+/// Other id. A language without an entry for a form it reports uses its Other text.
+struct PluralEntry {
+    Text other;
+    PluralForm form;
+    std::wstring_view text;
+};
 
 struct UiLanguage {
-    std::wstring_view tag;         ///< BCP 47 tag, "en" or "es".
+    std::wstring_view tag;         ///< BCP 47 tag: "en", "es", "pt-BR".
     std::wstring_view native_name; ///< The language's name in itself, for the picker.
     const Catalog* catalog;
     PluralForm (*plural)(std::uint64_t count);
+    std::span<const PluralEntry> extra_plurals{}; ///< Only for languages with more than one/other.
 };
 
 /// Every interface language, English first (the fallback for anything missing).
@@ -632,7 +659,8 @@ std::span<const UiLanguage> UiLanguages();
 const UiLanguage* FindUiLanguage(std::wstring_view tag);
 
 /// Best language for an ordered list of user preferences ("es-CO", "en-US", ...): the first
-/// preference whose tag, or a shorter form of it ("es-419" -> "es"), is available; English if none.
+/// preference whose tag, or a shorter form of it ("es-419" -> "es"), is available, or else a
+/// variant of its language ("pt-PT" -> "pt-BR"); English if none.
 const UiLanguage& NegotiateUiLanguage(std::span<const UiLanguage> available,
                                       std::span<const std::wstring> preferences);
 
@@ -643,7 +671,10 @@ const UiLanguage& CurrentUiLanguage();
 std::wstring_view Tr(Text id);
 /// Tr with "{0}", "{1}"... replaced by `args`.
 std::wstring Format(Text id, std::initializer_list<std::wstring_view> args);
-/// `one` or `other` by the current language's plural rule, with "{0}" replaced by `count`.
+/// The same for a pattern already looked up.
+std::wstring Format(std::wstring_view pattern, std::initializer_list<std::wstring_view> args);
+/// `one` or `other` (or the language's extra form for `other`) by the current language's plural
+/// rule, with "{0}" replaced by `count`.
 std::wstring Plural(Text one, Text other, std::uint64_t count);
 
 /// UTF-8 for strings that travel as std::string (worker errors, logs).

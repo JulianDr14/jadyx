@@ -16,7 +16,7 @@
 
   <Identity Name="Jadyx"
             Publisher="CN=JadyxDev"
-            Version="0.3.2.1"
+            Version="0.3.4.0"
             ProcessorArchitecture="x64" />
 
   <Properties>
@@ -70,6 +70,8 @@
     <Capability Name="codeGeneration" />
     <!-- core/network_interface + the NS services touch sockets on startup. -->
     <Capability Name="internetClient" />
+    <!-- User-started library portal: receive HTTP connections from the local network. -->
+    <Capability Name="privateNetworkClientServer" />
     <!-- PC Nintendo Pro USB transport; joystick usage is allowed by UWP HID. -->
     <DeviceCapability Name="humanInterfaceDevice" />
   </Capabilities>

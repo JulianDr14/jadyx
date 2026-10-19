@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/uwp_library_metadata.h"
+#include "jadyx/settings/nacp_language.h"
 #include "jadyx/storage/storage_path.h"
 #include "jadyx/storage/uwp_rom_storage.h"
 #include "jadyx/content/content_service.h"
@@ -36,8 +37,9 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
                          const LibraryCache& cache, MetadataOptions options, std::stop_token stop) {
     Content::Catalog catalog; Content::DefaultStore().Load(catalog);
     const auto language = static_cast<std::uint32_t>(options.language);
-    // NACP::GetLanguageEntry reads the title in Eden's system language. Only one metadata worker
-    // runs at a time and the guest is not running, so setting it here races with nothing.
+    // NACP::GetLanguageEntry reads the title in Eden's system language, so each title is read in
+    // the language its game will run in (PickNacpLanguage, as the boot does). Only one metadata
+    // worker runs at a time and the guest is not running, so setting it here races with nothing.
     Settings::values.language_index = options.language;
     // Core construction provides the loader's filesystem services. Initialize would reserve
     // guest DRAM and start timing; metadata does not need either.
@@ -71,11 +73,14 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
             auto loader = Loader::GetLoader(*system, file);
             if (!loader) continue;
             LibraryCacheRecord record;
+            FileSys::NACP control;
+            const bool have_control = loader->ReadControlData(control) == Loader::ResultStatus::Success;
+            Settings::values.language_index =
+                have_control ? PickNacpLanguage(options.language, control) : options.language;
             std::string title;
             if (loader->ReadTitle(title) == Loader::ResultStatus::Success && !title.empty())
                 record.name = winrt::to_hstring(title).c_str();
-            FileSys::NACP control;
-            if (loader->ReadControlData(control) == Loader::ResultStatus::Success) {
+            if (have_control) {
                 record.developer = winrt::to_hstring(control.GetDeveloperName()).c_str();
                 record.display_version = winrt::to_hstring(control.GetVersionString()).c_str();
             }
@@ -102,5 +107,6 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
             // and placeholder; one entry must not take down the whole library.
         } catch (const winrt::hresult_error&) {}
     }
+    Settings::values.language_index = options.language;
 }
 }

@@ -1087,3 +1087,48 @@ nueve filas. Metadatos junto al título; repetición UI y contadores/layouts Che
 optimizados. Build incremental y gates de navegación/catálogo/geometría pasan;
 arranque biblioteca PC correcto. Fluidez y visual Series pendientes; captura PC
 falló en Computer Use (timeout). Paquete único y símbolos de 0.2.98.0; sin commit.
+
+Portal local19oct2026: rama feature/local-import-portal desde main; subfase1
+conexión/emparejamiento implementada (HTTP8080, código8/5min, sesión, Host/Origin,
+controles File manager es/en y cierre biblioteca/suspensión). Sin rutas de subida;
+gate LAN real AppContainer/Series requerido antes del portal completo. ObjetosUWP
+y harnessTCP/catálogos pasan; cierre peer incompleto1910ms. Link/build
+amplio usuario y pruebas LAN pendientes, sin paquete/commit. Plan/estado/comandos en
+docs/xbox/xbox_network_portal.md. Nuevas ramas de este trabajo usan feature/, sin
+prefijo de asistente, por indicación explícita del usuario.
+
+Portal revisión19oct: usuario confirma acceso móvil, sin identificar hostPC/Series;
+código oculto en fila8 con7 visibles. Inicio ahora abre pantalla completa conURL y
+código112px4+4, Volver/Generar/Detener y foco exclusivo. Volver mantiene conexión;
+fila activa reabre pantalla. ObjetosUWP/catálogos correctos, visual/pairing pendientes.
+Sin commit/paquete nuevo; detalle en xbox_network_portal.md.
+
+PortalNSP19oct: usuario confirma pairing móvil y autoriza continuar (hostPC/Series
+sin identificar). tus1.0 streaming16MiB, buffer1MiB, checkpoints/rollback/reanudación
+uint64 y rename sin copia a games; UIweb es/en cola/pausa/renombrar/progreso/velocidad.
+Validación base PFS/NcaReader/CNMT en worker tras join metadatos, sin tickets globales
+ni hash íntegro; guest/mutaciones locales bloqueados durante transferencia activa.
+ObjetosUWP/catálogos y harnessTCP32MiB/cortes/restart/IOfailure/rename/offsetsparse>4GiB
+pasan; JScliente mock5GiB4/16/64MiB y SHAfallback pasan. Smoke loopback116–143MiB/s
+no certifica tasa sostenida/Xbox. Link amplio usuario, NSP real/visual/memoria/Series
+pendientes; webZIP/claves siguientes. Sin commit/paquete, rama feature/local-import-portal.
+Diseño/comandos/fuentes en docs/xbox/xbox_network_portal.md.
+
+Gate NSP real19oct: usuario confirma pairing en Series. AppContainer PC transfiere
+MarioKart8 base7.268.474.425bytes por HTTP16MiB a fixture propia, recrea servidor y
+recupera offset4.311.744.512, validador real/publicación por rename y comparación
+íntegra correctos; origen intacto, fixture eliminada, retorno0. Recepción62,130s/
+111,568MiB/s loopback; no velocidad LAN/Series. Memoria WinRT~61MiB estable sin guest.
+Siete de ocho NSP internos pasan; uno sigue incomplete. XML .cnmt.xml auxiliar ahora
+aceptado≤4MiB solo con NCA Meta correspondiente, sin interpretar ni relajar CNMT.
+Primera corrida suspendida en background falló red y cierre WinRT; segunda mantuvo
+foreground y pasó. Detalle/evidencias/comando network_import_gate=1 en documento.
+Link incremental UWP y paquete biblioteca0.3.3.0 firmados; entrega única
+build-uwp/package/jadyx.appx y símbolos0.3.3.0, sin gate activado ni datos de usuario.
+Importación desde navegador, biblioteca/arranque y benchmark4/16/64 Series pendientes.
+Sin commit, rama feature/local-import-portal.
+
+19oct: usuario autoriza guardar el portal en commits pequeños y prohíbe push.
+Cambios separados en almacenamiento NSP, validación, servidor/portal, interfaz,
+harnesses, gate AppContainer real y documentación/versión0.3.3.0. Commits locales
+en feature/local-import-portal, conservando únicamente la identidad del usuario.

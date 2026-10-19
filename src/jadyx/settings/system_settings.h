@@ -113,33 +113,44 @@ inline Settings::Region RegionForLocale(const SystemLocale& locale) {
     return Settings::Region::Europe;
 }
 
-/// Switch system language for the first Windows language, with the variant its region uses:
+/// Switch system language for the first Windows language a Switch has, with the variant its region uses:
 /// Spanish from Spain or Latin America, American or British English, and so on.
 inline Settings::Language GameLanguageForLocale(const SystemLocale& locale) {
     using L = Settings::Language;
-    const std::wstring_view tag = locale.languages.empty() ? std::wstring_view{} : locale.languages.front();
-    const auto parts = SystemDetail::Subtags(tag);
-    const std::wstring language = parts.empty() ? L"en" : parts.front();
-    const auto tag_region = SystemDetail::TagRegion(tag);
-    const auto region = tag_region.empty() ? EffectiveRegionCode(locale) : tag_region;
-    const bool americas = region.empty() || SystemDetail::IsAmericas(region);
-    if (language == L"es") return region == L"ES" ? L::Spanish : L::SpanishLatin;
-    if (language == L"fr") return region == L"CA" ? L::FrenchCanadian : L::French;
-    if (language == L"pt") return region == L"BR" ? L::PortugueseBrazilian : L::Portuguese;
-    if (language == L"zh") {
-        const bool traditional = std::find(parts.begin(), parts.end(), L"hant") != parts.end() ||
-                                 region == L"TW" || region == L"HK" || region == L"MO";
-        return traditional ? L::ChineseTraditional : L::ChineseSimplified;
+    const auto region_of = [&locale](std::wstring_view tag) {
+        const auto tag_region = SystemDetail::TagRegion(tag);
+        return tag_region.empty() ? EffectiveRegionCode(locale) : tag_region;
+    };
+    const auto english = [&region_of](std::wstring_view tag) {
+        const auto region = region_of(tag);
+        return region.empty() || SystemDetail::IsAmericas(region) ? L::EnglishAmerican : L::EnglishBritish;
+    };
+    // The first language in the Windows list that a Switch has: "ca-ES, es-ES" plays in Spanish.
+    for (const auto& tag : locale.languages) {
+        const auto parts = SystemDetail::Subtags(tag);
+        if (parts.empty()) continue;
+        const auto& language = parts.front();
+        const auto region = region_of(tag);
+        if (language == L"en") return english(tag);
+        if (language == L"es") return region == L"ES" ? L::Spanish : L::SpanishLatin;
+        if (language == L"fr") return region == L"CA" ? L::FrenchCanadian : L::French;
+        if (language == L"pt") return region == L"BR" ? L::PortugueseBrazilian : L::Portuguese;
+        if (language == L"zh") {
+            const bool traditional = std::find(parts.begin(), parts.end(), L"hant") != parts.end() ||
+                                     region == L"TW" || region == L"HK" || region == L"MO";
+            return traditional ? L::ChineseTraditional : L::ChineseSimplified;
+        }
+        if (language == L"ja") return L::Japanese;
+        if (language == L"de") return L::German;
+        if (language == L"it") return L::Italian;
+        if (language == L"nl") return L::Dutch;
+        if (language == L"ru") return L::Russian;
+        if (language == L"ko") return L::Korean;
+        if (language == L"pl") return L::Polish;
+        if (language == L"th") return L::Thai;
     }
-    if (language == L"ja") return L::Japanese;
-    if (language == L"de") return L::German;
-    if (language == L"it") return L::Italian;
-    if (language == L"nl") return L::Dutch;
-    if (language == L"ru") return L::Russian;
-    if (language == L"ko") return L::Korean;
-    if (language == L"pl") return L::Polish;
-    if (language == L"th") return L::Thai;
-    return americas ? L::EnglishAmerican : L::EnglishBritish;
+    // None of them: English, British unless the first language or the region is in the Americas.
+    return english(locale.languages.empty() ? std::wstring_view{} : std::wstring_view{locale.languages.front()});
 }
 
 inline ResolvedSystem ResolveSystem(const SystemSettings& settings, const SystemLocale& locale) {

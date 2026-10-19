@@ -36,6 +36,15 @@ add_executable(jadyx WIN32
     storage/uwp_rom_storage.h
     storage/uwp_file_manager.cpp
     storage/uwp_file_manager.h
+    storage/network_portal.cpp
+    storage/network_portal.h
+    storage/network_portal_page.h
+    storage/nsp_upload.cpp
+    storage/nsp_upload.h
+    storage/nsp_import.cpp
+    storage/nsp_import.h
+    storage/network_import_gate.cpp
+    storage/network_import_gate.h
     storage/storage_path.h
     input/uwp_pro_controller.cpp
     input/uwp_controllers.cpp
@@ -47,9 +56,11 @@ add_executable(jadyx WIN32
     i18n/locales/registry.cpp
     i18n/locales/en.cpp
     i18n/locales/es.cpp
+    i18n/locales/pt_br.cpp
     ui/ui_text.h
     # Settings > System and the library's on-disk metadata cache.
     settings/system_settings.h
+    settings/nacp_language.h
     settings/system_page.h
     settings/upscaling.h
     ui/text_entry.h

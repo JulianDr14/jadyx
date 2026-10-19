@@ -105,8 +105,10 @@
 #include "jadyx/content/content_service.h"
 #include "jadyx/mods/mod_settings.h"
 #include "jadyx/storage/uwp_file_manager.h"
+#include "jadyx/storage/network_import_gate.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/game/uwp_software_keyboard.h"
+#include "jadyx/settings/nacp_language.h"
 #include "jadyx/settings/uwp_system_settings.h"
 #include "video_core/performance_overlay.h"
 #include "jadyx/storage/utf8.h"
@@ -221,35 +223,6 @@ static void ApplyHeadlessBootSettings(const BootSurface& surface) {
     // DRAM clamp is a separate reservation follow-up, not here.
 }
 
-/// The NACP's supported-language bit for a system language (as NACP::GetLanguageEntry maps them).
-static u32 NacpLanguageBit(Settings::Language language) {
-    using FileSys::Language;
-    const auto bit = [](Language nacp) { return u32{1} << static_cast<u32>(nacp); };
-    switch (language) {
-    case Settings::Language::Japanese:            return bit(Language::Japanese);
-    case Settings::Language::EnglishAmerican:     return bit(Language::AmericanEnglish);
-    case Settings::Language::EnglishBritish:      return bit(Language::BritishEnglish);
-    case Settings::Language::French:              return bit(Language::French);
-    case Settings::Language::FrenchCanadian:      return bit(Language::CanadianFrench);
-    case Settings::Language::German:              return bit(Language::German);
-    case Settings::Language::Italian:             return bit(Language::Italian);
-    case Settings::Language::Spanish:             return bit(Language::Spanish);
-    case Settings::Language::SpanishLatin:        return bit(Language::LatinAmericanSpanish);
-    case Settings::Language::Dutch:               return bit(Language::Dutch);
-    case Settings::Language::Portuguese:          return bit(Language::Portuguese);
-    case Settings::Language::PortugueseBrazilian: return bit(Language::BrazilianPortuguese);
-    case Settings::Language::Russian:             return bit(Language::Russian);
-    case Settings::Language::Korean:              return bit(Language::Korean);
-    case Settings::Language::Chinese:
-    case Settings::Language::ChineseSimplified:   return bit(Language::SimplifiedChinese);
-    case Settings::Language::Taiwanese:
-    case Settings::Language::ChineseTraditional:  return bit(Language::TraditionalChinese);
-    case Settings::Language::Polish:              return bit(Language::Polish);
-    case Settings::Language::Thai:                return bit(Language::Thai);
-    }
-    return 0;
-}
-
 /// Many games read the system language directly and fall back to English on their own when they
 /// lack it, even when they ship a close variant (Spain's Spanish but not es-419). Give them the
 /// closest language they declare instead (PickGameLanguage: variant, then English, then any).
@@ -258,14 +231,12 @@ static void ApplyGameLanguage(Core::System& system) {
     if (system.GetAppLoader().ReadControlData(nacp) != Loader::ResultStatus::Success) {
         return;
     }
-    const u32 supported = nacp.GetSupportedLanguages();
     const auto preferred = Settings::values.language_index.GetValue();
-    const auto language = PickGameLanguage(preferred, [supported](Settings::Language language) {
-        return (supported & NacpLanguageBit(language)) != 0;
-    });
+    const auto language = PickNacpLanguage(preferred, nacp);
     Settings::values.language_index = language;
     LOG_INFO(Frontend, "Headless boot: game languages {:08X}, preferred {}, system language {}",
-             supported, Settings::CanonicalizeEnum(preferred), Settings::CanonicalizeEnum(language));
+             nacp.GetSupportedLanguages(), Settings::CanonicalizeEnum(preferred),
+             Settings::CanonicalizeEnum(language));
 }
 
 /// Optional boot.cfg next to boot.nro (written by package-appx.ps1 -RunSeconds).
@@ -377,6 +348,7 @@ struct BootConfig {
     bool gpu_removal_probe{};
     unsigned rom_storage_checks{}; // 1=record token, 2=restore after a process restart
     bool file_manager_gate{};
+    bool network_import_gate{};
     bool astc_sync{};
     bool astc_fresh{};
     /// Played by hand ("play=1"): runs until the app is closed, without frame dumps or draw trace.
@@ -425,6 +397,9 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     if (config.rom_storage_checks)
         return RunRomStorageGate(config.rom_storage_checks == 2, WriteDiag) ? 0 : 15;
     if (config.file_manager_gate) return RunFileManagerGate(WriteDiag) ? 0 : 15;
+    if (config.network_import_gate) return RunNetworkImportGate(
+        std::filesystem::path{std::wstring{winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()}},
+        WriteDiag) ? 0 : 15;
     // As yuzu_cmd: the default 15.6 ms timer resolution makes the emulated vsync (and any sleep in
     // the core) tick every 15.6 ms and drop one frame in ten, visible as a stutter.
     const auto timer_resolution = Common::Windows::SetCurrentTimerResolutionToMaximum();
@@ -2646,6 +2621,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.rom_storage_checks = 1;
                         } else if (line == "file_manager_gate=1") {
                             config.file_manager_gate = true;
+                        } else if (line == "network_import_gate=1") {
+                            config.network_import_gate = true;
                         } else if (line == "rom_storage_checks=restore") {
                             config.rom_storage_checks = 2;
                         } else if (line == "astc_verify=1") {

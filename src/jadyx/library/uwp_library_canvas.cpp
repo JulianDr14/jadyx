@@ -130,15 +130,19 @@ public:
         }
         const bool management = view.game_options.game || view.game_options.content;
         // Only the active library content prepares and draws its backdrop.
-        if (!management) UpdateBackdrop(game, now);
+        if (!management && !configuration.network_screen) UpdateBackdrop(game, now);
         hits.clear();
         target->BeginDraw();
         target->Clear(D2D1::ColorF(Palette::Canvas));
-        if (!management) DrawBackdrop(now);
+        if (!management && !configuration.network_screen) DrawBackdrop(now);
         // The backdrop moves on its own while it shows (AmbientDue).
-        ambient = !management && !backdrop_now.empty();
+        ambient = !management && !configuration.network_screen && !backdrop_now.empty();
         last_frame = now;
-        if (management) {
+        if (configuration.network_screen) {
+            // A dedicated page: only its controls populate the pointer hit map.
+            rows_shown = false;
+            DrawNetworkConnection(configuration);
+        } else if (management) {
             rows_shown = false;
         } else if (view.tab == LibraryTab::Settings) {
             rows_shown = false;
@@ -162,7 +166,7 @@ public:
                 Type(view.notice, TypeRole::Body, LibraryLayout::Margin, 430, 1000, Palette::Warning,
                      1, TextAlign::Leading, 2);
         }
-        if (!management) {
+        if (!management && !configuration.network_screen) {
             DrawHeader(view, now);
             DrawFooter(view);
         }
@@ -973,6 +977,20 @@ private:
                             I18n::Format(T::FirmwareFiles, {std::to_wstring(status.firmware_files)})});
             rows.push_back({Kind::Open, std::wstring{Tr(T::ContentUpdates)}});
             rows.push_back({Kind::Open, std::wstring{Tr(T::ContentDlc)}});
+            const auto& network = view.configuration.network;
+            rows.push_back({Kind::Open, std::wstring{Tr(T::NetworkConnection)},
+                network.running ? std::wstring{winrt::to_hstring(network.url)} : std::wstring{Tr(T::NetworkStopped)},
+                std::wstring{Tr(network.running ? T::Open : T::NetworkStart)}});
+            const auto& addresses = view.configuration.network_addresses;
+            const auto adapter = view.configuration.network_selected;
+            rows.push_back({Kind::Open, std::wstring{Tr(T::NetworkAdapter)},
+                addresses.empty() ? std::wstring{Tr(T::NetworkUnavailable)} :
+                    std::wstring{winrt::to_hstring(addresses[adapter].name)},
+                addresses.empty() ? std::wstring{} : std::wstring{winrt::to_hstring(addresses[adapter].ipv4)}});
+            rows.push_back({Kind::Open, std::wstring{Tr(T::NetworkCode)},
+                std::wstring{Tr(!network.running ? T::NetworkStopped : network.paired ? T::NetworkPaired :
+                    network.code_expired ? T::NetworkCodeExpired : T::NetworkCodeHint)},
+                network.running && !network.code_expired ? std::wstring{winrt::to_hstring(network.code)} : std::wstring{L"—"}});
             for (const auto& source : status.sources)
                 rows.push_back({Kind::Open, I18n::Format(T::RemoveFolder, {source.name})});
         }
@@ -984,6 +1002,58 @@ private:
     static constexpr float SettingsPaneWidth = 1280 - LibraryLayout::Margin - SettingsPaneX;
     static constexpr float SettingsRowsTop = 226, SettingsRowStride = 58, SettingsRowHeight = 52;
     static constexpr std::size_t SettingsVisibleRows = 7;
+    void DrawNetworkConnection(const ConfigurationPanel& configuration) {
+        const auto& network = configuration.network;
+        Type(L"J A D Y X", TypeRole::HeadlineSmall, 80, 44, 400, Palette::Text);
+        if (network.paired)
+            Type(Tr(T::NetworkPaired), TypeRole::LabelLarge, 720, 52, 480,
+                 Palette::TextHint, 1, TextAlign::Trailing);
+        Type(Tr(T::NetworkConnection), TypeRole::HeadlineLarge, 80, 100, 1120,
+             Palette::Text, 1, TextAlign::Center);
+        Type(winrt::to_hstring(network.url).c_str(), TypeRole::HeadlineMedium, 80, 176, 1120,
+             Palette::Text, 1, TextAlign::Center);
+        Type(Tr(T::NetworkOpenHint), TypeRole::Body, 80, 222, 1120,
+             Palette::TextSecondary, 1, TextAlign::Center);
+        Card(80, 274, 1120, 210, 20);
+        Type(Tr(T::NetworkCodeLabel), TypeRole::Caps, 100, 296, 1080,
+             Palette::TextSecondary, 1, TextAlign::Center);
+        if (network.running && !network.code_expired && network.code.size() == 8) {
+            const auto digits = winrt::to_hstring(network.code.substr(0, 4) + " " + network.code.substr(4));
+            D2D1_MATRIX_3X2_F transform;
+            target->GetTransform(&transform);
+            // Hero is 56px at the reference resolution: 112px here, independent of settings rows.
+            target->SetTransform(D2D1::Matrix3x2F::Scale(2, 2, D2D1::Point2F(640, 334)) * transform);
+            Type(digits.c_str(), TypeRole::Hero, 360, 334, 560, Palette::Text, 1, TextAlign::Center);
+            target->SetTransform(transform);
+        } else {
+            Type(Tr(network.paired ? T::NetworkPaired : T::NetworkCodeExpired),
+                 TypeRole::HeadlineMedium, 110, 366, 1060, Palette::Text, 1, TextAlign::Center);
+        }
+        std::wstring progress;
+        const auto& transfer=network.transfer;
+        if (transfer.busy) {
+            progress=transfer.phase == "receiving" ? I18n::Format(T::NetworkUploading,
+                {winrt::to_hstring(transfer.name).c_str(),std::to_wstring(transfer.received >> 20),std::to_wstring(transfer.length >> 20)}) :
+                std::wstring{Tr(T::NetworkValidating)};
+            const float fraction=transfer.length ? static_cast<float>(static_cast<double>(transfer.received)/transfer.length) : 0;
+            Round(100,560,1080,4,2,Palette::Graphite);
+            Round(100,560,1080*std::clamp(fraction,0.0f,1.0f),4,2,Palette::Accent);
+        }
+        Type(!progress.empty() ? std::wstring_view{progress} : configuration.notice.empty() ? Tr(T::NetworkCodeHint) : std::wstring_view{configuration.notice},
+             TypeRole::Body, 100, 510, 1080, Palette::TextSecondary, 1, TextAlign::Center, 2);
+        const std::array<T, 3> labels{T::Back, T::NetworkCode, T::NetworkStop};
+        for (size_t i = 0; i < labels.size(); ++i) {
+            const float x = 80 + static_cast<float>(i) * 380;
+            const bool focused = configuration.network_action == i;
+            if (focused) FocusGlow(x, 594, 360, 60, 14, 1);
+            Round(x, 594, 360, 60, 14, focused ? Palette::Accent : Palette::Surface);
+            Type(Tr(labels[i]), TypeRole::LabelLarge, x + 14, 614, 332,
+                 focused ? Palette::OnAccent : Palette::Text, 1, TextAlign::Center);
+            AddHit(x, 594, 360, 60, LibraryHit::NetworkAction, i);
+        }
+        ControlPrompt(Navigation::Play, Tr(T::Select), 80, 676);
+        ControlPrompt(Navigation::Back, Tr(T::Back), 400, 676);
+    }
     /// The Settings tab: the categories at the left with the emulator's data under them, and the
     /// rows of the focused category at the right, live while the list has the focus.
     void DrawSettings(const LibraryView& view) {

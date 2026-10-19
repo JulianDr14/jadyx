@@ -10,6 +10,7 @@
 #include "jadyx/storage/uwp_rom_storage.h"
 #include "jadyx/storage/storage_path.h"
 #include "jadyx/storage/uwp_file_manager.h"
+#include "jadyx/storage/nsp_import.h"
 
 #include <algorithm>
 #include <chrono>
@@ -17,6 +18,8 @@
 #include <thread>
 #include <windows.h>
 #include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.ApplicationModel.Core.h>
+#include <winrt/Windows.ApplicationModel.h>
 #include <winrt/Windows.Devices.Power.h>
 #include <winrt/Windows.Gaming.Input.h>
 #include <winrt/Windows.System.Power.h>
@@ -91,6 +94,13 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     auto battery_read_at = std::chrono::steady_clock::time_point{};
     bool dirty = true, loading = true, settings = false;
     ConfigurationPanel configuration;
+    NetworkPortal network_portal{root};
+    auto network_poll_at = std::chrono::steady_clock::time_point{};
+    // Revoked before the library-owned portal is destroyed. No background server survives play.
+    auto network_suspending = winrt::Windows::ApplicationModel::Core::CoreApplication::Suspending(
+        winrt::auto_revoke, [&](const auto&, const winrt::Windows::ApplicationModel::SuspendingEventArgs&) {
+            network_portal.Stop();
+        });
     SystemPage system_page;
     // The selected game's options (Menu), and its cheats page while open.
     GameOptionsPage game_options;
@@ -115,6 +125,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     FileImportProgress import_progress;
     std::future<std::string> import_future;
     std::jthread import_worker;
+    bool network_import{};
     std::chrono::steady_clock::time_point auto_pick_at{};
     unsigned setting_row = 0;
     ControllerPanel panel;
@@ -275,6 +286,16 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         const auto scale = std::max(0.01f, std::min(width / 1280.0f, height / 720.0f));
         const float x = static_cast<float>((p.X * dpi - (width - 1280 * scale) / 2) / scale);
         const float y = static_cast<float>((p.Y * dpi - (height - 720 * scale) / 2) / scale);
+        if (configuration.network_screen) {
+            const auto hit = canvas->HitAt(x, y);
+            if (hit.hit == LibraryHit::NetworkAction && hit.index < 3) {
+                configuration.network_action = hit.index;
+                actions |= Play;
+                dirty = true;
+            }
+            e.Handled(true);
+            return;
+        }
         if (system_page.name_editor) {
             using L = SystemPageLayout;
             if (const auto key = TextEntryPanelLayout::KeyAt(x - L::EditorX, y - L::EditorY)) {
@@ -463,6 +484,12 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         e.Handled(true);
     });
     auto wheel = window.PointerWheelChanged(winrt::auto_revoke, [&](auto&&, PointerEventArgs const& e) {
+        if (configuration.network_screen) {
+            const int delta = e.CurrentPoint().Properties().MouseWheelDelta();
+            if (delta) { actions |= delta > 0 ? Left : Right; dirty = true; }
+            e.Handled(true);
+            return;
+        }
         if (game_options.open && !configuration.open) {
             const int delta = e.CurrentPoint().Properties().MouseWheelDelta();
             if (delta) { actions |= delta > 0 ? Up : Down; dirty = true; }
@@ -601,6 +628,11 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             std::error_code ec;
             std::filesystem::create_directories(root, ec);
             auto result = ScanGameLibrary(root, stop);
+            // The filesystem's own text is English whatever the interface language: log it only.
+            if (!result.error.empty()) {
+                LOG_WARNING(Frontend, "Library scan: internal folder: {}", result.error);
+                result.error = I18n::ToUtf8(Tr(T::LibraryScanFailed));
+            }
             const std::wstring internal{Tr(T::SourceInternal)};
             for (auto& entry : result.entries) {
                 const auto path = (root / entry.relative_path).u8string();
@@ -628,7 +660,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     std::make_move_iterator(external.entries.begin()), std::make_move_iterator(external.entries.end()));
             } catch (const winrt::hresult_error& e) {
                 result.error = I18n::ToUtf8(I18n::Format(T::FolderAuthFailed, {e.message()}));
-            } catch (const std::exception& e) { result.error = e.what(); }
+            } catch (const std::exception& e) {
+                LOG_WARNING(Frontend, "Library scan: external folders: {}", e.what());
+                result.error = I18n::ToUtf8(Tr(T::LibraryScanFailed));
+            }
             std::sort(result.entries.begin(), result.entries.end(), [](const auto& a, const auto& b) {
                 return a.launch_path < b.launch_path;
             });
@@ -681,6 +716,39 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     while (true) {
         window.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
         const auto now = std::chrono::steady_clock::now();
+        network_portal.SetUploadsAvailable(!configuration.busy && !picker && !validation.valid() &&
+            !game_options.open && !content_session && !settings && !system_page.open);
+        if (now >= network_poll_at) {
+            network_poll_at = now + std::chrono::milliseconds{500};
+            const auto state = network_portal.Status();
+            if (configuration.network.running != state.running || configuration.network.paired != state.paired ||
+                configuration.network.code != state.code || configuration.network.code_expired != state.code_expired ||
+                configuration.network.error != state.error ||
+                configuration.network.transfer.received != state.transfer.received ||
+                configuration.network.transfer.phase != state.transfer.phase ||
+                configuration.network.transfer.id != state.transfer.id ||
+                configuration.network.transfer.error != state.transfer.error) {
+                configuration.network = state;
+                dirty = true;
+            }
+            if (state.transfer.phase == "ready" && !configuration.busy && !loading &&
+                !setup_future.valid() && !picker && !validation.valid() && !content_session && !game_options.open) {
+                configuration.busy=true;
+                network_import=true;
+                import_progress.completed=0; import_progress.total=0;
+                metadata_worker.request_stop();
+                std::packaged_task<std::string(std::stop_token)> task{
+                    [&, old_metadata=std::move(metadata_worker)](std::stop_token stop) mutable {
+                        std::stop_callback cancel{stop,[&] { network_portal.CancelTransfer(); }};
+                        if (old_metadata.joinable()) old_metadata.join();
+                        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+                        struct Uninitialize { ~Uninitialize() { winrt::uninit_apartment(); } } guard;
+                        return network_portal.FinalizeGame(ValidateUploadedNsp);
+                    }};
+                import_future=task.get_future();
+                import_worker=std::jthread(std::move(task));
+            }
+        }
         if (!panel.keyboard.notice.empty() && now >= keyboard_notice_until) {
             panel.keyboard.notice.clear(); dirty = true;
         }
@@ -722,7 +790,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         }
         if (catalog_changed || !pad || !next || pad->id != next->id)
             pad = next ? std::optional<ControllerDevice>{*next} : std::nullopt;
-        const unsigned context = game_options.open ? (7 + static_cast<unsigned>(game_options.selected) * 3 + static_cast<unsigned>(game_options.focus)) :
+        const unsigned context = configuration.network_screen ? 1000 : game_options.open ? (7 + static_cast<unsigned>(game_options.selected) * 3 + static_cast<unsigned>(game_options.focus)) :
             system_page.name_editor ? 6 : system_page.open ? 5 :
             panel.keyboard.open ? 3 : panel.expanded ? 2 : settings ? 1 : configuration.open ? 4 : 0;
         if (context != navigation_context) {
@@ -849,6 +917,26 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (!(read == battery)) { battery = read; dirty = true; }
         }
         if (window_closed || QuitRequested()) return std::nullopt;
+        if (configuration.network_screen) {
+            if (actions & (Left | Up)) configuration.network_action = (configuration.network_action + 2) % 3;
+            if (actions & (Right | Down)) configuration.network_action = (configuration.network_action + 1) % 3;
+            if (actions & Quit || (actions & Play && configuration.network_action == 0))
+                configuration.network_screen = false;
+            else if (actions & Refresh || (actions & Play && configuration.network_action == 1)) {
+                configuration.notice = network_portal.RenewCode() ? std::wstring{} : std::wstring{Tr(T::NetworkStartFailed)};
+                configuration.network = network_portal.Status();
+            } else if (actions & Play && configuration.network_action == 2) {
+                network_portal.Stop();
+                configuration.network = network_portal.Status();
+                configuration.network_screen = false;
+                configuration.selected = FilesNetwork;
+                configuration.notice.clear();
+            }
+            if (!configuration.network.running) configuration.network_screen = false;
+            dirty |= actions != 0;
+            actions = 0;
+            pressed_tab.reset();
+        }
         if (finish_name_editor) {
             apply_system_effect(FinishNameEditor(system_page, *finish_name_editor), now);
             finish_name_editor.reset();
@@ -902,7 +990,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     if (error.empty()) return selected_path;
                     if (error == "content-missing") missing_content = true;
                     else notice = Wide(error);
-                } catch (const std::exception& e) { notice = Wide(e.what()); }
+                } catch (const std::exception& e) {
+                    LOG_WARNING(Frontend, "Game check failed: {}", e.what());
+                    notice = Tr(T::GameLoadFailed);
+                }
                 dirty = true;
             }
         }
@@ -923,9 +1014,11 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (import_future.wait_for(std::chrono::seconds{0}) == std::future_status::ready) {
                 try {
                     const auto error = import_future.get();
-                    configuration.notice = error.empty() ? std::wstring{Tr(T::ImportDone)} : Wide(error);
+                    configuration.notice = error.empty() ? std::wstring{Tr(T::ImportDone)} :
+                        network_import ? std::wstring{Tr(T::ImportFailedKept)} : Wide(error);
                 } catch (...) { configuration.notice = Tr(T::ImportFailedKept); }
                 configuration.busy = false;
+                network_import=false;
                 // The old metadata worker has joined; discard results before rescanning.
                 metadata = {};
                 refresh_setup();
@@ -946,6 +1039,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (to == LibraryTab::Settings) {
                 configuration.open = true; configuration.files = false; configuration.selected = HomeSystem;
                 configuration.notice.clear(); refresh_setup();
+                if (!network_portal.Status().running) {
+                    configuration.network_addresses = PortalAddresses();
+                    configuration.network_selected = 0;
+                }
             }
             if (to == LibraryTab::Library) {
                 // The shelf opens on the game Home had focused.
@@ -1017,11 +1114,15 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                              (tab == LibraryTab::Library && !filter_focus && shelf_focus < shelf.size());
         if (actions & Options && on_game && !game_options.open && !settings && !configuration.open &&
             !panel.keyboard.open && !loading && !picker && !validation.valid() && !scan.entries.empty()) {
+            if (!network_portal.BlockForLocalOperation()) {
+                notice=Tr(T::NetworkBusy); actions=0; dirty=true;
+            } else {
             game_options = {true, selected};
             requested_game_option = 0;
             options_notice.clear();
             actions = 0;
             dirty = true;
+            }
         }
         if (game_options.open) {
             // A rescan may have replaced the list under the page.
@@ -1464,6 +1565,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         break;
                     }
                 } else if (loading || setup_future.valid()) configuration.notice = Tr(T::WaitForCheck);
+                else if (configuration.selected < FilesNetwork && !network_portal.BlockForLocalOperation()) {
+                    configuration.notice=Tr(T::NetworkBusy);
+                }
                 else if (configuration.selected == 3 || configuration.selected == 4) {
                     std::vector<std::uint64_t> bases;
                     for (const auto& e : scan.entries) if (e.program_id) bases.push_back(FileSys::GetBaseTitleID(e.program_id));
@@ -1474,9 +1578,50 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     metadata = {}; game_options.open = true; game_options.game = 0;
                     game_options.activate = false; game_options.focus = GameOptionsFocus::Content;
                 }
-                else if (configuration.selected >= 5) {
+                else if (configuration.selected == FilesNetwork) {
+                    if (network_portal.Status().running) {
+                        configuration.network_screen = true;
+                        configuration.network_action = 0;
+                        configuration.notice.clear();
+                    } else {
+                        if (configuration.network_addresses.empty()) configuration.network_addresses = PortalAddresses();
+                        if (configuration.network_addresses.empty()) configuration.notice = Tr(T::NetworkUnavailable);
+                        else {
+                            const auto& address = configuration.network_addresses[configuration.network_selected];
+                            const bool started = network_portal.Start(address.ipv4);
+                            const auto error = network_portal.Status().error;
+                            configuration.notice = started ? std::wstring{} :
+                                std::wstring{Tr(error == PortalError::Bind ? T::NetworkBindFailed : T::NetworkStartFailed)};
+                            configuration.network_screen = started;
+                            configuration.network_action = 0;
+                            // Never log the pairing code or browser session.
+                            LOG_INFO(Frontend, "Network portal: {}", started ? "listening" : "start failed");
+                        }
+                    }
+                    configuration.network = network_portal.Status();
+                }
+                else if (configuration.selected == FilesNetworkAddress) {
+                    network_portal.Stop();
+                    const auto old = configuration.network_addresses.empty() ? std::string{} :
+                        configuration.network_addresses[configuration.network_selected].ipv4;
+                    configuration.network_addresses = PortalAddresses();
+                    configuration.network_selected = 0;
+                    for (size_t i = 0; i < configuration.network_addresses.size(); ++i)
+                        if (configuration.network_addresses[i].ipv4 == old)
+                            configuration.network_selected = (i + 1) % configuration.network_addresses.size();
+                    configuration.network = network_portal.Status();
+                    configuration.notice.clear();
+                }
+                else if (configuration.selected == FilesNetworkCode) {
+                    if (!network_portal.RenewCode()) configuration.notice = Tr(T::NetworkStopped);
+                    else configuration.notice.clear();
+                    configuration.network = network_portal.Status();
+                    configuration.network_screen = configuration.network.running;
+                    configuration.network_action = 1;
+                }
+                else if (configuration.selected >= FilesSources) {
                     try {
-                        ForgetGameFolder(configuration.status.sources[configuration.selected - 5].token);
+                        ForgetGameFolder(configuration.status.sources[configuration.selected - FilesSources].token);
                         configuration.notice = Tr(T::FolderRemoved);
                         configuration.selected = 0; refresh_setup(); start_scan();
                     } catch (...) { configuration.notice = Tr(T::FolderRemoveFailed); }
@@ -1501,8 +1646,14 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             // A rescan keeps the game the player was on; the first scan starts at the last one played.
             const auto kept = selected < scan.entries.size() ? scan.entries[selected].launch_path : std::string{};
             try { scan = future.get(); }
-            catch (const std::exception& e) { scan.error = e.what(); }
-            catch (const winrt::hresult_error& e) { scan.error = winrt::to_string(e.message()); }
+            catch (const std::exception& e) {
+                LOG_WARNING(Frontend, "Library scan failed: {}", e.what());
+                scan.error = I18n::ToUtf8(Tr(T::LibraryScanFailed));
+            } catch (const winrt::hresult_error& e) {
+                LOG_WARNING(Frontend, "Library scan failed: {:08X} {}", static_cast<std::uint32_t>(e.code()),
+                            winrt::to_string(e.message()));
+                scan.error = I18n::ToUtf8(Tr(T::LibraryScanFailed));
+            }
             loading = false;
             refresh_play(kept);
             refresh_pulse();
@@ -1528,7 +1679,12 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             }
         }
         if (actions & Play && on_game && !configuration.open && !settings && !panel.keyboard.open && !loading &&
+            !scan.entries.empty() && !network_portal.BlockForLocalOperation()) {
+            notice=Tr(T::NetworkBusy); actions &= ~Play; dirty=true;
+        }
+        if (actions & Play && on_game && !configuration.open && !settings && !panel.keyboard.open && !loading &&
             !scan.entries.empty()) {
+            network_portal.Stop();
             selected_path = scan.entries[selected].launch_path;
             notice = Tr(T::CheckingGame);
             dirty = true;
@@ -1718,7 +1874,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         // The player moved to other rows: background work yields to its covers.
         if (metadata.valid() && metadata_background && (metadata_dirty || retained_page != page))
             metadata_worker.request_stop();
-        if (!content_session && !validation.valid() && !missing_content && !configuration.open && !loading && !metadata.valid() && !scan.entries.empty()) {
+        if (!configuration.busy && !content_session && !validation.valid() && !missing_content && !configuration.open && !loading && !metadata.valid() && !scan.entries.empty()) {
             MetadataOptions request{title_language};
             std::vector<LibraryEntry> requested;
             if (metadata_dirty || retained_page != page) {

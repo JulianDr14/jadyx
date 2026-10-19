@@ -659,18 +659,33 @@ vacío **no compila**. Marcadores posicionales `{0}`, `{1}` (la traducción pued
 plurales con la regla CLDR del idioma (`Plural`). El menú en juego usa la misma traducción (con
 texto real desde la sección de cheats, más abajo).
 
-Negociación BCP 47: preferencias de Windows en orden, recortando subetiquetas
-(`es-CO` -> `es`), inglés si ninguna coincide. Inglés es también el respaldo de cualquier texto
-que falte en un catálogo parcial.
+Idiomas: inglés (`en`), español (`es`) y portugués de Brasil (`pt-BR`, trato "você"). En pt la
+regla CLDR pone 0 con el singular ("0 jogo", "1 jogo", "2 jogos").
 
-Para agregar un idioma (p. ej. portugués):
-1. Copiar `locales/en.cpp` a `locales/pt.cpp`, renombrar `EnglishCatalog` a `PortugueseCatalog` y
+Negociación BCP 47: preferencias de Windows en orden; para cada una, la etiqueta recortando
+subetiquetas (`es-CO` -> `es`) y si no, otra variante del mismo idioma (`pt-PT` -> `pt-BR`);
+inglés si ninguna coincide. Inglés es también el respaldo de cualquier texto que falte en un
+catálogo parcial.
+
+Plurales: `PluralForm` tiene las seis categorías CLDR. Los catálogos guardan solo One/Other; un
+idioma con más formas (few en polaco, many en ruso...) las da en `UiLanguage::extra_plurals`,
+indexadas por el id Other del texto, y lo que no tenga sale con su texto Other.
+
+Errores: el texto crudo de excepciones y del sistema de archivos (`e.what()`, `ec.message()`)
+va solo al log; la UI muestra un texto traducido (`LibraryScanFailed`, `GameLoadFailed`,
+`GameReadFailed`).
+
+Para agregar un idioma (p. ej. francés):
+1. Copiar `locales/en.cpp` a `locales/fr.cpp`, renombrar `EnglishCatalog` a `FrenchCatalog` y
    traducir. Mientras esté a medias: `MakeCatalog({...}, true)`; lo que falte sale en inglés.
 2. Declararlo en `locales/catalogs.h` y añadir una línea en `locales/registry.cpp`
-   (`{L"pt", L"Português", &PortugueseCatalog, &OneOrOther}`; otra regla de plural si el idioma
-   la necesita).
-3. Añadir el `.cpp` en `src/eden_uwp/CMakeLists.txt`.
+   (`{L"fr", L"Français", &FrenchCatalog, &OneOrOther}`; otra regla de plural, y
+   `extra_plurals`, si el idioma la necesita).
+3. Añadir el `.cpp` en `src/jadyx/CMakeLists.txt` y en la línea de `cl` de
+   `tools/xbox/tests/run-frontend.ps1` y `run-game-menu.ps1`.
+4. Textos del portal web (`network_portal_page.h`): su tabla `words` es aparte, en JavaScript.
 Un texto nuevo: id en `I18n::Text` y su línea en cada catálogo completo (el compilador avisa).
+`localization-catalogs` comprueba que cada traducción usa los mismos `{n}` que inglés.
 
 ## Configuración > Sistema
 
@@ -679,28 +694,32 @@ juegos, región de la consola y limpiar caché. Cada elección es explícita o *
 (defecto), que sigue a Windows (`GlobalizationPreferences.Languages` y `HomeGeographicRegion`;
 en la Series, los de la consola) y se muestra como "Automático · Español".
 
-- Idioma de los juegos: la variante sale de la región (`es-ES` -> español de España, resto de
-  `es` -> latinoamericano; `en` de América -> EE. UU., resto -> británico; `fr-CA`, `pt-BR`,
-  `zh-Hant`). Al arrancar, `PickGameLanguage` da al juego el idioma más cercano que declara su
-  NACP: el elegido, su variante, inglés o el primero que tenga. La biblioteca lee los títulos en
-  ese mismo idioma.
+- Idioma de los juegos: el primer idioma de la lista de Windows que tenga la Switch
+  (`ca-ES, es-ES` -> español; si ninguno, inglés). La variante sale de la región (`es-ES` ->
+  español de España, resto de `es` -> latinoamericano; `en` de América -> EE. UU., resto ->
+  británico; `fr-CA`, `pt-BR`, `zh-Hant`). Al arrancar, `PickNacpLanguage`
+  (`settings/nacp_language.h`, sobre `PickGameLanguage`) da al juego el idioma más cercano que
+  declara su NACP: el elegido, su variante, inglés o el primero que tenga. La biblioteca lee
+  cada título con esa misma función, así que el nombre coincide con el idioma del juego (caché
+  de biblioteca versión 4).
 - Región: América para todo el continente, Japón, China, Corea, Taiwán/Hong Kong,
   Australia/Nueva Zelanda; Europa para el resto, como la consola.
 - Nombre de usuario: teclado en pantalla propio (`text_entry.h`): A escribe, X borra,
   Y espacio, View mayúsculas, Menú listo, B cancela; ratón y teclado físico también.
+  La página de símbolos empieza con los acentos de español y portugués (á à â ã é ê í ó ô õ ú ü ç).
   No se usa el teclado del sistema (`InputPane`): necesita un control de texto con foco y sin
   XAML habría que implementarlo a mano sobre `CoreTextEditContext`; además Microsoft documenta que
   el overlay del input pane no está plenamente soportado en apps de pantalla completa como los
   juegos y que `TryShow` es solo "best effort". Propio: igual en Series y PC y testeable. Máximo 10
   caracteres como en la Switch. Se aplica al perfil activo (`ProfileManager::SetProfileBase`)
-  antes de `System::Load`; vacío conserva "Eden".
+  antes de `System::Load`; vacío conserva "Jadyx".
 
 Persistencia en `LocalSettings` (`system_ui_language`, `system_game_language`, `system_region`,
 `system_user_name`; -1 = automático). Lógica pura en `system_settings.h` / `system_page.h`, WinRT
 en `uwp_system_settings.cpp`.
 
 Harness PASS: `localization-catalogs`, `system-settings`, `text-entry`, `library-cache` (con
-`/DEDEN_XBOX_NO_WINRT`) y `game-menu` (ahora con los catálogos). Compilan con `/Zc:preprocessor`
+`/DJADYX_NO_WINRT`) y `game-menu` (ahora con los catálogos). Compilan con `/Zc:preprocessor`
 como el resto de Eden. Build UWP limpio. Pendiente: validar en Series (teclado con mando,
 CJK en los nombres de idioma, tiempos de caché con biblioteca grande).
 
@@ -777,7 +796,7 @@ abierto. La fuente 3x5 queda para los overlays de rendimiento y carga; `ToOverla
 
 Harness PASS (`cl /std:c++20 /EHsc /Zc:preprocessor /utf-8 /Isrc`): `cheat-text`,
 `cheat-catalog`, `cheats-page`, `game-menu`, `localization-catalogs`, `library-cache`
-(`/DEDEN_XBOX_NO_WINRT`), `system-settings`, `game-library`. Build UWP de `eden-uwp` limpio.
+(`/DJADYX_NO_WINRT`), `system-settings`, `game-library`. Build UWP de `eden-uwp` limpio.
 Pendiente: validar en Series (descarga y 304, cheats en caliente con y sin cheats al arrancar,
 presupuesto de la VM, memoria con el menú abierto).
 

@@ -26,6 +26,10 @@ const UiLanguage* Find(std::span<const UiLanguage> available, std::wstring_view 
         if (SameTag(language.tag, tag)) return &language;
     return nullptr;
 }
+
+std::wstring_view PrimarySubtag(std::wstring_view tag) {
+    return tag.substr(0, tag.find_first_of(L"-_"));
+}
 } // namespace
 
 const UiLanguage* FindUiLanguage(std::wstring_view tag) {
@@ -34,14 +38,18 @@ const UiLanguage* FindUiLanguage(std::wstring_view tag) {
 
 const UiLanguage& NegotiateUiLanguage(std::span<const UiLanguage> available,
                                       std::span<const std::wstring> preferences) {
-    for (std::wstring_view tag : preferences) {
+    for (const std::wstring_view preference : preferences) {
         // Drop trailing subtags one at a time: "es-Latn-CO" -> "es-Latn" -> "es".
-        while (!tag.empty()) {
+        for (auto tag = preference; !tag.empty();) {
             if (const auto* found = Find(available, tag)) return *found;
             const auto dash = tag.find_last_of(L"-_");
             if (dash == std::wstring_view::npos) break;
             tag = tag.substr(0, dash);
         }
+        // Another variant of the same language beats moving on: "pt-PT" reads "pt-BR".
+        const auto primary = PrimarySubtag(preference);
+        for (const auto& language : available)
+            if (!primary.empty() && SameTag(PrimarySubtag(language.tag), primary)) return language;
     }
     return available.front();
 }
@@ -63,7 +71,10 @@ std::wstring_view Tr(Text id) {
 }
 
 std::wstring Format(Text id, std::initializer_list<std::wstring_view> args) {
-    const auto pattern = Tr(id);
+    return Format(Tr(id), args);
+}
+
+std::wstring Format(std::wstring_view pattern, std::initializer_list<std::wstring_view> args) {
     std::wstring result;
     result.reserve(pattern.size() + 16);
     for (std::size_t i = 0; i < pattern.size(); ++i) {
@@ -81,9 +92,14 @@ std::wstring Format(Text id, std::initializer_list<std::wstring_view> args) {
 }
 
 std::wstring Plural(Text one, Text other, std::uint64_t count) {
-    const auto form = CurrentUiLanguage().plural(count);
+    const auto& language = CurrentUiLanguage();
+    const auto form = language.plural(count);
     const auto number = std::to_wstring(count);
-    return Format(form == PluralForm::One ? one : other, {number});
+    if (form == PluralForm::One) return Format(one, {number});
+    if (form != PluralForm::Other)
+        for (const auto& entry : language.extra_plurals)
+            if (entry.other == other && entry.form == form) return Format(entry.text, {number});
+    return Format(other, {number});
 }
 
 std::string ToUtf8(std::wstring_view text) {
