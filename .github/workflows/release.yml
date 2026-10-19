@@ -159,3 +159,32 @@ jobs:
           if [ "$PRERELEASE" = "true" ]; then flags=(--prerelease --latest=false); fi
           gh release create "$TAG" out/* --title "$title" --notes-file "$RUNNER_TEMP/notes.md" \
               --verify-tag "${flags[@]}"
+          echo "TITLE=$title" >> "$GITHUB_ENV"
+
+      # The release is already out, so a Discord failure only warns. Pings Release Ping only for
+      # full releases, not pre-releases.
+      - name: Announce on Discord
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
+          DISCORD_ROLE: ${{ vars.DISCORD_RELEASE_ROLE }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then echo "No DISCORD_RELEASES_WEBHOOK secret; skipping"; exit 0; fi
+          python3 - > "$RUNNER_TEMP/discord.json" <<'PY'
+          import json, os
+          env = os.environ
+          url = f"https://github.com/{env['GITHUB_REPOSITORY']}/releases/tag/{env['TAG']}"
+          ping = env.get("DISCORD_ROLE") if env["PRERELEASE"] != "true" else ""
+          text = env.get("HIGHLIGHTS") or "A new build is out."
+          print(json.dumps({
+              "content": f"<@&{ping}>" if ping else "",
+              "allowed_mentions": {"roles": [ping] if ping else []},
+              "embeds": [{
+                  "title": env["TITLE"] + (" (pre-release)" if env["PRERELEASE"] == "true" else ""),
+                  "url": url,
+                  "description": text[:3500] + f"\n\n**Download and install:** {url}",
+                  "color": 0x0078D4,
+              }],
+          }))
+          PY
+          curl -fsS -H "Content-Type: application/json" --data @"$RUNNER_TEMP/discord.json" "$DISCORD_WEBHOOK"
