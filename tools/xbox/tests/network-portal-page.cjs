@@ -4,6 +4,9 @@ const fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto'),
 const header=fs.readFileSync('src/jadyx/storage/network_portal_page.h','utf8');
 const script=header.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(script,{filename:'network-portal-page.js'});
+// /logo.png serves the app's controller logo; its embedded bytes must match the packaged asset.
+const logo=fs.readFileSync('src/jadyx/storage/network_portal_logo.h','utf8').match(/Logo\[\]=\{([\s\S]*?)\};/)[1].match(/0x[0-9a-f]{2}/g).map(Number);
+assert.ok(Buffer.from(logo).equals(fs.readFileSync('dist/uwp/Assets/Square150x150Logo.scale-200.png')),'network_portal_logo.h is stale');
 const formatDuration=vm.runInNewContext('('+script.match(/function formatDuration\(value\)\{[\s\S]*?\n\}/)[0]+')');
 for(const [seconds,expected] of [[0,'0 s'],[59.1,'1 min 0 s'],[890,'14 min 50 s'],[3661,'1 h 1 min 1 s'],[90061,'25 h 1 min 1 s'],[Infinity,'—']]){
  assert.equal(formatDuration(seconds),expected);

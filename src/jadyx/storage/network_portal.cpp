@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/storage/network_portal.h"
+#include "jadyx/storage/network_portal_logo.h"
 #include "jadyx/storage/network_portal_page.h"
 
 // Match the httplib configuration used by the rest of common (including SSL feature macros).
@@ -320,7 +321,7 @@ struct NetworkPortal::Impl {
         });
         server->set_default_headers({{"Cache-Control", "no-store"}, {"X-Content-Type-Options", "nosniff"},
             {"Referrer-Policy", "no-referrer"}, {"X-Frame-Options", "DENY"},
-            {"Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"}});
+            {"Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"}});
         server->set_pre_routing_handler([this](const auto& request, auto& response) {
             std::lock_guard lock{mutex};
             if (!status.running) { Reply(response, 503, {{"error", "stopped"}}); return httplib::Server::HandlerResponse::Handled; }
@@ -340,7 +341,8 @@ struct NetworkPortal::Impl {
                 Reply(response, 413, {{"error", "chunk"}});
                 return httplib::Server::HandlerResponse::Handled;
             }
-            if (request.path == "/" && request.method == "GET") return httplib::Server::HandlerResponse::Unhandled;
+            if ((request.path == "/" || request.path == "/logo.png") && request.method == "GET")
+                return httplib::Server::HandlerResponse::Unhandled;
             if (request.path == "/api/v1/pair" && request.method == "POST" &&
                 request.get_header_value("Origin") == "http://" + authority)
                 return httplib::Server::HandlerResponse::Unhandled;
@@ -353,6 +355,9 @@ struct NetworkPortal::Impl {
         });
         server->Get("/", [](const auto&, auto& response) {
             response.set_content(PortalWeb::Page.data(), PortalWeb::Page.size(), "text/html; charset=utf-8");
+        });
+        server->Get("/logo.png", [](const auto&, auto& response) {
+            response.set_content(reinterpret_cast<const char*>(PortalWeb::Logo), PortalWeb::LogoSize, "image/png");
         });
         server->Post("/api/v1/pair", [this](const auto& request, auto& response) {
             const auto body = Json::parse(request.body, nullptr, false);

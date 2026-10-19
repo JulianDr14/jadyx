@@ -38,6 +38,7 @@ add_executable(jadyx WIN32
     storage/uwp_file_manager.h
     storage/network_portal.cpp
     storage/network_portal.h
+    storage/network_portal_logo.h
     storage/network_portal_page.h
     storage/nsp_upload.cpp
     storage/nsp_upload.h
