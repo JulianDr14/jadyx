@@ -25,7 +25,7 @@ struct LibraryEntry {
     std::array<std::uint8_t, 8> build_id{}; ///< The main module's, as cheat files are named.
     std::wstring display_version; ///< Effective NACP version, e.g. 2.0.0.
     std::wstring pulse_saved; ///< When the kept Pulse session was saved; empty without one.
-    bool pulse_current{};     ///< That session was made by this build, so it can resume.
+    bool pulse_current{};     ///< That session is of a Pulse version this build reads.
     std::uint64_t play_seconds{}; ///< Time played (play_history.h); counted only with play time on.
     std::int64_t last_played{};   ///< Unix seconds of the last launch; 0 = never played.
     std::int64_t added{};         ///< Unix seconds the file arrived (its creation); 0 = unknown.

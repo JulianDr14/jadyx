@@ -5,7 +5,8 @@
 // Pulse sessions (docs/xbox/xbox_pulse.md, phase 4): "Back to home" captures the running game and
 // picking it again in the library resumes it. One session per game file and user, kept in
 // LocalState/jadyx/pulse/sessions under the Store's quota; a session is consumed by the restore
-// that uses it and is never deleted without the player asking. Nothing runs while playing: the
+// that uses it. One this build can resume is never deleted without the player asking; one it
+// cannot is deleted when the library opens (Prune). Nothing runs while playing: the
 // capture happens only when the game is left.
 
 #include <array>
@@ -53,10 +54,15 @@ std::string Save(Core::System& system, const Common::Pulse::Identity& identity,
                  const std::function<std::uint64_t()>& headroom,
                  const std::function<void(const char*)>& phase = {});
 
+/// Deletes, in one pass over every game, what this build can never resume: sessions of another
+/// Pulse major.minor (or from before the version), unknown archive formats and sessions already
+/// resumed. Run when the library opens.
+void Prune();
+
 /// What the library shows for a game file: the newest session kept for it.
 struct Kept {
     std::filesystem::file_time_type saved{};
-    bool current{}; ///< Made by this build; otherwise it cannot be resumed.
+    bool current{}; ///< Of a Pulse version this build reads; otherwise it cannot be resumed.
 };
 std::optional<Kept> Find(std::string_view launch_path);
 /// The player discards the game's sessions. Normal saves are never touched.

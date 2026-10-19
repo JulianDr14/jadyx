@@ -1,17 +1,23 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Link src/common/pulse_archive.cpp and the configured LZ4 library.
+// Link src/common/pulse_archive.cpp and the configured LZ4 and zstd libraries.
 #include "common/pulse_archive.h"
+#include "common/pulse_version.h"
 
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <random>
+#include <source_location>
 #include <sstream>
 #include <vector>
 
 using namespace Common::Pulse;
-void Check(bool ok) { if (!ok) std::abort(); }
+void Check(bool ok, std::source_location where = std::source_location::current()) {
+    if (ok) return;
+    std::cerr << "Pulse archive check failed at line " << where.line() << '\n';
+    std::abort();
+}
 template <typename F> void Reject(F run, Error expected) {
     try { run(); } catch (const Failure& failure) { Check(failure.code == expected); return; }
     std::abort();
@@ -36,6 +42,11 @@ int main() {
     });
     writer.Finish();
     const auto archive = output.str();
+    // One zero block, one compressible block (zstd, codec 3 at byte 232), one random and one
+    // partial block that stay raw.
+    Check(archive[232] == 3);
+    Check(writer.Packed().zero == BlockSize && writer.Packed().packed == BlockSize &&
+          writer.Packed().raw == BlockSize + 13 && writer.Packed().stored < BlockSize / 100);
     {
         std::istringstream header_only{archive.substr(0, 136), std::ios::binary};
         Check(ReadHeader(header_only) == identity);
@@ -107,5 +118,44 @@ int main() {
     Check(!Fits(DefaultQuota, 1, DefaultQuota, UINT64_MAX));
     Check(!Fits(0, 1, DefaultQuota, FreeReserve));
     Check(!Fits(0, UINT64_MAX, UINT64_MAX, UINT64_MAX));
-    std::cout << "Pulse archive: 100 codec round trips, malformed/truncated/identity/limit/cancellation/IO/quota cases passed\n";
+    // The Pulse version: any patch of the same major.minor reads the session, a new major or
+    // minor does not.
+    static_assert(VersionOf(RevisionOf(Version{1, 2, 3})) == Version{1, 2, 3});
+    static_assert(VersionOf(RevisionOf(CurrentVersion)) == CurrentVersion);
+    static_assert(Compatible(Version{1, 0, 1}, Version{1, 0, 2}));
+    static_assert(Compatible(Version{1, 0, 2}, Version{1, 0, 1}));
+    static_assert(!Compatible(Version{1, 0, 0}, Version{1, 1, 0}));
+    static_assert(!Compatible(Version{1, 1, 0}, Version{1, 0, 0}));
+    static_assert(!Compatible(Version{1, 0, 0}, Version{2, 0, 0}));
+    Check(!VersionOf(identity.revision)); // a build hash, as sessions before the version stored
+    {
+        auto hashed = RevisionOf(Version{1, 0, 0});
+        hashed[31] = 1;
+        Check(!VersionOf(hashed));
+    }
+    auto saved = identity;
+    saved.revision = RevisionOf(Version{3, 4, 1});
+    std::ostringstream versioned{std::ios::binary};
+    Writer versioned_writer{versioned, saved};
+    versioned_writer.Add({1, 1, 0}, [](auto, auto) {});
+    versioned_writer.Finish();
+    auto reader = saved;
+    for (const auto& [version, readable] : {std::pair{Version{3, 4, 1}, true},
+                                            std::pair{Version{3, 4, 2}, true},
+                                            std::pair{Version{3, 4, 0}, true},
+                                            std::pair{Version{3, 5, 1}, false},
+                                            std::pair{Version{4, 4, 1}, false}}) {
+        reader.revision = RevisionOf(version);
+        Check(Compatible(saved, reader) == readable);
+        if (readable) {
+            decode(versioned.str(), reader, 0);
+        } else {
+            Reject([&] { decode(versioned.str(), reader, 0); }, Error::Incompatible);
+        }
+    }
+    reader.revision = RevisionOf(Version{3, 4, 2});
+    reader.content[0] ^= 1; // another game file: never compatible, whatever the version
+    Check(!Compatible(saved, reader));
+    Check(!Compatible(identity, saved) && !Compatible(saved, identity)); // build hash vs version
+    std::cout << "Pulse archive: 100 codec round trips, malformed/truncated/identity/limit/cancellation/IO/quota and version compatibility cases passed\n";
 }

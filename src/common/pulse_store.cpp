@@ -125,6 +125,24 @@ std::uint64_t Store::Used() const {
     return used;
 }
 
+void Store::RemoveConsumed() const {
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec)) return;
+    for (const auto& entry : std::filesystem::directory_iterator{root}) {
+        if (entry.path().extension() != ".consumed") continue;
+        const auto path = Path(entry.path().stem().string(), ".consumed");
+        RequireRegularOrAbsent(path);
+        std::filesystem::remove(path);
+    }
+}
+
+void Store::DropConsumed(std::string_view key) {
+    std::scoped_lock lock{mutex};
+    const auto consumed = Path(key, ".consumed");
+    RequireRegularOrAbsent(consumed);
+    std::filesystem::remove(consumed);
+}
+
 void Store::Publish(std::string_view key, const Identity& identity, std::uint64_t max_encoded,
                     std::uint64_t max_decoded, const std::function<void(Writer&)>& serialize,
                     std::stop_token stop, Progress progress) {
@@ -137,13 +155,16 @@ void Store::Publish(std::string_view key, const Identity& identity, std::uint64_
     std::filesystem::create_directories(root);
     RequireRegularOrAbsent(current);
     RequireRegularOrAbsent(next);
-    // An interrupted temporary can be removed; it was never a published session.
+    // An interrupted temporary can be removed; it was never a published session. Nor can a
+    // session already resumed ever be restored again: neither may hold back the quota.
     std::filesystem::remove(next);
+    RemoveConsumed();
     if (!Fits(Used(), max_encoded, quota, std::filesystem::space(root).available))
         throw Failure{Error::Limit, "Pulse storage quota or free reserve exceeded"};
     try {
         auto phase = std::chrono::steady_clock::now();
         long long write_ms{}, verify_ms{};
+        Packing packing{};
         if (fault) fault(PublishStep::Write);
         {
             std::ofstream file{next, std::ios::binary | std::ios::trunc};
@@ -153,6 +174,7 @@ void Store::Publish(std::string_view key, const Identity& identity, std::uint64_
             Writer writer{output, identity, stop, std::move(progress)};
             serialize(writer);
             writer.Finish();
+            packing = writer.Packed();
             file.close();
             if (!file) throw Failure{Error::Io, "Pulse temporary close failed"};
         }
@@ -167,9 +189,10 @@ void Store::Publish(std::string_view key, const Identity& identity, std::uint64_
         phase = std::chrono::steady_clock::now();
         if (fault) fault(PublishStep::Sync);
         if (!SyncFile(next)) throw Failure{Error::Io, "Pulse durable flush failed"};
-        LOG_INFO(Common, "Pulse: session written in {} ms, verified in {} ms, synced in {} ms ({} MiB)",
-                 write_ms, verify_ms, MillisecondsSince(phase),
-                 std::filesystem::file_size(next) >> 20);
+        LOG_INFO(Common, "Pulse: session written in {} ms, verified in {} ms, synced in {} ms ({} MiB: "
+                 "{} MiB packed into {} MiB, {} MiB stored raw, {} MiB of zero blocks)",
+                 write_ms, verify_ms, MillisecondsSince(phase), std::filesystem::file_size(next) >> 20,
+                 packing.packed >> 20, packing.stored >> 20, packing.raw >> 20, packing.zero >> 20);
         if (stop.stop_requested()) throw Failure{Error::Cancelled, "Pulse operation cancelled"};
         if (std::filesystem::space(root).available < FreeReserve)
             throw Failure{Error::Limit, "Pulse free reserve exhausted"};

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common/pulse_archive.h"
+#include "common/pulse_version.h"
 
 #include <algorithm>
 #include <condition_variable>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include <lz4.h>
+#include <zstd.h>
 
 #if defined(_M_X64) || defined(__x86_64__)
 #define PULSE_CRC_CLMUL 1
@@ -280,6 +282,23 @@ private:
     bool quit{};
 };
 
+// Blocks are written with zstd, which packs guest memory a good deal tighter than LZ4 at a speed
+// the lanes keep up with. LZ4 blocks are still read.
+constexpr std::uint64_t CodecZero = 0, CodecRaw = 1, CodecLz4 = 2, CodecZstd = 3;
+constexpr int ZstdLevel = 3;
+
+struct ZstdContexts {
+    ZSTD_CCtx* compress{};
+    ZSTD_DCtx* decompress{};
+    ZstdContexts() = default;
+    ZstdContexts(const ZstdContexts&) = delete;
+    ZstdContexts& operator=(const ZstdContexts&) = delete;
+    ~ZstdContexts() {
+        ZSTD_freeCCtx(compress);
+        ZSTD_freeDCtx(decompress);
+    }
+};
+
 std::uint64_t BlockCount(std::uint64_t size) {
     return (size + BlockSize - 1) / BlockSize;
 }
@@ -328,6 +347,7 @@ void Writer::Add(Section section, const ReadBlock& read) {
     struct Encoded {
         std::vector<std::uint8_t> raw;
         std::vector<char> packed;
+        ZstdContexts zstd;
         std::size_t count{};
         std::uint64_t stored{}, codec{};
         std::uint32_t crc{};
@@ -338,7 +358,9 @@ void Writer::Add(Section section, const ReadBlock& read) {
     std::vector<Encoded> slots(static_cast<std::size_t>(std::min<std::uint64_t>(blocks, lanes.Size())));
     for (auto& slot : slots) {
         slot.raw.resize(capacity);
-        slot.packed.resize(static_cast<std::size_t>(LZ4_compressBound(static_cast<int>(capacity))));
+        slot.packed.resize(ZSTD_compressBound(capacity));
+        slot.zstd.compress = ZSTD_createCCtx();
+        if (!slot.zstd.compress) throw Failure{Error::Io, "Pulse compressor unavailable"};
     }
     for (std::uint64_t offset = 0; offset < section.size;) {
         CheckStop(stop);
@@ -352,16 +374,17 @@ void Writer::Add(Section section, const ReadBlock& read) {
             const auto block = std::span{slot.raw}.first(slot.count);
             read(at, block);
             if (IsZero(block)) {
-                slot.stored = slot.codec = 0;
+                slot.stored = 0;
+                slot.codec = CodecZero;
                 slot.crc = ZeroCrc(slot.count);
                 return;
             }
             slot.crc = Crc(block);
-            const int packed = LZ4_compress_default(reinterpret_cast<const char*>(block.data()),
-                slot.packed.data(), static_cast<int>(slot.count), static_cast<int>(slot.packed.size()));
-            const bool use_lz4 = packed > 0 && static_cast<std::size_t>(packed) < slot.count;
-            slot.stored = use_lz4 ? static_cast<std::uint64_t>(packed) : slot.count;
-            slot.codec = use_lz4 ? 2 : 1;
+            const auto packed = ZSTD_compressCCtx(slot.zstd.compress, slot.packed.data(), slot.packed.size(),
+                                                  block.data(), slot.count, ZstdLevel);
+            const bool use_zstd = !ZSTD_isError(packed) && packed > 0 && packed < slot.count;
+            slot.stored = use_zstd ? packed : slot.count;
+            slot.codec = use_zstd ? CodecZstd : CodecRaw;
         });
         CheckStop(stop);
         for (unsigned index = 0; index < batch; ++index) {
@@ -370,8 +393,14 @@ void Writer::Add(Section section, const ReadBlock& read) {
             Put64(stream, slot.stored);
             Put64(stream, slot.codec);
             Put64(stream, slot.crc);
-            if (slot.codec == 2) Put(stream, {reinterpret_cast<const std::uint8_t*>(slot.packed.data()), static_cast<std::size_t>(slot.stored)});
-            else if (slot.codec == 1) Put(stream, std::span{slot.raw}.first(slot.count));
+            if (slot.codec == CodecZstd) Put(stream, {reinterpret_cast<const std::uint8_t*>(slot.packed.data()), static_cast<std::size_t>(slot.stored)});
+            else if (slot.codec == CodecRaw) Put(stream, std::span{slot.raw}.first(slot.count));
+            if (slot.codec == CodecZero) packing.zero += slot.count;
+            else if (slot.codec == CodecRaw) packing.raw += slot.count;
+            else {
+                packing.packed += slot.count;
+                packing.stored += slot.stored;
+            }
             offset += slot.count;
             total += slot.count;
             if (progress) progress(total);
@@ -412,9 +441,12 @@ Identity ReadHeader(std::istream& stream) {
 void Read(std::istream& stream, const Identity& expected, std::uint64_t max_decoded,
           const WriteBlock& write, std::stop_token stop, Progress progress) {
     CheckStop(stop);
-    if (ReadHeader(stream) != expected) throw Failure{Error::Incompatible, "Pulse identity mismatch"};
+    if (!Compatible(ReadHeader(stream), expected)) {
+        throw Failure{Error::Incompatible, "Pulse identity mismatch"};
+    }
     struct Stored {
         std::vector<std::uint8_t> raw, packed;
+        ZstdContexts zstd;
         std::uint64_t count{}, stored{}, codec{}, checksum{};
     };
     Lanes lanes{MaxLanes};
@@ -422,6 +454,8 @@ void Read(std::istream& stream, const Identity& expected, std::uint64_t max_deco
     for (auto& slot : slots) {
         slot.raw.resize(BlockSize);
         slot.packed.resize(BlockSize);
+        slot.zstd.decompress = ZSTD_createDCtx();
+        if (!slot.zstd.decompress) throw Failure{Error::Io, "Pulse decompressor unavailable"};
     }
     std::uint32_t last_id{};
     std::uint32_t sections{};
@@ -452,22 +486,27 @@ void Read(std::istream& stream, const Identity& expected, std::uint64_t max_deco
                 slot.checksum = Get64(stream);
                 const auto count = slot.count, stored = slot.stored, codec = slot.codec;
                 if (count != std::min<std::uint64_t>(BlockSize, section.size - at) || stored > BlockSize ||
-                    codec > 2 || (codec == 0 && stored != 0) || (codec == 1 && stored != count) ||
-                    (codec == 2 && (stored == 0 || stored >= count)))
+                    codec > CodecZstd || (codec == CodecZero && stored != 0) ||
+                    (codec == CodecRaw && stored != count) ||
+                    (codec >= CodecLz4 && (stored == 0 || stored >= count)))
                     throw Failure{Error::Invalid, "Pulse invalid block lengths/codec"};
-                if (codec == 1) Get(stream, std::span{slot.raw}.first(static_cast<std::size_t>(count)));
-                else if (codec == 2) Get(stream, std::span{slot.packed}.first(static_cast<std::size_t>(stored)));
+                if (codec == CodecRaw) Get(stream, std::span{slot.raw}.first(static_cast<std::size_t>(count)));
+                else if (codec >= CodecLz4) Get(stream, std::span{slot.packed}.first(static_cast<std::size_t>(stored)));
                 at += count;
             }
             lanes.Run(batch, [&](unsigned index) {
                 auto& slot = slots[index];
                 const auto block = std::span{slot.raw}.first(static_cast<std::size_t>(slot.count));
-                if (slot.codec == 0) {
+                if (slot.codec == CodecZero) {
                     std::fill(block.begin(), block.end(), std::uint8_t{0});
                     if (slot.checksum != ZeroCrc(block.size())) throw Failure{Error::Invalid, "Pulse block checksum mismatch"};
                     return;
                 }
-                if (slot.codec == 2 && LZ4_decompress_safe(reinterpret_cast<const char*>(slot.packed.data()),
+                if (slot.codec == CodecZstd &&
+                    ZSTD_decompressDCtx(slot.zstd.decompress, slot.raw.data(), static_cast<std::size_t>(slot.count),
+                                        slot.packed.data(), static_cast<std::size_t>(slot.stored)) != slot.count)
+                    throw Failure{Error::Invalid, "Pulse invalid zstd payload"};
+                if (slot.codec == CodecLz4 && LZ4_decompress_safe(reinterpret_cast<const char*>(slot.packed.data()),
                         reinterpret_cast<char*>(slot.raw.data()), static_cast<int>(slot.stored),
                         static_cast<int>(slot.count)) != static_cast<int>(slot.count))
                     throw Failure{Error::Invalid, "Pulse invalid LZ4 payload"};

@@ -18,8 +18,9 @@ inline constexpr std::uint64_t DefaultQuota = 20ULL << 30;
 inline constexpr std::uint64_t FreeReserve = 1ULL << 30;
 inline constexpr std::uint64_t TransferBudget = 32ULL << 20;
 
-// Caller computes cryptographic fingerprints over canonical effective content/settings,
-// emulator revision and savedata. No paths or host pointers are archive identities.
+// Caller computes cryptographic fingerprints over canonical effective content/settings and
+// savedata; revision holds the Pulse version (pulse_version.h). No paths or host pointers are
+// archive identities.
 struct Identity {
     std::uint64_t program_id{};
     std::array<std::uint8_t, 16> user{};
@@ -53,12 +54,21 @@ using WriteBlock = std::function<void(Section, std::uint64_t offset,
 // Used for the library catalogue without decompressing guest memory.
 [[nodiscard]] Identity ReadHeader(std::istream& stream);
 
+// Decoded bytes by how their blocks were stored, and what the compressed ones took.
+struct Packing {
+    std::uint64_t zero{};
+    std::uint64_t raw{};
+    std::uint64_t packed{};
+    std::uint64_t stored{};
+};
+
 class Writer final {
 public:
     Writer(std::ostream& stream, const Identity& identity, std::stop_token stop = {},
            Progress progress = {});
     void Add(Section section, const ReadBlock& read);
     void Finish();
+    [[nodiscard]] const Packing& Packed() const { return packing; }
 private:
     std::ostream& stream;
     std::stop_token stop;
@@ -66,11 +76,13 @@ private:
     std::uint32_t last_id{};
     std::uint32_t sections{};
     std::uint64_t total{};
+    Packing packing{};
     bool finished{};
     bool failed{};
 };
 
-// Scan first with no consumer to validate every checksum/limit before rebuilding.
+// Scan first with no consumer to validate every checksum/limit before rebuilding. The stored
+// identity must be Compatible (pulse_version.h) with `expected`, not equal to it.
 // Use a fresh, stopped system for the second pass; never load into a live guest.
 // max_decoded is a trusted caller limit, not a value taken from the file.
 void Read(std::istream& stream, const Identity& expected, std::uint64_t max_decoded,
