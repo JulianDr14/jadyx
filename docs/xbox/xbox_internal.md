@@ -3845,3 +3845,84 @@ porEsc delusuario; catálogo online/visual/Series pendientes. Sin commit/push.
   La biblioteca de esta versión arranca en PC. Captura visual no disponible:
   Computer Use devolvió FrameArrived timed out y window capture timed out tras
   recuperar la ventana y reintentar. No se certifica visualmente con esa herramienta.
+
+## Portal de red: conexión (19 octubre 2026)
+
+Rama feature/local-import-portal desde main. Primer gate del diseño aprobado:
+listener HTTP C++ integrado, puerto8080/interfaz concreta, pairing8 dígitos/5min,
+sesión256bits, límite intentos y Host/Origin; filas es/en en File manager y cierre
+al jugar/suspender/salir. Capacidad privateNetworkClientServer añadida. Solo prueba
+de conexión, sin rutas de subida. Objetos UWP y harness TCP/catálogos correctos;
+cierre activo con body incompleto1910ms (<3s del harness). Link/AppContainer/LAN/Series
+pendientes; usuario ejecuta build amplio. Sin commit/paquete nuevo. Plan restante,
+comandos, fuentes y trampas de bind/stop en docs/xbox/xbox_network_portal.md.
+
+Revisión19oct: usuario abre página desde móvil pero no ve código (fila8 fuera de
+las7 visibles; hostPC/Series no indicado). Iniciar abre pantalla completa: URL,
+código112px agrupado4+4 y botones Volver/Generar/Detener. Volver conserva servidor;
+fila activa reabre página. Captura exclusiva de mando/teclado/puntero y sin fondo
+animado. Caducidad/consumo muestran estado y renovación. ObjetosUWP/catálogos pasan;
+prueba visual y pairing pendientes. Sin commit ni paquete nuevo.
+
+## Portal NSP reanudable (19 octubre 2026)
+
+Usuario confirma pairing móvil y autoriza NSP; no identifica aún hostPC/Series.
+Implementado tus1.0 core/creation/termination, bloques16MiB (64 máximo), streaming
+ContentReader→buffer1MiB→WriteFile; datosFlush una vez/bloque y checkpoint doble.
+Offset uint64, partial fuera del escáner, rollback de bytes no confirmados y rename
+sin replace a LocalState/games, identidad de archivo para recuperar publicación.
+Browser es/en: cola, progreso/confirmación, MiB/s/ETA, pausa/descartar/renombrar y
+huella SHA256 muestreada (no hash íntegro). Fallback SHA JS por HTTP sin WebCrypto.
+Validador comparte PFS/NcaReader/NCAmeta/CNMT: base Application+Program, referencias,
+tamaños/tipos/titleIds y sin NCAextra; no rehash completo ni importar tickets globales.
+Coordinador join metadatos antes de validar/publicar y rescan después; bloquea guest
+y mutaciones locales hasta pausa/fin. Stop/Suspend cancelables con polling100ms/idle30s.
+Corregido drain de httplib0.46 tras Connection:close; requests rechazadas no esperan
+body ausente. Cuatro workers/cola8/keepalive2s, sin buffers TCP gigantes.
+
+Objetos UWP y catálogos PASS. Harness TCP32MiB, comparación íntegra de datos sintéticos,
+cortes/restart/checkpoints rotos/IOfailure/colisiones/cancelación/rename/recoveryFileId
+y offset sparse>4GiB PASS. Cliente mock5GiB y hashes/sintaxis JS PASS. Smoke loopback
+116,56–143,09MiB/s (ventanas~0,2s, compilación concurrente; no tasa sostenida ni Xbox).
+Cierre final84ms. Link amplio usuario, NSP real/CNMT positivo/visual/memoria/Series y
+5GiB TCP completo opcional pendientes. ZIP/claves web siguientes. Sin commit/paquete.
+Fuentes, decisiones y comandos en docs/xbox/xbox_network_portal.md.
+## Portal: gate NSP real AppContainer y entrega 0.3.3.0 (19 octubre 2026)
+
+Usuario confirma explícitamente que el pairing móvil ya probado era en Series.
+Gate opt-in `network_import_gate=1` en arranque: usa los NSP internos en modo lectura,
+validador de producción, HTTP loopback con bloques16MiB, fixture privada, reinicio de
+instancia/HEAD al superar4GiB, finalize/rename y comparación íntegra con el origen.
+Nunca publica la copia en la biblioteca real ni cambia los originales. Memoria acotada
+a buffers de1MiB por emisor/receptor y1MiB adicional al comparar, sin cargar el juego.
+
+Los archivos reales revelaron XML auxiliares .cnmt.xml en dos NSP: ahora permitidos
+≤4MiB, nombre id hexadecimal y NCA Meta correspondiente presente. Se ignora su contenido;
+CNMT cifrado conserva autoridad. Siete de ocho fuentes pasan; la cuarta continúa
+`incomplete` (Meta almacenado3616bytes); no se relajó validación ni se modificó ese NSP.
+
+Primera transferencia15,24GB suspendida por Windows al quedar en background: todos los
+hilos Suspended, socket expiró al reactivar, retorno15 y error WinRT durante cierre.
+Archivos pc-real-nsp-suspended-{diag,log}.txt; no es resultado de velocidad válido.
+Segunda mantuvo foreground por reactivación periódica: MarioKart8 base7.268.474.425bytes,
+reanudación offset4.311.744.512 tras reconstruir servidor/store, recepción62,130494s,
+111,567717MiB/s loopback, producción valida/publica y todos los bytes iguales. Retorno0
+a94,703s; origen tamaño/mtime intactos, comparación en lectura y fixture borrada.
+WinRT~61MiB estable; private bytes desktop pico muestreado61.333.504, working set
+pico30.023.680 (no equivalentes entre sí). Sin guest, no benchmark LAN ni Series.
+Fixture fallida también eliminada de forma confinada tras archivar evidencia.
+
+Comando: `powershell -ExecutionPolicy Bypass -File tools/xbox/local-run.ps1 -NoBuild -BootCfg network_import_gate=1 -TimeoutSec 240`, mantener app en primer plano.
+Evidencias ignoradas build-uwp/test-results/network-portal/pc-real-nsp-{diag,log}.txt
+y pc-real-nsp-memory.json. Link incremental UWP pasa. Después de terminar todos los
+procesos PC, manifest subido0.3.3.0 y paquete normal restaurado con package-appx.ps1
+-Library: boot.cfg solo library=1/play=1, sin datos de usuario, en entrega única
+build-uwp/package/jadyx.appx, firmado; exe/PDB en symbols/0.3.3.0.
+Pendientes: navegador real/importación biblioteca/arranque Series, suspensión producción,
+reinicio de proceso completo y benchmark4/16/64, tres corridas cada uno. Sin commit.
+Diseño/fuentes: xbox_network_portal.md.
+
+Guardado posterior autorizado19oct: commits locales separados por almacenamiento,
+validación, servidor/portal, interfaz, harnesses, gate real y documentación/versión.
+Rama feature/local-import-portal; identidad de autor del usuario conservada.
+El usuario pide explícitamente no hacer push; no se publica nada.
