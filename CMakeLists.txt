@@ -85,7 +85,11 @@ option(ENABLE_WERROR "Enable -Werror diagnostics" ON)
 # Lossless Scaling frame generation. Only Android.
 cmake_dependent_option(ENABLE_LSFG "Enable Lossless Scaling frame generation" ON "ANDROID" OFF)
 
-option(ENABLE_RESHADE "Enable ReShade FX post-processing effects" ON)
+# Vulkan renderer. A UWP app on Xbox has only Direct3D 12, so the Store build leaves it out.
+cmake_dependent_option(ENABLE_VULKAN "Enable the Vulkan renderer" ON "NOT CMAKE_SYSTEM_NAME STREQUAL WindowsStore" OFF)
+
+# ReShade FX runs in the Vulkan presenter only.
+cmake_dependent_option(ENABLE_RESHADE "Enable ReShade FX post-processing effects" ON "ENABLE_VULKAN" OFF)
 
 # non-linux bundled qt are static
 if (YUZU_USE_BUNDLED_QT AND (APPLE OR NOT UNIX))
