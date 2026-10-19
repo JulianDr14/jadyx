@@ -141,6 +141,7 @@ void SetDredEnabled(bool enabled);         // d3d12_device.h
 void SetGpuBreadcrumbsEnabled(bool enabled); // d3d12_device.h
 void SetCloseProbeEnabled(bool enabled);     // d3d12_device.h
 void SetPipelineEviction(bool enabled);      // d3d12_pipeline_cache.h
+void SetPipelinePrewarm(bool enabled);       // d3d12_pipeline_cache.h
 void SetDescriptorRemovalChecks(bool enabled); // d3d12_device.h
 void SetUniformUploadCopy(bool enabled);
 void SetDrawSamplerReuse(bool enabled);
@@ -291,6 +292,9 @@ struct BootConfig {
     bool close_probe{};
     /// Release idle pipelines' PSOs ("pso_eviction=0" keeps them unless memory nearly runs out).
     bool pso_eviction{true};
+    /// Build dormant PSOs in the background while memory is plentiful ("pso_prewarm=0" leaves
+    /// them to their first draw).
+    bool pso_prewarm{true};
     /// Look for a removed device after every descriptor a draw writes ("descriptor_checks=1"), to
     /// name the view that removed it; costs a kernel call per descriptor.
     bool descriptor_checks{};
@@ -499,6 +503,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     D3D12::SetGpuBreadcrumbsEnabled(config.gpu_breadcrumbs);
     D3D12::SetCloseProbeEnabled(config.close_probe);
     D3D12::SetPipelineEviction(config.pso_eviction);
+    D3D12::SetPipelinePrewarm(config.pso_prewarm);
     VideoCore::Perf::SetDetailedGpuProfile(config.gpu_profile);
     VideoCore::Perf::SetForceSwapIntervalOne(config.force_swap_interval_one);
     Settings::values.async_presentation.SetValue(config.async_present);
@@ -2414,6 +2419,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "pso_eviction=0") {
                             config.pso_eviction = false;
                             WriteDiag("boot.cfg: idle pipelines keep their PSOs");
+                        } else if (line == "pso_prewarm=0") {
+                            config.pso_prewarm = false;
+                            WriteDiag("boot.cfg: dormant PSOs wait for their first draw");
                         } else if (line == "gpu_profile=1") {
                             config.gpu_profile = true;
                             WriteDiag("boot.cfg: detailed D3D12 GPU-thread profiling enabled");
