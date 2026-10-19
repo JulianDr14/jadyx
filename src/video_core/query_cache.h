@@ -53,9 +53,10 @@ public:
     void Reset() {
         if (current) {
             current->EndQuery();
+            current = nullptr;
 
             // Immediately start a new query to avoid disabling its state.
-            current = cache.Counter(nullptr, type);
+            Start(nullptr);
         }
         last = nullptr;
     }
@@ -66,9 +67,11 @@ public:
             return nullptr;
         }
         current->EndQuery();
-        last = std::move(current);
-        current = cache.Counter(last, type);
-        return last;
+        std::shared_ptr<HostCounter> slice = std::exchange(current, nullptr);
+        Start(slice);
+        // A flush while starting runs Disable(), which clears last.
+        last = slice;
+        return slice;
     }
 
     /// Returns true when the counter stream is enabled.
@@ -81,7 +84,7 @@ public:
         if (current) {
             return;
         }
-        current = cache.Counter(last, type);
+        Start(last);
     }
 
     // Disables the stream.
@@ -93,6 +96,17 @@ public:
     }
 
 private:
+    /// Starts a counter as current. Creating it can wait on its dependency, and that wait can
+    /// flush: the flush disables and re-enables this stream, which starts a counter of its own.
+    /// That one is ended before it is replaced, or its query would be left open in the list.
+    void Start(std::shared_ptr<HostCounter> dependency) {
+        std::shared_ptr<HostCounter> counter = cache.Counter(std::move(dependency), type);
+        if (current) {
+            current->EndQuery();
+        }
+        current = std::move(counter);
+    }
+
     QueryCache& cache;
     const VideoCore::QueryType type;
 
