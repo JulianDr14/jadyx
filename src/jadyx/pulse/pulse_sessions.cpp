@@ -179,19 +179,47 @@ std::string Save(Core::System& system, const Common::Pulse::Identity& identity,
     }
 }
 
+void Prune() {
+    std::vector<Common::Pulse::Entry> entries;
+    try {
+        entries = Sessions().List();
+    } catch (...) {
+        return; // An unreadable folder: nothing is deleted.
+    }
+    for (const auto& entry : entries) {
+        try {
+            switch (entry.state) {
+            case Common::Pulse::EntryState::Consumed:
+                // Already resumed: never restored again, only taking space.
+                Sessions().DropConsumed(entry.key);
+                break;
+            case Common::Pulse::EntryState::UnknownFormat:
+                // An archive format this build does not know.
+                Sessions().Discard(entry.key);
+                break;
+            case Common::Pulse::EntryState::Available:
+                if (!entry.header_valid) break;
+                // An older major.minor, or a build hash from before the version: no build of
+                // this Pulse version resumes it again.
+                if (const auto version = Common::Pulse::VersionOf(entry.identity.revision);
+                    !version || !Common::Pulse::Compatible(*version, Common::Pulse::CurrentVersion)) {
+                    Sessions().Discard(entry.key);
+                }
+                break;
+            case Common::Pulse::EntryState::Corrupt:
+                break; // May be a passing read failure; the player can still discard it.
+            }
+        } catch (...) {
+            // A failed delete leaves the file; Find shows it as not resumable.
+        }
+    }
+}
+
 std::optional<Kept> Find(std::string_view launch_path) {
     const auto slot = Slot(launch_path);
     std::optional<Kept> kept;
     try {
         for (const auto& entry : Sessions().List()) {
-            if (entry.state == Common::Pulse::EntryState::Consumed) {
-                // Already resumed: never restored again, only taking space.
-                try {
-                    Sessions().DropConsumed(entry.key);
-                } catch (...) {
-                }
-                continue;
-            }
             if (entry.state != Common::Pulse::EntryState::Available || !entry.header_valid ||
                 entry.identity.program_id != slot) {
                 continue;
@@ -199,15 +227,6 @@ std::optional<Kept> Find(std::string_view launch_path) {
             const auto version = Common::Pulse::VersionOf(entry.identity.revision);
             const bool readable =
                 version && Common::Pulse::Compatible(*version, Common::Pulse::CurrentVersion);
-            if (!readable) {
-                // An older major.minor (or a build hash from before the version): no build will
-                // resume it again. A failed discard keeps it listed, as not resumable.
-                try {
-                    Sessions().Discard(entry.key);
-                    continue;
-                } catch (...) {
-                }
-            }
             if (kept && kept->saved >= entry.modified) continue;
             kept = Kept{entry.modified, readable};
         }

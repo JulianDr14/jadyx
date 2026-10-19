@@ -139,6 +139,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     };
     // The Pulse session each game keeps, as the tiles and the options show it.
     auto refresh_pulse = [&] {
+        PulseSessions::Prune();
         for (auto& entry : scan.entries) {
             const auto kept = PulseSessions::Find(entry.launch_path);
             entry.pulse_saved = kept ? PulseSessions::FormatTime(kept->saved) : std::wstring{};
