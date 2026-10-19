@@ -63,10 +63,14 @@ local y al revés. Para cargarlo o renovarlo:
 $pw = Read-Host -AsSecureString "PFX password"
 $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object Subject -eq 'CN=JadyxDev' | Select-Object -First 1
 Export-PfxCertificate -Cert $cert -FilePath jadyx.pfx -Password $pw
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("$PWD\jadyx.pfx")) | gh secret set JADYX_PFX_BASE64
-gh secret set JADYX_PFX_PASSWORD   # pega la misma contraseña
-Remove-Item jadyx.pfx
+[IO.File]::WriteAllText("$PWD\jadyx.b64", [Convert]::ToBase64String([IO.File]::ReadAllBytes("$PWD\jadyx.pfx")))
+cmd /c "gh secret set JADYX_PFX_BASE64 < jadyx.b64"
+gh secret set JADYX_PFX_PASSWORD   # la escribe en el prompt, la misma de arriba
+Remove-Item jadyx.pfx, jadyx.b64
 ```
+
+No se pasa nada a `gh` con `|` desde Windows PowerShell: la tubería cambia el encoding y le
+agrega un salto de línea, y el secret ya no coincide con el certificado o la contraseña.
 
 El certificado actual vence el 16/10/2027. Los paquetes firmados antes de esa fecha siguen siendo
 válidos, porque la firma lleva timestamp.
