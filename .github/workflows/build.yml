@@ -156,14 +156,16 @@ jobs:
           disable_annotations: true
 
       # USE_CCACHE (externals/cmake-modules/UseCcache.cmake) makes sccache the compiler launcher, and
-      # openssl-cmake writes it into OpenSSL's makefile. sccache cannot share a /Zi program database
-      # between parallel compilers: embed the debug info (/Z7) instead, which UseCcache does only for
-      # Debug and RelWithDebInfo. The link still writes jadyx.pdb.
+      # openssl-cmake writes it into OpenSSL's makefile. CCACHE_BINARY stays a bare name, found on the
+      # PATH: the makefile runs its dependency scans through cmd, which rejects the C:/... path that
+      # find_program would give. sccache cannot share a /Zi program database between parallel
+      # compilers: embed the debug info (/Z7) instead, which UseCcache does only for Debug and
+      # RelWithDebInfo. The link still writes jadyx.pdb.
       - name: Configure
         shell: cmd
         run: >
           tools\xbox\build-env.bat cmake --preset uwp-x64
-          -DUSE_CCACHE=ON -DCCACHE_PATH=sccache
+          -DUSE_CCACHE=ON -DCCACHE_BINARY=sccache
           -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
 
       - name: Build
