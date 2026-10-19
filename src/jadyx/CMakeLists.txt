@@ -40,7 +40,6 @@ add_executable(jadyx WIN32
     input/uwp_pro_controller.cpp
     input/uwp_controllers.cpp
     input/uwp_controllers.h
-    app/vma_impl.cpp
     # Interface languages: one catalog per language under locales/ (localization.h).
     i18n/localization.cpp
     i18n/localization.h
@@ -136,6 +135,11 @@ add_executable(jadyx WIN32
     mods/mods_view.h
     mods/work_queue.h
 )
+
+# The Vulkan Memory Allocator implementation, for the Vulkan renderer when it is built.
+if (ENABLE_VULKAN)
+    target_sources(jadyx PRIVATE app/vma_impl.cpp)
+endif()
 
 # core transitively pulls common/video_core/audio_core/hid_core/dynarmic etc.; name the ones we touch
 # directly so the dependency graph is explicit. frontend_common provides PlayTimeManager (pulled by
