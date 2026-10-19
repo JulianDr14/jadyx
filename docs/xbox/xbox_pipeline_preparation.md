@@ -393,3 +393,77 @@ Gate de ejecución/corrección observada y reutilización de PSO en Series pasa.
 Pendientes: visual, A/B con sampling/configuración/cachés equivalentes, cola de
 compilaciones únicas y la espera larga de adquisición/presentación de frames.
 No se cambian sincronización, presupuesto ni código funcional en esta revisión.
+
+## Compilación de shaders: esperas, prewarm de fondo y estadísticas — 18 oct 2026
+
+Rama `perf/shader-compile-pipeline`. Cambios reversibles, sin tocar el formato de los
+archivos de caché (`d3d12.bin` v1, `d3d12_hot.bin` v1) ni la regla de no omitir draws.
+
+### Diagnóstico de partida (Series 0.2.87.33, logs del 12 oct)
+
+- El driver domina: 62,2% de las muestras activas de los workers en `newbe_xs.DLL`,
+  3,1% Mesa, 0,3% `dxil.dll`. Afinar NIR o el mutex del validador no mueve la aguja.
+- Boot de Game A: 4311 pipelines, todos con DXIL; 1447 calientes → 746 creates de
+  driver, 36880 ms de worker (≈49 ms/create).
+- Gameplay de Game A: «0 released and **85 rebuilt**» frente a ≈20 pipelines nuevos.
+  `pipelines_woken` cuenta despertares de **dormidos que nunca tuvieron PSO** (eviction
+  no actuó). Esas esperas, no los shaders nuevos, son el grueso de los stalls.
+- Inversión de prioridad: el hilo GPU (Critical) esperaba a workers `BELOW_NORMAL`
+  y, además, a la cola FIFO que tuviera delante.
+- Memoria: ≈80 KiB por PSO; commit máximo 3636/5120 MiB. Prewarmear ≈1500 creates
+  únicos (≈2860 dormidos con ≈48% de dedup) costaría ≈120 MiB. **Estimación.**
+
+### Cambios
+
+1. **Estadísticas por etapa** (`d3d12_pipeline_stats.h`): histograma por cuartos de
+   octava, atómicos relajados, p50/p95/p99/max/total por etapa: `frontend` (IR+SPIR-V,
+   hilo GPU), `queue` (encolado→inicio), `dxil` (Mesa+firma), `pso` (create del driver,
+   sólo misses del índice), y esperas del hilo GPU separadas por causa: `wait-new`,
+   `wait-dormant` (disco, nunca construido), `wait-evicted` (liberado y redibujado).
+   Línea `D3D12 pipeline stages (boot|session, ms)` al final de la carga y cada minuto.
+   Se reinician al cargar cada juego: no mezclan títulos (ver trampa de contadores).
+2. **El hilo GPU reclama su build** (`GraphicsPipeline::QueueBuild/WaitBuilt`): cada
+   build encolado es un `PendingBuild` con flag atómico; si el hilo GPU lo necesita y
+   ningún worker lo empezó, lo ejecuta él mismo a su prioridad. Elimina la espera de
+   cola y la inversión de prioridad; si ya corre en un worker, espera como antes
+   (el create del driver no se puede tomar a mitad). Contador `inline builds`.
+3. **Prewarm de fondo de dormidos** (`PipelineCache::TickPrewarm`): un hilo
+   `D3D12PipelinePrewarm` Background, **un PSO a la vez**, sólo con más de 1,5 GiB
+   libres (`PipelineResidencyPolicy::MayPrewarm`). Orden: los vistos en sesiones
+   recientes que quedaron fuera del tope de boot, luego orden de primera aparición en
+   el disco. Si un draw lo necesita antes, el punto 2 lo reclama. `pso_prewarm=0` en
+   `boot.cfg` lo desactiva para A/B. Contadores `prewarmed` / `of them drawn`.
+4. **Nivel holgado en residencia**: con más de 1,5 GiB libres un PSO ocioso no se
+   libera (`KEEP_IDLE_FRAMES`); por debajo, la política anterior (3 min/10 s/1 s).
+   La línea coincide con la del prewarm, así que uno nunca deshace al otro.
+5. **Capacidades en el log**: flags de `D3D12_FEATURE_SHADER_CACHE`, `ID3D12Device1` e
+   `ID3D12Device9` (sólo `QueryInterface`/consulta). Es el gate previo a evaluar
+   `ID3D12PipelineLibrary` en Series; `GetCachedBlob` sigue prohibido.
+
+### Descartado o pendiente
+
+- **Ubershaders/omitir draws (Dolphin async, Vulkan async de Eden)**: produce
+  diferencias visuales; incompatible con la regla de corrección.
+- **Más workers**: el coste es del driver y compite con Dynarmic; Ryujinx limita a
+  `min(cores, 8)`, aquí 4 por memoria. Sin cambio.
+- **DXIL perezoso para dormidos en boot**: ahorraría ≈6 s de boot (2860 × ≈8,7 ms / 4
+  workers, **estimado**), pero exige guardar SPIR-V (memoria) y mover el reintento de
+  aplanado. Pendiente de medir `dxil` con las nuevas estadísticas.
+- **Biblioteca nativa de PSO**: sólo tras ver en el log de Series el flag LIBRARY.
+  `ID3D12ShaderCacheSession` exige Windows 10 build 20348+ (no garantizado en Series).
+
+### Gate en consola (pendiente, no medido)
+
+Comparar mismo título y recorrido con `pso_prewarm=0` y por defecto: `wait-dormant`
+n/p95/p99/max, hitches de pipeline por minuto, FPS P99, commit máximo y duración del
+boot. Aceptar sólo si `wait-dormant` baja sin subir commit cerca del cap ni empeorar
+los FPS de gameplay; si el prewarm compite con la emulación, quitarlo.
+
+Referencias:
+
+- [Microsoft: D3D12_FEATURE_DATA_SHADER_CACHE](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_feature_data_shader_cache) y
+  [D3D12_SHADER_CACHE_SUPPORT_FLAGS](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_shader_cache_support_flags).
+- [Microsoft: ID3D12ShaderCacheSession (build 20348+)](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nn-d3d12-id3d12shadercachesession).
+- [Microsoft: CreatePipelineLibrary](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12device1-createpipelinelibrary).
+- [Ryujinx: ShaderCache, compilación en paralelo acotada](https://github.com/Ryujinx/Ryujinx/blob/master/src/Ryujinx.Graphics.Gpu/Shader/ShaderCache.cs).
+- [Dolphin: ubershaders y compilación asíncrona](https://dolphin-emu.org/blog/2017/07/30/ubershaders/).

@@ -32,6 +32,7 @@
 #include "video_core/renderer_d3d12/d3d12_log.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_helper.h"
+#include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
@@ -229,7 +230,8 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
                                    const PipelineLayout& layout_, bool build_pso,
                                    GraphicsPsoCache* pso_cache_, u32 lower_noperspective_mask_)
     : device{device_}, texture_runtime{texture_runtime_}, key{key_}, key_hash{key_.Hash()},
-      layout{layout_}, lower_noperspective_mask{lower_noperspective_mask_}, pso_cache{pso_cache_} {
+      layout{layout_}, lower_noperspective_mask{lower_noperspective_mask_}, pso_cache{pso_cache_},
+      from_disk{worker_thread == nullptr} {
     u8 valid_targets{};
     for (size_t index = 0; index < key.state.color_formats.size(); ++index) {
         if (static_cast<Tegra::RenderTargetFormat>(key.state.color_formats[index]) !=
@@ -273,7 +275,9 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
         bool compiled = false;
         try {
             FT::ScopedSpan dxil_span{FT::Event::PipelineDxilLong, trace_pipeline};
+            const u64 dxil_start = SteadyMicros();
             dxil = compile_dxil(trace_pipeline, false);
+            GetPipelineStats().Record(PipelineStage::Dxil, SteadyMicros() - dxil_start);
             compiled = true;
         } catch (const std::exception& exception) {
             // Handle() stays null: draws with this pipeline are skipped.
@@ -322,14 +326,43 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
             shader_notify->MarkShaderComplete();
         }
     }};
-    if (worker_thread) {
-        worker_thread->QueueWork(std::move(func));
-    } else {
-        func();
-    }
+    QueueBuild(worker_thread, std::move(func));
 }
 
 GraphicsPipeline::~GraphicsPipeline() = default;
+
+void GraphicsPipeline::QueueBuild(Common::ThreadWorker* worker, Common::UniqueFunction<void> job) {
+    if (!worker) {
+        job();
+        return;
+    }
+    auto build = std::make_shared<PendingBuild>();
+    build->queued_us = SteadyMicros();
+    build->run = std::move(job);
+    {
+        std::scoped_lock lock{build_mutex};
+        pending = build;
+    }
+    // Pipelines outlive the workers (joined first), so this is still valid if the worker runs.
+    worker->QueueWork([this, build] {
+        if (!build->claimed.exchange(true, std::memory_order::acq_rel)) {
+            RunClaimed(*build);
+        }
+    });
+}
+
+void GraphicsPipeline::RunClaimed(PendingBuild& build) {
+    GetPipelineStats().Record(PipelineStage::QueueWait, SteadyMicros() - build.queued_us);
+    {
+        std::scoped_lock lock{build_mutex};
+        if (pending.get() == &build) {
+            pending.reset();
+        }
+    }
+    // Moved out, so the job's captures are gone once it ran, whoever still holds the entry.
+    const Common::UniqueFunction<void> job = std::move(build.run);
+    job();
+}
 
 void GraphicsPipeline::Publish(State next) {
     {
@@ -340,15 +373,16 @@ void GraphicsPipeline::Publish(State next) {
     build_condvar.notify_all();
 }
 
-void GraphicsPipeline::Wake(Common::ThreadWorker& worker) {
+bool GraphicsPipeline::Wake(Common::ThreadWorker& worker) {
     State expected = State::Dormant;
     if (!build_state.compare_exchange_strong(expected, State::Building, std::memory_order::acq_rel)) {
-        return;
+        return false;
     }
-    worker.QueueWork([this] {
+    QueueBuild(&worker, [this] {
         Build();
         Publish(State::Ready);
     });
+    return true;
 }
 
 bool GraphicsPipeline::Evict(Scheduler& scheduler) {
@@ -358,6 +392,7 @@ bool GraphicsPipeline::Evict(Scheduler& scheduler) {
         return false;
     }
     build_state.store(State::Dormant, std::memory_order::release);
+    evicted = true;
     // Keep the shared entry discoverable and charged until its last submitted use retires.
     // Other guest variants may still own it or acquire it while this fence is pending.
     scheduler.DeferRelease(std::move(pipeline_state),
@@ -388,6 +423,20 @@ D3D12_GPU_VIRTUAL_ADDRESS IntegerSamplerTable::Upload(BufferCache& buffer_cache)
 void GraphicsPipeline::WaitBuilt() {
     VideoCore::FrameTrace::ScopedSpan wait_span{
         VideoCore::FrameTrace::Event::PipelineWaitLong, reinterpret_cast<uintptr_t>(this)};
+    std::shared_ptr<PendingBuild> build;
+    {
+        std::scoped_lock lock{build_mutex};
+        if (build_state.load(std::memory_order::relaxed) == State::Ready) {
+            return;
+        }
+        build = pending;
+    }
+    // Still queued: nothing to wait for but the queue. A build already running on its worker is
+    // waited for (claimed), since the driver call cannot be taken over halfway.
+    if (build && !build->claimed.exchange(true, std::memory_order::acq_rel)) {
+        GetPipelineStats().inline_builds.fetch_add(1, std::memory_order_relaxed);
+        RunClaimed(*build);
+    }
     std::unique_lock lock{build_mutex};
     build_condvar.wait(lock, [this] {
         return build_state.load(std::memory_order::relaxed) == State::Ready;
@@ -955,6 +1004,7 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
         return plain_hr;
     };
     const auto create = [&] {
+        const u64 create_start = SteadyMicros();
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PsoCreateUs};
         VideoCore::Perf::Add(VideoCore::Perf::Counter::PsoCreates, 1);
         VideoCore::FrameTrace::ScopedSpan pso_span{
@@ -972,6 +1022,7 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
         } else {
             hr = create_pso(result.handle);
         }
+        GetPipelineStats().Record(PipelineStage::PsoCreate, SteadyMicros() - create_start);
         // Failed entries must not poison the index. All current waiters receive the HRESULT.
         if (FAILED(hr)) {
             throw hr;

@@ -1002,6 +1002,24 @@ void Device::LogCapabilities() const {
                  YesNo(arch.CacheCoherentUMA));
     }
 
+    // What a persistent PSO cache could stand on: pipeline libraries (ID3D12Device1 plus the
+    // LIBRARY flag) or shader cache sessions (ID3D12Device9). Queries only: GetCachedBlob
+    // removes the device on the Series, so nothing here creates or serializes a PSO.
+    D3D12_FEATURE_DATA_SHADER_CACHE shader_cache{};
+    const bool has_shader_cache = Query(dev, D3D12_FEATURE_SHADER_CACHE, shader_cache);
+    ComPtr<ID3D12Device1> device1;
+    ComPtr<ID3D12Device9> device9;
+    LOG_INFO(Render,
+             "D3D12: shader cache flags {} (single PSO {}, library {}, automatic in-process {}, "
+             "automatic disk {}), ID3D12Device1 {}, ID3D12Device9 {}",
+             has_shader_cache ? fmt::format("0x{:x}", static_cast<u32>(shader_cache.SupportFlags))
+                              : std::string("n/a"),
+             YesNo(shader_cache.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_SINGLE_PSO),
+             YesNo(shader_cache.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_LIBRARY),
+             YesNo(shader_cache.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_AUTOMATIC_INPROC_CACHE),
+             YesNo(shader_cache.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_AUTOMATIC_DISK_CACHE),
+             YesNo(SUCCEEDED(device.As(&device1))), YesNo(SUCCEEDED(device.As(&device9))));
+
     // Typed UAV loads decide how the shader backend lowers format-less storage image reads.
     constexpr std::array<std::pair<DXGI_FORMAT, const char*>, 6> uav_formats{{
         {DXGI_FORMAT_R8G8B8A8_UNORM, "RGBA8_UNORM"},

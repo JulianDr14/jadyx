@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <stop_token>
 #include <vector>
 
@@ -63,6 +64,10 @@ void SetGeometryDroppedShader(u64 unique_hash);
 /// tell a problem with rebuilt PSOs from one in what they draw. Set before boot (boot.cfg
 /// "pso_eviction=0").
 void SetPipelineEviction(bool enabled);
+
+/// Diagnostics: false never builds dormant PSOs ahead of their first draw, for A/B timing of the
+/// background prewarm. Set before boot (boot.cfg "pso_prewarm=0").
+void SetPipelinePrewarm(bool enabled);
 
 class ShaderCompiler;
 class TextureCacheRuntime;
@@ -137,6 +142,13 @@ private:
 
     void SaveHotPipelines();
 
+    /// GPU thread, once a frame: queues the next dormant PSO on the prewarm thread, one at a time,
+    /// while memory is plentiful (PipelineResidencyPolicy::MayPrewarm).
+    void TickPrewarm(const CacheMemorySnapshot& snapshot);
+
+    /// Logs each preparation stage's distribution and the waits by cause, totals so far.
+    void LogPipelineStats(std::string_view when) const;
+
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline();
 
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
@@ -189,10 +201,17 @@ private:
     u64 last_hot_save_frame{};
     u64 pipelines_evicted{};
     u64 pipelines_woken{};
+    /// Disk-cache pipelines left dormant at boot, most likely to be drawn first.
+    std::vector<GraphicsPipeline*> prewarm_order;
+    size_t prewarm_cursor{};
+    GraphicsPipeline* prewarm_last{}; ///< Queued last; the next waits until it is built.
 
     // Last, so they are joined before the pipelines they build are destroyed.
     Common::ThreadWorker workers;
     Common::ThreadWorker serialization_thread;
+    /// One thread, low priority: the PSOs it builds are guesses, so it must not compete with the
+    /// workers' or the guest's.
+    Common::ThreadWorker prewarm_thread;
 };
 
 } // namespace D3D12

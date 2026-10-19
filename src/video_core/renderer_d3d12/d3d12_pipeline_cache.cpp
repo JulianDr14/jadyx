@@ -35,6 +35,7 @@
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
+#include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
@@ -73,6 +74,7 @@ bool HasShaderHash(const std::array<std::atomic<u64>, 4>& slots, u64 unique_hash
     return false;
 }
 std::atomic_bool pipeline_eviction{true};
+std::atomic_bool pipeline_prewarm{true};
 
 /// Writes a translated stage's IR and SPIR-V next to the log (SetDumpedShader).
 void DumpShader(u64 unique_hash, size_t stage, const Shader::IR::Program& program,
@@ -378,6 +380,10 @@ void SetPipelineEviction(bool enabled) {
     pipeline_eviction.store(enabled, std::memory_order_relaxed);
 }
 
+void SetPipelinePrewarm(bool enabled) {
+    pipeline_prewarm.store(enabled, std::memory_order_relaxed);
+}
+
 PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                              const Device& device_, const ShaderCompiler& compiler_,
                              const TextureCacheRuntime& texture_runtime_,
@@ -388,7 +394,8 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       workers(GetTotalPipelineWorkers(), "D3D12PipelineBuilder", {},
               Common::ThreadPlacement::Background),
       serialization_thread(1, "D3D12PipelineSerialization", {},
-                           Common::ThreadPlacement::Background) {
+                           Common::ThreadPlacement::Background),
+      prewarm_thread(1, "D3D12PipelinePrewarm", {}, Common::ThreadPlacement::Background) {
     const ShaderCaps caps = QueryShaderCaps(device);
     profile = Shader::Profile{
         .supported_spirv = 0x00010300,
@@ -509,6 +516,7 @@ void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler
             ++pipelines_evicted;
         }
     }
+    TickPrewarm(snapshot);
     // About a minute between saves: a session closed from the console never reaches the
     // destructor, and the set changes most at the start.
     constexpr u64 HOT_SAVE_FRAMES = 60 * 60;
@@ -520,10 +528,71 @@ void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler
                  "far; {} drawn in recent sessions",
                  residency_sweep.size(), resident.objects, pipelines_evicted, pipelines_woken,
                  hot_pipelines.Size());
+        LogPipelineStats("session");
         if (hot_pipelines_dirty) {
             SaveHotPipelines();
         }
     }
+}
+
+void PipelineCache::TickPrewarm(const CacheMemorySnapshot& snapshot) {
+    if (prewarm_cursor >= prewarm_order.size() || (prewarm_last && !prewarm_last->IsBuilt()) ||
+        !pipeline_prewarm.load(std::memory_order_relaxed) ||
+        !PipelineResidencyPolicy::MayPrewarm(snapshot.app_used, snapshot.app_limit)) {
+        return;
+    }
+    prewarm_last = nullptr;
+    while (prewarm_cursor < prewarm_order.size()) {
+        GraphicsPipeline* const pipeline = prewarm_order[prewarm_cursor++];
+        // Pipelines drawn meanwhile were woken by their draw and are no longer dormant; one
+        // released while idle since is left to its next draw.
+        if (!pipeline->WasEvicted() && pipeline->Wake(prewarm_thread)) {
+            // Counted as used now, so eviction does not take it back before its first draw.
+            pipeline->Touch(residency_frame);
+            pipeline->MarkPrewarmed();
+            prewarm_last = pipeline;
+            GetPipelineStats().prewarm_queued.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+    }
+    if (prewarm_cursor == prewarm_order.size()) {
+        LOG_INFO(Render, "D3D12: background prewarm done ({} dormant PSOs queued, {} drawn so far)",
+                 GetPipelineStats().prewarm_queued.load(std::memory_order_relaxed),
+                 GetPipelineStats().prewarm_hits.load(std::memory_order_relaxed));
+        prewarm_order = {};
+        prewarm_cursor = 0;
+    }
+}
+
+void PipelineCache::LogPipelineStats(std::string_view when) const {
+    const PipelineStats& stats = GetPipelineStats();
+    const auto ms = [](u64 us) { return static_cast<double>(us) / 1000.0; };
+    constexpr std::array<std::pair<PipelineStage, const char*>,
+                         static_cast<size_t>(PipelineStage::Count)>
+        names{{
+            {PipelineStage::Frontend, "frontend"},
+            {PipelineStage::QueueWait, "queue"},
+            {PipelineStage::Dxil, "dxil"},
+            {PipelineStage::PsoCreate, "pso"},
+            {PipelineStage::WaitNew, "wait-new"},
+            {PipelineStage::WaitDormant, "wait-dormant"},
+            {PipelineStage::WaitEvicted, "wait-evicted"},
+        }};
+    std::string line;
+    for (const auto& [stage, name] : names) {
+        const auto summary = stats.Read(stage);
+        if (summary.count == 0) {
+            continue;
+        }
+        line += fmt::format("; {} n={} p50={:.1f} p95={:.1f} p99={:.1f} max={:.1f} total={:.0f}",
+                            name, summary.count, ms(summary.p50), ms(summary.p95),
+                            ms(summary.p99), ms(summary.max), ms(summary.total));
+    }
+    LOG_INFO(Render,
+             "D3D12 pipeline stages ({}, ms): {} inline builds, {} prewarmed, {} of them drawn{}",
+             when, stats.inline_builds.load(std::memory_order_relaxed),
+             stats.prewarm_queued.load(std::memory_order_relaxed),
+             stats.prewarm_hits.load(std::memory_order_relaxed), line);
 }
 
 void PipelineCache::SaveHotPipelines() {
@@ -619,6 +688,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     if (title_id == 0) {
         return;
     }
+    GetPipelineStats().Reset();
     if (!pipeline_cache_filename.empty()) {
         serialization_thread.WaitForRequests();
     }
@@ -643,6 +713,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         size_t built{};
         size_t graphics{};   ///< Graphics pipelines read, in file order (HotPipelineSet::Prewarm).
         size_t prewarmed{};
+        /// Left without a PSO, by position in the file, for the background prewarm.
+        std::vector<std::pair<size_t, GraphicsPipeline*>> dormant;
         bool has_loaded{};
     } state;
 
@@ -668,11 +740,12 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         GraphicsPipelineCacheKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
         // Every pipeline gets its DXIL; only the hot ones a PSO, the rest when first drawn.
-        const bool build_pso = hot_pipelines.Prewarm(key.Hash(), state.graphics++);
+        const size_t file_index = state.graphics++;
+        const bool build_pso = hot_pipelines.Prewarm(key.Hash(), file_index);
         state.prewarmed += build_pso ? 1 : 0;
 
-        workers.QueueWork([this, key, envs_ = std::move(envs), &state, &callback,
-                           build_pso]() mutable {
+        workers.QueueWork([this, key, envs_ = std::move(envs), &state, &callback, build_pso,
+                           file_index]() mutable {
             ShaderPools pools;
             boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
             for (auto& env : envs_) {
@@ -683,6 +756,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
 
             std::scoped_lock lock{state.mutex};
             if (pipeline) {
+                if (!build_pso) {
+                    state.dormant.emplace_back(file_index, pipeline.get());
+                }
                 graphics_cache.emplace(key, std::move(pipeline));
             }
             ++state.built;
@@ -727,6 +803,22 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             residency_sweep.push_back(pipeline.get());
         }
     }
+    // The background prewarm's order: drawn in a kept session but past the boot cap first, then
+    // the rest in the order the game first drew them, which is roughly the order it goes through
+    // its areas. Pipelines whose DXIL failed are Ready, not dormant, and are skipped when reached.
+    std::ranges::sort(state.dormant, [this](const auto& a, const auto& b) {
+        const bool known_a = hot_pipelines.Known(a.second->KeyHash());
+        const bool known_b = hot_pipelines.Known(b.second->KeyHash());
+        return known_a != known_b ? known_a : a.first < b.first;
+    });
+    prewarm_order.clear();
+    prewarm_order.reserve(state.dormant.size());
+    for (const auto& entry : state.dormant) {
+        prewarm_order.push_back(entry.second);
+    }
+    prewarm_cursor = 0;
+    prewarm_last = nullptr;
+    LogPipelineStats("boot");
 }
 
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
@@ -736,7 +828,9 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
         // Translating the shaders runs here, on the GPU thread, before the build is queued.
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PipelineStallUs};
         VideoCore::Perf::ScopedTimer frontend{VideoCore::Perf::Counter::PipelineFrontendUs};
+        const u64 frontend_start = SteadyMicros();
         pipeline = CreateGraphicsPipeline();
+        GetPipelineStats().Record(PipelineStage::Frontend, SteadyMicros() - frontend_start);
         if (pipeline) {
             residency_sweep.push_back(pipeline.get());
         }
@@ -759,23 +853,33 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
 
 GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
     pipeline->Touch(residency_frame);
-    if (pipeline->MarkDrawn() && hot_pipelines.MarkUsed(pipeline->KeyHash())) {
-        hot_pipelines_dirty = true;
+    if (pipeline->MarkDrawn()) {
+        if (pipeline->Prewarmed()) {
+            GetPipelineStats().prewarm_hits.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (hot_pipelines.MarkUsed(pipeline->KeyHash())) {
+            hot_pipelines_dirty = true;
+        }
     }
     if (pipeline->IsBuilt()) {
         return pipeline;
     }
-    if (pipeline->IsDormant()) {
-        // Its PSO was never built (not drawn in recent sessions) or was released while idle.
-        pipeline->Wake(workers);
+    // Its PSO was never built (not drawn in recent sessions) or was released while idle. Queued
+    // like any build, but WaitBuilt below claims it unless a worker already started it.
+    if (pipeline->Wake(workers)) {
         ++pipelines_woken;
     }
+    const PipelineStage cause = pipeline->WasEvicted() ? PipelineStage::WaitEvicted
+                                : pipeline->FromDisk() ? PipelineStage::WaitDormant
+                                                       : PipelineStage::WaitNew;
+    const u64 wait_start = SteadyMicros();
     // A valid draw has no semantically equivalent substitute while its exact PSO is pending.
     // Compilation stays on workers, but readiness never discards guest work.
     VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PipelineStallUs,
                                        VideoCore::Perf::Counter::PipelineStalls};
     VideoCore::Perf::ScopedTimer wait{VideoCore::Perf::Counter::PipelineWaitUs};
     pipeline->WaitBuilt();
+    GetPipelineStats().Record(cause, SteadyMicros() - wait_start);
     return pipeline;
 }
 

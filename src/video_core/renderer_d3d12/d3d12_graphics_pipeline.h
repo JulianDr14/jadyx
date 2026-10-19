@@ -187,11 +187,32 @@ public:
         return build_state.load(std::memory_order::acquire) == State::Dormant;
     }
 
-    /// Blocks until the worker finished the PSO. A dormant pipeline must be woken first.
+    /// Blocks until the PSO is built. A build still in its worker's queue is claimed and run on
+    /// the calling thread instead: the GPU thread runs at a higher priority than the workers and
+    /// would otherwise wait for the queue ahead of it too. A dormant pipeline must be woken first.
     void WaitBuilt();
 
-    /// GPU thread: a dormant pipeline queues the build of its PSO from the kept DXIL.
-    void Wake(Common::ThreadWorker& worker);
+    /// GPU thread: a dormant pipeline queues the build of its PSO from the kept DXIL. False if it
+    /// was not dormant.
+    bool Wake(Common::ThreadWorker& worker);
+
+    /// True for the disk cache's pipelines, made at boot; false for those first drawn this session.
+    [[nodiscard]] bool FromDisk() const noexcept {
+        return from_disk;
+    }
+
+    /// GPU thread: whether its PSO was released while idle at some point this session.
+    [[nodiscard]] bool WasEvicted() const noexcept {
+        return evicted;
+    }
+
+    /// GPU thread: its PSO was built ahead of any draw, by the background prewarm.
+    void MarkPrewarmed() noexcept {
+        prewarmed = true;
+    }
+    [[nodiscard]] bool Prewarmed() const noexcept {
+        return prewarmed;
+    }
 
     /// GPU thread: releases the PSO of a ready pipeline once the GPU is done with it, keeping the
     /// DXIL to build it again. Pipelines that failed have nothing to release. True if released.
@@ -291,6 +312,18 @@ private:
 
     void Publish(State next);
 
+    /// A build queued on a worker, which whoever claims it first runs: the worker, or a thread
+    /// that cannot go on without it (WaitBuilt).
+    struct PendingBuild {
+        std::atomic_bool claimed{};
+        u64 queued_us{};
+        Common::UniqueFunction<void> run;
+    };
+    /// Queues job on worker, claimable by WaitBuilt; without a worker, runs it here.
+    void QueueBuild(Common::ThreadWorker* worker, Common::UniqueFunction<void> job);
+    /// Runs a claimed build, recording how long it sat in the queue.
+    void RunClaimed(PendingBuild& build);
+
     const Device& device;
     const TextureCacheRuntime& texture_runtime;
     const GraphicsPipelineCacheKey key;
@@ -321,9 +354,13 @@ private:
     std::mutex build_mutex;
     std::condition_variable build_condvar;
     std::atomic<State> build_state{State::Building};
+    std::shared_ptr<PendingBuild> pending; ///< build_mutex: the build in a queue, if any.
 
+    const bool from_disk;
     u64 last_used_frame{}; ///< GPU thread only.
     bool drawn{};          ///< GPU thread only.
+    bool evicted{};        ///< GPU thread only.
+    bool prewarmed{};      ///< GPU thread only.
     /// The object itself. Its DXIL and stage bindings are shared with other pipelines.
     Common::MemoryCharge charge{Common::MemoryAccount::Pipelines, sizeof(GraphicsPipeline)};
 };

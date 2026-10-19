@@ -26,15 +26,24 @@
 // kept DXIL if it is drawn again.
 namespace D3D12 {
 
-/// How long an idle PSO is kept, in frames, for the app's free memory: minutes while there is
-/// room, seconds as the memory guard's thresholds near.
+/// How long an idle PSO is kept, in frames, for the app's free memory: for good while there is
+/// plenty, minutes while there is room, seconds as the memory guard's thresholds near.
+///
+/// Releasing an idle PSO saves some 80 KiB and costs a driver compile (about 50 ms on the Series,
+/// a stall when drawn again); with gigabytes free that trade only loses, so eviction waits until
+/// free memory falls under PLENTY_FREE. The background prewarm of dormant PSOs stops at the same
+/// line, so the two never undo each other's work.
 struct PipelineResidencyPolicy {
+    static constexpr std::uint64_t KEEP_IDLE_FRAMES = ~std::uint64_t{0}; ///< Never released.
     static constexpr std::uint64_t IDLE_FRAMES = 3 * 60 * 60;      ///< Three minutes at 60 FPS.
     static constexpr std::uint64_t LOW_IDLE_FRAMES = 10 * 60;      ///< Ten seconds.
     static constexpr std::uint64_t EMERGENCY_IDLE_FRAMES = 60;     ///< One second.
     static constexpr std::size_t SWEEP_PER_FRAME = 256;            ///< Pipelines checked a frame.
+    /// 1.5 GiB: some 19,000 PSOs, more than the largest disk cache seen builds after dedup.
+    static constexpr std::uint64_t PLENTY_FREE = 1536 * MemoryGuardPolicy::MiB;
 
-    /// limit 0 is an unknown limit: as with the memory guard, it never implies pressure.
+    /// limit 0 is an unknown limit: as with the memory guard, it never implies pressure, but it
+    /// is not known to be plenty either, so idle PSOs keep the minutes limit.
     [[nodiscard]] static constexpr std::uint64_t IdleFrames(std::uint64_t used,
                                                             std::uint64_t limit) noexcept {
         if (limit == 0) {
@@ -47,7 +56,17 @@ struct PipelineResidencyPolicy {
         if (free <= MemoryGuardPolicy::LOW_FREE) {
             return LOW_IDLE_FRAMES;
         }
+        if (free > PLENTY_FREE) {
+            return KEEP_IDLE_FRAMES;
+        }
         return IDLE_FRAMES;
+    }
+
+    /// Whether a dormant PSO may be built ahead of its first draw: only with plenty free, and
+    /// never with an unknown limit.
+    [[nodiscard]] static constexpr bool MayPrewarm(std::uint64_t used,
+                                                   std::uint64_t limit) noexcept {
+        return limit != 0 && used < limit && limit - used > PLENTY_FREE;
     }
 };
 
@@ -98,6 +117,11 @@ public:
             return file_index < FIRST_SESSION_PREWARM;
         }
         return prewarm.contains(hash);
+    }
+
+    /// Whether the pipeline was drawn in one of the kept sessions, built at boot or not.
+    [[nodiscard]] bool Known(std::uint64_t hash) const {
+        return last_used.contains(hash);
     }
 
     /// Marks a pipeline drawn this session; true the first time, when the set needs saving.
