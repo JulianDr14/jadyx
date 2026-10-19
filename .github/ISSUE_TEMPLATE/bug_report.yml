@@ -15,7 +15,7 @@ body:
     attributes:
       label: Jadyx version
       description: Shown in the corner of the game library.
-      placeholder: v0.2.92.2
+      placeholder: v0.3.0
     validations:
       required: true
   - type: dropdown
@@ -53,6 +53,6 @@ body:
     id: log
     attributes:
       label: Diagnostics
-      description: Attach `jadyx_diag.txt` and `jadyx_log.txt` from the package's `LocalState\jadyx\log` folder (Device Portal file explorer on the console, `%LOCALAPPDATA%\Packages\<package family>\LocalState\jadyx\log` on PC).
+      description: Attach `jadyx_log.txt`, `jadyx_diag.txt` and, for graphics problems, `jadyx_graphics_bugs.log`, taken right after the problem, from the package's `LocalState\jadyx\log` folder (Device Portal file explorer on the console, `%LOCALAPPDATA%\Packages\<package family>\LocalState\jadyx\log` on PC).
     validations:
       required: true

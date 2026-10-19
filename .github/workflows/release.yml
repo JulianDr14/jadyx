@@ -116,12 +116,36 @@ jobs:
 
           ## Install
 
-          On an Xbox Series X|S in Dev Mode, open Device Portal (\`https://<xbox-ip>:11443\`) and choose
-          **Add**. Pick \`Jadyx_${PACKAGE_VERSION}_x64.appx\`, add \`Microsoft.VCLibs.x64.14.00.appx\` as a
-          dependency and \`Jadyx.cer\` as the certificate, then set the app to **Game** mode. A newer
-          version installs over the previous one and keeps your games and saves.
+          You need an Xbox Series X|S in Dev Mode. No keys, firmware or games are included: use your
+          own dumps.
 
-          No keys, firmware or games are included: you need your own dumps.
+          1. Download \`Jadyx_${PACKAGE_VERSION}_x64.appx\`, \`Microsoft.VCLibs.x64.14.00.appx\` and
+             \`Jadyx.cer\` from the assets below.
+          2. On a PC on the same network, open Device Portal at \`https://<xbox-ip>:11443\` (Dev Home
+             shows the address) and accept the browser's certificate warning.
+          3. Choose **Add**, pick the Jadyx appx, add the VCLibs appx as a dependency and \`Jadyx.cer\`
+             as the certificate, and install.
+          4. In Dev Home, select Jadyx → **View details** and set **App type** to **Game**. In App mode
+             it runs out of memory.
+
+          A newer version installs over the previous one and keeps your games, saves and settings. Do
+          not uninstall to update: uninstalling deletes them.
+
+          ## Reporting bugs
+
+          Open an issue at https://github.com/${GITHUB_REPOSITORY}/issues/new/choose with the **Bug
+          Report** form. A good report has:
+
+          - The Jadyx version (\`${TAG#v}\`) and whether it is a Series X or S, in Game mode.
+          - What you did, what you expected and what happened instead, with the steps to make it
+            happen again.
+          - The logs from the app's \`LocalState\jadyx\log\` folder (Device Portal → **File
+            explorer**): \`jadyx_log.txt\`, \`jadyx_diag.txt\` and, for graphics problems,
+            \`jadyx_graphics_bugs.log\`. Grab them right after the problem, before launching another
+            game.
+
+          Search the existing issues first. Reports about pirated keys, firmware or games are closed.
+          If the bug also happens in the desktop builds of Eden, report it to Eden instead.
           EOF
           } > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
