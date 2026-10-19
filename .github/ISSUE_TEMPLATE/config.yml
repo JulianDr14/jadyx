@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Question or install help
+    url: https://discord.gg/3BhyyXGxpd
+    about: Ask on the Jadyx Discord; issues are for bugs.
   - name: Bug that also happens in the desktop builds of Eden
     url: https://git.eden-emu.dev/eden-emu/eden/issues
     about: Report it to Eden, not here.

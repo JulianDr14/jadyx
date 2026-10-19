@@ -14,10 +14,15 @@ SPDX-License-Identifier: GPL-3.0-or-later
   with a <b>native Direct3D 12 renderer</b> written for this port.<br>
 </p>
 
-> **Work in progress.** This is a development fork, not a release. Some games reach gameplay on the
-> console, none is free of bugs, and there are no published packages: you build and sign the app
-> yourself. It contains no keys, firmware or games and never will: use only the ones you dumped
-> from a console and games you own. See [Legal](#legal).
+<p align="center">
+  <a href="https://github.com/JulianDr14/jadyx/releases/latest"><b>Download the latest release</b></a> ·
+  <a href="https://discord.gg/3BhyyXGxpd"><b>Discord</b></a> ·
+  <a href="https://github.com/JulianDr14/jadyx/issues/new/choose"><b>Report a bug</b></a>
+</p>
+
+> **Beta.** Some games reach gameplay on the console and none is free of bugs. It contains no keys,
+> firmware or games and never will: use only the ones you dumped from a console and games you own.
+> See [Legal](#legal).
 
 **Contents:** [Progress](#progress) ([the memory wall](#the-memory-wall)) ·
 [Architecture](#architecture) · [Running it on a console](#running-it-on-a-console) ·
@@ -493,11 +498,13 @@ Design, phases and evidence: [docs/xbox/xbox_pulse.md](docs/xbox/xbox_pulse.md) 
 
 ## Running it on a console
 
-Requirements: an Xbox Series X|S in Developer Mode, the package you built (see
+Requirements: an Xbox Series X|S in Developer Mode, the package from the
+[latest release](https://github.com/JulianDr14/jadyx/releases/latest) (or one you built, see
 [Building](#building)), and the keys, firmware and games dumped from your own Switch.
 
 1. Open the Device Portal at `https://<console-ip>:11443`.
-2. Install `jadyx.appx` together with its `Microsoft.VCLibs.x64.14.00.appx` dependency.
+2. Install `Jadyx_<version>_x64.appx` together with its `Microsoft.VCLibs.x64.14.00.appx`
+   dependency and the `Jadyx.cer` certificate.
 3. In the app's settings on the console, set it to **Game** mode. Otherwise the memory limit is much
    lower than the 5120 MiB the emulator expects.
 4. Start the app. In the configuration panel, import keys and firmware from a folder.
@@ -505,7 +512,8 @@ Requirements: an Xbox Series X|S in Developer Mode, the package you built (see
    or add an external folder from the library.
 
 If something fails, `jadyx_diag.txt` and `jadyx_log.txt` in `LocalState\jadyx\log` describe what
-happened. The diagnostic switches are listed in [docs/xbox/xbox_deploy.md](docs/xbox/xbox_deploy.md).
+happened. Help and compatibility reports live on [Discord](https://discord.gg/3BhyyXGxpd); bugs go to
+[GitHub Issues](https://github.com/JulianDr14/jadyx/issues/new/choose). The diagnostic switches are listed in [docs/xbox/xbox_deploy.md](docs/xbox/xbox_deploy.md).
 
 ## Building
 

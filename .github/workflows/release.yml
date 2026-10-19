@@ -127,6 +127,9 @@ jobs:
              as the certificate, and install.
           4. In Dev Home, select Jadyx → **View details** and set **App type** to **Game**. In App mode
              it runs out of memory.
+          5. Start Jadyx and import your keys and firmware from a folder in the configuration panel.
+          6. Add games: copy them to the app's \`LocalState\games\` folder with the Device Portal
+             file explorer, or add an external folder from the library.
 
           A newer version installs over the previous one and keeps your games, saves and settings. Do
           not uninstall to update: uninstalling deletes them.
@@ -146,6 +149,9 @@ jobs:
 
           Search the existing issues first. Reports about pirated keys, firmware or games are closed.
           If the bug also happens in the desktop builds of Eden, report it to Eden instead.
+
+          Questions, install help and compatibility reports: join the
+          [Discord](https://discord.gg/3BhyyXGxpd).
           EOF
           } > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
