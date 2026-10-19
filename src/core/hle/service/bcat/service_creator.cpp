@@ -6,6 +6,7 @@
 
 #include "core/core.h"
 #include "core/hle/service/bcat/bcat_service.h"
+#include "core/hle/service/bcat/delivery_cache_progress_service.h"
 #include "core/hle/service/bcat/delivery_cache_storage_service.h"
 #include "core/hle/service/bcat/service_creator.h"
 #include "core/hle/service/cmif_serialization.h"
@@ -37,6 +38,23 @@ IServiceCreator::IServiceCreator(Core::System& system_, const char* name_)
 }
 
 IServiceCreator::~IServiceCreator() = default;
+
+SessionRequestHandlerPtr IServiceCreator::PulseRestore(std::string_view kind,
+                                                       Pulse::HandlerRestore& restore) {
+    auto& in = restore.state;
+    SessionRequestHandlerPtr handler;
+    if (kind == PulseKind()) {
+        handler = shared_from_this();
+    } else if (kind == IBcatService::PulseInterfaceKind) {
+        handler = IBcatService::PulseRestore(system, *backend, in);
+    } else if (kind == IDeliveryCacheProgressService::PulseInterfaceKind) {
+        handler = IDeliveryCacheProgressService::PulseRestore(restore);
+    } else {
+        return nullptr;
+    }
+    in.End();
+    return handler;
+}
 
 Result IServiceCreator::CreateBcatService(ClientProcessId process_id,
                                           OutInterface<IBcatService> out_interface) {

@@ -25,6 +25,22 @@ public:
     explicit IBcatService(Core::System& system_, BcatBackend& backend_, u64 program_id_);
     ~IBcatService() override;
 
+    // Pulse: the backend is the creator's and keeps nothing; the progress of each sync type and
+    // its update event are this interface's.
+    static constexpr std::string_view PulseInterfaceKind = "bcat:IBcatService";
+    std::string_view PulseKind() const override {
+        return PulseInterfaceKind;
+    }
+    void PulseCapture(Pulse::HandlerCapture& capture) const override;
+    Kernel::KEvent* PulseEvent(u32 slot) override;
+    /// Rebuilds an interface of the creator's backend from a captured state.
+    static std::shared_ptr<IBcatService> PulseRestore(Core::System& system, BcatBackend& backend,
+                                                      Pulse::StateReader& in);
+
+    ProgressServiceBackend& GetProgressBackend(SyncType type);
+    /// An interface over the progress of a sync type; it keeps this interface alive.
+    std::shared_ptr<IDeliveryCacheProgressService> CreateProgressService(SyncType type);
+
 private:
     Result RequestSyncDeliveryCache(OutInterface<IDeliveryCacheProgressService> out_interface);
 
@@ -38,7 +54,6 @@ private:
     Result ClearDeliveryCacheStorage(u64 application_id);
 
 private:
-    ProgressServiceBackend& GetProgressBackend(SyncType type);
     const ProgressServiceBackend& GetProgressBackend(SyncType type) const;
 
     BcatBackend& backend;
