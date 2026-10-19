@@ -46,12 +46,16 @@ void UploadTests(int port, bool large) {
         "disconnect rolls back unconfirmed bytes");
     Check(store->Snapshot().offset==0 && fs::file_size(staging/"payload.part")==0,"rollback truncates partial request");
     Check(store->Append(id,0,16ULL << 20,producer(16ULL << 20)).status==204,"first confirmed chunk");
+    const auto measured=store->Snapshot().performance;
+    Check(measured.confirmed_offset==16ULL << 20 && measured.bytes==16ULL << 20 && measured.reader_calls>0 &&
+          measured.total_us>=measured.write_us+measured.flush_us+measured.checkpoint_us,"last acknowledged block phase timings");
     Check(store->Append(id,0,1,producer(1)).status==409,"offset conflict cannot overwrite confirmed bytes");
     Check(store->Append(id,16ULL << 20,NspUpload::MaxChunk+1,producer(1)).status==413,"bounded request");
     Check(store->Ready(id).status==409,"incomplete file cannot finalize");
     fs::create_directory(staging/"checkpoint.tmp");
     Check(store->Append(id,16ULL << 20,16ULL << 20,producer(16ULL << 20)).status==507,"checkpoint I/O failure");
     Check(store->Snapshot().offset==16ULL << 20 && fs::file_size(staging/"payload.part")==16ULL << 20,"failed checkpoint cannot acknowledge data");
+    Check(store->Snapshot().performance.confirmed_offset==16ULL << 20,"failed block cannot publish performance as acknowledged");
     fs::remove(staging/"checkpoint.tmp");
     // Simulate death after extra data reached disk but before a new checkpoint was published.
     { std::ofstream trailing{staging/"payload.part",std::ios::binary|std::ios::app}; trailing.write("unconfirmed",11); }
@@ -189,6 +193,11 @@ void UploadTests(int port, bool large) {
         Check(result->get_header_value("Upload-Offset")==std::to_string(offset),"HTTP confirmed offset");
     }
     const auto seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-at).count();
+    const auto stats=client.Get("/api/v1/status",headers);
+    Check(Status(stats)==200,"performance status");
+    const auto profile=Json::parse(stats->body).at("transfer").at("performance");
+    Check(profile.at("confirmed_offset")==total && profile.at("bytes")==16ULL << 20,"performance JSON matches acknowledged block");
+    std::printf("Last block profile: %s\n",profile.dump().c_str());
     Check(Status(client.Post(url+"/finish",headers))==204 && portal.Status().transfer.phase=="ready","HTTP finish waits for coordinator");
     Check(portal.FinalizeGame(verify).empty(),"coordinator validates then publishes HTTP upload");
     std::printf("TCP loopback %llu MiB, %.2f s, %.2f MiB/s (desktop synthetic, not Xbox/LAN certification)\n",

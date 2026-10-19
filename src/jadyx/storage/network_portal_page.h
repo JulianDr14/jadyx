@@ -6,6 +6,7 @@ namespace Jadyx::PortalWeb {
 inline constexpr std::string_view Page=R"HTML(<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Jadyx · Import</title><style>
+.importcards{display:grid;grid-template-columns:1fr 1fr;gap:24px}.review{white-space:pre-line;border:1px solid #666;padding:20px;border-radius:12px}input[type=checkbox]{width:auto}@media(max-width:650px){.importcards{grid-template-columns:1fr}}
 :root{color-scheme:dark;font-family:system-ui,sans-serif;background:#08090b;color:#f5f5f7}
 *{box-sizing:border-box}body{max-width:920px;margin:5vh auto;padding:24px}header{letter-spacing:.3em;font-weight:600}
 main,section{margin-top:24px;padding:28px;border:1px solid #ffffff14;border-radius:18px;background:#111315}
@@ -28,6 +29,15 @@ progress{width:100%;height:10px;accent-color:#f5f5f7}#job,#message{white-space:p
 <button class="secondary" id="pause">Pause</button><button class="secondary" id="discard">Discard partial file</button></div>
 <p id="job" role="status" aria-live="polite"></p><progress id="progress" max="1" value="0"></progress>
 <div class="stats"><p id="confirmed"></p><p id="rate"></p><p id="eta"></p></div><p id="queue"></p></section>
+<section id="system-upload" hidden><div class="importcards"><article><h2 id="keys-title">Import keys</h2><p id="keys-help">ZIP or prod.keys / title.keys.</p>
+<input id="keys-files" type="file" accept=".keys,.zip" multiple><button id="keys-send">Upload and review</button></article>
+<article><h2 id="firmware-title">Import firmware</h2><p id="firmware-help">ZIP or multiple NCA files.</p>
+<input id="firmware-files" type="file" accept=".zip,.nca" multiple><label id="firmware-folder-label" for="firmware-folder">Or choose an extracted folder</label>
+<input id="firmware-folder" type="file" webkitdirectory multiple><button id="firmware-send">Upload and review</button></article></div>
+<p id="system-job" role="status" aria-live="polite"></p><progress id="system-progress" max="1" value="0"></progress>
+<div id="system-review" class="review" hidden><p id="system-versions"></p><p id="system-warnings"></p>
+<label id="system-warning-row"><input id="system-warning-accept" type="checkbox"><span id="system-warning-label">I understand and accept these warnings.</span></label>
+<button id="system-confirm">Confirm installation</button></div><button id="system-cancel" class="secondary">Cancel and discard system import</button></section>
 <p id="message" role="alert"></p><p id="privacy">Local network · HTTP connection without encryption.</p>
 <script>
 'use strict';
@@ -74,7 +84,13 @@ if(es||pt){document.documentElement.lang=pt?'pt-BR':'es';for(const id of ['title
 const selectedChunk=Number(new URLSearchParams(location.search).get('chunk'));
 const chunk=(selectedChunk===4||selectedChunk===16||selectedChunk===64?selectedChunk:16)*1048576;
 let session='',timer,state={},running=false,stopped=false,currentXHR=null,currentId='',rates=[];
+let systemRunning=false,systemReviewId='';
 const delay=ms=>new Promise(r=>setTimeout(r,ms)),mib=n=>(n/1048576).toFixed(1),reason=e=>words[e.message]||words.interrupted;
+function formatDuration(value){
+ if(!Number.isFinite(value))return '—';
+ const total=Math.max(0,Math.ceil(value)),hours=Math.floor(total/3600),minutes=Math.floor(total%3600/60),seconds=total%60;
+ return (hours?hours+' h ':'')+(hours||minutes?minutes+' min ':'')+seconds+' s';
+}
 function headers(extra={}){return {Authorization:'Bearer '+session,'Tus-Resumable':'1.0.0',...extra};}
 async function api(path,options={}){
  const response=await fetch(path,{...options,headers:headers(options.headers||{})});
@@ -90,11 +106,12 @@ function render(){
  $('progress').value=s.length?Math.min(1,(s.received||0)/s.length):0;
  $('confirmed').textContent=words.confirmed+': '+mib(s.offset||0)+' / '+mib(s.length||0)+' MiB';
  $('files').disabled=running;$('name').disabled=running||s.phase==='validating'||s.phase==='publishing';
- $('send').disabled=running||!session||!state.uploads||s.phase==='ready'||s.phase==='validating'||s.phase==='publishing';
- $('pause').disabled=!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
- $('discard').disabled=!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
- $('rename').disabled=running||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
+ $('send').disabled=running||systemRunning||state.system?.busy||!session||!state.uploads||s.phase==='ready'||s.phase==='validating'||s.phase==='publishing';
+ $('pause').disabled=systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
+ $('discard').disabled=systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
+ $('rename').disabled=running||systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
  if(s.error)$('message').textContent=words[s.error]||words.interrupted;
+ renderSystem();
 }
 async function refresh(){const response=await api('/api/v1/status');state=await response.json();render();return state;}
 $('pair').addEventListener('submit',async event=>{
@@ -164,7 +181,7 @@ async function sendFile(file,name){
  if(!Number.isSafeInteger(offset)||offset<=before||offset>file.size)throw Error('offset');
  const elapsed=Math.max(.001,(performance.now()-start)/1000);rates.push({bytes:offset-before,time:elapsed});if(rates.length>8)rates.shift();
  const speed=rates.reduce((a,x)=>a+x.bytes,0)/rates.reduce((a,x)=>a+x.time,0);
- $('rate').textContent=words.speed+': '+mib(speed)+' MiB/s';$('eta').textContent=words.eta+': '+Math.ceil((file.size-offset)/speed)+' s';attempts=0;
+ $('rate').textContent=words.speed+': '+mib(speed)+' MiB/s';$('eta').textContent=words.eta+': '+formatDuration((file.size-offset)/speed);attempts=0;
  }catch(error){
  if(stopped||error.message==='paused'||error.message==='lost'||!['interrupted','offset'].includes(error.message)||attempts++>=5)throw error;
  await delay(Math.min(3000,250*2**attempts));if(stopped)throw Error('paused');
@@ -176,7 +193,7 @@ async function sendFile(file,name){
 }
 $('files').addEventListener('change',()=>{if($('files').files.length)$('name').value=$('files').files[0].name;});
 $('send').addEventListener('click',async()=>{
- if(running)return;const files=Array.from($('files').files);if(!files.length){$('message').textContent=words.choose;return;}
+ if(running||systemRunning||state.system?.busy)return;const files=Array.from($('files').files);if(!files.length){$('message').textContent=words.choose;return;}
  running=true;stopped=false;rates=[];$('message').textContent='';render();
  try{for(let i=0;i<files.length;i++){if(stopped)break;$('queue').textContent=words.queue+': '+(files.length-i-1);await sendFile(files[i],files.length===1?$('name').value:files[i].name);}}
  catch(error){$('message').textContent=reason(error);}finally{running=false;currentXHR=null;try{await refresh();}catch{}render();}
@@ -190,5 +207,98 @@ async function control(action){
 }
 $('pause').addEventListener('click',()=>control('pause'));$('discard').addEventListener('click',()=>control('discard'));
 $('rename').addEventListener('click',async()=>{try{await api('/api/v1/uploads/'+state.transfer.id+'/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('name').value})});$('message').textContent='';await refresh();}catch(error){$('message').textContent=reason(error);}});
+const systemWords=pt?{
+ keysTitle:'Importar chaves',firmware:'Importar firmware',keysHelp:'ZIP ou prod.keys / title.keys. Máximo de 4 MiB por arquivo de chaves.',
+ firmwareHelp:'ZIP ou arquivos NCA extraídos. A versão será verificada antes de instalar.',folder:'Ou escolha uma pasta extraída',send:'Enviar e revisar',confirm:'Confirmar instalação',cancel:'Cancelar e apagar importação',accept:'Entendo e aceito os avisos.',
+ installed:'Instalado',selected:'Selecionado',generation:'Geração das chaves (índice)',required:'Geração exigida pelo firmware',ready:'Arquivos validados. Revise as versões e confirme.',
+ firmware_downgrade:'O firmware selecionado é anterior ao instalado.',keys_downgrade:'As novas chaves perdem gerações disponíveis nas chaves instaladas.',keys_firmware_old:'As chaves podem não abrir o firmware instalado. Continuar pode deixá-lo inutilizável.',keys_unknown:'Não foi possível verificar a geração das chaves.',installed_unknown:'Não foi possível verificar o firmware instalado.',
+ receiving:'Recebendo arquivos',extracting:'Extraindo ZIP',validating:'Validando arquivos',prepare_pending:'Aguardando validação',commit_pending:'Aguardando instalação',publishing:'Instalando',complete:'Instalação concluída',failed:'A importação falhou; os dados anteriores foram preservados.',idle:'Escolha arquivos para importar.',
+ archive:'O ZIP está danificado ou não é compatível.',archive_unsafe:'O ZIP contém caminhos perigosos, links ou arquivos criptografados.',archive_limit:'O arquivo ultrapassa os limites de tamanho ou quantidade.',file_limit:'Quantidade de arquivos inválida.',file:'Use somente ZIP ou os arquivos correspondentes, sem misturá-los.',keys:'Arquivo de chaves inválido.',keys_header:'Falta uma header_key válida em prod.keys.',keys_limit:'Cada arquivo de chaves deve ter no máximo 4 MiB.',firmware_keys:'As chaves instaladas não conseguem ler o firmware. Importe chaves compatíveis primeiro.',firmware_incomplete:'Firmware incompleto: falta SystemVersion ou MiiEdit.',firmware_game:'Este pacote contém arquivos de jogo.',firmware_duplicate:'O pacote contém nomes ou versões duplicados.',firmware_version:'Não foi possível verificar uma versão de firmware NX válida.',confirm_warnings:'Aceite os avisos antes de instalar.',recovery:'A importação interrompida não pôde ser recuperada. Apague-a e selecione os arquivos novamente.'
+}:es?{
+ keysTitle:'Importar claves',firmware:'Importar firmware',keysHelp:'ZIP o prod.keys / title.keys. Máximo de 4 MiB por archivo de claves.',
+ firmwareHelp:'ZIP o archivos NCA extraídos. La versión se comprobará antes de instalar.',folder:'O elige una carpeta extraída',send:'Subir y revisar',confirm:'Confirmar instalación',cancel:'Cancelar y eliminar importación',accept:'Entiendo y acepto las advertencias.',
+ installed:'Instalado',selected:'Seleccionado',generation:'Generación de claves (índice)',required:'Generación requerida por el firmware',ready:'Archivos validados. Revisa las versiones y confirma.',
+ firmware_downgrade:'El firmware seleccionado es anterior al instalado.',keys_downgrade:'Las nuevas claves pierden generaciones disponibles en las instaladas.',keys_firmware_old:'Las claves podrían no abrir el firmware instalado. Continuar puede dejarlo inutilizable.',keys_unknown:'No se pudo verificar la generación de las claves.',installed_unknown:'No se pudo verificar el firmware instalado.',
+ receiving:'Recibiendo archivos',extracting:'Extrayendo ZIP',validating:'Validando archivos',prepare_pending:'Esperando validación',commit_pending:'Esperando instalación',publishing:'Instalando',complete:'Instalación completada',failed:'La importación falló; se conservaron los datos anteriores.',idle:'Selecciona archivos para importar.',
+ archive:'El ZIP está dañado o no es compatible.',archive_unsafe:'El ZIP contiene rutas peligrosas, enlaces o archivos cifrados.',archive_limit:'El archivo supera los límites de tamaño o cantidad.',file_limit:'Cantidad de archivos no válida.',file:'Usa solo ZIP o los archivos correspondientes, sin mezclarlos.',keys:'Archivo de claves no válido.',keys_header:'Falta una header_key válida en prod.keys.',keys_limit:'Cada archivo de claves debe ocupar como máximo 4 MiB.',firmware_keys:'Las claves instaladas no pueden leer el firmware. Importa antes claves compatibles.',firmware_incomplete:'Firmware incompleto: falta SystemVersion o MiiEdit.',firmware_game:'El paquete contiene archivos de juego.',firmware_duplicate:'El paquete contiene nombres o versiones duplicados.',firmware_version:'No se pudo verificar una versión de firmware NX válida.',confirm_warnings:'Acepta las advertencias antes de instalar.',recovery:'No se pudo recuperar la importación interrumpida. Elimínala y vuelve a seleccionar los archivos.'
+}:{
+ keysTitle:'Import keys',firmware:'Import firmware',keysHelp:'ZIP or prod.keys / title.keys. Maximum 4 MiB per key file.',firmwareHelp:'ZIP or extracted NCA files. The version is checked before installation.',folder:'Or choose an extracted folder',send:'Upload and review',confirm:'Confirm installation',cancel:'Cancel and discard import',accept:'I understand and accept these warnings.',
+ installed:'Installed',selected:'Selected',generation:'Key generation (index)',required:'Firmware required generation',ready:'Files validated. Review versions and confirm.',firmware_downgrade:'The selected firmware is older than the installed firmware.',keys_downgrade:'The new keys lose generations present in the installed keys.',keys_firmware_old:'These keys may not open the installed firmware. Continuing may make it unusable.',keys_unknown:'The key generation could not be verified.',installed_unknown:'The installed firmware could not be verified.',
+ receiving:'Receiving files',extracting:'Extracting ZIP',validating:'Validating files',prepare_pending:'Waiting for validation',commit_pending:'Waiting for installation',publishing:'Installing',complete:'Installation complete',failed:'Import failed; previous data was preserved.',idle:'Choose files to import.',archive:'The ZIP is damaged or unsupported.',archive_unsafe:'The ZIP contains unsafe paths, links or encrypted entries.',archive_limit:'The size or file count limit was exceeded.',file_limit:'Invalid file count.',file:'Use only a ZIP or the appropriate loose files, without mixing formats.',keys:'Invalid key file.',keys_header:'A valid header_key is required in prod.keys.',keys_limit:'Each key file must be at most 4 MiB.',firmware_keys:'Installed keys cannot read this firmware. Import compatible keys first.',firmware_incomplete:'Incomplete firmware: SystemVersion or MiiEdit is missing.',firmware_game:'The package contains game files.',firmware_duplicate:'The package contains duplicate names or versions.',firmware_version:'A valid NX firmware version could not be verified.',confirm_warnings:'Accept warnings before installing.',recovery:'The interrupted import could not be recovered. Discard it and select the files again.'};
+for(const [id,text]of Object.entries({'keys-title':systemWords.keysTitle,'firmware-title':systemWords.firmware,'keys-help':systemWords.keysHelp,'firmware-help':systemWords.firmwareHelp,
+ 'firmware-folder-label':systemWords.folder,'keys-send':systemWords.send,'firmware-send':systemWords.send,'system-confirm':systemWords.confirm,'system-cancel':systemWords.cancel,'system-warning-label':systemWords.accept}))$(id).textContent=text;
+function systemReason(error){return systemWords[error.message]||words[error.message]||systemWords.failed;}
+function renderSystem(){
+ const s=state.system||{},r=s.review||{},warnings=r.warnings||[];
+ $('system-upload').hidden=!session||!state.system_supported;
+ if(!state.system_supported)return;
+ for(const kind of ['keys','firmware'])$(kind+'-send').disabled=running||systemRunning||state.transfer?.busy||!s.available||(s.busy&&s.kind!==kind)||!['idle','receiving','complete'].includes(s.phase);
+ $('system-job').textContent=(systemWords[s.phase]||systemWords.idle)+(s.count?' · '+(s.completed||0)+' / '+s.count:'')+(s.error?'\n'+systemReason(Error(s.error)):'');
+ const f=s.file||{};$('system-progress').value=f.length?Math.min(1,(f.received||0)/f.length):0;
+ $('system-review').hidden=s.phase!=='review';
+ if(s.phase!=='review')systemReviewId='';
+ if(s.phase==='review'){
+  if(systemReviewId!==s.id){systemReviewId=s.id;$('system-warning-accept').checked=false;}
+  const gen=value=>value>=0?'0x'+value.toString(16).padStart(2,'0'):'—';
+  $('system-versions').textContent=systemWords.installed+': '+(r.installed_firmware||'—')+'\n'+systemWords.selected+': '+(r.incoming_firmware||'—')+
+    '\n'+systemWords.generation+': '+gen(r.installed_generation)+' → '+gen(r.incoming_generation)+'\n'+systemWords.required+': '+gen(r.required_generation);
+  $('system-warnings').textContent=warnings.map(w=>systemWords[w]||systemWords.keys_unknown).join('\n');
+  $('system-warning-row').hidden=!warnings.length;$('system-confirm').disabled=!!warnings.length&&!$('system-warning-accept').checked;
+ }
+ $('system-cancel').disabled=!s.id||s.phase==='complete'||s.phase==='publishing'||s.phase==='commit_pending';
+}
+async function sendSystem(kind){
+ if(running||systemRunning)return;
+ const folder=kind==='firmware'?Array.from($('firmware-folder').files):[];
+ const files=(folder.length?folder:Array.from($(kind+'-files').files)).filter(f=>!folder.length||f.name.toLowerCase().endsWith('.nca'));
+ if(!files.length){$('message').textContent=words.choose;return;}
+ const zip=files.length===1&&files[0].name.toLowerCase().endsWith('.zip'),format=zip?'zip':'files';
+ if(!zip&&files.some(f=>kind==='keys'?!['prod.keys','title.keys'].includes(f.name.toLowerCase()):!f.name.toLowerCase().endsWith('.nca'))){$('message').textContent=systemWords.file;return;}
+ if(new Set(files.map(f=>f.name.toLowerCase())).size!==files.length){$('message').textContent=systemWords.firmware_duplicate;return;}
+ systemRunning=true;stopped=false;$('message').textContent='';render();
+ try{
+  await refresh();let s=state.system;
+  if(!s.id||s.phase==='complete'){
+   await api('/api/v1/system/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,format,count:files.length})});await refresh();s=state.system;
+  }
+  if(s.kind!==kind||s.format!==format||s.count!==files.length||s.phase!=='receiving')throw Error('same');
+  const job='/api/v1/system/jobs/'+s.id;
+  for(const file of files){
+   if(stopped)throw Error('paused');const signature=await fingerprint(file);await refresh();s=state.system;
+   const done=(s.files||[]).find(f=>f.name===file.name.toLowerCase());
+   if(done){if(done.length!==file.size||done.fingerprint!==signature)throw Error('same');continue;}
+   let f=s.file||{},url;
+   if(f.id&&f.phase!=='complete'){
+    if(f.name!==file.name.toLowerCase()||f.fingerprint!==signature||f.length!==file.size)throw Error('same');
+    url='/api/v1/system/files/'+f.id;
+   }else{
+    const created=await api(job+'/files',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:file.name.toLowerCase(),length:file.size,fingerprint:signature})});
+    url=created.headers.get('Location');
+   }
+   let offset=Number((await api(url,{method:'HEAD'})).headers.get('Upload-Offset')),attempts=0;
+   while(offset<file.size){
+    if(stopped)throw Error('paused');const before=offset;
+    try{offset=await patch(url,offset,file.slice(offset,Math.min(file.size,offset+chunk)));
+     if(!Number.isSafeInteger(offset)||offset<=before||offset>file.size)throw Error('offset');attempts=0;
+    }catch(error){if(stopped||!['interrupted','offset'].includes(error.message)||attempts++>=5)throw error;
+     await delay(Math.min(3000,250*2**attempts));offset=Number((await api(url,{method:'HEAD'})).headers.get('Upload-Offset'));}
+   }
+   await api(url+'/finish',{method:'POST'});
+  }
+  await api(job+'/prepare',{method:'POST'});await refresh();
+ }catch(error){$('message').textContent=systemReason(error);}finally{systemRunning=false;currentXHR=null;try{await refresh();}catch{}render();}
+}
+$('keys-send').addEventListener('click',()=>sendSystem('keys'));$('firmware-send').addEventListener('click',()=>sendSystem('firmware'));
+$('firmware-files').addEventListener('change',()=>{$('firmware-folder').value='';});$('firmware-folder').addEventListener('change',()=>{$('firmware-files').value='';});
+$('system-warning-accept').addEventListener('change',renderSystem);
+$('system-confirm').addEventListener('click',async()=>{try{
+ await api('/api/v1/system/jobs/'+state.system.id+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accept_warnings:$('system-warning-accept').checked})});await refresh();
+ }catch(error){$('message').textContent=systemReason(error);}});
+$('system-cancel').addEventListener('click',async()=>{
+ stopped=true;if(currentXHR)currentXHR.abort();
+ try{for(let retry=0;;retry++)try{await api('/api/v1/system/jobs/'+state.system.id,{method:'DELETE'});break;}
+ catch(error){if(error.message!=='busy'||retry>=30)throw error;await delay(100);}
+ systemReviewId='';$('message').textContent='';await refresh();}catch(error){$('message').textContent=systemReason(error);}
+});
 </script></html>)HTML";
 }

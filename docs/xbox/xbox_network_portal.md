@@ -2,7 +2,9 @@
 
 ## Estado: 19 octubre 2026
 
-Rama `feature/local-import-portal` desde main, con commits locales autorizados y sin push.
+Integrado en `main` mediante merge6e2983386b, junto con portugués brasileño y ajustes
+de idioma de juegos, versión0.3.4.0. El árbol del merge coincide con la punta integrada
+432985f2a4; receptor/store/validador NSP conservan el código probado.
 Conexión/emparejamiento y
 subida de juegos base NSP implementados. El usuario confirmó explícitamente que la
 conexión y el emparejamiento desde móvil fueron en Series. El gate de importación
@@ -24,6 +26,70 @@ pendientes; USB conserva su importador. Link incremental UWP completado.
 | Biblioteca/arranque del juego importado | Pendiente con UI real/Series |
 | Series: memoria, CPU, rendimiento4/16/64MiB | Pendiente |
 | Web claves/firmware ZIP | No implementados todavía |
+
+Prueba Series en curso19oct: el usuario comunica352,0/13960,6MiB confirmados,
+14,8MiB/s y ETA890s. Es una muestra puntual; finalización, reanudación y velocidad
+media completa siguen pendientes. ETA ahora se presenta en horas/minutos/segundos
+(890s →14min50s;3661s →1h1min1s), con horas sin límite24 y sin estimación para valores
+no finitos. Este cambio se sirve en la siguiente instalación; la página ya cargada
+durante esa transferencia conserva el código anterior.
+
+Preparación0.3.4.0: build incremental desde main y arranque biblioteca AppContainer
+PC Responding, diag scanning/waiting for user selection. Pruebas localization-catalogs,
+system-settings, text-entry y cliente web mock pasan. El smoke PC no ejecuta guest ni
+certifica visual/Series. Evidencia pc-0.3.4.0-library-{diag,log}.txt en test-results/network-portal.
+Entrega única biblioteca normal build-uwp/package/jadyx.appx, símbolos0.3.4.0.
+
+## Candidato de rendimiento Wi-Fi,19oct (entrega de prueba0.3.4.1)
+
+Usuario aclara PC y Xbox ambos por Wi-Fi. Banda/canal/AP y tasa completa desconocidos;
+14,8MiB/s (~124Mb/s) sigue siendo muestra puntual. Con radio/canal compartido existe
+contención entre ambos tramos; no demuestra cuello de CPU/disco. Siguiente comparación:
+mismo archivo/ubicación, cablear solo un equipo, luego ambos si es posible; conservar
+la conexión durante la transferencia actual. Comparar ?chunk=16/64 por separado con
+tres corridas completas, misma red y archivo; mantener16 por defecto hasta ventaja≥5%.
+
+Código httplib0.46: body se lee en≤16KiB. PortalStream hacía poll y SocketStream::read
+volvía a hacer otro antes de recv. Candidato delega directamente a read, reintenta
+Timeout del poll100ms hasta idle30s, conserva cancelación y propaga errores. No cambia
+macros globales/ODR, buffers TCP ni framing. El ACK sigue payload.Flush → checkpoint
+flushed/rename → respuesta. Sin paralelizar bloques ni ampliar RAM por archivo.
+
+Snapshot y status.transfer.performance exponen solo último bloque confirmado:
+confirmed_offset/bytes/total_us/write_us/flush_us/checkpoint_us/reader_calls. No se
+persisten ni gobiernan recuperación. Relojes solo por fase/escritura1MiB, no callback.
+total menos escritura/flush/checkpoint incluye red, copias, locks, apertura/truncado y
+espacio: no llamarlo tiempo de red puro ni CPU. Perfil no avanza si falla checkpoint.
+En consola del navegador emparejado, con candidato instalado, consultar sin mostrar
+sesión: `(await (await api('/api/v1/status')).json()).transfer.performance`.
+
+El ejecutable anterior al cambio también falló el rechazo413 de POST2048bytes con
+errorRead del cliente. Cierre inmediato SD_BOTH puede resetear TCP con datos pendientes.
+Candidato tras respuesta Connection:close hace SD_SEND y drenaje no bloqueante acotado
+100ms/1MiB, polls10ms, cancelable. Nunca espera todo el body anunciado. Patrón
+contrastado con Microsoft y notas de httplib; dependencia conservada0.46.0.
+
+Gates nativos pasan, incluidos cliente pausado350ms (>poll100ms), 413, 409 sin body
+16MiB anunciado, cancelación, offsets/checkpoints/cortes/rename/bytes y perfil asociado
+al ACK. Cierre parcial0–100ms. Objetos UWP network_portal/nsp_upload pasan. Smoke
+32MiB ~153–155MiB/s loopback: no A/B causal ni mejora certificada en Series.
+Último bloque16MiB ejemplo: total100650us, Write4901us, Flush31679us, Checkpoint37427us,
+1025callbacks. Datos PC, no inferir costes Xbox. Evidencia perf-before.txt (fallo
+previo), perf-after.txt, perf-repeats.txt en test-results/network-portal.
+Entregado para prueba en APPX0.3.4.1 a petición del usuario, sin commit/push. Build
+incremental/link correctos, smoke AppContainer PC llega a biblioteca y proceso21104
+Responding; no certifica gameplay ni recorrido web Series. Paquete firmado y verificado
+en build-uwp/package/jadyx.appx, solo library=1/play=1, sin gate ni datos de usuario.
+Exe/PDB en symbols/0.3.4.1; diag/log y registro de empaquetado/hash en test-results/network-portal.
+Mantener16MiB de inicio para comparar con la muestra anterior; probar64 después con
+?chunk=64 y un nombre nuevo. Mejora sostenida Series todavía pendiente.
+
+Fuentes contrastadas:
+- [Microsoft: recv](https://learn.microsoft.com/windows/win32/api/winsock/nf-winsock-recv).
+- [Microsoft: FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers).
+- [Microsoft: cierre graceful](https://learn.microsoft.com/en-us/windows/desktop/WinSock/graceful-shutdown-linger-options-and-socket-closure-2).
+- [cpp-httplib: cierre acotado](https://github.com/yhirose/cpp-httplib/releases).
+- [Cisco: Wi-Fi compartido](https://www.cisco.com/c/en/us/td/docs/wireless/controller/9800/technical-reference/wireless-rf-reference-guide.html).
 
 ## Conexión y pantalla Xbox
 
@@ -208,7 +274,78 @@ El comando restagea un paquete de diagnóstico: después volver a empaquetar con
 entregar biblioteca normal. En Series probar desde navegador real, verificar biblioteca
 y arranque, cortes de red/reinicio completo y medir bloques4/16/64 con tres repeticiones.
 
-## Siguiente: claves y firmware web
+## Claves y firmware web: candidato del 19 de octubre de 2026
+
+Rama `feature/portal-system-imports`, sin commits nuevos ni push. El usuario informa
+que 0.3.4.1 mantiene la misma velocidad que 0.3.4.0 (~14.8 MiB/s), con PC y Xbox
+ambos por Wi-Fi. No hay mejora de transferencia Series demostrada.
+
+`SystemUpload` reutiliza el transporte durable por bloques, con un lote exclusivo
+de claves o firmware. El servidor fija todos los destinos. Recibe ZIP o archivos
+sueltos (el navegador también puede seleccionar carpeta de NCA), recupera archivos
+terminados y offset confirmado, y requiere revisión nueva después de reiniciar.
+Los NCA sueltos pasan al staging por rename; ZIP se extrae allí, sin copia posterior
+del firmware completo. Las claves individuales conservan el límite de 4 MiB;
+ZIP de claves 16 MiB comprimido/8 MiB extraído; firmware 4/8 GiB y 4096 NCA.
+
+`system_import` comparte validación/publicación entre USB y portal. La biblioteca
+detiene y une sus workers de metadatos antes de los lectores core/recarga de claves.
+La revisión mantiene el sistema instalado intacto; confirmación explícita antes de
+publicar. Los ficheros preparados se vacían a disco antes del cambio de directorio.
+Rollback y recuperación usan `.previous`. Un fallo al limpiar temporales después
+de publicar no convierte una instalación completada en un fallo. Suspensión devuelve
+los archivos sueltos preparados a la entrada recuperable y exige revisión otra vez.
+
+Se obtiene la versión de `/file` (256 bytes) del título SystemVersion mediante los
+lectores reales de NCA/RomFS, compara major/minor/micro y revisiones, y exige MiiEdit.
+Las claves no tienen una versión de firmware oficial: se muestran índices de generación,
+se advierte si desaparece una generación declarada aunque el índice máximo no cambie,
+y se comparan header/key-area efectivos contra el material que abrió el firmware actual.
+No se recarga KeyManager para previsualizar. Firmware que no puede validarse con las
+claves instaladas se rechaza con indicación de importar claves compatibles primero.
+La advertencia de incompatibilidad de claves puede confirmarse; un NCA inválido no.
+
+Libarchive usa ZIP seekable exclusivamente, con callbacks de lectura/seek de 64 KiB:
+el build existente es de solo lectura y no incluye `archive_read_open_filename_w`.
+No se debe añadir un opener inexistente ni aceptar el fallback ZIP streamable para
+un archivo truncado sin directorio central. Extracción con buffer de 1 MiB, límites
+de bytes declarados y efectivos, espacio libre por bloque; rechaza rutas peligrosas,
+enlaces, cifrado, nombres duplicados y archivos ajenos al tipo seleccionado.
+
+Verificación inicial: objetos UWP nuevos y frontend compilados; harness nativo pasa
+reanudación/reinicio de lote, paso por extracción ZIP simulada, advertencias explícitas,
+publicación y cancelación sin tocar destino. Navegador simulado pasa cuatro combinaciones
+claves/firmware × ZIP/sueltos y confirmación de advertencias, además de los escenarios NSP.
+Los mocks no certifican Xbox. Gate real AppContainer completado: NCA/SystemVersion
+instalados, ZIP de claves y firmware con carpetas internas, rechazo de ZIP truncado,
+traversal y duplicados, advertencias por pérdida de generaciones/material incompatible,
+claves inválidas, cancelación y recuperación de publicación. Retorno0 a1.594s; uso
+WinRT59MiB. Se detectó y corrigió el uso de separadores mezclados al pasar la ruta
+de staging a `StorageFolder::GetFolderFromPathAsync`: normalizar con `make_preferred`,
+como ya hacía el importador USB. Los errores esperados del gate aparecen como
+first-chance; el cierre aún registra el conocido0x80010012 después del retorno0.
+Evidencia: `build-uwp/test-results/network-portal/pc-system-import-{diag,log}.txt`.
+
+Compilación incremental UWP y gate de catálogos es/en/pt-BR correctos. Harness TCP
+autenticado también pasa los endpoints reales de lote, exclusión NSP y rechazo de
+confirmación sin aceptar advertencias (validador simulado). Entrega **0.3.4.3**,
+solicitada por el usuario: APPX firmado en `build-uwp/package/jadyx.appx`, biblioteca
+normal, sin fixtures ni diagnóstico en `boot.cfg`; símbolos en `symbols/0.3.4.3`.
+Pendiente Series: portal real PC/móvil, firmware completo y anterior, pares de claves
+antiguas/nuevas, desconexión/reinicio/suspensión y confirmación visual de avisos.
+
+Comandos de los gates:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/xbox/tests/run-network-portal.ps1
+powershell -ExecutionPolicy Bypass -File tools/xbox/tests/run-frontend.ps1 -Tests localization-catalogs
+powershell -ExecutionPolicy Bypass -File tools/xbox/local-run.ps1 -NoBuild -BootCfg file_manager_gate=1
+```
+
+El gate de archivos crea únicamente una copia privada de claves y dos NCA ya instalados
+en LocalState; no cambia los originales ni los incorpora al paquete o repositorio.
+
+### Límites previstos y servicio compartido
 
 Servicio común USB/red de validación/publicación. prod.keys y title.keys opcional≤4MiB
 cada uno. ZIP≤4GiB, extraído≤8GiB y≤4096NCA; libarchive en consola y staging directo de
@@ -226,5 +363,18 @@ actualizaciones/DLC quedan en su gestor actual.
 - [Microsoft: FlushFileBuffers y coste de llamadas frecuentes](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers).
 - [Microsoft: buffering y alineación no-buffering](https://learn.microsoft.com/en-us/windows/win32/fileio/file-buffering).
 - [libarchive](https://www.libarchive.org/), versión local3.8.9 para fase siguiente.
+- [libarchive: contrato del lector y callbacks](https://github.com/libarchive/libarchive/blob/master/libarchive/archive.h).
+- [SwitchBrew: SystemVersion y estructura del fichero](https://switchbrew.org/wiki/System_Version_Title).
+- [SwitchBrew: criptosistema](https://www.switchbrew.org/wiki/Cryptosystem) y [generación de claves en 17.0.0](https://www.switchbrew.org/wiki/17.0.0).
 - Código propio: uwp_file_manager, uwp_library, PartitionFilesystem, NcaReader/CNMT,
   content_inspector (omite Application por diseño), mod_archive y network_interface.
+
+Corrección posterior de interfaz 0.3.4.3: el título de claves y el error compartían
+la propiedad JS keys; la segunda definición sustituía el título aun sin archivos.
+Se separa keysTitle y se comprueba el título inicial en es/en/pt-BR para las cuatro
+combinaciones claves/firmware ZIP/sueltos. Gate navegador pasa; texto redundante
+de privacidad eliminado del error. Recompilación incremental y paquete de la misma versión.
+
+Guardado solicitado por el usuario: portal separado en commits locales de transporte,
+validación compartida, lotes recuperables, API, integración UWP, página web y pruebas.
+La solución ajena en d3d12_query_cache.cpp queda sin incluir; no se hace push.

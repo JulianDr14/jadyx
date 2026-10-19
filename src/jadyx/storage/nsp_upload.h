@@ -9,10 +9,15 @@
 #include <string>
 
 namespace Jadyx {
+struct UploadPerformance {
+    // Last acknowledged block only; not persisted and never used for resume decisions.
+    std::uint64_t confirmed_offset{}, bytes{}, total_us{}, write_us{}, flush_us{}, checkpoint_us{}, reader_calls{};
+};
 struct UploadSnapshot {
     std::string id, name, fingerprint, phase{"idle"}, error;
     std::uint64_t length{}, offset{}, received{}, free_bytes{};
     bool busy{}, available{};
+    UploadPerformance performance;
 };
 struct UploadResult {
     int status{204};
@@ -28,7 +33,8 @@ class NspUpload {
 public:
     static constexpr std::uint64_t MaxLength = 1ULL << 40;
     static constexpr std::uint64_t MaxChunk = 64ULL << 20;
-    explicit NspUpload(std::filesystem::path games);
+    explicit NspUpload(std::filesystem::path games, bool system_files = false,
+                       std::filesystem::path temporary = {});
     ~NspUpload();
     UploadSnapshot Snapshot() const;
     bool SetAvailable(bool enabled); ///< false refuses new input; never cancels an active file.

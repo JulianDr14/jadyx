@@ -32,9 +32,19 @@ public:
     bool wait_writable() const override { return Wait(true); }
     bool is_peer_alive() const override { return !stopped && source.is_peer_alive(); }
     ssize_t read(char* bytes, size_t size) override {
-        if (read_closed) return -1;
-        if (!is_readable() && !Wait(false)) return -1;
-        return stopped ? -1 : source.read(bytes, size);
+        // SocketStream::read already polls before recv. Polling here too doubles the
+        // readiness syscalls on every unbuffered body read (16 KiB in httplib 0.46).
+        const auto until=Clock::now()+std::chrono::seconds{30};
+        while (!stopped && !read_closed) {
+            const auto count=source.read(bytes,size);
+            if (count >= 0 || source.get_error() != httplib::Error::Timeout) {
+                error_=count>0 ? httplib::Error::Success : source.get_error();
+                return stopped ? -1 : count;
+            }
+            if (Clock::now() >= until) { error_=httplib::Error::Timeout; return -1; }
+        }
+        error_=httplib::Error::ConnectionClosed;
+        return -1;
     }
     ssize_t write(const char* bytes, size_t size) override {
         if (!Wait(true)) return -1;
@@ -93,7 +103,7 @@ protected:
             if (stopping) { ::closesocket(socket); return false; }
             clients.insert(socket);
         }
-        bool result = false;
+        bool result = false, rejected = false;
         try {
             std::string remote, local;
             int remote_port{}, local_port{};
@@ -109,9 +119,28 @@ protected:
                     PortalStreamScope scope{cancellable};
                     const bool handled=process_request(cancellable, remote, remote_port, local, local_port, close, closed, nullptr);
                     closed |= cancellable.Closing();
+                    rejected |= cancellable.Closing();
                     return handled;
                 });
         } catch (...) {}
+        if (rejected && !stopping) {
+            // Finish the response before discarding a bounded amount of already-sent
+            // input. Closing immediately with unread TCP data can replace 413/409
+            // with a reset on Windows. Never wait for the whole advertised body.
+            ::shutdown(socket,SD_SEND);
+            u_long nonblocking=1;
+            if (::ioctlsocket(socket,FIONBIO,&nonblocking)==0) {
+                const auto until=Clock::now()+std::chrono::milliseconds{100};
+                std::array<char,4096> discarded{};
+                std::size_t drained{};
+                while (!stopping && drained<(1U << 20) && Clock::now()<until) {
+                    if (httplib::detail::select_read(socket,0,10000)<=0) continue;
+                    const auto count=::recv(socket,discarded.data(),static_cast<int>(discarded.size()),0);
+                    if (count<=0) break;
+                    drained+=static_cast<std::size_t>(count);
+                }
+            }
+        }
         {
             std::lock_guard lock{clients_mutex};
             clients.erase(socket);
@@ -183,9 +212,20 @@ bool Decode64(const std::string& encoded, std::string& decoded) {
 }
 
 Json UploadJson(const UploadSnapshot& info) {
+    const auto& p=info.performance;
     return {{"id",info.id}, {"name",info.name}, {"fingerprint",info.fingerprint},
         {"phase",info.phase}, {"error",info.error}, {"length",info.length}, {"offset",info.offset},
-        {"received",info.received}, {"free_bytes",info.free_bytes}, {"busy",info.busy}, {"available",info.available}};
+        {"received",info.received}, {"free_bytes",info.free_bytes}, {"busy",info.busy}, {"available",info.available},
+        {"performance",{{"confirmed_offset",p.confirmed_offset},{"bytes",p.bytes},{"total_us",p.total_us},
+            {"write_us",p.write_us},{"flush_us",p.flush_us},{"checkpoint_us",p.checkpoint_us},{"reader_calls",p.reader_calls}}}};
+}
+Json SystemJson(const SystemUploadStatus& info){
+    const auto& r=info.review;
+    auto files=Json::array();for(const auto& f:info.files)files.push_back({{"name",f.name},{"length",f.length},{"fingerprint",f.fingerprint}});
+    return {{"id",info.id},{"kind",info.kind},{"format",info.format},{"phase",info.phase},{"error",info.error},
+        {"count",info.count},{"completed",info.completed},{"processed",info.processed},{"bytes",info.bytes},{"busy",info.busy},{"available",info.available},
+        {"file",UploadJson(info.file)},{"files",files},{"review",{{"installed_firmware",r.installed_firmware},{"incoming_firmware",r.incoming_firmware},
+            {"installed_generation",r.installed_generation},{"incoming_generation",r.incoming_generation},{"required_generation",r.required_generation},{"warnings",r.warnings}}}};
 }
 
 bool LocalIpv4(const std::string& address) {
@@ -229,6 +269,8 @@ std::vector<PortalAddress> PortalAddresses() {
 }
 
 struct NetworkPortal::Impl {
+    std::mutex admission;
+    bool imports_available{},system_supported{};
     std::mutex lifecycle;
     mutable std::mutex mutex;
     PortalStatus status;
@@ -240,10 +282,12 @@ struct NetworkPortal::Impl {
     bool exclusive_socket{};
     std::jthread listener;
     std::unique_ptr<NspUpload> upload;
+    std::unique_ptr<SystemUpload> system;
     bool storage_failed{};
 
     void Shutdown() {
         if (upload) upload->Cancel();
+        if (system) system->Cancel();
         {
             std::lock_guard lock{mutex};
             status.running = status.paired = false;
@@ -253,6 +297,7 @@ struct NetworkPortal::Impl {
         if (listener.joinable()) listener.join();
         server.reset();
         if (upload) upload->Suspend();
+        if (system) system->Suspend();
     }
 
     void Routes() {
@@ -334,9 +379,11 @@ struct NetworkPortal::Impl {
         });
         server->Get("/api/v1/status", [this](const auto&, auto& response) {
             Reply(response, 200, {{"running", true}, {"stage", upload ? "nsp" : "connection-test"},
-                {"uploads", bool(upload)}, {"transfer", upload ? UploadJson(upload->Snapshot()) : Json::object()}});
+                {"uploads", bool(upload)}, {"transfer", upload ? UploadJson(upload->Snapshot()) : Json::object()},
+                {"system_supported",system_supported},{"system",system ? SystemJson(system->Snapshot()) : Json::object()}});
         });
         UploadRoutes();
+        SystemRoutes();
     }
 
     void UploadRoutes() {
@@ -359,6 +406,8 @@ struct NetworkPortal::Impl {
             response.set_header("Tus-Max-Size",std::to_string(NspUpload::MaxLength));
         });
         server->Post("/api/v1/uploads", [this,version,result](const auto& request, auto& response) {
+            std::lock_guard admission_lock{admission};
+            if(system&&system->Snapshot().busy){Reply(response,409,{{"error","busy"}});return;}
             if (!version(request,response)) return;
             if (!upload) { Reply(response,503,{{"error","unavailable"}}); return; }
             std::uint64_t length{};
@@ -433,11 +482,72 @@ struct NetworkPortal::Impl {
                 }
             });
     }
+    void SystemRoutes(){
+        const auto result=[](auto& response,const UploadResult& value){
+            response.status=value.status;if(!value.error.empty()){
+                response.set_header("Connection","close");Reply(response,value.status,{{"error",value.error}});
+            }
+        };
+        const auto version=[this](const auto& request,auto& response){
+            response.set_header("Tus-Resumable","1.0.0");
+            if(!system||!system_supported){Reply(response,503,{{"error","unavailable"}});return false;}
+            if(request.get_header_value("Tus-Resumable")!="1.0.0"){Reply(response,412,{{"error","version"}});return false;}
+            return true;
+        };
+        server->Post("/api/v1/system/jobs",[this,result](const auto& request,auto& response){
+            std::lock_guard admission_lock{admission};
+            if(!system||!system_supported){result(response,{503,"unavailable"});return;}
+            const auto body=Json::parse(request.body,nullptr,false);
+            if(!body.is_object()||!body.contains("kind")||!body["kind"].is_string()||!body.contains("format")||!body["format"].is_string()||
+               !body.contains("count")||!body["count"].is_number_unsigned()||body["count"].template get<std::uint64_t>()>4096){result(response,{400,"file"});return;}
+            if(upload&&!upload->BlockForLocalOperation()){result(response,{409,"busy"});return;}
+            const auto created=system->Create(body["kind"].template get<std::string>(),body["format"].template get<std::string>(),body["count"].template get<unsigned>());
+            if(created.status==201)Reply(response,201,{{"id",system->Snapshot().id}});
+            else {result(response,created);if(upload&&!system->Snapshot().busy)upload->SetAvailable(imports_available);}
+        });
+        server->Post("/api/v1/system/jobs/([0-9a-f]{32})/files",[this,result,version](const auto& request,auto& response){
+            if(!version(request,response))return;
+            const auto body=Json::parse(request.body,nullptr,false);
+            if(!body.is_object()||!body.contains("name")||!body["name"].is_string()||!body.contains("fingerprint")||!body["fingerprint"].is_string()||
+                !body.contains("length")||!body["length"].is_number_unsigned()){result(response,{400,"file"});return;}
+            const auto created=system->BeginFile(request.matches[1].str(),body["name"].template get<std::string>(),body["fingerprint"].template get<std::string>(),body["length"].template get<std::uint64_t>());
+            result(response,created);
+            if(created.status==201){response.set_header("Location","/api/v1/system/files/"+system->Snapshot().file.id);response.set_header("Upload-Offset","0");}
+        });
+        server->Get("/api/v1/system/files/([0-9a-f]{32})",[this,result,version](const auto& request,auto& response){
+            if(!version(request,response))return;const auto file=system->Snapshot().file;
+            if(file.id!=request.matches[1].str()||file.phase=="complete"){result(response,{404,"upload"});return;}
+            response.status=200;response.set_header("Upload-Offset",std::to_string(file.offset));response.set_header("Upload-Length",std::to_string(file.length));
+        });
+        server->Patch("/api/v1/system/files/([0-9a-f]{32})",[this,result,version](const httplib::Request& request,httplib::Response& response,const httplib::ContentReader& reader){
+            if(!version(request,response))return;std::uint64_t offset{},length{};
+            if(request.get_header_value("Content-Type")!="application/offset+octet-stream"||!Unsigned(request.get_header_value("Upload-Offset"),offset)||
+                !Unsigned(request.get_header_value("Content-Length"),length)){result(response,{400,"offset"});return;}
+            result(response,system->Append(request.matches[1].str(),offset,length,[&](const UploadSink& sink){return reader([&](const char* data,std::size_t count){return sink(data,count);});}));
+            response.set_header("Upload-Offset",std::to_string(system->Snapshot().file.offset));
+        });
+        server->Post("/api/v1/system/files/([0-9a-f]{32})/finish",[this,result,version](const auto& request,auto& response){
+            if(version(request,response))result(response,system->FinishFile(request.matches[1].str()));
+        });
+        server->Post("/api/v1/system/jobs/([0-9a-f]{32})/(prepare|confirm)",[this,result](const auto& request,auto& response){
+            if(!system){result(response,{503,"unavailable"});return;}
+            if(request.matches[2].str()=="prepare")result(response,system->Prepare(request.matches[1].str()));
+            else {const auto body=Json::parse(request.body,nullptr,false);
+                result(response,system->Confirm(request.matches[1].str(),body.is_object()&&body.value("accept_warnings",Json{false})==true));}
+        });
+        server->Delete("/api/v1/system/jobs/([0-9a-f]{32})",[this,result](const auto& request,auto& response){
+            if(!system){result(response,{404,"upload"});return;}result(response,system->Discard(request.matches[1].str()));
+        });
+    }
 };
 
-NetworkPortal::NetworkPortal(std::filesystem::path games) : impl{std::make_unique<Impl>()} {
+NetworkPortal::NetworkPortal(std::filesystem::path games,SystemImportBackend backend) : impl{std::make_unique<Impl>()} {
     if (!games.empty()) {
-        try { impl->upload=std::make_unique<NspUpload>(std::move(games)); }
+        try {
+            impl->system_supported=bool(backend.inspect);
+            impl->system=std::make_unique<SystemUpload>(games.parent_path(),std::move(backend));
+            impl->upload=std::make_unique<NspUpload>(std::move(games));
+        }
         catch (...) { impl->storage_failed=true; }
     }
 }
@@ -451,6 +561,7 @@ bool NetworkPortal::Start(const std::string& ipv4, unsigned short port) {
         std::lock_guard lock{impl->mutex}; impl->status.error=PortalError::Storage; return false;
     }
     if (impl->upload) impl->upload->Resume();
+    if (impl->system) impl->system->Resume();
     if (!LocalIpv4(ipv4) || port == 0) {
         std::lock_guard lock{impl->mutex}; impl->status.error = PortalError::NoAddress; return false;
     }
@@ -516,17 +627,27 @@ PortalStatus NetworkPortal::Status() const {
         result.code_expired=Clock::now() >= impl->expires;
     }
     if (impl->upload) result.transfer=impl->upload->Snapshot();
+    if (impl->system) result.system=impl->system->Snapshot();
     return result;
 }
 
-void NetworkPortal::SetUploadsAvailable(bool enabled) { if (impl->upload) impl->upload->SetAvailable(enabled); }
-bool NetworkPortal::BlockForLocalOperation() { return !impl->upload || impl->upload->BlockForLocalOperation(); }
+void NetworkPortal::SetUploadsAvailable(bool enabled) {
+    std::lock_guard lock{impl->admission};impl->imports_available=enabled;
+    if(impl->system)impl->system->SetAvailable(enabled);
+    if(impl->upload)impl->upload->SetAvailable(enabled&&(!impl->system||!impl->system->Snapshot().busy));
+}
+bool NetworkPortal::BlockForLocalOperation() {
+    std::lock_guard lock{impl->admission};if(impl->system&&impl->system->Snapshot().busy)return false;
+    if(impl->upload&&!impl->upload->BlockForLocalOperation())return false;
+    if(impl->system)impl->system->SetAvailable(false);return true;
+}
 std::string NetworkPortal::FinalizeGame(const NspValidator& validate) {
     if (!impl->upload) return "unavailable";
     const auto error=impl->upload->Finalize(validate);
     if (error == "interrupted" && Status().running) impl->upload->Resume();
     return error;
 }
-void NetworkPortal::CancelTransfer() { if (impl->upload) impl->upload->Cancel(); }
+void NetworkPortal::CancelTransfer() { if (impl->upload) impl->upload->Cancel();if(impl->system)impl->system->Cancel(); }
+std::string NetworkPortal::RunSystemImport(std::stop_token stop){return impl->system?impl->system->RunPending(stop):"unavailable";}
 
 } // namespace Jadyx

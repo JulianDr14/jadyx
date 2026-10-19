@@ -94,7 +94,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     auto battery_read_at = std::chrono::steady_clock::time_point{};
     bool dirty = true, loading = true, settings = false;
     ConfigurationPanel configuration;
-    NetworkPortal network_portal{root};
+    NetworkPortal network_portal{root,DefaultSystemImportBackend()};
     auto network_poll_at = std::chrono::steady_clock::time_point{};
     // Revoked before the library-owned portal is destroyed. No background server survives play.
     auto network_suspending = winrt::Windows::ApplicationModel::Core::CoreApplication::Suspending(
@@ -126,6 +126,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     std::future<std::string> import_future;
     std::jthread import_worker;
     bool network_import{};
+    bool system_network_import{};
     std::chrono::steady_clock::time_point auto_pick_at{};
     unsigned setting_row = 0;
     ControllerPanel panel;
@@ -286,7 +287,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         const auto scale = std::max(0.01f, std::min(width / 1280.0f, height / 720.0f));
         const float x = static_cast<float>((p.X * dpi - (width - 1280 * scale) / 2) / scale);
         const float y = static_cast<float>((p.Y * dpi - (height - 720 * scale) / 2) / scale);
-        if (configuration.network_screen) {
+        if (configuration.network_screen || configuration.confirm_import) {
             const auto hit = canvas->HitAt(x, y);
             if (hit.hit == LibraryHit::NetworkAction && hit.index < 3) {
                 configuration.network_action = hit.index;
@@ -727,23 +728,29 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 configuration.network.transfer.received != state.transfer.received ||
                 configuration.network.transfer.phase != state.transfer.phase ||
                 configuration.network.transfer.id != state.transfer.id ||
-                configuration.network.transfer.error != state.transfer.error) {
+                configuration.network.transfer.error != state.transfer.error ||
+                configuration.network.system.phase != state.system.phase ||
+                configuration.network.system.processed != state.system.processed ||
+                configuration.network.system.file.received != state.system.file.received ||
+                configuration.network.system.error != state.system.error) {
                 configuration.network = state;
                 dirty = true;
             }
-            if (state.transfer.phase == "ready" && !configuration.busy && !loading &&
+            const bool system_pending=state.system.phase=="prepare_pending"||state.system.phase=="commit_pending";
+            if ((state.transfer.phase == "ready" || system_pending) && !configuration.busy && !loading &&
                 !setup_future.valid() && !picker && !validation.valid() && !content_session && !game_options.open) {
                 configuration.busy=true;
                 network_import=true;
+                system_network_import=system_pending;
                 import_progress.completed=0; import_progress.total=0;
                 metadata_worker.request_stop();
                 std::packaged_task<std::string(std::stop_token)> task{
-                    [&, old_metadata=std::move(metadata_worker)](std::stop_token stop) mutable {
+                    [&, system_pending, old_metadata=std::move(metadata_worker)](std::stop_token stop) mutable {
                         std::stop_callback cancel{stop,[&] { network_portal.CancelTransfer(); }};
                         if (old_metadata.joinable()) old_metadata.join();
                         winrt::init_apartment(winrt::apartment_type::multi_threaded);
                         struct Uninitialize { ~Uninitialize() { winrt::uninit_apartment(); } } guard;
-                        return network_portal.FinalizeGame(ValidateUploadedNsp);
+                        return system_pending ? network_portal.RunSystemImport(stop) : network_portal.FinalizeGame(ValidateUploadedNsp);
                     }};
                 import_future=task.get_future();
                 import_worker=std::jthread(std::move(task));
@@ -790,7 +797,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         }
         if (catalog_changed || !pad || !next || pad->id != next->id)
             pad = next ? std::optional<ControllerDevice>{*next} : std::nullopt;
-        const unsigned context = configuration.network_screen ? 1000 : game_options.open ? (7 + static_cast<unsigned>(game_options.selected) * 3 + static_cast<unsigned>(game_options.focus)) :
+        const unsigned context = configuration.confirm_import ? 1001 : configuration.network_screen ? 1000 : game_options.open ? (7 + static_cast<unsigned>(game_options.selected) * 3 + static_cast<unsigned>(game_options.focus)) :
             system_page.name_editor ? 6 : system_page.open ? 5 :
             panel.keyboard.open ? 3 : panel.expanded ? 2 : settings ? 1 : configuration.open ? 4 : 0;
         if (context != navigation_context) {
@@ -917,6 +924,19 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (!(read == battery)) { battery = read; dirty = true; }
         }
         if (window_closed || QuitRequested()) return std::nullopt;
+        if(import_progress.confirmation.load()&&!configuration.confirm_import){
+            std::lock_guard lock{import_progress.review_mutex};configuration.review_text=import_progress.review_text;
+            configuration.confirm_import=true;configuration.network_action=0;dirty=true;
+        }
+        if(configuration.confirm_import){
+            if(actions&(Left|Right|Up|Down))configuration.network_action^=1;
+            if(actions&Quit || actions&Play){
+                import_progress.decision=(actions&Quit)||configuration.network_action==0?2:1;
+                import_progress.confirmation=false;
+                import_progress.decision.notify_all();configuration.confirm_import=false;dirty=true;
+            }
+            dirty|=actions!=0;actions=0;pressed_tab.reset();
+        }
         if (configuration.network_screen) {
             if (actions & (Left | Up)) configuration.network_action = (configuration.network_action + 2) % 3;
             if (actions & (Right | Down)) configuration.network_action = (configuration.network_action + 1) % 3;
@@ -1014,11 +1034,13 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (import_future.wait_for(std::chrono::seconds{0}) == std::future_status::ready) {
                 try {
                     const auto error = import_future.get();
-                    configuration.notice = error.empty() ? std::wstring{Tr(T::ImportDone)} :
+                    configuration.notice = error.empty() ? std::wstring{Tr(system_network_import&&network_portal.Status().system.phase!="complete"?T::SystemReviewReady:T::ImportDone)} :
                         network_import ? std::wstring{Tr(T::ImportFailedKept)} : Wide(error);
                 } catch (...) { configuration.notice = Tr(T::ImportFailedKept); }
                 configuration.busy = false;
                 network_import=false;
+                system_network_import=false;
+                configuration.confirm_import=false;
                 // The old metadata worker has joined; discard results before rescanning.
                 metadata = {};
                 refresh_setup();

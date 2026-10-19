@@ -17,6 +17,7 @@ int Status(const httplib::Result& result) { return result ? result->status : 0; 
 } // namespace
 
 #include "nsp-upload-tests.h"
+#include "system-upload-tests.h"
 
 int main(int argc,char** argv) {
     using namespace std::chrono_literals;
@@ -81,7 +82,9 @@ int main(int argc,char** argv) {
     Check(Status(client.Get("/api/v1/status", authenticated)) == 200, "renewal preserves paired session");
     Check(Status(client.Post("/api/v1/uploads", authenticated, "{}", "application/json")) == 412,
           "upload protocol version required");
-    Check(Status(client.Post("/api/v1/pair", headers, std::string(2048, 'x'), "application/json")) == 413,
+    const auto oversized=client.Post("/api/v1/pair", headers, std::string(2048, 'x'), "application/json");
+    if(Status(oversized)!=413)std::fprintf(stderr,"oversized status=%d transport=%d\n",Status(oversized),static_cast<int>(oversized.error()));
+    Check(Status(oversized) == 413,
           "bounded HTTP request body");
     portal.Stop();
     Check(!portal.Status().running && portal.Status().code.empty(), "stop clears secrets");
@@ -92,6 +95,24 @@ int main(int argc,char** argv) {
     const auto replacement = portal.Status();
     Check(Status(client.Post("/api/v1/pair", headers, Json{{"code", replacement.code}}.dump(), "application/json")) == 200,
           "new server session pairs");
+    // The transport polls at 100 ms but a live peer may legitimately pause longer.
+    const auto slow=::socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
+    Check(slow!=INVALID_SOCKET,"slow peer socket");
+    sockaddr_in slow_address{};slow_address.sin_family=AF_INET;slow_address.sin_port=htons(static_cast<u_short>(port));
+    InetPtonA(AF_INET,"127.0.0.1",&slow_address.sin_addr);
+    Check(::connect(slow,reinterpret_cast<sockaddr*>(&slow_address),sizeof(slow_address))==0,"slow peer connect");
+    const std::string first="GET / HTTP/1.1\r\n";
+    Check(::send(slow,first.data(),static_cast<int>(first.size()),0)==static_cast<int>(first.size()),"slow peer prefix");
+    std::this_thread::sleep_for(350ms);
+    const auto last="Host: 127.0.0.1:"+std::to_string(port)+"\r\nConnection: close\r\n\r\n";
+    Check(::send(slow,last.data(),static_cast<int>(last.size()),0)==static_cast<int>(last.size()),"slow peer suffix");
+    const DWORD slow_timeout=2000;
+    ::setsockopt(slow,SOL_SOCKET,SO_RCVTIMEO,reinterpret_cast<const char*>(&slow_timeout),sizeof(slow_timeout));
+    std::array<char,4096> slow_reply{};
+    const auto slow_count=::recv(slow,slow_reply.data(),static_cast<int>(slow_reply.size()),0);
+    Check(slow_count>0 && std::string_view{slow_reply.data(),static_cast<size_t>(slow_count)}.find(" 200 ")!=std::string_view::npos,
+          "peer pause longer than OS poll timeout survives");
+    ::closesocket(slow);
     // An unfinished body must not leave Stop blocked on an idle peer.
     const auto socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     Check(socket != INVALID_SOCKET, "partial peer socket");
@@ -109,5 +130,6 @@ int main(int argc,char** argv) {
     Check(stop_elapsed < 3s, "partial body shutdown stays within suspension budget");
     ::closesocket(socket);
     UploadTests(port,argc>1 && std::string_view{argv[1]}=="--large");
+    SystemUploadTests(port);
     std::puts("PASS: network portal native TCP pairing/origin/limits/restart/partial-body lifecycle; Xbox/AppContainer LAN gate still required");
 }

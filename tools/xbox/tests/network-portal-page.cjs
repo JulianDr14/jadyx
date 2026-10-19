@@ -4,6 +4,10 @@ const fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto'),
 const header=fs.readFileSync('src/jadyx/storage/network_portal_page.h','utf8');
 const script=header.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(script,{filename:'network-portal-page.js'});
+const formatDuration=vm.runInNewContext('('+script.match(/function formatDuration\(value\)\{[\s\S]*?\n\}/)[0]+')');
+for(const [seconds,expected] of [[0,'0 s'],[59.1,'1 min 0 s'],[890,'14 min 50 s'],[3661,'1 h 1 min 1 s'],[90061,'25 h 1 min 1 s'],[Infinity,'—']]){
+ assert.equal(formatDuration(seconds),expected);
+}
 const sha=script.match(/function sha256\(input\)\{[\s\S]*?\n\}/)[0];
 const fingerprint=script.match(/async function fingerprint\(file\)\{[\s\S]*?\n\}/)[0];
 const functions=vm.runInNewContext(sha+'\n'+fingerprint+'\n({sha256,fingerprint})',{TextEncoder});
@@ -27,6 +31,8 @@ for(const size of [0,3,55,56,63,64,65,128,131072]){
  await browserScenario({pause:true});
  await browserScenario({queue:true});
  console.log('PASS: browser client mocked 5GiB queue/chunks4-16-64/64-bit resume/lost ACK/different file/collision/pause; no whole-file arrayBuffer');
+ for(const language of ['es','en','pt-BR'])for(const kind of ['keys','firmware'])for(const zip of [false,true])await systemScenario(kind,zip,language);
+ console.log('PASS: browser keys/firmware, ZIP/loose, review warning checkbox and explicit confirmation (mock HTTP)');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 
 async function browserScenario(options){
@@ -100,4 +106,53 @@ async function browserScenario(options){
  }else if(options.pause){assert.equal(job.offset,16*1048576);assert.equal(job.phase,'paused');}
  else{assert.equal(job.offset,length);assert.equal(job.phase,'complete');}
  if(options.queue)assert.deepEqual(completed,[name,'second.nsp']);
+}
+
+async function systemScenario(kind,zip,language){
+ const elements=new Map(),callbacks=new Map();
+ const element=id=>{if(!elements.has(id))elements.set(id,{value:'',checked:false,textContent:'',files:[],hidden:false,disabled:false,
+  addEventListener:(event,callback)=>callbacks.set(id+':'+event,callback)});return elements.get(id);};
+ const id='b'.repeat(32),fileid='c'.repeat(32),length=1024*1024+1;
+ const selected={name:zip?'source.zip':kind==='keys'?'prod.keys':'0'.repeat(32)+'.nca',size:length,lastModified:123,
+  slice:(start,end=length)=>({size:end-start,arrayBuffer:async()=>{assert.ok(end-start<=65536);return new Uint8Array(end-start).buffer;}})};
+ let system={phase:'idle',available:true,busy:false},confirmations=0,writes=0;
+ const response=(status,data={},headers={})=>({status,ok:status>=200&&status<300,json:async()=>JSON.parse(JSON.stringify(data)),headers:{get:k=>headers[k]??null}});
+ const fetch=async(url,request={})=>{
+  if(url==='/api/v1/pair')return response(200,{session:'test-session'});
+  assert.equal(request.headers.Authorization,'Bearer test-session');
+  if(url==='/api/v1/status')return response(200,{uploads:true,transfer:{available:false},system_supported:true,system});
+  if(url==='/api/v1/system/jobs'){
+   assert.deepEqual(JSON.parse(request.body),{kind,format:zip?'zip':'files',count:1});
+   system={...system,id,kind,format:zip?'zip':'files',count:1,completed:0,files:[],phase:'receiving',busy:true,file:{}};return response(201,{id});
+  }
+  if(url.endsWith('/files')){
+   const body=JSON.parse(request.body);system.file={...body,id:fileid,offset:0,received:0,phase:'receiving'};
+   return response(201,{}, {Location:'/api/v1/system/files/'+fileid});
+  }
+  if(request.method==='HEAD')return response(200,{}, {'Upload-Offset':String(system.file.offset),'Upload-Length':String(length)});
+  if(url.endsWith('/finish')){assert.equal(system.file.offset,length);system.completed=1;system.file.phase='complete';system.files=[system.file];return response(204);}
+  if(url.endsWith('/prepare')){system.phase='review';system.review={installed_firmware:'20.0.0',incoming_firmware:'19.0.0',installed_generation:20,incoming_generation:19,required_generation:20,warnings:['keys_downgrade','keys_firmware_old']};return response(202);}
+  if(url.endsWith('/confirm')){
+   if(!JSON.parse(request.body).accept_warnings)return response(409,{error:'confirm_warnings'});
+   confirmations++;system.phase='complete';system.busy=false;return response(202);
+  }
+  throw Error('unexpected system request '+url);
+ };
+ class XHR{
+  open(method,url){assert.equal(method,'PATCH');assert.equal(url,'/api/v1/system/files/'+fileid);this.headers={};}
+  setRequestHeader(k,v){this.headers[k]=v;}
+  getResponseHeader(k){return k==='Upload-Offset'?String(system.file.offset):null;}
+  send(blob){assert.equal(Number(this.headers['Upload-Offset']),system.file.offset);system.file.offset+=blob.size;system.file.received=system.file.offset;writes++;queueMicrotask(()=>{this.status=204;this.onload();});}
+ }
+ const context=vm.createContext({document:{getElementById:element,documentElement:{}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
+  performance,XMLHttpRequest:XHR,fetch,btoa:v=>Buffer.from(v,'binary').toString('base64'),setTimeout:cb=>{queueMicrotask(cb);return 1;},setInterval:()=>1,clearInterval:()=>{}});
+ vm.runInContext(script,context);
+ assert.equal(element('keys-title').textContent,language==='es'?'Importar claves':language==='pt-BR'?'Importar chaves':'Import keys','initial keys card is a title, never an error');
+ element('code').value='12345678';await callbacks.get('pair:submit')({preventDefault(){}});
+ element(kind+'-files').files=[selected];await callbacks.get(kind+'-send:click')();
+ assert.equal(writes,1);assert.equal(system.phase,'review');assert.equal(confirmations,0);
+ assert.equal(element('system-confirm').disabled,true);assert.match(element('system-versions').textContent,/20\.0\.0/);
+ await callbacks.get('system-confirm:click')();assert.equal(confirmations,0,'server still rejects direct unaccepted confirmation');
+ element('system-warning-accept').checked=true;callbacks.get('system-warning-accept:change')();assert.equal(element('system-confirm').disabled,false);
+ await callbacks.get('system-confirm:click')();assert.equal(confirmations,1);assert.equal(system.phase,'complete');
 }

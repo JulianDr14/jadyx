@@ -3926,3 +3926,71 @@ Guardado posterior autorizado19oct: commits locales separados por almacenamiento
 validación, servidor/portal, interfaz, harnesses, gate real y documentación/versión.
 Rama feature/local-import-portal; identidad de autor del usuario conservada.
 El usuario pide explícitamente no hacer push; no se publica nada.
+
+## Revisión de main y prueba Series0.3.4.0 (19 octubre2026)
+
+Fetch origin de lectura y revisión: main6e2983386b integra432985f2a4, árbol idéntico
+a esa punta. Además del portal incluye pt-BR (interfaz/web), selección compartida de
+idioma NACP para arranque/metadatos, caché de biblioteca revisada, teclado con acentos
+y errores visibles traducidos. Receptor HTTP, store y validador NSP sin cambios frente
+al gate real anterior. Manifest ya0.3.4.0; no se sube otra versión ni se hace push.
+Build incremental desde main pasa; gates localization-catalogs/system-settings/text-entry
+y cliente JS mock pasan. local-run -NoBuild -Library -TimeoutSec10 arranca biblioteca
+AppContainer (PID18796 Responding, scanning/waiting for selection). Sin gameplay ni gate
+NSP automático. Se cierra esa instancia de smoke antes de restagear biblioteca normal.
+Entrega única package/jadyx.appx, exe/PDB en symbols/0.3.4.0; evidencia de arranque
+test-results/network-portal/pc-0.3.4.0-library-{diag,log}.txt.
+
+Durante preparación el usuario comunica progreso Series352,0/13960,6MiB a14,8MiB/s,
+ETA890s. Registro parcial, sin declarar éxito ni tasa sostenida. Solicita ETA en h/min/s:
+formatDuration muestra14min50s para890 y1h1min1s para3661; incluye minutos cero al
+haber horas, horas superiores24 y guion para estimación no finita. Gate JS existente
+comprueba límites/acarreo y siguen pasando cola/reanudación/huella. El navegador ya
+cargado no cambia durante la transferencia; el ajuste llegará con el paquete actualizado.
+
+Investigación rendimiento portal19oct: PC y Series ambosWi-Fi, confirmado por usuario.
+14,8MiB/s es muestra puntual; contención de radio posible, sin causa demostrada.
+Candidato elimina segundo poll de PortalStream.read (SocketStream ya hace poll antes
+de recv16KiB), reintenta Timeout100ms hasta30s y conserva cancelación. Perfil del último
+ACK en status.transfer.performance: bytes/offset,total/write/flush/checkpoint_us y calls;
+sin persistir ni cambiar durabilidad. Resto elapsed no es red pura ni CPUbusy.
+Harness anterior también falla413 oversized con errorRead: cierre TCP con datos pendientes.
+Candidato SD_SEND+drenaje100ms/1MiB no bloqueante y cancelable, sin esperar body entero.
+Gates pasan slowpeer350ms,413/409bodyausente,bytes/cortes/checkpoints/recovery/rename y
+perfil no avanza tras checkpoint fallido. Cierre0–100ms; smoke32MiB153–155MiB/s PC,
+sin A/B ni mejora certificada Series. Ejemplo16MiB:total100650us,Write4901,Flush31679,
+Checkpoint37427,calls1025. ObjetosUWP portal/store compilan; no link ni nuevo paquete.
+APPX0.3.4.0 conserva SHA256F071598FA73DCB1BFFB397AE8A379D214C4D2D1FB8F41983E562265F1273FD32
+de entrega previa con ETA. No se interrumpe subida/instala nada en consola. Sin commit/push.
+Siguiente: perfil Series, A/B Wi-Fi/cable y4/16/64 tres transferencias cadauno,default16
+hasta ventaja≥5%. Fuentes Microsoft/Cisco/httplib, comandos y evidencia perf-{before,after,
+repeats}.txt detallados en xbox_network_portal.md.
+
+Entrega autorizada0.3.4.1: manifest actualizado, incremental recompila consumidores
+de UploadSnapshot y link pasa (10operaciones previstas). Smoke -NoBuild -Library
+-TimeoutSec10 llega scanning/waiting; proceso ausente al consultar después, sin evento
+de fallo jadyx en Application1000/1001 reciente. Reactivado PID21104 Responding con nuevo
+arranque biblioteca en diag. No atribuir motivo de esa primera salida ni certificar
+estabilidad por smoke. Antes de restagear se termina solo ese proceso de prueba y se
+espera desaparición: Stop-Process puede devolver antes de Get-Process dejar de verlo.
+Exe/PDB archivados symbols/0.3.4.1; APPX normal firmado y comprobado versión0.3.4.1,
+boot.cfg library=1/play=1, sin payload de usuario ni gate. Entrega única package/jadyx.appx.
+Evidencia pc-0.3.4.1-library-{diag,log}.txt, package-0.3.4.1.txt y checksumJSON en
+test-results/network-portal. Incluye ETA h/min/s, poll duplicado eliminado, cierre TCP
+acotado y métricas del último ACK; 16MiB default. Importación/mejora Series pendientes.
+Sin commit ni push.
+## Portal: claves y firmware ZIP/sueltos, 0.3.4.3 (19 oct 2026)
+
+Rama feature/portal-system-imports, sin commits/push nuevos. Servicio compartido USB/red
+system_import para validar/revisar/publicar, lotes recuperables SystemUpload y tarjetas web
+es/en/pt-BR. ZIP seekable con libarchive y buffers acotados; NCA sueltos por rename al staging.
+Versiones desde SystemVersion real; claves por generaciones, aviso de pérdida de generaciones
+y material incompatible con firmware actual, confirmación explícita antes de publicar.
+
+Gate AppContainer real pasa ZIP con carpetas claves/fw, truncado/traversal/duplicados rechazados,
+revisión de claves antiguas/incompatibles, cancelación y recuperación; retorno0 a1.594s/59MiB.
+Trampa corregida: ruta mixta de filesystem en GetFolderFromPathAsync falla HRESULT; usar
+make_preferred antes del broker. Catálogos, navegador simulado y TCP autenticado pasan.
+Entrega0.3.4.3 solicitada, paquete biblioteca firmado y símbolos archivados; Series pendiente.
+Evidencia/comandos y límites en xbox_network_portal.md. Usuario confirma misma velocidad
+0.3.4.1 que0.3.4.0 (~14.8MiB/s), ambos extremos Wi-Fi; ninguna mejora Series demostrada.
