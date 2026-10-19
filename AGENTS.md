@@ -1132,3 +1132,33 @@ Sin commit, rama feature/local-import-portal.
 Cambios separados en almacenamiento NSP, validación, servidor/portal, interfaz,
 harnesses, gate AppContainer real y documentación/versión0.3.3.0. Commits locales
 en feature/local-import-portal, conservando únicamente la identidad del usuario.
+
+19oct: portal integrado en main6e2983386b junto con pt-BR y ajustes idioma NACP,
+árbol idéntico a432985f2a4. Preparación Series solicitada0.3.4.0; manifest ya correcto.
+Build incremental y gates catálogos/system-settings/text-entry/JS pasan; biblioteca
+AppContainer PC arranca Responding sin guest. Paquete normal en entrega única y
+símbolos0.3.4.0. Usuario informa muestra Series352/13960,6MiB a14,8MiB/s, aún en curso;
+no certificar importación completa ni rendimiento sostenido. ETA cambiado a h/min/s
+(890s=14min50s), en próxima instalación, sin interrumpir la subida actual. Sin push.
+
+Candidato rendimiento portal19oct: usuario confirma PC/Xbox ambosWi-Fi. Elimina poll
+duplicado por lectura16KiB, conserva cancelación/idle30s; añade fases último bloqueACK
+en status.transfer.performance. Arregla cierre413/409 con drenajeTCP acotado100ms/1MiB.
+Harness cortes/recovery/bytes/slowpeer350ms/errores/perfil y dos objetosUWP pasan;
+32MiBloopback153–155MiB/s no prueba mejoraSeries. Sin link/paquete/commit/push; APPX
+0.3.4.0 con ETA conservado, subida actual no interrumpida. PerfSeries y A/B Wi-Fi/cable,
+4/16/64MiB pendientes; mantener16 por defecto. Detalle/fuentes en xbox_network_portal.md.
+
+Usuario solicita entrega0.3.4.1: manifest y link incremental actualizados; smoke PC
+biblioteca Responding tras reactivación. Paquete normal firmado/verificado en
+build-uwp/package/jadyx.appx, sin gates/payload usuario, símbolos0.3.4.1. Incluye candidato
+de poll/cierreTCP/métricas ACK y ETA h/min/s. Series debe validar importación y comparar
+velocidad con misma red/NSP; no hay ganancia sostenida certificada. Sin commit/push.
+Portal sistema 19oct2026: candidato0.3.4.3 en feature/portal-system-imports,
+claves y firmware por ZIP/sueltos, validación/publicación compartida USB/web,
+revisión de SystemVersion/generaciones y avisos downgrade/incompatibilidad con
+confirmación. Gate AppContainer real ZIP/NCA, recuperación/cancelación y claves
+incompatibles pasa retorno0; catálogos/TCP/browser pasan. APPX biblioteca firmado
+en build-uwp/package/jadyx.appx, símbolos0.3.4.3; Series pendiente, sin commits/push.
+Trampa broker: normalizar staging.make_preferred antes de GetFolderFromPathAsync.
+Usuario informa misma velocidad0.3.4.1 (~14.8MiB/s), PC/Xbox ambos Wi-Fi.
