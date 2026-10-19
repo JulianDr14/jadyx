@@ -22,6 +22,12 @@ on:
         required: false
       JADYX_PFX_PASSWORD:
         required: false
+      SCCACHE_R2_ACCOUNT_ID:
+        required: false
+      SCCACHE_R2_ACCESS_KEY_ID:
+        required: false
+      SCCACHE_R2_SECRET_ACCESS_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -32,12 +38,12 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The DLL only depends on the Mesa version and our patches, all of which live in these files.
       - name: Restore the built DLL
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: mesa-out
           key: spirv-to-dxil-${{ hashFiles('tools/xbox/build-spirv-to-dxil.ps1', 'tools/xbox/mesa/**', 'externals/spirv-to-dxil/include/**') }}
@@ -51,7 +57,7 @@ jobs:
           New-Item -ItemType Directory -Force mesa-out | Out-Null
           Copy-Item (Join-Path $work "build-uwp\src\microsoft\spirv_to_dxil\spirv_to_dxil.dll") mesa-out
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: spirv-to-dxil
           path: mesa-out/spirv_to_dxil.dll
@@ -63,14 +69,18 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 240
     env:
-      # sccache keeps its objects in one directory, saved as a single cache archive.
+      # Without the R2 bucket, sccache keeps its objects in one directory, saved as a single cache
+      # archive.
       SCCACHE_DIR: ${{ github.workspace }}\.cache\sccache
       SCCACHE_CACHE_SIZE: 4G
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # build-env.bat picks these up from C:\glslang\bin and C:\Program Files\NASM, as on a PC.
-      - name: Host tools (glslang, NASM)
+      # With jom on the PATH openssl-cmake builds OpenSSL on every core; without it, it falls back
+      # to a single-threaded nmake (8 minutes on the runner).
+      - name: Host tools (glslang, NASM, jom)
+        id: tools
         shell: powershell
         run: |
           $zip = Join-Path $env:RUNNER_TEMP "glslang.zip"
@@ -81,31 +91,81 @@ jobs:
           Expand-Archive $zip C:\glslang -Force
           Copy-Item C:\glslang\bin\glslang.exe C:\glslang\bin\glslangValidator.exe
           if (-not (Test-Path "C:\Program Files\NASM\nasm.exe")) { choco install nasm -y --no-progress }
+          if (-not (Get-Command jom -ErrorAction SilentlyContinue)) { choco install jom -y --no-progress }
           if (-not (Test-Path "C:\Strawberry\perl\bin\perl.exe")) { throw "Strawberry Perl is missing from the runner" }
+          # The runner image pins the compiler: objects built by another one are not reused.
+          "image=$env:ImageOS-$env:ImageVersion" >> $env:GITHUB_OUTPUT
 
       - name: Restore CPM sources
         id: cpm
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .cache/cpm
           key: cpm-${{ hashFiles('cpmfile.json', '**/cpmfile.json') }}
 
+      # GitHub's cache is scoped: what a pull request saves is seen by that PR alone, so every new
+      # PR started from main's last save. One Cloudflare R2 bucket is shared by every PR, main and
+      # Release, like the compiler cache of a PC. Without its secrets (a fork's PR) the build falls
+      # back to GitHub's cache. The bucket expires objects after 14 days.
+      - name: Compiler cache backend
+        id: backend
+        shell: powershell
+        env:
+          R2_ACCOUNT: ${{ secrets.SCCACHE_R2_ACCOUNT_ID }}
+          R2_KEY: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          R2_SECRET: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+        run: |
+          if ($env:R2_ACCOUNT -and $env:R2_KEY -and $env:R2_SECRET) {
+              @(
+                  "SCCACHE_BUCKET=jadyx-sccache"
+                  "SCCACHE_ENDPOINT=https://$env:R2_ACCOUNT.r2.cloudflarestorage.com"
+                  "SCCACHE_REGION=auto"
+                  "SCCACHE_S3_KEY_PREFIX=uwp-x64"
+                  "AWS_ACCESS_KEY_ID=$env:R2_KEY"
+                  "AWS_SECRET_ACCESS_KEY=$env:R2_SECRET"
+              ) | Add-Content $env:GITHUB_ENV
+              "remote=true" >> $env:GITHUB_OUTPUT
+              "Compiler cache: R2 bucket jadyx-sccache"
+          } else {
+              "Compiler cache: GitHub Actions cache (no R2 secrets)"
+          }
+
       - name: Restore compiler cache
-        uses: actions/cache/restore@v4
+        if: steps.backend.outputs.remote != 'true'
+        uses: actions/cache/restore@v6
         with:
           path: .cache/sccache
           key: sccache-uwp-${{ github.run_id }}
           restore-keys: sccache-uwp-
 
-      - uses: mozilla-actions/sccache-action@v0.0.11
+      # OpenSSL builds through its own makefile. USE_CCACHE (Configure) puts sccache in front of its
+      # compiler as well, so its objects are shared across pull requests too; keeping the build tree
+      # (configure results, objects, libs) also skips the Perl configure and lets jom find the
+      # libraries up to date. Anything that can change its sources or flags changes the key.
+      - name: Restore OpenSSL build
+        id: openssl
+        uses: actions/cache/restore@v6
+        with:
+          path: build-uwp/_deps/openssl-build
+          key: openssl-uwp-sccache-${{ steps.tools.outputs.image }}-${{ hashFiles('cpmfile.json', 'CMakePresets.json', 'CMakeLists.txt', 'CMakeModules/**') }}
 
-      # sccache cannot share a /Zi program database between parallel compilers: embed the debug
-      # info (/Z7) instead. The link still writes jadyx.pdb.
+      # Its post step read the stats after "Compiler cache stats" had stopped the server, so its
+      # annotation always said 0 hits. That step writes the real ones to the run summary instead.
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          disable_annotations: true
+
+      # USE_CCACHE (externals/cmake-modules/UseCcache.cmake) makes sccache the compiler launcher, and
+      # openssl-cmake writes it into OpenSSL's makefile. CCACHE_BINARY stays a bare name, found on the
+      # PATH: the makefile runs its dependency scans through cmd, which rejects the C:/... path that
+      # find_program would give. sccache cannot share a /Zi program database between parallel
+      # compilers: embed the debug info (/Z7) instead, which UseCcache does only for Debug and
+      # RelWithDebInfo. The link still writes jadyx.pdb.
       - name: Configure
         shell: cmd
         run: >
           tools\xbox\build-env.bat cmake --preset uwp-x64
-          -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          -DUSE_CCACHE=ON -DCCACHE_BINARY=sccache
           -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
 
       - name: Build
@@ -115,27 +175,39 @@ jobs:
       - name: Compiler cache stats
         if: always()
         continue-on-error: true
+        shell: powershell
         run: |
-          sccache --show-stats
+          $stats = sccache --show-stats
+          $stats
           sccache --stop-server
+          $fence = '```'
+          "### sccache`n$fence`n$($stats -join "`n")`n$fence" >> $env:GITHUB_STEP_SUMMARY
 
-      # Only main saves: a PR's cache is visible to that PR alone, and its saves would evict main's
-      # from the repo's 10 GB. PRs restore main's cache, which is all they need.
+      # Every run saves what it built. A PR's GitHub caches are visible to that PR alone, so its
+      # next push starts warm; main's (Release and manual runs) seed every new PR. The repo keeps
+      # 10 GB and evicts the least recently used first, and every PR reads main's, so they stay.
       - name: Save CPM sources
-        if: always() && github.ref == 'refs/heads/main' && steps.cpm.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        if: always() && steps.cpm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
         with:
           path: .cache/cpm
           key: ${{ steps.cpm.outputs.cache-primary-key }}
 
+      - name: Save OpenSSL build
+        if: always() && steps.openssl.outputs.cache-hit != 'true' && hashFiles('build-uwp/_deps/openssl-build/libcrypto.lib') != ''
+        uses: actions/cache/save@v6
+        with:
+          path: build-uwp/_deps/openssl-build
+          key: ${{ steps.openssl.outputs.cache-primary-key }}
+
       - name: Save compiler cache
-        if: always() && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        if: always() && steps.backend.outputs.remote != 'true'
+        uses: actions/cache/save@v6
         with:
           path: .cache/sccache
           key: sccache-uwp-${{ github.run_id }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: jadyx-build
           retention-days: 7
@@ -152,14 +224,14 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: jadyx-build
           path: build-uwp/bin
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: spirv-to-dxil
           path: ${{ runner.temp }}/mesa
@@ -205,7 +277,7 @@ jobs:
           } | Set-Content -Encoding ascii out\SHA256SUMS.txt
           Get-ChildItem out | Format-Table Name, Length
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: jadyx-package
           path: out/*
