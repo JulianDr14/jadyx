@@ -8,6 +8,8 @@
 #include <vector>
 #include <winrt/Windows.Storage.h>
 #include "jadyx/storage/network_portal.h"
+#include "jadyx/storage/system_import.h"
+#include <mutex>
 
 namespace Jadyx {
 struct GameFolderSource { std::string token; std::wstring name; };
@@ -29,6 +31,8 @@ struct ConfigurationPanel {
     size_t network_action{};
     std::vector<PortalAddress> network_addresses;
     size_t network_selected{};
+    bool confirm_import{};
+    std::wstring review_text;
 };
 /// Rows of the settings home, in order.
 enum ConfigurationHomeRow : size_t { HomeSystem, HomeControllers, HomeFiles, HomeRowCount };
@@ -39,10 +43,13 @@ inline size_t ConfigurationRowCount(const ConfigurationPanel& panel) {
 inline size_t ConfigurationFirstRow(const ConfigurationPanel& panel) {
     return (panel.selected / 5) * 5;
 }
-enum class FileImport { Keys, Firmware };
 struct FileImportProgress {
     std::atomic<unsigned> completed{};
     std::atomic<unsigned> total{};
+    std::atomic<int> decision{}; // 0=pending, 1=install, 2=cancel
+    std::atomic<bool> confirmation{};
+    std::mutex review_mutex;
+    std::wstring review_text;
 };
 // These operations run on an MTA worker while the guest is stopped.
 FileSetupStatus ReadFileSetupStatus();

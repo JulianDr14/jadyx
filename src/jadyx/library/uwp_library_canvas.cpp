@@ -138,7 +138,16 @@ public:
         // The backdrop moves on its own while it shows (AmbientDue).
         ambient = !management && !configuration.network_screen && !backdrop_now.empty();
         last_frame = now;
-        if (configuration.network_screen) {
+        if(configuration.confirm_import){
+            rows_shown=false;
+            Type(Tr(T::SystemImportReview),TypeRole::HeadlineLarge,80,80,1120,Palette::Text);
+            Type(configuration.review_text,TypeRole::BodyLarge,80,190,1120,Palette::Warning,1,TextAlign::Leading,10);
+            for(size_t i=0;i<2;++i){const float x=80+static_cast<float>(i)*570;const bool focused=configuration.network_action==i;
+                Round(x,590,540,64,14,focused?Palette::Accent:Palette::Surface);
+                Type(Tr(i==0?T::Cancel:T::Import),TypeRole::LabelLarge,x+20,611,500,focused?Palette::OnAccent:Palette::Text);
+                AddHit(x,590,540,64,LibraryHit::NetworkAction,i);
+            }
+        } else if (configuration.network_screen) {
             // A dedicated page: only its controls populate the pointer hit map.
             rows_shown = false;
             DrawNetworkConnection(configuration);
@@ -166,7 +175,7 @@ public:
                 Type(view.notice, TypeRole::Body, LibraryLayout::Margin, 430, 1000, Palette::Warning,
                      1, TextAlign::Leading, 2);
         }
-        if (!management && !configuration.network_screen) {
+        if (!management && !configuration.network_screen && !configuration.confirm_import) {
             DrawHeader(view, now);
             DrawFooter(view);
         }
@@ -1031,7 +1040,17 @@ private:
         }
         std::wstring progress;
         const auto& transfer=network.transfer;
-        if (transfer.busy) {
+        const auto& system=network.system;
+        if (system.busy) {
+            const auto& file=system.file;
+            progress=system.phase=="receiving"&&file.busy ? I18n::Format(T::NetworkUploading,
+                {winrt::to_hstring(file.name).c_str(),std::to_wstring(file.received >> 20),std::to_wstring(file.length >> 20)}) :
+                system.phase=="review" ? std::wstring{Tr(T::SystemReviewReady)} : std::wstring{Tr(T::NetworkValidating)};
+            progress+=L" · "+std::to_wstring(system.completed)+L" / "+std::to_wstring(system.count);
+            const float fraction=file.length?static_cast<float>(static_cast<double>(file.received)/file.length):0;
+            Round(100,560,1080,4,2,Palette::Graphite);
+            Round(100,560,1080*std::clamp(fraction,0.0f,1.0f),4,2,Palette::Accent);
+        } else if (transfer.busy) {
             progress=transfer.phase == "receiving" ? I18n::Format(T::NetworkUploading,
                 {winrt::to_hstring(transfer.name).c_str(),std::to_wstring(transfer.received >> 20),std::to_wstring(transfer.length >> 20)}) :
                 std::wstring{Tr(T::NetworkValidating)};

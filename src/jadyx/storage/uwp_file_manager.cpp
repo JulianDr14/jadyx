@@ -24,10 +24,6 @@
 
 namespace Jadyx {
 namespace {
-/// Import failures reach the player through e.what(), so they are thrown already translated.
-std::string ImportError(I18n::Text id) {
-    return I18n::ToUtf8(I18n::Tr(id));
-}
 using namespace winrt::Windows::Storage;
 using winrt::Windows::Storage::AccessCache::StorageApplicationPermissions;
 constexpr unsigned PageSize = 64;
@@ -35,44 +31,7 @@ constexpr unsigned MaxFirmwareFiles = 4096;
 std::wstring BrokerPath(std::filesystem::path path) {
     return path.make_preferred().wstring();
 }
-void RequireInternalDestination(const std::filesystem::path& destination) {
-    auto base = BrokerPath(std::filesystem::path{std::wstring{ApplicationData::Current().LocalFolder().Path()}});
-    auto path = BrokerPath(destination.lexically_normal());
-    const auto lower = [](wchar_t c) { return std::towlower(c); };
-    std::transform(base.begin(), base.end(), base.begin(), lower);
-    std::transform(path.begin(), path.end(), path.begin(), lower);
-    if (!path.starts_with(base + L"\\")) throw std::runtime_error(ImportError(I18n::Text::ImportDestinationInvalid));
-}
-
-// Directory publication is confined to the app's internal keys/system-content folders.
-// Keep the previous installation until all source files have been copied and checked.
-bool RecoverDirectory(const std::filesystem::path& destination) {
-    RequireInternalDestination(destination);
-    const auto previous = destination.parent_path() / (destination.filename().wstring() + L".previous");
-    if (std::filesystem::exists(previous)) {
-        if (!std::filesystem::exists(destination)) {
-            std::filesystem::rename(previous, destination);
-            return true;
-        }
-        else std::filesystem::remove_all(previous);
-    }
-    return false;
-}
-void PublishDirectory(StorageFolder stage, const std::filesystem::path& destination) {
-    const auto previous = destination.parent_path() / (destination.filename().wstring() + L".previous");
-    RecoverDirectory(destination);
-    const bool exists = std::filesystem::exists(destination);
-    if (exists) std::filesystem::rename(destination, previous);
-    try {
-        stage.RenameAsync(destination.filename().wstring(), NameCollisionOption::FailIfExists).get();
-    } catch (...) {
-        if (exists) std::filesystem::rename(previous, destination);
-        throw;
-    }
-    // Failed cleanup is retried by ReadFileSetupStatus on the next library startup.
-    std::error_code error;
-    if (exists) std::filesystem::remove_all(previous, error);
-}
+bool RecoverDirectory(const std::filesystem::path& destination) { return RecoverSystemDirectory(destination); }
 std::filesystem::path FirmwarePath() {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir) / "system/Contents/registered";
 }
@@ -90,6 +49,34 @@ bool ValidProductionKeys(const std::filesystem::path& file) {
                key.substr(0, 32) != key.substr(32);
     }
     return false;
+}
+// Tiny opt-in gate ZIP writer: stored entries, no production writer dependency.
+// Sources are limited fixture files copied into LocalState, never bundled data.
+void GateZip(const std::filesystem::path& path,
+             const std::vector<std::pair<std::string,std::filesystem::path>>& files) {
+    struct Entry {std::string name;std::uint32_t crc,size,offset;};
+    std::vector<Entry> entries;std::ofstream output{path,std::ios::binary};
+    const auto put=[&](std::uint32_t value,unsigned count){for(unsigned i=0;i<count;++i)output.put(static_cast<char>(value>>(8*i)));};
+    for(const auto& [name,source]:files){
+        const auto size=std::filesystem::file_size(source);
+        if(size>(16ULL<<20))throw std::runtime_error("Gate fixture too large");
+        std::vector<char> bytes(static_cast<std::size_t>(size));std::ifstream input{source,std::ios::binary};
+        input.read(bytes.data(),static_cast<std::streamsize>(size));if(!input)throw std::runtime_error("Gate fixture read failed");
+        std::uint32_t crc=0xffffffff;
+        for(const auto byte:bytes){crc^=static_cast<unsigned char>(byte);for(unsigned bit=0;bit<8;++bit)crc=(crc>>1)^((crc&1)?0xedb88320U:0U);}
+        crc^=0xffffffff;const auto offset=static_cast<std::uint32_t>(output.tellp());
+        put(0x04034b50,4);put(20,2);put(0,2);put(0,2);put(0,4);put(crc,4);put(static_cast<std::uint32_t>(size),4);put(static_cast<std::uint32_t>(size),4);
+        put(static_cast<std::uint32_t>(name.size()),2);put(0,2);output<<name;output.write(bytes.data(),static_cast<std::streamsize>(size));
+        entries.push_back({name,crc,static_cast<std::uint32_t>(size),offset});
+    }
+    const auto central=static_cast<std::uint32_t>(output.tellp());
+    for(const auto& entry:entries){
+        put(0x02014b50,4);put(20,2);put(20,2);put(0,2);put(0,2);put(0,4);put(entry.crc,4);put(entry.size,4);put(entry.size,4);
+        put(static_cast<std::uint32_t>(entry.name.size()),2);put(0,2);put(0,2);put(0,2);put(0,2);put(0,4);put(entry.offset,4);output<<entry.name;
+    }
+    const auto end=static_cast<std::uint32_t>(output.tellp());
+    put(0x06054b50,4);put(0,2);put(0,2);put(static_cast<std::uint32_t>(entries.size()),2);put(static_cast<std::uint32_t>(entries.size()),2);
+    put(end-central,4);put(central,4);put(0,2);output.close();if(!output)throw std::runtime_error("Gate ZIP write failed");
 }
 }
 
@@ -126,84 +113,66 @@ void ForgetGameFolder(std::string_view token) {
 
 std::string ImportSystemFiles(const StorageFolder& source, FileImport kind,
                              FileImportProgress& progress, std::stop_token stop) {
-    StorageFolder stage{nullptr};
+    std::filesystem::path stage_path,zip_path;
+    progress.decision=0;progress.confirmation=false;
     try {
-        const bool keys = kind == FileImport::Keys;
-        if (!keys && !HasUsableHeaderKey()) return I18n::ToUtf8(I18n::Tr(I18n::Text::KeysFirst));
-        const auto destination = keys ? Common::FS::GetEdenPath(Common::FS::EdenPath::KeysDir) : FirmwarePath();
-        RecoverDirectory(destination);
-        std::filesystem::create_directories(destination.parent_path());
-        auto parent = StorageFolder::GetFolderFromPathAsync(BrokerPath(destination.parent_path())).get();
-        stage = parent.CreateFolderAsync(destination.filename().wstring() + L".import",
-                                         CreationCollisionOption::GenerateUniqueName).get();
-        std::vector<StorageFile> files;
-        if (keys) {
-            files.push_back(source.GetFileAsync(L"prod.keys").get());
-            if (auto title = source.TryGetItemAsync(L"title.keys").get()) files.push_back(title.as<StorageFile>());
-            // Preserve unrelated/generated key files in a complete staged directory.
-            if (std::filesystem::exists(destination)) {
-                auto existing = StorageFolder::GetFolderFromPathAsync(BrokerPath(destination)).get();
-                for (const auto& file : existing.GetFilesAsync().get()) {
-                    if (file.Name() != L"prod.keys" && (files.size() == 1 || file.Name() != L"title.keys"))
-                        file.CopyAsync(stage, file.Name(), NameCollisionOption::FailIfExists).get();
-                }
+        const bool keys=kind==FileImport::Keys;
+        if(!keys&&!HasUsableHeaderKey())return I18n::ToUtf8(I18n::Tr(I18n::Text::KeysFirst));
+        stage_path=CreateSystemStage(kind);
+        auto stage=StorageFolder::GetFolderFromPathAsync(BrokerPath(stage_path)).get();
+        std::vector<StorageFile> files,archives;
+        for(unsigned start=0;;start+=PageSize){
+            auto page=source.GetFilesAsync(Search::CommonFileQuery::DefaultQuery,start,PageSize).get();
+            for(const auto& file:page){
+                auto name=winrt::to_string(file.Name());
+                std::transform(name.begin(),name.end(),name.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+                if(ValidSystemFilename(name,kind))files.push_back(file);
+                else if(name.ends_with(".zip"))archives.push_back(file);
+                if(files.size()>(keys?2U:MaxFirmwareFiles)||archives.size()>1)throw std::runtime_error("file_limit");
             }
-        } else {
-            for (unsigned start = 0;; start += PageSize) {
-                auto page = source.GetFilesAsync(Search::CommonFileQuery::DefaultQuery, start, PageSize).get();
-                for (const auto& file : page) {
-                    std::wstring extension{file.FileType()};
-                    std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t c) { return std::towlower(c); });
-                    if (extension == L".nca") files.push_back(file);
-                    if (files.size() > MaxFirmwareFiles) throw std::runtime_error(ImportError(I18n::Text::TooManyFirmwareFiles));
-                }
-                if (page.Size() < PageSize) break;
-                if (start >= 16384) throw std::runtime_error(ImportError(I18n::Text::FirmwareFolderOnly));
-                if (stop.stop_requested()) throw std::runtime_error(ImportError(I18n::Text::ImportCancelled));
-            }
-            if (files.empty()) throw std::runtime_error(ImportError(I18n::Text::NoFirmwareInFolder));
+            if(stop.stop_requested())throw std::runtime_error("interrupted");
+            if(page.Size()<PageSize)break;
+            if(start>=16384)throw std::runtime_error("file_limit");
         }
-        progress.total.store(static_cast<unsigned>(files.size()), std::memory_order_relaxed);
-        bool system_version = false, mii_editor = false;
-        FileSys::RealVfsFilesystem vfs;
-        for (const auto& file : files) {
-            if (stop.stop_requested()) throw std::runtime_error(ImportError(I18n::Text::ImportCancelledKept));
-            const auto bytes = file.GetBasicPropertiesAsync().get().Size();
-            if (keys && bytes > 4 * 1024 * 1024) throw std::runtime_error(ImportError(I18n::Text::KeysFileTooLarge));
-            auto copied = file.CopyAsync(stage, file.Name(), NameCollisionOption::FailIfExists).get();
-            if (copied.GetBasicPropertiesAsync().get().Size() != bytes) throw std::runtime_error(ImportError(I18n::Text::CopyIncomplete));
-            if (!keys) {
-                const auto path = std::filesystem::path{std::wstring{copied.Path()}};
-                const auto u8path = path.u8string();
-                auto raw = vfs.OpenFile(std::string{reinterpret_cast<const char*>(u8path.data()), u8path.size()}, FileSys::OpenMode::Read);
-                FileSys::NCA nca{raw};
-                if (nca.GetStatus() != Loader::ResultStatus::Success) throw std::runtime_error(ImportError(I18n::Text::FirmwareUnreadable));
-                const auto id = nca.GetTitleId();
-                if ((id >> 16) != (0x0100000000000000ULL >> 16)) throw std::runtime_error(ImportError(I18n::Text::FolderHasGameNca));
-                system_version |= id == 0x0100000000000809ULL && nca.GetType() == FileSys::NCAContentType::Data;
-                mii_editor |= id == 0x0100000000001009ULL && nca.GetType() == FileSys::NCAContentType::Program;
+        if(files.empty()&&archives.size()==1){
+            const auto size=archives.front().GetBasicPropertiesAsync().get().Size();
+            if(size>(keys?16ULL<<20:4ULL<<30))throw std::runtime_error("archive_limit");
+            if(std::filesystem::space(stage_path).available<size+(64ULL<<20))throw std::runtime_error("space");
+            zip_path=std::filesystem::path{stage_path}.concat(L".zip");
+            auto parent=StorageFolder::GetFolderFromPathAsync(BrokerPath(zip_path.parent_path())).get();
+            archives.front().CopyAsync(parent,zip_path.filename().wstring(),NameCollisionOption::FailIfExists).get();
+            ExtractSystemZip(zip_path,stage_path,kind,[&](unsigned done,unsigned total){progress.completed=done;progress.total=total;},stop);
+            std::filesystem::remove(zip_path);zip_path.clear();
+        }else{
+            if(files.empty()||!archives.empty())throw std::runtime_error("file");
+            progress.total=static_cast<unsigned>(files.size());std::uint64_t total{};
+            for(const auto& file:files){
+                if(stop.stop_requested())throw std::runtime_error("interrupted");
+                const auto bytes=file.GetBasicPropertiesAsync().get().Size();
+                if(!bytes||(keys&&bytes>(4ULL<<20))||bytes>(8ULL<<30)-total)throw std::runtime_error("archive_limit");
+                if(std::filesystem::space(stage_path).available<bytes+(64ULL<<20))throw std::runtime_error("space");
+                std::wstring name{file.Name()};for(auto& c:name)c=std::towlower(c);
+                auto copied=file.CopyAsync(stage,name,NameCollisionOption::FailIfExists).get();
+                if(copied.GetBasicPropertiesAsync().get().Size()!=bytes)throw std::runtime_error("disk");
+                total+=bytes;progress.completed.fetch_add(1);
             }
-            progress.completed.fetch_add(1, std::memory_order_relaxed);
         }
-        if (keys && !ValidProductionKeys(std::filesystem::path{std::wstring{stage.Path()}} / "prod.keys"))
-            throw std::runtime_error(ImportError(I18n::Text::KeysMissingHeaderKey));
-        if (!keys && (!system_version || !mii_editor)) throw std::runtime_error(ImportError(I18n::Text::FirmwareIncomplete));
-        if (stop.stop_requested()) throw std::runtime_error(ImportError(I18n::Text::ImportCancelledKept));
-        PublishDirectory(stage, destination);
-        stage = nullptr;
-        if (keys) Core::Crypto::KeyManager::Instance().ReloadKeys();
-        LOG_INFO(Frontend, "File manager: imported {} files ({})", files.size(), keys ? "keys" : "firmware");
-        return {};
-    } catch (const winrt::hresult_error& e) {
-        LOG_ERROR(Frontend, "File manager: import failed HRESULT={:08X}", static_cast<unsigned>(e.code().value));
-        if (stage) { try { stage.DeleteAsync().get(); } catch (...) {} }
-        return I18n::ToUtf8(I18n::Tr(I18n::Text::ImportFailed));
-    } catch (const std::exception& e) {
-        if (stage) { try { stage.DeleteAsync().get(); } catch (...) {} }
-        return e.what();
+        auto prepared=InspectSystemStage(stage_path,kind,[&](unsigned done,unsigned total){progress.completed=done;progress.total=total;},stop);
+        if(!prepared->Review().warnings.empty()){
+            {std::lock_guard lock{progress.review_mutex};progress.review_text=DescribeSystemReview(prepared->Review());}
+            progress.confirmation=true;
+            std::stop_callback cancel{stop,[&]{progress.decision=2;progress.decision.notify_all();}};
+            while(progress.decision.load()==0)progress.decision.wait(0);
+            progress.confirmation=false;
+            if(progress.decision.load()!=1||stop.stop_requested())throw std::runtime_error("interrupted");
+        }
+        prepared->Commit(stop);stage_path.clear();return {};
+    }catch(...){
+        progress.confirmation=false;RemoveSystemStage(stage_path,kind);
+        if(!zip_path.empty()){std::error_code ec;std::filesystem::remove(zip_path,ec);}
+        return I18n::ToUtf8(I18n::Tr(I18n::Text::ImportFailedKept));
     }
 }
-
 bool RunFileManagerGate(const std::function<void(std::string)>& diagnostic) {
     using namespace winrt::Windows::Storage;
     const auto old_keys = Common::FS::GetEdenPath(Common::FS::EdenPath::KeysDir);
@@ -251,6 +220,43 @@ bool RunFileManagerGate(const std::function<void(std::string)>& diagnostic) {
         if (!firmware_error.empty()) throw std::runtime_error(firmware_error);
         const auto before = ReadFileSetupStatus();
         require(before.keys_ready && before.firmware_files == required, "Setup status mismatch");
+        step = "shared ZIP reader and review";
+        const auto check_zip=[&](const std::filesystem::path& zip,FileImport kind,bool valid){
+            const auto stage=CreateSystemStage(kind);SCOPE_EXIT{RemoveSystemStage(stage,kind);};
+            bool accepted=false;
+            try{ExtractSystemZip(zip,stage,kind,{},{});auto prepared=InspectSystemStage(stage,kind,{},{});
+                require(!prepared->Review().incoming_firmware.empty(),"SystemVersion missing in review");accepted=true;
+            }catch(...){if(valid)throw;}
+            require(accepted==valid,"Unsafe/damaged ZIP accepted");
+        };
+        const auto zip=fixture_path/"fixture.zip";
+        std::vector<std::pair<std::string,std::filesystem::path>> archive_files;
+        archive_files.emplace_back("nested/prod.keys",fixture_path/"keys/prod.keys");
+        GateZip(zip,archive_files);check_zip(zip,FileImport::Keys,true);
+        archive_files.clear();
+        for(const auto& file:std::filesystem::directory_iterator{FirmwarePath()})
+            archive_files.emplace_back("nested/"+file.path().filename().string(),file.path());
+        GateZip(zip,archive_files);check_zip(zip,FileImport::Firmware,true);
+        std::filesystem::resize_file(zip,std::filesystem::file_size(zip)-22);check_zip(zip,FileImport::Firmware,false);
+        archive_files={{"../prod.keys",fixture_path/"keys/prod.keys"}};
+        GateZip(zip,archive_files);check_zip(zip,FileImport::Keys,false);
+        archive_files={{"a/prod.keys",fixture_path/"keys/prod.keys"},{"b/PROD.KEYS",fixture_path/"keys/prod.keys"}};
+        GateZip(zip,archive_files);check_zip(zip,FileImport::Keys,false);
+        std::filesystem::remove(zip);
+        require(ReadFileSetupStatus().firmware_files==required&&HasUsableHeaderKey(),"Preview changed installed data");
+        step="key downgrade and compatibility review";
+        {
+            const auto stage=CreateSystemStage(FileImport::Keys);SCOPE_EXIT{RemoveSystemStage(stage,FileImport::Keys);};
+            // Syntactically valid but deliberately unrelated header material.
+            // Only preview this private fixture; never commit it.
+            {std::ofstream candidate{stage/"prod.keys"};candidate<<"header_key="<<std::string(32,'1')<<std::string(32,'2')<<'\n';}
+            const auto prepared=InspectSystemStage(stage,FileImport::Keys,{},{});
+            const auto& review=prepared->Review();
+            require(std::find(review.warnings.begin(),review.warnings.end(),"keys_firmware_old")!=review.warnings.end(),"Incompatible key material not warned");
+            if(review.installed_generation>=0)
+                require(std::find(review.warnings.begin(),review.warnings.end(),"keys_downgrade")!=review.warnings.end(),"Lost key generations not warned");
+        }
+        require(HasUsableHeaderKey()&&ValidProductionKeys(fixture_path/"keys/prod.keys"),"Key preview mutated installed material");
         auto bad = fixture.CreateFolderAsync(L"invalid-keys").get();
         auto invalid = bad.CreateFileAsync(L"prod.keys").get();
         FileIO::WriteTextAsync(invalid, L"header_key=0000\n").get();
@@ -264,7 +270,7 @@ bool RunFileManagerGate(const std::function<void(std::string)>& diagnostic) {
         const auto previous = firmware.parent_path() / L"registered.previous";
         std::filesystem::rename(firmware, previous);
         require(ReadFileSetupStatus().firmware_files == required, "Interrupted publication recovery failed");
-        diagnostic("File manager gate PASS: broker copies, NCA validation, key reload, invalid input, cancellation and interrupted publication recovery; live data preserved");
+        diagnostic("File manager gate PASS: broker copies, real NCA/SystemVersion validation, nested ZIP keys/firmware, truncated/traversal/duplicate ZIP rejection, key downgrade/compatibility review, key reload, invalid input, cancellation and interrupted publication recovery; live data preserved");
         return true;
     } catch (const std::exception& e) {
         diagnostic("File manager gate FAIL " + step + ": " + std::string{e.what()});
