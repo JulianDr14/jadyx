@@ -65,16 +65,36 @@ IBcatService::IBcatService(Core::System& system_, BcatBackend& backend_, u64 pro
 
 IBcatService::~IBcatService() = default;
 
+void IBcatService::PulseCapture(Pulse::HandlerCapture& capture) const {
+    capture.state.U64(program_id);
+    for (u32 slot = 0; slot < progress.size(); ++slot) {
+        capture.state.Raw(progress[slot].impl);
+        capture.ExportEvent(slot, progress[slot].update_event);
+    }
+}
+
+Kernel::KEvent* IBcatService::PulseEvent(u32 slot) {
+    return slot < progress.size() ? progress[slot].update_event : nullptr;
+}
+
+std::shared_ptr<IBcatService> IBcatService::PulseRestore(Core::System& system,
+                                                         BcatBackend& backend,
+                                                         Pulse::StateReader& in) {
+    auto service = std::make_shared<IBcatService>(system, backend, in.U64());
+    for (auto& entry : service->progress) {
+        entry.impl = in.Raw<DeliveryCacheProgressImpl>();
+    }
+    return service;
+}
+
 Result IBcatService::RequestSyncDeliveryCache(
     OutInterface<IDeliveryCacheProgressService> out_interface) {
     LOG_DEBUG(Service_BCAT, "called");
 
-    auto& progress_backend{GetProgressBackend(SyncType::Normal)};
     backend.Synchronize(system.Kernel(), {program_id, GetCurrentBuildID(system.GetApplicationProcessBuildID())},
                         GetProgressBackend(SyncType::Normal));
 
-    *out_interface = std::make_shared<IDeliveryCacheProgressService>(
-        system, progress_backend.GetEvent(), progress_backend.GetImpl());
+    *out_interface = CreateProgressService(SyncType::Normal);
     R_SUCCEED();
 }
 
@@ -88,8 +108,7 @@ Result IBcatService::RequestSyncDeliveryCacheWithDirectoryName(
     backend.SynchronizeDirectory(system.Kernel(), {program_id, GetCurrentBuildID(system.GetApplicationProcessBuildID())},
         name, progress_backend);
 
-    *out_interface = std::make_shared<IDeliveryCacheProgressService>(
-        system, progress_backend.GetEvent(), progress_backend.GetImpl());
+    *out_interface = CreateProgressService(SyncType::Directory);
     R_SUCCEED();
 }
 
@@ -120,6 +139,13 @@ Result IBcatService::ClearDeliveryCacheStorage(u64 application_id) {
     R_UNLESS(application_id != 0, ResultInvalidArgument);
     R_UNLESS(backend.Clear(system.Kernel(), application_id), FileSys::ResultPermissionDenied);
     R_SUCCEED();
+}
+
+std::shared_ptr<IDeliveryCacheProgressService> IBcatService::CreateProgressService(SyncType type) {
+    auto& progress_backend{GetProgressBackend(type)};
+    return std::make_shared<IDeliveryCacheProgressService>(
+        system, std::static_pointer_cast<IBcatService>(shared_from_this()), type,
+        progress_backend.GetEvent(), progress_backend.GetImpl());
 }
 
 ProgressServiceBackend& IBcatService::GetProgressBackend(SyncType type) {

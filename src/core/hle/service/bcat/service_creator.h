@@ -24,6 +24,13 @@ public:
     explicit IServiceCreator(Core::System& system_, const char* name_);
     ~IServiceCreator() override;
 
+    // Pulse: the backend keeps nothing; the interfaces it handed out are rebuilt over it.
+    std::string_view PulseKind() const override {
+        return "bcat:IServiceCreator";
+    }
+    SessionRequestHandlerPtr PulseRestore(std::string_view kind,
+                                          Pulse::HandlerRestore& restore) override;
+
 private:
     Result CreateBcatService(ClientProcessId process_id, OutInterface<IBcatService> out_interface);
 
