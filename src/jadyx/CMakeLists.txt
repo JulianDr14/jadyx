@@ -36,6 +36,13 @@ add_executable(jadyx WIN32
     storage/uwp_rom_storage.h
     storage/uwp_file_manager.cpp
     storage/uwp_file_manager.h
+    storage/network_portal.cpp
+    storage/network_portal.h
+    storage/network_portal_page.h
+    storage/nsp_upload.cpp
+    storage/nsp_upload.h
+    storage/nsp_import.cpp
+    storage/nsp_import.h
     storage/storage_path.h
     input/uwp_pro_controller.cpp
     input/uwp_controllers.cpp
