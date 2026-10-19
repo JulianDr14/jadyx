@@ -138,15 +138,16 @@ jobs:
           key: sccache-uwp-${{ github.run_id }}
           restore-keys: sccache-uwp-
 
-      # OpenSSL builds through its own makefile, out of sccache's reach. Keeping its build tree
-      # (configure results, objects, libs) lets openssl-cmake skip the configure and jom find the
+      # OpenSSL builds through its own makefile. USE_CCACHE (Configure) puts sccache in front of its
+      # compiler as well, so its objects are shared across pull requests too; keeping the build tree
+      # (configure results, objects, libs) also skips the Perl configure and lets jom find the
       # libraries up to date. Anything that can change its sources or flags changes the key.
       - name: Restore OpenSSL build
         id: openssl
         uses: actions/cache/restore@v6
         with:
           path: build-uwp/_deps/openssl-build
-          key: openssl-uwp-${{ steps.tools.outputs.image }}-${{ hashFiles('cpmfile.json', 'CMakePresets.json', 'CMakeLists.txt', 'CMakeModules/**') }}
+          key: openssl-uwp-sccache-${{ steps.tools.outputs.image }}-${{ hashFiles('cpmfile.json', 'CMakePresets.json', 'CMakeLists.txt', 'CMakeModules/**') }}
 
       # Its post step read the stats after "Compiler cache stats" had stopped the server, so its
       # annotation always said 0 hits. That step writes the real ones to the run summary instead.
@@ -154,13 +155,15 @@ jobs:
         with:
           disable_annotations: true
 
-      # sccache cannot share a /Zi program database between parallel compilers: embed the debug
-      # info (/Z7) instead. The link still writes jadyx.pdb.
+      # USE_CCACHE (externals/cmake-modules/UseCcache.cmake) makes sccache the compiler launcher, and
+      # openssl-cmake writes it into OpenSSL's makefile. sccache cannot share a /Zi program database
+      # between parallel compilers: embed the debug info (/Z7) instead, which UseCcache does only for
+      # Debug and RelWithDebInfo. The link still writes jadyx.pdb.
       - name: Configure
         shell: cmd
         run: >
           tools\xbox\build-env.bat cmake --preset uwp-x64
-          -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          -DUSE_CCACHE=ON -DCCACHE_PATH=sccache
           -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
 
       - name: Build
