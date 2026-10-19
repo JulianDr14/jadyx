@@ -184,6 +184,14 @@ std::optional<Kept> Find(std::string_view launch_path) {
     std::optional<Kept> kept;
     try {
         for (const auto& entry : Sessions().List()) {
+            if (entry.state == Common::Pulse::EntryState::Consumed) {
+                // Already resumed: never restored again, only taking space.
+                try {
+                    Sessions().DropConsumed(entry.key);
+                } catch (...) {
+                }
+                continue;
+            }
             if (entry.state != Common::Pulse::EntryState::Available || !entry.header_valid ||
                 entry.identity.program_id != slot) {
                 continue;

@@ -58,10 +58,14 @@ public:
     [[nodiscard]] std::vector<Entry> List();
     // Intended only for an explicit user discard. Does not touch normal saves.
     void Discard(std::string_view key);
+    // Removes a session already resumed: it can never be restored again, it only takes space
+    // (and quota). The key's available session, if any, stays.
+    void DropConsumed(std::string_view key);
 
 private:
     std::filesystem::path Path(std::string_view key, const char* extension) const;
     std::uint64_t Used() const;
+    void RemoveConsumed() const;
     const std::filesystem::path root;
     const std::uint64_t quota;
     Fault fault;

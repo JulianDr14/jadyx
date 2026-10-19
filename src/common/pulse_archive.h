@@ -54,12 +54,21 @@ using WriteBlock = std::function<void(Section, std::uint64_t offset,
 // Used for the library catalogue without decompressing guest memory.
 [[nodiscard]] Identity ReadHeader(std::istream& stream);
 
+// Decoded bytes by how their blocks were stored, and what the compressed ones took.
+struct Packing {
+    std::uint64_t zero{};
+    std::uint64_t raw{};
+    std::uint64_t packed{};
+    std::uint64_t stored{};
+};
+
 class Writer final {
 public:
     Writer(std::ostream& stream, const Identity& identity, std::stop_token stop = {},
            Progress progress = {});
     void Add(Section section, const ReadBlock& read);
     void Finish();
+    [[nodiscard]] const Packing& Packed() const { return packing; }
 private:
     std::ostream& stream;
     std::stop_token stop;
@@ -67,6 +76,7 @@ private:
     std::uint32_t last_id{};
     std::uint32_t sections{};
     std::uint64_t total{};
+    Packing packing{};
     bool finished{};
     bool failed{};
 };

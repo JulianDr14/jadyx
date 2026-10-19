@@ -27,7 +27,8 @@ struct Version {
     bool operator==(const Version&) const = default;
 };
 
-inline constexpr Version CurrentVersion{1, 0, 0};
+// 1.1: blocks are stored with zstd, which a 1.0 build cannot read.
+inline constexpr Version CurrentVersion{1, 1, 0};
 
 namespace Detail {
 // Marks Identity::revision as a version, not the build hash older sessions stored there.

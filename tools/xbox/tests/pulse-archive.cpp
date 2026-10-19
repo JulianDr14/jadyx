@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Link src/common/pulse_archive.cpp and the configured LZ4 library.
+// Link src/common/pulse_archive.cpp and the configured LZ4 and zstd libraries.
 #include "common/pulse_archive.h"
 #include "common/pulse_version.h"
 
@@ -8,11 +8,16 @@
 #include <cstdlib>
 #include <iostream>
 #include <random>
+#include <source_location>
 #include <sstream>
 #include <vector>
 
 using namespace Common::Pulse;
-void Check(bool ok) { if (!ok) std::abort(); }
+void Check(bool ok, std::source_location where = std::source_location::current()) {
+    if (ok) return;
+    std::cerr << "Pulse archive check failed at line " << where.line() << '\n';
+    std::abort();
+}
 template <typename F> void Reject(F run, Error expected) {
     try { run(); } catch (const Failure& failure) { Check(failure.code == expected); return; }
     std::abort();
@@ -37,6 +42,11 @@ int main() {
     });
     writer.Finish();
     const auto archive = output.str();
+    // One zero block, one compressible block (zstd, codec 3 at byte 232), one random and one
+    // partial block that stay raw.
+    Check(archive[232] == 3);
+    Check(writer.Packed().zero == BlockSize && writer.Packed().packed == BlockSize &&
+          writer.Packed().raw == BlockSize + 13 && writer.Packed().stored < BlockSize / 100);
     {
         std::istringstream header_only{archive.substr(0, 136), std::ios::binary};
         Check(ReadHeader(header_only) == identity);
