@@ -726,3 +726,47 @@ Evidenciaarchivada matrix24-series.jsonl y matrix24-series-comparison.json bajo
 comparison-2026-10-20;PCMismoexpected/params yfilesizecontrastados. No necesitarepetir
 esteinformeparaestablecerlapatologia. .24vigente,no paquetenuevoenestarevision.
 Sincommit/push; fixenganchependiente.
+
+### Correccion de lectura .24 y candidato .25 sin memoria local (20 oct)
+La lectura "falla al mezclar indices constantes y variables" es incompleta:
+`selection_separate_counter` usa solo indices variables y tambien falla (25 IDs,
+elegido 0). Patron compatible con los 84 casos: en PS de Series, una load del
+array local devuelve 0 cuando el compilador no puede reenviar en registros el
+valor recien escrito (`dynamic_both` pasa porque store y load usan la misma
+expresion). Compute 42/42. Hipotesis no probada: el PS .23 (489 KiB, sin alloca)
+pudo forzar spills del driver a la misma memoria y por eso tambien dio ceros.
+
+.25: `tools/xbox/tests/pick-select-registers.hlsl`, HLSL propio, mismo algoritmo
+sin tabla: cada muestra se vuelve a leer; la muestra i abre entrada si ninguna
+anterior tiene ID igual (float ==), su conteo es 1 + iguales posteriores, orden y
+desempate (primer maximo estricto), bits elegidos, minimo de profundidad y RT1
+cero iguales al original. Bucles de limite constante y Sample fuera de flujo
+divergente. DXC ps_6_4 -O3 -Gis -denorm ftz: 5580 bytes, cero alloca/GEP/fast,
+mismos bindings t3/t4/s3/s4/cb2 y firma TEXCOORD0/1 -> SV_Target0..2. Coste:
+25 x 27 fetches por pixel en un viewport 1x1.
+
+Gate PC (mrt-replay-gate, runtime normalizador real): 8 casos (real162/1225 .21,
+sus variantes UNORM, zero/stripes/unique/ties), PS original frente a nuevo: 24
+salidas RT identicas byte a byte, cero warnings/errors D3D12.
+`select-registers-pc-comparison.json` y `select-registers-pc-gate/`.
+
+Activacion: mismo hook `DirectPickLocalExperiment` (hash VS/PS + DXIL original
+byte exacto SHA256 0d950756...7b66e); sidecar direct.dxil SHA256
+F6184B68818CD57EA240908EF1313B3A8F9019F4D12CDB1D741CB865F1BA101E. Sin bateria .24.
+Entrega build-uwp/package/jadyx.appx 0.3.6.25, 79 entradas, SHA256
+14128EAE30BD9B9684783AC81F0142C8C64962C647368AE1E2B60AF73B915723; simbolos
+build-uwp/symbols/0.3.6.25. Library/play/captura menu/gpu_capture_full, fastmem0,
+39 controles solo en captura. Gate Series pendiente: apuntar al bloque con
+Magnesis y ver enganche; capturar y exportar logs. Sin commit/push.
+
+### Gate Series .25 POSITIVO (20 oct)
+Usuario confirma que Magnesis engancha en Series. Log: `direct-local experiment
+ACTIVE` (3 PSO), cero Critical. Captura full_1792531484612036_1: 170224 eventos,
+cero omisiones/errores. Ops 103/1130 ejecutan el PS nuevo (SHA256 F6184B...).
+Readback guest RT0 16x4 UNORM ya no es cero (`0000210041b0c0b2`, mismo patron de
+ID que PC) y RT2 profundidad 0,9914 (`62ce7d3f`). Causa: lecturas de array local
+indexable en pixel shader devuelven 0 en Series cuando el valor no se reenvia en
+registros; el pase de seleccion perdia su tabla de IDs. Arreglo actual: sustitucion
+opt-in de ese PS por la version sin memoria local; falta generalizarlo (lowering en
+el recompilador para PS con arrays locales) antes de release. Logs en
+series-0.3.6.25-logs. Sin commit/push.

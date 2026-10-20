@@ -88,7 +88,7 @@ GraphicsPipeline::SharedDxilStages DirectPickLocalExperiment(
     auto replaced = std::make_shared<GraphicsPipeline::DxilStages>(*original);
     (*replaced)[4] = sidecars.after;
     LOG_WARNING(Render, "D3D12 direct-local experiment ACTIVE: picking PS {} -> {} bytes, "
-                "scalar SSA replaces local array, guest logic preserved; Series test pending",
+                "no local array, guest logic preserved; Series test pending",
                 sidecars.before.size(), sidecars.after.size());
     return replaced;
 }
