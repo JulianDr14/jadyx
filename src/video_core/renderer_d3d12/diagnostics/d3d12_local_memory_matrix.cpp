@@ -35,7 +35,11 @@ void RunLocalMemoryMatrix(ID3D12Device* device,const std::filesystem::path& shad
         std::filesystem::create_directories(report.parent_path());log.open(report);
         if(!log) return;
         const auto luid=device->GetAdapterLuid();
-        log<<Json{{"event","begin"},{"revision",24},{"cases",cases.size()},{"adapter_luid_low",luid.LowPart},{"adapter_luid_high",luid.HighPart}}.dump()<<std::endl;
+        D3D12_FEATURE_DATA_D3D12_OPTIONS options{};D3D12_FEATURE_DATA_D3D12_OPTIONS1 options1{};
+        device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS,&options,sizeof(options));
+        device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1,&options1,sizeof(options1));
+        log<<Json{{"event","begin"},{"revision",27},{"cases",cases.size()},{"adapter_luid_low",luid.LowPart},{"adapter_luid_high",luid.HighPart},
+                  {"rovs",bool(options.ROVsSupported)},{"wave_lanes_min",options1.WaveLaneCountMin},{"wave_lanes_max",options1.WaveLaneCountMax}}.dump()<<std::endl;
         const auto vs=Read(shaders/"vs.dxil");
         D3D12_ROOT_PARAMETER params[2]{};
         params[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -52,14 +56,16 @@ void RunLocalMemoryMatrix(ID3D12Device* device,const std::filesystem::path& shad
         ComPtr<ID3D12Fence> fence;Check(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)));
         struct Event {HANDLE value=CreateEventExW(nullptr,nullptr,0,EVENT_ALL_ACCESS);~Event(){if(value)CloseHandle(value);}} event;
         if(!event.value) throw std::runtime_error("matrix fence event");
-        const auto buffer=[&](D3D12_HEAP_TYPE type,D3D12_RESOURCE_STATES state,D3D12_RESOURCE_FLAGS flags) {
+        // Storage doubles as the pixel UAV scratch of the revision 26 cases (64 slots of 588 words).
+        constexpr UINT64 storage_bytes=256*1024;
+        const auto buffer=[&](D3D12_HEAP_TYPE type,D3D12_RESOURCE_STATES state,D3D12_RESOURCE_FLAGS flags,UINT64 width=1024) {
             D3D12_HEAP_PROPERTIES heap{};heap.Type=type;
-            D3D12_RESOURCE_DESC desc{};desc.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;desc.Width=1024;
+            D3D12_RESOURCE_DESC desc{};desc.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;desc.Width=width;
             desc.Height=1;desc.DepthOrArraySize=1;desc.MipLevels=1;desc.SampleDesc.Count=1;
             desc.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;desc.Flags=flags;
             ComPtr<ID3D12Resource> result;Check(device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&desc,state,nullptr,IID_PPV_ARGS(&result)));return result;
         };
-        auto storage=buffer(D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        auto storage=buffer(D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,storage_bytes);
         auto sentinel_upload=buffer(D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ,D3D12_RESOURCE_FLAG_NONE);
         void* sentinel_data{};D3D12_RANGE empty_range{};Check(sentinel_upload->Map(0,&empty_range,&sentinel_data));
         std::memset(sentinel_data,0xA5,16);sentinel_upload->Unmap(0,nullptr);
@@ -75,6 +81,7 @@ void RunLocalMemoryMatrix(ID3D12Device* device,const std::filesystem::path& shad
         unsigned passed=0,failed=0;UINT64 tick=0;
         for(const auto& test:cases) {
             Json row{{"event","case"},{"name",test.at("name")},{"stage",test.at("stage")},{"compiler",test.at("compiler")},{"expected",test.at("expected")},{"params",test.at("params")},{"file",test.at("file")}};
+            for(const char* field:{"mode","words","storage","dxil_alloca","dxil_bytes"}) if(test.contains(field)) row[field]=test.at(field);
             log<<Json{{"event","case_begin"},{"name",test.at("name")}}.dump()<<std::endl;
             bool gpu_timeout=false;
             try {
@@ -108,11 +115,13 @@ void RunLocalMemoryMatrix(ID3D12Device* device,const std::filesystem::path& shad
                     cmd->SetComputeRootSignature(root.Get());cmd->SetComputeRoot32BitConstants(0,4,values.data(),0);cmd->SetComputeRootUnorderedAccessView(1,storage->GetGPUVirtualAddress());cmd->Dispatch(1,1,1);
                     transition(storage.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_SOURCE);cmd->CopyBufferRegion(download.Get(),0,storage.Get(),0,16);transition(storage.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON);
                 } else {
-                    const float clear[4]{};cmd->ClearRenderTargetView(rtv,clear,0,nullptr);cmd->SetGraphicsRootSignature(root.Get());cmd->SetGraphicsRoot32BitConstants(0,4,values.data(),0);cmd->OMSetRenderTargets(1,&rtv,FALSE,nullptr);
+                    transition(storage.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                    const float clear[4]{};cmd->ClearRenderTargetView(rtv,clear,0,nullptr);cmd->SetGraphicsRootSignature(root.Get());cmd->SetGraphicsRoot32BitConstants(0,4,values.data(),0);cmd->SetGraphicsRootUnorderedAccessView(1,storage->GetGPUVirtualAddress());cmd->OMSetRenderTargets(1,&rtv,FALSE,nullptr);
                     D3D12_VIEWPORT viewport{0,0,1,1,0,1};D3D12_RECT scissor{0,0,1,1};cmd->RSSetViewports(1,&viewport);cmd->RSSetScissorRects(1,&scissor);cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);cmd->DrawInstanced(3,1,0,0);
                     transition(target.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE);
                     D3D12_TEXTURE_COPY_LOCATION src{target.Get(),D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,{.SubresourceIndex=0}},dst{download.Get(),D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,{.PlacedFootprint=footprint}};cmd->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
                     transition(target.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);
+                    transition(storage.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COMMON);
                 }
                 Check(cmd->Close());ID3D12CommandList* lists[]={cmd.Get()};queue->ExecuteCommandLists(1,lists);Check(queue->Signal(fence.Get(),++tick));Check(fence->SetEventOnCompletion(tick,event.value));
                 if(WaitForSingleObjectEx(event.value,10000,FALSE)!=WAIT_OBJECT_0) {gpu_timeout=true;throw std::runtime_error("matrix GPU fence timeout");}
