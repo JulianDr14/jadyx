@@ -553,6 +553,8 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_query_cache.h
         renderer_d3d12/d3d12_resource_allocator.cpp
         renderer_d3d12/d3d12_resource_allocator.h
+        renderer_d3d12/d3d12_local_memory_scratch.cpp
+        renderer_d3d12/d3d12_local_memory_scratch.h
         renderer_d3d12/d3d12_resource_utils.cpp
         renderer_d3d12/d3d12_resource_utils.h
         renderer_d3d12/d3d12_rasterizer.cpp

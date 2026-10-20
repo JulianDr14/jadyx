@@ -13,6 +13,7 @@
 #include "common/bug_tracker.h"
 #include "common/cityhash.h"
 #include "common/logging.h"
+#include "shader_recompiler/local_memory_scratch.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
@@ -144,9 +145,11 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
     TableRanges ranges;
     u32 binding = 0;
     bool integer_textures = false;
+    bool local_memory_scratch = false;
     for (const Shader::Info* info : infos) {
         if (info) {
             AddStage(*info, binding, ranges);
+            local_memory_scratch |= info->local_memory_scratch_words != 0;
             for (const auto& desc : info->texture_descriptors) {
                 integer_textures |= desc.is_integer;
             }
@@ -156,7 +159,8 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
         throw std::runtime_error(fmt::format(
             "D3D12: {} bindings exceed the integer sampler table", binding));
     }
-    std::vector<u32> key{(is_compute ? 1u : 0u) | (integer_textures ? 2u : 0u)};
+    std::vector<u32> key{(is_compute ? 1u : 0u) | (integer_textures ? 2u : 0u) |
+                         (local_memory_scratch ? 4u : 0u)};
     AppendKey(key, ranges.resources);
     AppendKey(key, ranges.samplers);
     const u64 hash = Common::CityHash64(reinterpret_cast<const char*>(key.data()),
@@ -217,6 +221,15 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             .ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV,
             .Descriptor = {.ShaderRegister = 0, .RegisterSpace = EDEN_INTEGER_SAMPLER_SPACE},
             .ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
+        });
+    }
+    if (local_memory_scratch) {
+        layout->local_memory_scratch_index = static_cast<u32>(params.size());
+        params.push_back({
+            .ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV,
+            .Descriptor = {.ShaderRegister = Shader::LocalMemoryScratch::BINDING,
+                           .RegisterSpace = Shader::LocalMemoryScratch::DESCRIPTOR_SET},
+            .ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL,
         });
     }
     const D3D12_ROOT_SIGNATURE_DESC desc{

@@ -150,6 +150,8 @@ void SetPipelinePrewarm(bool enabled);       // d3d12_pipeline_cache.h
 void SetDescriptorRemovalChecks(bool enabled); // d3d12_device.h
 void SetUniformUploadCopy(bool enabled);
 void SetDrawSamplerReuse(bool enabled);
+enum class PixelShaderScratchMode : u8; // d3d12_local_memory_scratch.h: Auto, Uav, Native
+void SetPixelShaderScratchMode(PixelShaderScratchMode mode);
 void SetAsyncRecording(bool enabled);          // d3d12_scheduler.h
 using AppMemoryQuery = bool (*)(u64& used, u64& limit); // d3d12_device.h
 void SetAppMemoryQuery(AppMemoryQuery query);            // d3d12_device.h
@@ -315,6 +317,9 @@ struct BootConfig {
     bool async_record{};
     bool upload_copy{}; ///< Experimental short uniform copies; default off.
     bool draw_sampler_reuse{}; ///< Experimental gather-local TSC resolution; default off.
+    /// Where pixel shaders keep large local memory: 0 auto (boot probe), 1 pool, 2 private arrays
+    /// ("ps_scratch=auto|uav|native", D3D12::PixelShaderScratchMode).
+    u8 ps_scratch{};
     /// Host timing waits sleep on a high-resolution timer and wait only its lateness on the CPU
     /// ("timer_sleep=0" waits the last timer tick on the CPU, as before).
     bool timer_sleep{true};
@@ -511,6 +516,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     D3D12::SetAsyncRecording(config.async_record);
     D3D12::SetUniformUploadCopy(config.upload_copy);
     D3D12::SetDrawSamplerReuse(config.draw_sampler_reuse);
+    D3D12::SetPixelShaderScratchMode(static_cast<D3D12::PixelShaderScratchMode>(config.ps_scratch));
     if (config.debug_layer) {
         Settings::values.renderer_debug = true;
         D3D12::SetGpuBasedValidation(config.gpu_validation);
@@ -2523,6 +2529,12 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "draw_sampler_reuse=1") {
                             config.draw_sampler_reuse = true;
                             WriteDiag("boot.cfg: draw-local sampler resolution reuse enabled");
+                        } else if (line == "ps_scratch=auto" || line == "ps_scratch=uav" ||
+                                   line == "ps_scratch=native") {
+                            config.ps_scratch = line == "ps_scratch=uav"      ? 1
+                                                : line == "ps_scratch=native" ? 2
+                                                                              : 0;
+                            WriteDiag("boot.cfg: " + line);
                         } else if (line == "timer_profile=1") {
                             config.timer_profile = true;
                             WriteDiag("boot.cfg: HostTiming requested waits/sleeps/spin elapsed profiling enabled");

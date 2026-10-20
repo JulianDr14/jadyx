@@ -311,6 +311,8 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
         enabled_uniform_buffer_masks[stage] = info->constant_buffer_mask;
         std::ranges::copy(info->constant_buffer_used_sizes, uniform_buffer_sizes[stage].begin());
         has_images |= !info->image_descriptors.empty();
+        local_memory_scratch_words =
+            std::max(local_memory_scratch_words, info->local_memory_scratch_words);
     }
     namespace FT = VideoCore::FrameTrace;
     const u64 trace_pipeline = reinterpret_cast<uintptr_t>(this);

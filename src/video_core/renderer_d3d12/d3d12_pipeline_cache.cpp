@@ -33,6 +33,7 @@
 #include "video_core/frame_trace.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
+#include "video_core/renderer_d3d12/d3d12_local_memory_scratch.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
@@ -462,6 +463,8 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .min_ssbo_alignment = 16,
         .max_user_clip_distances = 8,
     };
+    profile.fragment_local_memory_scratch_lanes =
+        SelectFragmentScratchLanes(device, compiler, caps.wave_ops, caps.wave_lane_count_max);
     host_info = Shader::HostTranslateInfo{
         .min_ssbo_alignment = 16,
         .max_per_stage_descriptor_sampled_images = 128,

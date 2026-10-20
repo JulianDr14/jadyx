@@ -252,6 +252,10 @@ public:
     [[nodiscard]] const PipelineLayout& Layout() const noexcept {
         return layout;
     }
+    /// Words per lane of the local memory pool the fragment stage uses, or 0 without it.
+    [[nodiscard]] u32 LocalMemoryScratchWords() const noexcept {
+        return local_memory_scratch_words;
+    }
     [[nodiscard]] std::span<const u8> DiagnosticDxil(size_t stage) const noexcept {
         return dxil && stage < dxil->size() ? std::span<const u8>{(*dxil)[stage]}
                                           : std::span<const u8>{};
@@ -353,6 +357,7 @@ private:
     std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
     VideoCommon::UniformBufferSizes uniform_buffer_sizes{};
     bool has_images{};
+    u32 local_memory_scratch_words{};
     bool flatten_retry{};    ///< Build(true) hit a driver fault: retry with flattened branches.
     bool flattened_vertex{}; ///< dxil holds the flattened vertex stage.
     u8 bound_color_targets{}; ///< Computed once from the immutable PSO write masks.

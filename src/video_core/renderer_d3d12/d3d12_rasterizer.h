@@ -19,6 +19,7 @@
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_fence_manager.h"
 #include "video_core/renderer_d3d12/d3d12_indirect_buffer.h"
+#include "video_core/renderer_d3d12/d3d12_local_memory_scratch.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_conditional_rendering.h"
 #include "video_core/renderer_d3d12/d3d12_query_cache.h"
@@ -214,9 +215,9 @@ private:
     void TraceWatchedVertexShader(u64 vertex_shader);
     void InvalidateCommandListState();
     void InvalidateGraphicsState();
-    /// Sets the root constants, tables and integer sampler CBV of a draw that differ from the
-    /// ones the command list holds for the bound root signature.
-    void SetGraphicsRootArguments(CommandStream* cmd, const PipelineLayout& layout,
+    /// Sets the root constants, tables, integer sampler CBV and local memory pool of a draw that
+    /// differ from the ones the command list holds for the bound root signature.
+    void SetGraphicsRootArguments(CommandStream* cmd, const GraphicsPipeline& pipeline,
                                   const PipelineBindings& bindings, const DrawParams& params);
     void ApplyPendingStateInvalidation();
     /// Indirect draws of topologies rewritten on the CPU: reads the arguments and draws directly.
@@ -278,6 +279,7 @@ private:
     BufferCache buffer_cache;
     TextureCache texture_cache;
     PipelineCache pipeline_cache;
+    LocalMemoryPool local_memory_pool;
     Vulkan::StateTracker state_tracker;
     struct CommandListState {
         bool valid{};
@@ -300,6 +302,7 @@ private:
             u64 resource_table{};
             u64 sampler_table{};
             D3D12_GPU_VIRTUAL_ADDRESS integer_samplers{};
+            D3D12_GPU_VIRTUAL_ADDRESS local_memory_scratch{};
         } root_args;
     } command_state;
     bool channel_bound{};

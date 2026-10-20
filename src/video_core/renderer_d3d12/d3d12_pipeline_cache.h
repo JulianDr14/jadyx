@@ -130,6 +130,11 @@ public:
 
     [[nodiscard]] ComputePipeline* CurrentComputePipeline();
 
+    /// Lanes of the fragment local memory pool (Shader::LocalMemoryScratch), or 0 without it.
+    [[nodiscard]] u32 FragmentScratchLanes() const noexcept {
+        return profile.fragment_local_memory_scratch_lanes;
+    }
+
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
                            const VideoCore::DiskResourceLoadCallback& callback);
 

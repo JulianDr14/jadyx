@@ -214,7 +214,7 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
                     "different front and back stencil references; using the front");
     }
 
-    SetGraphicsRootArguments(cmd, layout, bindings, params);
+    SetGraphicsRootArguments(cmd, pipeline, bindings, params);
 
     const D3D12_PRIMITIVE_TOPOLOGY d3d_topology =
         MaxwellToD3D12::PrimitiveTopology(topology, regs.patch_vertices);
@@ -227,9 +227,10 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
 }
 
 void RasterizerD3D12::SetGraphicsRootArguments(CommandStream* cmd,
-                                               const PipelineLayout& layout,
+                                               const GraphicsPipeline& pipeline,
                                                const PipelineBindings& bindings,
                                                const DrawParams& params) {
+    const PipelineLayout& layout = pipeline.Layout();
     // Consecutive draws of one pipeline mostly repeat their root arguments: only changes are set.
     auto& cached = command_state.root_args;
     if (!cached.valid || cached.push_constants != bindings.push_constants) {
@@ -273,6 +274,14 @@ void RasterizerD3D12::SetGraphicsRootArguments(CommandStream* cmd,
         cmd->SetGraphicsRootConstantBufferView(layout.IntegerSamplerIndex(),
                                                bindings.integer_samplers);
         cached.integer_samplers = bindings.integer_samplers;
+    }
+    if (layout.LocalMemoryScratchIndex() != PipelineLayout::NO_TABLE) [[unlikely]] {
+        const D3D12_GPU_VIRTUAL_ADDRESS pool = local_memory_pool.Address(
+            pipeline_cache.FragmentScratchLanes(), pipeline.LocalMemoryScratchWords());
+        if (!cached.valid || cached.local_memory_scratch != pool) {
+            cmd->SetGraphicsRootUnorderedAccessView(layout.LocalMemoryScratchIndex(), pool);
+            cached.local_memory_scratch = pool;
+        }
     }
     cached.valid = true;
 }
