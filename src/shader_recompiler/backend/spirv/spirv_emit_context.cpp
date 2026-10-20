@@ -17,6 +17,7 @@
 #include "common/div_ceil.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
+#include "shader_recompiler/local_memory_scratch.h"
 
 namespace Shader::Backend::SPIRV {
 namespace {
@@ -639,9 +640,25 @@ void EmitContext::DefineInterfaces(const IR::Program& program) {
     DefineOutputs(program);
 }
 
-void EmitContext::DefineLocalMemory(const IR::Program& program) {
+void EmitContext::DefineLocalMemory(IR::Program& program) {
     if (program.local_memory_size == 0) {
         return;
+    }
+    if (stage == Stage::Fragment && profile.SupportsSubgroupStage(stage)) {
+        const u32 words{LocalMemoryScratch::PoolWords(profile.fragment_local_memory_scratch_lanes,
+                                                      program.local_memory_size)};
+        if (words != 0) {
+            size_t exits{};
+            for (IR::Block* const block : program.blocks) {
+                for (const IR::Inst& inst : block->Instructions()) {
+                    exits += inst.GetOpcode() == IR::Opcode::Epilogue ? 1 : 0;
+                }
+            }
+            program.info.local_memory_scratch_words = words;
+            DefineLocalMemoryScratch(words,
+                                     exits != 1 || program.info.uses_demote_to_helper_invocation);
+            return;
+        }
     }
     const u32 num_elements{Common::DivCeil(program.local_memory_size, 4U)};
     const Id element_type{TypeStruct(U32[1])};

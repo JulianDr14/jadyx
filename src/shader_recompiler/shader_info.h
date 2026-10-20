@@ -275,6 +275,9 @@ struct Info {
 
     bool stores_global_memory{};
     bool uses_local_memory{};
+    /// Words of local memory the backend placed in the scratch pool (local_memory_scratch.h), 0
+    /// when it stays in a private array. Set by the SPIR-V backend.
+    u32 local_memory_scratch_words{};
 
     bool uses_fp16{};
     bool uses_fp64{};

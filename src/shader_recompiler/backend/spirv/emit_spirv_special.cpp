@@ -94,6 +94,9 @@ void AlphaTest(EmitContext& ctx) {
 } // Anonymous namespace
 
 void EmitPrologue(EmitContext& ctx) {
+    if (Sirit::ValidId(ctx.local_memory_acquire_func)) {
+        ctx.local_memory_lane_base = ctx.OpFunctionCall(ctx.U32[1], ctx.local_memory_acquire_func);
+    }
     if (ctx.stage == Stage::Fragment && ctx.runtime_info.dual_source_blend) {
         // Initialize dual-source blending outputs - prevents MoltenVK crash.
         const Id zero{ctx.Const(0.0f)};
@@ -163,6 +166,7 @@ void EmitEpilogue(EmitContext& ctx) {
         ConvertDepthMode(ctx);
     }
     if (ctx.stage == Stage::Fragment) {
+        EmitLocalMemoryRelease(ctx);
         AlphaTest(ctx);
     }
 }

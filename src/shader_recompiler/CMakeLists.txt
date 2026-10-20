@@ -30,6 +30,7 @@ add_library(shader_recompiler STATIC
     backend/spirv/emit_spirv_undefined.cpp
     backend/spirv/emit_spirv_warp.cpp
     backend/spirv/spirv_emit_context.cpp
+    backend/spirv/spirv_local_memory_scratch.cpp
     backend/spirv/spirv_emit_context.h
     environment.h
     exception.h
@@ -188,6 +189,7 @@ add_library(shader_recompiler STATIC
     ir_opt/vendor_workaround_pass.cpp
     ir_opt/verification_pass.cpp
     object_pool.h
+    local_memory_scratch.h
     profile.h
     program_header.h
     runtime_info.h

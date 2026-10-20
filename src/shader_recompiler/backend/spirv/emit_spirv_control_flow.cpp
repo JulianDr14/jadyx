@@ -11,6 +11,7 @@ void EmitJoin(EmitContext&) {
 }
 
 void EmitDemoteToHelperInvocation(EmitContext& ctx) {
+    EmitLocalMemoryRelease(ctx);
     if (ctx.profile.support_demote_to_helper_invocation) {
         ctx.OpDemoteToHelperInvocationEXT();
     } else {
