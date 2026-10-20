@@ -4078,3 +4078,68 @@ Diseño, límites y gate: [xbox_fermi2d.md](xbox_fermi2d.md). No atribuir todav�
 FPS ni efectos a esta operación; prueba Series con nuevos logs pendiente.
 
 Entrega .9 completada: build UWP, firma matemática SignedCms, CRC ZIP/BlockMap 34 archivos/735 bloques y correspondencia EXE/símbolos correctos. APPX en build-uwp/package/jadyx.appx; prueba Series pendiente.
+
+
+Actualizador19oct2026: rama feature/self-updater, candidato0.3.6.0. ConsultaGitHub
+estable/pruebas, manifiestoRSA/SHA256 fijadoalcertificadoJadyxDev, descargaWinRT
+reanudableRange/If-Range, pausa/cancelacion/ETA, journalatomico y pantallaes/en/ptBR
+connovedades/historialdesplazables. Asistenciaweb autenticada conticket2min/1uso y
+stream64KiB; PackageManager experimental desactivado, backendDevicePortalinterno/
+configcredenciales pendientesdelgateSeries. Harnessfirmas/38manifiestosinvalidos/
+HTTPadverso/versionadopasan; build/linkUWP ysmokeAppContainerbibliotecaResponding,
+consulta/journalreales correctos. APPXnormalfirmado0.3.6.0 enentregaunica ysimbolos;
+CRC/exeidentico/signerCMS/metadatafirmada verificados. Visual/concurrencia/suspension/
+discolleno/instalacionentre2versionesSeries pendientes; noautoupdatecertificado.
+Sincommit/push/publicacion. Detalle docs/xbox/xbox_updater.md.
+
+
+Prueba solicitada19oct: entrega local0.3.4.0 con código actualizador actual, override de empaquetado; manifest fuente0.3.6.0 conservado. APPX firmado en entrega única, CRC/EXE idéntico correctos; símbolos anteriores preservados, nuevos en symbols/0.3.4.0/updater-test-20261019. Release pública v0.3.5 tiene tag de tres componentes y carece de update.json/update.sig: cliente la omite; no prueba descarga/despliegue real hasta publicar metadata compatible. Sin publicación/commit/push. Downgrade sobre instalación superior puede ser rechazado; no desinstalar ni borrar datos para forzar prueba.
+
+
+Actualizador0.3.6: rama feature/self-updater, modularizado transporte/politica/
+validacionAPPX/estadoatomico/coordinador/UI. Red/hash fuera del render, buffers
+acotados, UI2Hz/cache y accionesarray. Gate PC: 40metadatosinvalidos/14APPX/
+13escenarios,25repeticiones, HTTP real+APPXfirmado+Range/restart correctos;
+Status~0,57usPC. ZIP64 real detecto fallolectorstreaming: seekcentraldirectory
+corregido. ReplaceFile1175 transitorio: retryacotado280ms. Portal tickets
+usoúnico/version/hash/121sexpiracion y stream protegido pasan. APPXnormal0.3.6
+firmado/34archivos/738bloques/AXPC-CD-BM-CT-CI y símbolos archivados; smoke
+AppContainerbibliotecaResponding, singuest. Sincommit/push/publicacion.
+InstalacionSeries/datos/mando/suspension/discollenoreal pendientes; producción
+usaasistenciamóvilPC, no certificarautoinstalaciónnisuperioridad. Detalle y
+hashfinal en docs/xbox/xbox_updater.md.
+
+
+Investigación autoupdate19oct: Microsoft documenta PackageManager+self-update+
+restartUWP; no garantía específicaXbox. Nativra commit a5cf731f reporta medición
+exitosa de update(registro usuario) por AddPackageAsync+ForceApplicationShutdown,
+portal propio bloqueado loopback. Evidencia primaria prometedora, sin prueba
+Jadyx/Series. Objetivo usuario es unbotón+reapertura, asistencia solo recuperación.
+No habilitado ni recompilado; gate nativo con IsRegistered/capacidad/URI/datos y
+reapertura prioritario. Fuentes/límites en xbox_updater.md.
+
+
+Usuario solicita habilitarPackageManager: actualizador0.3.6 conecta ruta nativa
+principal y rescap packageManagement; Download(true)->verificación->admisiónlibre
+->targetpersistido->AddPackageAsync ForceApplicationShutdown. Adaptadorseparado,
+IsRegistered+HRESULT, URIescapada y archivo.appx. Suspensión no cancela despliegue;
+Preparing/Requested bloquean juego/escrituras y cambios/cancel. Confirmación solo
+arranquenuevo. Asistencia queda recuperación. Gate Series/reapertura/datos pendiente;
+no confundir habilitado con certificado. Sincommit/push/publicación. Detalle vigente
+al final de docs/xbox/xbox_updater.md.
+
+Gatecandidatonativo: buildUWP/link y19escenarios+10repeticiones pasan; respuestaOS
+inyectada, no autodespliegue real. AppContainer con packageManagement arrancaPC;
+mismaversion/capacidadnueva dio0x80073CFB: smoke temporal0.3.6.1 yregistroPC
+restaurado0.3.6 sin desinstalar. Entrega0.3.6 firmada normal/34archivos/738bloques,
+exe/símbolos idénticos, integralAPPX/HTTP real pasa, SHA en xbox_updater.md.
+Series/reemplazo/reapertura/datos pendientes. Sincommit/push/publicación.
+
+
+RevisiónActionsRelease: secretos JADYX_PFX_BASE64/JADYX_PFX_PASSWORD ya existen
+(nombres consultados, valores no leídos). Certificado público de v0.3.5 coincide
+con clave pública fijada del actualizador. Workflow local aún distinto de main:
+requiere integrar fuente/workflow/manifest0.3.6.0 antes de RunRelease desde main.
+Corregida regeneración de checksum para reutilizar SHA256SUMS.txt (build.yml lo
+crea con esa extensión), incluyendo update.json/update.sig sin auto-hash ni
+segundo índice divergente. YAML parsea; Actions no ejecutado, sincommit/push.
