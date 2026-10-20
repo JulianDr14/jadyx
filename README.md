@@ -51,6 +51,7 @@ report.
 | Mario Strikers | **60 FPS** in matches, stable | No graphical errors, special-move cutscenes included. GPU at 14 % |
 | Pokémon Let's Go | **60 FPS**, stable | No graphical errors |
 | Mario Wonder | **55–60 FPS**, stable | No crashes or graphical errors |
+| Mario 3D World | **60 FPS**, stable | In-game |
 | 13 Sentinels *(community)* | **60 FPS** in battles and exploration | Playable on Series X |
 | NEO TWEWY *(community)* | **20–30 FPS** in game, 50 in menus | In-game on Series X; drops to 10–17 FPS while new shaders compile |
 | Yo-kai Watch 4 *(community)* | **30 FPS** in the intro and menus | Series S. In 0.3.0 it froze on a white screen when starting the game; 0.3.5 gets past it. Work in progress |
