@@ -35,6 +35,9 @@ add_library(video_core STATIC
     control/scheduler.cpp
     control/scheduler.h
     delayed_destruction_ring.h
+    diagnostics/full_capture.cpp
+    diagnostics/full_capture.h
+    diagnostics/full_capture_archive.h
     dirty_flags.cpp
     dirty_flags.h
     dma_pusher.cpp
@@ -504,6 +507,9 @@ if (ENABLE_D3D12)
         renderer_d3d12/diagnostics/d3d12_draw_hunt.cpp
         renderer_d3d12/diagnostics/d3d12_draw_hunt.h
         renderer_d3d12/diagnostics/d3d12_draw_trace.cpp
+        renderer_d3d12/diagnostics/d3d12_local_memory_matrix.cpp
+        renderer_d3d12/diagnostics/d3d12_local_memory_matrix.h
+        renderer_d3d12/diagnostics/d3d12_full_capture.cpp
         renderer_d3d12/diagnostics/d3d12_frame_dump.cpp
         renderer_d3d12/diagnostics/d3d12_pipeline_diagnostics.cpp
         renderer_d3d12/diagnostics/d3d12_pipeline_diagnostics.h
@@ -547,6 +553,8 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_query_cache.h
         renderer_d3d12/d3d12_resource_allocator.cpp
         renderer_d3d12/d3d12_resource_allocator.h
+        renderer_d3d12/d3d12_local_memory_scratch.cpp
+        renderer_d3d12/d3d12_local_memory_scratch.h
         renderer_d3d12/d3d12_resource_utils.cpp
         renderer_d3d12/d3d12_resource_utils.h
         renderer_d3d12/d3d12_rasterizer.cpp

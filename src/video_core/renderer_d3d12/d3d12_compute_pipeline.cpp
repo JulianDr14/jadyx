@@ -143,10 +143,15 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
             image_view.PrepareRead(desc.type);
             queue.AddCopy(image_view.Handle(desc.type));
             const SamplerId sampler_id = *(samplers_it++);
+            if (out.trace_filters) out.trace_filters->push_back(fmt::format(
+                "binding={} type={} srv=[{}] sampler=[{}]", texture_binding,
+                static_cast<u32>(desc.type), image_view.DescribeSrv(desc.type, false),
+                texture_cache.GetSampler(sampler_id).Describe()));
             if (has_integer_samplers && desc.is_integer) {
                 integer_samplers.Add(texture_binding, texture_cache.GetSampler(sampler_id), image_view);
             }
             image_transitions.emplace_back(view_id, false);
+            if (out.trace_all_views) out.trace_all_views->push_back({view_id, false, desc.type});
         }
     }
     PushStorageImages(info, texture_cache, queue, views_it, image_transitions);
@@ -154,6 +159,7 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
 
     BarrierBatch barriers{context.scheduler};
     for (const auto& [view_id, is_storage] : image_transitions) {
+        if (out.trace_all_views && is_storage) out.trace_all_views->push_back({view_id, true});
         if (GpuDiagnosticsEnabled()) {
             const auto& view = texture_cache.GetImageView(view_id);
             TraceGpuDetail(fmt::format("compute image tick={} CS={:016x} guest={:x} resource={} storage={}",

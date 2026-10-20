@@ -79,6 +79,11 @@ public:
     ~TextureCacheRuntime();
 
     void Finish();
+    // D3D12 requires equal physical MRT view extents. Pitch-backed guest targets
+    // can have different padding widths even though their logical render area agrees.
+    std::span<const D3D12_CPU_DESCRIPTOR_HANDLE> PrepareCompatibleDrawTargets(
+        const Framebuffer& framebuffer, u32 bound_mask);
+    void FinishCompatibleDrawTargets(const Framebuffer& framebuffer);
 
     /// Where shader blits go (set by the renderer once the helper exists; null means skip).
     void SetBlitHelper(BlitImageHelper* helper) noexcept { blit_helper = helper; }
@@ -241,6 +246,15 @@ private:
     /// creating such a sampler there removes the device (DXGI_ERROR_INVALID_CALL).
     bool supports_min_max_filter{};
     u64 depth_feedback_copies{};
+    struct MrtScratch {
+        std::unique_ptr<Image> image;
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
+        DXGI_FORMAT format{DXGI_FORMAT_UNKNOWN};
+    };
+    std::array<MrtScratch, NUM_RT> mrt_scratch;
+    std::array<D3D12_CPU_DESCRIPTOR_HANDLE, NUM_RT> mrt_targets{};
+    u32 mrt_active{};
+    u64 mrt_normalizations{};
     /// FORMAT_SUPPORT answers by format, each logged once (see SupportsView).
     mutable std::mutex format_support_mutex;
     mutable std::unordered_map<DXGI_FORMAT, D3D12_FEATURE_DATA_FORMAT_SUPPORT> format_support;
@@ -282,6 +296,7 @@ public:
                         std::span<const VideoCommon::BufferImageCopy> copies);
 
     [[nodiscard]] ID3D12Resource* Handle() const noexcept { return resource.Get(); }
+    [[nodiscard]] u64 DiagnosticWriteVersion() const noexcept { return write_version; }
     [[nodiscard]] DXGI_FORMAT ResourceFormat() const noexcept { return format.resource; }
     [[nodiscard]] DXGI_FORMAT ViewFormat() const noexcept { return format.view; }
     /// Format of plane 0's copy footprints (the resource format, typeless included).
@@ -313,6 +328,11 @@ public:
     /// must record other commands).
     void Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch = nullptr);
     [[nodiscard]] D3D12_RESOURCE_STATES State() const noexcept { return state; }
+    /// Readback diagnostics: barriers only, without marking image contents modified.
+    std::optional<D3D12_RESOURCE_STATES> DiagnosticState(ID3D12Resource* tracked_resource) const;
+    void DiagnosticTransition(ID3D12Resource* tracked_resource, D3D12_RESOURCE_STATES next);
+    ID3D12Resource* DiagnosticSliceArray() const noexcept { return slice_array.Get(); }
+    ID3D12Resource* DiagnosticReinterpreted() const noexcept { return reinterpreted.Get(); }
     bool IsRescaled() const noexcept { return false; }
     bool ScaleUp(bool = false) { return false; }
     bool ScaleDown(bool = false) { return false; }
@@ -478,6 +498,12 @@ public:
 
     /// The texture cache image of this view; null for null and buffer views.
     [[nodiscard]] Image* SourceImage() const noexcept;
+    struct DiagnosticView {
+        ID3D12Resource* resource{};
+        u32 base_mip{}, mips{}, base_layer{}, layers{}, format{}, mapping{};
+        bool null_srv{};
+    };
+    DiagnosticView DiagnosticSrv(Shader::TextureType declared, bool feedback) const;
 
     /// Transitions the whole image this view belongs to (no-op for null and buffer views).
     void TransitionImage(D3D12_RESOURCE_STATES state, BarrierBatch* batch = nullptr) const;

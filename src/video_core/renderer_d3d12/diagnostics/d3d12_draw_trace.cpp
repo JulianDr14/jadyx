@@ -209,6 +209,18 @@ bool RasterizerD3D12::BeginMaterialTrace(u64 pixel_shader, s32 probe_x, s32 prob
     ++material_capture_id;
     material_capture_stamp = static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count());
+    if (VideoCommon::FullCapture::Enabled()) {
+        const auto directory = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "trace" /
+            fmt::format("full_{}_{}", material_capture_stamp, material_capture_id);
+        if (!VideoCommon::FullCapture::Begin(directory)) {
+            material_trace.End();
+            LOG_ERROR(Render, "D3D12 full capture could not start: {}", directory.string());
+            return false;
+        }
+        full_capture_operation = 0;
+        LOG_INFO(Render, "D3D12 full capture BEGIN: {} (synchronous, no FPS measurement)",
+                 directory.string());
+    }
     trace_index = 0;
     material_probe_x = probe_x;
     material_probe_y = probe_y;
@@ -264,12 +276,19 @@ void RasterizerD3D12::DumpMaterialShaderTarget(const GraphicsPipeline& pipeline,
 
 void RasterizerD3D12::EndMaterialTrace(bool intervals_complete) {
     if (!material_trace.Active()) return;
+    const bool full = VideoCommon::FullCapture::Active();
+    VideoCommon::FullCapture::End(intervals_complete);
+    full_capture_images.clear();
+    if (full_capture_staging.buffer) {
+        staging.FreeDeferred(full_capture_staging);
+        full_capture_staging = {};
+    }
     try {
         DumpMaterialProbe(intervals_complete);
     } catch (const std::exception& e) {
         LOG_WARNING(Render, "D3D12 material probe export failed: {}", e.what());
     }
-    if (intervals_complete) {
+    if (intervals_complete && !full) {
         try {
             DumpMaterialTargets();
         } catch (const std::exception& e) {
@@ -453,6 +472,7 @@ void RasterizerD3D12::DumpMaterialTargets() {
 }
 
 void RasterizerD3D12::LogDrawTrace(std::string_view line) {
+    VideoCommon::FullCapture::Text("draw_trace", line);
     if (material_trace.Active()) {
         // Identical state/bindings are printed once per capture. Full string equality (not a
         // hash alone) prevents collisions from hiding changed formats, samplers or registers.
@@ -551,6 +571,12 @@ void RasterizerD3D12::CheckTracedBuffers(std::span<const TracedBuffer> buffers,
                 return "index";
             case Kind::RewrittenIndex:
                 return "index rewritten";
+            case Kind::Storage:
+                return "storage";
+            case Kind::Texture:
+                return "texel";
+            case Kind::Image:
+                return "image";
             }
             return "?";
         }();
@@ -1527,6 +1553,48 @@ void RasterizerD3D12::CaptureMaterialPresent(ID3D12Resource* resource, u64 frame
         std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
         const auto directory = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "trace";
         std::filesystem::create_directories(directory);
+        if (VideoCommon::FullCapture::Active()) {
+            auto desc = resource->GetDesc();
+            ComPtr<ID3D12Device> capture_device;
+            ThrowIfFailed(resource->GetDevice(IID_PPV_ARGS(&capture_device)), "full present device");
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+            UINT rows{};
+            UINT64 row_bytes{}, bytes{};
+            capture_device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rows, &row_bytes, &bytes);
+            if (!bytes || !rows || !row_bytes || !footprint.Footprint.RowPitch ||
+                footprint.Footprint.RowPitch > (16ULL << 20) || rows != desc.Height) {
+                VideoCommon::FullCapture::Omit("present_footprint");
+                return;
+            }
+            const u32 full_height = desc.Height;
+            const u32 tile_rows = static_cast<u32>((16ULL << 20) / footprint.Footprint.RowPitch);
+            VideoCommon::FullCapture::Event("present", fmt::format(
+                "{{\"frame\":{},\"width\":{},\"height\":{},\"format\":{}}}",
+                frame, desc.Width, full_height, static_cast<u32>(desc.Format)));
+            auto& full_readback = FullCaptureStaging();
+            for (u32 y = 0; y < full_height; y += desc.Height) {
+                desc.Height = std::min(tile_rows, full_height - y);
+                capture_device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rows, &row_bytes, &bytes);
+                if (bytes > full_readback.mapped_span.size() || !bytes) {
+                    VideoCommon::FullCapture::Omit("present_short_staging");
+                    break;
+                }
+                auto placed = footprint;
+                placed.Offset = full_readback.offset;
+                const D3D12_TEXTURE_COPY_LOCATION src{resource,
+                    D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {.SubresourceIndex = 0}};
+                const D3D12_TEXTURE_COPY_LOCATION dst{full_readback.buffer,
+                    D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {.PlacedFootprint = placed}};
+                const D3D12_BOX box{0, y, 0, static_cast<UINT>(desc.Width), y + desc.Height, 1};
+                scheduler.CommandList()->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+                scheduler.Finish();
+                VideoCommon::FullCapture::Data("present_data", fmt::format(
+                    "{{\"frame\":{},\"width\":{},\"height\":{},\"origin_y\":{},\"format\":{},\"row_bytes\":{}}}",
+                    frame, desc.Width, desc.Height, y, static_cast<u32>(desc.Format), row_bytes),
+                    full_readback.mapped_span.first(bytes), row_bytes, footprint.Footprint.RowPitch, rows);
+            }
+            return;
+        }
         QueueMaterialReadback(resource, 0, resource->GetDesc().Format,
             fmt::format("material_{}_{}_present_{}", material_capture_stamp,
                         material_capture_id, frame));
@@ -1893,7 +1961,8 @@ void RasterizerD3D12::TraceDraw(std::string_view what, const GraphicsPipeline* p
     }
     for (const VideoCommon::ImageViewId id : views) {
         const ImageView& view = texture_cache.GetImageView(id);
-        if (material_trace.Active() && view.SourceImage() && view.SourceImage()->Handle() &&
+        if (material_trace.Active() && !VideoCommon::FullCapture::Active() &&
+            view.SourceImage() && view.SourceImage()->Handle() &&
             (view.SourceImage()->Handle()->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) {
             // Snapshot a sampled depth surface at its first use, before later clears/reuse.
             // These are candidates for shadow maps, not an assertion that all are shadows.

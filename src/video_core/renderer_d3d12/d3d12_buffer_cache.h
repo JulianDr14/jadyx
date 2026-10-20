@@ -53,7 +53,7 @@ public:
     /// Records a barrier to next unless the buffer is already there (a UAV barrier for UAV ->
     /// UAV). Buffers decay to COMMON at the end of every ExecuteCommandLists, so the tracked state
     /// only holds within the list that set it.
-    void Transition(D3D12_RESOURCE_STATES next);
+    void Transition(D3D12_RESOURCE_STATES next, bool mark_written = true);
     [[nodiscard]] D3D12_RESOURCE_STATES State() const noexcept { return state; }
 
     /// Unique among the buffers of a runtime, never 0 (IndexRewriteCache keys).
@@ -76,7 +76,8 @@ private:
 
 /// A buffer bound for a traced draw (RasterizerD3D12::SetDrawTrace), checked against guest memory.
 struct TracedBuffer {
-    enum class Kind { Uniform, NullUniform, StreamedUniform, Vertex, Index, RewrittenIndex };
+    enum class Kind { Uniform, NullUniform, StreamedUniform, Vertex, Index, RewrittenIndex,
+                      Storage, Texture, Image };
     Kind kind{};
     u32 slot{};
     Buffer* buffer{}; ///< null for staging memory and null bindings
@@ -85,6 +86,7 @@ struct TracedBuffer {
     u32 stride{}; ///< vertex stride or index size
     DAddr device_addr{};
     const u8* mapped{}; ///< what the GPU reads of a streamed cbuf
+    bool written{};
 };
 
 class BufferCacheRuntime {

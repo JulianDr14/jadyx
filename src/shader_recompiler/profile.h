@@ -117,6 +117,10 @@ struct Profile {
     /// Maxwell and earlier nVidia architectures have broken robust support
     bool has_broken_robust{};
 
+    /// Lanes per wave (the maximum the host may use) when fragment shaders keep large guest local
+    /// memory in a storage buffer (local_memory_scratch.h); 0 keeps it in a private array.
+    u32 fragment_local_memory_scratch_lanes{};
+
     u64 min_ssbo_alignment{};
     u32 max_user_clip_distances{};
 

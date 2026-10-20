@@ -110,6 +110,7 @@ public:
     [[nodiscard]] u64 UniqueHash() const noexcept {
         return unique_hash;
     }
+    [[nodiscard]] std::span<const u8> DiagnosticDxil() const noexcept { return dxil; }
 
 private:
     void Build();

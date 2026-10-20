@@ -33,6 +33,7 @@
 #include "video_core/frame_trace.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
+#include "video_core/renderer_d3d12/d3d12_local_memory_scratch.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
@@ -462,6 +463,8 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .min_ssbo_alignment = 16,
         .max_user_clip_distances = 8,
     };
+    profile.fragment_local_memory_scratch_lanes =
+        SelectFragmentScratchLanes(device, compiler, caps.wave_ops, caps.wave_lane_count_max);
     host_info = Shader::HostTranslateInfo{
         .min_ssbo_alignment = 16,
         .max_per_stage_descriptor_sampled_images = 128,
@@ -932,6 +935,16 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             auto program_vb{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
             programs[index] = MergeDualVertexPrograms(program_va, program_vb, env);
         }
+        if (programs[index].info.global_memory_fallbacks != 0 ||
+            programs[index].info.global_memory_unresolved != 0) {
+            LOG_WARNING(Render,
+                        "D3D12: shader {:016x} (stage {}) uses global memory fallbacks: {} untracked, "
+                        "{} unresolved, stores {}",
+                        key.unique_hashes[index], index,
+                        programs[index].info.global_memory_fallbacks,
+                        programs[index].info.global_memory_unresolved,
+                        programs[index].info.stores_global_memory);
+        }
         if (Settings::values.dump_guest_shaders) {
             env.Dump(key.Hash(), key.unique_hashes[index]);
         }
@@ -1161,6 +1174,13 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
         env.Dump(key.Hash(), key.unique_hash);
     }
     auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
+    if (program.info.global_memory_fallbacks != 0 || program.info.global_memory_unresolved != 0) {
+        LOG_WARNING(Render,
+                    "D3D12: compute shader {:016x} uses global memory fallbacks: {} untracked, "
+                    "{} unresolved, stores {}",
+                    key.unique_hash, program.info.global_memory_fallbacks,
+                    program.info.global_memory_unresolved, program.info.stores_global_memory);
+    }
     const std::vector<u32> code{EmitSPIRV(profile, program)};
 
     const std::array<ShaderCompiler::PipelineStage, 1> stages{{

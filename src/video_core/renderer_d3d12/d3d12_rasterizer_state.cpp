@@ -65,7 +65,8 @@ void RasterizerD3D12::TraceWatchedVertexShader(u64 vertex_shader) {
 void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
                                     const PipelineBindings& bindings,
                                     const Framebuffer& framebuffer, const DrawParams& params,
-                                    Maxwell::PrimitiveTopology topology) {
+                                    Maxwell::PrimitiveTopology topology,
+                                    std::span<const D3D12_CPU_DESCRIPTOR_HANDLE> compatible_targets) {
     const auto& regs = maxwell3d->regs;
     const PipelineLayout& layout = pipeline.Layout();
     CommandStream* const cmd = scheduler.CommandList();
@@ -84,7 +85,8 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
     MarkGpuCommands(cmd, "draw VS/PS", pipeline.Key().unique_hashes[1],
                     pipeline.Key().unique_hashes[5]);
 
-    const auto selected_targets = DrawColorTargets(framebuffer.ColorTargets(),
+    const auto selected_targets = DrawColorTargets(
+        compatible_targets.empty() ? framebuffer.ColorTargets() : compatible_targets,
         pipeline.BoundColorTargets(), texture_runtime.NullRenderTarget(
             MaxwellToD3D12::SampleCount(pipeline.Key().state.msaa_mode) > 1));
     const std::span<const D3D12_CPU_DESCRIPTOR_HANDLE> color_targets{
@@ -212,7 +214,7 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
                     "different front and back stencil references; using the front");
     }
 
-    SetGraphicsRootArguments(cmd, layout, bindings, params);
+    SetGraphicsRootArguments(cmd, pipeline, bindings, params);
 
     const D3D12_PRIMITIVE_TOPOLOGY d3d_topology =
         MaxwellToD3D12::PrimitiveTopology(topology, regs.patch_vertices);
@@ -225,9 +227,10 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
 }
 
 void RasterizerD3D12::SetGraphicsRootArguments(CommandStream* cmd,
-                                               const PipelineLayout& layout,
+                                               const GraphicsPipeline& pipeline,
                                                const PipelineBindings& bindings,
                                                const DrawParams& params) {
+    const PipelineLayout& layout = pipeline.Layout();
     // Consecutive draws of one pipeline mostly repeat their root arguments: only changes are set.
     auto& cached = command_state.root_args;
     if (!cached.valid || cached.push_constants != bindings.push_constants) {
@@ -246,6 +249,9 @@ void RasterizerD3D12::SetGraphicsRootArguments(CommandStream* cmd,
     static_assert(runtime_size <= std::tuple_size_v<decltype(cached.runtime_words)>);
     std::array<u32, std::tuple_size_v<decltype(cached.runtime_words)>> runtime_words{};
     std::memcpy(runtime_words.data(), &runtime_data, sizeof(runtime_data));
+    if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Data("graphics_runtime",
+        fmt::format("{{\"op\":{}}}", full_capture_operation),
+        {reinterpret_cast<const u8*>(&runtime_data), sizeof(runtime_data)});
     if (!cached.valid || cached.runtime_words != runtime_words) {
         cmd->SetGraphicsRoot32BitConstants(
             PipelineLayout::RUNTIME_DATA_INDEX,
@@ -268,6 +274,14 @@ void RasterizerD3D12::SetGraphicsRootArguments(CommandStream* cmd,
         cmd->SetGraphicsRootConstantBufferView(layout.IntegerSamplerIndex(),
                                                bindings.integer_samplers);
         cached.integer_samplers = bindings.integer_samplers;
+    }
+    if (layout.LocalMemoryScratchIndex() != PipelineLayout::NO_TABLE) [[unlikely]] {
+        const D3D12_GPU_VIRTUAL_ADDRESS pool = local_memory_pool.Address(
+            pipeline_cache.FragmentScratchLanes(), pipeline.LocalMemoryScratchWords());
+        if (!cached.valid || cached.local_memory_scratch != pool) {
+            cmd->SetGraphicsRootUnorderedAccessView(layout.LocalMemoryScratchIndex(), pool);
+            cached.local_memory_scratch = pool;
+        }
     }
     cached.valid = true;
 }

@@ -27,6 +27,7 @@
 #include "video_core/compatible_formats.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/guest_memory.h"
+#include "video_core/readback_trace.h"
 #include "video_core/memory_manager.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/decode_bc.h"
@@ -550,6 +551,10 @@ void SwizzlePitchLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr
         const u32 guest_offset = guest_offset_x + guest_offset_y;
         gpu_memory.WriteBlockUnsafe(gpu_addr + guest_offset, memory.data() + host_offset_y,
                                     row_length);
+        if (FullCapture::Active()) FullCapture::Data("guest_image_write", fmt::format(
+            "{{\"gpu_address\":{},\"layout\":\"pitch\",\"row\":{},\"format\":{}}}",
+            gpu_addr + guest_offset, line, static_cast<u32>(info.format)),
+            memory.subspan(host_offset_y, row_length));
     }
 }
 
@@ -594,6 +599,10 @@ void SwizzleBlockLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr
 
             SwizzleTexture(dst, src, bytes_per_block, num_tiles.width, num_tiles.height,
                            num_tiles.depth, block.height, block.depth);
+            if (FullCapture::Active()) FullCapture::Data("guest_image_write_payload", fmt::format(
+                "{{\"gpu_address\":{},\"layout\":\"block\",\"mip\":{},\"layer\":{},\"format\":{}}}",
+                gpu_addr + guest_offset, level, layer, static_cast<u32>(info.format)),
+                {dst.data(), dst.size()});
         }
 
         host_offset += host_bytes_per_layer;

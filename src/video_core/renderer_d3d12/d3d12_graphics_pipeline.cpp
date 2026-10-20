@@ -7,6 +7,7 @@
 #include <optional>
 #include <cstddef>
 #include <cstring>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <unordered_set>
@@ -17,7 +18,9 @@
 #include "common/alignment.h"
 #include "common/bug_tracker.h"
 #include "common/cityhash.h"
+#include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "video_core/diagnostics/full_capture.h"
 #include "video_core/gpu_thread.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "video_core/frame_trace.h"
@@ -264,6 +267,8 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
         enabled_uniform_buffer_masks[stage] = info->constant_buffer_mask;
         std::ranges::copy(info->constant_buffer_used_sizes, uniform_buffer_sizes[stage].begin());
         has_images |= !info->image_descriptors.empty();
+        local_memory_scratch_words =
+            std::max(local_memory_scratch_words, info->local_memory_scratch_words);
     }
     namespace FT = VideoCore::FrameTrace;
     const u64 trace_pipeline = reinterpret_cast<uintptr_t>(this);
@@ -417,6 +422,8 @@ D3D12_GPU_VIRTUAL_ADDRESS IntegerSamplerTable::Upload(BufferCache& buffer_cache)
     for (const auto& [binding, state] : rows) {
         std::memcpy(ref.mapped_span.data() + binding * sizeof(state), &state, sizeof(state));
     }
+    if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Data("integer_sampler_states",
+        fmt::format("{{\"num_bindings\":{}}}", num_bindings), ref.mapped_span.first(size));
     return ref.buffer->GetGPUVirtualAddress() + ref.offset;
 }
 
@@ -581,6 +588,8 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                                          image_view);
                 }
                 image_transitions.emplace_back(view_id, false);
+                if (out.trace_all_views) out.trace_all_views->push_back(
+                    {view_id, false, desc.type, aliases_depth && depth_feedback_ready});
                 if (out.trace_views) {
                     out.trace_views->push_back(view_id);
                 }
@@ -616,6 +625,7 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     // (DEPTH_SAMPLED_STATE) and the draw binds the read-only DSV.
     BarrierBatch barriers{context.scheduler};
     for (const auto& [view_id, is_storage] : image_transitions) {
+        if (out.trace_all_views && is_storage) out.trace_all_views->push_back({view_id, true});
         if (GpuDiagnosticsEnabled()) {
             const auto& view = texture_cache.GetImageView(view_id);
             TraceGpuDetail(fmt::format("graphics image tick={} PSO={} guest={:x} resource={} storage={}",
@@ -794,6 +804,35 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
     desc.SampleDesc = {.Count = MaxwellToD3D12::SampleCount(state.msaa_mode), .Quality = 0};
 
     return desc;
+}
+
+ComPtr<ID3D12PipelineState> GraphicsPipeline::CreatePickProbePipeline(
+    std::span<const u8> ps, bool float_outputs) const {
+    if (!dxil || key.unique_hashes[1] != 0x17d43777e7441cf4ULL ||
+        key.unique_hashes[5] != 0x0b7e4e46d61d3694ULL || has_stage[1] || has_stage[2] ||
+        has_stage[3] || layout.NumResourceDescriptors() != 5 ||
+        layout.NumSamplerDescriptors() != 4) {
+        throw std::runtime_error("pick probe: unsupported linked interface");
+    }
+    for (const auto& info : stage_infos) {
+        if (info && (!info->storage_buffers_descriptors.empty() ||
+                     !info->image_descriptors.empty() || !info->image_buffer_descriptors.empty()))
+            throw std::runtime_error("pick probe: side effects rejected");
+    }
+    std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
+    auto desc = Describe(elements);
+    if (desc.SampleDesc.Count != 1 || desc.DSVFormat != DXGI_FORMAT_UNKNOWN ||
+        desc.NumRenderTargets != 3 || desc.DepthStencilState.DepthEnable ||
+        desc.DepthStencilState.StencilEnable)
+        throw std::runtime_error("pick probe: unsupported framebuffer");
+    desc.PS = {ps.data(), ps.size()};
+    if (float_outputs) {
+        for (u32 i = 0; i < 3; ++i) desc.RTVFormats[i] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    }
+    ComPtr<ID3D12PipelineState> result;
+    ThrowIfFailed(device.Get()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&result)),
+                  "pick capture probe pipeline");
+    return result;
 }
 
 ComPtr<ID3D12PipelineState> GraphicsPipeline::CreateMaterialProbePipeline(

@@ -167,11 +167,11 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
     return *this;
 }
 
-void Buffer::Transition(D3D12_RESOURCE_STATES next) {
+void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
     if (!scheduler || !buffer) {
         return;
     }
-    if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS || next == D3D12_RESOURCE_STATE_COPY_DEST) {
+    if (mark_written && (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS || next == D3D12_RESOURCE_STATE_COPY_DEST)) {
         ++generation;
     }
     const u64 tick = scheduler->CurrentTick();
@@ -298,6 +298,10 @@ void BufferCacheRuntime::Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src,
     if (dst) dst->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
     if (src) src->Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
     for (const auto& copy : copies) {
+        if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Event("buffer_copy",
+            fmt::format("{{\"src_address\":{},\"dst_address\":{},\"src_offset\":{},\"dst_offset\":{},\"size\":{}}}",
+                src ? src->CpuAddr() : 0, dst ? dst->CpuAddr() : 0,
+                copy.src_offset, copy.dst_offset, copy.size));
         cmd->CopyBufferRegion(dst_raw, copy.dst_offset, src_raw, copy.src_offset, copy.size);
         if (dst) dst->MarkUsage(copy.dst_offset, copy.size);
         if (src) src->MarkUsage(copy.src_offset, copy.size);
@@ -574,6 +578,10 @@ void BufferCacheRuntime::BindStorageBuffer(Buffer& buffer, u32 offset, u32 size,
                                  : D3D12_RESOURCE_STATE_GENERIC_READ);
     const u64 available = buffer.SizeBytes() > offset ? buffer.SizeBytes() - offset : 0;
     const u32 clamped = static_cast<u32>(std::min<u64>(size, available));
+    if (trace_buffers) trace_buffers->push_back({.kind = TracedBuffer::Kind::Storage,
+        .slot = static_cast<u32>(trace_buffers->size()), .buffer = &buffer,
+        .offset = offset, .size = clamped, .device_addr = buffer.CpuAddr() + offset,
+        .written = is_written});
     descriptor_queue->AddStorageBuffer(clamped != 0 ? buffer.Handle() : nullptr, offset, clamped);
 }
 
@@ -583,6 +591,10 @@ void BufferCacheRuntime::BindTextureBuffer(Buffer& buffer, u32 offset, u32 size,
         return;
     }
     buffer.Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
+    if (trace_buffers) trace_buffers->push_back({.kind = TracedBuffer::Kind::Texture,
+        .slot = static_cast<u32>(trace_buffers->size()), .buffer = &buffer,
+        .offset = offset, .size = size, .stride = static_cast<u32>(format),
+        .device_addr = buffer.CpuAddr() + offset});
     descriptor_queue->AddTexelBuffer(buffer.Handle(), offset, size, SurfaceFormat(format).view,
                                      VideoCore::Surface::BytesPerBlock(format), false);
 }
@@ -593,6 +605,10 @@ void BufferCacheRuntime::BindImageBuffer(Buffer& buffer, u32 offset, u32 size,
         return;
     }
     buffer.Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    if (trace_buffers) trace_buffers->push_back({.kind = TracedBuffer::Kind::Image,
+        .slot = static_cast<u32>(trace_buffers->size()), .buffer = &buffer,
+        .offset = offset, .size = size, .stride = static_cast<u32>(format),
+        .device_addr = buffer.CpuAddr() + offset, .written = true});
     descriptor_queue->AddTexelBuffer(buffer.Handle(), offset, size, SurfaceFormat(format).view,
                                      VideoCore::Surface::BytesPerBlock(format), true);
 }

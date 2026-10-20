@@ -27,6 +27,29 @@
 #include "video_core/texture_cache/texture_cache.h"
 
 namespace D3D12 {
+std::optional<D3D12_RESOURCE_STATES> Image::DiagnosticState(ID3D12Resource* tracked_resource) const {
+    if (!tracked_resource) return std::nullopt;
+    if (tracked_resource == Handle()) return state;
+    if (tracked_resource == reinterpreted.Get()) return reinterpreted_state;
+    if (tracked_resource == slice_array.Get()) return slice_array_state;
+    if (depth_feedback && tracked_resource == depth_feedback->Handle()) return depth_feedback->State();
+    return std::nullopt;
+}
+
+void Image::DiagnosticTransition(ID3D12Resource* tracked_resource, D3D12_RESOURCE_STATES next) {
+    if (!tracked_resource) throw std::runtime_error("null diagnostic resource");
+    auto* tracked = tracked_resource == Handle() ? &state : tracked_resource == reinterpreted.Get()
+        ? &reinterpreted_state : tracked_resource == slice_array.Get() ? &slice_array_state : nullptr;
+    if (tracked) {
+        if (*tracked != next) TextureDetail::TransitionBuffer(runtime->scheduler.CommandList(), tracked_resource, *tracked, next);
+        *tracked = next;
+    } else if (depth_feedback && tracked_resource == depth_feedback->Handle()) {
+        depth_feedback->DiagnosticTransition(tracked_resource, next);
+    } else {
+        throw std::runtime_error("full capture resource is not tracked by image");
+    }
+}
+
 
 using namespace TextureDetail;
 
@@ -131,6 +154,13 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
 TextureCacheRuntime::~TextureCacheRuntime() {
     transfer_buffers.SetReclaimer({});
     scheduler.DrainForShutdown();
+    for (auto& scratch : mrt_scratch) {
+        if (scratch.rtv.ptr) rtv_descriptors.Free(scratch.rtv);
+        scratch.rtv = {};
+        scratch.image.reset();
+    }
+    scheduler.DrainForShutdown();
+    LOG_INFO(Render, "D3D12: normalized {} mismatched MRT draws", mrt_normalizations);
     rtv_descriptors.Free(null_rtv);
     rtv_descriptors.Free(null_rtv_ms);
     LOG_INFO(Render, "D3D12: {}", texture_allocator.Report());

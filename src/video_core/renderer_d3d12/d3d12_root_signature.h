@@ -40,6 +40,8 @@ constexpr u32 INDIRECT_DISPATCH_WORDS = INDIRECT_DISPATCH_CONSTANT_WORDS + 3;
 ///  - root CBV, integer sampler states (eden_integer_sampler_state per texture binding): b0
 ///    space 29, only when a texture is integer. D3D12 cannot Sample() integer resources, so
 ///    spirv_to_dxil turns those samples into texel loads and emulates the sampler with this data
+///  - root UAV, local memory pool (Shader::LocalMemoryScratch): u0 space 28, pixel stage only,
+///    when the fragment shader keeps its local memory there
 ///
 /// Descriptor tables follow the binding stream of the SPIR-V backend with
 /// unified_descriptor_binding: one counter over the pipeline's stages in order and, inside each
@@ -72,6 +74,9 @@ public:
     u32 IntegerSamplerIndex() const noexcept {
         return integer_sampler_index;
     }
+    u32 LocalMemoryScratchIndex() const noexcept {
+        return local_memory_scratch_index;
+    }
     u32 NumResourceDescriptors() const noexcept {
         return num_resources;
     }
@@ -102,6 +107,7 @@ private:
     u32 resource_table_index{NO_TABLE};
     u32 sampler_table_index{NO_TABLE};
     u32 integer_sampler_index{NO_TABLE};
+    u32 local_memory_scratch_index{NO_TABLE};
     u32 num_resources{};
     u32 num_samplers{};
 };

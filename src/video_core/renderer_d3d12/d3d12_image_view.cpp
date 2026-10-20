@@ -316,6 +316,24 @@ std::string ImageView::DescribeSrv(Shader::TextureType texture_type, bool depth_
                        srv_params.mapping);
 }
 
+ImageView::DiagnosticView ImageView::DiagnosticSrv(Shader::TextureType declared, bool feedback) const {
+    DiagnosticView result{srv_resource ? srv_resource : image, srv_params.base_level,
+        srv_params.levels, srv_params.base_layer, srv_params.layers,
+        static_cast<u32>(srv_params.format), srv_params.mapping};
+    if (auto* source = SourceImage()) {
+        if (feedback && source->DepthFeedback()) result.resource = source->DepthFeedback()->Handle();
+        if (declared == Shader::TextureType::ColorArray2D &&
+            srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D) {
+            result.resource = source->DiagnosticSliceArray();
+            result.base_layer = 0;
+            result.layers = result.resource ? result.resource->GetDesc().DepthOrArraySize : 0;
+        }
+    }
+    result.null_srv = !result.resource || !IsSrvDimensionCompatible(declared,
+        result.resource->GetDesc(), result.base_layer, result.layers);
+    return result;
+}
+
 D3D12_CPU_DESCRIPTOR_HANDLE ImageView::Handle(Shader::TextureType texture_type) const noexcept {
     const size_t index = static_cast<size_t>(texture_type);
     if (index >= srvs.size() || !runtime) {

@@ -331,6 +331,15 @@ public:
     u32 render_are_member_index{};
 
     Id local_memory{};
+    /// Pool storage buffer holding local memory instead of `local_memory`, see
+    /// LocalMemoryScratch. Valid only when the shader keeps local memory in the pool.
+    Id local_memory_scratch{};
+    Id local_memory_scratch_element{};
+    u32 local_memory_scratch_words{};
+    /// Pool index of word 0 of this lane, returned by the acquire function at the prologue.
+    Id local_memory_lane_base{};
+    Id local_memory_acquire_func{};
+    Id local_memory_release_func{};
 
     bool uses_explicit_workgroup_layout{};
     Id shared_memory_u8{};
@@ -402,7 +411,8 @@ private:
     void DefineCommonTypes(const Info& info);
     void DefineCommonConstants();
     void DefineInterfaces(const IR::Program& program);
-    void DefineLocalMemory(const IR::Program& program);
+    void DefineLocalMemory(IR::Program& program);
+    void DefineLocalMemoryScratch(u32 words, bool tracks_lanes);
     void DefineSharedMemory(const IR::Program& program);
     void DefineSharedMemoryFunctions(const IR::Program& program);
     void DefineConstantBuffers(const Info& info, u32& binding);
@@ -423,5 +433,8 @@ private:
     void DefineInputs(const IR::Program& program);
     void DefineOutputs(const IR::Program& program);
 };
+
+/// Frees the local memory pool slot for the lanes leaving here (no-op without a pool).
+void EmitLocalMemoryRelease(EmitContext& ctx);
 
 } // namespace Shader::Backend::SPIRV

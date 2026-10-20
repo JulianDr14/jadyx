@@ -15,6 +15,7 @@
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
+#include "video_core/readback_trace.h"
 #include "video_core/texture_cache/util.h"
 
 namespace VideoCommon {
@@ -754,6 +755,8 @@ void BufferCache<P>::PopAsyncBuffers() {
         async_downloads.ForEachInRange(device_addr, copy.size, [&](DAddr start, DAddr end, s32) {
             device_memory.WriteBlockUnsafe(start, &read_mapped_memory[start - device_addr],
                                            end - start);
+            ReadbackTrace::Log("buffer async", start, end - start,
+                               {&read_mapped_memory[start - device_addr], end - start});
         });
         async_downloads.Subtract(device_addr, copy.size, [&](DAddr start, DAddr end) {
             gpu_modified_ranges.Subtract(start, end - start);
@@ -1986,6 +1989,8 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
             const u64 dst_offset = copy.dst_offset - download_staging.offset;
             const u8* copy_mapped_memory = mapped_memory + dst_offset;
             device_memory.WriteBlockUnsafe(copy_device_addr, copy_mapped_memory, copy.size);
+            ReadbackTrace::Log("buffer sync", copy_device_addr, copy.size,
+                               {copy_mapped_memory, copy.size});
         }
     } else {
         const std::span<u8> immediate_buffer = ImmediateBuffer(largest_copy);
@@ -1993,6 +1998,8 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
             buffer.ImmediateDownload(copy.src_offset, immediate_buffer.subspan(0, copy.size));
             const DAddr copy_device_addr = buffer.CpuAddr() + copy.src_offset;
             device_memory.WriteBlockUnsafe(copy_device_addr, immediate_buffer.data(), copy.size);
+            ReadbackTrace::Log("buffer immediate", copy_device_addr, copy.size,
+                               immediate_buffer.first(copy.size));
         }
     }
 }

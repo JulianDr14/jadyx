@@ -103,6 +103,12 @@ struct PipelineBindContext {
 
 /// Root arguments of one draw, filled by GraphicsPipeline::Configure.
 struct PipelineBindings {
+    struct CapturedImageView {
+        VideoCommon::ImageViewId id;
+        bool storage{};
+        Shader::TextureType declared{};
+        bool depth_feedback{};
+    };
     D3D12_GPU_DESCRIPTOR_HANDLE resource_table{};
     D3D12_GPU_DESCRIPTOR_HANDLE sampler_table{};
     std::array<u32, PUSH_CONSTANT_WORDS> push_constants{};
@@ -114,6 +120,8 @@ struct PipelineBindings {
     std::vector<std::string>* trace_filters{};
     /// With trace_views: the Shader::TextureType each texture is declared as.
     std::vector<u32>* trace_types{};
+    /// Full forensic capture: every sampled/storage image, in descriptor order.
+    std::vector<CapturedImageView>* trace_all_views{};
     /// A texture of the draw is the bound depth buffer: bind it read-only (DEPTH_SAMPLED_STATE).
     bool depth_sampled{};
 };
@@ -244,6 +252,14 @@ public:
     [[nodiscard]] const PipelineLayout& Layout() const noexcept {
         return layout;
     }
+    /// Words per lane of the local memory pool the fragment stage uses, or 0 without it.
+    [[nodiscard]] u32 LocalMemoryScratchWords() const noexcept {
+        return local_memory_scratch_words;
+    }
+    [[nodiscard]] std::span<const u8> DiagnosticDxil(size_t stage) const noexcept {
+        return dxil && stage < dxil->size() ? std::span<const u8>{(*dxil)[stage]}
+                                          : std::span<const u8>{};
+    }
 
     [[nodiscard]] const StageBindings& StageInfo(size_t stage) const noexcept {
         static const StageBindings empty{};
@@ -298,6 +314,10 @@ public:
         bool reflection_probe = false,
         DXGI_FORMAT output_format = DXGI_FORMAT_R32G32B32A32_FLOAT) const;
 
+    /// Private capture controls for the exact picking interface; never used for guest draws.
+    ComPtr<ID3D12PipelineState> CreatePickProbePipeline(std::span<const u8> ps,
+                                                       bool float_outputs) const;
+
     /// Port of Vulkan's ConfigureImpl: synchronizes and binds the guest's buffers and textures,
     /// writes the descriptor tables and transitions sampled and storage images. The render
     /// targets are updated last (UpdateRenderTargets) but not transitioned. Records no
@@ -337,6 +357,7 @@ private:
     std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
     VideoCommon::UniformBufferSizes uniform_buffer_sizes{};
     bool has_images{};
+    u32 local_memory_scratch_words{};
     bool flatten_retry{};    ///< Build(true) hit a driver fault: retry with flattened branches.
     bool flattened_vertex{}; ///< dxil holds the flattened vertex stage.
     u8 bound_color_targets{}; ///< Computed once from the immutable PSO write masks.

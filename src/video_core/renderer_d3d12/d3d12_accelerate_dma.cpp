@@ -9,9 +9,13 @@ namespace D3D12 {
 AccelerateDMA::AccelerateDMA(BufferCache& buffers, TextureCache& textures)
     : buffer_cache{buffers}, texture_cache{textures} {}
 bool AccelerateDMA::BufferCopy(GPUVAddr src, GPUVAddr dst, u64 amount) {
+    if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Event("dma_buffer_copy",
+        fmt::format("{{\"src\":{},\"dst\":{},\"size\":{}}}", src, dst, amount));
     std::scoped_lock lock{buffer_cache.mutex}; return buffer_cache.DMACopy(src, dst, amount);
 }
 bool AccelerateDMA::BufferClear(GPUVAddr address, u64 amount, u32 value) {
+    if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Event("dma_buffer_clear",
+        fmt::format("{{\"address\":{},\"size\":{},\"value\":{}}}", address, amount, value));
     std::scoped_lock lock{buffer_cache.mutex}; return buffer_cache.DMAClear(address, amount, value);
 }
 template <bool IS_UPLOAD>
@@ -19,6 +23,9 @@ bool AccelerateDMA::BufferImageCopy(const Tegra::DMA::ImageCopy& info,
                                     const Tegra::DMA::BufferOperand& buffer_operand,
                                     const Tegra::DMA::ImageOperand& image_operand) {
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+    if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Event("dma_image_buffer",
+        fmt::format("{{\"upload\":{},\"buffer_address\":{},\"pitch\":{},\"height\":{}}}",
+                    IS_UPLOAD, buffer_operand.address, buffer_operand.pitch, buffer_operand.height));
     const auto image_id = texture_cache.DmaImageId(image_operand, IS_UPLOAD);
     if (image_id == VideoCommon::NULL_IMAGE_ID) return false;
     const u32 size = static_cast<u32>(buffer_operand.pitch * buffer_operand.height);

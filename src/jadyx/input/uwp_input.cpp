@@ -162,6 +162,20 @@ PadState ReadGamepad(const ControllerDevice& pad, const ControllerOptions& optio
     if (reading.RightTrigger > TRIGGER_THRESHOLD) {
         state.buttons |= Bit(VirtualButton::TriggerZR);
     }
+    {
+        // Diagnostic: press/release of L, A and ZR, to line up guest GPU activity with them.
+        static std::atomic<u64> last_logged{};
+        const u64 watched = state.buttons & (Bit(VirtualButton::TriggerL) |
+                                             Bit(VirtualButton::ButtonA) |
+                                             Bit(VirtualButton::TriggerZR));
+        const u64 previous = last_logged.exchange(watched);
+        if (previous != watched) {
+            LOG_WARNING(Input, "Pad: L {} A {} ZR {}",
+                        (watched & Bit(VirtualButton::TriggerL)) ? "down" : "up",
+                        (watched & Bit(VirtualButton::ButtonA)) ? "down" : "up",
+                        (watched & Bit(VirtualButton::TriggerZR)) ? "down" : "up");
+        }
+    }
     ApplyDeadzone(reading.LeftThumbstickX, reading.LeftThumbstickY, options.deadzone, state.left_x, state.left_y);
     ApplyDeadzone(reading.RightThumbstickX, reading.RightThumbstickY, options.deadzone, state.right_x,
                   state.right_y);

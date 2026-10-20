@@ -38,6 +38,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/frame_trace.h"
 #include "video_core/perf_counters.h"
+#include "video_core/readback_trace.h"
 #include "video_core/renderer_base.h"
 #include "video_core/shader_notify.h"
 
@@ -252,7 +253,27 @@ struct GPU::Impl {
 
     VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size) {
         auto raster_area = renderer->ReadRasterizer()->GetFlushArea(addr, size);
+        const auto capture_memory = [&] {
+            if (!VideoCommon::FullCapture::Active()) return;
+            if (size > (16ULL << 20)) {
+                VideoCommon::FullCapture::Omit("cpu_read_range_limit");
+                return;
+            }
+            std::array<u8, 4096> bytes{};
+            for (u64 offset = 0; offset < size;) {
+                const u64 count = std::min<u64>(bytes.size(), size - offset);
+                system.Host1x().MemoryManager().ReadBlockUnsafe(addr + offset, bytes.data(), count);
+                VideoCommon::FullCapture::Data("cpu_read_memory_snapshot", fmt::format(
+                    "{{\"address\":{},\"request_size\":{},\"chunk_offset\":{}}}",
+                    addr, size, offset), std::span<const u8>{bytes}.first(count));
+                offset += count;
+            }
+        };
+        if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Event("cpu_read_check",
+            fmt::format("{{\"address\":{},\"size\":{},\"preemptive\":{},\"start\":{},\"end\":{}}}",
+                        addr, size, raster_area.preemtive, raster_area.start_address, raster_area.end_address));
         if (raster_area.preemtive) {
+            capture_memory();
             return raster_area;
         }
         raster_area.preemtive = true;
@@ -261,6 +282,9 @@ struct GPU::Impl {
         });
         gpu_thread.TickGPU(is_async);
         WaitForSyncOperation(fence);
+        VideoCommon::ReadbackTrace::LogCpuReadFlush(addr, size, raster_area.start_address,
+                                                    raster_area.end_address);
+        capture_memory();
         return raster_area;
     }
 

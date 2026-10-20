@@ -160,6 +160,7 @@ private:
     void RecordCopy(const StagingBufferRef& upload, PresentFrame& frame);
     /// Submits the recorded frame and hands it to the present manager.
     void Present(FrameLease&& frame);
+    void CaptureGuestPresent(FrameLease& frame);
     /// Records a copy of frame into readback memory (before Present).
     StagingBufferRef RecordFrameReadback(PresentFrame& frame);
     /// Waits for the copy and writes it as frame.bmp next to the log: the one way to see what
@@ -228,6 +229,7 @@ private:
     bool logged_accelerated{};
     u32 accelerated_frames{};
     u32 material_trace_presents_remaining{};
+    u64 material_guest_presents{};
     bool logged_fallback{};
     u32 indicator_frames{}; ///< frames the shader indicator has been drawn, for its animation
     std::chrono::steady_clock::time_point last_load_present{};

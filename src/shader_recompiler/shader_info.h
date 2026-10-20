@@ -275,6 +275,9 @@ struct Info {
 
     bool stores_global_memory{};
     bool uses_local_memory{};
+    /// Words of local memory the backend placed in the scratch pool (local_memory_scratch.h), 0
+    /// when it stays in a private array. Set by the SPIR-V backend.
+    u32 local_memory_scratch_words{};
 
     bool uses_fp16{};
     bool uses_fp64{};
@@ -311,6 +314,10 @@ struct Info {
     bool uses_atomic_s32_max{};
     bool uses_int64_bit_atomics{};
     bool uses_global_memory{};
+    // Global memory accesses that could not be mapped to a storage buffer and run through the
+    // slower NVN fallback functions: untracked by the pass, or with no trackable low address.
+    u32 global_memory_fallbacks{};
+    u32 global_memory_unresolved{};
     bool uses_atomic_image_u32{};
     bool uses_shadow_lod{};
     bool uses_rescaling_uniform{};

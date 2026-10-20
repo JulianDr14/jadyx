@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <exception>
+#include <chrono>
 #include <optional>
 #include <span>
 #include <string>
@@ -11,6 +12,8 @@
 #include <utility>
 
 #include "common/logging.h"
+#include "common/fs/path_util.h"
+#include "video_core/renderer_d3d12/diagnostics/d3d12_local_memory_matrix.h"
 #include "common/settings.h"
 #include "core/frontend/emu_window.h"
 #include "core/frontend/graphics_context.h"
@@ -126,7 +129,20 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& emu_window,
         Texture2DDesc(swapchain.Width(), swapchain.Height(), Swapchain::FORMAT);
     dev->GetCopyableFootprints(&image_desc, 0, 1, 0, &footprint, nullptr, nullptr, &upload_size);
 
+    const auto matrix_dir = Common::FS::GetExeDirectory() / "local_memory_matrix";
+    std::error_code matrix_error;
+    if (std::filesystem::exists(matrix_dir / "enabled.flag", matrix_error)) {
+        static std::atomic_bool matrix_ran{};
+        if (!matrix_ran.exchange(true)) {
+            const auto stamp = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            RunLocalMemoryMatrix(dev, matrix_dir,
+                Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) /
+                    fmt::format("local_memory_matrix_{}.jsonl", stamp));
+        }
+    }
     blit_ready = CreateBlitPipeline();
+    if (VideoCommon::FullCapture::TakeSelfTest()) rasterizer.RunFullCaptureSelfTest();
 
     // Present one dark-blue frame straight away: on-console, a blue screen before the guest draws
     // anything proves the device and swapchain work independently of the emulation.
@@ -195,16 +211,6 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
                 constexpr u32 DUMP_INTERVAL = 600;
                 constexpr u32 MAX_DUMPS = 12;
                 ++accelerated_frames;
-                if (material_trace_presents_remaining != 0) {
-                    // This is the exact composited image copied by PresentManager to DXGI,
-                    // including crop/scale/overlays. Copy before handing its lease over.
-                    frame->Transition(scheduler.CommandList(), D3D12_RESOURCE_STATE_COPY_SOURCE);
-                    rasterizer.CaptureMaterialPresent(frame->image.Get(), accelerated_frames);
-                }
-                if (material_trace_presents_remaining != 0 &&
-                    --material_trace_presents_remaining == 0) {
-                    rasterizer.EndMaterialTrace();
-                }
                 const bool diagnostics = frame_diagnostics.load(std::memory_order_relaxed);
                 const bool dump = diagnostics && accelerated_frames >= DUMP_FRAME &&
                                   (accelerated_frames - DUMP_FRAME) % DUMP_INTERVAL == 0 &&
@@ -213,6 +219,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
                 if (dump) {
                     readback = RecordFrameReadback(*frame);
                 }
+                CaptureGuestPresent(frame);
                 Present(std::move(frame));
                 if (readback) {
                     WriteFrameDump(*readback, (accelerated_frames - DUMP_FRAME) / DUMP_INTERVAL);
@@ -244,23 +251,6 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
                     requested_trace = false;
                     LOG_INFO(Render, "D3D12: draw trace of frame {} complete", traced_frame);
                 }
-                const u32 automatic_capture = material_capture_frame.load(std::memory_order_relaxed);
-                const bool capture_requested = material_trace_requested.exchange(false, std::memory_order_acquire);
-                if (capture_requested || (automatic_capture != 0 && accelerated_frames == automatic_capture)) {
-                    const bool started = rasterizer.BeginMaterialTrace(
-                        material_trace_shader.load(std::memory_order_relaxed),
-                        material_probe_x.load(std::memory_order_relaxed),
-                        material_probe_y.load(std::memory_order_relaxed),
-                        {material_snapshot_first.load(std::memory_order_relaxed),
-                         material_snapshot_second.load(std::memory_order_relaxed)},
-                        {material_snapshot_vertices_first.load(std::memory_order_relaxed),
-                         material_snapshot_vertices_second.load(std::memory_order_relaxed)});
-                    // Game A may present while recording a guest frame's preliminary passes.
-                    // Include the next interval too; draw/text budgets span both intervals.
-                    material_trace_presents_remaining = started ? 2 : 0;
-                    LOG_INFO(Render, "D3D12 material frame {}: {}", accelerated_frames + 1,
-                             started ? "begin (2 present intervals; up to 3 target snapshots)" : "busy: draw trace active");
-                }
             } else if (const bool has_image = ReadGuestLayer(framebuffer);
                        blit_ready && has_image) {
                 PrepareGuestImage(static_cast<u32>(crop_width), static_cast<u32>(crop_height));
@@ -279,6 +269,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
                                          .width = guest_width,
                                          .height = guest_height,
                                          .crop = {0.0f, 0.0f, 1.0f, 1.0f}});
+                CaptureGuestPresent(frame);
                 Present(std::move(frame));
             } else {
                 const StagingBufferRef upload =
@@ -286,6 +277,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
                 ScaleGuestImage(framebuffer, upload.mapped_span.data(),
                                 footprint.Footprint.RowPitch);
                 RecordCopy(upload, *frame);
+                CaptureGuestPresent(frame);
                 Present(std::move(frame));
             }
             const auto present_end = std::chrono::steady_clock::now();
@@ -311,6 +303,41 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
         LOG_CRITICAL(Render, "{} - rasterizer frame tick failed", e.what());
     }
     render_window.OnFrameDisplayed();
+}
+
+void RendererD3D12::CaptureGuestPresent(FrameLease& frame) {
+    ++material_guest_presents;
+    if (material_trace_presents_remaining) {
+        frame->Transition(scheduler.CommandList(), D3D12_RESOURCE_STATE_COPY_SOURCE);
+        rasterizer.CaptureMaterialPresent(frame->image.Get(), material_guest_presents);
+        if (--material_trace_presents_remaining == 0) rasterizer.EndMaterialTrace();
+    }
+    // A repeated menu request must not cancel the active capture's end countdown.
+    if (material_trace_presents_remaining) return;
+    const auto automatic = material_capture_frame.load(std::memory_order_relaxed);
+    if (!material_trace_requested.exchange(false, std::memory_order_acquire) &&
+        (!automatic || material_guest_presents != automatic)) return;
+    const bool started = rasterizer.BeginMaterialTrace(
+        material_trace_shader.load(std::memory_order_relaxed),
+        material_probe_x.load(std::memory_order_relaxed), material_probe_y.load(std::memory_order_relaxed),
+        {material_snapshot_first.load(std::memory_order_relaxed),
+         material_snapshot_second.load(std::memory_order_relaxed)},
+        {material_snapshot_vertices_first.load(std::memory_order_relaxed),
+         material_snapshot_vertices_second.load(std::memory_order_relaxed)});
+    material_trace_presents_remaining = started ? 2 : 0;
+    if (started && VideoCommon::FullCapture::Active()) {
+        VideoCommon::FullCapture::Text("adapter", device.AdapterName());
+        VideoCommon::FullCapture::Event("capture_frame", fmt::format(
+            "{{\"first_present\":{},\"present_intervals\":2}}", material_guest_presents + 1));
+        D3D12_FEATURE_DATA_D3D12_OPTIONS caps{};
+        if (SUCCEEDED(device.Get()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &caps, sizeof(caps))))
+            VideoCommon::FullCapture::Data("device_caps", "{}", {reinterpret_cast<const u8*>(&caps), sizeof(caps)});
+        D3D12_FEATURE_DATA_D3D12_OPTIONS1 caps1{};
+        if (SUCCEEDED(device.Get()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &caps1, sizeof(caps1))))
+            VideoCommon::FullCapture::Data("device_caps1", "{}", {reinterpret_cast<const u8*>(&caps1), sizeof(caps1)});
+    }
+    LOG_INFO(Render, "D3D12 material frame {}: {}", material_guest_presents + 1,
+             started ? "begin (2 present intervals)" : "busy: capture not started");
 }
 
 void RendererD3D12::Present(FrameLease&& frame) {
