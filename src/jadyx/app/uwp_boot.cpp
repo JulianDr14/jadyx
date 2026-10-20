@@ -351,6 +351,7 @@ struct BootConfig {
     unsigned rom_storage_checks{}; // 1=record token, 2=restore after a process restart
     bool file_manager_gate{};
     bool network_import_gate{};
+    bool log_export_gate{};
     bool astc_sync{};
     bool astc_fresh{};
     /// Played by hand ("play=1"): runs until the app is closed, without frame dumps or draw trace.
@@ -401,6 +402,9 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     if (config.rom_storage_checks)
         return RunRomStorageGate(config.rom_storage_checks == 2, WriteDiag) ? 0 : 15;
     if (config.file_manager_gate) return RunFileManagerGate(WriteDiag) ? 0 : 15;
+    if (config.log_export_gate) return RunLogExportGate(
+        std::filesystem::path{std::wstring{winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()}},
+        WriteDiag) ? 0 : 15;
     if (config.network_import_gate) return RunNetworkImportGate(
         std::filesystem::path{std::wstring{winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()}},
         WriteDiag) ? 0 : 15;
@@ -2708,6 +2712,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.file_manager_gate = true;
                         } else if (line == "network_import_gate=1") {
                             config.network_import_gate = true;
+                        } else if (line == "log_export_gate=1") {
+                            config.log_export_gate = true;
                         } else if (line == "rom_storage_checks=restore") {
                             config.rom_storage_checks = 2;
                         } else if (line == "astc_verify=1") {

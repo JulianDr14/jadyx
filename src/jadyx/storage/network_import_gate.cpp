@@ -7,12 +7,84 @@
 #include <memory>
 #include <stdexcept>
 #include <vector>
+#include <zstd.h>
 #include "common/httplib.h"
 #include <nlohmann/json.hpp>
 #include "jadyx/storage/network_portal.h"
 #include "jadyx/storage/nsp_import.h"
 
 namespace Jadyx {
+bool RunLogExportGate(const std::filesystem::path& local,
+                      const std::function<void(std::string)>& diagnostic) {
+    namespace fs = std::filesystem;
+    using Json = nlohmann::json;
+    const auto require = [](bool ok, const char* message) {
+        if (!ok) throw std::runtime_error(message);
+    };
+    try {
+        const auto fixture = local / ("log-export-gate-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+        const auto logs = fixture / "log";
+        fs::create_directories(logs / "trace" / "empty");
+        { std::ofstream file{logs / "jadyx_log.txt"}; file << "private synthetic log fixture\n"; }
+        { std::ofstream file{logs / "trace" / "empty.bin", std::ios::binary}; }
+        { std::ofstream file{logs / "trace" / "blobs.bin", std::ios::binary};
+          for (unsigned i = 0; i < (1U << 20); ++i) file.put(static_cast<char>(i * 13 + i / 4096)); }
+        NetworkPortal portal;
+        portal.SetLogDirectory(logs);
+        require(portal.Start("127.0.0.1", 18081), "log gate bind");
+        httplib::Client client{"127.0.0.1", 18081}; client.set_read_timeout(10);
+        const auto paired = client.Post("/api/v1/pair", {{"Origin", "http://127.0.0.1:18081"}},
+            Json{{"code", portal.Status().code}}.dump(), "application/json");
+        require(paired && paired->status == 200, "log gate pairing");
+        const httplib::Headers auth{{"Authorization", "Bearer " +
+            Json::parse(paired->body).at("session").get<std::string>()}};
+        const auto start = client.Post("/api/v1/logs/export", auth, "{}", "application/json");
+        require(start && start->status == 202, "log gate start");
+        Json value;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{15};
+        do {
+            const auto response = client.Get("/api/v1/status", auth);
+            require(response && response->status == 200, "log gate progress");
+            value = Json::parse(response->body).at("logs");
+            if (!value.at("busy").get<bool>()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        } while (std::chrono::steady_clock::now() < deadline);
+        require(value.at("phase") == "ready", "log gate archive preparation");
+        const auto grant = client.Post("/api/v1/logs/download", auth, "{}", "application/json");
+        require(grant && grant->status == 200, "log gate download grant");
+        const auto url = Json::parse(grant->body).at("download").get<std::string>();
+        const auto downloaded = client.Get(url);
+        require(downloaded && downloaded->status == 200, "log gate download");
+        const auto ranged = client.Get(url, {{"Range", "bytes=7-63"}});
+        require(ranged && ranged->status == 206 && ranged->body == downloaded->body.substr(7, 57),
+                "log gate exact range retry");
+        std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> decoder{ZSTD_createDCtx(), ZSTD_freeDCtx};
+        require(bool(decoder), "log gate decoder");
+        std::vector<char> bytes(65536);
+        ZSTD_inBuffer input{downloaded->body.data(), downloaded->body.size(), 0};
+        std::ofstream tar{fixture / "download.tar", std::ios::binary};
+        std::size_t remaining = 1;
+        while (input.pos < input.size) {
+            ZSTD_outBuffer output{bytes.data(), bytes.size(), 0};
+            remaining = ZSTD_decompressStream(decoder.get(), &output, &input);
+            require(!ZSTD_isError(remaining), "log gate zstd checksum");
+            tar.write(bytes.data(), output.pos);
+        }
+        require(remaining == 0 && tar.good(), "log gate complete tar"); tar.close();
+        { std::ofstream compressed{fixture / "download.tar.zst", std::ios::binary};
+          compressed.write(downloaded->body.data(), downloaded->body.size()); }
+        portal.Stop();
+        diagnostic("LOG EXPORT GATE PASS: HTTP/range/zstd, files=" + value.at("files").dump() +
+                   " input=" + value.at("total").dump() + " packed=" + value.at("compressed").dump());
+        diagnostic("LOG EXPORT GATE fixture: " + fixture.string());
+        return true;
+    } catch (const std::exception& error) {
+        diagnostic(std::string{"LOG EXPORT GATE FAIL: "} + error.what());
+        return false;
+    }
+}
+
 bool RunNetworkImportGate(const std::filesystem::path& local,
                           const std::function<void(std::string)>& diagnostic) {
     namespace fs = std::filesystem;
