@@ -28,6 +28,8 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 
 ## Rendimiento y evidencia
 
+- [Operaciones Fermi2D](xbox_fermi2d.md): diagnóstico 0.3.4.9 para identificar operación, ROP, superficies y ruta antes de corregir efectos.
+
 - [Rendimiento](xbox_performance.md): perfiles, optimizaciones y prioridades pendientes.
 - [Preparación y reutilización de PSO](xbox_pipeline_preparation.md): identidad host, trabajo único, residencia por fence y gates Game A.
 - [Preparación CPU de draws](xbox_draw_preparation.md): baseline Game D, metadata, samplers y subasignación de uniform buffers.

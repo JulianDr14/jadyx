@@ -1,5 +1,32 @@
 # AGENTS.md: guía para agentes de IA en Jadyx (fork de JulianDr14)
 
+Investigación Hyrule19oct2026: rama feature/hyrule-crash-memory. Primer candidato
+recoge retiros antes de ampliar heaps y usa capacidad mínima alineada bajo
+presión app/DXGI; pooling64MiB normal conservado. Policy38136/packing1248000 y
+GPUdesktopdebug6recursos/31052bytes pasan; objetoUWPcorrecto. Link integrado,
+gateallocator completo, cargaHyrule/Series y memoria/FPS pendientes. No drenaje
+del ringgenérico8frames ni cambiosMesa/staging/JIT/DRAM/cuota5120; sinpaquete/commit.
+Detalle y límites: docs/xbox/xbox_hyrule_crash.md.
+
+Entrega solicitada0.3.4.8: buildUWP/link incremental correctos, APPX normalbiblioteca
+firmado en build-uwp/package/jadyx.appx, símbolos0.3.4.8 archivados. CRCZIP/735
+bloques/firmamatemáticaCMS y exeidénticoalbuild/símbolos correctos; sinpayloadusuario
+nidiagnósticos. Incluye candidatoheaps anterior; cargaHyrule/ahorroreal/Series
+pendientes, sincertificarcrashresuelto. Sincommit/push.
+
+GateSeries.8logs:3Hyrule/retorno10biblioteca sincrashnuevo/OOM/RenderError. Última
+appmaxmuestreada4741MiB/margen379;19heapscompactos confirmados, recuperaciones19
+sinbytesliberados/pending0/reused0/trim0. NoA/B: Pulse/DRAMdistintos; no declarar
+crashresuelto ni1178MiBahorroneto(contadorporreserva). FFmpegInvalidData yPulse
+throwscontrolados separados; últimoguardadoéxito11,333s. Ver xbox_hyrule_crash.md.
+
+Usuario confirmapasozonacrash.8 ypriorizaFPS/tirones; Pulse/vídeoaparcados.
+Logs:77,603spipelinestalls en97,637s, frames51/30s; previasventanas30FPS.
+Desglosecompilaciones>=250ms(frontend/cola/Mesa/firma/drivergraphics-compute)
+yshutdownstats implementado,4objetosUWPcorrectos. Sólocandidato diagnóstico,
+sinlink/paquete/FPScertificados; vigente.8 nocontienenuevoslogs. Detalle en
+docs/xbox/xbox_hyrule_crash.md. FFmpegcambiosretirados, pendientesanotados.
+
 Índice de documentación Xbox/UWP: [`docs/xbox/README.md`](docs/xbox/README.md).
 
 Léelo entero antes de tocar nada. Resume qué hacemos, en qué punto estamos y cómo trabajamos. El
@@ -1162,3 +1189,5 @@ incompatibles pasa retorno0; catálogos/TCP/browser pasan. APPX biblioteca firma
 en build-uwp/package/jadyx.appx, símbolos0.3.4.3; Series pendiente, sin commits/push.
 Trampa broker: normalizar staging.make_preferred antes de GetFolderFromPathAsync.
 Usuario informa misma velocidad0.3.4.1 (~14.8MiB/s), PC/Xbox ambos Wi-Fi.
+
+Paquete diagnóstico Fermi2D 0.3.4.9: snapshots acotados de operación/ROP/superficies/ruta; comportamiento del motor conservado. Diseño en docs/xbox/xbox_fermi2d.md. Gate Series y corrección semántica pendientes; sin commit nuevo.

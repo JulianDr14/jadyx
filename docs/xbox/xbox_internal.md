@@ -3994,3 +3994,87 @@ make_preferred antes del broker. Catálogos, navegador simulado y TCP autenticad
 Entrega0.3.4.3 solicitada, paquete biblioteca firmado y símbolos archivados; Series pendiente.
 Evidencia/comandos y límites en xbox_network_portal.md. Usuario confirma misma velocidad
 0.3.4.1 que0.3.4.0 (~14.8MiB/s), ambos extremos Wi-Fi; ninguna mejora Series demostrada.
+
+## Investigación memoria Hyrule — 19 octubre 2026
+
+En `feature/hyrule-crash-memory`, comparación de logs0.3.0.0/0.3.4.7 sitúa
+crashes en spirv_to_dxil bajo presión: bad_alloc antiguo, reserva staging64MiB
+rechazada/reintentada reciente, último commit5045/5120MiB. PDB0.3.4.7 resuelve
+DispatchCompute -> CreateComputePipeline -> CompilePipeline -> Mesa; falta DLL
+simbolizada/reproducción para demostrar asignación interna NULL. No fuga probada.
+Investigación Microsoft/Mesa/D3D12MA/Xenia/Dolphin/RPCS3 y gates en
+[xbox_hyrule_crash.md](xbox_hyrule_crash.md). Huecos: guard64MiB de staging no
+impone admisión tras recuperación insuficiente, compute inline sin guard Mesa,
+temporales concurrentes y cargas entre frames. Propuesta: admisión coordinada,
+uploads acotados por fence, recuperación efectiva y heaps sensibles a presupuesto;
+no cambiar DRAM/cuota/JIT ni continuar silenciosamente saltando dispatches.
+Solo documentación; implementación, reproducción y Series pendientes.
+
+Prioridad revisada por usuario19oct: recuperación anticipada real y reservas
+ajustadas primero; admisiónMesa/capuploads aplazados. Log confirmaUMA/cachecoherent
+yes y DXGI4147MiB, app5120 (no sumar). GCya inicia768/384/192MiBfree: investigar
+retención8ticks en sentenced_images antes del retiroD3D12 y falta de mantenimiento
+durante cargas, no solo adelantar umbrales. Allocator best-fit abrebase64MiB sin
+selección anticipada por presupuesto; comparar menorheap/committed exacto bajo
+presión conservando poolingnormal. FuentesXboxUWP/D3D12 y gatesR1/R2 en
+xbox_hyrule_crash.md; sin cambiosfuncionales/build/paquete.
+
+Candidato19oct implementado: allocator D3D12 recoge retiros antesdecrecer,
+rebusca/reserva bajo lock, espera tickanterior solo recordingthread/pendientes
+yuna vezportick; trimvacíos y nueva muestra app/DXGI. Bajo presión proyectada
+eligeheapmínimoalineado envezdebase64MiB, normalconservapool. MSAAheapalineado4MiB
+ycompatible. Logscomparanapp/heaps/pending ycapacidadevitada(noahorrocommit).
+38136policy/1248000packing yGPUdesktopdebug6formatos/31052bytesexactos pasan;
+objetoUWPpasa. GateGPU noinstanciaallocatorcompleto; integración/Series/Hyrule,
+ringgenérico8frames/scratch ychurnpendientes. Sinlink/paquete/commit.
+TrampaharnessWindows: macro`small` colisionaconidentificador; usacompact_size.
+Comandos/evidencia/límites en xbox_hyrule_crash.md.
+
+Entrega0.3.4.8 solicitada19oct: buildincremental/linkUWPcorrectos; biblioteca
+normalfirmada en build-uwp/package/jadyx.appx, símbolos0.3.4.8. Verificación
+CRC/34archivos/735bloquesCMSmath/exebuild-símbolos idénticos correcta. Sinpayload
+usuario/gates/debug. Cierra linkpaquete; HyruleSeries/ahorromemoria/churn pendientes,
+sincrashresueltocertificado ni commit/push. Hashes/evidencia en xbox_hyrule_crash.md.
+
+LogsSeries.8:3sesionesHyrule/retorno10biblioteca, tramo.8sinCRASH/badalloc;
+RenderError/Critical/OOM/assert0. Últimaappmaxmuestreada4741/5120(margen379),
+19heapsajustados/37,0625MiBtotal ejercitados;19recoveriesconpending0/reused0/
+trim0: recuperación efectiva no demostrada. Heaps933MiB/33,picolive895; avoided1178
+escontadorpordecisión,noahorronetocontrabaselinepooling. Pulse reanudado yDRAM2153
+vs3063previa impidenA/Bcausal/crashresueltocertificado.86FFmpegInvalidData ythrows
+Pulsecontrolados(guardadofinalsaved11,333s) separados. Detalles/evidencia en
+xbox_hyrule_crash.md ytest-results/hyrule-memory/series-0.3.4.8-20261019.
+
+Usuario confirma pasarzona conocida decrash trasguardar/reanudarPulse.8 ymenorRAM
+observada. AplazaPulse/vídeo, prioridadFPS/tirones. FFmpegpacket candidato retirado
+delárbol(solo patchprivadotest-results/video-decode), nointegrado nivalidado.
+Logs.8:ventanasprevias30FPS, luegoframes51,202s/29,940s; ventana97,637s tiene
+77,603spipelinestalls(~79,5%), GPUbusy0,802s,decodeCPUtexturas2,205s.
+NoatribuirFPSa86erroresVP9ocurridosmuchoantes. CuatroobjetosUWPconlogs>=250ms
+porfrontend/cola/Mesa/validatorlock/Validate/graphicsdriver/computefrontend-DXIL-driver
+compilan; snapshotPipelineStatsalcierre para sesionespocosframes. Sólo diagnóstico,
+sinlink/paquetenuevo ni FPSmejorados. Appxvigente.8 nocontienenuevoslogs; siguiente
+gatetransiciónSeriesconfrío/caliente antesdeoptimizarfase. Verxbox_hyrule_crash.md.
+
+Segundacaptura.8:retorno10/sincrashnuevo,maxappmuestreada3982/5120(margen1138),
+heaps832/13,growthrecoveries0. Ventanas15,97/13,92/16,15FPS,p50~45–52ms:
+hayFPSbasebajo ademásdepipelinestalls1,782/7,914/2,659s porventana~19–22s.
+GPUbusy5–7ms/frame,idlealto: host/guest/entregaporfilar,noCPUguestcausalprobada.
+174PSOboot29,15sagregadoworkers/max2,099s, noCPUbusy.134CriticalFermi2D
+Operationnotcopy sinaborto; valoroperationausente, investigarsemántica,nosilenciar.
+FFmpegInvalidData0. Logsarchivadoshyrule-memory/series-0.3.4.8-20261019-second;
+diagnósticosnuevos aúnnopackage. Sólo revisión, sincommit. Verxbox_hyrule_crash.md.
+
+## 19 octubre 2026: diagnóstico Fermi2D, paquete 0.3.4.9
+
+Solicitud del usuario: identificar la operación sin soporte antes de corregir el
+motor y comprobar efectos. Revisados SRV dimensions, geometry passthrough, BC copy
+y fase 4; contrastados registros con NVIDIA cl902d y pipeline 2D de Envytools.
+Fermi2D registra operación/nombre, ROP/betas/key/clip, superficies, coordenadas
+32.32 y ruta efectiva; máximo 32 estados exactos por motor, sin memoria guest
+adicional ni cambios de semántica. El Critical conserva operación/ROP aun al
+agotarse los snapshots. Incluye diagnósticos pendientes de shaders/PSO lentos.
+Diseño, límites y gate: [xbox_fermi2d.md](xbox_fermi2d.md). No atribuir todavía
+FPS ni efectos a esta operación; prueba Series con nuevos logs pendiente.
+
+Entrega .9 completada: build UWP, firma matemática SignedCms, CRC ZIP/BlockMap 34 archivos/735 bloques y correspondencia EXE/símbolos correctos. APPX en build-uwp/package/jadyx.appx; prueba Series pendiente.

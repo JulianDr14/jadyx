@@ -4,6 +4,9 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <chrono>
+#include <utility>
 #include "common/assert.h"
 #include "common/logging.h"
 #include "video_core/engines/fermi_2d.h"
@@ -30,7 +33,12 @@ Fermi2D::Fermi2D(MemoryManager& memory_manager_) : memory_manager{memory_manager
     execution_mask[FERMI2D_REG_INDEX(pixels_from_memory.src_y0) + 1] = true;
 }
 
-Fermi2D::~Fermi2D() = default;
+Fermi2D::~Fermi2D() {
+    if (unsupported_count != 0) {
+        LOG_WARNING(HW_GPU, "Fermi2D diagnostic summary: noncopy={} distinct_snapshots={} capacity=32 operation_writes={}",
+                    unsupported_count, unsupported_state_count, operation_write_count);
+    }
+}
 
 void Fermi2D::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
     rasterizer = rasterizer_;
@@ -39,6 +47,9 @@ void Fermi2D::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
 void Fermi2D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
     ASSERT_MSG(method < Regs::NUM_REGS, "Invalid Fermi2D register, increase the size of the Regs structure");
     regs.reg_array[method] = method_argument;
+    if (method == FERMI2D_REG_INDEX(operation)) {
+        ++operation_write_count;
+    }
 
     if (method == FERMI2D_REG_INDEX(pixels_from_memory.src_y0) + 1) {
         Blit();
@@ -54,6 +65,9 @@ void Fermi2D::CallMultiMethod(Core::System& system, u32 method, const u32* base_
 void Fermi2D::ConsumeSinkImpl(Core::System& system) {
     for (auto [method, value] : method_sink) {
         regs.reg_array[method] = value;
+        if (method == FERMI2D_REG_INDEX(operation)) {
+            ++operation_write_count;
+        }
     }
     method_sink.clear();
 }
@@ -61,7 +75,42 @@ void Fermi2D::ConsumeSinkImpl(Core::System& system) {
 void Fermi2D::Blit() {
     LOG_DEBUG(HW_GPU, "called. source address={:#x}, destination address={:#x}", regs.src.Address(), regs.dst.Address());
 
-    UNIMPLEMENTED_IF_MSG(regs.operation != Operation::SrcCopy, "Operation is not copy");
+    const bool noncopy = regs.operation != Operation::SrcCopy;
+    bool diagnostic = false;
+    if (noncopy) {
+        ++unsupported_count;
+        std::array<u32, 18> state{};
+        std::copy_n(regs.reg_array.begin() + 0x280 / 4, 14, state.begin());
+        state[14] = static_cast<u32>(regs.src.format);
+        state[15] = static_cast<u32>(regs.dst.format);
+        state[16] = regs.reg_array[0x88c / 4];
+        state[17] = (static_cast<u32>(regs.src.linear) << 16) |
+                    static_cast<u32>(regs.dst.linear);
+        const auto end = unsupported_states.begin() + unsupported_state_count;
+        if (unsupported_state_count < unsupported_states.size() &&
+            std::find(unsupported_states.begin(), end, state) == end) {
+            unsupported_states[unsupported_state_count++] = state;
+            diagnostic = true;
+        }
+    }
+    UNIMPLEMENTED_IF_MSG(noncopy, "Operation is not copy: operation={} rop={:#x}",
+                         static_cast<u32>(regs.operation), regs.reg_array[0x2a0 / 4]);
+    if (diagnostic) {
+        constexpr std::array names{"SrcCopyAnd", "ROPAnd", "Blend", "SrcCopy", "ROP",
+                                   "SrcCopyPremult", "BlendPremult"};
+        const auto operation = static_cast<u32>(regs.operation);
+        LOG_WARNING(HW_GPU, "Fermi2D diagnostic: snapshot={} occurrence={} operation={} ({}) operation_writes={} raw_register_offsets=bytes values=hex; behavior unchanged",
+                    unsupported_state_count, unsupported_count, operation,
+                    operation < names.size() ? names[operation] : "Unknown", operation_write_count);
+        // Exact raw state keeps enum domains, fixed-point coordinates and control bits intact.
+        for (const auto range : {std::pair{0x200u, 0x258u}, std::pair{0x260u, 0x2b8u},
+                                 std::pair{0x2e8u, 0x300u}, std::pair{0x880u, 0x8e0u}}) {
+            for (u32 offset = range.first; offset < range.second; offset += 4) {
+                LOG_WARNING(HW_GPU, "Fermi2D registers: snapshot={} offset={:#05x} value={:#010x}",
+                            unsupported_state_count, offset, regs.reg_array[offset / 4]);
+            }
+        }
+    }
     UNIMPLEMENTED_IF_MSG(regs.src.layer != 0, "Source layer is not zero");
     UNIMPLEMENTED_IF_MSG(regs.dst.layer != 0, "Destination layer is not zero");
     UNIMPLEMENTED_IF_MSG(regs.src.depth != 1, "Source depth is not one");
@@ -110,8 +159,19 @@ void Fermi2D::Blit() {
     }
 
     memory_manager.FlushCaching();
-    if (!rasterizer->AccelerateSurfaceCopy(src, regs.dst, config)) {
+    const auto started = diagnostic ? std::chrono::steady_clock::now() :
+                                     std::chrono::steady_clock::time_point{};
+    const bool accelerated = rasterizer->AccelerateSurfaceCopy(src, regs.dst, config);
+    if (!accelerated) {
         sw_blitter->Blit(src, regs.dst, config);
+    }
+    if (diagnostic) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        LOG_WARNING(HW_GPU, "Fermi2D result: snapshot={} accelerated={} host_elapsed_us={} src={:#x} dst={:#x} src_rect=({},{})-({},{}) dst_rect=({},{})-({},{}) pitch_adjusted={}; elapsed excludes FlushCaching and is not GPU time",
+                    unsupported_state_count, accelerated, elapsed, src.Address(), regs.dst.Address(),
+                    config.src_x0, config.src_y0, config.src_x1, config.src_y1,
+                    config.dst_x0, config.dst_y0, config.dst_x1, config.dst_y1, need_align_to_pitch);
     }
 }
 

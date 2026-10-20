@@ -72,6 +72,14 @@ public:
 
     void Free(KPhysicalAddress addr, size_t num_pages);
 
+    // Calls `f(address, size)` for each free block, of every size; a free page is in exactly one.
+    template <typename F>
+    void ForEachFreeBlock(F&& f) const {
+        for (size_t i = 0; i < m_num_blocks; i++) {
+            m_blocks[i].ForEachFreeBlock(f);
+        }
+    }
+
     static size_t CalculateManagementOverheadSize(size_t region_size) {
         return CalculateManagementOverheadSize(region_size, MemoryBlockPageShifts.data(),
                                                NumMemoryBlockPageShifts);
@@ -163,6 +171,14 @@ private:
 
             // We couldn't coalesce, or we're already as big as possible.
             return {};
+        }
+
+        // Calls `f(address, size)` for each free block of this size.
+        template <typename F>
+        void ForEachFreeBlock(F&& f) const {
+            m_bitmap.ForEachSetBit([&](size_t offset) {
+                f(m_heap_address + (offset << this->GetShift()), this->GetSize());
+            });
         }
 
         KPhysicalAddress PopBlock(bool random) {
