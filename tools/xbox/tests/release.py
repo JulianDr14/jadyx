@@ -31,7 +31,9 @@ with tempfile.TemporaryDirectory() as directory:
     assert release.validate("v0.3.0", manifest, [[]]) == "0.3.0.0"
     assert rejects("0.2.99", manifest, [[]])  # 0.2.99.0 <= 0.2.99.4: consoles would not update
     assert rejects("0.3", manifest, [[]])
-    assert rejects("0.3.0.1", manifest, [[]])
+    assert release.validate("0.3.0.1", manifest, [[]]) == "0.3.0.1"
+    assert rejects("0.03.0.1", manifest, [[]])
+    assert rejects("0.3.0.1", manifest, [[{"tag_name":"v0.3.0.2"}]])
     assert rejects("0.3.0-beta", manifest, [[]])
     assert rejects("0.3.70000", manifest, [[]])
 
@@ -46,7 +48,7 @@ with tempfile.TemporaryDirectory() as directory:
     release.bump("0.3.0.0", manifest)
     assert manifest.read_bytes() == manifest_text.replace("0.2.99.4", "0.3.0.0").encode("utf-8")
     assert release.manifest_version(manifest) == (0, 3, 0, 0)
-    assert rejects("0.3.0", manifest, [[]])  # now equal to the manifest
+    assert release.validate("0.3.0", manifest, [[]]) == "0.3.0.0"  # publish the already committed version
 
 log = "".join(f"{subject}\x1f{body}\x1e" for subject, body in [
     ("chore(uwp): bump version to 0.3.0.1", ""),

@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Publishes a release: Actions -> Release -> Run workflow (on main) with a version like 0.3.0.
-# It checks the version, builds and signs the appx, then commits the manifest bump, tags it
-# vMAJOR.MINOR.PATCH and creates the GitHub release with the package and the changelog. Nothing
-# is committed, tagged or published unless the build succeeds.
+# It requires the committed version, builds/signs the appx and metadata, then creates a draft
+# at that exact commit before publishing. It never creates commits or overwrites release assets.
 
 name: Release
 
@@ -12,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version to publish, MAJOR.MINOR.PATCH (e.g. 0.3.0)
+        description: Version to publish, MAJOR.MINOR.BUILD.REVISION (e.g. 0.3.6.0)
         required: true
         type: string
       highlights:
@@ -40,7 +39,7 @@ jobs:
       tag: ${{ steps.check.outputs.tag }}
     steps:
       - name: Only from main
-        if: github.ref != 'refs/heads/main'
+        if: github.ref != 'refs/heads/main' || github.repository != 'JulianDr14/jadyx'
         run: |
           echo "::error::Releases are made from main, not ${GITHUB_REF_NAME}"
           exit 1
@@ -57,8 +56,8 @@ jobs:
         run: |
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
           python3 tools/xbox/release.py version "$VERSION" --manifest dist/uwp/AppxManifest.xml \
-              --releases "$RUNNER_TEMP/releases.json" | tee -a "$GITHUB_OUTPUT"
-          tag="v${VERSION#v}"
+              --releases "$RUNNER_TEMP/releases.json" --match-manifest | tee -a "$GITHUB_OUTPUT"
+          tag="$(sed -n 's/^tag=//p' "$GITHUB_OUTPUT" | tail -1)"
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
               echo "::error::The tag $tag already exists"
               exit 1
@@ -95,17 +94,32 @@ jobs:
           name: jadyx-package
           path: out
 
-      - name: Commit the version and tag it
+      - name: Sign update metadata
+        shell: pwsh
+        env:
+          JADYX_PFX_BASE64: ${{ secrets.JADYX_PFX_BASE64 }}
+          JADYX_PFX_PASSWORD: ${{ secrets.JADYX_PFX_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "update-signing.pfx"
+          try {
+              [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:JADYX_PFX_BASE64))
+              $channel = if ($env:PRERELEASE -eq 'true') { 'preview' } else { 'stable' }
+              & tools/xbox/create-update.ps1 -Package "out/Jadyx_$($env:PACKAGE_VERSION)_x64.appx" -OutputDirectory out -Channel $channel -Notes $env:HIGHLIGHTS -PfxPath $pfx
+          } finally { if (Test-Path -LiteralPath $pfx) { Remove-Item -LiteralPath $pfx -Force } }
+
+      - name: Include update metadata in checksums
+        run: |
+          (cd out && find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\n' | LC_ALL=C sort | xargs sha256sum) > "$RUNNER_TEMP/SHA256SUMS.txt"
+          mv "$RUNNER_TEMP/SHA256SUMS.txt" out/SHA256SUMS.txt
+
+      - name: Record release source
         run: |
           previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)
           echo "PREVIOUS=$previous" >> "$GITHUB_ENV"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          python3 tools/xbox/release.py bump "$PACKAGE_VERSION" --manifest dist/uwp/AppxManifest.xml
-          git commit -am "chore(uwp): bump version to $PACKAGE_VERSION"
-          git tag -a "$TAG" -m "Jadyx ${TAG#v}"
-          # Atomic: if main moved since the build started, neither the commit nor the tag lands.
-          git push --atomic origin HEAD:main "$TAG"
+          # The version is already committed and matches the build. Never create bot-authored commits.
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
 
       - name: Write the release notes
         run: |
@@ -166,8 +180,17 @@ jobs:
           if [ "${version%%.*}" = "0" ]; then title="$title Beta"; fi
           flags=(--latest)
           if [ "$PRERELEASE" = "true" ]; then flags=(--prerelease --latest=false); fi
-          gh release create "$TAG" out/* --title "$title" --notes-file "$RUNNER_TEMP/notes.md" \
-              --verify-tag "${flags[@]}"
+          draft_flags=()
+          if [ "$PRERELEASE" = "true" ]; then draft_flags=(--prerelease); fi
+          gh release create "$TAG" out/* --repo JulianDr14/jadyx --verify-tag --draft --title "$title" --notes-file "$RUNNER_TEMP/notes.md" \
+              "${draft_flags[@]}"
+          test "$(gh api 'repos/JulianDr14/jadyx/git/ref/tags/'"$TAG" --jq .object.sha)" = "$GITHUB_SHA"
+          mkdir -p "$RUNNER_TEMP/update-verify"
+          gh release download "$TAG" --repo JulianDr14/jadyx -p update.json -p update.sig -p "Jadyx_${PACKAGE_VERSION}_x64.appx" --dir "$RUNNER_TEMP/update-verify"
+          for file in update.json update.sig "Jadyx_${PACKAGE_VERSION}_x64.appx"; do
+              cmp "out/$file" "$RUNNER_TEMP/update-verify/$file"
+          done
+          gh release edit "$TAG" --repo JulianDr14/jadyx --draft=false "${flags[@]}"
           echo "TITLE=$title" >> "$GITHUB_ENV"
 
       # The release is already out, so a Discord failure only warns. Pings Release Ping only for

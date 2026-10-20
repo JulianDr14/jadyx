@@ -63,6 +63,7 @@ enum class LibraryHit : unsigned {
     GameOptionSelect, ManagerTab, ManagerRow, ManagerCard,
     Category,   ///< A settings category (ConfigurationHomeRow).
     SettingRow, ///< A row of the settings category shown.
+    UpdateAction,
     NetworkAction, ///< Full-screen network page: back, renew code, stop.
 };
 /// A press: what, and which (the tab, the filter, the entry, the shelf position or the row).

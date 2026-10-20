@@ -1191,3 +1191,50 @@ Trampa broker: normalizar staging.make_preferred antes de GetFolderFromPathAsync
 Usuario informa misma velocidad0.3.4.1 (~14.8MiB/s), PC/Xbox ambos Wi-Fi.
 
 Paquete diagnóstico Fermi2D 0.3.4.9: snapshots acotados de operación/ROP/superficies/ruta; comportamiento del motor conservado. Diseño en docs/xbox/xbox_fermi2d.md. Gate Series y corrección semántica pendientes; sin commit nuevo.
+
+
+Actualizador19oct2026: rama feature/self-updater, candidato0.3.6.0. ConsultaGitHub
+estable/pruebas, manifiestoRSA/SHA256 fijadoalcertificadoJadyxDev, descargaWinRT
+reanudableRange/If-Range, pausa/cancelacion/ETA, journalatomico y pantallaes/en/ptBR
+connovedades/historialdesplazables. Asistenciaweb autenticada conticket2min/1uso y
+stream64KiB; PackageManager experimental desactivado, backendDevicePortalinterno/
+configcredenciales pendientesdelgateSeries. Harnessfirmas/38manifiestosinvalidos/
+HTTPadverso/versionadopasan; build/linkUWP ysmokeAppContainerbibliotecaResponding,
+consulta/journalreales correctos. APPXnormalfirmado0.3.6.0 enentregaunica ysimbolos;
+CRC/exeidentico/signerCMS/metadatafirmada verificados. Visual/concurrencia/suspension/
+discolleno/instalacionentre2versionesSeries pendientes; noautoupdatecertificado.
+Sincommit/push/publicacion. Detalle docs/xbox/xbox_updater.md.
+
+
+Prueba solicitada19oct: entrega local0.3.4.0 con código actualizador actual, override de empaquetado; manifest fuente0.3.6.0 conservado. APPX firmado en entrega única, CRC/EXE idéntico correctos; símbolos anteriores preservados, nuevos en symbols/0.3.4.0/updater-test-20261019. Release pública v0.3.5 tiene tag de tres componentes y carece de update.json/update.sig: cliente la omite; no prueba descarga/despliegue real hasta publicar metadata compatible. Sin publicación/commit/push. Downgrade sobre instalación superior puede ser rechazado; no desinstalar ni borrar datos para forzar prueba.
+
+
+Actualizador0.3.6: rama feature/self-updater, modularizado transporte/politica/
+validacionAPPX/estadoatomico/coordinador/UI. Red/hash fuera del render, buffers
+acotados, UI2Hz/cache y accionesarray. Gate PC: 40metadatosinvalidos/14APPX/
+13escenarios,25repeticiones, HTTP real+APPXfirmado+Range/restart correctos;
+Status~0,57usPC. ZIP64 real detecto fallolectorstreaming: seekcentraldirectory
+corregido. ReplaceFile1175 transitorio: retryacotado280ms. Portal tickets
+usoúnico/version/hash/121sexpiracion y stream protegido pasan. APPXnormal0.3.6
+firmado/34archivos/738bloques/AXPC-CD-BM-CT-CI y símbolos archivados; smoke
+AppContainerbibliotecaResponding, singuest. Sincommit/push/publicacion.
+InstalacionSeries/datos/mando/suspension/discollenoreal pendientes; producción
+usaasistenciamóvilPC, no certificarautoinstalaciónnisuperioridad. Detalle y
+hashfinal en docs/xbox/xbox_updater.md.
+
+
+Usuario solicita habilitarPackageManager: actualizador0.3.6 conecta ruta nativa
+principal y rescap packageManagement; Download(true)->verificación->admisiónlibre
+->targetpersistido->AddPackageAsync ForceApplicationShutdown. Adaptadorseparado,
+IsRegistered+HRESULT, URIescapada y archivo.appx. Suspensión no cancela despliegue;
+Preparing/Requested bloquean juego/escrituras y cambios/cancel. Confirmación solo
+arranquenuevo. Asistencia queda recuperación. Gate Series/reapertura/datos pendiente;
+no confundir habilitado con certificado. Sincommit/push/publicación. Detalle vigente
+al final de docs/xbox/xbox_updater.md.
+
+Gatecandidatonativo: buildUWP/link y19escenarios+10repeticiones pasan; respuestaOS
+inyectada, no autodespliegue real. AppContainer con packageManagement arrancaPC;
+mismaversion/capacidadnueva dio0x80073CFB: smoke temporal0.3.6.1 yregistroPC
+restaurado0.3.6 sin desinstalar. Entrega0.3.6 firmada normal/34archivos/738bloques,
+exe/símbolos idénticos, integralAPPX/HTTP real pasa, SHA en xbox_updater.md.
+Series/reemplazo/reapertura/datos pendientes. Sincommit/push/publicación.

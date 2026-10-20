@@ -16,6 +16,8 @@
 #include <atomic>
 #include <mutex>
 #include <set>
+#include <fstream>
+#include <fileapifromapp.h>
 #include <thread>
 
 namespace Jadyx {
@@ -271,6 +273,10 @@ std::vector<PortalAddress> PortalAddresses() {
 
 struct NetworkPortal::Impl {
     std::mutex admission;
+    std::function<std::optional<Updates::UpdatePackage>()> update_package;
+    std::optional<Updates::UpdatePackage> ticket_package;
+    std::string update_ticket;
+    Clock::time_point update_ticket_until{};
     bool imports_available{},system_supported{};
     std::mutex lifecycle;
     mutable std::mutex mutex;
@@ -292,6 +298,7 @@ struct NetworkPortal::Impl {
         {
             std::lock_guard lock{mutex};
             status.running = status.paired = false;
+            update_ticket.clear(); ticket_package.reset();
             status.code.clear(); status.url.clear(); session.clear();
         }
         if (server) { server->stop(); server->CancelClients(); server->decommission(); }
@@ -346,6 +353,11 @@ struct NetworkPortal::Impl {
             if (request.path == "/api/v1/pair" && request.method == "POST" &&
                 request.get_header_value("Origin") == "http://" + authority)
                 return httplib::Server::HandlerResponse::Unhandled;
+            if (request.method == "GET" && request.path == "/api/v1/update/package" &&
+                request.get_param_value_count("ticket")==1 && !update_ticket.empty() && Clock::now() < update_ticket_until &&
+                EqualSecret(request.get_param_value("ticket"), update_ticket)) {
+                return httplib::Server::HandlerResponse::Unhandled;
+            }
             if (request.get_header_value_count("Authorization") != 1 ||
                 !EqualSecret(request.get_header_value("Authorization"), "Bearer " + session) || session.empty()) {
                 Reply(response, 401, {{"error", "session"}});
@@ -378,6 +390,7 @@ struct NetworkPortal::Impl {
             if (next.empty()) { Reply(response, 503, {{"error", "random"}}); return; }
             // A code pairs one browser once. Existing sessions are invalidated on re-pairing.
             session = std::move(next);
+            update_ticket.clear(); ticket_package.reset();
             status.paired = true;
             expires = now;
             Reply(response, 200, {{"session", session}});
@@ -386,6 +399,58 @@ struct NetworkPortal::Impl {
             Reply(response, 200, {{"running", true}, {"stage", upload ? "nsp" : "connection-test"},
                 {"uploads", bool(upload)}, {"transfer", upload ? UploadJson(upload->Snapshot()) : Json::object()},
                 {"system_supported",system_supported},{"system",system ? SystemJson(system->Snapshot()) : Json::object()}});
+        });
+        server->Post("/api/v1/update/download", [this](const auto&, auto& response) {
+            std::lock_guard admission_lock{admission};
+            if ((system && system->Snapshot().busy) || (upload && !upload->BlockForLocalOperation())) {
+                Reply(response,409,{{"error","busy"}}); return;
+            }
+            std::lock_guard lock{mutex};
+            const auto package=update_package ? update_package() : std::nullopt;
+            if (!package) { Reply(response,409,{{"error","verify_in_app"}}); return; }
+            update_ticket=RandomSession(); update_ticket_until=Clock::now()+std::chrono::minutes{2}; ticket_package=package;
+            if (update_ticket.empty()) { Reply(response,503,{{"error","random"}}); return; }
+            Reply(response,200,{{"download","/api/v1/update/package?ticket="+update_ticket},{"filename",package->FileName()},{"version",package->version},{"size",package->size}});
+        });
+        server->Get("/api/v1/update/package", [this](const auto& request, auto& response) {
+            std::optional<Updates::UpdatePackage> package;
+            {
+                std::lock_guard lock{mutex};
+                // Consume in the route as well as checking in pre-routing: parallel GETs cannot replay it.
+                if (request.get_param_value_count("ticket")!=1 || update_ticket.empty() || Clock::now()>=update_ticket_until ||
+                    !EqualSecret(request.get_param_value("ticket"),update_ticket) || !ticket_package) {
+                    Reply(response,401,{{"error","ticket"}}); return;
+                }
+                const auto current=update_package ? update_package() : std::nullopt;
+                update_ticket.clear();
+                if (!current || *current!=*ticket_package) { ticket_package.reset(); Reply(response,409,{{"error","verify_in_app"}}); return; }
+                package=std::move(ticket_package); ticket_package.reset();
+            }
+            const auto& path=package->path;
+            const auto size=package->size;
+            // Hold a read-only handle without FILE_SHARE_WRITE/DELETE for the whole response.
+            // Pausing/cancelling or another download cannot change the bytes under the browser.
+            struct PackageReader {
+                HANDLE handle{INVALID_HANDLE_VALUE}; std::mutex io;
+                ~PackageReader() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+            };
+            const auto reader=std::make_shared<PackageReader>();
+            reader->handle=CreateFile2FromAppW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,OPEN_EXISTING,nullptr);
+            if (reader->handle == INVALID_HANDLE_VALUE) { Reply(response,409,{{"error","busy"}}); return; }
+            response.set_header("Content-Disposition", "attachment; filename="+package->FileName());
+            response.set_content_provider(static_cast<std::size_t>(size), "application/octet-stream",
+                [reader](std::size_t offset, std::size_t length, httplib::DataSink& sink) {
+                    std::lock_guard lock{reader->io};
+                    LARGE_INTEGER position{}; position.QuadPart=static_cast<LONGLONG>(offset);
+                    if (!SetFilePointerEx(reader->handle,position,nullptr,FILE_BEGIN)) return false;
+                    std::array<char, 65536> bytes{};
+                    while (length) {
+                        const auto take=static_cast<DWORD>(std::min(length,bytes.size())); DWORD received{};
+                        if (!ReadFile(reader->handle,bytes.data(),take,&received,nullptr) || received!=take || !sink.write(bytes.data(),take)) return false;
+                        length-=take;
+                    }
+                    return true;
+                });
         });
         UploadRoutes();
         SystemRoutes();
@@ -636,6 +701,9 @@ PortalStatus NetworkPortal::Status() const {
     return result;
 }
 
+void NetworkPortal::SetUpdatePackage(std::function<std::optional<Updates::UpdatePackage>()> package) {
+    std::lock_guard lock{impl->mutex}; impl->update_package = std::move(package);
+}
 void NetworkPortal::SetUploadsAvailable(bool enabled) {
     std::lock_guard lock{impl->admission};impl->imports_available=enabled;
     if(impl->system)impl->system->SetAvailable(enabled);

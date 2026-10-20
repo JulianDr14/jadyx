@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <thread>
+#include <future>
+#include <fstream>
 
 namespace {
 using Json = nlohmann::json;
@@ -71,6 +73,54 @@ int main(int argc,char** argv) {
           "authenticated connection gate, no upload endpoints");
     Check(status->body.find(token) == std::string::npos && status->body.find(initial.code) == std::string::npos,
           "status never returns secrets");
+    // Exercise the production update routes over real native TCP, not a mocked server.
+    Check(Status(client.Post("/api/v1/update/download", "{}", "application/json"))==401,"anonymous update preparation rejected");
+    Check(Status(client.Post("/api/v1/update/download", authenticated,"{}","application/json"))==409,"unverified update rejected");
+    const auto update_root=std::filesystem::absolute("build-uwp/test-results/network-portal/update-"+std::to_string(GetTickCount64()));
+    std::filesystem::create_directories(update_root);
+    const auto update_path=update_root/"package.appx";
+    const std::string update_bytes(8u<<20,'x');
+    {std::ofstream output{update_path,std::ios::binary};output.write(update_bytes.data(),update_bytes.size());}
+    std::mutex update_mutex;
+    std::optional<Jadyx::Updates::UpdatePackage> update=Jadyx::Updates::UpdatePackage{update_path,"0.3.6.0",std::string(64,'a'),update_bytes.size()};
+    portal.SetUpdatePackage([&] {std::lock_guard lock{update_mutex};return update;});
+    const auto grant=[&] {
+        auto result=client.Post("/api/v1/update/download",authenticated,"{}","application/json");
+        Check(Status(result)==200,"grant verified update");
+        const auto object=Json::parse(result->body);
+        Check(object.at("filename")=="Jadyx_0.3.6.0_x64.appx","versioned update filename");
+        return object.at("download").get<std::string>();
+    };
+    auto ticket=grant();
+    auto update_response=client.Get(ticket);
+    Check(Status(update_response)==200 && update_response->body==update_bytes,"stream exact verified update bytes");
+    Check(update_response->get_header_value("Content-Disposition").find("0.3.6.0")!=std::string::npos,"download content disposition");
+    Check(Status(client.Get(ticket))==401,"update ticket cannot replay");
+    Check(Status(client.Get("/api/v1/update/package",authenticated))==401,"authenticated GET still requires a ticket");
+    ticket=grant();
+    {std::lock_guard lock{update_mutex};update->sha256=std::string(64,'b');}
+    Check(Status(client.Get(ticket))==409,"ticket cannot deliver a replacement package");
+    ticket=grant();const auto replaced_ticket=grant();
+    Check(Status(client.Get(ticket))==401,"issuing another ticket revokes the previous one");
+    Check(Status(client.Get(replaced_ticket))==200,"replacement ticket delivers current package");
+    ticket=grant();
+    std::atomic<bool> receiving{},continue_download{};
+    auto read_update=std::async(std::launch::async,[&] {
+        httplib::Client download("127.0.0.1",port);download.set_read_timeout(10);
+        std::size_t received{};
+        auto result=download.Get(ticket,[&](const char* data,std::size_t size) {
+            Check(std::string_view{data,size}.find_first_not_of('x')==std::string_view::npos,"stream contents remain immutable");
+            received+=size;receiving=true;
+            while(!continue_download)std::this_thread::sleep_for(1ms);
+            return true;
+        });
+        Check(Status(result)==200 && received==update_bytes.size(),"pinned streaming update completes");
+    });
+    const auto receive_deadline=std::chrono::steady_clock::now()+5s;
+    while(!receiving){Check(std::chrono::steady_clock::now()<receive_deadline,"update stream started");std::this_thread::sleep_for(1ms);}
+    Check(!DeleteFileW(update_path.c_str()) && GetLastError()==ERROR_SHARING_VIOLATION,"in-flight stream prevents package deletion");
+    continue_download=true;read_update.get();
+    std::puts("PASS: real TCP verified update/auth/ticket replay/package binding/reissue/pinned stream");
     Check(portal.Status().paired && portal.Status().code_expired, "code consumed after pairing");
     Check(Status(client.Post("/api/v1/pair", headers, Json{{"code", initial.code}}.dump(), "application/json")) == 401,
           "code cannot be replayed");
@@ -86,6 +136,11 @@ int main(int argc,char** argv) {
     if(Status(oversized)!=413)std::fprintf(stderr,"oversized status=%d transport=%d\n",Status(oversized),static_cast<int>(oversized.error()));
     Check(Status(oversized) == 413,
           "bounded HTTP request body");
+    if(argc>1 && std::string_view{argv[1]}=="--update-expiry") {
+        ticket=grant(); const auto expiry=std::chrono::steady_clock::now()+121s;
+        while(std::chrono::steady_clock::now()<expiry)std::this_thread::sleep_for(100ms);
+        Check(Status(client.Get(ticket))==401,"expired update ticket rejected");
+    }
     portal.Stop();
     Check(!portal.Status().running && portal.Status().code.empty(), "stop clears secrets");
     Check(!portal.RenewCode(), "cannot renew stopped server");
