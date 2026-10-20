@@ -21,6 +21,15 @@
 namespace D3D12 {
 
 void RasterizerD3D12::DrawIndirect() {
+    const bool full = VideoCommon::FullCapture::Active();
+    if (full) {
+        ++full_capture_operation;
+        VideoCommon::FullCapture::Event("draw_indirect_begin", fmt::format("{{\"op\":{}}}", full_capture_operation));
+    }
+    const u64 full_operation = full_capture_operation;
+    SCOPE_EXIT {
+        if (full) VideoCommon::FullCapture::Event("draw_indirect_call_end", fmt::format("{{\"op\":{}}}", full_operation));
+    };
     ++draw_counter;
     HuntScope hunt{draw_hunt, Hunt::Kind::DrawIndirect};
     const IndirectParams& params = maxwell3d->draw_manager.indirect_state;
@@ -76,6 +85,17 @@ void RasterizerD3D12::DrawIndirect() {
     lock_timer.Locked();
     // With the indirect state set, Configure also synchronizes the argument and count buffers.
     PipelineBindings bindings;
+    FullCaptureViews full_views;
+    std::vector<TracedBuffer> full_buffers;
+    std::vector<std::string> full_samplers;
+    if (full) {
+        bindings.trace_all_views = &full_views;
+        bindings.trace_filters = &full_samplers;
+        buffer_runtime.SetTraceBuffers(&full_buffers);
+        for (u32 index = 0; index < Maxwell::NumVertexArrays; ++index)
+            maxwell3d->dirty.flags[VideoCommon::Dirty::VertexBuffer0 + index] = true;
+    }
+    SCOPE_EXIT { buffer_runtime.SetTraceBuffers(nullptr); };
     buffer_cache.SetDrawIndirect(&params);
     pipeline->Configure(params.is_indexed,
                         {*maxwell3d, *gpu_memory, buffer_cache, texture_cache, descriptor_queue,
@@ -113,6 +133,25 @@ void RasterizerD3D12::DrawIndirect() {
     const u32 record_words = INDIRECT_DRAW_CONSTANT_WORDS + guest_words;
     const u64 record_size = record_words * sizeof(u32);
     const u64 guest_stride = params.stride != 0 ? params.stride : guest_words * sizeof(u32);
+    if (full) {
+        CaptureFullPipeline(*pipeline, bindings);
+        const u64 size = (draw_count - 1) * guest_stride + guest_words * sizeof(u32);
+        if (size <= UINT32_MAX) full_buffers.push_back({.kind = TracedBuffer::Kind::Storage,
+            .buffer = buffer, .offset = offset, .size = static_cast<u32>(size),
+            .device_addr = buffer->CpuAddr() + offset});
+        else VideoCommon::FullCapture::Omit("indirect_args_size");
+        if (params.include_count) {
+            const auto [count_buffer, count_src] = buffer_cache.GetDrawIndirectCount();
+            full_buffers.push_back({.kind = TracedBuffer::Kind::Storage, .buffer = count_buffer,
+                .offset = static_cast<u32>(count_src), .size = sizeof(u32),
+                .device_addr = count_buffer->CpuAddr() + count_src});
+        }
+        VideoCommon::FullCapture::Event("draw_indirect_parameters", fmt::format(
+            "{{\"op\":{},\"max_draws\":{},\"guest_stride\":{},\"indexed\":{},\"include_count\":{}}}",
+            full_capture_operation, draw_count, guest_stride, params.is_indexed, params.include_count));
+        CaptureFullBuffers(full_buffers, false);
+        CaptureFullImages(full_views, framebuffer, false);
+    }
     std::array<D3D12_VIEWPORT, Maxwell::NumViewports> viewports{};
     const ViewportState viewport_state = ComputeViewports(viewports);
     indirect_words.assign(static_cast<size_t>(draw_count) * record_words + 1, 0);
@@ -153,17 +192,25 @@ void RasterizerD3D12::DrawIndirect() {
         .is_indexed = params.is_indexed,
         .runtime_first_vertex = 0,
     };
+    const auto compatible = texture_runtime.PrepareCompatibleDrawTargets(
+        *framebuffer, pipeline->BoundColorTargets());
     BindDrawState(*pipeline, bindings, *framebuffer, draw_params,
-                  maxwell3d->draw_manager.draw_state.topology);
+                  maxwell3d->draw_manager.draw_state.topology, compatible);
     {
         const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
         cmd->ExecuteIndirect(signature, draw_count, range.buffer, range.offset,
                              params.include_count ? range.buffer : nullptr,
                              params.include_count ? count_offset : 0);
     }
+    texture_runtime.FinishCompatibleDrawTargets(*framebuffer);
     hunt.Recorded();
     // The command signature wrote the runtime data constants: the next draw sets them again.
     command_state.root_args.valid = false;
+    if (full) {
+        CaptureFullBuffers(full_buffers, true);
+        CaptureFullImages(full_views, framebuffer, true);
+        VideoCommon::FullCapture::Event("draw_indirect_end", fmt::format("{{\"op\":{}}}", full_capture_operation));
+    }
     if (!logged_indirect_draw) {
         LOG_INFO(Render, "D3D12: first indirect draw recorded ({}, up to {} draws{})",
                  params.is_indexed ? "indexed" : "non-indexed", draw_count,

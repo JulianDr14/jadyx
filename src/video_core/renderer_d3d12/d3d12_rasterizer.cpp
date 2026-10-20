@@ -3,8 +3,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <optional>
+#include <unordered_map>
 
 #include <spirv_to_dxil.h>
 
@@ -115,9 +117,25 @@ RasterizerD3D12::~RasterizerD3D12() {
 }
 
 void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
+    const bool full = VideoCommon::FullCapture::Active();
+    if (full) {
+        ++full_capture_operation;
+        VideoCommon::FullCapture::Event("draw_begin", fmt::format(
+            "{{\"op\":{},\"indexed\":{},\"instances\":{}}}",
+            full_capture_operation, is_indexed, instance_count));
+    }
     ++draw_counter;
+    ++zpass_diag.attempted;
+    const u64 full_operation = full_capture_operation;
+    bool full_draw_recorded = false;
+    SCOPE_EXIT {
+        if (full) VideoCommon::FullCapture::Event("draw_call_end", fmt::format(
+            "{{\"op\":{},\"recorded\":{}}}", full_operation, full_draw_recorded));
+    };
     HuntScope hunt{draw_hunt, is_indexed ? Hunt::Kind::DrawIndexed : Hunt::Kind::Draw};
     if (conditional_rendering.SkipsDraws()) {
+        if (full) VideoCommon::FullCapture::Event("draw_conditional_skip");
+        ++zpass_diag.conditional;
         hunt.Outcome(Hunt::Outcome::Conditional);
         return;
     }
@@ -129,6 +147,8 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     gpu_memory->FlushCaching();
     ApplyPendingStateInvalidation();
     if (CullsEveryPrimitive()) {
+        if (full) VideoCommon::FullCapture::Event("draw_culled");
+        ++zpass_diag.culled;
         hunt.Outcome(Hunt::Outcome::Culled);
         if (trace_draws) {
             TraceDraw("draw skipped (both faces culled)", nullptr, nullptr, {}, 0, 0);
@@ -140,6 +160,8 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
     hunt.PipelineEnd();
     if (!pipeline) {
+        if (full) VideoCommon::FullCapture::Event("draw_no_pipeline");
+        ++zpass_diag.no_pipeline;
         hunt.Outcome(Hunt::Outcome::NoPipeline);
         if (trace_draws) {
             TraceDraw("draw skipped (no pipeline)", nullptr, nullptr, {}, 0, 0);
@@ -152,12 +174,14 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     lock_timer.Locked();
 
     const bool trace_this_draw = trace_draws ||
-        material_trace.Select(pipeline->Key().unique_hashes[5]);
+        material_trace.Select(pipeline->Key().unique_hashes[5]) || full;
     PipelineBindings bindings;
     std::vector<VideoCommon::ImageViewId> traced_views;
     std::vector<std::string> traced_filters;
     std::vector<u32> traced_types;
     std::vector<TracedBuffer> traced_buffers;
+    FullCaptureViews full_views;
+    if (full) bindings.trace_all_views = &full_views;
     if (trace_this_draw) {
         bindings.trace_views = &traced_views;
         bindings.trace_filters = &traced_filters;
@@ -169,7 +193,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     if (material_trace.Active()) {
         const auto& draw = maxwell3d->draw_manager.draw_state;
         const u32 count = is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count;
-        if (material_snapshots.Targeted(pipeline->Key().unique_hashes[5], count)) {
+        if (full || material_snapshots.Targeted(pipeline->Key().unique_hashes[5], count)) {
             // The normal binder skips unchanged VBs. Rebind only the explicit diagnostic draw
             // so its geometry snapshot includes retained bindings, without retaining Buffer*.
             for (u32 index = 0; index < Tegra::Engines::Maxwell3D::Regs::NumVertexArrays; ++index) {
@@ -186,6 +210,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
         BUG_TRACK_KEY(DrawSkipped, reinterpret_cast<std::uintptr_t>(pipeline),
                       "draw skipped: the pipeline was rejected (VS {:016x} PS {:016x})",
                       pipeline->Key().unique_hashes[1], pipeline->Key().unique_hashes[5]);
+        ++zpass_diag.rejected;
         hunt.Outcome(Hunt::Outcome::PsoRejected);
         if (trace_this_draw) {
             TraceDraw("draw skipped (PSO rejected)", pipeline, nullptr, traced_views, 0, 0);
@@ -193,6 +218,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
         return; // D3D12 rejected the PSO (logged when it was built)
     }
     if (UsesSkippedShader(pipeline->Key().unique_hashes)) [[unlikely]] {
+        ++zpass_diag.skipped_shader;
         hunt.Outcome(Hunt::Outcome::SkippedShader);
         return; // skip_shader
     }
@@ -230,6 +256,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
         params.is_indexed = true;
     }
     if (params.num_vertices == 0 || params.num_instances == 0) {
+        ++zpass_diag.empty;
         hunt.Outcome(Hunt::Outcome::Empty);
         buffer_runtime.ApplyGeometry(scheduler.CommandList());
         if (trace_this_draw) {
@@ -238,15 +265,38 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
         }
         return;
     }
-    if (material_trace.Active() && trace_this_draw) {
+    if (material_trace.Active() && trace_this_draw && !full) {
         try {
             CaptureMaterialSampledInputs(*pipeline, traced_views, params.num_vertices, *framebuffer);
         } catch (const std::exception& e) {
             LOG_WARNING(Render, "D3D12 material sampled inputs skipped: {}", e.what());
         }
     }
+    if (full) {
+        CaptureFullPipeline(*pipeline, bindings);
+        VideoCommon::FullCapture::Event("draw_geometry", fmt::format(
+            "{{\"op\":{},\"vertices\":{},\"instances\":{},\"first_index\":{},"
+            "\"base_vertex\":{},\"base_instance\":{},\"indexed\":{},\"runtime_first_vertex\":{}}}",
+            full_capture_operation, params.num_vertices, params.num_instances, params.first_index,
+            params.base_vertex, params.base_instance, params.is_indexed, params.runtime_first_vertex));
+        CaptureFullBuffers(traced_buffers, false);
+        CaptureFullImages(full_views, framebuffer, false);
+    }
     RecordDraw(*pipeline, bindings, *framebuffer, params, draw_state.topology);
+    full_draw_recorded = true;
+    if (full) {
+        CaptureFullBuffers(traced_buffers, true);
+        CaptureFullImages(full_views, framebuffer, true);
+        CapturePickProbes(*pipeline, bindings, traced_buffers, *framebuffer, params, draw_state.topology);
+        VideoCommon::FullCapture::Event("draw_end", fmt::format("{{\"op\":{}}}", full_capture_operation));
+    }
     hunt.Recorded();
+    if (zpass_diag.recorded < zpass_diag.vs.size()) {
+        zpass_diag.vs[zpass_diag.recorded] = pipeline->Key().unique_hashes[1];
+        zpass_diag.ps[zpass_diag.recorded] = pipeline->Key().unique_hashes[5];
+        zpass_diag.depth_test[zpass_diag.recorded] = maxwell3d->regs.depth_test_enable;
+    }
+    ++zpass_diag.recorded;
     if (material_trace.Active() && trace_this_draw) {
         try {
             ProbeMaterialIntermediates(*pipeline, bindings, *framebuffer, params, draw_state.topology);
@@ -254,7 +304,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
             LOG_WARNING(Render, "D3D12 material GPU probe skipped: {}", e.what());
         }
     }
-    if (material_trace.Active() && trace_this_draw) {
+    if (material_trace.Active() && trace_this_draw && !full) {
         try {
             CaptureMaterialInputs(*pipeline, traced_buffers, params);
         } catch (const std::exception& e) {
@@ -287,20 +337,34 @@ void RasterizerD3D12::RecordDraw(const GraphicsPipeline& pipeline,
                                  const PipelineBindings& bindings, const Framebuffer& framebuffer,
                                  const DrawParams& params,
                                  Maxwell::PrimitiveTopology topology) {
-    BindDrawState(pipeline, bindings, framebuffer, params, topology);
+    const auto compatible = texture_runtime.PrepareCompatibleDrawTargets(
+        framebuffer, pipeline.BoundColorTargets());
+    BindDrawState(pipeline, bindings, framebuffer, params, topology, compatible);
     CommandStream* const cmd = scheduler.CommandList();
     VideoCore::Perf::Add(VideoCore::Perf::Counter::Draws, 1);
-    const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
-    if (params.is_indexed) {
-        cmd->DrawIndexedInstanced(params.num_vertices, params.num_instances, params.first_index,
-                                  static_cast<INT>(params.base_vertex), params.base_instance);
-    } else {
-        cmd->DrawInstanced(params.num_vertices, params.num_instances, params.base_vertex,
-                           params.base_instance);
+    {
+        const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
+        if (params.is_indexed) {
+            cmd->DrawIndexedInstanced(params.num_vertices, params.num_instances, params.first_index,
+                                      static_cast<INT>(params.base_vertex), params.base_instance);
+        } else {
+            cmd->DrawInstanced(params.num_vertices, params.num_instances, params.base_vertex,
+                               params.base_instance);
+        }
     }
+    texture_runtime.FinishCompatibleDrawTargets(framebuffer);
 }
 
 void RasterizerD3D12::DispatchCompute() {
+    const bool full = VideoCommon::FullCapture::Active();
+    if (full) {
+        ++full_capture_operation;
+        VideoCommon::FullCapture::Event("dispatch_begin", fmt::format("{{\"op\":{}}}", full_capture_operation));
+    }
+    const u64 full_operation = full_capture_operation;
+    SCOPE_EXIT {
+        if (full) VideoCommon::FullCapture::Event("dispatch_call_end", fmt::format("{{\"op\":{}}}", full_operation));
+    };
     ++draw_counter;
     HuntScope hunt{draw_hunt, Hunt::Kind::Dispatch};
     VideoCore::Perf::ScopedNsTimer dispatch_timer{VideoCore::Perf::Counter::DispatchNs};
@@ -320,8 +384,27 @@ void RasterizerD3D12::DispatchCompute() {
         return;
     }
     hunt.Shaders(0, pipeline->UniqueHash());
+    {
+        // Diagnostic: how often each compute shader is dispatched (logged at 1, 2, 4, 8... and
+        // every 1024th dispatch, so the last line per hash approximates its total).
+        static std::unordered_map<u64, u64> dispatch_counts;
+        const u64 hash = pipeline->UniqueHash();
+        const u64 count = ++dispatch_counts[hash];
+        if ((count & (count - 1)) == 0 || (count & 1023) == 0) {
+            LOG_WARNING(Render, "D3D12: compute shader {:016x} dispatched {} times", hash, count);
+        }
+    }
     std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
     PipelineBindings bindings;
+    std::vector<TracedBuffer> full_buffers;
+    FullCaptureViews full_views;
+    std::vector<std::string> full_samplers;
+    if (full) {
+        bindings.trace_all_views = &full_views;
+        bindings.trace_filters = &full_samplers;
+        buffer_runtime.SetTraceBuffers(&full_buffers);
+    }
+    SCOPE_EXIT { buffer_runtime.SetTraceBuffers(nullptr); };
     pipeline->Configure({*kepler_compute, *gpu_memory, buffer_cache, texture_cache,
                          descriptor_queue, sampler_heap, scheduler},
                         bindings);
@@ -334,6 +417,47 @@ void RasterizerD3D12::DispatchCompute() {
     const auto& qmd = kepler_compute->launch_description;
     const PipelineLayout& layout = pipeline->Layout();
     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
+    if (full) {
+        const auto meta = fmt::format("{{\"op\":{},\"shader\":{}}}", full_capture_operation, pipeline->UniqueHash());
+        VideoCommon::FullCapture::Data("compute_dxil", meta, pipeline->DiagnosticDxil());
+        VideoCommon::FullCapture::Data("compute_launch", meta,
+            {reinterpret_cast<const u8*>(&qmd), sizeof(qmd)});
+        VideoCommon::FullCapture::Data("compute_push_constants", meta,
+            {reinterpret_cast<const u8*>(bindings.push_constants.data()), sizeof(bindings.push_constants)});
+        VideoCommon::FullCapture::Event("compute_root_layout", fmt::format(
+            "{{\"op\":{},\"runtime_words\":{},\"resource_index\":{},\"sampler_index\":{},"
+            "\"integer_index\":{},\"resource_count\":{},\"sampler_count\":{}}}",
+            full_capture_operation, layout.RuntimeDataWords(), layout.ResourceTableIndex(),
+            layout.SamplerTableIndex(), layout.IntegerSamplerIndex(), layout.NumResourceDescriptors(),
+            layout.NumSamplerDescriptors()));
+        const auto descriptors = [&](std::string_view kind, const auto& list) {
+            if (list.empty()) return;
+            VideoCommon::FullCapture::Data("compute_descriptors", fmt::format(
+                "{{\"op\":{},\"kind\":\"{}\",\"count\":{}}}", full_capture_operation, kind, list.size()),
+                {reinterpret_cast<const u8*>(list.data()), list.size() * sizeof(list[0])});
+        };
+        const auto& info = pipeline->Info();
+        descriptors("uniform", info.constant_buffer_descriptors);
+        descriptors("storage", info.storage_buffers_descriptors);
+        descriptors("texel", info.texture_buffer_descriptors);
+        descriptors("image_buffer", info.image_buffer_descriptors);
+        descriptors("texture", info.texture_descriptors);
+        descriptors("image", info.image_descriptors);
+        for (const auto& sampler : full_samplers) VideoCommon::FullCapture::Text("compute_sampler", sampler);
+        CaptureFullBuffers(full_buffers, false);
+        CaptureFullImages(full_views, nullptr, false);
+    }
+    bool dispatched = false;
+    SCOPE_EXIT {
+        if (full) {
+            if (dispatched) {
+                CaptureFullBuffers(full_buffers, true);
+                CaptureFullImages(full_views, nullptr, true);
+            }
+            VideoCommon::FullCapture::Event("dispatch_end", fmt::format(
+                "{{\"op\":{},\"recorded\":{}}}", full_capture_operation, dispatched));
+        }
+    };
     std::optional<IndirectArgumentRing::Range> indirect_range;
     if (const std::optional<GPUVAddr> indirect = kepler_compute->GetIndirectComputeAddress()) {
         // The group counts are also runtime data (root constants): the record carries them
@@ -342,6 +466,13 @@ void RasterizerD3D12::DispatchCompute() {
         const auto [buffer, offset] = buffer_cache.ObtainBuffer(
             *indirect, 3 * sizeof(u32), VideoCommon::ObtainBufferSynchronize::FullSynchronize,
             VideoCommon::ObtainBufferOperation::DiscardWrite);
+        if (full && buffer) {
+            const TracedBuffer args{.kind = TracedBuffer::Kind::Storage, .buffer = buffer,
+                .offset = static_cast<u32>(offset), .size = 3 * sizeof(u32),
+                .device_addr = buffer->CpuAddr() + offset};
+            CaptureFullBuffers({&args, 1}, false);
+            VideoCommon::FullCapture::Event("dispatch_indirect", fmt::format("{{\"address\":{}}}", *indirect));
+        }
         if (!layout.DispatchSignature() || !buffer || !buffer->Handle()) {
             return;
         }
@@ -392,6 +523,9 @@ void RasterizerD3D12::DispatchCompute() {
     runtime_data.group_count_z = dim[2];
     std::array<u32, sizeof(runtime_data) / sizeof(u32)> runtime_words{};
     std::memcpy(runtime_words.data(), &runtime_data, sizeof(runtime_data));
+    if (full) VideoCommon::FullCapture::Data("compute_runtime",
+        fmt::format("{{\"op\":{}}}", full_capture_operation),
+        {reinterpret_cast<const u8*>(&runtime_data), sizeof(runtime_data)});
     cmd->SetComputeRoot32BitConstants(PipelineLayout::RUNTIME_DATA_INDEX,
                                       std::min<UINT>(layout.RuntimeDataWords(),
                                                      static_cast<UINT>(runtime_words.size())),
@@ -410,6 +544,7 @@ void RasterizerD3D12::DispatchCompute() {
     if (indirect_range) {
         cmd->ExecuteIndirect(layout.DispatchSignature(), 1, indirect_range->buffer,
                              indirect_range->offset, nullptr, 0);
+        dispatched = true;
         hunt.Geometry(0, 1, 0); // the group count is on the GPU
         hunt.Recorded();
         if (!logged_indirect_dispatch) {
@@ -420,6 +555,7 @@ void RasterizerD3D12::DispatchCompute() {
         return;
     }
     cmd->Dispatch(dim[0], dim[1], dim[2]);
+    dispatched = true;
     hunt.Geometry(dim[0] * dim[1] * dim[2], 1, 0);
     hunt.Recorded();
     if (!logged_first_dispatch) {
@@ -454,12 +590,40 @@ bool RasterizerD3D12::AccelerateConditionalRendering() {
 
 void RasterizerD3D12::ResetCounter(VideoCommon::QueryType type) {
     const auto host_type = MaxwellToVideoCoreQuery(type);
+    if (type == VideoCommon::QueryType::ZPassPixelCount64) zpass_diag = {};
     if (host_type) query_cache.ResetCounter(*host_type);
 }
 
 void RasterizerD3D12::Query(GPUVAddr address, VideoCommon::QueryType type,
                             VideoCommon::QueryPropertiesFlags flags, u32 payload, u32) {
     const auto host_type = MaxwellToVideoCoreQuery(type);
+    {
+        // Diagnostic: every guest query by raw type, logged at 1, 2, 4, 8... requests.
+        static std::array<std::atomic<u64>, 32> query_counts{};
+        const u32 slot = static_cast<u32>(type) & 31;
+        const u64 count = ++query_counts[slot];
+        if ((count & (count - 1)) == 0 || (host_type && count <= 80)) {
+            LOG_WARNING(Render,
+                        "D3D12: guest query type {} flags {:#x} payload {:#x} addr {:#x} "
+                        "({}), request #{}",
+                        static_cast<u32>(type), static_cast<u32>(flags), payload, address,
+                        host_type ? "host counter" : "fallback", count);
+        }
+    }
+    if (type == VideoCommon::QueryType::ZPassPixelCount64) {
+        static u32 diag_logged{};
+        if (diag_logged++ < 40) {
+            const ZPassDiag& d = zpass_diag;
+            LOG_WARNING(Render,
+                        "D3D12: ZPass report since reset: {} draws ({} recorded, {} conditional, "
+                        "{} culled, {} no pipeline, {} rejected, {} skipped shader, {} empty); "
+                        "first recorded VS/PS/depth: {:016x}/{:016x}/{} {:016x}/{:016x}/{} "
+                        "{:016x}/{:016x}/{}",
+                        d.attempted, d.recorded, d.conditional, d.culled, d.no_pipeline,
+                        d.rejected, d.skipped_shader, d.empty, d.vs[0], d.ps[0], d.depth_test[0],
+                        d.vs[1], d.ps[1], d.depth_test[1], d.vs[2], d.ps[2], d.depth_test[2]);
+        }
+    }
     if (!host_type) return QueryFallback(address, type, flags, payload);
     const bool timeout = True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout);
     query_cache.Query(address, *host_type,

@@ -54,6 +54,22 @@ void RasterizerD3D12::DrawTexture() {
     framebuffer->PrepareAttachments(scheduler);
     hunt.Target(framebuffer);
     hunt.Geometry(4, 1, 0);
+    const bool full = VideoCommon::FullCapture::Active();
+    if (full) {
+        ++full_capture_operation;
+        VideoCommon::FullCapture::Event("draw_texture", fmt::format("{{\"op\":{}}}", full_capture_operation));
+        VideoCommon::FullCapture::Text("draw_texture_sampler", sampler.Describe());
+        VideoCommon::FullCapture::Data("draw_texture_state", "{}",
+            {reinterpret_cast<const u8*>(&state), sizeof(state)});
+        if (auto* image = texture.SourceImage(); image && image->Handle() == texture.ImageHandle()) {
+            for (s32 layer = texture.range.base.layer;
+                 layer < texture.range.base.layer + texture.range.extent.layers; ++layer)
+                for (s32 mip = texture.range.base.level;
+                     mip < texture.range.base.level + texture.range.extent.levels; ++mip)
+                    CaptureFullImage(*image, image->Subresource(mip, layer), "draw_texture_source", false);
+        } else VideoCommon::FullCapture::Omit("draw_texture_source_unavailable");
+        CaptureFullImages({}, framebuffer, false);
+    }
     if (trace_draws) {
         TraceDraw(fmt::format("draw texture from {} {}x{}", texture.format, texture.size.width,
                               texture.size.height),
@@ -67,6 +83,7 @@ void RasterizerD3D12::DrawTexture() {
         dst_region, src_region, {texture.size.width, texture.size.height});
     hunt.Recorded();
     InvalidateGraphicsState();
+    if (full) CaptureFullImages({}, framebuffer, true);
 }
 
 void RasterizerD3D12::Clear(u32 layer_count) {
@@ -91,6 +108,18 @@ void RasterizerD3D12::Clear(u32 layer_count) {
     texture_cache.UpdateRenderTargets(true);
     const Framebuffer* const framebuffer = texture_cache.GetFramebuffer();
     framebuffer->PrepareAttachments(scheduler);
+    const bool full = VideoCommon::FullCapture::Active();
+    if (full) {
+        ++full_capture_operation;
+        VideoCommon::FullCapture::Event("clear", fmt::format(
+            "{{\"op\":{},\"layers\":{},\"color\":{},\"depth\":{},\"stencil\":{}}}",
+            full_capture_operation, layer_count, use_color, use_depth, use_stencil));
+        VideoCommon::FullCapture::Data("clear_registers", "{}",
+            {reinterpret_cast<const u8*>(&regs), sizeof(regs)});
+        CaptureFullImages({}, framebuffer, false);
+    }
+    // Runs after the predication scope has restored SetPredication(nullptr).
+    SCOPE_EXIT { if (full) CaptureFullImages({}, framebuffer, true); };
     // As in Vulkan, the clear covers layers [layer, layer + layer_count) of the attachments. The
     // framebuffer's views cover all their layers; a narrower clear gets views of its own, freed
     // once recorded (RTVs and DSVs are read when the clear is recorded).

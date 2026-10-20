@@ -37,6 +37,7 @@
 #include <vector>
 
 #include <winrt/base.h>
+#include <winrt/Windows.ApplicationModel.h>
 
 #include "common/bug_tracker.h"
 #include "common/fs/path_util.h"
@@ -76,6 +77,7 @@
 #include "core/memory/cheat_engine.h"
 #include "hid_core/hid_core.h"
 #include "video_core/frame_trace.h"
+#include "video_core/diagnostics/full_capture.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/perf_counters.h"
@@ -278,6 +280,10 @@ struct BootConfig {
     bool hunt_menu{};
     /// Fine per-draw D3D12 CPU timers ("gpu_profile=1"). Off because clock reads are measurable.
     bool gpu_profile{};
+    /// Writes every translated guest shader to the dump folder ("dump_guest_shaders=1").
+    bool dump_guest_shaders{};
+    bool full_gpu_capture{};
+    bool full_gpu_capture_self_test{};
     /// Per-core JIT elapsed time and slow callback counts ("cpu_profile=1"). Diagnostic only.
     bool cpu_profile{};
     /// In-process sampling profiler over every named thread ("profile=1"; "profile=full" adds the
@@ -488,6 +494,17 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     D3D12::SetPipelineEviction(config.pso_eviction);
     D3D12::SetPipelinePrewarm(config.pso_prewarm);
     VideoCore::Perf::SetDetailedGpuProfile(config.gpu_profile);
+    if (config.dump_guest_shaders) Settings::values.dump_guest_shaders.SetValue(true);
+    VideoCommon::FullCapture::Enable(config.full_gpu_capture);
+    VideoCommon::FullCapture::RequestSelfTest(config.full_gpu_capture_self_test);
+    if (config.full_gpu_capture) {
+        const auto version = winrt::Windows::ApplicationModel::Package::Current().Id().Version();
+        VideoCommon::FullCapture::SetSession(fmt::format(
+            "{{\"version\":\"{}.{}.{}.{}\",\"memory_limit_mib\":{},\"async_record\":{},"
+            "\"async_present\":{},\"async_shaders\":{}}}",
+            version.Major, version.Minor, version.Build, version.Revision, config.memory_limit_mib,
+            config.async_record, config.async_present, config.async_shaders));
+    }
     VideoCore::Perf::SetForceSwapIntervalOne(config.force_swap_interval_one);
     Settings::values.async_presentation.SetValue(config.async_present);
     if (config.upscaling) ApplyUpscaling(*config.upscaling); // before the renderer exists
@@ -2486,6 +2503,17 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "pso_prewarm=0") {
                             config.pso_prewarm = false;
                             WriteDiag("boot.cfg: dormant PSOs wait for their first draw");
+                        } else if (line == "gpu_capture_self_test=1") {
+                            config.full_gpu_capture = true;
+                            config.full_gpu_capture_self_test = true;
+                            WriteDiag("boot.cfg: full capture synthetic GPU gate enabled");
+                        } else if (line == "gpu_capture_full=1") {
+                            config.full_gpu_capture = true;
+                            config.material_capture_menu = true;
+                            WriteDiag("boot.cfg: full synchronous GPU capture enabled (menu)");
+                        } else if (line == "dump_guest_shaders=1") {
+                            config.dump_guest_shaders = true;
+                            WriteDiag("boot.cfg: guest shader dump enabled");
                         } else if (line == "gpu_profile=1") {
                             config.gpu_profile = true;
                             WriteDiag("boot.cfg: detailed D3D12 GPU-thread profiling enabled");

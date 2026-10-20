@@ -65,7 +65,8 @@ void RasterizerD3D12::TraceWatchedVertexShader(u64 vertex_shader) {
 void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
                                     const PipelineBindings& bindings,
                                     const Framebuffer& framebuffer, const DrawParams& params,
-                                    Maxwell::PrimitiveTopology topology) {
+                                    Maxwell::PrimitiveTopology topology,
+                                    std::span<const D3D12_CPU_DESCRIPTOR_HANDLE> compatible_targets) {
     const auto& regs = maxwell3d->regs;
     const PipelineLayout& layout = pipeline.Layout();
     CommandStream* const cmd = scheduler.CommandList();
@@ -84,7 +85,8 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
     MarkGpuCommands(cmd, "draw VS/PS", pipeline.Key().unique_hashes[1],
                     pipeline.Key().unique_hashes[5]);
 
-    const auto selected_targets = DrawColorTargets(framebuffer.ColorTargets(),
+    const auto selected_targets = DrawColorTargets(
+        compatible_targets.empty() ? framebuffer.ColorTargets() : compatible_targets,
         pipeline.BoundColorTargets(), texture_runtime.NullRenderTarget(
             MaxwellToD3D12::SampleCount(pipeline.Key().state.msaa_mode) > 1));
     const std::span<const D3D12_CPU_DESCRIPTOR_HANDLE> color_targets{
@@ -246,6 +248,9 @@ void RasterizerD3D12::SetGraphicsRootArguments(CommandStream* cmd,
     static_assert(runtime_size <= std::tuple_size_v<decltype(cached.runtime_words)>);
     std::array<u32, std::tuple_size_v<decltype(cached.runtime_words)>> runtime_words{};
     std::memcpy(runtime_words.data(), &runtime_data, sizeof(runtime_data));
+    if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Data("graphics_runtime",
+        fmt::format("{{\"op\":{}}}", full_capture_operation),
+        {reinterpret_cast<const u8*>(&runtime_data), sizeof(runtime_data)});
     if (!cached.valid || cached.runtime_words != runtime_words) {
         cmd->SetGraphicsRoot32BitConstants(
             PipelineLayout::RUNTIME_DATA_INDEX,
