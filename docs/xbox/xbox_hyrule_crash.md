@@ -464,10 +464,116 @@ separado si usuario observa fallo; no modificar funcionalidad ajena en revisión
 Resultado: no reproduce crash en estas sesiones y valida heaps pequeños enSeries;
 recuperación real/ring8frames/estabilidad prolongada ymisma transición pendientes.
 
-### Confirmación de la prueba en Series
+### Confirmación del usuario y prioridad FPS
 
 El usuario aclara19oct que guardó conPulse antes de la zona que conocía como
 reproductora del fallo, reanudó desde ese punto y pudo atravesarla correctamente
 en.8. Confirma funcionamiento y menor RAM observada en su comparación manual.
 Esto valida pasar el punto conocido en esa prueba; no es un A/B automatizado
 de RAM ni garantiza todos los escenarios. Se conserva el candidato de memoria.
+
+Usuario aplaza explícitamente Pulse/decodificación y pide centrarse enFPS/tirones.
+El candidato FFmpeg iniciado (paddingowned/EAGAIN/offsets) se retiró del árbol
+antes de entregar: queda solo como patch privado en `test-results/video-decode`,
+no integrado ni validado. Anotar para futura investigación: Packet toma un span
+prestado sin garantizarpadding64, EAGAIN/EOF tratadoscomosuccess, offsetsencolados
+antes de aceptación; son defectos revisables pero NOprueba de causa de estosFPS.
+NVDECrestaurado no contiene referenciasFFmpeg ni estado completoVP9: comprobar
+antes de declarar el origen exacto deInvalidData.86errores se concentran239,9–242,9s,
+lejos de los tirones masivos320–402s. Sin cambios de Pulse ni supresión de logs.
+
+Evidencia FPS del mismo logSeries.8:
+
+- Ventanas300frames a290,266/300,266/310,266s:29,95/30/30FPS, mediana33,33ms,
+  sin pipeline stalls. Son ventanas anteriores a la carga nueva, no certificar
+  misma complejidad ni rendimiento de combate.
+- Frame reportado a372,001s dura51202ms:46953,4ms en preparación/esperas de
+  pipelines,2204,6msdecodeCPUtexturas,316msrecursos; GPUbusy32ms.
+- Frame a402,068s dura29940ms:29868,1mspipeline stalls,3,2msfences,
+  GPUbusy15ms. No atribuir todo al driver: ese contador incluye frontend/esperas.
+- Ventana300frames/97637ms a407,903s:3,07FPS de media, mediana33,54ms,
+  p9553,98ms, p991266,73ms.
+  Pipeline stalls77602,8ms (~79,5% del tiempo de ventana),88esperas contadas;
+  GPUbusy801,7ms, newresources395,7ms, CPUtexturedecode2204,6ms.
+  Los tiempos son elapsed, no CPUbusy; scopes pueden anidarse y no se suman
+  categorías arbitrariamente. La media3FPS incluye pausas enormes, no significa
+  que todos los frames se ejecuten a3FPS.
+- Computea66ea316e680e6ce termina376,518s,0425364fe2c75d8ca384,716s,
+  seguidos de global-memoryfallbacks. Son pistas, no medidas por shader de cada
+  paso ni prueba de que el fallback cause los30s.
+
+### Diagnóstico dirigido de compilaciones lentas
+
+Implementado sin cambiar sincronización, shaders, calidad ni presets. Registra
+solo fases>=250ms (clocks por compilación/creación, no por draw caliente):
+
+- Graphics: frontendconVS/PS, queueconid/VS/PS, DXIL/cacheconid/VS/PS y
+  CreateGraphicsPipelineStateconid/VS/PS/HRESULT.
+- ShaderCompiler: tiempoMesa separado de copia/firma, hashSPIRV/stage/words y
+  bytesDXIL; validador separa lock de Validate. Son spans anidados, no sumar
+  Mesa+DXIL/cache como fases disjuntas. Compute usaid0 en translator; el evento
+  exterior compute llevaCS,workgroup/shared y sus tiempos para identificarlo.
+- Compute: frontendMaxwell->SPIRV separado de DXIL; driverPSO porCS/bytes/hr.
+- SnapshotPipelineStats al destruir caché, porque sesión lenta puede no alcanzar
+  cadence3600frames. Concurrente con finalización deworkers, etiquetado snapshot:
+  no totales finales consistentes ni tiemposCPU.
+
+CuatroobjetosUWP compilan (pipeline_cache,graphics_pipeline,compute_pipeline,
+shader_compiler), diffcheckcorrecto. Sinlink/paquete nuevo ni mejoraFPS medida.
+Entrega instalable vigente.8 conserva el candidato de memoria y NOcontiene estos
+logs nuevos. Siguiente gateSeries debe capturar la misma transición con desglose
+y repetición caliente; distinguir primera compilación de reconstrucción/eviction.
+No aumentar workers/memoria ni saltar dispatch/draws para esconder la espera.
+
+Fuentes para diseñar el siguiente cambio:
+[MicrosoftPSOcache](https://learn.microsoft.com/en-us/samples/microsoft/directx-graphics-samples/d3d12-pipeline-state-cache-sample-win32/)
+explica reducir compilación repetida mediante cachés, pero ejemploPC no certifica
+soporteSeriesUWP ni habilita GetCachedBlob(prohibidoenesteproyecto).
+[DolphinShaderCache](https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/VideoCommon/ShaderCache.cpp)
+separa precarga yruntime; nuestro backend ya tiene ambas. Comparar cobertura y
+coste porfase antes de sustituir la arquitectura o trasladar el tirón al arranque.
+
+### Segunda capturaSeries.8 (revisión19oct)
+
+Nueva evidencia suelta enDownloads, guardada en
+`test-results/hyrule-memory/series-0.3.4.8-20261019-second`.
+LogSHA256FD9058417BF7A8E0ACE11178CE3741F20B90F33901D5912405814E14CF77A49C.
+Diag acumulado: última sesión selección+1828ms, versión0.3.4.8, reanudaciónPulse
+11,666s; vuelve biblioteca conretorno10 a+121875ms, sincrash/badalloc nuevos.
+No incluye los nuevos logs porfase: entrega.8 conocida, no confundir objetosPC
+compilados con el paquete instalado.
+
+Maxappmuestreada3982/5120MiB(margen1138); últimaDRAM2020MiB, heaps832/13.
+SinOOM niRenderError, ningúnintento growthrecovery/heapcompacto: enesta carga
+no se alcanzó su umbral de crecimiento. No pruebaahorro adicional ni fallo delguard.
+
+|Ventana300frames|FPS|p50/p95/p99 ms|Pipeline stalls|GPUbusy|GPUthread idle|
+|---|---|---|---|---|---|
+|18,782s|15,97|45,98/104,38/607,38|1,782s|1,627s|11,166s|
+|21,545s|13,92|44,93/73,64/417,28|7,914s|1,703s|7,514s|
+|18,581s|16,15|52,01/66,83/131,58|2,659s|2,200s|8,481s|
+
+Pipelines siguen produciendo tirones(1,17/1,32s de espera en ejemplos), pero
+ahora medianas45–52ms y300frames/14–16FPS muestran rendimiento base bajo en
+esta escena, además de compilación. GPUbusy5,4–7,3ms/frameaprox ytiempoidle
+alto orientan ahost/guest/entrega detrabajo; NOpruebanCPUguest saturada ni excluyen
+CPUdraw/binding/residual. Hay1491–1895draws/frame enesasventanas, media por
+ventana, sinperfilporDraw. No comparar estosFPS de escena nueva con anteriores
+ventanas30FPS ligeras como regresión atribuible.
+
+Bootcache180DXIL:5,607s agregado;174creacionesPSO:29,150s agregado enworkers,
+maxdriver2,099s. Sonelapsedporjob concurrente, no sumarlos como tiempoCPU ni
+duración dearranque. Indicio concreto dePSOcostoso alarranque, pero falta desglose
+delosjobs causantes delos tironesdegameplay.
+
+Fallo nuevo:134Critical deFermi2D::Blit `Operation is not copy`, primero65,262s;
+no aborto. ElguardUNIMPLEMENTEDregistra ycontinúa pasandooperationenConfig a la
+ruta acelerada/software. Elmensaje noincluye elvaloroperation: aún noidentifica
+quéROP/blend sepidió ni sucausa (estado restaurado frente operaciónlegítima).
+Investigar soporte/semántica antesdesilenciar o asumirSrcCopy. No está demostrado
+que134mensajes expliquenFPS. NoFFmpegInvalidData eneste log;1084InputUnknownEngine
+y3BSDnetworknotinitialized restantes. Pulseaplazado segúnusuario.
+
+Prioridad: desglosepipelineya implementado para tirones; después perfilCPUdraw/
+guest/sync enescena estable paraFPSbase. AnalizarFermi2Dcomo corrección funcional
+separada. Sólo revisión/documentación, sinotro cambiofuncional ni paquete/commit.

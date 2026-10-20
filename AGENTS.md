@@ -20,6 +20,12 @@ sinbytesliberados/pending0/reused0/trim0. NoA/B: Pulse/DRAMdistintos; no declara
 crashresuelto ni1178MiBahorroneto(contadorporreserva). FFmpegInvalidData yPulse
 throwscontrolados separados; últimoguardadoéxito11,333s. Ver xbox_hyrule_crash.md.
 
+Usuario confirmapasozonacrash.8 ypriorizaFPS/tirones; Pulse/vídeoaparcados.
+Logs:77,603spipelinestalls en97,637s, frames51/30s; previasventanas30FPS.
+Desglosecompilaciones>=250ms(frontend/cola/Mesa/firma/drivergraphics-compute)
+yshutdownstats implementado,4objetosUWPcorrectos. Sólocandidato diagnóstico,
+sinlink/paquete/FPScertificados; vigente.8 nocontienenuevoslogs. Detalle en
+docs/xbox/xbox_hyrule_crash.md. FFmpegcambiosretirados, pendientesanotados.
 
 Índice de documentación Xbox/UWP: [`docs/xbox/README.md`](docs/xbox/README.md).
 
@@ -1183,3 +1189,5 @@ incompatibles pasa retorno0; catálogos/TCP/browser pasan. APPX biblioteca firma
 en build-uwp/package/jadyx.appx, símbolos0.3.4.3; Series pendiente, sin commits/push.
 Trampa broker: normalizar staging.make_preferred antes de GetFolderFromPathAsync.
 Usuario informa misma velocidad0.3.4.1 (~14.8MiB/s), PC/Xbox ambos Wi-Fi.
+
+Paquete diagnóstico Fermi2D 0.3.4.9: snapshots acotados de operación/ROP/superficies/ruta; comportamiento del motor conservado. Diseño en docs/xbox/xbox_fermi2d.md. Gate Series y corrección semántica pendientes; sin commit nuevo.

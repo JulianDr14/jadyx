@@ -308,6 +308,11 @@ private:
     VideoCore::RasterizerInterface* rasterizer = nullptr;
     std::unique_ptr<Blitter::SoftwareBlitEngine> sw_blitter;
     MemoryManager& memory_manager;
+    // Bounded diagnostic state; never reads guest memory or changes blit semantics.
+    std::array<std::array<u32, 18>, 32> unsupported_states{};
+    u32 unsupported_state_count{};
+    u64 unsupported_count{};
+    u64 operation_write_count{};
 
     /// Performs the copy from the source surface to the destination surface as configured in the
     /// registers.

@@ -4044,3 +4044,37 @@ escontadorpordecisión,noahorronetocontrabaselinepooling. Pulse reanudado yDRAM2
 vs3063previa impidenA/Bcausal/crashresueltocertificado.86FFmpegInvalidData ythrows
 Pulsecontrolados(guardadofinalsaved11,333s) separados. Detalles/evidencia en
 xbox_hyrule_crash.md ytest-results/hyrule-memory/series-0.3.4.8-20261019.
+
+Usuario confirma pasarzona conocida decrash trasguardar/reanudarPulse.8 ymenorRAM
+observada. AplazaPulse/vídeo, prioridadFPS/tirones. FFmpegpacket candidato retirado
+delárbol(solo patchprivadotest-results/video-decode), nointegrado nivalidado.
+Logs.8:ventanasprevias30FPS, luegoframes51,202s/29,940s; ventana97,637s tiene
+77,603spipelinestalls(~79,5%), GPUbusy0,802s,decodeCPUtexturas2,205s.
+NoatribuirFPSa86erroresVP9ocurridosmuchoantes. CuatroobjetosUWPconlogs>=250ms
+porfrontend/cola/Mesa/validatorlock/Validate/graphicsdriver/computefrontend-DXIL-driver
+compilan; snapshotPipelineStatsalcierre para sesionespocosframes. Sólo diagnóstico,
+sinlink/paquetenuevo ni FPSmejorados. Appxvigente.8 nocontienenuevoslogs; siguiente
+gatetransiciónSeriesconfrío/caliente antesdeoptimizarfase. Verxbox_hyrule_crash.md.
+
+Segundacaptura.8:retorno10/sincrashnuevo,maxappmuestreada3982/5120(margen1138),
+heaps832/13,growthrecoveries0. Ventanas15,97/13,92/16,15FPS,p50~45–52ms:
+hayFPSbasebajo ademásdepipelinestalls1,782/7,914/2,659s porventana~19–22s.
+GPUbusy5–7ms/frame,idlealto: host/guest/entregaporfilar,noCPUguestcausalprobada.
+174PSOboot29,15sagregadoworkers/max2,099s, noCPUbusy.134CriticalFermi2D
+Operationnotcopy sinaborto; valoroperationausente, investigarsemántica,nosilenciar.
+FFmpegInvalidData0. Logsarchivadoshyrule-memory/series-0.3.4.8-20261019-second;
+diagnósticosnuevos aúnnopackage. Sólo revisión, sincommit. Verxbox_hyrule_crash.md.
+
+## 19 octubre 2026: diagnóstico Fermi2D, paquete 0.3.4.9
+
+Solicitud del usuario: identificar la operación sin soporte antes de corregir el
+motor y comprobar efectos. Revisados SRV dimensions, geometry passthrough, BC copy
+y fase 4; contrastados registros con NVIDIA cl902d y pipeline 2D de Envytools.
+Fermi2D registra operación/nombre, ROP/betas/key/clip, superficies, coordenadas
+32.32 y ruta efectiva; máximo 32 estados exactos por motor, sin memoria guest
+adicional ni cambios de semántica. El Critical conserva operación/ROP aun al
+agotarse los snapshots. Incluye diagnósticos pendientes de shaders/PSO lentos.
+Diseño, límites y gate: [xbox_fermi2d.md](xbox_fermi2d.md). No atribuir todavía
+FPS ni efectos a esta operación; prueba Series con nuevos logs pendiente.
+
+Entrega .9 completada: build UWP, firma matemática SignedCms, CRC ZIP/BlockMap 34 archivos/735 bloques y correspondencia EXE/símbolos correctos. APPX en build-uwp/package/jadyx.appx; prueba Series pendiente.
