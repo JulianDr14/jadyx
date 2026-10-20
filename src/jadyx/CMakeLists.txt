@@ -38,6 +38,8 @@ add_executable(jadyx WIN32
     storage/uwp_file_manager.h
     storage/network_portal.cpp
     storage/network_portal.h
+    storage/log_export.cpp
+    storage/log_export.h
     storage/network_portal_logo.h
     storage/network_portal_page.h
     storage/nsp_upload.cpp
@@ -169,7 +171,7 @@ endif()
 # dynarmic the JIT's committed code size for the diag's memory split.
 target_link_libraries(jadyx PRIVATE common core video_core audio_core frontend_common hid_core
                                         input_common SDL3::SDL3 dynarmic::dynarmic LibArchive::Read
-                                        OpenSSL::Crypto)
+                                        OpenSSL::Crypto zstd::zstd)
 
 # WinRT (CoreApplication, IFrameworkView, ApplicationData) comes from the Store umbrella import lib.
 target_link_libraries(jadyx PRIVATE WindowsApp.lib)

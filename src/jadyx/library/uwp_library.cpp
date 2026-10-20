@@ -49,6 +49,7 @@
 #include "jadyx/settings/uwp_system_settings.h"
 #include <fmt/format.h>
 #include "common/logging.h"
+#include "common/fs/path_util.h"
 #include "core/file_sys/common_funcs.h"
 #include "core/core.h"
 #include "core/hle/service/filesystem/filesystem.h"
@@ -97,6 +98,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     ConfigurationPanel configuration;
     Updates::Updater updater;
     NetworkPortal network_portal{root,DefaultSystemImportBackend()};
+    network_portal.SetLogDirectory(Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir));
     network_portal.SetUpdatePackage([&] { return updater.PrepareAssistedDownload(); });
     auto network_poll_at = std::chrono::steady_clock::time_point{};
     // Revoked before the library-owned portal is destroyed. No background server survives play.

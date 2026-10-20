@@ -156,7 +156,12 @@ footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:24
 <div id="system-review" class="review" hidden><p id="system-versions"></p><p id="system-warnings"></p>
 <label id="system-warning-row"><input id="system-warning-accept" type="checkbox"><span id="system-warning-label">I understand and accept these warnings.</span></label>
 <button id="system-confirm" class="primary">Confirm installation</button></div></div><button id="system-cancel" class="danger">Cancel and discard system import</button></section></div>
-</div><section class="panel" id="app-updates" hidden>
+</div><section class="panel" id="log-export" hidden>
+<h2 id="logs-title"></h2><p id="logs-help"></p>
+<div class="actions"><button id="logs-download" class="primary"></button><button id="logs-cancel" hidden></button>
+<a id="logs-file" hidden></a></div><progress id="logs-progress" max="1" value="0" hidden></progress>
+<p id="logs-status" role="status" aria-live="polite"></p>
+</section><section class="panel" id="app-updates" hidden>
 <h2 id="app-update-title"></h2><p id="app-update-help"></p>
 <button id="app-update-download"></button><a id="app-update-package" hidden></a>
 <p id="app-update-status" role="status" aria-live="polite"></p>
@@ -242,6 +247,7 @@ async function api(path,options={}){
  return response;
 }
 function render(){
+ renderLogs();
  $('app-updates').hidden=!session;
  const s=state.transfer||{};
  $('upload').hidden=!session||!state.uploads;
@@ -459,6 +465,52 @@ $('system-cancel').addEventListener('click',async()=>{
  try{for(let retry=0;;retry++)try{await api('/api/v1/system/jobs/'+state.system.id,{method:'DELETE'});break;}
  catch(error){if(error.message!=='busy'||retry>=30)throw error;await delay(100);}
  systemReviewId='';$('message').textContent='';await refresh();}catch(error){$('message').textContent=systemReason(error);}
+});
+
+// Export logs to a file download; never fetch multi-GiB archives into a browser Blob. The
+// download starts with the export and follows it while it compresses; the link stays for a retry.
+let logsWaiting=false,logsRequesting=false;
+const logWords=pt?{title:'Logs e capturas',help:'Baixe toda a pasta de logs, incluindo as capturas gráficas, em um arquivo comprimido .tar.zst. Mantenha o Jadyx na biblioteca.',
+ download:'Comprimir e baixar logs',cancel:'Cancelar',save:'Salvar arquivo',scanning:'Preparando arquivos…',compressing:'Comprimindo e enviando',ready:'Arquivo pronto. Se o download não começar, clique em Salvar arquivo.',cancelled:'Compressão cancelada.',failed:'Não foi possível preparar os logs. Os originais foram preservados.',space:'Não há espaço livre suficiente para preparar o arquivo.',read:'Um arquivo de log mudou ou não pôde ser lido. Tente novamente.',saving:'Iniciando download…'}:es?{
+ title:'Logs y capturas',help:'Descarga toda la carpeta de logs, incluidas las capturas gráficas, en un archivo comprimido .tar.zst. Mantén Jadyx en la biblioteca.',
+ download:'Comprimir y descargar logs',cancel:'Cancelar',save:'Guardar archivo',scanning:'Preparando archivos…',compressing:'Comprimiendo y enviando',ready:'Archivo listo. Si no empieza la descarga, pulsa Guardar archivo.',cancelled:'Compresión cancelada.',failed:'No se pudieron preparar los logs. Los originales se conservan.',space:'No hay espacio libre suficiente para preparar el archivo.',read:'Un archivo de log cambió o no se pudo leer. Vuelve a intentarlo.',saving:'Iniciando descarga…'}:{
+ title:'Logs and captures',help:'Download the entire log folder, including graphics captures, as a compressed .tar.zst file. Keep Jadyx in the library.',
+ download:'Compress and download logs',cancel:'Cancel',save:'Save file',scanning:'Preparing files…',compressing:'Compressing and sending',ready:'Archive ready. If downloading does not start, click Save file.',cancelled:'Compression cancelled.',failed:'Could not prepare logs. Original files were preserved.',space:'Not enough free space to prepare the archive.',read:'A log file changed or could not be read. Try again.',saving:'Starting download…'};
+$('logs-title').textContent=logWords.title;$('logs-help').textContent=logWords.help;
+$('logs-download').textContent=logWords.download;$('logs-cancel').textContent=logWords.cancel;
+$('logs-file').textContent=logWords.save;
+async function saveLogs(){
+ const response=await api('/api/v1/logs/download',{method:'POST'}),data=await response.json();
+ if(typeof data.download!=='string'||!/^\/api\/v1\/logs\/archive\?ticket=[0-9a-f]{64}$/.test(data.download)||
+    typeof data.filename!=='string'||!/^jadyx-logs-[0-9]{8}-[0-9]{6}\.tar\.zst$/.test(data.filename))throw Error('download');
+ const link=$('logs-file');link.href=data.download;link.download=data.filename;link.hidden=false;link.click();
+}
+function renderLogs(){
+ const s=state.logs||{};$('log-export').hidden=!session||!s.supported;
+ if(!session||!s.supported)return;
+ $('logs-download').disabled=!!s.busy||logsRequesting;$('logs-cancel').hidden=!s.busy;
+ $('logs-progress').hidden=s.phase!=='compressing';
+ $('logs-progress').value=s.total?Math.min(1,s.processed/s.total):0;
+ $('logs-status').textContent=s.phase==='compressing'?logWords.compressing+' · '+size(s.processed||0)+' / '+size(s.total||0)+' · '+size(s.compressed||0):
+  s.phase==='failed'?(logWords[s.error]||logWords.failed):(logWords[s.phase]||'');
+ if(!s.busy&&s.phase!=='ready')$('logs-file').hidden=true;
+ if(logsWaiting&&s.phase==='ready'){
+  logsWaiting=false;logsRequesting=true;
+  saveLogs().catch(()=>{$('logs-status').textContent=logWords.failed;}).finally(()=>{logsRequesting=false;$('logs-download').disabled=false;});
+ }
+ if(s.phase==='failed'||s.phase==='cancelled')logsWaiting=false;
+}
+$('logs-download').addEventListener('click',async()=>{
+ logsRequesting=true;$('logs-download').disabled=true;$('logs-file').hidden=true;
+ try{await api('/api/v1/logs/export',{method:'POST'});
+  try{await saveLogs();}catch{logsWaiting=true;}
+  await refresh();}
+ catch(error){$('logs-status').textContent=logWords[error.message]||logWords.failed;}
+ finally{logsRequesting=false;$('logs-download').disabled=!!state.logs?.busy;}
+});
+$('logs-cancel').addEventListener('click',async()=>{
+ logsWaiting=false;try{await api('/api/v1/logs/export',{method:'DELETE'});await refresh();}
+ catch{$('logs-status').textContent=logWords.failed;}
 });
 
 // Guided app update. The server grants a short-lived ticket bound to a verified package.

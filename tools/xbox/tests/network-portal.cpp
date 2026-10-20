@@ -18,10 +18,12 @@ void Check(bool ok, const char* message) {
 int Status(const httplib::Result& result) { return result ? result->status : 0; }
 } // namespace
 
+#include "log-export-tests.h"
 #include "nsp-upload-tests.h"
 #include "system-upload-tests.h"
 
 int main(int argc,char** argv) {
+    try {
     using namespace std::chrono_literals;
     const auto reservation = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     Check(reservation != INVALID_SOCKET, "port reservation socket");
@@ -33,7 +35,9 @@ int main(int argc,char** argv) {
     const auto port = ntohs(reserve.sin_port);
     ::closesocket(reservation);
     Check(port > 0 && port <= 65535, "reserve a test port");
+    const auto log_root=CreateLogFixture();
     Jadyx::NetworkPortal portal;
+    portal.SetLogDirectory(log_root / "log");
     Check(!portal.Status().running, "off by default");
     Check(!portal.Start("0.0.0.0", static_cast<unsigned short>(port)), "reject wildcard binding");
     Check(!portal.Start("8.8.8.8", static_cast<unsigned short>(port)), "reject public binding");
@@ -73,6 +77,7 @@ int main(int argc,char** argv) {
           "authenticated connection gate, no upload endpoints");
     Check(status->body.find(token) == std::string::npos && status->body.find(initial.code) == std::string::npos,
           "status never returns secrets");
+    LogExportTests(portal,client,authenticated,log_root);
     // Exercise the production update routes over real native TCP, not a mocked server.
     Check(Status(client.Post("/api/v1/update/download", "{}", "application/json"))==401,"anonymous update preparation rejected");
     Check(Status(client.Post("/api/v1/update/download", authenticated,"{}","application/json"))==409,"unverified update rejected");
@@ -187,4 +192,5 @@ int main(int argc,char** argv) {
     UploadTests(port,argc>1 && std::string_view{argv[1]}=="--large");
     SystemUploadTests(port);
     std::puts("PASS: network portal native TCP pairing/origin/limits/restart/partial-body lifecycle; Xbox/AppContainer LAN gate still required");
+    } catch (const std::exception& error) { std::fprintf(stderr,"FAIL: uncaught %s\n",error.what());return 1; }
 }

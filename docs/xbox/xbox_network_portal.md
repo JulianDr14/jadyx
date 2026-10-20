@@ -378,3 +378,115 @@ de privacidad eliminado del error. Recompilación incremental y paquete de la mi
 Guardado solicitado por el usuario: portal separado en commits locales de transporte,
 validación compartida, lotes recuperables, API, integración UWP, página web y pruebas.
 La solución ajena en d3d12_query_cache.cpp queda sin incluir; no se hace push.
+
+## Descarga completa de logs y capturas — 0.3.6.16 (20 octubre 2026)
+
+El usuario confirma que la captura .15 termina correctamente y solicita exportar
+la carpeta log completa porque la descarga de Device Portal no funciona. La nueva
+opcion del portal de Jadyx es **Comprimir y descargar logs**; se usa desde el PC
+emparejado, manteniendo la app en biblioteca. La actualizacion sobre la instalacion
+existente conserva LocalState y las capturas anteriores; no es necesario repetirlas.
+
+La biblioteca configura el root mediante GetEdenPath(LogDir), independiente de la
+version del paquete. Incluye archivos binarios y texto, subdirectorios, vacios y
+trace/full_*. No explora otras carpetas ni acepta rutas del navegador. Rechaza
+reparse points/enlaces y archivos que no puede leer; no anuncia un archivo listo
+si hubo un fallo. Tamaños de archivos fijados al inventariar: un log que siga
+creciendo aporta su prefijo inventariado; truncados/lecturas cortas fallan. No es
+una instantanea atomica entre todos los archivos. Capturas cerradas son inmutables.
+
+Formato interoperable PAX tar + Zstandard, usando zstd estatico existente, sin
+agregar dependencias. Nivel15, ventana8MiB, hashLog21/chainLog22, un worker de
+compresion, checksum de frame habilitado. Se verifica una estimacion de memoria
+del compresor <=64MiB; buffers de lectura1MiB y salida ZSTD_CStreamOutSize, mas
+el inventario de rutas. No se carga un archivo completo ni el archivo descargado
+en un Blob del navegador. No se promete un ratio para datos ya comprimidos.
+
+El worker mantiene scanning/compressing/ready/failed/cancelled y progreso de bytes,
+archivos y tamaño comprimido. Crea LocalState/jadyx/transfers/log-export/logs.partial
+y publica logs.tar.zst solo al cerrar completamente. Esa ruta queda fuera de log,
+no se incluye a si misma. Conserva un unico archivo preparado para reintentos;
+la siguiente preparacion lo sustituye. Reserva32MiB de disco, inventario<=100000
+entradas y contenido<=1TiB; comprueba espacio durante la escritura. Cancelar/parar
+el portal pide stop y une el worker, eliminando el parcial, sin modificar los logs.
+
+API, con los mismos controles Host/Origin/emparejamiento del portal:
+- POST /api/v1/logs/export: 202, preparacion asincrona; 409 si ya esta ocupada.
+- DELETE /api/v1/logs/export: solicita cancelacion.
+- GET /api/v1/status: campo logs con progreso/estado; no devuelve secretos/rutas.
+- POST /api/v1/logs/download: archivo listo -> ticket aleatorio, URL y nombre.
+- GET/HEAD /api/v1/logs/archive?ticket=...: descarga nativa en bloques64KiB;
+  Content-Disposition y Content-Length; Range/206/416 con proveedor de httplib.
+
+Ticket de alcance exclusivo a logs,30min, reutilizable para Range/reintentos;
+nueva preparacion, nuevo emparejamiento o Stop lo revocan. Durante una respuesta
+se retiene handle readonly sin compartir escritura/borrado: no puede sustituirse
+el archivo bajo un lector activo. El enlace no transporta el Bearer de sesion.
+Pagina es/en/pt-BR con progreso/cancelacion y descarga automatica una vez lista,
+mas enlace Guardar archivo si el navegador no inicia automaticamente.
+
+Validacion completada:
+- Harness TCP nativo: pairing/auth, no listo, un worker, descarga zstd completa,
+  Range exacto/HEAD/416, revocacion, cancelacion sin parcial y reinicio; conserva
+  los gates anteriores de actualizacion, subidas NSP y lotes de sistema.
+- Python tarfile contrasta todos los bytes y nombres, rutas UTF-8 largas para
+  PAX, archivos/carpetas vacios y exclusion del archivo externo sintetico.
+- Navegador simulado es/en/pt-BR: progreso5GiB, cancelacion/error y descarga
+  nativa unica, sin leer el archivo como Blob. Suite previa de pagina pasa.
+- UWP incremental/link correctos. Gate real AppContainer HTTP/range/zstd,
+  3archivos sinteticos/1048607bytes ->1502bytes, retorno0 a187ms; extraccion
+  posterior tarfile y comparacion integra correctas. Este ratio es sintetico,
+  no una medida de las capturas reales ni certificacion Series/LAN.
+
+Comandos: tools/xbox/tests/run-network-portal.ps1,
+node tools/xbox/tests/log-export-page.cjs,
+node tools/xbox/tests/network-portal-page.cjs.
+Opt-in AppContainer log_export_gate=1, ausente del paquete final. Evidencias:
+build-uwp/test-results/log-export-{native-gate,build-gate,package,package-verification}.txt
+ y network-portal/pc-log-export-gate. Pendiente descarga real Series al PC.
+
+Entrega diagnostica0.3.6.16, biblioteca/play/captura menu/full, fastmem0, sin
+payload/gates/self-test/debug/cap PC: build-uwp/package/jadyx.appx.
+SHA256 5C50A80140BC8069C19E808CB9CB4CF381B9D5617DFC8E991C6AF122E9D20490.
+Firma/payload/container verificados, simbolos symbols/0.3.6.16. Sin commit/push.
+
+Trampas del gate: Python Windows usa cp1252 por defecto; editar UTF-8 con encoding
+explicito para no mezclar codificaciones en el HTML. Fixture PAX largo se mantiene
+dentro de MAX_PATH del harness desktop; no certifica rutas Windows >260 caracteres.
+El batch comprueba errorlevel distinto de0, incluidos codigos negativos de excepcion;
+el main del harness informa excepciones en vez de un terminate opaco.
+
+Fuentes primarias: [Zstandard streaming y parametros](https://facebook.github.io/zstd/zstd_manual.html),
+[cpp-httplib: proveedores de contenido](https://github.com/yhirose/cpp-httplib#send-content-with-a-content-provider).
+Libarchive configurado en este proyecto solo para lectura; por eso el escritor
+PAX usa el contenedor estandar y se valida con un lector independiente.
+
+## Compresion multihilo y descarga en streaming de logs — 0.3.6.17+ (20 octubre 2026)
+
+El portal solo exporta con la consola quieta en modo red, asi que la compresion usa
+todos los nucleos. Sustituye la configuracion de .16 (nivel15, un worker, 64KiB):
+- Zstd multihilo (ZSTD_MULTITHREAD ya compilado; hilos _beginthreadex validos en UWP):
+  un worker por hardware_concurrency, max16, recortado a ~256MiB totales (estimacion
+  monohilo + 3 jobs por worker). Si nbWorkers no se acepta, sigue monohilo.
+- Nivel7 (lazy), ventana4MiB, overlapLog6; jobs = total/(nucleos*4) entre1 y8MiB para
+  que una carpeta pequeña tambien reparta trabajo. Checksum de frame igual.
+- Lectura 4MiB, salida 1MiB, espacio libre consultado cada16MiB con margen48MiB
+  (la reserva de32MiB se mantiene entre consultas).
+
+Descarga sin esperar al final: POST /api/v1/logs/download se concede tambien mientras
+comprime (campo streaming). El ticket queda ligado a la ejecucion (run) de esa
+exportacion. GET del archivo en curso responde chunked siguiendo el parcial: el
+escritor hace flush antes de publicar compressed y notifica una condition variable.
+El renombrado parcial->final ocurre bajo el mismo lock en que el lector elige archivo.
+Un fallo/cancelacion corta la conexion; nunca entrega un archivo truncado como completo.
+Range mientras comprime -> 409 (se reintenta cuando esta listo). Ya listo: longitud
+fija, Range/206, ETag fuerte para reanudar. Lecturas posicionadas de1MiB (OVERLAPPED,
+sin puntero compartido) y SO_SNDBUF4MiB en el socket de la descarga. El nombre del
+archivo se fija al iniciar. Pagina: la descarga nativa arranca junto con la exportacion;
+el enlace Guardar archivo permanece para reintentar.
+
+Validacion: harness TCP nativo con streaming real (chunked) byte-identico al archivo
+final, ETag, Range/HEAD/416, cancelacion tolerante a la carrera con el export rapido
+(reintenta hasta cancelar; cada intento acaba en cancelled o ready), 5/5 ejecuciones;
+PAX tarfile pasa; UWP compila/enlaza. Test de pagina log-export-page.cjs actualizado,
+no ejecutado (sin node en este PC). Pendiente medir tiempo/tamaño reales en Series.
