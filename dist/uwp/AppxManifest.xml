@@ -12,11 +12,12 @@
 <Package
     xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
     xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
-    IgnorableNamespaces="uap">
+    xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+    IgnorableNamespaces="uap rescap">
 
   <Identity Name="Jadyx"
             Publisher="CN=JadyxDev"
-            Version="0.3.5.0"
+            Version="0.3.6.0"
             ProcessorArchitecture="x64" />
 
   <Properties>
@@ -72,6 +73,8 @@
     <Capability Name="internetClient" />
     <!-- User-started library portal: receive HTTP connections from the local network. -->
     <Capability Name="privateNetworkClientServer" />
+    <!-- Native self-update of the installed Jadyx package in Xbox Developer Mode. -->
+    <rescap:Capability Name="packageManagement" />
     <!-- PC Nintendo Pro USB transport; joystick usage is allowed by UWP HID. -->
     <DeviceCapability Name="humanInterfaceDevice" />
   </Capabilities>
