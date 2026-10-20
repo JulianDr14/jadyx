@@ -51,6 +51,8 @@ public:
     void SetUploadsAvailable(bool enabled);
     // Fixed verified package supplied by the library; caller outlives this server.
     void SetUpdatePackage(std::function<std::optional<Updates::UpdatePackage>()> package);
+    // Configure the fixed app log root before Start; never takes a browser path.
+    void SetLogDirectory(std::filesystem::path directory);
     bool BlockForLocalOperation();
     std::string FinalizeGame(const NspValidator& validate);
     void CancelTransfer();

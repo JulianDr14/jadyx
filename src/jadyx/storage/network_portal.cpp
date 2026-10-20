@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/storage/network_portal.h"
+#include "jadyx/storage/log_export.h"
 #include "jadyx/storage/network_portal_logo.h"
 #include "jadyx/storage/network_portal_page.h"
 
@@ -272,6 +273,10 @@ std::vector<PortalAddress> PortalAddresses() {
 }
 
 struct NetworkPortal::Impl {
+    std::unique_ptr<LogExport> logs;
+    std::string logs_ticket;
+    std::uint64_t logs_ticket_run{};
+    Clock::time_point logs_ticket_until{};
     std::mutex admission;
     std::function<std::optional<Updates::UpdatePackage>()> update_package;
     std::optional<Updates::UpdatePackage> ticket_package;
@@ -293,12 +298,14 @@ struct NetworkPortal::Impl {
     bool storage_failed{};
 
     void Shutdown() {
+        if (logs) logs->Stop();
         if (upload) upload->Cancel();
         if (system) system->Cancel();
         {
             std::lock_guard lock{mutex};
             status.running = status.paired = false;
             update_ticket.clear(); ticket_package.reset();
+            logs_ticket.clear();
             status.code.clear(); status.url.clear(); session.clear();
         }
         if (server) { server->stop(); server->CancelClients(); server->decommission(); }
@@ -358,6 +365,12 @@ struct NetworkPortal::Impl {
                 EqualSecret(request.get_param_value("ticket"), update_ticket)) {
                 return httplib::Server::HandlerResponse::Unhandled;
             }
+            if ((request.method == "GET" || request.method == "HEAD") &&
+                request.path == "/api/v1/logs/archive" &&
+                request.get_param_value_count("ticket") == 1 && !logs_ticket.empty() &&
+                Clock::now() < logs_ticket_until &&
+                EqualSecret(request.get_param_value("ticket"), logs_ticket))
+                return httplib::Server::HandlerResponse::Unhandled;
             if (request.get_header_value_count("Authorization") != 1 ||
                 !EqualSecret(request.get_header_value("Authorization"), "Bearer " + session) || session.empty()) {
                 Reply(response, 401, {{"error", "session"}});
@@ -390,6 +403,7 @@ struct NetworkPortal::Impl {
             if (next.empty()) { Reply(response, 503, {{"error", "random"}}); return; }
             // A code pairs one browser once. Existing sessions are invalidated on re-pairing.
             session = std::move(next);
+            logs_ticket.clear();
             update_ticket.clear(); ticket_package.reset();
             status.paired = true;
             expires = now;
@@ -398,7 +412,8 @@ struct NetworkPortal::Impl {
         server->Get("/api/v1/status", [this](const auto&, auto& response) {
             Reply(response, 200, {{"running", true}, {"stage", upload ? "nsp" : "connection-test"},
                 {"uploads", bool(upload)}, {"transfer", upload ? UploadJson(upload->Snapshot()) : Json::object()},
-                {"system_supported",system_supported},{"system",system ? SystemJson(system->Snapshot()) : Json::object()}});
+                {"system_supported",system_supported},{"system",system ? SystemJson(system->Snapshot()) : Json::object()},
+                {"logs", LogsJson()}});
         });
         server->Post("/api/v1/update/download", [this](const auto&, auto& response) {
             std::lock_guard admission_lock{admission};
@@ -454,6 +469,120 @@ struct NetworkPortal::Impl {
         });
         UploadRoutes();
         SystemRoutes();
+        LogRoutes();
+    }
+
+    Json LogsJson() const {
+        if (!logs) return {{"supported", false}};
+        const auto value = logs->Status();
+        return {{"supported", true}, {"phase", value.phase}, {"busy", value.busy},
+            {"error", value.error}, {"total", value.total}, {"processed", value.processed},
+            {"compressed", value.compressed}, {"files", value.files},
+            {"completed_files", value.completed_files}, {"filename", value.filename}};
+    }
+
+    void LogRoutes() {
+        server->Post("/api/v1/logs/export", [this](const auto&, auto& response) {
+            std::lock_guard admission_lock{admission};
+            if (!logs) { Reply(response, 409, {{"error", "unavailable"}}); return; }
+            const auto error = logs->Start();
+            if (!error.empty()) { Reply(response, error == "busy" ? 409 : 503, {{"error", error}}); return; }
+            { std::lock_guard lock{mutex}; logs_ticket.clear(); }
+            Reply(response, 202, LogsJson());
+        });
+        server->Delete("/api/v1/logs/export", [this](const auto&, auto& response) {
+            if (logs) logs->Cancel();
+            Reply(response, 200, LogsJson());
+        });
+        server->Post("/api/v1/logs/download", [this](const auto&, auto& response) {
+            std::lock_guard admission_lock{admission};
+            // Granted while compressing too: the browser starts receiving the archive as
+            // it is written instead of waiting for the whole export.
+            const auto value = logs ? logs->Status() : LogExportStatus{};
+            if (!logs || (!value.busy && value.phase != "ready")) {
+                Reply(response, 409, {{"error", "not_ready"}}); return;
+            }
+            std::lock_guard lock{mutex};
+            logs_ticket = RandomSession();
+            if (logs_ticket.empty()) { Reply(response, 503, {{"error", "random"}}); return; }
+            logs_ticket_run = value.run;
+            logs_ticket_until = Clock::now() + std::chrono::minutes{30};
+            Reply(response, 200, {{"download", "/api/v1/logs/archive?ticket=" + logs_ticket},
+                {"filename", value.filename}, {"streaming", value.busy},
+                {"size", value.busy ? Json(nullptr) : Json(value.compressed)}});
+        });
+        server->Get("/api/v1/logs/archive", [this](const auto& request, auto& response) {
+            std::uint64_t run{};
+            {
+                std::lock_guard lock{mutex};
+                if (request.get_param_value_count("ticket") != 1 || logs_ticket.empty() ||
+                    Clock::now() >= logs_ticket_until ||
+                    !EqualSecret(request.get_param_value("ticket"), logs_ticket)) {
+                    Reply(response, 401, {{"error", "ticket"}}); return;
+                }
+                run = logs_ticket_run;
+            }
+            auto* const exporter = logs.get();
+            const auto value = exporter ? exporter->Status() : LogExportStatus{};
+            const bool ready = value.phase == "ready";
+            // A range needs the final length; a resumed download asks again once it is ready.
+            if (!exporter || value.run != run || (!ready && (!value.busy || !request.ranges.empty()))) {
+                Reply(response, 409, {{"error", "not_ready"}}); return;
+            }
+            struct ArchiveReader {
+                HANDLE handle{INVALID_HANDLE_VALUE};
+                std::vector<char> bytes;
+                ~ArchiveReader() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+                // Positioned reads in 1 MiB blocks: no shared file pointer, few send calls.
+                bool Send(std::uint64_t offset, std::uint64_t length, httplib::DataSink& sink) {
+                    if (bytes.empty()) bytes.resize(1U << 20);
+                    while (length) {
+                        const auto take = static_cast<DWORD>(std::min<std::uint64_t>(length, bytes.size()));
+                        OVERLAPPED at{};
+                        at.Offset = static_cast<DWORD>(offset); at.OffsetHigh = static_cast<DWORD>(offset >> 32);
+                        DWORD received{};
+                        if (!ReadFile(handle, bytes.data(), take, &received, &at) || received != take ||
+                            !sink.write(bytes.data(), take)) return false;
+                        offset += take; length -= take;
+                    }
+                    return true;
+                }
+            };
+            const auto reader = std::make_shared<ArchiveReader>();
+            reader->handle = static_cast<HANDLE>(exporter->OpenArchive(run, [] { return true; }));
+            if (reader->handle == INVALID_HANDLE_VALUE) {
+                Reply(response, 409, {{"error", "busy"}}); return;
+            }
+            // Large send buffer: each 1 MiB block leaves in one call and the window never
+            // starves while the next block is read, over Ethernet or Wi-Fi.
+            if (current_portal_stream) {
+                const int buffer = 4 << 20;
+                ::setsockopt(current_portal_stream->socket(), SOL_SOCKET, SO_SNDBUF,
+                             reinterpret_cast<const char*>(&buffer), sizeof(buffer));
+            }
+            response.set_header("Content-Disposition", "attachment; filename=\"" + value.filename + "\"");
+            if (!ready) {
+                // Follows the archive while it is compressed; chunked, since its size is not
+                // known yet. A failed or cancelled export aborts the transfer, never truncates it.
+                response.set_chunked_content_provider("application/zstd",
+                    [reader, exporter, run](std::size_t offset, httplib::DataSink& sink) {
+                        std::uint64_t available{};
+                        switch (exporter->WaitFor(run, offset, available, [&sink] { return sink.is_writable(); })) {
+                        case LogExport::Follow::End: sink.done(); return true;
+                        case LogExport::Follow::Data: return reader->Send(offset, available - offset, sink);
+                        default: return false;
+                        }
+                    });
+                return;
+            }
+            response.set_header("Accept-Ranges", "bytes");
+            // A strong validator lets the browser resume an interrupted download with Range.
+            response.set_header("ETag", "\"" + std::to_string(run) + "-" + std::to_string(value.compressed) + "\"");
+            response.set_content_provider(static_cast<std::size_t>(value.compressed), "application/zstd",
+                [reader](std::size_t offset, std::size_t length, httplib::DataSink& sink) {
+                    return reader->Send(offset, length, sink);
+                });
+        });
     }
 
     void UploadRoutes() {
@@ -632,6 +761,7 @@ bool NetworkPortal::Start(const std::string& ipv4, unsigned short port) {
     }
     if (impl->upload) impl->upload->Resume();
     if (impl->system) impl->system->Resume();
+    if (impl->logs) impl->logs->Resume();
     if (!LocalIpv4(ipv4) || port == 0) {
         std::lock_guard lock{impl->mutex}; impl->status.error = PortalError::NoAddress; return false;
     }
@@ -703,6 +833,11 @@ PortalStatus NetworkPortal::Status() const {
 
 void NetworkPortal::SetUpdatePackage(std::function<std::optional<Updates::UpdatePackage>()> package) {
     std::lock_guard lock{impl->mutex}; impl->update_package = std::move(package);
+}
+void NetworkPortal::SetLogDirectory(std::filesystem::path directory) {
+    std::lock_guard lock{impl->lifecycle};
+    if (impl->server) throw std::logic_error{"SetLogDirectory must precede Start"};
+    impl->logs = std::make_unique<LogExport>(std::move(directory));
 }
 void NetworkPortal::SetUploadsAvailable(bool enabled) {
     std::lock_guard lock{impl->admission};impl->imports_available=enabled;
