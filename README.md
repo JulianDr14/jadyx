@@ -26,6 +26,11 @@ SPDX-License-Identifier: GPL-3.0-or-later
   images, names or game assets are used.</sub>
 </p>
 
+<p align="center">
+  <img src="docs/assets/screens/in-game-menu.png" alt="Jadyx in-game quick menu on Xbox Series X|S" width="900"><br>
+  <sub>The in-game quick menu. Hold <b>View + Menu</b> on the controller while playing to open it.</sub>
+</p>
+
 > **Beta.** Some games reach gameplay on the console and none is free of bugs. It contains no keys,
 > firmware or games and never will: use only the ones you dumped from a console and games you own.
 > See [Legal](#legal).
