@@ -144,6 +144,7 @@ add_executable(jadyx WIN32
     mods/mod_store.h
     mods/mod_thumbnails.cpp
     mods/mod_thumbnails.h
+    network/http.cpp
     mods/mod_web.cpp
     mods/mod_web.h
     mods/mods_page.h
