@@ -49,50 +49,6 @@
 namespace D3D12 {
 
 namespace {
-// Private, opt-in Series experiment. A byte-exact original sidecar prevents applying
-// the captured replacement to any other compiler options or linked shader interface.
-GraphicsPipeline::SharedDxilStages DirectPickLocalExperiment(
-    GraphicsPipeline::SharedDxilStages original, const GraphicsPipelineCacheKey& key) {
-    if (!original || key.unique_hashes[1] != 0x17d43777e7441cf4ULL ||
-        key.unique_hashes[5] != 0x0b7e4e46d61d3694ULL) return original;
-    struct Sidecars { std::vector<u8> before, after; };
-    static const Sidecars sidecars = [] {
-        Sidecars result;
-        try {
-            const auto dir = Common::FS::GetExeDirectory() / "pick_local_direct";
-            const auto read = [&](const char* name) {
-                std::ifstream file(dir / name, std::ios::binary | std::ios::ate);
-                if (!file) return std::vector<u8>{};
-                const auto size = file.tellg();
-                if (size < 32 || size > (1 << 20))
-                    throw std::runtime_error("invalid direct-local experiment sidecar size");
-                std::vector<u8> bytes(static_cast<size_t>(size)); file.seekg(0);
-                file.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
-                if (!file || std::memcmp(bytes.data(), "DXBC", 4))
-                    throw std::runtime_error("invalid direct-local experiment container");
-                return bytes;
-            };
-            result.before = read("original.dxil");
-            result.after = read("direct.dxil");
-        } catch (const std::exception& error) {
-            LOG_ERROR(Render, "D3D12 direct-local experiment disabled: {}", error.what());
-            result = {};
-        }
-        return result;
-    }();
-    if (sidecars.before.empty() || sidecars.after.empty()) return original;
-    if ((*original)[4] != sidecars.before) {
-        LOG_WARNING(Render, "D3D12 direct-local experiment: original DXIL differs; kept original");
-        return original;
-    }
-    auto replaced = std::make_shared<GraphicsPipeline::DxilStages>(*original);
-    (*replaced)[4] = sidecars.after;
-    LOG_WARNING(Render, "D3D12 direct-local experiment ACTIVE: picking PS {} -> {} bytes, "
-                "no local array, guest logic preserved; Series test pending",
-                sidecars.before.size(), sidecars.after.size());
-    return replaced;
-}
-
 std::atomic_bool draw_sampler_reuse{};
 }
 void SetDrawSamplerReuse(bool enabled) {
@@ -325,7 +281,7 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
         try {
             FT::ScopedSpan dxil_span{FT::Event::PipelineDxilLong, trace_pipeline};
             const u64 dxil_start = SteadyMicros();
-            dxil = DirectPickLocalExperiment(compile_dxil(trace_pipeline, false), key);
+            dxil = compile_dxil(trace_pipeline, false);
             GetPipelineStats().Record(PipelineStage::Dxil, SteadyMicros() - dxil_start);
             compiled = true;
         } catch (const std::exception& exception) {
@@ -347,7 +303,7 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
             // this session, but trying to draw it makes it one of the pipelines built at boot.
             flatten_retry = false;
             try {
-                dxil = DirectPickLocalExperiment(compile_dxil(trace_pipeline, true), key);
+                dxil = compile_dxil(trace_pipeline, true);
                 flattened_vertex = true;
             } catch (const std::exception& exception) {
                 BUG_TRACK_KEY(PipelineRejected, key.Hash(),
