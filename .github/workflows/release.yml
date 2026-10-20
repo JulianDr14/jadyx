@@ -127,9 +127,12 @@ jobs:
              as the certificate, and install.
           4. In Dev Home, select Jadyx → **View details** and set **App type** to **Game**. In App mode
              it runs out of memory.
-          5. Start Jadyx and import your keys and firmware from a folder in the configuration panel.
-          6. Add games: copy them to the app's \`LocalState\games\` folder with the Device Portal
-             file explorer, or add an external folder from the library.
+          5. Start Jadyx and send your keys, firmware and games from a PC or phone with the
+             **Jadyx Portal**: **Settings → File manager → Network connection → Start server**, open
+             the address it shows in a browser on the same network and enter the connection code.
+          6. Other ways: import keys and firmware from a folder or ZIP on a USB drive in
+             **Settings → File manager**, and add games from an external folder or USB drive, or copy
+             them to the app's \`LocalState\games\` folder with the Device Portal file explorer.
 
           A newer version installs over the previous one and keeps your games, saves and settings. Do
           not uninstall to update: uninstalling deletes them.

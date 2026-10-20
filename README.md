@@ -68,7 +68,7 @@ Audio works in every game tested. None has been played from start to finish, so 
 | App memory | A memory guard that shrinks the caches as the 5120 MiB limit nears, and a ledger of who owns each MiB | See [The memory guard](#the-memory-guard) and [The memory wall](#the-memory-wall) |
 | Textures | ASTC decoded on the GPU into BC3, or BC1 when the texture has no alpha; arrays included | `astc=bc3` keeps the CPU path, `astc_opaque=bc3` keeps every ASTC texture as BC3, `astc_arrays=rgba` keeps arrays in RGBA8 |
 | Audio | XAudio2 2.9 | Same path on PC and Series |
-| Front end | Home, Library and Settings tabs; library with cover art cached on disk, filters and pinned games; full-screen in-game menu (View + Menu held) with screenshots | English and Spanish interface; imports keys and firmware from a folder; games from `LocalState\games` or external folders and USB drives. See [The front end](#the-front-end) |
+| Front end | Home, Library and Settings tabs; library with cover art cached on disk, filters and pinned games; full-screen in-game menu (View + Menu held) with screenshots | English, Spanish and Brazilian Portuguese interface; games, keys and firmware sent from a PC or phone with the [Jadyx Portal](#jadyx-portal), or imported from a folder, ZIP or USB drive. See [The front end](#the-front-end) |
 | Game options | Mods, Cheats, Updates, DLC and Pulse for each game, opened from the library | Cheats also change from the in-game menu, while playing. See [Game options](#game-options) |
 | Mods | Installed in priority order; browsed and downloaded from GameBanana or the CNX index, or installed from archives on disk | `.zip`, `.7z` and `.rar`; an archive with several variants lets you pick. See [Mods](#mods) |
 | Cheats | Atmosphere cheats from the game's files and the online nx-cheats-db, turned on before playing or while playing | See [Cheats](#cheats) |
@@ -442,15 +442,15 @@ cached, then the remaining games in short batches that give way as soon as the p
 one catalog in `src/jadyx/i18n/locales/`. Catalogs are built at compile time: a missing, repeated or
 empty translation stops the build, so a half-translated screen cannot ship. Placeholders are
 positional (`{0}`), plurals follow the language's CLDR rule, and the interface language is picked
-from Windows' preferred languages with BCP 47 fallback (`es-CO` → `es` → English). English and
-Spanish are complete; adding a language is one catalog file and one line in `locales/registry.cpp`
+from Windows' preferred languages with BCP 47 fallback (`es-CO` → `es` → English). English,
+Spanish and Brazilian Portuguese are complete; adding a language is one catalog file and one line in `locales/registry.cpp`
 (steps in [the front end notes](docs/xbox/xbox_frontend.md)).
 
 **Settings > System.** Each choice is either explicit or **Automatic**, which follows the console
 (or PC) language and home region:
 - *User name*: written to the active profile before the game loads, so games show it. Up to 10
   characters, as on the Switch.
-- *Emulator language*: English or Spanish.
+- *Emulator language*: English, Spanish or Brazilian Portuguese.
 - *Game language*: the 18 Switch languages. Automatic picks the variant from the region (Spain's
   Spanish in Spain, Latin American Spanish elsewhere; American or British English, and so on). A
   game that lacks the chosen language gets the closest one it declares: the other variant, then
@@ -467,6 +467,28 @@ name field would depend on an overlay that may never show up. The keyboard in `t
 instead behaves the same on the Series and the PC, works with a controller, a mouse or a real
 keyboard, and is a pure class with its own tests. Controls follow the console keyboard: A types,
 X deletes, Y adds a space, View is Shift, Menu confirms and B cancels.
+
+### Jadyx Portal
+
+The portal sends games, keys and firmware from a PC or phone to the console over the local network,
+with no Device Portal or USB drive. Open **Settings > File manager > Network connection > Start
+server** in Jadyx, open the address it shows (`http://<console-ip>:8080`) in a browser on the same
+network, then choose **Generate connection code** and type the 8-digit code in the browser. The code
+lasts 5 minutes and works once.
+
+- **Content** receives base games (`.nsp`). Each upload is checked before it reaches the library, so
+  an incomplete or damaged file never shows up as a game.
+- **System** receives keys (`prod.keys`, `title.keys` or a `.zip`) and firmware (a `.zip`, the loose
+  `.nca` files or their folder). Nothing is installed until you confirm a review that compares the
+  installed and the new firmware version and key generation, and warns about downgrades and keys
+  that may not open the installed firmware. If an import fails, the previous keys and firmware stay.
+- **Interrupted uploads resume.** After a dropped connection or a restart of the browser or the app,
+  pair again and pick the same file: the upload continues from the last confirmed block.
+
+The server only listens on the local network (Ethernet or Wi-Fi), never on the internet, and stops
+when a game starts or when you choose **Stop server**. Keys and firmware can also be imported from a
+folder or ZIP on a USB drive in **Settings > File manager**, with the same review. Design and
+protocol: [docs/xbox/xbox_network_portal.md](docs/xbox/xbox_network_portal.md) (in Spanish).
 
 ### Game options
 
@@ -547,8 +569,8 @@ moment, instead of booting it from the start. The library marks a game with a sa
   PC; on PC a game with 2 GiB of memory resumes in about 10 s. Homebrew passed 100 save and resume
   cycles on the Series.
 - **Limits.** A forced close during play leaves no session: the guarantee starts once Back to home
-  finishes. A session belongs to the build that saved it; after an update it is kept but
-  not resumed. Sessions live in `LocalState\jadyx\pulse\sessions` with a 20 GiB quota, and can be
+  finishes. Sessions survive app updates: a session resumes in any build with the same
+  Pulse major.minor version, and only a change to Pulse's format discards it. Sessions live in `LocalState\jadyx\pulse\sessions` with a 20 GiB quota, and can be
   turned off in **Settings > System > Pulse sessions** or discarded per game from its options.
 - **Its own log.** `LocalState\jadyx\log\jadyx_pulse.txt` records every save, resume and refusal, and the frames
   shown in each of the first 30 seconds after a resume.
@@ -566,9 +588,12 @@ Requirements: an Xbox Series X|S in Developer Mode, the package from the
    dependency and the `Jadyx.cer` certificate.
 3. In the app's settings on the console, set it to **Game** mode. Otherwise the memory limit is much
    lower than the 5120 MiB the emulator expects.
-4. Start the app. In the configuration panel, import keys and firmware from a folder.
-5. Add games: copy them to the app's `LocalState\games` folder with the Device Portal file explorer,
-   or add an external folder or USB drive from the library.
+4. Start the app and send your keys, firmware and games from a PC or phone with the
+   [Jadyx Portal](#jadyx-portal): **Settings > File manager > Network connection > Start server**,
+   open the address it shows in a browser on the same network and enter the connection code.
+5. Other ways to add them: import keys and firmware from a folder or ZIP on a USB drive in
+   **Settings > File manager**, and add games from an external folder or USB drive, or copy them to
+   the app's `LocalState\games` folder with the Device Portal file explorer.
 
 To update Jadyx, install the new package over the old one. Do not uninstall first: that deletes
 the keys, firmware, saves and games stored in the app.
