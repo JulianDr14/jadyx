@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <vector>
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -16,6 +17,7 @@
 #include "core/hle/kernel/k_page_group.h"
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/hle/kernel/optimized_memory_runs.h"
 #include "core/hle/kernel/svc_results.h"
 
 namespace Kernel {
@@ -389,8 +391,8 @@ Result KMemoryManager::AllocateForProcess(KPageGroup* out, size_t num_pages, u32
                     // Process part or all of the block.
                     const size_t cur_pages =
                         (std::min)(remaining_pages, manager.GetPageOffsetToEnd(cur_address));
-                    any_new = manager.ProcessOptimizedAllocation(m_system.Kernel(), cur_address,
-                                                                 cur_pages, fill_pattern);
+                    any_new |= manager.ProcessOptimizedAllocation(m_system.Kernel(), cur_address,
+                                                                  cur_pages, fill_pattern);
 
                     // Advance.
                     cur_address += cur_pages * PageSize;
@@ -431,6 +433,45 @@ Result KMemoryManager::AllocateForProcess(KPageGroup* out, size_t num_pages, u32
     }
 
     R_SUCCEED();
+}
+
+size_t KMemoryManager::TrimFree(Pool pool, size_t budget) {
+    KScopedLightLock lk(m_pool_locks[static_cast<size_t>(pool)]);
+
+    size_t released = 0;
+    for (auto* manager = this->GetFirstManager(pool, Direction::FromFront); manager != nullptr;
+         manager = this->GetNextManager(manager, Direction::FromFront)) {
+        released += manager->TrimFree(m_system.Kernel(),
+                                      m_has_optimized_process[static_cast<size_t>(pool)], budget);
+    }
+    return released;
+}
+
+size_t KMemoryManager::Impl::TrimFree(KernelCore& kernel, bool optimized, size_t& budget) {
+    auto& buffer = kernel.System().DeviceMemory().buffer;
+
+    std::vector<std::pair<size_t, size_t>> runs;
+    m_heap.ForEachFreeBlock([&](KPhysicalAddress address, size_t size) {
+        runs.emplace_back(this->GetPageOffset(address), size / PageSize);
+    });
+    CoalescePageRuns(runs);
+
+    const size_t heap_offset = GetInteger(m_heap.GetAddress()) - Core::DramMemoryMap::Base;
+    constexpr size_t SlicePages = (16ULL << 20) / PageSize;
+    size_t released = 0;
+    for (const auto& [offset, count] : runs) {
+        released += ReleasePageRun(
+            offset, count, SlicePages, budget, [&](size_t first, size_t pages) {
+                const size_t bytes =
+                    buffer.ReleaseBackingRegion(heap_offset + first * PageSize, pages * PageSize);
+                if (bytes != 0 && optimized) {
+                    this->TrackUnoptimizedAllocation(kernel, m_heap.GetAddress() + first * PageSize,
+                                                     pages);
+                }
+                return bytes;
+            });
+    }
+    return released;
 }
 
 size_t KMemoryManager::Impl::Initialize(KPhysicalAddress address, size_t size,
@@ -510,31 +551,15 @@ bool KMemoryManager::Impl::ProcessOptimizedAllocation(KernelCore& kernel, KPhysi
     auto optimize_pa = KPageTable::GetHeapPhysicalAddress(kernel, m_management_region);
     auto* optimize_map = device_memory.GetPointer<u64>(optimize_pa);
 
-    // We want to return whether any pages were newly allocated.
-    bool any_new = false;
-
-    // Get the range we're processing.
-    size_t offset = this->GetPageOffset(block);
-    const size_t last = offset + num_pages - 1;
-
-    // Process.
-    while (offset <= last) {
-        // Check if the page has been optimized-allocated before.
-        if ((optimize_map[offset / Common::BitSize<u64>()] &
-             (u64(1) << (offset % Common::BitSize<u64>()))) == 0) {
-            // If not, it's new.
-            any_new = true;
-
-            // Fill the page.
-            auto* ptr = device_memory.GetPointer<u8>(m_heap.GetAddress());
-            std::memset(ptr + offset * PageSize, fill_pattern, PageSize);
-        }
-
-        offset++;
-    }
-
-    // Return the number of pages we processed.
-    return any_new;
+    const auto bitmap_words = CalculateOptimizedProcessOverheadSize(m_heap.GetSize()) / sizeof(u64);
+    const auto initialized = InitializeUnoptimizedPageRuns(
+        std::span<const u64>{optimize_map, bitmap_words}, this->GetPageOffset(block), num_pages,
+        [&](size_t offset, size_t count) {
+            device_memory.buffer.ClearBackingRegion(
+                GetInteger(m_heap.GetAddress()) - Core::DramMemoryMap::Base + offset * PageSize,
+                count * PageSize, fill_pattern);
+        });
+    return initialized != 0;
 }
 
 size_t KMemoryManager::Impl::CalculateManagementOverheadSize(size_t region_size) {

@@ -219,6 +219,22 @@ public:
         return chosen_offset;
     }
 
+    // Calls `f(offset)` for each set (free) bit, in ascending order.
+    template <typename F>
+    void ForEachSetBit(F&& f) const {
+        if (m_used_depths == 0) {
+            return;
+        }
+        const u64* const storage_start = m_bit_storages[m_used_depths - 1];
+        const u64* const storage_end = m_end_storages[m_used_depths - 1];
+        for (const u64* storage = storage_start; storage < storage_end; ++storage) {
+            for (u64 v = *storage; v != 0; v &= v - 1) {
+                f(static_cast<size_t>(storage - storage_start) * Common::BitSize<u64>() +
+                  std::countr_zero(v));
+            }
+        }
+    }
+
     void SetBit(size_t offset) {
         this->SetBit(this->GetHighestDepthIndex(), offset);
         m_num_bits++;

@@ -55,6 +55,7 @@
 #endif // ^^^ POSIX ^^^
 
 #include <atomic>
+#include <bitset>
 #include <array>
 #include <chrono>
 #include <mutex>
@@ -241,6 +242,8 @@ void* g_backing_veh{nullptr};
 
 constexpr size_t BACKING_COMMIT_GRANULARITY = 64 * 1024; // commit in 64 KiB chunks to limit faults
 constexpr uintptr_t HOST_PAGE_SIZE = 4096;
+constexpr size_t SPAN_SIZE = 4 * 1024 * 1024;
+constexpr size_t SPAN_PAGES = SPAN_SIZE / HOST_PAGE_SIZE;
 
 // Section commit accounting for the diag (0.2.55 died with commit far below the app limit, so the
 // error the console returns is what is missing). Written from the handler: atomics only.
@@ -250,6 +253,20 @@ std::atomic<u64> g_page_retry_saves{0};
 std::atomic<u32> g_last_commit_error{0};
 std::atomic<uintptr_t> g_last_failed_address{0};
 std::atomic<u64> g_last_failed_length{0};
+
+std::atomic<uintptr_t> g_held_span{0};
+std::atomic<u32> g_commits_in_flight{0};
+std::mutex g_backing_decommit_mutex;
+
+void WaitHeldSpan(uintptr_t span) {
+    for (u32 spin = 0; g_held_span.load(std::memory_order_acquire) == span; ++spin) {
+        if (spin < 4096) {
+            YieldProcessor();
+        } else {
+            Sleep(spin < 4160 ? 0 : 1);
+        }
+    }
+}
 bool CommitSectionRange(uintptr_t begin, uintptr_t end) {
     if (g_pfn_virtual_alloc_from_app(reinterpret_cast<void*>(begin), end - begin, MEM_COMMIT,
                                      PAGE_READWRITE)) {
@@ -398,7 +415,27 @@ LONG NTAPI BackingDemandCommitHandler(EXCEPTION_POINTERS* ep) {
     const size_t offset = static_cast<size_t>(fault_addr - base);
     const size_t chunk_offset = offset & ~(BACKING_COMMIT_GRANULARITY - 1);
     const size_t chunk_len = (std::min)(BACKING_COMMIT_GRANULARITY, size - chunk_offset);
-    if (g_pfn_virtual_alloc_from_app(base + chunk_offset, chunk_len, MEM_COMMIT, PAGE_READWRITE)) {
+    const auto span = reinterpret_cast<uintptr_t>(base + (offset & ~(SPAN_SIZE - 1)));
+    g_commits_in_flight.fetch_add(1);
+    if (g_held_span.load() == span) {
+        g_commits_in_flight.fetch_sub(1);
+        WaitHeldSpan(span);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    // A partly committed chunk takes back only the faulting page.
+    size_t commit_offset = chunk_offset;
+    size_t commit_len = chunk_len;
+    if (MEMORY_BASIC_INFORMATION info{};
+        VirtualQuery(base + chunk_offset, &info, sizeof(info)) != 0 &&
+        !(info.State == MEM_RESERVE &&
+          static_cast<u8*>(info.BaseAddress) + info.RegionSize >= base + chunk_offset + chunk_len)) {
+        commit_offset = offset & ~(HOST_PAGE_SIZE - 1);
+        commit_len = HOST_PAGE_SIZE;
+    }
+    const bool committed = g_pfn_virtual_alloc_from_app(base + commit_offset, commit_len,
+                                                        MEM_COMMIT, PAGE_READWRITE) != nullptr;
+    g_commits_in_flight.fetch_sub(1);
+    if (committed) {
         return EXCEPTION_CONTINUE_EXECUTION; // page committed — retry the faulting access
     }
     return EXCEPTION_CONTINUE_SEARCH;
@@ -1897,8 +1934,11 @@ void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 f
         const uintptr_t pages_begin = Common::AlignUp(begin, HostPageSize);
         const uintptr_t pages_end = Common::AlignDown(end, HostPageSize);
         if (pages_begin < pages_end &&
-            VirtualFree(reinterpret_cast<void*>(pages_begin), pages_end - pages_begin,
-                        MEM_DECOMMIT)) {
+            [&] {
+                std::scoped_lock decommit{g_backing_decommit_mutex};
+                return VirtualFree(reinterpret_cast<void*>(pages_begin), pages_end - pages_begin,
+                                   MEM_DECOMMIT);
+            }()) {
             if (Common::Pulse::Diagnostics()) NoteDecommit(pages_begin, pages_end);
             std::memset(reinterpret_cast<void*>(begin), 0, pages_begin - begin);
             std::memset(reinterpret_cast<void*>(pages_end), 0, end - pages_end);
@@ -1907,6 +1947,206 @@ void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 f
     }
 #endif
     std::memset(backing_base + physical_offset, fill_value, length);
+}
+
+#ifdef HOST_MEMORY_USE_FROM_APP
+namespace {
+bool IsPrivateBacking(const u8* backing_base) {
+    return backing_base != nullptr && !g_backing_is_file.load(std::memory_order_acquire) &&
+           !g_backing_is_section.load(std::memory_order_acquire) &&
+           g_backing_base.load(std::memory_order_acquire) == backing_base;
+}
+
+template <typename F>
+void ForEachCommittedRun(u8* begin, u8* end, F&& committed) {
+    for (u8* address = begin; address < end;) {
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQuery(address, &info, sizeof(info)) == 0) {
+            return;
+        }
+        u8* const region_end = (std::min)(static_cast<u8*>(info.BaseAddress) + info.RegionSize, end);
+        if (info.State == MEM_COMMIT) {
+            committed(address, region_end);
+        }
+        address = region_end;
+    }
+}
+} // namespace
+#endif
+
+size_t HostMemory::ReleaseBackingRegion(size_t physical_offset, size_t length) {
+#ifdef HOST_MEMORY_USE_FROM_APP
+    if (!IsPrivateBacking(backing_base)) {
+        return 0;
+    }
+    constexpr uintptr_t HostPageSize = 4096;
+    const auto begin = reinterpret_cast<uintptr_t>(backing_base + physical_offset);
+    const uintptr_t pages_begin = Common::AlignUp(begin, HostPageSize);
+    const uintptr_t pages_end = Common::AlignDown(begin + length, HostPageSize);
+    if (pages_begin >= pages_end) {
+        return 0;
+    }
+    size_t released = 0;
+    std::scoped_lock decommit{g_backing_decommit_mutex};
+    ForEachCommittedRun(reinterpret_cast<u8*>(pages_begin), reinterpret_cast<u8*>(pages_end),
+                        [&](u8* run_begin, u8* run_end) {
+                            if (VirtualFree(run_begin, run_end - run_begin, MEM_DECOMMIT)) {
+                                released += run_end - run_begin;
+                                if (Common::Pulse::Diagnostics()) {
+                                    NoteDecommit(reinterpret_cast<uintptr_t>(run_begin),
+                                                 reinterpret_cast<uintptr_t>(run_end));
+                                }
+                            }
+                        });
+    return released;
+#else
+    return 0;
+#endif
+}
+
+#ifdef HOST_MEMORY_USE_FROM_APP
+namespace {
+bool IsClear(const u8* page) {
+    const auto* const words = reinterpret_cast<const volatile u64*>(page);
+    for (size_t i = 0; i < HOST_PAGE_SIZE / sizeof(u64); i += 4) {
+        if ((words[i] | words[i + 1] | words[i + 2] | words[i + 3]) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+BOOL ProtectBacking(u8* begin, size_t size, DWORD protection) {
+    static Common::DynamicLibrary kernelbase("Kernelbase");
+    static PFN_VirtualProtect protect = [] {
+        PFN_VirtualProtect function{};
+        if (kernelbase.IsOpen()) kernelbase.GetSymbol("VirtualProtectFromApp", &function);
+        return function;
+    }();
+    DWORD old{};
+    return protect && protect(begin, size, protection, &old);
+}
+
+template <size_t N, typename F>
+void ForEachPageRun(const std::bitset<N>& mask, F&& f) {
+    for (size_t first = 0; first < N;) {
+        if (!mask[first]) {
+            ++first;
+            continue;
+        }
+        size_t last = first + 1;
+        while (last < N && mask[last]) ++last;
+        f(first, last - first);
+        first = last;
+    }
+}
+
+size_t ReleaseRuns(u8* span, const std::bitset<SPAN_PAGES>& candidates) {
+    using Mask = std::bitset<SPAN_PAGES>;
+    std::scoped_lock hold{g_backing_decommit_mutex};
+    g_held_span.store(reinterpret_cast<uintptr_t>(span));
+    while (g_commits_in_flight.load() != 0) {
+        YieldProcessor();
+    }
+    Mask held;
+    ForEachPageRun(candidates, [&](size_t first, size_t count) {
+        if (ProtectBacking(span + first * HOST_PAGE_SIZE, count * HOST_PAGE_SIZE, PAGE_READONLY)) {
+            for (size_t i = first; i < first + count; ++i) held.set(i);
+        }
+    });
+    Mask release;
+    ForEachPageRun(held, [&](size_t first, size_t count) {
+        for (size_t i = first; i < first + count; ++i) {
+            if (IsClear(span + i * HOST_PAGE_SIZE)) release.set(i);
+        }
+    });
+    size_t released = 0;
+    ForEachPageRun(release, [&](size_t first, size_t count) {
+        u8* const begin = span + first * HOST_PAGE_SIZE;
+        if (VirtualFree(begin, count * HOST_PAGE_SIZE, MEM_DECOMMIT)) {
+            released += count * HOST_PAGE_SIZE;
+            if (Common::Pulse::Diagnostics()) {
+                NoteDecommit(reinterpret_cast<uintptr_t>(begin),
+                             reinterpret_cast<uintptr_t>(begin + count * HOST_PAGE_SIZE));
+            }
+        } else {
+            for (size_t i = first; i < first + count; ++i) release.reset(i);
+        }
+    });
+    ForEachPageRun(held & ~release, [&](size_t first, size_t count) {
+        const BOOL restored =
+            ProtectBacking(span + first * HOST_PAGE_SIZE, count * HOST_PAGE_SIZE, PAGE_READWRITE);
+        ASSERT_MSG(restored, "backing protection could not be restored");
+    });
+    g_held_span.store(0);
+    return released;
+}
+
+size_t TrimSpan(u8* span, size_t& released) {
+    using Mask = std::bitset<SPAN_PAGES>;
+    Mask committed;
+    for (size_t page = 0; page < SPAN_PAGES;) {
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQuery(span + page * HOST_PAGE_SIZE, &info, sizeof(info)) == 0) {
+            return 0;
+        }
+        const size_t end = (std::min)(
+            SPAN_PAGES,
+            static_cast<size_t>(static_cast<u8*>(info.BaseAddress) + info.RegionSize - span) /
+                HOST_PAGE_SIZE);
+        if (info.State == MEM_COMMIT && info.Protect == PAGE_READWRITE) {
+            for (size_t i = page; i < end; ++i) committed.set(i);
+        }
+        page = (std::max)(end, page + 1);
+    }
+    Mask candidates;
+    ForEachPageRun(committed, [&](size_t first, size_t count) {
+        for (size_t i = first; i < first + count; ++i) {
+            if (IsClear(span + i * HOST_PAGE_SIZE)) candidates.set(i);
+        }
+    });
+    if (candidates.any()) {
+        released += ReleaseRuns(span, candidates);
+    }
+    return committed.count() * HOST_PAGE_SIZE;
+}
+
+} // namespace
+#endif
+
+HostMemory::TrimResult HostMemory::Trim(size_t& cursor, size_t budget) {
+    TrimResult result;
+#ifdef HOST_MEMORY_USE_FROM_APP
+    if (!IsPrivateBacking(backing_base) || backing_size < SPAN_SIZE) {
+        return result;
+    }
+    static std::mutex trim_mutex;
+    std::scoped_lock lock{trim_mutex};
+    const size_t spans_end = Common::AlignDown(backing_size, SPAN_SIZE);
+    size_t span = cursor < spans_end ? Common::AlignDown(cursor, SPAN_SIZE) : 0;
+    for (size_t visited = 0; visited < spans_end && result.visited < budget;) {
+        u8* const begin = backing_base + span;
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQuery(begin, &info, sizeof(info)) == 0) {
+            break;
+        }
+        size_t next = span + SPAN_SIZE;
+        const size_t region_end =
+            static_cast<size_t>(static_cast<u8*>(info.BaseAddress) + info.RegionSize - backing_base);
+        if (info.State != MEM_COMMIT && region_end >= next) {
+            next = (std::max)(next, Common::AlignDown((std::min)(region_end, spans_end), SPAN_SIZE));
+        } else {
+            result.visited += TrimSpan(begin, result.released);
+        }
+        visited += next - span;
+        span = next < spans_end ? next : 0;
+    }
+    cursor = span;
+#else
+    (void)cursor;
+    (void)budget;
+#endif
+    return result;
 }
 
 void HostMemory::EnableDirectMappedAddress() {

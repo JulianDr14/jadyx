@@ -58,6 +58,7 @@
 #include "core/core.h"
 #include "core/perf_stats.h"
 #include "core/cpu_manager.h"
+#include "core/device_memory.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
 #include "core/file_sys/control_metadata.h"
@@ -174,6 +175,7 @@ void WritePulseLog(const std::string& msg); // jadyx_pulse.txt, defined next to 
 std::string MemoryReport();             // likewise
 std::string MemoryOwners();             // likewise
 std::string GuestMemoryReport(Core::System& system); // likewise
+u64 TrimFreeGuestMemory(Core::System& system, u64 budget); // likewise
 void ApplyProcessMemoryLimit(u32 limit_mib); // likewise
 [[noreturn]] void RestartApp();              // likewise
 std::string LargestAllocations();       // likewise
@@ -356,6 +358,8 @@ struct BootConfig {
     /// Every minute of play, the process heaps and the memory map ("memory_audit=1"): what the
     /// commit no owner accounts for is made of. Walking the heaps locks them for a moment.
     bool memory_audit{};
+    bool pool_trim{true};
+    bool host_trim{true};
     /// Guest memory through the host-mapped arena. Xbox uses a bounded hybrid section; "full" is
     /// diagnostic and falls back to hybrid if the complete mapping cannot be created.
     enum class Fastmem { Off, Auto, Hybrid, Full } fastmem{Fastmem::Off};
@@ -539,7 +543,9 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     // Shown while Pulse saves or resumes a session (pulse_screen.h); it draws through the GPU
     // thread, so it goes before anything is torn down.
     std::optional<PulseScreen> pulse_screen;
+    std::optional<std::jthread> trim_worker;
     const auto shutdown = [&] {
+        trim_worker.reset();
         pulse_screen.reset();
         Common::SamplingProfiler::Stop(); // writes the window in progress, if it runs
         if (config.gpu_failure_probe) WriteDiag("GPU recovery shutdown: input.Stop");
@@ -902,6 +908,50 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         constexpr u64 LOW_HEADROOM_STEP = 50ULL << 20;
         u64 low_snapshot_headroom = ~u64{};
         u32 low_snapshot_tick = 0;
+        constexpr u64 POOL_TRIM_PER_SECOND = 64ULL << 20;
+        constexpr u64 POOL_TRIM_ALL_HEADROOM = 512ULL << 20;
+        constexpr u64 TRIM_SLICE = 32ULL << 20;
+        constexpr u64 TRIM_LOW_HEADROOM = 1024ULL << 20;
+        constexpr u64 TRIM_ACTIVE_PASS = 64ULL << 20;
+        std::atomic<bool> trim_low{false};
+        std::atomic<bool> trim_paused{false};
+        struct StopTrim {
+            std::optional<std::jthread>& worker;
+            ~StopTrim() { worker.reset(); }
+        } stop_trim{trim_worker};
+        if (config.host_trim) {
+            trim_worker.emplace([&](std::stop_token stop) {
+                Common::SetCurrentThreadName("HostTrim");
+                auto& dram = system.DeviceMemory().buffer;
+                size_t cursor = 0;
+                u64 pass_released = TRIM_ACTIVE_PASS;
+                u64 last_pass_released = TRIM_ACTIVE_PASS;
+                while (!stop.stop_requested()) {
+                    if (trim_paused.load(std::memory_order_relaxed)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        continue;
+                    }
+                    const size_t before = cursor;
+                    const auto slice_start = std::chrono::steady_clock::now();
+                    const auto trim = dram.Trim(cursor, TRIM_SLICE);
+                    const auto slice_time = std::chrono::steady_clock::now() - slice_start;
+                    pass_released += trim.released;
+                    if (cursor <= before) {
+                        last_pass_released = pass_released;
+                        pass_released = 0;
+                    }
+                    if (trim.visited != 0 && trim.released >= trim.visited / 4) {
+                        std::this_thread::sleep_for((std::max)(
+                            std::chrono::steady_clock::duration{std::chrono::milliseconds(2)},
+                            slice_time / 2));
+                        continue;
+                    }
+                    const bool low = trim_low.load(std::memory_order_relaxed);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(
+                        low ? 20 : last_pass_released >= TRIM_ACTIVE_PASS ? 100 : 500));
+                }
+            });
+        }
         // Pulse: after a resume the presented frames are logged each second for 30 s, so a guest
         // that freezes shows when it stopped.
         u64 resume_frames = 0;
@@ -930,6 +980,20 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
                 WriteDiag("JIT prewarm budget lowered to " +
                           std::to_string(prewarm_budget.MiBPerCore()) +
                           " MiB per core for this game's next session | " + MemoryReport());
+            }
+            if (config.host_trim) {
+                trim_paused.store(menu.has_value(), std::memory_order_relaxed);
+                if (u64 used{}, limit{}; tick % TICKS_PER_SECOND == 0 &&
+                                         QueryAppMemory(used, limit)) {
+                    trim_low.store((limit > used ? limit - used : 0) < TRIM_LOW_HEADROOM,
+                                   std::memory_order_relaxed);
+                }
+            }
+            if (config.pool_trim && tick % TICKS_PER_SECOND == 0) {
+                u64 used{}, limit{};
+                const bool low = QueryAppMemory(used, limit) &&
+                                 (limit > used ? limit - used : 0) < POOL_TRIM_ALL_HEADROOM;
+                TrimFreeGuestMemory(system, low ? ~u64{} : POOL_TRIM_PER_SECOND);
             }
             if (ConsumeStorageReadFailure()) {
                 WriteDiag("content: storage read failed; closing guest for library recovery");
@@ -1526,6 +1590,27 @@ std::string GuestMemoryReport(Core::System& system) {
            std::to_string(*committed >> 20) + " MiB, freed but committed about " +
            std::to_string((*committed > in_use ? *committed - in_use : 0) >> 20) + " MiB (" +
            pools + ")";
+}
+
+u64 TrimFreeGuestMemory(Core::System& system, u64 budget) {
+    using Pool = Kernel::KMemoryManager::Pool;
+    constexpr u64 STEP = 64ULL << 20;
+    auto& manager = system.Kernel().MemoryManager();
+    u64 total = 0;
+    for (const Pool pool : {Pool::Application, Pool::Applet, Pool::System, Pool::SystemNonSecure}) {
+        for (;;) {
+            const u64 step = (std::min)(STEP, budget > total ? budget - total : 0);
+            if (step == 0) {
+                return total;
+            }
+            const u64 released = manager.TrimFree(pool, step);
+            total += released;
+            if (released < step) {
+                break;
+            }
+        }
+    }
+    return total;
 }
 
 // The PC has no app memory limit of its own: memory_limit_mib (boot.cfg) puts the process in a
@@ -2671,6 +2756,12 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "pso_probe=1") {
                             D3D12::SetPsoCostProbe(true);
                             WriteDiag("boot.cfg: measuring the driver's commit per graphics PSO");
+                        } else if (line == "host_trim=0") {
+                            config.host_trim = false;
+                            WriteDiag("boot.cfg: host_trim off");
+                        } else if (line == "pool_trim=0") {
+                            config.pool_trim = false;
+                            WriteDiag("boot.cfg: pool_trim off");
                         } else if (line == "memory_audit=1") {
                             config.memory_audit = true;
                             WriteDiag("boot.cfg: memory audit every minute of play");

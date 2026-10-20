@@ -67,6 +67,14 @@ public:
 
     void ClearBackingRegion(size_t physical_offset, size_t length, u32 fill_value);
 
+    size_t ReleaseBackingRegion(size_t physical_offset, size_t length);
+
+    struct TrimResult {
+        size_t visited{};
+        size_t released{};
+    };
+    TrimResult Trim(size_t& cursor, size_t budget);
+
     [[nodiscard]] u8* BackingBasePointer() noexcept {
         return backing_base;
     }
