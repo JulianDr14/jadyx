@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/uwp_library_canvas.h"
+#include "jadyx/updates/update_ui.h"
+#include <ctime>
 #include "jadyx/input/pro_controller_geometry.h"
 
 #include <algorithm>
@@ -147,6 +149,8 @@ public:
                 Type(Tr(i==0?T::Cancel:T::Import),TypeRole::LabelLarge,x+20,611,500,focused?Palette::OnAccent:Palette::Text);
                 AddHit(x,590,540,64,LibraryHit::NetworkAction,i);
             }
+        } else if (view.system.updates_open) {
+            rows_shown = false; DrawUpdates(view.system);
         } else if (configuration.network_screen) {
             // A dedicated page: only its controls populate the pointer hit map.
             rows_shown = false;
@@ -175,7 +179,7 @@ public:
                 Type(view.notice, TypeRole::Body, LibraryLayout::Margin, 430, 1000, Palette::Warning,
                      1, TextAlign::Leading, 2);
         }
-        if (!management && !configuration.network_screen && !configuration.confirm_import) {
+        if (!management && !configuration.network_screen && !configuration.confirm_import && !view.system.updates_open) {
             DrawHeader(view, now);
             DrawFooter(view);
         }
@@ -189,6 +193,10 @@ public:
             // The library owns the header. Pages replace its content, never its chrome.
             Round(0, 0, 1280, 94, 0, Palette::Canvas);
             DrawHeader(view, now);
+        }
+        if (!view.system.updates_open && view.system.update.notice && !management && !configuration.network_screen && !configuration.open) {
+            Round(780, 96, 450, 42, 10, Palette::Surface);
+            Type(Tr(T::UpdaterAvailable), TypeRole::Label, 796, 107, 420, Palette::Accent);
         }
         if (!view.game_options.game) management_collapse.Snap(0);
         if (view.missing_content) Content::DrawMissingContent(*this);
@@ -205,6 +213,91 @@ public:
                     filter_slide.Running(now) || management_collapse.Running(now) ||
                     list_scroll.Running(now) || grid_scroll.Running(now);
     }
+    void DrawUpdates(const SystemPage& page) {
+        const auto& state = page.update;
+        Round(0, 0, 1280, 720, 0, Palette::Canvas);
+        Type(Tr(T::UpdaterTitle), TypeRole::HeadlineLarge, 54, 36, 1100, Palette::Text);
+        Type(Tr(Updates::PhaseText(state.phase)), TypeRole::LabelLarge, 54, 98, 1150, Palette::Accent);
+        const auto installed = winrt::to_hstring(Updates::FormatVersion(state.installed));
+        const auto available = winrt::to_hstring(state.release ? Updates::FormatVersion(state.release->version) : "—");
+        Type(I18n::Format(T::UpdaterVersions, {installed.c_str(), available.c_str()}), TypeRole::Body, 54, 140, 1150, Palette::TextSecondary);
+        std::wstring checked = std::wstring{Tr(T::UpdaterNever)};
+        if (state.last_check) {
+            const std::time_t stamp = state.last_check; std::tm local{}; localtime_s(&local, &stamp);
+            wchar_t date[64]{}; std::wcsftime(date, 64, L"%Y-%m-%d %H:%M", &local); checked = date;
+        }
+        Type(I18n::Format(T::UpdaterLastCheck, {checked}), TypeRole::Body, 54, 172, 1100, Palette::TextSecondary);
+        if (state.release) {
+            const auto& release = *state.release;
+            std::wstring detail = winrt::to_hstring(release.published).c_str();
+            detail += L" · " + std::to_wstring(release.size/(1024*1024)) + L" MiB";
+            Type(detail, TypeRole::Body, 54, 212, 690, Palette::TextSecondary);
+            Type(winrt::to_hstring(release.notes).c_str(), TypeRole::BodyLarge, 54, 249, 690, Palette::Text, 1, TextAlign::Leading, 7);
+        }
+        if (state.channel == Updates::Channel::Preview)
+            Type(Tr(T::UpdaterPreviewWarning), TypeRole::Body, 54, 438, 690, Palette::Warning, 1, TextAlign::Leading, 2);
+        if (state.phase == Updates::Phase::Downloading || state.phase == Updates::Phase::Paused || state.phase == Updates::Phase::Verifying) {
+            const auto pct = state.total ? std::min<std::uint64_t>(100, state.received*100/state.total) : 0;
+            Round(54, 500, 690, 10, 5, Palette::Surface);
+            if (pct) Round(54, 500, 690*static_cast<float>(pct)/100, 10, 5, Palette::Accent);
+            auto eta = std::wstring{Tr(T::UpdaterEta)};
+            if (state.bytes_per_second > 0 && state.total >= state.received) {
+                const auto seconds = static_cast<unsigned>(std::min(3599999.0,(state.total-state.received)/state.bytes_per_second));
+                eta = std::to_wstring(seconds/3600)+L"h "+std::to_wstring(seconds/60%60)+L"m "+std::to_wstring(seconds%60)+L"s";
+            }
+            const auto speed = std::to_wstring(static_cast<unsigned>(state.bytes_per_second*10/(1024*1024)));
+            const auto speed_text = speed.size() > 1 ? speed.substr(0,speed.size()-1)+L"."+speed.back() : L"0."+speed;
+            Type(I18n::Format(T::UpdaterProgress, {std::to_wstring(pct), std::to_wstring(state.received/(1024*1024)),
+                std::to_wstring(state.total/(1024*1024)), speed_text, eta}), TypeRole::Body, 54, 520, 690, Palette::TextSecondary);
+        }
+        if (state.error != Updates::Error::None)
+            Type(Tr(Updates::ErrorText(state.error)), TypeRole::Body, 54, 563, 690, Palette::Warning, 1, TextAlign::Leading, 3);
+        if (state.phase == Updates::Phase::Assistance)
+            Type(Tr(T::UpdaterHelp), TypeRole::Body, 54, 465, 690, Palette::TextSecondary, 1, TextAlign::Leading, 6);
+        if (!state.history.empty() && state.phase != Updates::Phase::Downloading && state.phase != Updates::Phase::Assistance) {
+            Type(Tr(T::UpdaterHistory), TypeRole::Label, 54, 652, 250, Palette::TextSecondary);
+            Type(std::to_wstring(state.history.size()), TypeRole::Label, 304, 652, 100, Palette::TextSecondary);
+        }
+        if (page.update_detail) {
+            Round(0, 205, 1280, 515, 0, Palette::Canvas);
+            const auto language=I18n::CurrentUiLanguage().tag;
+            if(update_detail_kind!=page.update_detail || update_detail_revision!=state.revision || update_detail_language!=language) {
+            update_detail_kind=page.update_detail;update_detail_revision=state.revision;update_detail_language=language;
+            auto& lines=update_detail_lines;lines.clear();
+            if (page.update_detail == 2) lines=Updates::DetailLines(state,true);
+            else if (state.release) {
+                std::wstring text=winrt::to_hstring(state.release->notes).c_str();
+                for (std::size_t start=0;start<text.size();) {
+                    const auto newline=text.find(L'\n',start);
+                    auto end=std::min(start+86,newline==text.npos ? text.size() : newline);
+                    if (end<text.size() && end>start && end!=newline) {
+                        auto space=text.rfind(L' ',end); if(space!=text.npos && space>start)end=space;
+                        if(end>start && text[end]>=0xDC00 && text[end]<=0xDFFF)--end;
+                    }
+                    lines.push_back(text.substr(start,end-start)); start=end;
+                    if(start<text.size() && (text[start]==L' ' || text[start]==L'\n'))++start;
+                }
+            }
+            }
+            const auto& lines=update_detail_lines;
+            const auto first=std::min(page.update_scroll,lines.size()>12 ? lines.size()-12 : 0);
+            for (std::size_t n=0;n<12 && first+n<lines.size();++n)
+                Type(lines[first+n],TypeRole::BodyLarge,54,220+static_cast<float>(n)*32,1150,Palette::Text);
+            Round(54,650,436,46,10,Palette::Accent);
+            Type(Tr(T::UpdaterBack),TypeRole::Label,70,662,400,Palette::OnAccent);
+            AddHit(54,650,436,46,LibraryHit::UpdateAction,0);
+            return;
+        }
+        const auto actions = Updates::Actions(state);
+        for (std::size_t i=0;i<actions.size();++i) {
+            const bool focused = i == std::min(page.update_row, actions.size()-1);
+            const float y = 214 + static_cast<float>(i)*54;
+            Round(790, y, 436, 46, 10, focused ? Palette::Accent : Palette::Surface);
+            Type(Tr(Updates::ActionText(actions[i], state)), TypeRole::Label, 806, y+12, 400,
+                focused ? Palette::OnAccent : Palette::Text);
+            AddHit(790, y, 436, 46, LibraryHit::UpdateAction, i);
+        }
+    }
     void InvalidateCovers() { covers.clear(); pictures.clear(); backdrops.clear(); backdrop_now.clear(); backdrop_before.clear(); }
     bool Animating() const {
         return animating || (ambient && Tween::Clock::now() - last_frame >= AmbientFrame);
@@ -217,6 +310,10 @@ public:
         return {};
     }
 private:
+    std::uint64_t update_detail_revision{~std::uint64_t{0}};
+    std::size_t update_detail_kind{};
+    std::wstring update_detail_language;
+    std::vector<std::wstring> update_detail_lines;
     bool manager_targets{};
     float manager_offset{};
     float manager_bottom{GameOptionsLayout::ListBottom};
@@ -939,6 +1036,7 @@ private:
                                  std::wstring{Tr(SystemRowHint(row))}, SystemRowValue(view.system, row)};
                 switch (row) {
                 case SystemPage::UserName: item.kind = Kind::Open; break;
+                case SystemPage::Updates: item.kind = Kind::Open; break;
                 case SystemPage::ClearCache: item.kind = Kind::Open; break;
                 case SystemPage::AdultMods: item.kind = Kind::Toggle; item.on = settings.show_adult_mods; break;
                 case SystemPage::PerformanceStats: item.kind = Kind::Toggle; item.on = settings.show_performance_stats; break;

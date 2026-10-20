@@ -7,6 +7,7 @@
 // draws from the same state and the layout below, which pointer hit tests share.
 
 #include <optional>
+#include "jadyx/updates/updater.h"
 #include <string>
 
 #include "jadyx/i18n/localization.h"
@@ -17,8 +18,11 @@
 namespace Jadyx {
 
 struct SystemPage {
-    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, AdultMods, PerformanceStats, PulseSessions, PlayTime, ClearCache, RowCount };
+    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, AdultMods, PerformanceStats, PulseSessions, PlayTime, ClearCache, Updates, RowCount };
 
+    bool updates_open{};
+    std::size_t update_row{}, update_detail{}, update_scroll{};
+    Updates::Snapshot update;
     bool open{};
     std::size_t selected{};
     SystemSettings settings; ///< As saved.
@@ -33,6 +37,7 @@ enum class SystemPageEffect : std::uint8_t {
     Changed,    ///< Settings changed: save and apply them.
     EditName,   ///< The name editor opened.
     NameDone,   ///< The editor closed with a new name in settings: save and apply.
+    OpenUpdates,
     ClearCache, ///< Clear the library cache.
 };
 
@@ -97,6 +102,8 @@ inline SystemPageEffect HandleSystemInput(SystemPage& page, SystemInput input) {
     case Row::PlayTime:
         settings.track_play_time = !settings.track_play_time;
         return SystemPageEffect::Changed;
+    case Row::Updates:
+        return input == SystemInput::Confirm ? SystemPageEffect::OpenUpdates : SystemPageEffect::None;
     case Row::ClearCache:
         return input == SystemInput::Confirm ? SystemPageEffect::ClearCache : SystemPageEffect::None;
     case Row::RowCount:
@@ -126,6 +133,7 @@ inline SystemPageEffect FinishNameEditor(SystemPage& page, bool accept) {
 inline I18n::Text SystemRowTitle(SystemPage::Row row) {
     using I18n::Text;
     switch (row) {
+    case SystemPage::Updates:           return Text::UpdaterTitle;
     case SystemPage::UserName:          return Text::UserName;
     case SystemPage::InterfaceLanguage: return Text::InterfaceLanguage;
     case SystemPage::GameLanguage:      return Text::GameLanguage;
@@ -141,6 +149,7 @@ inline I18n::Text SystemRowTitle(SystemPage::Row row) {
 inline I18n::Text SystemRowHint(SystemPage::Row row) {
     using I18n::Text;
     switch (row) {
+    case SystemPage::Updates:           return Text::UpdaterHint;
     case SystemPage::UserName:          return Text::UserNameHint;
     case SystemPage::InterfaceLanguage: return Text::InterfaceLanguageHint;
     case SystemPage::GameLanguage:      return Text::GameLanguageHint;

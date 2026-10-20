@@ -4,6 +4,9 @@
 
 #include <chrono>
 #include <memory>
+#include <functional>
+#include <optional>
+#include "jadyx/updates/update_package.h"
 #include <string>
 #include <vector>
 #include "jadyx/storage/nsp_upload.h"
@@ -46,6 +49,8 @@ public:
     bool RenewCode();
     PortalStatus Status() const;
     void SetUploadsAvailable(bool enabled);
+    // Fixed verified package supplied by the library; caller outlives this server.
+    void SetUpdatePackage(std::function<std::optional<Updates::UpdatePackage>()> package);
     bool BlockForLocalOperation();
     std::string FinalizeGame(const NspValidator& validate);
     void CancelTransfer();

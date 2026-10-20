@@ -156,7 +156,13 @@ footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:24
 <div id="system-review" class="review" hidden><p id="system-versions"></p><p id="system-warnings"></p>
 <label id="system-warning-row"><input id="system-warning-accept" type="checkbox"><span id="system-warning-label">I understand and accept these warnings.</span></label>
 <button id="system-confirm" class="primary">Confirm installation</button></div></div><button id="system-cancel" class="danger">Cancel and discard system import</button></section></div>
-</div></div>
+</div><section class="panel" id="app-updates" hidden>
+<h2 id="app-update-title"></h2><p id="app-update-help"></p>
+<button id="app-update-download"></button><a id="app-update-package" hidden></a>
+<p id="app-update-status" role="status" aria-live="polite"></p>
+<a id="app-update-portal" target="_blank" rel="noopener noreferrer"></a>
+</section>
+</div>
 <footer><svg class="ico" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/></svg><span id="privacy">Local network · HTTP connection without encryption.</span></footer>
 <script>
 'use strict';
@@ -236,6 +242,7 @@ async function api(path,options={}){
  return response;
 }
 function render(){
+ $('app-updates').hidden=!session;
  const s=state.transfer||{};
  $('upload').hidden=!session||!state.uploads;
  $('space').textContent=words.free+': '+((s.free_bytes||0)/1073741824).toFixed(2)+' GiB';
@@ -452,6 +459,31 @@ $('system-cancel').addEventListener('click',async()=>{
  try{for(let retry=0;;retry++)try{await api('/api/v1/system/jobs/'+state.system.id,{method:'DELETE'});break;}
  catch(error){if(error.message!=='busy'||retry>=30)throw error;await delay(100);}
  systemReviewId='';$('message').textContent='';await refresh();}catch(error){$('message').textContent=systemReason(error);}
+});
+
+// Guided app update. The server grants a short-lived ticket bound to a verified package.
+const updatePanel=$('app-updates'),updateTitle=$('app-update-title'),updateHelp=$('app-update-help');
+const updateDownload=$('app-update-download'),updateStatus=$('app-update-status'),updateLink=$('app-update-package'),updatePortal=$('app-update-portal');
+updateTitle.textContent=pt?'Atualizar Jadyx':es?'Actualizar Jadyx':'Update Jadyx';
+updateHelp.textContent=pt?
+ 'No Xbox, abra Configurações → Sistema → Atualizações e baixe a versão. Depois baixe o pacote verificado aqui e instale sobre o Jadyx pelo Device Portal. Não desinstale: isso apaga seus dados.':es?
+ 'En Xbox, abre Ajustes → Sistema → Actualizaciones y descarga la versión. Después descarga aquí el paquete verificado e instálalo sobre Jadyx desde Device Portal. No desinstales: eso borra tus datos.':
+ 'On Xbox, open Settings → System → Updates and download the version. Then download the verified package here and install over Jadyx in Device Portal. Do not uninstall: that deletes your data.';
+updateDownload.textContent=pt?'Baixar pacote verificado':es?'Descargar paquete verificado':'Download verified package';
+updatePortal.textContent=pt?'Abrir Device Portal':es?'Abrir Device Portal':'Open Device Portal';
+if(location.hostname)updatePortal.href='https://'+location.hostname+':11443';
+updateDownload.addEventListener('click',async()=>{
+ try{
+  updateDownload.disabled=true;updateStatus.textContent='';
+  const result=await api('/api/v1/update/download',{method:'POST'}),data=await result.json();
+  // Keep the navigation same-origin even if a future server response is malformed.
+  if(typeof data.download!=='string'||!/^\/api\/v1\/update\/package\?ticket=[0-9a-f]{64}$/.test(data.download)||
+     typeof data.filename!=='string'||!/^Jadyx_[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+_x64\.appx$/.test(data.filename))throw Error('invalid_update');
+  updateLink.href=data.download;updateLink.download=data.filename;updateLink.click();
+  updateStatus.textContent=pt?'Instale no Device Portal → Add. Reabra o Jadyx para confirmar a versão.':es?'Instala en Device Portal → Add. Vuelve a abrir Jadyx para confirmar la versión.':'Install in Device Portal → Add. Reopen Jadyx to confirm the version.';
+ }catch{
+  updateStatus.textContent=pt?'Não foi possível preparar o pacote. Conclua a verificação no Xbox e termine transferências ativas.':es?'No se pudo preparar el paquete. Completa la verificación en Xbox y termina las transferencias activas.':'Could not prepare the package. Complete verification on Xbox and finish active transfers.';
+ }finally{updateDownload.disabled=false;}
 });
 </script></body></html>)HTML";
 }

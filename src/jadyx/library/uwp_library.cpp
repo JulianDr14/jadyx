@@ -43,6 +43,7 @@
 #include "jadyx/library/library_cache.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/settings/system_page.h"
+#include "jadyx/updates/update_ui.h"
 #include "jadyx/input/uwp_input.h"
 #include "jadyx/library/uwp_library_metadata.h"
 #include "jadyx/settings/uwp_system_settings.h"
@@ -94,11 +95,14 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     auto battery_read_at = std::chrono::steady_clock::time_point{};
     bool dirty = true, loading = true, settings = false;
     ConfigurationPanel configuration;
+    Updates::Updater updater;
     NetworkPortal network_portal{root,DefaultSystemImportBackend()};
+    network_portal.SetUpdatePackage([&] { return updater.PrepareAssistedDownload(); });
     auto network_poll_at = std::chrono::steady_clock::time_point{};
     // Revoked before the library-owned portal is destroyed. No background server survives play.
     auto network_suspending = winrt::Windows::ApplicationModel::Core::CoreApplication::Suspending(
         winrt::auto_revoke, [&](const auto&, const winrt::Windows::ApplicationModel::SuspendingEventArgs&) {
+            updater.Pause();
             network_portal.Stop();
         });
     SystemPage system_page;
@@ -355,6 +359,11 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             }
             e.Handled(true);
             return;
+        }
+        if (system_page.updates_open) {
+            const auto hit = canvas->HitAt(x, y);
+            if (hit.hit == LibraryHit::UpdateAction) { system_page.update_row = hit.index; actions |= Play; dirty = true; }
+            e.Handled(true); return;
         }
         // The header's tabs and controller work over every page that is not a dialog.
         if ((!settings || configuration.open) && !panel.keyboard.open && !panel.expanded && !game_options.open &&
@@ -690,6 +699,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 refresh_play(selected < scan.entries.size() ? scan.entries[selected].launch_path : std::string{});
             break;
         }
+        case SystemPageEffect::OpenUpdates:
+            system_page.updates_open = true; system_page.update_row = 0; break;
         case SystemPageEffect::ClearCache: {
             reload_metadata();
             canvas->InvalidateCovers();
@@ -718,8 +729,19 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         window.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
         const auto now = std::chrono::steady_clock::now();
         network_portal.SetUploadsAvailable(!configuration.busy && !picker && !validation.valid() &&
-            !game_options.open && !content_session && !settings && !system_page.open);
+            !game_options.open && !content_session && !settings && !system_page.open &&
+            updater.CurrentPhase() != Updates::Phase::Downloading && updater.CurrentPhase() != Updates::Phase::Verifying &&
+            updater.CurrentPhase() != Updates::Phase::Preparing && updater.CurrentPhase() != Updates::Phase::Requested);
         if (now >= network_poll_at) {
+            auto update = updater.Status();
+            if (update.revision != system_page.update.revision) dirty = true;
+            system_page.update = std::move(update);
+            if (system_page.updates_open && system_page.update.phase == Updates::Phase::Ready) {
+                const bool storage_idle = !configuration.busy && !picker && !validation.valid() &&
+                    !content_session && !loading && !setup_future.valid() &&
+                    network_portal.BlockForLocalOperation();
+                updater.InstallIfReady(storage_idle);
+            }
             network_poll_at = now + std::chrono::milliseconds{500};
             const auto state = network_portal.Status();
             if (configuration.network.running != state.running || configuration.network.paired != state.paired ||
@@ -1076,6 +1098,59 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             filter_focus = false;
             dirty = true;
         };
+        // Windows can replace us after accepting a deployment. Do not launch a game or
+        // begin another storage operation while the old process is waiting to close.
+        if (updater.CurrentPhase() == Updates::Phase::Preparing || updater.CurrentPhase() == Updates::Phase::Requested) {
+            actions = 0;
+            pressed_tab.reset();
+        }
+        if (system_page.updates_open) {
+            const auto& snapshot = system_page.update;
+            const auto items = Updates::Actions(snapshot);
+            if (system_page.update_detail) {
+                if (actions & Up && system_page.update_scroll) --system_page.update_scroll;
+                if (actions & Down) ++system_page.update_scroll;
+                if (actions & (Quit | Play)) { system_page.update_detail=0; system_page.update_scroll=0; }
+                if (actions) dirty=true;
+                actions=0;
+            }
+            system_page.update_row = std::min(system_page.update_row, items.size()-1);
+            if (actions & Up) system_page.update_row = (system_page.update_row + items.size()-1)%items.size();
+            if (actions & Down) system_page.update_row = (system_page.update_row+1)%items.size();
+            if (actions & Quit) system_page.updates_open = false;
+            if (actions & Play) {
+                using A = Updates::Action;
+                const auto action = items[system_page.update_row];
+                // Reserve local storage admission atomically against incoming browser uploads.
+                const bool mutation = action == A::Download || action == A::Install || action == A::Cancel;
+                if (mutation && (configuration.busy || picker || validation.valid() || content_session || !network_portal.BlockForLocalOperation())) {
+                    system_page.update.error = Updates::Error::Busy;
+                } else switch (action) {
+                case A::Notes: system_page.update_detail=1; system_page.update_scroll=0; break;
+                case A::History: system_page.update_detail=2; system_page.update_scroll=0; break;
+                case A::Check: updater.Check(true); break;
+                case A::Channel: updater.SetChannel(snapshot.channel == Updates::Channel::Stable ? Updates::Channel::Preview : Updates::Channel::Stable); break;
+                case A::Download: updater.Download(true); break;
+                case A::Pause: updater.Pause(); break;
+                case A::Cancel: updater.Cancel(); break;
+                case A::Install:
+                    if (snapshot.phase == Updates::Phase::Assistance) {
+                        updater.RecordAssistedRequest(); system_page.updates_open = false;
+                        system_page.open = false; configuration.files = true;
+                    } else updater.Install();
+                    break;
+                case A::Later: updater.Dismiss(false); system_page.updates_open = false; break;
+                case A::Skip: updater.Dismiss(true); system_page.updates_open = false; break;
+                case A::Back: updater.Pause(); system_page.updates_open = false; break;
+                }
+                system_page.update_row = 0;
+            }
+            if (actions) dirty = true;
+            actions = 0; pressed_tab.reset();
+        }
+        // Leaving the update page to use another feature pauses network work before dispatching it.
+        if (!system_page.updates_open && actions &&
+            (updater.CurrentPhase() == Updates::Phase::Downloading || updater.CurrentPhase() == Updates::Phase::Verifying)) updater.Pause();
         const bool top_level = !settings && !system_page.open && !configuration.files && !configuration.busy &&
                                !picker && !validation.valid() && !game_options.open && !missing_content;
         if (pressed_tab) {
@@ -1123,7 +1198,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 send(Up, SystemInput::Up);
                 send(Down, SystemInput::Down);
                 const bool opens = system_page.selected == SystemPage::UserName ||
-                                   system_page.selected == SystemPage::ClearCache;
+                                   system_page.selected == SystemPage::ClearCache || system_page.selected == SystemPage::Updates;
                 send(Left, opens ? SystemInput::Back : SystemInput::Left);
                 send(Right, SystemInput::Right);
                 send(Play, SystemInput::Confirm);
