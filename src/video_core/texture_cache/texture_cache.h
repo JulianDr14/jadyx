@@ -23,6 +23,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/perf_counters.h"
 #include "video_core/frame_trace.h"
+#include "video_core/readback_trace.h"
 #include "video_core/texture_cache/blit_coverage.h"
 #include "video_core/texture_cache/gc_policy.h"
 #include "video_core/texture_cache/image_view_base.h"
@@ -729,6 +730,10 @@ void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size, bool modified_
         runtime.Finish();
         SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span,
                      swizzle_data_buffer);
+        ReadbackTrace::Log("image sync", image.cpu_addr, image.unswizzled_size_bytes,
+                           map.mapped_span.first(image.unswizzled_size_bytes),
+                           static_cast<u32>(image.info.format), image.info.size.width,
+                           image.info.size.height);
     }
 }
 
@@ -1118,12 +1123,20 @@ void TextureCache<P>::PopAsyncFlushes() {
                 std::span<u8> download_span =
                     download_buffer.mapped_span.subspan(download_buffer.offset);
                 SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span, swizzle_data_buffer);
+                ReadbackTrace::Log("image async", image.cpu_addr, image.unswizzled_size_bytes,
+                                   download_span.first((std::min<size_t>)(
+                                       download_span.size(), image.unswizzled_size_bytes)),
+                                   static_cast<u32>(image.info.format), image.info.size.width,
+                                   image.info.size.height);
             } else {
                 const BufferDownload& buffer_info = slot_buffer_downloads[download_info.object_id];
                 std::span<u8> download_span =
                     download_buffer.mapped_span.subspan(download_buffer.offset);
                 gpu_memory->WriteBlockUnsafe(buffer_info.address, download_span.data(),
                                              buffer_info.size);
+                ReadbackTrace::Log("image->buffer async", buffer_info.address, buffer_info.size,
+                                   download_span.first((std::min<size_t>)(download_span.size(),
+                                                                          buffer_info.size)));
                 slot_buffer_downloads.erase(download_info.object_id);
             }
         }

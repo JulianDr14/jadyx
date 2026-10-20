@@ -311,6 +311,10 @@ struct Info {
     bool uses_atomic_s32_max{};
     bool uses_int64_bit_atomics{};
     bool uses_global_memory{};
+    // Global memory accesses that could not be mapped to a storage buffer and run through the
+    // slower NVN fallback functions: untracked by the pass, or with no trackable low address.
+    u32 global_memory_fallbacks{};
+    u32 global_memory_unresolved{};
     bool uses_atomic_image_u32{};
     bool uses_shadow_lod{};
     bool uses_rescaling_uniform{};

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <functional>
 #include <iterator>
@@ -19,6 +20,8 @@
 #include <vector>
 
 #include "common/assert.h"
+#include "common/logging.h"
+#include "video_core/diagnostics/full_capture.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
 #include "video_core/control/channel_state_cache.h"
@@ -344,6 +347,19 @@ private:
             VAddr address = async_job.query_location;
             slot_async_jobs.erase(new_async_job_id);
             local_lock.unlock();
+            if (FullCapture::Active()) FullCapture::Event("query_guest_result", fmt::format(
+                "{{\"address\":{},\"value\":{},\"timestamped\":{}}}",
+                static_cast<u64>(address), value, timestamp.has_value()));
+            {
+                // Diagnostic: host counter results written back to the guest.
+                static std::atomic<u64> written{};
+                const u64 count = ++written;
+                if (count <= 80 || (count & 127) == 0) {
+                    LOG_WARNING(Render, "guest query result #{}: addr {:#x} value {} ({})", count,
+                                static_cast<u64>(address), value,
+                                timestamp ? "64-bit+timestamp" : "32-bit");
+                }
+            }
             if (timestamp) {
                 u64 timestamp_value = *timestamp;
                 device_memory.WriteBlockUnsafe(address + sizeof(u64), &timestamp_value,

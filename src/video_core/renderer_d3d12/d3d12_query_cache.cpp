@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstring>
@@ -195,6 +196,21 @@ u64 HostCounter::BlockingQuery([[maybe_unused]] bool async) const {
     std::memcpy(&value, mapped + ValueOffset(), sizeof(value));
     const D3D12_RANGE written_range{0, 0};
     slot.readback->Unmap(0, &written_range);
+    {
+        // Diagnostic: values the GPU hands back for guest counters (first 24 per type, then
+        // each 256th), to see whether occlusion-style results are ever non-zero.
+        static std::array<std::atomic<u64>, 16> read_counts{};
+        static std::array<std::atomic<u64>, 16> nonzero_counts{};
+        const u32 index = static_cast<u32>(type) & 15;
+        const u64 count = ++read_counts[index];
+        if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Event("query_host_result",
+            fmt::format("{{\"type\":{},\"value\":{}}}", static_cast<u32>(type), value));
+        const u64 nonzero = value != 0 ? ++nonzero_counts[index] : nonzero_counts[index].load();
+        if (count <= 24 || (count & 255) == 0) {
+            LOG_WARNING(Render, "D3D12: counter type {} read #{} = {} ({} non-zero so far)",
+                        static_cast<u32>(type), count, value, nonzero);
+        }
+    }
     return value;
 }
 
