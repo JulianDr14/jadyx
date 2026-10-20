@@ -507,6 +507,8 @@ if (ENABLE_D3D12)
         renderer_d3d12/diagnostics/d3d12_draw_hunt.cpp
         renderer_d3d12/diagnostics/d3d12_draw_hunt.h
         renderer_d3d12/diagnostics/d3d12_draw_trace.cpp
+        renderer_d3d12/diagnostics/d3d12_local_memory_matrix.cpp
+        renderer_d3d12/diagnostics/d3d12_local_memory_matrix.h
         renderer_d3d12/diagnostics/d3d12_full_capture.cpp
         renderer_d3d12/diagnostics/d3d12_frame_dump.cpp
         renderer_d3d12/diagnostics/d3d12_pipeline_diagnostics.cpp

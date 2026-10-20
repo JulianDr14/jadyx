@@ -13,6 +13,7 @@
 
 #include "common/logging.h"
 #include "common/fs/path_util.h"
+#include "video_core/renderer_d3d12/diagnostics/d3d12_local_memory_matrix.h"
 #include "common/settings.h"
 #include "core/frontend/emu_window.h"
 #include "core/frontend/graphics_context.h"
@@ -128,6 +129,18 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& emu_window,
         Texture2DDesc(swapchain.Width(), swapchain.Height(), Swapchain::FORMAT);
     dev->GetCopyableFootprints(&image_desc, 0, 1, 0, &footprint, nullptr, nullptr, &upload_size);
 
+    const auto matrix_dir = Common::FS::GetExeDirectory() / "local_memory_matrix";
+    std::error_code matrix_error;
+    if (std::filesystem::exists(matrix_dir / "enabled.flag", matrix_error)) {
+        static std::atomic_bool matrix_ran{};
+        if (!matrix_ran.exchange(true)) {
+            const auto stamp = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            RunLocalMemoryMatrix(dev, matrix_dir,
+                Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) /
+                    fmt::format("local_memory_matrix_{}.jsonl", stamp));
+        }
+    }
     blit_ready = CreateBlitPipeline();
     if (VideoCommon::FullCapture::TakeSelfTest()) rasterizer.RunFullCaptureSelfTest();
 
