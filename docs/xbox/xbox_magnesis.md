@@ -770,3 +770,26 @@ registros; el pase de seleccion perdia su tabla de IDs. Arreglo actual: sustituc
 opt-in de ese PS por la version sin memoria local; falta generalizarlo (lowering en
 el recompilador para PS con arrays locales) antes de release. Logs en
 series-0.3.6.25-logs. Sin commit/push.
+
+### Arreglo general: pool UAV de memoria local en pixel shaders (0.3.6.29)
+Sustituye la sustitucion por hash (`DirectPickLocalExperiment`, eliminada). Al
+arrancar, un PS de prueba con array privado de 512 palabras escribe y relee un
+valor (`d3d12_local_memory_scratch.cpp`); si se pierde (Series lee 0), el perfil
+activa `fragment_local_memory_scratch_lanes` y los PS con memoria local mayor de
+64 palabras la guardan en un storage buffer (u0 space 28, UAV raiz solo pixel) en
+lugar de un array privado. En PC la prueba pasa y nada cambia. Override boot.cfg:
+`ps_scratch=auto|uav|native`.
+
+Diseno (`shader_recompiler/local_memory_scratch.h`): cada wave toma un slot de un
+bitmap al entrar (un lider elegido por ballot, atomicas solo una vez por wave) y lo
+libera cuando sale su ultima lane viva (epilogo o demote); con una sola salida y
+sin demote no se siguen lanes. Datos intercalados por lane (accesos coalescidos),
+indices acotados, busqueda limitada con slot de overflow (sin cuelgues). Pool
+perezoso, crece por filas de 64; el antiguo se libera tras la GPU.
+
+Gate PC `tools/xbox/tests/local-memory-scratch.cpp` (`run-demote-helper.ps1
+-Fixture local-memory-scratch`): 588 palabras con salida unica, con demote y control
+privado; SPIR-V valido, enlace Mesa y DXIL firmado sin alloca en los casos pool.
+Gate Series 0.3.6.29 POSITIVO: prueba lee 0 -> pool; PS de seleccion compila,
+cero PSO rechazados, pool 640 palabras x 64 lanes x 129 slots (20642 KiB), 30 fps
+estables.
