@@ -172,6 +172,10 @@ jobs:
         shell: cmd
         run: tools\xbox\build-env.bat cmake --build --preset uwp-x64 --target jadyx
 
+      - name: Test updater policy, HTTP and recovery
+        shell: pwsh
+        run: tools/xbox/tests/run-updater-gates.ps1
+
       - name: Compiler cache stats
         if: always()
         continue-on-error: true

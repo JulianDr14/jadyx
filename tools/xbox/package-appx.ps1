@@ -276,16 +276,12 @@ if ($PfxPath) {
     if ($LASTEXITCODE -ne 0) { throw "SignTool failed ($LASTEXITCODE)." }
     [IO.File]::WriteAllBytes($cer, $cert.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
 } else {
-    # Reuse a matching cert if one is already in the user store, else mint a self-signed one.
+    # The updater pins the distribution public key. Never silently mint a different signer.
     $cert = Get-ChildItem Cert:\CurrentUser\My |
             Where-Object { $_.Subject -eq $PublisherCN -and $_.NotAfter -gt (Get-Date) } |
             Select-Object -First 1
     if (-not $cert) {
-        Write-Host "minting a self-signed code-signing cert for $PublisherCN"
-        $cert = New-SelfSignedCertificate -Type Custom -Subject $PublisherCN `
-            -KeyUsage DigitalSignature -FriendlyName "Jadyx sideload" `
-            -CertStoreLocation "Cert:\CurrentUser\My" `
-            -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+        throw 'The Jadyx signing certificate is missing. Restore the distribution certificate; do not mint a replacement for an update.'
     }
 
     & $signtool sign /fd SHA256 /sha1 $cert.Thumbprint /t http://timestamp.digicert.com $appx

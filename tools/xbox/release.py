@@ -10,8 +10,8 @@
       Prints the release notes: the conventional commits on the first-parent history since the
       previous release, grouped by kind.
 
-A public release is MAJOR.MINOR.PATCH and packages as MAJOR.MINOR.PATCH.0. The fourth field stays
-for the fix packages built between releases (0.3.0.1, 0.3.0.2...), so a release must be newer than
+A release accepts three or four components; the tag and package use four canonical components.
+The fourth component publishes incremental fixes. A release must be newer than
 the version in the manifest as well as every published release: the console only updates upwards.
 """
 
@@ -33,7 +33,7 @@ HIDDEN = {"chore", "ci", "build", "docs", "test", "style", "refactor", "revert"}
 
 
 def parse_release(text):
-    if not re.fullmatch(r"v?[0-9]+\.[0-9]+\.[0-9]+", text):
+    if not re.fullmatch(r"v?(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))?", text):
         raise ValueError(f"'{text}' is not MAJOR.MINOR.PATCH")
     parts = tuple(int(part) for part in text.lstrip("v").split("."))
     if any(part > 65535 for part in parts):
@@ -64,11 +64,11 @@ def manifest_version(path):
 def validate(version, manifest, releases):
     """Returns the package version for the release `version`, or raises ValueError."""
     release = parse_release(version)
-    package = release + (0,)
+    package = release + (0,) if len(release) == 3 else release
     current = manifest_version(manifest)
-    if package <= current:
+    if package < current:
         raise ValueError(
-            f"{'.'.join(map(str, package))} is not newer than the manifest's "
+            f"{'.'.join(map(str, package))} is older than the manifest's "
             f"{'.'.join(map(str, current))}: consoles would not update")
     for page in releases:
         for published in page if isinstance(page, list) else [page]:
@@ -81,7 +81,8 @@ def validate(version, manifest, releases):
                 previous = parse_release(tag)
             except ValueError:
                 continue
-            if release <= previous:
+            previous = previous + (0,) if len(previous) == 3 else previous
+            if package <= previous:
                 raise ValueError(f"v{version.lstrip('v')} is not newer than the published {tag}")
     return ".".join(map(str, package))
 
@@ -149,6 +150,7 @@ def main(argv):
     v = commands.add_parser("version")
     v.add_argument("version")
     v.add_argument("--manifest", required=True)
+    v.add_argument("--match-manifest", action="store_true", help="Require the committed source version to match the package")
     v.add_argument("--releases", required=True, help="gh api --paginate --slurp .../releases")
     b = commands.add_parser("bump")
     b.add_argument("package_version")
@@ -163,8 +165,10 @@ def main(argv):
         if args.command == "version":
             with open(args.releases, encoding="utf-8") as source:
                 package = validate(args.version, args.manifest, json.load(source))
+            if args.match_manifest and parse_package(package) != manifest_version(args.manifest):
+                raise ValueError("Commit the exact release version in AppxManifest.xml before publishing")
             print(f"package_version={package}")
-            print(f"tag=v{args.version.lstrip('v')}")
+            print(f"tag=v{package}")
         elif args.command == "bump":
             bump(args.package_version, args.manifest)
         elif args.previous:
