@@ -20,6 +20,12 @@ SPDX-License-Identifier: GPL-3.0-or-later
   <a href="https://github.com/JulianDr14/jadyx/issues/new/choose"><b>Report a bug</b></a>
 </p>
 
+<p align="center">
+  <img src="docs/assets/screens/home.jpg" alt="Jadyx home screen on Xbox Series X|S" width="900"><br>
+  <sub>The home screen. The games shown are made-up placeholders with original artwork: no Nintendo
+  images, names or game assets are used.</sub>
+</p>
+
 > **Beta.** Some games reach gameplay on the console and none is free of bugs. It contains no keys,
 > firmware or games and never will: use only the ones you dumped from a console and games you own.
 > See [Legal](#legal).
@@ -664,6 +670,8 @@ Nintendo or Microsoft. Please do not report problems from this fork to Eden.
 
 - Jadyx contains no Nintendo code, keys, firmware, games or game assets, and does not explain how to
   obtain them. It runs only software you dumped yourself from hardware you own.
+- Screenshots in this repository use made-up placeholder games with original artwork, never
+  Nintendo images or game assets.
 - Piracy is not supported. Issues, pull requests or messages that ask for, link to or are based on
   pirated games, keys or firmware are closed without an answer.
 - Nintendo Switch is a trademark of Nintendo. Xbox and Xbox Series X|S are trademarks of Microsoft.
