@@ -33,19 +33,24 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ### Games
 
-Tested only with dumps of games the tester owns, on a retail Xbox Series X in Developer Mode with
-the app in Game mode. This page does not name titles; each game is described by its kind. Figures
-are measured once the game's shaders are compiled: the first visit to a new area still stutters
-while its shaders build.
+Tested only with dumps of games the tester owns, on retail Xbox Series X|S consoles in Developer
+Mode with the app in Game mode. Figures are measured once the game's shaders are compiled: the
+first visit to a new area still stutters while its shaders build. Rows marked *community* come from
+the `#compatibility` forum on [Discord](https://discord.gg/3BhyyXGxpd), where anyone can add a
+report.
 
-| Game | Xbox Series X | State |
+| Game | Series X\|S | State |
 | --- | --- | --- |
-| Kart racer (32-bit) | **60 FPS** in races, stable | No graphical errors. Frames of 16.7 ms, slowest 17.1 ms mid-race; rain, reflections and particles included |
-| Arcade football game | **60 FPS** in matches, stable | No graphical errors, special-move cutscenes included. GPU at 14 % |
-| Monster-catching RPG | **60 FPS**, stable | No graphical errors |
-| 2D platformer | **55–60 FPS**, stable | No crashes or graphical errors |
-| Open-world adventure | **About 20 FPS** in the open world, of the game's 30 | **Work in progress.** Renders without graphical errors; holds 30 FPS in lighter areas (under 2 000 draws per frame). With the whole world in view: 21 FPS, GPU 9.5 ms per frame |
-| Open-world sequel | Renders **without graphical errors**, then **hits the memory wall** | The heaviest loads need more than the app's 5120 MiB, see [The memory wall](#the-memory-wall). On PC it reaches the open world at **30 FPS** |
+| Mario Kart 8 (32-bit) | **60 FPS** in races, stable | No graphical errors. Frames of 16.7 ms, slowest 17.1 ms mid-race; rain, reflections and particles included |
+| Mario Strikers | **60 FPS** in matches, stable | No graphical errors, special-move cutscenes included. GPU at 14 % |
+| Pokémon Let's Go | **60 FPS**, stable | No graphical errors |
+| Mario Wonder | **55–60 FPS**, stable | No crashes or graphical errors |
+| 13 Sentinels *(community)* | **60 FPS** in battles and exploration | Playable on Series X |
+| NEO TWEWY *(community)* | **20–30 FPS** in game, 50 in menus | In-game on Series X; drops to 10–17 FPS while new shaders compile |
+| Yo-kai Watch 4 *(community)* | **30 FPS** in the intro and menus | Series S. In 0.3.0 it froze on a white screen when starting the game; 0.3.5 gets past it. Work in progress |
+| Hyrule Warriors AoC *(community)* | **30 FPS** in cutscenes | Series X. In 0.3.0 it crashed at the same point after the first cutscene; 0.3.5 gets in-game. Work in progress |
+| Zelda BotW | **About 20 FPS** in the open world, of the game's 30 | **Work in progress.** Renders without graphical errors; holds 30 FPS in lighter areas (under 2 000 draws per frame). With the whole world in view: 21 FPS, GPU 9.5 ms per frame |
+| Zelda TotK | Renders **without graphical errors**, then **hits the memory wall** | The heaviest loads need more than the app's 5120 MiB, see [The memory wall](#the-memory-wall). On PC it reaches the open world at **30 FPS** |
 
 Where the open world loses its frames: the renderer's GPU thread spends about 32 ms of host CPU
 time recording some 4 000 draws per frame (about 8 µs per draw), while the GPU itself needs only
