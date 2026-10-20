@@ -1238,3 +1238,54 @@ mismaversion/capacidadnueva dio0x80073CFB: smoke temporal0.3.6.1 yregistroPC
 restaurado0.3.6 sin desinstalar. Entrega0.3.6 firmada normal/34archivos/738bloques,
 exe/símbolos idénticos, integralAPPX/HTTP real pasa, SHA en xbox_updater.md.
 Series/reemplazo/reapertura/datos pendientes. Sincommit/push/publicación.
+
+Entrega Magnesis .14 (20 octubre 2026): APPX final firmado en build-uwp/package/jadyx.appx,
+biblioteca/gpu_capture_full=1/fastmem0; sin payload, self-test, captura automática,
+debug layer ni memory_limit_mib PC. Símbolos en symbols/0.3.6.14. CMS/metadata/
+contenedor/34archivos/739bloques correctos. Gate final AppContainer PC ex11:
+151 eventos, 4 dispatches/2 draws, dos presents completos (PC por franjas),
+26454978 bytes únicos, omisiones0/errores0, retorno0/RenderError0; 13 checks
+imagen+2 buffer byteexactos pasan. Fixtures/parser/corrupción/diffcheck pasan.
+Evidencia privada en test-results/magnesis/pc-full-capture-final; informes
+full-capture-{gpu,ex11}-gate.json. Capturas manuales santuario Series/PC fuera/sobre
+pendientes. Protocolo y límites en docs/xbox/xbox_magnesis.md. Sin commit/push.
+
+Magnesis .14 PC: usuario cerro por pausa de captura, no crash confirmado.
+.15 agrupa readbacks por binding/16MiB y reutiliza SRV nativa readonly por
+recurso/version/rango con referencias exactas; outputs/aliases/UAV conservadores.
+GPUdebug PC: 581 subrecursos array83capas +13imagenes/2buffers correctos; ex04
+reutilizacion real, 2presents completos/0,763s/retorno0/RenderError0. No certifica
+duracion santuario/Series. APPX .15 firmado/verificado en entrega unica, simbolos
+archivados; sincommit. Ver docs/xbox/xbox_magnesis.md.
+
+Portal logs .16: usuario confirma captura .15 termina; descarga Device Portal falla.
+Boton web Comprimir y descargar logs exporta root LogDir completo/trace como
+tar.zst nivel15/ventana8MiB, memoria estimada compresor<=64MiB, worker/progreso/
+cancelacion y download Range con ticket30min. Originales conservados. TCP nativo,
+PAX exacto, UI3idiomas y AppContainer HTTP/range/bytes pasan/retorno0. APPX .16
+firmado/verificado/simbolos archivados; descarga real Series pendiente, sincommit.
+Detalle docs/xbox/xbox_network_portal.md.
+
+Magnesis20oct: PC nuevo misma actualizacion/DLC queSeries; seis capturas completas verificadas. DXILigual; replay exacto Series enPC devuelveID dondeSeriesRT0cero. MRT16x4/8x4/8x4 incompatibles confirmado debug. Candidato.17 normalizaMRTcolor sinDS/MSAA/arrays/reinterpretacion con copiasGPU yscratchreutilizable; cuatroreplaysruntime real sinwarnings yPCbytesidenticos. APPX.17firmado/verificado, simbolosarchivados; gateSeriesenganche pendiente, no declararresuelto. Sincommit/push. Detalle docs/xbox/xbox_magnesis.md.
+
+EntregaMagnesis corregida porusuario: vigente0.3.6.19, reemplaza.17, misma correccionMRT. APPXfirmado/verificado ysimbolos.19 archivados; Seriespendiente. Detalle xbox_magnesis.md.
+
+GateMagnesisSeries.19 negativo: mrt_extents_normalized8x4 confirmado ops220/1249, RT0cero persiste. Replayexactonuevo enPC produceID; captura validada completa. No declararMRTcausaresuelta; siguienteaislarintermediosVS/PS. Detalle xbox_magnesis.md; sincommit/push.
+
+Magnesis.20 preparado:29controlesGPUaislados soloencaptura delshaderpick, muestras/varyings/LOD0/conteos/formatos; sidecarsprivados. 29gatePCsinwarnings y25muestrasCPUlookup pasan,buildUWP yAPPXfirmado/verificado/simbolos.20. Flujo capturaengameplay/Seriespendiente; nofixcertificado. Detalle xbox_magnesis.md; sincommit/push.
+
+Magnesis.20: controlesinvalidos(sentinel), faltaba rebindIAtrasreadback/reset. .21reponeVB/IBdesdeTracedBuffer ymarcaomision si nofragmento;6GPUreplaysreset/rebind sinwarnings,18outputsidenticos. IntegracioncapturaSeriespendiente; no causaoriginaldemostrada. Ver xbox_magnesis.md; sincommit/push.
+
+Magnesis.21:29controlesx2validos;25muestrasaisladas/UV/varyings EXACTAS PC/Series conIDnozero. OriginalSeriesID0/minprimero;PCIDcorrecto/minreal;conteoinstrumentado1vs5. Foco bucles/phis/local588i32, subcausapendiente. 58GPUreplayssinwarnings,capturaverificada. Detalle xbox_magnesis.md; sinpaquetenuevo/commit/push.
+
+Magnesis.22entregado:39controles(encaptura),10nuevosaislancontador/local/CFG. 66GPUdrawsPCy180outputsbyteidenticos(0/1/2/25IDs) pasan;buildUWP/firmaAPPX/simbolos.22correctos. Seriespendiente, nofixcertificado; detalle xbox_magnesis.md. Sincommit/push.
+
+GateMagnesis.22:contadorSSA/separado recupera25muestras/minPCperoID0persiste; tablaagrupa25envez1. Volatile/init/tamano/CFGnofix. Capturaintegra39x2 y22GPUreplayssinwarnings;focoarraylocalDXILSeries, nofixcertificado. Detalle xbox_magnesis.md; sinpaquetenuevo/commit/push.
+
+Magnesis.23entregadoexperimentoGAMEPLAY:PSlocal588aSSA/sinalloca-GEP,sidecarprivadooptinconbyteexactoriginal+hashVS/PS. 8GPUdrawsPCbitexactos/sinwarnings;489228Bshader,costeSeriespendiente. APPXfirmado/verificadoysimbolos.23correctos. Probarenganche/captura+logACTIVE;nogenericfixcertificado. Detalle xbox_magnesis.md; sincommit/push.
+
+Magnesis.23SeriesNEGATIVO:shaderdirectoactivoSHAcorrecto,IDydepth0;replayexactoPCcorrecto/capturaintegra. ExpansionSSA.23noesfix. Faltareproducerpequenosinundef paraaislarlocal/indexado/SSA; noerratumdriverexactoprobado. Detalle xbox_magnesis.md;sinpaquetenuevo/commit/push.
+
+Magnesis.24entregado:84micropruebasautomaticasPS/CS/DXC-Mesa/arrays-loops-SSA,JSONLalabrirjuego. PC84/84debuglimpio y2negativosdetectados;APPXfirmado/verificado/simbolos.24. .23overridefallidofuera. Seriespendiente;exportarlogsportal,sincapturagraficaobligatoria. Detalle xbox_magnesis.md; sincommit/push.
+
+Series.24matriz:66/84,18fallosPSreplicadosDXCO3/Od/Mesa,compute42/42. Mezclaindicesconstante-variablearraylocalfalla;const/constydynamic/dynamic/SSAseleccionsinarraypasan. Reproducerajenoaljuego;focoalias/loweringPSSeries. Detalle xbox_magnesis.md;sinpaquetenuevo/commit/push.

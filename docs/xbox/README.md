@@ -26,7 +26,7 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 - [Biblioteca e interfaz](xbox_frontend.md): carátulas, navegación, mandos y teclado.
 - [Contratos compartidos del frontend](xbox_frontend_refactor.md): catálogo de mandos, acciones, captura modal y listas; migración y gates.
 - [Carpetas y almacenamiento USB](xbox_rom_storage.md): acceso UWP persistente y apertura de juegos sin copiarlos.
-- [Portal local de importación](xbox_network_portal.md): NSP real validado por HTTP en AppContainer; claves/firmware ZIP y sueltos con revisión de versiones en 0.3.4.3, gates PC correctos y prueba Series pendiente.
+- [Portal local de importación](xbox_network_portal.md): exportación completa de logs/capturas en tar.zst con descarga reanudable (.16, AppContainer PC correcto); NSP real validado por HTTP en AppContainer; claves/firmware ZIP y sueltos con revisión de versiones en 0.3.4.3, gates PC correctos y prueba Series pendiente.
 
 ## Rendimiento y evidencia
 
@@ -48,3 +48,5 @@ un arranque en PC no certifica gameplay, rendimiento ni funcionamiento en Series
 - [RTV duplicados e inactivos](xbox_rtv_bindings.md): binding por máscara, PSO, MSAA y alpha-to-coverage.
 
 - [Geometry shader passthrough](xbox_geometry_passthrough.md): Game B, lowering, interfaces SPIR-V/DXIL y gates de componentes.
+
+- [Magnesis PC/Series](xbox_magnesis.md): antecedentes resueltos y plan de captura diferencial del fallo de enganche exclusivo de Series.

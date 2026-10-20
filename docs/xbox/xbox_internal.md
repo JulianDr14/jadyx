@@ -4143,3 +4143,97 @@ requiere integrar fuente/workflow/manifest0.3.6.0 antes de RunRelease desde main
 Corregida regeneración de checksum para reutilizar SHA256SUMS.txt (build.yml lo
 crea con esa extensión), incluyendo update.json/update.sig sin auto-hash ni
 segundo índice divergente. YAML parsea; Actions no ejecutado, sincommit/push.
+
+## 20 octubre 2026: Magnesis, diferencia PC/Series (0.3.6.13)
+
+El usuario confirma que Magnesis reconoce el bloque correctamente en PC con .13;
+el fallo descrito persiste en Series. La prueba PC es referencia funcional, no
+reproduccion del fallo ni validacion de Series. Priorizar comparacion en consola
+con diagnosticos CPU read flush/readback de .13. Driver, capacidades, shaders y
+sincronizacion especificos de la plataforma siguen como posibilidades; no hay
+causa identificada ni evidencia suficiente para atribuirlo al driver. Un readback
+con ceros o un hash repetido por si solo tampoco demuestra un fallo: hay que
+relacionarlo con el recurso y la accion del juego.
+Segun el contexto aportado por el usuario, el APPX actual se preparo para PC con
+memory_limit_mib=5120; revisar configuracion de entrega antes de usarlo en Series.
+No se ha recompilado, reempaquetado ni cambiado codigo en esta revision.
+
+20 octubre 2026: revisados antecedentes Series-only de iluminación .43/.44 y tubos .46-.51. Plan de Magnesis en docs/xbox/xbox_magnesis.md: capturar productor y bytes entregados al guest, replay PC con inputs exactos Series y controles de una variable. .13 muestrea eventos y solo 1MiB por huella; no basta como prueba causal. Sin código/build/paquete nuevo.
+
+Entrega Magnesis .14 (20 octubre 2026): APPX final firmado en build-uwp/package/jadyx.appx,
+biblioteca/gpu_capture_full=1/fastmem0; sin payload, self-test, captura automática,
+debug layer ni memory_limit_mib PC. Símbolos en symbols/0.3.6.14. CMS/metadata/
+contenedor/34archivos/739bloques correctos. Gate final AppContainer PC ex11:
+151 eventos, 4 dispatches/2 draws, dos presents completos (PC por franjas),
+26454978 bytes únicos, omisiones0/errores0, retorno0/RenderError0; 13 checks
+imagen+2 buffer byteexactos pasan. Fixtures/parser/corrupción/diffcheck pasan.
+Evidencia privada en test-results/magnesis/pc-full-capture-final; informes
+full-capture-{gpu,ex11}-gate.json. Capturas manuales santuario Series/PC fuera/sobre
+pendientes. Protocolo y límites en docs/xbox/xbox_magnesis.md. Sin commit/push.
+
+### 0.3.6.15: correccion del coste de captura (20 octubre)
+El usuario confirma que cerro manualmente la app por la pausa, no un cierre
+espontaneo. La .14 habia copiado 11671 subrecursos de la misma textura
+1024x1024x83/11 mips antes de terminar siquiera un present.
+
+La .15 agrupa subrecursos de cada binding en una unica asignacion readback de
+16 MiB y espera una vez por lote, conservando todas las filas, capas y planos.
+Las vistas SRV nativas de solo lectura se descargan una vez por recurso/version/
+rango durante la captura. Los usos siguientes guardan una referencia explicita
+a la operacion/binding original; los recursos se retienen hasta End para evitar
+confundir direcciones recicladas. Transition a estados de escritura cambia la
+version del contenido; estados escribibles, UAV, aliases y feedback no reutilizan
+esta cache. Los outputs se siguen copiando antes/despues. La politica de memoria
+del juego y fastmem no cambian. Metadatos transmitidos a disco: hasta 1000000
+eventos/512 MiB (antes 200000/128 MiB); datos unicos conservan limite 2 GiB.
+
+Gate GPU AppContainer PC/debug: 13 imagenes y 2 buffers previos correctos,
+mas 581 subrecursos (83 capas x 7 mips) con patrones distintos, todos iguales
+al upload. Pruebas del parser pasan referencias exactas y rechazo de referencia
+a recurso equivocado, snapshot parcial o inexistente. Homebrews ex03/ex04:
+2 presents completos sin omisiones/errores; ex04 reutiliza realmente una SRV
+(op6 -> op3), captura 0,763 s, cierre retornado 0 y sin Render Error/Critical.
+Estos controles no miden aun la duracion de la captura real del santuario ni
+certifican Series. Informes full-capture-fixed-*-gate.json y logs bajo
+build-uwp/test-results/magnesis/pc-full-capture-fixed{-texture,}-gate.
+
+Entrega unica firmada 0.3.6.15: build-uwp/package/jadyx.appx; SHA256
+7E9B6A10138B6D6D6C37D2B4AE27345E8636D04996AA43B1C43047EA761E8A87.
+Biblioteca/play/captura menu, fastmem0, sin payload, self-test, debug ni cap PC.
+Simbolos archivados en build-uwp/symbols/0.3.6.15. Firma/payload verificados.
+Pendiente captura del santuario en PC y Series. Sin commit/push.
+
+### Portal: exportar logs .16, 20 octubre
+Usuario confirma captura .15 correcta y fallo de descarga Device Portal.
+Portal Jadyx ahora exporta todo log/ como PAX tar.zst, nivel15/ventana8MiB,
+worker con progreso/cancelacion, streaming y tickets Range/reintento30min.
+No muta originales; archivo preparado fuera de log. Harness TCP/parser/UI3idiomas
+y gate real AppContainer HTTP/range/bytes pasan, retorno0. Paquete .16 firmado
+verificado en entrega unica, simbolos archivados; Series real pendiente.
+Detalles/limites/evidencias/fuentes en xbox_network_portal.md. Sin commit/push.
+
+Magnesis 20oct: seis capturas integras; nuevo PC misma actualizacion/DLC confirma DXIL identico. Replay exacto localiza RT0 cero ya en GPU Series. Defecto confirmado: MRT16x4/8x4/8x4 incompatible (dos errores D3D12). Candidato.17 normaliza MRT color single-sample sin depth mediante scratch/copiaGPU; cuatro replays con runtime real pasan sin warnings, PC bytes identicos. APPX firmado/verificado y simbolos.17; Series pendiente, no causa/arreglo certificado. Detalle/evidencia: docs/xbox/xbox_magnesis.md. Sin commit/push.
+
+Correccion de entrega solicitada por usuario: el paquete vigente es 0.3.6.19 (sustituye .17), misma correccion MRT y configuracion. Reempaquetado/firmado, manifest0.3.6.19, CMS/metadatos/payload/container y741bloques validos. SHA256 5CEB5675589C6A5922894FD04F30430104E162D4B13D6A099223E11D0CA20357. Simbolos build-uwp/symbols/0.3.6.19. GateSeries pendiente; sincommit/push.
+
+GateSeries.19 NEGATIVO: normalizacion8x4 confirmada por captura ops220/1249, RT0siguecero. Replayexacto deesasentradas enPC normalizado retornaIDnozero, sinwarnings. Captura integra validada; MRTcorregido noresuelveMagnesis. Investigar intermediosVS/muestras/seleccionPS; nootroparcheciego. Detalle xbox_magnesis.md.
+
+EntregaMagnesis.20 diagnostica: captura añade29controles aislados del pasepick (originalUNORM/float,LOD0,conteos,25muestras/varyings), sin reemplazar paseguest. Sidecars privados, sin actividad fuera de captura. 29replaysGPU PC sinwarnings,25IDs CPUlookup correctos; buildUWP/link yfirmaAPPX verificados, simbolos.20. Gateintegraciongameplay/Series pendiente. Detalle xbox_magnesis.md. Sincommit/push.
+
+RevisionMagnesis.20: captura integra pero58controles noescribieron (sentinel intacto). Diagnostico perdiaVB/IBtrasFinish: ApplyGeometryconsume pendientes. .21reponeIAexplicitamentedesdeTracedBuffer en cadacontrol, detectasentinel comoomision. Gate6replaysGPUconreset/rebind y18outputsidenticos pasa; capturagameplay/Seriespendiente. No concluirfalloshader apartir.20. Detalle xbox_magnesis.md.
+
+Magnesis.21controlesVALIDOS:25muestrasID/profundidad/UV/varyings bytefloatiguales PC/Series en2ops;IDnozero. PSoriginalSeriesID0,minprimermuestra;PCIDcorrecto,minreal. Conteoinstrumentado1PC/5Series. LOD0/FLOAT32noparchean. Localizadoenprogramaoriginal bucles/estadoarrastrado/local588i32, no subcausaexactaprobada. 58GPUreplayssinwarnings;capturaintegra. Detalle xbox_magnesis.md; sinbuildnueva/commit/push.
+
+Magnesis.22 listo:10controles nuevos29..38(volatile,contadorSSA/separado,init/tamanolocal,CFG23forwarders) para separar bucles/local sinpatchguest. 66GPUdrawsPC/6entradas0-1-2-25IDs sinwarnings;60variantesx3salidasbyteidenticas. Buildincremental/link yAPPXfirmado/verificado73files780blocks/simbolos.22. GateSeries pendiente39controles/captura. Detalle xbox_magnesis.md; sincommit/push.
+
+Magnesis.22 revisada:30/31contadorfueraarray recuperan25muestras y minEXACTOPC; tablaSeriescuenta25IDsiguales/elige0, PC1/IDcorrecto. Otros8controlesnofix. Captura39x2integra,22GPUreplaysnuevossinwarnings;DXILsidecars20exactos. FocoaccesosarraylocalDXIL, compatibleloads0 peroerratumexactono probado. No paquetenuevo; detalle xbox_magnesis.md.
+
+InvestigacionwebMagnesis20oct:DXILadmitealloca/GEPi32local;noerratumpublicoSeriesconfirmado. Mesa tiene nir_lower_indirect_derefs_to_if_else_trees+vars_to_ssa; nuestro26.2.3soloaplicaumbral4, array588 quedaindexable. Candidatoprioritario: eliminardinamicosentabla+contador ypromoverSSA, rangos/costecontrolados;primeroequivalenciacaptura/Series. #2817esraytracingdistinto,no confirmacion. Fuentes/diseño ylimites xbox_magnesis.md; sinimplementacion/buildnuevo/commit/push.
+
+Magnesis.23experimentoGAMEPLAY:PSprivadodecaptura reemplazadosolotrasVS/PSguest+byteexactoriginal. Local588->slotsconstantes/selects->SSA;DXILsinalloca/GEP,489228B (primerarbolbranch5,9MBdescartado). 8drawsGPU PC0/1/2/25IDs/float/UNORMconservanoutputs,sinwarnings. Buildincremental,firmaAPPX75files789blocks/simbolos.23pasan. Seriesenganche+captura/logACTIVE pendientes. Nogenericfix/rendimientocertificado. Detalle xbox_magnesis.md; sincommit/push.
+
+GateMagnesis.23NEGATIVO:PSdirect489228B/hashconfirmadoactivo;IDydepth0enSeries,PCexactoinputsID/mincorrectos(2GPUdraws/0warnings). Captura39x2integra;baselinesoriginalessiguenevidencia.22. ExpansionSSA.23noarregla; no atribuirnuevoceroadriver/undef/tamano sinreproducerpequenodeterminista. Sinpaquetenuevo;detalle xbox_magnesis.md; sincommit/push.
+
+Magnesis.24bateriamultihipotesis:84casosautomaticos(14escenariosxPS/CSxDXCO3/Od/Mesa),sinundef,dato/expectedpropios,JSONLpequenoalabrirjuego1vez/proceso. PCmismoexecutor84/84sinwarnings y2negativosdetectados;buildUWP/firma160files867blocks/simbolos.24correctos. .23overrideexcluido,guestoriginal. Seriesautomatico/resultado pendiente; bastanlogsportal,sincapturagrande. Detalle xbox_magnesis.md. Sincommit/push.
+
+GateSeries.24:66/84pasan,18fallosPS(6escenariosx3DXC/Mesa),compute42/42. Mezclastore/loadindicesconstante-variabledevuelve0;const/constydynamic/dynamicpasan(incluyeDXCOdconalloca). SeleccionsinarrayPS1/5IDspasa;tablaarrayfallacomoMagnesis. Focoalias/loweringPSSeries,noafirmartodoindexadodinamico roto. Reportearchivado matrix24-series*. .24vigente,fixpendiente;detalle xbox_magnesis.md. Sincommit/push.
