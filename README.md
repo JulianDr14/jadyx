@@ -57,7 +57,9 @@ report.
 | Mario Strikers | Series X | **60 FPS** in matches, stable | No graphical errors, special-move cutscenes included. GPU at 14 % |
 | Pokémon Let's Go | Series X | **60 FPS**, stable | No graphical errors |
 | Mario Wonder | Series X | **55–60 FPS**, stable | No crashes or graphical errors |
-| Mario Wonder *(community)* | Series S | **30–60 FPS** | Community report, build not specified |
+| Mario Wonder *(community)* | Series S | **60 FPS** | Latest community report |
+| Under Night In-Birth II Sys:Celes *(community)* | Series S | **60 FPS** | In-game; community report |
+| Naruto x Boruto: Connections *(community)* | Series S | **30 FPS**, reported stable | No FPS drops reported by the tester |
 | Mario 3D World | Series X | **60 FPS**, stable | In-game |
 | Super Mario Odyssey | Series X | **45–50 FPS** in very open areas; **60 FPS** in more enclosed areas and in certain levels | In-game |
 | 13 Sentinels *(community)* | Series X | **60 FPS** in battles and exploration | Playable |
