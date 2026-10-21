@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Run from the repo root after building the changed UWP objects. These are component gates;
 # they do not certify DSP/GPU/kernel restoration or a persistent homebrew session.
+param([string[]]$Only = @())
+
 $ErrorActionPreference = 'Stop'
 $pulseVs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (!$pulseVs) { throw 'MSVC not found' }
@@ -21,10 +23,12 @@ $pulseTests = @(
     @{ Name = 'pulse-machine'; Source = 'pulse-machine'; Objects = ''; Libraries = "$pulseCommon build-uwp\_deps\lz4-build\lz4.lib WindowsApp.lib ntdll.lib" },
     @{ Name = 'pulse-readback'; Source = 'gc-readback'; Objects = ''; Libraries = '' },
     @{ Name = 'pulse-services'; Source = 'pulse-services'; Objects = ''; Libraries = '' },
+    @{ Name = 'pulse-npad'; Source = 'pulse-npad'; Objects = 'src\hid_core\resources\npad\npad_data.cpp /Gy'; Libraries = '' },
     @{ Name = 'pulse-filesystem'; Source = 'pulse-filesystem'; Objects = 'build-uwp\src\core\CMakeFiles\core.dir\file_sys\vfs\vfs.cpp.obj build-uwp\src\core\CMakeFiles\core.dir\file_sys\vfs\vfs_real.cpp.obj build-uwp\src\core\CMakeFiles\core.dir\file_sys\vfs\vfs_offset.cpp.obj'; Libraries = "$pulseCommon WindowsApp.lib ntdll.lib" },
     @{ Name = 'pulse-audio'; Source = 'pulse-audio'; Objects = 'build-uwp\src\core\CMakeFiles\core.dir\core_timing.cpp.obj build-uwp\src\audio_core\CMakeFiles\audio_core.dir\sink\sink_stream.cpp.obj build-uwp\src\audio_core\CMakeFiles\audio_core.dir\sink\xaudio2_sink.cpp.obj'; Libraries = "$pulseCommon WindowsApp.lib ntdll.lib xaudio2.lib" }
 )
 foreach ($pulseTest in $pulseTests) {
+    if ($Only.Count -and $pulseTest.Name -notin $Only) { continue }
     $pulseCompile = 'cl ' + $pulseFlags + ' tools\xbox\tests\' + $pulseTest.Source + '.cpp ' + $pulseTest.Objects + ' /Fo:build-uwp\pulse-gate\ /Fe:build-uwp\pulse-gate\' + $pulseTest.Name + '.exe /link /OPT:REF ' + $pulseTest.Libraries
     $pulseCommands = @('@echo off', ('call "' + $pulseVs + '\VC\Auxiliary\Build\vcvarsall.bat" x64'), 'if errorlevel 1 exit /b 1', $pulseCompile)
     Set-Content "$($pulseGate.FullName)/phase3.cmd" -Value $pulseCommands -Encoding ascii
