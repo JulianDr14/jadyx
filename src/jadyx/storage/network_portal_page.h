@@ -518,11 +518,11 @@ const updatePanel=$('app-updates'),updateTitle=$('app-update-title'),updateHelp=
 const updateDownload=$('app-update-download'),updateStatus=$('app-update-status'),updateLink=$('app-update-package'),updatePortal=$('app-update-portal');
 updateTitle.textContent=pt?'Atualizar Jadyx':es?'Actualizar Jadyx':'Update Jadyx';
 updateHelp.textContent=pt?
- 'No Xbox, abra Configurações → Sistema → Atualizações e baixe a versão. Depois baixe o pacote verificado aqui e instale sobre o Jadyx pelo Device Portal. Não desinstale: isso apaga seus dados.':es?
- 'En Xbox, abre Ajustes → Sistema → Actualizaciones y descarga la versión. Después descarga aquí el paquete verificado e instálalo sobre Jadyx desde Device Portal. No desinstales: eso borra tus datos.':
- 'On Xbox, open Settings → System → Updates and download the version. Then download the verified package here and install over Jadyx in Device Portal. Do not uninstall: that deletes your data.';
+ 'No Xbox, abra Configurações → Sistema → Atualizações e baixe a versão. Depois baixe o pacote verificado aqui e instale sobre o Jadyx pelo Xbox Device Portal. Não desinstale: isso apaga seus dados.':es?
+ 'En Xbox, abre Ajustes → Sistema → Actualizaciones y descarga la versión. Después descarga aquí el paquete verificado e instálalo sobre Jadyx desde Xbox Device Portal. No desinstales: eso borra tus datos.':
+ 'On Xbox, open Settings → System → Updates and download the version. Then download the verified package here and install over Jadyx in Xbox Device Portal. Do not uninstall: that deletes your data.';
 updateDownload.textContent=pt?'Baixar pacote verificado':es?'Descargar paquete verificado':'Download verified package';
-updatePortal.textContent=pt?'Abrir Device Portal':es?'Abrir Device Portal':'Open Device Portal';
+updatePortal.textContent=pt?'Abrir Xbox Device Portal':es?'Abrir Xbox Device Portal':'Open Xbox Device Portal';
 if(location.hostname)updatePortal.href='https://'+location.hostname+':11443';
 updateDownload.addEventListener('click',async()=>{
  try{
@@ -532,7 +532,7 @@ updateDownload.addEventListener('click',async()=>{
   if(typeof data.download!=='string'||!/^\/api\/v1\/update\/package\?ticket=[0-9a-f]{64}$/.test(data.download)||
      typeof data.filename!=='string'||!/^Jadyx_[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+_x64\.appx$/.test(data.filename))throw Error('invalid_update');
   updateLink.href=data.download;updateLink.download=data.filename;updateLink.click();
-  updateStatus.textContent=pt?'Instale no Device Portal → Add. Reabra o Jadyx para confirmar a versão.':es?'Instala en Device Portal → Add. Vuelve a abrir Jadyx para confirmar la versión.':'Install in Device Portal → Add. Reopen Jadyx to confirm the version.';
+  updateStatus.textContent=pt?'Instale no Xbox Device Portal → Add. Reabra o Jadyx para confirmar a versão.':es?'Instala en Xbox Device Portal → Add. Vuelve a abrir Jadyx para confirmar la versión.':'Install in Xbox Device Portal → Add. Reopen Jadyx to confirm the version.';
  }catch{
   updateStatus.textContent=pt?'Não foi possível preparar o pacote. Conclua a verificação no Xbox e termine transferências ativas.':es?'No se pudo preparar el paquete. Completa la verificación en Xbox y termina las transferencias activas.':'Could not prepare the package. Complete verification on Xbox and finish active transfers.';
  }finally{updateDownload.disabled=false;}
