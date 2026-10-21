@@ -287,6 +287,8 @@ struct BootConfig {
     bool dump_guest_shaders{};
     bool full_gpu_capture{};
     bool full_gpu_capture_self_test{};
+    /// Render targets are read back only after each operation ("gpu_capture_targets=after").
+    bool full_gpu_capture_targets_after{};
     /// Per-core JIT elapsed time and slow callback counts ("cpu_profile=1"). Diagnostic only.
     bool cpu_profile{};
     /// In-process sampling profiler over every named thread ("profile=1"; "profile=full" adds the
@@ -507,13 +509,15 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     if (config.dump_guest_shaders) Settings::values.dump_guest_shaders.SetValue(true);
     VideoCommon::FullCapture::Enable(config.full_gpu_capture);
     VideoCommon::FullCapture::RequestSelfTest(config.full_gpu_capture_self_test);
+    VideoCommon::FullCapture::SetTargetsAfterOnly(config.full_gpu_capture_targets_after);
     if (config.full_gpu_capture) {
         const auto version = winrt::Windows::ApplicationModel::Package::Current().Id().Version();
         VideoCommon::FullCapture::SetSession(fmt::format(
             "{{\"version\":\"{}.{}.{}.{}\",\"memory_limit_mib\":{},\"async_record\":{},"
-            "\"async_present\":{},\"async_shaders\":{}}}",
+            "\"async_present\":{},\"async_shaders\":{},\"targets_after_only\":{}}}",
             version.Major, version.Minor, version.Build, version.Revision, config.memory_limit_mib,
-            config.async_record, config.async_present, config.async_shaders));
+            config.async_record, config.async_present, config.async_shaders,
+            config.full_gpu_capture_targets_after));
     }
     VideoCore::Perf::SetForceSwapIntervalOne(config.force_swap_interval_one);
     Settings::values.async_presentation.SetValue(config.async_present);
@@ -2525,6 +2529,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.full_gpu_capture = true;
                             config.material_capture_menu = true;
                             WriteDiag("boot.cfg: full synchronous GPU capture enabled (menu)");
+                        } else if (line == "gpu_capture_targets=after") {
+                            config.full_gpu_capture_targets_after = true;
+                            WriteDiag("boot.cfg: full capture reads render targets after operations only");
                         } else if (line == "dump_guest_shaders=1") {
                             config.dump_guest_shaders = true;
                             WriteDiag("boot.cfg: guest shader dump enabled");

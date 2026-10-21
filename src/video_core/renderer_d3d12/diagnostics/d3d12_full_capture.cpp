@@ -454,6 +454,10 @@ void RasterizerD3D12::CaptureFullImages(const FullCaptureViews& views,
                                          full_capture_operation, ordinal, count});
         }
         if (!framebuffer) return;
+        if (!after && FC::TargetsAfterOnly()) {
+            FC::Event("targets_before_skipped", fmt::format("{{\"op\":{}}}", full_capture_operation));
+            return;
+        }
         for (u32 rt = 0; rt < VideoCommon::NUM_RT; ++rt) {
             auto* image = const_cast<Image*>(framebuffer->ColorImage(rt));
             if (!image || !image->Handle()) continue;
