@@ -196,6 +196,24 @@ el hilo de GPU solo las graba, en bloques que ese hilo ejecuta en orden y envía
 `async_record=0` en BootCfg el hilo de GPU las hace él mismo, como antes. El log dice qué modo se usa:
 `D3D12: command list calls made on a recording thread` o `on the GPU thread`.
 
+La reutilización del pipeline entre draws es experimental y está apagada por defecto. Con
+`pipeline_key_reuse=1` en BootCfg, un draw reutiliza el pipeline del anterior sin recalcular su
+clave cuando no cambió ningún registro que la clave lea, ni el engine, la topología, el hint de
+macro HLE o los shaders. La lista de registros que no la afectan está en
+`d3d12_pipeline_key_tracking.cpp` y la verifica `tools/xbox/tests/run-pipeline-key-tracking.ps1`
+contra el refresco real de la clave. Con `pipeline_key_reuse=check` se recalcula siempre y el log
+registra cada draw en el que la reutilización habría dado otro pipeline (`D3D12: pipeline key
+changed with no tracked register write`); cada perf report añade
+`D3D12 pipeline key check: N reusable draws verified, M mismatched`. Con `gpu_profile=1` el detalle
+del hilo de GPU cuenta además los `key reuses` del modo `=1`.
+
+Sigue en investigación. En consola, el modo check verificó unos 7,3 M draws reutilizables (~74% de
+los draws) sin ninguna discrepancia, pero eso cubre una sola zona del juego. Las sesiones con la
+reutilización activa no mostraron una ganancia medible frente a las que no la tenían: lo esperado
+es 1 ms por frame o menos, y las diferencias de escena (día y noche, pipelines nuevos, descargas
+GPU→CPU) lo tapan. Falta una comparación A/B en el mismo sitio y más cobertura del modo check antes
+de activarla por defecto.
+
 El hilo `HostTiming` duerme hasta poco antes de cada evento con un timer de alta resolución y
 solo espera en la CPU el retraso que ese timer suele tener (decenas de microsegundos). Con
 `timer_sleep=0` en BootCfg vuelve a dormir por ticks del timer del sistema y a esperar en la CPU
