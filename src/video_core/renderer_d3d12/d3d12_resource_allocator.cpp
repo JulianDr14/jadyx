@@ -45,6 +45,7 @@ struct TextureResourceAllocator::State {
         u64 alignment{};
         std::map<u64, u64> free_ranges; // offset -> bytes
         Common::MemoryCharge charge;
+        u64 empty_tick{}; // first trim pass that saw it empty; 0 while in use
     };
 
     mutable std::mutex mutex;
@@ -138,6 +139,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
         if (end < range_offset + range_size) {
             ranges.emplace(end, range_offset + range_size - end);
         }
+        state->blocks[selected].empty_tick = 0;
         state->live_bytes += info.SizeInBytes;
         state->peak_bytes = std::max(state->peak_bytes, state->live_bytes);
     };
@@ -201,7 +203,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
                 find_space();
             }
         }
-        TrimEmptyHeaps(pressure);
+        TrimEmptyHeaps(pressure ? TrimMode::Settled : TrimMode::KeepWarm);
         // The selected range was already reserved above. Trim cannot destroy its heap.
         if (pressure) {
             const auto after = device.QueryCacheMemoryPressure();
@@ -313,7 +315,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
             scheduler.Wait(current - 1);
         }
         scheduler.CollectGarbage();
-        TrimEmptyHeaps(true);
+        TrimEmptyHeaps(TrimMode::All);
         hr = create_committed();
     }
     ThrowIfFailed(hr, "Create committed texture fallback");
@@ -340,7 +342,11 @@ void TextureResourceAllocator::DeferRelease(Resource&& resource) {
                            [allocation = std::move(allocation)]() mutable { allocation.reset(); });
 }
 
-void TextureResourceAllocator::TrimEmptyHeaps(bool under_pressure) {
+void TextureResourceAllocator::TrimEmptyHeaps(TrimMode mode) {
+    // Releasing every empty heap on each pressured miss churned heaps that the next textures
+    // would have reused. Settled keeps a heap until it has stayed empty for this many submits.
+    constexpr u64 settle_ticks = 64;
+    const u64 tick = mode == TrimMode::Settled ? scheduler.CurrentTick() : 0;
     std::scoped_lock lock{state->mutex};
     std::array<bool, 2> warm{};
     for (auto& block : state->blocks) {
@@ -348,9 +354,13 @@ void TextureResourceAllocator::TrimEmptyHeaps(bool under_pressure) {
         const auto& [offset, size] = *block.free_ranges.begin();
         if (offset != 0 || size != block.size) continue;
         const size_t type = static_cast<size_t>(block.heap_class);
-        if (!under_pressure && !warm[type]) {
+        if (mode == TrimMode::KeepWarm && !warm[type]) {
             warm[type] = true;
             continue;
+        }
+        if (mode == TrimMode::Settled) {
+            if (!block.empty_tick) block.empty_tick = tick;
+            if (tick < block.empty_tick + settle_ticks) continue;
         }
         state->heap_bytes -= block.size;
         state->trimmed_bytes += block.size;
@@ -359,6 +369,7 @@ void TextureResourceAllocator::TrimEmptyHeaps(bool under_pressure) {
         block.free_ranges.clear();
         block.charge.Reset();
         block.size = 0;
+        block.empty_tick = 0;
     }
 }
 

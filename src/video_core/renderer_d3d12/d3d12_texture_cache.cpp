@@ -131,7 +131,8 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
     : device{device_}, scheduler{scheduler_}, staging{staging_}, view_descriptors{views},
       sampler_descriptors{samplers}, rtv_descriptors{rtvs}, dsv_descriptors{dsvs},
       texture_allocator{device_, scheduler_}, transfer_buffers{transfer_buffers_} {
-    transfer_buffers.SetReclaimer([this] { texture_allocator.TrimEmptyHeaps(true); });
+    transfer_buffers.SetReclaimer(
+        [this] { texture_allocator.TrimEmptyHeaps(TextureResourceAllocator::TrimMode::All); });
     null_rtv = rtv_descriptors.Allocate();
     D3D12_RENDER_TARGET_VIEW_DESC null_desc{
         .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -327,7 +328,8 @@ void TextureCacheRuntime::TickFrame() {
     // only in an Emergency, Critical keeps the ones recent copies used. An allocation the system
     // refuses still reclaims everything (TransferBufferPool::ReclaimAfterOutOfMemory).
     const bool release_idle = pressure_level >= CachePressure::Critical;
-    texture_allocator.TrimEmptyHeaps(release_idle);
+    texture_allocator.TrimEmptyHeaps(release_idle ? TextureResourceAllocator::TrimMode::Settled
+                                                  : TextureResourceAllocator::TrimMode::KeepWarm);
     if (pressure_level >= CachePressure::Emergency) {
         transfer_buffers.Trim(true);
     } else if (release_idle) {

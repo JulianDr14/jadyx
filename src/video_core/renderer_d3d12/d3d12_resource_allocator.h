@@ -32,9 +32,13 @@ public:
                                   D3D12_RESOURCE_STATES initial_state,
                                   const D3D12_CLEAR_VALUE* clear_value = nullptr);
     void DeferRelease(Resource&& resource);
+    enum class TrimMode {
+        KeepWarm, ///< Keep one warm empty heap per class, release the rest.
+        Settled,  ///< Release heaps that stayed empty for a while; recent ones get reused.
+        All,      ///< Release every empty heap (the system refused memory).
+    };
     /// Called by the recording thread. Only fully free, fence-retired heaps are eligible.
-    /// Keep one warm empty heap per class normally; release all empty heaps under pressure.
-    void TrimEmptyHeaps(bool under_pressure);
+    void TrimEmptyHeaps(TrimMode mode);
 
     [[nodiscard]] std::string Report() const;
     struct Stats {
