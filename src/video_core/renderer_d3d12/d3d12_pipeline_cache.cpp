@@ -520,11 +520,17 @@ void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler
         }
     }
     TickPrewarm(snapshot);
-    // About a minute between saves: a session closed from the console never reaches the
-    // destructor, and the set changes most at the start.
-    constexpr u64 HOT_SAVE_FRAMES = 60 * 60;
-    if (residency_frame - last_hot_save_frame >= HOT_SAVE_FRAMES) {
+    // A session closed from the console never reaches the destructor, and the set changes most at
+    // the start. A minute at 60 FPS is two or three at the frame rates seen, longer than many test
+    // sessions, so save what changed every 10 seconds' worth of frames.
+    constexpr u64 HOT_SAVE_FRAMES = 10 * 60;
+    if (hot_pipelines_dirty && residency_frame - last_hot_save_frame >= HOT_SAVE_FRAMES) {
         last_hot_save_frame = residency_frame;
+        SaveHotPipelines();
+    }
+    constexpr u64 STATS_FRAMES = 60 * 60;
+    if (residency_frame - last_stats_frame >= STATS_FRAMES) {
+        last_stats_frame = residency_frame;
         const auto resident = Common::ReadMemoryAccount(Common::MemoryAccount::PipelineStates);
         LOG_INFO(Render,
                  "D3D12: {} graphics pipelines, {} PSOs resident; {} released and {} rebuilt so "
@@ -532,9 +538,6 @@ void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler
                  residency_sweep.size(), resident.objects, pipelines_evicted, pipelines_woken,
                  hot_pipelines.Size());
         LogPipelineStats("session");
-        if (hot_pipelines_dirty) {
-            SaveHotPipelines();
-        }
     }
 }
 

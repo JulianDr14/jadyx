@@ -204,6 +204,7 @@ private:
     size_t residency_cursor{};
     u64 residency_frame{};
     u64 last_hot_save_frame{};
+    u64 last_stats_frame{};
     u64 pipelines_evicted{};
     u64 pipelines_woken{};
     /// Disk-cache pipelines left dormant at boot, most likely to be drawn first.
