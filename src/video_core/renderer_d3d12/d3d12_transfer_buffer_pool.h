@@ -38,6 +38,10 @@ public:
     /// Frees idle buffers: all of them under memory pressure, otherwise the ones unused for a while.
     void Trim(bool under_pressure);
 
+    /// Under memory pressure short of an emergency: frees the buffers no recent submission used
+    /// but keeps the ones copies cycle through every frame.
+    void TrimStale();
+
     [[nodiscard]] u64 PooledBytes() const;
 
     /// After the commit limit refused a resource of size bytes: frees what finished work no longer
@@ -62,6 +66,9 @@ private:
     static constexpr u64 MAX_POOLED_BYTES = 64ULL << 20;
     /// Submissions an idle buffer is kept for when there is no memory pressure.
     static constexpr u64 IDLE_TICKS = 2048;
+    /// Submissions an idle buffer is kept for under memory pressure. Emptying the pool every frame
+    /// instead made a game recreate ~11 buffers per frame (~6 MiB, ~20 ms of the GPU thread).
+    static constexpr u64 STALE_TICKS = 16;
 
     const Device& device;
     Scheduler& scheduler;
@@ -69,6 +76,8 @@ private:
     std::vector<Entry> entries;
     u64 pooled_bytes{};
     std::function<void()> reclaimer;
+
+    void TrimOlderThan(u64 idle_ticks);
 };
 
 } // namespace D3D12

@@ -125,11 +125,18 @@ void TransferBufferPool::Release(ComPtr<ID3D12Resource>&& buffer) {
 }
 
 void TransferBufferPool::Trim(bool under_pressure) {
+    TrimOlderThan(under_pressure ? 0 : IDLE_TICKS);
+}
+
+void TransferBufferPool::TrimStale() {
+    TrimOlderThan(STALE_TICKS);
+}
+
+void TransferBufferPool::TrimOlderThan(u64 idle_ticks) {
     const u64 current = scheduler.CurrentTick();
     std::scoped_lock lock{mutex};
     std::erase_if(entries, [&](Entry& entry) {
-        const bool idle_too_long = current > entry.tick + IDLE_TICKS;
-        if (!under_pressure && !idle_too_long) {
+        if (idle_ticks != 0 && current <= entry.tick + idle_ticks) {
             return false;
         }
         pooled_bytes -= entry.size;

@@ -323,11 +323,18 @@ void TextureCacheRuntime::TickFrame() {
     }
     // Emptying the pools every frame under mere pressure made a game recreate its transfer buffers
     // and texture heaps each frame: ~9 committed resources, about 8 ms of the GPU thread, to save
-    // at most a few tens of MiB. Only Critical and worse release them all; an allocation the
-    // system refuses still reclaims everything (TransferBufferPool::ReclaimAfterOutOfMemory).
+    // at most a few tens of MiB. Only Critical and worse release the heaps; transfer buffers go
+    // only in an Emergency, Critical keeps the ones recent copies used. An allocation the system
+    // refuses still reclaims everything (TransferBufferPool::ReclaimAfterOutOfMemory).
     const bool release_idle = pressure_level >= CachePressure::Critical;
     texture_allocator.TrimEmptyHeaps(release_idle);
-    transfer_buffers.Trim(release_idle);
+    if (pressure_level >= CachePressure::Emergency) {
+        transfer_buffers.Trim(true);
+    } else if (release_idle) {
+        transfer_buffers.TrimStale();
+    } else {
+        transfer_buffers.Trim(false);
+    }
     if (VideoCore::FrameTrace::Active()) {
         const auto stats = texture_allocator.GetStats();
         VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::TextureHeapUsage,
