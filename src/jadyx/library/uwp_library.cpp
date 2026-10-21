@@ -5,6 +5,7 @@
 #include "jadyx/input/controller_catalog.h"
 #include "jadyx/ui/text_entry_input.h"
 #include "jadyx/library/favorites.h"
+#include "jadyx/library/game_removal.h"
 #include "jadyx/library/library_layout.h"
 #include "jadyx/library/uwp_library_canvas.h"
 #include "jadyx/storage/uwp_rom_storage.h"
@@ -39,6 +40,7 @@
 #include "jadyx/mods/mods_page.h"
 #include "jadyx/mods/mods_view.h"
 #include "jadyx/library/play_history.h"
+#include "jadyx/library/portal_library.h"
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/library/library_cache.h"
 #include "jadyx/i18n/localization.h"
@@ -97,8 +99,11 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     bool dirty = true, loading = true, settings = false;
     ConfigurationPanel configuration;
     Updates::Updater updater;
+    // Declared before the portal: its workers read this view until the portal is destroyed.
+    PortalLibrarySource portal_library{root, DefaultLibraryCacheDirectory()};
     NetworkPortal network_portal{root,DefaultSystemImportBackend()};
     network_portal.SetLogDirectory(Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir));
+    network_portal.SetLibrary(portal_library.View());
     network_portal.SetUpdatePackage([&] { return updater.PrepareAssistedDownload(); });
     auto network_poll_at = std::chrono::steady_clock::time_point{};
     // Revoked before the library-owned portal is destroyed. No background server survives play.
@@ -131,8 +136,11 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     FileImportProgress import_progress;
     std::future<std::string> import_future;
     std::jthread import_worker;
-    bool network_import{};
-    bool system_network_import{};
+    // What the storage worker runs: one at a time, never alongside a manager or the metadata reader.
+    enum class StorageJob { Files, PortalGame, PortalSystem, PortalContent, PortalRemoval, Removal };
+    StorageJob storage_job{};
+    std::optional<GameFiles> removal_request; ///< Confirmed in the game's options.
+    std::wstring after_scan; ///< Shown when the rescan that follows a storage job completes.
     std::chrono::steady_clock::time_point auto_pick_at{};
     unsigned setting_row = 0;
     ControllerPanel panel;
@@ -746,6 +754,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             }
             network_poll_at = now + std::chrono::milliseconds{500};
             const auto state = network_portal.Status();
+            if (state.running) portal_library.Publish(scan.entries, static_cast<std::uint32_t>(title_language));
             if (configuration.network.running != state.running || configuration.network.paired != state.paired ||
                 configuration.network.code != state.code || configuration.network.code_expired != state.code_expired ||
                 configuration.network.error != state.error ||
@@ -753,6 +762,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 configuration.network.transfer.phase != state.transfer.phase ||
                 configuration.network.transfer.id != state.transfer.id ||
                 configuration.network.transfer.error != state.transfer.error ||
+                configuration.network.content.received != state.content.received ||
+                configuration.network.content.phase != state.content.phase ||
+                configuration.network.content.error != state.content.error ||
+                configuration.network.removal != state.removal ||
                 configuration.network.system.phase != state.system.phase ||
                 configuration.network.system.processed != state.system.processed ||
                 configuration.network.system.file.received != state.system.file.received ||
@@ -761,21 +774,42 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 dirty = true;
             }
             const bool system_pending=state.system.phase=="prepare_pending"||state.system.phase=="commit_pending";
-            if ((state.transfer.phase == "ready" || system_pending) && !configuration.busy && !loading &&
+            const std::optional<StorageJob> next_job = removal_request ? StorageJob::Removal :
+                system_pending ? StorageJob::PortalSystem : state.removal.phase == "pending" ? StorageJob::PortalRemoval :
+                state.transfer.phase == "ready" ? StorageJob::PortalGame :
+                state.content.phase == "ready" ? std::optional{StorageJob::PortalContent} : std::nullopt;
+            if (next_job && !configuration.busy && !loading &&
                 !setup_future.valid() && !picker && !validation.valid() && !content_session && !game_options.open) {
                 configuration.busy=true;
-                network_import=true;
-                system_network_import=system_pending;
+                storage_job=*next_job;
                 import_progress.completed=0; import_progress.total=0;
+                portal_library.Progress(0, 0);
+                if (storage_job == StorageJob::Removal || storage_job == StorageJob::PortalRemoval) notice = Tr(T::GameRemoving);
                 metadata_worker.request_stop();
+                // An update/DLC from the portal goes through the content manager's import.
+                const auto install=[&](const std::filesystem::path& path, const std::string& tag, std::stop_token stop) {
+                    return portal_library.Install(path, tag, stop, [&](std::uint64_t done, std::uint64_t total) {
+                        import_progress.completed=static_cast<unsigned>(done >> 20);
+                        import_progress.total=static_cast<unsigned>(total >> 20);
+                    });
+                };
                 std::packaged_task<std::string(std::stop_token)> task{
-                    [&, system_pending, old_metadata=std::move(metadata_worker)](std::stop_token stop) mutable {
+                    [&, job=storage_job, install, removal=removal_request.value_or(GameFiles{}),
+                     old_metadata=std::move(metadata_worker)](std::stop_token stop) mutable {
                         std::stop_callback cancel{stop,[&] { network_portal.CancelTransfer(); }};
                         if (old_metadata.joinable()) old_metadata.join();
                         winrt::init_apartment(winrt::apartment_type::multi_threaded);
                         struct Uninitialize { ~Uninitialize() { winrt::uninit_apartment(); } } guard;
-                        return system_pending ? network_portal.RunSystemImport(stop) : network_portal.FinalizeGame(ValidateUploadedNsp);
+                        switch (job) {
+                        case StorageJob::Removal: return RemoveGame(root, removal);
+                        case StorageJob::PortalSystem: return network_portal.RunSystemImport(stop);
+                        case StorageJob::PortalRemoval:
+                            return network_portal.RunRemoval([&](const PortalRemoval& r) { return portal_library.Remove(r); });
+                        case StorageJob::PortalContent: return network_portal.FinalizeContent(install);
+                        default: return network_portal.FinalizeGame(ValidateUploadedNsp);
+                        }
                     }};
+                removal_request.reset();
                 import_future=task.get_future();
                 import_worker=std::jthread(std::move(task));
             }
@@ -1008,6 +1042,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                                 struct Uninitialize { ~Uninitialize() { winrt::uninit_apartment(); } } guard;
                                 return ImportSystemFiles(folder, kind == 1 ? FileImport::Keys : FileImport::Firmware, import_progress, stop);
                             }};
+                        storage_job = StorageJob::Files;
                         import_future = task.get_future();
                         import_worker = std::jthread(std::move(task));
                     } else { configuration.notice = Tr(T::SelectionCancelled); dirty = true; }
@@ -1056,14 +1091,24 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 configuration.completed = done; configuration.total = total; dirty = true;
             }
             if (import_future.wait_for(std::chrono::seconds{0}) == std::future_status::ready) {
+                const bool removal = storage_job == StorageJob::Removal || storage_job == StorageJob::PortalRemoval;
                 try {
                     const auto error = import_future.get();
-                    configuration.notice = error.empty() ? std::wstring{Tr(system_network_import&&network_portal.Status().system.phase!="complete"?T::SystemReviewReady:T::ImportDone)} :
-                        network_import ? std::wstring{Tr(T::ImportFailedKept)} : Wide(error);
-                } catch (...) { configuration.notice = Tr(T::ImportFailedKept); }
+                    if (removal) {
+                        const bool content = storage_job == StorageJob::PortalRemoval &&
+                            !network_portal.Status().removal.content.empty();
+                        after_scan = Tr(!error.empty() ? (error == "external" ? T::GameRemoveExternal : T::GameRemoveFailed) :
+                                        content ? T::ContentRemoved : T::GameRemoved);
+                    } else {
+                        configuration.notice = error.empty() ? std::wstring{Tr(storage_job==StorageJob::PortalSystem&&network_portal.Status().system.phase!="complete"?T::SystemReviewReady:T::ImportDone)} :
+                            storage_job != StorageJob::Files ? std::wstring{Tr(T::ImportFailedKept)} : Wide(error);
+                    }
+                } catch (...) {
+                    if (removal) after_scan = Tr(T::GameRemoveFailed);
+                    else configuration.notice = Tr(T::ImportFailedKept);
+                }
                 configuration.busy = false;
-                network_import=false;
-                system_network_import=false;
+                portal_library.Progress(0, 0);
                 configuration.confirm_import=false;
                 // The old metadata worker has joined; discard results before rescanning.
                 metadata = {};
@@ -1279,12 +1324,12 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 } else {
                     const bool manager_root = (mods_active && mods_page.screen == Mods::ModsScreen::List && !mods_page.moving) ||
                         cheats_active || (content_session && content_session->View().screen == Content::Screen::Manager) ||
-                        GameOptions()[game_options.selected] == GameOption::Pulse;
+                        !GameOptionHasManager(GameOptions()[game_options.selected]);
                     const bool first = (mods_active && (mods_page.tab == Mods::ModsTab::Explore ?
                         mods_page.card < Mods::ModsLayout::Columns : mods_page.selected == 0)) ||
                         (cheats_active && cheats_page.selected == 0) ||
                         (content_session && content_session->View().selected == 0) ||
-                        GameOptions()[game_options.selected] == GameOption::Pulse;
+                        !GameOptionHasManager(GameOptions()[game_options.selected]);
                     if (manager_root && ((actions & Quit) || ((actions & Up) && first))) {
                         LeaveGameOptionsPane(game_options, has_manager_tabs);
                         actions &= ~(Up | Quit); dirty = true;
@@ -1332,8 +1377,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (game_options.activate && !configuration.open &&
                 scan.entries[game_options.game].title_loaded) {
                 game_options.activate = false;
-                game_options.page = GameOptions()[game_options.selected] == GameOption::Pulse ? std::nullopt :
-                    std::optional{GameOptions()[game_options.selected]};
+                game_options.page = GameOptionHasManager(GameOptions()[game_options.selected]) ?
+                    std::optional{GameOptions()[game_options.selected]} : std::nullopt;
                 if (game_options.page == GameOption::Updates || game_options.page == GameOption::Dlc) {
                     const auto& game = scan.entries[game_options.game];
                     if (!game.title_loaded || !game.program_id) {
@@ -1592,9 +1637,25 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     if (actions & bit) HandleGameOptionsInput(game_options, input);
                 };
 
-                if (GameOptions()[game_options.selected] == GameOption::Pulse) send(Play, GameOptionsInput::Confirm);
+                const auto option = GameOptions()[game_options.selected];
+                if (!GameOptionHasManager(option)) send(Play, GameOptionsInput::Confirm);
                 send(Quit, GameOptionsInput::Back);
-                if (game_options.confirm_discard || game_options.discard) {
+                if (option == GameOption::Remove && (game_options.confirm_discard || game_options.discard)) {
+                    const auto& game = scan.entries[game_options.game];
+                    auto files = FindGameFiles(scan.entries, FileSys::GetBaseTitleID(game.program_id));
+                    if (!game.program_id || files.external) {
+                        game_options.confirm_discard = game_options.discard = false;
+                        notify(files.external ? T::GameRemoveExternal : T::GameRemoveFailed);
+                    } else if (std::exchange(game_options.discard, false)) {
+                        // The storage worker deletes it once the options have closed.
+                        removal_request = std::move(files);
+                        game_options.open = false;
+                        options_notice.clear();
+                    } else {
+                        options_notice = Tr(T::GameRemoveConfirm);
+                        options_notice_until = std::chrono::steady_clock::time_point::max();
+                    }
+                } else if (game_options.confirm_discard || game_options.discard) {
                     auto& game = scan.entries[game_options.game];
                     if (game.pulse_saved.empty()) {
                         game_options.confirm_discard = game_options.discard = false;
@@ -1606,7 +1667,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         options_notice = Tr(T::PulseDiscardConfirm);
                         options_notice_until = std::chrono::steady_clock::time_point::max();
                     }
-                } else if (options_notice == Tr(T::PulseDiscardConfirm)) {
+                } else if (options_notice == Tr(T::PulseDiscardConfirm) || options_notice == Tr(T::GameRemoveConfirm)) {
                     options_notice.clear();
                 }
                 dirty = true;
@@ -1760,6 +1821,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             notice = Wide(scan.error);
             if (notice.empty() && !initial_notice.empty()) notice = Wide(initial_notice);
             initial_notice = {};
+            if (notice.empty()) notice = std::move(after_scan);
+            after_scan.clear();
             if (scan.limited) notice = Tr(T::ScanLimit);
             dirty = true;
         }
