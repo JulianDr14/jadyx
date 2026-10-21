@@ -26,6 +26,7 @@
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_linked_shader_cache.h"
 #include "video_core/renderer_d3d12/d3d12_memory_guard.h"
+#include "video_core/renderer_d3d12/d3d12_pipeline_key_tracking.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_residency.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
@@ -140,6 +141,9 @@ public:
 
 private:
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipelineSlowPath();
+    /// Refreshes the key and finds its pipeline, through the transitions or the cache.
+    [[nodiscard]] GraphicsPipeline* LookupGraphicsPipeline();
+    void ReportKeyReuseMismatch(const GraphicsPipeline* reused);
 
     /// Records the draw (residency, hot set), wakes a dormant pipeline, and returns it once its PSO
     /// is built. Valid guest draws always wait for their exact pipeline.
@@ -175,6 +179,8 @@ private:
 
     GraphicsPipelineCacheKey graphics_key{};
     GraphicsPipeline* current_pipeline{};
+    PipelineKeyTracking::Reuse key_reuse;
+    u64 key_reuse_mismatches{};
 
     RootSignatureCache root_signatures;
     GraphicsPsoCache graphics_psos; ///< Weak host-identity index; residency stays with pipelines.

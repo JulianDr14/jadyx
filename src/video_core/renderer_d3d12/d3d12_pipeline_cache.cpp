@@ -633,8 +633,44 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
         return nullptr;
     if (!RefreshStages(graphics_key.unique_hashes)) {
         current_pipeline = nullptr;
+        key_reuse.Forget();
         return nullptr;
     }
+    // No register the key reads changed and the rest of its inputs are the same: the previous
+    // draw's pipeline stands without refreshing and comparing the key.
+    const PipelineKeyTracking::Inputs inputs{
+        .engine = maxwell3d,
+        .topology = maxwell3d->draw_manager.draw_state.topology,
+        .engine_state = maxwell3d->engine_state,
+        .unique_hashes = graphics_key.unique_hashes,
+    };
+    auto& flags = maxwell3d->dirty.flags;
+    const PipelineKeyTracking::Mode mode = PipelineKeyTracking::GetMode();
+    const bool reusable = mode != PipelineKeyTracking::Mode::Off &&
+                          key_reuse.Allows(inputs, flags[PipelineKeyTracking::KeyRegisters]);
+    flags[PipelineKeyTracking::KeyRegisters] = false;
+    if (reusable && mode == PipelineKeyTracking::Mode::On) {
+        VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::PipelineKeyReuses, 1);
+        return BuiltPipeline(current_pipeline);
+    }
+    GraphicsPipeline* const previous = current_pipeline;
+    GraphicsPipeline* const pipeline = LookupGraphicsPipeline();
+    if (pipeline) {
+        key_reuse.Remember(inputs);
+    } else {
+        key_reuse.Forget();
+    }
+    if (reusable) {
+        // Counted without detailed profiling so a check run alone shows how much it verified.
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::PipelineKeyChecks, 1);
+        if (pipeline != previous) {
+            ReportKeyReuseMismatch(previous);
+        }
+    }
+    return pipeline;
+}
+
+GraphicsPipeline* PipelineCache::LookupGraphicsPipeline() {
     // The D3D12 rasterizer installs Vulkan's fixed-state dirty tables for the channel. Refresh
     // only rereads blocks whose Maxwell registers changed.
     graphics_key.state.Refresh(*maxwell3d, dynamic_features);
@@ -650,6 +686,26 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
     }
     VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::PipelineFastMisses, 1);
     return CurrentGraphicsPipelineSlowPath();
+}
+
+void PipelineCache::ReportKeyReuseMismatch(const GraphicsPipeline* reused) {
+    // Check mode: the key changed although no tracked register did, so some register the key
+    // reads is in PipelineKeyTracking::IgnoredRegisters or was written past the dirty tables.
+    VideoCore::Perf::Add(VideoCore::Perf::Counter::PipelineKeyMismatches, 1);
+    const GraphicsPipelineCacheKey& before = reused->Key();
+    const auto* const a = reinterpret_cast<const u8*>(&before);
+    const auto* const b = reinterpret_cast<const u8*>(&graphics_key);
+    size_t byte = 0;
+    while (byte < sizeof(GraphicsPipelineCacheKey) && a[byte] == b[byte]) {
+        ++byte;
+    }
+    if (++key_reuse_mismatches <= 32) {
+        LOG_ERROR(Render, "D3D12: pipeline key changed with no tracked register write (first "
+                          "differing byte {} of {})",
+                  byte, sizeof(GraphicsPipelineCacheKey));
+    }
+    BUG_TRACK_KEY(Renderer, byte, "pipeline key changed with no tracked register write (byte {})",
+                  byte);
 }
 
 ComputePipeline* PipelineCache::CurrentComputePipeline() {

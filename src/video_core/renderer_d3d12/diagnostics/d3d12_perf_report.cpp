@@ -159,7 +159,8 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         "draws {:.1f} ms ({:.1f} us each: textures {:.1f}, buffers {:.1f}, descriptors {:.1f}, "
         "targets {:.1f} [update {:.1f}, feedback {:.1f}, framebuffer {:.1f}, transitions {:.1f}], "
         "samplers {:.1f}, record {:.1f}), clears {:.1f} ms, dispatches {:.1f} ms, "
-        "outside them {:.1f} ms | pipeline fast path {} hits / {} misses | CBV {} ({:.1f} ms: "
+        "outside them {:.1f} ms | pipeline fast path {} hits / {} misses, {} key reuses ({} "
+        "mismatched) | CBV {} ({:.1f} ms: "
         "{} streamed, {} persistent, {} null; {} root, {} root clamped), view copies {} "
         "({:.1f} ms), tables {} reused of {} | guest waited for "
         "the GPU {} times ({:.1f} ms in all) | commands: {} submit lists {:.1f} ms ({:.1f} ms "
@@ -183,6 +184,7 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         per_draw(Counter::DrawImageTransitionsNs), per_draw(Counter::DrawSamplersNs),
         per_draw(Counter::DrawRecordNs), clear_ms, dispatch_ms, outside,
         get(Counter::PipelineFastHits), get(Counter::PipelineFastMisses),
+        get(Counter::PipelineKeyReuses), get(Counter::PipelineKeyMismatches),
         get(Counter::CbvCreates), ns_ms(Counter::CbvCreateNs), get(Counter::CbvStreamed),
         get(Counter::CbvPersistent), get(Counter::CbvNull), get(Counter::CbvRoot),
         get(Counter::CbvRootClamped), get(Counter::ViewCopies),
@@ -340,6 +342,10 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
     LOG_INFO(Render, "D3D12 perf over {} frames ({:.0f} ms), mostly {} | {}", frames, total_ms,
              LikelyCause(delta, total_ms), DescribePerf(delta, total_ms));
     LOG_INFO(Render, "D3D12 GPU thread: {}", DescribeDrawCosts(delta, total_ms));
+    if (const u64 checks = VideoCore::Perf::Get(delta, Counter::PipelineKeyChecks); checks != 0) {
+        LOG_INFO(Render, "D3D12 pipeline key check: {} reusable draws verified, {} mismatched",
+                 checks, VideoCore::Perf::Get(delta, Counter::PipelineKeyMismatches));
+    }
     {
         const auto get = [&delta](Counter counter) { return VideoCore::Perf::Get(delta, counter); };
         const auto mib = [](u64 bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); };

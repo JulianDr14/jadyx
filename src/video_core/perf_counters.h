@@ -100,6 +100,9 @@ enum class Counter : size_t {
     DrawRecordNs,          ///< preparing attachments and recording state and the draw
     PipelineFastHits,      ///< transition-cache hits in CurrentGraphicsPipeline
     PipelineFastMisses,
+    PipelineKeyReuses,     ///< draws that kept the previous pipeline without refreshing the key
+    PipelineKeyMismatches, ///< check mode: reuses that would have drawn with another pipeline
+    PipelineKeyChecks,     ///< check mode: draws that could have reused, verified by a lookup
     CbvCreateNs,
     CbvCreates,
     CbvStreamed,

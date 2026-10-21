@@ -84,6 +84,7 @@
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 #include "video_core/renderer_d3d12/d3d12_menu_image.h"
+#include "video_core/renderer_d3d12/d3d12_pipeline_key_mode.h"
 
 #include "jadyx/app/alloc_watch.h"
 #include "jadyx/cheats/cheat_session.h"
@@ -315,6 +316,10 @@ struct BootConfig {
     /// Make the D3D12 command list calls on a thread of their own, so the GPU thread only records
     /// them ("async_record=0" makes them on the GPU thread, as before the recorder).
     bool async_record{true};
+    /// Keep the previous draw's pipeline while no register its key reads changed
+    /// ("pipeline_key_reuse=1"; "=check" refreshes the key and logs every reuse that would have
+    /// drawn with another pipeline). Off by default until a gain is measured on the console.
+    D3D12::PipelineKeyTracking::Mode pipeline_key_reuse{D3D12::PipelineKeyTracking::Mode::Off};
     bool upload_copy{}; ///< Experimental short uniform copies; default off.
     bool draw_sampler_reuse{}; ///< Experimental gather-local TSC resolution; default off.
     /// Where pixel shaders keep large local memory: 0 auto (boot probe), 1 pool, 2 private arrays
@@ -514,6 +519,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     Settings::values.async_presentation.SetValue(config.async_present);
     if (config.upscaling) ApplyUpscaling(*config.upscaling); // before the renderer exists
     D3D12::SetAsyncRecording(config.async_record);
+    D3D12::PipelineKeyTracking::SetMode(config.pipeline_key_reuse);
     D3D12::SetUniformUploadCopy(config.upload_copy);
     D3D12::SetDrawSamplerReuse(config.draw_sampler_reuse);
     D3D12::SetPixelShaderScratchMode(static_cast<D3D12::PixelShaderScratchMode>(config.ps_scratch));
@@ -2644,6 +2650,18 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.async_record = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: command list recording thread ") +
                                       (config.async_record ? "on" : "off"));
+                        } else if (line == "pipeline_key_reuse=0" ||
+                                   line == "pipeline_key_reuse=1" ||
+                                   line == "pipeline_key_reuse=check") {
+                            using D3D12::PipelineKeyTracking::Mode;
+                            const std::string value = line.substr(19);
+                            config.pipeline_key_reuse = value == "check" ? Mode::Check
+                                                        : value == "1"   ? Mode::On
+                                                                         : Mode::Off;
+                            WriteDiag("boot.cfg: pipeline key reuse " +
+                                      std::string(value == "check" ? "checked"
+                                                  : value == "1"   ? "on"
+                                                                   : "off"));
                         } else if (line == "timer_sleep=0" || line == "timer_sleep=1") {
                             config.timer_sleep = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: host timing sleeps on ") +
