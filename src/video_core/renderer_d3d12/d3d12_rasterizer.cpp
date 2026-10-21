@@ -879,7 +879,11 @@ void RasterizerD3D12::FlushIfUploadHeavy() {
     // nothing under pressure), and the stream only reuses submitted regions. The
     // reset callback invalidates cached state, so submitting between draws is safe.
     constexpr u64 UPLOAD_SUBMIT_BYTES = 32ULL << 20;
-    if (staging.PendingUploadBytes() < UPLOAD_SUBMIT_BYTES) {
+    // A game drawing ~3900 times in one guest command list had the host GPU start only once the
+    // whole list was recorded (~50 ms), and the guest waited for both in turn every frame.
+    // Submitting every few hundred draws lets the GPU execute while the rest is recorded.
+    constexpr u32 SUBMIT_DRAWS = 512;
+    if (staging.PendingUploadBytes() < UPLOAD_SUBMIT_BYTES && draw_counter < SUBMIT_DRAWS) {
         return;
     }
     draw_counter = 0;
