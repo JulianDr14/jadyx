@@ -7,7 +7,8 @@
 //
 // One file per game, named by a hash of its launch path. A record remembers the game file's
 // size and write time when they are cheap to know (internal storage), so a replaced dump is read
-// again, and the game language its title was read in, so changing it refreshes the titles.
+// again, the game language its title was read in, so changing it refreshes the titles, and the
+// stamp of the game's own updates/DLC.
 // Writes go to a temporary file renamed over the old one: a crash never leaves half a record.
 
 #include <array>
@@ -27,6 +28,9 @@ struct LibraryCacheRecord {
     std::uint64_t program_id{};              ///< 0 when unknown (homebrew, unreadable game).
     std::array<std::uint8_t, 8> build_id{}; ///< The main module's, as cheat files are named.
     std::wstring display_version; ///< Effective NACP version, e.g. 2.0.0.
+    /// Content::ApplicationStamp of the game's updates/DLC when it was read; the reader compares
+    /// it, so new content refreshes that game alone.
+    std::uint64_t content{};
 };
 
 class LibraryCache {

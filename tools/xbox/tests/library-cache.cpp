@@ -17,6 +17,7 @@ int main() {
     LibraryCacheRecord record{L"Título ñ", L"Estudio", std::vector<unsigned char>(5000, 0x5A),
                               0x0100ABCD00010000ULL, {0x55, 0xEE, 0x1A, 0x69, 0x14, 0x5D, 0xE0, 0x4E}};
     record.display_version = L"1.0.0";
+    record.content = 0x5EEDULL;
     check(!cache.Load(game, 7, 14, true));
     check(cache.Store(game, 7, 14, record));
 
@@ -24,7 +25,7 @@ int main() {
     const auto full = cache.Load(game, 7, 14, true);
     check(full && full->name == record.name && full->developer == record.developer && full->icon == record.icon);
     check(full->display_version == L"1.0.0");
-    check(full->program_id == record.program_id && full->build_id == record.build_id);
+    check(full->program_id == record.program_id && full->build_id == record.build_id && full->content == 0x5EEDULL);
     const auto texts = cache.Load(game, 7, 14, false);
     check(texts && texts->name == record.name && texts->icon.empty());
     check(texts->display_version == L"1.0.0");
@@ -58,7 +59,7 @@ int main() {
     // Old-format records are a miss and will be read again from the game.
     for (const auto& item : std::filesystem::directory_iterator{root / "cache"}) {
         std::fstream out{item.path(), std::ios::in | std::ios::out | std::ios::binary};
-        const std::uint32_t old_version = 2;
+        const std::uint32_t old_version = 4;
         out.seekp(4); out.write(reinterpret_cast<const char*>(&old_version), sizeof(old_version));
     }
     check(!cache.Load(game, 7, 14, false));
