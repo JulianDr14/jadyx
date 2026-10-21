@@ -51,14 +51,37 @@ bool RemoveDump(const fs::path& root, const fs::path& relative) {
 }
 } // namespace
 
-GameFiles FindGameFiles(std::span<const LibraryEntry> entries, std::uint64_t application) {
+namespace {
+/// The dumps of `application` that `chosen` picks; the rest are kept.
+template <typename Chosen>
+GameFiles Collect(std::span<const LibraryEntry> entries, std::uint64_t application, Chosen chosen) {
     GameFiles game{.application = application};
     for (const auto& entry : entries) {
         if (!entry.program_id || FileSys::GetBaseTitleID(entry.program_id) != application) continue;
+        if (!chosen(entry) || IsStoragePath(entry.launch_path)) {
+            game.kept = true;
+            continue;
+        }
         game.launch_paths.push_back(entry.launch_path);
-        if (IsStoragePath(entry.launch_path)) game.external = true;
-        else game.files.push_back(entry.relative_path);
+        game.files.push_back(entry.relative_path);
     }
+    game.external = game.files.empty() && game.kept;
+    return game;
+}
+} // namespace
+
+GameFiles FindGameFiles(std::span<const LibraryEntry> entries, std::uint64_t application) {
+    return Collect(entries, application, [](const LibraryEntry&) { return true; });
+}
+
+GameFiles FindDumpFiles(std::span<const LibraryEntry> entries, const std::string& launch_path) {
+    const auto found = std::find_if(entries.begin(), entries.end(),
+                                    [&](const auto& e) { return e.launch_path == launch_path; });
+    if (found == entries.end() || !found->program_id) return {};
+    const auto application = FileSys::GetBaseTitleID(found->program_id);
+    auto game = Collect(entries, application, [&](const LibraryEntry& e) { return e.launch_path == launch_path; });
+    // The chosen copy itself is external: never fall back to deleting another one.
+    game.external = IsStoragePath(launch_path);
     return game;
 }
 
@@ -70,6 +93,8 @@ std::string RemoveGame(const fs::path& root, const GameFiles& game) {
     for (const auto& file : game.files)
         if (!RemoveDump(root, file)) return "game";
     for (const auto& path : game.launch_paths) PulseSessions::Discard(path);
+    // Another copy still plays: its saves and updates/DLC are its own too.
+    if (game.kept) return {};
     if (!Content::RemoveApplicationContent(game.application).empty()) return "content";
     bool saves = true;
     for (const auto& folder : SaveFolders(game.application)) {
