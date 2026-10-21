@@ -2388,8 +2388,10 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
             Jadyx::SetKeyboardKey(static_cast<unsigned>(key), pressed);
         };
         auto focus = window.Activated(winrt::auto_revoke, [](auto&&, WindowActivatedEventArgs const& args) {
-            if (args.WindowActivationState() == CoreWindowActivationState::Deactivated)
-                Jadyx::ResetKeyboardKeys();
+            if (args.WindowActivationState() != CoreWindowActivationState::Deactivated) return;
+            Jadyx::ResetKeyboardKeys();
+            // On the console the Xbox button's guide takes the focus: the game pauses in its menu.
+            Jadyx::RequestGameMenuOpen();
         });
         window.KeyDown([on_key](auto&&, KeyEventArgs const& args) {
             if (!args.KeyStatus().WasKeyDown) on_key(args.VirtualKey(), true);

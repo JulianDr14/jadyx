@@ -120,6 +120,7 @@ void ApplyDeadzone(double x, double y, float deadzone, float& out_x, float& out_
 std::atomic<u32> pressed_keys{0};
 std::atomic<bool> quit_requested{false};
 std::atomic<bool> game_menu_requested{false};
+std::atomic<bool> game_menu_open_requested{false};
 
 struct KeyboardRuntime {
     std::mutex mutex;
@@ -339,6 +340,10 @@ void RequestGameMenu() {
     game_menu_requested.store(true, std::memory_order_relaxed);
 }
 
+void RequestGameMenuOpen() {
+    game_menu_open_requested.store(true, std::memory_order_relaxed);
+}
+
 namespace {
 std::atomic<bool> text_entry_active{};
 std::mutex text_entry_mutex;
@@ -553,6 +558,8 @@ void GamepadInput::SetOptions(const ControllerOptions& next) {
 
 void GamepadInput::Start(Core::HID::HIDCore& hid_) {
     hid = &hid_;
+    // A focus lost while the game was still loading does not pause it once it starts.
+    game_menu_open_requested.store(false, std::memory_order_relaxed);
     if (!thread.joinable()) {
         thread = std::jthread([this](std::stop_token stop) { Run(stop); });
     }
@@ -659,8 +666,12 @@ void GamepadInput::Run(std::stop_token stop) {
         // Menu shortcut: View + Menu (Switch - and +) held, or Escape.
         bool plus = (state.buttons & Bit(VirtualButton::ButtonPlus)) != 0;
         bool minus = (state.buttons & Bit(VirtualButton::ButtonMinus)) != 0;
+        // One snapshot for both navigation and guest filtering: closing the menu on the
+        // frontend thread must not expose this poll's confirmation to the guest.
+        const bool in_menu = menu_open.load(std::memory_order_relaxed);
         const bool toggle = combo.Filter(plus, minus, elapsed) |
-                            game_menu_requested.exchange(false, std::memory_order_relaxed);
+                            game_menu_requested.exchange(false, std::memory_order_relaxed) |
+                            (game_menu_open_requested.exchange(false, std::memory_order_relaxed) && !in_menu);
         state.buttons &= ~(Bit(VirtualButton::ButtonPlus) | Bit(VirtualButton::ButtonMinus));
         state.buttons |= (plus ? Bit(VirtualButton::ButtonPlus) : 0) |
                          (minus ? Bit(VirtualButton::ButtonMinus) : 0);
@@ -681,9 +692,6 @@ void GamepadInput::Run(std::stop_token stop) {
                          (nav(VirtualButton::TriggerR, false) ? 512U : 0U);
         const u32 pressed = held & ~menu_held;
         menu_held = held;
-        // One snapshot for both navigation and guest filtering: closing the menu on the
-        // frontend thread must not expose this poll's confirmation to the guest.
-        const bool in_menu = menu_open.load(std::memory_order_relaxed);
         if (toggle || (in_menu && pressed)) {
             std::scoped_lock lock{menu_mutex};
             if (toggle) menu_actions.push_back(MenuAction::Toggle);
