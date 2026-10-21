@@ -262,9 +262,37 @@ bool LocalIpv4(const std::string& address) {
     return (v >> 24) == 10 || (v >> 20) == 0xac1 || (v >> 16) == 0xc0a8 ||
            (v >> 16) == 0xa9fe || (v >> 24) == 127; // loopback used only by the native harness
 }
+
+/// httplib does not say why a bind failed. Binding the same way again tells: the port is
+/// taken, the system refuses it, or the address no longer belongs to the console.
+int BindError(const std::string& ipv4, unsigned short port) {
+    const auto socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (socket == INVALID_SOCKET) return ::WSAGetLastError();
+    const BOOL exclusive = TRUE;
+    int error = ::setsockopt(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+        reinterpret_cast<const char*>(&exclusive), sizeof(exclusive)) == 0 ? 0 : ::WSAGetLastError();
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    if (!error && InetPtonA(AF_INET, ipv4.c_str(), &address.sin_addr) != 1) error = WSAEADDRNOTAVAIL;
+    if (!error && ::bind(socket, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0)
+        error = ::WSAGetLastError();
+    ::closesocket(socket);
+    return error;
+}
+
+PortalError BindFailure(int error) {
+    switch (error) {
+    case WSAEADDRINUSE: return PortalError::PortInUse;
+    case WSAEACCES: return PortalError::PortBlocked;
+    case WSAEADDRNOTAVAIL: return PortalError::AddressLost;
+    default: return PortalError::Bind;
+    }
+}
 } // namespace
 
-std::vector<PortalAddress> PortalAddresses() {
+namespace {
+std::vector<unsigned char> AdapterTable() {
     ULONG size = 16 * 1024;
     std::vector<unsigned char> data(size);
     ULONG result{};
@@ -987,9 +1015,13 @@ NetworkPortal::NetworkPortal(std::filesystem::path games,SystemImportBackend bac
 }
 NetworkPortal::~NetworkPortal() { Stop(); }
 
-bool NetworkPortal::Start(const std::string& ipv4, unsigned short port) {
+bool NetworkPortal::Start(const std::string& ipv4, unsigned short port, unsigned spare_ports) {
     std::lock_guard lifecycle_lock{impl->lifecycle};
     impl->Shutdown();
+    {
+        std::lock_guard lock{impl->mutex};
+        impl->status.error = PortalError::None; impl->status.port = 0; impl->status.os_error = 0;
+    }
     try {
     if (impl->storage_failed) {
         std::lock_guard lock{impl->mutex}; impl->status.error=PortalError::Storage; return false;
@@ -1005,17 +1037,33 @@ bool NetworkPortal::Start(const std::string& ipv4, unsigned short port) {
     if (code.empty()) {
         std::lock_guard lock{impl->mutex}; impl->status.error = PortalError::Random; return false;
     }
-    impl->server = std::make_unique<PortalServer>();
-    impl->exclusive_socket = false;
-    impl->authority = ipv4 + ":" + std::to_string(port);
-    impl->Routes();
-    if (!impl->server->bind_to_port(ipv4, port) || !impl->exclusive_socket) {
+    // A taken or refused port moves on to the next one; a lost address or anything else stops.
+    unsigned short bound = 0;
+    PortalError failure = PortalError::Bind;
+    int os_error = 0;
+    for (unsigned i = 0; i <= spare_ports && port + i <= 0xFFFF; ++i) {
+        const auto candidate = static_cast<unsigned short>(port + i);
+        impl->server = std::make_unique<PortalServer>();
+        impl->exclusive_socket = false;
+        impl->authority = ipv4 + ":" + std::to_string(candidate);
+        impl->Routes();
+        if (impl->server->bind_to_port(ipv4, candidate) && impl->exclusive_socket) { bound = candidate; break; }
+        const bool exclusive = impl->exclusive_socket;
         impl->server.reset();
-        std::lock_guard lock{impl->mutex}; impl->status.error = PortalError::Bind; return false;
+        const int error = BindError(ipv4, candidate);
+        const auto reason = exclusive ? BindFailure(error) : PortalError::Bind;
+        // The user is told about the usual port; the spare ones only count if it was refused.
+        if (i == 0) { failure = reason; os_error = error; }
+        if (reason != PortalError::PortInUse && reason != PortalError::PortBlocked) break;
+    }
+    if (!bound) {
+        std::lock_guard lock{impl->mutex};
+        impl->status.error = failure; impl->status.port = port; impl->status.os_error = os_error;
+        return false;
     }
     {
         std::lock_guard lock{impl->mutex};
-        impl->status = {.running = true, .url = "http://" + impl->authority, .code = std::move(code)};
+        impl->status = {.running = true, .url = "http://" + impl->authority, .code = std::move(code), .port = bound};
         impl->expires = Clock::now() + std::chrono::minutes{5};
         impl->attempts_window = Clock::now(); impl->attempts = 0;
     }

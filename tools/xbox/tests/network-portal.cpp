@@ -44,10 +44,38 @@ int main(int argc,char** argv) {
     Check(!portal.Start("8.8.8.8", static_cast<unsigned short>(port)), "reject public binding");
     Check(portal.Start("127.0.0.1", static_cast<unsigned short>(port)), "start loopback harness");
     const auto initial = portal.Status();
+    Check(initial.port == port && initial.error == Jadyx::PortalError::None, "status carries the bound port");
     Jadyx::NetworkPortal occupied;
     Check(!occupied.Start("127.0.0.1", static_cast<unsigned short>(port)) &&
-          occupied.Status().error == Jadyx::PortalError::Bind && occupied.Status().url.empty(),
-          "occupied port fails without advertising URL");
+          occupied.Status().error == Jadyx::PortalError::PortInUse && occupied.Status().url.empty() &&
+          occupied.Status().port == port && occupied.Status().os_error == WSAEADDRINUSE,
+          "occupied port fails as port in use without advertising URL");
+    // A spare port takes over; the next free one above the taken port.
+    Check(occupied.Start("127.0.0.1", static_cast<unsigned short>(port), 8) &&
+          occupied.Status().port > port && occupied.Status().port <= port + 8 &&
+          occupied.Status().url == "http://127.0.0.1:" + std::to_string(occupied.Status().port) &&
+          occupied.Status().error == Jadyx::PortalError::None,
+          "taken port moves on to a spare one");
+    occupied.Stop();
+    // A LAN address the machine does not hold reads as lost, not as a port problem, and stops
+    // without trying the spare ports.
+    Check(!Jadyx::PortalAddressOwned("10.254.253.252"), "fixture address is foreign");
+    Check(!occupied.Start("10.254.253.252", 18090, 4) &&
+          occupied.Status().error == Jadyx::PortalError::AddressLost &&
+          occupied.Status().os_error == WSAEADDRNOTAVAIL && occupied.Status().port == 18090,
+          "foreign address reads as lost");
+    Check(Jadyx::PortalAddressOwned("127.0.0.1"), "loopback owned");
+    for (const auto& address : Jadyx::PortalAddresses()) {
+        Check(Jadyx::PortalAddressOwned(address.ipv4) && address.ipv4.rfind("127.", 0) != 0 &&
+              address.name == (address.link == Jadyx::PortalLink::WiFi ? "Wi-Fi" : "Ethernet") &&
+              address.link_local == (address.ipv4.rfind("169.254.", 0) == 0),
+              "listed addresses are owned LAN addresses with a consistent link");
+        std::printf("address: %s %s gateway=%d link_local=%d\n", address.name.c_str(), address.ipv4.c_str(),
+                    address.gateway, address.link_local);
+    }
+    const auto report = Jadyx::PortalAdapterReport();
+    Check(report.find("adapter '") != std::string::npos && report.find("ipv4 127.0.0.1") != std::string::npos,
+          "adapter report lists every adapter");
     Check(initial.code.size() == 8 && initial.code.find_first_not_of("0123456789") == std::string::npos,
           "eight random digits");
     httplib::Client client("127.0.0.1", port);

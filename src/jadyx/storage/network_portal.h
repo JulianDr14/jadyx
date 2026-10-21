@@ -54,6 +54,8 @@ struct PortalStatus {
     std::string url;
     std::string code; ///< Local UI only; never returned by HTTP or logged.
     PortalError error{};
+    unsigned short port{}; ///< Listening port, or the first one tried when the start failed.
+    int os_error{};        ///< WSA code behind a failed bind, 0 when there was none.
     UploadSnapshot transfer;
     UploadSnapshot content; ///< Update/DLC package; its tag is "<kind>:<application hex>".
     SystemUploadStatus system;
@@ -98,7 +100,8 @@ public:
     NetworkPortal& operator=(const NetworkPortal&) = delete;
 
     // Start/Stop/RenewCode are serialized by the library coordinator. Status is thread safe.
-    bool Start(const std::string& ipv4, unsigned short port = 8080);
+    /// When `port` is taken or the system refuses it, the next `spare_ports` ports are tried.
+    bool Start(const std::string& ipv4, unsigned short port = 8080, unsigned spare_ports = 0);
     void Stop();
     bool RenewCode();
     PortalStatus Status() const;
