@@ -83,6 +83,11 @@ public:
     DescriptorRing& operator=(const DescriptorRing&) = delete;
 
     [[nodiscard]] DescriptorRange Allocate(u32 count);
+    /// Gives back range, the last count slots Allocate handed out, unless the ring allocated
+    /// again since.
+    void Rewind(const DescriptorRange& range, u32 count);
+
+    [[nodiscard]] u64 CurrentTick() const;
 
     /// Allocates count slots and copies the given offline descriptors into them.
     [[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE Upload(
@@ -112,6 +117,8 @@ private:
     u32 head{}; ///< next free slot
     u32 tail{}; ///< oldest slot the GPU may still read
     std::deque<std::pair<u64, u32>> in_flight; ///< (tick, end offset), oldest first
+    u32 head_before{};       ///< head before the last allocation, for Rewind
+    bool added_in_flight{}; ///< the last allocation started its in_flight entry
     bool logged_upload{};
 };
 
@@ -205,6 +212,11 @@ private:
     DescriptorRange range{};
     u32 count{};
     u32 written{};
+    u64 acquire_tick{};
+    bool finished{};
+    std::vector<Write> writes;
+    std::array<RecentTable, NUM_RECENT_TABLES> recent_tables{};
+    size_t next_recent{};
     /// Sources of the pending copies, written from copy_destination on.
     boost::container::small_vector<D3D12_CPU_DESCRIPTOR_HANDLE, 64> pending_copies;
     D3D12_CPU_DESCRIPTOR_HANDLE copy_destination{};

@@ -137,10 +137,11 @@ DescriptorRange DescriptorRing::Allocate(u32 count) {
         scheduler.Wait(in_flight.front().first);
     }
     const u64 tick = scheduler.CurrentTick();
-    if (!in_flight.empty() && in_flight.back().first == tick) {
-        in_flight.back().second = head;
-    } else {
+    added_in_flight = in_flight.empty() || in_flight.back().first != tick;
+    if (added_in_flight) {
         in_flight.emplace_back(tick, head);
+    } else {
+        in_flight.back().second = head;
     }
     return {
         .cpu = {cpu_base.ptr + static_cast<SIZE_T>(offset) * stride},
@@ -270,18 +271,84 @@ void GuestDescriptorQueue::Acquire(u32 count_, std::span<const ConstantBufferSlo
     }
     // Slots no constant buffer reaches (the cache binds fewer than declared) read zeros.
     root_cbvs.fill(zero_buffer->GetGPUVirtualAddress());
-    // One spare slot past the table absorbs writes beyond what the root signature declares.
+    // Reserved now even if a recent table ends up reused: a full ring flushes the list, which
+    // must not happen once the draw has started recording. One spare slot past the table absorbs
+    // writes beyond what the root signature declares.
     range = count != 0 ? ring.Allocate(count + 1) : DescriptorRange{};
+    acquire_tick = ring.CurrentTick();
 }
 
 D3D12_GPU_DESCRIPTOR_HANDLE GuestDescriptorQueue::Table() {
-    FlushCopies();
+    if (finished || count == 0) {
+        return range.gpu;
+    }
+    finished = true;
+    VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::DescriptorTables, 1);
+    if (const RecentTable* const recent = FindRecent()) {
+        VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::DescriptorTableReuses, 1);
+        ring.Rewind(range, count + 1);
+        range = {.cpu = {}, .gpu = recent->gpu};
+        return range.gpu;
+    }
+    WriteRecorded();
     if (written != count && !logged_mismatch) {
         LOG_ERROR(Render, "D3D12: descriptor table filled with {} of {} descriptors", written,
                   count);
         logged_mismatch = true;
     }
+    // A table whose list was flushed while it was being filled is retired with the older list.
+    if (ring.CurrentTick() == acquire_tick) {
+        RecentTable& recent = recent_tables[next_recent];
+        next_recent = (next_recent + 1) % NUM_RECENT_TABLES;
+        recent.tick = acquire_tick;
+        recent.view_frees = CpuDescriptorAllocator::ViewFrees();
+        recent.count = count;
+        recent.gpu = range.gpu;
+        recent.writes.assign(writes.begin(), writes.end());
+    }
     return range.gpu;
+}
+
+const GuestDescriptorQueue::RecentTable* GuestDescriptorQueue::FindRecent() const {
+    if (GpuDiagnosticsEnabled()) {
+        return nullptr; // the traces describe every table that is written
+    }
+    // Retired only once their list completes, which is not before this draw's list.
+    const u64 tick = ring.CurrentTick();
+    if (tick != acquire_tick) {
+        return nullptr;
+    }
+    const u64 view_frees = CpuDescriptorAllocator::ViewFrees();
+    for (const RecentTable& recent : recent_tables) {
+        if (recent.tick == tick && recent.count == count && recent.view_frees == view_frees &&
+            recent.writes == writes) {
+            return &recent;
+        }
+    }
+    return nullptr;
+}
+
+void GuestDescriptorQueue::WriteRecorded() {
+    for (const Write& write : writes) {
+        switch (write.kind) {
+        case Write::Kind::ConstantBuffer:
+            FlushCopies();
+            CreateConstantBuffer(write);
+            break;
+        case Write::Kind::StorageBuffer:
+            FlushCopies();
+            CreateStorageBuffer(write);
+            break;
+        case Write::Kind::TexelBuffer:
+            FlushCopies();
+            CreateTexelBuffer(write);
+            break;
+        case Write::Kind::Copy:
+            Copy({static_cast<SIZE_T>(write.handle)});
+            break;
+        }
+    }
+    FlushCopies();
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE GuestDescriptorQueue::Next() {
@@ -316,27 +383,14 @@ void GuestDescriptorQueue::AddConstantBuffer(D3D12_GPU_VIRTUAL_ADDRESS address, 
     if (count == 0) {
         return;
     }
-    VideoCore::Perf::ScopedNsTimer timer{VideoCore::Perf::Counter::CbvCreateNs};
-    VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::CbvCreates, 1);
-    const D3D12_CONSTANT_BUFFER_VIEW_DESC desc{
-        .BufferLocation = address,
-        .SizeInBytes = address != 0 ? (size + 255u) & ~255u : 0u,
-    };
-    device->CreateConstantBufferView(&desc, Next());
-    if (GpuDiagnosticsEnabled()) {
-        TraceGpuDetail(fmt::format("CBV table={:x} slot={} address={:x} size={}",
-            range.gpu.ptr, written - 1, address, desc.SizeInBytes));
-    }
-    CheckRemovedAfterDescriptor(device, [&] {
-        return fmt::format("CBV at 0x{:x} of {} bytes", desc.BufferLocation, desc.SizeInBytes);
+    writes.push_back({
+        .kind = Write::Kind::ConstantBuffer,
+        .size = address != 0 ? (size + 255u) & ~255u : 0u,
+        .handle = address,
     });
 }
 
 void GuestDescriptorQueue::AddStorageBuffer(ID3D12Resource* resource, u64 offset, u32 size) {
-    if (GpuDiagnosticsEnabled()) {
-        TraceGpuDetail(fmt::format("storage buffer table={:x} slot={} resource={} offset={} size={}",
-            range.gpu.ptr, written, static_cast<void*>(resource), offset, size));
-    }
     if (count == 0) {
         return;
     }
@@ -349,40 +403,16 @@ void GuestDescriptorQueue::AddStorageBuffer(ID3D12Resource* resource, u64 offset
                     offset);
         resource = nullptr;
     }
-    const u32 words = (size + 3) / 4;
-    D3D12_UNORDERED_ACCESS_VIEW_DESC uav{
-        .Format = DXGI_FORMAT_R32_TYPELESS,
-        .ViewDimension = D3D12_UAV_DIMENSION_BUFFER,
-        .Buffer = {.FirstElement = resource ? offset / 4 : 0,
-                   .NumElements = resource ? words : 0,
-                   .StructureByteStride = 0,
-                   .CounterOffsetInBytes = 0,
-                   .Flags = D3D12_BUFFER_UAV_FLAG_RAW},
-    };
-    device->CreateUnorderedAccessView(resource, nullptr, &uav, Next());
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv{
-        .Format = DXGI_FORMAT_R32_TYPELESS,
-        .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
-        .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-        .Buffer = {.FirstElement = resource ? offset / 4 : 0,
-                   .NumElements = resource ? words : 0,
-                   .StructureByteStride = 0,
-                   .Flags = D3D12_BUFFER_SRV_FLAG_RAW},
-    };
-    device->CreateShaderResourceView(resource, &srv, Next());
-    CheckRemovedAfterDescriptor(device, [&] {
-        return fmt::format("storage buffer views (offset {} size {} null {})", offset, size,
-                           resource == nullptr);
+    writes.push_back({
+        .kind = Write::Kind::StorageBuffer,
+        .size = resource ? size : 0,
+        .handle = reinterpret_cast<u64>(resource),
+        .offset = resource ? offset : 0,
     });
 }
 
 void GuestDescriptorQueue::AddTexelBuffer(ID3D12Resource* resource, u64 offset, u32 size,
                                           DXGI_FORMAT format, u32 element_size, bool with_uav) {
-    if (GpuDiagnosticsEnabled()) {
-        TraceGpuDetail(fmt::format("texel buffer table={:x} slot={} resource={} offset={} size={} format={} uav={}",
-            range.gpu.ptr, written, static_cast<void*>(resource), offset, size,
-            static_cast<u32>(format), with_uav));
-    }
     if (count == 0) {
         return;
     }
@@ -398,13 +428,86 @@ void GuestDescriptorQueue::AddTexelBuffer(ID3D12Resource* resource, u64 offset, 
         WarnOnceLog(logged_unaligned, "texel buffer at unaligned offset {} bound as null", offset);
         resource = nullptr;
     }
-    const u64 first = resource ? offset / element_size : 0;
-    const u32 elements = resource ? size / element_size : 0;
-    if (with_uav) {
+    writes.push_back({
+        .kind = Write::Kind::TexelBuffer,
+        .size = resource ? size / element_size : 0,
+        .handle = reinterpret_cast<u64>(resource),
+        .offset = resource ? offset / element_size : 0,
+        .format = static_cast<u32>(format),
+        .with_uav = with_uav ? 1u : 0u,
+    });
+}
+
+void GuestDescriptorQueue::AddCopy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor) {
+    if (count == 0) {
+        return;
+    }
+    writes.push_back({.kind = Write::Kind::Copy, .handle = static_cast<u64>(descriptor.ptr)});
+}
+
+void GuestDescriptorQueue::CreateConstantBuffer(const Write& write) {
+    VideoCore::Perf::ScopedNsTimer timer{VideoCore::Perf::Counter::CbvCreateNs};
+    VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::CbvCreates, 1);
+    const D3D12_CONSTANT_BUFFER_VIEW_DESC desc{
+        .BufferLocation = write.handle,
+        .SizeInBytes = write.size,
+    };
+    device->CreateConstantBufferView(&desc, Next());
+    if (GpuDiagnosticsEnabled()) {
+        TraceGpuDetail(fmt::format("CBV table={:x} slot={} address={:x} size={}",
+            range.gpu.ptr, written - 1, write.handle, desc.SizeInBytes));
+    }
+    CheckRemovedAfterDescriptor(device, [&] {
+        return fmt::format("CBV at 0x{:x} of {} bytes", desc.BufferLocation, desc.SizeInBytes);
+    });
+}
+
+void GuestDescriptorQueue::CreateStorageBuffer(const Write& write) {
+    ID3D12Resource* const resource = reinterpret_cast<ID3D12Resource*>(write.handle);
+    if (GpuDiagnosticsEnabled()) {
+        TraceGpuDetail(fmt::format("storage buffer table={:x} slot={} resource={} offset={} size={}",
+            range.gpu.ptr, written, static_cast<void*>(resource), write.offset, write.size));
+    }
+    const u32 words = (write.size + 3) / 4;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav{
+        .Format = DXGI_FORMAT_R32_TYPELESS,
+        .ViewDimension = D3D12_UAV_DIMENSION_BUFFER,
+        .Buffer = {.FirstElement = write.offset / 4,
+                   .NumElements = words,
+                   .StructureByteStride = 0,
+                   .CounterOffsetInBytes = 0,
+                   .Flags = D3D12_BUFFER_UAV_FLAG_RAW},
+    };
+    device->CreateUnorderedAccessView(resource, nullptr, &uav, Next());
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{
+        .Format = DXGI_FORMAT_R32_TYPELESS,
+        .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
+        .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+        .Buffer = {.FirstElement = write.offset / 4,
+                   .NumElements = words,
+                   .StructureByteStride = 0,
+                   .Flags = D3D12_BUFFER_SRV_FLAG_RAW},
+    };
+    device->CreateShaderResourceView(resource, &srv, Next());
+    CheckRemovedAfterDescriptor(device, [&] {
+        return fmt::format("storage buffer views (offset {} size {} null {})", write.offset,
+                           write.size, resource == nullptr);
+    });
+}
+
+void GuestDescriptorQueue::CreateTexelBuffer(const Write& write) {
+    ID3D12Resource* const resource = reinterpret_cast<ID3D12Resource*>(write.handle);
+    const DXGI_FORMAT format = static_cast<DXGI_FORMAT>(write.format);
+    if (GpuDiagnosticsEnabled()) {
+        TraceGpuDetail(fmt::format("texel buffer table={:x} slot={} resource={} first={} elements={} format={} uav={}",
+            range.gpu.ptr, written, static_cast<void*>(resource), write.offset, write.size,
+            write.format, write.with_uav));
+    }
+    if (write.with_uav != 0) {
         D3D12_UNORDERED_ACCESS_VIEW_DESC uav{
             .Format = format,
             .ViewDimension = D3D12_UAV_DIMENSION_BUFFER,
-            .Buffer = {.FirstElement = first, .NumElements = elements},
+            .Buffer = {.FirstElement = write.offset, .NumElements = write.size},
         };
         device->CreateUnorderedAccessView(resource, nullptr, &uav, Next());
     }
@@ -412,23 +515,20 @@ void GuestDescriptorQueue::AddTexelBuffer(ID3D12Resource* resource, u64 offset, 
         .Format = format,
         .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
         .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-        .Buffer = {.FirstElement = first, .NumElements = elements},
+        .Buffer = {.FirstElement = write.offset, .NumElements = write.size},
     };
     device->CreateShaderResourceView(resource, &srv, Next());
     CheckRemovedAfterDescriptor(device, [&] {
-        return fmt::format("texel buffer views (format {} offset {} elements {} uav {} null {})",
-                           static_cast<u32>(format), offset, elements, with_uav,
+        return fmt::format("texel buffer views (format {} first {} elements {} uav {} null {})",
+                           write.format, write.offset, write.size, write.with_uav,
                            resource == nullptr);
     });
 }
 
-void GuestDescriptorQueue::AddCopy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor) {
+void GuestDescriptorQueue::Copy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor) {
     if (GpuDiagnosticsEnabled()) {
         TraceGpuDetail(fmt::format("descriptor copy table={:x} slot={} source={:x}",
             range.gpu.ptr, written, descriptor.ptr));
-    }
-    if (count == 0) {
-        return;
     }
     VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::ViewCopies, 1);
     if (written >= count) {
@@ -439,10 +539,6 @@ void GuestDescriptorQueue::AddCopy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor) {
         return;
     }
     const D3D12_CPU_DESCRIPTOR_HANDLE slot = Next();
-    if (!pending_copies.empty() &&
-        slot.ptr != copy_destination.ptr + pending_copies.size() * stride) {
-        FlushCopies(); // a view was created in between: start a new run
-    }
     if (pending_copies.empty()) {
         copy_destination = slot;
     }

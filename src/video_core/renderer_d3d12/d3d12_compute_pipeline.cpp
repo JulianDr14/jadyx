@@ -155,7 +155,6 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
         }
     }
     PushStorageImages(info, texture_cache, queue, views_it, image_transitions);
-    queue.FlushCopies();
 
     BarrierBatch barriers{context.scheduler};
     for (const auto& [view_id, is_storage] : image_transitions) {
