@@ -338,6 +338,10 @@ public:
     u32 local_memory_scratch_words{};
     /// Pool index of word 0 of this lane, returned by the acquire function at the prologue.
     Id local_memory_lane_base{};
+    /// Pool words between consecutive words of a lane (slots of the pool times lanes), stored by
+    /// the acquire function and loaded at the prologue.
+    Id local_memory_stride_var{};
+    Id local_memory_stride{};
     Id local_memory_acquire_func{};
     Id local_memory_release_func{};
 

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
-#include <bit>
 
 #include "common/div_ceil.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
@@ -45,10 +44,12 @@ Id IsLeader(EmitContext& ctx, Id lane, Id ballot) {
     return ctx.OpIEqual(ctx.U1, lane, leader);
 }
 
-/// Returns the pool index of word 0 of the calling lane. The leader takes the lowest free slot of
-/// a bitmap word, starting at a rotating word so concurrent waves rarely collide; a wave that
-/// finds the pool full keeps retrying for a bounded time and then shares OVERFLOW_SLOT.
-Id DefineAcquire(EmitContext& ctx, Id slot_var, Id live_var, u32 mask_words) {
+/// Returns the pool index of word 0 of the calling lane and stores the row stride in stride_var.
+/// The leader takes the lowest free slot of a bitmap word, starting at a rotating word so
+/// concurrent waves rarely collide; a wave that finds the pool full keeps retrying for a bounded
+/// time and then shares the overflow slot. Both outcomes are counted for the host, which grows
+/// the pool when waves wait.
+Id DefineAcquire(EmitContext& ctx, Id slot_var, Id live_var, Id stride_var, u32 mask_words) {
     const u32 lanes{ctx.profile.fragment_local_memory_scratch_lanes};
     const Id u32_type{ctx.U32[1]};
     const Id scope{ctx.Const(static_cast<u32>(spv::Scope::Subgroup))};
@@ -63,9 +64,19 @@ Id DefineAcquire(EmitContext& ctx, Id slot_var, Id live_var, u32 mask_words) {
     const Id attempt_var{ctx.AddLocalVariable(function_pointer, spv::StorageClass::Function,
                                               ctx.u32_zero_value)};
     const Id found_var{ctx.AddLocalVariable(function_pointer, spv::StorageClass::Function,
-                                            ctx.Const(Scratch::OVERFLOW_SLOT))};
+                                            ctx.Const(Scratch::INVALID_SLOT))};
     const Id lane{ctx.OpLoad(u32_type, ctx.subgroup_local_invocation_id)};
     const Id ballot{ctx.OpGroupNonUniformBallot(ctx.U32[4], scope, ctx.true_value)};
+    // Every lane reads the size of the pool, helper lanes included: they need the stride too. The
+    // clamp keeps a missing header inside the smallest pool.
+    const Id stored_words{
+        ctx.OpLoad(u32_type, PoolWord(ctx, ctx.Const(Scratch::BITMAP_WORDS_WORD)))};
+    const Id bitmap_words{ctx.OpUMin(u32_type,
+                                     ctx.OpUMax(u32_type, stored_words,
+                                                ctx.Const(Scratch::MIN_BITMAP_WORDS)),
+                                     ctx.Const(Scratch::MAX_BITMAP_WORDS))};
+    const Id word_mask{ctx.OpISub(u32_type, bitmap_words, ctx.Const(1U))};
+    const Id slots{ctx.OpShiftLeftLogical(u32_type, bitmap_words, ctx.Const(5U))};
 
     const Id leader_label{ctx.OpLabel()};
     const Id header_label{ctx.OpLabel()};
@@ -76,7 +87,8 @@ Id DefineAcquire(EmitContext& ctx, Id slot_var, Id live_var, u32 mask_words) {
     const Id try_merge{ctx.OpLabel()};
     const Id continue_label{ctx.OpLabel()};
     const Id loop_merge{ctx.OpLabel()};
-    const Id overflow_label{ctx.OpLabel()};
+    const Id count_label{ctx.OpLabel()};
+    const Id count_merge{ctx.OpLabel()};
     const Id owned_label{ctx.OpLabel()};
     const Id owned_merge{ctx.OpLabel()};
     const Id done_label{ctx.OpLabel()};
@@ -89,7 +101,7 @@ Id DefineAcquire(EmitContext& ctx, Id slot_var, Id live_var, u32 mask_words) {
 
     ctx.AddLabel(leader_label);
     const Id start{
-        ctx.OpAtomicIIncrement(u32_type, PoolWord(ctx, ctx.Const(Scratch::HINT_WORD)), device,
+        ctx.OpAtomicIIncrement(u32_type, PoolWord(ctx, ctx.Const(Scratch::ACQUIRE_WORD)), device,
                                relaxed)};
     ctx.OpBranch(header_label);
 
@@ -100,9 +112,7 @@ Id DefineAcquire(EmitContext& ctx, Id slot_var, Id live_var, u32 mask_words) {
     ctx.OpBranchConditional(searching, body_label, loop_merge);
 
     ctx.AddLabel(body_label);
-    static_assert(std::has_single_bit(Scratch::BITMAP_WORDS));
-    const Id word{ctx.OpBitwiseAnd(u32_type, ctx.OpIAdd(u32_type, start, attempt),
-                                   ctx.Const(Scratch::BITMAP_WORDS - 1))};
+    const Id word{ctx.OpBitwiseAnd(u32_type, ctx.OpIAdd(u32_type, start, attempt), word_mask)};
     const Id bitmap{PoolWord(ctx, ctx.OpIAdd(u32_type, word, ctx.Const(Scratch::BITMAP_BASE)))};
     const Id free_bits{ctx.OpNot(u32_type, ctx.OpAtomicLoad(u32_type, bitmap, device, relaxed))};
     const Id has_free{ctx.OpINotEqual(ctx.U1, free_bits, ctx.u32_zero_value)};
@@ -136,15 +146,24 @@ Id DefineAcquire(EmitContext& ctx, Id slot_var, Id live_var, u32 mask_words) {
     ctx.OpBranch(header_label);
 
     ctx.AddLabel(loop_merge);
+    // A wave that scanned every bitmap word before winning found the pool full: it waited.
     const Id found{ctx.OpLoad(u32_type, found_var)};
-    const Id overflow{ctx.OpIEqual(ctx.U1, found, ctx.Const(Scratch::OVERFLOW_SLOT))};
-    ctx.OpSelectionMerge(owned_merge, spv::SelectionControlMask::MaskNone);
-    ctx.OpBranchConditional(overflow, overflow_label, owned_label);
+    const Id overflow{ctx.OpIEqual(ctx.U1, found, ctx.Const(Scratch::INVALID_SLOT))};
+    const Id waited{
+        ctx.OpUGreaterThanEqual(ctx.U1, ctx.OpLoad(u32_type, attempt_var), bitmap_words)};
+    const Id counter{ctx.OpSelect(u32_type, overflow, ctx.Const(Scratch::OVERFLOW_WORD),
+                                  ctx.Const(Scratch::WAIT_WORD))};
+    const Id counted{ctx.OpLogicalOr(ctx.U1, overflow, waited)};
+    ctx.OpSelectionMerge(count_merge, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(counted, count_label, count_merge);
 
-    ctx.AddLabel(overflow_label);
-    ctx.OpAtomicIIncrement(u32_type, PoolWord(ctx, ctx.Const(Scratch::OVERFLOW_WORD)), device,
-                           relaxed);
-    ctx.OpBranch(owned_merge);
+    ctx.AddLabel(count_label);
+    ctx.OpAtomicIIncrement(u32_type, PoolWord(ctx, counter), device, relaxed);
+    ctx.OpBranch(count_merge);
+
+    ctx.AddLabel(count_merge);
+    ctx.OpSelectionMerge(owned_merge, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(overflow, owned_merge, owned_label);
 
     ctx.AddLabel(owned_label);
     // An exchange instead of OpAtomicStore: sirit encodes that one with a stray result id.
@@ -162,11 +181,16 @@ Id DefineAcquire(EmitContext& ctx, Id slot_var, Id live_var, u32 mask_words) {
     // anything: the clamps keep their accesses inside the pool, and their stores are dropped.
     const Id broadcast{
         ctx.OpGroupNonUniformBroadcastFirst(u32_type, scope, ctx.OpLoad(u32_type, found_var))};
-    const Id slot{ctx.OpUMin(u32_type, broadcast, ctx.Const(Scratch::OVERFLOW_SLOT))};
-    ctx.OpStore(slot_var, slot);
+    const Id owned{ctx.OpULessThan(ctx.U1, broadcast, slots)};
+    ctx.OpStore(slot_var,
+                ctx.OpSelect(u32_type, owned, broadcast, ctx.Const(Scratch::INVALID_SLOT)));
     ctx.OpStore(live_var, ctx.true_value);
+    // Slot `slots` is the overflow slot.
+    const Id data_slot{ctx.OpUMin(u32_type, broadcast, slots)};
+    const Id total_slots{ctx.OpIAdd(u32_type, slots, ctx.Const(1U))};
+    ctx.OpStore(stride_var, ctx.OpIMul(u32_type, total_slots, ctx.Const(lanes)));
     const Id lane_offset{ctx.OpUMin(u32_type, lane, ctx.Const(lanes - 1))};
-    const Id slot_offset{ctx.OpIMul(u32_type, slot, ctx.Const(lanes))};
+    const Id slot_offset{ctx.OpIMul(u32_type, data_slot, ctx.Const(lanes))};
     ctx.OpReturnValue(ctx.OpIAdd(u32_type, ctx.OpIAdd(u32_type, slot_offset, lane_offset),
                                  ctx.Const(Scratch::DATA_BASE)));
     ctx.OpFunctionEnd();
@@ -206,7 +230,7 @@ Id DefineRelease(EmitContext& ctx, Id slot_var, Id live_var, u32 mask_words) {
     const Id leaving{ctx.OpGroupNonUniformBallot(ctx.U32[4], scope, ctx.true_value)};
     const Id owner{ctx.OpLogicalAnd(ctx.U1, IsLeader(ctx, lane, leaving),
                                     ctx.OpINotEqual(ctx.U1, slot,
-                                                    ctx.Const(Scratch::OVERFLOW_SLOT)))};
+                                                    ctx.Const(Scratch::INVALID_SLOT)))};
     ctx.OpSelectionMerge(owner_merge, spv::SelectionControlMask::MaskNone);
     ctx.OpBranchConditional(owner, owner_label, owner_merge);
 
@@ -280,18 +304,23 @@ void EmitContext::DefineLocalMemoryScratch(u32 words, bool tracks_lanes) {
     }
     const Id slot_var{AddGlobalVariable(TypePointer(spv::StorageClass::Private, U32[1]),
                                         spv::StorageClass::Private,
-                                        Const(Scratch::OVERFLOW_SLOT))};
+                                        Const(Scratch::INVALID_SLOT))};
     const Id live_var{AddGlobalVariable(TypePointer(spv::StorageClass::Private, U1),
                                         spv::StorageClass::Private, false_value)};
+    local_memory_stride_var = AddGlobalVariable(TypePointer(spv::StorageClass::Private, U32[1]),
+                                                spv::StorageClass::Private, u32_zero_value);
     Name(slot_var, "local_memory_slot");
     Name(live_var, "local_memory_live");
+    Name(local_memory_stride_var, "local_memory_stride");
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(local_memory_scratch);
         interfaces.push_back(slot_var);
         interfaces.push_back(live_var);
+        interfaces.push_back(local_memory_stride_var);
     }
     const u32 mask_words{MaskWords(*this, tracks_lanes)};
-    local_memory_acquire_func = DefineAcquire(*this, slot_var, live_var, mask_words);
+    local_memory_acquire_func =
+        DefineAcquire(*this, slot_var, live_var, local_memory_stride_var, mask_words);
     local_memory_release_func = DefineRelease(*this, slot_var, live_var, mask_words);
 }
 

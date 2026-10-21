@@ -10,7 +10,6 @@
 
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
-#include "shader_recompiler/local_memory_scratch.h"
 
 namespace Shader::Backend::SPIRV {
 namespace {
@@ -659,10 +658,8 @@ namespace {
 Id LocalMemoryScratchPointer(EmitContext& ctx, Id word_offset) {
     const Id last_word{ctx.Const(ctx.local_memory_scratch_words - 1)};
     const Id word{ctx.OpUMin(ctx.U32[1], word_offset, last_word)};
-    const u32 stride{LocalMemoryScratch::TOTAL_SLOTS *
-                     ctx.profile.fragment_local_memory_scratch_lanes};
     const Id index{ctx.OpIAdd(ctx.U32[1], ctx.local_memory_lane_base,
-                              ctx.OpIMul(ctx.U32[1], word, ctx.Const(stride)))};
+                              ctx.OpIMul(ctx.U32[1], word, ctx.local_memory_stride))};
     return ctx.OpAccessChain(ctx.local_memory_scratch_element, ctx.local_memory_scratch,
                              ctx.u32_zero_value, index);
 }

@@ -35,9 +35,12 @@ int main(int argc, char** argv) try {
     D3D12::ShaderCompiler compiler;
     if (!compiler.IsAvailable()) throw std::runtime_error("compiler unavailable");
     auto validator = spvContextCreate(SPV_ENV_VULKAN_1_1);
-    struct Case { const char* name; bool demote; u32 lanes; };
-    for (const Case c : {Case{"pool_single_exit", false, 64}, Case{"pool_demote", true, 64},
-                         Case{"private_control", false, 0}}) {
+    // indexed: offsets from a varying, else constant ones, which stay private (registers).
+    struct Case { const char* name; bool demote; u32 lanes; bool indexed; bool pool; };
+    for (const Case c : {Case{"pool_single_exit", false, 64, true, true},
+                         Case{"pool_demote", true, 64, true, true},
+                         Case{"private_control", false, 0, true, false},
+                         Case{"constant_offsets", false, 64, false, false}}) {
         ObjectPool<IR::Inst> insts;
         ObjectPool<IR::Block> blocks;
         IR::Program vs, ps;
@@ -66,7 +69,8 @@ int main(int argc, char** argv) try {
         f.Prologue();
         const auto x = f.GetAttribute(IR::Attribute::Generic0X);
         const IR::U32 index{f.ConvertFToU(32, x)};
-        const IR::U32 offset{f.ShiftLeftLogical(index, f.Imm32(2U))};
+        const IR::U32 offset{c.indexed ? IR::U32{f.ShiftLeftLogical(index, f.Imm32(2U))}
+                                       : f.Imm32(500U)};
         f.WriteLocal(offset, f.Imm32(0x3f123456U));
         IR::Block* after = before;
         if (c.demote) {
@@ -86,8 +90,9 @@ int main(int argc, char** argv) try {
             ps.info.uses_demote_to_helper_invocation = true;
         }
         IR::IREmitter a{*after};
-        const IR::U32 loaded{a.LoadLocal(a.ShiftLeftLogical(a.BitwiseXor(index, a.Imm32(1U)),
-                                                            a.Imm32(2U)))};
+        const IR::U32 loaded{a.LoadLocal(
+            c.indexed ? IR::U32{a.ShiftLeftLogical(a.BitwiseXor(index, a.Imm32(1U)), a.Imm32(2U))}
+                      : a.Imm32(501U))};
         a.SetFragColor(0, 0, a.BitCast<IR::F32>(loaded));
         a.SetFragColor(0, 1, x);
         a.SetFragColor(0, 2, x);
@@ -109,7 +114,7 @@ int main(int argc, char** argv) try {
         Backend::Bindings bindings;
         const auto vertex = Backend::SPIRV::EmitSPIRV(profile, vr, vs, bindings);
         const auto pixel = Backend::SPIRV::EmitSPIRV(profile, pr, ps, bindings);
-        if ((ps.info.local_memory_scratch_words != 0) != (c.lanes != 0))
+        if ((ps.info.local_memory_scratch_words != 0) != c.pool)
             throw std::runtime_error(std::string(c.name) + ": wrong storage choice");
         {
             std::ofstream file{std::filesystem::path(argv[1]) / (std::string(c.name) + ".spv"),

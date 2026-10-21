@@ -18,6 +18,7 @@
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
+#include "video_core/renderer_d3d12/d3d12_staging_buffer_pool.h"
 
 namespace D3D12 {
 namespace {
@@ -25,6 +26,16 @@ std::atomic<PixelShaderScratchMode> scratch_mode{PixelShaderScratchMode::Auto};
 
 /// Pool rows are allocated in steps, so pipelines of similar sizes share one pool.
 constexpr u32 ROW_STEP = 64;
+/// Slots stop doubling at this pool size.
+constexpr u64 MAX_POOL_BYTES = u64{128} << 20;
+/// Pool counters are sampled at most this often.
+constexpr auto SAMPLE_INTERVAL = std::chrono::milliseconds{250};
+/// Bytes copied per sample: the header words with the counters.
+constexpr u64 SAMPLE_BYTES = Shader::LocalMemoryScratch::HEADER_WORDS * sizeof(u32);
+/// A sample shows the pool short of slots when at least MIN_WAITS waves, and more than one in
+/// WAIT_RATIO, scanned the whole bitmap before finding a slot.
+constexpr u32 MIN_WAITS = 16;
+constexpr u64 WAIT_RATIO = 32;
 
 constexpr u32 PROBE_INDEX = 511;
 constexpr u32 PROBE_VALUE = 0x3f123456;
@@ -222,25 +233,147 @@ LocalMemoryPool::LocalMemoryPool(const Device& device_, Scheduler& scheduler_)
 
 LocalMemoryPool::~LocalMemoryPool() = default;
 
+D3D12_GPU_VIRTUAL_ADDRESS LocalMemoryPool::BeginList() {
+    list_tick = scheduler.CurrentTick();
+    if (!ReadSamples()) {
+        RecordSample();
+    }
+    return address;
+}
+
 D3D12_GPU_VIRTUAL_ADDRESS LocalMemoryPool::Grow(u32 lanes, u32 words) {
-    const u32 new_rows = Common::AlignUp(std::max(words, lanes == pool_lanes ? rows : 0U),
-                                         ROW_STEP);
-    const u64 bytes = Shader::LocalMemoryScratch::PoolBytes(lanes, new_rows);
-    // Default heaps are zeroed: an empty bitmap and no live lanes.
+    using Shader::LocalMemoryScratch::MIN_SLOTS;
+    using Shader::LocalMemoryScratch::PoolBytes;
+    const bool same_lanes = lanes == pool_lanes;
+    const u32 new_rows = Common::AlignUp(std::max(words, same_lanes ? rows : 0U), ROW_STEP);
+    // Longer rows keep the slots the pool needed, as far as the cap allows.
+    u32 new_slots = same_lanes ? slots : MIN_SLOTS;
+    while (new_slots > MIN_SLOTS && PoolBytes(lanes, new_rows, new_slots) > MAX_POOL_BYTES) {
+        new_slots /= 2;
+    }
+    Recreate(lanes, new_rows, new_slots);
+    return address;
+}
+
+void LocalMemoryPool::Recreate(u32 lanes, u32 new_rows, u32 new_slots) {
+    using namespace Shader::LocalMemoryScratch;
+    const u64 bytes = PoolBytes(lanes, new_rows, new_slots);
+    // Default heaps are zeroed: empty counters and bitmap, no live lanes.
     ComPtr<ID3D12Resource> new_buffer =
         CreateCommittedBuffer(device.Get(), bytes, D3D12_HEAP_TYPE_DEFAULT,
                               D3D12_RESOURCE_STATE_COMMON,
                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, "local memory pool");
+    std::span<u8> upload_data;
+    ComPtr<ID3D12Resource> upload =
+        CreateMappedBuffer(device.Get(), sizeof(u32), D3D12_HEAP_TYPE_UPLOAD, upload_data);
+    const u32 bitmap_words = new_slots / 32;
+    std::memcpy(upload_data.data(), &bitmap_words, sizeof(bitmap_words));
+
+    // The copy promotes the new pool from the common state; its draws need it as a UAV.
+    CommandStream* const cmd = scheduler.CommandList();
+    cmd->CopyBufferRegion(new_buffer.Get(), BITMAP_WORDS_WORD * sizeof(u32), upload.Get(), 0,
+                          sizeof(u32));
+    const D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(
+        new_buffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cmd->ResourceBarrier(1, &barrier);
+    scheduler.DeferRelease(std::move(upload));
     if (buffer) {
         scheduler.DeferRelease(std::move(buffer));
     }
     LOG_INFO(Render, "D3D12: local memory pool of {} words x {} lanes x {} slots ({} KiB)",
-             new_rows, lanes, Shader::LocalMemoryScratch::TOTAL_SLOTS, bytes / 1024);
+             new_rows, lanes, new_slots, bytes / 1024);
     buffer = std::move(new_buffer);
     address = buffer->GetGPUVirtualAddress();
     rows = new_rows;
     pool_lanes = lanes;
-    return address;
+    slots = new_slots;
+    ++generation;
+    last = {};
+    capped = false;
+    // The pool is a UAV for the rest of this list: no sample until the next one.
+    list_tick = scheduler.CurrentTick();
+}
+
+bool LocalMemoryPool::ReadSamples() {
+    using namespace Shader::LocalMemoryScratch;
+    // Samples complete in submission order: from the oldest, which is the next one to write.
+    for (u32 i = 0; i < SAMPLES; ++i) {
+        const u32 index = (next_sample + i) % SAMPLES;
+        Sample& sample = samples[index];
+        if (!sample.pending) {
+            continue;
+        }
+        if (!scheduler.IsFree(sample.tick)) {
+            break;
+        }
+        sample.pending = false;
+        if (sample.generation != generation) {
+            continue;
+        }
+        Counters now;
+        std::memcpy(&now, readback_data.data() + index * SAMPLE_BYTES, sizeof(now));
+        // The counters only grow (and wrap): the difference is what happened since the last sample.
+        const Counters delta{
+            .acquires = now.acquires - last.acquires,
+            .overflows = now.overflows - last.overflows,
+            .waits = now.waits - last.waits,
+        };
+        last = now;
+        const bool short_of_slots =
+            delta.overflows != 0 ||
+            (delta.waits >= MIN_WAITS && u64{delta.waits} * WAIT_RATIO > delta.acquires);
+        if (!short_of_slots) {
+            continue;
+        }
+        const u32 new_slots = slots * 2;
+        if (new_slots > MAX_SLOTS || PoolBytes(pool_lanes, rows, new_slots) > MAX_POOL_BYTES) {
+            if (!capped) {
+                LOG_WARNING(Render,
+                            "D3D12: local memory pool at its limit of {} slots ({} of {} waves "
+                            "waited, {} shared the overflow slot)",
+                            slots, delta.waits, delta.acquires, delta.overflows);
+                capped = true;
+            }
+            continue;
+        }
+        LOG_INFO(Render,
+                 "D3D12: local memory pool short of slots ({} of {} waves waited, {} shared the "
+                 "overflow slot): growing to {}",
+                 delta.waits, delta.acquires, delta.overflows, new_slots);
+        Recreate(pool_lanes, rows, new_slots);
+        return true;
+    }
+    return false;
+}
+
+void LocalMemoryPool::RecordSample() {
+    const auto now = std::chrono::steady_clock::now();
+    Sample& sample = samples[next_sample];
+    if (now < next_sample_time || sample.pending) {
+        return;
+    }
+    if (!readback) {
+        try {
+            readback = CreateMappedBuffer(device.Get(), SAMPLES * SAMPLE_BYTES,
+                                          D3D12_HEAP_TYPE_READBACK, readback_data);
+        } catch (const std::exception& e) {
+            // The pool keeps working at its current size.
+            LOG_WARNING(Render, "D3D12: local memory pool counters unavailable ({})", e.what());
+            next_sample_time = std::chrono::steady_clock::time_point::max();
+            return;
+        }
+    }
+    // First use of the pool in this list: the copy promotes it from the common state, and the
+    // draws need it back as a UAV.
+    CommandStream* const cmd = scheduler.CommandList();
+    cmd->CopyBufferRegion(readback.Get(), next_sample * SAMPLE_BYTES, buffer.Get(), 0,
+                          SAMPLE_BYTES);
+    const D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(
+        buffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cmd->ResourceBarrier(1, &barrier);
+    sample = {.tick = list_tick, .generation = generation, .pending = true};
+    next_sample = (next_sample + 1) % SAMPLES;
+    next_sample_time = now + SAMPLE_INTERVAL;
 }
 
 } // namespace D3D12

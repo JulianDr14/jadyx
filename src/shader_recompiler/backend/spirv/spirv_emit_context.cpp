@@ -647,13 +647,19 @@ void EmitContext::DefineLocalMemory(IR::Program& program) {
     if (stage == Stage::Fragment && profile.SupportsSubgroupStage(stage)) {
         const u32 words{LocalMemoryScratch::PoolWords(profile.fragment_local_memory_scratch_lanes,
                                                       program.local_memory_size)};
-        if (words != 0) {
-            size_t exits{};
-            for (IR::Block* const block : program.blocks) {
-                for (const IR::Inst& inst : block->Instructions()) {
-                    exits += inst.GetOpcode() == IR::Opcode::Epilogue ? 1 : 0;
-                }
+        size_t exits{};
+        bool indexed{};
+        for (IR::Block* const block : program.blocks) {
+            for (const IR::Inst& inst : block->Instructions()) {
+                const IR::Opcode opcode{inst.GetOpcode()};
+                exits += opcode == IR::Opcode::Epilogue ? 1 : 0;
+                indexed |= (opcode == IR::Opcode::LoadLocal || opcode == IR::Opcode::WriteLocal) &&
+                           !inst.Arg(0).IsImmediate();
             }
+        }
+        // Local memory reached only at constant offsets (register spills) becomes registers in the
+        // host compiler and keeps its values: only indexed access needs the pool.
+        if (words != 0 && indexed) {
             program.info.local_memory_scratch_words = words;
             DefineLocalMemoryScratch(words,
                                      exits != 1 || program.info.uses_demote_to_helper_invocation);
