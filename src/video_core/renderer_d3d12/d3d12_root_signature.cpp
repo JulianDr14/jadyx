@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <stdexcept>
@@ -44,10 +45,28 @@ struct TableRanges {
     }
 };
 
+/// Constant buffers moved out of the resource table into root CBVs.
+struct RootCbvs {
+    size_t budget{};            ///< how many root CBVs the root signature has room for
+    std::vector<u32> registers; ///< shader register of each root CBV
+    std::vector<u32> slots;     ///< per constant buffer of the stream: root slot or NO_ROOT_CBV
+};
+
 /// Walks one stage's descriptors in the order spirv_emit_context.cpp assigns bindings.
-void AddStage(const Shader::Info& info, u32& binding, TableRanges& ranges) {
+void AddStage(const Shader::Info& info, u32& binding, TableRanges& ranges, RootCbvs& root) {
     for (const auto& desc : info.constant_buffer_descriptors) {
-        ranges.Add(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, binding, desc.count);
+        // Root descriptors cannot be indexed, so arrays stay in the table. So do buffers read at
+        // dynamic offsets (sized 64 KiB by the shader info): a root CBV has no bounds, and games
+        // bind those smaller than that (skinning matrices), where a table CBV reads zeros.
+        constexpr u32 DYNAMIC_SIZE = 0x10000;
+        if (desc.count == 1 && info.constant_buffer_used_sizes[desc.index] < DYNAMIC_SIZE &&
+            root.registers.size() < root.budget) {
+            root.slots.push_back(static_cast<u32>(root.registers.size()));
+            root.registers.push_back(binding);
+        } else {
+            ranges.Add(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, binding, desc.count);
+            root.slots.insert(root.slots.end(), desc.count, PipelineLayout::NO_ROOT_CBV);
+        }
         binding += desc.count;
     }
     for (const auto& desc : info.storage_buffers_descriptors) {
@@ -142,17 +161,34 @@ void RootSignatureCache::CreateCommandSignatures(PipelineLayout& layout, bool is
 
 const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* const> infos,
                                               bool is_compute) {
-    TableRanges ranges;
-    u32 binding = 0;
     bool integer_textures = false;
     bool local_memory_scratch = false;
     for (const Shader::Info* info : infos) {
         if (info) {
-            AddStage(*info, binding, ranges);
             local_memory_scratch |= info->local_memory_scratch_words != 0;
             for (const auto& desc : info->texture_descriptors) {
                 integer_textures |= desc.is_integer;
             }
+        }
+    }
+    const u32 runtime_data_words =
+        static_cast<u32>((is_compute ? sizeof(dxil_spirv_compute_runtime_data)
+                                     : sizeof(dxil_spirv_vertex_runtime_data)) /
+                         sizeof(u32));
+    RootCbvs root;
+    if (!is_compute) {
+        // Root constants take a dword each, tables one, root descriptors two.
+        constexpr u32 ROOT_DWORDS = 64;
+        const u32 used = PUSH_CONSTANT_WORDS + runtime_data_words + 2 +
+                         (integer_textures ? 2 : 0) + (local_memory_scratch ? 2 : 0);
+        root.budget = std::min<size_t>(PipelineLayout::MAX_ROOT_CBVS,
+                                       used < ROOT_DWORDS ? (ROOT_DWORDS - used) / 2 : 0);
+    }
+    TableRanges ranges;
+    u32 binding = 0;
+    for (const Shader::Info* info : infos) {
+        if (info) {
+            AddStage(*info, binding, ranges, root);
         }
     }
     if (integer_textures && binding > EDEN_INTEGER_SAMPLER_MAX_BINDINGS) {
@@ -163,6 +199,8 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
                          (local_memory_scratch ? 4u : 0u)};
     AppendKey(key, ranges.resources);
     AppendKey(key, ranges.samplers);
+    key.push_back(static_cast<u32>(root.registers.size()));
+    key.insert(key.end(), root.registers.begin(), root.registers.end());
     const u64 hash = Common::CityHash64(reinterpret_cast<const char*>(key.data()),
                                         key.size() * sizeof(u32));
 
@@ -175,10 +213,7 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
     }
 
     auto layout = std::make_unique<PipelineLayout>();
-    layout->runtime_data_words =
-        static_cast<u32>((is_compute ? sizeof(dxil_spirv_compute_runtime_data)
-                                     : sizeof(dxil_spirv_vertex_runtime_data)) /
-                         sizeof(u32));
+    layout->runtime_data_words = runtime_data_words;
     layout->num_resources = ranges.num_resources;
     layout->num_samplers = ranges.num_samplers;
 
@@ -232,6 +267,18 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             .ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL,
         });
     }
+    if (!root.registers.empty()) {
+        layout->root_cbv_index = static_cast<u32>(params.size());
+        for (const u32 reg : root.registers) {
+            params.push_back({
+                .ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV,
+                .Descriptor = {.ShaderRegister = reg, .RegisterSpace = 0},
+                .ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
+            });
+        }
+    }
+    layout->root_cbv_registers = std::move(root.registers);
+    layout->cbv_root_slots = std::move(root.slots);
     const D3D12_ROOT_SIGNATURE_DESC desc{
         .NumParameters = static_cast<UINT>(params.size()),
         .pParameters = params.data(),
@@ -242,8 +289,10 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
     };
     layout->root_signature = CreateRootSignature(device.Get(), desc, "guest root signature");
     CreateCommandSignatures(*layout, is_compute);
-    LOG_DEBUG(Render, "D3D12: root signature {:016x} ({} resource and {} sampler descriptors)",
-              hash, ranges.num_resources, ranges.num_samplers);
+    LOG_DEBUG(Render,
+              "D3D12: root signature {:016x} ({} resource and {} sampler descriptors, {} root "
+              "CBVs)",
+              hash, ranges.num_resources, ranges.num_samplers, layout->NumRootCbvs());
 
     bucket.emplace_back(std::move(key), std::move(layout));
     return *bucket.back().second;

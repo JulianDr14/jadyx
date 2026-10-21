@@ -1006,8 +1006,15 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             return alignment > 1 && (offset % alignment) != 0;
         }
     }();
+    // A backend that binds the buffer with no bounds (D3D12 root CBVs) may need more than size
+    // bytes behind it; streaming pads them, while the cached buffer might end right there.
+    bool needs_padding = false;
+    if constexpr (requires { runtime.UniformNeedsPadding(size); }) {
+        needs_padding = runtime.UniformNeedsPadding(size);
+    }
     const bool use_fast_buffer = needs_alignment_stream
-        || (has_host_buffer && size <= channel_state->uniform_buffer_skip_cache_size
+        || (has_host_buffer
+            && (size <= channel_state->uniform_buffer_skip_cache_size || needs_padding)
             && !memory_tracker.IsRegionGpuModified(device_addr, size));
     if (use_fast_buffer) {
         if constexpr (IS_OPENGL) {

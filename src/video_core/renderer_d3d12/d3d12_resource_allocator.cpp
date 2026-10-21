@@ -45,6 +45,7 @@ struct TextureResourceAllocator::State {
         u64 alignment{};
         std::map<u64, u64> free_ranges; // offset -> bytes
         Common::MemoryCharge charge;
+        u64 empty_tick{}; // first trim pass that saw it empty; 0 while in use
     };
 
     mutable std::mutex mutex;
@@ -60,6 +61,7 @@ struct TextureResourceAllocator::State {
     u64 growth_recoveries{};
     u64 compact_heaps{};
     u64 avoided_capacity{};
+    u64 pressure_waits{};
     // Accessed only by the recording thread, never by retirement callbacks.
     u64 pressure_wait_tick{};
 
@@ -137,6 +139,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
         if (end < range_offset + range_size) {
             ranges.emplace(end, range_offset + range_size - end);
         }
+        state->blocks[selected].empty_tick = 0;
         state->live_bytes += info.SizeInBytes;
         state->peak_bytes = std::max(state->peak_bytes, state->live_bytes);
     };
@@ -164,6 +167,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
     find_space();
 
     bool compact = false;
+    u64 wanted{};
     if (selected == SIZE_MAX) {
         // Collect before growing, outside the pool lock: retirement callbacks acquire it.
         // This also runs during loading screens, without waiting for another present/GC frame.
@@ -179,22 +183,35 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
         const auto old_stats = GetStats();
         scheduler.CollectGarbage();
         find_space();
-        if (selected == SIZE_MAX && pressure && scheduler.IsRecordingThread() &&
-            old_stats.pending_bytes != 0) {
+        // Waiting stalled the GPU thread on most pressured misses. Only wait when even an exact
+        // heap would exhaust the budget and retiring work could return enough to hold this one.
+        const bool exhausted = HeapGrowth::Exhausted(
+            HeapGrowth::Capacity(info.SizeInBytes, info.Alignment, true),
+            {before.app_used, before.app_limit});
+        if (selected == SIZE_MAX && pressure && exhausted && scheduler.IsRecordingThread() &&
+            GetStats().pending_bytes >= info.SizeInBytes) {
             const u64 current = scheduler.CurrentTick();
             const u64 previous = current > 0 ? current - 1 : 0;
             if (previous > state->pressure_wait_tick) {
                 state->pressure_wait_tick = previous;
+                {
+                    std::scoped_lock lock{state->mutex};
+                    ++state->pressure_waits;
+                }
                 scheduler.Wait(previous);
                 scheduler.CollectGarbage();
                 find_space();
             }
         }
-        TrimEmptyHeaps(pressure);
+        TrimEmptyHeaps(pressure ? TrimMode::Settled : TrimMode::KeepWarm);
         // The selected range was already reserved above. Trim cannot destroy its heap.
         if (pressure) {
             const auto after = device.QueryCacheMemoryPressure();
             compact = !after.Known() || pressured(after);
+            if (compact && after.Known()) {
+                wanted = HeapGrowth::PressureCapacity(info.SizeInBytes, info.Alignment,
+                                                      {after.app_used, after.app_limit});
+            }
             const auto stats = GetStats();
             {
                 std::scoped_lock lock{state->mutex};
@@ -214,7 +231,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
         std::scoped_lock lock{state->mutex};
 
         if (selected == SIZE_MAX) {
-            const u64 wanted = HeapGrowth::Capacity(info.SizeInBytes, info.Alignment, compact);
+            if (!wanted) wanted = HeapGrowth::Capacity(info.SizeInBytes, info.Alignment, compact);
             if (!wanted) return {};
             const D3D12_HEAP_DESC heap_desc{
                 .SizeInBytes = wanted,
@@ -298,7 +315,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
             scheduler.Wait(current - 1);
         }
         scheduler.CollectGarbage();
-        TrimEmptyHeaps(true);
+        TrimEmptyHeaps(TrimMode::All);
         hr = create_committed();
     }
     ThrowIfFailed(hr, "Create committed texture fallback");
@@ -325,7 +342,11 @@ void TextureResourceAllocator::DeferRelease(Resource&& resource) {
                            [allocation = std::move(allocation)]() mutable { allocation.reset(); });
 }
 
-void TextureResourceAllocator::TrimEmptyHeaps(bool under_pressure) {
+void TextureResourceAllocator::TrimEmptyHeaps(TrimMode mode) {
+    // Releasing every empty heap on each pressured miss churned heaps that the next textures
+    // would have reused. Settled keeps a heap until it has stayed empty for this many submits.
+    constexpr u64 settle_ticks = 64;
+    const u64 tick = mode == TrimMode::Settled ? scheduler.CurrentTick() : 0;
     std::scoped_lock lock{state->mutex};
     std::array<bool, 2> warm{};
     for (auto& block : state->blocks) {
@@ -333,9 +354,13 @@ void TextureResourceAllocator::TrimEmptyHeaps(bool under_pressure) {
         const auto& [offset, size] = *block.free_ranges.begin();
         if (offset != 0 || size != block.size) continue;
         const size_t type = static_cast<size_t>(block.heap_class);
-        if (!under_pressure && !warm[type]) {
+        if (mode == TrimMode::KeepWarm && !warm[type]) {
             warm[type] = true;
             continue;
+        }
+        if (mode == TrimMode::Settled) {
+            if (!block.empty_tick) block.empty_tick = tick;
+            if (tick < block.empty_tick + settle_ticks) continue;
         }
         state->heap_bytes -= block.size;
         state->trimmed_bytes += block.size;
@@ -344,17 +369,20 @@ void TextureResourceAllocator::TrimEmptyHeaps(bool under_pressure) {
         block.free_ranges.clear();
         block.charge.Reset();
         block.size = 0;
+        block.empty_tick = 0;
     }
 }
 
 std::string TextureResourceAllocator::Report() const {
     std::scoped_lock lock{state->mutex};
     return fmt::format("texture heaps {} MiB, live {} MiB, peak {} MiB, placed {}, fallback {}, trimmed {} ({} MiB), "
-                       "growth recoveries {}, pressure heaps {}, avoided capacity {} MiB",
+                       "growth recoveries {}, pressure waits {}, pressure heaps {}, "
+                       "avoided capacity {} MiB",
                        state->heap_bytes / 1_MiB, state->live_bytes / 1_MiB,
                        state->peak_bytes / 1_MiB, state->placed_resources,
                        state->committed_fallbacks, state->trimmed_heaps, state->trimmed_bytes / 1_MiB,
-                       state->growth_recoveries, state->compact_heaps, state->avoided_capacity / 1_MiB);
+                       state->growth_recoveries, state->pressure_waits, state->compact_heaps,
+                       state->avoided_capacity / 1_MiB);
 }
 
 TextureResourceAllocator::Stats TextureResourceAllocator::GetStats() const {

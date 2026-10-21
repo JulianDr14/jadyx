@@ -46,6 +46,12 @@ enum class Counter : size_t {
     StagingDedicated,      ///< staging buffers created outside the stream ring
     StagingDedicatedBytes,
     StagingStreamWaits,    ///< large uploads that waited for the GPU to free the stream ring
+    TransferPoolHits,      ///< transfer buffers handed out again from the pool
+    TransferPoolMissBusy,  ///< misses with a fitting pooled buffer the GPU still used
+    TransferPoolMissNoFit, ///< misses with no pooled buffer of a fitting size
+    TransferPoolMissBytes, ///< bytes of the buffers created on those misses
+    TransferPoolOverflows, ///< returned buffers released because the pool was at its budget
+    TransferPoolOverflowBytes,
     TextureDecodeUs,       ///< CPU decoding/re-encoding of converted textures (ASTC, BCn arrays)
     TextureGpuDecodes,     ///< textures decoded by a compute shader (ASTC)
     TextureUploadMapNs,    ///< querying a CPU pointer for non-staging upload sources
@@ -94,13 +100,20 @@ enum class Counter : size_t {
     DrawRecordNs,          ///< preparing attachments and recording state and the draw
     PipelineFastHits,      ///< transition-cache hits in CurrentGraphicsPipeline
     PipelineFastMisses,
+    PipelineKeyReuses,     ///< draws that kept the previous pipeline without refreshing the key
+    PipelineKeyMismatches, ///< check mode: reuses that would have drawn with another pipeline
+    PipelineKeyChecks,     ///< check mode: draws that could have reused, verified by a lookup
     CbvCreateNs,
     CbvCreates,
     CbvStreamed,
     CbvPersistent,
     CbvNull,
+    CbvRoot,        ///< bound as root CBVs instead of table descriptors
+    CbvRootClamped, ///< root CBVs bound to zeros: the shader could read past the buffer
     ViewCopyNs,
     ViewCopies,
+    DescriptorTables,       ///< resource tables a draw or dispatch asked for
+    DescriptorTableReuses,  ///< of them, served by an identical table of the same list
     SubmitListNs,
     SubmitLists,
     GpuTickNs,

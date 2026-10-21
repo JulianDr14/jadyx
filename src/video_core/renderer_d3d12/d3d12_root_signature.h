@@ -11,6 +11,7 @@
 
 #include "common/common_types.h"
 #include "shader_recompiler/shader_info.h"
+#include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
 
 namespace D3D12 {
@@ -42,6 +43,9 @@ constexpr u32 INDIRECT_DISPATCH_WORDS = INDIRECT_DISPATCH_CONSTANT_WORDS + 3;
 ///    spirv_to_dxil turns those samples into texel loads and emulates the sampler with this data
 ///  - root UAV, local memory pool (Shader::LocalMemoryScratch): u0 space 28, pixel stage only,
 ///    when the fragment shader keeps its local memory there
+///  - graphics only: root CBVs for the first constant buffers that are not arrays, up to
+///    MAX_ROOT_CBVS and what the 64-dword root budget leaves. Setting a root address per draw
+///    replaces creating a CBV in the table; the shaders still read b<B> space 0
 ///
 /// Descriptor tables follow the binding stream of the SPIR-V backend with
 /// unified_descriptor_binding: one counter over the pipeline's stages in order and, inside each
@@ -50,7 +54,7 @@ constexpr u32 INDIRECT_DISPATCH_WORDS = INDIRECT_DISPATCH_CONSTANT_WORDS + 3;
 /// descriptor at binding B lands on b<B>, t<B> or u<B> (a combined sampler also on s<B>).
 ///
 /// Table slots, in that order, per guest descriptor (count = descriptor array length):
-///  - constant buffer: count CBVs
+///  - constant buffer: count CBVs, none when it is a root CBV
 ///  - storage buffer, image buffer, image: count UAVs, then count SRVs. spirv_to_dxil turns the
 ///    ones it proves read-only into SRVs (declared_read_only_images_as_srvs, NonWritable), so both
 ///    are declared on the same register and both get written
@@ -83,6 +87,18 @@ public:
     u32 NumSamplerDescriptors() const noexcept {
         return num_samplers;
     }
+    /// Root parameter index of the first root CBV; the others follow it.
+    u32 RootCbvIndex() const noexcept {
+        return root_cbv_index;
+    }
+    u32 NumRootCbvs() const noexcept {
+        return static_cast<u32>(root_cbv_registers.size());
+    }
+    /// Root CBV slot of each constant buffer of the binding stream, in order, or NO_ROOT_CBV for
+    /// the ones in the table.
+    std::span<const u32> CbvRootSlots() const noexcept {
+        return cbv_root_slots;
+    }
     /// Command signatures for ExecuteIndirect with the records above; null if D3D12 refused them
     /// (logged). Graphics layouts have the draw ones, compute layouts the dispatch one.
     ID3D12CommandSignature* DrawSignature(bool indexed) const noexcept {
@@ -95,6 +111,8 @@ public:
     static constexpr u32 PUSH_CONSTANTS_INDEX = 0;
     static constexpr u32 RUNTIME_DATA_INDEX = 1;
     static constexpr u32 NO_TABLE = ~0u;
+    static constexpr u32 NO_ROOT_CBV = ConstantBufferSlot::TABLE;
+    static constexpr u32 MAX_ROOT_CBVS = D3D12::MAX_ROOT_CBVS;
 
 private:
     friend class RootSignatureCache;
@@ -110,6 +128,9 @@ private:
     u32 local_memory_scratch_index{NO_TABLE};
     u32 num_resources{};
     u32 num_samplers{};
+    u32 root_cbv_index{NO_TABLE};
+    std::vector<u32> root_cbv_registers;
+    std::vector<u32> cbv_root_slots;
 };
 
 /// Binding of a stage's first texture, given the stage's first binding. Texture array elements

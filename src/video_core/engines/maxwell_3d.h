@@ -3160,7 +3160,9 @@ public:
     struct DirtyState {
         using Flags = std::bitset<(std::numeric_limits<u8>::max)() + 1>;
         using Table = std::array<u8, Regs::NUM_REGS>;
-        using Tables = std::array<std::array<u8, Regs::NUM_REGS>, 2>;
+        // A changed register raises one flag per table. The third is the D3D12 pipeline key's;
+        // the other renderers leave it at NullEntry.
+        using Tables = std::array<std::array<u8, Regs::NUM_REGS>, 3>;
 
         Flags flags;
         Tables tables{};

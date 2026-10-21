@@ -23,6 +23,7 @@
 #include "shader_recompiler/shader_info.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
+#include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
 #include "video_core/renderer_d3d12/d3d12_pso_cache.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_transition_order.h"
@@ -111,6 +112,8 @@ struct PipelineBindings {
     };
     D3D12_GPU_DESCRIPTOR_HANDLE resource_table{};
     D3D12_GPU_DESCRIPTOR_HANDLE sampler_table{};
+    /// Root CBVs (PipelineLayout::RootCbvIndex on), by root slot.
+    std::array<D3D12_GPU_VIRTUAL_ADDRESS, PipelineLayout::MAX_ROOT_CBVS> root_cbvs{};
     std::array<u32, PUSH_CONSTANT_WORDS> push_constants{};
     /// Integer sampler states (PipelineLayout::IntegerSamplerIndex), 0 when the layout has none.
     D3D12_GPU_VIRTUAL_ADDRESS integer_samplers{};
@@ -356,6 +359,8 @@ private:
     std::array<std::shared_ptr<const StageBindings>, NUM_STAGES> stage_infos;
     std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
     VideoCommon::UniformBufferSizes uniform_buffer_sizes{};
+    /// Each constant buffer the draw binds, in binding order: root CBV slot and shader reach.
+    std::vector<ConstantBufferSlot> cbv_slots;
     bool has_images{};
     u32 local_memory_scratch_words{};
     bool flatten_retry{};    ///< Build(true) hit a driver fault: retry with flattened branches.

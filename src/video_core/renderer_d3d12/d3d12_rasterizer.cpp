@@ -23,6 +23,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_draw_metrics.h"
+#include "video_core/renderer_d3d12/d3d12_pipeline_key_tracking.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 
@@ -879,7 +880,11 @@ void RasterizerD3D12::FlushIfUploadHeavy() {
     // nothing under pressure), and the stream only reuses submitted regions. The
     // reset callback invalidates cached state, so submitting between draws is safe.
     constexpr u64 UPLOAD_SUBMIT_BYTES = 32ULL << 20;
-    if (staging.PendingUploadBytes() < UPLOAD_SUBMIT_BYTES) {
+    // A game drawing ~3900 times in one guest command list had the host GPU start only once the
+    // whole list was recorded (~50 ms), and the guest waited for both in turn every frame.
+    // Submitting every few hundred draws lets the GPU execute while the rest is recorded.
+    constexpr u32 SUBMIT_DRAWS = 512;
+    if (staging.PendingUploadBytes() < UPLOAD_SUBMIT_BYTES && draw_counter < SUBMIT_DRAWS) {
         return;
     }
     draw_counter = 0;
@@ -945,6 +950,8 @@ void RasterizerD3D12::InitializeChannel(Tegra::Control::ChannelState& channel) {
     // them a new render target or program is never picked up (Vulkan's StateTracker::SetupTables
     // does the same, plus its own flags).
     state_tracker.SetupTables(channel);
+    PipelineKeyTracking::SetupTable(
+        channel.payload->maxwell_3d.dirty.tables[PipelineKeyTracking::TABLE_INDEX]);
     CreateChannel(channel);
     { std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
       texture_cache.CreateChannel(channel); buffer_cache.CreateChannel(channel); }

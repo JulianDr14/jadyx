@@ -131,7 +131,8 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
     : device{device_}, scheduler{scheduler_}, staging{staging_}, view_descriptors{views},
       sampler_descriptors{samplers}, rtv_descriptors{rtvs}, dsv_descriptors{dsvs},
       texture_allocator{device_, scheduler_}, transfer_buffers{transfer_buffers_} {
-    transfer_buffers.SetReclaimer([this] { texture_allocator.TrimEmptyHeaps(true); });
+    transfer_buffers.SetReclaimer(
+        [this] { texture_allocator.TrimEmptyHeaps(TextureResourceAllocator::TrimMode::All); });
     null_rtv = rtv_descriptors.Allocate();
     D3D12_RENDER_TARGET_VIEW_DESC null_desc{
         .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -323,11 +324,19 @@ void TextureCacheRuntime::TickFrame() {
     }
     // Emptying the pools every frame under mere pressure made a game recreate its transfer buffers
     // and texture heaps each frame: ~9 committed resources, about 8 ms of the GPU thread, to save
-    // at most a few tens of MiB. Only Critical and worse release them all; an allocation the
-    // system refuses still reclaims everything (TransferBufferPool::ReclaimAfterOutOfMemory).
+    // at most a few tens of MiB. Only Critical and worse release the heaps; transfer buffers go
+    // only in an Emergency, Critical keeps the ones recent copies used. An allocation the system
+    // refuses still reclaims everything (TransferBufferPool::ReclaimAfterOutOfMemory).
     const bool release_idle = pressure_level >= CachePressure::Critical;
-    texture_allocator.TrimEmptyHeaps(release_idle);
-    transfer_buffers.Trim(release_idle);
+    texture_allocator.TrimEmptyHeaps(release_idle ? TextureResourceAllocator::TrimMode::Settled
+                                                  : TextureResourceAllocator::TrimMode::KeepWarm);
+    if (pressure_level >= CachePressure::Emergency) {
+        transfer_buffers.Trim(true);
+    } else if (release_idle) {
+        transfer_buffers.TrimStale();
+    } else {
+        transfer_buffers.Trim(false);
+    }
     if (VideoCore::FrameTrace::Active()) {
         const auto stats = texture_allocator.GetStats();
         VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::TextureHeapUsage,

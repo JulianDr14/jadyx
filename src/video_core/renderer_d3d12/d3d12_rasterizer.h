@@ -301,6 +301,7 @@ private:
             std::array<u32, 16> runtime_words{};
             u64 resource_table{};
             u64 sampler_table{};
+            std::array<D3D12_GPU_VIRTUAL_ADDRESS, PipelineLayout::MAX_ROOT_CBVS> root_cbvs{};
             D3D12_GPU_VIRTUAL_ADDRESS integer_samplers{};
             D3D12_GPU_VIRTUAL_ADDRESS local_memory_scratch{};
         } root_args;

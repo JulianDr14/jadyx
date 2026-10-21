@@ -270,6 +270,26 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
         local_memory_scratch_words =
             std::max(local_memory_scratch_words, info->local_memory_scratch_words);
     }
+    // The buffer cache binds each stage's enabled constant buffers in index order, the order of
+    // the descriptors that RootSignatureCache walked.
+    const std::span<const u32> root_slots = layout.CbvRootSlots();
+    for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+        if (!infos[stage]) {
+            continue;
+        }
+        const auto& used_sizes = infos[stage]->constant_buffer_used_sizes;
+        for (const auto& desc : infos[stage]->constant_buffer_descriptors) {
+            for (u32 element = 0; element < desc.count; ++element) {
+                const size_t ordinal = cbv_slots.size();
+                const u32 cbuf = desc.index + element;
+                cbv_slots.push_back({
+                    .root_slot = ordinal < root_slots.size() ? root_slots[ordinal]
+                                                             : PipelineLayout::NO_ROOT_CBV,
+                    .reach = cbuf < used_sizes.size() ? used_sizes[cbuf] : 0x10000,
+                });
+            }
+        }
+    }
     namespace FT = VideoCore::FrameTrace;
     const u64 trace_pipeline = reinterpret_cast<uintptr_t>(this);
     FT::Mark(FT::Event::PipelineBuildRequested, trace_pipeline, key.Hash());
@@ -546,7 +566,7 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     out.sampler_table = sampler_table.Table(context.sampler_heap);
     lap.Lap(VideoCore::Perf::Counter::DrawSamplersNs);
     GuestDescriptorQueue& queue = context.descriptor_queue;
-    queue.Acquire(layout.NumResourceDescriptors());
+    queue.Acquire(layout.NumResourceDescriptors(), cbv_slots);
     ImageTransitionList image_transitions;
     bool uses_render_area = false;
     const bool has_integer_samplers = layout.IntegerSamplerIndex() != PipelineLayout::NO_TABLE;
@@ -611,7 +631,6 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
         PushStorageImages(info, texture_cache, queue, views_it, image_transitions);
         uses_render_area |= info.uses_render_area;
     }
-    queue.FlushCopies();
     if (buffer_cache.any_buffer_uploaded) {
         buffer_cache.runtime.PostCopyBarrier();
         buffer_cache.any_buffer_uploaded = false;
@@ -654,6 +673,7 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     lap.Lap(VideoCore::Perf::Counter::DrawTargetsNs);
 
     out.resource_table = queue.Table();
+    std::ranges::copy(queue.RootConstantBuffers(), out.root_cbvs.begin());
     out.integer_samplers = integer_samplers.Upload(buffer_cache);
     lap.Lap(VideoCore::Perf::Counter::DrawSamplersNs);
 

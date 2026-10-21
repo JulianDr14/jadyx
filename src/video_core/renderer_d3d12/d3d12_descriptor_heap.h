@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <deque>
 #include <mutex>
 #include <span>
@@ -36,7 +38,15 @@ public:
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE Allocate();
     void Free(D3D12_CPU_DESCRIPTOR_HANDLE handle);
 
+    /// Counts the CBV/SRV/UAV slots ever freed: a new view may take a freed handle, so a table
+    /// copied from handles before a free may no longer hold what they describe.
+    [[nodiscard]] static u64 ViewFrees() noexcept {
+        return view_frees.load(std::memory_order_relaxed);
+    }
+
 private:
+    static inline std::atomic<u64> view_frees{};
+
     struct PendingFree {
         u64 record_point;
         D3D12_CPU_DESCRIPTOR_HANDLE handle;
@@ -73,6 +83,11 @@ public:
     DescriptorRing& operator=(const DescriptorRing&) = delete;
 
     [[nodiscard]] DescriptorRange Allocate(u32 count);
+    /// Gives back range, the last count slots Allocate handed out, unless the ring allocated
+    /// again since.
+    void Rewind(const DescriptorRange& range, u32 count);
+
+    [[nodiscard]] u64 CurrentTick() const;
 
     /// Allocates count slots and copies the given offline descriptors into them.
     [[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE Upload(
@@ -102,12 +117,26 @@ private:
     u32 head{}; ///< next free slot
     u32 tail{}; ///< oldest slot the GPU may still read
     std::deque<std::pair<u64, u32>> in_flight; ///< (tick, end offset), oldest first
+    u32 head_before{};       ///< head before the last allocation, for Rewind
+    bool added_in_flight{}; ///< the last allocation started its in_flight entry
     bool logged_upload{};
 };
 
-/// The CBV/SRV/UAV table of one draw or dispatch, written in root-signature order straight into a
-/// range of the ring (see d3d12_root_signature.h for the slot order). Buffer views are created in
-/// place; image views are copied from their offline descriptors.
+/// Most root CBVs a guest root signature has (PipelineLayout::NumRootCbvs).
+constexpr u32 MAX_ROOT_CBVS = 16;
+
+/// Where one constant buffer of a pipeline's binding stream goes.
+struct ConstantBufferSlot {
+    static constexpr u32 TABLE = ~0u;
+    u32 root_slot{TABLE}; ///< root CBV slot, or TABLE
+    u32 reach{};          ///< bytes the shader may read from it
+};
+
+/// The CBV/SRV/UAV table of one draw or dispatch, in root-signature order, in a range of the ring
+/// (see d3d12_root_signature.h for the slot order). Buffer views are created in place; image views
+/// are copied from their offline descriptors. The descriptors are only recorded until Table():
+/// consecutive draws often bind the very same ones, and then a table written earlier in the same
+/// list is reused, like the Vulkan backend reuses an identical descriptor payload.
 ///
 /// Acquire() must come before any command of the draw is recorded: allocating from a full ring
 /// flushes the command list.
@@ -118,28 +147,64 @@ public:
     GuestDescriptorQueue(const GuestDescriptorQueue&) = delete;
     GuestDescriptorQueue& operator=(const GuestDescriptorQueue&) = delete;
 
-    /// Starts a table of count descriptors (none when count is zero).
-    void Acquire(u32 count);
+    /// Starts a table of count descriptors (none when count is zero). cbv_slots, one per constant
+    /// buffer the draw binds and in that order, sends some of them to root CBVs.
+    void Acquire(u32 count, std::span<const ConstantBufferSlot> cbv_slots = {});
 
     /// GPU handle of the table; checks (and warns once) that it was filled exactly.
     [[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE Table();
 
     /// A CBV; address 0 writes a null one. size is rounded up to 256 bytes.
     void AddConstantBuffer(D3D12_GPU_VIRTUAL_ADDRESS address, u32 size);
+    /// Bytes the next constant buffer must hold when bound with size bytes. A table CBV reads
+    /// zeros past its size; a root CBV has no size, so it must cover all the shader may read.
+    [[nodiscard]] u32 ConstantBufferReach(u32 size) const;
+    /// Addresses of the root CBVs of the draw, by root slot.
+    [[nodiscard]] std::span<const D3D12_GPU_VIRTUAL_ADDRESS> RootConstantBuffers() const {
+        return std::span{root_cbvs}.first(num_root_cbvs);
+    }
     /// A raw UAV, then a raw SRV of the same range (null ones when resource is null).
     void AddStorageBuffer(ID3D12Resource* resource, u64 offset, u32 size);
     /// A typed SRV (texture buffer), preceded by a typed UAV for image buffers. Null views when
     /// resource is null or the offset is not a whole number of elements.
     void AddTexelBuffer(ID3D12Resource* resource, u64 offset, u32 size, DXGI_FORMAT format,
                         u32 element_size, bool with_uav);
-    /// Copies of offline descriptors (texture SRVs, image UAVs). Consecutive copies are recorded
-    /// with one CopyDescriptors call when the table is finished.
+    /// Copies of offline descriptors (texture SRVs, image UAVs). Consecutive copies are written
+    /// with one CopyDescriptors call.
     void AddCopy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor);
-    /// Writes the pending copies to the slots reserved for them (Table() also does).
-    void FlushCopies();
 
 private:
+    /// One recorded descriptor. Views are already validated: Table() only creates them.
+    struct Write {
+        enum class Kind : u32 { ConstantBuffer, StorageBuffer, TexelBuffer, Copy };
+        Kind kind{};
+        u32 size{};
+        u64 handle{}; ///< GPU address, resource or offline descriptor
+        u64 offset{}; ///< texel buffers: first element
+        u32 format{}; ///< texel buffers: DXGI_FORMAT
+        u32 with_uav{};
+
+        bool operator==(const Write&) const = default;
+    };
+    /// A table written earlier in the list being recorded.
+    struct RecentTable {
+        u64 tick{};
+        u64 view_frees{};
+        u32 count{};
+        D3D12_GPU_DESCRIPTOR_HANDLE gpu{};
+        std::vector<Write> writes;
+    };
+    static constexpr size_t NUM_RECENT_TABLES = 8;
+
     D3D12_CPU_DESCRIPTOR_HANDLE Next();
+    /// The recent table holding exactly the recorded descriptors, if one may still be read.
+    [[nodiscard]] const RecentTable* FindRecent() const;
+    void WriteRecorded();
+    void CreateConstantBuffer(const Write& write);
+    void CreateStorageBuffer(const Write& write);
+    void CreateTexelBuffer(const Write& write);
+    void Copy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor);
+    void FlushCopies();
 
     ID3D12Device* device;
     DescriptorRing& ring;
@@ -147,9 +212,20 @@ private:
     DescriptorRange range{};
     u32 count{};
     u32 written{};
+    u64 acquire_tick{};
+    bool finished{};
+    std::vector<Write> writes;
+    std::array<RecentTable, NUM_RECENT_TABLES> recent_tables{};
+    size_t next_recent{};
     /// Sources of the pending copies, written from copy_destination on.
     boost::container::small_vector<D3D12_CPU_DESCRIPTOR_HANDLE, 64> pending_copies;
     D3D12_CPU_DESCRIPTOR_HANDLE copy_destination{};
+    std::span<const ConstantBufferSlot> cbv_slots;
+    u32 cbv_index{};
+    std::array<D3D12_GPU_VIRTUAL_ADDRESS, MAX_ROOT_CBVS> root_cbvs{};
+    u32 num_root_cbvs{};
+    /// 64 KiB of zeros, the largest constant buffer: what an unbound root CBV points at.
+    ComPtr<ID3D12Resource> zero_buffer;
     bool logged_mismatch{};
     bool logged_unaligned{};
 };
