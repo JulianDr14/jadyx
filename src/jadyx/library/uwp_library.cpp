@@ -140,6 +140,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     enum class StorageJob { Files, PortalGame, PortalSystem, PortalContent, PortalRemoval, Removal };
     StorageJob storage_job{};
     std::optional<GameFiles> removal_request; ///< Confirmed in the game's options.
+    bool removed_copy{}; ///< That removal keeps another copy of the game.
     std::wstring after_scan; ///< Shown when the rescan that follows a storage job completes.
     /// Set for the rescan after a storage job that leaves keys and firmware alone: it keeps the
     /// titles already read. The value is the game whose content changed (0: none).
@@ -1117,7 +1118,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         const bool content = storage_job == StorageJob::PortalRemoval &&
                             !network_portal.Status().removal.content.empty();
                         after_scan = Tr(!error.empty() ? (error == "external" ? T::GameRemoveExternal : T::GameRemoveFailed) :
-                                        content ? T::ContentRemoved : T::GameRemoved);
+                                        content ? T::ContentRemoved :
+                                        storage_job == StorageJob::Removal && removed_copy ? T::GameCopyRemoved : T::GameRemoved);
                     } else {
                         configuration.notice = error.empty() ? std::wstring{Tr(storage_job==StorageJob::PortalSystem&&network_portal.Status().system.phase!="complete"?T::SystemReviewReady:T::ImportDone)} :
                             storage_job != StorageJob::Files ? std::wstring{Tr(T::ImportFailedKept)} : Wide(error);
@@ -1647,17 +1649,18 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 send(Quit, GameOptionsInput::Back);
                 if (option == GameOption::Remove && (game_options.confirm_discard || game_options.discard)) {
                     const auto& game = scan.entries[game_options.game];
-                    auto files = FindGameFiles(scan.entries, FileSys::GetBaseTitleID(game.program_id));
+                    auto files = FindDumpFiles(scan.entries, game.launch_path);
                     if (!game.program_id || files.external) {
                         game_options.confirm_discard = game_options.discard = false;
                         notify(files.external ? T::GameRemoveExternal : T::GameRemoveFailed);
                     } else if (std::exchange(game_options.discard, false)) {
                         // The storage worker deletes it once the options have closed.
+                        removed_copy = files.kept;
                         removal_request = std::move(files);
                         game_options.open = false;
                         options_notice.clear();
                     } else {
-                        options_notice = Tr(T::GameRemoveConfirm);
+                        options_notice = Tr(files.kept ? T::GameRemoveCopyConfirm : T::GameRemoveConfirm);
                         options_notice_until = std::chrono::steady_clock::time_point::max();
                     }
                 } else if (game_options.confirm_discard || game_options.discard) {
@@ -2115,7 +2118,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             const GameOptionsView options_view{
                 game_options, game_options.open && !configuration.open && game_options.game < scan.entries.size() ? &scan.entries[game_options.game] : nullptr,
                 cheat_session ? &*cheat_session : nullptr, cheats_page, options_notice, content_session.get(),
-                mod_session.get(), &mods_page};
+                mod_session.get(), &mods_page,
+                game_options.open && game_options.game < scan.entries.size() &&
+                    FindDumpFiles(scan.entries, scan.entries[game_options.game].launch_path).kept};
             // Titles, Pulse sessions and plays arrive after the shelf was made: keep it current,
             // the focus on the same game.
             if (tab == LibraryTab::Library && !loading) {

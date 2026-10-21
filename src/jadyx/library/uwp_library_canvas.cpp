@@ -1569,7 +1569,8 @@ private:
                 in_place(option, pulse, game.pulse_saved.empty() ? std::wstring_view{} : Tr(T::PulseDiscardConfirm));
             } else if (option == GameOption::Remove) {
                 const bool external = IsStoragePath(game.launch_path);
-                in_place(option, Tr(external ? T::GameRemoveExternal : T::GameRemoveWarning),
+                in_place(option, Tr(external ? T::GameRemoveExternal :
+                                    view.other_copies ? T::GameRemoveCopyWarning : T::GameRemoveWarning),
                          external ? std::wstring_view{} : Tr(T::GameRemove));
             } else {
                 Type(view.notice.empty() ? Tr(T::CheckingGame) : view.notice, TypeRole::BodyLarge, 56, 230, 1168, Palette::TextHint,
