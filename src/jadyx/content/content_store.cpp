@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/content/content_store.h"
+#include <algorithm>
 #include <fstream>
 #include <set>
 #include <nlohmann/json.hpp>
@@ -98,6 +99,20 @@ bool Read(const std::filesystem::path& path, Catalog& output) {
     } catch (const std::exception&) { return false; }
 }
 } // namespace
+
+std::uint64_t ApplicationStamp(const Catalog& catalog, std::uint64_t application) {
+    const auto hash = [](std::string_view text, bool enabled) {
+        std::uint64_t value = 0xcbf29ce484222325ULL ^ static_cast<std::uint64_t>(enabled);
+        for (const unsigned char c : text) value = (value ^ c) * 0x100000001b3ULL;
+        return value;
+    };
+    // A sum, so the catalog's order does not matter; never 0.
+    std::uint64_t stamp = std::find(catalog.managed_applications.begin(), catalog.managed_applications.end(),
+                                    application) != catalog.managed_applications.end() ? 2 : 0;
+    for (const auto& r : catalog.revisions)
+        if (r.application == application) stamp += hash(r.id, r.enabled);
+    return stamp | 1;
+}
 
 std::filesystem::path ContentStore::Object(const std::string& id) const {
     return ValidId(id) ? root / "objects" / id : std::filesystem::path{};
