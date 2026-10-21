@@ -16,15 +16,26 @@
 
 namespace Jadyx {
 
+enum class PortalLink { Ethernet, WiFi };
+
 struct PortalAddress {
-    std::string name;
+    std::string name; ///< "Ethernet" or "Wi-Fi", from `link`.
     std::string ipv4;
+    PortalLink link{};
+    bool gateway{};    ///< The router answered: phones on the same network can reach it.
+    bool link_local{}; ///< 169.254.x.x: the router gave no address, so phones cannot reach it.
 };
 
-/// LAN IPv4 addresses on operational Ethernet/Wi-Fi adapters, gateways first.
+/// LAN IPv4 addresses on operational Ethernet/Wi-Fi adapters: with a gateway first, then by
+/// the system's own route metric, link-local last. Only addresses the console owns for sure.
 std::vector<PortalAddress> PortalAddresses();
+/// Whether an operational adapter still holds `ipv4`. Cheaper than PortalAddresses for polling.
+bool PortalAddressOwned(const std::string& ipv4);
+/// Every adapter the console sees, kept or not and why, for the portal fault reports.
+/// No MAC addresses or adapter GUIDs.
+std::string PortalAdapterReport();
 
-enum class PortalError { None, NoAddress, Bind, Random, Listen, Storage };
+enum class PortalError { None, NoAddress, AddressLost, PortInUse, PortBlocked, Bind, Random, Listen, Storage };
 
 /// A deletion asked from the browser. The library runs it with its other storage jobs.
 struct PortalRemoval {

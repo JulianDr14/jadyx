@@ -19,7 +19,13 @@
 #include <set>
 #include <fstream>
 #include <fileapifromapp.h>
+#include <map>
 #include <thread>
+#include <tuple>
+#include <cctype>
+#include <format>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Networking.Connectivity.h>
 
 namespace Jadyx {
 namespace {
@@ -270,23 +276,123 @@ std::vector<PortalAddress> PortalAddresses() {
         if (size > 1024 * 1024) return {};
         data.resize(size);
     }
-    if (result != NO_ERROR) return {};
-    std::vector<PortalAddress> preferred, other;
-    for (auto* a = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(data.data()); a; a = a->Next) {
+    if (result != NO_ERROR) data.clear();
+    return data;
+}
+
+std::string LowerGuid(std::string text) {
+    text.erase(std::remove_if(text.begin(), text.end(), [](char c) { return c == '{' || c == '}'; }), text.end());
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+
+/// What Windows' connection manager knows of each adapter, by adapter GUID. The console can
+/// show its wireless link as an Ethernet interface, so the interface type alone is not enough.
+struct AdapterProfile { bool wlan{}, internet{}; std::uint32_t iana{}; };
+std::map<std::string, AdapterProfile> AdapterProfiles() {
+    using namespace winrt::Windows::Networking::Connectivity;
+    std::map<std::string, AdapterProfile> result;
+    try {
+        for (const auto& profile : NetworkInformation::GetConnectionProfiles()) {
+            const auto adapter = profile.NetworkAdapter();
+            if (!adapter) continue;
+            auto& entry = result[LowerGuid(winrt::to_string(winrt::to_hstring(adapter.NetworkAdapterId())))];
+            entry.wlan |= profile.IsWlanConnectionProfile();
+            entry.iana = adapter.IanaInterfaceType();
+        }
+        if (const auto internet = NetworkInformation::GetInternetConnectionProfile())
+            if (const auto adapter = internet.NetworkAdapter())
+                result[LowerGuid(winrt::to_string(winrt::to_hstring(adapter.NetworkAdapterId())))].internet = true;
+    } catch (...) {} // Without the connection manager the interface type still decides.
+    return result;
+}
+
+bool Wireless(const IP_ADAPTER_ADDRESSES& adapter, const AdapterProfile* profile) {
+    return adapter.IfType == IF_TYPE_IEEE80211 ||
+        (profile && (profile->wlan || profile->iana == IF_TYPE_IEEE80211));
+}
+
+std::string Narrow(const wchar_t* text) {
+    return text ? winrt::to_string(text) : std::string{};
+}
+} // namespace
+
+std::vector<PortalAddress> PortalAddresses() {
+    const auto data = AdapterTable();
+    if (data.empty()) return {};
+    const auto profiles = AdapterProfiles();
+    struct Ranked { PortalAddress address; bool internet{}, deprecated{}; ULONG metric{}; };
+    std::vector<Ranked> found;
+    for (auto* a = reinterpret_cast<const IP_ADAPTER_ADDRESSES*>(data.data()); a; a = a->Next) {
         if (a->OperStatus != IfOperStatusUp ||
             (a->IfType != IF_TYPE_ETHERNET_CSMACD && a->IfType != IF_TYPE_IEEE80211)) continue;
+        const auto profile_it = profiles.find(LowerGuid(a->AdapterName ? a->AdapterName : ""));
+        const auto* profile = profile_it != profiles.end() ? &profile_it->second : nullptr;
+        const auto link = Wireless(*a, profile) ? PortalLink::WiFi : PortalLink::Ethernet;
         for (auto* u = a->FirstUnicastAddress; u; u = u->Next) {
             if (!u->Address.lpSockaddr || u->Address.lpSockaddr->sa_family != AF_INET) continue;
+            // Tentative, duplicate or invalid addresses are not the console's yet (or anymore).
+            if (u->DadState != IpDadStatePreferred && u->DadState != IpDadStateDeprecated) continue;
             char address[INET_ADDRSTRLEN]{};
             auto* ip = &reinterpret_cast<sockaddr_in*>(u->Address.lpSockaddr)->sin_addr;
             if (!InetNtopA(AF_INET, ip, address, sizeof(address)) || !LocalIpv4(address)) continue;
+            if ((ntohl(ip->s_addr) >> 24) == 127) continue; // the native harness passes loopback itself
+            if (std::any_of(found.begin(), found.end(), [&](const Ranked& r) { return r.address.ipv4 == address; }))
+                continue;
             // Friendly adapter names never become HTML or a command; the local UI renders text.
-            std::string name = a->IfType == IF_TYPE_IEEE80211 ? "Wi-Fi" : "Ethernet";
-            (a->FirstGatewayAddress ? preferred : other).push_back({std::move(name), address});
+            found.push_back({{link == PortalLink::WiFi ? "Wi-Fi" : "Ethernet", address, link,
+                              a->FirstGatewayAddress != nullptr, (ntohl(ip->s_addr) >> 16) == 0xa9fe},
+                             profile && profile->internet, u->DadState == IpDadStateDeprecated, a->Ipv4Metric});
         }
     }
-    preferred.insert(preferred.end(), other.begin(), other.end());
-    return preferred;
+    std::stable_sort(found.begin(), found.end(), [](const Ranked& l, const Ranked& r) {
+        return std::tuple{l.address.link_local, !l.address.gateway, !l.internet, l.deprecated, l.metric} <
+               std::tuple{r.address.link_local, !r.address.gateway, !r.internet, r.deprecated, r.metric};
+    });
+    std::vector<PortalAddress> result;
+    for (auto& r : found) result.push_back(std::move(r.address));
+    return result;
+}
+
+bool PortalAddressOwned(const std::string& ipv4) {
+    const auto data = AdapterTable();
+    for (auto* a = data.empty() ? nullptr : reinterpret_cast<const IP_ADAPTER_ADDRESSES*>(data.data()); a; a = a->Next) {
+        if (a->OperStatus != IfOperStatusUp) continue;
+        for (auto* u = a->FirstUnicastAddress; u; u = u->Next) {
+            if (!u->Address.lpSockaddr || u->Address.lpSockaddr->sa_family != AF_INET) continue;
+            char address[INET_ADDRSTRLEN]{};
+            if (InetNtopA(AF_INET, &reinterpret_cast<sockaddr_in*>(u->Address.lpSockaddr)->sin_addr, address,
+                          sizeof(address)) && ipv4 == address)
+                return true;
+        }
+    }
+    return false;
+}
+
+std::string PortalAdapterReport() {
+    const auto data = AdapterTable();
+    if (data.empty()) return "adapters: GetAdaptersAddresses failed\n";
+    const auto profiles = AdapterProfiles();
+    std::string report;
+    for (auto* a = reinterpret_cast<const IP_ADAPTER_ADDRESSES*>(data.data()); a; a = a->Next) {
+        const auto profile_it = profiles.find(LowerGuid(a->AdapterName ? a->AdapterName : ""));
+        const auto* profile = profile_it != profiles.end() ? &profile_it->second : nullptr;
+        const bool kept_type = a->IfType == IF_TYPE_ETHERNET_CSMACD || a->IfType == IF_TYPE_IEEE80211;
+        report += std::format("adapter '{}' ({}) type={} up={} metric={} gateway={} profile={}{}\n",
+            Narrow(a->FriendlyName), Narrow(a->Description), a->IfType, a->OperStatus == IfOperStatusUp,
+            a->Ipv4Metric, a->FirstGatewayAddress != nullptr,
+            profile ? std::format("wlan={} iana={} internet={}", profile->wlan, profile->iana, profile->internet) : "none",
+            !kept_type ? " [skipped: type]" : a->OperStatus != IfOperStatusUp ? " [skipped: down]" :
+                Wireless(*a, profile) ? " [Wi-Fi]" : " [Ethernet]");
+        for (auto* u = a->FirstUnicastAddress; u; u = u->Next) {
+            if (!u->Address.lpSockaddr || u->Address.lpSockaddr->sa_family != AF_INET) continue;
+            char address[INET_ADDRSTRLEN]{};
+            InetNtopA(AF_INET, &reinterpret_cast<sockaddr_in*>(u->Address.lpSockaddr)->sin_addr, address, sizeof(address));
+            report += std::format("  ipv4 {} dad={} prefix={} lan={}\n", address, static_cast<int>(u->DadState),
+                                  static_cast<int>(u->OnLinkPrefixLength), LocalIpv4(address));
+        }
+    }
+    return report;
 }
 
 struct NetworkPortal::Impl {
