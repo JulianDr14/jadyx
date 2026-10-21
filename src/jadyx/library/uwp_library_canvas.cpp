@@ -1566,7 +1566,8 @@ private:
             if (option == GameOption::Pulse) {
                 const auto pulse = game.pulse_saved.empty() ? std::wstring{Tr(T::PulseNone)} :
                     I18n::Format(game.pulse_current ? T::PulseSavedOn : T::PulseSavedOther, {game.pulse_saved});
-                in_place(option, pulse, game.pulse_saved.empty() ? std::wstring_view{} : Tr(T::PulseDiscardConfirm));
+                const auto discard = I18n::Format(T::PulseDiscardConfirm, {PromptKey(Navigation::Play).letters});
+                in_place(option, pulse, game.pulse_saved.empty() ? std::wstring_view{} : std::wstring_view{discard});
             } else if (option == GameOption::Remove) {
                 const bool external = IsStoragePath(game.launch_path);
                 in_place(option, Tr(external ? T::GameRemoveExternal :
@@ -1625,8 +1626,10 @@ private:
                 active ? Palette::Text : Palette::TextHint, 1, TextAlign::Center);
             AddHit(left, sections + 4, tab_width - 4, 36, LibraryHit::GameOptionSelect, i);
         }
+        // A confirmation names the key that confirms on this controller ("{0}").
         if (!view.notice.empty() && view.page.page != GameOption::Mods && view.page.page != GameOption::Cheats)
-            Type(view.notice, TypeRole::Label, 56, G::Status, 1168, Palette::Warning);
+            Type(I18n::Format(view.notice, {PromptKey(Navigation::Play).letters}), TypeRole::Label, 56, G::Status,
+                 1168, Palette::Warning);
         if (view.page.focus != GameOptionsFocus::Content) {
             // On the bars: switching tabs, then the way down, up and out, over the pane's own.
             Round(0, G::FooterLine + 1, 1280, 720 - G::FooterLine - 1, 0, Palette::Canvas);

@@ -428,7 +428,7 @@ void DrawExplore(UiPainter& paint, const ModsView& view, float x, float y) {
     if (store.cards.empty()) {
         switch (store.status) {
         case StoreStatus::Offline:
-            DrawMessage(paint, UiIcon::Mods, I18n::Format(Text::ModsStoreOffline, {Tr(SourceText(store.source))}), x, y + 40);
+            DrawMessage(paint, UiIcon::Mods, I18n::Format(Text::ModsStoreOffline, {Tr(SourceText(store.source)), view.confirm}), x, y + 40);
             return;
         case StoreStatus::Empty:
             DrawMessage(paint, UiIcon::Mods,
@@ -437,7 +437,7 @@ void DrawExplore(UiPainter& paint, const ModsView& view, float x, float y) {
                         x, y + 40);
             return;
         case StoreStatus::NoGame:
-            DrawMessage(paint, UiIcon::Game, I18n::Format(Text::ModsStoreNoGame, {view.game}), x, y + 40);
+            DrawMessage(paint, UiIcon::Game, I18n::Format(Text::ModsStoreNoGame, {view.game, view.confirm}), x, y + 40);
             return;
         default:
             // Cards to come: their outlines, so the grid does not jump when they arrive.
@@ -524,7 +524,7 @@ void DrawDetail(UiPainter& paint, const ModsView& view, float x, float y) {
     const auto& store = view.session.Store();
     paint.ManagementSurface(x, y, L::Width, L::Height, L::Footer);
     if (!store.detail) {
-        const auto text = store.detail_failed ? I18n::Format(Text::ModsStoreOffline, {Tr(Text::ModsSourceGameBanana)})
+        const auto text = store.detail_failed ? I18n::Format(Text::ModsStoreOffline, {Tr(Text::ModsSourceGameBanana), view.confirm})
                                               : std::wstring{Tr(Text::ModsDetailLoading)};
         paint.Icon(UiIcon::Mods, x + L::Width / 2 - 16, y + 240, Palette::TextSecondary);
         paint.Text(text, x + L::Margin, y + 290, 20, Palette::TextHint, RowWidth, 60, false, true, true);
@@ -789,7 +789,7 @@ void DrawCategories(UiPainter& paint, const ModsView& view, float x, float y) {
     paint.Text(title, left, top, 22, Palette::Text, inner, 32, true);
     if (rows.empty()) {
         const auto text = store.categories_failed
-                              ? I18n::Format(Text::ModsStoreOffline, {Tr(Text::ModsSourceGameBanana)})
+                              ? I18n::Format(Text::ModsStoreOffline, {Tr(Text::ModsSourceGameBanana), view.confirm})
                               : std::wstring{Tr(Text::ModsCategoriesLoading)};
         paint.Text(text, left, top + 220, 18, Palette::TextHint, inner, 60, false, true, true);
         return;

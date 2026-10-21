@@ -1675,7 +1675,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         options_notice = Tr(T::PulseDiscardConfirm);
                         options_notice_until = std::chrono::steady_clock::time_point::max();
                     }
-                } else if (options_notice == Tr(T::PulseDiscardConfirm) || options_notice == Tr(T::GameRemoveConfirm)) {
+                } else if (options_notice == Tr(T::PulseDiscardConfirm) || options_notice == Tr(T::GameRemoveConfirm) ||
+                           options_notice == Tr(T::GameRemoveCopyConfirm)) {
                     options_notice.clear();
                 }
                 dirty = true;
