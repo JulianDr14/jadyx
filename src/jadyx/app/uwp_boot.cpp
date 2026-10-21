@@ -2387,6 +2387,10 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 if (pressed) VideoCore::FrameTrace::Start(480);
                 return;
             }
+            if (developer_hotkeys && key == VirtualKey::F6) {
+                if (pressed) D3D12::TraceNextFrames(1);
+                return;
+            }
             if (developer_hotkeys && key == VirtualKey::F7) {
                 if (pressed) D3D12::TraceNextMaterialFrame();
                 return;
