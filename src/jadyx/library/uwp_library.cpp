@@ -2044,13 +2044,15 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         // every title the cache already has, then the rest of the library into the cache.
         const auto covers = covers_for_tab();
         const size_t page = covers.key;
-        // The player moved to other rows: background work yields to its covers.
-        if (metadata.valid() && metadata_background && (metadata_dirty || retained_page != page))
+        // The player moved to other rows: background work yields to its covers. Behind the file
+        // manager no cover is shown, but titles still fill in (the portal lists them).
+        const bool covers_due = !configuration.open && (metadata_dirty || retained_page != page);
+        if (metadata.valid() && metadata_background && covers_due)
             metadata_worker.request_stop();
-        if (!configuration.busy && !content_session && !validation.valid() && !missing_content && !configuration.open && !loading && !metadata.valid() && !scan.entries.empty()) {
+        if (!configuration.busy && !setup_future.valid() && !content_session && !validation.valid() && !missing_content && !loading && !metadata.valid() && !scan.entries.empty()) {
             MetadataOptions request{title_language};
             std::vector<LibraryEntry> requested;
-            if (metadata_dirty || retained_page != page) {
+            if (covers_due) {
                 metadata_dirty = false;
                 retained_page = page;
                 for (size_t i = 0; i < scan.entries.size(); ++i) {
