@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <deque>
 #include <mutex>
 #include <span>
@@ -37,7 +38,15 @@ public:
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE Allocate();
     void Free(D3D12_CPU_DESCRIPTOR_HANDLE handle);
 
+    /// Counts the CBV/SRV/UAV slots ever freed: a new view may take a freed handle, so a table
+    /// copied from handles before a free may no longer hold what they describe.
+    [[nodiscard]] static u64 ViewFrees() noexcept {
+        return view_frees.load(std::memory_order_relaxed);
+    }
+
 private:
+    static inline std::atomic<u64> view_frees{};
+
     struct PendingFree {
         u64 record_point;
         D3D12_CPU_DESCRIPTOR_HANDLE handle;

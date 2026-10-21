@@ -80,6 +80,9 @@ void CpuDescriptorAllocator::Free(D3D12_CPU_DESCRIPTOR_HANDLE handle) {
     if (handle.ptr == 0) {
         return;
     }
+    if (type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) {
+        view_frees.fetch_add(1, std::memory_order_relaxed);
+    }
     std::scoped_lock lock{mutex};
     if (scheduler) {
         // A call recorded before the free may still have to read the descriptor.
