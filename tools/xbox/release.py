@@ -4,8 +4,9 @@
 
   release.py version 0.3.0 --manifest dist/uwp/AppxManifest.xml --releases releases.json
       Checks that 0.3.0 can be published and prints package_version=0.3.0.0 and tag=v0.3.0.
-  release.py bump 0.3.0.0 --manifest dist/uwp/AppxManifest.xml
-      Writes the package version into the manifest, keeping the rest of the file byte for byte.
+  release.py bump 0.3.0.0 --manifest dist/uwp/AppxManifest.xml [--issue-template bug_report.yml]
+      Writes the package version into the manifest, keeping the rest of the file byte for byte,
+      and lists it first in the bug report's version dropdown.
   release.py notes --tag v0.3.0 [--previous v0.2.0] [--repo owner/name]
       Prints the release notes: the conventional commits on the first-parent history since the
       previous release, grouped by kind.
@@ -22,6 +23,8 @@ import subprocess
 import sys
 
 VERSION_ATTR = re.compile(r'(<Identity\b[^>]*?\bVersion=")([0-9.]+)(")', re.S)
+# The "- 0.3.0.0" options of the bug report's "Jadyx version" dropdown.
+ISSUE_VERSIONS = re.compile(r"(label: Jadyx version\n(?:[ \t]+(?!options:)\S.*\n)*?[ \t]+options:\n)((?:[ \t]+- .*\n)+)")
 CONVENTIONAL = re.compile(r"^(?P<kind>[a-z]+)(?:\((?P<scope>[^)]*)\))?(?P<breaking>!)?:\s*(?P<text>.+)$")
 SECTIONS = (
     ("feat", "New"),
@@ -98,6 +101,28 @@ def bump(package_version, manifest):
         output.write(bom + updated.encode("utf-8"))
 
 
+def issue_versions(path):
+    with open(path, encoding="utf-8", newline="") as source:
+        text = source.read()
+    match = ISSUE_VERSIONS.search(text)
+    if not match:
+        raise ValueError(f"{path} has no Jadyx version dropdown")
+    return text, match, [line.strip()[2:] for line in match.group(2).splitlines()]
+
+
+def list_issue_version(package_version, template):
+    """Lists the version first in the bug report dropdown; issue forms only take fixed options."""
+    parse_package(package_version)
+    text, match, versions = issue_versions(template)
+    if package_version in versions:
+        return
+    options = match.group(2)
+    indent = options[:len(options) - len(options.lstrip())]
+    updated = text[:match.end(1)] + f"{indent}- {package_version}\n" + text[match.end(1):]
+    with open(template, "w", encoding="utf-8", newline="") as output:
+        output.write(updated)
+
+
 def entries(log):
     """Yields (kind, scope, text) for each first-parent commit of `git log` output."""
     for record in log.split("\x1e"):
@@ -152,9 +177,11 @@ def main(argv):
     v.add_argument("--manifest", required=True)
     v.add_argument("--match-manifest", action="store_true", help="Require the committed source version to match the package")
     v.add_argument("--releases", required=True, help="gh api --paginate --slurp .../releases")
+    v.add_argument("--issue-template", help="Require the version in this bug report's version dropdown")
     b = commands.add_parser("bump")
     b.add_argument("package_version")
     b.add_argument("--manifest", required=True)
+    b.add_argument("--issue-template", help="Also list the version in this bug report's version dropdown")
     n = commands.add_parser("notes")
     n.add_argument("--tag", required=True)
     n.add_argument("--previous", default="")
@@ -167,10 +194,16 @@ def main(argv):
                 package = validate(args.version, args.manifest, json.load(source))
             if args.match_manifest and parse_package(package) != manifest_version(args.manifest):
                 raise ValueError("Commit the exact release version in AppxManifest.xml before publishing")
+            if args.issue_template and package not in issue_versions(args.issue_template)[2]:
+                raise ValueError(
+                    f"List {package} in {args.issue_template} before publishing: release.py bump "
+                    f"{package} --manifest {args.manifest} --issue-template {args.issue_template}")
             print(f"package_version={package}")
             print(f"tag=v{package}")
         elif args.command == "bump":
             bump(args.package_version, args.manifest)
+            if args.issue_template:
+                list_issue_version(args.package_version, args.issue_template)
         elif args.previous:
             sys.stdout.write(notes(git_log(args.previous), args.tag, args.previous, args.repo))
         else:
