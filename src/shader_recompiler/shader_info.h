@@ -278,6 +278,9 @@ struct Info {
     /// Words of local memory the backend placed in the scratch pool (local_memory_scratch.h), 0
     /// when it stays in a private array. Set by the SPIR-V backend.
     u32 local_memory_scratch_words{};
+    /// Transform feedback buffers the shader writes as storage buffers (bit N: buffer N, see
+    /// transform_feedback_storage.h). Set by the SPIR-V backend.
+    u32 xfb_storage_buffers{};
 
     bool uses_fp16{};
     bool uses_fp64{};

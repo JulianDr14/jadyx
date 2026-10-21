@@ -124,6 +124,9 @@ struct RuntimeInfo {
     /// Transform feedback state for each varying
     std::array<TransformFeedbackVarying, 256> xfb_varyings{};
     u32 xfb_count{0};
+    /// The vertex shader writes the varyings above to storage buffers instead of declaring them
+    /// for stream output (transform_feedback_storage.h).
+    bool xfb_storage{};
 
     /// Output types for each color attachment
     std::array<AttributeType, 8> color_output_types{};

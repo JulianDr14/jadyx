@@ -343,6 +343,13 @@ public:
     Id local_memory_stride_var{};
     Id local_memory_stride{};
     Id local_memory_acquire_func{};
+
+    /// Storage transform feedback (transform_feedback_storage.h): one storage buffer per captured
+    /// buffer, and the constants block.
+    std::array<Id, 4> xfb_storage_buffers{};
+    Id xfb_storage_element{};
+    Id xfb_storage_constants{};
+    Id xfb_storage_constant_element{};
     Id local_memory_release_func{};
 
     bool uses_explicit_workgroup_layout{};
@@ -417,6 +424,7 @@ private:
     void DefineInterfaces(const IR::Program& program);
     void DefineLocalMemory(IR::Program& program);
     void DefineLocalMemoryScratch(u32 words, bool tracks_lanes);
+    void DefineTransformFeedbackStorage(IR::Program& program);
     void DefineSharedMemory(const IR::Program& program);
     void DefineSharedMemoryFunctions(const IR::Program& program);
     void DefineConstantBuffers(const Info& info, u32& binding);

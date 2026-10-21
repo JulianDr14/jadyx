@@ -18,6 +18,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "shader_recompiler/local_memory_scratch.h"
+#include "shader_recompiler/transform_feedback_storage.h"
 
 namespace Shader::Backend::SPIRV {
 namespace {
@@ -170,7 +171,8 @@ void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invo
         const u32 remainder{4 - element};
         const TransformFeedbackVarying* xfb_varying{};
         const size_t xfb_varying_index{base_attr_index + element};
-        if (xfb_varying_index < ctx.runtime_info.xfb_count) {
+        // Storage transform feedback reads whole outputs at the epilogue: no split needed.
+        if (!ctx.runtime_info.xfb_storage && xfb_varying_index < ctx.runtime_info.xfb_count) {
             xfb_varying = &ctx.runtime_info.xfb_varyings[xfb_varying_index];
             xfb_varying = xfb_varying->components > 0 ? xfb_varying : nullptr;
         }
@@ -518,6 +520,7 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineCommonTypes(program.info);
     DefineCommonConstants();
     DefineInterfaces(program);
+    DefineTransformFeedbackStorage(program);
     DefineLocalMemory(program);
     DefineSharedMemory(program);
     DefineSharedMemoryFunctions(program);
@@ -673,6 +676,76 @@ void EmitContext::DefineLocalMemory(IR::Program& program) {
     local_memory = AddGlobalVariable(pointer, spv::StorageClass::Private);
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(local_memory);
+    }
+}
+
+void EmitContext::DefineTransformFeedbackStorage(IR::Program& program) {
+    namespace Xfb = TransformFeedbackStorage;
+    if (stage != Stage::VertexB || !runtime_info.xfb_storage || runtime_info.xfb_count == 0) {
+        return;
+    }
+    u32 buffers{};
+    for (u32 index = 0; index < runtime_info.xfb_count; ++index) {
+        const TransformFeedbackVarying& varying{runtime_info.xfb_varyings[index]};
+        if (varying.components != 0 && varying.buffer < Xfb::NUM_BUFFERS) {
+            buffers |= 1U << varying.buffer;
+        }
+    }
+    if (buffers == 0) {
+        return;
+    }
+    program.info.xfb_storage_buffers = buffers;
+
+    const Id array_type{TypeRuntimeArray(U32[1])};
+    Decorate(array_type, spv::Decoration::ArrayStride, 4U);
+    const Id struct_type{TypeStruct(array_type)};
+    Decorate(struct_type, spv::Decoration::Block);
+    MemberDecorate(struct_type, 0, spv::Decoration::Offset, 0U);
+    xfb_storage_element = TypePointer(spv::StorageClass::StorageBuffer, U32[1]);
+    const Id buffer_pointer{TypePointer(spv::StorageClass::StorageBuffer, struct_type)};
+    for (u32 index = 0; index < Xfb::NUM_BUFFERS; ++index) {
+        if ((buffers & (1U << index)) == 0) {
+            continue;
+        }
+        const Id variable{AddGlobalVariable(buffer_pointer, spv::StorageClass::StorageBuffer)};
+        Decorate(variable, spv::Decoration::Binding, index);
+        Decorate(variable, spv::Decoration::DescriptorSet, Xfb::DESCRIPTOR_SET);
+        Name(variable, fmt::format("xfb_buffer{}", index));
+        if (profile.supported_spirv >= 0x00010400) {
+            interfaces.push_back(variable);
+        }
+        xfb_storage_buffers[index] = variable;
+    }
+
+    // Scalar members: an array of u32 would take 16 bytes per element in a uniform block.
+    const std::vector<Id> members(Xfb::CONSTANT_WORDS, U32[1]);
+    const Id constants_type{TypeStruct(members)};
+    Decorate(constants_type, spv::Decoration::Block);
+    for (u32 word = 0; word < Xfb::CONSTANT_WORDS; ++word) {
+        MemberDecorate(constants_type, word, spv::Decoration::Offset, word * 4);
+    }
+    xfb_storage_constant_element = TypePointer(spv::StorageClass::Uniform, U32[1]);
+    xfb_storage_constants = AddGlobalVariable(
+        TypePointer(spv::StorageClass::Uniform, constants_type), spv::StorageClass::Uniform);
+    Decorate(xfb_storage_constants, spv::Decoration::Binding, Xfb::CONSTANTS_BINDING);
+    Decorate(xfb_storage_constants, spv::Decoration::DescriptorSet, Xfb::DESCRIPTOR_SET);
+    Name(xfb_storage_constants, "xfb_constants");
+    if (profile.supported_spirv >= 0x00010400) {
+        interfaces.push_back(xfb_storage_constants);
+    }
+
+    // The slot of the vertex: its index and instance relative to the draw's first ones.
+    if (!Sirit::ValidId(vertex_index)) {
+        vertex_index = DefineInput(*this, U32[1], true, spv::BuiltIn::VertexIndex);
+    }
+    if (!Sirit::ValidId(base_vertex)) {
+        base_vertex = DefineInput(*this, U32[1], true, spv::BuiltIn::BaseVertex);
+    }
+    if (!Sirit::ValidId(instance_index)) {
+        instance_index = DefineInput(*this, U32[1], true, spv::BuiltIn::InstanceIndex);
+    }
+    if (!Sirit::ValidId(base_instance)) {
+        base_instance = DefineInput(*this, U32[1], true, spv::BuiltIn::BaseInstance);
     }
 }
 

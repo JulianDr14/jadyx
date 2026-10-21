@@ -7,6 +7,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
+#include "shader_recompiler/transform_feedback_storage.h"
 
 namespace Shader::Backend::SPIRV {
 namespace {
@@ -91,6 +92,93 @@ void AlphaTest(EmitContext& ctx) {
     ctx.OpKill();
     ctx.AddLabel(true_label);
 }
+
+/// Component of a captured output (a TransformFeedbackVarying attribute), or its default when the
+/// shader does not write it.
+Id CapturedComponent(EmitContext& ctx, u32 attribute) {
+    const auto attr{static_cast<IR::Attribute>(attribute)};
+    if (attr >= IR::Attribute::PositionX && attr <= IR::Attribute::PositionW) {
+        const u32 element{attribute - static_cast<u32>(IR::Attribute::PositionX)};
+        const Id pointer{
+            ctx.OpAccessChain(ctx.output_f32, ctx.output_position, ctx.Const(element))};
+        return ctx.OpLoad(ctx.F32[1], pointer);
+    }
+    if (IR::IsGeneric(attr)) {
+        const u32 element{IR::GenericAttributeElement(attr)};
+        const u32 index{IR::GenericAttributeIndex(attr)};
+        const GenericElementInfo& info{ctx.output_generics[index][element]};
+        if (!Sirit::ValidId(info.id)) {
+            return ctx.Const(element == 3 ? 1.0f : 0.0f);
+        }
+        if (info.num_components == 1) {
+            return ctx.OpLoad(ctx.F32[1], info.id);
+        }
+        const Id member{ctx.Const(element - info.first_element)};
+        return ctx.OpLoad(ctx.F32[1], ctx.OpAccessChain(ctx.output_f32, info.id, member));
+    }
+    static bool logged{};
+    if (!logged) {
+        logged = true;
+        LOG_WARNING(Shader_SPIRV, "Storage transform feedback of attribute {} writes zero", attr);
+    }
+    return ctx.f32_zero_value;
+}
+
+/// Writes the captured outputs of this vertex to the transform feedback buffers and, when the
+/// guest rasterizer is disabled, moves the vertex behind the viewer (transform_feedback_storage.h).
+/// Runs before every position transform, so the buffers get the outputs the guest wrote.
+void WriteTransformFeedbackStorage(EmitContext& ctx) {
+    namespace Xfb = TransformFeedbackStorage;
+    if (!Sirit::ValidId(ctx.xfb_storage_constants)) {
+        return;
+    }
+    const Id u32_type{ctx.U32[1]};
+    const auto constant = [&](u32 word) {
+        return ctx.OpLoad(u32_type, ctx.OpAccessChain(ctx.xfb_storage_constant_element,
+                                                      ctx.xfb_storage_constants, ctx.Const(word)));
+    };
+    const Id vertex{ctx.OpISub(u32_type, ctx.OpLoad(u32_type, ctx.vertex_index),
+                               ctx.OpLoad(u32_type, ctx.base_vertex))};
+    const Id instance{ctx.OpISub(u32_type, ctx.OpLoad(u32_type, ctx.instance_index),
+                                 ctx.OpLoad(u32_type, ctx.base_instance))};
+    const Id slot{ctx.OpIAdd(u32_type, vertex,
+                             ctx.OpIMul(u32_type, instance, constant(Xfb::VERTEX_COUNT_WORD)))};
+    for (u32 attribute = 0; attribute < ctx.runtime_info.xfb_count; ++attribute) {
+        const TransformFeedbackVarying& varying{ctx.runtime_info.xfb_varyings[attribute]};
+        if (varying.components == 0 || varying.buffer >= Xfb::NUM_BUFFERS) {
+            continue;
+        }
+        std::array<Id, 4> values{};
+        for (u32 component = 0; component < varying.components; ++component) {
+            values[component] =
+                ctx.OpBitcast(u32_type, CapturedComponent(ctx, attribute + component));
+        }
+        const Id slot_word{ctx.OpIMul(u32_type, slot, ctx.Const(varying.stride / 4))};
+        const Id first_word{ctx.OpIAdd(u32_type, slot_word, ctx.Const(varying.offset / 4))};
+        const Id end_word{ctx.OpIAdd(u32_type, first_word, ctx.Const(varying.components))};
+        const Id size{constant(Xfb::SIZE_WORD + varying.buffer)};
+        const Id fits{ctx.OpULessThanEqual(ctx.U1, end_word, size)};
+        const Id store_label{ctx.OpLabel()};
+        const Id merge_label{ctx.OpLabel()};
+        ctx.OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
+        ctx.OpBranchConditional(fits, store_label, merge_label);
+        ctx.AddLabel(store_label);
+        for (u32 component = 0; component < varying.components; ++component) {
+            const Id word{ctx.OpIAdd(u32_type, first_word, ctx.Const(component))};
+            const Id pointer{ctx.OpAccessChain(ctx.xfb_storage_element,
+                                               ctx.xfb_storage_buffers[varying.buffer],
+                                               ctx.u32_zero_value, word)};
+            ctx.OpStore(pointer, values[component]);
+        }
+        ctx.OpBranch(merge_label);
+        ctx.AddLabel(merge_label);
+    }
+    // A negative W fails every clip plane test (-w <= x <= w), whatever X, Y and Z are.
+    const Id discard{ctx.OpINotEqual(ctx.U1, constant(Xfb::DISCARD_WORD), ctx.u32_zero_value)};
+    const Id w_pointer{ctx.OpAccessChain(ctx.output_f32, ctx.output_position, ctx.Const(3U))};
+    const Id w{ctx.OpLoad(ctx.F32[1], w_pointer)};
+    ctx.OpStore(w_pointer, ctx.OpSelect(ctx.F32[1], discard, ctx.Const(-1.0f), w));
+}
 } // Anonymous namespace
 
 void EmitPrologue(EmitContext& ctx) {
@@ -144,6 +232,9 @@ void EmitPrologue(EmitContext& ctx) {
 }
 
 void EmitEpilogue(EmitContext& ctx) {
+    if (ctx.stage == Stage::VertexB) {
+        WriteTransformFeedbackStorage(ctx);
+    }
     if (ctx.stage == Stage::VertexB && ctx.runtime_info.lower_noperspective_mask != 0) {
         // Read final outputs, after every guest store and before clipping. Doing
         // this at each SetAttribute would depend on the order PositionW is written.
@@ -154,7 +245,8 @@ void EmitEpilogue(EmitContext& ctx) {
                 continue;
             }
             const auto& output = ctx.output_generics[index][0];
-            if (output.num_components != 4 || ctx.runtime_info.xfb_count != 0) {
+            if (output.num_components != 4 ||
+                (ctx.runtime_info.xfb_count != 0 && !ctx.runtime_info.xfb_storage)) {
                 throw NotImplementedException(
                     "NoPerspective lowering requires whole VS varyings without XFB");
             }
