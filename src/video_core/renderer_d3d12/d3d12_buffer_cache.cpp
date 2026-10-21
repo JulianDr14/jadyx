@@ -516,6 +516,10 @@ void BufferCacheRuntime::ApplyGeometry(CommandStream* cmd) {
     rewritten_count.reset();
 }
 
+bool BufferCacheRuntime::UniformNeedsPadding(u32 size) const {
+    return descriptor_queue && descriptor_queue->ConstantBufferReach(size) > size;
+}
+
 std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t, u32, u32 size) {
     VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::CbvStreamed, 1);
     if (VideoCore::Perf::DetailedGpuProfileEnabled()) {

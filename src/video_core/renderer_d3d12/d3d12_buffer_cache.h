@@ -101,6 +101,9 @@ public:
 
     /// Where guest uniform, storage and texel buffer views go (set by the rasterizer).
     void SetDescriptorQueue(GuestDescriptorQueue* queue) noexcept { descriptor_queue = queue; }
+    /// The next constant buffer is a root CBV the shader reads past size (see
+    /// GuestDescriptorQueue::ConstantBufferReach): streaming it pads the rest with zeros.
+    [[nodiscard]] bool UniformNeedsPadding(u32 size) const;
     /// Collects the buffers of the next bindings (null stops); diagnostics only.
     void SetTraceBuffers(std::vector<TracedBuffer>* out) noexcept {
         trace_buffers = out;
