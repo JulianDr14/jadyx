@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <stop_token>
+#include <string_view>
 #include "jadyx/content/content_model.h"
 #include "core/file_sys/nca_metadata.h"
 #include "core/file_sys/vfs/vfs_types.h"
@@ -28,8 +29,10 @@ struct Inspection {
     Error error{};
     std::vector<InspectedContent> contents;
 };
+// format overrides the extension (nsp/xci/nca) for files without one, such as uploads.
 Inspection InspectPackage(FileSys::VfsFilesystem& vfs, const std::string& source,
-                          bool verify, std::stop_token stop = {}, Progress progress = {});
+                          bool verify, std::stop_token stop = {}, Progress progress = {},
+                          std::string_view format = {});
 Error VerifyContent(InspectedContent& content, std::stop_token stop = {}, Progress progress = {});
 void RegisterContent(FileSys::ManualContentProvider& provider, const InspectedContent& content);
 } // namespace Jadyx::Content

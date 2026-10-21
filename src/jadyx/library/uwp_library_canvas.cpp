@@ -28,6 +28,7 @@
 #include "jadyx/library/game_options_page.h"
 #include "jadyx/library/library_layout.h"
 #include "jadyx/content/content_view.h"
+#include "jadyx/storage/storage_path.h"
 #include "jadyx/mods/mods_view.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/ui/ui_painter.h"
@@ -1553,17 +1554,24 @@ private:
             Content::DrawContentPanel(*this, *view.content, game.name, ContentKeys());
         } else {
             ManagementSurface(0, 0, 1280, 720, GameOptionsLayout::Footer);
-            if (GameOptions()[view.page.selected] == GameOption::Pulse) {
+            // The panes that act in place: what A does, explained, and A once more confirms it.
+            const auto in_place = [&](GameOption option, std::wstring_view body, std::wstring_view action) {
                 Card(56, 214, 1168, 264, 24);
-                Icon(UiIcon::Archive, 80, 240, Palette::Text);
-                Type(Tr(T::PulseSession), TypeRole::HeadlineMedium, 132, 234, 1056, Palette::Text);
+                Icon(GameOptionIcon(option), 80, 240, Palette::Text);
+                Type(Tr(GameOptionTitle(option)), TypeRole::HeadlineMedium, 132, 234, 1056, Palette::Text);
+                Type(body, TypeRole::BodyLarge, 80, 298, 1120, Palette::TextHint, 1, TextAlign::Leading, 3);
+                if (!action.empty()) Prompt(PromptKey(Navigation::Play).letters, Palette::Text, action, 80, 404);
+            };
+            const auto option = GameOptions()[view.page.selected];
+            if (option == GameOption::Pulse) {
                 const auto pulse = game.pulse_saved.empty() ? std::wstring{Tr(T::PulseNone)} :
                     I18n::Format(game.pulse_current ? T::PulseSavedOn : T::PulseSavedOther, {game.pulse_saved});
-                Type(pulse, TypeRole::BodyLarge, 80, 298, 1120, Palette::TextHint, 1, TextAlign::Leading, 3);
-                if (!game.pulse_saved.empty()) {
-                    const auto key = PromptKey(Navigation::Play);
-                    Prompt(key.letters, Palette::Text, Tr(T::PulseDiscardConfirm), 80, 404);
-                }
+                in_place(option, pulse, game.pulse_saved.empty() ? std::wstring_view{} : Tr(T::PulseDiscardConfirm));
+            } else if (option == GameOption::Remove) {
+                const bool external = IsStoragePath(game.launch_path);
+                in_place(option, Tr(external ? T::GameRemoveExternal :
+                                    view.other_copies ? T::GameRemoveCopyWarning : T::GameRemoveWarning),
+                         external ? std::wstring_view{} : Tr(T::GameRemove));
             } else {
                 Type(view.notice.empty() ? Tr(T::CheckingGame) : view.notice, TypeRole::BodyLarge, 56, 230, 1168, Palette::TextHint,
                      1, TextAlign::Leading, 3);
@@ -1605,7 +1613,8 @@ private:
         Round(56, sections, 1168, G::SectionsHeight, G::SectionsHeight / 2, Palette::Surface);
         Badge(keyboard ? L"Q" : nintendo ? L"L" : L"LB", 80, sections + G::SectionsHeight / 2, Palette::Text);
         Badge(keyboard ? L"E" : nintendo ? L"R" : L"RB", 1200, sections + G::SectionsHeight / 2, Palette::Text);
-        constexpr float tab_width = 216;
+        // The bar spans the bumpers' gap, shared by however many options there are.
+        const float tab_width = 1080.0f / static_cast<float>(options.size());
         for (std::size_t i = 0; i < options.size(); ++i) {
             const float left = 100 + static_cast<float>(i) * tab_width;
             const bool active = i == view.page.selected;

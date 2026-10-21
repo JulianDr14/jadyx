@@ -17,14 +17,20 @@
 
 namespace Jadyx {
 
-/// Pulse's pane shows the kept session; discarding still requires a second confirmation.
-enum class GameOption : std::uint8_t { Cheats, Mods, Updates, Dlc, Pulse };
+/// Pulse's pane shows the kept session and Remove's what deleting the game takes with it. Both
+/// act in place and only on a second confirmation.
+enum class GameOption : std::uint8_t { Cheats, Mods, Updates, Dlc, Pulse, Remove };
 
 /// The options shown, in order.
 inline std::span<const GameOption> GameOptions() {
     static constexpr std::array options{GameOption::Mods, GameOption::Cheats, GameOption::Updates,
-                                        GameOption::Dlc, GameOption::Pulse};
+                                        GameOption::Dlc, GameOption::Pulse, GameOption::Remove};
     return options;
+}
+
+/// False for the panes that act in place (with a second press) instead of opening a manager.
+inline bool GameOptionHasManager(GameOption option) {
+    return option != GameOption::Pulse && option != GameOption::Remove;
 }
 
 inline I18n::Text GameOptionTitle(GameOption option) {
@@ -34,6 +40,7 @@ inline I18n::Text GameOptionTitle(GameOption option) {
     case GameOption::Cheats: return I18n::Text::CheatsTitle;
     case GameOption::Mods: return I18n::Text::ModsTitle;
     case GameOption::Pulse: return I18n::Text::PulseSession;
+    case GameOption::Remove: return I18n::Text::GameRemove;
     }
     return I18n::Text::CheatsTitle;
 }
@@ -45,6 +52,7 @@ inline I18n::Text GameOptionHint(GameOption option) {
     case GameOption::Cheats: return I18n::Text::CheatsHint;
     case GameOption::Mods: return I18n::Text::ModsHint;
     case GameOption::Pulse: return I18n::Text::PulseNone;
+    case GameOption::Remove: return I18n::Text::GameRemoveHint;
     }
     return I18n::Text::CheatsHint;
 }
@@ -56,6 +64,7 @@ inline UiIcon GameOptionIcon(GameOption option) {
     case GameOption::Cheats: return UiIcon::Cheats;
     case GameOption::Mods: return UiIcon::Mods;
     case GameOption::Pulse: return UiIcon::Archive;
+    case GameOption::Remove: return UiIcon::Remove;
     }
     return UiIcon::Settings;
 }
@@ -67,8 +76,8 @@ struct GameOptionsPage {
     std::size_t game{};     ///< The library entry the options are for.
     std::size_t selected{}; ///< Active category in GameOptions().
     std::optional<GameOption> page; ///< Selected manager; Pulse has its own pane in the shell.
-    bool confirm_discard{}; ///< A was pressed once on the Pulse row; a second press discards.
-    bool discard{};         ///< Confirmed: the library discards the game's session.
+    bool confirm_discard{}; ///< A was pressed once on Pulse or Remove; a second press acts.
+    bool discard{};         ///< Confirmed: the library discards the session or deletes the game.
     GameOptionsFocus focus{GameOptionsFocus::Sections};
     bool activate{true};    ///< The coordinator initializes the selected manager once.
 };
@@ -76,8 +85,8 @@ struct GameOptionsPage {
 inline void SelectGameOption(GameOptionsPage& options, std::size_t index) {
     if (index >= GameOptions().size()) return;
     options.selected = index;
-    options.page = GameOptions()[index] == GameOption::Pulse ? std::nullopt :
-                   std::optional{GameOptions()[index]};
+    options.page = GameOptionHasManager(GameOptions()[index]) ? std::optional{GameOptions()[index]} :
+                   std::nullopt;
     options.confirm_discard = options.discard = false;
     options.focus = GameOptionsFocus::Sections;
     options.activate = true;
@@ -110,7 +119,7 @@ inline void HandleGameOptionsInput(GameOptionsPage& options, GameOptionsInput in
         SelectGameOption(options, (options.selected + 1) % count);
         break;
     case GameOptionsInput::Confirm:
-        if (GameOptions()[options.selected] == GameOption::Pulse) {
+        if (!GameOptionHasManager(GameOptions()[options.selected])) {
             options.confirm_discard = !confirming;
             options.discard = confirming;
             break;

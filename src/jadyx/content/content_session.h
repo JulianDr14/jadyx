@@ -40,6 +40,8 @@ public:
     bool TakeAuthorizeRequest() { return std::exchange(authorize, false); }
     bool Busy() const { return pending.valid(); }
     bool Changed() const { return changed; }
+    /// The game whose updates/DLC this session manages; 0 for every game.
+    std::uint64_t Application() const { return application; }
     bool CopyInternal() const { return copy_internal; }
     Kind Category() const { return kind; }
     const ContentSnapshot& View() const { return view; }

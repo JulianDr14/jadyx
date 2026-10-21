@@ -4,13 +4,13 @@
 #include <string_view>
 namespace Jadyx::PortalWeb {
 // The page is laid out like the console frontend: the wordmark and segmented tabs in the header,
-// and each tab is a Settings-style page, a list of categories beside the chosen one's pane, so
-// new kinds of content (updates, DLC) take a row there. Palette, Inter and capsule buttons follow
+// and each tab is a Settings-style page, a list of categories beside the chosen one's pane; the
+// library's games open into their updates/DLC. Palette, Inter and capsule buttons follow
 // Jadyx::Palette; the only colour is the logo's. The CSP allows images from the portal itself
 // (/logo.png) and nothing external, so icons are inline SVG.
 inline constexpr std::string_view Page=R"HTML(<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#08090b"><link rel="icon" href="/logo.png"><title>Jadyx · Portal</title><style>
+<meta name="theme-color" content="#08090b"><link rel="icon" href="/logo.png"><title>Jadyx Portal</title><style>
 :root{color-scheme:dark;--canvas:#08090b;--surface:#111315;--row:#16181b;--graphite:#1c1f23;--active:#26282b;--text:#f5f5f7;--muted:#92959a;--hint:#b4b7bb;
  --warn:#f0c27a;--cyan:#2eb5e5;--crimson:#e02b41;--line:rgba(255,255,255,.08);--field:#2a2d31;
  font-family:Inter,"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Roboto,sans-serif;font-size:15px;line-height:22px;-webkit-font-smoothing:antialiased}
@@ -102,12 +102,30 @@ progress::-moz-progress-bar{background:linear-gradient(90deg,var(--cyan),var(--c
 #system-warning-row{display:flex;align-items:center;gap:10px;margin-top:14px;color:var(--text);cursor:pointer}
 input[type=checkbox]{width:18px;height:18px;margin:0;accent-color:var(--text)}
 #system-confirm,#system-cancel{margin-top:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:20px 18px}
+button.tile{display:flex;flex-direction:column;align-items:stretch;gap:6px;height:auto;padding:0;border:0;border-radius:16px;background:none;text-align:left;font-weight:400}
+button.tile:hover:not(:disabled){background:none}.tile:hover .art{transform:translateY(-2px);border-color:rgba(255,255,255,.32);box-shadow:0 18px 36px -18px rgba(0,0,0,.9)}
+.art{display:grid;place-items:center;aspect-ratio:1;width:100%;margin-bottom:4px;border-radius:14px;border:1px solid var(--line);background:var(--row) center/cover no-repeat;
+ font-size:34px;font-weight:600;color:var(--muted);transition:transform .15s,border-color .15s,box-shadow .15s}
+.tile b{font-size:14px;line-height:19px;font-weight:600;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}.tile small{font-size:12px;line-height:16px}
+#library-empty{padding:40px 0;text-align:center}#library-note{margin:-8px 0 20px;color:var(--cyan);font-weight:500}#library-note:empty{display:none}
+button.back{height:34px;padding:0 14px;margin-bottom:20px;font-size:13px;color:var(--hint)}
+.hero{display:grid;grid-template-columns:96px minmax(0,1fr) auto;gap:20px;align-items:center;margin-bottom:8px}.hero .art{width:96px;margin:0}
+.hero p{margin-top:4px}#game-warning{margin-bottom:24px;font-size:13px}
+.seg{display:inline-flex;padding:4px;margin-bottom:16px;border-radius:999px;background:var(--row);border:1px solid var(--line)}
+.seg button{height:34px;border:0;background:none;color:var(--muted)}.seg button:hover:not(:disabled){background:none;color:var(--text)}
+.seg button[aria-selected=true],.seg button[aria-selected=true]:hover{background:var(--text);color:var(--canvas)}
+.items{display:flex;flex-direction:column;gap:8px;margin:0 0 20px;padding:0;list-style:none}
+.items li{display:flex;align-items:center;gap:14px;padding:12px 14px;border-radius:14px;background:var(--row);border:1px solid var(--line)}
+.items li span{flex:1;min-width:0}.items b{display:block;font-weight:600;overflow-wrap:anywhere}.items small{display:block;font-size:13px}
+.items li.empty{justify-content:center;color:var(--muted)}.items button{height:36px;padding:0 16px}
 footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:24px 16px 32px;font-size:13px;color:var(--muted)}footer .ico{width:16px;height:16px}
 @media(max-width:860px){.bar{grid-template-columns:minmax(0,1fr) auto;padding:12px 16px;row-gap:12px}.tabs{grid-column:1/-1}.tabs button{flex:1}
  .shell{padding:20px 16px 32px}.view{grid-template-columns:minmax(0,1fr);gap:16px}
  .cats{position:static;flex-direction:row;overflow-x:auto;scrollbar-width:none;margin:0 -16px;padding:0 16px}.cats::-webkit-scrollbar{display:none}
  .cats .kicker,.cat .chev,.cat small{display:none}button.cat{flex:none;width:auto;min-height:48px;padding:8px 16px;background:var(--row)}
  .store{flex:none;margin:0;padding:8px 16px}#message{top:132px}
+ .grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}.hero{grid-template-columns:72px minmax(0,1fr)}.hero .art{width:72px}.hero .danger{grid-column:1/-1}
  .card{padding:22px}h1{font-size:28px;line-height:34px}.actions button{flex:1 1 calc(50% - 10px)}#code{font-size:28px;letter-spacing:.28em;text-indent:.28em}}
 @media(max-width:420px){.brand img{width:36px;height:36px}.word{font-size:16px;letter-spacing:.3em}.caps,.link span{display:none}.link{padding:0 11px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -126,8 +144,8 @@ footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:24
 <div class="view" id="view-content"><nav class="cats"><p class="kicker" id="content-kicker">Install</p>
 <button class="cat" id="cat-games" aria-selected="true"><svg class="ico" viewBox="0 0 24 24"><path d="M6.5 8h11a4 4 0 0 1 3.9 4.9l-1 4.4a2.4 2.4 0 0 1-4.2 1L14.5 16h-5l-1.7 2.3a2.4 2.4 0 0 1-4.2-1l-1-4.4A4 4 0 0 1 6.5 8z"/><path d="M8 11v3M6.5 12.5h3M15.5 12h.01M17.5 14h.01"/></svg>
 <span><b id="cat-games-title">Games</b><small id="cat-games-sub">NSP · base game</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
-<button class="cat" disabled><svg class="ico" viewBox="0 0 24 24"><path d="M20 12a8 8 0 0 1-14.3 4.9M4 12a8 8 0 0 1 14.3-4.9"/><path d="M18.5 3v4.2h-4.2M5.5 21v-4.2h4.2"/></svg><span><b id="cat-updates-title">Updates</b></span><em class="tag" id="updates-soon">Soon</em></button>
-<button class="cat" disabled><svg class="ico" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8.5v7M8.5 12h7"/></svg><span><b id="cat-dlc-title">DLC</b></span><em class="tag" id="dlc-soon">Soon</em></button>
+<button class="cat" id="cat-library" aria-selected="false" hidden><svg class="ico" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
+<span><b id="cat-library-title">Library</b><small id="cat-library-sub">Updates · DLC · delete</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
 <div class="store"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13 7.5 5h9L19 13M7 16.5h.01"/></svg><span id="space"></span></div></nav>
 <section id="upload" class="card" hidden><div class="head"><h2 id="uploadtitle">Import NSP games</h2><p id="uploadintro">Base games only. Files are copied to your console's internal storage.</p></div>
 <label class="drop" id="files-zone"><input id="files" type="file" accept=".nsp" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
@@ -136,7 +154,20 @@ footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:24
 <div class="actions"><button id="send" class="primary">Upload / resume</button><button id="pause">Pause</button><button id="rename">Rename pending file</button>
 <button class="danger" id="discard">Discard partial file</button></div>
 <div class="panel"><div class="panel-top"><p id="job" role="status" aria-live="polite"></p><span class="pct" id="percent"></span></div>
-<progress id="progress" max="1" value="0"></progress><div class="stats"><p id="confirmed"></p><p id="rate"></p><p id="eta"></p><p id="queue"></p></div></div></section></div>
+<progress id="progress" max="1" value="0"></progress><div class="stats"><p id="confirmed"></p><p id="rate"></p><p id="eta"></p><p id="queue"></p></div></div></section>
+<section id="library" class="card" hidden><p id="library-note" role="status" aria-live="polite"></p>
+<div id="library-list"><div class="head"><h2 id="library-title">Your library</h2><p id="library-intro">Open a game to manage its updates and DLC, or to delete it.</p></div>
+<div class="grid" id="games"></div><p id="library-empty" hidden>No games yet.</p></div>
+<div id="game" hidden><button class="back" id="game-back">← Library</button>
+<div class="hero"><div class="art" id="game-art"></div><div><h2 id="game-name"></h2><p id="game-meta"></p></div><button class="danger" id="game-remove">Delete game</button></div>
+<p id="game-warning"></p>
+<nav class="seg" role="tablist"><button id="kind-update" role="tab" aria-selected="true">Updates</button><button id="kind-dlc" role="tab" aria-selected="false">DLC</button></nav>
+<ul class="items" id="items"></ul>
+<label class="drop"><input id="content-files" type="file" accept=".nsp" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+<strong id="content-pick">Choose update NSP files</strong><span id="content-drop">or drop them here</span><span class="picked" id="content-picked"></span></label>
+<div class="actions"><button id="content-send" class="primary">Upload and install</button><button id="content-pause">Pause</button><button class="danger" id="content-discard">Discard partial file</button></div>
+<div class="panel"><div class="panel-top"><p id="content-job" role="status" aria-live="polite"></p><span class="pct" id="content-percent"></span></div>
+<progress id="content-progress" max="1" value="0"></progress><div class="stats"><p id="content-rate"></p><p id="content-eta"></p></div></div></div></section></div>
 <div class="view" id="view-system" hidden><nav class="cats"><p class="kicker" id="system-kicker">System files</p>
 <button class="cat" id="cat-keys" aria-selected="true"><svg class="ico" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/></svg>
 <span><b id="cat-keys-title">Keys</b><small>prod.keys · title.keys · ZIP</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
@@ -215,17 +246,18 @@ const words=pt?{
 if(es||pt){document.documentElement.lang=pt?'pt-BR':'es';for(const id of ['title','intro','label','connect','uploadtitle','uploadintro','fileslabel','namelabel','send','rename','pause','discard','privacy',
  'kicker','status-off','status-on','code-hint','files-drop'])$(id).textContent=words[id];}
 const labels=pt?{'tab-content':'Conteúdo','tab-system':'Sistema','content-kicker':'Instalar','cat-games-title':'Jogos','cat-games-sub':'NSP · jogo base',
- 'cat-updates-title':'Atualizações','updates-soon':'Em breve','dlc-soon':'Em breve','system-kicker':'Arquivos do sistema','cat-keys-title':'Chaves'}
+ 'cat-library-title':'Biblioteca','cat-library-sub':'Atualizações · DLC · apagar','system-kicker':'Arquivos do sistema','cat-keys-title':'Chaves'}
 :es?{'tab-content':'Contenido','tab-system':'Sistema','content-kicker':'Instalar','cat-games-title':'Juegos','cat-games-sub':'NSP · juego base',
- 'cat-updates-title':'Actualizaciones','updates-soon':'Pronto','dlc-soon':'Pronto','system-kicker':'Archivos del sistema','cat-keys-title':'Claves'}:{};
+ 'cat-library-title':'Biblioteca','cat-library-sub':'Actualizaciones · DLC · eliminar','system-kicker':'Archivos del sistema','cat-keys-title':'Claves'}:{};
 for(const [id,text]of Object.entries(labels))$(id).textContent=text;
+if(es||pt)document.title='Portal Jadyx';
 // The header's tabs and each page's categories, as in the console: one of each group is shown.
 const tabs=[['tab-content','view-content'],['tab-system','view-system']],categories=[['cat-keys','keys-pane'],['cat-firmware','firmware-pane']];
 function choose(group,chosen){for(const [button,view]of group){$(button).ariaSelected=String(button===chosen);$(view).hidden=button!==chosen;}}
 for(const group of [tabs,categories])for(const [button]of group)$(button).addEventListener('click',()=>choose(group,button));
 const selectedChunk=Number(new URLSearchParams(location.search).get('chunk'));
 const chunk=(selectedChunk===4||selectedChunk===16||selectedChunk===64?selectedChunk:16)*1048576;
-let session='',timer,state={},running=false,stopped=false,currentXHR=null,currentId='',rates=[];
+let session='',timer,state={},running=false,stopped=false,currentXHR=null,currentId='',rates=[],pane='games',contentRunning=false;
 let systemRunning=false,systemReviewId='';
 const delay=ms=>new Promise(r=>setTimeout(r,ms)),mib=n=>(n/1048576).toFixed(1),reason=e=>words[e.message]||words.interrupted;
 const size=n=>n>=1073741824?(n/1073741824).toFixed(2)+' GiB':mib(n)+' MiB',percent=(done,total)=>total?Math.floor(100*Math.min(1,done/total))+' %':'';
@@ -250,21 +282,22 @@ function render(){
  renderLogs();
  $('app-updates').hidden=!session;
  const s=state.transfer||{};
- $('upload').hidden=!session||!state.uploads;
+ $('upload').hidden=!session||!state.uploads||pane!=='games';
  $('space').textContent=words.free+': '+((s.free_bytes||0)/1073741824).toFixed(2)+' GiB';
  $('job').textContent=(s.name?s.name+'\n':'')+(words[s.phase]||words.idle);
  $('progress').value=s.length?Math.min(1,(s.received||0)/s.length):0;
  $('percent').textContent=percent(s.received||0,s.length);
  $('confirmed').textContent=words.confirmed+': '+mib(s.offset||0)+' / '+mib(s.length||0)+' MiB';
  $('files').disabled=running;$('name').disabled=running||s.phase==='validating'||s.phase==='publishing';
- $('send').disabled=running||systemRunning||state.system?.busy||!session||!state.uploads||s.phase==='ready'||s.phase==='validating'||s.phase==='publishing';
+ $('send').disabled=running||contentRunning||systemRunning||state.system?.busy||!session||!state.uploads||s.phase==='ready'||s.phase==='validating'||s.phase==='publishing';
  $('pause').disabled=systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
  $('discard').disabled=systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
  $('rename').disabled=running||systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
  if(s.error)$('message').textContent=words[s.error]||words.interrupted;
  renderSystem();
+ renderLibrary();
 }
-async function refresh(){const response=await api('/api/v1/status');state=await response.json();render();return state;}
+async function refresh(){const response=await api('/api/v1/status');state=await response.json();render();followLibrary();return state;}
 $('pair').addEventListener('submit',async event=>{
  event.preventDefault();$('connect').disabled=true;$('message').textContent='';
  try{
@@ -314,18 +347,22 @@ function patch(url,offset,blob){return new Promise((resolve,reject)=>{
  xhr.onload=()=>{currentXHR=null;if(xhr.status===204)resolve(Number(xhr.getResponseHeader('Upload-Offset')));else{let error='interrupted';try{error=JSON.parse(xhr.responseText).error||error;}catch{}reject(Error(xhr.status===401?'lost':error));}};
  xhr.onerror=()=>{currentXHR=null;reject(Error('interrupted'));};xhr.onabort=()=>{currentXHR=null;reject(Error('paused'));};xhr.send(blob);
 });}
-async function sendFile(file,name){
+// Games and updates/DLC share this resumable client. A target names the status record, its
+// route, the extra metadata (an update/DLC names its kind and game) and where speed is shown.
+const gameTarget={key:'transfer',base:'/api/v1/uploads',tag:'',metadata:{},rate:'rate',eta:'eta'};
+async function sendFile(file,name,target=gameTarget){
  const signature=await fingerprint(file);if(stopped)throw Error('paused');
- await refresh();let s=state.transfer;
+ await refresh();let s=state[target.key];
  if(s.id&&s.phase!=='complete'){
- if(s.fingerprint!==signature||s.length!==file.size)throw Error('same');
+ if(s.fingerprint!==signature||s.length!==file.size||(s.tag||'')!==target.tag)throw Error('same');
  currentId=s.id;
- if(s.name!==name)await api('/api/v1/uploads/'+currentId+'/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+ if(s.name!==name)await api(target.base+'/'+currentId+'/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
  }else{
- const created=await api('/api/v1/uploads',{method:'POST',headers:{'Upload-Length':String(file.size),'Upload-Metadata':'filename '+base64(name)+',fingerprint '+base64(signature)}});
+ const metadata=Object.entries({filename:name,fingerprint:signature,...target.metadata}).map(([key,value])=>key+' '+base64(value)).join(',');
+ const created=await api(target.base,{method:'POST',headers:{'Upload-Length':String(file.size),'Upload-Metadata':metadata}});
  currentId=created.headers.get('Location').split('/').pop();
  }
- const url='/api/v1/uploads/'+currentId;
+ const url=target.base+'/'+currentId;
  let offset=Number((await api(url,{method:'HEAD'})).headers.get('Upload-Offset')),attempts=0;
  while(offset<file.size){
  if(stopped)throw Error('paused');
@@ -335,7 +372,7 @@ async function sendFile(file,name){
  if(!Number.isSafeInteger(offset)||offset<=before||offset>file.size)throw Error('offset');
  const elapsed=Math.max(.001,(performance.now()-start)/1000);rates.push({bytes:offset-before,time:elapsed});if(rates.length>8)rates.shift();
  const speed=rates.reduce((a,x)=>a+x.bytes,0)/rates.reduce((a,x)=>a+x.time,0);
- $('rate').textContent=words.speed+': '+mib(speed)+' MiB/s';$('eta').textContent=words.eta+': '+formatDuration((file.size-offset)/speed);attempts=0;
+ $(target.rate).textContent=words.speed+': '+mib(speed)+' MiB/s';$(target.eta).textContent=words.eta+': '+formatDuration((file.size-offset)/speed);attempts=0;
  }catch(error){
  if(stopped||error.message==='paused'||error.message==='lost'||!['interrupted','offset'].includes(error.message)||attempts++>=5)throw error;
  await delay(Math.min(3000,250*2**attempts));if(stopped)throw Error('paused');
@@ -343,11 +380,11 @@ async function sendFile(file,name){
  }
  }
  if(stopped)throw Error('paused');await api(url+'/finish',{method:'POST'});
- for(;;){await delay(500);await refresh();s=state.transfer;if(s.phase==='complete')return;if(s.error)throw Error(s.error);if(stopped||s.phase==='paused')throw Error('paused');}
+ for(;;){await delay(500);await refresh();s=state[target.key];if(s.phase==='complete')return;if(s.error)throw Error(s.error);if(stopped||s.phase==='paused')throw Error('paused');}
 }
 $('files').addEventListener('change',()=>{if($('files').files.length)$('name').value=$('files').files[0].name;picked('files-picked','files');});
 // The file inputs cover their drop zones, so a drop lands on the input itself; this only lights the zone.
-for(const id of ['files','keys-files','firmware-files']){
+for(const id of ['files','content-files','keys-files','firmware-files']){
  for(const event of ['dragenter','dragover'])$(id).addEventListener(event,e=>e.target.parentElement.classList.add('over'));
  for(const event of ['dragleave','drop'])$(id).addEventListener(event,e=>e.target.parentElement.classList.remove('over'));
 }
@@ -357,15 +394,185 @@ $('send').addEventListener('click',async()=>{
  try{for(let i=0;i<files.length;i++){if(stopped)break;$('queue').textContent=words.queue+': '+(files.length-i-1);await sendFile(files[i],files.length===1?$('name').value:files[i].name);}}
  catch(error){$('message').textContent=reason(error);}finally{running=false;currentXHR=null;try{await refresh();}catch{}render();}
 });
-async function control(action){
+async function control(action,target=gameTarget){
  stopped=true;if(currentXHR)currentXHR.abort();$('message').textContent='';
- try{await refresh();const id=state.transfer.id;if(!id)return;
- for(let retry=0;;retry++)try{await api('/api/v1/uploads/'+id+(action==='pause'?'/pause':''),{method:action==='pause'?'POST':'DELETE'});break;}
+ try{await refresh();const id=state[target.key]?.id;if(!id)return;
+ for(let retry=0;;retry++)try{await api(target.base+'/'+id+(action==='pause'?'/pause':''),{method:action==='pause'?'POST':'DELETE'});break;}
  catch(error){if(error.message!=='busy'||retry>=15)throw error;await delay(100);}
  await refresh();}catch(error){$('message').textContent=reason(error);}
 }
 $('pause').addEventListener('click',()=>control('pause'));$('discard').addEventListener('click',()=>control('discard'));
 $('rename').addEventListener('click',async()=>{try{await api('/api/v1/uploads/'+state.transfer.id+'/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('name').value})});$('message').textContent='';await refresh();}catch(error){$('message').textContent=reason(error);}});
+
+// Library: the console's games, each opening into its updates and DLC. An upload is installed
+// in internal storage by the console's content import; a deletion runs there too, after the
+// same second press the console asks for.
+const libraryWords=pt?{
+ title:'Sua biblioteca',intro:'Abra um jogo para gerenciar suas atualizações e DLC ou para apagá-lo.',empty:'Ainda não há jogos.',back:'← Biblioteca',
+ update:'Atualizações',dlc:'DLC',none_update:'Nenhuma atualização instalada.',none_dlc:'Nenhum DLC instalado.',pick_update:'Selecionar NSP de atualização',pick_dlc:'Selecionar NSP de DLC',
+ send:'Enviar e instalar',remove_game:'Apagar jogo',remove:'Apagar',confirm:'Clique de novo para confirmar',external_item:'Pasta externa',
+ warning:'Apagar o jogo remove também seus saves, atualizações e DLC deste console. Mods e cheats são mantidos. Não pode ser desfeito.',
+ external:'Este jogo está em uma pasta externa; o Jadyx não apaga arquivos de lá.',removing:'Apagando…',removed_game:'Jogo apagado.',removed:'Conteúdo apagado.',
+ ready:'Aguardando instalação',validating:'Instalando',complete:'Instalado',idle:'Escolha arquivos para instalar.',failed:'Não foi possível concluir a operação.',
+ game:'O jogo não está mais na biblioteca ou não pôde ser apagado.',content:'Não foi possível apagar esse conteúdo.',saves:'O jogo foi apagado, mas alguns saves não puderam ser removidos.',
+ wrong_game:'Esse pacote pertence a outro jogo.',kind:'O pacote não é do tipo escolhido (atualização ou DLC).',conflict:'Já existe uma versão conflitante desse conteúdo.',
+ hash:'O pacote está danificado.',requirements:'O pacote exige uma versão mais nova do jogo ou do firmware.',unsupported:'Esse pacote não é compatível.',invalid:'O pacote não é válido.',metadata:'Recarregue a página e tente de novo.'
+}:es?{
+ title:'Tu biblioteca',intro:'Abre un juego para gestionar sus actualizaciones y DLC, o para eliminarlo.',empty:'Todavía no hay juegos.',back:'← Biblioteca',
+ update:'Actualizaciones',dlc:'DLC',none_update:'No hay actualizaciones instaladas.',none_dlc:'No hay DLC instalados.',pick_update:'Seleccionar NSP de actualización',pick_dlc:'Seleccionar NSP de DLC',
+ send:'Subir e instalar',remove_game:'Eliminar juego',remove:'Eliminar',confirm:'Pulsa otra vez para confirmar',external_item:'Carpeta externa',
+ warning:'Eliminar el juego borra también sus partidas, actualizaciones y DLC de esta consola. Los mods y trucos se conservan. No se puede deshacer.',
+ external:'Este juego está en una carpeta externa; Jadyx no borra archivos de ahí.',removing:'Eliminando…',removed_game:'Juego eliminado.',removed:'Contenido eliminado.',
+ ready:'Esperando a instalar',validating:'Instalando',complete:'Instalado',idle:'Selecciona archivos para instalar.',failed:'No se pudo completar la operación.',
+ game:'El juego ya no está en la biblioteca o no se pudo eliminar.',content:'No se pudo eliminar ese contenido.',saves:'El juego se eliminó, pero algunas partidas no se pudieron borrar.',
+ wrong_game:'Ese paquete es de otro juego.',kind:'El paquete no es del tipo elegido (actualización o DLC).',conflict:'Ya hay una versión de ese contenido que choca con esta.',
+ hash:'El paquete está dañado.',requirements:'El paquete necesita una versión más nueva del juego o del firmware.',unsupported:'Ese paquete no es compatible.',invalid:'El paquete no es válido.',metadata:'Recarga la página y vuelve a intentarlo.'
+}:{
+ title:'Your library',intro:'Open a game to manage its updates and DLC, or to delete it.',empty:'No games yet.',back:'← Library',
+ update:'Updates',dlc:'DLC',none_update:'No updates installed.',none_dlc:'No DLC installed.',pick_update:'Choose update NSP files',pick_dlc:'Choose DLC NSP files',
+ send:'Upload and install',remove_game:'Delete game',remove:'Delete',confirm:'Click again to confirm',external_item:'External folder',
+ warning:'Deleting the game also deletes its saves, updates and DLC from this console. Mods and cheats are kept. This cannot be undone.',
+ external:'This game is in an external folder; Jadyx does not delete files there.',removing:'Deleting…',removed_game:'Game deleted.',removed:'Content deleted.',
+ ready:'Waiting to install',validating:'Installing',complete:'Installed',idle:'Choose files to install.',failed:'The operation could not be completed.',
+ game:'The game is no longer in the library or could not be deleted.',content:'That content could not be deleted.',saves:'The game was deleted, but some saves could not be removed.',
+ wrong_game:'That package belongs to another game.',kind:'The package is not the chosen kind (update or DLC).',conflict:'A conflicting version of this content is already installed.',
+ hash:'The package is damaged.',requirements:'The package needs a newer game or firmware version.',unsupported:'That package is not supported.',invalid:'The package is not valid.',metadata:'Reload this page and try again.'};
+for(const [id,key]of [['library-title','title'],['library-intro','intro'],['library-empty','empty'],['game-back','back'],['game-warning','warning'],
+ ['kind-update','update'],['kind-dlc','dlc'],['content-send','send'],['content-pick','pick_update']])$(id).textContent=libraryWords[key];
+for(const [id,key]of [['content-drop','files-drop'],['content-pause','pause'],['content-discard','discard']])if(words[key])$(id).textContent=words[key];
+const libraryReason=error=>libraryWords[error.message]||words[error.message]||libraryWords.failed;
+let games=[],revision=-1,libraryAt=0,gameId='',kind='update',contents=null,armed='',armedTimer=0,removalSerial=0,lastContent='';
+const covers=new Map(),gone=new Set();
+const contentTarget=()=>({key:'content',base:'/api/v1/content/uploads',tag:kind+':'+gameId,metadata:{kind,application:gameId},rate:'content-rate',eta:'content-eta'});
+function node(tag,className,text){const n=document.createElement(tag);if(className)n.className=className;if(text)n.textContent=text;return n;}
+// Covers come with the session header, so they are fetched once into blob URLs.
+async function cover(id,art){
+ art.textContent=(games.find(g=>g.id===id)?.name||'?').slice(0,1);art.style.backgroundImage='';
+ if(!covers.has(id))covers.set(id,api('/api/v1/library/'+id+'/cover').then(r=>r.blob()).then(b=>URL.createObjectURL(b)).catch(()=>''));
+ const url=await covers.get(id);
+ if(url&&art.dataset.id===id){art.style.backgroundImage='url("'+url+'")';art.textContent='';}
+}
+function showCover(art,id){art.dataset.id=id;cover(id,art);}
+async function loadLibrary(){
+ if(!session||!state.library)return;libraryAt=Date.now();
+ try{
+  const data=await(await api('/api/v1/library')).json();
+  if(data.revision!==revision){
+   revision=data.revision;
+   for(const url of covers.values())url.then(u=>u&&URL.revokeObjectURL(u));covers.clear();
+   for(const id of gone)if(!data.games.some(g=>g.id===id))gone.delete(id);
+   games=data.games;renderGames();
+   if(gameId)openGame(gameId,false);
+  }
+ }catch(error){$('message').textContent=libraryReason(error);}
+}
+function renderGames(){
+ const shown=games.filter(g=>!gone.has(g.id));
+ $('games').replaceChildren(...shown.map(game=>{
+  const tile=node('button','tile'),art=node('div','art');tile.type='button';showCover(art,game.id);
+  tile.append(art,node('b','',game.name),node('small','',[game.developer,game.version].filter(Boolean).join(' · ')));
+  tile.addEventListener('click',()=>openGame(game.id,true));return tile;
+ }));
+ $('library-empty').hidden=shown.length>0;
+}
+async function loadContents(){
+ const id=gameId;if(!id)return;
+ try{const data=await(await api('/api/v1/library/'+id+'/content')).json();if(id===gameId){contents=data.contents;renderItems();}}
+ catch(error){$('message').textContent=libraryReason(error);}
+}
+function openGame(id,fresh){
+ const game=games.find(g=>g.id===id);
+ if(!game||gone.has(id)){gameId='';render();return;}
+ if(fresh){gameId=id;contents=null;armed='';chooseKind('update');$('library-note').textContent='';$('content-files').value='';$('content-picked').textContent='';}
+ $('game-name').textContent=game.name;$('game-meta').textContent=[game.developer,game.version].filter(Boolean).join(' · ');
+ showCover($('game-art'),id);loadContents();render();
+}
+function chooseKind(next){
+ kind=next;armed='';
+ for(const k of ['update','dlc'])$('kind-'+k).ariaSelected=String(k===kind);
+ $('content-pick').textContent=libraryWords['pick_'+kind];renderItems();
+}
+// Nothing deletes or installs while another storage job runs; the server refuses it as well.
+function libraryBusy(){
+ const r=state.removal||{};
+ return running||contentRunning||systemRunning||!!state.system?.busy||!!state.transfer?.busy||!!state.content?.busy||r.phase==='pending'||r.phase==='running';
+}
+// The first press arms a deletion and the second, within six seconds, sends it.
+function arm(key){
+ if(armed===key){armed='';clearTimeout(armedTimer);return true;}
+ armed=key;clearTimeout(armedTimer);armedTimer=setTimeout(()=>{armed='';renderItems();render();},6000);renderItems();render();return false;
+}
+async function remove(path,key){
+ if(!arm(key))return;
+ try{const data=await(await api('/api/v1/library/'+path,{method:'DELETE'})).json();removalSerial=data.removal.serial;$('message').textContent='';await refresh();}
+ catch(error){$('message').textContent=libraryReason(error);}
+ renderItems();
+}
+function renderItems(){
+ if(!gameId)return;
+ const list=(contents||[]).filter(c=>c.kind===kind),busy=libraryBusy();
+ $('items').replaceChildren(...(list.length?list.map(item=>{
+  const row=node('li'),text=node('span'),button=node('button','danger',armed===item.id?libraryWords.confirm:libraryWords.remove);
+  text.append(node('b','',item.name||libraryWords[kind]),node('small','',[item.version,size(item.bytes||0),item.internal?'':libraryWords.external_item].filter(Boolean).join(' · ')));
+  button.disabled=busy;button.addEventListener('click',()=>remove(gameId+'/content/'+item.id,item.id));
+  row.append(text,button);return row;
+ }):[node('li','empty',contents?libraryWords['none_'+kind]:'…')]));
+}
+let lastBusy=false;
+function renderLibrary(){
+ const on=!!session&&!!state.library;
+ $('cat-library').hidden=!on;if(!on&&pane==='library')pane='games';
+ $('cat-games').ariaSelected=String(pane==='games');$('cat-library').ariaSelected=String(pane==='library');
+ $('library').hidden=!on||pane!=='library';if($('library').hidden)return;
+ const game=gameId&&games.find(g=>g.id===gameId);
+ $('library-list').hidden=!!game;$('game').hidden=!game;
+ const r=state.removal||{};
+ if(r.phase==='pending'||r.phase==='running')$('library-note').textContent=libraryWords.removing;
+ if(!game)return;
+ const busy=libraryBusy(),s=state.content||{},install=state.install||{},installing=s.phase==='validating';
+ if(busy!==lastBusy){lastBusy=busy;renderItems();}
+ $('game-remove').hidden=!game.removable;$('game-remove').disabled=busy;
+ $('game-remove').textContent=armed==='game'?libraryWords.confirm:libraryWords.remove_game;
+ $('game-warning').textContent=game.removable?libraryWords.warning:libraryWords.external;
+ const active=s.id&&!['complete','validating','publishing'].includes(s.phase);
+ $('content-files').disabled=contentRunning;
+ $('content-send').disabled=busy||s.available===false||['ready','validating','publishing'].includes(s.phase);
+ $('content-pause').disabled=!active||systemRunning;$('content-discard').disabled=!active||systemRunning;
+ $('content-job').textContent=(s.name?s.name+'\n':'')+(installing&&install.total?libraryWords.validating+' · '+install.done+' / '+install.total+' MiB':
+  libraryWords[s.phase]||words[s.phase]||libraryWords.idle);
+ $('content-progress').value=installing?(install.total?Math.min(1,install.done/install.total):0):s.length?Math.min(1,(s.received||0)/s.length):0;
+ $('content-percent').textContent=installing?percent(install.done||0,install.total):percent(s.received||0,s.length);
+}
+// Follows this page's own deletion and installs to their end, then reloads what they changed.
+function followLibrary(){
+ if(!state.library)return;
+ const r=state.removal||{},s=state.content||{};
+ if(removalSerial&&r.serial===removalSerial&&(r.phase==='complete'||r.phase==='failed')){
+  removalSerial=0;
+  if(r.phase==='failed'){$('library-note').textContent='';$('message').textContent=libraryReason(Error(r.error));}
+  else{
+   $('library-note').textContent=r.content?libraryWords.removed:libraryWords.removed_game;
+   if(!r.content){gone.add(r.game);if(gameId===r.game)gameId='';renderGames();}
+  }
+  loadContents();render();
+ }
+ const phase=s.id+':'+s.phase;
+ if(phase!==lastContent){lastContent=phase;if(s.phase==='complete'&&s.tag===kind+':'+gameId)loadContents();}
+ if(pane==='library'&&Date.now()-libraryAt>10000)loadLibrary();
+}
+function choosePane(next){pane=next;$('message').textContent='';if(next==='library')loadLibrary();render();}
+$('cat-games').addEventListener('click',()=>choosePane('games'));$('cat-library').addEventListener('click',()=>choosePane('library'));
+$('game-back').addEventListener('click',()=>{gameId='';armed='';render();});
+$('kind-update').addEventListener('click',()=>chooseKind('update'));$('kind-dlc').addEventListener('click',()=>chooseKind('dlc'));
+$('game-remove').addEventListener('click',()=>remove(gameId,'game'));
+$('content-files').addEventListener('change',()=>picked('content-picked','content-files'));
+$('content-send').addEventListener('click',async()=>{
+ if(libraryBusy()||!gameId)return;const files=Array.from($('content-files').files);if(!files.length){$('message').textContent=words.choose;return;}
+ contentRunning=true;stopped=false;rates=[];$('message').textContent='';$('library-note').textContent='';const target=contentTarget();render();
+ try{for(const file of files){if(stopped)break;await sendFile(file,file.name,target);}await loadContents();}
+ catch(error){$('message').textContent=libraryReason(error);}finally{contentRunning=false;currentXHR=null;try{await refresh();}catch{}render();}
+});
+$('content-pause').addEventListener('click',()=>control('pause',contentTarget()));$('content-discard').addEventListener('click',()=>control('discard',contentTarget()));
 const systemWords=pt?{
  keysTitle:'Importar chaves',firmware:'Importar firmware',keysHelp:'ZIP ou prod.keys / title.keys. Máximo de 4 MiB por arquivo de chaves.',
  firmwareHelp:'ZIP ou arquivos NCA extraídos. A versão será verificada antes de instalar.',folder:'Ou escolha uma pasta extraída',send:'Enviar e revisar',confirm:'Confirmar instalação',cancel:'Cancelar e apagar importação',accept:'Entendo e aceito os avisos.',
@@ -518,11 +725,11 @@ const updatePanel=$('app-updates'),updateTitle=$('app-update-title'),updateHelp=
 const updateDownload=$('app-update-download'),updateStatus=$('app-update-status'),updateLink=$('app-update-package'),updatePortal=$('app-update-portal');
 updateTitle.textContent=pt?'Atualizar Jadyx':es?'Actualizar Jadyx':'Update Jadyx';
 updateHelp.textContent=pt?
- 'No Xbox, abra Configurações → Sistema → Atualizações e baixe a versão. Depois baixe o pacote verificado aqui e instale sobre o Jadyx pelo Device Portal. Não desinstale: isso apaga seus dados.':es?
- 'En Xbox, abre Ajustes → Sistema → Actualizaciones y descarga la versión. Después descarga aquí el paquete verificado e instálalo sobre Jadyx desde Device Portal. No desinstales: eso borra tus datos.':
- 'On Xbox, open Settings → System → Updates and download the version. Then download the verified package here and install over Jadyx in Device Portal. Do not uninstall: that deletes your data.';
+ 'No Xbox, abra Configurações → Sistema → Atualizações e baixe a versão. Depois baixe o pacote verificado aqui e instale sobre o Jadyx pelo Xbox Device Portal. Não desinstale: isso apaga seus dados.':es?
+ 'En Xbox, abre Ajustes → Sistema → Actualizaciones y descarga la versión. Después descarga aquí el paquete verificado e instálalo sobre Jadyx desde Xbox Device Portal. No desinstales: eso borra tus datos.':
+ 'On Xbox, open Settings → System → Updates and download the version. Then download the verified package here and install over Jadyx in Xbox Device Portal. Do not uninstall: that deletes your data.';
 updateDownload.textContent=pt?'Baixar pacote verificado':es?'Descargar paquete verificado':'Download verified package';
-updatePortal.textContent=pt?'Abrir Device Portal':es?'Abrir Device Portal':'Open Device Portal';
+updatePortal.textContent=pt?'Abrir Xbox Device Portal':es?'Abrir Xbox Device Portal':'Open Xbox Device Portal';
 if(location.hostname)updatePortal.href='https://'+location.hostname+':11443';
 updateDownload.addEventListener('click',async()=>{
  try{
@@ -532,7 +739,7 @@ updateDownload.addEventListener('click',async()=>{
   if(typeof data.download!=='string'||!/^\/api\/v1\/update\/package\?ticket=[0-9a-f]{64}$/.test(data.download)||
      typeof data.filename!=='string'||!/^Jadyx_[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+_x64\.appx$/.test(data.filename))throw Error('invalid_update');
   updateLink.href=data.download;updateLink.download=data.filename;updateLink.click();
-  updateStatus.textContent=pt?'Instale no Device Portal → Add. Reabra o Jadyx para confirmar a versão.':es?'Instala en Device Portal → Add. Vuelve a abrir Jadyx para confirmar la versión.':'Install in Device Portal → Add. Reopen Jadyx to confirm the version.';
+  updateStatus.textContent=pt?'Instale no Xbox Device Portal → Add. Reabra o Jadyx para confirmar a versão.':es?'Instala en Xbox Device Portal → Add. Vuelve a abrir Jadyx para confirmar la versión.':'Install in Xbox Device Portal → Add. Reopen Jadyx to confirm the version.';
  }catch{
   updateStatus.textContent=pt?'Não foi possível preparar o pacote. Conclua a verificação no Xbox e termine transferências ativas.':es?'No se pudo preparar el paquete. Completa la verificación en Xbox y termina las transferencias activas.':'Could not prepare the package. Complete verification on Xbox and finish active transfers.';
  }finally{updateDownload.disabled=false;}

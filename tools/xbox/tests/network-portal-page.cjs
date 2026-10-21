@@ -36,6 +36,8 @@ for(const size of [0,3,55,56,63,64,65,128,131072]){
  console.log('PASS: browser client mocked 5GiB queue/chunks4-16-64/64-bit resume/lost ACK/different file/collision/pause; no whole-file arrayBuffer');
  for(const language of ['es','en','pt-BR'])for(const kind of ['keys','firmware'])for(const zip of [false,true])await systemScenario(kind,zip,language);
  console.log('PASS: browser keys/firmware, ZIP/loose, review warning checkbox and explicit confirmation (mock HTTP)');
+ for(const language of ['es','en','pt-BR'])await libraryScenario(language);
+ console.log('PASS: browser library, update upload with kind/game metadata, two-press content and game deletion (mock HTTP)');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 
 async function browserScenario(options){
@@ -159,3 +161,71 @@ async function systemScenario(kind,zip,language){
  element('system-warning-accept').checked=true;callbacks.get('system-warning-accept:change')();assert.equal(element('system-confirm').disabled,false);
  await callbacks.get('system-confirm:click')();assert.equal(confirmations,1);assert.equal(system.phase,'complete');
 }
+
+async function libraryScenario(language){
+ const elements=new Map(),requests=[];
+ const make=tag=>{const n={tag,value:'',textContent:'',files:[],hidden:false,disabled:false,style:{},dataset:{},children:[],listeners:{},
+  classList:{add(){},remove(){}},addEventListener:(event,callback)=>{n.listeners[event]=callback;},
+  append:(...c)=>n.children.push(...c),replaceChildren:(...c)=>{n.children=c;}};return n;};
+ const element=id=>{if(!elements.has(id))elements.set(id,make('#'+id));return elements.get(id);};
+ const click=n=>n.listeners.click();
+ const app='0100000000010000',item='d'.repeat(64),upload='e'.repeat(32),length=3*1048576+5;
+ let games=[{id:app,name:'Game',developer:'Dev',version:'1.0.0',removable:true}],contents=[{id:item,kind:'update',name:'Update',version:'1.0.1',bytes:1048576,internal:true}];
+ let removal={serial:0,game:'',content:'',phase:'',error:''},content={},revision=1;
+ const response=(status,data={},headers={})=>({status,ok:status>=200&&status<300,json:async()=>JSON.parse(JSON.stringify(data)),headers:{get:k=>headers[k]??null}});
+ const fetch=async(url,request={})=>{
+  if(url==='/api/v1/pair')return response(200,{session:'test-session'});
+  assert.equal(request.headers.Authorization,'Bearer test-session');requests.push((request.method||'GET')+' '+url);
+  // The console runs a queued deletion before the next status read.
+  if(url==='/api/v1/status'){
+   if(removal.phase==='pending'){removal={...removal,phase:'complete'};
+    if(removal.content)contents=contents.filter(c=>c.id!==removal.content);else{games=[];revision++;}}
+   return response(200,{uploads:true,transfer:{},library:true,content,install:{done:0,total:0},removal});
+  }
+  if(url==='/api/v1/library')return response(200,{revision,games});
+  if(url.endsWith('/cover'))return response(404,{error:'cover'});
+  if(url==='/api/v1/library/'+app+'/content')return response(200,{contents});
+  if(request.method==='DELETE'&&url.startsWith('/api/v1/library/'+app)){
+   const id=url.split('/content/')[1]||'';removal={serial:removal.serial+1,game:app,content:id,phase:'pending',error:''};return response(202,{removal});
+  }
+  if(url==='/api/v1/content/uploads'){
+   const metadata=Object.fromEntries(request.headers['Upload-Metadata'].split(',').map(s=>{const [key,b64]=s.split(' ');return[key,Buffer.from(b64,'base64').toString('utf8')];}));
+   assert.equal(metadata.kind,'update');assert.equal(metadata.application,app);assert.equal(metadata.filename,'patch.nsp');
+   content={id:upload,name:metadata.filename,fingerprint:metadata.fingerprint,tag:'update:'+app,length,offset:0,received:0,phase:'receiving',busy:true,available:true};
+   return response(201,{}, {Location:'/api/v1/content/uploads/'+upload});
+  }
+  if(request.method==='HEAD')return response(200,{}, {'Upload-Offset':String(content.offset)});
+  if(url.endsWith('/finish')){assert.equal(content.offset,length);content={...content,phase:'complete',busy:false};
+   contents=[...contents,{id:'f'.repeat(64),kind:'update',name:'Update',version:'1.0.2',bytes:length,internal:true}];return response(204);}
+  throw Error('unexpected library request '+url);
+ };
+ class XHR{
+  open(method,url){assert.equal(method,'PATCH');assert.equal(url,'/api/v1/content/uploads/'+upload);this.headers={};}
+  setRequestHeader(k,v){this.headers[k]=v;}
+  getResponseHeader(k){return k==='Upload-Offset'?String(content.offset):null;}
+  send(blob){assert.equal(Number(this.headers['Upload-Offset']),content.offset);content.offset+=blob.size;content.received=content.offset;queueMicrotask(()=>{this.status=204;this.onload();});}
+ }
+ const file={name:'patch.nsp',size:length,lastModified:1,slice:(start,end=length)=>({size:end-start,arrayBuffer:async()=>new Uint8Array(end-start).buffer})};
+ const context=vm.createContext({document:{getElementById:element,createElement:make,documentElement:{}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
+  performance,XMLHttpRequest:XHR,fetch,URL:{createObjectURL:()=>'blob:x',revokeObjectURL(){}},btoa:v=>Buffer.from(v,'binary').toString('base64'),
+  setTimeout:(cb,ms)=>{if(!(ms>=6000))queueMicrotask(cb);return 1;},clearTimeout:()=>{},setInterval:()=>1,clearInterval:()=>{}});
+ vm.runInContext(script,context);
+ element('code').value='12345678';await element('pair').listeners.submit({preventDefault(){}});
+ assert.equal(element('cat-library').hidden,false);
+ click(element('cat-library'));await delay();
+ assert.equal(element('upload').hidden,true);assert.equal(element('library').hidden,false);assert.equal(element('games').children.length,1);
+ click(element('games').children[0]);await delay();
+ assert.equal(element('game').hidden,false);assert.equal(element('game-name').textContent,'Game');assert.equal(element('items').children.length,1);
+ // One press arms the deletion; only the second sends it.
+ let remove=()=>element('items').children[0].children[1];
+ await click(remove());assert.ok(!requests.some(r=>r.startsWith('DELETE')),'first press never deletes');
+ await click(remove());assert.ok(requests.includes('DELETE /api/v1/library/'+app+'/content/'+item));
+ await delay();assert.equal(element('items').children[0].tag,'li');assert.equal(element('items').children[0].className,'empty');
+ assert.notEqual(element('library-note').textContent,'');
+ element('content-files').files=[file];await click(element('content-send'));await delay();
+ assert.equal(content.phase,'complete');assert.equal(element('items').children.length,1,'installed update is listed');
+ await click(element('game-remove'));assert.ok(!requests.includes('DELETE /api/v1/library/'+app));
+ await click(element('game-remove'));assert.ok(requests.includes('DELETE /api/v1/library/'+app));
+ await delay();assert.equal(element('game').hidden,true);assert.equal(element('library-list').hidden,false);assert.equal(element('games').children.length,0);
+}
+function delay(){return new Promise(resolve=>setImmediate(resolve));}

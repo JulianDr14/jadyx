@@ -76,7 +76,7 @@ Error VerifyContent(InspectedContent& content, std::stop_token stop, Progress pr
 }
 
 Inspection InspectPackage(FileSys::VfsFilesystem& vfs, const std::string& source,
-                          bool verify, std::stop_token stop, Progress progress) {
+                          bool verify, std::stop_token stop, Progress progress, std::string_view format) {
     using namespace FileSys;
     Inspection result;
     std::vector<VirtualFile> raw;
@@ -85,7 +85,7 @@ Inspection InspectPackage(FileSys::VfsFilesystem& vfs, const std::string& source
     } else {
         const auto file = vfs.OpenFile(source, OpenMode::Read);
         if (!file) return {Error::Unavailable, {}};
-        auto extension = file->GetExtension();
+        auto extension = format.empty() ? file->GetExtension() : std::string{format};
         std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return std::tolower(c); });
         if (extension == "nsp") {
             PartitionFilesystem nsp{file};

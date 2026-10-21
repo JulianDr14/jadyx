@@ -80,4 +80,21 @@ inline LibraryScan ScanGameLibrary(const std::filesystem::path& root,
     });
     return result;
 }
+
+// A rescan after a storage job finds mostly the same dumps: give them back the titles already
+// read, so neither the grid nor the portal goes blank while one game's metadata is read again.
+// Icons are not kept: the visible window reloads them from the cache.
+inline void KeepKnownTitles(const std::vector<LibraryEntry>& known, std::vector<LibraryEntry>& entries) {
+    for (auto& entry : entries) {
+        const auto found = std::find_if(known.begin(), known.end(),
+            [&](const auto& k) { return k.title_loaded && k.launch_path == entry.launch_path; });
+        if (found == known.end()) continue;
+        entry.name = found->name;
+        entry.developer = found->developer;
+        entry.display_version = found->display_version;
+        entry.program_id = found->program_id;
+        entry.build_id = found->build_id;
+        entry.title_loaded = true;
+    }
+}
 } // namespace Jadyx

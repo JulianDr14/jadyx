@@ -14,8 +14,12 @@ add_executable(jadyx WIN32
     pulse/pulse_sessions.h
     library/favorites.cpp
     library/favorites.h
+    library/game_removal.cpp
+    library/game_removal.h
     library/play_history.cpp
     library/play_history.h
+    library/portal_library.cpp
+    library/portal_library.h
     pulse/pulse_screen.cpp
     pulse/pulse_screen.h
     pulse/pulse_store_gate.cpp
@@ -98,6 +102,8 @@ add_executable(jadyx WIN32
     content/content_model.h
     content/content_inspector.cpp
     content/content_store.cpp
+    content/content_actions.cpp
+    content/content_actions.h
     content/content_service.cpp
     content/content_session.cpp
     content/content_view.cpp

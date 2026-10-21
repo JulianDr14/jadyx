@@ -5,7 +5,9 @@
 #include <chrono>
 #include <memory>
 #include <functional>
+#include <cstdint>
 #include <optional>
+#include <utility>
 #include "jadyx/updates/update_package.h"
 #include <string>
 #include <vector>
@@ -24,6 +26,16 @@ std::vector<PortalAddress> PortalAddresses();
 
 enum class PortalError { None, NoAddress, Bind, Random, Listen, Storage };
 
+/// A deletion asked from the browser. The library runs it with its other storage jobs.
+struct PortalRemoval {
+    std::uint64_t serial{};      ///< One per request, so the page follows its own.
+    std::uint64_t application{};
+    std::string content;         ///< Update/DLC id; empty deletes the whole game.
+    std::string phase;           ///< "", "pending", "running", "complete" or "failed".
+    std::string error;
+    bool operator==(const PortalRemoval&) const = default;
+};
+
 struct PortalStatus {
     bool running{};
     bool paired{};
@@ -32,8 +44,39 @@ struct PortalStatus {
     std::string code; ///< Local UI only; never returned by HTTP or logged.
     PortalError error{};
     UploadSnapshot transfer;
+    UploadSnapshot content; ///< Update/DLC package; its tag is "<kind>:<application hex>".
     SystemUploadStatus system;
+    PortalRemoval removal;
 };
+
+/// One installed game as the browser sees it. Never carries a console path.
+struct PortalGame {
+    std::uint64_t program_id{};
+    std::string name, developer, version;
+    bool removable{}; ///< Every dump is in internal storage, so the console can delete it.
+    bool operator==(const PortalGame&) const = default;
+};
+
+/// One update/DLC already registered for a game.
+struct PortalContent {
+    std::string id, kind, name, version;
+    std::uint64_t title{}, bytes{};
+    bool enabled{}, internal{};
+};
+
+/// Read-only library view supplied by the coordinator. Every callback runs on a portal
+/// worker, must be thread safe and must outlive the server.
+struct PortalLibrary {
+    std::function<std::pair<std::uint64_t, std::vector<PortalGame>>()> games; ///< revision + games
+    std::function<std::optional<std::string>(std::uint64_t)> cover;          ///< JPEG bytes
+    std::function<std::vector<PortalContent>(std::uint64_t)> contents;
+    std::function<std::pair<std::uint64_t, std::uint64_t>()> progress;      ///< installed MiB, total MiB
+};
+
+/// Installs an update/DLC upload; `tag` is the validated "<kind>:<application hex>".
+using ContentValidator = std::function<std::string(const std::filesystem::path&, const std::string& tag, std::stop_token)>;
+/// Carries out the pending removal; returns an error word, empty on success.
+using RemovalRunner = std::function<std::string(const PortalRemoval&)>;
 
 /// Library-owned HTTP server. Destruction stops and joins all network workers before launch.
 class NetworkPortal {
@@ -53,8 +96,15 @@ public:
     void SetUpdatePackage(std::function<std::optional<Updates::UpdatePackage>()> package);
     // Configure the fixed app log root before Start; never takes a browser path.
     void SetLogDirectory(std::filesystem::path directory);
+    // Configure the library view before Start; without it the library routes answer 503.
+    void SetLibrary(PortalLibrary library);
     bool BlockForLocalOperation();
     std::string FinalizeGame(const NspValidator& validate);
+    /// Only the library coordinator calls this, after its metadata worker has joined.
+    std::string FinalizeContent(const ContentValidator& validate);
+    /// Runs the pending removal, if any. Only the library coordinator calls this, from its
+    /// storage worker; uploads stay closed from the request until it returns.
+    std::string RunRemoval(const RemovalRunner& run);
     void CancelTransfer();
     std::string RunSystemImport(std::stop_token stop);
 

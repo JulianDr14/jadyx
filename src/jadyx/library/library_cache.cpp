@@ -15,7 +15,7 @@
 namespace Jadyx {
 namespace {
 constexpr std::uint32_t Magic = 0x434C5845; // "EXLC"
-constexpr std::uint32_t Version = 4;       // 4: titles read in the language each game runs in.
+constexpr std::uint32_t Version = 5;       // 5: each record keeps its game's content stamp.
 constexpr std::uint32_t MaxText = 512;      // UTF-16 units; NACP names are at most 512 bytes.
 
 struct Header {
@@ -29,8 +29,9 @@ struct Header {
     std::uint32_t icon_size;
     std::uint64_t program_id;
     std::array<std::uint8_t, 8> build_id;
+    std::uint64_t content;
 };
-static_assert(sizeof(Header) == 56);
+static_assert(sizeof(Header) == 64);
 
 std::uint64_t Fnv1a(std::string_view text) {
     std::uint64_t hash = 0xcbf29ce484222325ULL;
@@ -93,6 +94,7 @@ std::optional<LibraryCacheRecord> LibraryCache::Load(std::string_view launch_pat
     LibraryCacheRecord record;
     record.program_id = header.program_id;
     record.build_id = header.build_id;
+    record.content = header.content;
     if (!ReadText(in, header.name_length, record.name) ||
         !ReadText(in, header.developer_length, record.developer) ||
         !ReadText(in, header.display_version_length, record.display_version))
@@ -119,7 +121,8 @@ bool LibraryCache::Store(std::string_view launch_path, std::uint64_t stamp, std:
                         static_cast<std::uint32_t>(display_version.size()),
                         static_cast<std::uint32_t>(record.icon.size()),
                         record.program_id,
-                        record.build_id};
+                        record.build_id,
+                        record.content};
     const auto path_size = static_cast<std::uint32_t>(launch_path.size());
     std::string bytes;
     bytes.reserve(sizeof(header) + sizeof(path_size) + launch_path.size() +

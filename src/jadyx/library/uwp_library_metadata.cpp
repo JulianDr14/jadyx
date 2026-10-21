@@ -11,6 +11,7 @@
 #include "common/logging.h"
 #include "common/settings.h"
 #include "core/core.h"
+#include "core/file_sys/common_funcs.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/registered_cache.h"
@@ -31,6 +32,9 @@ void Apply(LibraryEntry& entry, LibraryCacheRecord&& record, bool icons) {
     entry.title_loaded = true;
 }
 
+std::uint64_t ContentStamp(const Content::Catalog& catalog, std::uint64_t program_id) {
+    return program_id ? Content::ApplicationStamp(catalog, FileSys::GetBaseTitleID(program_id)) : 0;
+}
 } // namespace
 
 void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryEntry>& entries,
@@ -47,8 +51,10 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
     bool have_keys = false;
     for (auto& entry : entries) {
         if (stop.stop_requested()) break;
-        const auto stamp = (IsStoragePath(entry.launch_path) ? 0 : LibraryCache::StampFor(root / entry.relative_path)) ^ (catalog.generation * 0x9e3779b97f4a7c15ULL);
-        if (auto record = cache.Load(entry.launch_path, stamp, language, options.icons)) {
+        const auto stamp = IsStoragePath(entry.launch_path) ? 0 : LibraryCache::StampFor(root / entry.relative_path);
+        // A record stays valid until its own game's updates/DLC change, not anyone else's.
+        if (auto record = cache.Load(entry.launch_path, stamp, language, options.icons);
+            record && record->content == ContentStamp(catalog, record->program_id)) {
             Apply(entry, std::move(*record), options.icons);
             continue;
         }
@@ -99,6 +105,7 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
             }
             else
                 record.program_id = 0;
+            record.content = ContentStamp(catalog, record.program_id);
             LOG_INFO(Frontend, "Library metadata: title '{}', icon {} bytes", title, record.icon.size());
             cache.Store(entry.launch_path, stamp, language, record);
             Apply(entry, std::move(record), options.icons);

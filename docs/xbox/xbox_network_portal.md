@@ -490,3 +490,36 @@ final, ETag, Range/HEAD/416, cancelacion tolerante a la carrera con el export ra
 (reintenta hasta cancelar; cada intento acaba en cancelled o ready), 5/5 ejecuciones;
 PAX tarfile pasa; UWP compila/enlaza. Test de pagina log-export-page.cjs actualizado,
 no ejecutado (sin node en este PC). Pendiente medir tiempo/tamaño reales en Series.
+
+## Biblioteca, actualizaciones/DLC y eliminación — 0.3.6.30 (20 octubre 2026)
+
+Rama feature/portal-library-content. La pestaña Biblioteca del portal aparece cuando la
+consola publica su vista (PortalLibrarySource, solo lectura, generación por escaneo).
+- GET /api/v1/library: {revision, games:[{id,name,developer,version,removable}]}; id 16 hex.
+- GET /api/v1/library/{id}/cover: JPEG (img-src 'self' blob:); id mal formado -> 404 sin
+  llegar a la vista.
+- GET /api/v1/library/{id}/content: {contents:[{id,kind,name,version,title,bytes,enabled,internal}]}.
+- tus /api/v1/content/uploads: metadata filename/fingerprint + kind (update|dlc) +
+  application (16 hex). kind inválido -> 400 metadata; juego desconocido -> 404. Al terminar,
+  el worker de almacenamiento llama a FinalizeContent con tag "<kind>:<id>" y la importación
+  es la del gestor de contenido (ImportUploadedContent: copia interna, base presente, sin
+  downgrade, paquete rechazado entero si trae contenido de otro juego).
+- DELETE /api/v1/library/{id} y DELETE /api/v1/library/{id}/content/{64 hex}: 202 {removal};
+  404 game; 409 busy (subida abierta, importación de sistema u otra eliminación).
+  status.removal {serial,game,content,phase,error}: pending -> running -> complete|failed.
+  Mientras hay una eliminación pendiente las subidas quedan cerradas.
+
+Eliminación compartida consola/portal (mismo worker serie, mismas funciones):
+- Opciones del juego -> Eliminar juego (segunda pulsación confirma) o portal -> juego ->
+  Eliminar juego (dos pulsaciones). RemoveGame borra dumps internos, partidas, updates/DLC
+  del catálogo y sesiones Pulse; conserva mods/trucos. Juegos fuera del almacenamiento
+  interno -> error external (no se borra nada).
+- Update/DLC individual: gestor de contenido de la consola o botón por elemento del portal
+  (RemoveContent). Tras cada trabajo se reescanea; la generación del catálogo forma parte de
+  la clave de metadatos, así la versión mostrada y ResolveLaunchContent ven el cambio.
+
+Validación: harness TCP nativo (library-tests.h, vista sintética: listado, carátula,
+admisión kind/juego, tag al instalador, cola de eliminación, exclusión de subidas, fallo
+visible); test de página network-portal-page.cjs (es/en/pt-BR, mock HTTP, ejecutado con
+Electron de VS Code en modo node); UWP compila/enlaza. Pendiente: gate en Series con
+update/DLC reales y eliminación desde ambos lados.

@@ -11,6 +11,9 @@ struct Catalog {
     std::vector<std::uint64_t> managed_applications;
     std::uint64_t generation{};
 };
+/// Identity of one game's registered updates/DLC (ids, which are enabled, whether it is managed).
+/// Changes only when that game's content does, unlike the catalog-wide generation.
+std::uint64_t ApplicationStamp(const Catalog& catalog, std::uint64_t application);
 // Only the serial import worker writes this store. Readers get an immutable copy.
 class ContentStore {
 public:
@@ -21,6 +24,9 @@ public:
     Error Load(Catalog& catalog) const;
     Error Save(Catalog& catalog) const;
     Error Remove(Catalog& catalog, const std::string& id) const;
+    /// Removes every matching revision and deletes their internal copies; Error::Invalid when
+    /// none matched.
+    Error Remove(Catalog& catalog, const std::function<bool(const Revision&)>& match) const;
     void Cleanup(const Catalog& catalog) const;
     std::filesystem::path Object(const std::string& id) const;
     std::filesystem::path Temporary(const std::string& id) const;

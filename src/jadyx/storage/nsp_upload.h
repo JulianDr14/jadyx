@@ -15,6 +15,7 @@ struct UploadPerformance {
 };
 struct UploadSnapshot {
     std::string id, name, fingerprint, phase{"idle"}, error;
+    std::string tag; ///< Caller-defined destination (content uploads: "update:<application>").
     std::uint64_t length{}, offset{}, received{}, free_bytes{};
     bool busy{}, available{};
     UploadPerformance performance;
@@ -29,12 +30,14 @@ using NspValidator = std::function<std::string(const std::filesystem::path&, std
 
 /// One bounded sequential upload; the browser queues files. No core/WinRT state is touched.
 /// Two durable checkpoints preserve confirmed offsets across a process restart.
+/// A consumed upload is never published under `games`: its validator installs the payload
+/// elsewhere (update/DLC into internal storage) and the payload is deleted once it succeeds.
 class NspUpload {
 public:
     static constexpr std::uint64_t MaxLength = 1ULL << 40;
     static constexpr std::uint64_t MaxChunk = 64ULL << 20;
     explicit NspUpload(std::filesystem::path games, bool system_files = false,
-                       std::filesystem::path temporary = {});
+                       std::filesystem::path temporary = {}, bool consume = false);
     ~NspUpload();
     UploadSnapshot Snapshot() const;
     bool SetAvailable(bool enabled); ///< false refuses new input; never cancels an active file.
@@ -42,7 +45,7 @@ public:
     void Cancel();                  ///< Interrupt finalization; call before stopping sockets.
     void Suspend();                 ///< After joining sockets: retain the last confirmed offset.
     void Resume();                  ///< After previous operations joined.
-    UploadResult Create(std::string name, std::string fingerprint, std::uint64_t length);
+    UploadResult Create(std::string name, std::string fingerprint, std::uint64_t length, std::string tag = {});
     UploadResult Append(const std::string& id, std::uint64_t offset, std::uint64_t length, const UploadReader& reader);
     UploadResult Discard(const std::string& id);
     UploadResult Pause(const std::string& id);
