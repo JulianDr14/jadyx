@@ -609,8 +609,21 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
         if (IsValidEntry(*gpu_memory, descriptor)) {
             // Is new (registered view) on the texture cache side?
             const auto [pair, is_new_tc] = channel_state->image_views.try_emplace(descriptor);
-            if (is_new_tc)
+            if (is_new_tc) {
+                if (static_cast<u32>(descriptor.format.Value()) == 0) {
+                    // The format lookup only reports "format=0": name the descriptor behind it.
+                    LOG_WARNING(HW_GPU,
+                                "TIC {} ({}) has format 0: addr 0x{:X} {}x{}x{} type {} header {} "
+                                "raw {:016X} {:016X} {:016X} {:016X}",
+                                index, compute ? "compute" : "graphics", descriptor.Address(),
+                                descriptor.Width(), descriptor.Height(), descriptor.Depth(),
+                                static_cast<u32>(descriptor.texture_type.Value()),
+                                static_cast<u32>(descriptor.header_version.Value()),
+                                descriptor.raw[0], descriptor.raw[1], descriptor.raw[2],
+                                descriptor.raw[3]);
+                }
                 pair->second = CreateImageView(descriptor);
+            }
             PrepareImageView(pair->second, false, false);
             channel_state->image_view_ids.insert_or_assign(map_index, pair->second);
             return pair->second;
