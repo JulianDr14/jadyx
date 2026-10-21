@@ -81,6 +81,7 @@
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/perf_counters.h"
+#include "video_core/readback_trace.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 #include "video_core/renderer_d3d12/d3d12_menu_image.h"
@@ -289,6 +290,8 @@ struct BootConfig {
     bool full_gpu_capture_self_test{};
     /// Render targets are read back only after each operation ("gpu_capture_targets=after").
     bool full_gpu_capture_targets_after{};
+    /// Logs CPU buffer writes lost to GPU-written ranges ("buffer_write_origins=1").
+    bool buffer_write_origins{};
     /// Per-core JIT elapsed time and slow callback counts ("cpu_profile=1"). Diagnostic only.
     bool cpu_profile{};
     /// In-process sampling profiler over every named thread ("profile=1"; "profile=full" adds the
@@ -510,6 +513,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     VideoCommon::FullCapture::Enable(config.full_gpu_capture);
     VideoCommon::FullCapture::RequestSelfTest(config.full_gpu_capture_self_test);
     VideoCommon::FullCapture::SetTargetsAfterOnly(config.full_gpu_capture_targets_after);
+    VideoCommon::ReadbackTrace::SetWriteOrigins(config.buffer_write_origins);
     if (config.full_gpu_capture) {
         const auto version = winrt::Windows::ApplicationModel::Package::Current().Id().Version();
         VideoCommon::FullCapture::SetSession(fmt::format(
@@ -2532,6 +2536,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "gpu_capture_targets=after") {
                             config.full_gpu_capture_targets_after = true;
                             WriteDiag("boot.cfg: full capture reads render targets after operations only");
+                        } else if (line == "buffer_write_origins=1") {
+                            config.buffer_write_origins = true;
+                            WriteDiag("boot.cfg: buffer GPU-write origins traced");
                         } else if (line == "dump_guest_shaders=1") {
                             config.dump_guest_shaders = true;
                             WriteDiag("boot.cfg: guest shader dump enabled");

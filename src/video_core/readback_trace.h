@@ -4,8 +4,11 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <mutex>
 #include <span>
+#include <unordered_set>
 
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -57,6 +60,44 @@ inline void LogCpuReadFlush(u64 address, u64 size, u64 start, u64 end) {
     }
     LOG_WARNING(Render, "CPU read flush #{}: addr {:#x} size {} area {:#x}-{:#x}", count, address,
                 size, start, end);
+}
+
+/// Path that marked a buffer range as written by the GPU (buffer_write_origins=1).
+enum class WriteOrigin : u8 {
+    None,
+    MultiRange,
+    GraphicsStorage,
+    GraphicsTexture,
+    TransformFeedback,
+    ComputeStorage,
+    ComputeTexture,
+    DmaImage,
+    DmaCopy,
+};
+
+inline std::atomic_bool write_origins_enabled{};
+inline void SetWriteOrigins(bool enabled) { write_origins_enabled = enabled; }
+inline bool WriteOriginsEnabled() { return write_origins_enabled.load(std::memory_order_relaxed); }
+
+/// Diagnostic: guest bytes the CPU wrote that lose against a GPU-written range, either skipped
+/// by an upload or overwritten by a download. Each range start is reported once (up to 4096).
+inline void LogWriteConflict(const char* kind, u64 address, u64 size, u64 origin, u64 origin_seq,
+                             u64 current_seq) {
+    static constexpr std::array<const char*, 9> names{
+        "none", "multi_range", "graphics_storage", "graphics_texture", "transform_feedback",
+        "compute_storage", "compute_texture", "dma_image", "dma_copy"};
+    static std::mutex mutex;
+    static std::unordered_set<u64> seen;
+    {
+        std::scoped_lock lock{mutex};
+        if (seen.size() >= 4096 || !seen.insert(address).second) return;
+    }
+    const char* name = origin < names.size() ? names[origin] : "unknown";
+    if (FullCapture::Active()) FullCapture::Event("buffer_write_conflict", fmt::format(
+        "{{\"kind\":\"{}\",\"address\":{},\"size\":{},\"origin\":\"{}\",\"origin_seq\":{},"
+        "\"current_seq\":{}}}", kind, address, size, name, origin_seq, current_seq));
+    LOG_WARNING(Render, "Buffer write conflict, {}: addr {:#x} size {} | last GPU write by {} "
+                "(mark #{} of {})", kind, address, size, name, origin_seq, current_seq);
 }
 
 } // namespace VideoCommon::ReadbackTrace
