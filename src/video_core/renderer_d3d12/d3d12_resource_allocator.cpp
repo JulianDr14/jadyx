@@ -164,6 +164,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
     find_space();
 
     bool compact = false;
+    u64 wanted{};
     if (selected == SIZE_MAX) {
         // Collect before growing, outside the pool lock: retirement callbacks acquire it.
         // This also runs during loading screens, without waiting for another present/GC frame.
@@ -195,6 +196,10 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
         if (pressure) {
             const auto after = device.QueryCacheMemoryPressure();
             compact = !after.Known() || pressured(after);
+            if (compact && after.Known()) {
+                wanted = HeapGrowth::PressureCapacity(info.SizeInBytes, info.Alignment,
+                                                      {after.app_used, after.app_limit});
+            }
             const auto stats = GetStats();
             {
                 std::scoped_lock lock{state->mutex};
@@ -214,7 +219,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
         std::scoped_lock lock{state->mutex};
 
         if (selected == SIZE_MAX) {
-            const u64 wanted = HeapGrowth::Capacity(info.SizeInBytes, info.Alignment, compact);
+            if (!wanted) wanted = HeapGrowth::Capacity(info.SizeInBytes, info.Alignment, compact);
             if (!wanted) return {};
             const D3D12_HEAP_DESC heap_desc{
                 .SizeInBytes = wanted,

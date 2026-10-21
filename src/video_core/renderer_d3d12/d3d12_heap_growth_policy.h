@@ -29,4 +29,20 @@ struct Budget {
                                           bool pressure) {
     return HeapPacking::BlockSize(size, alignment, pressure ? 0 : 64ULL << 20);
 }
+
+// Below this much free app memory after growing, padding stops and growth may wait on the GPU.
+inline constexpr std::uint64_t exhausted_reserve = 256ULL << 20;
+
+[[nodiscard]] inline bool Exhausted(std::uint64_t bytes, Budget app) {
+    const auto free = app.Free();
+    return app.limit && (bytes >= free || free - bytes <= exhausted_reserve);
+}
+
+// Exact-size heaps under pressure made every following texture miss and grow its own heap.
+// Pad to a small block so the next few fit, unless that padding would exhaust the app budget.
+[[nodiscard]] inline std::uint64_t PressureCapacity(std::uint64_t size, std::uint64_t alignment,
+                                                  Budget app) {
+    const auto padded = HeapPacking::BlockSize(size, alignment, 16ULL << 20);
+    return Exhausted(padded, app) ? Capacity(size, alignment, true) : padded;
+}
 } // namespace D3D12::HeapGrowth
