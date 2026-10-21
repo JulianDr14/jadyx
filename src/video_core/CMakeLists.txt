@@ -534,6 +534,9 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_overlay.cpp
         renderer_d3d12/d3d12_pipeline_cache.cpp
         renderer_d3d12/d3d12_pipeline_cache.h
+        renderer_d3d12/d3d12_pipeline_key_mode.h
+        renderer_d3d12/d3d12_pipeline_key_tracking.cpp
+        renderer_d3d12/d3d12_pipeline_key_tracking.h
         renderer_d3d12/d3d12_pipeline_residency.h
         renderer_d3d12/d3d12_pipeline_helper.h
         renderer_d3d12/d3d12_present_manager.cpp
