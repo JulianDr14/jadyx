@@ -326,3 +326,93 @@ Integral HTTP real+APPX firmado+pausa/Range/restart pasa (15.487.776bytes,
 es simulada y la versión instalada está inyectada; no certifica reinicio real.
 Evidencia `updater-packagemanager-{gates-final,build-final,smoke,e2e-final,package-verification}.log`.
 Sin commits, pushes ni publicación. GateSeries/reapertura/datos pendiente.
+
+## Prueba de actualización con versión instalada falseada (20 octubre 2026)
+
+Para probar aviso, descarga y verificación cuando el release
+publicado (p. ej. 0.3.7.0) no es mayor que el paquete instalado, el paquete de prueba
+lleva en `boot.cfg` la línea `update_installed=X.Y.Z.W`. El updater (`ProductionRuntime`
+en `src/jadyx/updates/updater.cpp`) la lee de la carpeta instalada y usa esa versión
+como "instalada" en vez de la del manifiesto.
+
+Comando (solo paquetes locales, nunca publicados):
+
+```
+.\tools\xbox\package-appx.ps1 -Library -Version 0.3.7.1 -StageScript ..\eden-data\stage-userdata.ps1 -BootCfg update_installed=0.3.6.37
+```
+
+- `-Release` rechaza cualquier línea extra de `boot.cfg`, así que el parche no puede
+  colarse en un release. Aun así, comprobar que el `boot.cfg` publicado solo tenga
+  `library=1` y `play=1`.
+- Con la versión falseada, instalar de verdad 0.3.7.0 encima de 0.3.7.1 sería un downgrade
+  (0x80073D06). Para probar la instalación completa hace falta un release mayor que el
+  paquete instalado.
+
+### Servidor local de releases
+
+Falsear la versión no basta para probar la instalación: instalar un release inferior es un
+downgrade. Para eso el paquete de prueba lleva `update_server=http://<ip-del-PC>:8787` en
+`boot.cfg`; el updater manda ahí las peticiones a `api.github.com/repos/JulianDr14/jadyx/` y
+`github.com/JulianDr14/jadyx/` (mismas rutas, sin prefijo). El manifiesto sigue firmado con las
+URLs de GitHub y pasa por la misma política que en producción.
+
+1. Paquete "release" mayor que el instalado, sin keys (el firmador las rechaza):
+   `package-appx.ps1 -Library -Version 0.3.7.2`, copiar `jadyx.appx` a
+   `build-uwp\update-server\v0.3.7.2\Jadyx_0.3.7.2_x64.appx` y firmar `update.json`/`update.sig`
+   con `create-update.ps1` (requiere PowerShell 7) o un firmador equivalente con el certificado
+   `82FAA237…` del almacén. Comprobar con
+   `openssl dgst -sha256 -verify src/jadyx/updates/release_public_key.pem -signature update.sig update.json`.
+2. Paquete instalado (las keys y el firmware ya están en LocalState de la consola):
+   `package-appx.ps1 -Library -Version 0.3.7.1 -BootCfg update_server=http://<ip>:8787`.
+3. `py tools/xbox/tests/update-server.py build-uwp\update-server` (puerto 8787; el firewall de
+   Windows debe permitir la entrada).
+
+`-Release` rechaza `update_server=` igual que `update_installed=`.
+
+## Por qué Xbox no se actualiza sola (21 octubre 2026)
+
+Se probó en una Series en Dev Mode (0.3.7.0 y 0.3.7.3 → 0.3.7.4, con rastreo en la app) y
+ninguna vía de instalación interna sirve. Las pruebas y el rastreo se retiraron del código; en
+Xbox `runtime.deploy` queda vacío y la instalación siempre es guiada.
+
+- **PackageManager desde la app (`AddPackageAsync` + `ForceApplicationShutdown`):** el Device
+  Portal registra Jadyx para `XBOX\DefaultAccount` (RID 503), pero la app se ejecuta como
+  `XBOX\UserMgr0` (RID 1002). La instalación llega al 97 %, Windows cierra la app y la versión
+  nueva queda registrada **solo para UserMgr0**; la de DefaultAccount sigue en la vieja (el
+  Device Portal muestra las dos). Desde entonces la consola ya no abre Jadyx. El modo diferido
+  (`DeferRegistrationWhenPackagesAreInUse`) registra para el mismo usuario: mismo problema.
+- **Instalar para todos los usuarios** (`FindPackages`, aprovisionar): `0x80070005`; requiere
+  administrador y la app no lo es.
+- **Device Portal desde la app:** 127.0.0.1, localhost y la IP propia dan timeout. UWP trata la
+  IP de la consola como loopback y la aísla; en Xbox no hay exención.
+- **Device Portal desde una página web** (p. ej. el portal de Jadyx abierto en el PC): el Portal
+  no envía cabeceras CORS y responde `403 CSRF Token Invalid` a la petición previa del
+  navegador, así que una página no puede subirle el paquete.
+- **Programa auxiliar en el PC** (descarga y llama al Portal, que sí responde fuera del
+  navegador): funcionaría, pero obliga a mantener otra aplicación; descartado.
+- Proyectos similares (Nativra, NXbox) usan esas mismas vías y no documentan una actualización
+  que deje ambas cuentas en la misma versión.
+
+**Recuperación** si una consola quedó con versiones divididas: instalar por el Device Portal una
+versión **mayor** encima, sin desinstalar (desinstalar borra los datos de UserMgr0).
+
+**Limitaciones de la vía guiada:** hace falta un móvil o PC en la misma red, y elegir el archivo
+y pulsar instalar dentro del Device Portal es manual. Todo lo demás (buscar, descargar,
+verificar la firma, servir el paquete y abrir el Portal) lo hace Jadyx.
+
+### Instalación guiada
+
+1. **Consola:** con la versión verificada (fase Ready), *Instalar desde el móvil o PC* abre la
+   pantalla de instalación sobre la página de actualizaciones. El portal de red arranca solo y
+   la pantalla muestra la dirección, el código de 8 dígitos, los tres pasos y el aviso de no
+   desinstalar. B vuelve a la página de actualizaciones; Detener apaga el portal sin salir.
+2. **Navegador:** mientras la consola está en Assistance, `/api/v1/status` lleva
+   `update.offered=true` y la página, tras emparejar, abre directamente en *Actualizar Jadyx*
+   (*Ir al contenido* la aparta y deja un aviso abajo). La página pide el ticket por adelantado
+   (dura 2 minutos y sirve una vez; se renueva a los 90 s y tras cada uso) para que un solo
+   clic en *Descargar e instalar* baje el appx y abra `https://<host>:11443` en otra pestaña.
+3. **Device Portal:** aceptar el certificado autofirmado, Add → archivo → Next → Install.
+   Cuando la consola deja de responder tras la descarga (3 sondeos fallidos o sesión perdida),
+   la página pasa a *Instalando la actualización*.
+4. **Reapertura:** si la versión instalada coincide con la objetivo guardada, la biblioteca
+   muestra una vez *Jadyx se actualizó a X* hasta la siguiente entrada del mando.
