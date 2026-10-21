@@ -157,7 +157,9 @@ int main() {
       assert(u.CurrentPhase() == Phase::Ready && u.Status().received == 8);
       u.Install();
       Settle(u);
+      // Without native deployment (Xbox) the guided install is the path, not an error.
       assert(u.CurrentPhase() == Phase::Assistance);
+      assert(u.Status().error == Error::None && u.Status().native_error == 0);
       assert(f.Journal().at("target") == "0.3.6.0");
     }
     {

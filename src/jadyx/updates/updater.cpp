@@ -14,6 +14,7 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Management.Deployment.h>
 #include <winrt/Windows.Storage.h>
+#include <winrt/Windows.System.Profile.h>
 #include "jadyx/network/http.h"
 #include "jadyx/storage/atomic_file.h"
 #include "jadyx/updates/package_validation.h"
@@ -205,6 +206,11 @@ struct Updater::Impl {
     }
 };
 namespace {
+bool IsXbox() {
+    return winrt::Windows::System::Profile::AnalyticsInfo::VersionInfo().DeviceFamily() ==
+           L"Windows.Xbox";
+}
+
 Runtime ProductionRuntime() {
     Runtime runtime;
     const auto package = winrt::Windows::ApplicationModel::Package::Current();
@@ -253,7 +259,13 @@ Runtime ProductionRuntime() {
         };
     }
     runtime.verify_package = ValidatePackage;
-    runtime.deploy = DeployPackage;
+    // Xbox Dev Mode cannot update itself (measured, see docs/xbox/xbox_updater.md): the Device
+    // Portal registers Jadyx for DefaultAccount while the app runs as UserMgr0, so
+    // PackageManager registers the new version for UserMgr0 only and the console stops
+    // launching Jadyx. The app cannot reach the Portal either (loopback isolation). There the
+    // verified package goes in through the Device Portal, guided from a phone or PC.
+    if (!IsXbox())
+        runtime.deploy = DeployPackage;
     return runtime;
 }
 } // namespace
@@ -622,10 +634,17 @@ void Updater::Install() {
             return;
         }
         p.target = FormatVersion(p.state.release->version);
+        p.install_when_ready = false;
+        if (!p.runtime.deploy) {
+            // No native deployment here: the guided install is the way, not a failure.
+            p.Event("guided installation prepared " + p.target);
+            p.PhaseTo(Phase::Assistance);
+            p.Save();
+            return;
+        }
         p.Event("installation prepared " + p.target);
         if (!p.Save())
             return;
-        p.install_when_ready = false;
         p.PhaseTo(Phase::Preparing);
     }
     p.Stop();
