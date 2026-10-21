@@ -21,6 +21,7 @@ int Status(const httplib::Result& result) { return result ? result->status : 0; 
 #include "log-export-tests.h"
 #include "nsp-upload-tests.h"
 #include "system-upload-tests.h"
+#include "library-tests.h"
 
 int main(int argc,char** argv) {
     try {
@@ -191,6 +192,7 @@ int main(int argc,char** argv) {
     ::closesocket(socket);
     UploadTests(port,argc>1 && std::string_view{argv[1]}=="--large");
     SystemUploadTests(port);
+    LibraryTests(port);
     std::puts("PASS: network portal native TCP pairing/origin/limits/restart/partial-body lifecycle; Xbox/AppContainer LAN gate still required");
     } catch (const std::exception& error) { std::fprintf(stderr,"FAIL: uncaught %s\n",error.what());return 1; }
 }
