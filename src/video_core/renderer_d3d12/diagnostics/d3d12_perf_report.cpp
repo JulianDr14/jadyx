@@ -160,7 +160,8 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         "targets {:.1f} [update {:.1f}, feedback {:.1f}, framebuffer {:.1f}, transitions {:.1f}], "
         "samplers {:.1f}, record {:.1f}), clears {:.1f} ms, dispatches {:.1f} ms, "
         "outside them {:.1f} ms | pipeline fast path {} hits / {} misses | CBV {} ({:.1f} ms: "
-        "{} streamed, {} persistent, {} null), view copies {} ({:.1f} ms) | guest waited for "
+        "{} streamed, {} persistent, {} null; {} root, {} root clamped), view copies {} "
+        "({:.1f} ms) | guest waited for "
         "the GPU {} times ({:.1f} ms in all) | commands: {} submit lists {:.1f} ms ({:.1f} ms "
         "outside draw/clear/dispatch), {} ticks {:.1f} ms, {} invalidations {:.1f} ms | uploads: "
         "{} maps {:.1f} ms, {} repacks {:.1f} ms, {} copies {:.1f} ms | texture cache: "
@@ -183,7 +184,8 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         per_draw(Counter::DrawRecordNs), clear_ms, dispatch_ms, outside,
         get(Counter::PipelineFastHits), get(Counter::PipelineFastMisses),
         get(Counter::CbvCreates), ns_ms(Counter::CbvCreateNs), get(Counter::CbvStreamed),
-        get(Counter::CbvPersistent), get(Counter::CbvNull), get(Counter::ViewCopies),
+        get(Counter::CbvPersistent), get(Counter::CbvNull), get(Counter::CbvRoot),
+        get(Counter::CbvRootClamped), get(Counter::ViewCopies),
         ns_ms(Counter::ViewCopyNs),
         get(Counter::GuestGpuWaits), Ms(d, Counter::GuestGpuWaitUs), get(Counter::SubmitLists),
         submit_ms, submit_overhead, get(Counter::GpuTicks), ns_ms(Counter::GpuTickNs),

@@ -523,7 +523,10 @@ std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t, u32, u32 size)
         const size_t bin = size <= 64 ? 0 : size <= 128 ? 1 : size <= 256 ? 2 : size <= 512 ? 3 : 4;
         DrawMetrics::uniform_upload_sizes[bin].fetch_add(1, std::memory_order_relaxed);
     }
-    const UniformUpload upload = uniform_stream.Request(size, scheduler.CurrentTick(),
+    // A root CBV reads past size when the shader uses more than the guest bound: zeros there, as a
+    // table CBV would give.
+    const u32 reach = descriptor_queue ? descriptor_queue->ConstantBufferReach(size) : size;
+    const UniformUpload upload = uniform_stream.Request(reach, scheduler.CurrentTick(),
         [this](size_t bytes) {
             const auto ref = staging.Request(bytes, MemoryUsage::Upload);
             return UniformUpload{ref.mapped_span, ref.buffer->GetGPUVirtualAddress() + ref.offset};
@@ -536,6 +539,9 @@ std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t, u32, u32 size)
     if (descriptor_queue) {
         descriptor_queue->AddConstantBuffer(upload.address, size);
     }
+    if (reach > size) {
+        std::memset(upload.mapped.data() + size, 0, reach - size);
+    }
     return upload.mapped.first(size);
 }
 
@@ -544,8 +550,9 @@ void BufferCacheRuntime::BindUniformBuffer(Buffer& buffer, u32 offset, u32 size)
         return;
     }
     // A CBV spans whole 256-byte blocks and must stay inside its resource; the null buffer (an
-    // unbound guest cbuf) does not hold one.
-    const u64 aligned = Common::AlignUp(size, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+    // unbound guest cbuf) does not hold one. A root CBV must also hold all the shader may read.
+    const u32 reach = descriptor_queue->ConstantBufferReach(size);
+    const u64 aligned = Common::AlignUp(reach, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
     const bool fits = buffer.Handle() && buffer.SizeBytes() != 0 &&
                       offset + aligned <= Common::AlignUp(buffer.SizeBytes(),
                                                           D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
@@ -558,7 +565,9 @@ void BufferCacheRuntime::BindUniformBuffer(Buffer& buffer, u32 offset, u32 size)
                                   .device_addr = buffer.CpuAddr() + offset});
     }
     if (!fits) {
-        VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::CbvNull, 1);
+        VideoCore::Perf::AddDetailed(reach > size ? VideoCore::Perf::Counter::CbvRootClamped
+                                                  : VideoCore::Perf::Counter::CbvNull,
+                                     1);
         descriptor_queue->AddConstantBuffer(0, 0);
         return;
     }

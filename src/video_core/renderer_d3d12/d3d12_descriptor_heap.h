@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <deque>
 #include <mutex>
 #include <span>
@@ -105,6 +106,16 @@ private:
     bool logged_upload{};
 };
 
+/// Most root CBVs a guest root signature has (PipelineLayout::NumRootCbvs).
+constexpr u32 MAX_ROOT_CBVS = 16;
+
+/// Where one constant buffer of a pipeline's binding stream goes.
+struct ConstantBufferSlot {
+    static constexpr u32 TABLE = ~0u;
+    u32 root_slot{TABLE}; ///< root CBV slot, or TABLE
+    u32 reach{};          ///< bytes the shader may read from it
+};
+
 /// The CBV/SRV/UAV table of one draw or dispatch, written in root-signature order straight into a
 /// range of the ring (see d3d12_root_signature.h for the slot order). Buffer views are created in
 /// place; image views are copied from their offline descriptors.
@@ -118,14 +129,22 @@ public:
     GuestDescriptorQueue(const GuestDescriptorQueue&) = delete;
     GuestDescriptorQueue& operator=(const GuestDescriptorQueue&) = delete;
 
-    /// Starts a table of count descriptors (none when count is zero).
-    void Acquire(u32 count);
+    /// Starts a table of count descriptors (none when count is zero). cbv_slots, one per constant
+    /// buffer the draw binds and in that order, sends some of them to root CBVs.
+    void Acquire(u32 count, std::span<const ConstantBufferSlot> cbv_slots = {});
 
     /// GPU handle of the table; checks (and warns once) that it was filled exactly.
     [[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE Table();
 
     /// A CBV; address 0 writes a null one. size is rounded up to 256 bytes.
     void AddConstantBuffer(D3D12_GPU_VIRTUAL_ADDRESS address, u32 size);
+    /// Bytes the next constant buffer must hold when bound with size bytes. A table CBV reads
+    /// zeros past its size; a root CBV has no size, so it must cover all the shader may read.
+    [[nodiscard]] u32 ConstantBufferReach(u32 size) const;
+    /// Addresses of the root CBVs of the draw, by root slot.
+    [[nodiscard]] std::span<const D3D12_GPU_VIRTUAL_ADDRESS> RootConstantBuffers() const {
+        return std::span{root_cbvs}.first(num_root_cbvs);
+    }
     /// A raw UAV, then a raw SRV of the same range (null ones when resource is null).
     void AddStorageBuffer(ID3D12Resource* resource, u64 offset, u32 size);
     /// A typed SRV (texture buffer), preceded by a typed UAV for image buffers. Null views when
@@ -150,6 +169,12 @@ private:
     /// Sources of the pending copies, written from copy_destination on.
     boost::container::small_vector<D3D12_CPU_DESCRIPTOR_HANDLE, 64> pending_copies;
     D3D12_CPU_DESCRIPTOR_HANDLE copy_destination{};
+    std::span<const ConstantBufferSlot> cbv_slots;
+    u32 cbv_index{};
+    std::array<D3D12_GPU_VIRTUAL_ADDRESS, MAX_ROOT_CBVS> root_cbvs{};
+    u32 num_root_cbvs{};
+    /// 64 KiB of zeros, the largest constant buffer: what an unbound root CBV points at.
+    ComPtr<ID3D12Resource> zero_buffer;
     bool logged_mismatch{};
     bool logged_unaligned{};
 };

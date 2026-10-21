@@ -105,6 +105,8 @@ enum class Counter : size_t {
     CbvStreamed,
     CbvPersistent,
     CbvNull,
+    CbvRoot,        ///< bound as root CBVs instead of table descriptors
+    CbvRootClamped, ///< root CBVs bound to zeros: the shader could read past the buffer
     ViewCopyNs,
     ViewCopies,
     SubmitListNs,

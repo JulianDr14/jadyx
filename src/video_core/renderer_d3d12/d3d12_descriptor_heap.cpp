@@ -13,6 +13,7 @@
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_log.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
+#include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 
 namespace D3D12 {
@@ -218,13 +219,33 @@ void DescriptorRing::Retire(bool read_fence) {
 
 // --- GuestDescriptorQueue ---------------------------------------------------------------------
 
-GuestDescriptorQueue::GuestDescriptorQueue(ID3D12Device* device_, DescriptorRing& ring_)
-    : device{device_}, ring{ring_}, stride{ring_.Stride()} {}
+namespace {
 
-void GuestDescriptorQueue::Acquire(u32 count_) {
+/// The largest CBV D3D12 allows (4096 16-byte constants).
+constexpr u32 MAX_CONSTANT_BUFFER_BYTES = D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16;
+
+} // Anonymous namespace
+
+GuestDescriptorQueue::GuestDescriptorQueue(ID3D12Device* device_, DescriptorRing& ring_)
+    : device{device_}, ring{ring_}, stride{ring_.Stride()},
+      zero_buffer{CreateCommittedBuffer(device_, MAX_CONSTANT_BUFFER_BYTES,
+                                        D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON,
+                                        D3D12_RESOURCE_FLAG_NONE, "Create zero constant buffer")} {}
+
+void GuestDescriptorQueue::Acquire(u32 count_, std::span<const ConstantBufferSlot> cbv_slots_) {
     FlushCopies();
     count = count_;
     written = 0;
+    cbv_slots = cbv_slots_;
+    cbv_index = 0;
+    num_root_cbvs = 0;
+    for (const ConstantBufferSlot& slot : cbv_slots) {
+        if (slot.root_slot != ConstantBufferSlot::TABLE) {
+            num_root_cbvs = std::max(num_root_cbvs, slot.root_slot + 1);
+        }
+    }
+    // Slots no constant buffer reaches (the cache binds fewer than declared) read zeros.
+    root_cbvs.fill(zero_buffer->GetGPUVirtualAddress());
     // One spare slot past the table absorbs writes beyond what the root signature declares.
     range = count != 0 ? ring.Allocate(count + 1) : DescriptorRange{};
 }
@@ -248,7 +269,26 @@ D3D12_CPU_DESCRIPTOR_HANDLE GuestDescriptorQueue::Next() {
     return {range.cpu.ptr + static_cast<SIZE_T>(written++) * stride};
 }
 
+u32 GuestDescriptorQueue::ConstantBufferReach(u32 size) const {
+    if (cbv_index >= cbv_slots.size() ||
+        cbv_slots[cbv_index].root_slot == ConstantBufferSlot::TABLE) {
+        return size;
+    }
+    return std::min(std::max(size, cbv_slots[cbv_index].reach), MAX_CONSTANT_BUFFER_BYTES);
+}
+
 void GuestDescriptorQueue::AddConstantBuffer(D3D12_GPU_VIRTUAL_ADDRESS address, u32 size) {
+    const u32 index = cbv_index++;
+    if (index < cbv_slots.size() && cbv_slots[index].root_slot != ConstantBufferSlot::TABLE) {
+        VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::CbvRoot, 1);
+        const u32 slot = cbv_slots[index].root_slot;
+        root_cbvs[slot] = address != 0 ? address : zero_buffer->GetGPUVirtualAddress();
+        if (GpuDiagnosticsEnabled()) {
+            TraceGpuDetail(fmt::format("root CBV slot={} address={:x} size={}", slot,
+                                       root_cbvs[slot], size));
+        }
+        return;
+    }
     if (count == 0) {
         return;
     }

@@ -269,6 +269,13 @@ void RasterizerD3D12::SetGraphicsRootArguments(CommandStream* cmd,
         cmd->SetGraphicsRootDescriptorTable(layout.SamplerTableIndex(), bindings.sampler_table);
         cached.sampler_table = bindings.sampler_table.ptr;
     }
+    for (u32 slot = 0; slot < layout.NumRootCbvs(); ++slot) {
+        const D3D12_GPU_VIRTUAL_ADDRESS address = bindings.root_cbvs[slot];
+        if (!cached.valid || cached.root_cbvs[slot] != address) {
+            cmd->SetGraphicsRootConstantBufferView(layout.RootCbvIndex() + slot, address);
+            cached.root_cbvs[slot] = address;
+        }
+    }
     if (layout.IntegerSamplerIndex() != PipelineLayout::NO_TABLE && bindings.integer_samplers &&
         (!cached.valid || cached.integer_samplers != bindings.integer_samplers)) {
         cmd->SetGraphicsRootConstantBufferView(layout.IntegerSamplerIndex(),
