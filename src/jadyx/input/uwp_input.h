@@ -53,6 +53,8 @@ void RequestQuit();
 [[nodiscard]] bool QuitRequested();
 /// Escape on the keyboard: open or close the in-game menu (game_menu.h).
 void RequestGameMenu();
+/// The window lost the focus (the Xbox button opened the guide): open the menu, never close it.
+void RequestGameMenuOpen();
 
 /// A real key while a game's on-screen keyboard is up: a typed character or a command.
 struct TextEntryKey {
