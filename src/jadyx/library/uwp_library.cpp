@@ -564,6 +564,17 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         names_cursor = fill_cursor = 0;
         dirty = true;
     };
+    // A game's updates/DLC changed (0: any game's): only its entries read their metadata again.
+    // Its cache record no longer matches the catalog, so the fill rereads it from the files.
+    auto forget_content = [&](std::uint64_t application) {
+        metadata = {}; ++generation;
+        for (auto& entry : scan.entries) {
+            if (application && FileSys::GetBaseTitleID(entry.program_id) != application) continue;
+            entry.title_loaded = entry.metadata_loaded = false;
+            entry.build_id = {}; entry.display_version.clear();
+        }
+        metadata_dirty = true; names_cursor = fill_cursor = 0;
+    };
     // Each game's play time and last play, and the library's order (play_history.h). `keep` stays
     // selected where it lands; otherwise the first game (the last one played) is.
     auto refresh_play = [&](std::string_view keep) {
@@ -1204,20 +1215,13 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             // A primary tab pops idle management pages. Never interrupt an import/install.
             if (game_options.open && (!content_session || !content_session->Busy()) &&
                 (!mod_session || (!mod_session->Busy() && mod_session->Downloads().empty()))) {
-                const bool changed = content_session && content_session->Changed();
+                const auto changed = content_session && content_session->Changed() ?
+                    std::optional{content_session->Application()} : std::nullopt;
                 content_session.reset();
                 mod_session.reset();
                 cheat_session.reset();
                 game_options = {};
-                if (changed) {
-                    mod_session.reset(); cheat_session.reset();
-                    cache.Clear(); metadata = {}; ++generation;
-                    for (auto& entry : scan.entries) {
-                        entry.title_loaded = entry.metadata_loaded = false;
-                        entry.build_id = {}; entry.display_version.clear();
-                    }
-                    metadata_dirty = true; names_cursor = fill_cursor = 0;
-                }
+                if (changed) forget_content(*changed);
                 switch_tab(*pressed_tab);
             }
             if (top_level || *pressed_tab == LibraryTab::Settings || tab == LibraryTab::Settings) {
@@ -1342,18 +1346,14 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 requested_game_option.reset(); options_notice.clear(); dirty = true;
             }
             if (requested_game_option && can_switch) {
-                const bool changed = content_session && content_session->Changed();
+                const auto changed = content_session && content_session->Changed() ?
+                    std::optional{content_session->Application()} : std::nullopt;
                 content_session.reset(); requested_manager_tab.reset();
                 SelectGameOption(game_options, *requested_game_option);
                 requested_game_option.reset(); options_notice.clear();
                 if (changed) {
                     mod_session.reset(); cheat_session.reset();
-                    cache.Clear(); metadata = {}; ++generation;
-                    for (auto& entry : scan.entries) {
-                        entry.title_loaded = entry.metadata_loaded = false;
-                        entry.build_id = {}; entry.display_version.clear();
-                    }
-                    metadata_dirty = true; names_cursor = fill_cursor = 0;
+                    forget_content(*changed);
                 }
                 dirty = true;
             } else if (requested_game_option) {
@@ -1443,12 +1443,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 const auto send = [&](unsigned bits, Content::Input input) {
                     if ((actions & bits) && content_session && content_session->Handle(input)) {
                         const bool changed = content_session->Changed();
+                        const auto application = content_session->Application();
                         content_session.reset(); game_options = {};
-                        if (changed) {
-                            cache.Clear(); metadata = {}; ++generation;
-                            for (auto& e : scan.entries) { e.title_loaded = false; e.metadata_loaded = false; e.build_id = {}; e.display_version.clear(); }
-                            metadata_dirty = true; names_cursor = fill_cursor = 0;
-                        }
+                        if (changed) forget_content(application);
                     }
                 };
                 send(Up, Content::Input::Up); send(Down, Content::Input::Down);
