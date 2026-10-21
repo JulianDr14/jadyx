@@ -75,7 +75,9 @@ struct PipelineResidencyPolicy {
 /// forgotten, so the set follows where the player is instead of growing with the whole game.
 class HotPipelineSet {
 public:
-    static constexpr std::uint32_t KEEP_SESSIONS = 4;
+    /// Short test launches count as sessions too: with 4, a few of them in a row forgot the areas
+    /// played before, and their PSOs were built again mid-game. MAX_PREWARM still bounds boot.
+    static constexpr std::uint32_t KEEP_SESSIONS = 16;
     /// Pipelines built at boot at most, most recently drawn first.
     static constexpr std::size_t MAX_PREWARM = 4096;
     /// With no history yet (first session, or a file of an older format), the first pipelines
