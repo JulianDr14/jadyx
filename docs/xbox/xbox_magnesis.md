@@ -793,3 +793,34 @@ privado; SPIR-V valido, enlace Mesa y DXIL firmado sin alloca en los casos pool.
 Gate Series 0.3.6.29 POSITIVO: prueba lee 0 -> pool; PS de seleccion compila,
 cero PSO rechazados, pool 640 palabras x 64 lanes x 129 slots (20642 KiB), 30 fps
 estables.
+
+### Pool solo para acceso indexado y slots adaptativos (0.3.7.8 - 0.3.7.10)
+Regresion en un juego 2D a pantalla completa: parpadeo, pixeles corruptos y GPU al
+80% (X) / 90% (S). Causa: sus PS tenian mas de 64 palabras de memoria local solo
+por spills a offsets constantes, entraban al pool y 128 slots no bastaban para las
+waves en vuelo: las waves giraban buscando slot (GPU alta) y acababan en el slot
+de overflow compartido (datos corruptos). 0.3.7.8 con `ps_scratch=native` lo
+confirmo (juego correcto, Magnesis roto como se esperaba).
+
+1. Gate (0.3.7.9): `DefineLocalMemory` solo usa el pool si algun
+   `LoadLocal`/`WriteLocal` tiene offset no inmediato. Lo accedido a offsets
+   constantes se vuelve registros en el compilador del host y conserva sus
+   valores (matriz .24). Gate Series POSITIVO: el juego 2D no crea pool; Magnesis
+   crea el de 640 palabras y funciona.
+2. Slots adaptativos (0.3.7.10): el numero de slots ya no esta compilado en el
+   shader. Cabecera del pool: [0] waves que tomaron slot (y arranque rotativo de
+   la busqueda), [1] waves en overflow, [2] waves que recorrieron todo el bitmap
+   antes de ganar slot, [3] palabras de bitmap (slots/32, la escribe el host al
+   crear el pool). El shader lee [3], acota a [4, 64] (128..2048 slots) y calcula
+   la mascara de busqueda y el stride de filas `(slots+1)*lanes`. Slot de overflow
+   = `slots`; `INVALID_SLOT` marca la wave sin slot para el release.
+   El host (`LocalMemoryPool`) copia la cabecera a un readback mapeado en la
+   primera draw con pool de una lista, como mucho cada 250 ms, sin esperar nunca a
+   la GPU; con la muestra completada calcula deltas y duplica los slots si hubo
+   overflow o si esperaron >= 16 waves y mas de 1 de cada 32. Tope 128 MiB y 2048
+   slots (aviso en log). Nunca encoge; nunca recompila shaders.
+
+Coste: PS sin memoria local indexada, cero (array privado, como upstream). PS con
+pool: una carga de la cabecera por lane y las atomicas por wave que ya tenia; en
+CPU una comparacion de tick por draw con pool y una copia de 16 bytes por muestra.
+Gate PC: anade `constant_offsets` (espera array privado); 4/4 PASS.
