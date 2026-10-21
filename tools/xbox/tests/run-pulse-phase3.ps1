@@ -20,7 +20,7 @@ $pulseTests = @(
     @{ Name = 'pulse-exclusive'; Source = 'pulse-exclusive'; Objects = 'src\dynarmic\src\dynarmic\backend\x64\exclusive_monitor.cpp build-uwp\src\dynarmic\src\dynarmic\CMakeFiles\dynarmic.dir\common\spin_lock_x64.cpp.obj'; Libraries = "$pulseCommon WindowsApp.lib ntdll.lib" },
     @{ Name = 'pulse-wait'; Source = 'pulse-wait'; Objects = ''; Libraries = '' },
     @{ Name = 'pulse-process'; Source = 'pulse-process'; Objects = ''; Libraries = '' },
-    @{ Name = 'pulse-machine'; Source = 'pulse-machine'; Objects = ''; Libraries = "$pulseCommon build-uwp\_deps\lz4-build\lz4.lib WindowsApp.lib ntdll.lib" },
+    @{ Name = 'pulse-machine'; Source = 'pulse-machine'; Objects = ''; Libraries = "$pulseCommon build-uwp\_deps\lz4-build\lz4.lib build-uwp\_deps\zstd-build\lib\zstd_static.lib WindowsApp.lib ntdll.lib" },
     @{ Name = 'pulse-readback'; Source = 'gc-readback'; Objects = ''; Libraries = '' },
     @{ Name = 'pulse-services'; Source = 'pulse-services'; Objects = ''; Libraries = '' },
     @{ Name = 'pulse-npad'; Source = 'pulse-npad'; Objects = 'src\hid_core\resources\npad\npad_data.cpp /Gy'; Libraries = '' },
