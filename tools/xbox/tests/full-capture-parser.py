@@ -26,13 +26,14 @@ fake = list(complete[2]) + [dict(kind='present', detail=dict(frame=1, width=10, 
 fake_report = module.report((complete[0], complete[1], fake, complete[3]))
 assert not fake_report['present_coverage_complete']
 assert fake_report['unclosed_producers'] == [99]
-for mode in ('checksum', 'truncate', 'index', 'missing_summary', 'summary_lie'):
+for mode in ('checksum', 'checksum_word', 'truncate', 'index', 'missing_summary', 'summary_lie'):
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / 'capture'
         shutil.copytree(root / 'complete', target)
-        if mode == 'checksum':
+        if mode in ('checksum', 'checksum_word'):
             data = bytearray((target / 'blobs.bin').read_bytes())
-            data[0] ^= 1
+            # Byte 0 is in a 4-byte tail-only chunk; byte 100 is inside a hashed 64-bit word.
+            data[0 if mode == 'checksum' else 100] ^= 1
             (target / 'blobs.bin').write_bytes(data)
         elif mode == 'truncate':
             (target / 'blobs.bin').write_bytes(b'')
@@ -52,7 +53,7 @@ for mode in ('checksum', 'truncate', 'index', 'missing_summary', 'summary_lie'):
             pass
         else:
             raise AssertionError(f'Accepted invalid capture: {mode}')
-print('PASS: exact checksums/dedup, pitch, concurrent records, incomplete captures and five corruption cases')
+print('PASS: exact checksums/dedup, pitch, concurrent records, incomplete captures and six corruption cases')
 
 # A reference must resolve to earlier, complete image bytes, never to another
 # reference or to a missing/partial snapshot. It contributes the original hashes.

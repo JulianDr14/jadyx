@@ -106,7 +106,7 @@ public:
                 return false;
             if (segments.size() != 1) segments += ',';
             segments += "{\"offset\":" + std::to_string(offset) + ",\"size\":" +
-                std::to_string(used) + ",\"fnv64\":\"" + std::to_string(hash) + "\"}";
+                std::to_string(used) + ",\"fnv64w\":\"" + std::to_string(hash) + "\"}";
             reused &= shared;
             used = 0;
             return true;
@@ -130,15 +130,15 @@ public:
     bool StoreChunk(std::span<const std::uint8_t> data, std::uint64_t& offset,
                     std::uint64_t& hash, bool& reused) {
         const auto size = data.size();
-        hash = 0xcbf29ce484222325ULL;
-        for (const auto byte : data) hash = (hash ^ byte) * 0x100000001b3ULL;
+        hash = Hash(data);
         // A hash collision must never substitute different bytes.
         const std::string key = std::to_string(size) + ":" + std::to_string(hash);
         offset = bytes;
         reused = false;
         if (const auto it = known.find(key); it != known.end()) {
             std::array<char, 65536> chunk{};
-            blobs.flush();
+            // Repeated render targets hit this path for almost every chunk; flush only new writes.
+            if (unflushed) { blobs.flush(); unflushed = false; }
             for (const auto candidate : it->second) {
                 blobs.clear();
                 blobs.seekg(static_cast<std::streamoff>(candidate));
@@ -154,6 +154,7 @@ public:
             blobs.seekp(static_cast<std::streamoff>(bytes));
             blobs.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(size));
             if (!blobs) { ++errors; return false; }
+            unflushed = true;
             known[key].push_back(bytes);
             bytes += size;
         }
@@ -180,7 +181,22 @@ public:
     }
 
 private:
+    // FNV-1a over little-endian 64-bit words, then the tail bytes: the byte-wise form
+    // dominated capture time once multi-GiB of repeated targets went through it.
+    static std::uint64_t Hash(std::span<const std::uint8_t> data) {
+        std::uint64_t hash = 0xcbf29ce484222325ULL;
+        std::size_t at = 0;
+        for (; at + 8 <= data.size(); at += 8) {
+            std::uint64_t word{};
+            for (std::size_t i = 0; i < 8; ++i) word |= std::uint64_t{data[at + i]} << (i * 8);
+            hash = (hash ^ word) * 0x100000001b3ULL;
+        }
+        for (; at < data.size(); ++at) hash = (hash ^ data[at]) * 0x100000001b3ULL;
+        return hash;
+    }
+
     bool active{};
+    bool unflushed{};
     std::filesystem::path root;
     std::fstream blobs;
     std::ofstream index;
