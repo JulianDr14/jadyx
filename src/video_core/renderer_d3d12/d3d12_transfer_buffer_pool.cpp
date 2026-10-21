@@ -31,9 +31,14 @@ ComPtr<ID3D12Resource> TransferBufferPool::Acquire(u64 size, bool unordered_acce
         // Best fit among the idle buffers, and at most twice the size so a large buffer is not
         // tied up by small copies.
         auto best = entries.end();
+        bool busy_fit = false;
         for (auto it = entries.begin(); it != entries.end(); ++it) {
             if (it->size < size || it->size > size * 2 ||
-                (unordered_access && !it->unordered_access) || !scheduler.IsFree(it->tick)) {
+                (unordered_access && !it->unordered_access)) {
+                continue;
+            }
+            if (!scheduler.IsFree(it->tick)) {
+                busy_fit = true;
                 continue;
             }
             if (best == entries.end() || it->size < best->size) {
@@ -45,8 +50,13 @@ ComPtr<ID3D12Resource> TransferBufferPool::Acquire(u64 size, bool unordered_acce
             pooled_bytes -= best->size;
             *best = std::move(entries.back());
             entries.pop_back();
+            VideoCore::Perf::Add(VideoCore::Perf::Counter::TransferPoolHits, 1);
             return buffer;
         }
+        VideoCore::Perf::Add(busy_fit ? VideoCore::Perf::Counter::TransferPoolMissBusy
+                                      : VideoCore::Perf::Counter::TransferPoolMissNoFit,
+                             1);
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::TransferPoolMissBytes, size);
     }
     HRESULT hr = S_OK;
     const auto create = [&] {
@@ -109,6 +119,8 @@ void TransferBufferPool::Release(ComPtr<ID3D12Resource>&& buffer) {
             return;
         }
     }
+    VideoCore::Perf::Add(VideoCore::Perf::Counter::TransferPoolOverflows, 1);
+    VideoCore::Perf::Add(VideoCore::Perf::Counter::TransferPoolOverflowBytes, desc.Width);
     scheduler.DeferRelease(std::move(buffer));
 }
 

@@ -337,6 +337,19 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
     LOG_INFO(Render, "D3D12 perf over {} frames ({:.0f} ms), mostly {} | {}", frames, total_ms,
              LikelyCause(delta, total_ms), DescribePerf(delta, total_ms));
     LOG_INFO(Render, "D3D12 GPU thread: {}", DescribeDrawCosts(delta, total_ms));
+    {
+        const auto get = [&delta](Counter counter) { return VideoCore::Perf::Get(delta, counter); };
+        const auto mib = [](u64 bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); };
+        LOG_INFO(Render,
+                 "D3D12 transfer buffers: {} reused, {} created ({} with a fitting buffer still "
+                 "in use by the GPU, {} with none of a fitting size; {:.2f} MiB), {} released over "
+                 "the pool budget ({:.2f} MiB); {:.2f} MiB pooled now",
+                 get(Counter::TransferPoolHits),
+                 get(Counter::TransferPoolMissBusy) + get(Counter::TransferPoolMissNoFit),
+                 get(Counter::TransferPoolMissBusy), get(Counter::TransferPoolMissNoFit),
+                 mib(get(Counter::TransferPoolMissBytes)), get(Counter::TransferPoolOverflows),
+                 mib(get(Counter::TransferPoolOverflowBytes)), mib(transfer_buffers.PooledBytes()));
+    }
     if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
         std::array<u64, 64> bins{};
         u64 samples{};
@@ -450,10 +463,13 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
         LOG_INFO(Render, "D3D12 sync sites: {}", scheduler.TakeSyncSites(6));
     }
     const DXGI_QUERY_VIDEO_MEMORY_INFO video = device.QueryVideoMemory();
+    const CacheMemorySnapshot snapshot = device.QueryCacheMemoryPressure();
     LOG_INFO(Render,
-             "D3D12 memory: GPU {} MiB, DXGI budget {} MiB, cache budget {} MiB, caches see {} MiB used",
+             "D3D12 memory: GPU {} MiB, DXGI budget {} MiB, cache budget {} MiB, caches see {} MiB "
+             "used, app {} of {} MiB ({} MiB free)",
              video.CurrentUsage >> 20, video.Budget >> 20, device.CacheMemoryBudget() >> 20,
-             device.CacheMemoryUsage() >> 20);
+             device.CacheMemoryUsage(snapshot) >> 20, snapshot.app_used >> 20,
+             snapshot.app_limit >> 20, snapshot.AppFree() >> 20);
 }
 
 } // namespace D3D12

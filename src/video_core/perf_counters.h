@@ -46,6 +46,12 @@ enum class Counter : size_t {
     StagingDedicated,      ///< staging buffers created outside the stream ring
     StagingDedicatedBytes,
     StagingStreamWaits,    ///< large uploads that waited for the GPU to free the stream ring
+    TransferPoolHits,      ///< transfer buffers handed out again from the pool
+    TransferPoolMissBusy,  ///< misses with a fitting pooled buffer the GPU still used
+    TransferPoolMissNoFit, ///< misses with no pooled buffer of a fitting size
+    TransferPoolMissBytes, ///< bytes of the buffers created on those misses
+    TransferPoolOverflows, ///< returned buffers released because the pool was at its budget
+    TransferPoolOverflowBytes,
     TextureDecodeUs,       ///< CPU decoding/re-encoding of converted textures (ASTC, BCn arrays)
     TextureGpuDecodes,     ///< textures decoded by a compute shader (ASTC)
     TextureUploadMapNs,    ///< querying a CPU pointer for non-staging upload sources
