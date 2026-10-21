@@ -3,12 +3,16 @@
 
 #pragma once
 
+#include <array>
+#include <chrono>
+#include <span>
+
 #include "common/common_types.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
+#include "video_core/renderer_d3d12/d3d12_scheduler.h"
 
 namespace D3D12 {
 
-class Scheduler;
 class ShaderCompiler;
 
 /// Where fragment shaders keep large guest local memory (Shader::LocalMemoryScratch).
@@ -28,7 +32,12 @@ void SetPixelShaderScratchMode(PixelShaderScratchMode mode);
 
 /// The storage buffer bound to the fragment shaders that keep local memory in the pool. One pool
 /// serves every pipeline: slots are taken per wave, so its size depends only on the largest local
-/// memory drawn. GPU thread only.
+/// memory drawn and on the waves the GPU runs at once.
+///
+/// The slot count starts small and doubles while the pool's counters (read back a few times per
+/// second, never waited on) show waves waiting for a free slot or sharing the overflow slot, up to
+/// a memory cap. Shaders read the count from the pool, so growing never recompiles anything, and
+/// draws pay nothing for it: one copy of 16 bytes per sample. GPU thread only.
 class LocalMemoryPool {
 public:
     explicit LocalMemoryPool(const Device& device, Scheduler& scheduler);
@@ -39,13 +48,40 @@ public:
     /// their slots there while new draws allocate from the new one.
     [[nodiscard]] D3D12_GPU_VIRTUAL_ADDRESS Address(u32 lanes, u32 words) {
         if (words <= rows && lanes == pool_lanes) [[likely]] {
-            return address;
+            if (scheduler.CurrentTick() == list_tick) [[likely]] {
+                return address;
+            }
+            return BeginList();
         }
         return Grow(lanes, words);
     }
 
+    /// Slots of the current pool, without the overflow slot; 0 before the first pool.
+    [[nodiscard]] u32 Slots() const noexcept {
+        return slots;
+    }
+
 private:
+    struct Counters {
+        u32 acquires{};
+        u32 overflows{};
+        u32 waits{};
+    };
+    struct Sample {
+        u64 tick{};
+        u64 generation{};
+        bool pending{};
+    };
+    static constexpr u32 SAMPLES = 4;
+
+    /// First draw of a command list that uses the pool: the pool is in the common state here.
+    D3D12_GPU_VIRTUAL_ADDRESS BeginList();
     D3D12_GPU_VIRTUAL_ADDRESS Grow(u32 lanes, u32 words);
+    /// Replaces the pool with a zeroed one and records the write of its header.
+    void Recreate(u32 lanes, u32 new_rows, u32 new_slots);
+    /// Reads the samples the GPU finished; returns whether the pool was grown.
+    bool ReadSamples();
+    void RecordSample();
 
     const Device& device;
     Scheduler& scheduler;
@@ -53,6 +89,18 @@ private:
     D3D12_GPU_VIRTUAL_ADDRESS address{};
     u32 rows{};
     u32 pool_lanes{};
+    u32 slots{};
+    /// Bumped by every Recreate: samples of a replaced pool are dropped.
+    u64 generation{};
+    u64 list_tick{};
+    bool capped{};
+
+    ComPtr<ID3D12Resource> readback;
+    std::span<u8> readback_data;
+    std::array<Sample, SAMPLES> samples{};
+    u32 next_sample{};
+    Counters last{};
+    std::chrono::steady_clock::time_point next_sample_time{};
 };
 
 } // namespace D3D12

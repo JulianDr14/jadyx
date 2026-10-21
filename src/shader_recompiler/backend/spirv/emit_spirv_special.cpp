@@ -96,6 +96,7 @@ void AlphaTest(EmitContext& ctx) {
 void EmitPrologue(EmitContext& ctx) {
     if (Sirit::ValidId(ctx.local_memory_acquire_func)) {
         ctx.local_memory_lane_base = ctx.OpFunctionCall(ctx.U32[1], ctx.local_memory_acquire_func);
+        ctx.local_memory_stride = ctx.OpLoad(ctx.U32[1], ctx.local_memory_stride_var);
     }
     if (ctx.stage == Stage::Fragment && ctx.runtime_info.dual_source_blend) {
         // Initialize dual-source blending outputs - prevents MoltenVK crash.
