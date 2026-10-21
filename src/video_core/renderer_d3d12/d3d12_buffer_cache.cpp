@@ -598,6 +598,25 @@ void BufferCacheRuntime::BindStorageBuffer(Buffer& buffer, u32 offset, u32 size,
     descriptor_queue->AddStorageBuffer(clamped != 0 ? buffer.Handle() : nullptr, offset, clamped);
 }
 
+void BufferCacheRuntime::BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>& bindings) {
+    for (size_t index = 0; index < transform_feedback.size(); ++index) {
+        TransformFeedbackBinding& binding = transform_feedback[index];
+        binding = {};
+        if (index >= bindings.buffers.size() || bindings.sizes[index] == 0) {
+            continue;
+        }
+        Buffer& buffer = *bindings.buffers[index];
+        const u64 offset = bindings.offsets[index];
+        // A root UAV reads whole words from a 4-byte aligned address.
+        if (!buffer.Handle() || offset % 4 != 0 || offset >= buffer.SizeBytes()) {
+            continue;
+        }
+        buffer.Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        const u64 size = std::min<u64>(bindings.sizes[index], buffer.SizeBytes() - offset);
+        binding = {.address = buffer.Address() + offset, .size = static_cast<u32>(size)};
+    }
+}
+
 void BufferCacheRuntime::BindTextureBuffer(Buffer& buffer, u32 offset, u32 size,
                                            VideoCore::Surface::PixelFormat format) {
     if (!descriptor_queue) {

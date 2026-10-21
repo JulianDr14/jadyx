@@ -151,8 +151,17 @@ public:
     void BindVertexBuffer(u32 index, Buffer& buffer, u32 offset, u32 size, u32 stride);
     void BindVertexBuffer(u32 index, ID3D12Resource* buffer, u32 offset, u32 size, u32 stride);
     void BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bindings);
-    void BindTransformFeedbackBuffer(u32, Buffer&, u32, u32) {}
-    void BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>&) {}
+    void BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>& bindings);
+    /// Transform feedback buffers of the last draw that enabled it, written by its vertex shader
+    /// (Shader::TransformFeedbackStorage). Size 0: unbound.
+    struct TransformFeedbackBinding {
+        D3D12_GPU_VIRTUAL_ADDRESS address{};
+        u32 size{};
+    };
+    [[nodiscard]] const std::array<TransformFeedbackBinding, 4>& TransformFeedbackBindings()
+        const noexcept {
+        return transform_feedback;
+    }
     std::span<u8> BindMappedUniformBuffer(size_t, u32, u32 size);
     bool UseWriteCombinedUniformCopy(u32 size) const noexcept {
         return uniform_upload_copy && !trace_buffers && size <= 512;
@@ -208,6 +217,7 @@ private:
     bool uniform_upload_copy{};
     u32 pending_vertex_mask{};
     std::optional<u32> rewritten_count;
+    std::array<TransformFeedbackBinding, 4> transform_feedback{};
     std::vector<u32> rewrite_scratch;
     IndexRewriteCache rewrite_cache;
     u64 next_buffer_id{1};

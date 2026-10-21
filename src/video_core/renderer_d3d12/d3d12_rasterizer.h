@@ -182,6 +182,9 @@ private:
         bool is_indexed;
         u32 runtime_first_vertex; ///< what gl_VertexIndex adds to SV_VertexID
     };
+    /// Root arguments of a vertex shader writing transform feedback (TransformFeedbackStorage).
+    void SetTransformFeedbackArguments(CommandStream* cmd, const PipelineLayout& layout,
+                                       const DrawParams& params);
     void CapturePickProbes(const GraphicsPipeline& pipeline, const PipelineBindings& bindings,
                            std::span<const TracedBuffer> geometry,
                            const Framebuffer& framebuffer, const DrawParams& params,
@@ -316,6 +319,7 @@ private:
     FenceManager fence_manager;
     DrawHunt draw_hunt;
     bool logged_integer_clear{};
+    bool logged_indexed_transform_feedback{};
     bool logged_draw_texture{};
     bool logged_first_draw{};
     bool logged_stencil_ref{};
