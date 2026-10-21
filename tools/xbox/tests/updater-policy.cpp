@@ -148,6 +148,10 @@ int main(int argc, char **argv) {
     assert(VerifyManifest(b, sign(b), pem, installed, Channel::Preview));
   }
   assert(VerifyManifest(body, signature, pem, installed, Channel::Preview));
+  assert(ReleaseNotesText("## What's new\r\n\r\n- **Fix** the `updater`\r\n"
+                          "  continued line\r\n* See [docs](https://x)\r\n\r\n\r\nEnd\r\n") ==
+         "What's new\n\n\xE2\x80\xA2 Fix the updater continued line\n\xE2\x80\xA2 See docs\n\nEnd");
+  assert(ReleaseNotesText(std::string(20000, 'a')).size() == 16384);
   Snapshot state;
   state.phase = Phase::Downloading;
   assert(std::ranges::equal(
@@ -157,5 +161,5 @@ int main(int argc, char **argv) {
   state.phase = Phase::Verifying;
   assert(std::ranges::equal(Actions(state), std::array{Action::Back}));
   std::cout << "updater policy: signatures, versions, " << rejected
-            << " malformed signed manifests, channel and UI states OK\n";
+            << " malformed signed manifests, channel, notes and UI states OK\n";
 }

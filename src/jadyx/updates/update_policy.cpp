@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <memory>
+#include <vector>
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -34,6 +35,75 @@ std::optional<Version> ParseVersion(std::string_view text) {
 std::string FormatVersion(const Version& v) {
     return std::to_string(v[0]) + "." + std::to_string(v[1]) + "." + std::to_string(v[2]) + "." +
            std::to_string(v[3]);
+}
+std::string ReleaseNotesText(std::string_view markdown) {
+    const auto inline_text = [](std::string_view text) {
+        std::string out;
+        for (std::size_t i = 0; i < text.size(); ++i) {
+            if (text.substr(i, 2) == "**" || text.substr(i, 2) == "__") {
+                ++i;
+                continue;
+            }
+            if (text[i] == '`')
+                continue;
+            // [label](target) keeps the label; a console cannot follow the link.
+            if (text[i] == '[') {
+                const auto close = text.find("](", i);
+                const auto end = close == text.npos ? text.npos : text.find(')', close);
+                if (end != text.npos && text.find('\n', i) > end) {
+                    out += text.substr(i + 1, close - i - 1);
+                    i = end;
+                    continue;
+                }
+            }
+            out += text[i];
+        }
+        return out;
+    };
+    std::vector<std::string> lines;
+    bool joinable = false; // The previous line is a bullet or paragraph a wrapped line continues.
+    while (!markdown.empty()) {
+        const auto newline = markdown.find('\n');
+        auto line = markdown.substr(0, newline);
+        markdown.remove_prefix(newline == markdown.npos ? markdown.size() : newline + 1);
+        if (!line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        const auto start = line.find_first_not_of(" \t");
+        if (start == line.npos) {
+            if (!lines.empty() && !lines.back().empty())
+                lines.emplace_back();
+            joinable = false;
+            continue;
+        }
+        line.remove_prefix(start);
+        if (line.front() == '#') {
+            line.remove_prefix(std::min(line.find_first_not_of('#'), line.size()));
+            line.remove_prefix(std::min(line.find_first_not_of(' '), line.size()));
+            lines.push_back(inline_text(line));
+            joinable = false;
+        } else if (line.starts_with("- ") || line.starts_with("* ")) {
+            lines.push_back("\xE2\x80\xA2 " + inline_text(line.substr(2)));
+            joinable = true;
+        } else if (joinable) {
+            lines.back() += " " + inline_text(line);
+        } else {
+            lines.push_back(inline_text(line));
+            joinable = true;
+        }
+    }
+    while (!lines.empty() && lines.back().empty())
+        lines.pop_back();
+    std::string out;
+    for (const auto& line : lines)
+        out += (out.empty() ? "" : "\n") + line;
+    if (out.size() > 16384) {
+        out.resize(16384);
+        while (!out.empty() && (static_cast<unsigned char>(out.back()) & 0xC0) == 0x80)
+            out.pop_back();
+        if (!out.empty() && static_cast<unsigned char>(out.back()) >= 0xC0)
+            out.pop_back();
+    }
+    return out;
 }
 std::optional<Release> VerifyManifest(std::string_view body, std::string_view signature,
                                       std::string_view public_pem, const Version& installed,

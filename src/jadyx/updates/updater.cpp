@@ -212,8 +212,11 @@ Runtime ProductionRuntime() {
 } // namespace
 Updater::Updater() : Updater{ProductionRuntime()} {}
 Updater::Updater(Runtime runtime) : impl{std::make_unique<Impl>(std::move(runtime))} {
-    if (impl->runtime.automatic_check && impl->state.phase == Phase::Idle && impl->target.empty())
-        Check();
+    // Every launch asks once: the list answers 304 while nothing changed. A remembered release
+    // (Paused) is checked too, so a newer one or its notes show without opening the page.
+    if (impl->runtime.automatic_check && impl->target.empty() &&
+        (impl->state.phase == Phase::Idle || impl->state.phase == Phase::Paused))
+        Check(true);
 }
 Updater::~Updater() {
     std::lock_guard lock{impl->operation};
@@ -252,7 +255,7 @@ void Updater::Check(bool force) {
             // The list contains preview releases too; never use /latest for the preview channel.
             // Pagination makes selection independent of the order in which releases were published.
             std::optional<Release> best;
-            std::string best_body, best_signature;
+            std::string best_body, best_signature, best_notes;
             bool failed = false;
             for (unsigned page = 1; page <= 10 && !stop.stop_requested(); ++page) {
                 const auto cache = p.folder / ("releases-" + std::to_string(page) + ".json");
@@ -318,6 +321,11 @@ void Updater::Check(bool force) {
                     best = verified;
                     best_body = m.body;
                     best_signature = s.body;
+                    // Display text only: the signed manifest stays the authority on the package.
+                    const auto notes = release.find("body");
+                    best_notes = notes != release.end() && notes->is_string()
+                                     ? notes->get<std::string>()
+                                     : std::string{};
                 }
                 if (releases.size() < 100)
                     break;
@@ -342,6 +350,8 @@ void Updater::Check(bool force) {
                     p.target.clear();
                 }
                 p.state.release = best;
+                if (best && best->notes.empty())
+                    p.state.release->notes = ReleaseNotesText(best_notes);
                 p.body = best_body;
                 p.signature = best_signature;
                 p.state.total = best ? best->size : 0;
