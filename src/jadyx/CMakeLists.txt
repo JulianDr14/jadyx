@@ -98,6 +98,8 @@ add_executable(jadyx WIN32
     content/content_model.h
     content/content_inspector.cpp
     content/content_store.cpp
+    content/content_actions.cpp
+    content/content_actions.h
     content/content_service.cpp
     content/content_session.cpp
     content/content_view.cpp

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/content/content_session.h"
 #include <winrt/base.h>
+#include "jadyx/content/content_actions.h"
 #include "jadyx/storage/uwp_file_manager.h"
 #include "jadyx/storage/storage_path.h"
 #include "core/file_sys/common_funcs.h"
@@ -20,24 +21,8 @@ ContentSession::ContentSession(std::uint64_t application_, std::string base_path
         if (state.error != Error::None) return;
         store.Cleanup(state.catalog);
         if (!base_path.empty()) base_version = PackageBaseVersion(*vfs, base_path, application);
-        // Discover embedded content once. Persist it too, so individual toggles have exact semantics.
-        const bool first = application && std::find(state.catalog.managed_applications.begin(), state.catalog.managed_applications.end(), application) == state.catalog.managed_applications.end();
-        if (!base_path.empty() && first) {
-            auto embedded = InspectPackage(*vfs, base_path, false, stop);
-            for (auto& item : embedded.contents) {
-                if (stop.stop_requested()) { state.error = Error::Cancelled; break; }
-                if (item.error != Error::None || PlanImport(state.catalog.revisions, item.revision) != ImportAction::Add) continue;
-                const auto error = ExecuteImport(store, state.catalog, *vfs, item, false, true, stop,
-                    [this](auto d, auto t) { done = d; total = t; }, base_version);
-                if (error != Error::None) { state.error = error; break; }
-            }
-        }
-        if (first && state.error == Error::None && !stop.stop_requested()) {
-            if (std::find(state.catalog.managed_applications.begin(), state.catalog.managed_applications.end(), application) == state.catalog.managed_applications.end()) {
-                state.catalog.managed_applications.push_back(application);
-                state.error = store.Save(state.catalog);
-            }
-        }
+        state.error = AdoptEmbeddedContent(store, state.catalog, *vfs, application, base_path, base_version, stop,
+            [this](auto d, auto t) { done = d; total = t; });
         Reload(state, stop);
     });
 }
