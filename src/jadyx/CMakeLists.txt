@@ -46,6 +46,8 @@ add_executable(jadyx WIN32
     storage/log_export.h
     storage/network_portal_logo.h
     storage/network_portal_page.h
+    storage/portal_fault_log.cpp
+    storage/portal_fault_log.h
     storage/nsp_upload.cpp
     storage/nsp_upload.h
     storage/nsp_import.cpp
