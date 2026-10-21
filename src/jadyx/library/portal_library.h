@@ -9,7 +9,6 @@
 // so no browser request touches the library state.
 
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -25,13 +24,17 @@
 
 namespace Jadyx {
 
+/// The application of a content upload's "<kind>:<application hex>" tag; 0 when malformed.
+std::uint64_t ContentTagApplication(const std::string& tag);
+
 class PortalLibrarySource {
 public:
     PortalLibrarySource(std::filesystem::path root, std::filesystem::path cache_directory);
     PortalLibrarySource(const PortalLibrarySource&) = delete;
     PortalLibrarySource& operator=(const PortalLibrarySource&) = delete;
 
-    /// Games with a known title and program id, one per application. Cheap when nothing changed.
+    /// Games with a known title and program id, one per application; a dump whose metadata is being
+    /// read again keeps its previous card. Cheap when nothing changed.
     void Publish(const std::vector<LibraryEntry>& entries, std::uint32_t language);
     /// Callbacks for NetworkPortal::SetLibrary; this object must outlive the portal.
     PortalLibrary View();
@@ -54,7 +57,6 @@ private:
     };
     std::optional<Game> Find(std::uint64_t application) const;
     std::optional<std::string> Cover(std::uint64_t application);
-    std::uint64_t Generation();
 
     std::filesystem::path root;
     const LibraryCache cache;
@@ -63,9 +65,6 @@ private:
     std::vector<Game> games;
     std::uint32_t language{};
     std::uint64_t revision{};
-    std::mutex generation_mutex;
-    std::uint64_t generation{};
-    std::chrono::steady_clock::time_point generation_until{};
 };
 
 } // namespace Jadyx
