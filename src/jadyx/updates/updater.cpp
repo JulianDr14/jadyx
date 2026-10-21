@@ -5,6 +5,7 @@
 #include <fileapifromapp.h>
 
 #include <chrono>
+#include <fstream>
 #include <mutex>
 #include <thread>
 #include <nlohmann/json.hpp>
@@ -206,8 +207,24 @@ struct Updater::Impl {
 namespace {
 Runtime ProductionRuntime() {
     Runtime runtime;
-    const auto v = winrt::Windows::ApplicationModel::Package::Current().Id().Version();
+    const auto package = winrt::Windows::ApplicationModel::Package::Current();
+    const auto v = package.Id().Version();
     runtime.installed = {v.Major, v.Minor, v.Build, v.Revision};
+    // Update test packages only (package-appx.ps1 -BootCfg; -Release refuses these lines):
+    // update_installed=X reports X as the installed version, update_server=http://host:port
+    // sends the GitHub requests to tools/xbox/tests/update-server.py. Manifests stay signed with
+    // the GitHub URLs, so the release policy is the same one production runs.
+    std::string server;
+    std::ifstream cfg{std::filesystem::path{package.InstalledLocation().Path().c_str()} / "boot.cfg"};
+    for (std::string line; std::getline(cfg, line);) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.starts_with("update_installed="))
+            if (const auto version = ParseVersion(std::string_view{line}.substr(17)))
+                runtime.installed = *version;
+        if (line.starts_with("update_server=http://"))
+            server = line.substr(14);
+    }
     runtime.folder =
         std::filesystem::path{
             winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path().c_str()} /
@@ -215,6 +232,26 @@ Runtime ProductionRuntime() {
     runtime.public_key = ReleasePublicKey;
     runtime.fetch = Http::Fetch;
     runtime.download = Http::DownloadVerified;
+    if (!server.empty()) {
+        const auto local = [server](const std::string& url) {
+            for (const std::string_view prefix : {"https://api.github.com/repos/JulianDr14/jadyx/",
+                                                  "https://github.com/JulianDr14/jadyx/"})
+                if (url.starts_with(prefix))
+                    return server + "/" + url.substr(prefix.size());
+            return url;
+        };
+        runtime.fetch = [local](const std::string& url, const std::string& etag,
+                                std::stop_token stop, std::size_t max_bytes) {
+            return Http::Fetch(local(url), etag, stop, max_bytes);
+        };
+        runtime.download = [local](const std::string& url, const std::filesystem::path& part,
+                                   const std::string& sha256, std::uint64_t bytes,
+                                   std::stop_token stop, const Http::DownloadProgress& progress,
+                                   const std::function<void()>& verifying) {
+            return Http::DownloadVerified(local(url), part, sha256, bytes, stop, progress,
+                                          verifying);
+        };
+    }
     runtime.verify_package = ValidatePackage;
     runtime.deploy = DeployPackage;
     return runtime;
