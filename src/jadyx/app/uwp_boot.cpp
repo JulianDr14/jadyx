@@ -313,8 +313,8 @@ struct BootConfig {
     /// upscaling.h ParseUpscaling lists the values). Not saved.
     std::optional<Upscaling> upscaling;
     /// Make the D3D12 command list calls on a thread of their own, so the GPU thread only records
-    /// them ("async_record=1"). Off by default until it has been played through on the console.
-    bool async_record{};
+    /// them ("async_record=0" makes them on the GPU thread, as before the recorder).
+    bool async_record{true};
     bool upload_copy{}; ///< Experimental short uniform copies; default off.
     bool draw_sampler_reuse{}; ///< Experimental gather-local TSC resolution; default off.
     /// Where pixel shaders keep large local memory: 0 auto (boot probe), 1 pool, 2 private arrays

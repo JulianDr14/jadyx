@@ -191,9 +191,9 @@ La presentación usa un hilo propio por defecto. Con `async_present=0` en BootCf
 el hilo de GPU, como antes de ese cambio. El log dice qué modo se usa:
 `D3D12: presentation on its own thread` o `on the GPU thread`.
 
-Las llamadas a la command list de D3D12 se pueden hacer en un hilo propio (`D3D12Recorder`) con
-`async_record=1` en BootCfg: el hilo de GPU solo las graba, en bloques que ese hilo ejecuta en
-orden y envía a la cola. Por defecto el hilo de GPU las hace él mismo. El log dice qué modo se usa:
+Las llamadas a la command list de D3D12 se hacen por defecto en un hilo propio (`D3D12Recorder`):
+el hilo de GPU solo las graba, en bloques que ese hilo ejecuta en orden y envía a la cola. Con
+`async_record=0` en BootCfg el hilo de GPU las hace él mismo, como antes. El log dice qué modo se usa:
 `D3D12: command list calls made on a recording thread` o `on the GPU thread`.
 
 El hilo `HostTiming` duerme hasta poco antes de cada evento con un timer de alta resolución y
