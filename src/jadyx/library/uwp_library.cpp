@@ -1326,32 +1326,18 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     actions &= ~(Left | Right | PreviousTab | NextTab | Up | Down | Play);
                 }
             } else if (!configuration.open && !manager_busy) {
+                // Only a pointer focuses the manager's tabs: any way down or out goes back to the
+                // pane. In the pane, B at the manager's root closes the options.
                 if (game_options.focus == GameOptionsFocus::ManagerTabs) {
-                    if (actions & (Up | Quit)) {
-                        LeaveGameOptionsPane(game_options, has_manager_tabs);
-                        actions &= ~(Up | Quit); dirty = true;
-                    } else if (actions & (Down | Play)) {
-                        EnterGameOptionsPane(game_options, has_manager_tabs);
-                        actions &= ~(Down | Play); dirty = true;
+                    if (actions & (Up | Down | Play | Quit)) {
+                        game_options.focus = GameOptionsFocus::Content;
+                        actions &= ~(Up | Down | Play | Quit); dirty = true;
                     }
                     actions &= Left | Right | PreviousManagerTab | NextManagerTab;
-                } else {
-                    const bool manager_root = (mods_active && mods_page.screen == Mods::ModsScreen::List && !mods_page.moving) ||
-                        cheats_active || (content_session && content_session->View().screen == Content::Screen::Manager) ||
-                        !GameOptionHasManager(GameOptions()[game_options.selected]);
-                    const bool first = (mods_active && (mods_page.tab == Mods::ModsTab::Explore ?
-                        mods_page.card < Mods::ModsLayout::Columns : mods_page.selected == 0)) ||
-                        (cheats_active && cheats_page.selected == 0) ||
-                        (content_session && content_session->View().selected == 0) ||
-                        !GameOptionHasManager(GameOptions()[game_options.selected]);
-                    if (manager_root && ((actions & Quit) || ((actions & Up) && first))) {
-                        LeaveGameOptionsPane(game_options, has_manager_tabs);
-                        actions &= ~(Up | Quit); dirty = true;
-                    }
                 }
             }
             if (requested_game_option == game_options.selected && !game_options.activate && can_switch) {
-                game_options.focus = GameOptionsFocus::Sections;
+                game_options.focus = GameOptionsFocus::Content;
                 game_options.confirm_discard = false;
                 requested_game_option.reset(); options_notice.clear(); dirty = true;
             }

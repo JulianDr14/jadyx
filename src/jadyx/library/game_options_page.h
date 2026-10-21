@@ -78,7 +78,9 @@ struct GameOptionsPage {
     std::optional<GameOption> page; ///< Selected manager; Pulse has its own pane in the shell.
     bool confirm_discard{}; ///< A was pressed once on Pulse or Remove; a second press acts.
     bool discard{};         ///< Confirmed: the library discards the session or deletes the game.
-    GameOptionsFocus focus{GameOptionsFocus::Sections};
+    /// The pane below the bars: LB/RB switch sections and LT/RT the manager's tabs, so the
+    /// stick and the d-pad only move inside the pane. A pointer can still focus a bar.
+    GameOptionsFocus focus{GameOptionsFocus::Content};
     bool activate{true};    ///< The coordinator initializes the selected manager once.
 };
 
@@ -88,7 +90,7 @@ inline void SelectGameOption(GameOptionsPage& options, std::size_t index) {
     options.page = GameOptionHasManager(GameOptions()[index]) ? std::optional{GameOptions()[index]} :
                    std::nullopt;
     options.confirm_discard = options.discard = false;
-    options.focus = GameOptionsFocus::Sections;
+    options.focus = GameOptionsFocus::Content;
     options.activate = true;
 }
 

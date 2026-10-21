@@ -105,14 +105,15 @@ int main() {
     check(HandleCheatsInput(none, empty, CheatsInput::Toggle, rows) == CheatsEffect::None);
     check(HandleCheatsInput(none, empty, CheatsInput::NextCategory, rows) == CheatsEffect::None);
 
-    // Selecting a category activates its manager without an intermediate Open action.
+    // Selecting a category activates its manager without an intermediate Open action; the focus
+    // starts in its pane (LB/RB switch categories, not the stick).
     GameOptionsPage options{true, 7};
     HandleGameOptionsInput(options, GameOptionsInput::Up);
     check(options.selected == GameOptions().size() - 1); // the list wraps
     HandleGameOptionsInput(options, GameOptionsInput::Down);
     HandleGameOptionsInput(options, GameOptionsInput::Down);
     check(GameOptions()[options.selected] == GameOption::Cheats); // Mods, then Cheats
-    check(options.page == GameOption::Cheats && options.activate && (options.focus == GameOptionsFocus::Sections));
+    check(options.page == GameOption::Cheats && options.activate && (options.focus == GameOptionsFocus::Content));
     HandleGameOptionsInput(options, GameOptionsInput::Confirm);
     check(options.page == GameOption::Cheats && options.open && !(options.focus == GameOptionsFocus::Sections));
     HandleGameOptionsInput(options, GameOptionsInput::Back);
@@ -122,6 +123,7 @@ int main() {
     SelectGameOption(options, 0);
     options.activate = false; // The coordinator finished initializing Mods.
     const auto active_page = options.page;
+    options.focus = GameOptionsFocus::Sections; // The helpers still walk all three levels.
     EnterGameOptionsPane(options, true);
     check(options.focus == GameOptionsFocus::ManagerTabs && !options.activate);
     EnterGameOptionsPane(options, true);

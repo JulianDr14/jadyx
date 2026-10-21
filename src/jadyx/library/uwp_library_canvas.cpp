@@ -1630,15 +1630,15 @@ private:
         if (!view.notice.empty() && view.page.page != GameOption::Mods && view.page.page != GameOption::Cheats)
             Type(I18n::Format(view.notice, {PromptKey(Navigation::Play).letters}), TypeRole::Label, 56, G::Status,
                  1168, Palette::Warning);
-        if (view.page.focus != GameOptionsFocus::Content) {
-            // On the bars: switching tabs, then the way down, up and out, over the pane's own.
+        // The panes that act in place have no prompts of their own; on the manager's tabs (a
+        // pointer put the focus there), the bar's prompts speak over the pane's.
+        if (view.page.focus != GameOptionsFocus::Content || !view.page.page) {
             Round(0, G::FooterLine + 1, 1280, 720 - G::FooterLine - 1, 0, Palette::Canvas);
             float next = 56;
             next += view.page.focus == GameOptionsFocus::ManagerTabs ? internal_prompt(Tr(T::Category), next) :
                 ControlPrompt(Navigation::Tabs, Tr(T::Category), next, footer);
-            next += Prompt(L"\u2193", Palette::Text, Tr(T::Select), next, footer);
             if (view.page.focus == GameOptionsFocus::ManagerTabs)
-                Prompt(L"\u2191", Palette::Text, Tr(T::GameOptionsTitle), next, footer);
+                Prompt(L"\u2193", Palette::Text, Tr(T::Select), next, footer);
             back_prompt(Tr(T::Back));
         }
 
