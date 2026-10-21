@@ -23,6 +23,7 @@ struct SystemPage {
     bool updates_open{};
     std::size_t update_row{}, update_detail{}, update_scroll{};
     Updates::Snapshot update;
+    bool updated{}; ///< This launch confirmed a new version: shown until the next input.
     bool open{};
     std::size_t selected{};
     SystemSettings settings; ///< As saved.

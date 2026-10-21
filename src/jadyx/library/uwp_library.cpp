@@ -113,6 +113,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             network_portal.Stop();
         });
     SystemPage system_page;
+    system_page.updated = updater.CurrentPhase() == Updates::Phase::Confirmed;
     // The selected game's options (Menu), and its cheats page while open.
     GameOptionsPage game_options;
     std::optional<std::size_t> requested_game_option;
@@ -376,7 +377,17 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         }
         if (system_page.updates_open) {
             const auto hit = canvas->HitAt(x, y);
-            if (hit.hit == LibraryHit::UpdateAction) { system_page.update_row = hit.index; actions |= Play; dirty = true; }
+            if (hit.hit == LibraryHit::UpdateAction) {
+                if (hit.index == UpdateBackHit) actions |= Quit;
+                else { system_page.update_row = hit.index; actions |= Play; }
+                dirty = true;
+            }
+            e.Handled(true); return;
+        }
+        // The new-version notice: its prompts do what Y and X do while it shows.
+        if (const auto hit = canvas->HitAt(x, y); hit.hit == LibraryHit::UpdateNotice) {
+            actions |= hit.index == 0 ? Pin : Refresh;
+            dirty = true;
             e.Handled(true); return;
         }
         // The header's tabs and controller work over every page that is not a dialog.
@@ -750,6 +761,32 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     unsigned navigation_context = 0;
     std::optional<ControllerDevice> pad;
     ControllerCatalog<ControllerDevice> controllers;
+    // Starts the portal on the chosen address, or says why not. Never logs the pairing code.
+    const auto start_portal = [&] {
+        if (configuration.network_addresses.empty()) configuration.network_addresses = PortalAddresses();
+        if (configuration.network_addresses.empty()) {
+            configuration.notice = Tr(T::NetworkUnavailable);
+            return false;
+        }
+        const auto& address = configuration.network_addresses[configuration.network_selected];
+        const bool started = network_portal.Start(address.ipv4);
+        const auto error = network_portal.Status().error;
+        configuration.notice = started ? std::wstring{} :
+            std::wstring{Tr(error == PortalError::Bind ? T::NetworkBindFailed : T::NetworkStartFailed)};
+        LOG_INFO(Frontend, "Network portal: {}", started ? "listening" : "start failed");
+        return started;
+    };
+    // Without a native deployment (Xbox) the install is guided from a browser: its screen opens
+    // over the update page with the portal already listening.
+    const auto open_update_guide = [&] {
+        updater.RecordAssistedRequest();
+        if (!network_portal.Status().running) start_portal();
+        else configuration.notice.clear();
+        configuration.network = network_portal.Status();
+        configuration.network_screen = configuration.network_update = true;
+        configuration.network_action = 0;
+        dirty = true;
+    };
     while (true) {
         window.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
         const auto now = std::chrono::steady_clock::now();
@@ -766,8 +803,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     !content_session && !loading && !setup_future.valid() &&
                     network_portal.BlockForLocalOperation();
                 updater.InstallIfReady(storage_idle);
+                if (updater.CurrentPhase() == Updates::Phase::Assistance) open_update_guide();
             }
             network_poll_at = now + std::chrono::milliseconds{500};
+            network_portal.SetUpdateOffered(system_page.update.phase == Updates::Phase::Assistance);
             const auto state = network_portal.Status();
             if (state.running) portal_library.Publish(scan.entries, static_cast<std::uint32_t>(title_language));
             if (configuration.network.running != state.running || configuration.network.paired != state.paired ||
@@ -964,7 +1003,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         const bool library = !settings && !configuration.open && !game_options.open &&
                                              !missing_content;
                         if (hit(GamepadButtons::X)) {
-                            if (settings || content_session || missing_content) actions |= Swap;
+                            if (system_page.updates_open) actions |= Quit;
+                            else if (settings || content_session || missing_content) actions |= Swap;
                             else if (library) actions |= Refresh;
                             else if (!configuration.open) actions |= AddFolder;
                         }
@@ -1002,6 +1042,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (!(read == battery)) { battery = read; dirty = true; }
         }
         if (window_closed || QuitRequested()) return std::nullopt;
+        if (actions && system_page.updated) { system_page.updated = false; dirty = true; }
         if(import_progress.confirmation.load()&&!configuration.confirm_import){
             std::lock_guard lock{import_progress.review_mutex};configuration.review_text=import_progress.review_text;
             configuration.confirm_import=true;configuration.network_action=0;dirty=true;
@@ -1021,16 +1062,19 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (actions & Quit || (actions & Play && configuration.network_action == 0))
                 configuration.network_screen = false;
             else if (actions & Refresh || (actions & Play && configuration.network_action == 1)) {
-                configuration.notice = network_portal.RenewCode() ? std::wstring{} : std::wstring{Tr(T::NetworkStartFailed)};
+                // The update guide stays open when its portal failed to start: this retries it.
+                if (configuration.network_update && !network_portal.Status().running) start_portal();
+                else configuration.notice = network_portal.RenewCode() ? std::wstring{} : std::wstring{Tr(T::NetworkStartFailed)};
                 configuration.network = network_portal.Status();
             } else if (actions & Play && configuration.network_action == 2) {
                 network_portal.Stop();
                 configuration.network = network_portal.Status();
                 configuration.network_screen = false;
-                configuration.selected = FilesNetwork;
+                if (!configuration.network_update) configuration.selected = FilesNetwork;
                 configuration.notice.clear();
             }
-            if (!configuration.network.running) configuration.network_screen = false;
+            if (!configuration.network.running && !configuration.network_update) configuration.network_screen = false;
+            if (!configuration.network_screen) configuration.network_update = false;
             dirty |= actions != 0;
             actions = 0;
             pressed_tab.reset();
@@ -1175,18 +1219,22 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         if (system_page.updates_open) {
             const auto& snapshot = system_page.update;
             const auto items = Updates::Actions(snapshot);
+            // B, and X like everywhere a page closes, leave; Y does nothing here.
+            const bool leave = actions & (Quit | Swap | Refresh | AddFolder);
             if (system_page.update_detail) {
                 if (actions & Up && system_page.update_scroll) --system_page.update_scroll;
                 if (actions & Down) ++system_page.update_scroll;
-                if (actions & (Quit | Play)) { system_page.update_detail=0; system_page.update_scroll=0; }
+                if (leave || actions & Play) { system_page.update_detail=0; system_page.update_scroll=0; }
                 if (actions) dirty=true;
                 actions=0;
             }
-            system_page.update_row = std::min(system_page.update_row, items.size()-1);
-            if (actions & Up) system_page.update_row = (system_page.update_row + items.size()-1)%items.size();
-            if (actions & Down) system_page.update_row = (system_page.update_row+1)%items.size();
-            if (actions & Quit) system_page.updates_open = false;
-            if (actions & Play) {
+            if (!items.empty()) {
+                system_page.update_row = std::min(system_page.update_row, items.size()-1);
+                if (actions & Up) system_page.update_row = (system_page.update_row + items.size()-1)%items.size();
+                if (actions & Down) system_page.update_row = (system_page.update_row+1)%items.size();
+            }
+            if (actions && leave) system_page.updates_open = false;
+            else if (actions & Play && !items.empty()) {
                 using A = Updates::Action;
                 const auto action = items[system_page.update_row];
                 // Reserve local storage admission atomically against incoming browser uploads.
@@ -1195,26 +1243,33 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     system_page.update.error = Updates::Error::Busy;
                 } else switch (action) {
                 case A::Notes: system_page.update_detail=1; system_page.update_scroll=0; break;
-                case A::History: system_page.update_detail=2; system_page.update_scroll=0; break;
                 case A::Check: updater.Check(true); break;
                 case A::Channel: updater.SetChannel(snapshot.channel == Updates::Channel::Stable ? Updates::Channel::Preview : Updates::Channel::Stable); break;
                 case A::Download: updater.Download(true); break;
                 case A::Pause: updater.Pause(); break;
                 case A::Cancel: updater.Cancel(); break;
                 case A::Install:
-                    if (snapshot.phase == Updates::Phase::Assistance) {
-                        updater.RecordAssistedRequest(); system_page.updates_open = false;
-                        system_page.open = false; configuration.files = true;
-                    } else updater.Install();
+                    if (snapshot.phase == Updates::Phase::Ready) updater.Install();
+                    if (updater.CurrentPhase() == Updates::Phase::Assistance) open_update_guide();
                     break;
                 case A::Later: updater.Dismiss(false); system_page.updates_open = false; break;
                 case A::Skip: updater.Dismiss(true); system_page.updates_open = false; break;
-                case A::Back: updater.Pause(); system_page.updates_open = false; break;
                 }
-                system_page.update_row = 0;
+                // Notes and Channel keep their row; the others change which rows there are.
+                if (action != A::Notes && action != A::Channel) system_page.update_row = 0;
             }
             if (actions) dirty = true;
             actions = 0; pressed_tab.reset();
+        }
+        // While the new-version notice shows on Home or the Library, Y opens the update page and
+        // X hides the notice until tomorrow; neither pins nor rescans then.
+        if (system_page.update.notice && system_page.update.release && !system_page.updates_open && !settings &&
+            !configuration.open && !configuration.network_screen && !game_options.open && !missing_content &&
+            !panel.keyboard.open && tab != LibraryTab::Settings && actions & (Pin | Refresh)) {
+            if (actions & Pin) { system_page.updates_open = true; system_page.update_row = 0; }
+            else { updater.Dismiss(false); system_page.update.notice = false; }
+            actions &= ~(Pin | Refresh);
+            dirty = true;
         }
         // Leaving the update page to use another feature pauses network work before dispatching it.
         if (!system_page.updates_open && actions &&
@@ -1739,19 +1794,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         configuration.network_action = 0;
                         configuration.notice.clear();
                     } else {
-                        if (configuration.network_addresses.empty()) configuration.network_addresses = PortalAddresses();
-                        if (configuration.network_addresses.empty()) configuration.notice = Tr(T::NetworkUnavailable);
-                        else {
-                            const auto& address = configuration.network_addresses[configuration.network_selected];
-                            const bool started = network_portal.Start(address.ipv4);
-                            const auto error = network_portal.Status().error;
-                            configuration.notice = started ? std::wstring{} :
-                                std::wstring{Tr(error == PortalError::Bind ? T::NetworkBindFailed : T::NetworkStartFailed)};
-                            configuration.network_screen = started;
-                            configuration.network_action = 0;
-                            // Never log the pairing code or browser session.
-                            LOG_INFO(Frontend, "Network portal: {}", started ? "listening" : "start failed");
-                        }
+                        configuration.network_screen = start_portal();
+                        configuration.network_action = 0;
                     }
                     configuration.network = network_portal.Status();
                 }

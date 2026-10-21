@@ -296,6 +296,7 @@ struct NetworkPortal::Impl {
     Clock::time_point logs_ticket_until{};
     std::mutex admission;
     std::function<std::optional<Updates::UpdatePackage>()> update_package;
+    std::atomic<bool> update_offered{};
     std::optional<Updates::UpdatePackage> ticket_package;
     std::string update_ticket;
     Clock::time_point update_ticket_until{};
@@ -455,7 +456,7 @@ struct NetworkPortal::Impl {
                 {"install", InstallJson()},
                 {"removal", [this] { std::lock_guard lock{mutex}; return RemovalJson(status.removal); }()},
                 {"system_supported",system_supported},{"system",system ? SystemJson(system->Snapshot()) : Json::object()},
-                {"logs", LogsJson()}});
+                {"logs", LogsJson()}, {"update", {{"offered", update_offered.load()}}}});
         });
         server->Post("/api/v1/update/download", [this](const auto&, auto& response) {
             std::lock_guard admission_lock{admission};
@@ -961,6 +962,7 @@ PortalStatus NetworkPortal::Status() const {
     return result;
 }
 
+void NetworkPortal::SetUpdateOffered(bool offered) { impl->update_offered = offered; }
 void NetworkPortal::SetUpdatePackage(std::function<std::optional<Updates::UpdatePackage>()> package) {
     std::lock_guard lock{impl->mutex}; impl->update_package = std::move(package);
 }

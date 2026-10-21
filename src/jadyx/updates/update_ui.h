@@ -1,17 +1,24 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <algorithm>
 #include <array>
-#include <span>
-#include <vector>
+#include <string>
 #include "jadyx/i18n/localization.h"
 #include "jadyx/updates/updater.h"
 namespace Jadyx::Updates {
-inline I18n::Text PhaseText(Phase phase) {
+// A remembered release reopens as Paused even when nothing was downloaded yet.
+inline bool DownloadStarted(const Snapshot& state) {
+    return state.received > 0 || state.phase == Phase::Downloading ||
+           state.phase == Phase::Verifying || state.phase == Phase::Ready ||
+           state.phase == Phase::Assistance;
+}
+// The page's headline: what is happening, in the user's words.
+inline I18n::Text PhaseText(const Snapshot& state) {
     using T = I18n::Text;
-    switch (phase) {
+    switch (state.phase) {
     case Phase::Idle:
-        return T::UpdaterIdle;
+        return state.release ? T::UpdaterAvailable : T::UpdaterIdle;
     case Phase::Checking:
         return T::UpdaterChecking;
     case Phase::Available:
@@ -19,7 +26,7 @@ inline I18n::Text PhaseText(Phase phase) {
     case Phase::Downloading:
         return T::UpdaterDownloading;
     case Phase::Paused:
-        return T::UpdaterPaused;
+        return state.received ? T::UpdaterPaused : T::UpdaterAvailable;
     case Phase::Verifying:
         return T::UpdaterVerifying;
     case Phase::Ready:
@@ -58,19 +65,7 @@ inline I18n::Text ErrorText(Error error) {
         return T::UpdaterFailed;
     }
 }
-enum class Action {
-    Check,
-    Channel,
-    Download,
-    Pause,
-    Cancel,
-    Install,
-    Later,
-    Skip,
-    Notes,
-    History,
-    Back
-};
+enum class Action { Check, Channel, Download, Pause, Cancel, Install, Later, Skip, Notes };
 // At most nine actions; building a frame's controls requires no heap allocation.
 struct ActionList {
     std::array<Action, 9> items{};
@@ -87,6 +82,9 @@ struct ActionList {
     std::size_t size() const {
         return count;
     }
+    bool empty() const {
+        return count == 0;
+    }
     Action operator[](std::size_t index) const {
         return items[index];
     }
@@ -97,92 +95,106 @@ struct ActionList {
         return items.begin() + count;
     }
 };
+// Only what can be done now: no cancel without a download, no install without a package.
+// Leaving the page is B (or X), never a row.
 inline ActionList Actions(const Snapshot& state) {
-    if (state.phase == Phase::Checking || state.phase == Phase::Verifying ||
-        state.phase == Phase::Preparing)
-        return {Action::Back};
-    if (state.phase == Phase::Downloading)
-        return {Action::Pause, Action::Cancel, Action::Back};
-    ActionList out;
-    if (state.phase != Phase::Requested) {
-        out = {Action::Check, Action::Channel};
-        if (state.release) {
-            out.push_back(state.phase == Phase::Ready || state.phase == Phase::Assistance
-                              ? Action::Install
-                              : Action::Download);
-            out.push_back(Action::Cancel);
-            out.push_back(Action::Later);
-            out.push_back(Action::Skip);
-        }
+    switch (state.phase) {
+    case Phase::Checking:
+    case Phase::Verifying:
+    case Phase::Preparing:
+    case Phase::Requested:
+        return {};
+    case Phase::Downloading:
+        return {Action::Pause, Action::Cancel};
+    case Phase::Ready:
+    case Phase::Assistance:
+        if (!state.release)
+            break;
+        if (state.release->notes.empty())
+            return {Action::Install, Action::Cancel};
+        return {Action::Install, Action::Cancel, Action::Notes};
+    default:
+        break;
     }
-    if (state.release)
+    if (!state.release)
+        return {Action::Check, Action::Channel};
+    ActionList out{Action::Download};
+    if (state.received)
+        out.push_back(Action::Cancel);
+    if (!state.release->notes.empty())
         out.push_back(Action::Notes);
-    if (!state.history.empty())
-        out.push_back(Action::History);
-    out.push_back(Action::Back);
+    if (!state.received) {
+        out.push_back(Action::Later);
+        out.push_back(Action::Skip);
+        out.push_back(Action::Channel);
+    }
     return out;
 }
 inline I18n::Text ActionText(Action action, const Snapshot& state) {
     using T = I18n::Text;
     switch (action) {
-    case Action::Notes:
-        return T::UpdaterHint;
-    case Action::History:
-        return T::UpdaterHistory;
-    case Action::Channel:
-        return state.channel == Channel::Stable ? T::UpdaterStable : T::UpdaterPreview;
-    case Action::Download:
-        return state.phase == Phase::Paused || state.phase == Phase::Failed ? T::UpdaterResume
-                                                                            : T::UpdaterDownload;
-    case Action::Install:
-        return state.phase == Phase::Assistance ? T::UpdaterAssistance : T::UpdaterInstall;
     case Action::Check:
         return T::UpdaterCheck;
+    case Action::Channel:
+        return T::UpdaterChannel;
+    case Action::Download:
+        return state.phase == Phase::Failed ? T::UpdaterRetry
+               : state.received             ? T::UpdaterResume
+                                            : T::UpdaterDownload;
     case Action::Pause:
         return T::UpdaterPause;
     case Action::Cancel:
-        return T::UpdaterCancel;
+        return state.phase == Phase::Downloading ? T::UpdaterCancel : T::UpdaterDiscard;
+    case Action::Install:
+        return state.phase == Phase::Assistance ? T::UpdaterInstallGuided : T::UpdaterInstall;
     case Action::Later:
         return T::UpdaterLater;
     case Action::Skip:
         return T::UpdaterSkip;
-    case Action::Back:
-        return T::UpdaterBack;
+    case Action::Notes:
+        return T::UpdaterNotes;
     }
-    return T::UpdaterBack;
+    return T::UpdaterCheck;
 }
-inline std::vector<std::wstring> DetailLines(const Snapshot& state, bool history) {
-    std::wstring text;
-    if (!history && state.release) {
-        // UTF-8 decoding is provided by the caller for notes (the UI is Windows/WinRT).
-        return {};
+// What a row says under its label once focused.
+inline I18n::Text ActionHint(Action action, const Snapshot& state) {
+    using T = I18n::Text;
+    switch (action) {
+    case Action::Check:
+        return T::UpdaterCheckHint;
+    case Action::Channel:
+        return T::UpdaterChannelHint;
+    case Action::Download:
+        return T::UpdaterDownloadHint;
+    case Action::Pause:
+        return T::UpdaterPauseHint;
+    case Action::Cancel:
+        return T::UpdaterDiscardHint;
+    case Action::Install:
+        return state.phase == Phase::Assistance ? T::UpdaterHelp : T::UpdaterInstallHint;
+    case Action::Later:
+        return T::UpdaterLaterHint;
+    case Action::Skip:
+        return T::UpdaterSkipHint;
+    case Action::Notes:
+        return T::UpdaterNotesHint;
     }
-    for (const auto& event : state.history) {
-        I18n::Text label = I18n::Text::UpdaterCheck;
-        if (event.find("confirmed") != std::string::npos)
-            label = event.find("unconfirmed") != std::string::npos ? I18n::Text::UpdaterDeployment
-                                                                   : I18n::Text::UpdaterConfirmed;
-        else if (event.find("verified") != std::string::npos)
-            label = I18n::Text::UpdaterReady;
-        else if (event.find("cancelled") != std::string::npos)
-            label = I18n::Text::UpdaterCancel;
-        else if (event.find("installation") != std::string::npos)
-            label = I18n::Text::UpdaterAssistance;
-        else if (event.find("deployment accepted") != std::string::npos)
-            label = I18n::Text::UpdaterRequested;
-        else if (event.find("deployment unavailable") != std::string::npos)
-            label = I18n::Text::UpdaterDeployment;
-        text += std::wstring{I18n::Tr(label)} + L"\n";
+    return T::UpdaterCheckHint;
+}
+// The label with its values: the version to download, the percent already saved, the channel.
+inline std::wstring ActionLabel(Action action, const Snapshot& state) {
+    const auto text = ActionText(action, state);
+    if (action == Action::Channel)
+        return I18n::Format(text, {I18n::Tr(state.channel == Channel::Stable
+                                                 ? I18n::Text::UpdaterStable
+                                                 : I18n::Text::UpdaterPreview)});
+    if (action == Action::Download && state.release) {
+        const auto version = FormatVersion(state.release->version);
+        const auto percent =
+            state.total ? std::min<std::uint64_t>(99, state.received * 100 / state.total) : 0;
+        return I18n::Format(text, {std::wstring{version.begin(), version.end()},
+                                   std::to_wstring(percent)});
     }
-    std::vector<std::wstring> lines;
-    std::size_t begin = 0;
-    while (begin < text.size()) {
-        const auto end = text.find(L'\n', begin);
-        lines.push_back(text.substr(begin, end - begin));
-        if (end == text.npos)
-            break;
-        begin = end + 1;
-    }
-    return lines;
+    return std::wstring{I18n::Tr(text)};
 }
 } // namespace Jadyx::Updates

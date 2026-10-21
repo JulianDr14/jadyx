@@ -225,7 +225,12 @@ if ($mf.Package.Identity.Publisher -ne $PublisherCN) {
 }
 if ($Version) {
     $mf.Package.Identity.Version = $Version
-    $mf.Save((Join-Path $layout "AppxManifest.xml"))
+    # XmlDocument.Save alone writes a UTF-8 BOM; updaters up to 0.3.7.0 reject such a manifest.
+    $settings = New-Object System.Xml.XmlWriterSettings
+    $settings.Encoding = New-Object System.Text.UTF8Encoding $false
+    $settings.Indent = $true
+    $writer = [System.Xml.XmlWriter]::Create((Join-Path $layout "AppxManifest.xml"), $settings)
+    try { $mf.Save($writer) } finally { $writer.Dispose() }
 }
 Write-Host "version  : $($mf.Package.Identity.Version)"
 

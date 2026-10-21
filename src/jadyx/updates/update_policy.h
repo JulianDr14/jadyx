@@ -17,6 +17,9 @@ struct Release {
     std::string url, sha256, notes, published, tag;
     std::uint64_t size{};
 };
+// A GitHub release body (Markdown) as plain lines for the console: headings and bullets kept,
+// wrapped bullet lines joined, emphasis, code marks and link targets dropped. At most 16 KiB.
+std::string ReleaseNotesText(std::string_view markdown);
 // Signature covers the exact UTF-8 bytes, not a reserialized JSON object.
 std::optional<Release> VerifyManifest(std::string_view body, std::string_view signature,
                                       std::string_view public_pem, const Version& installed,

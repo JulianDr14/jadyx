@@ -5,6 +5,7 @@
 #include <fileapifromapp.h>
 
 #include <chrono>
+#include <fstream>
 #include <mutex>
 #include <thread>
 #include <nlohmann/json.hpp>
@@ -13,6 +14,7 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Management.Deployment.h>
 #include <winrt/Windows.Storage.h>
+#include <winrt/Windows.System.Profile.h>
 #include "jadyx/network/http.h"
 #include "jadyx/storage/atomic_file.h"
 #include "jadyx/updates/package_validation.h"
@@ -131,6 +133,16 @@ struct Updater::Impl {
         return state.release && skipped != FormatVersion(state.release->version) &&
                Now() >= dismissed_until;
     }
+    bool Discard() {
+        std::error_code ec;
+        for (const auto& path : {part, std::filesystem::path{part.wstring() + L".identity"},
+                                 std::filesystem::path{part.wstring() + L".validator"}}) {
+            std::filesystem::remove(path, ec);
+            if (ec)
+                return false;
+        }
+        return true;
+    }
     void Event(const std::string& event) {
         state.history.insert(state.history.begin(), std::to_string(Now()) + " " + event);
         if (state.history.size() > 20)
@@ -194,10 +206,31 @@ struct Updater::Impl {
     }
 };
 namespace {
+bool IsXbox() {
+    return winrt::Windows::System::Profile::AnalyticsInfo::VersionInfo().DeviceFamily() ==
+           L"Windows.Xbox";
+}
+
 Runtime ProductionRuntime() {
     Runtime runtime;
-    const auto v = winrt::Windows::ApplicationModel::Package::Current().Id().Version();
+    const auto package = winrt::Windows::ApplicationModel::Package::Current();
+    const auto v = package.Id().Version();
     runtime.installed = {v.Major, v.Minor, v.Build, v.Revision};
+    // Update test packages only (package-appx.ps1 -BootCfg; -Release refuses these lines):
+    // update_installed=X reports X as the installed version, update_server=http://host:port
+    // sends the GitHub requests to tools/xbox/tests/update-server.py. Manifests stay signed with
+    // the GitHub URLs, so the release policy is the same one production runs.
+    std::string server;
+    std::ifstream cfg{std::filesystem::path{package.InstalledLocation().Path().c_str()} / "boot.cfg"};
+    for (std::string line; std::getline(cfg, line);) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.starts_with("update_installed="))
+            if (const auto version = ParseVersion(std::string_view{line}.substr(17)))
+                runtime.installed = *version;
+        if (line.starts_with("update_server=http://"))
+            server = line.substr(14);
+    }
     runtime.folder =
         std::filesystem::path{
             winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path().c_str()} /
@@ -205,15 +238,44 @@ Runtime ProductionRuntime() {
     runtime.public_key = ReleasePublicKey;
     runtime.fetch = Http::Fetch;
     runtime.download = Http::DownloadVerified;
+    if (!server.empty()) {
+        const auto local = [server](const std::string& url) {
+            for (const std::string_view prefix : {"https://api.github.com/repos/JulianDr14/jadyx/",
+                                                  "https://github.com/JulianDr14/jadyx/"})
+                if (url.starts_with(prefix))
+                    return server + "/" + url.substr(prefix.size());
+            return url;
+        };
+        runtime.fetch = [local](const std::string& url, const std::string& etag,
+                                std::stop_token stop, std::size_t max_bytes) {
+            return Http::Fetch(local(url), etag, stop, max_bytes);
+        };
+        runtime.download = [local](const std::string& url, const std::filesystem::path& part,
+                                   const std::string& sha256, std::uint64_t bytes,
+                                   std::stop_token stop, const Http::DownloadProgress& progress,
+                                   const std::function<void()>& verifying) {
+            return Http::DownloadVerified(local(url), part, sha256, bytes, stop, progress,
+                                          verifying);
+        };
+    }
     runtime.verify_package = ValidatePackage;
-    runtime.deploy = DeployPackage;
+    // Xbox Dev Mode cannot update itself (measured, see docs/xbox/xbox_updater.md): the Device
+    // Portal registers Jadyx for DefaultAccount while the app runs as UserMgr0, so
+    // PackageManager registers the new version for UserMgr0 only and the console stops
+    // launching Jadyx. The app cannot reach the Portal either (loopback isolation). There the
+    // verified package goes in through the Device Portal, guided from a phone or PC.
+    if (!IsXbox())
+        runtime.deploy = DeployPackage;
     return runtime;
 }
 } // namespace
 Updater::Updater() : Updater{ProductionRuntime()} {}
 Updater::Updater(Runtime runtime) : impl{std::make_unique<Impl>(std::move(runtime))} {
-    if (impl->runtime.automatic_check && impl->state.phase == Phase::Idle && impl->target.empty())
-        Check();
+    // Every launch asks once: the list answers 304 while nothing changed. A remembered release
+    // (Paused) is checked too, so a newer one or its notes show without opening the page.
+    if (impl->runtime.automatic_check && impl->target.empty() &&
+        (impl->state.phase == Phase::Idle || impl->state.phase == Phase::Paused))
+        Check(true);
 }
 Updater::~Updater() {
     std::lock_guard lock{impl->operation};
@@ -252,7 +314,7 @@ void Updater::Check(bool force) {
             // The list contains preview releases too; never use /latest for the preview channel.
             // Pagination makes selection independent of the order in which releases were published.
             std::optional<Release> best;
-            std::string best_body, best_signature;
+            std::string best_body, best_signature, best_notes;
             bool failed = false;
             for (unsigned page = 1; page <= 10 && !stop.stop_requested(); ++page) {
                 const auto cache = p.folder / ("releases-" + std::to_string(page) + ".json");
@@ -318,6 +380,11 @@ void Updater::Check(bool force) {
                     best = verified;
                     best_body = m.body;
                     best_signature = s.body;
+                    // Display text only: the signed manifest stays the authority on the package.
+                    const auto notes = release.find("body");
+                    best_notes = notes != release.end() && notes->is_string()
+                                     ? notes->get<std::string>()
+                                     : std::string{};
                 }
                 if (releases.size() < 100)
                     break;
@@ -342,10 +409,14 @@ void Updater::Check(bool force) {
                     p.target.clear();
                 }
                 p.state.release = best;
+                if (best && best->notes.empty())
+                    p.state.release->notes = ReleaseNotesText(best_notes);
                 p.body = best_body;
                 p.signature = best_signature;
                 p.state.total = best ? best->size : 0;
-                p.state.received = ready ? p.state.total : 0;
+                std::error_code ec;
+                const auto partial = same ? std::filesystem::file_size(p.part, ec) : 0;
+                p.state.received = ready ? p.state.total : ec ? 0 : std::min(partial, p.state.total);
                 p.state.last_check = Now();
                 p.state.notice = p.Visible();
                 p.PhaseTo(ready ? Phase::Ready : best ? Phase::Available : Phase::Idle);
@@ -434,11 +505,20 @@ void Updater::Download(bool install_when_ready) {
                     std::lock_guard lock{p.mutex};
                     p.PhaseTo(Phase::Verifying);
                 });
+            bool rejected = false;
             if (error == Http::DownloadError::None &&
-                !p.runtime.verify_package(p.part, release, stop))
+                !p.runtime.verify_package(p.part, release, stop)) {
                 error = Http::DownloadError::Checksum;
+                rejected = !stop.stop_requested();
+            }
             {
                 std::lock_guard lock{p.mutex};
+                // A complete file that fails validation would only fail again on resume.
+                if (rejected) {
+                    p.Discard();
+                    p.state.received = 0;
+                    p.Event("package rejected " + FormatVersion(release.version));
+                }
                 if (error == Http::DownloadError::None) {
                     p.verified_write = std::filesystem::last_write_time(p.part);
                     p.package_verified = true;
@@ -482,15 +562,10 @@ void Updater::Cancel() {
     }
     Pause();
     std::lock_guard lock{impl->mutex};
-    std::error_code ec;
     impl->package_verified = false;
-    for (const auto& path : {impl->part, std::filesystem::path{impl->part.wstring() + L".identity"},
-                             std::filesystem::path{impl->part.wstring() + L".validator"}}) {
-        std::filesystem::remove(path, ec);
-        if (ec) {
-            impl->PhaseTo(Phase::Failed, Error::Disk);
-            return;
-        }
+    if (!impl->Discard()) {
+        impl->PhaseTo(Phase::Failed, Error::Disk);
+        return;
     }
     impl->target.clear();
     impl->state.received = 0;
@@ -559,10 +634,17 @@ void Updater::Install() {
             return;
         }
         p.target = FormatVersion(p.state.release->version);
+        p.install_when_ready = false;
+        if (!p.runtime.deploy) {
+            // No native deployment here: the guided install is the way, not a failure.
+            p.Event("guided installation prepared " + p.target);
+            p.PhaseTo(Phase::Assistance);
+            p.Save();
+            return;
+        }
         p.Event("installation prepared " + p.target);
         if (!p.Save())
             return;
-        p.install_when_ready = false;
         p.PhaseTo(Phase::Preparing);
     }
     p.Stop();
