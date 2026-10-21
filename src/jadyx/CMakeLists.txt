@@ -14,6 +14,8 @@ add_executable(jadyx WIN32
     pulse/pulse_sessions.h
     library/favorites.cpp
     library/favorites.h
+    library/game_removal.cpp
+    library/game_removal.h
     library/play_history.cpp
     library/play_history.h
     pulse/pulse_screen.cpp
