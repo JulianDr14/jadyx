@@ -371,7 +371,7 @@ int main() {
     release.version = {0, 3, 6, 0};
     for (const auto &item : std::filesystem::directory_iterator(
              "build-uwp/test-results/updater/packages")) {
-      const bool expected = item.path().stem() == "valid";
+      const bool expected = item.path().stem().string().starts_with("valid");
       assert(ValidatePackage(item.path(), release) == expected);
     }
   }

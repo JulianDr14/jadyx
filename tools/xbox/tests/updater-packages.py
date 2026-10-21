@@ -4,7 +4,8 @@ import zipfile, pathlib, warnings
 root=pathlib.Path('build-uwp/test-results/updater/packages');root.mkdir(parents=True,exist_ok=True)
 valid='<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="Jadyx" Publisher="CN=JadyxDev" Version="0.3.6.0" ProcessorArchitecture="x64" /></Package>'
 fixtures={
- 'valid':valid,'wrong-version':valid.replace('0.3.6.0','0.3.7.0'),
+ 'valid':valid,'valid-bom':'﻿<?xml version="1.0" encoding="utf-8"?>\r\n'+valid,
+ 'wrong-version':valid.replace('0.3.6.0','0.3.7.0'),
  'wrong-name':valid.replace('Name="Jadyx"','Name="Other"'),
  'wrong-publisher':valid.replace('JadyxDev','Other'),
  'wrong-architecture':valid.replace('x64','arm64'),

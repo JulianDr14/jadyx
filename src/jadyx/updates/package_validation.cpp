@@ -3,6 +3,7 @@
 #include <array>
 #include <fstream>
 #include <memory>
+#include <string_view>
 #include <archive.h>
 #include <archive_entry.h>
 #include <winrt/Windows.Data.Xml.Dom.h>
@@ -78,7 +79,11 @@ bool ValidatePackage(const std::filesystem::path& path, const Release& release,
             settings.ResolveExternals(false);
             settings.MaxElementDepth(32);
             XmlDocument document;
-            document.LoadXml(winrt::to_hstring(xml), settings);
+            // PowerShell's XmlDocument.Save writes a UTF-8 BOM, which LoadXml rejects as text.
+            std::string_view text{xml};
+            if (text.starts_with("\xEF\xBB\xBF"))
+                text.remove_prefix(3);
+            document.LoadXml(winrt::to_hstring(text), settings);
             // Parse the actual document: a comment containing a plausible Identity is not one.
             const auto nodes =
                 document.SelectNodes(L"/*[local-name()='Package' and "
