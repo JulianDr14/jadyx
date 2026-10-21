@@ -131,6 +131,16 @@ struct Updater::Impl {
         return state.release && skipped != FormatVersion(state.release->version) &&
                Now() >= dismissed_until;
     }
+    bool Discard() {
+        std::error_code ec;
+        for (const auto& path : {part, std::filesystem::path{part.wstring() + L".identity"},
+                                 std::filesystem::path{part.wstring() + L".validator"}}) {
+            std::filesystem::remove(path, ec);
+            if (ec)
+                return false;
+        }
+        return true;
+    }
     void Event(const std::string& event) {
         state.history.insert(state.history.begin(), std::to_string(Now()) + " " + event);
         if (state.history.size() > 20)
@@ -355,7 +365,9 @@ void Updater::Check(bool force) {
                 p.body = best_body;
                 p.signature = best_signature;
                 p.state.total = best ? best->size : 0;
-                p.state.received = ready ? p.state.total : 0;
+                std::error_code ec;
+                const auto partial = same ? std::filesystem::file_size(p.part, ec) : 0;
+                p.state.received = ready ? p.state.total : ec ? 0 : std::min(partial, p.state.total);
                 p.state.last_check = Now();
                 p.state.notice = p.Visible();
                 p.PhaseTo(ready ? Phase::Ready : best ? Phase::Available : Phase::Idle);
@@ -444,11 +456,20 @@ void Updater::Download(bool install_when_ready) {
                     std::lock_guard lock{p.mutex};
                     p.PhaseTo(Phase::Verifying);
                 });
+            bool rejected = false;
             if (error == Http::DownloadError::None &&
-                !p.runtime.verify_package(p.part, release, stop))
+                !p.runtime.verify_package(p.part, release, stop)) {
                 error = Http::DownloadError::Checksum;
+                rejected = !stop.stop_requested();
+            }
             {
                 std::lock_guard lock{p.mutex};
+                // A complete file that fails validation would only fail again on resume.
+                if (rejected) {
+                    p.Discard();
+                    p.state.received = 0;
+                    p.Event("package rejected " + FormatVersion(release.version));
+                }
                 if (error == Http::DownloadError::None) {
                     p.verified_write = std::filesystem::last_write_time(p.part);
                     p.package_verified = true;
@@ -492,15 +513,10 @@ void Updater::Cancel() {
     }
     Pause();
     std::lock_guard lock{impl->mutex};
-    std::error_code ec;
     impl->package_verified = false;
-    for (const auto& path : {impl->part, std::filesystem::path{impl->part.wstring() + L".identity"},
-                             std::filesystem::path{impl->part.wstring() + L".validator"}}) {
-        std::filesystem::remove(path, ec);
-        if (ec) {
-            impl->PhaseTo(Phase::Failed, Error::Disk);
-            return;
-        }
+    if (!impl->Discard()) {
+        impl->PhaseTo(Phase::Failed, Error::Disk);
+        return;
     }
     impl->target.clear();
     impl->state.received = 0;
