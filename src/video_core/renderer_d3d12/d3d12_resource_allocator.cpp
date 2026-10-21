@@ -60,6 +60,7 @@ struct TextureResourceAllocator::State {
     u64 growth_recoveries{};
     u64 compact_heaps{};
     u64 avoided_capacity{};
+    u64 pressure_waits{};
     // Accessed only by the recording thread, never by retirement callbacks.
     u64 pressure_wait_tick{};
 
@@ -180,12 +181,21 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
         const auto old_stats = GetStats();
         scheduler.CollectGarbage();
         find_space();
-        if (selected == SIZE_MAX && pressure && scheduler.IsRecordingThread() &&
-            old_stats.pending_bytes != 0) {
+        // Waiting stalled the GPU thread on most pressured misses. Only wait when even an exact
+        // heap would exhaust the budget and retiring work could return enough to hold this one.
+        const bool exhausted = HeapGrowth::Exhausted(
+            HeapGrowth::Capacity(info.SizeInBytes, info.Alignment, true),
+            {before.app_used, before.app_limit});
+        if (selected == SIZE_MAX && pressure && exhausted && scheduler.IsRecordingThread() &&
+            GetStats().pending_bytes >= info.SizeInBytes) {
             const u64 current = scheduler.CurrentTick();
             const u64 previous = current > 0 ? current - 1 : 0;
             if (previous > state->pressure_wait_tick) {
                 state->pressure_wait_tick = previous;
+                {
+                    std::scoped_lock lock{state->mutex};
+                    ++state->pressure_waits;
+                }
                 scheduler.Wait(previous);
                 scheduler.CollectGarbage();
                 find_space();
@@ -355,11 +365,13 @@ void TextureResourceAllocator::TrimEmptyHeaps(bool under_pressure) {
 std::string TextureResourceAllocator::Report() const {
     std::scoped_lock lock{state->mutex};
     return fmt::format("texture heaps {} MiB, live {} MiB, peak {} MiB, placed {}, fallback {}, trimmed {} ({} MiB), "
-                       "growth recoveries {}, pressure heaps {}, avoided capacity {} MiB",
+                       "growth recoveries {}, pressure waits {}, pressure heaps {}, "
+                       "avoided capacity {} MiB",
                        state->heap_bytes / 1_MiB, state->live_bytes / 1_MiB,
                        state->peak_bytes / 1_MiB, state->placed_resources,
                        state->committed_fallbacks, state->trimmed_heaps, state->trimmed_bytes / 1_MiB,
-                       state->growth_recoveries, state->compact_heaps, state->avoided_capacity / 1_MiB);
+                       state->growth_recoveries, state->pressure_waits, state->compact_heaps,
+                       state->avoided_capacity / 1_MiB);
 }
 
 TextureResourceAllocator::Stats TextureResourceAllocator::GetStats() const {
