@@ -125,9 +125,11 @@ struct ConstantBufferSlot {
     u32 reach{};          ///< bytes the shader may read from it
 };
 
-/// The CBV/SRV/UAV table of one draw or dispatch, written in root-signature order straight into a
-/// range of the ring (see d3d12_root_signature.h for the slot order). Buffer views are created in
-/// place; image views are copied from their offline descriptors.
+/// The CBV/SRV/UAV table of one draw or dispatch, in root-signature order, in a range of the ring
+/// (see d3d12_root_signature.h for the slot order). Buffer views are created in place; image views
+/// are copied from their offline descriptors. The descriptors are only recorded until Table():
+/// consecutive draws often bind the very same ones, and then a table written earlier in the same
+/// list is reused, like the Vulkan backend reuses an identical descriptor payload.
 ///
 /// Acquire() must come before any command of the draw is recorded: allocating from a full ring
 /// flushes the command list.
@@ -160,14 +162,42 @@ public:
     /// resource is null or the offset is not a whole number of elements.
     void AddTexelBuffer(ID3D12Resource* resource, u64 offset, u32 size, DXGI_FORMAT format,
                         u32 element_size, bool with_uav);
-    /// Copies of offline descriptors (texture SRVs, image UAVs). Consecutive copies are recorded
-    /// with one CopyDescriptors call when the table is finished.
+    /// Copies of offline descriptors (texture SRVs, image UAVs). Consecutive copies are written
+    /// with one CopyDescriptors call.
     void AddCopy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor);
-    /// Writes the pending copies to the slots reserved for them (Table() also does).
-    void FlushCopies();
 
 private:
+    /// One recorded descriptor. Views are already validated: Table() only creates them.
+    struct Write {
+        enum class Kind : u32 { ConstantBuffer, StorageBuffer, TexelBuffer, Copy };
+        Kind kind{};
+        u32 size{};
+        u64 handle{}; ///< GPU address, resource or offline descriptor
+        u64 offset{}; ///< texel buffers: first element
+        u32 format{}; ///< texel buffers: DXGI_FORMAT
+        u32 with_uav{};
+
+        bool operator==(const Write&) const = default;
+    };
+    /// A table written earlier in the list being recorded.
+    struct RecentTable {
+        u64 tick{};
+        u64 view_frees{};
+        u32 count{};
+        D3D12_GPU_DESCRIPTOR_HANDLE gpu{};
+        std::vector<Write> writes;
+    };
+    static constexpr size_t NUM_RECENT_TABLES = 8;
+
     D3D12_CPU_DESCRIPTOR_HANDLE Next();
+    /// The recent table holding exactly the recorded descriptors, if one may still be read.
+    [[nodiscard]] const RecentTable* FindRecent() const;
+    void WriteRecorded();
+    void CreateConstantBuffer(const Write& write);
+    void CreateStorageBuffer(const Write& write);
+    void CreateTexelBuffer(const Write& write);
+    void Copy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor);
+    void FlushCopies();
 
     ID3D12Device* device;
     DescriptorRing& ring;

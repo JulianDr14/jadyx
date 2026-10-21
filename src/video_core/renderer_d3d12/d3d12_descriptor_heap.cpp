@@ -170,16 +170,35 @@ D3D12_GPU_DESCRIPTOR_HANDLE DescriptorRing::Upload(
     return range.gpu;
 }
 
+void DescriptorRing::Rewind(const DescriptorRange& range, u32 count) {
+    const u32 offset = static_cast<u32>((range.gpu.ptr - gpu_base.ptr) / stride);
+    if (in_flight.empty() || head != offset + count || in_flight.back().second != head) {
+        return; // allocated again since: the slots are retired with their range
+    }
+    head = head_before;
+    if (added_in_flight) {
+        in_flight.pop_back();
+    } else {
+        in_flight.back().second = head;
+    }
+}
+
+u64 DescriptorRing::CurrentTick() const {
+    return scheduler.CurrentTick();
+}
+
 bool DescriptorRing::TryAllocate(u32 count, u32& offset) {
     // Ranges the last known GPU tick already covers are retired first; the fence is only read
     // when they do not make room, instead of once per draw.
     Retire(false);
     if (FindSpace(count, offset)) {
+        head_before = head;
         head = offset + count;
         return true;
     }
     Retire(true);
     if (FindSpace(count, offset)) {
+        head_before = head;
         head = offset + count;
         return true;
     }
@@ -236,9 +255,11 @@ GuestDescriptorQueue::GuestDescriptorQueue(ID3D12Device* device_, DescriptorRing
                                         D3D12_RESOURCE_FLAG_NONE, "Create zero constant buffer")} {}
 
 void GuestDescriptorQueue::Acquire(u32 count_, std::span<const ConstantBufferSlot> cbv_slots_) {
-    FlushCopies();
     count = count_;
     written = 0;
+    finished = false;
+    writes.clear();
+    pending_copies.clear();
     cbv_slots = cbv_slots_;
     cbv_index = 0;
     num_root_cbvs = 0;
