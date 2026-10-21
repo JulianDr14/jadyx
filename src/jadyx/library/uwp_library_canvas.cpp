@@ -1176,10 +1176,15 @@ private:
                 std::wstring{Tr(network.running ? T::Open : T::NetworkStart)}});
             const auto& addresses = view.configuration.network_addresses;
             const auto adapter = view.configuration.network_selected;
-            rows.push_back({Kind::Open, std::wstring{Tr(T::NetworkAdapter)},
+            // A 169.254 address means the router gave none: phones cannot reach it, so it warns.
+            const bool link_local = !addresses.empty() && addresses[adapter].link_local;
+            SettingsRow address{Kind::Open, std::wstring{Tr(T::NetworkAdapter)},
                 addresses.empty() ? std::wstring{Tr(T::NetworkUnavailable)} :
-                    std::wstring{winrt::to_hstring(addresses[adapter].name)},
-                addresses.empty() ? std::wstring{} : std::wstring{winrt::to_hstring(addresses[adapter].ipv4)}});
+                    std::wstring{winrt::to_hstring(addresses[adapter].name)} +
+                    (link_local ? L" · " + std::wstring{Tr(T::NetworkLinkLocal)} : std::wstring{}),
+                addresses.empty() ? std::wstring{} : std::wstring{winrt::to_hstring(addresses[adapter].ipv4)}};
+            address.warning = addresses.empty() || link_local;
+            rows.push_back(std::move(address));
             rows.push_back({Kind::Open, std::wstring{Tr(T::NetworkCode)},
                 std::wstring{Tr(!network.running ? T::NetworkStopped : network.paired ? T::NetworkPaired :
                     network.code_expired ? T::NetworkCodeExpired : T::NetworkCodeHint)},

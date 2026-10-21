@@ -12,6 +12,7 @@
 #include "jadyx/storage/storage_path.h"
 #include "jadyx/storage/uwp_file_manager.h"
 #include "jadyx/storage/nsp_import.h"
+#include "jadyx/storage/portal_fault_log.h"
 
 #include <algorithm>
 #include <chrono>
@@ -103,6 +104,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     PortalLibrarySource portal_library{root, DefaultLibraryCacheDirectory()};
     NetworkPortal network_portal{root,DefaultSystemImportBackend()};
     network_portal.SetLogDirectory(Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir));
+    PortalFaultLog portal_faults{Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir)};
+    PortalAddress portal_address;   // Where the running portal listens.
+    auto portal_check_at = std::chrono::steady_clock::time_point{};
     network_portal.SetLibrary(portal_library.View());
     network_portal.SetUpdatePackage([&] { return updater.PrepareAssistedDownload(); });
     auto network_poll_at = std::chrono::steady_clock::time_point{};
@@ -761,20 +765,75 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     unsigned navigation_context = 0;
     std::optional<ControllerDevice> pad;
     ControllerCatalog<ControllerDevice> controllers;
+    // 8080, or one of the next ports when another app holds it or the console refuses it.
+    constexpr unsigned short portal_port = 8080;
+    constexpr unsigned portal_spare_ports = 4;
+    // Every fault is kept in jx_portal with the adapters of the moment. The user reads what
+    // happened, or that the network itself needs a look once it keeps failing.
+    const auto portal_fault = [&](std::string_view what, PortalError error, const PortalAddress& address,
+                                  unsigned short port, int os_error) {
+        const auto failures = portal_faults.Record({.what = what, .error = error, .address = address, .port = port,
+                                                    .spare_ports = portal_spare_ports, .os_error = os_error});
+        const std::wstring ip{winrt::to_hstring(address.ipv4)};
+        const auto first = std::to_wstring(port), last = std::to_wstring(port + portal_spare_ports);
+        std::wstring message;
+        if (failures >= PortalFaultLog::RepeatedFailures)
+            message = I18n::Format(T::NetworkRepeatedFailures, {std::to_wstring(failures)});
+        else if (what == "stopped" && error == PortalError::AddressLost)
+            message = I18n::Format(T::NetworkPortalLost, {ip});
+        else switch (error) {
+            case PortalError::NoAddress: message = Tr(T::NetworkUnavailable); break;
+            case PortalError::PortInUse: message = I18n::Format(T::NetworkPortInUse, {first, last}); break;
+            case PortalError::PortBlocked: message = I18n::Format(T::NetworkPortBlocked, {first, last}); break;
+            case PortalError::AddressLost:
+                message = I18n::Format(address.link == PortalLink::WiFi ? T::NetworkWifiLost : T::NetworkAddressLost, {ip});
+                break;
+            case PortalError::Bind: message = I18n::Format(T::NetworkBindFailed, {first, std::to_wstring(os_error)}); break;
+            default:
+                message = I18n::Format(T::NetworkStartFailedCode, {winrt::to_hstring(PortalErrorName(error)).c_str()});
+        }
+        configuration.notice = message + L" " + std::wstring{Tr(T::NetworkReportSaved)};
+    };
+    // Reads the console's addresses again, keeping the chosen one when it is still there.
+    // Returns the address that was chosen before, empty when there was none.
+    const auto refresh_addresses = [&] {
+        const auto chosen = configuration.network_addresses.empty() ? PortalAddress{} :
+            configuration.network_addresses[configuration.network_selected];
+        configuration.network_addresses = PortalAddresses();
+        configuration.network_selected = 0;
+        for (size_t i = 0; i < configuration.network_addresses.size(); ++i)
+            if (configuration.network_addresses[i].ipv4 == chosen.ipv4) configuration.network_selected = i;
+        return chosen;
+    };
     // Starts the portal on the chosen address, or says why not. Never logs the pairing code.
     const auto start_portal = [&] {
-        if (configuration.network_addresses.empty()) configuration.network_addresses = PortalAddresses();
-        if (configuration.network_addresses.empty()) {
-            configuration.notice = Tr(T::NetworkUnavailable);
+        // The list was read when Settings opened; a Wi-Fi reconnection may have changed it since.
+        // When the address went away while binding, the list is read once more.
+        for (unsigned attempt = 0;; ++attempt) {
+            const auto chosen = refresh_addresses();
+            if (configuration.network_addresses.empty()) {
+                portal_fault("start", PortalError::NoAddress, chosen, portal_port, 0);
+                return false;
+            }
+            const auto address = configuration.network_addresses[configuration.network_selected];
+            if (!chosen.ipv4.empty() && chosen.ipv4 != address.ipv4)
+                LOG_INFO(Frontend, "Network portal: {} {} is gone, using {} {}", chosen.name, chosen.ipv4,
+                         address.name, address.ipv4);
+            const bool started = network_portal.Start(address.ipv4, portal_port, portal_spare_ports);
+            const auto status = network_portal.Status();
+            if (started) {
+                portal_address = address;
+                portal_faults.Recovered(address, status.port);
+                configuration.notice = address.link_local ?
+                    std::wstring{winrt::to_hstring(address.ipv4)} + L": " + std::wstring{Tr(T::NetworkLinkLocal)} :
+                    std::wstring{};
+                LOG_INFO(Frontend, "Network portal: listening on {} {} port {}", address.name, address.ipv4, status.port);
+                return true;
+            }
+            if (status.error == PortalError::AddressLost && attempt == 0) continue;
+            portal_fault("start", status.error, address, status.port ? status.port : portal_port, status.os_error);
             return false;
         }
-        const auto& address = configuration.network_addresses[configuration.network_selected];
-        const bool started = network_portal.Start(address.ipv4);
-        const auto error = network_portal.Status().error;
-        configuration.notice = started ? std::wstring{} :
-            std::wstring{Tr(error == PortalError::Bind ? T::NetworkBindFailed : T::NetworkStartFailed)};
-        LOG_INFO(Frontend, "Network portal: {}", started ? "listening" : "start failed");
-        return started;
     };
     // Without a native deployment (Xbox) the install is guided from a browser: its screen opens
     // over the update page with the portal already listening.
@@ -807,7 +866,22 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             }
             network_poll_at = now + std::chrono::milliseconds{500};
             network_portal.SetUpdateOffered(system_page.update.phase == Updates::Phase::Assistance);
-            const auto state = network_portal.Status();
+            auto state = network_portal.Status();
+            // The listener died on its own, or the console left the network it listens on (the
+            // Wi-Fi dropped, the cable came out, the router gave another address): say so.
+            if (configuration.network.running && !state.running && state.error != PortalError::None) {
+                portal_fault("stopped", state.error, portal_address, configuration.network.port, 0);
+                dirty = true;
+            } else if (state.running && now >= portal_check_at) {
+                portal_check_at = now + std::chrono::seconds{3};
+                if (!PortalAddressOwned(portal_address.ipv4)) {
+                    network_portal.Stop();
+                    state = network_portal.Status();
+                    portal_fault("stopped", PortalError::AddressLost, portal_address, configuration.network.port, 0);
+                    refresh_addresses();
+                    dirty = true;
+                }
+            }
             if (state.running) portal_library.Publish(scan.entries, static_cast<std::uint32_t>(title_language));
             if (configuration.network.running != state.running || configuration.network.paired != state.paired ||
                 configuration.network.code != state.code || configuration.network.code_expired != state.code_expired ||
