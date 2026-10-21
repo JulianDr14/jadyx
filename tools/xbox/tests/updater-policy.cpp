@@ -153,13 +153,25 @@ int main(int argc, char **argv) {
          "What's new\n\n\xE2\x80\xA2 Fix the updater continued line\n\xE2\x80\xA2 See docs\n\nEnd");
   assert(ReleaseNotesText(std::string(20000, 'a')).size() == 16384);
   Snapshot state;
+  assert(std::ranges::equal(Actions(state), std::array{Action::Check, Action::Channel}));
   state.phase = Phase::Downloading;
-  assert(std::ranges::equal(
-      Actions(state), std::array{Action::Pause, Action::Cancel, Action::Back}));
+  assert(std::ranges::equal(Actions(state), std::array{Action::Pause, Action::Cancel}));
   state.phase = Phase::Requested;
-  assert(std::ranges::equal(Actions(state), std::array{Action::Back}));
+  assert(Actions(state).empty());
   state.phase = Phase::Verifying;
-  assert(std::ranges::equal(Actions(state), std::array{Action::Back}));
+  assert(Actions(state).empty());
+  // A remembered release with nothing downloaded offers the download, not a cancel.
+  state.release = Release{};
+  state.phase = Phase::Paused;
+  assert(std::ranges::equal(Actions(state), std::array{Action::Download, Action::Later,
+                                                       Action::Skip, Action::Channel}));
+  state.release->notes = "notes";
+  state.received = 1;
+  assert(std::ranges::equal(Actions(state),
+                            std::array{Action::Download, Action::Cancel, Action::Notes}));
+  state.phase = Phase::Ready;
+  assert(std::ranges::equal(Actions(state),
+                            std::array{Action::Install, Action::Cancel, Action::Notes}));
   std::cout << "updater policy: signatures, versions, " << rejected
             << " malformed signed manifests, channel, notes and UI states OK\n";
 }

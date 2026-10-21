@@ -64,9 +64,11 @@ enum class LibraryHit : unsigned {
     GameOptionSelect, ManagerTab, ManagerRow, ManagerCard,
     Category,   ///< A settings category (ConfigurationHomeRow).
     SettingRow, ///< A row of the settings category shown.
-    UpdateAction,
+    UpdateAction,  ///< A row of the update page, or UpdateBackHit for its Back prompt.
     NetworkAction, ///< Full-screen network page: back, renew code, stop.
+    UpdateNotice,  ///< The library's new-version notice: 0 opens the update page, 1 hides it.
 };
+inline constexpr std::size_t UpdateBackHit = 99;
 /// A press: what, and which (the tab, the filter, the entry, the shelf position or the row).
 struct LibraryTarget {
     LibraryHit hit{};

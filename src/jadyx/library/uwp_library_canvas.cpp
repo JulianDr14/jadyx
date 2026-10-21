@@ -195,10 +195,10 @@ public:
             Round(0, 0, 1280, 94, 0, Palette::Canvas);
             DrawHeader(view, now);
         }
-        if (!view.system.updates_open && view.system.update.notice && !management && !configuration.network_screen && !configuration.open) {
-            Round(780, 96, 450, 42, 10, Palette::Surface);
-            Type(Tr(T::UpdaterAvailable), TypeRole::Label, 796, 107, 420, Palette::Accent);
-        }
+        if (view.system.update.notice && view.system.update.release && !view.system.updates_open && !management &&
+            !configuration.network_screen && !configuration.open && view.tab != LibraryTab::Settings &&
+            !view.controller_panel && !view.missing_content && !panel.keyboard.open)
+            DrawUpdateNotice(*view.system.update.release);
         if (!view.game_options.game) management_collapse.Snap(0);
         if (view.missing_content) Content::DrawMissingContent(*this);
         // A text whose fallback font the system cannot read (0x8007067D, now and then on the
@@ -214,90 +214,157 @@ public:
                     filter_slide.Running(now) || management_collapse.Running(now) ||
                     list_scroll.Running(now) || grid_scroll.Running(now);
     }
+    /// The library's corner card for a new version: Y opens the update page, X hides it a day.
+    void DrawUpdateNotice(const Updates::Release& release) {
+        const auto version = winrt::to_hstring(Updates::FormatVersion(release.version));
+        const auto text = I18n::Format(T::UpdaterNotice, {version.c_str()});
+        const auto view_label = Tr(T::UpdaterView), hide_label = Tr(T::UpdaterHide);
+        const float text_width = std::min(300.0f, MeasureType(text, TypeRole::LabelLarge) + 4);
+        const float view_width = PromptWidth(Navigation::Pin, view_label);
+        const float width = 20 + text_width + 24 + view_width + PromptWidth(Navigation::Rescan, hide_label) - 28 + 16;
+        const float x = 1280 - LibraryLayout::Margin - width, y = 98;
+        // Dot, text (20 px line) and prompts (32 px line) share the card's center line.
+        const float center = y + 24;
+        Card(x, y, width, 48, 14);
+        Round(x + 12, center - 4, 8, 8, 4, Palette::Accent);
+        Type(text, TypeRole::LabelLarge, x + 28, center - 10, text_width, Palette::Text);
+        float next = x + 28 + text_width + 16;
+        AddHit(next - 4, y, view_width - 20, 48, LibraryHit::UpdateNotice, 0);
+        next += ControlPrompt(Navigation::Pin, view_label, next, center - 16);
+        AddHit(next - 4, y, x + width - next + 4, 48, LibraryHit::UpdateNotice, 1);
+        ControlPrompt(Navigation::Rescan, hide_label, next, center - 16);
+    }
+    /// The update page's footer: A selects (when a row is there), B goes back.
+    void DrawUpdatesFooter(bool select) {
+        const float y = LibraryLayout::FooterTop + 12;
+        float x = LibraryLayout::Margin;
+        if (select) x += ControlPrompt(Navigation::Play, Tr(T::Select), x, y);
+        const auto back = Tr(T::UpdaterBack);
+        AddHit(x - 4, y - 6, PromptWidth(Navigation::Back, back) - 20, 44, LibraryHit::UpdateAction, UpdateBackHit);
+        ControlPrompt(Navigation::Back, back, x, y);
+    }
     void DrawUpdates(const SystemPage& page) {
+        using namespace LibraryLayout;
         const auto& state = page.update;
+        const auto release_version =
+            state.release ? std::wstring{winrt::to_hstring(Updates::FormatVersion(state.release->version))} : std::wstring{};
         Round(0, 0, 1280, 720, 0, Palette::Canvas);
-        Type(Tr(T::UpdaterTitle), TypeRole::HeadlineLarge, 54, 36, 1100, Palette::Text);
-        Type(Tr(Updates::PhaseText(state.phase)), TypeRole::LabelLarge, 54, 98, 1150, Palette::Accent);
+        if (page.update_detail && state.release) {
+            // Every note, scrolled with the d-pad.
+            Type(I18n::Format(T::UpdaterNotesTitle, {release_version}), TypeRole::HeadlineLarge, Margin, 40, 1150, Palette::Text);
+            const auto language = I18n::CurrentUiLanguage().tag;
+            if (update_detail_revision != state.revision || update_detail_language != language) {
+                update_detail_revision = state.revision; update_detail_language = language;
+                auto& lines = update_detail_lines; lines.clear();
+                const std::wstring text = winrt::to_hstring(state.release->notes).c_str();
+                for (std::size_t start = 0; start < text.size();) {
+                    const auto newline = text.find(L'\n', start);
+                    auto end = std::min(start + 110, newline == text.npos ? text.size() : newline);
+                    if (end < text.size() && end > start && end != newline) {
+                        auto space = text.rfind(L' ', end); if (space != text.npos && space > start) end = space;
+                        if (end > start && text[end] >= 0xDC00 && text[end] <= 0xDFFF) --end;
+                    }
+                    lines.push_back(text.substr(start, end - start)); start = end;
+                    if (start < text.size() && (text[start] == L' ' || text[start] == L'\n')) ++start;
+                }
+            }
+            const auto& lines = update_detail_lines;
+            constexpr std::size_t shown = 16;
+            const auto first = std::min(page.update_scroll, lines.size() > shown ? lines.size() - shown : 0);
+            for (std::size_t n = 0; n < shown && first + n < lines.size(); ++n)
+                Type(lines[first + n], TypeRole::Body, Margin, 116 + static_cast<float>(n) * 32, 1150, Palette::Text);
+            DrawUpdatesFooter(false);
+            return;
+        }
+        Type(Tr(T::UpdaterTitle), TypeRole::HeadlineLarge, Margin, 40, 700, Palette::Text);
+        // The state card: what is happening, the versions and what comes next.
+        constexpr float card_x = Margin, card_y = 112, card_w = 660, card_h = 236, inner = card_x + 28, inner_w = card_w - 56;
+        Card(card_x, card_y, card_w, card_h);
+        Type(Tr(Updates::PhaseText(state)), TypeRole::HeadlineMedium, inner, card_y + 24, inner_w, Palette::Text);
         const auto installed = winrt::to_hstring(Updates::FormatVersion(state.installed));
-        const auto available = winrt::to_hstring(state.release ? Updates::FormatVersion(state.release->version) : "—");
-        Type(I18n::Format(T::UpdaterVersions, {installed.c_str(), available.c_str()}), TypeRole::Body, 54, 140, 1150, Palette::TextSecondary);
+        Type(state.release ? I18n::Format(T::UpdaterVersions, {installed.c_str(), release_version})
+                           : I18n::Format(T::UpdaterInstalled, {installed.c_str()}),
+             TypeRole::BodyLarge, inner, card_y + 70, inner_w, Palette::TextHint);
+        if (state.release) {
+            const auto published = winrt::to_hstring(state.release->published.substr(0, 10));
+            Type(I18n::Format(T::UpdaterReleaseInfo, {std::to_wstring(state.release->size / (1024 * 1024)), published.c_str()}),
+                 TypeRole::Body, inner, card_y + 100, inner_w, Palette::TextSecondary);
+        }
+        const bool progress = state.received && state.total &&
+            (state.phase == Updates::Phase::Downloading || state.phase == Updates::Phase::Paused ||
+             state.phase == Updates::Phase::Verifying || state.phase == Updates::Phase::Failed);
+        float body_y = card_y + 140;
+        if (progress) {
+            const auto pct = std::min<std::uint64_t>(100, state.received * 100 / state.total);
+            Round(inner, body_y, inner_w, 10, 5, Palette::Graphite);
+            if (pct) Round(inner, body_y, inner_w * static_cast<float>(pct) / 100, 10, 5, Palette::Accent);
+            auto eta = std::wstring{Tr(T::UpdaterEta)};
+            if (state.bytes_per_second > 0 && state.total >= state.received) {
+                const auto seconds = static_cast<unsigned>(std::min(3599999.0, (state.total - state.received) / state.bytes_per_second));
+                eta = std::to_wstring(seconds / 3600) + L"h " + std::to_wstring(seconds / 60 % 60) + L"m " + std::to_wstring(seconds % 60) + L"s";
+            }
+            const auto speed = std::to_wstring(static_cast<unsigned>(state.bytes_per_second * 10 / (1024 * 1024)));
+            const auto speed_text = speed.size() > 1 ? speed.substr(0, speed.size() - 1) + L"." + speed.back() : L"0." + speed;
+            const bool moving = state.phase == Updates::Phase::Downloading;
+            Type(moving ? I18n::Format(T::UpdaterProgress, {std::to_wstring(pct), std::to_wstring(state.received / (1024 * 1024)),
+                              std::to_wstring(state.total / (1024 * 1024)), speed_text, eta})
+                        : std::to_wstring(pct) + L"% · " + std::to_wstring(state.received / (1024 * 1024)) + L" / " +
+                              std::to_wstring(state.total / (1024 * 1024)) + L" MiB",
+                 TypeRole::Body, inner, body_y + 16, inner_w, Palette::TextSecondary);
+            body_y += 46;
+        }
+        // One line on what happens next, or what went wrong.
+        std::optional<T> body;
+        unsigned body_color = Palette::TextSecondary;
+        if (state.error != Updates::Error::None && state.phase != Updates::Phase::Checking) {
+            body = Updates::ErrorText(state.error); body_color = Palette::Warning;
+        } else switch (state.phase) {
+        case Updates::Phase::Idle: case Updates::Phase::Confirmed:
+            body = state.release ? T::UpdaterAvailableBody : T::UpdaterIdleBody; break;
+        case Updates::Phase::Available: body = T::UpdaterAvailableBody; break;
+        case Updates::Phase::Paused: body = state.received ? T::UpdaterDownloadingBody : T::UpdaterAvailableBody; break;
+        case Updates::Phase::Downloading: case Updates::Phase::Verifying: body = T::UpdaterDownloadingBody; break;
+        case Updates::Phase::Ready: case Updates::Phase::Requested: body = T::UpdaterReadyBody; break;
+        case Updates::Phase::Preparing: body = T::UpdaterInstallHint; break;
+        case Updates::Phase::Assistance: body = T::UpdaterHelp; break;
+        default: break;
+        }
+        if (body) Type(Tr(*body), TypeRole::Body, inner, body_y, inner_w, body_color, 1, TextAlign::Leading,
+                       static_cast<unsigned>(std::max(1.0f, (card_y + card_h - 16 - body_y) / 22)));
+        // The release notes, on the page: the full list is one row away.
+        if (state.release && !state.release->notes.empty()) {
+            Type(I18n::Format(T::UpdaterNotesTitle, {release_version}), TypeRole::HeadlineSmall, Margin, 376, card_w, Palette::Text);
+            Type(winrt::to_hstring(state.release->notes).c_str(), TypeRole::Body, Margin, 414, card_w, Palette::TextHint, 1,
+                 TextAlign::Leading, 9);
+        }
         std::wstring checked = std::wstring{Tr(T::UpdaterNever)};
         if (state.last_check) {
             const std::time_t stamp = state.last_check; std::tm local{}; localtime_s(&local, &stamp);
             wchar_t date[64]{}; std::wcsftime(date, 64, L"%Y-%m-%d %H:%M", &local); checked = date;
         }
-        Type(I18n::Format(T::UpdaterLastCheck, {checked}), TypeRole::Body, 54, 172, 1100, Palette::TextSecondary);
-        if (state.release) {
-            const auto& release = *state.release;
-            std::wstring detail = winrt::to_hstring(release.published).c_str();
-            detail += L" · " + std::to_wstring(release.size/(1024*1024)) + L" MiB";
-            Type(detail, TypeRole::Body, 54, 212, 690, Palette::TextSecondary);
-            Type(winrt::to_hstring(release.notes).c_str(), TypeRole::BodyLarge, 54, 249, 690, Palette::Text, 1, TextAlign::Leading, 7);
-        }
-        if (state.channel == Updates::Channel::Preview)
-            Type(Tr(T::UpdaterPreviewWarning), TypeRole::Body, 54, 438, 690, Palette::Warning, 1, TextAlign::Leading, 2);
-        if (state.phase == Updates::Phase::Downloading || state.phase == Updates::Phase::Paused || state.phase == Updates::Phase::Verifying) {
-            const auto pct = state.total ? std::min<std::uint64_t>(100, state.received*100/state.total) : 0;
-            Round(54, 500, 690, 10, 5, Palette::Surface);
-            if (pct) Round(54, 500, 690*static_cast<float>(pct)/100, 10, 5, Palette::Accent);
-            auto eta = std::wstring{Tr(T::UpdaterEta)};
-            if (state.bytes_per_second > 0 && state.total >= state.received) {
-                const auto seconds = static_cast<unsigned>(std::min(3599999.0,(state.total-state.received)/state.bytes_per_second));
-                eta = std::to_wstring(seconds/3600)+L"h "+std::to_wstring(seconds/60%60)+L"m "+std::to_wstring(seconds%60)+L"s";
-            }
-            const auto speed = std::to_wstring(static_cast<unsigned>(state.bytes_per_second*10/(1024*1024)));
-            const auto speed_text = speed.size() > 1 ? speed.substr(0,speed.size()-1)+L"."+speed.back() : L"0."+speed;
-            Type(I18n::Format(T::UpdaterProgress, {std::to_wstring(pct), std::to_wstring(state.received/(1024*1024)),
-                std::to_wstring(state.total/(1024*1024)), speed_text, eta}), TypeRole::Body, 54, 520, 690, Palette::TextSecondary);
-        }
-        if (state.error != Updates::Error::None)
-            Type(Tr(Updates::ErrorText(state.error)), TypeRole::Body, 54, 563, 690, Palette::Warning, 1, TextAlign::Leading, 3);
-        if (state.phase == Updates::Phase::Assistance)
-            Type(Tr(T::UpdaterHelp), TypeRole::Body, 54, 465, 690, Palette::TextSecondary, 1, TextAlign::Leading, 6);
-        if (!state.history.empty() && state.phase != Updates::Phase::Downloading && state.phase != Updates::Phase::Assistance) {
-            Type(Tr(T::UpdaterHistory), TypeRole::Label, 54, 652, 250, Palette::TextSecondary);
-            Type(std::to_wstring(state.history.size()), TypeRole::Label, 304, 652, 100, Palette::TextSecondary);
-        }
-        if (page.update_detail) {
-            Round(0, 205, 1280, 515, 0, Palette::Canvas);
-            const auto language=I18n::CurrentUiLanguage().tag;
-            if(update_detail_kind!=page.update_detail || update_detail_revision!=state.revision || update_detail_language!=language) {
-            update_detail_kind=page.update_detail;update_detail_revision=state.revision;update_detail_language=language;
-            auto& lines=update_detail_lines;lines.clear();
-            if (page.update_detail == 2) lines=Updates::DetailLines(state,true);
-            else if (state.release) {
-                std::wstring text=winrt::to_hstring(state.release->notes).c_str();
-                for (std::size_t start=0;start<text.size();) {
-                    const auto newline=text.find(L'\n',start);
-                    auto end=std::min(start+86,newline==text.npos ? text.size() : newline);
-                    if (end<text.size() && end>start && end!=newline) {
-                        auto space=text.rfind(L' ',end); if(space!=text.npos && space>start)end=space;
-                        if(end>start && text[end]>=0xDC00 && text[end]<=0xDFFF)--end;
-                    }
-                    lines.push_back(text.substr(start,end-start)); start=end;
-                    if(start<text.size() && (text[start]==L' ' || text[start]==L'\n'))++start;
-                }
-            }
-            }
-            const auto& lines=update_detail_lines;
-            const auto first=std::min(page.update_scroll,lines.size()>12 ? lines.size()-12 : 0);
-            for (std::size_t n=0;n<12 && first+n<lines.size();++n)
-                Type(lines[first+n],TypeRole::BodyLarge,54,220+static_cast<float>(n)*32,1150,Palette::Text);
-            Round(54,650,436,46,10,Palette::Accent);
-            Type(Tr(T::UpdaterBack),TypeRole::Label,70,662,400,Palette::OnAccent);
-            AddHit(54,650,436,46,LibraryHit::UpdateAction,0);
-            return;
-        }
+        Type(I18n::Format(T::UpdaterLastCheck, {checked}), TypeRole::Label, 1280 - Margin - 400, FooterTop + 20, 400,
+             Palette::TextSecondary, 1, TextAlign::Trailing);
+        // The rows: only what can be done now; the focused one explains itself underneath.
         const auto actions = Updates::Actions(state);
-        for (std::size_t i=0;i<actions.size();++i) {
-            const bool focused = i == std::min(page.update_row, actions.size()-1);
-            const float y = 214 + static_cast<float>(i)*54;
-            Round(790, y, 436, 46, 10, focused ? Palette::Accent : Palette::Surface);
-            Type(Tr(Updates::ActionText(actions[i], state)), TypeRole::Label, 806, y+12, 400,
-                focused ? Palette::OnAccent : Palette::Text);
-            AddHit(790, y, 436, 46, LibraryHit::UpdateAction, i);
+        constexpr float rows_x = 780, rows_w = 1280 - Margin - rows_x;
+        for (std::size_t i = 0; i < actions.size(); ++i) {
+            const bool focused = i == std::min(page.update_row, actions.size() - 1);
+            const float y = card_y + static_cast<float>(i) * 64;
+            Round(rows_x, y, rows_w, 54, 12, focused ? Palette::Accent : Palette::Surface);
+            Type(Updates::ActionLabel(actions[i], state), TypeRole::BodyLarge, rows_x + 20, y + 14, rows_w - 40,
+                 focused ? Palette::OnAccent : Palette::Text);
+            AddHit(rows_x, y, rows_w, 54, LibraryHit::UpdateAction, i);
         }
+        if (!actions.empty()) {
+            const auto focused = actions[std::min(page.update_row, actions.size() - 1)];
+            float y = card_y + static_cast<float>(actions.size()) * 64 + 8;
+            y += Type(Tr(Updates::ActionHint(focused, state)), TypeRole::Body, rows_x + 4, y, rows_w - 8, Palette::TextSecondary, 1,
+                      TextAlign::Leading, 5);
+            if (focused == Updates::Action::Channel && state.channel == Updates::Channel::Preview)
+                Type(Tr(T::UpdaterPreviewWarning), TypeRole::Body, rows_x + 4, y + 8, rows_w - 8, Palette::Warning, 1,
+                     TextAlign::Leading, 3);
+        }
+        DrawUpdatesFooter(!actions.empty());
     }
     void InvalidateCovers() { covers.clear(); pictures.clear(); backdrops.clear(); backdrop_now.clear(); backdrop_before.clear(); }
     bool Animating() const {
@@ -312,7 +379,6 @@ public:
     }
 private:
     std::uint64_t update_detail_revision{~std::uint64_t{0}};
-    std::size_t update_detail_kind{};
     std::wstring update_detail_language;
     std::vector<std::wstring> update_detail_lines;
     bool manager_targets{};
@@ -1437,6 +1503,10 @@ private:
         }
         const auto key = PromptKey(action);
         return Prompt(key.letters, key.color, label, x, y);
+    }
+    /// The width ControlPrompt takes for a one-badge prompt, to lay it out before drawing it.
+    float PromptWidth(Navigation action, std::wstring_view label) {
+        return BadgeWidth(PromptKey(action).letters) + 8 + MeasureType(label, TypeRole::LabelLarge) + 28;
     }
     /// Eases `tween` toward the row `first`; a jump of more than a page (a new tab) lands at once.
     static float FollowRow(Tween& tween, std::size_t first, float page, Tween::Clock::time_point now) {

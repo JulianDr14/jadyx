@@ -376,7 +376,17 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         }
         if (system_page.updates_open) {
             const auto hit = canvas->HitAt(x, y);
-            if (hit.hit == LibraryHit::UpdateAction) { system_page.update_row = hit.index; actions |= Play; dirty = true; }
+            if (hit.hit == LibraryHit::UpdateAction) {
+                if (hit.index == UpdateBackHit) actions |= Quit;
+                else { system_page.update_row = hit.index; actions |= Play; }
+                dirty = true;
+            }
+            e.Handled(true); return;
+        }
+        // The new-version notice: its prompts do what Y and X do while it shows.
+        if (const auto hit = canvas->HitAt(x, y); hit.hit == LibraryHit::UpdateNotice) {
+            actions |= hit.index == 0 ? Pin : Refresh;
+            dirty = true;
             e.Handled(true); return;
         }
         // The header's tabs and controller work over every page that is not a dialog.
@@ -964,7 +974,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         const bool library = !settings && !configuration.open && !game_options.open &&
                                              !missing_content;
                         if (hit(GamepadButtons::X)) {
-                            if (settings || content_session || missing_content) actions |= Swap;
+                            if (system_page.updates_open) actions |= Quit;
+                            else if (settings || content_session || missing_content) actions |= Swap;
                             else if (library) actions |= Refresh;
                             else if (!configuration.open) actions |= AddFolder;
                         }
@@ -1175,18 +1186,22 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         if (system_page.updates_open) {
             const auto& snapshot = system_page.update;
             const auto items = Updates::Actions(snapshot);
+            // B, and X like everywhere a page closes, leave; Y does nothing here.
+            const bool leave = actions & (Quit | Swap | Refresh | AddFolder);
             if (system_page.update_detail) {
                 if (actions & Up && system_page.update_scroll) --system_page.update_scroll;
                 if (actions & Down) ++system_page.update_scroll;
-                if (actions & (Quit | Play)) { system_page.update_detail=0; system_page.update_scroll=0; }
+                if (leave || actions & Play) { system_page.update_detail=0; system_page.update_scroll=0; }
                 if (actions) dirty=true;
                 actions=0;
             }
-            system_page.update_row = std::min(system_page.update_row, items.size()-1);
-            if (actions & Up) system_page.update_row = (system_page.update_row + items.size()-1)%items.size();
-            if (actions & Down) system_page.update_row = (system_page.update_row+1)%items.size();
-            if (actions & Quit) system_page.updates_open = false;
-            if (actions & Play) {
+            if (!items.empty()) {
+                system_page.update_row = std::min(system_page.update_row, items.size()-1);
+                if (actions & Up) system_page.update_row = (system_page.update_row + items.size()-1)%items.size();
+                if (actions & Down) system_page.update_row = (system_page.update_row+1)%items.size();
+            }
+            if (actions && leave) system_page.updates_open = false;
+            else if (actions & Play && !items.empty()) {
                 using A = Updates::Action;
                 const auto action = items[system_page.update_row];
                 // Reserve local storage admission atomically against incoming browser uploads.
@@ -1195,7 +1210,6 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     system_page.update.error = Updates::Error::Busy;
                 } else switch (action) {
                 case A::Notes: system_page.update_detail=1; system_page.update_scroll=0; break;
-                case A::History: system_page.update_detail=2; system_page.update_scroll=0; break;
                 case A::Check: updater.Check(true); break;
                 case A::Channel: updater.SetChannel(snapshot.channel == Updates::Channel::Stable ? Updates::Channel::Preview : Updates::Channel::Stable); break;
                 case A::Download: updater.Download(true); break;
@@ -1209,12 +1223,22 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     break;
                 case A::Later: updater.Dismiss(false); system_page.updates_open = false; break;
                 case A::Skip: updater.Dismiss(true); system_page.updates_open = false; break;
-                case A::Back: updater.Pause(); system_page.updates_open = false; break;
                 }
-                system_page.update_row = 0;
+                // Notes and Channel keep their row; the others change which rows there are.
+                if (action != A::Notes && action != A::Channel) system_page.update_row = 0;
             }
             if (actions) dirty = true;
             actions = 0; pressed_tab.reset();
+        }
+        // While the new-version notice shows on Home or the Library, Y opens the update page and
+        // X hides the notice until tomorrow; neither pins nor rescans then.
+        if (system_page.update.notice && system_page.update.release && !system_page.updates_open && !settings &&
+            !configuration.open && !configuration.network_screen && !game_options.open && !missing_content &&
+            !panel.keyboard.open && tab != LibraryTab::Settings && actions & (Pin | Refresh)) {
+            if (actions & Pin) { system_page.updates_open = true; system_page.update_row = 0; }
+            else { updater.Dismiss(false); system_page.update.notice = false; }
+            actions &= ~(Pin | Refresh);
+            dirty = true;
         }
         // Leaving the update page to use another feature pauses network work before dispatching it.
         if (!system_page.updates_open && actions &&
