@@ -31,6 +31,11 @@ volver a lanzarla.
   ahora.
 - `release.py version` rechaza una versión que no sea mayor que la del manifest y que todas las
   releases publicadas, porque la consola solo actualiza hacia arriba.
+- La versión se sube con
+  `release.py bump X.Y.Z.0 --manifest dist/uwp/AppxManifest.xml --issue-template .github/ISSUE_TEMPLATE/bug_report.yml`,
+  que también la añade la primera al desplegable de versiones del Bug Report (los formularios de
+  issues solo admiten opciones fijas). `release.yml` no publica si la versión no está en ese
+  desplegable.
 
 ## Qué lleva una release
 

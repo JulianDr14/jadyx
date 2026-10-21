@@ -56,7 +56,8 @@ jobs:
         run: |
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
           python3 tools/xbox/release.py version "$VERSION" --manifest dist/uwp/AppxManifest.xml \
-              --releases "$RUNNER_TEMP/releases.json" --match-manifest | tee -a "$GITHUB_OUTPUT"
+              --releases "$RUNNER_TEMP/releases.json" --match-manifest \
+              --issue-template .github/ISSUE_TEMPLATE/bug_report.yml | tee -a "$GITHUB_OUTPUT"
           tag="$(sed -n 's/^tag=//p' "$GITHUB_OUTPUT" | tail -1)"
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
               echo "::error::The tag $tag already exists"

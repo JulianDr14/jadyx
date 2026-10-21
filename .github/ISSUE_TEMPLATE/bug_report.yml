@@ -4,55 +4,78 @@ body:
   - type: markdown
     attributes:
       value: |
-        Read the [contributing guide](https://github.com/JulianDr14/jadyx/blob/main/CONTRIBUTING.md) first. Reports about pirated keys, firmware or games are closed without an answer. If the bug also happens in the desktop builds of Eden, report it to Eden instead.
+        Thanks for taking the time to report a bug! A few minutes here saves us hours of guessing.
+
+        Before you start:
+        - Read the [contributing guide](https://github.com/JulianDr14/jadyx/blob/main/CONTRIBUTING.md).
+        - Reports about pirated keys, firmware or games are closed without an answer.
+        - If the bug also happens in the desktop builds of Eden, report it to Eden instead.
+        - Need help installing or have a question? Ask on [Discord](https://discord.gg/3BhyyXGxpd).
   - type: checkboxes
     attributes:
       label: Is there an existing issue for this?
       options:
       - label: I have searched the existing issues
         required: true
-  - type: input
+  - type: dropdown
     attributes:
       label: Jadyx version
-      description: Shown in the corner of the game library.
-      placeholder: v0.3.0
+      description: Shown in the corner of the game library. If yours is not listed, update to the latest version and check whether the bug is still there.
+      options:
+        - 0.3.8.0
+        - 0.3.7.0
+        - 0.3.6.0
+        - 0.3.5.0
+        - 0.3.0.0
     validations:
       required: true
   - type: dropdown
     attributes:
-      label: Where did it happen?
+      label: Console
       options:
         - Xbox Series X
         - Xbox Series S
-        - PC
     validations:
       required: true
   - type: dropdown
     attributes:
-      label: App mode on the console
+      label: App type
+      description: In Dev Home, select Jadyx → View details → App type. It must be Game; in App mode Jadyx runs out of memory.
       options:
         - Game
         - App
-        - Not on a console
     validations:
       required: true
   - type: textarea
     id: issue-desc
     attributes:
       label: What happened
-      description: What you did, what you expected and what happened instead. You may describe the game by its kind instead of naming it.
+      description: What you did, what you expected and what happened instead. Screenshots or a short video help a lot. You may describe the game by its kind instead of naming it.
+      placeholder: |
+        I opened ... and expected ..., but instead ...
     validations:
       required: true
   - type: textarea
     id: reproduction-steps
     attributes:
       label: Steps to reproduce
+      description: The shortest way to make it happen again. Say if it happens every time or only sometimes.
+      placeholder: |
+        1. Start Jadyx
+        2. Open ...
+        3. ...
     validations:
       required: true
   - type: textarea
     id: log
     attributes:
       label: Diagnostics
-      description: Attach `jadyx_log.txt`, `jadyx_diag.txt` and, for graphics problems, `jadyx_graphics_bugs.log`, taken right after the problem, from the package's `LocalState\jadyx\log` folder (Device Portal file explorer on the console, `%LOCALAPPDATA%\Packages\<package family>\LocalState\jadyx\log` on PC).
+      description: |
+        Attach the logs, taken right after the problem and before launching another game.
+
+        **Easiest way, with the Jadyx Portal:** on the console go to **Settings → File manager → Network connection → Start server**. Open the address it shows in a browser on your PC or phone, enter the connection code and, under **Logs and captures**, choose **Compress and download logs**. You get the whole log folder in one `.tar.zst` file. GitHub does not accept `.tar.zst` files, so put it in a `.zip` first and drag the `.zip` here. If it is over 25 MB, share it through a link instead.
+
+        **Or by hand:** in the Xbox Device Portal **File explorer**, open the app's `LocalState\jadyx\log` folder and attach `jadyx_log.txt`, `jadyx_diag.txt`, `jadyx_graphics_bugs.log` for graphics problems and `jx_portal\portal_faults.log` for Jadyx Portal problems.
+      placeholder: Drag the .zip or the log files here.
     validations:
       required: true

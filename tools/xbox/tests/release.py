@@ -50,6 +50,28 @@ with tempfile.TemporaryDirectory() as directory:
     assert release.manifest_version(manifest) == (0, 3, 0, 0)
     assert release.validate("0.3.0", manifest, [[]]) == "0.3.0.0"  # publish the already committed version
 
+    # The bug report lists the new version first, once, and keeps the rest of the form.
+    template_text = "body:\n  - type: dropdown\n    attributes:\n      label: Jadyx version\n" \
+        "      description: Shown in the library.\n      options:\n        - 0.2.99.4\n" \
+        "    validations:\n      required: true\n  - type: dropdown\n    attributes:\n" \
+        "      label: Console\n      options:\n        - Xbox Series X\n"
+    template = Path(directory) / "bug_report.yml"
+    template.write_bytes(template_text.encode("utf-8"))
+    assert release.issue_versions(template)[2] == ["0.2.99.4"]
+    assert release.main(["bump", "0.3.0.0", "--manifest", str(manifest), "--issue-template", str(template)]) == 0
+    release.list_issue_version("0.3.0.0", template)
+    assert template.read_bytes() == template_text.replace(
+        "        - 0.2.99.4\n", "        - 0.3.0.0\n        - 0.2.99.4\n").encode("utf-8")
+    releases = Path(directory) / "releases.json"
+    releases.write_text("[[]]", encoding="utf-8")
+    check = ["version", "0.3.0", "--manifest", str(manifest), "--releases", str(releases), "--match-manifest"]
+    assert release.main(check + ["--issue-template", str(template)]) == 0
+    template.write_bytes(template_text.encode("utf-8"))
+    assert release.main(check + ["--issue-template", str(template)]) == 1  # not listed yet
+    assert release.main(check) == 0
+    template.write_text("body: []\n", encoding="utf-8")
+    assert release.main(check + ["--issue-template", str(template)]) == 1  # no dropdown
+
 log = "".join(f"{subject}\x1f{body}\x1e" for subject, body in [
     ("chore(uwp): bump version to 0.3.0.1", ""),
     ("fix(input): name a pad by its maker", "Longer explanation.\n"),
