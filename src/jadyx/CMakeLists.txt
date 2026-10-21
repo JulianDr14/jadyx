@@ -18,6 +18,8 @@ add_executable(jadyx WIN32
     library/game_removal.h
     library/play_history.cpp
     library/play_history.h
+    library/portal_library.cpp
+    library/portal_library.h
     pulse/pulse_screen.cpp
     pulse/pulse_screen.h
     pulse/pulse_store_gate.cpp
