@@ -28,6 +28,7 @@ struct ConfigurationPanel {
     unsigned completed{}, total{};
     PortalStatus network;
     bool network_screen{};
+    bool network_update{}; ///< The screen guides the app update instead of the file portal.
     size_t network_action{};
     std::vector<PortalAddress> network_addresses;
     size_t network_selected{};

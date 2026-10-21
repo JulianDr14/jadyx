@@ -94,6 +94,8 @@ public:
     void SetUploadsAvailable(bool enabled);
     // Fixed verified package supplied by the library; caller outlives this server.
     void SetUpdatePackage(std::function<std::optional<Updates::UpdatePackage>()> package);
+    // While true the browser opens on the guided app update instead of the content pages.
+    void SetUpdateOffered(bool offered);
     // Configure the fixed app log root before Start; never takes a browser path.
     void SetLogDirectory(std::filesystem::path directory);
     // Configure the library view before Start; without it the library routes answer 503.

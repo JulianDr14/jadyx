@@ -150,6 +150,8 @@ public:
                 Type(Tr(i==0?T::Cancel:T::Import),TypeRole::LabelLarge,x+20,611,500,focused?Palette::OnAccent:Palette::Text);
                 AddHit(x,590,540,64,LibraryHit::NetworkAction,i);
             }
+        } else if (configuration.network_screen && configuration.network_update) {
+            rows_shown = false; DrawUpdateGuide(configuration, view.system.update);
         } else if (view.system.updates_open) {
             rows_shown = false; DrawUpdates(view.system);
         } else if (configuration.network_screen) {
@@ -195,10 +197,11 @@ public:
             Round(0, 0, 1280, 94, 0, Palette::Canvas);
             DrawHeader(view, now);
         }
-        if (view.system.update.notice && view.system.update.release && !view.system.updates_open && !management &&
-            !configuration.network_screen && !configuration.open && view.tab != LibraryTab::Settings &&
-            !view.controller_panel && !view.missing_content && !panel.keyboard.open)
-            DrawUpdateNotice(*view.system.update.release);
+        if (!view.system.updates_open && !management && !configuration.network_screen && !configuration.open &&
+            view.tab != LibraryTab::Settings && !view.controller_panel && !view.missing_content && !panel.keyboard.open) {
+            if (view.system.updated) DrawUpdatedNotice(view.system.update.installed);
+            else if (view.system.update.notice && view.system.update.release) DrawUpdateNotice(*view.system.update.release);
+        }
         if (!view.game_options.game) management_collapse.Snap(0);
         if (view.missing_content) Content::DrawMissingContent(*this);
         // A text whose fallback font the system cannot read (0x8007067D, now and then on the
@@ -233,6 +236,17 @@ public:
         next += ControlPrompt(Navigation::Pin, view_label, next, center - 16);
         AddHit(next - 4, y, x + width - next + 4, 48, LibraryHit::UpdateNotice, 1);
         ControlPrompt(Navigation::Rescan, hide_label, next, center - 16);
+    }
+    /// The library's corner card after a guided install: this launch runs the new version.
+    void DrawUpdatedNotice(const Updates::Version& installed) {
+        const auto version = winrt::to_hstring(Updates::FormatVersion(installed));
+        const auto text = I18n::Format(T::UpdaterUpdatedTo, {version.c_str()});
+        const float text_width = std::min(360.0f, MeasureType(text, TypeRole::LabelLarge) + 4);
+        const float width = 28 + text_width + 20;
+        const float x = 1280 - LibraryLayout::Margin - width, y = 98, center = y + 24;
+        Card(x, y, width, 48, 14);
+        Round(x + 12, center - 4, 8, 8, 4, Palette::Accent);
+        Type(text, TypeRole::LabelLarge, x + 28, center - 10, text_width, Palette::Text);
     }
     /// The update page's footer: A selects (when a row is there), B goes back.
     void DrawUpdatesFooter(bool select) {
@@ -1231,6 +1245,84 @@ private:
         Type(!progress.empty() ? std::wstring_view{progress} : configuration.notice.empty() ? Tr(T::NetworkCodeHint) : std::wstring_view{configuration.notice},
              TypeRole::Body, 100, 510, 1080, Palette::TextSecondary, 1, TextAlign::Center, 2);
         const std::array<T, 3> labels{T::Back, T::NetworkCode, T::NetworkStop};
+        for (size_t i = 0; i < labels.size(); ++i) {
+            const float x = 80 + static_cast<float>(i) * 380;
+            const bool focused = configuration.network_action == i;
+            if (focused) FocusGlow(x, 594, 360, 60, 14, 1);
+            Round(x, 594, 360, 60, 14, focused ? Palette::Accent : Palette::Surface);
+            Type(Tr(labels[i]), TypeRole::LabelLarge, x + 14, 614, 332,
+                 focused ? Palette::OnAccent : Palette::Text, 1, TextAlign::Center);
+            AddHit(x, 594, 360, 60, LibraryHit::NetworkAction, i);
+        }
+        ControlPrompt(Navigation::Play, Tr(T::Select), 80, 676);
+        ControlPrompt(Navigation::Back, Tr(T::Back), 400, 676);
+    }
+    /// The guided app update: where to point a browser and its code at the left, the three steps
+    /// at the right over the warning that keeps the user's data. Laid out like the portal screen.
+    void DrawUpdateGuide(const ConfigurationPanel& configuration, const Updates::Snapshot& update) {
+        const auto& network = configuration.network;
+        const bool code = network.running && !network.code_expired && network.code.size() == 8;
+        Type(L"J A D Y X", TypeRole::HeadlineSmall, 80, 44, 400, Palette::Text);
+        const std::wstring installed{winrt::to_hstring(Updates::FormatVersion(update.installed))};
+        const std::wstring incoming = update.release ?
+            std::wstring{winrt::to_hstring(Updates::FormatVersion(update.release->version))} : installed;
+        if (network.paired) {
+            const float width = MeasureType(Tr(T::NetworkPaired), TypeRole::LabelLarge);
+            Round(1200 - width - 18, 58, 8, 8, 4, Palette::Accent);
+            Type(Tr(T::NetworkPaired), TypeRole::LabelLarge, 720, 52, 480, Palette::TextHint, 1, TextAlign::Trailing);
+        } else {
+            Type(installed + L"  \u2192  " + incoming, TypeRole::LabelLarge, 720, 52, 480, Palette::TextHint, 1,
+                 TextAlign::Trailing);
+        }
+        Type(I18n::Format(T::UpdateGuideTitle, {incoming}), TypeRole::HeadlineLarge, 80, 96, 1120, Palette::Text);
+        Type(Tr(T::UpdateGuideIntro), TypeRole::BodyLarge, 80, 150, 1120, Palette::TextSecondary);
+        // The address and the code, drawn as large as the portal screen draws them.
+        constexpr float card_x = 80, card_y = 200, card_w = 560, card_h = 330, inner = card_x + 28, inner_w = card_w - 56;
+        Card(card_x, card_y, card_w, card_h, 20);
+        Type(Upper(Tr(T::UpdateGuideAddress)), TypeRole::Caps, inner, card_y + 24, inner_w, Palette::TextSecondary);
+        const std::wstring url = network.running ? std::wstring{winrt::to_hstring(network.url)} : std::wstring{L"\u2014"};
+        Type(url, TypeRole::HeadlineMedium, inner, card_y + 50, inner_w, Palette::Text);
+        Round(inner, card_y + 106, inner_w, 1, 0.5f, Palette::Graphite);
+        Type(Upper(Tr(T::NetworkCodeLabel)), TypeRole::Caps, inner, card_y + 128, inner_w, Palette::TextSecondary);
+        if (code) {
+            const auto digits = winrt::to_hstring(network.code.substr(0, 4) + " " + network.code.substr(4));
+            D2D1_MATRIX_3X2_F transform;
+            target->GetTransform(&transform);
+            // Hero is 56px at the reference resolution: 84px here, centred in the card.
+            const float center = card_x + card_w / 2, top = card_y + 156;
+            target->SetTransform(D2D1::Matrix3x2F::Scale(1.5f, 1.5f, D2D1::Point2F(center, top)) * transform);
+            Type(digits.c_str(), TypeRole::Hero, inner, top, inner_w, Palette::Text, 1, TextAlign::Center);
+            target->SetTransform(transform);
+        } else {
+            Type(Tr(network.paired ? T::NetworkPaired : network.running ? T::NetworkCodeExpired : T::NetworkStopped),
+                 TypeRole::HeadlineMedium, inner, card_y + 180, inner_w, Palette::Text, 1, TextAlign::Center);
+        }
+        const bool problem = !configuration.notice.empty();
+        Type(problem ? std::wstring_view{configuration.notice} : Tr(T::NetworkCodeHint), TypeRole::Body, inner,
+             card_y + 270, inner_w, problem ? Palette::Warning : Palette::TextSecondary, 1, TextAlign::Center, 2);
+        // The steps: the done and current ones lit, the rest waiting.
+        constexpr float steps_x = 680, steps_w = 520;
+        const std::array<std::pair<T, T>, 3> steps{{{T::UpdateGuideConnect, T::UpdateGuideConnectBody},
+            {T::UpdateGuideDownload, T::UpdateGuideDownloadBody}, {T::UpdateGuidePortal, T::UpdateGuidePortalBody}}};
+        const std::size_t current = network.paired ? 1 : 0;
+        for (std::size_t i = 0; i < steps.size(); ++i) {
+            const float y = card_y + 8 + static_cast<float>(i) * 84;
+            const bool lit = i <= current;
+            if (i + 1 < steps.size())
+                Round(steps_x + 17, y + 44, 2, 36, 1, i < current ? Palette::Accent : Palette::Graphite);
+            if (i == current) FocusGlow(steps_x, y, 36, 36, 18, 1);
+            Round(steps_x, y, 36, 36, 18, lit ? Palette::Accent : Palette::Surface);
+            Type(std::to_wstring(i + 1), TypeRole::LabelLarge, steps_x, y + 8, 36,
+                 lit ? Palette::OnAccent : Palette::TextSecondary, 1, TextAlign::Center);
+            Type(Tr(steps[i].first), TypeRole::LabelLarge, steps_x + 56, y + 2, steps_w - 56,
+                 lit ? Palette::Text : Palette::TextHint);
+            Type(Tr(steps[i].second), TypeRole::Body, steps_x + 56, y + 28, steps_w - 56, Palette::TextSecondary, 1,
+                 TextAlign::Leading, 2);
+        }
+        Round(steps_x, card_y + card_h - 66, steps_w, 66, 14, Palette::Warning, 0.12f);
+        Type(Tr(T::UpdateGuideWarning), TypeRole::Body, steps_x + 20, card_y + card_h - 56, steps_w - 40,
+             Palette::Warning, 1, TextAlign::Leading, 2);
+        const std::array<T, 3> labels{T::UpdaterBack, T::NetworkCode, T::NetworkStop};
         for (size_t i = 0; i < labels.size(); ++i) {
             const float x = 80 + static_cast<float>(i) * 380;
             const bool focused = configuration.network_action == i;

@@ -120,6 +120,26 @@ button.back{height:34px;padding:0 14px;margin-bottom:20px;font-size:13px;color:v
 .items li span{flex:1;min-width:0}.items b{display:block;font-weight:600;overflow-wrap:anywhere}.items small{display:block;font-size:13px}
 .items li.empty{justify-content:center;color:var(--muted)}.items button{height:36px;padding:0 16px}
 footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:24px 16px 32px;font-size:13px;color:var(--muted)}footer .ico{width:16px;height:16px}
+body.updating .tabs{visibility:hidden}body.updating #view-content,body.updating #view-system,body.updating #log-export{display:none!important}
+#view-update{display:none;max-width:760px;margin:0 auto}body.updating #view-update{display:block}
+.update-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:32px}.update-top h1{margin-top:8px}.update-top p{margin-top:6px}
+.badge{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap;
+ color:var(--cyan);background:rgba(46,181,229,.1);border:1px solid rgba(46,181,229,.3)}.badge .ico{width:15px;height:15px;stroke-width:2.25}
+.steps{display:flex;flex-direction:column;margin:0;padding:0;list-style:none}
+.steps li{position:relative;display:grid;grid-template-columns:36px minmax(0,1fr);gap:18px;padding-bottom:28px}
+.steps li:not(:last-child)::after{content:"";position:absolute;left:17px;top:46px;bottom:8px;width:2px;border-radius:1px;background:var(--graphite)}
+.steps li.done::after{background:var(--text)}
+.steps .n{display:grid;place-items:center;width:36px;height:36px;border-radius:50%;font-weight:600;background:var(--graphite);color:var(--muted);transition:background .2s,box-shadow .2s}
+.steps li.done .n,.steps li.now .n{background:var(--text);color:var(--canvas)}.steps li.now .n{box-shadow:0 0 0 6px rgba(255,255,255,.1)}
+.steps h3{margin-top:7px}.steps li:not(.done):not(.now) h3{color:var(--muted)}.steps p{margin-top:4px;max-width:36em}.steps .actions{margin-top:16px}
+a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px;border-radius:999px;border:1px solid var(--line);font-size:14px;font-weight:600;
+ color:var(--hint);text-decoration:none}a.pill:hover{color:var(--text);border-color:rgba(255,255,255,.3)}a.pill .ico{width:16px;height:16px}
+.keep{padding:14px 16px;border-radius:14px;color:var(--warn);background:rgba(240,194,122,.08);border:1px solid rgba(240,194,122,.24)}
+#update-skip{margin:24px 0 0;align-self:center}.update-foot{display:flex;justify-content:center}
+.installing{padding:24px 0 8px;text-align:center}.installing p{max-width:30em;margin:10px auto 0}.installing button{margin-top:24px}
+.spin{width:48px;height:48px;margin:0 auto 22px;border-radius:50%;border:3px solid var(--graphite);border-top-color:var(--cyan);animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#update-banner .panel-top{align-items:center;margin:0}#update-banner p{margin-top:4px}
 @media(max-width:860px){.bar{grid-template-columns:minmax(0,1fr) auto;padding:12px 16px;row-gap:12px}.tabs{grid-column:1/-1}.tabs button{flex:1}
  .shell{padding:20px 16px 32px}.view{grid-template-columns:minmax(0,1fr);gap:16px}
  .cats{position:static;flex-direction:row;overflow-x:auto;scrollbar-width:none;margin:0 -16px;padding:0 16px}.cats::-webkit-scrollbar{display:none}
@@ -127,6 +147,7 @@ footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:24
  .store{flex:none;margin:0;padding:8px 16px}#message{top:132px}
  .grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}.hero{grid-template-columns:72px minmax(0,1fr)}.hero .art{width:72px}.hero .danger{grid-column:1/-1}
  .card{padding:22px}h1{font-size:28px;line-height:34px}.actions button{flex:1 1 calc(50% - 10px)}#code{font-size:28px;letter-spacing:.28em;text-indent:.28em}}
+@media(max-width:600px){.update-top{flex-direction:column}.steps li{gap:14px}.steps .actions>*{flex:1 1 100%;justify-content:center}}
 @media(max-width:420px){.brand img{width:36px;height:36px}.word{font-size:16px;letter-spacing:.3em}.caps,.link span{display:none}.link{padding:0 11px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
@@ -141,6 +162,18 @@ footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:24
 <button id="connect" class="primary">Connect</button><p class="hint" id="code-hint">8 digits · it changes every time you open the portal</p></form>
 <p id="connection" role="status" aria-live="polite"></p></main>
 <div class="app">
+<section class="card" id="view-update" aria-live="polite"><div class="update-top"><div><p class="kicker" id="update-kicker">Jadyx update</p><h1 id="update-title">Update Jadyx</h1>
+<p id="update-meta"></p></div><span class="badge" id="update-badge" hidden><svg class="ico" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.5 3 8.3 7 10 4-1.7 7-5.5 7-10V6z"/><path d="m9 12 2 2 4-4"/></svg><span id="update-verified">Signature verified</span></span></div>
+<ol class="steps" id="update-steps">
+<li class="done" id="update-step-1"><span class="n">1</span><div><h3 id="update-s1">Connect the browser</h3><p id="update-s1b">Done: this browser is connected to the console.</p></div></li>
+<li class="now" id="update-step-2"><span class="n">2</span><div><h3 id="update-s2">Download and install</h3><p id="update-s2b">The package downloads and Xbox Device Portal opens in another tab.</p>
+<div class="actions"><button class="primary" id="update-go" disabled>Download and install</button></div><a id="update-package" hidden></a></div></li>
+<li id="update-step-3"><span class="n">3</span><div><h3 id="update-s3">Finish in Device Portal</h3><p id="update-s3b"></p>
+<div class="actions"><a class="pill" id="update-portal" target="_blank" rel="noopener noreferrer"><svg class="ico" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg><span id="update-portal-label">Open Device Portal</span></a></div></div></li>
+</ol>
+<div class="installing" id="update-installing" hidden><div class="spin"></div><h2 id="update-installing-title">Installing the update</h2><p id="update-installing-body"></p>
+<button id="update-reconnect">Connect again</button></div>
+<p class="keep" id="update-keep"></p><div class="update-foot"><button class="back" id="update-skip">Go to content</button></div></section>
 <div class="view" id="view-content"><nav class="cats"><p class="kicker" id="content-kicker">Install</p>
 <button class="cat" id="cat-games" aria-selected="true"><svg class="ico" viewBox="0 0 24 24"><path d="M6.5 8h11a4 4 0 0 1 3.9 4.9l-1 4.4a2.4 2.4 0 0 1-4.2 1L14.5 16h-5l-1.7 2.3a2.4 2.4 0 0 1-4.2-1l-1-4.4A4 4 0 0 1 6.5 8z"/><path d="M8 11v3M6.5 12.5h3M15.5 12h.01M17.5 14h.01"/></svg>
 <span><b id="cat-games-title">Games</b><small id="cat-games-sub">NSP · base game</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
@@ -192,12 +225,8 @@ footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:24
 <div class="actions"><button id="logs-download" class="primary"></button><button id="logs-cancel" hidden></button>
 <a id="logs-file" hidden></a></div><progress id="logs-progress" max="1" value="0" hidden></progress>
 <p id="logs-status" role="status" aria-live="polite"></p>
-</section><section class="panel" id="app-updates" hidden>
-<h2 id="app-update-title"></h2><p id="app-update-help"></p>
-<button id="app-update-download"></button><a id="app-update-package" hidden></a>
-<p id="app-update-status" role="status" aria-live="polite"></p>
-<a id="app-update-portal" target="_blank" rel="noopener noreferrer"></a>
-</section>
+</section><section class="panel" id="update-banner" hidden><div class="panel-top"><div><h3 id="update-banner-title"></h3><p id="update-banner-body"></p></div>
+<button class="primary" id="update-banner-open"></button></div></section>
 </div>
 <footer><svg class="ico" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/></svg><span id="privacy">Local network · HTTP connection without encryption.</span></footer>
 <script>
@@ -280,7 +309,7 @@ async function api(path,options={}){
 }
 function render(){
  renderLogs();
- $('app-updates').hidden=!session;
+ renderUpdate();
  const s=state.transfer||{};
  $('upload').hidden=!session||!state.uploads||pane!=='games';
  $('space').textContent=words.free+': '+((s.free_bytes||0)/1073741824).toFixed(2)+' GiB';
@@ -305,8 +334,10 @@ $('pair').addEventListener('submit',async event=>{
  if(!response.ok){$('connection').textContent=response.status===429?words.attempts:words.bad;return;}
  session=(await response.json()).session;$('code').value='';$('pair').hidden=true;$('connection').textContent=words.ok;
  await refresh();clearInterval(timer);let polling=false;
- timer=setInterval(async()=>{if(polling)return;polling=true;try{await refresh();$('connection').textContent=words.ok;}catch(error){
- if(error.message==='lost'){clearInterval(timer);stopped=true;if(currentXHR)currentXHR.abort();session='';$('pair').hidden=false;$('upload').hidden=true;$('connection').textContent=words.lost;}
+ timer=setInterval(async()=>{if(polling)return;polling=true;try{await refresh();failures=0;$('connection').textContent=words.ok;}catch(error){
+ // After the package went to Device Portal, the console going away is the install closing Jadyx.
+ if(updateStarted&&(error.message==='lost'||++failures>=3)){clearInterval(timer);session='';updateGone=true;renderUpdate();}
+ else if(error.message==='lost'){clearInterval(timer);stopped=true;if(currentXHR)currentXHR.abort();session='';$('pair').hidden=false;$('upload').hidden=true;$('connection').textContent=words.lost;}
  else $('connection').textContent=words.interrupted;
  }finally{polling=false;}},1000);
  }catch{$('connection').textContent=words.lost;}finally{$('connect').disabled=false;}
@@ -720,29 +751,74 @@ $('logs-cancel').addEventListener('click',async()=>{
  catch{$('logs-status').textContent=logWords.failed;}
 });
 
-// Guided app update. The server grants a short-lived ticket bound to a verified package.
-const updatePanel=$('app-updates'),updateTitle=$('app-update-title'),updateHelp=$('app-update-help');
-const updateDownload=$('app-update-download'),updateStatus=$('app-update-status'),updateLink=$('app-update-package'),updatePortal=$('app-update-portal');
-updateTitle.textContent=pt?'Atualizar Jadyx':es?'Actualizar Jadyx':'Update Jadyx';
-updateHelp.textContent=pt?
- 'No Xbox, abra Configurações → Sistema → Atualizações e baixe a versão. Depois baixe o pacote verificado aqui e instale sobre o Jadyx pelo Xbox Device Portal. Não desinstale: isso apaga seus dados.':es?
- 'En Xbox, abre Ajustes → Sistema → Actualizaciones y descarga la versión. Después descarga aquí el paquete verificado e instálalo sobre Jadyx desde Xbox Device Portal. No desinstales: eso borra tus datos.':
- 'On Xbox, open Settings → System → Updates and download the version. Then download the verified package here and install over Jadyx in Xbox Device Portal. Do not uninstall: that deletes your data.';
-updateDownload.textContent=pt?'Baixar pacote verificado':es?'Descargar paquete verificado':'Download verified package';
-updatePortal.textContent=pt?'Abrir Xbox Device Portal':es?'Abrir Xbox Device Portal':'Open Xbox Device Portal';
-if(location.hostname)updatePortal.href='https://'+location.hostname+':11443';
-updateDownload.addEventListener('click',async()=>{
+// Guided app update: while Jadyx offers one, the page opens on its steps. The ticket is fetched
+// ahead of the click (it lives two minutes and serves once) so the download and the Device Portal
+// tab both start inside the click, where browsers still allow opening a tab.
+const uw=pt?{kicker:'Atualização do Jadyx',title:'Atualizar Jadyx',preparing:'Preparando o pacote verificado…',verified:'Assinatura verificada',
+ s1:'Conecte o navegador',s1b:'Feito: este navegador está conectado ao console.',s2:'Baixe e instale',s2b:'O pacote é baixado e o Xbox Device Portal se abre em outra aba.',
+ go:'Baixar e instalar',again:'Baixar de novo',s3:'Conclua no Device Portal',
+ s3b:'Se aparecer um aviso de certificado, escolha Avançado → Continuar. Depois Add → escolha o arquivo baixado → Next → Install.',portal:'Abrir Device Portal',
+ keep:'Não desinstale o Jadyx: isso apaga seus saves e configurações. Instale por cima.',skip:'Ir para o conteúdo',
+ installing:'Instalando a atualização',installingb:'O Jadyx fechou para ser instalado. Quando o Device Portal terminar, abra-o no console: ele confirmará a nova versão.',
+ reconnect:'Conectar de novo',banner:'Atualização do Jadyx pronta',bannerb:'Instale-a por cima pelo Xbox Device Portal.',open:'Ver passos',
+ busy:'Aguarde o fim das transferências ativas.',verify_in_app:'Abra Atualizações no console e verifique o pacote de novo.',failed:'Não foi possível preparar o pacote. Tente de novo.'}
+:es?{kicker:'Actualización de Jadyx',title:'Actualizar Jadyx',preparing:'Preparando el paquete verificado…',verified:'Firma verificada',
+ s1:'Conecta el navegador',s1b:'Hecho: este navegador está conectado a la consola.',s2:'Descarga e instala',s2b:'Se descarga el paquete y se abre Xbox Device Portal en otra pestaña.',
+ go:'Descargar e instalar',again:'Descargar de nuevo',s3:'Termina en Device Portal',
+ s3b:'Si avisa del certificado, elige Avanzado → Continuar. Luego Add → elige el archivo descargado → Next → Install.',portal:'Abrir Device Portal',
+ keep:'No desinstales Jadyx: borraría tus partidas y ajustes. Instala encima.',skip:'Ir al contenido',
+ installing:'Instalando la actualización',installingb:'Jadyx se cerró para instalarse. Cuando Device Portal termine, ábrelo en la consola: confirmará la versión nueva.',
+ reconnect:'Conectar de nuevo',banner:'Actualización de Jadyx lista',bannerb:'Instálala encima desde Xbox Device Portal.',open:'Ver pasos',
+ busy:'Espera a que terminen las transferencias activas.',verify_in_app:'Abre Actualizaciones en la consola y vuelve a verificar el paquete.',failed:'No se pudo preparar el paquete. Inténtalo de nuevo.'}
+:{kicker:'Jadyx update',title:'Update Jadyx',preparing:'Preparing the verified package…',verified:'Signature verified',
+ s1:'Connect the browser',s1b:'Done: this browser is connected to the console.',s2:'Download and install',s2b:'The package downloads and Xbox Device Portal opens in another tab.',
+ go:'Download and install',again:'Download again',s3:'Finish in Device Portal',
+ s3b:'If it warns about the certificate, choose Advanced → Continue. Then Add → choose the downloaded file → Next → Install.',portal:'Open Device Portal',
+ keep:'Do not uninstall Jadyx: that deletes your saves and settings. Install over it.',skip:'Go to content',
+ installing:'Installing the update',installingb:'Jadyx closed to be installed. When Device Portal finishes, open it on the console: it confirms the new version.',
+ reconnect:'Connect again',banner:'Jadyx update ready',bannerb:'Install it over Jadyx from Xbox Device Portal.',open:'View steps',
+ busy:'Wait for active transfers to finish.',verify_in_app:'Open Updates on the console and verify the package again.',failed:'Could not prepare the package. Try again.'};
+for(const [id,key]of [['update-kicker','kicker'],['update-title','title'],['update-verified','verified'],['update-s1','s1'],['update-s1b','s1b'],['update-s2','s2'],
+ ['update-s2b','s2b'],['update-s3','s3'],['update-s3b','s3b'],['update-portal-label','portal'],['update-keep','keep'],['update-skip','skip'],
+ ['update-installing-title','installing'],['update-installing-body','installingb'],['update-reconnect','reconnect'],['update-banner-title','banner'],
+ ['update-banner-body','bannerb'],['update-banner-open','open'],['update-go','go']])$(id).textContent=uw[key];
+const portalUrl=location.hostname?'https://'+location.hostname+':11443':'';
+if(portalUrl)$('update-portal').href=portalUrl;
+let ticket=null,ticketAt=0,ticketing=false,ticketError='',release=null,updateDismissed=false,updateStarted=false,updateGone=false,failures=0;
+async function fetchTicket(){
+ ticketing=true;
  try{
-  updateDownload.disabled=true;updateStatus.textContent='';
-  const result=await api('/api/v1/update/download',{method:'POST'}),data=await result.json();
+  const data=await (await api('/api/v1/update/download',{method:'POST'})).json();
   // Keep the navigation same-origin even if a future server response is malformed.
   if(typeof data.download!=='string'||!/^\/api\/v1\/update\/package\?ticket=[0-9a-f]{64}$/.test(data.download)||
-     typeof data.filename!=='string'||!/^Jadyx_[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+_x64\.appx$/.test(data.filename))throw Error('invalid_update');
-  updateLink.href=data.download;updateLink.download=data.filename;updateLink.click();
-  updateStatus.textContent=pt?'Instale no Xbox Device Portal → Add. Reabra o Jadyx para confirmar a versão.':es?'Instala en Xbox Device Portal → Add. Vuelve a abrir Jadyx para confirmar la versión.':'Install in Xbox Device Portal → Add. Reopen Jadyx to confirm the version.';
- }catch{
-  updateStatus.textContent=pt?'Não foi possível preparar o pacote. Conclua a verificação no Xbox e termine transferências ativas.':es?'No se pudo preparar el paquete. Completa la verificación en Xbox y termina las transferencias activas.':'Could not prepare the package. Complete verification on Xbox and finish active transfers.';
- }finally{updateDownload.disabled=false;}
+     typeof data.filename!=='string'||!/^Jadyx_[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+_x64\.appx$/.test(data.filename))throw Error('failed');
+  ticket=release=data;ticketError='';
+ }catch(error){ticket=null;ticketError=error.message==='lost'?'':(uw[error.message]||uw.failed);}
+ finally{ticketAt=Date.now();ticketing=false;renderUpdate();}
+}
+function renderUpdate(){
+ const offered=updateGone||!!(session&&state.update?.offered);
+ document.body.classList.toggle('updating',offered&&!updateDismissed);
+ $('update-banner').hidden=!offered||!updateDismissed||updateGone;
+ if(!offered)return;
+ const age=Date.now()-ticketAt;
+ if(session&&!updateGone&&!updateDismissed&&!ticketing&&(ticket?age>90000:age>(ticketError?5000:0)))fetchTicket();
+ $('update-title').textContent=release?'Jadyx '+release.version:uw.title;
+ $('update-meta').textContent=ticketError&&!ticket?ticketError:release?release.filename+' · '+size(release.size):uw.preparing;
+ $('update-badge').hidden=!release;
+ $('update-go').disabled=!ticket;$('update-go').textContent=updateStarted?uw.again:uw.go;
+ $('update-go').classList.toggle('primary',!updateStarted);
+ $('update-step-2').className=updateStarted?'done':'now';$('update-step-3').className=updateStarted?'now':'';
+ $('update-steps').hidden=$('update-skip').hidden=updateGone;$('update-installing').hidden=!updateGone;
+}
+$('update-go').addEventListener('click',()=>{
+ if(!ticket)return;
+ const link=$('update-package');link.href=ticket.download;link.download=ticket.filename;link.click();
+ if(portalUrl)window.open(portalUrl,'_blank','noopener');
+ updateStarted=true;ticket=null;ticketAt=0;renderUpdate();
 });
+$('update-skip').addEventListener('click',()=>{updateDismissed=true;renderUpdate();scrollTo(0,0);});
+$('update-banner-open').addEventListener('click',()=>{updateDismissed=false;renderUpdate();scrollTo(0,0);});
+$('update-reconnect').addEventListener('click',()=>location.reload());
 </script></body></html>)HTML";
 }
