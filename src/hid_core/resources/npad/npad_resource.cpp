@@ -4,11 +4,13 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "common/logging.h"
 #include "core/hle/kernel/k_event.h"
 #include "core/hle/kernel/k_readable_event.h"
 #include "core/hle/service/pulse_service.h"
 #include "hid_core/hid_result.h"
 #include "hid_core/hid_util.h"
+#include "hid_core/resources/npad/npad_pulse.h"
 #include "hid_core/resources/npad/npad_resource.h"
 #include "hid_core/resources/npad/npad_types.h"
 
@@ -702,20 +704,20 @@ Result NPadResource::SetNpadSystemExtStateEnabled(u64 aruid, bool is_enabled) {
 bool NPadResource::PulseSave(u64 aruid, Pulse::StateWriter& out) const {
     const u64 aruid_index = GetIndexFromAruid(aruid);
     if (aruid_index >= AruidIndexMax) return false;
-    out.U32(static_cast<u32>(state[aruid_index].npad_revision));
-    state[aruid_index].data.PulseSave(out);
+    const auto& resource = state[aruid_index];
+    SaveNpadPulseState(out, resource.npad_revision, resource.data);
+    LOG_INFO(Service_HID, "Pulse: saved npad revision {} for aruid {}",
+             static_cast<u32>(resource.npad_revision), aruid);
     return true;
 }
 
 void NPadResource::PulseLoad(u64 aruid, Pulse::StateReader& in) {
     const u64 aruid_index = GetIndexFromAruid(aruid);
     if (aruid_index >= AruidIndexMax) throw std::invalid_argument("Pulse: npad aruid not registered");
-    const u32 revision = in.U32();
-    if (revision > static_cast<u32>(NpadRevision::Revision3)) {
-        throw std::invalid_argument("Pulse: npad revision");
-    }
-    state[aruid_index].npad_revision = static_cast<NpadRevision>(revision);
-    state[aruid_index].data.PulseLoad(in);
+    auto& resource = state[aruid_index];
+    resource.npad_revision = LoadNpadPulseState(in, resource.data);
+    LOG_INFO(Service_HID, "Pulse: restored npad revision {} for aruid {}",
+             static_cast<u32>(resource.npad_revision), aruid);
     if (active_data_aruid == aruid) active_data = state[aruid_index].data;
 }
 
