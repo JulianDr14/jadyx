@@ -1,5 +1,122 @@
 # Pulse: sesiones persistentes (11 oct 2026)
 
+## Auditoría de rechazos Npad, 20 octubre 2026
+
+Rama `feature/pulse-resume-audit`, desde `main` 6ad69f85b5. Se conservan sin
+modificar los cambios de interfaz que ya estaban en el árbol. Auditoría inicial
+sin commit/push ni paquete; entrega posterior 0.3.6.33 registrada abajo.
+
+Evidencia: `C:\Users\julia\Downloads\Pulse\log\jadyx_pulse.txt`,
+`jadyx_diag.txt` y `jadyx_log.txt.old.txt`, aplicación Series 0.3.6.25.
+Dos restauraciones fallan con `Pulse: npad revision` a +11250/+241312 ms;
+entre ellas se guarda una sesión nueva en 5948 ms, que también falla al restaurar.
+Los archivos disponibles no incluyen el payload `.pulse` ni el valor numérico
+de la revisión; no se puede afirmar qué revisión concreta contenían.
+
+### Causa y corrección
+
+`IHidServer::ActivateNpadWithRevision` acepta `NpadRevision` con base `u32`
+y lo pasa a `NPad::SetRevision` sin restringirlo a los nombres del enum.
+`NPadResource::PulseSave` lo escribe como U32 sin límite. Sin embargo,
+`PulseLoad` rechazaba cualquier valor mayor que `Revision3`. Es una asimetría
+reproducible: el mismo build puede guardar estados que su lector rechaza.
+La lista local 0..3 tampoco cubre todos los valores usados por clientes HID:
+[libnx, `_hidActivateNpad`](https://github.com/switchbrew/libnx/blob/master/nx/source/services/hid.c)
+envía 5 desde firmware 18. Esta fuente confirma un valor legítimo mayor que 3,
+no demuestra que sea el valor de esta sesión concreta.
+
+El codec compartido `npad_pulse.h` conserva exactamente el U32 admitido por
+HID y la configuración existente. No normaliza a 0/3, ni cambia los masks
+`switch/default` del gameplay, ni anuncia soporte nuevo de mandos. NpadSave/Load
+registran ahora revisión numérica/aruid. Se mantiene el rechazo de aruid no
+registrado, truncamiento, booleanos inválidos, exceso de IDs y datos sobrantes
+por el lector exterior. Versión Pulse 1.1.1 (patch): bytes y compatibilidad con
+1.1.0 conservados; no hay migración ni descarte de sesiones.
+
+Hipótesis descartada durante la auditoría: `StateWriter::Bytes` NO añade longitud;
+`NPad::PulseSave` y `PulseLoad` sí coinciden en su framing. No modificar ese orden.
+
+### Otros dos mensajes de la captura
+
+- `a guest thread is waiting on IPC or a kernel lock`: un rechazo reintentable
+  a +216593 ms; después se publica la sesión. No forzar captura con el lock activo.
+- `texture exceeds bounded readback support`: first-chance C++ capturada por
+  `FlushGpuWrites`; `jadyx_log.txt.old.txt:11126` confirma el fallback por regiones.
+  La ruta exacta limita guest/unswizzled/footprint a 8 MiB y exige plan soportado.
+  Línea 11138 registra 804 imágenes, mayor 10 MiB, transferencias 25 MiB y +97 MiB;
+  línea 11143 otras dos imágenes/+16 MiB. El mayor de 10 MiB ya supera el cap,
+  pero el log no identifica la primera imagen que causó el rechazo.
+  Línea 11148 confirma publicación/verificación: 573 MiB, escritura 3609 ms y
+  verificación 1930 ms. No es un fallo final del guardado ni demuestra pérdida
+  de texturas. El pico extra de +130 MiB escrito en el log sigue por encima del
+  objetivo histórico de 32 MiB: esta corrección Npad no cambia ni certifica ese pico.
+
+### Gates y límites
+
+`tools/xbox/tests/run-pulse-phase3.ps1 -Only pulse-npad` compila el codec usado por
+producción y `npad_data.cpp` real. Ocho revisiones (0..5, 0x80000000, 0xffffffff),
+bytes del writer anterior, configuración no predeterminada, aruid/registered,
+cola de diez mandos, envelope HandlerRecord, todas las truncaciones, IDs inválidos,
+booleano inválido y trailing bytes pasan. Aceptar un U32 desconocido conserva
+el estado que ya acepta el emulador, sin usarlo como índice ni tamaño.
+Se recompiló el mismo test con una copia privada del codec y el guard anterior
+`revision > Revision3`: falla con `Pulse: npad revision`; el codec corregido pasa.
+La prueba no instancia un Kernel/System completo ni certifica reconexión de mandos.
+
+Gates adyacentes: servicios 100 ciclos y readback 20000 layouts pasan.
+Objetos UWP `npad_resource.cpp.obj` y `pulse_sessions.cpp.obj` compilados con
+Store CRT. `git diff --check` correcto. No se enlaza ni sustituye la entrega.
+
+El runner completo se detuvo antes de Npad por un problema previo de link en
+`pulse-machine` (faltan símbolos ZSTD en su lista de bibliotecas). No se presenta
+como gate completo pasado. Se añade `-Only` para ejecutar los gates relevantes;
+el arreglo del link del harness queda pendiente y no afecta al objeto UWP.
+
+Siguiente gate: en Series, con entrega que incorpore la corrección, intentar
+reanudar la sesión conservada, confirmar revisión numérica en el log y después
+guardar/volver a biblioteca/reanudar otra vez. Verificar gameplay y mandos,
+frames posteriores a resume y ausencia de un siguiente rechazo de otro servicio.
+No borrar sesiones para forzar la prueba. Series/restauración integral pendientes.
+
+### Entrega solicitada 0.3.6.33
+
+Manifest fuente y paquete en 0.3.6.33, UTF-8 sin BOM. Build UWP incremental
+amplio y link correctos (232 operaciones planificadas); avisos BUILD_ID redefinido
+y deprecación u8path, sin errores de compilación/link. Incluye la corrección
+anterior, Pulse1.1.1, y los cambios locales de interfaz que ya estaban presentes.
+Se ejecutó `package-appx.ps1 -Release`: biblioteca/play, sin payload ni diagnósticos,
+ni límite de memoria PC añadido. Se comprobó ausencia de procesos Jadyx y las
+rutas absolutas de layout/pri antes de sustituir el layout de entrega.
+
+Instalador único `build-uwp/package/jadyx.appx`, certificado `jadyx.cer` y dependencia
+`Microsoft.VCLibs.x64.14.00.appx`. Símbolos EXE/PDB, manifest, configuración y
+verificación archivados en `build-uwp/symbols/0.3.6.33/`.
+
+`verify-appx.ps1` pasa CMS matemático, key pin JadyxDev, AXPC/AXCD/AXBM/AXCT/AXCI,
+contenedor/CRC y 34 archivos/743 bloques. EXE del APPX idéntico a build/símbolos;
+PDB archivado idéntico al build. Configuración exacta `library=1\nplay=1\n`.
+Prueba Npad repetida correcta. Smoke AppContainer PC: registro0.3.6.33,
+biblioteca Responding, sin guest; proceso de prueba cerrado después del smoke.
+Evidencias en `build-uwp/test-results/pulse-0.3.6.33/` y verification.json en entrega.
+
+SHA256 APPX: `FB69CE04CD616CC5AED2705269412582F095C359F4710706FD8BFD1A697BE6B9`.
+Series guardar/reanudar/mandos y resto de gameplay pendientes. Sin commit/push,
+publicación ni instalación remota en consola.
+
+### Confirmación manual y alcance de la PR
+
+Tras instalar la .33, el usuario confirma que funcionó «simplemente perfecto»
+en la prueba de Pulse y autoriza commits pequeños y PR hacia `main` de
+`JulianDr14/jadyx`. Es confirmación manual de esta prueba en Series: no se han
+recibido logs nuevos que permitan contar ciclos, identificar la revisión
+numérica o certificar otros juegos/servicios.
+
+Por petición explícita, los seis archivos de interfaz que ya estaban modificados
+quedan fuera de los commits/PR, conservados en el árbol local. La entrega .33
+probada sí contenía esos cambios locales; su SHA anterior describe ese paquete,
+no un binario reconstruido únicamente desde el contenido de la PR. La PR incluye
+la corrección/versión Pulse, regresiones/runner, manifest .33 y documentación.
+
 Estado: fases 1–4 implementadas y fase 5 en curso. La biblioteca guarda la sesión
 al volver al inicio y la reanuda al elegir el juego (fase 4, abajo). Homebrew con
 vídeo, audio y archivos se reanuda. La fase 5 añade GPU, audren, HID, AM y los

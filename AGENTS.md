@@ -1,5 +1,22 @@
 # AGENTS.md: guía para agentes de IA en Jadyx (fork de JulianDr14)
 
+Pulse20oct: rama feature/pulse-resume-audit desde main. Auditoría logsSeries.25:
+HID acepta/guarda revisionu32 pero restore limitaba0..3; codec conserva valor
+exacto y añade lognumérico, Pulse1.1.1 compatible1.1.0. Ocho revisiones/byteslegacy/
+truncaciones/envelope/NPadDatareal pasan; guardanterior reproduce rechazo.
+ObjetosUWPnpad_resource/pulse_sessions correctos; servicios/readback pasan.
+IPC temporal reintentado yreadback8MiB fallbackregional terminan enguardadoéxito.
+Valorconcreto delsnapshot no disponible; validaciónSeries posterior abajo.
+Runnercompleto bloqueadoenpulse-machine porlinkZSTDprevio; -Only añadido.
+Entrega solicitada.33: buildUWP/link correctos, APPXnormalbiblioteca firmado en
+build-uwp/package/jadyx.appx, símbolos0.3.6.33 archivados. FirmaCMS/keypin/
+metadatos/contenedor/CRC/34archivos743bloques yexe/PDBidénticos correctos.
+SmokeAppContainerPCbibliotecaResponding,singuest; Pulse1.1.1 compatible1.1.0.
+Usuario confirma funcionamiento perfecto de.33 enSeries traspruebaPulse.
+Confirmaciónmanual,sinlogs nuevos ni gateexhaustivo deotrosjuegos/servicios.
+Autoriza commitspequeños yPRamain; cambiosUIlocales excluidos porpedidoexpreso.
+Detalle docs/xbox/xbox_pulse.md.
+
 Investigación Hyrule19oct2026: rama feature/hyrule-crash-memory. Primer candidato
 recoge retiros antes de ampliar heaps y usa capacidad mínima alineada bajo
 presión app/DXGI; pooling64MiB normal conservado. Policy38136/packing1248000 y

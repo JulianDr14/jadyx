@@ -4237,3 +4237,43 @@ GateMagnesis.23NEGATIVO:PSdirect489228B/hashconfirmadoactivo;IDydepth0enSeries,P
 Magnesis.24bateriamultihipotesis:84casosautomaticos(14escenariosxPS/CSxDXCO3/Od/Mesa),sinundef,dato/expectedpropios,JSONLpequenoalabrirjuego1vez/proceso. PCmismoexecutor84/84sinwarnings y2negativosdetectados;buildUWP/firma160files867blocks/simbolos.24correctos. .23overrideexcluido,guestoriginal. Seriesautomatico/resultado pendiente; bastanlogsportal,sincapturagrande. Detalle xbox_magnesis.md. Sincommit/push.
 
 GateSeries.24:66/84pasan,18fallosPS(6escenariosx3DXC/Mesa),compute42/42. Mezclastore/loadindicesconstante-variabledevuelve0;const/constydynamic/dynamicpasan(incluyeDXCOdconalloca). SeleccionsinarrayPS1/5IDspasa;tablaarrayfallacomoMagnesis. Focoalias/loweringPSSeries,noafirmartodoindexadodinamico roto. Reportearchivado matrix24-series*. .24vigente,fixpendiente;detalle xbox_magnesis.md. Sincommit/push.
+
+### Pulse: auditoría Npad, 20 octubre 2026
+
+Rama nueva `feature/pulse-resume-audit` desde main6ad69f85b5, cambios previos
+de UI conservados. Logs privados de Downloads/Pulse/log, Series0.3.6.25:
+dos resumes rechazan `npad revision`, incluso después de guardar sesión nueva
+en5948ms. Causa reproducible: IPC HID admite revisionu32 y save la conserva,
+restore imponía <=3. libnx usa5 desde18 (fuente y análisis en
+[xbox_pulse.md](xbox_pulse.md)); valor concreto del snapshot no disponible.
+Codec probado conserva U32 exacto sin cambiar comportamiento/masks gameplay;
+añade lognumérico y Pulse1.1.1 compatible1.1.0, bytes existentes intactos.
+
+Gates: ocho revisiones/byteslegacy/NPadDatareal/configuración/envelope/mandos/
+truncaciones y malformed pasan; copia privada con guardanterior falla como
+esperado. Servicios100ciclos/readback20000layouts pasan. Dos objetosUWP con
+StoreCRT correctos; sin link/paquete/commit/push ni gateSeries integral.
+
+Los otros mensajes no eran fallos finales: esperaIPC reintentable y readback
+exacto8MiB no soportado -> FlushCheckpointRegion -> Publish correcto.
+Log11138 tiene imagen10MiB y+97MiB,11143 +16MiB; pico+130MiB no se corrige aquí.
+Trampa: Bytes() del StateWriter NO escribe prefijo; hipótesis inicial de framing
+descartada antes de tocar código. Runnerfase3 completo tiene deuda previa:
+pulse-machine no enlaza ZSTD; -Only permite gates concretos, no alegar suite
+completa pasada. Comandos, evidencia, fuentes y gateSeries en xbox_pulse.md.
+
+Entrega posterior solicitada0.3.6.33: manifestUTF8sinBOM, buildUWP/link correctos
+(232ops planificadas), APPXRelease normalbiblioteca/play en entregaunica.
+Sinpayload/diagnósticos/capPC. SímbolosEXE/PDB/manifest/config/verification
+archivados en symbols/0.3.6.33. VerificadorCMS/keypin/metadata/container/CRC,
+34archivos/743bloques yEXE/PDBidénticos pasan. Npadgate repetido correcto.
+Smoke AppContainerPC registra.33 ybibliotecaResponding,singuest; cerrado después.
+Evidencia build-uwp/test-results/pulse-0.3.6.33. SHA256APPX
+FB69CE04CD616CC5AED2705269412582F095C359F4710706FD8BFD1A697BE6B9.
+Resume/mandosSeries pendiente; sincommit/push/publicación. Detalle xbox_pulse.md.
+
+Confirmación posterior: usuario informa funcionamiento «simplemente perfecto»
+de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificación
+global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
+excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
+el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
