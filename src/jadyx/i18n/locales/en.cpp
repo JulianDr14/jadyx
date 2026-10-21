@@ -344,7 +344,7 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::ContentFreeSpace, L"{0} MiB free internally"},
     {Text::ContentWorking, L"Reading, verifying or importing content…"},
     {Text::ContentConfirmImport, L"Add the selected content to the destination shown above? A newer update will become active. Previous versions are kept."},
-    {Text::ContentConfirmRemove, L"Remove this content? Internal files are reclaimed when neither the catalog nor its recovery generation references them. USB files, the base game and saves will be preserved."},
+    {Text::ContentConfirmRemove, L"Remove this content? Its internal copy is deleted from the console. USB files, the base game and saves are kept."},
     {Text::ContentInstall, L"Add content…"},
     {Text::ContentInstallHint, L"Choose files, then add them from USB or copy to internal storage"},
     {Text::ContentAuthorize, L"Authorize a folder"},

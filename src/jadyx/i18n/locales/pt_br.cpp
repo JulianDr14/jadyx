@@ -344,7 +344,7 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::ContentFreeSpace, L"{0} MiB livres no armazenamento interno"},
     {Text::ContentWorking, L"Lendo, verificando ou importando conteúdo…"},
     {Text::ContentConfirmImport, L"Adicionar o conteúdo selecionado ao destino mostrado acima? Uma atualização mais nova ficará ativa. As versões anteriores são mantidas."},
-    {Text::ContentConfirmRemove, L"Remover este conteúdo? Os arquivos internos são liberados quando nem o catálogo nem a geração de recuperação fazem referência a eles. Os arquivos no USB, o jogo base e os salvamentos são preservados."},
+    {Text::ContentConfirmRemove, L"Remover este conteúdo? Sua cópia interna é excluída do console. Os arquivos no USB, o jogo base e os salvamentos são preservados."},
     {Text::ContentInstall, L"Adicionar conteúdo…"},
     {Text::ContentInstallHint, L"Escolha os arquivos e adicione-os do USB ou copie para o armazenamento interno"},
     {Text::ContentAuthorize, L"Autorizar uma pasta"},

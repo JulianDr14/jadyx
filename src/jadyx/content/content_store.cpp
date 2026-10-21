@@ -134,12 +134,17 @@ Error ContentStore::Save(Catalog& catalog) const {
     } catch (const std::exception&) { return Error::Io; }
 }
 Error ContentStore::Remove(Catalog& catalog, const std::string& id) const {
+    return Remove(catalog, [&](const Revision& r) { return r.id == id; });
+}
+Error ContentStore::Remove(Catalog& catalog, const std::function<bool(const Revision&)>& match) const {
     Catalog next = catalog;
-    std::erase_if(next.revisions, [&](const auto& r) { return r.id == id; });
+    std::erase_if(next.revisions, match);
     if (next.revisions.size() == catalog.revisions.size()) return Error::Invalid;
     if (auto error = Save(next); error != Error::None) return error;
     catalog = std::move(next);
-    // The backup may still reference an object. Cleanup protects both generations.
+    // Cleanup protects both catalog generations, and the backup still references the removed
+    // objects. A delete should give the space back now, so publish once more before cleaning.
+    if (auto error = Save(catalog); error != Error::None) return error;
     Cleanup(catalog);
     return Error::None;
 }
