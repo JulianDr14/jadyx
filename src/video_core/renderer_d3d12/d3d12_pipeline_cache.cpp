@@ -42,6 +42,7 @@
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
 #include "video_core/shader_environment.h"
+#include "video_core/transform_feedback.h"
 #include "video_core/shader_notify.h"
 
 namespace D3D12 {
@@ -126,8 +127,9 @@ auto MakeSpan(Container& container) {
 }
 
 // MaxwellToOutputTopology, MaxwellToCompareFunction, CastAttributeType and MakeRuntimeInfo follow
-// vk_pipeline_cache.cpp. D3D12 has no transform feedback yet (phase 5) and no native OpenGL NDC,
-// so the depth conversion always happens in the shader.
+// vk_pipeline_cache.cpp. D3D12 has no native OpenGL NDC, so the depth conversion always happens in
+// the shader; transform feedback is written by the vertex shader (xfb_storage), since stream output
+// semantics cannot follow the varyings spirv_to_dxil packs.
 
 Shader::OutputTopology MaxwellToOutputTopology(Maxwell::PrimitiveTopology topology) {
     switch (topology) {
@@ -224,6 +226,19 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
                 info.fixed_state_point_size = point_size;
             }
             info.convert_depth_mode = gl_ndc;
+        }
+        if (key.state.xfb_enabled != 0) {
+            if (key.unique_hashes[2] == 0 && key.unique_hashes[3] == 0 &&
+                key.unique_hashes[4] == 0) {
+                const auto [varyings, count] =
+                    VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);
+                info.xfb_varyings = varyings;
+                info.xfb_count = count;
+                info.xfb_storage = true;
+            } else {
+                LOG_WARNING(Render, "D3D12: transform feedback after tessellation or geometry "
+                                    "shaders is not written");
+            }
         }
         std::ranges::transform(key.state.attributes, info.generic_input_types.begin(),
                                &CastAttributeType);
