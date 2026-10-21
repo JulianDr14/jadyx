@@ -445,19 +445,18 @@ private:
             const auto bezier = [&](float x1, float y1, float x2, float y2, float x3, float y3) {
                 sink->AddBezier(D2D1::BezierSegment(D2D1::Point2F(x1, y1), D2D1::Point2F(x2, y2), D2D1::Point2F(x3, y3)));
             };
-            sink->BeginFigure(D2D1::Point2F(9, 1.4f), D2D1_FIGURE_BEGIN_FILLED);
-            bezier(12, 0.6f, 20, 0.6f, 23, 1.4f);                // The top edge.
-            bezier(27.6f, 2, 30.2f, 4.4f, 30.9f, 9);             // The right shoulder.
-            sink->AddLine(D2D1::Point2F(31.6f, 15.6f));
-            bezier(32.1f, 19.6f, 29.8f, 21.8f, 27.4f, 21.2f);    // The right grip.
-            bezier(25.6f, 20.8f, 24.4f, 19.2f, 23, 17.4f);
-            bezier(22.2f, 16.4f, 21.4f, 16, 20.2f, 16);
-            sink->AddLine(D2D1::Point2F(11.8f, 16));
-            bezier(10.6f, 16, 9.8f, 16.4f, 9, 17.4f);
-            bezier(7.6f, 19.2f, 6.4f, 20.8f, 4.6f, 21.2f);       // The left grip.
-            bezier(2.2f, 21.8f, -0.1f, 19.6f, 0.4f, 15.6f);
-            sink->AddLine(D2D1::Point2F(1.1f, 9));
-            bezier(1.8f, 4.4f, 4.4f, 2, 9, 1.4f);                // The left shoulder.
+            sink->BeginFigure(D2D1::Point2F(9.5f, 1.6f), D2D1_FIGURE_BEGIN_FILLED);
+            bezier(13, 0.9f, 19, 0.9f, 22.5f, 1.6f);             // The top edge, under the bumpers.
+            bezier(26.5f, 1.6f, 29.2f, 3, 30.2f, 6.5f);          // The right shoulder.
+            sink->AddLine(D2D1::Point2F(31.7f, 14));
+            bezier(32.4f, 18, 31, 21.4f, 28.4f, 21.6f);          // The right grip's end.
+            bezier(26.6f, 21.7f, 25.4f, 20.4f, 24, 18.4f);
+            bezier(22.6f, 16.4f, 19.8f, 15.2f, 16, 15.2f);       // The arch between the grips.
+            bezier(12.2f, 15.2f, 9.4f, 16.4f, 8, 18.4f);
+            bezier(6.6f, 20.4f, 5.4f, 21.7f, 3.6f, 21.6f);       // The left grip's end.
+            bezier(1, 21.4f, -0.4f, 18, 0.3f, 14);
+            sink->AddLine(D2D1::Point2F(1.8f, 6.5f));
+            bezier(2.8f, 3, 5.5f, 1.6f, 9.5f, 1.6f);             // The left shoulder.
             sink->EndFigure(D2D1_FIGURE_END_CLOSED);
             if (FAILED(sink->Close())) {
                 pad_outline.Reset();
@@ -472,13 +471,19 @@ private:
         target->FillGeometry(pad_outline.Get(), brush.Get());
         brush->SetColor(D2D1::ColorF(color, alpha));
         target->DrawGeometry(pad_outline.Get(), brush.Get(), 1.7f);
-        // The left stick and the d-pad, the face buttons in their diamond, the guide button.
-        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(8.6f, 7.4f), 2.3f, 2.3f), brush.Get(), 1.4f);
-        target->DrawLine(D2D1::Point2F(11.2f, 12.2f), D2D1::Point2F(14.4f, 12.2f), brush.Get(), 1.4f);
-        target->DrawLine(D2D1::Point2F(12.8f, 10.6f), D2D1::Point2F(12.8f, 13.8f), brush.Get(), 1.4f);
-        constexpr D2D1_POINT_2F face[] = {{23.4f, 5}, {23.4f, 9.6f}, {21.1f, 7.3f}, {25.7f, 7.3f}};
-        for (const auto button : face) target->FillEllipse(D2D1::Ellipse(button, 1.15f, 1.15f), brush.Get());
-        target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(16, 5.2f), 1.5f, 1.5f), brush.Get());
+        // As on an Xbox Series pad: the left stick high and the face buttons' diamond across
+        // from it, the d-pad and the right stick low and inward, the Xbox button between the
+        // bumpers with View and Menu under it.
+        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(8.4f, 7), 2.4f, 2.4f), brush.Get(), 1.4f);
+        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(20, 11.8f), 2.1f, 2.1f), brush.Get(), 1.4f);
+        target->DrawLine(D2D1::Point2F(10.3f, 11.8f), D2D1::Point2F(13.7f, 11.8f), brush.Get(), 1.4f);
+        target->DrawLine(D2D1::Point2F(12, 10.1f), D2D1::Point2F(12, 13.5f), brush.Get(), 1.4f);
+        constexpr D2D1_POINT_2F face[] = {{23.6f, 4.8f}, {23.6f, 9.2f}, {21.4f, 7}, {25.8f, 7}};
+        for (const auto button : face) target->FillEllipse(D2D1::Ellipse(button, 1.05f, 1.05f), brush.Get());
+        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(16, 4.4f), 1.7f, 1.7f), brush.Get(), 1.2f);
+        target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(16, 4.4f), 0.8f, 0.8f), brush.Get());
+        for (const float side : {13.8f, 18.2f})
+            target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(side, 8), 0.6f, 0.6f), brush.Get());
         target->SetTransform(previous);
     }
     /// The battery: four bars inside a rounded case, amber when low, a bolt while charging.
