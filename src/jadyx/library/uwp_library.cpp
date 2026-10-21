@@ -141,6 +141,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     StorageJob storage_job{};
     std::optional<GameFiles> removal_request; ///< Confirmed in the game's options.
     std::wstring after_scan; ///< Shown when the rescan that follows a storage job completes.
+    /// Set for the rescan after a storage job that leaves keys and firmware alone: it keeps the
+    /// titles already read. The value is the game whose content changed (0: none).
+    std::optional<std::uint64_t> keep_titles;
     std::chrono::steady_clock::time_point auto_pick_at{};
     unsigned setting_row = 0;
     ControllerPanel panel;
@@ -820,6 +823,11 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         default: return network_portal.FinalizeGame(ValidateUploadedNsp);
                         }
                     }};
+                // Keys and firmware stay as they are: the rescan keeps every other game's titles.
+                keep_titles = storage_job == StorageJob::PortalContent ? std::optional{ContentTagApplication(state.content.tag)} :
+                    storage_job == StorageJob::PortalRemoval ? std::optional{state.removal.application} :
+                    storage_job == StorageJob::Removal ? std::optional{removal_request->application} :
+                    storage_job == StorageJob::PortalGame ? std::optional<std::uint64_t>{0} : std::nullopt;
                 removal_request.reset();
                 import_future=task.get_future();
                 import_worker=std::jthread(std::move(task));
@@ -1802,7 +1810,12 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         if (loading && future.wait_for(std::chrono::seconds{0}) == std::future_status::ready) {
             // A rescan keeps the game the player was on; the first scan starts at the last one played.
             const auto kept = selected < scan.entries.size() ? scan.entries[selected].launch_path : std::string{};
-            try { scan = future.get(); }
+            try {
+                auto rescanned = future.get();
+                if (keep_titles) KeepKnownTitles(scan.entries, rescanned.entries);
+                scan = std::move(rescanned);
+                if (keep_titles && *keep_titles) forget_content(*keep_titles);
+            }
             catch (const std::exception& e) {
                 LOG_WARNING(Frontend, "Library scan failed: {}", e.what());
                 scan.error = I18n::ToUtf8(Tr(T::LibraryScanFailed));
@@ -1812,6 +1825,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 scan.error = I18n::ToUtf8(Tr(T::LibraryScanFailed));
             }
             loading = false;
+            keep_titles.reset();
             refresh_play(kept);
             refresh_pulse();
             if (!configuration.busy) refresh_setup();
