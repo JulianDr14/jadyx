@@ -179,6 +179,51 @@ void WriteTransformFeedbackStorage(EmitContext& ctx) {
     const Id w{ctx.OpLoad(ctx.F32[1], w_pointer)};
     ctx.OpStore(w_pointer, ctx.OpSelect(ctx.F32[1], discard, ctx.Const(-1.0f), w));
 }
+
+/// Native transform feedback outputs of this vertex (DefineTransformFeedbackOutputs). Runs before
+/// every position transform, so the position copies hold the position the guest wrote.
+void WriteTransformFeedbackOutputs(EmitContext& ctx) {
+    if (ctx.xfb_position_outputs.empty() && ctx.xfb_unstored_generics == 0) {
+        return;
+    }
+    const Id zero{ctx.Const(0.0f)};
+    const Id one{ctx.Const(1.0f)};
+    const Id default_vector{ctx.ConstantComposite(ctx.F32[4], zero, zero, zero, one)};
+    if (!ctx.xfb_position_outputs.empty()) {
+        const Id position{Sirit::ValidId(ctx.output_position)
+                              ? ctx.OpLoad(ctx.F32[4], ctx.output_position)
+                              : default_vector};
+        for (const GenericElementInfo& output : ctx.xfb_position_outputs) {
+            std::array<Id, 4> components{};
+            for (u32 i = 0; i < output.num_components; ++i) {
+                components[i] =
+                    ctx.OpCompositeExtract(ctx.F32[1], position, output.first_element + i);
+            }
+            const std::span<const Id> values(components.data(), output.num_components);
+            const Id value{output.num_components == 1
+                               ? components[0]
+                               : ctx.OpCompositeConstruct(ctx.F32[output.num_components], values)};
+            ctx.OpStore(output.id, value);
+        }
+    }
+    // The vertex stage prologue already wrote them.
+    if (ctx.stage == Stage::VertexB) {
+        return;
+    }
+    for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
+        if ((ctx.xfb_unstored_generics & (1U << index)) == 0) {
+            continue;
+        }
+        const auto& info{ctx.output_generics[index]};
+        u32 element{0};
+        while (element < 4) {
+            const u32 num{info[element].num_components};
+            ctx.OpStore(info[element].id,
+                        DefaultVarying(ctx, num, element, zero, one, default_vector));
+            element += num;
+        }
+    }
+}
 } // Anonymous namespace
 
 void EmitPrologue(EmitContext& ctx) {
@@ -235,6 +280,9 @@ void EmitEpilogue(EmitContext& ctx) {
     if (ctx.stage == Stage::VertexB) {
         WriteTransformFeedbackStorage(ctx);
     }
+    if (ctx.stage == Stage::VertexB || ctx.stage == Stage::TessellationEval) {
+        WriteTransformFeedbackOutputs(ctx);
+    }
     if (ctx.stage == Stage::VertexB && ctx.runtime_info.lower_noperspective_mask != 0) {
         // Read final outputs, after every guest store and before clipping. Doing
         // this at each SetAttribute would depend on the order PositionW is written.
@@ -245,10 +293,18 @@ void EmitEpilogue(EmitContext& ctx) {
                 continue;
             }
             const auto& output = ctx.output_generics[index][0];
-            if (output.num_components != 4 ||
-                (ctx.runtime_info.xfb_count != 0 && !ctx.runtime_info.xfb_storage)) {
+            // Stream output would capture the lowered value; storage capture runs before this.
+            bool captured{};
+            if (!ctx.runtime_info.xfb_storage) {
+                const u32 base{static_cast<u32>(IR::Attribute::Generic0X) + index * 4};
+                for (u32 attribute = base; attribute < base + 4; ++attribute) {
+                    captured |= attribute < ctx.runtime_info.xfb_count &&
+                                ctx.runtime_info.xfb_varyings[attribute].components > 0;
+                }
+            }
+            if (output.num_components != 4 || captured) {
                 throw NotImplementedException(
-                    "NoPerspective lowering requires whole VS varyings without XFB");
+                    "NoPerspective lowering requires whole, uncaptured VS varyings");
             }
             const Id value{ctx.OpLoad(ctx.F32[4], output.id)};
             ctx.OpStore(output.id, ctx.OpVectorTimesScalar(ctx.F32[4], value, w));
@@ -272,6 +328,7 @@ void EmitEmitVertex(EmitContext& ctx, const IR::Value& stream) {
     for (const auto& [variable, type] : ctx.passthrough_outputs) {
         passthrough_values.push_back(ctx.OpLoad(type, variable));
     }
+    WriteTransformFeedbackOutputs(ctx);
     if (ctx.runtime_info.convert_depth_mode && !ctx.profile.support_native_ndc) {
         ConvertDepthMode(ctx);
     }

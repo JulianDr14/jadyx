@@ -392,6 +392,11 @@ public:
     Id output_point_size{};
     Id output_position{};
     std::array<std::array<GenericElementInfo, 4>, 32> output_generics{};
+    /// RuntimeInfo::xfb_position_outputs: copies of the captured position components, at a
+    /// generic location the shader leaves free. first_element is the position component.
+    std::vector<GenericElementInfo> xfb_position_outputs;
+    /// Captured generics the shader never stores: each vertex writes their defaults.
+    u32 xfb_unstored_generics{};
 
     Id output_tess_level_outer{};
     Id output_tess_level_inner{};

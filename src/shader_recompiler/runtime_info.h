@@ -127,6 +127,9 @@ struct RuntimeInfo {
     /// The vertex shader writes the varyings above to storage buffers instead of declaring them
     /// for stream output (transform_feedback_storage.h).
     bool xfb_storage{};
+    /// Captured position components go out through their own generic outputs, stored before any
+    /// position transform, so stream output reads the position the guest wrote (D3D12).
+    bool xfb_position_outputs{};
 
     /// Output types for each color attachment
     std::array<AttributeType, 8> color_output_types{};

@@ -212,6 +212,90 @@ void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invo
     }
 }
 
+/// Stream output only reads declared outputs, so native transform feedback declares the captured
+/// generics the shader never stores (written with their defaults) and copies of the captured
+/// position components. Those copies are stored before any position transform (depth mode,
+/// Y flip), so the buffers get the position the guest wrote, like on Maxwell.
+void DefineTransformFeedbackOutputs(EmitContext& ctx, const Info& info,
+                                    std::optional<u32> invocations) {
+    const RuntimeInfo& runtime_info{ctx.runtime_info};
+    if (runtime_info.xfb_count == 0 || runtime_info.xfb_storage) {
+        return;
+    }
+    if (ctx.stage != Stage::VertexB && ctx.stage != Stage::TessellationEval &&
+        ctx.stage != Stage::Geometry) {
+        return;
+    }
+    const auto captured = [&](u32 attribute) -> const TransformFeedbackVarying* {
+        if (attribute >= runtime_info.xfb_count) {
+            return nullptr;
+        }
+        const TransformFeedbackVarying& varying{runtime_info.xfb_varyings[attribute]};
+        return varying.components > 0 ? &varying : nullptr;
+    };
+    u32 captured_generics{};
+    for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
+        const u32 base{static_cast<u32>(IR::Attribute::Generic0X) + index * 4};
+        for (u32 element = 0; element < 4; ++element) {
+            if (captured(base + element)) {
+                captured_generics |= 1U << index;
+            }
+        }
+        if ((captured_generics & (1U << index)) != 0 && !info.stores.Generic(index)) {
+            DefineGenericOutput(ctx, index, invocations, info.passthrough);
+            ctx.xfb_unstored_generics |= 1U << index;
+        }
+    }
+    if (!runtime_info.xfb_position_outputs) {
+        return;
+    }
+    const u32 position_base{static_cast<u32>(IR::Attribute::PositionX)};
+    bool captures_position{};
+    for (u32 element = 0; element < 4; ++element) {
+        captures_position |= captured(position_base + element) != nullptr;
+    }
+    if (!captures_position) {
+        return;
+    }
+    // The next stage never reads a location this one does not store, so any free one works.
+    std::optional<u32> location;
+    for (u32 index = IR::NUM_GENERICS; index-- > 0;) {
+        if (!info.stores.Generic(index) && (captured_generics & (1U << index)) == 0) {
+            location = index;
+            break;
+        }
+    }
+    if (!location) {
+        LOG_WARNING(Shader_SPIRV, "No free location for the captured position: it is skipped");
+        return;
+    }
+    static constexpr std::string_view swizzle{"xyzw"};
+    u32 element{0};
+    while (element < 4) {
+        const TransformFeedbackVarying* const varying{captured(position_base + element)};
+        if (!varying) {
+            ++element;
+            continue;
+        }
+        const u32 num_components{(std::min)(varying->components, 4 - element)};
+        const Id id{DefineOutput(ctx, ctx.F32[num_components], invocations, {}, {}, false)};
+        ctx.Decorate(id, spv::Decoration::Location, *location);
+        if (element > 0) {
+            ctx.Decorate(id, spv::Decoration::Component, element);
+        }
+        ctx.Decorate(id, spv::Decoration::XfbBuffer, varying->buffer);
+        ctx.Decorate(id, spv::Decoration::XfbStride, varying->stride);
+        ctx.Decorate(id, spv::Decoration::Offset, varying->offset);
+        ctx.Name(id, fmt::format("xfb_position_{}", swizzle.substr(element, num_components)));
+        ctx.xfb_position_outputs.push_back({
+            .id = id,
+            .first_element = element,
+            .num_components = num_components,
+        });
+        element += num_components;
+    }
+}
+
 Id GetAttributeType(EmitContext& ctx, AttributeType type) {
     switch (type) {
     case AttributeType::Float:
@@ -1934,6 +2018,7 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
             DefineGenericOutput(*this, index, invocations, info.passthrough);
         }
     }
+    DefineTransformFeedbackOutputs(*this, info, invocations);
     switch (stage) {
     case Stage::TessellationControl:
         if (info.stores_tess_level_outer) {
