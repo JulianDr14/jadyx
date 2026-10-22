@@ -93,35 +93,53 @@ void AlphaTest(EmitContext& ctx) {
     ctx.AddLabel(true_label);
 }
 
-/// Component of a captured output (a TransformFeedbackVarying attribute), or its default when the
-/// shader does not write it.
+/// Component of a captured output (an IsCopyableCapture attribute), with its bits as a float, or
+/// its default when the shader does not write it (the capture is undefined then, as on Maxwell).
 Id CapturedComponent(EmitContext& ctx, u32 attribute) {
     const auto attr{static_cast<IR::Attribute>(attribute)};
-    if (attr >= IR::Attribute::PositionX && attr <= IR::Attribute::PositionW) {
-        const u32 element{attribute - static_cast<u32>(IR::Attribute::PositionX)};
-        const Id pointer{
-            ctx.OpAccessChain(ctx.output_f32, ctx.output_position, ctx.Const(element))};
+    // Vectors default to (0, 0, 0, 1), like the vertex stage prologue writes them.
+    const Id vector_default{ctx.Const(attribute % 4 == 3 ? 1.0f : 0.0f)};
+    const auto load_float = [&](Id output, std::optional<u32> element = std::nullopt,
+                                Id fallback = {}) {
+        if (!Sirit::ValidId(output)) {
+            return Sirit::ValidId(fallback) ? fallback : ctx.f32_zero_value;
+        }
+        const Id pointer{element ? ctx.OpAccessChain(ctx.output_f32, output, ctx.Const(*element))
+                                 : output};
         return ctx.OpLoad(ctx.F32[1], pointer);
+    };
+    const auto load_integer = [&](Id output) {
+        return Sirit::ValidId(output)
+                   ? ctx.OpBitcast(ctx.F32[1], ctx.OpLoad(ctx.U32[1], output))
+                   : ctx.f32_zero_value;
+    };
+    if (attr >= IR::Attribute::PositionX && attr <= IR::Attribute::PositionW) {
+        return load_float(ctx.output_position, attribute % 4, vector_default);
+    }
+    if (attr >= IR::Attribute::ClipDistance0 && attr <= IR::Attribute::ClipDistance7) {
+        const u32 index{attribute - static_cast<u32>(IR::Attribute::ClipDistance0)};
+        return index < ctx.profile.max_user_clip_distances ? load_float(ctx.clip_distances, index)
+                                                           : ctx.f32_zero_value;
     }
     if (IR::IsGeneric(attr)) {
-        const u32 element{IR::GenericAttributeElement(attr)};
-        const u32 index{IR::GenericAttributeIndex(attr)};
-        const GenericElementInfo& info{ctx.output_generics[index][element]};
-        if (!Sirit::ValidId(info.id)) {
-            return ctx.Const(element == 3 ? 1.0f : 0.0f);
-        }
+        const GenericElementInfo& info{
+            ctx.output_generics[IR::GenericAttributeIndex(attr)][IR::GenericAttributeElement(attr)]};
         if (info.num_components == 1) {
-            return ctx.OpLoad(ctx.F32[1], info.id);
+            return load_float(info.id, std::nullopt, vector_default);
         }
-        const Id member{ctx.Const(element - info.first_element)};
-        return ctx.OpLoad(ctx.F32[1], ctx.OpAccessChain(ctx.output_f32, info.id, member));
+        return load_float(info.id, IR::GenericAttributeElement(attr) - info.first_element,
+                          vector_default);
     }
-    static bool logged{};
-    if (!logged) {
-        logged = true;
-        LOG_WARNING(Shader_SPIRV, "Storage transform feedback of attribute {} writes zero", attr);
+    switch (attr) {
+    case IR::Attribute::PointSize:
+        return load_float(ctx.output_point_size);
+    case IR::Attribute::Layer:
+        return load_integer(ctx.layer);
+    case IR::Attribute::ViewportIndex:
+        return load_integer(ctx.viewport_index);
+    default:
+        throw InvalidArgument("Attribute {} has no captured value", attr);
     }
-    return ctx.f32_zero_value;
 }
 
 /// Writes the captured outputs of this vertex to the transform feedback buffers and, when the
@@ -143,12 +161,12 @@ void WriteTransformFeedbackStorage(EmitContext& ctx) {
                                  ctx.OpLoad(u32_type, ctx.base_instance))};
     const Id slot{ctx.OpIAdd(u32_type, vertex,
                              ctx.OpIMul(u32_type, instance, constant(Xfb::VERTEX_COUNT_WORD)))};
-    for (u32 attribute = 0; attribute < ctx.runtime_info.xfb_count; ++attribute) {
-        const TransformFeedbackVarying* const captured{ctx.CapturedVarying(attribute)};
-        if (!captured || captured->buffer >= Xfb::NUM_BUFFERS) {
-            continue;
+    const auto store = [&](u32 attribute, const TransformFeedbackVarying& varying) {
+        // Other attributes are not outputs (layout gaps): their words stay as they were.
+        if (varying.buffer >= Xfb::NUM_BUFFERS ||
+            !IsCopyableCapture(static_cast<IR::Attribute>(attribute))) {
+            return;
         }
-        const TransformFeedbackVarying& varying{*captured};
         std::array<Id, 4> values{};
         for (u32 component = 0; component < varying.components; ++component) {
             values[component] =
@@ -173,6 +191,16 @@ void WriteTransformFeedbackStorage(EmitContext& ctx) {
         }
         ctx.OpBranch(merge_label);
         ctx.AddLabel(merge_label);
+    };
+    for (u32 attribute = 0; attribute < ctx.runtime_info.xfb_count; ++attribute) {
+        if (const TransformFeedbackVarying* const varying{ctx.CapturedVarying(attribute)}) {
+            store(attribute, *varying);
+        }
+    }
+    for (const TransformFeedbackRepeat& repeat : ctx.runtime_info.xfb_repeats) {
+        if (ctx.Captures(repeat.varying)) {
+            store(repeat.attribute, repeat.varying);
+        }
     }
     // A negative W fails every clip plane test (-w <= x <= w), whatever X, Y and Z are.
     const Id discard{ctx.OpINotEqual(ctx.U1, constant(Xfb::DISCARD_WORD), ctx.u32_zero_value)};
@@ -182,47 +210,36 @@ void WriteTransformFeedbackStorage(EmitContext& ctx) {
 }
 
 /// Native transform feedback outputs of this vertex (DefineTransformFeedbackOutputs). Runs before
-/// every position transform, so the position copies hold the position the guest wrote.
+/// every position transform, so the copies hold the values the guest wrote.
 void WriteTransformFeedbackOutputs(EmitContext& ctx) {
-    if (ctx.xfb_position_outputs.empty() && ctx.xfb_unstored_generics == 0) {
-        return;
-    }
-    const Id zero{ctx.Const(0.0f)};
-    const Id one{ctx.Const(1.0f)};
-    const Id default_vector{ctx.ConstantComposite(ctx.F32[4], zero, zero, zero, one)};
-    if (!ctx.xfb_position_outputs.empty()) {
-        const Id position{Sirit::ValidId(ctx.output_position)
-                              ? ctx.OpLoad(ctx.F32[4], ctx.output_position)
-                              : default_vector};
-        for (const GenericElementInfo& output : ctx.xfb_position_outputs) {
-            std::array<Id, 4> components{};
-            for (u32 i = 0; i < output.num_components; ++i) {
-                components[i] =
-                    ctx.OpCompositeExtract(ctx.F32[1], position, output.first_element + i);
+    // The vertex stage prologue already wrote the defaults. Copies may read them, so they go first.
+    if (ctx.stage != Stage::VertexB && ctx.xfb_unstored_generics != 0) {
+        const Id zero{ctx.Const(0.0f)};
+        const Id one{ctx.Const(1.0f)};
+        const Id default_vector{ctx.ConstantComposite(ctx.F32[4], zero, zero, zero, one)};
+        for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
+            if ((ctx.xfb_unstored_generics & (1U << index)) == 0) {
+                continue;
             }
-            const std::span<const Id> values(components.data(), output.num_components);
-            const Id value{output.num_components == 1
-                               ? components[0]
-                               : ctx.OpCompositeConstruct(ctx.F32[output.num_components], values)};
-            ctx.OpStore(output.id, value);
+            const auto& info{ctx.output_generics[index]};
+            u32 element{0};
+            while (element < 4) {
+                const u32 num{info[element].num_components};
+                ctx.OpStore(info[element].id,
+                            DefaultVarying(ctx, num, element, zero, one, default_vector));
+                element += num;
+            }
         }
     }
-    // The vertex stage prologue already wrote them.
-    if (ctx.stage == Stage::VertexB) {
-        return;
-    }
-    for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
-        if ((ctx.xfb_unstored_generics & (1U << index)) == 0) {
-            continue;
+    for (const TransformFeedbackCopy& copy : ctx.xfb_copies) {
+        std::array<Id, 4> components{};
+        for (u32 i = 0; i < copy.num_components; ++i) {
+            components[i] = CapturedComponent(ctx, copy.attribute + i);
         }
-        const auto& info{ctx.output_generics[index]};
-        u32 element{0};
-        while (element < 4) {
-            const u32 num{info[element].num_components};
-            ctx.OpStore(info[element].id,
-                        DefaultVarying(ctx, num, element, zero, one, default_vector));
-            element += num;
-        }
+        const std::span<const Id> values(components.data(), copy.num_components);
+        ctx.OpStore(copy.id, copy.num_components == 1
+                                 ? components[0]
+                                 : ctx.OpCompositeConstruct(ctx.F32[copy.num_components], values));
     }
 }
 } // Anonymous namespace

@@ -162,6 +162,28 @@ Id DefineOutput(EmitContext& ctx, Id type, std::optional<u32> invocations,
     return variable;
 }
 
+/// Whether a copy output captures the point size (DefineTransformFeedbackOutputs).
+bool CopiesPointSizeCapture(const EmitContext& ctx) {
+    const RuntimeInfo& runtime_info{ctx.runtime_info};
+    if (!runtime_info.xfb_copy_outputs || runtime_info.xfb_storage) {
+        return false;
+    }
+    static constexpr u32 attribute{static_cast<u32>(IR::Attribute::PointSize)};
+    return ctx.CapturedVarying(attribute) ||
+           std::ranges::any_of(runtime_info.xfb_repeats, [&](const TransformFeedbackRepeat& repeat) {
+               return repeat.attribute == attribute && ctx.Captures(repeat.varying);
+           });
+}
+
+void DecorateCapture(EmitContext& ctx, Id id, const TransformFeedbackVarying& varying) {
+    ctx.Decorate(id, spv::Decoration::XfbBuffer, varying.buffer);
+    ctx.Decorate(id, spv::Decoration::XfbStride, varying.stride);
+    ctx.Decorate(id, spv::Decoration::Offset, varying.offset);
+    if (ctx.stage == Stage::Geometry && varying.stream != 0) {
+        ctx.Decorate(id, spv::Decoration::Stream, varying.stream);
+    }
+}
+
 void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invocations,
                          const VaryingState& passthrough) {
     static constexpr std::string_view swizzle{"xyzw"};
@@ -199,12 +221,7 @@ void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invo
             ctx.Decorate(id, spv::Decoration::Component, element);
         }
         if (xfb_varying) {
-            ctx.Decorate(id, spv::Decoration::XfbBuffer, xfb_varying->buffer);
-            ctx.Decorate(id, spv::Decoration::XfbStride, xfb_varying->stride);
-            ctx.Decorate(id, spv::Decoration::Offset, xfb_varying->offset);
-            if (ctx.stage == Stage::Geometry && xfb_varying->stream != 0) {
-                ctx.Decorate(id, spv::Decoration::Stream, xfb_varying->stream);
-            }
+            DecorateCapture(ctx, id, *xfb_varying);
         }
         if (num_components < 4 || element > 0) {
             const std::string_view subswizzle{swizzle.substr(element, num_components)};
@@ -223,9 +240,10 @@ void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invo
 }
 
 /// Stream output only reads declared outputs, so native transform feedback declares the captured
-/// generics the shader never stores (written with their defaults) and copies of the captured
-/// position components. Those copies are stored before any position transform (depth mode,
-/// Y flip), so the buffers get the position the guest wrote, like on Maxwell.
+/// generics the shader never stores (written with their defaults) and copies of the captures no
+/// output carries itself: an output takes one capture decoration, built-ins take none, and the
+/// position is transformed (depth mode, Y flip) after the guest writes it. The copies are stored
+/// before those transforms, so the buffers get the values the guest wrote, like on Maxwell.
 void DefineTransformFeedbackOutputs(EmitContext& ctx, const Info& info,
                                     std::optional<u32> invocations) {
     const RuntimeInfo& runtime_info{ctx.runtime_info};
@@ -236,67 +254,68 @@ void DefineTransformFeedbackOutputs(EmitContext& ctx, const Info& info,
         ctx.stage != Stage::Geometry) {
         return;
     }
-    const auto captured = [&](u32 attribute) { return ctx.CapturedVarying(attribute); };
-    u32 captured_generics{};
+    // Components of each generic location the shader or a capture takes.
+    std::array<u32, IR::NUM_GENERICS> used_components{};
     for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
         const u32 base{static_cast<u32>(IR::Attribute::Generic0X) + index * 4};
+        bool captured{};
         for (u32 element = 0; element < 4; ++element) {
-            if (captured(base + element)) {
-                captured_generics |= 1U << index;
-            }
+            captured |= ctx.CapturedVarying(base + element) != nullptr;
         }
-        if ((captured_generics & (1U << index)) != 0 && !info.stores.Generic(index)) {
+        if (captured && !info.stores.Generic(index)) {
             DefineGenericOutput(ctx, index, invocations, info.passthrough);
             ctx.xfb_unstored_generics |= 1U << index;
         }
-    }
-    if (!runtime_info.xfb_position_outputs) {
-        return;
-    }
-    const u32 position_base{static_cast<u32>(IR::Attribute::PositionX)};
-    bool captures_position{};
-    for (u32 element = 0; element < 4; ++element) {
-        captures_position |= captured(position_base + element) != nullptr;
-    }
-    if (!captures_position) {
-        return;
-    }
-    // The next stage never reads a location this one does not store, so any free one works.
-    std::optional<u32> location;
-    for (u32 index = IR::NUM_GENERICS; index-- > 0;) {
-        if (!info.stores.Generic(index) && (captured_generics & (1U << index)) == 0) {
-            location = index;
-            break;
+        if (captured || info.stores.Generic(index)) {
+            used_components[index] = 0xf;
         }
     }
-    if (!location) {
-        LOG_WARNING(Shader_SPIRV, "No free location for the captured position: it is skipped");
+    if (!runtime_info.xfb_copy_outputs) {
         return;
     }
-    static constexpr std::string_view swizzle{"xyzw"};
-    u32 element{0};
-    while (element < 4) {
-        const TransformFeedbackVarying* const varying{captured(position_base + element)};
-        if (!varying) {
-            ++element;
-            continue;
+    const auto define_copy = [&](u32 attribute, const TransformFeedbackVarying& varying) {
+        const auto attr{static_cast<IR::Attribute>(attribute)};
+        if (!IsCopyableCapture(attr)) {
+            return;
         }
-        const u32 num_components{(std::min)(varying->components, 4 - element)};
-        const Id id{DefineOutput(ctx, ctx.F32[num_components], invocations, {}, {}, false)};
-        ctx.Decorate(id, spv::Decoration::Location, *location);
-        if (element > 0) {
-            ctx.Decorate(id, spv::Decoration::Component, element);
+        // The next stage never reads a location this one does not store, so any free components
+        // work. Copies share locations, from the last one down.
+        const u32 num_components{varying.components};
+        const u32 mask{(1U << num_components) - 1};
+        for (u32 location = IR::NUM_GENERICS; location-- > 0;) {
+            for (u32 element = 0; element + num_components <= 4; ++element) {
+                if ((used_components[location] & (mask << element)) != 0) {
+                    continue;
+                }
+                used_components[location] |= mask << element;
+                const Id id{
+                    DefineOutput(ctx, ctx.F32[num_components], invocations, {}, {}, false)};
+                ctx.Decorate(id, spv::Decoration::Location, location);
+                if (element > 0) {
+                    ctx.Decorate(id, spv::Decoration::Component, element);
+                }
+                DecorateCapture(ctx, id, varying);
+                ctx.Name(id, fmt::format("xfb_{}_{}", attr, num_components));
+                ctx.xfb_copies.push_back({
+                    .id = id,
+                    .attribute = attribute,
+                    .num_components = num_components,
+                });
+                return;
+            }
         }
-        ctx.Decorate(id, spv::Decoration::XfbBuffer, varying->buffer);
-        ctx.Decorate(id, spv::Decoration::XfbStride, varying->stride);
-        ctx.Decorate(id, spv::Decoration::Offset, varying->offset);
-        ctx.Name(id, fmt::format("xfb_position_{}", swizzle.substr(element, num_components)));
-        ctx.xfb_position_outputs.push_back({
-            .id = id,
-            .first_element = element,
-            .num_components = num_components,
-        });
-        element += num_components;
+        LOG_WARNING(Shader_SPIRV, "No free location for the capture of {}: it is skipped", attr);
+    };
+    for (u32 attribute = 0; attribute < runtime_info.xfb_count; ++attribute) {
+        const TransformFeedbackVarying* const varying{ctx.CapturedVarying(attribute)};
+        if (varying && !IR::IsGeneric(static_cast<IR::Attribute>(attribute))) {
+            define_copy(attribute, *varying);
+        }
+    }
+    for (const TransformFeedbackRepeat& repeat : runtime_info.xfb_repeats) {
+        if (ctx.Captures(repeat.varying)) {
+            define_copy(repeat.attribute, repeat.varying);
+        }
     }
 }
 
@@ -561,6 +580,20 @@ Id DescType(EmitContext& ctx, Id sampled_type, Id pointer_type, u32 count) {
 }
 } // Anonymous namespace
 
+bool IsCopyableCapture(IR::Attribute attribute) {
+    switch (attribute) {
+    case IR::Attribute::Layer:
+    case IR::Attribute::ViewportIndex:
+    case IR::Attribute::PointSize:
+        return true;
+    default:
+        return IR::IsGeneric(attribute) ||
+               (attribute >= IR::Attribute::PositionX && attribute <= IR::Attribute::PositionW) ||
+               (attribute >= IR::Attribute::ClipDistance0 &&
+                attribute <= IR::Attribute::ClipDistance7);
+    }
+}
+
 void VectorTypes::Define(Sirit::Module& sirit_ctx, Id base_type, std::string_view name) {
     defs[0] = sirit_ctx.Name(base_type, name);
 
@@ -777,6 +810,11 @@ void EmitContext::DefineTransformFeedbackStorage(IR::Program& program) {
         const TransformFeedbackVarying* const varying{CapturedVarying(index)};
         if (varying && varying->buffer < Xfb::NUM_BUFFERS) {
             buffers |= 1U << varying->buffer;
+        }
+    }
+    for (const TransformFeedbackRepeat& repeat : runtime_info.xfb_repeats) {
+        if (Captures(repeat.varying) && repeat.varying.buffer < Xfb::NUM_BUFFERS) {
+            buffers |= 1U << repeat.varying.buffer;
         }
     }
     if (buffers == 0) {
@@ -1982,7 +2020,18 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
         if (stage == Stage::Fragment) {
             throw NotImplementedException("Storing PointSize in fragment stage");
         }
-        output_point_size = DefineOutput(*this, F32[1], invocations, spv::BuiltIn::PointSize);
+        if (CopiesPointSizeCapture(*this)) {
+            // The host drops the built-in (D3D12 has no point size) and reads it back as 1, so
+            // the value the copy captures lives in a private variable.
+            output_point_size = AddGlobalVariable(TypePointer(spv::StorageClass::Private, F32[1]),
+                                                  spv::StorageClass::Private);
+            Name(output_point_size, "point_size");
+            if (profile.supported_spirv >= 0x00010400) {
+                interfaces.push_back(output_point_size);
+            }
+        } else {
+            output_point_size = DefineOutput(*this, F32[1], invocations, spv::BuiltIn::PointSize);
+        }
     }
     if (info.stores.ClipDistances()) {
         if (stage == Stage::Fragment) {

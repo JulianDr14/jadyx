@@ -88,9 +88,7 @@ Shader::RuntimeInfo MakeRuntimeInfo(const GraphicsPipelineKey& key,
     case Shader::Stage::VertexB:
     case Shader::Stage::Geometry:
         if (!use_assembly_shaders && key.xfb_enabled != 0) {
-            auto [varyings, count] = VideoCommon::MakeTransformFeedbackVaryings(key.xfb_state);
-            info.xfb_varyings = varyings;
-            info.xfb_count = count;
+            VideoCommon::MakeTransformFeedbackVaryings(key.xfb_state).Apply(info);
         }
         break;
     case Shader::Stage::TessellationEval:

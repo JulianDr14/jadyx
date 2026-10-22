@@ -173,23 +173,35 @@ struct GenericElementInfo {
     u32 num_components{};
 };
 
+/// An output holding a copy of captured components, for stream output (xfb_copy_outputs).
+struct TransformFeedbackCopy {
+    Id id{};
+    u32 attribute{}; ///< the first component
+    u32 num_components{};
+};
+
+/// Whether a transform feedback copy can carry attribute: the outputs whose values a stage has.
+[[nodiscard]] bool IsCopyableCapture(IR::Attribute attribute);
+
 class EmitContext final : public Sirit::Module {
 public:
     explicit EmitContext(const Profile& profile, const RuntimeInfo& runtime_info,
                          IR::Program& program, Bindings& binding);
     ~EmitContext();
 
-    /// The transform feedback varying this stage captures for attribute, if any. Only a
-    /// geometry shader emits to streams other than 0, so other stages capture nothing there.
+    /// Whether this stage captures varying. Only a geometry shader emits to streams other than 0,
+    /// so other stages capture nothing there.
+    [[nodiscard]] bool Captures(const TransformFeedbackVarying& varying) const {
+        return varying.components != 0 && (stage == Stage::Geometry || varying.stream == 0);
+    }
+
+    /// The transform feedback varying this stage captures for attribute, if any.
     [[nodiscard]] const TransformFeedbackVarying* CapturedVarying(size_t attribute) const {
         if (attribute >= runtime_info.xfb_count) {
             return nullptr;
         }
         const TransformFeedbackVarying& varying{runtime_info.xfb_varyings[attribute]};
-        if (varying.components == 0 || (stage != Stage::Geometry && varying.stream != 0)) {
-            return nullptr;
-        }
-        return &varying;
+        return Captures(varying) ? &varying : nullptr;
     }
 
     bool uses_geometry_passthrough{};
@@ -405,9 +417,9 @@ public:
     Id output_point_size{};
     Id output_position{};
     std::array<std::array<GenericElementInfo, 4>, 32> output_generics{};
-    /// RuntimeInfo::xfb_position_outputs: copies of the captured position components, at a
-    /// generic location the shader leaves free. first_element is the position component.
-    std::vector<GenericElementInfo> xfb_position_outputs;
+    /// RuntimeInfo::xfb_copy_outputs: the captures no output carries itself, at generic locations
+    /// the shader leaves free. Each vertex stores them before any position transform.
+    std::vector<TransformFeedbackCopy> xfb_copies;
     /// Captured generics the shader never stores: each vertex writes their defaults.
     u32 xfb_unstored_generics{};
 

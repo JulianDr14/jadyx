@@ -179,10 +179,7 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
             }
             if (key.state.xfb_enabled) {
                 if (device.IsExtTransformFeedbackSupported()) {
-                    auto [varyings, count] =
-                        VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);
-                    info.xfb_varyings = varyings;
-                    info.xfb_count = count;
+                    VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state).Apply(info);
                 } else {
                     LOG_WARNING(Render_Vulkan, "XFB requested in pipeline key but device lacks VK_EXT_transform_feedback; ignoring XFB decorations");
                 }
@@ -233,10 +230,7 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
         }
         if (key.state.xfb_enabled != 0) {
             if (device.IsExtTransformFeedbackSupported()) {
-                auto [varyings, count] =
-                    VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);
-                info.xfb_varyings = varyings;
-                info.xfb_count = count;
+                VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state).Apply(info);
             } else {
                 LOG_WARNING(Render_Vulkan, "XFB requested in pipeline key but device lacks VK_EXT_transform_feedback; ignoring XFB decorations");
             }

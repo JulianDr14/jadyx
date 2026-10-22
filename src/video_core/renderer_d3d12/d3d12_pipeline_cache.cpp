@@ -1041,21 +1041,14 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     const bool captures_xfb{key.state.xfb_enabled != 0};
     const bool native_xfb{captures_xfb && compiler.SupportsStreamOutput() &&
                           !transform_feedback_storage.load(std::memory_order_relaxed)};
-    std::array<Shader::TransformFeedbackVarying, 256> xfb_varyings{};
-    u32 xfb_count{};
+    VideoCommon::TransformFeedbackVaryings xfb_varyings;
     if (captures_xfb) {
-        std::tie(xfb_varyings, xfb_count) =
-            VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);
+        xfb_varyings = VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);
         if (!native_xfb && xfb_program != 1) {
             LOG_WARNING(Render, "D3D12: transform feedback after tessellation or geometry "
                                 "shaders needs stream output; it is not written");
         }
     }
-    const auto captures_generic = [&](u32 index) {
-        const size_t base = static_cast<size_t>(Shader::IR::Attribute::Generic0X) + index * 4;
-        return std::any_of(xfb_varyings.begin() + base, xfb_varyings.begin() + base + 4,
-                           [](const auto& varying) { return varying.components != 0; });
-    };
 
     // Series corrupts native NoPerspective coordinates when clipping volumes
     // cross W=0. Preserve screen-linear semantics via smooth(a*clipW)/clipW.
@@ -1071,7 +1064,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             // Stream output reads the varying itself: a captured one keeps native NoPerspective.
             if (fragment_info.interpolation[index] == Shader::Interpolation::NoPerspective &&
                 fragment_info.loads.Generic(index) && vertex_info.stores.Generic(index) &&
-                !(native_xfb && captures_generic(index))) {
+                !(native_xfb && xfb_varyings.CapturesGeneric(index))) {
                 lower_noperspective_mask |= 1U << index;
             }
         }
@@ -1110,10 +1103,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage)};
         runtime_info.lower_noperspective_mask = lower_noperspective_mask;
         if (captures_xfb && index == xfb_program && (native_xfb || index == 1)) {
-            runtime_info.xfb_varyings = xfb_varyings;
-            runtime_info.xfb_count = xfb_count;
+            xfb_varyings.Apply(runtime_info);
             runtime_info.xfb_storage = !native_xfb;
-            runtime_info.xfb_position_outputs = native_xfb;
+            runtime_info.xfb_copy_outputs = native_xfb;
         }
         ConvertLegacyToGeneric(program, runtime_info);
         Shader::Optimization::DemoteReturnVerdict demote_return{};

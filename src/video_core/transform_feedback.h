@@ -29,7 +29,20 @@ struct TransformFeedbackState {
     void Refresh(const Tegra::Engines::Maxwell3D::Regs& regs);
 };
 
-std::pair<std::array<Shader::TransformFeedbackVarying, 256>, u32> MakeTransformFeedbackVaryings(
+/// The captures of a transform feedback layout, as the shader recompiler takes them.
+struct TransformFeedbackVaryings {
+    std::array<Shader::TransformFeedbackVarying, 256> varyings{};
+    u32 count{};
+    std::vector<Shader::TransformFeedbackRepeat> repeats;
+
+    /// Whether any component of generic index is captured.
+    [[nodiscard]] bool CapturesGeneric(u32 index) const;
+
+    /// Sets the captures of the stage that feeds transform feedback.
+    void Apply(Shader::RuntimeInfo& info) const;
+};
+
+[[nodiscard]] TransformFeedbackVaryings MakeTransformFeedbackVaryings(
     const TransformFeedbackState& state);
 
 } // namespace VideoCommon
