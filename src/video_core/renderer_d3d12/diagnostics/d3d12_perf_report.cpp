@@ -413,6 +413,22 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
     }
     LOG_INFO(Render, "D3D12 frame chain: {}", DescribeFrameChain(delta));
     LOG_INFO(Render,
+             "D3D12 indirect macros: {} from GPU arguments, {} from CPU arguments ({} GPU-written, "
+             "{} with no instances)",
+             VideoCore::Perf::Get(delta, Counter::IndirectMacroGpu),
+             VideoCore::Perf::Get(delta, Counter::IndirectMacroCpu),
+             VideoCore::Perf::Get(delta, Counter::IndirectMacroCpuWritten),
+             VideoCore::Perf::Get(delta, Counter::IndirectMacroCpuZero));
+    {
+        const u64 results = VideoCore::Perf::Get(delta, Counter::OcclusionResults);
+        const u64 latency_us = VideoCore::Perf::Get(delta, Counter::OcclusionResultLatencyUs);
+        LOG_INFO(Render,
+                 "D3D12 occlusion results: {} written to the guest, {} with no samples; "
+                 "{:.2f} ms on average from the report to the write",
+                 results, VideoCore::Perf::Get(delta, Counter::OcclusionResultsZero),
+                 results != 0 ? static_cast<double>(latency_us) / 1000.0 / results : 0.0);
+    }
+    LOG_INFO(Render,
              "D3D12 pipeline preparation: frontend {:.1f} ms, dependent waits {} / {:.1f} ms; "
              "host PSO requests {}, hits {}, shared in-flight {}, capacity bypasses {}, "
              "driver creates {} / {:.1f} ms (accumulated worker wall time, overlaps waits/frames)",

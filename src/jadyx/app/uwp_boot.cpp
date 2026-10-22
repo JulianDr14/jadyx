@@ -80,7 +80,9 @@
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
+#include "video_core/macro.h"
 #include "video_core/perf_counters.h"
+#include "video_core/query_cache.h"
 #include "video_core/readback_trace.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
@@ -279,6 +281,12 @@ struct BootConfig {
     /// Transform feedback through vertex shader storage writes instead of stream output
     /// ("xfb=storage"): the fallback, for A/B comparison.
     bool xfb_storage{};
+    /// Indirect draw macros read GPU-written arguments back on the CPU ("indirect_macro_cpu=1"):
+    /// A/B against drawing from the GPU-side arguments.
+    bool indirect_macro_cpu{};
+    /// Sample counts reach the guest as never zero ("occlusion_force_visible=1"): A/B for
+    /// objects the game's occlusion culling drops.
+    bool occlusion_force_visible{};
     /// Filtered MIN/MAX sampler reductions go to the hardware although the device reports no
     /// support ("min_max_filter=force").
     bool force_min_max_filter{};
@@ -517,6 +525,9 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     D3D12::SetPipelineEviction(config.pso_eviction);
     D3D12::SetPipelinePrewarm(config.pso_prewarm);
     D3D12::SetTransformFeedbackStorage(config.xfb_storage);
+    Tegra::SetIndirectMacroCpuRead(config.indirect_macro_cpu);
+    VideoCommon::force_occlusion_visible.store(config.occlusion_force_visible,
+                                               std::memory_order_relaxed);
     D3D12::SetForceMinMaxFilter(config.force_min_max_filter);
     VideoCore::Perf::SetDetailedGpuProfile(config.gpu_profile);
     if (config.dump_guest_shaders) Settings::values.dump_guest_shaders.SetValue(true);
@@ -2539,6 +2550,12 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "xfb=storage") {
                             config.xfb_storage = true;
                             WriteDiag("boot.cfg: transform feedback through storage buffers");
+                        } else if (line == "indirect_macro_cpu=1") {
+                            config.indirect_macro_cpu = true;
+                            WriteDiag("boot.cfg: indirect draw macros read GPU-written arguments on the CPU");
+                        } else if (line == "occlusion_force_visible=1") {
+                            config.occlusion_force_visible = true;
+                            WriteDiag("boot.cfg: occlusion results reach the game as never zero");
                         } else if (line == "min_max_filter=force") {
                             config.force_min_max_filter = true;
                             WriteDiag("boot.cfg: filtered min/max sampler reduction forced on");

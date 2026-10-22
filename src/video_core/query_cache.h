@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <functional>
 #include <iterator>
@@ -28,6 +29,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/memory_manager.h"
+#include "video_core/perf_counters.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace VideoCore {
@@ -45,6 +47,10 @@ namespace VideoCommon {
 using AsyncJobId = Common::SlotId;
 
 static constexpr AsyncJobId NULL_ASYNC_JOB_ID{0};
+
+/// Diagnostic ("occlusion_force_visible=1"): sample counts reach the guest as never zero, so
+/// occlusion culling built on them keeps every object, and every conditional draw renders.
+inline std::atomic<bool> force_occlusion_visible{};
 
 template <class QueryCache, class HostCounter>
 class CounterStreamBase {
@@ -174,7 +180,7 @@ public:
             async_job.value = *result;
             query->SetAsyncJob(NULL_ASYNC_JOB_ID);
         }
-        AsyncFlushQuery(query, timestamp, lock);
+        AsyncFlushQuery(query, type, timestamp, lock);
     }
 
     /// Enables all available GPU counters
@@ -325,8 +331,10 @@ private:
         return found != std::end(contents) ? &*found : nullptr;
     }
 
-    void AsyncFlushQuery(CachedQuery* query, std::optional<u64> timestamp,
+    void AsyncFlushQuery(CachedQuery* query, VideoCore::QueryType type,
+                         std::optional<u64> timestamp,
                          std::unique_lock<std::recursive_mutex>& lock) {
+        const auto reported = std::chrono::steady_clock::now();
         const AsyncJobId new_async_job_id = slot_async_jobs.insert();
         {
             AsyncJob& async_job = slot_async_jobs[new_async_job_id];
@@ -340,13 +348,24 @@ private:
             uncommitted_flushes->push_back(new_async_job_id);
         }
         lock.unlock();
-        std::function<void()> operation([this, new_async_job_id, timestamp] {
+        std::function<void()> operation([this, new_async_job_id, type, timestamp, reported] {
             std::unique_lock local_lock{mutex};
             AsyncJob& async_job = slot_async_jobs[new_async_job_id];
             u64 value = async_job.value;
             VAddr address = async_job.query_location;
             slot_async_jobs.erase(new_async_job_id);
             local_lock.unlock();
+            if (type == VideoCore::QueryType::SamplesPassed) {
+                namespace Perf = VideoCore::Perf;
+                const auto waited = std::chrono::steady_clock::now() - reported;
+                Perf::Add(Perf::Counter::OcclusionResults, 1);
+                Perf::Add(Perf::Counter::OcclusionResultsZero, value == 0 ? 1 : 0);
+                Perf::Add(Perf::Counter::OcclusionResultLatencyUs,
+                          std::chrono::duration_cast<std::chrono::microseconds>(waited).count());
+                if (force_occlusion_visible.load(std::memory_order_relaxed)) {
+                    value = (std::max<u64>)(value, 1ULL << 20);
+                }
+            }
             if (FullCapture::Active()) FullCapture::Event("query_guest_result", fmt::format(
                 "{{\"address\":{},\"value\":{},\"timestamped\":{}}}",
                 static_cast<u64>(address), value, timestamp.has_value()));
