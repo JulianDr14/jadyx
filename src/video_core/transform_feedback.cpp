@@ -16,6 +16,23 @@
 
 namespace VideoCommon {
 
+void TransformFeedbackState::Refresh(const Tegra::Engines::Maxwell3D::Regs& regs) {
+    for (size_t index = 0; index < layouts.size(); ++index) {
+        if (regs.transform_feedback.buffers[index].enable == 0) {
+            layouts[index] = {};
+            varyings[index] = {};
+            continue;
+        }
+        const auto& control{regs.transform_feedback.controls[index]};
+        layouts[index] = {
+            .stream = control.stream,
+            .varying_count = control.varying_count,
+            .stride = control.stride,
+        };
+        varyings[index] = regs.stream_out_layout[index];
+    }
+}
+
 std::pair<std::array<Shader::TransformFeedbackVarying, 256>, u32> MakeTransformFeedbackVaryings(
     const TransformFeedbackState& state) {
     static constexpr std::array VECTORS{

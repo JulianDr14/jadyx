@@ -22,6 +22,11 @@ struct TransformFeedbackState {
     std::array<std::array<Tegra::Engines::Maxwell3D::Regs::StreamOutLayout, 32>,
                Tegra::Engines::Maxwell3D::Regs::NumTransformFeedbackBuffers>
         varyings;
+
+    /// Takes the layouts from regs. A disabled buffer gets none, as it captures nothing: its
+    /// stale layout stays out of the pipeline key, and the pipeline declares no capture for it
+    /// (stream output into an unbound slot 0 loses every buffer's capture on some drivers).
+    void Refresh(const Tegra::Engines::Maxwell3D::Regs& regs);
 };
 
 std::pair<std::array<Shader::TransformFeedbackVarying, 256>, u32> MakeTransformFeedbackVaryings(
