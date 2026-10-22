@@ -22,6 +22,7 @@
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
+#include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
 #include "video_core/renderer_d3d12/d3d12_draw_metrics.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_tracking.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
@@ -147,6 +148,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     }
     DrawMetrics::ScopedDrawTimer draw_timer;
     SCOPE_EXIT {
+        scheduler.EndWork();
         FlushIfUploadHeavy();
         gpu.TickWork();
     };
@@ -162,6 +164,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
         return;
     }
 
+    scheduler.BeginWork(false);
     hunt.PipelineStart();
     GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
     hunt.PipelineEnd();
@@ -386,6 +389,7 @@ void RasterizerD3D12::DispatchCompute() {
     HuntScope hunt{draw_hunt, Hunt::Kind::Dispatch};
     VideoCore::Perf::ScopedNsTimer dispatch_timer{VideoCore::Perf::Counter::DispatchNs};
     SCOPE_EXIT {
+        scheduler.EndWork();
         FlushIfUploadHeavy();
         // As after a draw: a guest core waiting on a flush is not held up by a compute batch.
         gpu.TickWork();
@@ -393,6 +397,7 @@ void RasterizerD3D12::DispatchCompute() {
     gpu_memory->FlushCaching();
     ApplyPendingStateInvalidation();
 
+    scheduler.BeginWork(true);
     hunt.PipelineStart();
     ComputePipeline* const pipeline = pipeline_cache.CurrentComputePipeline();
     hunt.PipelineEnd();
@@ -935,6 +940,22 @@ void RasterizerD3D12::FlushCommands() {
 }
 void RasterizerD3D12::FlushIfUploadHeavy() {
     if (removal_tripwire::removal_tripped.load(std::memory_order_relaxed)) return;
+    // Diagnostic (DiagSync's UAV barrier modes): a UAV barrier on every resource the draw or
+    // dispatch just ended made a UAV, or a global one.
+    std::vector<ID3D12Resource*>& written = scheduler.WorkUavs();
+    if (GetDiagSync() == DiagSync::GlobalUavBarrier) {
+        BarrierBatch barriers{scheduler};
+        barriers.Uav(nullptr);
+    } else if (!written.empty()) {
+        std::ranges::sort(written);
+        const auto [first, last] = std::ranges::unique(written);
+        written.erase(first, last);
+        BarrierBatch barriers{scheduler};
+        for (ID3D12Resource* const resource : written) {
+            barriers.Uav(resource);
+        }
+        written.clear();
+    }
     // A loading frame may upload more textures than the staging stream holds within one command
     // list (151 MiB in Game C; the stream is 256 MiB, and the memory guard shrinks it down to
     // nothing under pressure), and the stream only reuses submitted regions. The

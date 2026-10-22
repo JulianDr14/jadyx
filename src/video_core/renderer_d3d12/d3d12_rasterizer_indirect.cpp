@@ -64,12 +64,14 @@ void RasterizerD3D12::DrawIndirect() {
     }
     DrawMetrics::ScopedDrawTimer draw_timer;
     SCOPE_EXIT {
+        scheduler.EndWork();
         FlushIfUploadHeavy();
         gpu.TickWork();
     };
     gpu_memory->FlushCaching();
     ApplyPendingStateInvalidation();
 
+    scheduler.BeginWork(false);
     hunt.PipelineStart();
     GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
     hunt.PipelineEnd();
@@ -284,11 +286,13 @@ void RasterizerD3D12::DrawByteCount(const IndirectParams& params) {
     }
     DrawMetrics::ScopedDrawTimer draw_timer;
     SCOPE_EXIT {
+        scheduler.EndWork();
         FlushIfUploadHeavy();
         gpu.TickWork();
     };
     gpu_memory->FlushCaching();
     ApplyPendingStateInvalidation();
+    scheduler.BeginWork(false);
     GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
     if (!pipeline) {
         return;

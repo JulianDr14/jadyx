@@ -582,6 +582,7 @@ Image& Image::operator=(Image&& other) noexcept {
         state = other.state;
         needs_placed_init = other.needs_placed_init;
         write_version = other.write_version;
+        uav_work = other.uav_work;
         guest_blocks = std::move(other.guest_blocks);
         guest_blocks_coverage = std::move(other.guest_blocks_coverage);
         guest_blocks_version = other.guest_blocks_version;
@@ -645,6 +646,25 @@ void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
             InitializePlacedResource();
         }
     }
+    constexpr D3D12_RESOURCE_STATES WRITE_STATES =
+        D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+        D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_COPY_DEST |
+        D3D12_RESOURCE_STATE_RESOLVE_DEST;
+    const u64 work = runtime->scheduler.Work();
+    if (work != 0 && uav_work == work && state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
+        (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
+         ((next & WRITE_STATES) == 0 && next != D3D12_RESOURCE_STATE_COPY_SOURCE)) &&
+        GetDiagSync() != DiagSync::LastBindingWins) {
+        // Another binding of this draw or dispatch writes it: it stays a UAV (Scheduler::BeginWork),
+        // and its UAV barrier is in. AMD hardware, the Series included, samples it there too.
+        return;
+    }
+    if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && work != 0) {
+        uav_work = work;
+        if (runtime->scheduler.CollectsWorkUavs()) {
+            runtime->scheduler.WorkUavs().push_back(resource.Get());
+        }
+    }
     BarrierBatch local{runtime->scheduler};
     BarrierBatch& barriers = batch ? *batch : local;
     if (state == next) {
@@ -660,10 +680,6 @@ void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
                                 D3D12_RESOURCE_STATE_COPY_DEST);
         }
     } else {
-        constexpr D3D12_RESOURCE_STATES WRITE_STATES =
-            D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
-            D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_COPY_DEST |
-            D3D12_RESOURCE_STATE_RESOLVE_DEST;
         if ((next & WRITE_STATES) != 0) {
             ++write_version;
         }

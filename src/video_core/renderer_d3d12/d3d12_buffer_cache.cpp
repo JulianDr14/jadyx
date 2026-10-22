@@ -162,6 +162,7 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
         tracker = std::move(other.tracker);
         state = other.state;
         state_tick = other.state_tick;
+        uav_work = other.uav_work;
         charge = std::move(other.charge);
     }
     return *this;
@@ -178,6 +179,21 @@ void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
     }
     const u64 tick = scheduler->CurrentTick();
     const D3D12_RESOURCE_STATES current = state_tick == tick ? state : D3D12_RESOURCE_STATE_COMMON;
+    const u64 work = scheduler->Work();
+    if (work != 0 && uav_work == work && current == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
+        (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
+         next == D3D12_RESOURCE_STATE_GENERIC_READ) &&
+        GetDiagSync() != DiagSync::LastBindingWins) {
+        // Another binding of this draw or dispatch writes it: it stays a UAV (Scheduler::BeginWork),
+        // and its UAV barrier is in. AMD hardware, the Series included, reads buffers in any state.
+        return;
+    }
+    if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && work != 0) {
+        uav_work = work;
+        if (scheduler->CollectsWorkUavs()) {
+            scheduler->WorkUavs().push_back(buffer.Get());
+        }
+    }
     CommandStream* const cmd = scheduler->CommandList();
     if (current == next) {
         if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
