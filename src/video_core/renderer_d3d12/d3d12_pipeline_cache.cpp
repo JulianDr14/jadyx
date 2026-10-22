@@ -39,6 +39,7 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
+#include "video_core/renderer_d3d12/d3d12_stream_output.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
 #include "video_core/shader_environment.h"
@@ -107,32 +108,6 @@ void DumpDxil(u64 vertex_shader, u64 fragment_shader, u64 pipeline,
     }
     LOG_INFO(Render, "D3D12: pipeline DXIL VS {:016x} PS {:016x} key {:016x} dumped",
              vertex_shader, fragment_shader, pipeline);
-}
-
-/// spirv_to_dxil's stream output entries with the semantic names of the DXIL output signature.
-std::vector<D3D12_SO_DECLARATION_ENTRY> MakeStreamOutputDeclaration(
-    const eden_spirv_to_dxil_stream_output& stream_output) {
-    static constexpr std::array<const char*, 8> semantic_names{
-        nullptr,           "TEXCOORD",        "SV_Position",          "SV_ClipDistance",
-        "SV_CullDistance", "SV_PrimitiveID",  "SV_ViewportArrayIndex", "SV_RenderTargetArrayIndex",
-    };
-    const u32 count = std::min<u32>(stream_output.entry_count, EDEN_SPIRV_TO_DXIL_SO_MAX_ENTRIES);
-    std::vector<D3D12_SO_DECLARATION_ENTRY> entries;
-    entries.reserve(count);
-    for (u32 index = 0; index < count; ++index) {
-        const eden_spirv_to_dxil_so_entry& entry = stream_output.entries[index];
-        const char* const name =
-            entry.semantic < semantic_names.size() ? semantic_names[entry.semantic] : nullptr;
-        entries.push_back({
-            .Stream = entry.stream,
-            .SemanticName = name,
-            .SemanticIndex = name ? entry.semantic_index : 0U,
-            .StartComponent = name ? entry.start_component : BYTE{0},
-            .ComponentCount = entry.component_count,
-            .OutputSlot = entry.output_slot,
-        });
-    }
-    return entries;
 }
 
 using Shader::Backend::SPIRV::EmitSPIRV;

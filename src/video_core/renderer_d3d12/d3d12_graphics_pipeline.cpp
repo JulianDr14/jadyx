@@ -38,6 +38,7 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
+#include "video_core/renderer_d3d12/d3d12_stream_output.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_pipeline_diagnostics.h"
 #include "video_core/shader_notify.h"
@@ -713,18 +714,8 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
     // drops every primitive after it, so nothing reaches the pixel shader.
     const auto& stream_output = dxil->stream_output;
     if (!stream_output.empty()) {
-        UINT num_strides = 0;
-        for (const D3D12_SO_DECLARATION_ENTRY& entry : stream_output) {
-            num_strides = std::max<UINT>(num_strides, entry.OutputSlot + 1U);
-        }
         const bool rasterize = dynamic.rasterize_enable != 0;
-        desc.StreamOutput = {
-            .pSODeclaration = stream_output.data(),
-            .NumEntries = static_cast<UINT>(stream_output.size()),
-            .pBufferStrides = stream_output_strides.data(),
-            .NumStrides = num_strides,
-            .RasterizedStream = rasterize ? 0U : D3D12_SO_NO_RASTERIZED_STREAM,
-        };
+        desc.StreamOutput = DescribeStreamOutput(stream_output, stream_output_strides, rasterize);
         if (!rasterize) {
             desc.PS = {};
         }

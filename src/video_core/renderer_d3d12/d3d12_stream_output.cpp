@@ -1,8 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
+
+#include <eden_spirv_to_dxil.h>
 
 #include "video_core/host_shaders/d3d12_draw_auto_comp_spv.h"
 #include "video_core/renderer_d3d12/d3d12_command_stream.h"
@@ -30,6 +33,46 @@ constexpr u32 DRAW_AUTO_RUNTIME_DATA_PARAM = 3;
 constexpr u32 DRAW_AUTO_CONSTANT_WORDS = 2;
 
 } // Anonymous namespace
+
+std::vector<D3D12_SO_DECLARATION_ENTRY> MakeStreamOutputDeclaration(
+    const eden_spirv_to_dxil_stream_output& stream_output) {
+    static constexpr std::array<const char*, 8> semantic_names{
+        nullptr,           "TEXCOORD",        "SV_Position",          "SV_ClipDistance",
+        "SV_CullDistance", "SV_PrimitiveID",  "SV_ViewportArrayIndex", "SV_RenderTargetArrayIndex",
+    };
+    const u32 count = std::min<u32>(stream_output.entry_count, EDEN_SPIRV_TO_DXIL_SO_MAX_ENTRIES);
+    std::vector<D3D12_SO_DECLARATION_ENTRY> entries;
+    entries.reserve(count);
+    for (u32 index = 0; index < count; ++index) {
+        const eden_spirv_to_dxil_so_entry& entry = stream_output.entries[index];
+        const char* const name =
+            entry.semantic < semantic_names.size() ? semantic_names[entry.semantic] : nullptr;
+        entries.push_back({
+            .Stream = entry.stream,
+            .SemanticName = name,
+            .SemanticIndex = name ? entry.semantic_index : 0U,
+            .StartComponent = name ? entry.start_component : BYTE{0},
+            .ComponentCount = entry.component_count,
+            .OutputSlot = entry.output_slot,
+        });
+    }
+    return entries;
+}
+
+D3D12_STREAM_OUTPUT_DESC DescribeStreamOutput(std::span<const D3D12_SO_DECLARATION_ENTRY> entries,
+                                              std::span<const UINT, 4> strides, bool rasterize) {
+    UINT num_strides = 0;
+    for (const D3D12_SO_DECLARATION_ENTRY& entry : entries) {
+        num_strides = std::max<UINT>(num_strides, entry.OutputSlot + 1U);
+    }
+    return {
+        .pSODeclaration = entries.data(),
+        .NumEntries = static_cast<UINT>(entries.size()),
+        .pBufferStrides = strides.data(),
+        .NumStrides = num_strides,
+        .RasterizedStream = rasterize ? 0U : D3D12_SO_NO_RASTERIZED_STREAM,
+    };
+}
 
 StreamOutput::StreamOutput(const Device& device_, Scheduler& scheduler_,
                            const ShaderCompiler& compiler_)

@@ -5,17 +5,32 @@
 
 #include <array>
 #include <optional>
+#include <span>
+#include <vector>
 
 #include "common/common_types.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
 
+struct eden_spirv_to_dxil_stream_output;
+
 namespace D3D12 {
 
 class CommandStream;
 class Scheduler;
 class ShaderCompiler;
+
+/// spirv_to_dxil's stream output entries (eden_spirv_to_dxil_pipeline_v4) as a PSO declaration,
+/// with the semantic names of the DXIL output signature. Entries of an unknown semantic are gaps.
+[[nodiscard]] std::vector<D3D12_SO_DECLARATION_ENTRY> MakeStreamOutputDeclaration(
+    const eden_spirv_to_dxil_stream_output& stream_output);
+
+/// The stream output of a PSO capturing entries (MakeStreamOutputDeclaration), which must outlive
+/// it, as do strides (one per buffer). Without rasterization nothing streams to the rasterizer.
+[[nodiscard]] D3D12_STREAM_OUTPUT_DESC DescribeStreamOutput(
+    std::span<const D3D12_SO_DECLARATION_ENTRY> entries, std::span<const UINT, 4> strides,
+    bool rasterize);
 
 /// Transform feedback through D3D12 stream output, for the pipelines that capture it that way
 /// (PipelineLayout::StreamOutput).
