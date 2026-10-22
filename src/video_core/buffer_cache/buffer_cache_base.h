@@ -542,6 +542,8 @@ private:
     Common::OverlapRangeSet<DAddr> async_downloads;
     std::deque<std::optional<Async_Buffer>> async_buffers;
     std::deque<boost::container::small_vector<BufferCopy, 4>> pending_downloads;
+    /// Per pending download: ranges a GPU write rewrote after it was recorded, so it is stale there.
+    std::deque<Common::RangeSet<DAddr>> superseded_downloads;
     std::optional<Async_Buffer> current_buffer;
 
     std::deque<Async_Buffer> async_buffers_death_ring;

@@ -728,6 +728,7 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
     }
     runtime.PostCopyBarrier();
     pending_downloads.emplace_back(std::move(normalized_copies));
+    superseded_downloads.emplace_back();
     async_buffers.emplace_back(download_staging);
 }
 
@@ -754,29 +755,50 @@ void BufferCache<P>::PopAsyncBuffers() {
     auto& async_buffer = async_buffers.front();
     u8* base = async_buffer->mapped_span.data();
     const size_t base_offset = async_buffer->offset;
+    const Common::RangeSet<DAddr>& superseded = superseded_downloads.front();
+    // Visits the parts of [start, end) that no GPU write rewrote after this download was recorded.
+    const auto for_each_current = [&](DAddr start, DAddr end, auto&& func) {
+        DAddr cursor = start;
+        superseded.ForEachInRange(start, end - start, [&](DAddr lower, DAddr upper) {
+            if (lower > cursor) {
+                func(cursor, lower);
+            }
+            cursor = (std::max)(cursor, upper);
+        });
+        if (cursor < end) {
+            func(cursor, end);
+        }
+    };
     for (const auto& copy : downloads) {
         const DAddr device_addr = static_cast<DAddr>(copy.src_offset);
         const u64 dst_offset = copy.dst_offset - base_offset;
         const u8* read_mapped_memory = base + dst_offset;
-        async_downloads.ForEachInRange(device_addr, copy.size, [&](DAddr start, DAddr end, s32) {
-            if (ReadbackTrace::WriteOriginsEnabled() &&
-                memory_tracker.IsRegionCpuModified(start, end - start)) {
-                const u64 origin = write_origins.GetValueAt(static_cast<s64>(start));
-                ReadbackTrace::LogWriteConflict("download over cpu write", start, end - start,
-                                                origin & 0xff, origin >> 8, write_origin_seq);
-            }
-            device_memory.WriteBlockUnsafe(start, &read_mapped_memory[start - device_addr],
-                                           end - start);
-            ReadbackTrace::Log("buffer async", start, end - start,
-                               {&read_mapped_memory[start - device_addr], end - start});
+        async_downloads.ForEachInRange(device_addr, copy.size, [&](DAddr range_start,
+                                                                   DAddr range_end, s32) {
+            for_each_current(range_start, range_end, [&](DAddr start, DAddr end) {
+                if (ReadbackTrace::WriteOriginsEnabled() &&
+                    memory_tracker.IsRegionCpuModified(start, end - start)) {
+                    const u64 origin = write_origins.GetValueAt(static_cast<s64>(start));
+                    ReadbackTrace::LogWriteConflict("download over cpu write", start,
+                                                    end - start, origin & 0xff, origin >> 8,
+                                                    write_origin_seq);
+                }
+                device_memory.WriteBlockUnsafe(start, &read_mapped_memory[start - device_addr],
+                                               end - start);
+                ReadbackTrace::Log("buffer async", start, end - start,
+                                   {&read_mapped_memory[start - device_addr], end - start});
+            });
         });
-        async_downloads.Subtract(device_addr, copy.size, [&](DAddr start, DAddr end) {
-            gpu_modified_ranges.Subtract(start, end - start);
+        async_downloads.Subtract(device_addr, copy.size, [&](DAddr range_start, DAddr range_end) {
+            for_each_current(range_start, range_end, [&](DAddr start, DAddr end) {
+                gpu_modified_ranges.Subtract(start, end - start);
+            });
         });
     }
     async_buffers_death_ring.emplace_back(*async_buffer);
     async_buffers.pop_front();
     pending_downloads.pop_front();
+    superseded_downloads.pop_front();
 }
 
 template <class P>
@@ -1619,6 +1641,17 @@ void BufferCache<P>::MarkWrittenBuffer(ReadbackTrace::WriteOrigin origin, Buffer
             Buffer& buffer = slot_buffers[buffer_id];
             buffer.setWriteTick(runtime.CurrentTick());
         }
+    }
+    // A download still in flight holds this range's previous contents. Left alone, its pop writes
+    // them over guest memory and clears the dirty mark set below, so macro parameters read from
+    // the range see stale words (GPU-culled instance counts read as zero). Downloads committed
+    // after this write carry the new contents and still land.
+    if (!superseded_downloads.empty()) {
+        async_downloads.ForEachInRange(device_addr, size, [&](DAddr start, DAddr end, s32) {
+            for (auto& superseded : superseded_downloads) {
+                superseded.Add(start, end - start);
+            }
+        });
     }
     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
