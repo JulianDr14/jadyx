@@ -119,8 +119,9 @@ std::pair<std::array<Shader::TransformFeedbackVarying, 256>, u32> MakeTransformF
                 UNIMPLEMENTED_IF_MSG(attribute % 4 != 0 && attribute >= 160, "Unaligned TFB {}",
                                      attribute);
 
-                const auto base_index = attribute / 4;
-                while (offset + 1 < varying_count && base_index == get_attribute(offset + 1) / 4) {
+                // Only the next components of the same vector form one varying.
+                while (offset + 1 < varying_count && (attribute + varying.components) % 4 != 0 &&
+                       get_attribute(offset + 1) == attribute + varying.components) {
                     ++offset;
                     ++varying.components;
                 }
