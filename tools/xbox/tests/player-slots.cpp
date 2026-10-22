@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -44,5 +45,24 @@ int main() {
 
     // Everyone leaves.
     check(slots.Assign({}).size() == MaxPlayers - 1);
-    std::puts("player slots: assign/stable/leave/refill/overflow PASS");
+
+    // Player 1 keeps its pad while it can play, whatever the others do.
+    using Jadyx::PreferredPlayerOne;
+    std::vector<std::wstring> playable{L"one", L"two", L"three"};
+    const auto can_play = [&](const std::wstring& id) {
+        return std::find(playable.begin(), playable.end(), id) != playable.end();
+    };
+    slots.Assign({L"three", L"two"}); // Player 2 is "three", player 3 is "two".
+    check(PreferredPlayerOne(L"one", slots, can_play) == L"one");
+    // It leaves: the lowest player steps up, not the first pad listed.
+    playable.erase(playable.begin());
+    check(PreferredPlayerOne(L"one", slots, can_play) == L"three");
+    // Nobody yet: any pad.
+    check(PreferredPlayerOne(L"", Jadyx::PlayerSlots{}, can_play).empty());
+    // A player whose pad cannot play now is skipped.
+    playable = {L"two"};
+    check(PreferredPlayerOne(L"one", slots, can_play) == L"two");
+    playable.clear();
+    check(PreferredPlayerOne(L"one", slots, can_play).empty());
+    std::puts("player slots: assign/stable/leave/refill/overflow/player one PASS");
 }

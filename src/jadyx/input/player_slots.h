@@ -45,4 +45,17 @@ public:
 private:
     std::array<std::wstring, MaxPlayers> slots;
 };
+
+/// The pad automatic selection gives player 1: the one it has while that can still play, so a
+/// reordered pad list never swaps players mid-game; else the lowest other player's, so the rest
+/// keep their numbers; else empty, any pad. `playable(id)` says whether that pad can play now.
+template <typename Playable>
+std::wstring PreferredPlayerOne(const std::wstring& current, const PlayerSlots& slots,
+                                Playable playable) {
+    if (!current.empty() && playable(current)) return current;
+    for (std::size_t player = 1; player < MaxPlayers; ++player) {
+        if (!slots.Id(player).empty() && playable(slots.Id(player))) return slots.Id(player);
+    }
+    return {};
+}
 } // namespace Jadyx
