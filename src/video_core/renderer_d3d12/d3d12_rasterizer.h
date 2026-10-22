@@ -415,6 +415,11 @@ private:
     u64 material_sampled_depth_bytes{};
     void CaptureMaterialInputs(const GraphicsPipeline& pipeline,
                                std::span<const TracedBuffer> buffers, const DrawParams& params);
+    /// Menu capture: the stream output buffers and counters after a draw that captures transform
+    /// feedback natively, with its declaration and the guest's layout. Bounded per capture.
+    void CaptureMaterialStreamOutput(const GraphicsPipeline& pipeline, const DrawParams& params);
+    u32 material_xfb_draws{};
+    u64 material_xfb_bytes{};
     s32 material_probe_x{-1}, material_probe_y{-1};
     u32 material_probe_omitted{};
     void LogDrawTrace(std::string_view line);

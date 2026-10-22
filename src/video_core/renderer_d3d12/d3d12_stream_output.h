@@ -68,6 +68,13 @@ public:
     /// Copies the byte count of a buffer (ByteCountSlot) to dst, which is in COPY_DEST.
     void CopyByteCount(CommandStream* cmd, u32 slot, ID3D12Resource* dst, u64 dst_offset);
 
+    /// The four counters, 16 bytes apart: the byte count is the first word of each.
+    static constexpr u64 COUNTERS_BYTES = 64;
+
+    /// Copies the four counters (COUNTERS_BYTES) to dst, which is in COPY_DEST. A diagnostic; the
+    /// next capture binds the targets again.
+    void CopyCounters(CommandStream* cmd, ID3D12Resource* dst, u64 dst_offset);
+
     /// Builds the ExecuteIndirect record (INDIRECT_DRAW_WORDS) of a DrawAuto: byte_count / stride
     /// vertices from vertex 0, one instance. byte_count is a GPU address readable by a shader.
     /// Returns the record's buffer, in INDIRECT_ARGUMENT, at offset 0. Changes the compute root
@@ -99,6 +106,7 @@ private:
     };
 
     void Transition(CommandStream* cmd, TrackedBuffer& buffer, D3D12_RESOURCE_STATES next);
+    void UnbindTargets(CommandStream* cmd);
     void CreateDrawAutoPipeline();
 
     const Device& device;

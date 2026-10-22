@@ -290,6 +290,14 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     }
     RecordDraw(*pipeline, bindings, *framebuffer, params, draw_state.topology);
     full_draw_recorded = true;
+    if (material_trace.Active() && pipeline->Layout().StreamOutput() &&
+        maxwell3d->regs.transform_feedback_enabled != 0) {
+        try {
+            CaptureMaterialStreamOutput(*pipeline, params);
+        } catch (const std::exception& e) {
+            LOG_WARNING(Render, "D3D12 material stream output skipped: {}", e.what());
+        }
+    }
     if (full) {
         CaptureFullBuffers(traced_buffers, true);
         CaptureFullImages(full_views, framebuffer, true);

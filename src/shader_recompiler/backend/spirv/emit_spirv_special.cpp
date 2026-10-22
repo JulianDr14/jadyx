@@ -234,7 +234,7 @@ void WriteTransformFeedbackOutputs(EmitContext& ctx) {
     for (const TransformFeedbackCopy& copy : ctx.xfb_copies) {
         std::array<Id, 4> components{};
         for (u32 i = 0; i < copy.num_components; ++i) {
-            components[i] = CapturedComponent(ctx, copy.attribute + i);
+            components[i] = CapturedComponent(ctx, copy.attributes[i]);
         }
         const std::span<const Id> values(components.data(), copy.num_components);
         ctx.OpStore(copy.id, copy.num_components == 1

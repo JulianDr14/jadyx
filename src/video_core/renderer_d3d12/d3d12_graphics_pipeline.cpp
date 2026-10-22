@@ -1057,28 +1057,31 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
                       "{:016x}; its draws are skipped",
                       static_cast<u32>(code), key.unique_hashes[1], key.unique_hashes[5]);
     };
-    const auto create_pso = [&](ComPtr<ID3D12PipelineState>& handle) {
-        DWORD fault = 0;
+    const auto try_create = [&](ComPtr<ID3D12PipelineState>& handle, DWORD& fault) {
         if (bounds_test) {
             const HRESULT stream_hr = CallDriverGuarded(
                 [&] { return CreateWithDepthBounds(device.Get2(), desc, handle); }, fault);
-            if (SUCCEEDED(stream_hr)) {
-                return stream_hr;
-            }
-            if (stream_hr == DRIVER_FAULT_HRESULT) {
-                log_driver_fault(fault, handle);
+            if (SUCCEEDED(stream_hr) || stream_hr == DRIVER_FAULT_HRESULT) {
                 return stream_hr;
             }
             // The option bit is not a promise the driver takes the stream: draw without the test.
             WarnOnce(warned_depth_bounds, "the depth bounds test (pipeline stream rejected)");
         }
         ID3D12Device* const raw = device.Get();
-        const HRESULT plain_hr = CallDriverGuarded(
+        return CallDriverGuarded(
             [&] { return raw->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&handle)); }, fault);
-        if (plain_hr == DRIVER_FAULT_HRESULT) {
+    };
+    const auto create_pso = [&](ComPtr<ID3D12PipelineState>& handle) {
+        DWORD fault = 0;
+        HRESULT result;
+        {
+            std::shared_lock build_lock{PipelineBuildMutex()};
+            result = try_create(handle, fault);
+        }
+        if (result == DRIVER_FAULT_HRESULT) {
             log_driver_fault(fault, handle);
         }
-        return plain_hr;
+        return result;
     };
     const auto create = [&] {
         const u64 create_start = SteadyMicros();
@@ -1165,7 +1168,9 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
         if (hr == E_OUTOFMEMORY) {
             VideoCommon::GPUThread::ReportException("D3D12 graphics PSO allocation exhausted memory");
         } else if (FirstFailure(key.Hash())) {
-            // Every pipeline object with these shaders fails again; diagnose the first.
+            // Every pipeline object with these shaders fails again; diagnose the first, alone in
+            // the driver so that other builds do not decide its variants.
+            std::unique_lock build_lock{PipelineBuildMutex()};
             if (hr == DRIVER_FAULT_HRESULT) {
                 DumpFaultedPipeline(key.unique_hashes[1], key.unique_hashes[5], stages);
             }

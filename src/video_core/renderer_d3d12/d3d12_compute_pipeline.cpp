@@ -189,9 +189,12 @@ void ComputePipeline::Build() {
     };
     ID3D12Device* const raw = device.Get();
     DWORD fault = 0;
-    const HRESULT hr = CallDriverGuarded(
-        [&] { return raw->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline_state)); },
-        fault);
+    const HRESULT hr = [&] {
+        std::shared_lock build_lock{PipelineBuildMutex()};
+        return CallDriverGuarded(
+            [&] { return raw->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline_state)); },
+            fault);
+    }();
     if (hr == DRIVER_FAULT_HRESULT) {
         pipeline_state.Detach(); // whatever the driver left there is not an object to release
         BUG_TRACK_KEY(PipelineRejected, unique_hash,

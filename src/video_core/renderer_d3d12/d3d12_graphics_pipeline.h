@@ -269,6 +269,11 @@ public:
         return dxil && stage < dxil->stages.size() ? std::span<const u8>{dxil->stages[stage]}
                                                    : std::span<const u8>{};
     }
+    [[nodiscard]] std::span<const D3D12_SO_DECLARATION_ENTRY> DiagnosticStreamOutput()
+        const noexcept {
+        return dxil ? std::span<const D3D12_SO_DECLARATION_ENTRY>{dxil->stream_output}
+                    : std::span<const D3D12_SO_DECLARATION_ENTRY>{};
+    }
 
     [[nodiscard]] const StageBindings& StageInfo(size_t stage) const noexcept {
         static const StageBindings empty{};

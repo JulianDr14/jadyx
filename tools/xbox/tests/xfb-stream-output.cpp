@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Transform feedback through D3D12 stream output: a test bench of 30 cases (5 each of sanity,
-// functional, integration, regression, performance and exploratory) on the production pieces
+// Transform feedback through D3D12 stream output: a test bench of 33 cases (sanity, functional,
+// integration, regression, performance and exploratory) on the production pieces
 // (shader recompiler, MakeTransformFeedbackVaryings, spirv_to_dxil, RootSignatureCache,
 // StreamOutput, Buffer) and a real D3D12 device with the debug layer.
 //
@@ -35,6 +35,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <d3d12sdklayers.h>
@@ -685,6 +686,70 @@ void BuildFragment(ProgramBuilder& builder, IR::Program& p, const ShaderSpec& sp
     }
 }
 
+/// The layout rule the Series driver needs (DefineTransformFeedbackCopies): every output stream
+/// output reads is alone in its register, from component 0. Checked on the SPIR-V the last stage
+/// declares and on the stream output declaration built from it.
+void CheckCaptureLayout(std::span<const u32> spirv,
+                        std::span<const D3D12_SO_DECLARATION_ENTRY> declaration) {
+    static constexpr u32 OP_DECORATE = 71;
+    static constexpr u32 OP_VARIABLE = 59;
+    static constexpr u32 STORAGE_OUTPUT = 3;
+    static constexpr u32 DECORATION_LOCATION = 30;
+    static constexpr u32 DECORATION_COMPONENT = 31;
+    static constexpr u32 DECORATION_XFB_BUFFER = 36;
+    struct Output {
+        bool output{};
+        std::optional<u32> location;
+        bool component{};
+        bool captured{};
+    };
+    std::unordered_map<u32, Output> ids;
+    for (size_t word = 5; word < spirv.size();) {
+        const u32 count = spirv[word] >> 16;
+        const u32 opcode = spirv[word] & 0xFFFF;
+        CHECK(count != 0 && word + count <= spirv.size(), "malformed SPIR-V at word {}", word);
+        if (opcode == OP_VARIABLE && count >= 4 && spirv[word + 3] == STORAGE_OUTPUT) {
+            ids[spirv[word + 2]].output = true;
+        } else if (opcode == OP_DECORATE && count >= 3) {
+            Output& id = ids[spirv[word + 1]];
+            switch (spirv[word + 2]) {
+            case DECORATION_LOCATION:
+                id.location = spirv[word + 3];
+                break;
+            case DECORATION_COMPONENT:
+                id.component = true;
+                break;
+            case DECORATION_XFB_BUFFER:
+                id.captured = true;
+                break;
+            }
+        }
+        word += count;
+    }
+    std::array<u32, 32> per_location{};
+    for (const auto& [id, output] : ids) {
+        if (output.output && output.location && *output.location < per_location.size()) {
+            ++per_location[*output.location];
+        }
+    }
+    for (const auto& [id, output] : ids) {
+        if (!output.output || !output.captured || !output.location) continue;
+        CHECK(!output.component, "captured output %{} at location {} takes a component",
+              id, *output.location);
+        CHECK(per_location[*output.location] == 1,
+              "captured output %{} shares location {} with {} other output(s)", id,
+              *output.location, per_location[*output.location] - 1);
+    }
+    std::array<u32, 32> per_register{};
+    for (const D3D12_SO_DECLARATION_ENTRY& entry : declaration) {
+        if (!entry.SemanticName || std::string_view{entry.SemanticName} != "TEXCOORD") continue;
+        CHECK(entry.StartComponent == 0, "TEXCOORD{} captured from component {}",
+              entry.SemanticIndex, entry.StartComponent);
+        CHECK(entry.SemanticIndex < per_register.size() && ++per_register[entry.SemanticIndex] == 1,
+              "TEXCOORD{} captured twice", entry.SemanticIndex);
+    }
+}
+
 Pipeline Bench::Build(const ShaderSpec& spec, const Layouts& layout_set,
                       const PipelineConfig& config) {
     const auto start = std::chrono::steady_clock::now();
@@ -792,6 +857,7 @@ Pipeline Bench::Build(const ShaderSpec& spec, const Layouts& layout_set,
         out.declaration = MakeStreamOutputDeclaration(*out.so);
         for (u32 b = 0; b < 4; ++b) out.strides[b] = layout_set[b].Stride();
         desc.StreamOutput = DescribeStreamOutput(out.declaration, out.strides, config.rasterize);
+        CheckCaptureLayout(has_gs ? gs_spirv : vs_spirv, out.declaration);
     }
     if (!config.rasterize) desc.PS = {};
     static constexpr std::array<D3D12_INPUT_ELEMENT_DESC, 2> elements{{
@@ -1533,6 +1599,47 @@ void RegressionUnreadCaptures(Bench& bench) {
                        .call = {.vertices = MakeVertices(9)}});
 }
 
+void RegressionDriverFaultLayout(Bench& bench) {
+    // The vertex-only pass the Series driver faulted compiling (0xC0000005): xyz of generic 0 in
+    // buffer 0 and x of generics 1 and 2 in buffers 1 and 2, nothing rasterized. Packed, the
+    // capture of generic 1 shared a register with generic 0; each must now be alone in its own.
+    RunCapture(bench, {.spec = {.vs_generics = 0b111},
+                       .layouts = {BufferLayout{0, Vector(Gen(0, 0), 0, 3)},
+                                   BufferLayout{0, Vector(Gen(1, 0), 0, 1)},
+                                   BufferLayout{0, Vector(Gen(2, 0), 0, 1)}},
+                       .call = {.vertices = MakeVertices(9)}});
+}
+
+void RegressionCopiesAcrossVectors(Bench& bench) {
+    // Consecutive words of different vectors share a copy, a hole or a fifth word starts the
+    // next, a partial generic is copied without its neighbours, and a repeated capture (generic
+    // 0 z in two buffers) gets a copy of its own.
+    RunCapture(bench, {.spec = {.vs_generics = 0b1111, .vs_partial = 0b1000, .fs_loads = 0b1111},
+                       .layouts = {BufferLayout{0, Cat({Vector(Gen(0, 0), 2, 2),
+                                                        Vector(Gen(1, 0), 0, 2), Vector(Pos(0), 0, 4),
+                                                        {HOLE}, Vector(Gen(1, 0), 3, 1),
+                                                        Vector(Gen(3, 0), 0, 2)})},
+                                   BufferLayout{0, Cat({Vector(Gen(2, 0), 1, 3), {HOLE},
+                                                        Vector(Gen(0, 0), 2, 1)})}},
+                       .config = {.rasterize = true},
+                       .call = {.vertices = MakeVertices(9)}});
+}
+
+void RegressionFullRegisters(Bench& bench) {
+    // 30 generics stored, all captured whole in one buffer with the position: no free location
+    // for 31 copies, so the whole generics carry their captures themselves, still one output per
+    // register, and the position takes the location left.
+    BufferLayout layout{0, Vector(Pos(0), 0, 4)};
+    for (u32 g = 0; g < 30; ++g) {
+        const auto part = Vector(Gen(g, 0), 0, 4);
+        layout.attrs.insert(layout.attrs.end(), part.begin(), part.end());
+    }
+    RunCapture(bench, {.spec = {.vs_generics = (1u << 30) - 1, .fs_loads = (1u << 30) - 1},
+                       .layouts = {layout},
+                       .config = {.rasterize = true},
+                       .call = {.vertices = MakeVertices(6)}});
+}
+
 // =============================================================================================
 // Performance
 
@@ -1837,6 +1944,9 @@ constexpr std::array TESTS{
     Test{"regression", "append across command lists", RegressionAcrossSubmits},
     Test{"regression", "overflow writes whole primitives to every buffer or none", RegressionOverflow},
     Test{"regression", "captures the fragment shader does not read", RegressionUnreadCaptures},
+    Test{"regression", "the layout the Series driver faulted on", RegressionDriverFaultLayout},
+    Test{"regression", "copies across vectors, holes and repeats", RegressionCopiesAcrossVectors},
+    Test{"regression", "every register taken: whole generics capture in place", RegressionFullRegisters},
     Test{"performance", "pipeline build cost", PerformanceCompile},
     Test{"performance", "Bind cost", PerformanceBind},
     Test{"performance", "1M vertex capture", PerformanceThroughput},

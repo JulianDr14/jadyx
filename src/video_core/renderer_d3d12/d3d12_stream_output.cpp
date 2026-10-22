@@ -21,7 +21,7 @@ namespace {
 
 /// Each counter gets 16 bytes: BufferFilledSizeLocation only needs 4-byte alignment, but some
 /// drivers write more than the 32-bit count there.
-constexpr u64 COUNTER_STRIDE = 16;
+constexpr u64 COUNTER_STRIDE = StreamOutput::COUNTERS_BYTES / 4;
 
 /// Root parameters of d3d12_draw_auto.comp: its push constants (stride, yz_flip_mask), the byte
 /// count (the readonly SSBO at binding 0, t0), the record (binding 1, u1) and spirv_to_dxil's
@@ -165,8 +165,7 @@ std::optional<u32> StreamOutput::ByteCountSlot(const Maxwell& regs, u32 stream) 
     return std::nullopt;
 }
 
-void StreamOutput::CopyByteCount(CommandStream* cmd, u32 slot, ID3D12Resource* dst,
-                                 u64 dst_offset) {
+void StreamOutput::UnbindTargets(CommandStream* cmd) {
     // The GPU only stores a filled size when its target is unbound: until then the counter
     // still holds the count from before the last draws of this list.
     if (targets_tick == scheduler.CurrentTick()) {
@@ -175,9 +174,20 @@ void StreamOutput::CopyByteCount(CommandStream* cmd, u32 slot, ID3D12Resource* d
         cmd->SOSetTargets(0, static_cast<UINT>(unbound.size()), unbound.data());
         targets_tick = 0;
     }
+}
+
+void StreamOutput::CopyByteCount(CommandStream* cmd, u32 slot, ID3D12Resource* dst,
+                                 u64 dst_offset) {
+    UnbindTargets(cmd);
     Transition(cmd, counters, D3D12_RESOURCE_STATE_COPY_SOURCE);
     cmd->CopyBufferRegion(dst, dst_offset, counters.resource.Get(), slot * COUNTER_STRIDE,
                           sizeof(u32));
+}
+
+void StreamOutput::CopyCounters(CommandStream* cmd, ID3D12Resource* dst, u64 dst_offset) {
+    UnbindTargets(cmd);
+    Transition(cmd, counters, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    cmd->CopyBufferRegion(dst, dst_offset, counters.resource.Get(), 0, COUNTERS_BYTES);
 }
 
 void StreamOutput::CreateDrawAutoPipeline() {

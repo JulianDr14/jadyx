@@ -21,6 +21,11 @@ int FaultFilter(DWORD code) {
 
 } // Anonymous namespace
 
+std::shared_mutex& PipelineBuildMutex() {
+    static std::shared_mutex mutex;
+    return mutex;
+}
+
 // No objects with destructors here: __try cannot share a function with C++ unwinding.
 HRESULT CallDriverGuardedImpl(HRESULT (*call)(void*), void* context, DWORD& fault_code) {
     DWORD code = 0;

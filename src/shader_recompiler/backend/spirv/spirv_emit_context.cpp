@@ -8,6 +8,9 @@
 #include <array>
 #include <bit>
 #include <climits>
+#include <span>
+#include <tuple>
+#include <vector>
 
 #include <boost/container/static_vector.hpp>
 
@@ -193,14 +196,19 @@ void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invo
         const u32 remainder{4 - element};
         const TransformFeedbackVarying* xfb_varying{};
         const size_t xfb_varying_index{base_attr_index + element};
-        // Storage transform feedback reads whole outputs at the epilogue: no split needed.
-        if (!ctx.runtime_info.xfb_storage) {
+        // Only captures decorated in place split outputs: storage transform feedback reads whole
+        // outputs at the epilogue, and copy outputs capture copies of them, but for the whole
+        // generics PlanInPlaceCaptures leaves in place.
+        const bool in_place{!ctx.runtime_info.xfb_storage &&
+                            (!ctx.runtime_info.xfb_copy_outputs ||
+                             ((ctx.xfb_in_place_generics >> index) & 1) != 0)};
+        if (in_place) {
             xfb_varying = ctx.CapturedVarying(xfb_varying_index);
         }
         u32 num_components{remainder};
         if (xfb_varying) {
             num_components = xfb_varying->components;
-        } else if (!ctx.runtime_info.xfb_storage) {
+        } else if (in_place) {
             // Stop before the next captured component, so that it gets an output of its own.
             for (u32 next = element + 1; next < 4; ++next) {
                 if (ctx.CapturedVarying(base_attr_index + next)) {
@@ -239,23 +247,126 @@ void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invo
     }
 }
 
-/// Stream output only reads declared outputs, so native transform feedback declares the captured
-/// generics the shader never stores (written with their defaults) and copies of the captures no
-/// output carries itself: an output takes one capture decoration, built-ins take none, and the
-/// position is transformed (depth mode, Y flip) after the guest writes it. The copies are stored
-/// before those transforms, so the buffers get the values the guest wrote, like on Maxwell.
-void DefineTransformFeedbackOutputs(EmitContext& ctx, const Info& info,
-                                    std::optional<u32> invocations) {
+bool CapturesTransformFeedback(const EmitContext& ctx) {
     const RuntimeInfo& runtime_info{ctx.runtime_info};
-    if (runtime_info.xfb_count == 0 || runtime_info.xfb_storage) {
-        return;
+    return runtime_info.xfb_count != 0 && !runtime_info.xfb_storage &&
+           (ctx.stage == Stage::VertexB || ctx.stage == Stage::TessellationEval ||
+            ctx.stage == Stage::Geometry);
+}
+
+/// Generic locations the outputs can take: D3D12 has 32 output registers, and the position, the
+/// clip distances, the layer and the viewport index take theirs.
+u32 GenericLocationBudget(const EmitContext& ctx) {
+    static constexpr u32 OUTPUT_REGISTERS{32};
+    u32 builtins{1};
+    if (Sirit::ValidId(ctx.clip_distances)) {
+        builtins += Common::DivCeil((std::min)(ctx.profile.max_user_clip_distances, 8u), 4u);
     }
-    if (ctx.stage != Stage::VertexB && ctx.stage != Stage::TessellationEval &&
-        ctx.stage != Stage::Geometry) {
-        return;
+    builtins += Sirit::ValidId(ctx.layer) ? 1 : 0;
+    builtins += Sirit::ValidId(ctx.viewport_index) ? 1 : 0;
+    return OUTPUT_REGISTERS - builtins;
+}
+
+/// A captured component: where it goes, and the attribute holding its value.
+struct CapturedWord {
+    TransformFeedbackVarying varying; ///< one component, at its offset
+    u32 attribute{};
+    bool repeat{}; ///< from RuntimeInfo::xfb_repeats
+};
+
+/// The components of the captures a copy can carry, by buffer and offset.
+std::vector<CapturedWord> CopyableCapturedWords(const EmitContext& ctx) {
+    std::vector<CapturedWord> words;
+    const auto add = [&](u32 attribute, const TransformFeedbackVarying& varying, bool repeat) {
+        if (!IsCopyableCapture(static_cast<IR::Attribute>(attribute))) {
+            return; // not an output: a gap in the layout
+        }
+        for (u32 component = 0; component < varying.components; ++component) {
+            TransformFeedbackVarying word{varying};
+            word.offset += component * 4;
+            word.components = 1;
+            words.push_back({word, attribute + component, repeat});
+        }
+    };
+    for (u32 attribute = 0; attribute < ctx.runtime_info.xfb_count; ++attribute) {
+        if (const TransformFeedbackVarying* const varying{ctx.CapturedVarying(attribute)}) {
+            add(attribute, *varying, false);
+        }
     }
-    // Components of each generic location the shader or a capture takes.
-    std::array<u32, IR::NUM_GENERICS> used_components{};
+    for (const TransformFeedbackRepeat& repeat : ctx.runtime_info.xfb_repeats) {
+        if (ctx.Captures(repeat.varying)) {
+            add(repeat.attribute, repeat.varying, true);
+        }
+    }
+    std::ranges::sort(words, [](const CapturedWord& lhs, const CapturedWord& rhs) {
+        return std::tie(lhs.varying.buffer, lhs.varying.offset) <
+               std::tie(rhs.varying.buffer, rhs.varying.offset);
+    });
+    return words;
+}
+
+/// Calls func with each copy: a run of up to four consecutive words of one buffer, but for the
+/// words the generics in in_place carry themselves.
+template <typename Func>
+void ForEachCopy(std::span<const CapturedWord> all_words, u32 in_place, Func&& func) {
+    std::vector<CapturedWord> words;
+    for (const CapturedWord& word : all_words) {
+        const auto attr{static_cast<IR::Attribute>(word.attribute)};
+        if (word.repeat || !IR::IsGeneric(attr) ||
+            ((in_place >> IR::GenericAttributeIndex(attr)) & 1) == 0) {
+            words.push_back(word);
+        }
+    }
+    for (size_t first = 0; first < words.size();) {
+        size_t end{first + 1};
+        while (end < words.size() && end - first < 4 &&
+               words[end].varying.buffer == words[first].varying.buffer &&
+               words[end].varying.offset == words[end - 1].varying.offset + 4) {
+            ++end;
+        }
+        func(std::span<const CapturedWord>(words.data() + first, end - first));
+        first = end;
+    }
+}
+
+u32 StoredGenerics(const Info& info) {
+    u32 stored{};
+    for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
+        stored += info.stores.Generic(index) ? 1 : 0;
+    }
+    return stored;
+}
+
+/// The stored generics that carry their capture themselves (EmitContext::xfb_in_place_generics):
+/// none, unless the copies do not fit in the locations left. Then whole generics captured whole,
+/// one varying from x to w, each one location fewer: an output alone in its register like a copy.
+u32 PlanInPlaceCaptures(const EmitContext& ctx, const Info& info) {
+    if (!CapturesTransformFeedback(ctx) || !ctx.runtime_info.xfb_copy_outputs) {
+        return 0;
+    }
+    const std::vector<CapturedWord> words{CopyableCapturedWords(ctx)};
+    const u32 budget{GenericLocationBudget(ctx)};
+    const u32 stored{StoredGenerics(info)};
+    u32 in_place{};
+    for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
+        u32 copies{};
+        ForEachCopy(words, in_place, [&](std::span<const CapturedWord>) { ++copies; });
+        if (stored + copies <= budget) {
+            break;
+        }
+        const TransformFeedbackVarying* const varying{
+            ctx.CapturedVarying(static_cast<u32>(IR::Attribute::Generic0X) + index * 4)};
+        if (info.stores.Generic(index) && varying && varying->components == 4) {
+            in_place |= 1U << index;
+        }
+    }
+    return in_place;
+}
+
+/// Captures decorated in place (Vulkan): the captured generics the shader never stores are
+/// declared, and each vertex writes their defaults.
+void DefineUnstoredCapturedGenerics(EmitContext& ctx, const Info& info,
+                                    std::optional<u32> invocations) {
     for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
         const u32 base{static_cast<u32>(IR::Attribute::Generic0X) + index * 4};
         bool captured{};
@@ -266,56 +377,70 @@ void DefineTransformFeedbackOutputs(EmitContext& ctx, const Info& info,
             DefineGenericOutput(ctx, index, invocations, info.passthrough);
             ctx.xfb_unstored_generics |= 1U << index;
         }
-        if (captured || info.stores.Generic(index)) {
-            used_components[index] = 0xf;
-        }
     }
-    if (!runtime_info.xfb_copy_outputs) {
-        return;
+}
+
+/// D3D12 stream output reads declared outputs, and the Series driver faults compiling it when it
+/// reads an output packed into a register with another output. So an output the shader writes
+/// carries no capture, but for the whole generics PlanInPlaceCaptures leaves in place: the
+/// captures go out through copies, each a run of up to four consecutive words of one buffer alone
+/// in a free location, from component 0. The copies are stored before any position transform
+/// (depth mode, Y flip), so the buffers get the values the guest wrote, like on Maxwell, the
+/// built-ins' and the repeated captures' too.
+void DefineTransformFeedbackCopies(EmitContext& ctx, const Info& info,
+                                   std::optional<u32> invocations) {
+    const std::vector<CapturedWord> words{CopyableCapturedWords(ctx)};
+    // The next stage never reads a location this one does not store: the others are free.
+    std::array<bool, IR::NUM_GENERICS> used{};
+    for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
+        used[index] = info.stores.Generic(index);
     }
-    const auto define_copy = [&](u32 attribute, const TransformFeedbackVarying& varying) {
-        const auto attr{static_cast<IR::Attribute>(attribute)};
-        if (!IsCopyableCapture(attr)) {
-            return;
-        }
-        // The next stage never reads a location this one does not store, so any free components
-        // work. Copies share locations, from the last one down.
-        const u32 num_components{varying.components};
-        const u32 mask{(1U << num_components) - 1};
-        for (u32 location = IR::NUM_GENERICS; location-- > 0;) {
-            for (u32 element = 0; element + num_components <= 4; ++element) {
-                if ((used_components[location] & (mask << element)) != 0) {
-                    continue;
-                }
-                used_components[location] |= mask << element;
-                const Id id{
-                    DefineOutput(ctx, ctx.F32[num_components], invocations, {}, {}, false)};
-                ctx.Decorate(id, spv::Decoration::Location, location);
-                if (element > 0) {
-                    ctx.Decorate(id, spv::Decoration::Component, element);
-                }
-                DecorateCapture(ctx, id, varying);
-                ctx.Name(id, fmt::format("xfb_{}_{}", attr, num_components));
-                ctx.xfb_copies.push_back({
-                    .id = id,
-                    .attribute = attribute,
-                    .num_components = num_components,
-                });
-                return;
+    u32 used_count{StoredGenerics(info)};
+    const u32 budget{GenericLocationBudget(ctx)};
+    u32 skipped{};
+    ForEachCopy(words, ctx.xfb_in_place_generics, [&](std::span<const CapturedWord> run) {
+        const u32 num_components{static_cast<u32>(run.size())};
+        u32 location{IR::NUM_GENERICS};
+        if (used_count < budget) {
+            while (location-- > 0 && used[location]) {
             }
         }
-        LOG_WARNING(Shader_SPIRV, "No free location for the capture of {}: it is skipped", attr);
-    };
-    for (u32 attribute = 0; attribute < runtime_info.xfb_count; ++attribute) {
-        const TransformFeedbackVarying* const varying{ctx.CapturedVarying(attribute)};
-        if (varying && !IR::IsGeneric(static_cast<IR::Attribute>(attribute))) {
-            define_copy(attribute, *varying);
+        if (location >= IR::NUM_GENERICS) {
+            skipped += num_components;
+            return;
         }
+        used[location] = true;
+        ++used_count;
+        TransformFeedbackVarying varying{run.front().varying};
+        varying.components = num_components;
+        const Id id{DefineOutput(ctx, ctx.F32[num_components], invocations, {}, {}, false)};
+        ctx.Decorate(id, spv::Decoration::Location, location);
+        DecorateCapture(ctx, id, varying);
+        ctx.Name(id, fmt::format("xfb_{}_{}_{}", varying.buffer, varying.offset, num_components));
+        TransformFeedbackCopy copy{
+            .id = id,
+            .num_components = num_components,
+        };
+        for (u32 component = 0; component < num_components; ++component) {
+            copy.attributes[component] = run[component].attribute;
+        }
+        ctx.xfb_copies.push_back(copy);
+    });
+    if (skipped != 0) {
+        LOG_WARNING(Shader_SPIRV, "No free location for {} captured words: they are skipped",
+                    skipped);
     }
-    for (const TransformFeedbackRepeat& repeat : runtime_info.xfb_repeats) {
-        if (ctx.Captures(repeat.varying)) {
-            define_copy(repeat.attribute, repeat.varying);
-        }
+}
+
+void DefineTransformFeedbackOutputs(EmitContext& ctx, const Info& info,
+                                    std::optional<u32> invocations) {
+    if (!CapturesTransformFeedback(ctx)) {
+        return;
+    }
+    if (ctx.runtime_info.xfb_copy_outputs) {
+        DefineTransformFeedbackCopies(ctx, info, invocations);
+    } else {
+        DefineUnstoredCapturedGenerics(ctx, info, invocations);
     }
 }
 
@@ -2066,6 +2191,7 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
         viewport_mask = DefineOutput(*this, TypeArray(U32[1], Const(1u)), std::nullopt,
                                      spv::BuiltIn::ViewportMaskNV);
     }
+    xfb_in_place_generics = PlanInPlaceCaptures(*this, info);
     for (size_t index = 0; index < IR::NUM_GENERICS; ++index) {
         if (info.stores.Generic(index)) {
             DefineGenericOutput(*this, index, invocations, info.passthrough);

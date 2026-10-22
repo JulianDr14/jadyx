@@ -176,7 +176,7 @@ struct GenericElementInfo {
 /// An output holding a copy of captured components, for stream output (xfb_copy_outputs).
 struct TransformFeedbackCopy {
     Id id{};
-    u32 attribute{}; ///< the first component
+    std::array<u32, 4> attributes{}; ///< the attribute each component copies
     u32 num_components{};
 };
 
@@ -417,11 +417,15 @@ public:
     Id output_point_size{};
     Id output_position{};
     std::array<std::array<GenericElementInfo, 4>, 32> output_generics{};
-    /// RuntimeInfo::xfb_copy_outputs: the captures no output carries itself, at generic locations
-    /// the shader leaves free. Each vertex stores them before any position transform.
+    /// RuntimeInfo::xfb_copy_outputs: every capture, alone in a generic location the shader leaves
+    /// free (DefineTransformFeedbackCopies). Each vertex stores them before any position transform.
     std::vector<TransformFeedbackCopy> xfb_copies;
-    /// Captured generics the shader never stores: each vertex writes their defaults.
+    /// Captures decorated in place: the captured generics the shader never stores, whose defaults
+    /// each vertex writes.
     u32 xfb_unstored_generics{};
+    /// RuntimeInfo::xfb_copy_outputs: whole generics captured whole that carry their capture
+    /// themselves, when the copies do not fit in the free locations (PlanInPlaceCaptures).
+    u32 xfb_in_place_generics{};
 
     Id output_tess_level_outer{};
     Id output_tess_level_inner{};

@@ -232,6 +232,8 @@ bool RasterizerD3D12::BeginMaterialTrace(u64 pixel_shader, s32 probe_x, s32 prob
     material_input_bytes = 0;
     material_sampled_depth.clear();
     material_sampled_depth_bytes = 0;
+    material_xfb_draws = 0;
+    material_xfb_bytes = 0;
     return true;
 }
 
@@ -1649,6 +1651,71 @@ void RasterizerD3D12::CaptureMaterialInputs(const GraphicsPipeline& pipeline,
         LOG_INFO(Render, "D3D12 material input {}: address={:x} offset={} stride={} full_size={} "
                         "saved={} truncated={}", name, source.device_addr, source.offset,
                         source.stride, source.size, bytes, bytes != source.size);
+    }
+}
+
+void RasterizerD3D12::CaptureMaterialStreamOutput(const GraphicsPipeline& pipeline,
+                                                  const DrawParams& params) {
+    static constexpr u32 MAX_DRAWS = 48;
+    static constexpr u32 MAX_SLOT_BYTES = 256U << 10;
+    static constexpr u64 BUDGET = 16ULL << 20;
+    if (material_xfb_draws == MAX_DRAWS) return;
+    const u32 ordinal = material_xfb_draws++;
+    const auto& regs = maxwell3d->regs;
+    const u64 vs = pipeline.Key().unique_hashes[1];
+    const u64 ps = pipeline.Key().unique_hashes[5];
+    std::string declaration;
+    for (const D3D12_SO_DECLARATION_ENTRY& entry : pipeline.DiagnosticStreamOutput()) {
+        declaration += fmt::format(" [stream {} {}{} {}+{} slot {}]", entry.Stream,
+            entry.SemanticName ? entry.SemanticName : "gap", entry.SemanticIndex,
+            entry.StartComponent, entry.ComponentCount, entry.OutputSlot);
+    }
+    LOG_INFO(Render, "D3D12 material xfb #{}: VS={:016x} PS={:016x} vertices={} instances={} "
+                    "first_index={} base_vertex={} indexed={} rasterize={} decl:{}",
+             ordinal, vs, ps, params.num_vertices, params.num_instances, params.first_index,
+             params.base_vertex, params.is_indexed, regs.rasterize_enable, declaration);
+    const std::string prefix = fmt::format("material_{}_{}_xfb_{}_vs_{:016x}",
+                                           material_capture_stamp, material_capture_id, ordinal, vs);
+    const auto queue = [&](u32 bytes, std::string name, const auto& copy) {
+        material_buffer_readbacks.reserve(material_buffer_readbacks.size() + 1);
+        MaterialBufferReadback pending{{}, {}, {}, scheduler.CurrentTick(), bytes, std::move(name)};
+        pending.buffer = staging.Request(bytes, MemoryUsage::Download, true);
+        copy(pending.buffer);
+        material_xfb_bytes += bytes;
+        material_buffer_readbacks.push_back(std::move(pending));
+    };
+    queue(static_cast<u32>(StreamOutput::COUNTERS_BYTES), prefix + "_counters",
+          [&](const StagingBufferRef& dst) {
+              stream_output.CopyCounters(scheduler.CommandList(), dst.buffer, dst.offset);
+          });
+    const auto& bindings = buffer_runtime.TransformFeedbackBindings();
+    for (u32 index = 0; index < Tegra::Engines::Maxwell3D::Regs::NumTransformFeedbackBuffers;
+         ++index) {
+        const auto& buffer = regs.transform_feedback.buffers[index];
+        const auto& control = regs.transform_feedback.controls[index];
+        if (buffer.enable == 0) continue;
+        const auto& binding = bindings[index];
+        std::string attributes;
+        for (u32 offset = 0; offset < std::min<u32>(control.varying_count, 128); ++offset) {
+            const auto& word = regs.stream_out_layout[index][offset / 4];
+            const u32 values[4]{word.attribute0.Value(), word.attribute1.Value(),
+                                word.attribute2.Value(), word.attribute3.Value()};
+            attributes += fmt::format(" {}", values[offset % 4]);
+        }
+        const u32 bytes = std::min(binding.size, MAX_SLOT_BYTES);
+        LOG_INFO(Render, "D3D12 material xfb #{} slot {}: guest={:x} size={} start_offset={} "
+                        "stream={} stride={} varyings={} bound={} saved={} attributes:{}",
+                 ordinal, index, buffer.Address(), buffer.size, buffer.start_offset,
+                 control.stream, control.stride, control.varying_count, binding.size, bytes,
+                 attributes);
+        if (!binding.buffer || bytes == 0 || bytes > BUDGET - std::min(BUDGET, material_xfb_bytes))
+            continue;
+        const u64 offset = binding.address - binding.buffer->Address();
+        queue(bytes, fmt::format("{}_slot_{}", prefix, index), [&](const StagingBufferRef& dst) {
+            binding.buffer->Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
+            scheduler.CommandList()->CopyBufferRegion(dst.buffer, dst.offset,
+                                                      binding.buffer->Handle(), offset, bytes);
+        });
     }
 }
 
