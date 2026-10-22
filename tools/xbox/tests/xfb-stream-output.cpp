@@ -688,18 +688,26 @@ void BuildFragment(ProgramBuilder& builder, IR::Program& p, const ShaderSpec& sp
 Pipeline Bench::Build(const ShaderSpec& spec, const Layouts& layout_set,
                       const PipelineConfig& config) {
     const auto start = std::chrono::steady_clock::now();
-    VideoCommon::TransformFeedbackState state{};
+    // The key as the pipeline cache refreshes it, from the layout registers and the current
+    // buffer enables (SetTargets).
+    auto regs = std::make_unique<Maxwell>(Regs());
     for (u32 b = 0; b < 4; ++b) {
         const BufferLayout& layout = layout_set[b];
-        state.layouts[b] = {layout.stream, static_cast<u32>(layout.attrs.size()), layout.Stride()};
+        auto& control = regs->transform_feedback.controls[b];
+        control.stream = layout.stream;
+        control.varying_count = static_cast<u32>(layout.attrs.size());
+        control.stride = layout.Stride();
+        regs->stream_out_layout[b] = {};
         for (size_t w = 0; w < layout.attrs.size(); ++w) {
             u32 raw{};
-            std::memcpy(&raw, &state.varyings[b][w / 4], sizeof(raw));
+            std::memcpy(&raw, &regs->stream_out_layout[b][w / 4], sizeof(raw));
             raw |= (layout.attrs[w] & 0xFF) << ((w % 4) * 8);
-            std::memcpy(&state.varyings[b][w / 4], &raw, sizeof(raw));
+            std::memcpy(&regs->stream_out_layout[b][w / 4], &raw, sizeof(raw));
         }
     }
-    const auto [xfb_varyings, xfb_count] = VideoCommon::MakeTransformFeedbackVaryings(state);
+    VideoCommon::TransformFeedbackState state{};
+    state.Refresh(*regs);
+    const auto xfb_varyings = VideoCommon::MakeTransformFeedbackVaryings(state);
     const bool native = config.capture && !spec.storage && compiler.SupportsStreamOutput();
 
     ProgramBuilder builder;
@@ -715,11 +723,7 @@ Pipeline Bench::Build(const ShaderSpec& spec, const Layouts& layout_set,
     u32 lower_mask = 0;
     if (!has_gs) {
         for (u32 g = 0; g < 32; ++g) {
-            const size_t base = static_cast<size_t>(IR::Attribute::Generic0X) + g * 4;
-            const bool captured =
-                config.capture &&
-                std::any_of(xfb_varyings.begin() + base, xfb_varyings.begin() + base + 4,
-                            [](const auto& varying) { return varying.components != 0; });
+            const bool captured = config.capture && xfb_varyings.CapturesGeneric(g);
             if (fs.info.interpolation[g] == Shader::Interpolation::NoPerspective &&
                 fs.info.loads.Generic(g) && vs.info.stores.Generic(g) && !(native && captured)) {
                 lower_mask |= 1u << g;
@@ -742,10 +746,9 @@ Pipeline Bench::Build(const ShaderSpec& spec, const Layouts& layout_set,
         if (&program == &last) {
             info.convert_depth_mode = spec.convert_depth;
             if (config.capture) {
-                info.xfb_varyings = xfb_varyings;
-                info.xfb_count = xfb_count;
+                xfb_varyings.Apply(info);
                 info.xfb_storage = !native;
-                info.xfb_position_outputs = native;
+                info.xfb_copy_outputs = native;
             }
         }
         return info;
@@ -1129,6 +1132,10 @@ void SanityRootSignatures(Bench& bench) {
 
 void SanityPipelineStates(Bench& bench) {
     const Layouts layouts{BufferLayout{0, Cat({Vector(Pos(0), 0, 4), Vector(Gen(0, 0), 0, 4)})}};
+    // The cache keys pipelines on the live registers: buffer 0 has to be enabled to capture.
+    bench.layouts = layouts;
+    bench.AddTarget(0, 4096, 0, 1024);
+    bench.SetTargets();
     for (const bool rasterize : {false, true}) {
         const Pipeline pipeline = bench.Build({.fs_loads = 1}, layouts, {.rasterize = rasterize});
         CHECK(pipeline.native, "not native");
