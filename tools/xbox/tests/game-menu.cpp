@@ -228,6 +228,29 @@ int main() {
     I18n::SetUiLanguage(*I18n::FindUiLanguage(L"en"));
     check(hunt.Rows()[hunt.Selected()].label == L"Capture performance and resume");
     for (const auto& row : normal_rows) check(row.label != L"Capture performance and resume");
-    std::puts("game menu: controller combo, pages, navigation, settings, upscaling, cheats, screenshot and "
-              "opt-in capture PASS");
+    GameMenu plain_display{GameMenuSettings{}};
+    open_display(plain_display);
+    for (const auto& row : plain_display.Rows()) check(row.label != L"GPU synchronization (diagnostic)");
+    GameMenuSettings toggle_settings{};
+    toggle_settings.diag_toggles = true;
+    GameMenu toggles{toggle_settings};
+    open_display(toggles);
+    check(toggles.Rows().size() == plain_display.Rows().size() + 2);
+    while (toggles.SelectedItem() != GameMenu::GpuSync) toggles.Apply(MenuAction::Down);
+    check(toggles.Rows()[toggles.Selected()].label == L"GPU synchronization (diagnostic)");
+    check(toggles.Rows()[toggles.Selected()].value == L"Normal");
+    check(toggles.Apply(MenuAction::Left) == GameMenuResult::GpuSyncChanged);
+    check(toggles.Settings().gpu_sync == 5 &&
+          toggles.Rows()[toggles.Selected()].value == L"Global UAV barrier after everything");
+    check(toggles.Apply(MenuAction::Right) == GameMenuResult::GpuSyncChanged);
+    check(toggles.Apply(MenuAction::Right) == GameMenuResult::GpuSyncChanged);
+    check(toggles.Settings().gpu_sync == 1 && toggles.Rows()[toggles.Selected()].value == L"Previous state tracking");
+    toggles.Apply(MenuAction::Down);
+    check(toggles.SelectedItem() == GameMenu::OcclusionVisible);
+    check(toggles.Rows()[toggles.Selected()].label == L"Occlusion always visible (diagnostic)");
+    check(toggles.Rows()[toggles.Selected()].value == L"No");
+    check(toggles.Apply(MenuAction::Right) == GameMenuResult::OcclusionChanged);
+    check(toggles.Settings().occlusion_visible && toggles.Rows()[toggles.Selected()].value == L"Yes");
+    std::puts("game menu: controller combo, pages, navigation, settings, upscaling, cheats, screenshot, "
+              "opt-in capture and diagnostic toggles PASS");
 }

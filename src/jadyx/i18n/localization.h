@@ -145,6 +145,14 @@ enum class Text : std::uint16_t {
     MenuCaptureGraphics,
     MenuCapturePerformance,
     MenuFullScreen,
+    MenuGpuSync,
+    MenuGpuSyncNormal,
+    MenuGpuSyncLastBinding,
+    MenuGpuSyncWorkBarriers,
+    MenuGpuSyncDispatchBarriers,
+    MenuGpuSyncDrawBarriers,
+    MenuGpuSyncGlobalBarrier,
+    MenuOcclusionVisible,
     MenuBackToHome,
 
     // Game options and cheats
