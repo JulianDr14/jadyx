@@ -60,6 +60,7 @@ Patch-File "src\util\os_misc.c" `
 $s2d = Join-Path $src "src\microsoft\spirv_to_dxil"
 Copy-Item (Join-Path $PSScriptRoot "mesa\eden_pipeline.c") $s2d -Force
 Copy-Item (Join-Path $PSScriptRoot "mesa\eden_integer_sampling.h") $s2d -Force
+Copy-Item (Join-Path $PSScriptRoot "mesa\eden_reduction_sampling.h") $s2d -Force
 Copy-Item (Join-Path $PSScriptRoot "..\..\externals\spirv-to-dxil\include\eden_spirv_to_dxil.h") $s2d -Force
 Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
     "    spirv_to_dxil_get_version`n" `
@@ -77,6 +78,10 @@ Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
 Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
     "    eden_spirv_to_dxil_pipeline_v3`n" `
     "    eden_spirv_to_dxil_pipeline_v3`n    eden_spirv_to_dxil_pipeline_v4`n"
+# The flags this DLL understands (EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION is the first optional one).
+Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
+    "    eden_spirv_to_dxil_pipeline_v4`n" `
+    "    eden_spirv_to_dxil_pipeline_v4`n    eden_spirv_to_dxil_supported_flags`n"
 Patch-File "src\microsoft\spirv_to_dxil\meson.build" `
     "      'spirv_to_dxil.h',`n" `
     "      'spirv_to_dxil.h',`n      'eden_pipeline.c',`n      'eden_spirv_to_dxil.h',`n"

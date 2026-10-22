@@ -13,6 +13,7 @@
 #include "dxil_spirv_nir.h"
 #include "eden_spirv_to_dxil.h"
 #include "eden_integer_sampling.h"
+#include "eden_reduction_sampling.h"
 #include "nir_builder.h"
 #include "nir_to_dxil.h"
 #include "nir_xfb_info.h"
@@ -290,6 +291,8 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
        * nir_to_dxil's own optimization loop scalarizes and lowers what this emits. */
       if (lower_integer_sampling)
          eden_lower_integer_sampling(nir[i]);
+      if (flags & EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION)
+         eden_lower_reduction_sampling(nir[i]);
    }
 
    if (success) {
@@ -363,6 +366,12 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
 
    glsl_type_singleton_decref();
    return success;
+}
+
+uint32_t
+eden_spirv_to_dxil_supported_flags(void)
+{
+   return EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX | EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION;
 }
 
 bool
