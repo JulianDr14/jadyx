@@ -151,6 +151,9 @@ public:
     void BindVertexBuffer(u32 index, Buffer& buffer, u32 offset, u32 size, u32 stride);
     void BindVertexBuffer(u32 index, ID3D12Resource* buffer, u32 offset, u32 size, u32 stride);
     void BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bindings);
+    /// A vertex buffer binding the draw keeps: storage writes to it since it was bound (a
+    /// dispatch or draw in the same command list) need a barrier before vertex fetch reads it.
+    void KeepVertexBufferReadable(Buffer& buffer);
     void BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>& bindings);
     /// Transform feedback buffers of the last draw that enabled it, still in their previous
     /// state: stream output (StreamOutput) or the vertex shader's storage writes

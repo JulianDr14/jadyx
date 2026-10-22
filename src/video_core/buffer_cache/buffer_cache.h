@@ -929,6 +929,11 @@ void BufferCache<P>::BindHostVertexBuffers() {
             TouchBuffer(buffer, binding.buffer_id);
             SynchronizeBuffer(buffer, binding.device_addr, binding.size);
             if (!flags[Dirty::VertexBuffer0 + index]) {
+                // A backend with explicit resource states still needs the read barrier when a
+                // shader wrote the buffer since it was bound.
+                if constexpr (requires { runtime.KeepVertexBufferReadable(buffer); }) {
+                    runtime.KeepVertexBufferReadable(buffer);
+                }
                 flush_bindings();
                 continue;
             }

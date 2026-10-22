@@ -500,6 +500,10 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bi
     }
 }
 
+void BufferCacheRuntime::KeepVertexBufferReadable(Buffer& buffer) {
+    buffer.Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
+}
+
 void BufferCacheRuntime::ApplyGeometry(CommandStream* cmd) {
     if (pending_index && (!applied_index || std::memcmp(&*applied_index, &*pending_index,
                                                         sizeof(D3D12_INDEX_BUFFER_VIEW)) != 0)) {
