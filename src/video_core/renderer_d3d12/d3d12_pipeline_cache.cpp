@@ -77,6 +77,7 @@ bool HasShaderHash(const std::array<std::atomic<u64>, 4>& slots, u64 unique_hash
 }
 std::atomic_bool pipeline_eviction{true};
 std::atomic_bool pipeline_prewarm{true};
+std::atomic_bool transform_feedback_storage{false};
 
 /// Writes a translated stage's IR and SPIR-V next to the log (SetDumpedShader).
 void DumpShader(u64 unique_hash, size_t stage, const Shader::IR::Program& program,
@@ -108,6 +109,32 @@ void DumpDxil(u64 vertex_shader, u64 fragment_shader, u64 pipeline,
              vertex_shader, fragment_shader, pipeline);
 }
 
+/// spirv_to_dxil's stream output entries with the semantic names of the DXIL output signature.
+std::vector<D3D12_SO_DECLARATION_ENTRY> MakeStreamOutputDeclaration(
+    const eden_spirv_to_dxil_stream_output& stream_output) {
+    static constexpr std::array<const char*, 8> semantic_names{
+        nullptr,           "TEXCOORD",        "SV_Position",          "SV_ClipDistance",
+        "SV_CullDistance", "SV_PrimitiveID",  "SV_ViewportArrayIndex", "SV_RenderTargetArrayIndex",
+    };
+    const u32 count = std::min<u32>(stream_output.entry_count, EDEN_SPIRV_TO_DXIL_SO_MAX_ENTRIES);
+    std::vector<D3D12_SO_DECLARATION_ENTRY> entries;
+    entries.reserve(count);
+    for (u32 index = 0; index < count; ++index) {
+        const eden_spirv_to_dxil_so_entry& entry = stream_output.entries[index];
+        const char* const name =
+            entry.semantic < semantic_names.size() ? semantic_names[entry.semantic] : nullptr;
+        entries.push_back({
+            .Stream = entry.stream,
+            .SemanticName = name,
+            .SemanticIndex = name ? entry.semantic_index : 0U,
+            .StartComponent = name ? entry.start_component : BYTE{0},
+            .ComponentCount = entry.component_count,
+            .OutputSlot = entry.output_slot,
+        });
+    }
+    return entries;
+}
+
 using Shader::Backend::SPIRV::EmitSPIRV;
 using Shader::Maxwell::ConvertLegacyToGeneric;
 using Shader::Maxwell::GenerateGeometryPassthrough;
@@ -128,8 +155,8 @@ auto MakeSpan(Container& container) {
 
 // MaxwellToOutputTopology, MaxwellToCompareFunction, CastAttributeType and MakeRuntimeInfo follow
 // vk_pipeline_cache.cpp. D3D12 has no native OpenGL NDC, so the depth conversion always happens in
-// the shader; transform feedback is written by the vertex shader (xfb_storage), since stream output
-// semantics cannot follow the varyings spirv_to_dxil packs.
+// the shader. Transform feedback goes out through stream output, declared by spirv_to_dxil from the
+// Xfb decorations of the last pre-rasterization stage (CreateGraphicsPipeline sets it up).
 
 Shader::OutputTopology MaxwellToOutputTopology(Maxwell::PrimitiveTopology topology) {
     switch (topology) {
@@ -226,19 +253,6 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
                 info.fixed_state_point_size = point_size;
             }
             info.convert_depth_mode = gl_ndc;
-        }
-        if (key.state.xfb_enabled != 0) {
-            if (key.unique_hashes[2] == 0 && key.unique_hashes[3] == 0 &&
-                key.unique_hashes[4] == 0) {
-                const auto [varyings, count] =
-                    VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);
-                info.xfb_varyings = varyings;
-                info.xfb_count = count;
-                info.xfb_storage = true;
-            } else {
-                LOG_WARNING(Render, "D3D12: transform feedback after tessellation or geometry "
-                                    "shaders is not written");
-            }
         }
         std::ranges::transform(key.state.attributes, info.generic_input_types.begin(),
                                &CastAttributeType);
@@ -394,6 +408,15 @@ void SetGeometryDroppedShader(u64 unique_hash) {
 
 void SetPipelineEviction(bool enabled) {
     pipeline_eviction.store(enabled, std::memory_order_relaxed);
+}
+
+void SetTransformFeedbackStorage(bool enabled) {
+    transform_feedback_storage.store(enabled, std::memory_order_relaxed);
+}
+
+bool PipelineCache::NativeStreamOutput() const {
+    return compiler.SupportsStreamOutput() &&
+           !transform_feedback_storage.load(std::memory_order_relaxed);
 }
 
 void SetPipelinePrewarm(bool enabled) {
@@ -1031,6 +1054,34 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     std::array<std::vector<u32>, Maxwell::MaxShaderStage> spirv;
     boost::container::static_vector<size_t, Maxwell::MaxShaderStage> stage_indices;
 
+    // Transform feedback is captured where Maxwell captures it, after the last pre-rasterization
+    // stage: through stream output, in primitive order, with the counters carrying the buffer
+    // offsets across draws. Storage buffer writes from the vertex shader are the fallback, for an
+    // older spirv_to_dxil.dll or boot.cfg "xfb=storage"; they cover the vertex shader alone.
+    const bool has_geometry_stage{(key.unique_hashes[4] != 0 || layer_source_program != nullptr) &&
+                                  !drops_geometry};
+    const size_t xfb_program = has_geometry_stage          ? 4
+                               : key.unique_hashes[3] != 0 ? 3
+                                                           : 1;
+    const bool captures_xfb{key.state.xfb_enabled != 0};
+    const bool native_xfb{captures_xfb && compiler.SupportsStreamOutput() &&
+                          !transform_feedback_storage.load(std::memory_order_relaxed)};
+    std::array<Shader::TransformFeedbackVarying, 256> xfb_varyings{};
+    u32 xfb_count{};
+    if (captures_xfb) {
+        std::tie(xfb_varyings, xfb_count) =
+            VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);
+        if (!native_xfb && xfb_program != 1) {
+            LOG_WARNING(Render, "D3D12: transform feedback after tessellation or geometry "
+                                "shaders needs stream output; it is not written");
+        }
+    }
+    const auto captures_generic = [&](u32 index) {
+        const size_t base = static_cast<size_t>(Shader::IR::Attribute::Generic0X) + index * 4;
+        return std::any_of(xfb_varyings.begin() + base, xfb_varyings.begin() + base + 4,
+                           [](const auto& varying) { return varying.components != 0; });
+    };
+
     // Series corrupts native NoPerspective coordinates when clipping volumes
     // cross W=0. Preserve screen-linear semantics via smooth(a*clipW)/clipW.
     // Only direct VS -> FS is covered here: intermediate stages/indexed loads
@@ -1042,8 +1093,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         const auto& vertex_info = programs[1].info;
         const auto& fragment_info = programs[5].info;
         for (u32 index = 0; index < Shader::IR::NUM_GENERICS; ++index) {
+            // Stream output reads the varying itself: a captured one keeps native NoPerspective.
             if (fragment_info.interpolation[index] == Shader::Interpolation::NoPerspective &&
-                fragment_info.loads.Generic(index) && vertex_info.stores.Generic(index)) {
+                fragment_info.loads.Generic(index) && vertex_info.stores.Generic(index) &&
+                !(native_xfb && captures_generic(index))) {
                 lower_noperspective_mask |= 1U << index;
             }
         }
@@ -1081,6 +1134,12 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
         auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage)};
         runtime_info.lower_noperspective_mask = lower_noperspective_mask;
+        if (captures_xfb && index == xfb_program && (native_xfb || index == 1)) {
+            runtime_info.xfb_varyings = xfb_varyings;
+            runtime_info.xfb_count = xfb_count;
+            runtime_info.xfb_storage = !native_xfb;
+            runtime_info.xfb_position_outputs = native_xfb;
+        }
         ConvertLegacyToGeneric(program, runtime_info);
         Shader::Optimization::DemoteReturnVerdict demote_return{};
         const auto merged_demote_returns =
@@ -1110,7 +1169,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         stage_indices.push_back(stage_index);
         previous_stage = &program;
     }
-    const PipelineLayout& layout = root_signatures.Get(infos, false);
+    const PipelineLayout& layout = root_signatures.Get(infos, false, native_xfb);
 
     // SPIR-V to DXIL goes with the PSO build, on a worker: done here it stalled the GPU thread for
     // 150-490 ms per 300 frames when entering new areas (0.2.59 profile). Translating the guest
@@ -1118,7 +1177,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     auto compile_dxil = [this, spirv = std::move(spirv), stage_indices, dumps_dxil,
                          vertex_shader = key.unique_hashes[1],
                          fragment_shader = key.unique_hashes[5],
-                         pipeline_key = key.Hash()](u64 trace_pipeline, bool flatten_vertex) {
+                         pipeline_key = key.Hash(), native_xfb](u64 trace_pipeline,
+                                                                bool flatten_vertex) {
         boost::container::static_vector<ShaderCompiler::PipelineStage, Maxwell::MaxShaderStage>
             stages;
         for (const size_t stage_index : stage_indices) {
@@ -1137,37 +1197,54 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         for (const auto& stage : stages) {
             key_stages.push_back({stage.spirv, static_cast<u32>(stage.stage)});
         }
-        const std::array<u32, 5> key_options{
+        const std::array<u32, 6> key_options{
             static_cast<u32>(options.yz_flip), options.y_flip_mask, options.z_flip_mask,
             static_cast<u32>(options.first_vertex_and_base_instance),
-            static_cast<u32>(options.flatten_vertex)};
+            static_cast<u32>(options.flatten_vertex), static_cast<u32>(native_xfb)};
         auto key = MakeLinkedShaderKey(std::span(key_stages.data(), key_stages.size()), key_options);
         const auto cached = linked_shaders.Get(std::move(key), [&] {
-            auto compiled = compiler.CompilePipeline(std::span(stages.data(), stages.size()), options,
-                                                      trace_pipeline);
+            std::unique_ptr<eden_spirv_to_dxil_stream_output> stream_output;
+            ShaderCompiler::PipelineOptions linked_options = options;
+            if (native_xfb) {
+                stream_output = std::make_unique<eden_spirv_to_dxil_stream_output>();
+                linked_options.stream_output = stream_output.get();
+            }
+            auto compiled = compiler.CompilePipeline(std::span(stages.data(), stages.size()),
+                                                     linked_options, trace_pipeline);
             ChargedDxilStages dxil;
             u64 bytes = 0;
             for (size_t i = 0; i < compiled.size(); ++i) {
                 bytes += compiled[i].dxil.capacity();
-                dxil.stages[stage_indices[i]] = std::move(compiled[i].dxil);
+                dxil.linked.stages[stage_indices[i]] = std::move(compiled[i].dxil);
+            }
+            if (stream_output) {
+                dxil.linked.stream_output = MakeStreamOutputDeclaration(*stream_output);
+                bytes += dxil.linked.stream_output.capacity() * sizeof(D3D12_SO_DECLARATION_ENTRY);
+                if (stream_output->missing_outputs != 0 || stream_output->dropped_entries != 0) {
+                    BUG_TRACK_KEY(UnsupportedState, pipeline_key,
+                                  "VS {:016x} stream output leaves {} captured outputs unwritten "
+                                  "and drops {} entries",
+                                  vertex_shader, stream_output->missing_outputs,
+                                  stream_output->dropped_entries);
+                }
             }
             dxil.charge = Common::MemoryCharge(Common::MemoryAccount::ShaderBytecode, bytes);
             return dxil;
         }, [](const ChargedDxilStages& dxil) {
             size_t bytes = sizeof(dxil);
-            for (const auto& stage : dxil.stages) {
+            for (const auto& stage : dxil.linked.stages) {
                 bytes += stage.capacity();
             }
-            return bytes;
+            return bytes + dxil.linked.stream_output.capacity() * sizeof(D3D12_SO_DECLARATION_ENTRY);
         });
         // Export the actual linked bytes even when another pipeline populated this cache entry.
         if (dumps_dxil) [[unlikely]] {
-            DumpDxil(vertex_shader, fragment_shader, pipeline_key, cached.value->stages);
+            DumpDxil(vertex_shader, fragment_shader, pipeline_key, cached.value->linked.stages);
         }
         VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::PipelineCacheResult,
                                    static_cast<u64>(cached.outcome), trace_pipeline);
         // The pipeline keeps the whole entry, charge included, alive through its stages.
-        return GraphicsPipeline::SharedDxilStages(cached.value, &cached.value->stages);
+        return GraphicsPipeline::SharedDxilStages(cached.value, &cached.value->linked);
     };
 
     Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};

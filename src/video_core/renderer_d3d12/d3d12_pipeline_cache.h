@@ -66,6 +66,11 @@ void SetGeometryDroppedShader(u64 unique_hash);
 /// "pso_eviction=0").
 void SetPipelineEviction(bool enabled);
 
+/// true writes transform feedback from the vertex shader to storage buffers instead of stream
+/// output: the fallback for a spirv_to_dxil.dll without it, for A/B comparison. Covers the vertex
+/// shader alone. Set before boot (boot.cfg "xfb=storage").
+void SetTransformFeedbackStorage(bool enabled);
+
 /// Diagnostics: false never builds dormant PSOs ahead of their first draw, for A/B timing of the
 /// background prewarm. Set before boot (boot.cfg "pso_prewarm=0").
 void SetPipelinePrewarm(bool enabled);
@@ -88,7 +93,7 @@ struct ShaderPools {
 /// Linked DXIL as the linked shader cache holds it: charged to the memory ledger once, however
 /// many pipelines share it, until the last of them is gone.
 struct ChargedDxilStages {
-    GraphicsPipeline::DxilStages stages;
+    GraphicsPipeline::LinkedDxil linked;
     Common::MemoryCharge charge;
 };
 
@@ -130,6 +135,9 @@ public:
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipeline();
 
     [[nodiscard]] ComputePipeline* CurrentComputePipeline();
+
+    /// Whether the pipelines that capture transform feedback do it through stream output.
+    [[nodiscard]] bool NativeStreamOutput() const;
 
     /// Lanes of the fragment local memory pool (Shader::LocalMemoryScratch), or 0 without it.
     [[nodiscard]] u32 FragmentScratchLanes() const noexcept {

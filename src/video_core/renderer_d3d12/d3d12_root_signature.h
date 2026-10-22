@@ -92,6 +92,10 @@ public:
     const std::array<u32, 4>& TransformFeedbackBufferIndices() const noexcept {
         return xfb_buffer_indices;
     }
+    /// The pipelines of this layout capture transform feedback through stream output.
+    bool StreamOutput() const noexcept {
+        return stream_output;
+    }
     u32 NumResourceDescriptors() const noexcept {
         return num_resources;
     }
@@ -142,6 +146,7 @@ private:
     u32 num_resources{};
     u32 num_samplers{};
     u32 root_cbv_index{NO_TABLE};
+    bool stream_output{};
     std::vector<u32> root_cbv_registers;
     std::vector<u32> cbv_root_slots;
 };
@@ -170,8 +175,10 @@ public:
     ~RootSignatureCache();
 
     /// Layout for the stages of one pipeline, in the order their SPIR-V was emitted. Null entries
-    /// (absent stages) are skipped. Throws std::runtime_error if D3D12 rejects the signature.
-    const PipelineLayout& Get(std::span<const Shader::Info* const> infos, bool is_compute);
+    /// (absent stages) are skipped. stream_output: the pipeline declares stream output (native
+    /// transform feedback). Throws std::runtime_error if D3D12 rejects the signature.
+    const PipelineLayout& Get(std::span<const Shader::Info* const> infos, bool is_compute,
+                              bool stream_output = false);
 
 private:
     void CreateCommandSignatures(PipelineLayout& layout, bool is_compute);

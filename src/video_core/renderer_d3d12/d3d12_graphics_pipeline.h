@@ -161,7 +161,13 @@ public:
 
     static constexpr size_t NUM_STAGES = Maxwell::MaxShaderStage;
     using DxilStages = std::array<std::vector<u8>, NUM_STAGES>;
-    using SharedDxilStages = std::shared_ptr<const DxilStages>;
+    /// The linked stages, and the stream output declaration of the last pre-rasterization stage
+    /// when the pipeline captures transform feedback natively (empty otherwise).
+    struct LinkedDxil {
+        DxilStages stages;
+        std::vector<D3D12_SO_DECLARATION_ENTRY> stream_output;
+    };
+    using SharedDxilStages = std::shared_ptr<const LinkedDxil>;
     /// (trace id, flatten the vertex stage's branches) -> linked DXIL.
     using CompileDxil = std::function<SharedDxilStages(u64, bool)>;
 
@@ -260,8 +266,8 @@ public:
         return local_memory_scratch_words;
     }
     [[nodiscard]] std::span<const u8> DiagnosticDxil(size_t stage) const noexcept {
-        return dxil && stage < dxil->size() ? std::span<const u8>{(*dxil)[stage]}
-                                          : std::span<const u8>{};
+        return dxil && stage < dxil->stages.size() ? std::span<const u8>{dxil->stages[stage]}
+                                                   : std::span<const u8>{};
     }
 
     [[nodiscard]] const StageBindings& StageInfo(size_t stage) const noexcept {
@@ -368,6 +374,8 @@ private:
     u8 bound_color_targets{}; ///< Computed once from the immutable PSO write masks.
     bool depth_bounds{};
     bool blend_constant_alpha{};
+    /// Guest transform feedback buffer strides, for the stream output declaration.
+    std::array<UINT, Maxwell::NumTransformFeedbackBuffers> stream_output_strides{};
 
     std::vector<GraphicsPipelineCacheKey> transition_keys;
     std::vector<GraphicsPipeline*> transitions;

@@ -51,6 +51,12 @@ public:
         return lowers_integer_sampling;
     }
 
+    /// Whether linked pipelines report their stream output declaration
+    /// (eden_spirv_to_dxil_pipeline_v4), which native transform feedback needs.
+    bool SupportsStreamOutput() const {
+        return translate_pipeline_v4 != nullptr;
+    }
+
     /// Translates and signs one stage. Throws std::runtime_error with the translator's or the
     /// validator's message on failure. Vertex-pipeline stages get Vulkan's Y-down clip space flipped
     /// to D3D's when flip_y is set.
@@ -73,6 +79,9 @@ public:
         dxil_spirv_sysval_type first_vertex_and_base_instance = DXIL_SPIRV_SYSVAL_TYPE_ZERO;
         /// Turns every branch of the vertex stage into selects (EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX).
         bool flatten_vertex = false;
+        /// Filled with the last pre-rasterization stage's stream output declaration
+        /// (eden_spirv_to_dxil_pipeline_v4). Needs SupportsStreamOutput().
+        eden_spirv_to_dxil_stream_output* stream_output = nullptr;
     };
 
     /// Translates, links and signs the stages of one pipeline, given in pipeline order. Returns
@@ -94,6 +103,7 @@ private:
     PFN_spirv_to_dxil_free free_dxil{};
     PFN_eden_spirv_to_dxil_pipeline translate_pipeline{};
     decltype(&::eden_spirv_to_dxil_pipeline_v3) translate_pipeline_v3{};
+    decltype(&::eden_spirv_to_dxil_pipeline_v4) translate_pipeline_v4{};
     ComPtr<IDxcValidator> validator;
     /// The validator is shared by the pipeline workers.
     mutable std::mutex validator_mutex;

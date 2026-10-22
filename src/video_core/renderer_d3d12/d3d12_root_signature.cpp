@@ -162,7 +162,7 @@ void RootSignatureCache::CreateCommandSignatures(PipelineLayout& layout, bool is
 }
 
 const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* const> infos,
-                                              bool is_compute) {
+                                              bool is_compute, bool stream_output) {
     bool integer_textures = false;
     bool local_memory_scratch = false;
     u32 xfb_buffers = 0;
@@ -204,7 +204,8 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             "D3D12: {} bindings exceed the integer sampler table", binding));
     }
     std::vector<u32> key{(is_compute ? 1u : 0u) | (integer_textures ? 2u : 0u) |
-                         (local_memory_scratch ? 4u : 0u) | (xfb_buffers << 3)};
+                         (local_memory_scratch ? 4u : 0u) | (xfb_buffers << 3) |
+                         (stream_output ? 1u << 7 : 0u)};
     AppendKey(key, ranges.resources);
     AppendKey(key, ranges.samplers);
     key.push_back(static_cast<u32>(root.registers.size()));
@@ -309,13 +310,19 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
     }
     layout->root_cbv_registers = std::move(root.registers);
     layout->cbv_root_slots = std::move(root.slots);
+    D3D12_ROOT_SIGNATURE_FLAGS flags =
+        is_compute ? D3D12_ROOT_SIGNATURE_FLAG_NONE
+                   : D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    if (stream_output) {
+        flags |= D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT;
+        layout->stream_output = true;
+    }
     const D3D12_ROOT_SIGNATURE_DESC desc{
         .NumParameters = static_cast<UINT>(params.size()),
         .pParameters = params.data(),
         .NumStaticSamplers = 0,
         .pStaticSamplers = nullptr,
-        .Flags = is_compute ? D3D12_ROOT_SIGNATURE_FLAG_NONE
-                            : D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+        .Flags = flags,
     };
     layout->root_signature = CreateRootSignature(device.Get(), desc, "guest root signature");
     CreateCommandSignatures(*layout, is_compute);

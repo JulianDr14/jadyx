@@ -254,6 +254,11 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
     depth_bounds = device.SupportsDepthBounds() && key.state.depth_enabled != 0 &&
                    key.state.dynamic_state.depth_bounds_enable != 0;
     blend_constant_alpha = ReadsOnlyConstantAlpha(key.state, bound_color_targets);
+    if (key.state.xfb_enabled != 0) {
+        for (size_t index = 0; index < stream_output_strides.size(); ++index) {
+            stream_output_strides[index] = key.state.xfb_state.layouts[index].stride;
+        }
+    }
     if (shader_notify) {
         shader_notify->MarkShaderBuilding();
     }
@@ -691,7 +696,7 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
     using VideoCore::Surface::PixelFormatFromDepthFormat;
     using VideoCore::Surface::PixelFormatFromRenderTargetFormat;
 
-    const auto& stages = *dxil;
+    const auto& stages = dxil->stages;
     const FixedPipelineState& state = key.state;
     const FixedPipelineState::DynamicState& dynamic = state.dynamic_state;
 
@@ -702,6 +707,28 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
     desc.DS = Bytecode(stages[2]);
     desc.GS = Bytecode(stages[3]);
     desc.PS = Bytecode(stages[4]);
+
+    // Native transform feedback: the last pre-rasterization stage streams out the captured
+    // outputs where its Xfb decorations place them. Rasterizer discard keeps the capture and
+    // drops every primitive after it, so nothing reaches the pixel shader.
+    const auto& stream_output = dxil->stream_output;
+    if (!stream_output.empty()) {
+        UINT num_strides = 0;
+        for (const D3D12_SO_DECLARATION_ENTRY& entry : stream_output) {
+            num_strides = std::max<UINT>(num_strides, entry.OutputSlot + 1U);
+        }
+        const bool rasterize = dynamic.rasterize_enable != 0;
+        desc.StreamOutput = {
+            .pSODeclaration = stream_output.data(),
+            .NumEntries = static_cast<UINT>(stream_output.size()),
+            .pBufferStrides = stream_output_strides.data(),
+            .NumStrides = num_strides,
+            .RasterizedStream = rasterize ? 0U : D3D12_SO_NO_RASTERIZED_STREAM,
+        };
+        if (!rasterize) {
+            desc.PS = {};
+        }
+    }
 
     // Vertex input: nir_to_dxil names generic attribute N "TEXCOORD" N. Strides are dynamic (they
     // go in the vertex buffer views), so the layout only needs slots and offsets.
@@ -1017,7 +1044,7 @@ bool FirstFailure(u64 key_hash) {
 } // Anonymous namespace
 
 void GraphicsPipeline::Build(bool flatten_on_fault) try {
-    const auto& stages = *dxil;
+    const auto& stages = dxil->stages;
     std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
     auto desc = Describe(elements);
     const size_t num_attachments = desc.NumRenderTargets;
