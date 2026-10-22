@@ -224,6 +224,10 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
         command_state.topology = d3d_topology;
     }
     buffer_runtime.ApplyGeometry(cmd);
+    // Last: nothing after it may submit the list before the draw.
+    if (layout.StreamOutput() && regs.transform_feedback_enabled != 0) {
+        stream_output.Bind(cmd, regs, buffer_runtime.TransformFeedbackBindings());
+    }
     command_state.valid = true;
 }
 
@@ -320,6 +324,9 @@ void RasterizerD3D12::SetTransformFeedbackArguments(CommandStream* cmd,
     const auto& indices = layout.TransformFeedbackBufferIndices();
     for (u32 index = 0; index < Xfb::NUM_BUFFERS; ++index) {
         if (indices[index] != PipelineLayout::NO_TABLE) {
+            if (buffers[index].buffer) {
+                buffers[index].buffer->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            }
             cmd->SetGraphicsRootUnorderedAccessView(indices[index], buffers[index].address);
         }
     }

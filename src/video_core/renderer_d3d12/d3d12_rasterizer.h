@@ -23,6 +23,7 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_conditional_rendering.h"
 #include "video_core/renderer_d3d12/d3d12_query_cache.h"
+#include "video_core/renderer_d3d12/d3d12_stream_output.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_draw_hunt.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_material_trace.h"
@@ -73,6 +74,7 @@ public:
     void ResetCounter(VideoCommon::QueryType type) override;
     void Query(GPUVAddr, VideoCommon::QueryType, VideoCommon::QueryPropertiesFlags, u32,
                u32) override;
+    bool HasDrawTransformFeedback() override;
     void BindGraphicsUniformBuffer(size_t, u32, GPUVAddr, u32) override;
     void DisableGraphicsUniformBuffer(size_t, u32) override;
     void FlushAll() override;
@@ -231,6 +233,10 @@ private:
     void UpdateScissors(CommandStream* cmd);
     [[nodiscard]] D3D12_RECT ScissorRect(size_t index) const;
     void QueryFallback(GPUVAddr, VideoCommon::QueryType, VideoCommon::QueryPropertiesFlags, u32);
+    /// StreamingByteCount from the stream output counters (see StreamOutput).
+    void QueryByteCount(GPUVAddr, VideoCommon::QueryPropertiesFlags, u32 stream);
+    /// DrawAuto: a draw of as many vertices as a transform feedback byte count holds.
+    void DrawByteCount(const IndirectParams& params);
 
     // Draw trace (diagnostics/d3d12_draw_trace.cpp).
     /// One trace line (SetDrawTrace): what was recorded or why it was skipped.
@@ -277,6 +283,7 @@ private:
     SamplerHeap& sampler_heap;
     BlitImageHelper& blit_helper;
     IndirectArgumentRing indirect_args;
+    StreamOutput stream_output;
     std::vector<u32> indirect_words; ///< CPU part of the ExecuteIndirect records
     GuestDescriptorQueue descriptor_queue;
     BufferCache buffer_cache;

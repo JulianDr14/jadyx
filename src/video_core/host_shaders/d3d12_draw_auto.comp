@@ -1,0 +1,36 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// DrawAuto (draw from a transform feedback byte count) for the D3D12 renderer, which has no such
+// draw: turns the byte count into an ExecuteIndirect draw record of INDIRECT_DRAW_WORDS
+// (d3d12_root_signature.h). The record starts with the vertex runtime data words first_vertex,
+// base_instance, is_indexed_draw, yz_flip_mask and draw_id, then D3D12_DRAW_ARGUMENTS.
+
+#version 460 core
+
+layout(local_size_x = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer ByteCount {
+    uint byte_count;
+};
+
+layout(std430, set = 0, binding = 1) buffer Record {
+    uint record[9];
+};
+
+layout(push_constant) uniform Params {
+    uint stride;
+    uint yz_flip_mask;
+};
+
+void main() {
+    record[0] = 0;
+    record[1] = 0;
+    record[2] = 0;
+    record[3] = yz_flip_mask;
+    record[4] = 0;
+    record[5] = stride != 0 ? byte_count / stride : 0;
+    record[6] = 1;
+    record[7] = 0;
+    record[8] = 0;
+}

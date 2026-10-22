@@ -152,9 +152,11 @@ public:
     void BindVertexBuffer(u32 index, ID3D12Resource* buffer, u32 offset, u32 size, u32 stride);
     void BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bindings);
     void BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>& bindings);
-    /// Transform feedback buffers of the last draw that enabled it, written by its vertex shader
-    /// (Shader::TransformFeedbackStorage). Size 0: unbound.
+    /// Transform feedback buffers of the last draw that enabled it, still in their previous
+    /// state: stream output (StreamOutput) or the vertex shader's storage writes
+    /// (Shader::TransformFeedbackStorage) move them to theirs. Size 0: unbound.
     struct TransformFeedbackBinding {
+        Buffer* buffer{};
         D3D12_GPU_VIRTUAL_ADDRESS address{};
         u32 size{};
     };

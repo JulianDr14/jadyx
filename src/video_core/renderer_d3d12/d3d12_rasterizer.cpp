@@ -89,6 +89,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
       buffer_runtime{buffer_runtime_}, texture_runtime{texture_runtime}, descriptor_ring{descriptor_ring_},
       sampler_heap{sampler_heap_}, blit_helper{blit_helper_},
       indirect_args{device, scheduler_, staging},
+      stream_output{device, scheduler_, compiler},
       descriptor_queue{device.Get(), descriptor_ring_},
       buffer_cache{device_memory_, buffer_runtime_}, texture_cache{texture_runtime, device_memory_},
       pipeline_cache{device_memory_, device, compiler, texture_runtime, gpu_.ShaderNotify()},
@@ -128,6 +129,9 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     }
     ++draw_counter;
     ++zpass_diag.attempted;
+    if (maxwell3d->regs.transform_feedback_enabled == 0) {
+        stream_output.Disable();
+    }
     const u64 full_operation = full_capture_operation;
     bool full_draw_recorded = false;
     SCOPE_EXIT {
@@ -597,7 +601,8 @@ void RasterizerD3D12::ResetCounter(VideoCommon::QueryType type) {
 }
 
 void RasterizerD3D12::Query(GPUVAddr address, VideoCommon::QueryType type,
-                            VideoCommon::QueryPropertiesFlags flags, u32 payload, u32) {
+                            VideoCommon::QueryPropertiesFlags flags, u32 payload,
+                            u32 subreport) {
     const auto host_type = MaxwellToVideoCoreQuery(type);
     {
         // Diagnostic: every guest query by raw type, logged at 1, 2, 4, 8... requests.
@@ -626,10 +631,51 @@ void RasterizerD3D12::Query(GPUVAddr address, VideoCommon::QueryType type,
                         d.vs[1], d.ps[1], d.depth_test[1], d.vs[2], d.ps[2], d.depth_test[2]);
         }
     }
+    if (type == VideoCommon::QueryType::StreamingByteCount && HasDrawTransformFeedback()) {
+        return QueryByteCount(address, flags, subreport);
+    }
     if (!host_type) return QueryFallback(address, type, flags, payload);
     const bool timeout = True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout);
     query_cache.Query(address, *host_type,
                       timeout ? std::optional<u64>{gpu.GetTicks()} : std::nullopt);
+}
+
+bool RasterizerD3D12::HasDrawTransformFeedback() {
+    return pipeline_cache.NativeStreamOutput();
+}
+
+void RasterizerD3D12::QueryByteCount(GPUVAddr address, VideoCommon::QueryPropertiesFlags flags,
+                                     u32 stream) {
+    // Written on the GPU, ordered after the captures, into the guest memory the buffer cache
+    // holds (as the Vulkan backend's SyncValues): DrawAuto reads it there without a stall.
+    const bool timeout = True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout);
+    std::scoped_lock lock{buffer_cache.mutex};
+    const auto [buffer, offset] = buffer_cache.ObtainBuffer(
+        address, timeout ? 16 : 4, VideoCommon::ObtainBufferSynchronize::FullSynchronize,
+        VideoCommon::ObtainBufferOperation::MarkAsWritten);
+    if (!buffer || !buffer->Handle()) {
+        return QueryFallback(address, VideoCommon::QueryType::Payload, flags, 0);
+    }
+    CommandStream* const cmd = scheduler.CommandList();
+    buffer->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
+    const D3D12_GPU_VIRTUAL_ADDRESS base = buffer->Address() + offset;
+    std::array<D3D12_WRITEBUFFERIMMEDIATE_PARAMETER, 4> words{};
+    UINT num_words = 0;
+    // No capture with the current registers wrote the stream: nothing was written.
+    if (const std::optional<u32> slot = stream_output.ByteCountSlot(maxwell3d->regs, stream)) {
+        stream_output.CopyByteCount(cmd, *slot, buffer->Handle(), offset);
+    } else {
+        words[num_words++] = {.Dest = base, .Value = 0};
+    }
+    if (timeout) {
+        const u64 ticks = gpu.GetTicks();
+        words[num_words++] = {.Dest = base + 4, .Value = 0};
+        words[num_words++] = {.Dest = base + 8, .Value = static_cast<u32>(ticks)};
+        words[num_words++] = {.Dest = base + 12, .Value = static_cast<u32>(ticks >> 32)};
+    }
+    if (num_words != 0) {
+        cmd->WriteBufferImmediate(num_words, words.data());
+    }
 }
 
 void RasterizerD3D12::QueryFallback(GPUVAddr address, VideoCommon::QueryType type,

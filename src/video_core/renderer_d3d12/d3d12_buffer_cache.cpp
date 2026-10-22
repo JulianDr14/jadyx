@@ -171,7 +171,9 @@ void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
     if (!scheduler || !buffer) {
         return;
     }
-    if (mark_written && (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS || next == D3D12_RESOURCE_STATE_COPY_DEST)) {
+    if (mark_written && (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
+                         next == D3D12_RESOURCE_STATE_COPY_DEST ||
+                         next == D3D12_RESOURCE_STATE_STREAM_OUT)) {
         ++generation;
     }
     const u64 tick = scheduler->CurrentTick();
@@ -611,9 +613,9 @@ void BufferCacheRuntime::BindTransformFeedbackBuffers(VideoCommon::HostBindings<
         if (!buffer.Handle() || offset % 4 != 0 || offset >= buffer.SizeBytes()) {
             continue;
         }
-        buffer.Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         const u64 size = std::min<u64>(bindings.sizes[index], buffer.SizeBytes() - offset);
-        binding = {.address = buffer.Address() + offset, .size = static_cast<u32>(size)};
+        binding = {.buffer = &buffer, .address = buffer.Address() + offset,
+                   .size = static_cast<u32>(size)};
     }
 }
 
