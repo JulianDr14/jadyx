@@ -487,6 +487,16 @@ Settings::ControllerType ToSettingsType(ConsoleControllerStyle style) {
     }
 }
 
+/// The style of a player controller (handheld is its own controller, see SyncControllerStyle).
+ConsoleControllerStyle FromNpadStyle(Core::HID::NpadStyleIndex style) {
+    switch (style) {
+    case Core::HID::NpadStyleIndex::JoyconDual:  return ConsoleControllerStyle::DualJoycon;
+    case Core::HID::NpadStyleIndex::JoyconLeft:  return ConsoleControllerStyle::LeftJoycon;
+    case Core::HID::NpadStyleIndex::JoyconRight: return ConsoleControllerStyle::RightJoycon;
+    default:                                     return ConsoleControllerStyle::Pro;
+    }
+}
+
 SupportedControllerStyles SupportedStyles(const Core::HID::HIDCore& hid) {
     const auto tag = hid.GetSupportedStyleTag();
     return {.fullkey = tag.fullkey != 0, .joycon_dual = tag.joycon_dual != 0,
@@ -522,12 +532,7 @@ ConsoleControllerStyle GamepadInput::SyncControllerStyle() {
     auto* handheld = hid->GetEmulatedController(NpadIdType::Handheld);
     const auto seen = [&] {
         if (handheld->IsConnected()) return ConsoleControllerStyle::Handheld;
-        switch (player->GetNpadStyleIndex()) {
-        case NpadStyleIndex::JoyconDual:  return ConsoleControllerStyle::DualJoycon;
-        case NpadStyleIndex::JoyconLeft:  return ConsoleControllerStyle::LeftJoycon;
-        case NpadStyleIndex::JoyconRight: return ConsoleControllerStyle::RightJoycon;
-        default:                          return ConsoleControllerStyle::Pro;
-        }
+        return FromNpadStyle(player->GetNpadStyleIndex());
     };
     const auto current = seen();
     const auto chosen = Options().style;
@@ -635,14 +640,21 @@ void GamepadInput::Run(std::stop_token stop) {
     std::vector<bool> announced(script.size());
     PlayerSlots slots;
     std::array<ExtraPlayer, MaxPlayers> extras; // Index 0 unused: player 1 is `pad`.
+    // Player 1's pad, kept while a read fails so it is not handed to another player meanwhile.
+    std::wstring player1_id;
     SupportedControllerStyles supported{};
     // Eden binds player N to virtual_gamepad port N; connecting it is all the game needs to see
     // a new controller, as when a pad is paired on a Switch.
     const auto connect_extra = [&](std::size_t player) {
         auto& extra = extras[player];
         const auto wanted = ExtraPlayerStyle(style, supported);
+        // Connect would refuse it; trying again every poll would only fill the log.
+        if (!IsStyleSupported(wanted, supported)) return;
         auto* controller = hid->GetEmulatedControllerByIndex(player);
-        if (controller->IsConnected() && extra.style == wanted) return;
+        if (controller->IsConnected() && controller->GetNpadStyleIndex() == ToNpadStyle(wanted)) {
+            extra.style = wanted;
+            return;
+        }
         controller->Disconnect();
         controller->SetNpadStyleIndex(ToNpadStyle(wanted));
         controller->Connect();
@@ -663,11 +675,14 @@ void GamepadInput::Run(std::stop_token stop) {
         if (style_polls++ % 125 == 0 || style_changed.load()) {
             style = SyncControllerStyle();
             supported = SupportedStyles(*hid);
-            // Players still playing follow player 1's style; one the game dropped stays out
-            // until its pad presses a button.
+            // A player keeps the style the game (or its controller applet) connected it as while
+            // the game accepts it; one the game dropped stays out until its pad presses a button.
             for (std::size_t player = 1; player < MaxPlayers; ++player) {
-                if (extras[player].pad && hid->GetEmulatedControllerByIndex(player)->IsConnected())
-                    connect_extra(player);
+                auto* controller = hid->GetEmulatedControllerByIndex(player);
+                if (!extras[player].pad || !controller->IsConnected()) continue;
+                const auto current = FromNpadStyle(controller->GetNpadStyleIndex());
+                if (IsStyleSupported(current, supported)) extras[player].style = current;
+                else connect_extra(player);
             }
         }
         // The gamepad list is cheap to query but changes rarely: look again twice a second.
@@ -677,7 +692,14 @@ void GamepadInput::Run(std::stop_token stop) {
                 const bool catalog_changed = controllers.Update(std::chrono::steady_clock::now(),
                                    EnumerateControllers, SameControllerList);
                 const auto& devices = controllers.Devices();
-                const auto selected = controllers.Select(current_options.controller_id);
+                const auto& chosen_id = current_options.controller_id;
+                const auto selected = controllers.Select(chosen_id.empty() ?
+                    PreferredPlayerOne(player1_id, slots, [&](const std::wstring& id) {
+                        return controllers.Select(id) != nullptr;
+                    }) : chosen_id);
+                if (selected) player1_id = selected->id;
+                else if (!chosen_id.empty())
+                    player1_id = chosen_id == KeyboardControllerId ? std::wstring{} : chosen_id;
                 const bool selection_changed = bool(pad) != bool(selected) ||
                     (pad && selected && pad->id != selected->id);
                 if (catalog_changed || selection_changed)
@@ -697,7 +719,7 @@ void GamepadInput::Run(std::stop_token stop) {
                     // Every other pad plays players 2-8.
                     std::vector<std::wstring> ids;
                     for (const auto& device : devices) {
-                        if (device && (!pad || device.id != pad->id)) ids.push_back(device.id);
+                        if (device && device.id != player1_id) ids.push_back(device.id);
                     }
                     const auto changed = slots.Assign(ids);
                     for (std::size_t player = 1; player < MaxPlayers; ++player) {
