@@ -588,6 +588,7 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_draw_targets.h
         renderer_d3d12/d3d12_debug_messages.h
         renderer_d3d12/d3d12_sampler.cpp
+        renderer_d3d12/d3d12_border_color.h
         renderer_d3d12/d3d12_texture_cache_internal.h
         renderer_d3d12/d3d12_texture_formats.cpp
         renderer_d3d12/d3d12_transfer_buffer_pool.cpp

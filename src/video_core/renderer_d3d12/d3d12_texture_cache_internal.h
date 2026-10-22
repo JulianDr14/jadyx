@@ -125,6 +125,7 @@ inline std::atomic<bool> decode_bc_arrays{true};
 inline std::atomic<bool> gpu_astc_decode{true};
 inline std::atomic<int> gpu_astc_verify{0}; ///< GPU ASTC uploads left to check against the CPU
 inline std::atomic<bool> gpu_astc_sync{false};
+inline std::atomic<bool> force_min_max_filter{false};
 inline std::atomic<bool> gpu_astc_fresh{false};
 
 constexpr u64 ASTC_RGBA_SCRATCH_BUDGET = 32ULL * 1024 * 1024;

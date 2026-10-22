@@ -117,6 +117,10 @@ void SetAstcGpuSync(bool enabled) {
     gpu_astc_sync.store(enabled, std::memory_order_relaxed);
 }
 
+void SetForceMinMaxFilter(bool enabled) {
+    force_min_max_filter.store(enabled, std::memory_order_relaxed);
+}
+
 void SetAstcGpuVerify(bool enabled) {
     gpu_astc_verify.store(enabled ? 64 : 0, std::memory_order_relaxed);
 }
@@ -148,8 +152,11 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
         SUCCEEDED(device.Get()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options,
                                                     sizeof(options))) &&
         options.TiledResourcesTier >= D3D12_TILED_RESOURCES_TIER_2;
-    LOG_INFO(Render, "D3D12: texture cache runtime ready (min/max sampler reduction {})",
-             supports_min_max_filter ? "yes" : "no");
+    const bool reported_min_max = supports_min_max_filter;
+    supports_min_max_filter |= force_min_max_filter.load(std::memory_order_relaxed);
+    LOG_INFO(Render, "D3D12: texture cache runtime ready (min/max sampler reduction {}{})",
+             supports_min_max_filter ? "yes" : "no",
+             supports_min_max_filter != reported_min_max ? ", forced by boot.cfg" : "");
 }
 
 TextureCacheRuntime::~TextureCacheRuntime() {

@@ -17,6 +17,7 @@
 #include "shader_recompiler/shader_info.h"
 #include "video_core/renderer_d3d12/d3d12_cache_policy.h"
 #include "video_core/renderer_d3d12/d3d12_bc_copy.h"
+#include "video_core/renderer_d3d12/d3d12_border_color.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_gc_readback.h"
 #include "video_core/renderer_d3d12/d3d12_resource_allocator.h"
@@ -516,6 +517,11 @@ public:
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE DepthFeedbackHandle(
         Shader::TextureType texture_type) const;
 
+    /// A sampler's border color as samples through this view return it (SampledBorderColor).
+    [[nodiscard]] std::array<u32, 4> SampledBorder(const std::array<u32, 4>& raw) const noexcept {
+        return SampledBorderColor(raw, srv_params.format, srv_params.mapping);
+    }
+
 private:
     /// What the per-type SRVs are created from.
     struct SrvParams {
@@ -566,6 +572,9 @@ void SetAstcGpuVerify(bool enabled);
 void SetAstcGpuSync(bool enabled);
 /// Diagnostic: new scratch resources for every GPU ASTC upload (no reuse between images).
 void SetAstcGpuFresh(bool enabled);
+/// Diagnostic ("min_max_filter=force"): filtered MIN/MAX sampler reductions go to the hardware
+/// even when the device reports no support for them. Applies to runtimes created from now on.
+void SetForceMinMaxFilter(bool enabled);
 
 class Sampler {
 public:
@@ -591,6 +600,9 @@ public:
     /// What spirv_to_dxil's integer texture lowering emulates of this sampler, for a view whose
     /// last mip level (relative to the view) is last_level.
     [[nodiscard]] eden_integer_sampler_state IntegerState(u32 last_level) const;
+    /// EDEN_SAMPLER_REDUCTION_* the shader must apply: the guest asked for a filtered MIN/MAX
+    /// reduction this device cannot create, so the descriptor filters normally.
+    [[nodiscard]] u32 EmulatedReduction() const noexcept { return emulated_reduction; }
 
 private:
     TextureCacheRuntime* runtime{};
@@ -599,6 +611,8 @@ private:
     D3D12_FILTER filter{};
     D3D12_SAMPLER_DESC desc{};
     std::array<u64, 4> guest_raw{}; ///< Original TSC words, diagnostic comparison only.
+    u32 emulated_reduction{}; ///< EDEN_SAMPLER_REDUCTION_*
+    u32 emulated_filter{};    ///< EDEN_SAMPLER_FILTER_* bits, with emulated_reduction only
 };
 
 class Framebuffer {
