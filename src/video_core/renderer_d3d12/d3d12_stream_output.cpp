@@ -142,6 +142,7 @@ void StreamOutput::Bind(
     }
     Transition(cmd, counters, D3D12_RESOURCE_STATE_STREAM_OUT);
     cmd->SOSetTargets(0, static_cast<UINT>(views.size()), views.data());
+    targets_tick = scheduler.CurrentTick();
 }
 
 std::optional<u32> StreamOutput::ByteCountSlot(const Maxwell& regs, u32 stream) const {
@@ -166,6 +167,14 @@ std::optional<u32> StreamOutput::ByteCountSlot(const Maxwell& regs, u32 stream) 
 
 void StreamOutput::CopyByteCount(CommandStream* cmd, u32 slot, ID3D12Resource* dst,
                                  u64 dst_offset) {
+    // The GPU only stores a filled size when its target is unbound: until then the counter
+    // still holds the count from before the last draws of this list.
+    if (targets_tick == scheduler.CurrentTick()) {
+        const std::array<D3D12_STREAM_OUTPUT_BUFFER_VIEW, Maxwell::NumTransformFeedbackBuffers>
+            unbound{};
+        cmd->SOSetTargets(0, static_cast<UINT>(unbound.size()), unbound.data());
+        targets_tick = 0;
+    }
     Transition(cmd, counters, D3D12_RESOURCE_STATE_COPY_SOURCE);
     cmd->CopyBufferRegion(dst, dst_offset, counters.resource.Get(), slot * COUNTER_STRIDE,
                           sizeof(u32));

@@ -106,6 +106,7 @@ private:
     const ShaderCompiler& compiler;
     std::array<Slot, Maxwell::NumTransformFeedbackBuffers> slots{};
     bool active{};
+    u64 targets_tick{}; ///< the list that has the targets bound, so the counters lag behind
     TrackedBuffer counters;
     TrackedBuffer draw_auto_record;
     ComPtr<ID3D12RootSignature> draw_auto_root_signature;
