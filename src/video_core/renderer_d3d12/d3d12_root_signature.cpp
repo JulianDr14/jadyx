@@ -162,8 +162,10 @@ void RootSignatureCache::CreateCommandSignatures(PipelineLayout& layout, bool is
 }
 
 const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* const> infos,
-                                              bool is_compute, bool stream_output) {
+                                              bool is_compute, bool stream_output,
+                                              bool emulate_reduction) {
     bool integer_textures = false;
+    bool textures = false;
     bool local_memory_scratch = false;
     u32 xfb_buffers = 0;
     for (const Shader::Info* info : infos) {
@@ -173,8 +175,12 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             for (const auto& desc : info->texture_descriptors) {
                 integer_textures |= desc.is_integer;
             }
+            textures |= !info->texture_descriptors.empty();
         }
     }
+    // The sampler table (eden_integer_sampler_state rows): integer samples always read it, float
+    // ones when the pipeline emulates MIN/MAX reduction.
+    const bool sampler_table = integer_textures || (emulate_reduction && textures);
     const u32 runtime_data_words =
         static_cast<u32>((is_compute ? sizeof(dxil_spirv_compute_runtime_data)
                                      : sizeof(dxil_spirv_vertex_runtime_data)) /
@@ -188,7 +194,7 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
                                    2 * static_cast<u32>(std::popcount(xfb_buffers))
                              : 0;
         const u32 used = PUSH_CONSTANT_WORDS + runtime_data_words + 2 +
-                         (integer_textures ? 2 : 0) + (local_memory_scratch ? 2 : 0) + xfb_words;
+                         (sampler_table ? 2 : 0) + (local_memory_scratch ? 2 : 0) + xfb_words;
         root.budget = std::min<size_t>(PipelineLayout::MAX_ROOT_CBVS,
                                        used < ROOT_DWORDS ? (ROOT_DWORDS - used) / 2 : 0);
     }
@@ -199,11 +205,11 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             AddStage(*info, binding, ranges, root);
         }
     }
-    if (integer_textures && binding > EDEN_INTEGER_SAMPLER_MAX_BINDINGS) {
+    if (sampler_table && binding > EDEN_INTEGER_SAMPLER_MAX_BINDINGS) {
         throw std::runtime_error(fmt::format(
             "D3D12: {} bindings exceed the integer sampler table", binding));
     }
-    std::vector<u32> key{(is_compute ? 1u : 0u) | (integer_textures ? 2u : 0u) |
+    std::vector<u32> key{(is_compute ? 1u : 0u) | (sampler_table ? 2u : 0u) |
                          (local_memory_scratch ? 4u : 0u) | (xfb_buffers << 3) |
                          (stream_output ? 1u << 7 : 0u)};
     AppendKey(key, ranges.resources);
@@ -259,7 +265,7 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             .ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
         });
     }
-    if (integer_textures) {
+    if (sampler_table) {
         layout->integer_sampler_index = static_cast<u32>(params.size());
         params.push_back({
             .ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV,

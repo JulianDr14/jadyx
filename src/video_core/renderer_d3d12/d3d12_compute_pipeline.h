@@ -77,7 +77,8 @@ class ComputePipeline {
 public:
     ComputePipeline(const Device& device, VideoCore::ShaderNotify* shader_notify,
                     Common::ThreadWorker* worker_thread, u64 unique_hash, std::vector<u8> dxil,
-                    const Shader::Info& info, const PipelineLayout& layout);
+                    const Shader::Info& info, const PipelineLayout& layout,
+                    bool emulate_reduction = false);
     ~ComputePipeline();
 
     ComputePipeline(const ComputePipeline&) = delete;
@@ -111,12 +112,15 @@ public:
         return unique_hash;
     }
     [[nodiscard]] std::span<const u8> DiagnosticDxil() const noexcept { return dxil; }
+    /// Built with EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION (PipelineCache::EmulateReduction).
+    [[nodiscard]] bool EmulatesReduction() const noexcept { return emulate_reduction; }
 
 private:
     void Build();
 
     const Device& device;
     const u64 unique_hash;
+    const bool emulate_reduction;
     const PipelineLayout& layout;
     std::vector<u8> dxil;
     Common::MemoryCharge dxil_charge;

@@ -9,6 +9,7 @@
 #include <span>
 #include <string_view>
 #include <stop_token>
+#include <unordered_set>
 #include <vector>
 
 #include "common/container/unordered_map.h"
@@ -136,6 +137,13 @@ public:
 
     [[nodiscard]] ComputePipeline* CurrentComputePipeline();
 
+    /// A draw sampled with a filtered MIN/MAX sampler the device cannot create through a pipeline
+    /// that does not emulate it (PipelineBindings::unemulated_reduction_stages): from the next
+    /// lookup on, pipelines with those stages' shaders take their emulating variant.
+    void EmulateReduction(const GraphicsPipelineCacheKey& key, u8 stages);
+    /// The same for a compute shader.
+    void EmulateReduction(u64 compute_hash);
+
     /// Whether the pipelines that capture transform feedback do it through stream output.
     [[nodiscard]] bool NativeStreamOutput() const;
 
@@ -173,12 +181,17 @@ private:
         std::span<Shader::Environment* const> envs, bool build_in_parallel, bool build_pso = true);
 
     std::unique_ptr<ComputePipeline> CreateComputePipeline(const ComputePipelineCacheKey& key,
-                                                           const VideoCommon::ShaderInfo* shader);
+                                                           const VideoCommon::ShaderInfo* shader,
+                                                           bool emulate_reduction = false);
 
     std::unique_ptr<ComputePipeline> CreateComputePipeline(ShaderPools& pools,
                                                            const ComputePipelineCacheKey& key,
                                                            Shader::Environment& env,
-                                                           bool build_in_parallel);
+                                                           bool build_in_parallel,
+                                                           bool emulate_reduction = false);
+
+    /// Whether a stage of the key uses a shader in reduction_shaders.
+    [[nodiscard]] bool UsesReductionShader(const std::array<u64, 6>& unique_hashes) const;
 
     const Device& device;
     const ShaderCompiler& compiler;
@@ -195,6 +208,11 @@ private:
 
     ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
         compute_cache;
+    /// Emulating variants of compute_cache's pipelines, built on demand (not on disk).
+    ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
+        compute_reduction_cache;
+    /// Shaders (unique hashes) that sample with an emulated MIN/MAX reduction. GPU thread only.
+    std::unordered_set<u64> reduction_shaders;
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>>
         graphics_cache;
 

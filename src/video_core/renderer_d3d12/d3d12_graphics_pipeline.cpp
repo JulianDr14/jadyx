@@ -221,7 +221,7 @@ void GraphicsPipelineCacheKey::RefreshStatic(const Maxwell& regs) noexcept {
                                         ? D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF
                                         : D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF);
     }
-    padding = 0;
+    emulate_reduction = 0;
 }
 
 GraphicsPipeline::GraphicsPipeline(const Device& device_,
@@ -445,6 +445,8 @@ D3D12_GPU_VIRTUAL_ADDRESS IntegerSamplerTable::Upload(BufferCache& buffer_cache)
     const size_t size = Common::AlignUp(num_bindings * sizeof(eden_integer_sampler_state),
                                         D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
     const StagingBufferRef ref = buffer_cache.runtime.UploadStagingBuffer(size);
+    // Bindings without a row (storage images, gaps) must read reduction NONE.
+    std::memset(ref.mapped_span.data(), 0, size);
     for (const auto& [binding, state] : rows) {
         std::memcpy(ref.mapped_span.data() + binding * sizeof(state), &state, sizeof(state));
     }
@@ -575,7 +577,8 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     queue.Acquire(layout.NumResourceDescriptors(), cbv_slots);
     ImageTransitionList image_transitions;
     bool uses_render_area = false;
-    const bool has_integer_samplers = layout.IntegerSamplerIndex() != PipelineLayout::NO_TABLE;
+    const bool has_sampler_table = layout.IntegerSamplerIndex() != PipelineLayout::NO_TABLE;
+    const bool emulates_reduction = key.emulate_reduction != 0;
     IntegerSamplerTable integer_samplers;
     u32 stage_binding = 0;
     const SamplerId* samplers_it = samplers.data();
@@ -609,9 +612,13 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                     queue.AddCopy(image_view.Handle(desc.type));
                 }
                 const SamplerId sampler_id = *(samplers_it++);
-                if (has_integer_samplers && desc.is_integer) {
-                    integer_samplers.Add(texture_binding, texture_cache.GetSampler(sampler_id),
-                                         image_view);
+                const Sampler& sampler = texture_cache.GetSampler(sampler_id);
+                if (has_sampler_table && (desc.is_integer || emulates_reduction)) {
+                    integer_samplers.Add(texture_binding, sampler, image_view);
+                }
+                if (!emulates_reduction && sampler.EmulatedReduction() != 0 &&
+                    ReducibleTexture(desc)) {
+                    out.unemulated_reduction_stages |= static_cast<u8>(1u << stage);
                 }
                 image_transitions.emplace_back(view_id, false);
                 if (out.trace_all_views) out.trace_all_views->push_back(
@@ -620,7 +627,6 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                     out.trace_views->push_back(view_id);
                 }
                 if (out.trace_filters) {
-                    const Sampler& sampler = texture_cache.GetSampler(sampler_id);
                     out.trace_filters->push_back(fmt::format(
                         "stage={} binding={} cbuf={}+{:x} element={} depth={} integer={} "
                         "srv=[{}] sampler=[{}]",

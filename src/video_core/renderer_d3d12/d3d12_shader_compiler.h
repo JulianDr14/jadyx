@@ -57,6 +57,12 @@ public:
         return translate_pipeline_v4 != nullptr;
     }
 
+    /// Whether linked pipelines can emulate filtered MIN/MAX sampler reduction from the sampler
+    /// table (EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION).
+    bool EmulatesReduction() const {
+        return emulates_reduction;
+    }
+
     /// Translates and signs one stage. Throws std::runtime_error with the translator's or the
     /// validator's message on failure. Vertex-pipeline stages get Vulkan's Y-down clip space flipped
     /// to D3D's when flip_y is set.
@@ -79,6 +85,9 @@ public:
         dxil_spirv_sysval_type first_vertex_and_base_instance = DXIL_SPIRV_SYSVAL_TYPE_ZERO;
         /// Turns every branch of the vertex stage into selects (EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX).
         bool flatten_vertex = false;
+        /// Float samples honor the MIN/MAX reduction of their sampler table row
+        /// (EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION). Needs EmulatesReduction().
+        bool emulate_reduction = false;
         /// Filled with the last pre-rasterization stage's stream output declaration
         /// (eden_spirv_to_dxil_pipeline_v4). Needs SupportsStreamOutput().
         eden_spirv_to_dxil_stream_output* stream_output = nullptr;
@@ -108,6 +117,7 @@ private:
     /// The validator is shared by the pipeline workers.
     mutable std::mutex validator_mutex;
     bool lowers_integer_sampling{};
+    bool emulates_reduction{};
     bool available{};
 };
 

@@ -176,9 +176,11 @@ public:
 
     /// Layout for the stages of one pipeline, in the order their SPIR-V was emitted. Null entries
     /// (absent stages) are skipped. stream_output: the pipeline declares stream output (native
-    /// transform feedback). Throws std::runtime_error if D3D12 rejects the signature.
+    /// transform feedback). emulate_reduction: its float samples read the sampler table too
+    /// (EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION). Throws std::runtime_error if D3D12 rejects the
+    /// signature.
     const PipelineLayout& Get(std::span<const Shader::Info* const> infos, bool is_compute,
-                              bool stream_output = false);
+                              bool stream_output = false, bool emulate_reduction = false);
 
 private:
     void CreateCommandSignatures(PipelineLayout& layout, bool is_compute);

@@ -212,6 +212,9 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
                          sampler_heap, scheduler},
                         bindings);
     buffer_runtime.SetTraceBuffers(nullptr);
+    if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
+        pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+    }
     if (!pipeline->Handle()) {
         BUG_TRACK_KEY(DrawSkipped, reinterpret_cast<std::uintptr_t>(pipeline),
                       "draw skipped: the pipeline was rejected (VS {:016x} PS {:016x})",
@@ -422,6 +425,9 @@ void RasterizerD3D12::DispatchCompute() {
     pipeline->Configure({*kepler_compute, *gpu_memory, buffer_cache, texture_cache,
                          descriptor_queue, sampler_heap, scheduler},
                         bindings);
+    if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
+        pipeline_cache.EmulateReduction(pipeline->UniqueHash());
+    }
     if (!pipeline->Handle()) {
         hunt.Outcome(Hunt::Outcome::PsoRejected);
         return; // D3D12 rejected the PSO (logged when it was built)

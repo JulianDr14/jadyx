@@ -87,6 +87,11 @@ ShaderCompiler::ShaderCompiler() {
         (void)spirv_to_dxil_library.GetSymbol("eden_spirv_to_dxil_pipeline_v3", &translate_pipeline_v3);
         // Optional: without it, transform feedback falls back to storage buffers.
         (void)spirv_to_dxil_library.GetSymbol("eden_spirv_to_dxil_pipeline_v4", &translate_pipeline_v4);
+        decltype(&::eden_spirv_to_dxil_supported_flags) supported_flags{};
+        if (translate_pipeline_v3 &&
+            spirv_to_dxil_library.GetSymbol("eden_spirv_to_dxil_supported_flags", &supported_flags)) {
+            emulates_reduction = (supported_flags() & EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION) != 0;
+        }
     } else if (!spirv_to_dxil_library.GetSymbol("eden_spirv_to_dxil_pipeline",
                                                 &translate_pipeline)) {
         LOG_WARNING(Render, "D3D12: spirv_to_dxil.dll cannot link stages (rebuild it with "
@@ -198,23 +203,27 @@ std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
     std::array<dxil_spirv_object, EDEN_SPIRV_TO_DXIL_MAX_STAGES> objects{};
     VideoCore::FrameTrace::ScopedSpan translate_span{
         VideoCore::FrameTrace::Event::PipelineTranslateLong, trace_pipeline, trace_pipeline != 0};
+    const u32 flags = (options.flatten_vertex ? EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX : 0) |
+                      (options.emulate_reduction ? EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION : 0);
+    if (options.emulate_reduction && !emulates_reduction) {
+        throw std::runtime_error("D3D12: spirv_to_dxil.dll cannot emulate sampler reduction");
+    }
     if (options.stream_output) {
         if (!translate_pipeline_v4) {
             throw std::runtime_error("D3D12: spirv_to_dxil.dll lacks eden_spirv_to_dxil_pipeline_v4");
         }
-        const u32 flags = options.flatten_vertex ? EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX : 0;
         if (!translate_pipeline_v4(inputs.data(), static_cast<unsigned>(stages.size()),
                                    VALIDATOR_VERSION, &debug_options, &logger, flags,
                                    objects.data(), options.stream_output)) {
             throw std::runtime_error("D3D12: eden_spirv_to_dxil_pipeline_v4 failed");
         }
-    } else if (options.flatten_vertex) {
+    } else if (flags != 0) {
         if (!translate_pipeline_v3) {
             throw std::runtime_error("D3D12: spirv_to_dxil.dll lacks eden_spirv_to_dxil_pipeline_v3");
         }
         if (!translate_pipeline_v3(inputs.data(), static_cast<unsigned>(stages.size()),
                                    VALIDATOR_VERSION, &debug_options, &logger,
-                                   EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX, objects.data())) {
+                                   flags, objects.data())) {
             throw std::runtime_error("D3D12: eden_spirv_to_dxil_pipeline_v3 failed");
         }
     } else if (translate_pipeline) {

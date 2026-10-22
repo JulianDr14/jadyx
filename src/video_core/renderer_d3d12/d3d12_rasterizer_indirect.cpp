@@ -100,6 +100,9 @@ void RasterizerD3D12::DrawIndirect() {
                          sampler_heap, scheduler},
                         bindings);
     buffer_cache.SetDrawIndirect(nullptr);
+    if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
+        pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+    }
     if (!pipeline->Handle()) {
         hunt.Outcome(Hunt::Outcome::PsoRejected);
         return; // D3D12 rejected the PSO (logged when it was built)
@@ -299,6 +302,9 @@ void RasterizerD3D12::DrawByteCount(const IndirectParams& params) {
                          sampler_heap, scheduler},
                         bindings);
     buffer_cache.SetDrawIndirect(nullptr);
+    if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
+        pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+    }
     if (!pipeline->Handle() || UsesSkippedShader(pipeline->Key().unique_hashes)) {
         return;
     }

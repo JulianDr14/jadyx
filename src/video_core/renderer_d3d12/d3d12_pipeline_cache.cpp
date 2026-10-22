@@ -688,6 +688,7 @@ GraphicsPipeline* PipelineCache::LookupGraphicsPipeline() {
     // only rereads blocks whose Maxwell registers changed.
     graphics_key.state.Refresh(*maxwell3d, dynamic_features);
     graphics_key.RefreshStatic(maxwell3d->regs);
+    graphics_key.emulate_reduction = UsesReductionShader(graphics_key.unique_hashes) ? 1 : 0;
 
     if (current_pipeline) {
         GraphicsPipeline* const next{current_pipeline->Next(graphics_key)};
@@ -699,6 +700,47 @@ GraphicsPipeline* PipelineCache::LookupGraphicsPipeline() {
     }
     VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::PipelineFastMisses, 1);
     return CurrentGraphicsPipelineSlowPath();
+}
+
+bool PipelineCache::UsesReductionShader(const std::array<u64, 6>& unique_hashes) const {
+    if (reduction_shaders.empty()) [[likely]] {
+        return false;
+    }
+    // VertexA (index 0) is translated together with VertexB.
+    for (size_t index = 1; index < unique_hashes.size(); ++index) {
+        if (unique_hashes[index] != 0 && reduction_shaders.contains(unique_hashes[index])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void PipelineCache::EmulateReduction(const GraphicsPipelineCacheKey& key, u8 stages) {
+    if (!compiler.EmulatesReduction()) {
+        return; // older spirv_to_dxil.dll: the samples keep filtering normally
+    }
+    bool added = false;
+    for (size_t stage = 0; stage < Maxwell::MaxShaderStage; ++stage) {
+        const u64 hash = key.unique_hashes[stage + 1];
+        if (((stages >> stage) & 1) != 0 && hash != 0 && reduction_shaders.insert(hash).second) {
+            added = true;
+            LOG_INFO(Render, "D3D12: shader {:016x} (stage {}) samples with a filtered MIN/MAX "
+                             "reduction; using its emulating pipelines",
+                     hash, stage);
+        }
+    }
+    if (added) {
+        // The previous draw's pipeline must not be reused without the new key bit.
+        key_reuse.Forget();
+    }
+}
+
+void PipelineCache::EmulateReduction(u64 compute_hash) {
+    if (compiler.EmulatesReduction() && reduction_shaders.insert(compute_hash).second) {
+        LOG_INFO(Render, "D3D12: compute shader {:016x} samples with a filtered MIN/MAX "
+                         "reduction; using its emulating pipeline",
+                 compute_hash);
+    }
 }
 
 void PipelineCache::ReportKeyReuseMismatch(const GraphicsPipeline* reused) {
@@ -734,12 +776,15 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
         .shared_memory_size = qmd.shared_alloc,
         .workgroup_size{qmd.block_dim_x, qmd.block_dim_y, qmd.block_dim_z},
     };
-    const auto [pair, is_new]{compute_cache.try_emplace(key)};
+    const bool emulate_reduction =
+        !reduction_shaders.empty() && reduction_shaders.contains(key.unique_hash);
+    auto& cache = emulate_reduction ? compute_reduction_cache : compute_cache;
+    const auto [pair, is_new]{cache.try_emplace(key)};
     auto& pipeline{pair->second};
     if (is_new) {
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PipelineStallUs};
         VideoCore::Perf::ScopedTimer frontend{VideoCore::Perf::Counter::PipelineFrontendUs};
-        pipeline = CreateComputePipeline(key, shader);
+        pipeline = CreateComputePipeline(key, shader, emulate_reduction);
     }
     if (!pipeline) {
         BUG_TRACK_KEY(DrawSkipped, key.unique_hash,
@@ -1136,7 +1181,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         stage_indices.push_back(stage_index);
         previous_stage = &program;
     }
-    const PipelineLayout& layout = root_signatures.Get(infos, false, native_xfb);
+    // Disk-cache keys may carry the bit from a session whose DLL emulated reduction.
+    const bool emulate_reduction = key.emulate_reduction != 0 && compiler.EmulatesReduction();
+    const PipelineLayout& layout =
+        root_signatures.Get(infos, false, native_xfb, emulate_reduction);
 
     // SPIR-V to DXIL goes with the PSO build, on a worker: done here it stalled the GPU thread for
     // 150-490 ms per 300 frames when entering new areas (0.2.59 profile). Translating the guest
@@ -1144,8 +1192,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     auto compile_dxil = [this, spirv = std::move(spirv), stage_indices, dumps_dxil,
                          vertex_shader = key.unique_hashes[1],
                          fragment_shader = key.unique_hashes[5],
-                         pipeline_key = key.Hash(), native_xfb](u64 trace_pipeline,
-                                                                bool flatten_vertex) {
+                         pipeline_key = key.Hash(), native_xfb,
+                         emulate_reduction](u64 trace_pipeline, bool flatten_vertex) {
         boost::container::static_vector<ShaderCompiler::PipelineStage, Maxwell::MaxShaderStage>
             stages;
         for (const size_t stage_index : stage_indices) {
@@ -1159,15 +1207,17 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             .yz_flip = DXIL_SPIRV_YZ_FLIP_CONDITIONAL,
             .first_vertex_and_base_instance = DXIL_SPIRV_SYSVAL_TYPE_RUNTIME_DATA,
             .flatten_vertex = flatten_vertex,
+            .emulate_reduction = emulate_reduction,
         };
         boost::container::static_vector<LinkedShaderStage, Maxwell::MaxShaderStage> key_stages;
         for (const auto& stage : stages) {
             key_stages.push_back({stage.spirv, static_cast<u32>(stage.stage)});
         }
-        const std::array<u32, 6> key_options{
+        const std::array<u32, 7> key_options{
             static_cast<u32>(options.yz_flip), options.y_flip_mask, options.z_flip_mask,
             static_cast<u32>(options.first_vertex_and_base_instance),
-            static_cast<u32>(options.flatten_vertex), static_cast<u32>(native_xfb)};
+            static_cast<u32>(options.flatten_vertex), static_cast<u32>(native_xfb),
+            static_cast<u32>(options.emulate_reduction)};
         auto key = MakeLinkedShaderKey(std::span(key_stages.data(), key_stages.size()), key_options);
         const auto cached = linked_shaders.Get(std::move(key), [&] {
             std::unique_ptr<eden_spirv_to_dxil_stream_output> stream_output;
@@ -1266,15 +1316,18 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
 }
 
 std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
-    const ComputePipelineCacheKey& key, const VideoCommon::ShaderInfo* shader) {
+    const ComputePipelineCacheKey& key, const VideoCommon::ShaderInfo* shader,
+    bool emulate_reduction) {
     const GPUVAddr program_base{kepler_compute->regs.code_loc.Address()};
     const auto& qmd{kepler_compute->launch_description};
     ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
     env.SetCachedSize(shader->size_bytes);
 
     main_pools.ReleaseContents();
-    auto pipeline{CreateComputePipeline(main_pools, key, env, true)};
-    if (!pipeline || pipeline_cache_filename.empty()) {
+    auto pipeline{CreateComputePipeline(main_pools, key, env, true, emulate_reduction)};
+    // The emulating variant is not stored: the disk cache rebuilds the plain pipeline, and the
+    // first dispatch with the sampler switches again.
+    if (!pipeline || pipeline_cache_filename.empty() || emulate_reduction) {
         return pipeline;
     }
     serialization_thread.QueueWork([this, key, env_ = std::move(env)] {
@@ -1286,7 +1339,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
 
 std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     ShaderPools& pools, const ComputePipelineCacheKey& key, Shader::Environment& env,
-    bool build_in_parallel) try {
+    bool build_in_parallel, bool emulate_reduction) try {
     Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
     if (Settings::values.dump_guest_shaders) {
         env.Dump(key.Hash(), key.unique_hash);
@@ -1304,14 +1357,14 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     const std::array<ShaderCompiler::PipelineStage, 1> stages{{
         {.spirv = code, .stage = DXIL_SPIRV_SHADER_COMPUTE},
     }};
-    auto compiled = compiler.CompilePipeline(stages, {});
+    auto compiled = compiler.CompilePipeline(stages, {.emulate_reduction = emulate_reduction});
     const std::array<const Shader::Info*, 1> infos{&program.info};
-    const PipelineLayout& layout = root_signatures.Get(infos, true);
+    const PipelineLayout& layout = root_signatures.Get(infos, true, false, emulate_reduction);
 
     Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
     return std::make_unique<ComputePipeline>(device, &shader_notify, thread_worker,
                                              key.unique_hash, std::move(compiled[0].dxil),
-                                             program.info, layout);
+                                             program.info, layout, emulate_reduction);
 
 } catch (const Shader::Exception& exception) {
     BUG_TRACK_KEY(ShaderCompile, key.unique_hash, "recompiling compute {:016x} failed: {}",

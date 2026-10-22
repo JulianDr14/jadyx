@@ -61,7 +61,9 @@ struct GraphicsPipelineCacheKey {
     u8 stencil_read_mask;        ///< D3D12 has one pair for both faces: the front one
     u8 stencil_write_mask;
     u8 strip_cut; ///< D3D12_INDEX_BUFFER_STRIP_CUT_VALUE, from the index format
-    u8 padding;
+    /// 1: the float samples apply the sampler table's MIN/MAX reduction (PipelineCache sets it for
+    /// the shaders seen with a filtered MIN/MAX sampler the device cannot create).
+    u8 emulate_reduction;
 
     size_t Hash() const noexcept;
 
@@ -127,14 +129,30 @@ struct PipelineBindings {
     std::vector<CapturedImageView>* trace_all_views{};
     /// A texture of the draw is the bound depth buffer: bind it read-only (DEPTH_SAMPLED_STATE).
     bool depth_sampled{};
+    /// Stages (bit per Configure stage, VS first) that sampled a float texture with a sampler whose
+    /// MIN/MAX reduction is emulated while the pipeline does not emulate it. Draws filter normally.
+    u8 unemulated_reduction_stages{};
 };
 
-/// Integer sampler states of one draw or dispatch, indexed by texture binding. Only the rows of
-/// integer textures are written: the shaders never read the others, so they are not cleared.
+/// Textures whose samples EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION reduces: float, not cube.
+[[nodiscard]] inline bool ReducibleTexture(const Shader::TextureDescriptor& desc) noexcept {
+    return !desc.is_integer && desc.type != Shader::TextureType::ColorCube &&
+           desc.type != Shader::TextureType::ColorArrayCube &&
+           desc.type != Shader::TextureType::Buffer;
+}
+
+/// Sampler states of one draw or dispatch, indexed by texture binding: the integer textures', and
+/// every texture's when the pipeline emulates MIN/MAX reduction. Rows not added read as zero.
 class IntegerSamplerTable {
 public:
     void Add(u32 binding, const Sampler& sampler, const ImageView& view) {
-        rows.push_back({binding, sampler.IntegerState(static_cast<u32>(std::max(view.range.extent.levels, 1) - 1))});
+        auto state = sampler.IntegerState(static_cast<u32>(std::max(view.range.extent.levels, 1) - 1));
+        // Shaders substitute the border for the texels they load through the view themselves.
+        std::array<u32, 4> border;
+        std::copy(std::begin(state.border_color), std::end(state.border_color), border.begin());
+        border = view.SampledBorder(border);
+        std::copy(border.begin(), border.end(), state.border_color);
+        rows.push_back({binding, state});
         num_bindings = std::max(num_bindings, binding + 1);
     }
     /// Copies the rows to the staging stream; returns their address, or 0 if there are none.
