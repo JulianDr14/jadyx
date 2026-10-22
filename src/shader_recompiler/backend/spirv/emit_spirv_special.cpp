@@ -144,10 +144,11 @@ void WriteTransformFeedbackStorage(EmitContext& ctx) {
     const Id slot{ctx.OpIAdd(u32_type, vertex,
                              ctx.OpIMul(u32_type, instance, constant(Xfb::VERTEX_COUNT_WORD)))};
     for (u32 attribute = 0; attribute < ctx.runtime_info.xfb_count; ++attribute) {
-        const TransformFeedbackVarying& varying{ctx.runtime_info.xfb_varyings[attribute]};
-        if (varying.components == 0 || varying.buffer >= Xfb::NUM_BUFFERS) {
+        const TransformFeedbackVarying* const captured{ctx.CapturedVarying(attribute)};
+        if (!captured || captured->buffer >= Xfb::NUM_BUFFERS) {
             continue;
         }
+        const TransformFeedbackVarying& varying{*captured};
         std::array<Id, 4> values{};
         for (u32 component = 0; component < varying.components; ++component) {
             values[component] =
@@ -298,8 +299,7 @@ void EmitEpilogue(EmitContext& ctx) {
             if (!ctx.runtime_info.xfb_storage) {
                 const u32 base{static_cast<u32>(IR::Attribute::Generic0X) + index * 4};
                 for (u32 attribute = base; attribute < base + 4; ++attribute) {
-                    captured |= attribute < ctx.runtime_info.xfb_count &&
-                                ctx.runtime_info.xfb_varyings[attribute].components > 0;
+                    captured |= ctx.CapturedVarying(attribute) != nullptr;
                 }
             }
             if (output.num_components != 4 || captured) {

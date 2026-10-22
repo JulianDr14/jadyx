@@ -179,6 +179,19 @@ public:
                          IR::Program& program, Bindings& binding);
     ~EmitContext();
 
+    /// The transform feedback varying this stage captures for attribute, if any. Only a
+    /// geometry shader emits to streams other than 0, so other stages capture nothing there.
+    [[nodiscard]] const TransformFeedbackVarying* CapturedVarying(size_t attribute) const {
+        if (attribute >= runtime_info.xfb_count) {
+            return nullptr;
+        }
+        const TransformFeedbackVarying& varying{runtime_info.xfb_varyings[attribute]};
+        if (varying.components == 0 || (stage != Stage::Geometry && varying.stream != 0)) {
+            return nullptr;
+        }
+        return &varying;
+    }
+
     bool uses_geometry_passthrough{};
     bool geometry_passthrough_lowered{};
     // Ordinary GS outputs become undefined after EmitVertex. Lowered passthrough
