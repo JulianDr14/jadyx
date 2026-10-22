@@ -76,6 +76,50 @@ eden_spirv_to_dxil_pipeline_v3(const struct eden_spirv_to_dxil_stage *stages, un
                                const struct dxil_spirv_logger *logger, uint32_t flags,
                                struct dxil_spirv_object *out);
 
+/* v4: stream output (transform feedback) of the last pre-rasterization stage, as a
+ * D3D12_SO_DECLARATION_ENTRY list whose semantics name that stage's DXIL output signature. Built
+ * from the SPIR-V Xfb decorations (XfbBuffer, Offset, Stream); words no output covers are gaps. */
+#define EDEN_SPIRV_TO_DXIL_SO_MAX_ENTRIES 512
+
+enum eden_so_semantic {
+   EDEN_SO_SEMANTIC_GAP = 0, /* SemanticName NULL: ComponentCount words skipped */
+   EDEN_SO_SEMANTIC_TEXCOORD,
+   EDEN_SO_SEMANTIC_POSITION,
+   EDEN_SO_SEMANTIC_CLIP_DISTANCE,
+   EDEN_SO_SEMANTIC_CULL_DISTANCE,
+   EDEN_SO_SEMANTIC_PRIMITIVE_ID,
+   EDEN_SO_SEMANTIC_VIEWPORT_ARRAY_INDEX,
+   EDEN_SO_SEMANTIC_RENDER_TARGET_ARRAY_INDEX,
+};
+
+struct eden_spirv_to_dxil_so_entry {
+   uint8_t stream;
+   uint8_t semantic; /* enum eden_so_semantic */
+   uint8_t semantic_index;
+   uint8_t start_component;
+   uint8_t component_count;
+   uint8_t output_slot;
+   uint8_t padding[2];
+};
+
+struct eden_spirv_to_dxil_stream_output {
+   uint32_t entry_count;
+   /* Captured outputs missing from the signature (written as gaps), and entries past the limit. */
+   uint32_t missing_outputs;
+   uint32_t dropped_entries;
+   uint32_t padding;
+   struct eden_spirv_to_dxil_so_entry entries[EDEN_SPIRV_TO_DXIL_SO_MAX_ENTRIES];
+};
+
+/* stream_output may be NULL; otherwise it is filled on success (entry_count 0: no Xfb outputs). */
+bool
+eden_spirv_to_dxil_pipeline_v4(const struct eden_spirv_to_dxil_stage *stages, unsigned count,
+                               enum dxil_validator_version validator_version_max,
+                               const struct dxil_spirv_debug_options *debug_options,
+                               const struct dxil_spirv_logger *logger, uint32_t flags,
+                               struct dxil_spirv_object *out,
+                               struct eden_spirv_to_dxil_stream_output *stream_output);
+
 #ifdef __cplusplus
 }
 #endif

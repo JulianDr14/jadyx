@@ -73,6 +73,10 @@ Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
 Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
     "    eden_spirv_to_dxil_pipeline_v2`n" `
     "    eden_spirv_to_dxil_pipeline_v2`n    eden_spirv_to_dxil_pipeline_v3`n"
+# v4: v3 plus the stream output declaration of the last pre-rasterization stage.
+Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
+    "    eden_spirv_to_dxil_pipeline_v3`n" `
+    "    eden_spirv_to_dxil_pipeline_v3`n    eden_spirv_to_dxil_pipeline_v4`n"
 Patch-File "src\microsoft\spirv_to_dxil\meson.build" `
     "      'spirv_to_dxil.h',`n" `
     "      'spirv_to_dxil.h',`n      'eden_pipeline.c',`n      'eden_spirv_to_dxil.h',`n"
