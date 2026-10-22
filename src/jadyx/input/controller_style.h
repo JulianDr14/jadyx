@@ -59,6 +59,17 @@ constexpr ConsoleControllerStyle AutoControllerStyle(SupportedControllerStyles s
     return ConsoleControllerStyle::Pro;
 }
 
+/// Players 2-8 look like player 1 when the game accepts that, so a party plays with matching
+/// controllers; handheld is the console itself and only ever player 1, so they never take it.
+constexpr ConsoleControllerStyle ExtraPlayerStyle(ConsoleControllerStyle first,
+                                                  SupportedControllerStyles s) {
+    if (first != ConsoleControllerStyle::Auto && first != ConsoleControllerStyle::Handheld &&
+        IsStyleSupported(first, s))
+        return first;
+    s.handheld = false;
+    return AutoControllerStyle(s);
+}
+
 /// VirtualGamepad button ids (virtual_gamepad.h); 20/21 are the right Joy-Con SL/SR, which
 /// EmulatedController binds but the VirtualButton enum does not name.
 namespace PadBit {
