@@ -176,7 +176,20 @@ void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invo
             xfb_varying = &ctx.runtime_info.xfb_varyings[xfb_varying_index];
             xfb_varying = xfb_varying->components > 0 ? xfb_varying : nullptr;
         }
-        const u32 num_components{xfb_varying ? xfb_varying->components : remainder};
+        u32 num_components{remainder};
+        if (xfb_varying) {
+            num_components = xfb_varying->components;
+        } else if (!ctx.runtime_info.xfb_storage) {
+            // Stop before the next captured component, so that it gets an output of its own.
+            for (u32 next = element + 1; next < 4; ++next) {
+                const size_t next_index{base_attr_index + next};
+                if (next_index < ctx.runtime_info.xfb_count &&
+                    ctx.runtime_info.xfb_varyings[next_index].components > 0) {
+                    num_components = next - element;
+                    break;
+                }
+            }
+        }
 
         bool preserve_passthrough{};
         for (u32 component = element; component < element + num_components; ++component) {

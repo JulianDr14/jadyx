@@ -98,7 +98,9 @@ std::pair<std::array<Shader::TransformFeedbackVarying, 256>, u32> MakeTransformF
             const u32 base_offset = offset;
             const auto attribute{get_attribute(offset)};
             if (std::ranges::find(VECTORS, Common::AlignDown(attribute, 4)) != VECTORS.end()) {
-                UNIMPLEMENTED_IF_MSG(attribute % 4 != 0, "Unaligned TFB {}", attribute);
+                // Generics and the position may start past x; the legacy vectors may not.
+                UNIMPLEMENTED_IF_MSG(attribute % 4 != 0 && attribute >= 160, "Unaligned TFB {}",
+                                     attribute);
 
                 const auto base_index = attribute / 4;
                 while (offset + 1 < varying_count && base_index == get_attribute(offset + 1) / 4) {
