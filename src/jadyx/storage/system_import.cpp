@@ -8,6 +8,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <vector>
 #include <archive.h>
 #include <archive_entry.h>
 #include <openssl/rand.h>
@@ -16,6 +17,7 @@
 #include <winrt/Windows.Storage.h>
 #include <winrt/Windows.Foundation.h>
 #include "common/fs/path_util.h"
+#include "common/logging.h"
 #include "common/scope_exit.h"
 #include "core/crypto/key_manager.h"
 #include "core/file_sys/content_archive.h"
@@ -104,6 +106,7 @@ struct ZipSource {
 FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress progress,std::stop_token stop) {
     FirmwareInfo info;bool system=false,mii=false,update=false;unsigned count{};
     std::set<u64> outside,listed;
+    std::map<u64,std::vector<fs::path>> game_files;
     if(!fs::exists(folder)){Require(!strict,"firmware_incomplete");return info;}
     FileSys::RealVfsFilesystem vfs;
     for(const auto& file:fs::directory_iterator{folder}) {
@@ -118,7 +121,10 @@ FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress p
         if(nca.GetStatus()!=Loader::ResultStatus::Success){Require(!strict,"firmware_keys");continue;}
         // Firmware also ships a few system titles outside 0x010000000000xxxx (e.g. 01008BB00013C000);
         // those are allowed only when the SystemUpdate meta lists them.
-        if((nca.GetTitleId()>>16)!=(0x0100000000000000ULL>>16))outside.insert(nca.GetTitleId());
+        if((nca.GetTitleId()>>16)!=(0x0100000000000000ULL>>16)) {
+            outside.insert(nca.GetTitleId());
+            game_files[nca.GetTitleId()].push_back(file.path());
+        }
         if(nca.GetTitleId()==0x0100000000000816ULL&&nca.GetType()==FileSys::NCAContentType::Meta&&
            !nca.GetSubdirectories().empty())
             if(const auto cnmt=nca.GetSubdirectories()[0]->GetFile("SystemUpdate_0100000000000816.cnmt")) {
@@ -141,7 +147,19 @@ FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress p
         mii|=nca.GetTitleId()==0x0100000000001009ULL&&nca.GetType()==FileSys::NCAContentType::Program;
         if(progress)progress(count,0);
     }
-    for(const auto title:outside)Require(update&&listed.contains(title),"firmware_game");
+    // Players keep their dumps together, so a game NCA often sits next to the firmware. A staged
+    // import is a copy: leaving those files out installs the firmware and loses nothing, instead
+    // of refusing the whole package. Titles the SystemUpdate meta lists are real system content
+    // and stay; the installed folder is only inspected, never trimmed.
+    for(const auto title:outside) {
+        if(update&&listed.contains(title))continue;
+        if(!strict)continue;
+        for(const auto& path:game_files[title]) {
+            LOG_INFO(Frontend, "Firmware import: leaving out the game NCA {:016X} ('{}')", title,
+                     Utf8(path.filename()));
+            std::error_code ignored;fs::remove(path,ignored);
+        }
+    }
     Require(!strict||(system&&mii),"firmware_incomplete");return info;
 }
 }
