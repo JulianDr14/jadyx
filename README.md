@@ -61,14 +61,20 @@ report.
 | Under Night In-Birth II Sys:Celes *(community)* | Series S | **60 FPS** | In-game; community report |
 | Naruto x Boruto: Connections *(community)* | Series S | **30 FPS**, reported stable | No FPS drops reported by the tester |
 | Mario 3D World | Series X | **60 FPS**, stable | In-game |
+| Hades II *(community)* | Series S | **60 FPS**, reported smooth with no drops | Jadyx 0.3.8.0; community report |
+| Bayonetta *(community)* | Series S | **60 FPS**, dropping to **42 FPS** during combos | Jadyx 0.3.8.0; community report |
+| Bayonetta 2 *(community)* | Series S | **60 FPS**, dropping to **30–40 FPS** during heavy action and combat | Jadyx 0.3.8.0; community report |
 | Super Mario Odyssey | Series X | **45–50 FPS** in very open areas; **60 FPS** in more enclosed areas and in certain levels | In-game |
 | 13 Sentinels *(community)* | Series X | **60 FPS** in battles and exploration | Playable |
 | NEO TWEWY *(community)* | Series X | **20–30 FPS** in game, 50 in menus | In-game; drops to 10–17 FPS while new shaders compile |
 | Pokémon Sword *(community)* | Series S | **20–30 FPS** | Reported stable apart from roughly one-second stutters, possibly shader compilation. Open areas still to be tested; build not specified |
 | Yo-kai Watch 4++ *(community)* | Series S | **30 FPS** in the intro and menus; **20 FPS** reported in the open world | In 0.3.0 it froze on a white screen when starting the game; 0.3.5 gets past it. The tester now confirms gameplay and reports stable operation despite open-world FPS drops. Work in progress |
 | Hyrule Warriors AoC *(community)* | Series X | **30 FPS** in cutscenes | In 0.3.0 it crashed at the same point after the first cutscene; 0.3.5 gets in-game. Work in progress |
-| Zelda BotW | Series X | **About 20 FPS** in the open world, of the game's 30 | **Work in progress.** Renders without graphical errors; holds 30 FPS in lighter areas (under 2 000 draws per frame). With the whole world in view: 21 FPS, GPU 9.5 ms per frame |
+| The Legend of Zelda: Breath of the Wild | Series X | **27–29 FPS** observed in the open world with shaders compiled | Previously about 23 FPS in the tested open area. Holds 30 FPS in lighter areas; work in progress |
 | Zelda TotK | Series X | Renders **without graphical errors**, then **hits the memory wall** | The heaviest loads need more than the app's 5120 MiB, see [The memory wall](#the-memory-wall). On PC it reaches the open world at **30 FPS** |
+
+For Hades II and both Bayonetta reports, Series S is inferred from the same tester's explicit
+console identification and other compatibility reports; those three posts do not repeat the model.
 
 Where the open world loses its frames: the renderer's GPU thread spends about 32 ms of host CPU
 time recording some 4 000 draws per frame (about 8 µs per draw), while the GPU itself needs only
