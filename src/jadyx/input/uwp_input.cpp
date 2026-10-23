@@ -28,6 +28,7 @@
 #include "jadyx/input/controller_catalog.h"
 #include "jadyx/input/menu_input_capture.h"
 #include "jadyx/input/player_slots.h"
+#include "jadyx/settings/uwp_system_settings.h"
 #include "jadyx/game/game_menu.h"
 #include "hid_core/frontend/emulated_controller.h"
 #include "hid_core/hid_core.h"
@@ -603,6 +604,8 @@ void GamepadInput::Start(Core::HID::HIDCore& hid_) {
     // A focus lost while the game was still loading does not pause it once it starts.
     game_menu_open_requested.store(false, std::memory_order_relaxed);
     if (!thread.joinable()) {
+        extra_players = LoadSystemSettings().multiple_controllers;
+        LOG_INFO(Input, "UWP input: multiple controllers {}", extra_players ? "on" : "off");
         thread = std::jthread([this](std::stop_token stop) { Run(stop); });
     }
 }
@@ -716,10 +719,10 @@ void GamepadInput::Run(std::stop_token stop) {
                     }
                 }
                 if (catalog_changed || selection_changed) {
-                    // Every other pad plays players 2-8.
+                    // Every other pad plays players 2-8, unless Settings > System turned them off.
                     std::vector<std::wstring> ids;
                     for (const auto& device : devices) {
-                        if (device && device.id != player1_id) ids.push_back(device.id);
+                        if (extra_players && device && device.id != player1_id) ids.push_back(device.id);
                     }
                     const auto changed = slots.Assign(ids);
                     for (std::size_t player = 1; player < MaxPlayers; ++player) {
