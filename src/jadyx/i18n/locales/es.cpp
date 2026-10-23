@@ -645,6 +645,8 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::LastPlayed, L"Jugado: {0}"},
     {Text::PlayTimeSorted, L"Más jugados"},
     {Text::LastPlayedSorted, L"Jugados recientemente"},
+    {Text::MultipleControllers, L"Varios mandos"},
+    {Text::MultipleControllersHint, L"Cada mando extra juega como jugador 2 a 8. Se aplica al iniciar un juego"},
 
     // Tabs, sections and filters
     {Text::TabHome, L"Inicio"},

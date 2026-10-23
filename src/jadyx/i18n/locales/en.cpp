@@ -645,6 +645,8 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::LastPlayed, L"Last played {0}"},
     {Text::PlayTimeSorted, L"Most played"},
     {Text::LastPlayedSorted, L"Recently played"},
+    {Text::MultipleControllers, L"Multiple controllers"},
+    {Text::MultipleControllersHint, L"Each extra controller plays as players 2 to 8. Applies when a game starts"},
 
     // Tabs, sections and filters
     {Text::TabHome, L"Home"},
