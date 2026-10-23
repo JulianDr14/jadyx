@@ -133,29 +133,34 @@ private:
     /// Records the shader-path upload of the CPU-read guest image into guest_texture.
     void RecordUpload(const StagingBufferRef& upload);
 
-    /// An image to composite: its offline SRV, its size and the normalized region the screen
-    /// shows (as Tegra::NormalizeCrop: the screen's top edge samples crop.top).
-    struct CompositeSource {
+    /// One layer of the guest composition: its offline SRV, its size, the normalized region the
+    /// screen shows (as Tegra::NormalizeCrop: the screen's top edge samples crop.top) and how it
+    /// blends over the layers below it.
+    struct CompositeLayer {
         D3D12_CPU_DESCRIPTOR_HANDLE srv;
         u32 width;
         u32 height;
         Common::Rectangle<f32> crop;
+        Tegra::BlendMode blending{};
     };
-    /// Draws source into frame, letterboxed: with FSR 1 when it is selected and enlarges the
-    /// image, with the bilinear blit otherwise; then the overlays. Allocates the frame's
-    /// descriptors before recording anything of it, since allocating from a full ring flushes.
-    void RecordComposite(PresentFrame& frame, const CompositeSource& source);
-    /// The FSR passes for source on the current screen, or nullopt for the bilinear blit.
-    std::optional<Fsr::Plan> PlanFsr(const CompositeSource& source);
+    /// Draws the layers into frame, letterboxed and back to front (the last one on top): with FSR 1
+    /// when it is selected, enlarges the image and there is a single layer, with the bilinear blit
+    /// otherwise; then the overlays. Allocates the frame's descriptors before recording anything of
+    /// it, since allocating from a full ring flushes.
+    void RecordComposite(PresentFrame& frame, std::span<const CompositeLayer> layers);
+    /// The FSR passes for the single layer on the current screen, or nullopt for the bilinear blit
+    /// (also when an applet shares the screen with the game: FSR takes one source).
+    std::optional<Fsr::Plan> PlanFsr(const CompositeLayer& layer, bool single_layer);
     /// Transitions and clears frame, binds it and sets the letterboxed screen viewport.
     void BeginComposite(CommandStream* cmd, PresentFrame& frame);
-    /// The bilinear blit of the source table into the bound frame.
-    void RecordBlit(CommandStream* cmd, const CompositeSource& source,
+    /// The bilinear blit of one layer's descriptor into the bound frame, with its blend mode.
+    void RecordBlit(CommandStream* cmd, const CompositeLayer& layer,
                     D3D12_GPU_DESCRIPTOR_HANDLE source_table,
                     D3D12_GPU_DESCRIPTOR_HANDLE sampler_table);
-    /// Composites the guest image the GPU rendered (texture cache) into frame, without reading
-    /// it back. False when the framebuffer is not a cached image.
-    bool CompositeAccelerated(const Tegra::FramebufferConfig& framebuffer, PresentFrame& frame);
+    /// Composites the guest images the GPU rendered (texture cache) into frame, back to front,
+    /// without reading them back. False when any layer is not a cached image: the frame then falls
+    /// back to the CPU path of the bottom layer, as before.
+    bool CompositeLayers(std::span<const Tegra::FramebufferConfig> framebuffers, PresentFrame& frame);
     /// Records the CPU-path copy of the upload image into frame.
     void RecordCopy(const StagingBufferRef& upload, PresentFrame& frame);
     /// Submits the recorded frame and hands it to the present manager.
@@ -195,7 +200,9 @@ private:
     // Shader path
     bool blit_ready{};
     ComPtr<ID3D12RootSignature> blit_root_signature;
-    ComPtr<ID3D12PipelineState> blit_pipeline;
+    /// One present blit pipeline per Tegra::BlendMode (Opaque, Premultiplied, Coverage): the blit
+    /// is recorded once per guest layer, bottom layer first.
+    std::array<ComPtr<ID3D12PipelineState>, 3> blit_pipelines;
     D3D12_CPU_DESCRIPTOR_HANDLE linear_sampler{};
     ComPtr<ID3D12Resource> guest_texture;
     D3D12_CPU_DESCRIPTOR_HANDLE guest_srv{};
@@ -210,11 +217,14 @@ private:
     int crop_width{};
     int crop_height{};
     bool present_failed{};
-    /// The frontend menu while open, and the last framebuffer composited, to redraw it paused.
+    /// The frontend menu while open, and the layer stack last composited, to redraw it paused.
+    /// More than one layer means an applet (the Mii editor, the software keyboard) over the game.
     std::optional<MenuImage> game_menu;
     /// While CaptureFrame composites: the guest's image only, nothing drawn over it.
     bool bare_composite{};
-    std::optional<Tegra::FramebufferConfig> last_framebuffer;
+    std::vector<Tegra::FramebufferConfig> last_framebuffers;
+    /// How many layers the last composited frame had, to log a change only once.
+    size_t logged_layer_count{};
     /// What the present last logged about FSR, so it logs again only when that changes.
     struct FsrLogState {
         bool active{};
