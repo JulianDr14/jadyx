@@ -645,6 +645,8 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::LastPlayed, L"Jogado por último {0}"},
     {Text::PlayTimeSorted, L"Mais jogados"},
     {Text::LastPlayedSorted, L"Jogados recentemente"},
+    {Text::MultipleControllers, L"Vários controles"},
+    {Text::MultipleControllersHint, L"Cada controle extra joga como jogador 2 a 8. Vale ao iniciar um jogo"},
 
     // Tabs, sections and filters
     {Text::TabHome, L"Início"},

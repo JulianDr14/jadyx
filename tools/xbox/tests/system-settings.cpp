@@ -110,6 +110,15 @@ int main() {
           !page.settings.track_play_time && SystemRowValue(page, SystemPage::PlayTime) == L"No");
     check(HandleSystemInput(page, SystemInput::Right) == SystemPageEffect::Changed &&
           page.settings.track_play_time);
+    // Extra controllers play unless the player turns them off.
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
+          page.selected == SystemPage::MultipleControllers && page.settings.multiple_controllers);
+    check(SystemRowValue(page, SystemPage::MultipleControllers) == L"Sí");
+    check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::Changed &&
+          !page.settings.multiple_controllers &&
+          SystemRowValue(page, SystemPage::MultipleControllers) == L"No");
+    check(HandleSystemInput(page, SystemInput::Right) == SystemPageEffect::Changed &&
+          page.settings.multiple_controllers);
     check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
           page.selected == SystemPage::ClearCache);
     check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::ClearCache);
