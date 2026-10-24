@@ -80,8 +80,9 @@ std::optional<LibraryCacheRecord> LibraryCache::Load(std::string_view launch_pat
     Header header{};
     if (!in || !in.read(reinterpret_cast<char*>(&header), sizeof(header))) return std::nullopt;
     if (header.magic != Magic || header.version != Version || header.stamp != stamp ||
-        header.language != language || header.name_length > MaxText ||
-        header.developer_length > MaxText || header.display_version_length > MaxText || header.icon_size > MaxIcon)
+        header.language != language || !header.name_length || !header.icon_size ||
+        header.name_length > MaxText || header.developer_length > MaxText ||
+        header.display_version_length > MaxText || header.icon_size > MaxIcon)
         return std::nullopt;
     // Two games whose paths hash alike: the record also stores its path, compared here.
     std::string stored_path(launch_path.size(), '\0');
@@ -108,7 +109,9 @@ std::optional<LibraryCacheRecord> LibraryCache::Load(std::string_view launch_pat
 
 bool LibraryCache::Store(std::string_view launch_path, std::uint64_t stamp, std::uint32_t language,
                          const LibraryCacheRecord& record) const {
-    if (directory.empty() || record.icon.size() > MaxIcon) return false;
+    if (directory.empty() || record.name.empty() || record.icon.empty() ||
+        record.icon.size() > MaxIcon)
+        return false;
     const std::wstring_view name = std::wstring_view{record.name}.substr(0, MaxText);
     const std::wstring_view developer = std::wstring_view{record.developer}.substr(0, MaxText);
     const auto display_version = std::wstring_view{record.display_version}.substr(0, MaxText);

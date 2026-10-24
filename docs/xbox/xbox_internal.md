@@ -4455,3 +4455,14 @@ flow; View/Select mappings are untouched. Host frontend gates: 9 pass / 3 existi
 failures before, 10 pass / same 3 failures after. JSON parser gate lacks its
 existing nlohmann dependency on this Mac; UWP and console gates are pending.
 See [scope, evidence and exact console gate](nxbox-jx-1a-game-info-menu.md).
+## Library metadata recovery (2026-10-24)
+
+Task `jx-1b-missing-covers`, based on local `nxbox/integration3`: empty title/icon
+records were accepted as persistent cache hits, and background fill did not
+publish artwork to visible tiles. Reject negative v5 records without invalidating
+complete ones; retry incomplete reads on rescan and once after cold fill; read
+update Control metadata and borrow missing accessory presentation from the
+matching cached base through `GetBaseTitleID`. Storage read failures must not
+persist partial icons. Four macOS host harnesses pass; MSVC/UWP and Series gates
+remain pending. Findings, commands and exact manual console test:
+[nxbox-jx-1b-missing-covers.md](nxbox-jx-1b-missing-covers.md).

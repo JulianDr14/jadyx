@@ -30,6 +30,7 @@ struct LibraryEntry {
     std::int64_t last_played{};   ///< Unix seconds of the last launch; 0 = never played.
     std::int64_t added{};         ///< Unix seconds the file arrived (its creation); 0 = unknown.
     bool pinned{};                ///< Pinned by the player (favorites.h).
+    bool metadata_retry{};        ///< Incomplete read: do not preserve it across a rescan.
 };
 struct LibraryScan {
     std::vector<LibraryEntry> entries;
@@ -86,8 +87,9 @@ inline LibraryScan ScanGameLibrary(const std::filesystem::path& root,
 // Icons are not kept: the visible window reloads them from the cache.
 inline void KeepKnownTitles(const std::vector<LibraryEntry>& known, std::vector<LibraryEntry>& entries) {
     for (auto& entry : entries) {
-        const auto found = std::find_if(known.begin(), known.end(),
-            [&](const auto& k) { return k.title_loaded && k.launch_path == entry.launch_path; });
+        const auto found = std::find_if(known.begin(), known.end(), [&](const auto& k) {
+            return k.title_loaded && !k.metadata_retry && k.launch_path == entry.launch_path;
+        });
         if (found == known.end()) continue;
         entry.name = found->name;
         entry.developer = found->developer;
