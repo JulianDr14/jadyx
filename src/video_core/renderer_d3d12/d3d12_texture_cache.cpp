@@ -20,6 +20,7 @@
 #include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
 #include "video_core/renderer_d3d12/d3d12_checkpoint_readback.h"
 #include "video_core/renderer_d3d12/d3d12_blit_image.h"
+#include "video_core/renderer_d3d12/d3d12_msaa_validation.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/render_targets.h"
@@ -491,6 +492,48 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
         (decoder_writes_image || runtime->SupportsView(format.view, D3D12_FORMAT_SUPPORT1_NONE,
                                               D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE))) {
         resource_flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    }
+    const auto reject_msaa = [&](std::string_view reason) {
+        const auto message =
+            fmt::format("D3D12: image allocation rejected: {} (format {} native {} samples {} "
+                        "type {} {}x{}x{} levels {})",
+                        reason, info_.format, static_cast<u32>(format.resource), info_.num_samples,
+                        static_cast<u32>(info_.type), info_.size.width, info_.size.height,
+                        info_.size.depth, info_.resources.levels);
+        LOG_ERROR(Render, "{}", message);
+        // Use Jadyx's existing construction-failure/recovery path. A null image
+        // would leave existing transfer and view callers with an invalid handle.
+        throw std::runtime_error(message);
+    };
+    if (const auto reason = ValidateMsaaShape(
+            info_.num_samples, info_.type == ImageType::e2D, info_.resources.levels,
+            info_.size.depth, info_.size.width, info_.size.height,
+            std::max(VideoCore::Surface::DefaultBlockWidth(info_.format),
+                     VideoCore::Surface::DefaultBlockWidth(format.copy_format)),
+            std::max(VideoCore::Surface::DefaultBlockHeight(info_.format),
+                     VideoCore::Surface::DefaultBlockHeight(format.copy_format)));
+        !reason.empty()) {
+        reject_msaa(reason);
+    }
+    const bool attachment_supported =
+        !is_msaa ||
+        (is_color ? (resource_flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0
+                  : runtime->SupportsView(format.dsv, D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL));
+    if (const auto reason = ValidateMsaaAllocation(
+            info_.num_samples, attachment_supported,
+            [&](u32 requested_samples) {
+                D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS quality{
+                    .Format = is_color ? format.view : format.dsv,
+                    .SampleCount = requested_samples,
+                    .Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE,
+                    .NumQualityLevels = 0,
+                };
+                const HRESULT result = runtime->device.Get()->CheckFeatureSupport(
+                    D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &quality, sizeof(quality));
+                return SUCCEEDED(result) && quality.NumQualityLevels != 0;
+            });
+        !reason.empty()) {
+        reject_msaa(reason);
     }
     const auto [samples_x, samples_y] = VideoCommon::SamplesLog2(info_.num_samples);
     u64 width = std::max<u64>(1, info_.size.width >> samples_x);

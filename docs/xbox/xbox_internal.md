@@ -4400,3 +4400,14 @@ and applies live. `ui/ui_theme.h` owns the default Jadyx tokens and the GPL NXbo
 adaptation. Jadyx remains the default; text, focus-brush, cover-mask and scrim caches invalidate
 on a theme change. Host gates and the pending console comparison are recorded in
 [nxbox-themes.md](nxbox-themes.md). No UWP/console visual certification or package was produced.
+## R040: exact native MSAA allocation checks (24 Oct 2026)
+
+`nxbox/33-msaa-validation` adapts NXbox's allocation checks to Jadyx's resource
+owner. Invalid counts/shapes/sample grids now reject before `SamplesLog2` and
+allocation; typed physical RTV/DSV queries require nonzero quality levels for the
+exact requested count, without lowering samples. Rejection uses existing logged
+GPU exception recovery, not nullable images. Single-sample/settings/Pulse formats
+are unchanged. Two wiring regressions fail before/pass after; 122 portable cases
+and five existing Python suites pass. No UWP/Series gate or transfer parity claimed.
+Evidence, local provenance and the exact pending console matrix:
+[nxbox-33-msaa-validation.md](nxbox-33-msaa-validation.md).
