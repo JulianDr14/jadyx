@@ -1,5 +1,8 @@
 # Library compatibility badges
 
+> Freshness, cache paths and curation were updated by [jx-19](nxbox-jx-19-compat-fresh.md).
+> The opt-in behavior and `dist/compat` paths below describe the original implementation.
+
 Jadyx's library now draws a 24-unit badge over each cover: green check (Playable),
 yellow exclamation (Issues), red cross (Broken), or grey question (Untested).
 The Home hero and Library shelf heading show the focused game's translated status,

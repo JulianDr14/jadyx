@@ -4433,3 +4433,14 @@ settings and legacy sensor delivery remain the baseline with switches absent.
 Host evidence and exact pending console acceptance:
 [`nxbox-37-controllers-motion.md`](nxbox-37-controllers-motion.md).
 No Windows/UWP build, console test or performance certification in this work.
+
+
+## 2026-10-24: curated compatibility freshness (jx-19)
+
+The bundled source moved to `compat/compat.json`; package location remains unchanged.
+The library now refreshes that path on main without opt-in, with a 3-second deadline,
+256 KiB response limit and newest-valid `generated` selection. The cache lives at
+`LocalState/jadyx/compat_cache.json`. Reuse updater Storage::Persist: the older
+WriteFileAtomically uses filesystem::rename, which does not replace an existing
+file on Windows. Host parser/selection/CLI/library/locale checks pass; UWP build
+and console remain pending. See [jx-19 evidence and exact gate](nxbox-jx-19-compat-fresh.md).

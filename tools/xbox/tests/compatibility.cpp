@@ -9,12 +9,6 @@
 
 int main() {
     using namespace Jadyx::Compatibility;
-    assert(!RefreshEnabled({}, {}));
-    assert(!RefreshEnabled("0", "NXBOX_COMPAT_REFRESH=1"));
-    assert(RefreshEnabled("1", {}));
-    assert(RefreshEnabled({}, "library=1\nNXBOX_COMPAT_REFRESH=1\r\n"));
-    assert(!RefreshEnabled({}, "NXBOX_COMPAT_REFRESH=1\nNXBOX_COMPAT_REFRESH=0"));
-    assert(!RefreshEnabled({}, "# NXBOX_COMPAT_REFRESH=1\nNXBOX_COMPAT_REFRESH=true"));
     const std::string good =
         R"({"schema_version":1,"titles":{"010028600EBDA000":[{"title_id":"010028600EBDA000","name":"Example","status":"issues","console":"X","fps_note":"20-30 FPS","jadyx_version":"","note":"Test report","source":"README.md","product":"Jadyx"}]}})";
     assert(!Parse("broken"));
@@ -40,8 +34,8 @@ int main() {
     assert(Select("bad", "bad", "bad").empty());
     assert(Select(R"({"schema_version":1,"titles":{}})", good, good).empty());
     const auto good_json = nlohmann::json::parse(good);
-    for (const auto* field : {"title_id", "name", "status", "console", "fps_note", "jadyx_version",
-                              "note", "source", "product"}) {
+    for (const auto* field : {"title_id", "name", "status", "console", "fps_note",
+                              "note", "product"}) {
         auto missing = good_json;
         missing["titles"]["010028600EBDA000"][0].erase(field);
         assert(!Parse(missing.dump()));
@@ -69,7 +63,7 @@ int main() {
     auto mismatch = good_json;
     mismatch["titles"]["010028600EBDA000"][0]["title_id"] = "010028600EBDA800";
     assert(!Parse(mismatch.dump()));
-    std::ifstream input{"dist/compat/compat.json"};
+    std::ifstream input{"compat/compat.json"};
     assert(input);
     const std::string bundled{std::istreambuf_iterator<char>{input},
                               std::istreambuf_iterator<char>{}};

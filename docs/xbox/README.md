@@ -20,6 +20,8 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 
 ## Diseño y funciones
 
+- [Curated compatibility freshness](nxbox-jx-19-compat-fresh.md): background refresh, timestamp selection and manual Bun curation without a new release.
+
 - [Compatibility badges](nxbox-compat-badges.md): report metadata, offline fallback, opt-in refresh and console test.
 
 - [Actualizador de Jadyx](xbox_updater.md): versiones firmadas, descarga reanudable, pantalla de actualizaciones y asistencia web; instalación interna Xbox pendiente de gate.
