@@ -4433,3 +4433,15 @@ settings and legacy sensor delivery remain the baseline with switches absent.
 Host evidence and exact pending console acceptance:
 [`nxbox-37-controllers-motion.md`](nxbox-37-controllers-motion.md).
 No Windows/UWP build, console test or performance certification in this work.
+
+## Library metadata recovery (2026-10-24)
+
+Task `jx-1b-missing-covers`, based on local `nxbox/integration3`: empty title/icon
+records were accepted as persistent cache hits, and background fill did not
+publish artwork to visible tiles. Reject negative v5 records without invalidating
+complete ones; retry incomplete reads on rescan and once after cold fill; read
+update Control metadata and borrow missing accessory presentation from the
+matching cached base through `GetBaseTitleID`. Storage read failures must not
+persist partial icons. Four macOS host harnesses pass; MSVC/UWP and Series gates
+remain pending. Findings, commands and exact manual console test:
+[nxbox-jx-1b-missing-covers.md](nxbox-jx-1b-missing-covers.md).

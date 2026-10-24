@@ -65,6 +65,27 @@ int main() {
     check(!cache.Load(game, 7, 14, false));
     check(cache.Store(game, 7, 14, record));
 
+    // A failed title/icon read must be retried, including old v5 negative records.
+    auto incomplete = record;
+    incomplete.icon.clear();
+    check(!cache.Store("failed-icon", 0, 14, incomplete));
+    check(!cache.Load("failed-icon", 0, 14, true));
+    incomplete = record;
+    incomplete.name.clear();
+    check(!cache.Store("failed-title", 0, 14, incomplete));
+    // Corrupt a valid v5 header to emulate a previously persisted failed icon read.
+    for (const auto& item : std::filesystem::directory_iterator{root / "cache"}) {
+        std::fstream out{item.path(), std::ios::in | std::ios::out | std::ios::binary};
+        const std::uint32_t no_icon = 0;
+        out.seekp(32);
+        out.write(reinterpret_cast<const char*>(&no_icon), sizeof(no_icon));
+    }
+    check(!cache.Load(game, 7, 14, false));
+    check(!cache.Load(game, 7, 14, true));
+    // A later successful scan replaces the miss without a global cache clear.
+    check(cache.Store(game, 7, 14, record));
+    check(cache.Load(game, 7, 14, true)->icon == record.icon);
+
     // A truncated record is a miss, not a crash.
     for (const auto& item : std::filesystem::directory_iterator{root / "cache"})
         std::filesystem::resize_file(item.path(), 40);

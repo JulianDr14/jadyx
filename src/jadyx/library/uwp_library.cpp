@@ -46,6 +46,7 @@
 #include "jadyx/library/portal_library.h"
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/library/library_cache.h"
+#include "jadyx/library/library_metadata_policy.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/settings/system_page.h"
 #include "jadyx/updates/update_ui.h"
@@ -203,6 +204,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     size_t retained_page = SIZE_MAX;
     bool metadata_dirty = true;
     size_t names_cursor = 0; // Next game whose title is looked up in the cache, after a scan.
+    size_t retry_cursor = 0; // One bounded pass after bases have filled the cache.
     size_t fill_cursor = 0;  // Next game the background fill reads into the cache.
     unsigned actions = 0;
     std::optional<LibraryTab> pressed_tab; // A tab the pointer chose.
@@ -604,7 +606,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         }
         metadata_dirty = true;
         retained_page = SIZE_MAX;
-        names_cursor = fill_cursor = 0;
+        names_cursor = fill_cursor = retry_cursor = 0;
         dirty = true;
     };
     // A game's updates/DLC changed (0: any game's): only its entries read their metadata again.
@@ -616,7 +618,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             entry.title_loaded = entry.metadata_loaded = false;
             entry.build_id = {}; entry.display_version.clear();
         }
-        metadata_dirty = true; names_cursor = fill_cursor = 0;
+        metadata_dirty = true;
+        names_cursor = fill_cursor = retry_cursor = 0;
     };
     // Each game's play time and last play, and the library's order (play_history.h). `keep` stays
     // selected where it lands; otherwise the first game (the last one played) is.
@@ -644,7 +647,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         // Covers and background reads follow positions: start them over for the new order.
         metadata_dirty = true;
         retained_page = SIZE_MAX;
-        names_cursor = fill_cursor = 0;
+        names_cursor = fill_cursor = retry_cursor = 0;
         dirty = true;
     };
     // The entries whose covers the current tab may show, nearest first, and a key that changes
@@ -690,7 +693,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         ++generation;
         metadata_dirty = true;
         retained_page = SIZE_MAX;
-        names_cursor = fill_cursor = 0;
+        names_cursor = fill_cursor = retry_cursor = 0;
         metadata_worker.request_stop();
         canvas->InvalidateCovers();
         std::packaged_task<LibraryScan(std::stop_token)> task{[&, added, reload_keys](std::stop_token stop) {
@@ -2238,6 +2241,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 if (batch.generation == generation) {
                     // Merge field by field: a names-only batch must not drop icons already shown.
                     const auto covers = covers_for_tab();
+                    bool covers_changed = false;
                     for (auto& entry : batch.entries) {
                         auto found = std::find_if(scan.entries.begin(), scan.entries.end(), [&](const auto& e) {
                             return e.launch_path == entry.launch_path;
@@ -2248,19 +2252,17 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         if (batch.stopped && !batch.icons && !entry.title_loaded) {
                             names_cursor = std::min(names_cursor, index);
                             fill_cursor = std::min(fill_cursor, index);
+                            retry_cursor = std::min(retry_cursor, index);
                         }
-                        found->name = std::move(entry.name);
-                        found->developer = std::move(entry.developer);
-                        if (entry.title_loaded) found->display_version = std::move(entry.display_version);
-                        if (entry.title_loaded) {
-                            found->program_id = entry.program_id;
-                            found->build_id = entry.build_id;
+                        if (batch.stopped && batch.icons && !entry.title_loaded) {
+                            found->metadata_loaded = false;
+                            metadata_dirty = true;
                         }
-                        found->title_loaded |= entry.title_loaded;
-                        // The player may have paged on meanwhile: keep icons only inside the window.
-                        if (batch.icons && covers.shown[index])
-                            found->icon = std::move(entry.icon);
+                        covers_changed |= MergeLibraryMetadata(*found, std::move(entry),
+                                                               covers.shown[index], batch.icons);
                     }
+                    if (covers_changed)
+                        canvas->InvalidateCovers();
                     dirty = true;
                 }
             } catch (const std::exception&) { notice = Tr(T::MetadataFailed); }
@@ -2297,32 +2299,55 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     if (entry.metadata_loaded) continue;
                     entry.metadata_loaded = true;
                     requested.push_back(entry);
+                    requested.back().title_loaded = false;
                 }
                 request.icons = true;
             } else {
                 // Titles without icons: what the grid and the cache need, never a cover's bytes.
-                const auto take = [&](size_t& cursor, size_t batch) {
+                const auto take = [&](size_t& cursor, size_t batch, bool retry = false) {
                     while (cursor < scan.entries.size() && requested.size() < batch) {
                         const auto& entry = scan.entries[cursor++];
-                        if (!entry.title_loaded)
-                            requested.push_back({entry.relative_path, entry.name, {}, {}, false, false,
-                                                 entry.launch_path, entry.source_name});
+                        if (retry ? entry.metadata_retry : !entry.title_loaded) {
+                            LibraryEntry pending;
+                            pending.relative_path = entry.relative_path;
+                            pending.name = entry.name;
+                            pending.launch_path = entry.launch_path;
+                            pending.source_name = entry.source_name;
+                            requested.push_back(std::move(pending));
+                        }
                     }
                 };
                 if (names_cursor < scan.entries.size()) {
                     take(names_cursor, NamesBatch);
                     request.cache_only = true;
-                } else {
+                } else if (fill_cursor < scan.entries.size()) {
                     take(fill_cursor, FillBatch);
+                } else {
+                    // A DLC seen before its base gets a second chance after the cache fills.
+                    // Permanent failures wait for the next scan, rather than spinning here.
+                    take(retry_cursor, FillBatch, true);
                 }
             }
             if (!requested.empty()) {
                 if (!logging_ready) { Common::Log::Initialize(); logging_ready = true; }
+                std::vector<MetadataSource> sources;
+                sources.reserve(scan.entries.size());
+                for (const auto& entry : scan.entries) {
+                    MetadataSource source;
+                    source.relative_path = entry.relative_path;
+                    source.launch_path = entry.launch_path;
+                    sources.push_back(std::move(source));
+                }
                 std::packaged_task<MetadataBatch(std::stop_token)> task{
-                    [root, &cache, requested = std::move(requested), generation, request](std::stop_token stop) mutable {
+                    [root, &cache, sources = std::move(sources), requested = std::move(requested),
+                     generation, request](std::stop_token stop) mutable {
                         winrt::init_apartment(winrt::apartment_type::multi_threaded);
-                        struct Uninitialize { ~Uninitialize() { winrt::uninit_apartment(); } } guard;
-                        ReadLibraryMetadata(root, requested, cache, request, stop);
+                        struct Uninitialize {
+                            ~Uninitialize() {
+                                winrt::uninit_apartment();
+                            }
+                        } guard;
+                        ReadLibraryMetadata(root, requested, cache, request, stop, sources);
                         return MetadataBatch{std::move(requested), generation, request.icons,
                                              stop.stop_requested()};
                     }};
