@@ -25,8 +25,8 @@
 namespace Core {
 
 void ConfigureApplicationPrewarm(System& system, bool warm,
-                                const std::function<void(std::size_t, std::size_t)>& progress,
-                                std::size_t code_budget) {
+                                 const std::function<void(std::size_t, std::size_t)>& progress,
+                                 std::size_t code_budget, std::stop_token stop) {
     auto* process = system.ApplicationProcess();
     if (!process || Settings::IsNceEnabled()) {
         return;
@@ -52,16 +52,22 @@ void ConfigureApplicationPrewarm(System& system, bool warm,
         // Owners keep their own reference; nothing else may register into it now.
         JitPrewarm::application_catalog.reset();
     }
-    if (!warm) return;
+    if (!warm || stop.stop_requested())
+        return;
     std::array<std::size_t, Hardware::NUM_CPU_CORES> sizes{};
     for (std::size_t core = 0; core < owners.size(); ++core) {
+        if (stop.stop_requested())
+            break;
         if (owners[core]) sizes[core] = owners[core]->PrepareCandidates();
     }
     const auto start = std::chrono::steady_clock::now();
     try {
-        JitPrewarm::RunOwners(sizes, [&](std::size_t core, const JitPrewarm::Progress& callback) {
-            owners[core]->Warm(callback, code_budget);
-        }, progress);
+        JitPrewarm::RunOwners(
+            sizes,
+            [&](std::size_t core, const JitPrewarm::Progress& callback) {
+                owners[core]->Warm(callback, code_budget, stop);
+            },
+            progress, stop);
     } catch (const std::exception& e) {
         // RunOwners joins all workers before unwinding. Prepared blocks remain valid.
         LOG_WARNING(Core, "JIT prewarm {}: parallel stage incomplete, using normal JIT: {}", layout.name, e.what());
@@ -176,17 +182,20 @@ std::size_t Owner::PrepareCandidates() {
     }
 }
 
-void Owner::Warm(const Progress& progress, std::size_t code_budget) {
+void Owner::Warm(const Progress& progress, std::size_t code_budget, std::stop_token stop) {
     auto& p = profile;
     target->SetBlockObserver({}); // Warming must not record its own compilations.
     try {
         const auto plan = p.WarmPlan();
         std::size_t accepted{}, rejected{}, budget_skipped{}, priority_accepted{}, shared_accepted{};
+        std::size_t processed{};
         const auto start = std::chrono::steady_clock::now();
         const auto space = target->CodeCacheSpaceRemaining();
         const auto used = [&] { return space - target->CodeCacheSpaceRemaining(); };
         target->BeginWarm();
         for (std::size_t n = 0; n < plan.size(); ++n) {
+            if (stop.stop_requested())
+                break;
             if (used() >= code_budget) {
                 budget_skipped = plan.size() - n;
                 break;
@@ -206,12 +215,17 @@ void Owner::Warm(const Progress& progress, std::size_t code_budget) {
                 }
             }
             rejected += status == WarmStatus::Rejected;
+            processed = n + 1;
             if (progress && (n % 256 == 0 || n + 1 == plan.size())) {
                 progress(n + 1, plan.size());
             }
         }
         if (progress && !plan.empty()) {
-            progress(plan.size(), plan.size());
+            progress(stop.stop_requested() ? processed : plan.size(), plan.size());
+        }
+        if (stop.stop_requested()) {
+            LOG_INFO(Core, "JIT prewarm {} core {}: stopped after {} of {} candidates",
+                     p.layout->name, p.core, processed, plan.size());
         }
         LOG_INFO(Core, "JIT prewarm {} core {}: RX ranges {}, loaded {}, accepted {}, rejected {}, budget skipped {}, code {:.2f} MiB, {:.1f} ms",
                  p.layout->name, p.core, p.executable_ranges.size(), p.loaded.size(), accepted, rejected,

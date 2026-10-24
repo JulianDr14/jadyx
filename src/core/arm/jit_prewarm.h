@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <stop_token>
 
 namespace Core {
 class System;
@@ -17,6 +18,7 @@ inline constexpr std::size_t DefaultPrewarmCodeBudget = 64 * 1024 * 1024;
 // Frontend entry point. Must run after Load and before System::Run. Covers A64 and A32
 // applications alike (one profile per core and ISA, core/arm/dynarmic/jit_prewarm_owner.h).
 void ConfigureApplicationPrewarm(System& system, bool warm,
-                                const std::function<void(std::size_t, std::size_t)>& progress,
-                                std::size_t code_budget = DefaultPrewarmCodeBudget);
+                                 const std::function<void(std::size_t, std::size_t)>& progress,
+                                 std::size_t code_budget = DefaultPrewarmCodeBudget,
+                                 std::stop_token stop = {});
 }

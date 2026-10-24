@@ -4479,3 +4479,22 @@ assertions pass after failing before implementation; existing macOS selection
 remains 26/31 passing with the same five pre-existing failures. No Windows build,
 package, PC app or Xbox execution. Exact console gate and limitations:
 [`nxbox-jx-20-files-browser.md`](nxbox-jx-20-files-browser.md).
+## 2026-10-24 — Optional startup warmup controls (jx-22)
+
+Fresh interactive D3D12 launches may opt into `NXBOX_WARMUP_CONTROL=1`
+(environment or existing boot.cfg). Jadyx's canvas shows shader/CPU phases,
+counts/time and mapped skip/back prompts in EN/ES/PT-BR. Skip keeps prepared
+work and profile learning; cancel drains/join workers before normal shutdown
+and library return 10. Pulse restore and default UI are unchanged.
+
+Trap: `ThreadWorker::WaitForRequests(token)` waits active tasks but stops the
+persistent pool. For a reusable startup skip, check the token in queued tasks
+and drain without a token. An old-strategy host harness reproduces the later
+work failure. Add a scope-exit drain because jobs capture local state/callbacks.
+JIT checks stop between blocks, rejoins owners, and restores observers.
+
+Host baseline remains 10 passing / 2 pre-existing failing executables
+(game-menu/system-settings); 5 new gates pass, plus locale-order/theme gates.
+No UWP build, console or performance validation in this task. Cooperative
+stop cannot interrupt an active driver call. Full design and exact Series
+gate: [jx-22 warmup controls](nxbox-jx-22-warmup-skip.md).

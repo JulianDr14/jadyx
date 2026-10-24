@@ -73,3 +73,4 @@ un arranque en PC no certifica gameplay, rendimiento ni funcionamiento en Series
 - [Opt-in controller preference and synthetic motion](nxbox-37-controllers-motion.md): NXbox input port, host evidence and pending Series acceptance.
 
 - [Read-only on-console Files browser](nxbox-jx-20-files-browser.md): LocalState and authorized USB folders, bounded pages and host evidence; Series gate pending.
+- [Optional startup warmup controls](nxbox-jx-22-warmup-skip.md): safe shader/JIT skip, return to library, host gates and pending Series acceptance.

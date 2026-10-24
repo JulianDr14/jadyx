@@ -17,6 +17,7 @@
 #include <winrt/base.h>
 #include <winrt/Windows.ApplicationModel.h>
 
+#include "jadyx/app/warmup_control.h"
 #include "jadyx/cheats/cheats_view.h"
 #include "jadyx/game/game_menu.h"
 #include "jadyx/i18n/localization.h"
@@ -604,6 +605,35 @@ struct GameMenuSurface::Impl : UiPainter {
         }
     }
 
+    void DrawWarmup(const WarmupView& view) {
+        Type(I18n::Tr(Text::WarmupTitle), TypeRole::HeadlineLarge, 160, 200, 960, Palette::Text);
+        const auto phase =
+            view.phase == WarmupPhase::Shaders ? Text::WarmupShaders : Text::WarmupCpu;
+        Type(I18n::Tr(phase), TypeRole::BodyLarge, 160, 270, 960, Palette::TextHint);
+        const auto status =
+            view.stopping     ? std::wstring{I18n::Tr(view.cancelled ? Text::WarmupCancelling
+                                                                     : Text::WarmupSkipping)}
+            : view.total == 0 ? std::wstring{I18n::Tr(Text::WarmupReading)}
+                              : I18n::Format(Text::WarmupCount, {std::to_wstring(view.done),
+                                                                 std::to_wstring(view.total)});
+        Type(status, TypeRole::Body, 160, 312, 960, Palette::TextSecondary);
+        Round(160, 360, 960, 6, 3, Palette::Track);
+        if (view.total != 0) {
+            const auto fraction = static_cast<float>(std::min(view.done, view.total)) /
+                                  static_cast<float>(view.total);
+            Round(160, 360, 960 * fraction, 6, 3, Palette::Accent);
+        }
+        Type(I18n::Format(Text::WarmupElapsed, {std::to_wstring(view.seconds)}), TypeRole::Label,
+             160, 388, 960, Palette::TextSecondary);
+        Type(I18n::Tr(Text::WarmupHint), TypeRole::Body, 160, 432, 960, Palette::TextHint, 1,
+             TextAlign::Leading, 2);
+        const auto [skip_key, skip_color] = Key(L"X", ButtonColor::X);
+        const auto [cancel_key, cancel_color] = Key(L"B", ButtonColor::B);
+        if (!view.stopping)
+            Prompt(skip_key, skip_color, I18n::Tr(Text::WarmupSkip), 160, 520);
+        Prompt(cancel_key, cancel_color, I18n::Tr(Text::WarmupCancel), 640, 520);
+    }
+
     void DrawKeyboard(const TextEntryPanelView& view, bool can_cancel) {
         using K = TextEntryPanelLayout;
         DrawTextEntryPanel(*this, view, 0, 0);
@@ -661,6 +691,10 @@ D3D12::MenuImage GameMenuSurface::DrawKeyboard(const TextEntryPanelView& view, b
                                               std::pair<u32, u32> screen) {
     using K = TextEntryPanelLayout;
     return impl->Render(K::Width, K::Height, screen, [&] { impl->DrawKeyboard(view, can_cancel); });
+}
+
+D3D12::MenuImage GameMenuSurface::DrawWarmup(const WarmupView& view, std::pair<u32, u32> screen) {
+    return impl->RenderScreen(screen, false, [&] { impl->DrawWarmup(view); });
 }
 
 } // namespace Jadyx

@@ -18,6 +18,7 @@
 namespace Jadyx {
 
 class GameMenu;
+struct WarmupView;
 struct TextEntryPanelView;
 namespace Cheats {
 struct CheatsView;
@@ -52,6 +53,9 @@ public:
                                 std::pair<u32, u32> screen);
     /// The keyboard a game opened (game_keyboard.h); B's prompt only when the game lets it cancel.
     D3D12::MenuImage DrawKeyboard(const TextEntryPanelView& view, bool can_cancel, std::pair<u32, u32> screen);
+
+    /// Startup preparation, using the same canvas, palette and controller prompts.
+    D3D12::MenuImage DrawWarmup(const WarmupView& view, std::pair<u32, u32> screen);
 
 private:
     struct Impl;
