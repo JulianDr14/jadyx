@@ -9,6 +9,13 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::ThemeJadyx, L"Jadyx"},
     {Text::ThemeOldNxbox, L"Old NXbox"},
 
+    {Text::NxboxWelcomeTitle, L"Seus dados do NXbox foram trazidos"},
+    {Text::NxboxWelcomeSummary, L"Chaves: {0} · Firmware: {1} · Saves: {2} · Mods: {3}"},
+    {Text::NxboxUsbHint,
+     L"Selecione cada pasta USB novamente para permitir o acesso. Repita para cada pasta."},
+    {Text::NxboxUsbAdd, L"Adicionar pasta USB"},
+    {Text::NxboxWelcomeDone, L"Continuar"},
+
     // Library
     {Text::CompatibilityUntested, L"Não testado"},
     {Text::CompatibilityPlayable, L"Jogável"},

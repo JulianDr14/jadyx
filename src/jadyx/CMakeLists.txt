@@ -116,6 +116,10 @@ add_executable(jadyx WIN32
     storage/move_recovery.h
     storage/move_digest.h
     storage/verified_move.h
+    storage/nxbox_import_store.h
+    storage/nxbox_import.h
+    storage/uwp_nxbox_import.h
+    storage/uwp_nxbox_import.cpp
     storage/atomic_file.h
     storage/utf8.h
     # Drawing shared by the library and the in-game menu (real text over the paused game).

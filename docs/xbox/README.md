@@ -21,6 +21,7 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 ## Diseño y funciones
 
 - [Curated compatibility freshness](nxbox-jx-19-compat-fresh.md): background refresh, timestamp selection and manual Bun curation without a new release.
+- [NXbox migration contract](nxbox-import.md): versioned metadata, preserved user settings, pending USB title history, welcome and console gate.
 
 - [Compatibility badges](nxbox-compat-badges.md): report metadata, offline fallback, opt-in refresh and console test.
 

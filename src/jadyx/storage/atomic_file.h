@@ -36,8 +36,12 @@ inline bool WriteFileAtomically(const std::filesystem::path& path, std::string_v
         }
     }
     std::filesystem::rename(temporary, path, ec);
-    if (ec) std::filesystem::remove(temporary, ec);
-    return !ec;
+    if (ec) {
+        std::error_code cleanup_error;
+        std::filesystem::remove(temporary, cleanup_error);
+        return false;
+    }
+    return true;
 }
 
 } // namespace Jadyx

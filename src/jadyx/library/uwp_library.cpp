@@ -46,6 +46,7 @@
 #include "jadyx/mods/mods_page.h"
 #include "jadyx/mods/mods_view.h"
 #include "jadyx/library/play_history.h"
+#include "jadyx/storage/uwp_nxbox_import.h"
 #include "jadyx/library/portal_library.h"
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/library/library_cache.h"
@@ -88,6 +89,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                                          std::string_view auto_pick, std::string_view initial_notice,
                                          std::string_view ftp_test_password) {
     using namespace winrt::Windows::UI::Core;
+    auto nxbox_welcome = ImportNxboxSetup();
     auto window = CoreWindow::GetForCurrentThread();
     auto canvas = std::make_unique<LibraryCanvas>(core_window, width, height);
     LibraryScan scan;
@@ -394,6 +396,15 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             e.Handled(true);
             return;
         }
+        if (nxbox_welcome.visible) {
+            const auto target = canvas->HitAt(x, y);
+            if (target.hit == LibraryHit::NxboxWelcome) {
+                actions |= target.index == 0 ? Play : Quit;
+                dirty = true;
+            }
+            e.Handled(true);
+            return;
+        }
         if (configuration.network_screen || configuration.confirm_import) {
             const auto hit = canvas->HitAt(x, y);
             if (hit.hit == LibraryHit::NetworkAction && hit.index < 3) {
@@ -690,6 +701,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     // Each game's play time and last play, and the library's order (play_history.h). `keep` stays
     // selected where it lands; otherwise the first game (the last one played) is.
     auto refresh_play = [&](std::string_view keep) {
+        ResolveNxboxLibrary(scan.entries, favorites);
         const auto history = LoadPlayHistory();
         for (auto& entry : scan.entries) {
             const auto found = history.find(entry.launch_path);
@@ -1382,6 +1394,27 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             }
             if (!configuration.network.running && !configuration.network_update) configuration.network_screen = false;
             if (!configuration.network_screen) configuration.network_update = false;
+            dirty |= actions != 0;
+            actions = 0;
+            pressed_tab.reset();
+        }
+        if (nxbox_welcome.visible) {
+            if (actions & Quit || (actions & Play && nxbox_welcome.usb_folders.empty())) {
+                if (!DismissNxboxWelcome())
+                    LOG_WARNING(Frontend, "NXbox import: welcome dismissal could not be saved");
+                nxbox_welcome.visible = false;
+            } else if (actions & Play && !picker && !loading && !configuration.busy) {
+                try {
+                    winrt::Windows::Storage::Pickers::FolderPicker folder_picker;
+                    folder_picker.SuggestedStartLocation(
+                        winrt::Windows::Storage::Pickers::PickerLocationId::ComputerFolder);
+                    folder_picker.FileTypeFilter().Append(L"*");
+                    picker_kind = 0;
+                    picker = folder_picker.PickSingleFolderAsync();
+                } catch (...) {
+                    notice = Tr(T::PickerOpenFailed);
+                }
+            }
             dirty |= actions != 0;
             actions = 0;
             pressed_tab.reset();
@@ -2361,7 +2394,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (scan.limited) notice = Tr(T::ScanLimit);
             dirty = true;
         }
-        if (!ftp_test_pending && !ftp_test_active && !auto_pick.empty() && !configuration.open && !loading && !picker && !validation.valid()) {
+        if (!ftp_test_pending && !ftp_test_active && !nxbox_welcome.visible && !auto_pick.empty() &&
+            !configuration.open && !loading && !picker && !validation.valid()) {
             if (auto_pick_at == std::chrono::steady_clock::time_point{})
                 auto_pick_at = std::chrono::steady_clock::now() + std::chrono::seconds{2};
             if (std::chrono::steady_clock::now() >= auto_pick_at) {
@@ -2560,6 +2594,12 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     }
                     if (covers_changed)
                         canvas->InvalidateCovers();
+                    if (ResolveNxboxLibrary(scan.entries, favorites)) {
+                        const auto keep = selected < scan.entries.size()
+                                              ? scan.entries[selected].launch_path
+                                              : std::string{};
+                        refresh_play(keep);
+                    }
                     dirty = true;
                 }
             } catch (const std::exception&) { notice = Tr(T::MetadataFailed); }
@@ -2706,7 +2746,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                           .shelf_focus = shelf_focus,
                           .filter_focus = filter_focus,
                           .battery = battery,
-                          .compatibility = &compatibility});
+                          .compatibility = &compatibility,
+                          .nxbox_welcome = &nxbox_welcome});
             compatibility_loader.Start();
             dirty = false;
         }

@@ -9,6 +9,13 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::ThemeJadyx, L"Jadyx"},
     {Text::ThemeOldNxbox, L"Old NXbox"},
 
+    {Text::NxboxWelcomeTitle, L"Your NXbox setup was brought over"},
+    {Text::NxboxWelcomeSummary, L"Keys: {0} · Firmware: {1} · Saves: {2} · Mods: {3}"},
+    {Text::NxboxUsbHint,
+     L"Choose each USB folder again to allow access. You can repeat this for every folder."},
+    {Text::NxboxUsbAdd, L"Re-add USB folder"},
+    {Text::NxboxWelcomeDone, L"Continue"},
+
     // Library
     {Text::CompatibilityUntested, L"Untested"},
     {Text::CompatibilityPlayable, L"Playable"},
