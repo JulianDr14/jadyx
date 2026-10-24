@@ -44,12 +44,8 @@ volver a lanzarla.
   `-GraphicsCapture`, `-DebugLayer`, `-BootCfg` y las sondas, y falla si el `boot.cfg` final trae
   otra línea. Los diagnósticos (DRED, perfiladores, menús de captura) están apagados sin su línea
   de `boot.cfg`; el bug tracker queda encendido, que es su valor por defecto.
-- `Microsoft.VCLibs.x64.14.00.appx`: el framework del CRT, dependencia obligatoria. Se descarga
-  solo si Device Portal pide una dependencia; una versión compatible ya instalada se reutiliza.
-- El APPX es el instalador principal, etiquetado **Jadyx Xbox installer**. La release pública no
-  incluye `Jadyx.cer`; el artifact de build lo conserva para sideloading en Windows. El APPX sigue
-  firmado con el certificado del proyecto. La instalación Xbox sin cargar `.cer` requiere el
-  [gate de consola documentado](nxbox-simple-install.md).
+- `Microsoft.VCLibs.x64.14.00.appx`: el framework del CRT, dependencia obligatoria.
+- `Jadyx.cer`: el certificado de firma.
 - `Jadyx_X.Y.Z.0_symbols.zip`: `jadyx.pdb`, para resolver los crash logs (`pdb_symbols.py`).
 - `build-info.json` (versión, commit, run) y `SHA256SUMS.txt`.
 
