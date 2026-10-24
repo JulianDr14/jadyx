@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <map>
+#include <set>
 #include <memory>
 #include <winrt/base.h>
 #include "common/logging.h"
@@ -21,6 +22,7 @@
 #include "jadyx/library/library_metadata_policy.h"
 #include "jadyx/library/uwp_library_metadata.h"
 #include "jadyx/settings/nacp_language.h"
+#include "jadyx/settings/uwp_system_settings.h"
 #include "jadyx/storage/storage_path.h"
 #include "jadyx/storage/uwp_file_manager.h"
 #include "jadyx/storage/uwp_rom_storage.h"
@@ -72,7 +74,7 @@ void ReadPackagePresentation(Core::System& system, const FileSys::VirtualFile& f
             continue;
         auto [control, icon] = patches.ParseControlNCA(*nca);
         if (control) {
-            Settings::values.language_index = PickNacpLanguage(language, *control);
+            Settings::values.language_index = PickNacpLanguage(PreferredGameLanguage(LoadGameLanguageOverride(record.program_id), language), *control);
             record.name = winrt::to_hstring(control->GetApplicationName()).c_str();
             record.developer = winrt::to_hstring(control->GetDeveloperName()).c_str();
             record.display_version = winrt::to_hstring(control->GetVersionString()).c_str();
@@ -93,7 +95,6 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
                          const LibraryCache& cache, MetadataOptions options, std::stop_token stop,
                          const std::vector<MetadataSource>& sources) {
     Content::Catalog catalog; Content::DefaultStore().Load(catalog);
-    const auto language = static_cast<std::uint32_t>(options.language);
     Settings::values.language_index = options.language;
     struct RestoreLanguage {
         Settings::Language language;
@@ -108,18 +109,18 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
         const MetadataSource* source{};
         std::uint64_t stamp{};
     };
-    std::map<std::uint64_t, CachedBase> bases;
-    bool indexed_bases = false;
+    std::map<std::pair<std::uint64_t, std::uint32_t>, CachedBase> bases;
+    std::set<std::uint32_t> indexed_languages;
     const auto source_stamp = [&](const MetadataSource& source) {
         return IsStoragePath(source.launch_path)
                    ? 0
                    : LibraryCache::StampFor(root / source.relative_path);
     };
-    const auto borrow_base = [&](LibraryCacheRecord& record) {
+    const auto borrow_base = [&](LibraryCacheRecord& record, Settings::Language preferred) {
+        const auto language = static_cast<std::uint32_t>(preferred);
         if (!record.program_id || FileSys::GetBaseTitleID(record.program_id) == record.program_id)
             return;
-        if (!indexed_bases) {
-            indexed_bases = true;
+        if (indexed_languages.insert(language).second) {
             for (const auto& source : sources) {
                 if (stop.stop_requested())
                     return;
@@ -131,11 +132,11 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
                     CachedBase candidate;
                     candidate.source = &source;
                     candidate.stamp = stamp;
-                    bases.try_emplace(donor->program_id, candidate);
+                    bases.try_emplace(std::pair{donor->program_id, language}, candidate);
                 }
             }
         }
-        const auto found = bases.find(FileSys::GetBaseTitleID(record.program_id));
+        const auto found = bases.find(std::pair{FileSys::GetBaseTitleID(record.program_id), language});
         if (found == bases.end())
             return;
         const auto donor =
@@ -148,9 +149,17 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
         const auto stamp = IsStoragePath(entry.launch_path) ? 0 : LibraryCache::StampFor(root / entry.relative_path);
         // Names-only cache probes stay cheap; actual fill results carry icons to visible tiles.
         const bool keep_icon = options.icons || !options.cache_only;
-        if (auto record = cache.Load(entry.launch_path, stamp, language, keep_icon);
-            record && record->content == ContentStamp(catalog, record->program_id)) {
-            Apply(entry, std::move(*record), keep_icon);
+        auto preferred = PreferredGameLanguage(LoadGameLanguageOverride(entry.program_id), options.language);
+        auto cached_record = cache.Load(entry.launch_path, stamp, static_cast<std::uint32_t>(preferred), keep_icon);
+        if (cached_record) {
+            const auto cached_preferred = PreferredGameLanguage(LoadGameLanguageOverride(cached_record->program_id), options.language);
+            if (preferred != cached_preferred) {
+                preferred = cached_preferred;
+                cached_record = cache.Load(entry.launch_path, stamp, static_cast<std::uint32_t>(preferred), keep_icon);
+            }
+        }
+        if (cached_record && cached_record->content == ContentStamp(catalog, cached_record->program_id)) {
+            Apply(entry, std::move(*cached_record), keep_icon);
             continue;
         }
         if (options.cache_only) continue;
@@ -186,12 +195,15 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
                 if (!loader)
                     reason = "file unavailable or loader not recognized";
                 else {
+                    if (loader->ReadProgramId(record.program_id) != Loader::ResultStatus::Success)
+                        record.program_id = 0;
+                    preferred = PreferredGameLanguage(LoadGameLanguageOverride(record.program_id), options.language);
                     FileSys::NACP control;
                     const bool have_control =
                         loader->ReadControlData(control) == Loader::ResultStatus::Success;
                     Settings::values.language_index =
-                        have_control ? PickNacpLanguage(options.language, control)
-                                     : options.language;
+                        have_control ? PickNacpLanguage(preferred, control)
+                                     : preferred;
                     std::string title;
                     const auto title_status = loader->ReadTitle(title);
                     if (title_status == Loader::ResultStatus::Success && !title.empty())
@@ -208,12 +220,11 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
                     reason = "title_status=" + std::to_string(static_cast<unsigned>(title_status)) +
                              " icon_status=" + std::to_string(static_cast<unsigned>(icon_status)) +
                              " (control unavailable, missing keys/base or empty/oversized icon)";
-                    if (loader->ReadProgramId(record.program_id) != Loader::ResultStatus::Success)
-                        record.program_id = 0;
                     if (extension != L".nro") {
                         if (record.name.empty() || record.icon.empty()) {
-                            ReadPackagePresentation(*system, file, record, options.language);
-                            borrow_base(record);
+                            ReadPackagePresentation(*system, file, record, preferred);
+                            preferred = PreferredGameLanguage(LoadGameLanguageOverride(record.program_id), options.language);
+                            borrow_base(record, preferred);
                         }
                         if (record.program_id &&
                             record.program_id == FileSys::GetBaseTitleID(record.program_id)) {
@@ -255,7 +266,7 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
                         "reason={}; retry next scan",
                         entry.launch_path, record.program_id, reason);
         } else {
-            cache.Store(entry.launch_path, stamp, language, record);
+            cache.Store(entry.launch_path, stamp, static_cast<std::uint32_t>(preferred), record);
         }
         Apply(entry, std::move(record), keep_icon);
         entry.metadata_retry = incomplete;

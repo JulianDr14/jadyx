@@ -4508,3 +4508,12 @@ Load more action avoids filtered-page dead ends without crawling the catalog.
 Host policy/navigation/catalog tests pass; no network, Windows PC, console, UWP
 build/package or push performed. Console/visual gate remains pending. Details and
 reproduction: [nxbox-jx-24-mod-language-filter.md](nxbox-jx-24-mod-language-filter.md).
+## Per-game language override (24 October 2026)
+
+Library game options now expose inherit/explicit/reset language selection through
+LocalSettings, with the existing NACP fallback on fresh boot and matching metadata
+selection. Global settings/library formats are unchanged; Pulse resume does not
+inject a newly selected override. Host frontend gates remain 9 pass/3 pre-existing
+failures, plus the new passing language gate. UWP build and console validation are
+pending. Implementation, reference evidence and exact acceptance steps:
+[nxbox-jx-23b-game-language.md](nxbox-jx-23b-game-language.md).

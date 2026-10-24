@@ -298,6 +298,11 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::InterfaceLanguageHint, L"Menus and library"},
     {Text::GameLanguage, L"Game language"},
     {Text::GameLanguageHint, L"If a game lacks it, the closest one it has is used"},
+    {Text::TitleLanguageHint, L"Only this game. Takes effect on the next fresh start; unsupported "
+                              L"languages use the closest one available."},
+    {Text::TitleLanguageInherit, L"Use global setting ({0})"},
+    {Text::TitleLanguageReset, L"Use global setting"},
+    {Text::TitleLanguageUnavailable, L"A game identity is needed to save its language."},
     {Text::ConsoleRegion, L"Console region"},
     {Text::ConsoleRegionHint, L"Applies when the next game starts"},
     {Text::ClearLibraryCache, L"Clear library cache"},

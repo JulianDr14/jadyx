@@ -298,6 +298,11 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::InterfaceLanguageHint, L"Menus e biblioteca"},
     {Text::GameLanguage, L"Idioma dos jogos"},
     {Text::GameLanguageHint, L"Se um jogo não o tiver, usa o mais próximo que tiver"},
+    {Text::TitleLanguageHint, L"Só este jogo. Vale na próxima inicialização; se não tiver o "
+                              L"idioma, usa o mais próximo disponível."},
+    {Text::TitleLanguageInherit, L"Usar ajuste global ({0})"},
+    {Text::TitleLanguageReset, L"Usar ajuste global"},
+    {Text::TitleLanguageUnavailable, L"É preciso identificar o jogo para salvar seu idioma."},
     {Text::ConsoleRegion, L"Região do console"},
     {Text::ConsoleRegionHint, L"Vale ao iniciar o próximo jogo"},
     {Text::ClearLibraryCache, L"Limpar cache da biblioteca"},

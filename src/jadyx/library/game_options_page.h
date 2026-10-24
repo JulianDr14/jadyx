@@ -13,19 +13,20 @@
 #include <utility>
 
 #include "jadyx/i18n/localization.h"
+#include "jadyx/settings/game_language.h"
 #include "jadyx/ui/ui_icon.h"
 
 namespace Jadyx {
 
 /// Pulse's pane shows the kept session and Remove's what deleting the game takes with it. Both
 /// act in place and only on a second confirmation.
-enum class GameOption : std::uint8_t { Information, Cheats, Mods, Updates, Dlc, Pulse, Remove };
+enum class GameOption : std::uint8_t { Information, Cheats, Mods, Updates, Dlc, Pulse, Remove, Language };
 
 /// The options shown, in order.
 inline std::span<const GameOption> GameOptions() {
     static constexpr std::array options{
         GameOption::Information, GameOption::Mods,  GameOption::Cheats, GameOption::Updates,
-        GameOption::Dlc,         GameOption::Pulse, GameOption::Remove};
+        GameOption::Dlc, GameOption::Language, GameOption::Pulse, GameOption::Remove};
     return options;
 }
 
@@ -43,6 +44,8 @@ inline I18n::Text GameOptionTitle(GameOption option) {
     case GameOption::Cheats: return I18n::Text::CheatsTitle;
     case GameOption::Mods: return I18n::Text::ModsTitle;
     case GameOption::Pulse: return I18n::Text::PulseSession;
+    case GameOption::Language:
+        return I18n::Text::GameLanguage;
     case GameOption::Remove: return I18n::Text::GameRemove;
     }
     return I18n::Text::CheatsTitle;
@@ -57,6 +60,8 @@ inline I18n::Text GameOptionHint(GameOption option) {
     case GameOption::Cheats: return I18n::Text::CheatsHint;
     case GameOption::Mods: return I18n::Text::ModsHint;
     case GameOption::Pulse: return I18n::Text::PulseNone;
+    case GameOption::Language:
+        return I18n::Text::TitleLanguageHint;
     case GameOption::Remove: return I18n::Text::GameRemoveHint;
     }
     return I18n::Text::CheatsHint;
@@ -71,6 +76,8 @@ inline UiIcon GameOptionIcon(GameOption option) {
     case GameOption::Cheats: return UiIcon::Cheats;
     case GameOption::Mods: return UiIcon::Mods;
     case GameOption::Pulse: return UiIcon::Archive;
+    case GameOption::Language:
+        return UiIcon::Settings;
     case GameOption::Remove: return UiIcon::Remove;
     }
     return UiIcon::Settings;
@@ -88,6 +95,7 @@ struct GameOptionsPage {
     /// The pane below the bars: LB/RB switch sections and LT/RT the manager's tabs, so the
     /// stick and the d-pad only move inside the pane. A pointer can still focus a bar.
     GameOptionsFocus focus{GameOptionsFocus::Content};
+    std::optional<Settings::Language> language; ///< Saved override; nullopt inherits global.
     bool activate{true};    ///< The coordinator initializes the selected manager once.
 };
 
