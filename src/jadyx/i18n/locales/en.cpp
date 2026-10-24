@@ -256,6 +256,7 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::SystemKeysDowngrade, L"The selected keys lose generations present in the installed keys."},
     {Text::SystemKeysFirmwareWarning, L"These keys may not open the installed firmware. Continuing may make it unusable."},
     {Text::SystemVersionUnknown, L"Some version information could not be verified. Review the source before continuing."},
+    {Text::SystemFirmwareGamesRemoved, L"Game files found in the firmware package were left out. Only the firmware will be installed."},
     {Text::SystemReviewReady, L"Files validated. Review and confirm installation in Jadyx Portal."},
     {Text::NetworkOpenHint, L"Open this address on your phone or PC connected to the same local network."},
     {Text::NetworkCodeLabel, L"Connection code"},

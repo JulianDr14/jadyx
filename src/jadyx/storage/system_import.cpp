@@ -6,8 +6,10 @@
 #include <cctype>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 #include <archive.h>
 #include <archive_entry.h>
@@ -86,6 +88,7 @@ struct FirmwareInfo {
     std::string display;
     int generation{-1};
     std::set<std::pair<int,int>> areas;
+    unsigned removed{};
 };
 // The bundled libarchive intentionally excludes platform filename openers.
 // Supply bounded seekable input, as the mod importer already does.
@@ -105,8 +108,12 @@ struct ZipSource {
 };
 FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress progress,std::stop_token stop) {
     FirmwareInfo info;bool system=false,mii=false,update=false;unsigned count{};
-    std::set<u64> outside,listed;
-    std::map<u64,std::vector<fs::path>> game_files;
+    std::set<u64> listed;
+    // Titles outside 0x010000000000xxxx wait for the meta: only the NCAs that stay count.
+    struct Outside{fs::path path;int generation;std::optional<std::pair<int,int>> area;};
+    std::map<u64,std::vector<Outside>> outside;
+    const auto keep=[&info](int generation,const std::optional<std::pair<int,int>>& area){
+        info.generation=(std::max)(info.generation,generation);if(area)info.areas.insert(*area);};
     if(!fs::exists(folder)){Require(!strict,"firmware_incomplete");return info;}
     FileSys::RealVfsFilesystem vfs;
     for(const auto& file:fs::directory_iterator{folder}) {
@@ -121,18 +128,17 @@ FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress p
         if(nca.GetStatus()!=Loader::ResultStatus::Success){Require(!strict,"firmware_keys");continue;}
         // Firmware also ships a few system titles outside 0x010000000000xxxx (e.g. 01008BB00013C000);
         // those are allowed only when the SystemUpdate meta lists them.
-        if((nca.GetTitleId()>>16)!=(0x0100000000000000ULL>>16)) {
-            outside.insert(nca.GetTitleId());
-            game_files[nca.GetTitleId()].push_back(file.path());
-        }
+        const int generation=static_cast<int>((std::max)(nca.GetKeyGeneration(),u8{1})-1);
+        std::optional<std::pair<int,int>> area;
+        if(header.GetKeyIndex()<3)area=std::pair{static_cast<int>((std::max)(header.GetKeyGeneration(),u8{1})-1),static_cast<int>(header.GetKeyIndex())};
+        if((nca.GetTitleId()>>16)!=(0x0100000000000000ULL>>16))outside[nca.GetTitleId()].push_back({file.path(),generation,area});
+        else keep(generation,area);
         if(nca.GetTitleId()==0x0100000000000816ULL&&nca.GetType()==FileSys::NCAContentType::Meta&&
            !nca.GetSubdirectories().empty())
             if(const auto cnmt=nca.GetSubdirectories()[0]->GetFile("SystemUpdate_0100000000000816.cnmt")) {
                 update=true;
                 for(const auto& record:FileSys::CNMT{cnmt}.GetMetaRecords())listed.insert(record.title_id);
             }
-        info.generation=(std::max)(info.generation,static_cast<int>((std::max)(nca.GetKeyGeneration(),u8{1})-1));
-        if(header.GetKeyIndex()<3)info.areas.emplace(static_cast<int>((std::max)(header.GetKeyGeneration(),u8{1})-1),header.GetKeyIndex());
         if(nca.GetTitleId()==0x0100000000000809ULL&&nca.GetType()==FileSys::NCAContentType::Data) {
             const auto romfs=nca.GetRomFS()?FileSys::ExtractRomFS(nca.GetRomFS()):nullptr;
             const auto version=romfs?romfs->GetFile("file"):nullptr;
@@ -151,13 +157,16 @@ FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress p
     // import is a copy: leaving those files out installs the firmware and loses nothing, instead
     // of refusing the whole package. Titles the SystemUpdate meta lists are real system content
     // and stay; the installed folder is only inspected, never trimmed.
-    for(const auto title:outside) {
-        if(update&&listed.contains(title))continue;
-        if(!strict)continue;
-        for(const auto& path:game_files[title]) {
+    for(const auto& [title,files]:outside) {
+        if((update&&listed.contains(title))||!strict) {
+            for(const auto& file:files)keep(file.generation,file.area);
+            continue;
+        }
+        for(const auto& file:files) {
             LOG_INFO(Frontend, "Firmware import: leaving out the game NCA {:016X} ('{}')", title,
-                     Utf8(path.filename()));
-            std::error_code ignored;fs::remove(path,ignored);
+                     Utf8(file.path.filename()));
+            // A file left behind would be published inside the firmware folder.
+            std::error_code error;Require(fs::remove(file.path,error)&&!error,"disk");++info.removed;
         }
     }
     Require(!strict||(system&&mii),"firmware_incomplete");return info;
@@ -273,6 +282,7 @@ std::unique_ptr<PreparedSystemImport> InspectSystemStage(fs::path stage,FileImpo
         review.incoming_firmware=incoming.display;review.required_generation=incoming.generation;
         review.incoming_generation=review.installed_generation;
         if(!installed.display.empty()&&incoming.version<installed.version)review.warnings.push_back("firmware_downgrade");
+        if(incoming.removed)review.warnings.push_back("firmware_games_removed");
     }else{
         review.incoming_firmware=installed.display;
         const auto destination=SystemDestination(kind);
@@ -329,7 +339,8 @@ std::wstring DescribeSystemReview(const SystemReview& review) {
         wide(review.incoming_firmware.empty()?"—":review.incoming_firmware),review.installed_generation<0?L"—":std::to_wstring(review.installed_generation),
         review.incoming_generation<0?L"—":std::to_wstring(review.incoming_generation)});
     for(const auto& warning:review.warnings){result+=L"\n";result+=Tr(warning=="firmware_downgrade"?Text::SystemFirmwareDowngrade:
-        warning=="keys_downgrade"?Text::SystemKeysDowngrade:warning=="keys_firmware_old"?Text::SystemKeysFirmwareWarning:Text::SystemVersionUnknown);}
+        warning=="keys_downgrade"?Text::SystemKeysDowngrade:warning=="keys_firmware_old"?Text::SystemKeysFirmwareWarning:
+        warning=="firmware_games_removed"?Text::SystemFirmwareGamesRemoved:Text::SystemVersionUnknown);}
     return result;
 }
 SystemImportBackend DefaultSystemImportBackend(){return {SystemDestination,CreateSystemStage,RemoveSystemStage,ExtractSystemZip,InspectSystemStage};}

@@ -256,6 +256,7 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::SystemKeysDowngrade, L"Las claves seleccionadas pierden generaciones presentes en las instaladas."},
     {Text::SystemKeysFirmwareWarning, L"Estas claves podrían no abrir el firmware instalado. Continuar puede dejarlo inutilizable."},
     {Text::SystemVersionUnknown, L"No se pudo verificar parte de la información de versión. Revisa el origen antes de continuar."},
+    {Text::SystemFirmwareGamesRemoved, L"Se quitaron archivos de juego que venían en el paquete de firmware. Solo se instalará el firmware."},
     {Text::SystemReviewReady, L"Archivos validados. Revisa y confirma la instalación en el Portal Jadyx."},
     {Text::NetworkOpenHint, L"Abre esta dirección en tu móvil o PC conectado a la misma red local."},
     {Text::NetworkCodeLabel, L"Código de conexión"},
