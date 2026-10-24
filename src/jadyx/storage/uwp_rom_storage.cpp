@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/storage/uwp_rom_storage.h"
 #include "jadyx/storage/storage_path.h"
+#include "jadyx/storage/files_browser.h"
 #include "jadyx/storage/usb_discovery.h"
 #include "jadyx/i18n/localization.h"
 
@@ -10,6 +11,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -440,6 +442,148 @@ std::vector<StorageBrowserEntry> BrowseStorageFolder(std::string_view path, std:
     std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) {
         return a.folder != b.folder ? a.folder > b.folder : a.name < b.name;
     });
+    return result;
+}
+
+namespace {
+// One deadline for the page, including resolution and metadata. Cancel pending async waits.
+template <typename Operation>
+auto FilesAwait(const Operation& operation, std::stop_token stop,
+                std::chrono::steady_clock::time_point deadline) {
+    while (operation.Status() == winrt::Windows::Foundation::AsyncStatus::Started) {
+        if (stop.stop_requested() || std::chrono::steady_clock::now() >= deadline) {
+            operation.Cancel();
+            throw winrt::hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    return operation.GetResults();
+}
+} // namespace
+FilesPage ReadFilesPage(bool roots, const FilesLocation& location, unsigned offset,
+                        std::stop_token stop) {
+    FilesPage result;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    try {
+        EnsureStorageApartment();
+        if (roots) {
+            FilesEntry internal;
+            internal.name = I18n::Tr(I18n::Text::FilesInternal);
+            internal.folder = true;
+            result.entries.push_back(std::move(internal));
+            try {
+                for (const auto& source : ContentFolderSources()) {
+                    if (stop.stop_requested())
+                        break;
+                    const auto parsed = ParseStoragePath(source.path);
+                    if (!parsed)
+                        continue;
+                    FilesEntry entry;
+                    entry.name = source.name;
+                    entry.token = parsed->token;
+                    entry.folder = true;
+                    result.entries.push_back(std::move(entry));
+                }
+            } catch (...) {
+                result.sources_unavailable = true;
+            }
+            // Include opt-in discovery's session-only roots without persisting or probing drives.
+            std::scoped_lock lock{session_sources_mutex};
+            for (const auto& [token, folder] : session_sources) {
+                const bool exists =
+                    std::any_of(result.entries.begin(), result.entries.end(),
+                                [&](const auto& entry) { return entry.token == token; });
+                if (exists)
+                    continue;
+                FilesEntry entry;
+                try {
+                    entry.name = folder.DisplayName();
+                } catch (...) {
+                    entry.name = L"USB";
+                    result.sources_unavailable = true;
+                }
+                entry.token = token;
+                entry.folder = true;
+                result.entries.push_back(std::move(entry));
+            }
+            return result;
+        }
+        if (!ValidStorageRelative(location.relative))
+            throw winrt::hresult_invalid_argument();
+        StorageFolder folder{nullptr};
+        if (location.token.empty()) {
+            folder = ApplicationData::Current().LocalFolder();
+        } else {
+            if (!ParseStoragePath(MakeStoragePath(location.token)))
+                throw winrt::hresult_invalid_argument();
+            // Same catalog and session identities as the existing storage broker.
+            {
+                std::scoped_lock lock{session_sources_mutex};
+                const auto found = session_sources.find(location.token);
+                if (found != session_sources.end())
+                    folder = found->second;
+            }
+            if (!folder)
+                folder =
+                    FilesAwait(StorageApplicationPermissions::FutureAccessList().GetFolderAsync(
+                                   winrt::to_hstring(location.token)),
+                               stop, deadline);
+        }
+        const auto guard_folder = [](const StorageFolder& candidate) {
+            const auto path = candidate.Path();
+            WIN32_FILE_ATTRIBUTE_DATA attributes{};
+            if (!path.empty() &&
+                GetFileAttributesExFromAppW(path.c_str(), GetFileExInfoStandard, &attributes) &&
+                (attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+                throw winrt::hresult_access_denied();
+        };
+        guard_folder(folder);
+        std::string_view remaining = location.relative;
+        while (!remaining.empty()) {
+            const auto slash = remaining.find('/');
+            folder =
+                FilesAwait(folder.GetFolderAsync(winrt::to_hstring(remaining.substr(0, slash))),
+                           stop, deadline);
+            guard_folder(folder);
+            if (slash == std::string_view::npos)
+                break;
+            remaining.remove_prefix(slash + 1);
+        }
+        // Broker query ordering is global across pages; no recursive enumeration or file reads.
+        using namespace winrt::Windows::Storage::Search;
+        QueryOptions options;
+        options.FolderDepth(FolderDepth::Shallow);
+        options.SortOrder().Clear();
+        SortEntry sort{};
+        sort.PropertyName = L"System.ItemNameDisplay";
+        sort.AscendingOrder = true;
+        options.SortOrder().Append(sort);
+        const auto query = folder.CreateItemQueryWithOptions(options);
+        const auto items =
+            FilesAwait(query.GetItemsAsync(offset, FilesPageSize + 1), stop, deadline);
+        result.more = items.Size() > FilesPageSize;
+        for (unsigned index = 0; index < std::min(items.Size(), FilesPageSize); ++index) {
+            if (stop.stop_requested())
+                throw winrt::hresult_canceled();
+            const auto item = items.GetAt(index);
+            FilesEntry entry;
+            entry.name = item.Name();
+            entry.component = winrt::to_string(item.Name());
+            if (!FilesChild(location, entry.component))
+                continue;
+            entry.folder = item.IsOfType(StorageItemTypes::Folder);
+            if (!entry.folder)
+                entry.size = FilesAwait(item.GetBasicPropertiesAsync(), stop, deadline).Size();
+            result.entries.push_back(std::move(entry));
+        }
+    } catch (const winrt::hresult_error& error) {
+        result = {};
+        result.error =
+            error.code() == E_ACCESSDENIED ? FilesError::Permission : FilesError::Unavailable;
+    } catch (...) {
+        result = {};
+        result.error = FilesError::Unavailable;
+    }
     return result;
 }
 

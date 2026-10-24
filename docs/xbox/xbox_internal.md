@@ -4466,3 +4466,16 @@ matching cached base through `GetBaseTitleID`. Storage read failures must not
 persist partial icons. Four macOS host harnesses pass; MSVC/UWP and Series gates
 remain pending. Findings, commands and exact manual console test:
 [nxbox-jx-1b-missing-covers.md](nxbox-jx-1b-missing-covers.md).
+## 24 October 2026 — read-only on-console Files browser
+
+`nxbox/20-files-browser`, based on `nxbox/integration3`: Settings/File manager now
+opens a separate Jadyx painter page for LocalState and existing authorized/session
+USB roots. Broker name-sorted shallow pages hold 64 entries plus one lookahead;
+metadata only, no generic file operations. One MTA worker with cancellable bounded
+async waits owns each request; late closed-page results are discarded. EN/ES/PT-BR,
+Palette/TypeRole, controller/keyboard/pointer input and recovery states are wired.
+No persistent schema or emulation default changes. Portable policy gate: 30
+assertions pass after failing before implementation; existing macOS selection
+remains 26/31 passing with the same five pre-existing failures. No Windows build,
+package, PC app or Xbox execution. Exact console gate and limitations:
+[`nxbox-jx-20-files-browser.md`](nxbox-jx-20-files-browser.md).

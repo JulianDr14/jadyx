@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "jadyx/storage/files_browser.h"
 #include <atomic>
 #include <functional>
 #include <stop_token>
@@ -21,6 +22,7 @@ struct FileSetupStatus {
 struct ConfigurationPanel {
     bool open{};
     bool files{};
+    FilesBrowser browser;
     bool busy{};
     size_t selected{};
     FileSetupStatus status;
@@ -44,6 +46,7 @@ enum FileManagerNetworkRow : size_t {
     FilesNetworkAddress,
     FilesNetworkCode,
     FilesFtp,
+    FilesBrowse,
     FilesSources
 };
 inline size_t ConfigurationRowCount(const ConfigurationPanel& panel) {

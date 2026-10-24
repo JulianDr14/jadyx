@@ -45,6 +45,7 @@ add_executable(jadyx WIN32
     storage/uwp_rom_storage.cpp
     storage/uwp_rom_storage.h
     storage/uwp_file_manager.cpp
+    storage/files_browser.h
     storage/uwp_file_manager.h
     storage/ftp/ftp_protocol.h
     storage/ftp/ftp_safety.h
