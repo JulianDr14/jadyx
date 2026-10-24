@@ -233,12 +233,16 @@ static void ApplyHeadlessBootSettings(const BootSurface& surface) {
 /// Many games read the system language directly and fall back to English on their own when they
 /// lack it, even when they ship a close variant (Spain's Spanish but not es-419). Give them the
 /// closest language they declare instead (PickGameLanguage: variant, then English, then any).
-static void ApplyGameLanguage(Core::System& system) {
+static void ApplyGameLanguage(Core::System& system, bool fresh_start) {
+    const auto preferred = PreferredGameLanguage(
+        fresh_start ? LoadGameLanguageOverride(system.GetApplicationProcessProgramID())
+                    : std::nullopt,
+        Settings::values.language_index.GetValue());
+    Settings::values.language_index = preferred;
     FileSys::NACP nacp;
     if (system.GetAppLoader().ReadControlData(nacp) != Loader::ResultStatus::Success) {
         return;
     }
-    const auto preferred = Settings::values.language_index.GetValue();
     const auto language = PickNacpLanguage(preferred, nacp);
     Settings::values.language_index = language;
     LOG_INFO(Frontend, "Headless boot: game languages {:08X}, preferred {}, system language {}",
@@ -725,7 +729,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         shutdown();
         return 2;
     }
-    ApplyGameLanguage(system);
+    ApplyGameLanguage(system, !resumed);
     if (config.bug_tracker) {
         std::string title;
         void(system.GetAppLoader().ReadTitle(title));

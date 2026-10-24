@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/uwp_library_metadata.h"
 #include "jadyx/settings/nacp_language.h"
+#include "jadyx/settings/uwp_system_settings.h"
 #include "jadyx/storage/storage_path.h"
 #include "jadyx/storage/uwp_rom_storage.h"
 #include "jadyx/content/content_service.h"
@@ -40,7 +41,6 @@ std::uint64_t ContentStamp(const Content::Catalog& catalog, std::uint64_t progra
 void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryEntry>& entries,
                          const LibraryCache& cache, MetadataOptions options, std::stop_token stop) {
     Content::Catalog catalog; Content::DefaultStore().Load(catalog);
-    const auto language = static_cast<std::uint32_t>(options.language);
     // NACP::GetLanguageEntry reads the title in Eden's system language, so each title is read in
     // the language its game will run in (PickNacpLanguage, as the boot does). Only one metadata
     // worker runs at a time and the guest is not running, so setting it here races with nothing.
@@ -53,9 +53,22 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
         if (stop.stop_requested()) break;
         const auto stamp = IsStoragePath(entry.launch_path) ? 0 : LibraryCache::StampFor(root / entry.relative_path);
         // A record stays valid until its own game's updates/DLC change, not anyone else's.
-        if (auto record = cache.Load(entry.launch_path, stamp, language, options.icons);
-            record && record->content == ContentStamp(catalog, record->program_id)) {
-            Apply(entry, std::move(*record), options.icons);
+        auto preferred =
+            PreferredGameLanguage(LoadGameLanguageOverride(entry.program_id), options.language);
+        auto cached_record = cache.Load(entry.launch_path, stamp,
+                                        static_cast<std::uint32_t>(preferred), options.icons);
+        if (cached_record) {
+            const auto cached_preferred = PreferredGameLanguage(
+                LoadGameLanguageOverride(cached_record->program_id), options.language);
+            if (preferred != cached_preferred) {
+                preferred = cached_preferred;
+                cached_record = cache.Load(entry.launch_path, stamp,
+                                           static_cast<std::uint32_t>(preferred), options.icons);
+            }
+        }
+        if (cached_record &&
+            cached_record->content == ContentStamp(catalog, cached_record->program_id)) {
+            Apply(entry, std::move(*cached_record), options.icons);
             continue;
         }
         if (options.cache_only) continue;
@@ -79,10 +92,14 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
             auto loader = Loader::GetLoader(*system, file);
             if (!loader) continue;
             LibraryCacheRecord record;
+            if (entry.relative_path.extension() != L".nro")
+                void(loader->ReadProgramId(record.program_id));
+            preferred = PreferredGameLanguage(LoadGameLanguageOverride(record.program_id),
+                                              options.language);
             FileSys::NACP control;
             const bool have_control = loader->ReadControlData(control) == Loader::ResultStatus::Success;
             Settings::values.language_index =
-                have_control ? PickNacpLanguage(options.language, control) : options.language;
+                have_control ? PickNacpLanguage(preferred, control) : preferred;
             std::string title;
             if (loader->ReadTitle(title) == Loader::ResultStatus::Success && !title.empty())
                 record.name = winrt::to_hstring(title).c_str();
@@ -107,7 +124,7 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
                 record.program_id = 0;
             record.content = ContentStamp(catalog, record.program_id);
             LOG_INFO(Frontend, "Library metadata: title '{}', icon {} bytes", title, record.icon.size());
-            cache.Store(entry.launch_path, stamp, language, record);
+            cache.Store(entry.launch_path, stamp, static_cast<std::uint32_t>(preferred), record);
             Apply(entry, std::move(record), options.icons);
         } catch (const std::exception&) {
             // Missing keys/control data or an unreadable dump keeps filename

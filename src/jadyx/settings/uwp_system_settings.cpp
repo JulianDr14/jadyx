@@ -40,6 +40,43 @@ int32_t ChoiceValue(std::optional<T> choice) {
 }
 } // namespace
 
+std::optional<Settings::Language> LoadGameLanguageOverride(std::uint64_t program_id) {
+    if (!program_id)
+        return std::nullopt;
+    try {
+        const auto values =
+            winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        return ReadGameLanguage(program_id,
+                                [&](const std::wstring& key) -> std::optional<std::int32_t> {
+                                    const winrt::hstring name{key};
+                                    if (!values.HasKey(name))
+                                        return std::nullopt;
+                                    return winrt::unbox_value<std::int32_t>(values.Lookup(name));
+                                });
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+bool SaveGameLanguageOverride(std::uint64_t program_id,
+                              std::optional<Settings::Language> language) {
+    try {
+        const auto values =
+            winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        return WriteGameLanguage(program_id, language,
+                                 [&](const std::wstring& key, std::optional<std::int32_t> raw) {
+                                     const winrt::hstring name{key};
+                                     if (raw)
+                                         values.Insert(name, winrt::box_value(*raw));
+                                     else if (values.HasKey(name))
+                                         values.Remove(name);
+                                     return true;
+                                 });
+    } catch (...) {
+        return false;
+    }
+}
+
 SystemSettings LoadSystemSettings() {
     SystemSettings settings;
     try {

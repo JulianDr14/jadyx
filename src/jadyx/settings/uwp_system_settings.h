@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
-#include "jadyx/settings/system_settings.h"
+#include "jadyx/settings/game_language.h"
 
 namespace Service::Account {
 class ProfileManager;
@@ -11,6 +11,10 @@ namespace Jadyx {
 /// Saved in the app's LocalSettings, like the controller options.
 SystemSettings LoadSystemSettings();
 bool SaveSystemSettings(const SystemSettings& settings);
+
+/// Per-title choice; missing/invalid values inherit. Reset removes only this title's key.
+std::optional<Settings::Language> LoadGameLanguageOverride(std::uint64_t program_id);
+bool SaveGameLanguageOverride(std::uint64_t program_id, std::optional<Settings::Language> language);
 
 /// Windows' preferred languages and home region (the console's, on Xbox). Never throws.
 SystemLocale DetectSystemLocale();

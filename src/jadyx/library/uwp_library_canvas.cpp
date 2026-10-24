@@ -1736,7 +1736,28 @@ private:
                 if (!action.empty()) Prompt(PromptKey(Navigation::Play).letters, Palette::Text, action, 80, 404);
             };
             const auto option = GameOptions()[view.page.selected];
-            if (option == GameOption::Pulse) {
+            if (option == GameOption::Language) {
+                Type(Tr(T::GameLanguage), TypeRole::HeadlineMedium, 80, 234, 1120, Palette::Text);
+                Type(Tr(T::TitleLanguageHint), TypeRole::BodyLarge, 80, 286, 1120,
+                     Palette::TextHint, 1, TextAlign::Leading, 3);
+                if (game.program_id) {
+                    const auto value = view.page.language
+                                           ? std::wstring{GameLanguageName(*view.page.language)}
+                                           : I18n::Format(T::TitleLanguageInherit,
+                                                          {GameLanguageName(view.global_language)});
+                    Round(80, 384, 1120, 56, 16, Palette::RowActive);
+                    Type(value, TypeRole::BodyLarge, 104, 398, 1072, Palette::Text);
+                    AddHit(80, 384, 1120, 56, LibraryHit::ManagerRow, 0);
+                    Type(Tr(T::TitleLanguageReset), TypeRole::BodyLarge, 104, 466, 1072,
+                         Palette::Text);
+                    AddHit(80, 452, 1120, 56, LibraryHit::ManagerRow, 1);
+                    ControlPrompt(Navigation::Play, Tr(T::Change), 80, 552);
+                    ControlPrompt(Navigation::AddFolder, Tr(T::TitleLanguageReset), 360, 552);
+                } else {
+                    Type(Tr(T::TitleLanguageUnavailable), TypeRole::BodyLarge, 80, 398, 1120,
+                         Palette::TextHint);
+                }
+            } else if (option == GameOption::Pulse) {
                 const auto pulse = game.pulse_saved.empty() ? std::wstring{Tr(T::PulseNone)} :
                     I18n::Format(game.pulse_current ? T::PulseSavedOn : T::PulseSavedOther, {game.pulse_saved});
                 const auto discard = I18n::Format(T::PulseDiscardConfirm, {PromptKey(Navigation::Play).letters});
@@ -1805,7 +1826,8 @@ private:
                  1168, Palette::Warning);
         // The panes that act in place have no prompts of their own; on the manager's tabs (a
         // pointer put the focus there), the bar's prompts speak over the pane's.
-        if (view.page.focus != GameOptionsFocus::Content || !view.page.page) {
+        if (view.page.focus != GameOptionsFocus::Content || !view.page.page ||
+            view.page.page == GameOption::Language) {
             Round(0, G::FooterLine + 1, 1280, 720 - G::FooterLine - 1, 0, Palette::Canvas);
             float next = 56;
             next += view.page.focus == GameOptionsFocus::ManagerTabs ? internal_prompt(Tr(T::Category), next) :

@@ -27,6 +27,7 @@ struct GameOptionsView {
     const Content::ContentSession* content{};
     const Mods::ModSession* mods{};      ///< The open mods page's.
     const Mods::ModsPage* mods_page{};
+    Settings::Language global_language{Settings::Language::EnglishAmerican};
     bool other_copies{};                 ///< Another dump of the game stays if this one is deleted.
 };
 /// The active controller's battery, as Windows.Gaming.Input reports it; unknown when it does not.

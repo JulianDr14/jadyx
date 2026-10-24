@@ -361,11 +361,15 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 game_options.focus = GameOptionsFocus::ManagerTabs;
                 dirty = true;
             } else if (target.hit == LibraryHit::ManagerRow) {
-                if (game_options.page == GameOption::Mods && mod_session) {
+                if (game_options.page == GameOption::Language && target.index < 2) {
+                    actions |= target.index == 0 ? Play : Swap;
+                } else if (game_options.page == GameOption::Mods && mod_session) {
                     const auto count = mods_page.tab == Mods::ModsTab::Installed ?
                         mod_session->View().mods.size() : mod_session->View().files.size();
                     if (target.index < count) { mods_page.selected = target.index; actions |= Play; }
-                } else if (game_options.page == GameOption::Cheats && cheat_session && target.index < cheat_session->Catalog().Cheats(cheats_page.category).size()) {
+                } else if (game_options.page == GameOption::Cheats && cheat_session &&
+                           target.index <
+                               cheat_session->Catalog().Cheats(cheats_page.category).size()) {
                     cheats_page.selected = target.index; actions |= Play;
                 }
                 game_options.focus = GameOptionsFocus::Content;
@@ -1504,6 +1508,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 game_options.activate = false;
                 game_options.page = GameOptionHasManager(GameOptions()[game_options.selected]) ?
                     std::optional{GameOptions()[game_options.selected]} : std::nullopt;
+                if (game_options.page == GameOption::Language) {
+                    game_options.language =
+                        LoadGameLanguageOverride(scan.entries[game_options.game].program_id);
+                }
                 if (game_options.page == GameOption::Updates || game_options.page == GameOption::Dlc) {
                     const auto& game = scan.entries[game_options.game];
                     if (!game.title_loaded || !game.program_id) {
@@ -1753,6 +1761,23 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 send(Swap | AddFolder, MenuAction::Alternate);
                 send(Refresh, MenuAction::Refresh);
                 if (cheat_session) send(Quit, MenuAction::Back);
+                dirty = true;
+            } else if (game_options.page == GameOption::Language && actions) {
+                if (actions & Quit)
+                    game_options.open = false;
+                else if (actions & (Play | Left | Right | Swap | AddFolder)) {
+                    const auto program_id = scan.entries[game_options.game].program_id;
+                    const auto next =
+                        actions & (Swap | AddFolder)
+                            ? std::optional<Settings::Language>{}
+                            : StepGameLanguage(game_options.language, (actions & Left) != 0);
+                    if (SaveGameLanguageOverride(program_id, next)) {
+                        game_options.language = next;
+                        notify(T::SettingsSaved);
+                        reload_metadata();
+                    } else
+                        notify(T::SystemSaveFailed);
+                }
                 dirty = true;
             } else if (actions) {
                 const auto send = [&](unsigned bit, GameOptionsInput input) {
@@ -2221,10 +2246,20 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         const bool draw = dirty || canvas->Animating();
         if (draw) {
             const GameOptionsView options_view{
-                game_options, game_options.open && !configuration.open && game_options.game < scan.entries.size() ? &scan.entries[game_options.game] : nullptr,
-                cheat_session ? &*cheat_session : nullptr, cheats_page, options_notice, content_session.get(),
-                mod_session.get(), &mods_page,
-                game_options.open && game_options.game < scan.entries.size() &&
+                .page = game_options,
+                .game = game_options.open && !configuration.open &&
+                                game_options.game < scan.entries.size()
+                            ? &scan.entries[game_options.game]
+                            : nullptr,
+                .cheats = cheat_session ? &*cheat_session : nullptr,
+                .cheats_page = cheats_page,
+                .notice = options_notice,
+                .content = content_session.get(),
+                .mods = mod_session.get(),
+                .mods_page = &mods_page,
+                .global_language = title_language,
+                .other_copies =
+                    game_options.open && game_options.game < scan.entries.size() &&
                     FindDumpFiles(scan.entries, scan.entries[game_options.game].launch_path).kept};
             // Titles, Pulse sessions and plays arrive after the shelf was made: keep it current,
             // the focus on the same game.

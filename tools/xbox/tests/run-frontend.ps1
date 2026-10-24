@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 param([string[]]$Tests = @('frontend-input', 'controller-selection', 'player-slots', 'stick-navigation',
-    'game-menu', 'game-keyboard', 'system-settings', 'cheats-page', 'mods-page',
+    'game-menu', 'game-keyboard', 'game-language', 'system-settings', 'cheats-page', 'mods-page',
     'text-entry', 'localization-catalogs', 'play-history'))
 $ErrorActionPreference = 'Stop'
 $frontendOutput = New-Item -ItemType Directory -Force build-uwp/test-results/frontend-refactor
