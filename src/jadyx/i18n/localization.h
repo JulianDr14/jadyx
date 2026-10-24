@@ -227,6 +227,7 @@ enum class Text : std::uint16_t {
     SystemKeysDowngrade,
     SystemKeysFirmwareWarning,
     SystemVersionUnknown,
+    SystemFirmwareGamesRemoved,
     SystemReviewReady,
     AddGamesFolder,
     ImportKeys,

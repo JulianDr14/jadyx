@@ -88,6 +88,7 @@ struct FirmwareInfo {
     std::string display;
     int generation{-1};
     std::set<std::pair<int,int>> areas;
+    unsigned removed{};
 };
 // The bundled libarchive intentionally excludes platform filename openers.
 // Supply bounded seekable input, as the mod importer already does.
@@ -165,7 +166,7 @@ FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress p
             LOG_INFO(Frontend, "Firmware import: leaving out the game NCA {:016X} ('{}')", title,
                      Utf8(file.path.filename()));
             // A file left behind would be published inside the firmware folder.
-            std::error_code error;Require(fs::remove(file.path,error)&&!error,"disk");
+            std::error_code error;Require(fs::remove(file.path,error)&&!error,"disk");++info.removed;
         }
     }
     Require(!strict||(system&&mii),"firmware_incomplete");return info;
@@ -281,6 +282,7 @@ std::unique_ptr<PreparedSystemImport> InspectSystemStage(fs::path stage,FileImpo
         review.incoming_firmware=incoming.display;review.required_generation=incoming.generation;
         review.incoming_generation=review.installed_generation;
         if(!installed.display.empty()&&incoming.version<installed.version)review.warnings.push_back("firmware_downgrade");
+        if(incoming.removed)review.warnings.push_back("firmware_games_removed");
     }else{
         review.incoming_firmware=installed.display;
         const auto destination=SystemDestination(kind);
@@ -337,7 +339,8 @@ std::wstring DescribeSystemReview(const SystemReview& review) {
         wide(review.incoming_firmware.empty()?"—":review.incoming_firmware),review.installed_generation<0?L"—":std::to_wstring(review.installed_generation),
         review.incoming_generation<0?L"—":std::to_wstring(review.incoming_generation)});
     for(const auto& warning:review.warnings){result+=L"\n";result+=Tr(warning=="firmware_downgrade"?Text::SystemFirmwareDowngrade:
-        warning=="keys_downgrade"?Text::SystemKeysDowngrade:warning=="keys_firmware_old"?Text::SystemKeysFirmwareWarning:Text::SystemVersionUnknown);}
+        warning=="keys_downgrade"?Text::SystemKeysDowngrade:warning=="keys_firmware_old"?Text::SystemKeysFirmwareWarning:
+        warning=="firmware_games_removed"?Text::SystemFirmwareGamesRemoved:Text::SystemVersionUnknown);}
     return result;
 }
 SystemImportBackend DefaultSystemImportBackend(){return {SystemDestination,CreateSystemStage,RemoveSystemStage,ExtractSystemZip,InspectSystemStage};}
