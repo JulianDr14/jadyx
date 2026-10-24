@@ -25,9 +25,9 @@ Sampler::Sampler(TextureCacheRuntime& runtime_, const Tegra::Texture::TSCEntry& 
     const bool linear_mip = config.mipmap_filter == Tegra::Texture::TextureMipmapFilter::Linear;
     const f32 anisotropy = std::clamp(config.MaxAnisotropy(), 1.0f, 16.0f);
     D3D12_FILTER_REDUCTION_TYPE reduction = D3D12_FILTER_REDUCTION_TYPE_STANDARD;
-    if (config.depth_compare_enabled) {
-        reduction = D3D12_FILTER_REDUCTION_TYPE_COMPARISON;
-    } else if (config.reduction_filter == Tegra::Texture::SamplerReduction::Min) {
+    // The TSC can be shared by plain and depth-reference instructions. Plain Sample* through
+    // a D3D12 comparison sampler is undefined, regardless of the texture's format/dimension.
+    if (config.reduction_filter == Tegra::Texture::SamplerReduction::Min) {
         reduction = D3D12_FILTER_REDUCTION_TYPE_MINIMUM;
     } else if (config.reduction_filter == Tegra::Texture::SamplerReduction::Max) {
         reduction = D3D12_FILTER_REDUCTION_TYPE_MAXIMUM;
@@ -68,6 +68,24 @@ Sampler::Sampler(TextureCacheRuntime& runtime_, const Tegra::Texture::TSCEntry& 
         .ComparisonFunc = Compare(config.depth_compare_func), .BorderColor = {border[0], border[1], border[2], border[3]},
         .MinLOD = min_lod, .MaxLOD = max_lod};
     runtime->device.Get()->CreateSampler(&desc, handle);
+    if (config.depth_compare_enabled) {
+        // Keep a separate identity as well as a descriptor: SamplerHeap caches whole tables
+        // by key, so a mixed plain/compare use of one TSC must never hit the other table.
+        comparison_handle = runtime->sampler_descriptors.Allocate();
+        comparison_key = next_sampler_key.fetch_add(1, std::memory_order_relaxed);
+        comparison_filter =
+            anisotropy > 1.0f
+                ? D3D12_ENCODE_ANISOTROPIC_FILTER(D3D12_FILTER_REDUCTION_TYPE_COMPARISON)
+                : D3D12_ENCODE_BASIC_FILTER(
+                      linear_min ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
+                      linear_mag ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
+                      linear_mip ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
+                      D3D12_FILTER_REDUCTION_TYPE_COMPARISON);
+        D3D12_SAMPLER_DESC comparison_desc = desc;
+        comparison_desc.Filter = comparison_filter;
+        comparison_desc.ComparisonFunc = Compare(config.depth_compare_func);
+        runtime->device.Get()->CreateSampler(&comparison_desc, comparison_handle);
+    }
     CheckRemovedAfter(runtime->device.Get(), [&] {
         return fmt::format("sampler (filter 0x{:x} address {}/{}/{} aniso {} compare {} lod {}..{} "
                            "bias {})",
@@ -93,22 +111,49 @@ eden_integer_sampler_state Sampler::IntegerState(u32 last_level) const {
     return state;
 }
 
-std::string Sampler::Describe() const {
+std::string Sampler::Describe(bool shader_compares) const {
     return fmt::format("filter 0x{:x} address {}/{}/{} aniso {} lod {}..{} bias {} "
                        "compare {} border [{:.6g},{:.6g},{:.6g},{:.6g}] "
                        "TSC={:016x}/{:016x}/{:016x}/{:016x}",
-                       static_cast<u32>(desc.Filter), static_cast<u32>(desc.AddressU),
+                       static_cast<u32>(Filter(shader_compares)), static_cast<u32>(desc.AddressU),
                        static_cast<u32>(desc.AddressV), static_cast<u32>(desc.AddressW),
                        desc.MaxAnisotropy, desc.MinLOD, desc.MaxLOD, desc.MipLODBias,
                        static_cast<u32>(desc.ComparisonFunc), desc.BorderColor[0],
-                       desc.BorderColor[1], desc.BorderColor[2], desc.BorderColor[3],
-                       guest_raw[0], guest_raw[1], guest_raw[2], guest_raw[3]);
+                       desc.BorderColor[1], desc.BorderColor[2], desc.BorderColor[3], guest_raw[0],
+                       guest_raw[1], guest_raw[2], guest_raw[3]);
 }
-Sampler::~Sampler() { if (runtime && handle.ptr) runtime->sampler_descriptors.Free(handle); }
-Sampler::Sampler(Sampler&& other) noexcept : runtime{std::exchange(other.runtime, nullptr)}, handle{other.handle}, key{other.key}, filter{other.filter}, desc{other.desc}, guest_raw{other.guest_raw} {}
+Sampler::~Sampler() {
+    if (runtime) {
+        if (handle.ptr)
+            runtime->sampler_descriptors.Free(handle);
+        if (comparison_handle.ptr)
+            runtime->sampler_descriptors.Free(comparison_handle);
+    }
+}
+Sampler::Sampler(Sampler&& other) noexcept
+    : runtime{std::exchange(other.runtime, nullptr)}, handle{other.handle}, key{other.key},
+      filter{other.filter}, comparison_handle{other.comparison_handle},
+      comparison_key{other.comparison_key}, comparison_filter{other.comparison_filter},
+      desc{other.desc}, guest_raw{other.guest_raw} {}
 Sampler& Sampler::operator=(Sampler&& other) noexcept {
-    if (this != &other) { if (runtime && handle.ptr) runtime->sampler_descriptors.Free(handle);
-        runtime = std::exchange(other.runtime, nullptr); handle = other.handle; key = other.key; filter = other.filter; desc = other.desc; guest_raw = other.guest_raw; } return *this;
+    if (this != &other) {
+        if (runtime) {
+            if (handle.ptr)
+                runtime->sampler_descriptors.Free(handle);
+            if (comparison_handle.ptr)
+                runtime->sampler_descriptors.Free(comparison_handle);
+        }
+        runtime = std::exchange(other.runtime, nullptr);
+        handle = other.handle;
+        key = other.key;
+        filter = other.filter;
+        comparison_handle = other.comparison_handle;
+        comparison_key = other.comparison_key;
+        comparison_filter = other.comparison_filter;
+        desc = other.desc;
+        guest_raw = other.guest_raw;
+    }
+    return *this;
 }
 
 } // namespace D3D12

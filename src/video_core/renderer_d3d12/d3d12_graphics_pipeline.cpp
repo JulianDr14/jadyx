@@ -562,7 +562,14 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     // Sampler exhaustion may Finish/reset the list. Reserve it before the resource range and
     // streamed UBOs, whose lifetime must cover the submission that actually executes this draw.
     SamplerTableBuilder sampler_table;
-    for (const SamplerId id : samplers) sampler_table.Add(texture_cache.GetSampler(id));
+    const SamplerId* table_samplers_it = samplers.data();
+    for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+        if (!HasStage(stage)) {
+            continue;
+        }
+        const StageBindings& info = *stage_infos[stage];
+        sampler_table.AddStage(info, texture_cache, table_samplers_it);
+    }
     out.sampler_table = sampler_table.Table(context.sampler_heap);
     lap.Lap(VideoCore::Perf::Counter::DrawSamplersNs);
     GuestDescriptorQueue& queue = context.descriptor_queue;
@@ -621,7 +628,7 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                         stage, texture_binding, desc.cbuf_index, desc.cbuf_offset, index,
                         desc.is_depth, desc.is_integer,
                         image_view.DescribeSrv(desc.type, aliases_depth && depth_feedback_ready),
-                        sampler.Describe()));
+                        sampler.Describe(desc.is_depth)));
                 }
                 if (out.trace_types) {
                     out.trace_types->push_back(static_cast<u32>(desc.type));
