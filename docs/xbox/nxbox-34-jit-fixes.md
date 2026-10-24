@@ -107,3 +107,25 @@ source/destination aliases. Compare all 128 output bits against an independent
 SM4 software oracle, print an explicit mismatch count and require zero. On the
 Windows host additionally place the JIT more than 2 GiB from its static table and
 repeat the Catch2 test. A close console mapping alone cannot validate reach.
+
+## Scalar rounding thunk fields
+
+Reference: rounding hunks of `0e9cc0f0b`. The caller packs rounding mode in bits
+0–7 and exactness in bits 8–15; the thunk instead decoded bits 8–15 and 16–23.
+Decode the documented fields so FP16 and fallback scalar rounds use the requested
+mode and update FPSR only as specified by the instruction.
+
+`python3 -B tools/xbox/tests/jit-round-thunk.py` failed before at the exactness
+contract. Afterward 72 contracts pass: production caller packing and thunk
+unpacking, three widths, six modes, exact/non-exact and ignored upper bits. The
+FP utility is an observing adapter; this checks dispatch, not FP arithmetic.
+Added `A64: Scalar rounding differential` to the existing Dynarmic/Unicorn suite:
+5376 random cases across FRINTN/P/M/Z/A/X/I and FP16/32/64, with IXC comparison.
+That native suite has not run on this Mac.
+
+Console gate: original A64 diagnostic executes those seven scalar FRINT variants
+in half/single/double precision with each FPCR rounding mode. Inputs: ±0, ±0.5,
+±1.5, ±2.5, finite integers, subnormals, infinities, qNaN and sNaN; clear FPSR
+before each instruction. Compare result bits and IOC/IXC/IDC against Dynarmic's
+software FP oracle with matching FZ/DN/AHP. Require zero mismatches, including
+FRINTX exactness. Keep the diagnostic source original and independent of games.
