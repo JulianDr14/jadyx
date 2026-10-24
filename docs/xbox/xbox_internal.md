@@ -4,6 +4,13 @@ Cuaderno de trabajo del port: cómo compilar, en qué fase vamos y lo que hemos 
 Los docs "de verdad" son [`uwp_build.md`](uwp_build.md) (toolchain) y [`xbox_deploy.md`](xbox_deploy.md)
 (empaquetar y desplegar). Aquí va el resumen rápido y todo lo que no cabe en ellos.
 
+Cache coherence audit (24 October 2026): R038 software DMA fills now distinguish
+successful acceleration from software writes; R039 D3D12 drains cached inline
+writes even with the CPU invalidation skip enabled, matching Vulkan. Both host
+regressions fail on the original paths and pass after the fixes. Existing local
+trace/release tests pass; UWP/Series validation remains pending. Scope, evidence
+and synthetic console acceptance protocols: [nxbox-31-cache-coherence.md](nxbox-31-cache-coherence.md).
+
 **Reglas de la casa**
 - Los commits van solo a nuestro fork: `origin` = `JulianDr14/jadyx`, fork de
   `eden-emulator/mirror` (el espejo oficial de Eden en GitHub), rama `xbox`.

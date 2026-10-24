@@ -57,6 +57,24 @@ class CacheCoherenceTests(unittest.TestCase):
         end = source.index("\n        } else {", start)
         compile_run("dma-clear.cpp", {"// PRODUCTION_FILL": source[start:end]})
 
+    def test_inline_write_drain(self):
+        memory = "src/video_core/memory_manager.cpp"
+        compile_run(
+            "inline-invalidation.cpp",
+            {
+                "// PRODUCTION_WRITE": function_body(
+                    memory, "void MemoryManager::WriteBlockCached"
+                ),
+                "// PRODUCTION_FLUSH": function_body(
+                    memory, "void MemoryManager::FlushCaching"
+                ),
+                "// PRODUCTION_INVALIDATION": function_body(
+                    "src/video_core/renderer_d3d12/d3d12_rasterizer.cpp",
+                    "void RasterizerD3D12::InnerInvalidation",
+                ),
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

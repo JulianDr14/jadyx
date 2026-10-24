@@ -54,6 +54,56 @@ This protocol requires such a workload; the host fixture is not a console NRO.
 The repository's current boot NRO does not implement this adversarial workload;
 ordinary boot/gameplay alone cannot certify this fix on the console.
 
+## R039: drained inline writes bypass the CPU skip option
+
+Adapted NXbox `02479f68c` to Jadyx's existing batched override. Removed only the
+early return controlled by `skip_cpu_inner_invalidation`. `FlushCaching` drains
+GPU command writes, including `Maxwell3D::ProcessCBMultiData`'s cached constant
+buffer writes; dropping those notifications permanently loses their cache
+ownership transition. Vulkan already invalidates these batches unconditionally.
+
+Texture/buffer locking remains once per batch; query and pipeline invalidation,
+range order, and Jadyx's null-address/zero-length guards are unchanged. This is
+also an unconditional correctness fix. The existing setting still loads with its
+old key/type/default and retains its meaning in other invalidation paths. No
+boot.cfg, translation, persistent profile or Pulse format changes are needed.
+
+Host regression: `python3 -B tools/xbox/tests/cache-coherence.py -k inline`.
+The fixture compiles the production bodies of `WriteBlockCached`, `FlushCaching`
+and D3D12 `InnerInvalidation`. Synthetic adapters model address translation,
+accumulation and cache upload eligibility; this is not a full memory-manager or
+GPU test. Both skip values execute two rounds of three writes, including overlap
+and a disjoint range (12 writes total). All four cache adapters must see the
+actual new bytes, with exact translated ranges. Empty drains cannot replay old
+ranges, and invalid address/size pairs cannot reach cache methods. The original
+code aborts on stale cached bytes with skip enabled; after the fix both settings
+pass. Batch lock counts are checked separately.
+
+### Console acceptance test (pending)
+
+Use an original synthetic command-stream NRO or a diagnostic test adapter; the
+current boot NRO does not yet implement this workload.
+
+1. Install the eventual package in Game mode on Series X|S. Run the workload twice,
+   setting `Settings::values.skip_cpu_inner_invalidation` to false, then true in
+   the diagnostic adapter before renderer creation. Do not change the setting's
+   persisted format or reset user data.
+2. Allocate 64 mapped bytes and initialize them to zero. Bind/sample the range as
+   a buffer and texture so both caches contain zeros. Wait for completion.
+3. Through Maxwell3D constant-buffer data commands (`ProcessCBMultiData`), write
+   twelve `0x53` bytes at offsets 0, 8 and 40, without a CPU invalidation command.
+   Issue a draw that consumes the range, exercising the normal pre-draw
+   `FlushCaching` path. Require the first 20 and bytes 40..51 to equal `0x53`,
+   with all other bytes zero, in guest RAM and both GPU consumers.
+4. Repeat with `0xa7`, without recreating caches or resources. Repeat an otherwise
+   identical draw without writes, checking that no stale batch is replayed.
+5. For each skip value require byte-exact buffer/texture results and normal
+   library return, with no Render errors/device removal. A diagnostic adapter
+   must also verify affected query/shader ranges become invalidated. Resume an
+   existing session afterward; retain existing data and configuration.
+
+No console result, frame-rate gain, MSVC build or GPU correctness is claimed.
+
 ## Local baseline
 
 Before changes, the existing macOS-compatible scripts `gc-trace.py`,
@@ -64,3 +114,9 @@ The inherited NXbox command
 fails discovery because Jadyx has no `tests/port`; the NXbox baseline of about
 three failures/five errors does not apply to this repository.
 No UWP/MSVC build or GPU execution is claimed by the host tests.
+
+After both fixes, all four selected existing scripts still pass, and
+`python3 -B tools/xbox/tests/cache-coherence.py` passes both compiled regressions
+with ASan/UBSan and `-Wall -Wextra -Wshadow -Wconversion -Werror`.
+The inherited `tests/port` discovery command still reports the same missing
+directory. `git diff --check` passes. No dependencies were added.
