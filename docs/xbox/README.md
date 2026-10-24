@@ -1,5 +1,8 @@
 # Xbox Series X|S: documentación del fork
 
+- [Integración de insignias de compatibilidad](nxbox-integration-notes.md): conflictos,
+  pruebas host y gate de consola pendiente para la integración con FTP/USB/resolución/shaders.
+
 Port UWP de Eden con backend Direct3D 12, compartido con las pruebas en PC.
 La rama de trabajo es `xbox`; las reglas del proyecto están en [AGENTS.md](../../AGENTS.md).
 
@@ -16,6 +19,8 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 - [Investigación de activación 0x80070002](nxbox-launch-80070002.md): comparación 0.3.8.0/0.3.8.5 y comprobación de dependencias al empaquetar; causa Series pendiente.
 
 ## Diseño y funciones
+
+- [Compatibility badges](nxbox-compat-badges.md): report metadata, offline fallback, opt-in refresh and console test.
 
 - [Actualizador de Jadyx](xbox_updater.md): versiones firmadas, descarga reanudable, pantalla de actualizaciones y asistencia web; instalación interna Xbox pendiente de gate.
 

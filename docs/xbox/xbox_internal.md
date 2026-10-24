@@ -4351,3 +4351,26 @@ mask/arithmetic, FSR and catalog tests pass; existing menu/system harness failur
 are reproduced on main. No UWP compile or console verification on this Mac.
 Comparison, limitations and exact 3D World/BotW test:
 [nxbox-resolution-options.md](nxbox-resolution-options.md).
+## Library compatibility badges (2026-10-24)
+
+The Jadyx library now consumes packaged compatibility metadata keyed by base title ID,
+with drawn status badges and en/es/pt-BR focus text. Loading starts after first draw;
+refresh is opt-in via NXBOX_COMPAT_REFRESH, bounded to three seconds and 256 KiB.
+LocalState cache falls back to the bundle; NXbox reports retain provenance and never
+certify Jadyx. Four titles/eight reports seeded from local sources; unmapped IDs omitted.
+Host parsing/library/history/localization pass; UWP build and console layout/timing
+remain pending. Maintenance rules, exact commands and evidence limits are in
+[nxbox-compat-badges.md](nxbox-compat-badges.md). No upstream or network operations.
+
+## Integration merge: compatibility badges (2026-10-24)
+
+Merged badges onto integration `3c62b4ffff`, retaining FTP, USB play in place,
+parallel shaders, resolution, guides and package launch validation. Three locale
+conflicts retain both parents' translations, with 677 entries each in exact enum
+order; the library conflict retains both FTP shutdown/refresh and the compatibility
+loader. New source-order regression fails before resolution and passes afterward.
+Host gates retain only the two documented macOS menu/settings failures. The themes
+branch currently has no changes beyond an existing ancestor. Single local merge,
+no push/network/PC runtime/console; UWP/MSVC and console gates pending.
+Conflict details, before/after evidence and console procedure:
+[nxbox-integration-notes.md](nxbox-integration-notes.md).
