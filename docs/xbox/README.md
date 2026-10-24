@@ -15,8 +15,6 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 
 ## Diseño y funciones
 
-- [Compatibility badges](nxbox-compat-badges.md): report metadata, offline fallback, opt-in refresh and console test.
-
 - [Actualizador de Jadyx](xbox_updater.md): versiones firmadas, descarga reanudable, pantalla de actualizaciones y asistencia web; instalación interna Xbox pendiente de gate.
 
 - [Pulse: sesiones persistentes](xbox_pulse.md): guarda y reanuda sesiones desde la biblioteca; juegos comerciales de 64 y 32 bits probados en la Series y en PC.

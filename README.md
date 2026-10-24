@@ -612,18 +612,17 @@ Requirements: an Xbox Series X|S in Developer Mode, the package from the
 [latest release](https://github.com/JulianDr14/jadyx/releases/latest) (or one you built, see
 [Building](#building)), and the keys, firmware and games dumped from your own Switch.
 
-1. Download **`Jadyx_<version>_x64.appx`** from the release and install it through **Add** in
-   Device Portal at `https://<console-ip>:11443` (Dev Home shows the address).
-   **If Device Portal asks for a dependency**, download `Microsoft.VCLibs.x64.14.00.appx` from
-   the same release and add it as a dependency. VCLibs remains required; once installed at a
-   compatible version, it does not need to be uploaded again.
-2. In Dev Home, select Jadyx → **View details** and set **App type** to **Game**. App mode has
-   much less memory than the 5120 MiB the emulator expects.
-3. Start Jadyx and import your own keys and firmware in **Settings > File manager**, from a
-   folder or ZIP on USB, or with the [Jadyx Portal](#jadyx-portal): **Network connection > Start
-   server**, then open its address on a PC or phone on the same network and enter the code.
-4. Add your own games from a USB drive or external folder, send them with the Jadyx Portal, or
-   copy them to `LocalState\games` with the Device Portal file explorer.
+1. Open the Device Portal at `https://<console-ip>:11443`.
+2. Install `Jadyx_<version>_x64.appx` together with its `Microsoft.VCLibs.x64.14.00.appx`
+   dependency and the `Jadyx.cer` certificate.
+3. In the app's settings on the console, set it to **Game** mode. Otherwise the memory limit is much
+   lower than the 5120 MiB the emulator expects.
+4. Start the app and send your keys, firmware and games from a PC or phone with the
+   [Jadyx Portal](#jadyx-portal): **Settings > File manager > Network connection > Start server**,
+   open the address it shows in a browser on the same network and enter the connection code.
+5. Other ways to add them: import keys and firmware from a folder or ZIP on a USB drive in
+   **Settings > File manager**, and add games from an external folder or USB drive, or copy them to
+   the app's `LocalState\games` folder with the Device Portal file explorer.
 
 To update Jadyx, install the new package over the old one. Do not uninstall first: that deletes
 the keys, firmware, saves and games stored in the app.

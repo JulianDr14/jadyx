@@ -4277,15 +4277,3 @@ de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificaci�
 global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
 excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
-
-
-## Library compatibility badges (2026-10-24)
-
-The Jadyx library now consumes packaged compatibility metadata keyed by base title ID,
-with drawn status badges and en/es/pt-BR focus text. Loading starts after first draw;
-refresh is opt-in via NXBOX_COMPAT_REFRESH, bounded to three seconds and 256 KiB.
-LocalState cache falls back to the bundle; NXbox reports retain provenance and never
-certify Jadyx. Four titles/eight reports seeded from local sources; unmapped IDs omitted.
-Host parsing/library/history/localization pass; UWP build and console layout/timing
-remain pending. Maintenance rules, exact commands and evidence limits are in
-[nxbox-compat-badges.md](nxbox-compat-badges.md). No upstream or network operations.

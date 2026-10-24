@@ -24,11 +24,6 @@ namespace Jadyx::I18n {
 
 enum class Text : std::uint16_t {
     // Library
-    CompatibilityUntested,
-    CompatibilityPlayable,
-    CompatibilityIssues,
-    CompatibilityBroken,
-    CompatibilityReport,
     LibraryHeading,
     GamesCountOne,
     GamesCountOther,

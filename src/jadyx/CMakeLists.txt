@@ -12,10 +12,6 @@ add_executable(jadyx WIN32
     pulse/pulse_gate.h
     pulse/pulse_sessions.cpp
     pulse/pulse_sessions.h
-    library/compatibility.cpp
-    library/compatibility.h
-    library/compatibility_loader.cpp
-    library/compatibility_loader.h
     library/favorites.cpp
     library/favorites.h
     library/game_removal.cpp

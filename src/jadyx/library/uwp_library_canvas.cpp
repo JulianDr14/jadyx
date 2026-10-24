@@ -630,68 +630,6 @@ private:
     float TileAmount(TileKey tile, Tween::Clock::time_point now) const {
         return tile == focused_tile ? focus_in.Value(now) : tile == left_tile ? focus_out.Value(now) : 0.0f;
     }
-    const Compatibility::Report& CompatibilityFor(const LibraryView& view,
-                                                  const LibraryEntry& entry) const {
-        static const Compatibility::Report untested;
-        return view.compatibility ? Compatibility::Lookup(*view.compatibility, entry.program_id)
-                                  : untested;
-    }
-    static T CompatibilityText(Compatibility::Status status) {
-        switch (status) {
-        case Compatibility::Status::Playable:
-            return T::CompatibilityPlayable;
-        case Compatibility::Status::Issues:
-            return T::CompatibilityIssues;
-        case Compatibility::Status::Broken:
-            return T::CompatibilityBroken;
-        default:
-            return T::CompatibilityUntested;
-        }
-    }
-    std::wstring CompatibilityLabel(const Compatibility::Report& report) const {
-        if (report.console.empty())
-            return std::wstring{Tr(T::CompatibilityUntested)};
-        return I18n::Format(T::CompatibilityReport,
-                            {Tr(CompatibilityText(report.status)),
-                             std::wstring{winrt::to_hstring(report.fps_note)},
-                             std::wstring{winrt::to_hstring(report.console)}});
-    }
-    void DrawCompatibility(Compatibility::Status status, float cx, float cy, float alpha) {
-        unsigned color = Palette::TextSecondary;
-        if (status == Compatibility::Status::Playable)
-            color = Palette::CompatibilityPlayable;
-        else if (status == Compatibility::Status::Issues)
-            color = Palette::Warning;
-        else if (status == Compatibility::Status::Broken)
-            color = Palette::CompatibilityBroken;
-        Round(cx - 12, cy - 12, 24, 24, 12, Palette::Canvas, 0.96f * alpha);
-        brush->SetColor(D2D1::ColorF(color, alpha));
-        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 9, 9), brush.Get(), 1.7f);
-        const auto line = [&](float ax, float ay, float bx, float by) {
-            target->DrawLine(D2D1::Point2F(cx + ax, cy + ay), D2D1::Point2F(cx + bx, cy + by),
-                             brush.Get(), 1.7f);
-        };
-        if (status == Compatibility::Status::Playable) {
-            line(-5, 0, -1, 4);
-            line(-1, 4, 5, -4);
-        } else if (status == Compatibility::Status::Broken) {
-            line(-4, -4, 4, 4);
-            line(-4, 4, 4, -4);
-        } else {
-            if (status == Compatibility::Status::Issues)
-                line(0, -5, 0, 1);
-            else {
-                // A small question hook, drawn from line segments rather than a font glyph.
-                line(-4, -3, -2, -5);
-                line(-2, -5, 2, -5);
-                line(2, -5, 4, -3);
-                line(4, -3, 4, -1);
-                line(4, -1, 0, 1);
-                line(0, 1, 0, 2);
-            }
-            target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy + 5), 1, 1), brush.Get());
-        }
-    }
     /// The focused game, large: who makes it, its title, what is known about it, and its actions.
     void DrawHero(const LibraryView& view, const LibraryEntry& game, Tween::Clock::time_point now) {
         using namespace LibraryLayout;
@@ -729,8 +667,6 @@ private:
         if (!game.pulse_saved.empty())
             chip(I18n::Format(T::PulseBadge, {game.pulse_saved}),
                  game.pulse_current ? Palette::Text : Palette::TextSecondary);
-        Type(CompatibilityLabel(CompatibilityFor(view, game)), TypeRole::Label, Margin,
-             342 + lift, 1152, Palette::TextHint, shown);
         const auto play = PromptKey(Navigation::Play);
         const auto menu = PromptKey(Navigation::Options);
         const float play_width = PillButton(Tr(T::Play), play.letters, play.color, Margin, PillTop, true, PillHeight);
@@ -809,7 +745,6 @@ private:
         const float top = y + (Tile - size) / 2 - 8 * amount;
         FocusGlow(left, top, size, size, 12, amount * alpha);
         Cover(entry, left, top, size, alpha);
-        DrawCompatibility(CompatibilityFor(view, entry).status, left + 18, top + 18, alpha);
         if (entry.pinned) {
             // A pin's head: a white dot in a graphite disc, at the top right.
             const float cx = left + size - 18, cy = top + 18;
@@ -838,10 +773,6 @@ private:
         const std::size_t count = shelf.size() + (import ? 1 : 0);
         Type(Tr(T::FullCollection), TypeRole::HeadlineLarge, Margin, ShelfHeadingTop - 6, 560, Palette::Text);
         Type(TitlesCount(shelf.size()), TypeRole::Body, Margin, ShelfHeadingTop + 46, 400, Palette::TextSecondary);
-        if (!view.filter_focus && view.shelf_focus < shelf.size()) {
-            Type(CompatibilityLabel(CompatibilityFor(view, entries[shelf[view.shelf_focus]])),
-                 TypeRole::Label, Margin + 240, ShelfHeadingTop + 50, 900, Palette::TextHint);
-        }
         const std::vector<std::wstring_view> filters{Tr(T::FilterAll),    Tr(T::FilterPlayed), Tr(T::FilterAlphabetical),
                                                      Tr(T::FilterPinned), Tr(T::FilterRecent), Tr(T::FilterPulse)};
         const auto active = static_cast<std::size_t>(view.filter);
