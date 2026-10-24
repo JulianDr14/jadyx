@@ -8,18 +8,19 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
+#include <map>
 #include <mutex>
 #include <thread>
-#include <windows.h>
-#include <objbase.h>
 #include <fileapifromapp.h>
+#include <objbase.h>
+#include <windows.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Storage.AccessCache.h>
-#include <winrt/Windows.Storage.Streams.h>
-#include <winrt/Windows.Storage.Search.h>
 #include <winrt/Windows.Storage.FileProperties.h>
+#include <winrt/Windows.Storage.Search.h>
+#include <winrt/Windows.Storage.Streams.h>
 #include "common/logging.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/loader/nro.h"
@@ -34,6 +35,41 @@ constexpr unsigned MaxSources = 16;
 constexpr unsigned MaxEntries = 10000;
 std::atomic<bool> storage_read_failure{};
 std::atomic<bool> usb_play_in_place{};
+// Keep broker objects alive for the session, including while metadata/core
+// workers resolve logical paths. Discovery never writes FutureAccessList.
+std::mutex session_sources_mutex;
+std::map<std::string, StorageFolder> session_sources;
+
+std::string SessionGameFolder(const StorageFolder& folder) {
+    std::scoped_lock lock{session_sources_mutex};
+    for (const auto& [token, existing] : session_sources) {
+        if (existing.Path() == folder.Path())
+            return token;
+    }
+    // Do not reuse a logical identity for a different drive after app restart.
+    GUID guid{};
+    winrt::check_hresult(CoCreateGuid(&guid));
+    std::string token = std::string{GameTokenPrefix} + "session-";
+    const auto* bytes = reinterpret_cast<const unsigned char*>(&guid);
+    constexpr char hex[] = "0123456789abcdef";
+    for (size_t index = 0; index < sizeof(guid); ++index) {
+        token += hex[bytes[index] >> 4];
+        token += hex[bytes[index] & 15];
+    }
+    session_sources.emplace(token, folder);
+    return token;
+}
+StorageFolder SourceFolder(std::string_view token) {
+    {
+        std::scoped_lock lock{session_sources_mutex};
+        const auto found = session_sources.find(std::string{token});
+        if (found != session_sources.end())
+            return found->second;
+    }
+    return StorageApplicationPermissions::FutureAccessList()
+        .GetFolderAsync(winrt::to_hstring(token))
+        .get();
+}
 constexpr unsigned ReadChunk = 1024 * 1024;
 
 void EnsureStorageApartment() {
@@ -57,8 +93,7 @@ void AddError(LibraryScan& scan, std::string_view error) {
     }
 }
 StorageFolder ResolveFolder(const StoragePath& path, std::string_view relative) {
-    auto folder = StorageApplicationPermissions::FutureAccessList().GetFolderAsync(
-        winrt::to_hstring(path.token)).get();
+    auto folder = SourceFolder(path.token);
     while (!relative.empty()) {
         const auto slash = relative.find('/');
         folder = folder.GetFolderAsync(winrt::to_hstring(relative.substr(0, slash))).get();
@@ -271,7 +306,6 @@ public:
         if (!parsed || parsed->relative.empty() || mode != FileSys::OpenMode::Read) return {};
         try {
             EnsureStorageApartment();
-            if (!StorageApplicationPermissions::FutureAccessList().ContainsItem(winrt::to_hstring(parsed->token))) return {};
             const auto slash = parsed->relative.rfind('/');
             const auto parent = slash == std::string::npos ? "" : parsed->relative.substr(0, slash);
             const auto name = slash == std::string::npos ? parsed->relative : parsed->relative.substr(slash + 1);
@@ -315,20 +349,27 @@ public:
 };
 
 void ScanFolder(StorageFolder folder, const std::string& token, const std::wstring& source,
-                std::string relative, unsigned depth, unsigned& visited,
+                std::string relative, unsigned depth, StorageScanBudget& budget, bool drive_root,
                 LibraryScan& scan, std::stop_token stop) {
     for (unsigned start = 0; !stop.stop_requested(); start += PageSize) {
         auto items = folder.GetItemsAsync(start, PageSize).get();
         for (const auto& item : items) {
             if (stop.stop_requested()) return;
-            if (++visited > MaxEntries) { scan.limited = true; return; }
+            if (!budget.Visit()) {
+                scan.limited = true;
+                return;
+            }
             const auto name = winrt::to_string(item.Name());
             const auto child = relative.empty() ? name : relative + "/" + name;
             if (!ValidStorageRelative(child)) continue;
             if (item.IsOfType(StorageItemTypes::Folder)) {
-                if (depth < 4) {
-                    try { ScanFolder(item.as<StorageFolder>(), token, source, child, depth + 1, visited, scan, stop); }
-                    catch (const winrt::hresult_error& e) { AddError(scan, ErrorText(e)); }
+                if (drive_root ? ShouldDescendUsbFolder(child) : depth < 4) {
+                    try {
+                        ScanFolder(item.as<StorageFolder>(), token, source, child, depth + 1,
+                                   budget, drive_root, scan, stop);
+                    } catch (const winrt::hresult_error& e) {
+                        AddError(scan, ErrorText(e));
+                    }
                 }
             } else {
                 const auto p = std::filesystem::path{winrt::to_hstring(child).c_str()};
@@ -447,28 +488,73 @@ std::vector<StorageBrowserEntry> ContentFolderSources() {
 LibraryScan ScanExternalGameFolders(std::stop_token stop) {
     EnsureStorageApartment();
     LibraryScan result;
-    bool discovery_limited = false;
-    unsigned visited = 0, sources = 0;
     auto list = StorageApplicationPermissions::FutureAccessList();
+    struct Source {
+        std::string token;
+        StorageFolder folder{nullptr};
+        std::wstring path;
+        bool drive_root{};
+    };
+    std::vector<Source> sources;
+    std::vector<std::wstring> registered;
+    // Snapshot selections before discovery; scan them first, never a newly
+    // remembered root. Retain saved metadata for disconnected sources.
+    for (const auto& entry : list.Entries()) {
+        if (stop.stop_requested())
+            return result;
+        const auto token = winrt::to_string(entry.Token);
+        if (!IsGameToken(token))
+            continue;
+        Source source{};
+        source.token = token;
+        source.path = std::wstring{entry.Metadata};
+        try {
+            source.folder = list.GetFolderAsync(entry.Token).get();
+            const std::wstring resolved{source.folder.Path()};
+            if (!resolved.empty())
+                source.path = resolved;
+        } catch (const winrt::hresult_error& e) {
+            AddError(result, ErrorText(e));
+        }
+        source.drive_root = IsStorageDriveRoot(source.path);
+        registered.push_back(source.path);
+        sources.push_back(std::move(source));
+    }
+    // Bound work and results independently per source. A full/failed source
+    // cannot prevent later selections from contributing their games.
+    unsigned scanned_sources = 0;
+    const auto scan_source = [&](const Source& source) {
+        if (stop.stop_requested() || !source.folder)
+            return;
+        if (!ShouldScanStorageSource(source.path, registered)) {
+            LOG_INFO(Frontend, "ROM storage: skipped drive root={} (registered subfolder)",
+                     winrt::to_string(source.path));
+            return;
+        }
+        if (scanned_sources >= MaxSources) {
+            result.limited = true;
+            return;
+        }
+        ++scanned_sources;
+        StorageScanBudget budget{};
+        LibraryScan partial;
+        try {
+            ScanFolder(source.folder, source.token, std::wstring{source.folder.Name()}, "", 0,
+                       budget, source.drive_root, partial, stop);
+        } catch (const winrt::hresult_error& e) {
+            AddError(partial, ErrorText(e));
+        }
+        LOG_INFO(Frontend, "ROM storage: scanned source={} token={} entries={} games={} limited={}",
+                 winrt::to_string(source.path), source.token, budget.visited,
+                 partial.entries.size(), partial.limited);
+        if (!partial.error.empty())
+            AddError(result, partial.error);
+        AppendStorageScan(result, std::move(partial));
+    };
+    for (const auto& source : sources)
+        scan_source(source);
     if (!stop.stop_requested() && (usb_play_in_place.load() ||
                                    UsbPlayInPlaceEnabled(std::getenv("NXBOX_USB_PLAY_IN_PLACE")))) {
-        // Use the broker for enumeration as well as reads. std::filesystem and ordinary
-        // Win32 opens cannot enumerate removable storage in the Xbox AppContainer.
-        std::vector<std::wstring> registered;
-        for (const auto& entry : list.Entries()) {
-            if (stop.stop_requested()) {
-                return result;
-            }
-            if (IsGameToken(winrt::to_string(entry.Token))) {
-                try {
-                    registered.push_back(
-                        std::wstring{list.GetFolderAsync(entry.Token).get().Path()});
-                } catch (const winrt::hresult_error&) {
-                    // Retain disconnected sources; a missing USB must not forget a selection.
-                    registered.push_back(std::wstring{entry.Metadata});
-                }
-            }
-        }
         try {
             const auto devices = KnownFolders::RemovableDevices();
             for (unsigned start = 0; !stop.stop_requested() && start < MaxEntries;
@@ -482,44 +568,28 @@ LibraryScan ScanExternalGameFolders(std::stop_token stop) {
                     if (stop.stop_requested())
                         break;
                     const std::wstring drive_path{drive.Path()};
-                    if (drive_path.empty() ||
-                        std::any_of(registered.begin(), registered.end(), [&](const auto& path) {
-                            return StorageFoldersOverlap(drive_path, path);
-                        })) {
+                    if (!ShouldDiscoverUsbDrive(drive_path, registered))
                         continue;
-                    }
-                    if (registered.size() >= MaxSources) {
-                        discovery_limited = true;
+                    if (scanned_sources >= MaxSources) {
+                        result.limited = true;
                         break;
                     }
-                    try {
-                        const auto token = RememberGameFolder(drive);
-                        registered.push_back(drive_path);
-                        LOG_INFO(Frontend, "ROM storage: discovered USB source={} token={}",
-                                 winrt::to_string(drive.Path()), token);
-                    } catch (const winrt::hresult_error& e) {
-                        AddError(result, ErrorText(e));
-                    }
+                    Source source{};
+                    source.token = SessionGameFolder(drive);
+                    source.folder = drive;
+                    source.path = drive_path;
+                    source.drive_root = true;
+                    registered.push_back(drive_path);
+                    LOG_INFO(Frontend,
+                             "ROM storage: discovered USB source={} token={} session-only",
+                             winrt::to_string(drive_path), source.token);
+                    scan_source(source);
                 }
-                if (drives.Size() < PageSize || discovery_limited)
+                if (drives.Size() < PageSize || scanned_sources >= MaxSources)
                     break;
             }
-        } catch (const winrt::hresult_error& e) {
-            AddError(result, ErrorText(e));
-        }
-    }
-    for (const auto& entry : list.Entries()) {
-        if (stop.stop_requested()) break;
-        const auto token = winrt::to_string(entry.Token);
-        if (!IsGameToken(token)) continue;
-        if (++sources > MaxSources) { result.limited = true; break; }
-        try {
-            auto folder = list.GetFolderAsync(entry.Token).get();
-            ScanFolder(folder, token, std::wstring{folder.Name()}, "", 0, visited, result, stop);
         } catch (const winrt::hresult_error& e) { AddError(result, ErrorText(e)); }
-        if (result.limited) break;
     }
-    result.limited |= discovery_limited;
     return result;
 }
 
