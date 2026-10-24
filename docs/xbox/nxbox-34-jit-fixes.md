@@ -87,3 +87,23 @@ returns for every target. Report unavailable placements as skipped, not passed.
 Then boot the original boot NRO, return to library and relaunch twice. A normal
 console layout may never exercise a far target; host boundary tests remain
 mandatory.
+
+## Full-width SM4 table address
+
+Reference: `3ab0dfe95`, adapted to Jadyx register allocation. Load the table's
+64-bit address with MOV, then zero-extend its indexed byte into a 32-bit view.
+RIP-relative LEA cannot address a static table arbitrarily far from a JIT mapping.
+Both SM4E and SM4EKEY use this lookup.
+
+`python3 -B tools/xbox/tests/jit-sm4.py` failed before the fix on the modeled
+out-of-range LEA. Now all 65536 inputs pass, checking every table entry and
+ignoring high input bits. The production table and emitter are extracted at run
+time. Added Dynarmic Catch2 test `A64: SM4 rounds differential` compares both
+variants with Unicorn (512 cases); execution of that x64 suite is pending.
+
+Console gate: an original A64 diagnostic executes SM4E `0xcec08420` and SM4EKEY
+`0xce62c820`, with zero, all-one and deterministic random vectors, including
+source/destination aliases. Compare all 128 output bits against an independent
+SM4 software oracle, print an explicit mismatch count and require zero. On the
+Windows host additionally place the JIT more than 2 GiB from its static table and
+repeat the Catch2 test. A close console mapping alone cannot validate reach.

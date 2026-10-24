@@ -7,7 +7,9 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -511,5 +513,30 @@ TEST_CASE("A64: Large random block", "[a64][unicorn]") {
         const u32 fpcr = RandomFpcr();
 
         RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, start_address, instructions, pstate, fpcr);
+    }
+}
+
+TEST_CASE("A64: SM4 rounds differential", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    std::mt19937 random{0x1944};
+    A64Unicorn::RegisterArray regs{};
+
+    for (size_t variant = 0; variant < 2; ++variant) {
+        for (size_t iteration = 0; iteration < 256; ++iteration) {
+            A64Unicorn::VectorArray vecs{};
+            for (auto &vector : vecs) {
+                for (auto &part : vector) {
+                    part = (static_cast<u64>(random()) << 32) | static_cast<u64>(random());
+                }
+            }
+            const u32 destination = static_cast<u32>(iteration % 3);
+            const u32 instruction = (variant == 0 ? 0xcec08420 : 0xce62c820) | destination;
+            INFO("variant=" << variant << " iteration=" << iteration);
+            RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0, {instruction}, 0, 0);
+        }
     }
 }
