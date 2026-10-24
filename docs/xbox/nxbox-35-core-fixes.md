@@ -57,8 +57,8 @@ existing kernel/memory paths; no mutex or page-table layout is serialized.
 
 Lock order is writer_mutex then host protection's placeholder mutex. The
 inspected HostMemory protection implementation does not call back into these
-writers. Mapping's host map/unmap operations finish before MapPages acquires the
-writer lock. No new recursive locking is introduced.
+writers. MapPages releases the writer lock before its caller performs host map/unmap
+operations, so those operations do not nest a reverse acquisition. No new recursive locking is introduced.
 
 `run.py page-writers` fails before the fix: map/unmap completes while a
 rasterizer writer is paused inside host protection. After the fix, both debug
@@ -145,3 +145,63 @@ controlled local peer required):
    normal original boot homebrew. Require no stuck worker, crash or unexpected
    error. These payload/peer fixtures are a future console gate; the mock host
    tests do not establish actual Xbox network permission or wake behavior.
+
+## 4. Validate FSP IStorage reads
+
+Reference: NXbox `166a71fa55162423dafd0dc8160c5ccc2405d579`.
+
+Read checked only the signs of offset/length, could overrun the IPC output buffer
+or backend range, and ignored the actual bytes read. Preserve the existing
+negative-size/offset errors; reject length exceeding the IPC buffer with
+ResultInvalidSize, and a range outside GetSize with ResultOutOfRange. Bounds
+use `offset <= size && length <= size - offset`, avoiding signed/unsigned sum
+overflow. Only after validation convert arguments to the backend's size_t.
+Zero-length requests within the storage (including its end) succeed without
+calling Read. A short backend read returns ResultUnknown and logs requested vs
+actual length, rather than claiming a complete successful transfer. On error a
+backend may have written a prefix; no rollback or atomic-buffer guarantee is
+introduced. Pulse opener metadata/capture and GetSize remain untouched.
+
+`run.py storage-read` fails before the fix: an empty backend result for an
+eight-byte request returns success. After the fix it passes exact/short/zero
+backend reads, negative arguments, small output buffers, storage-end and
+out-of-range cases, 64-bit offsets above 4 GiB and a valid range crossing signed
+INT64_MAX. Another **726 offset/length combinations** (66 offsets × 11 lengths)
+check error precedence, absence of backend calls for invalid/empty requests and
+sentinel preservation. All bytes in rejected buffers remain unchanged.
+
+Console test (pending; original diagnostic payload required):
+
+1. Build/package as in section 1. Give a diagnostic homebrew an original 64-byte
+   data storage, bytes 0 through 63, opened with FSP OpenDataStorageByCurrentProcess
+   (command 200). Call IStorage Read (command 0) with an eight-byte IPC output
+   buffer surrounded by sentinels. Offset 3/length 8 must return bytes 3..10;
+   offset 56/length 8 must return bytes 56..63.
+2. Require InvalidSize for length -1 or 9, InvalidOffset for offset -1,
+   OutOfRange for offset 60/length 8, offset 65/length 0 and INT64_MAX/length 8.
+   Offset 64/length 0 must succeed. Compare error codes to FileSys constants and
+   verify sentinels after every call. Repeat the 726-case host matrix through
+   guest IPC. Oversized IPC buffers with a smaller requested length must succeed.
+3. A host-side console diagnostic using a synthetic VfsFile reporting size 64
+   but returning 0 or 7 bytes for Read(8, 0) must return ResultUnknown. This
+   requires a diagnostic wrapper; do not damage a real file or simulate a
+   console storage fault. Repeat with a fake >4 GiB VfsFile to check wide offsets.
+4. Open the original homebrew storage, save a Pulse session, return to library,
+   restart and resume, including a session produced before these fixes. Require
+   the same bytes/state, no restore rejection, no crash or Critical log. Ordinary
+   boot and Pulse smoke alone do not test short backend reads or wide offsets.
+
+## Final host results and remaining gates
+
+All four new regressions failed on their unfixed production code and pass with
+the corresponding fix. All eight existing macOS checks listed above pass again;
+no new failure. The inherited tests/port command still reports the same missing
+start directory. No FPS, memory-saving or console-compatibility result is claimed.
+
+C++ fixtures were formatted with the repository's `src/.clang-format`; the Python
+runner uses the locally cached Ruff formatter, without fetching a package. New
+service work aggregates use named fields. No package version is bumped because
+this task does not create a deliverable UWP package; a future release must use
+its normal version/symbol discipline. The four fixes are separate local commits.
+The Windows warning/build gate, real IPC/worker scheduling, console diagnostics,
+normal boot and old-session Pulse checks remain unexecuted. No push or network.

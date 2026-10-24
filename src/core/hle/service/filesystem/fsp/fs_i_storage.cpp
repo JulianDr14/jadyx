@@ -41,8 +41,25 @@ Result IStorage::Read(
     R_UNLESS(length >= 0, FileSys::ResultInvalidSize);
     R_UNLESS(offset >= 0, FileSys::ResultInvalidOffset);
 
-    // Read the data from the Storage backend
-    backend->Read(out_bytes.data(), length, offset);
+    R_UNLESS(static_cast<u64>(length) <= out_bytes.size(), FileSys::ResultInvalidSize);
+
+    const u64 storage_size = backend->GetSize();
+    R_UNLESS(static_cast<u64>(offset) <= storage_size &&
+                 static_cast<u64>(length) <= storage_size - static_cast<u64>(offset),
+             FileSys::ResultOutOfRange);
+
+    if (length == 0) {
+        R_SUCCEED();
+    }
+
+    // IStorage has no bytes-read output: success promises the entire requested range.
+    const auto read = backend->Read(out_bytes.data(), static_cast<std::size_t>(length),
+                                    static_cast<std::size_t>(offset));
+    if (read != static_cast<u64>(length)) {
+        LOG_ERROR(Service_FS, "Storage read failed, offset={:#x}, requested={}, actual={}", offset,
+                  length, read);
+        R_THROW(ResultUnknown);
+    }
 
     R_SUCCEED();
 }
