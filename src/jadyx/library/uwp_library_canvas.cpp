@@ -29,6 +29,7 @@
 #include "jadyx/library/library_layout.h"
 #include "jadyx/content/content_view.h"
 #include "jadyx/storage/storage_path.h"
+#include "jadyx/storage/friendly_setup.h"
 #include "jadyx/mods/mods_view.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/ui/ui_painter.h"
@@ -165,6 +166,30 @@ public:
             // Settings dims the art further: its own page, not a dialog over the library.
             Round(0, 0, 1280, 720, 0, Palette::Canvas, 0.62f);
             DrawSettings(view);
+        } else if (!view.loading && configuration.setup_checked &&
+                   ShowSetupChecklist(configuration.status.keys_ready, configuration.status.firmware_files,
+                                      configuration.setup_requested)) {
+            rows_shown = false;
+            Type(Tr(T::SetupHeading), TypeRole::HeadlineLarge, 64,
+                 configuration.low_memory_mode ? 280.0f : 180.0f, 1152, Palette::Text);
+            const auto &setup = configuration.status;
+            const float setup_top = configuration.low_memory_mode ? 332.0f : 240.0f;
+            const auto status_text = [&](bool found, bool present) {
+                return Tr(found ? T::SetupFound : present ? T::SetupWrong : T::SetupMissing);
+            };
+            Type(std::wstring{Tr(T::SetupKeys)} + L" — " +
+                     std::wstring{status_text(setup.keys_ready, setup.keys_present)},
+                 TypeRole::BodyLarge, 64, setup_top, 1152, Palette::Text);
+            Type(std::wstring{Tr(T::SetupFirmware)} + L" — " +
+                     std::wstring{status_text(setup.firmware_ready, setup.firmware_files != 0)},
+                 TypeRole::BodyLarge, 64, setup_top + 32, 1152, Palette::Text);
+            Type(std::wstring{Tr(T::SetupGames)} + L" — " +
+                     std::wstring{status_text(!scan.entries.empty(), false)},
+                 TypeRole::BodyLarge, 64, setup_top + 64, 1152, Palette::Text);
+            Type(Tr(T::SetupTitleKeys), TypeRole::Body, 64, setup_top + 106, 1152,
+                 Palette::TextSecondary, 1, TextAlign::Leading, 2);
+            Type(Tr(T::SetupWays), TypeRole::Body, 64, setup_top + 164, 1152,
+                 Palette::TextSecondary, 1, TextAlign::Leading, 5);
         } else if (game) {
             if (view.tab == LibraryTab::Home) {
                 DrawRows(view, now);
@@ -183,6 +208,12 @@ public:
                      1, TextAlign::Leading, 2);
         }
         if (!management && !configuration.network_screen && !configuration.confirm_import && !view.system.updates_open) {
+            if (configuration.low_memory_mode && view.tab != LibraryTab::Settings) {
+                Round(48, 100, 1184, 160, 22, Palette::Surface);
+                Type(Tr(T::GameModeHeading), TypeRole::BodyLarge, 64, 112, 1152, Palette::Warning);
+                Type(Tr(T::GameModeHelp), TypeRole::Body, 64, 148, 1152, Palette::Text, 1,
+                     TextAlign::Leading, 4);
+            }
             DrawHeader(view, now);
             DrawFooter(view);
         }

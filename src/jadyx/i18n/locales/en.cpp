@@ -4,6 +4,22 @@
 
 namespace Jadyx::I18n {
 const Catalog EnglishCatalog = MakeCatalog({
+    {Text::SetupHeading, L"Finish setting up Jadyx"},
+    {Text::SetupFound, L"Found"},
+    {Text::SetupMissing, L"Missing"},
+    {Text::SetupWrong, L"Needs attention"},
+    {Text::SetupKeys, L"1. Keys"},
+    {Text::SetupFirmware, L"2. Firmware"},
+    {Text::SetupGames, L"3. Games"},
+    {Text::SetupWays, L"Settings > File manager: import a USB folder, or start Jadyx Portal. Device Portal > File explorer > LocalAppData > Jadyx > LocalState: jadyx/keys, jadyx/nand/system/Contents/registered, games."},
+    {Text::SetupTitleKeys, L"title.keys contains per-title decryption keys for your own ticket-encrypted dumps; it does not replace prod.keys."},
+    {Text::GameModeHeading, L"Switch Jadyx to Game mode"},
+    {Text::GameModeHelp, L"Close Jadyx. Dev Home > Jadyx > View button > View details > App type > Game. Or Device Portal > Apps > Jadyx > App type > Game. Restart Jadyx. Game mode provides 5120 MiB; App mode has too little memory."},
+    {Text::StorageFull, L"Xbox storage full: {0} GB free, need {1} GB. Free space and retry."},
+    {Text::ImportStalled, L"No progress for 60 s: {0}. Check the USB connection and available storage."},
+    {Text::KeysOlderFirmware, L"Your prod.keys are older than firmware {0}; dump keys from a console on {0} or newer."},
+    {Text::SelectedFirmware, L"selected (version unreadable with these keys)"},
+    {Text::FirmwareKeysHelp, L"The firmware cannot be read with these keys. Import compatible prod.keys from your console first; then retry the firmware."},
     {Text::UpdaterTitle, L"Updates"},
     {Text::UpdaterHint, L"Find and install new versions of Jadyx"},
     {Text::UpdaterCheck, L"Check for updates"},

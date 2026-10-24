@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/storage/system_upload.h"
+#include "jadyx/storage/friendly_setup.h"
+#include <chrono>
+#include <winrt/base.h>
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -30,6 +33,7 @@ struct SystemUpload::Impl {
     mutable std::mutex mutex;
     std::mutex operation;
     SystemUploadStatus info;
+    std::chrono::steady_clock::time_point progress_at{};
     std::unique_ptr<NspUpload> file;
     std::unique_ptr<SystemPrepared> prepared;
     SystemImportBackend backend;
@@ -116,7 +120,10 @@ struct SystemUpload::Impl {
 };
 SystemUpload::SystemUpload(fs::path local,SystemImportBackend backend):impl{std::make_unique<Impl>(std::move(local),std::move(backend))}{}
 SystemUpload::~SystemUpload(){Cancel();}
-SystemUploadStatus SystemUpload::Snapshot() const {std::lock_guard lock{impl->mutex};auto result=impl->info;if(impl->file)result.file=impl->file->Snapshot();return result;}
+SystemUploadStatus SystemUpload::Snapshot() const {std::lock_guard lock{impl->mutex};auto result=impl->info;if(impl->file)result.file=impl->file->Snapshot();
+    if ((result.phase == "validating" || result.phase == "extracting") && !result.current_file.empty())
+        result.no_progress_seconds = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - impl->progress_at).count());
+    return result;}
 void SystemUpload::SetAvailable(bool enabled){std::lock_guard lock{impl->mutex};impl->info.available=enabled;if(impl->file)impl->file->SetAvailable(enabled);}
 UploadResult SystemUpload::Create(std::string kind,std::string format,unsigned count){
     if((kind!="keys"&&kind!="firmware")||(format!="zip"&&format!="files")||!count||count>(format=="zip"?1U:kind=="keys"?2U:4096U))return {400,"file"};
@@ -200,7 +207,16 @@ std::string SystemUpload::RunPending(std::stop_token stop){
         const auto token=impl->cancellation.get_token();
         if(token.stop_requested())throw std::runtime_error("interrupted");
         if(phase=="prepare_pending"){
-            const auto progress=[&](unsigned done,unsigned){std::lock_guard lock{impl->mutex};impl->info.processed=done;};
+            SystemProgress progress{[&](unsigned done, unsigned) {
+                std::lock_guard lock{impl->mutex};
+                impl->info.processed = done;
+                impl->progress_at = std::chrono::steady_clock::now();
+            }};
+            progress.current_file = [&](std::string_view name) {
+                std::lock_guard lock{impl->mutex};
+                impl->info.current_file = name;
+                impl->progress_at = std::chrono::steady_clock::now();
+            };
             if(!impl->backend.create_stage||!impl->backend.inspect||!impl->backend.extract)throw std::runtime_error("unavailable");
             impl->stage=impl->backend.create_stage(kind);
             {std::lock_guard lock{impl->mutex};impl->manifest=impl->Files();impl->Save("preparing");}
@@ -227,6 +243,36 @@ std::string SystemUpload::RunPending(std::stop_token stop){
             fs::remove_all(impl->incoming,cleanup);fs::create_directories(impl->incoming,cleanup);fs::remove_all(impl->root/"transfer",cleanup);
         }
         return {};
+    } catch (const StorageSpaceError &space) {
+        std::lock_guard lock{impl->mutex};
+        impl->info.phase = "failed";
+        impl->info.error = "space";
+        impl->info.free_bytes = space.free;
+        impl->info.required_bytes = space.needed;
+        return "space";
+    } catch (const fs::filesystem_error &error) {
+        std::lock_guard lock{impl->mutex};
+        impl->info.phase = "failed";
+        impl->info.error = error.code() == std::errc::no_space_on_device ||
+                                   IsDiskFull(static_cast<std::uint32_t>(error.code().value()))
+                               ? "space"
+                               : "disk";
+        std::error_code query_error;
+        impl->info.free_bytes = fs::space(impl->incoming, query_error).available;
+        impl->info.required_bytes = impl->info.bytes + (64ULL << 20);
+        if (query_error)
+            impl->info.error = "disk";
+        return impl->info.error;
+    } catch (const winrt::hresult_error &error) {
+        std::lock_guard lock{impl->mutex};
+        impl->info.phase = "failed";
+        impl->info.error = IsDiskFull(static_cast<std::uint32_t>(error.code())) ? "space" : "disk";
+        std::error_code query_error;
+        impl->info.free_bytes = fs::space(impl->incoming, query_error).available;
+        impl->info.required_bytes = impl->info.bytes + (64ULL << 20);
+        if (query_error)
+            impl->info.error = "disk";
+        return impl->info.error;
     }catch(const std::exception& error){std::lock_guard lock{impl->mutex};impl->info.phase="failed";
         const std::string code=error.what();
         // Only machine error identifiers leave the worker; filesystem/WinRT

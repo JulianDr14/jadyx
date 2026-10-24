@@ -232,7 +232,7 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <script>
 'use strict';
 const $=id=>document.getElementById(id),lang=navigator.language.toLowerCase(),es=lang.startsWith('es'),pt=lang.startsWith('pt');
-const words=pt?{
+const words=pt?{storage_full:'Xbox sem espaço: {0} GB livres, precisa de {1} GB. Libere espaço e tente novamente.',update_route:'Atualização detectada. Abra Biblioteca > seu jogo > Atualizações e envie o NSP ali.',dlc_route:'DLC detectado. Abra Biblioteca > seu jogo > DLC e envie o NSP ali.',stalled:'Sem progresso há 60 s. Arquivo: ',keys_older_version:'Suas prod.keys são anteriores ao firmware {0}; extraia chaves de um console com {0} ou mais recente.',firmware_keys_old:'Suas prod.keys são anteriores ao firmware selecionado; extraia chaves de um console com esse firmware ou mais recente. A versão não pôde ser lida.',title_keys:'title.keys contém chaves por título para suas cópias criptografadas com tickets; não substitui prod.keys.',
  title:'Conecte-se ao seu console',intro:'Digite o código temporário que o Jadyx mostra. Mantenha o app aberto na biblioteca.',label:'Código de conexão',connect:'Conectar',
  uploadtitle:'Importar jogos NSP',uploadintro:'Somente jogos base. Os arquivos são copiados para o armazenamento interno do console.',fileslabel:'Selecionar arquivos NSP',
  namelabel:'Nome de destino (um único arquivo)',send:'Enviar / retomar',rename:'Renomear arquivo pendente',pause:'Pausar',discard:'Apagar arquivo parcial',
@@ -243,11 +243,11 @@ const words=pt?{
  receiving:'Recebendo',paused:'Pausado. Selecione o mesmo arquivo para continuar.',ready:'Aguardando validação',validating:'Validando NSP',publishing:'Adicionando à biblioteca',complete:'Instalado na biblioteca',
  busy:'Aguarde o fim da operação no Jadyx.',exists:'Esse nome já existe. Altere o nome de destino e tente de novo.',space:'Não há espaço suficiente.',
  file:'Nome ou arquivo inválido. Selecione um NSP.',base:'Somente jogos base são aceitos; não atualizações, DLC nem pacotes mistos.',
- nsp:'A estrutura do NSP é inválida.',incomplete:'O NSP está incompleto.',keys:'Não foi possível ler os metadados. Verifique as chaves do seu console e o arquivo NSP.',
+ nsp:'A estrutura do NSP é inválida.',incomplete:'O NSP está incompleto.',keys:'Não foi possível ler os metadados. Importe prod.keys do seu console com o firmware exigido pelo jogo ou mais recente e confira o NSP.',
  disk:'Não foi possível gravar ou publicar o arquivo.',interrupted:'Transferência interrompida. Você pode retomar a partir do progresso confirmado.',
  partial:'Há uma transferência pendente. Retome ou apague.',recovery:'Não foi possível recuperar o arquivo parcial. Apague-o antes de iniciar outro.',unavailable:'A importação não está disponível no momento.',
  attempts:'Tentativas demais. Aguarde um minuto.',version:'Versão de transferência incompatível. Recarregue a página.',idle:'Pronto para importar.'
-}:es?{
+}:es?{storage_full:'Almacenamiento Xbox lleno: {0} GB libres, se necesitan {1} GB. Libera espacio y reintenta.',update_route:'Actualización detectada. Abre Biblioteca > tu juego > Actualizaciones y sube allí el NSP.',dlc_route:'DLC detectado. Abre Biblioteca > tu juego > DLC y sube allí el NSP.',stalled:'Sin progreso durante 60 s. Archivo: ',keys_older_version:'Tus prod.keys son anteriores al firmware {0}; extrae claves de una consola con {0} o posterior.',firmware_keys_old:'Tus prod.keys son anteriores al firmware seleccionado; extrae claves de una consola con ese firmware o posterior. No se pudo leer la versión.',title_keys:'title.keys contiene claves por título para tus copias cifradas con tickets; no sustituye a prod.keys.',
  title:'Conecta con tu consola',intro:'Introduce el código temporal que muestra Jadyx. Mantén la app abierta en la biblioteca.',label:'Código de conexión',connect:'Conectar',
  uploadtitle:'Importar juegos NSP',uploadintro:'Solo juegos base. Los archivos se copian al almacenamiento interno de la consola.',fileslabel:'Seleccionar archivos NSP',
  namelabel:'Nombre de destino (un solo archivo)',send:'Subir / reanudar',rename:'Renombrar archivo pendiente',pause:'Pausar',discard:'Eliminar archivo parcial',
@@ -258,17 +258,17 @@ const words=pt?{
  receiving:'Recibiendo',paused:'En pausa. Selecciona el mismo archivo para continuar.',ready:'Esperando a validar',validating:'Validando NSP',publishing:'Añadiendo a la biblioteca',complete:'Instalado en la biblioteca',
  busy:'Espera a que termine la operación en Jadyx.',exists:'Ese nombre ya existe. Cambia el nombre de destino y vuelve a intentarlo.',space:'No hay espacio suficiente.',
  file:'Nombre o archivo no válido. Selecciona un NSP.',base:'Solo se admiten juegos base; no actualizaciones, DLC ni paquetes mezclados.',
- nsp:'La estructura del NSP no es válida.',incomplete:'El NSP está incompleto.',keys:'No se pueden leer sus metadatos. Revisa las claves de tu consola y el archivo NSP.',
+ nsp:'La estructura del NSP no es válida.',incomplete:'El NSP está incompleto.',keys:'No se pueden leer sus metadatos. Importa prod.keys de tu consola con el firmware requerido por el juego o posterior y comprueba el NSP.',
  disk:'No se pudo escribir o publicar el archivo.',interrupted:'Transferencia interrumpida. Puedes reanudar desde el progreso confirmado.',
  partial:'Hay una transferencia pendiente. Reanúdala o elimínala.',recovery:'No se pudo recuperar el parcial. Elimínalo antes de iniciar otro.',unavailable:'La importación no está disponible en este momento.',
  attempts:'Demasiados intentos. Espera un minuto.',version:'Versión de transferencia incompatible. Recarga la página.',idle:'Listo para importar.'
-}:{ok:'Connected.',bad:'Incorrect or expired code. Generate another in Jadyx.',lost:'Connection closed. Reconnect in Jadyx; confirmed progress is retained.',
+}:{storage_full:'Xbox storage full: {0} GB free, need {1} GB. Free space and retry.',update_route:'Update detected. Open Library > your game > Updates and upload the NSP there.',dlc_route:'DLC detected. Open Library > your game > DLC and upload the NSP there.',stalled:'No progress for 60 s. File: ',keys_older_version:'Your prod.keys are older than firmware {0}; dump keys from a console on {0} or newer.',firmware_keys_old:'Your prod.keys are older than the selected firmware; dump keys from a console on that firmware or newer. Its version could not be read.',title_keys:'title.keys contains per-title decryption keys for your own ticket-encrypted dumps; it does not replace prod.keys.',ok:'Connected.',bad:'Incorrect or expired code. Generate another in Jadyx.',lost:'Connection closed. Reconnect in Jadyx; confirmed progress is retained.',
  free:'Free space',confirmed:'Confirmed',speed:'Speed',eta:'Time left',queue:'Queued',choose:'Choose one or more NSP files.',files:'files',
  same:'A different file is pending. Select the same file to resume, or discard the partial upload.',receiving:'Receiving',paused:'Paused. Select the same file to continue.',
  ready:'Waiting for validation',validating:'Validating NSP',publishing:'Adding to library',complete:'Installed in your library',busy:'Wait for the operation in Jadyx to finish.',
  exists:'This destination already exists. Change its name and try again.',space:'Not enough free space.',file:'Invalid filename or file. Choose an NSP.',
  base:'Base games only; updates, DLC and mixed packages are not supported.',nsp:'Invalid NSP structure.',incomplete:'The NSP is incomplete.',
- keys:'Cannot read its metadata. Check your console keys and NSP file.',disk:'Could not write or publish this file.',
+ keys:'Cannot read its metadata. Import prod.keys from your console on the firmware required by this game or newer, and check the NSP.',disk:'Could not write or publish this file.',
  interrupted:'Transfer interrupted. You can resume from confirmed progress.',partial:'An upload is pending. Resume or discard it.',
  recovery:'Cannot recover the partial file. Discard it before starting another.',unavailable:'Import is currently unavailable.',
  attempts:'Too many attempts. Wait one minute.',version:'Incompatible upload version. Reload this page.',idle:'Ready to import.'};
@@ -288,7 +288,13 @@ const selectedChunk=Number(new URLSearchParams(location.search).get('chunk'));
 const chunk=(selectedChunk===4||selectedChunk===16||selectedChunk===64?selectedChunk:16)*1048576;
 let session='',timer,state={},running=false,stopped=false,currentXHR=null,currentId='',rates=[],pane='games',contentRunning=false;
 let systemRunning=false,systemReviewId='';
-const delay=ms=>new Promise(r=>setTimeout(r,ms)),mib=n=>(n/1048576).toFixed(1),reason=e=>words[e.message]||words.interrupted;
+const delay=ms=>new Promise(r=>setTimeout(r,ms)),mib=n=>(n/1048576).toFixed(1),reason=e=>friendlyReason(e)||words[e.message]||words.interrupted;
+function friendlyReason(error,record=state.transfer||{}){
+ if(error.message!=='space')return '';
+ const free=error.free_bytes??record.free_bytes,need=error.required_bytes??record.required_bytes;
+ if(!Number.isFinite(free)||!Number.isFinite(need))return words.space;
+ return words.storage_full.replace('{0}',(free/1e9).toFixed(2)).replace('{1}',(need/1e9).toFixed(2));
+}
 const size=n=>n>=1073741824?(n/1073741824).toFixed(2)+' GiB':mib(n)+' MiB',percent=(done,total)=>total?Math.floor(100*Math.min(1,done/total))+' %':'';
 // What a drop zone holds: the file's name, or how many and their total size.
 function picked(output,input){
@@ -304,7 +310,7 @@ function headers(extra={}){return {Authorization:'Bearer '+session,'Tus-Resumabl
 async function api(path,options={}){
  const response=await fetch(path,{...options,headers:headers(options.headers||{})});
  if(response.status===401){throw Error('lost');}
- if(!response.ok){let error='interrupted';try{error=(await response.json()).error||error;}catch{}throw Error(error);}
+ if(!response.ok){let detail={error:'interrupted'};try{detail=await response.json();}catch{}throw Object.assign(Error(detail.error||'interrupted'),detail);}
  return response;
 }
 function render(){
@@ -313,7 +319,7 @@ function render(){
  const s=state.transfer||{};
  $('upload').hidden=!session||!state.uploads||pane!=='games';
  $('space').textContent=words.free+': '+((s.free_bytes||0)/1073741824).toFixed(2)+' GiB';
- $('job').textContent=(s.name?s.name+'\n':'')+(words[s.phase]||words.idle);
+ $('job').textContent=(s.name?s.name+'\n':'')+(words[s.phase]||words.idle)+(s.length?' · '+size(s.received||0)+' / '+size(s.length):'');
  $('progress').value=s.length?Math.min(1,(s.received||0)/s.length):0;
  $('percent').textContent=percent(s.received||0,s.length);
  $('confirmed').textContent=words.confirmed+': '+mib(s.offset||0)+' / '+mib(s.length||0)+' MiB';
@@ -322,7 +328,7 @@ function render(){
  $('pause').disabled=systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
  $('discard').disabled=systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
  $('rename').disabled=running||systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
- if(s.error)$('message').textContent=words[s.error]||words.interrupted;
+ if(s.error)$('message').textContent=reason(Error(s.error));
  renderSystem();
  renderLibrary();
 }
@@ -375,7 +381,7 @@ const base64=s=>btoa(String.fromCharCode(...new TextEncoder().encode(s)));
 function patch(url,offset,blob){return new Promise((resolve,reject)=>{
  const xhr=new XMLHttpRequest();currentXHR=xhr;xhr.open('PATCH',url);
  for(const [key,value]of Object.entries(headers({'Content-Type':'application/offset+octet-stream','Upload-Offset':String(offset)})))xhr.setRequestHeader(key,value);
- xhr.onload=()=>{currentXHR=null;if(xhr.status===204)resolve(Number(xhr.getResponseHeader('Upload-Offset')));else{let error='interrupted';try{error=JSON.parse(xhr.responseText).error||error;}catch{}reject(Error(xhr.status===401?'lost':error));}};
+ xhr.onload=()=>{currentXHR=null;if(xhr.status===204)resolve(Number(xhr.getResponseHeader('Upload-Offset')));else{let detail={error:'interrupted'};try{detail=JSON.parse(xhr.responseText);}catch{}reject(Object.assign(Error(xhr.status===401?'lost':detail.error),detail));}};
  xhr.onerror=()=>{currentXHR=null;reject(Error('interrupted'));};xhr.onabort=()=>{currentXHR=null;reject(Error('paused'));};xhr.send(blob);
 });}
 // Games and updates/DLC share this resumable client. A target names the status record, its
@@ -471,7 +477,7 @@ const libraryWords=pt?{
 for(const [id,key]of [['library-title','title'],['library-intro','intro'],['library-empty','empty'],['game-back','back'],['game-warning','warning'],
  ['kind-update','update'],['kind-dlc','dlc'],['content-send','send'],['content-pick','pick_update']])$(id).textContent=libraryWords[key];
 for(const [id,key]of [['content-drop','files-drop'],['content-pause','pause'],['content-discard','discard']])if(words[key])$(id).textContent=words[key];
-const libraryReason=error=>libraryWords[error.message]||words[error.message]||libraryWords.failed;
+const libraryReason=error=>friendlyReason(error,state.content||{})||libraryWords[error.message]||words[error.message]||libraryWords.failed;
 let games=[],revision=-1,libraryAt=0,gameId='',kind='update',contents=null,armed='',armedTimer=0,removalSerial=0,lastContent='';
 const covers=new Map(),gone=new Set();
 const contentTarget=()=>({key:'content',base:'/api/v1/content/uploads',tag:kind+':'+gameId,metadata:{kind,application:gameId},rate:'content-rate',eta:'content-eta'});
@@ -604,7 +610,7 @@ $('content-send').addEventListener('click',async()=>{
  catch(error){$('message').textContent=libraryReason(error);}finally{contentRunning=false;currentXHR=null;try{await refresh();}catch{}render();}
 });
 $('content-pause').addEventListener('click',()=>control('pause',contentTarget()));$('content-discard').addEventListener('click',()=>control('discard',contentTarget()));
-const systemWords=pt?{
+const systemWords=pt?{storage_full:'Xbox sem espaço: {0} GB livres, precisa de {1} GB. Libere espaço e tente novamente.',update_route:'Atualização detectada. Abra Biblioteca > seu jogo > Atualizações e envie o NSP ali.',dlc_route:'DLC detectado. Abra Biblioteca > seu jogo > DLC e envie o NSP ali.',stalled:'Sem progresso há 60 s. Arquivo: ',keys_older_version:'Suas prod.keys são anteriores ao firmware {0}; extraia chaves de um console com {0} ou mais recente.',firmware_keys_old:'Suas prod.keys são anteriores ao firmware selecionado; extraia chaves de um console com esse firmware ou mais recente. A versão não pôde ser lida.',title_keys:'title.keys contém chaves por título para suas cópias criptografadas com tickets; não substitui prod.keys.',
  keysTitle:'Importar chaves',firmware:'Importar firmware',keysHelp:'ZIP ou prod.keys / title.keys. Máximo de 4 MiB por arquivo de chaves.',
  firmwareHelp:'ZIP ou arquivos NCA extraídos. A versão será verificada antes de instalar.',folder:'Ou escolha uma pasta extraída',send:'Enviar e revisar',confirm:'Confirmar instalação',cancel:'Cancelar e apagar importação',accept:'Entendo e aceito os avisos.',
  systemTitle:'Chaves e firmware',systemIntro:'Tudo é verificado antes de instalar. Os arquivos atuais ficam até você confirmar.',pick:'Selecionar arquivos',drop:'ou arraste-os para cá',
@@ -612,7 +618,7 @@ const systemWords=pt?{
  firmware_downgrade:'O firmware selecionado é anterior ao instalado.',keys_downgrade:'As novas chaves perdem gerações disponíveis nas chaves instaladas.',keys_firmware_old:'As chaves podem não abrir o firmware instalado. Continuar pode deixá-lo inutilizável.',keys_unknown:'Não foi possível verificar a geração das chaves.',installed_unknown:'Não foi possível verificar o firmware instalado.',
  receiving:'Recebendo arquivos',extracting:'Extraindo ZIP',validating:'Validando arquivos',prepare_pending:'Aguardando validação',commit_pending:'Aguardando instalação',publishing:'Instalando',complete:'Instalação concluída',failed:'A importação falhou; os dados anteriores foram preservados.',idle:'Escolha arquivos para importar.',
  archive:'O ZIP está danificado ou não é compatível.',archive_unsafe:'O ZIP contém caminhos perigosos, links ou arquivos criptografados.',archive_limit:'O arquivo ultrapassa os limites de tamanho ou quantidade.',file_limit:'Quantidade de arquivos inválida.',file:'Use somente ZIP ou os arquivos correspondentes, sem misturá-los.',keys:'Arquivo de chaves inválido.',keys_header:'Falta uma header_key válida em prod.keys.',keys_limit:'Cada arquivo de chaves deve ter no máximo 4 MiB.',firmware_keys:'As chaves instaladas não conseguem ler o firmware. Importe chaves compatíveis primeiro.',firmware_incomplete:'Firmware incompleto: falta SystemVersion ou MiiEdit.',firmware_game:'Este pacote contém arquivos de jogo.',firmware_duplicate:'O pacote contém nomes ou versões duplicados.',firmware_version:'Não foi possível verificar uma versão de firmware NX válida.',confirm_warnings:'Aceite os avisos antes de instalar.',recovery:'A importação interrompida não pôde ser recuperada. Apague-a e selecione os arquivos novamente.'
-}:es?{
+}:es?{storage_full:'Almacenamiento Xbox lleno: {0} GB libres, se necesitan {1} GB. Libera espacio y reintenta.',update_route:'Actualización detectada. Abre Biblioteca > tu juego > Actualizaciones y sube allí el NSP.',dlc_route:'DLC detectado. Abre Biblioteca > tu juego > DLC y sube allí el NSP.',stalled:'Sin progreso durante 60 s. Archivo: ',keys_older_version:'Tus prod.keys son anteriores al firmware {0}; extrae claves de una consola con {0} o posterior.',firmware_keys_old:'Tus prod.keys son anteriores al firmware seleccionado; extrae claves de una consola con ese firmware o posterior. No se pudo leer la versión.',title_keys:'title.keys contiene claves por título para tus copias cifradas con tickets; no sustituye a prod.keys.',
  keysTitle:'Importar claves',firmware:'Importar firmware',keysHelp:'ZIP o prod.keys / title.keys. Máximo de 4 MiB por archivo de claves.',
  firmwareHelp:'ZIP o archivos NCA extraídos. La versión se comprobará antes de instalar.',folder:'O elige una carpeta extraída',send:'Subir y revisar',confirm:'Confirmar instalación',cancel:'Cancelar y eliminar importación',accept:'Entiendo y acepto las advertencias.',
  systemTitle:'Claves y firmware',systemIntro:'Todo se comprueba antes de instalar. Tus archivos actuales se conservan hasta que confirmes.',pick:'Seleccionar archivos',drop:'o arrástralos aquí',
@@ -620,23 +626,23 @@ const systemWords=pt?{
  firmware_downgrade:'El firmware seleccionado es anterior al instalado.',keys_downgrade:'Las nuevas claves pierden generaciones disponibles en las instaladas.',keys_firmware_old:'Las claves podrían no abrir el firmware instalado. Continuar puede dejarlo inutilizable.',keys_unknown:'No se pudo verificar la generación de las claves.',installed_unknown:'No se pudo verificar el firmware instalado.',
  receiving:'Recibiendo archivos',extracting:'Extrayendo ZIP',validating:'Validando archivos',prepare_pending:'Esperando validación',commit_pending:'Esperando instalación',publishing:'Instalando',complete:'Instalación completada',failed:'La importación falló; se conservaron los datos anteriores.',idle:'Selecciona archivos para importar.',
  archive:'El ZIP está dañado o no es compatible.',archive_unsafe:'El ZIP contiene rutas peligrosas, enlaces o archivos cifrados.',archive_limit:'El archivo supera los límites de tamaño o cantidad.',file_limit:'Cantidad de archivos no válida.',file:'Usa solo ZIP o los archivos correspondientes, sin mezclarlos.',keys:'Archivo de claves no válido.',keys_header:'Falta una header_key válida en prod.keys.',keys_limit:'Cada archivo de claves debe ocupar como máximo 4 MiB.',firmware_keys:'Las claves instaladas no pueden leer el firmware. Importa antes claves compatibles.',firmware_incomplete:'Firmware incompleto: falta SystemVersion o MiiEdit.',firmware_game:'El paquete contiene archivos de juego.',firmware_duplicate:'El paquete contiene nombres o versiones duplicados.',firmware_version:'No se pudo verificar una versión de firmware NX válida.',confirm_warnings:'Acepta las advertencias antes de instalar.',recovery:'No se pudo recuperar la importación interrumpida. Elimínala y vuelve a seleccionar los archivos.'
-}:{
+}:{storage_full:'Xbox storage full: {0} GB free, need {1} GB. Free space and retry.',update_route:'Update detected. Open Library > your game > Updates and upload the NSP there.',dlc_route:'DLC detected. Open Library > your game > DLC and upload the NSP there.',stalled:'No progress for 60 s. File: ',keys_older_version:'Your prod.keys are older than firmware {0}; dump keys from a console on {0} or newer.',firmware_keys_old:'Your prod.keys are older than the selected firmware; dump keys from a console on that firmware or newer. Its version could not be read.',title_keys:'title.keys contains per-title decryption keys for your own ticket-encrypted dumps; it does not replace prod.keys.',
  keysTitle:'Import keys',firmware:'Import firmware',keysHelp:'ZIP or prod.keys / title.keys. Maximum 4 MiB per key file.',firmwareHelp:'ZIP or extracted NCA files. The version is checked before installation.',folder:'Or choose an extracted folder',send:'Upload and review',confirm:'Confirm installation',cancel:'Cancel and discard import',accept:'I understand and accept these warnings.',
  systemTitle:'Keys and firmware',systemIntro:'Everything is checked before installing. Your current files stay until you confirm.',pick:'Choose files',drop:'or drop them here',
  installed:'Installed',selected:'Selected',generation:'Key generation (index)',required:'Firmware required generation',ready:'Files validated. Review versions and confirm.',review:'Review versions and confirm.',firmware_downgrade:'The selected firmware is older than the installed firmware.',keys_downgrade:'The new keys lose generations present in the installed keys.',keys_firmware_old:'These keys may not open the installed firmware. Continuing may make it unusable.',keys_unknown:'The key generation could not be verified.',installed_unknown:'The installed firmware could not be verified.',
  receiving:'Receiving files',extracting:'Extracting ZIP',validating:'Validating files',prepare_pending:'Waiting for validation',commit_pending:'Waiting for installation',publishing:'Installing',complete:'Installation complete',failed:'Import failed; previous data was preserved.',idle:'Choose files to import.',archive:'The ZIP is damaged or unsupported.',archive_unsafe:'The ZIP contains unsafe paths, links or encrypted entries.',archive_limit:'The size or file count limit was exceeded.',file_limit:'Invalid file count.',file:'Use only a ZIP or the appropriate loose files, without mixing formats.',keys:'Invalid key file.',keys_header:'A valid header_key is required in prod.keys.',keys_limit:'Each key file must be at most 4 MiB.',firmware_keys:'Installed keys cannot read this firmware. Import compatible keys first.',firmware_incomplete:'Incomplete firmware: SystemVersion or MiiEdit is missing.',firmware_game:'The package contains game files.',firmware_duplicate:'The package contains duplicate names or versions.',firmware_version:'A valid NX firmware version could not be verified.',confirm_warnings:'Accept warnings before installing.',recovery:'The interrupted import could not be recovered. Discard it and select the files again.'};
-for(const [id,text]of Object.entries({'keys-title':systemWords.keysTitle,'firmware-title':systemWords.firmware,'keys-help':systemWords.keysHelp,'firmware-help':systemWords.firmwareHelp,
+for(const [id,text]of Object.entries({'keys-title':systemWords.keysTitle,'firmware-title':systemWords.firmware,'keys-help':systemWords.keysHelp+' '+systemWords.title_keys,'firmware-help':systemWords.firmwareHelp,
  'firmware-folder-label':systemWords.folder,'keys-send':systemWords.send,'firmware-send':systemWords.send,'system-confirm':systemWords.confirm,'system-cancel':systemWords.cancel,'system-warning-label':systemWords.accept,
  'system-title':systemWords.systemTitle,'system-intro':systemWords.systemIntro,'keys-pick':systemWords.pick,'firmware-pick':systemWords.pick,'keys-drop':systemWords.drop,'firmware-drop':systemWords.drop}))$(id).textContent=text;
-function systemReason(error){return systemWords[error.message]||words[error.message]||systemWords.failed;}
+function systemReason(error){return friendlyReason(error,state.system||{})||systemWords[error.message]||words[error.message]||systemWords.failed;}
 function renderSystem(){
  const s=state.system||{},r=s.review||{},warnings=r.warnings||[];
  $('system-upload').hidden=!session||!state.system_supported;
  $('tab-system').hidden=!state.system_supported;
  if(!state.system_supported){if(!$('view-system').hidden)choose(tabs,'tab-content');return;}
  for(const kind of ['keys','firmware'])$(kind+'-send').disabled=running||systemRunning||state.transfer?.busy||!s.available||(s.busy&&s.kind!==kind)||!['idle','receiving','complete'].includes(s.phase);
- $('system-job').textContent=(systemWords[s.phase]||systemWords.idle)+(s.count?' · '+(s.completed||0)+' / '+s.count:'')+(s.error?'\n'+systemReason(Error(s.error)):'');
- const f=s.file||{};$('system-progress').value=f.length?Math.min(1,(f.received||0)/f.length):0;$('system-percent').textContent=percent(f.received||0,f.length);
+ $('system-job').textContent=(systemWords[s.phase]||systemWords.idle)+(s.count?' · '+(s.completed||0)+' / '+s.count:'')+(s.current_file?' · '+s.current_file:'')+(s.no_progress_seconds>=60?'\n'+systemWords.stalled+(s.current_file||'—'):'')+(s.error?'\n'+systemReason(Error(s.error)):'');
+ const f=s.file||{};$('system-job').textContent+='\n'+size(f.received||0)+' / '+size(f.length||0)+' · '+(s.processed||0)+' '+systemWords.validating;$('system-progress').value=f.length?Math.min(1,(f.received||0)/f.length):0;$('system-percent').textContent=percent(f.received||0,f.length);
  $('system-review').hidden=s.phase!=='review';
  if(s.phase!=='review')systemReviewId='';
  if(s.phase==='review'){
@@ -644,7 +650,7 @@ function renderSystem(){
   const gen=value=>value>=0?'0x'+value.toString(16).padStart(2,'0'):'—';
   $('system-versions').textContent=systemWords.installed+': '+(r.installed_firmware||'—')+'\n'+systemWords.selected+': '+(r.incoming_firmware||'—')+
     '\n'+systemWords.generation+': '+gen(r.installed_generation)+' → '+gen(r.incoming_generation)+'\n'+systemWords.required+': '+gen(r.required_generation);
-  $('system-warnings').textContent=warnings.map(w=>systemWords[w]||systemWords.keys_unknown).join('\n');
+  $('system-warnings').textContent=warnings.map(w=>w==='keys_firmware_old'&&r.incoming_generation>=0&&r.required_generation>r.incoming_generation?systemWords.keys_older_version.replaceAll('{0}',r.incoming_firmware||r.installed_firmware||'—'):systemWords[w]||systemWords.keys_unknown).join('\n');
   $('system-warning-row').hidden=!warnings.length;$('system-confirm').disabled=!!warnings.length&&!$('system-warning-accept').checked;
  }
  $('system-cancel').disabled=!s.id||s.phase==='complete'||s.phase==='publishing'||s.phase==='commit_pending';

@@ -4,6 +4,22 @@
 
 namespace Jadyx::I18n {
 const Catalog PortugueseBrazilCatalog = MakeCatalog({
+    {Text::SetupHeading, L"Conclua a configuração do Jadyx"},
+    {Text::SetupFound, L"Encontrado"},
+    {Text::SetupMissing, L"Ausente"},
+    {Text::SetupWrong, L"Precisa de atenção"},
+    {Text::SetupKeys, L"1. Chaves"},
+    {Text::SetupFirmware, L"2. Firmware"},
+    {Text::SetupGames, L"3. Jogos"},
+    {Text::SetupWays, L"Ajustes > Arquivos: importe uma pasta USB ou inicie o Jadyx Portal. Device Portal > File explorer > LocalAppData > Jadyx > LocalState: jadyx/keys, jadyx/nand/system/Contents/registered, games."},
+    {Text::SetupTitleKeys, L"title.keys contém chaves por título para suas cópias criptografadas com tickets; não substitui prod.keys."},
+    {Text::GameModeHeading, L"Mude o Jadyx para o modo Game"},
+    {Text::GameModeHelp, L"Feche o Jadyx. Dev Home > Jadyx > botão View > View details > App type > Game. Ou Device Portal > Apps > Jadyx > App type > Game. Abra o Jadyx novamente. Game oferece 5120 MiB; App tem pouca memória."},
+    {Text::StorageFull, L"Armazenamento Xbox cheio: {0} GB livres, precisa de {1} GB. Libere espaço e tente novamente."},
+    {Text::ImportStalled, L"Sem progresso há 60 s: {0}. Verifique a conexão USB e o espaço livre."},
+    {Text::KeysOlderFirmware, L"Suas prod.keys são anteriores ao firmware {0}; extraia chaves de um console com {0} ou mais recente."},
+    {Text::SelectedFirmware, L"selecionado (versão ilegível com estas chaves)"},
+    {Text::FirmwareKeysHelp, L"Estas chaves não conseguem ler o firmware. Importe primeiro prod.keys compatíveis do seu console e tente novamente."},
     {Text::UpdaterTitle, L"Atualizações"},
     {Text::UpdaterHint, L"Busque e instale novas versões do Jadyx"},
     {Text::UpdaterCheck, L"Buscar atualizações"},

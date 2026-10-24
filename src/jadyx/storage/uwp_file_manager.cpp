@@ -3,6 +3,7 @@
 #include "jadyx/storage/uwp_file_manager.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/storage/storage_path.h"
+#include "jadyx/storage/friendly_setup.h"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -94,6 +95,8 @@ FileSetupStatus ReadFileSetupStatus() {
     if (restored_keys) Core::Crypto::KeyManager::Instance().ReloadKeys();
     FileSetupStatus result;
     result.keys_ready = HasUsableHeaderKey();
+    result.keys_present = std::filesystem::exists(keys / "prod.keys");
+    result.firmware_ready = result.keys_ready && ReadInstalledFirmwareStatus().ready;
     std::error_code error;
     for (std::filesystem::directory_iterator it{FirmwarePath(), error}, end; !error && it != end; it.increment(error)) {
         if (it->is_regular_file(error) && it->path().extension() == ".nca") ++result.firmware_files;
@@ -114,7 +117,18 @@ void ForgetGameFolder(std::string_view token) {
 std::string ImportSystemFiles(const StorageFolder& source, FileImport kind,
                              FileImportProgress& progress, std::stop_token stop) {
     std::filesystem::path stage_path,zip_path;
+    std::uint64_t needed_bytes = 64ULL << 20;
     progress.decision=0;progress.confirmation=false;
+    SystemProgress report{[&](unsigned done, unsigned count) {
+        progress.completed = done; progress.total = count;
+        std::lock_guard lock{progress.review_mutex};
+        progress.progress_at = std::chrono::steady_clock::now();
+    }};
+    report.current_file = [&](std::string_view name) {
+        std::lock_guard lock{progress.review_mutex};
+        progress.current_file = name;
+        progress.progress_at = std::chrono::steady_clock::now();
+    };
     try {
         const bool keys=kind==FileImport::Keys;
         if(!keys&&!HasUsableHeaderKey())return I18n::ToUtf8(I18n::Tr(I18n::Text::KeysFirst));
@@ -137,11 +151,13 @@ std::string ImportSystemFiles(const StorageFolder& source, FileImport kind,
         if(files.empty()&&archives.size()==1){
             const auto size=archives.front().GetBasicPropertiesAsync().get().Size();
             if(size>(keys?16ULL<<20:4ULL<<30))throw std::runtime_error("archive_limit");
-            if(std::filesystem::space(stage_path).available<size+(64ULL<<20))throw std::runtime_error("space");
+            if (const auto free = std::filesystem::space(stage_path).available; free < size + (64ULL << 20)) throw StorageSpaceError(free, size + (64ULL << 20));
             zip_path=std::filesystem::path{stage_path}.concat(L".zip");
             auto parent=StorageFolder::GetFolderFromPathAsync(BrokerPath(zip_path.parent_path())).get();
+            needed_bytes = size + (64ULL << 20);
+            report.File(winrt::to_string(archives.front().Name()));
             archives.front().CopyAsync(parent,zip_path.filename().wstring(),NameCollisionOption::FailIfExists).get();
-            ExtractSystemZip(zip_path,stage_path,kind,[&](unsigned done,unsigned total){progress.completed=done;progress.total=total;},stop);
+            ExtractSystemZip(zip_path,stage_path,kind,report,stop);
             std::filesystem::remove(zip_path);zip_path.clear();
         }else{
             if(files.empty()||!archives.empty())throw std::runtime_error("file");
@@ -150,14 +166,16 @@ std::string ImportSystemFiles(const StorageFolder& source, FileImport kind,
                 if(stop.stop_requested())throw std::runtime_error("interrupted");
                 const auto bytes=file.GetBasicPropertiesAsync().get().Size();
                 if(!bytes||(keys&&bytes>(4ULL<<20))||bytes>(8ULL<<30)-total)throw std::runtime_error("archive_limit");
-                if(std::filesystem::space(stage_path).available<bytes+(64ULL<<20))throw std::runtime_error("space");
+                if (const auto free = std::filesystem::space(stage_path).available; free < bytes + (64ULL << 20)) throw StorageSpaceError(free, bytes + (64ULL << 20));
                 std::wstring name{file.Name()};for(auto& c:name)c=std::towlower(c);
+                needed_bytes = bytes + (64ULL << 20);
+                report.File(winrt::to_string(file.Name()));
                 auto copied=file.CopyAsync(stage,name,NameCollisionOption::FailIfExists).get();
                 if(copied.GetBasicPropertiesAsync().get().Size()!=bytes)throw std::runtime_error("disk");
                 total+=bytes;progress.completed.fetch_add(1);
             }
         }
-        auto prepared=InspectSystemStage(stage_path,kind,[&](unsigned done,unsigned total){progress.completed=done;progress.total=total;},stop);
+        auto prepared=InspectSystemStage(stage_path,kind,report,stop);
         if(!prepared->Review().warnings.empty()){
             {std::lock_guard lock{progress.review_mutex};progress.review_text=DescribeSystemReview(prepared->Review());}
             progress.confirmation=true;
@@ -168,9 +186,32 @@ std::string ImportSystemFiles(const StorageFolder& source, FileImport kind,
         }
         prepared->Commit(stop);stage_path.clear();return {};
     }catch(...){
+        std::string failure = I18n::ToUtf8(I18n::Tr(I18n::Text::ImportFailedKept));
+        try { throw; }
+        catch (const StorageSpaceError& space) { failure = I18n::ToUtf8(StorageFullMessage(space.free, space.needed)); }
+        catch (const winrt::hresult_error& error) {
+            if (IsDiskFull(static_cast<std::uint32_t>(error.code()))) {
+                std::error_code query_error;
+                const auto available = std::filesystem::space(SystemDestination(kind).parent_path(), query_error).available;
+                if (!query_error) failure = I18n::ToUtf8(StorageFullMessage(available, needed_bytes));
+            }
+        }
+        catch (const std::filesystem::filesystem_error& error) {
+            if (error.code() == std::errc::no_space_on_device || IsDiskFull(static_cast<std::uint32_t>(error.code().value()))) {
+                std::error_code query_error;
+                const auto available = std::filesystem::space(SystemDestination(kind).parent_path(), query_error).available;
+                if (!query_error) failure = I18n::ToUtf8(StorageFullMessage(available, needed_bytes));
+            }
+        }
+        catch (const std::exception& error) {
+            const std::string_view code{error.what()};
+            if (code == "firmware_keys_old") failure = I18n::ToUtf8(I18n::Format(I18n::Text::KeysOlderFirmware, {I18n::Tr(I18n::Text::SelectedFirmware)}));
+            else if (code == "firmware_keys") failure = I18n::ToUtf8(I18n::Tr(I18n::Text::FirmwareKeysHelp));
+        }
+        catch (...) {}
         progress.confirmation=false;RemoveSystemStage(stage_path,kind);
         if(!zip_path.empty()){std::error_code ec;std::filesystem::remove(zip_path,ec);}
-        return I18n::ToUtf8(I18n::Tr(I18n::Text::ImportFailedKept));
+        return failure;
     }
 }
 bool RunFileManagerGate(const std::function<void(std::string)>& diagnostic) {

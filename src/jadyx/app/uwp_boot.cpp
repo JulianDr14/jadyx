@@ -2455,6 +2455,12 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     const auto local = std::filesystem::path{
                         Windows::Storage::ApplicationData::Current().LocalFolder().Path().c_str()};
                     WriteDiag("library: scanning LocalState/games; waiting for user selection");
+                    try {
+                        const auto setup_limit =
+                            winrt::Windows::System::MemoryManager::AppMemoryUsageLimit();
+                        WriteDiag("setup: platform_limit_mib=" + std::to_string(setup_limit >> 20) +
+                                  " below_game_budget=" + (setup_limit && setup_limit < (5120ULL << 20) ? "yes" : "no"));
+                    } catch (...) { WriteDiag("setup: platform memory limit unavailable"); }
                     library_game = Jadyx::ShowGameLibrary(surface.core_window, surface.width,
                         surface.height, local / L"games", [install, local] { SeedUserData(install, local); },
                         session <= 2 && library_error.empty() ? std::string_view{library_pick} : std::string_view{},

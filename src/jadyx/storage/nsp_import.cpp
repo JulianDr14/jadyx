@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/storage/nsp_import.h"
+#include "jadyx/storage/friendly_setup.h"
 #include <algorithm>
 #include <array>
 #include <map>
@@ -83,7 +84,10 @@ std::string ValidateUploadedNsp(const std::filesystem::path& path, std::stop_tok
             CNMT cnmt{item};
             if (!cnmt.IsValid()) return "nsp";
             if (cnmt.GetContentRecords().empty() || cnmt.GetContentRecords().size()>entries.size()) return "nsp";
-            if (cnmt.GetType() != TitleType::Application || GetBaseTitleID(cnmt.GetTitleID()) != cnmt.GetTitleID()) return "base";
+            const auto route = GeneralUploadRoute(static_cast<unsigned>(cnmt.GetType()), cnmt.GetTitleID());
+            if (route == UploadRoute::Update) return "update_route";
+            if (route == UploadRoute::Dlc) return "dlc_route";
+            if (route != UploadRoute::Base) return "base";
             if (cnmt.GetTitleID() != entry.title) return "nsp";
             found=application=true;
             bool app_program=false;

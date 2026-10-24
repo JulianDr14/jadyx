@@ -4277,3 +4277,14 @@ de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificaci�
 global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
 excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
+
+
+## First-install guidance (24 October 2026)
+
+Branch `nxbox/26-friendly-setup` starts at Jadyx main `0fc5c01836`. The setup
+checklist is conditional on missing usable keys or firmware files; Xbox memory-mode
+guidance uses the platform limit, never the PC Job budget. Key-generation indexes
+are not firmware versions. A failed decrypt cannot always reveal SystemVersion.
+Host results, additive portal error/progress fields and the exact pending console
+gate are documented in [the first-install report](nxbox-jx-26-friendly-setup.md).
+No package, Windows run or console validation was performed for this change.

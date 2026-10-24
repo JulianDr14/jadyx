@@ -608,28 +608,74 @@ Design, phases and evidence: [docs/xbox/xbox_pulse.md](docs/xbox/xbox_pulse.md) 
 
 ## Running it on a console
 
-Requirements: an Xbox Series X|S in Developer Mode, the package from the
-[latest release](https://github.com/JulianDr14/jadyx/releases/latest) (or one you built, see
-[Building](#building)), and the keys, firmware and games dumped from your own Switch.
+You need an Xbox Series X|S already in Developer Mode and your own dumped keys, firmware and
+games. Jadyx does not supply these files. The Xbox Device Portal installs the app; Jadyx Portal
+imports your files after the app is running. They are different pages.
 
-1. Open the Device Portal at `https://<console-ip>:11443`.
-2. Install `Jadyx_<version>_x64.appx` together with its `Microsoft.VCLibs.x64.14.00.appx`
-   dependency and the `Jadyx.cer` certificate.
-3. In the app's settings on the console, set it to **Game** mode. Otherwise the memory limit is much
-   lower than the 5120 MiB the emulator expects.
-4. Start the app and send your keys, firmware and games from a PC or phone with the
-   [Jadyx Portal](#jadyx-portal): **Settings > File manager > Network connection > Start server**,
-   open the address it shows in a browser on the same network and enter the connection code.
-5. Other ways to add them: import keys and firmware from a folder or ZIP on a USB drive in
-   **Settings > File manager**, and add games from an external folder or USB drive, or copy them to
-   the app's `LocalState\games` folder with the Device Portal file explorer.
+1. Download the Jadyx `.appx` from the release assets.
+2. Download its `Microsoft.VCLibs.x64.14.00.appx` dependency from the same release.
+3. Open **Dev Home** on the Xbox.
+4. Note the console IP shown under **Remote Access**.
+5. Open `https://<console-ip>:11443` in a browser on the same network.
+6. Open **Apps > Add** in the Xbox Device Portal.
+7. Select the Jadyx `.appx` as the application package.
+8. Select `Microsoft.VCLibs.x64.14.00.appx` as its dependency.
+9. Start the installation and wait for it to finish.
+10. Select Jadyx in **Dev Home** on the Xbox.
+11. Press the controller's **View** button to open **View details**.
+12. Set **App type** to **Game** (also available under **Apps > Jadyx > App type** in Device Portal).
+13. Open Jadyx again after changing the mode.
+14. Open **Settings > File manager > Network connection > Start server** in Jadyx.
+15. Open the address Jadyx shows in a browser on the same network.
+16. Enter the connection code shown by Jadyx.
+17. Import your `prod.keys` under **System > Keys** in Jadyx Portal.
+18. Import your firmware ZIP or extracted NCA files under **System > Firmware**.
+19. Confirm the versions shown by the import review.
+20. Upload a base-game NSP under **Games**.
+21. Upload updates under **Library > your game > Updates**.
+22. Upload DLC under **Library > your game > DLC**.
 
-To update Jadyx, install the new package over the old one. Do not uninstall first: that deletes
-the keys, firmware, saves and games stored in the app.
+`Jadyx.cer` is **optional** for Device Portal deployment. In our measured Series X test, the portal
+installed the self-signed package without trusting or installing the certificate. Keep the asset
+if your deployment tool asks for it; installing it is not a normal prerequisite.
 
-If something fails, `jadyx_diag.txt` and `jadyx_log.txt` in `LocalState\jadyx\log` describe what
-happened. Help and compatibility reports live on [Discord](https://discord.gg/3BhyyXGxpd); bugs go to
-[GitHub Issues](https://github.com/JulianDr14/jadyx/issues/new/choose). The diagnostic switches are listed in [docs/xbox/xbox_deploy.md](docs/xbox/xbox_deploy.md).
+Game mode gives the emulator 5120 MiB. App mode has too little memory. A persistent library notice
+explains how to switch when Xbox reports a lower limit. The setup checklist appears automatically
+when usable keys or firmware files are missing; a configured library keeps its normal screen.
+
+`title.keys` contains per-title decryption keys for your own ticket-encrypted dumps; it does not
+replace `prod.keys`. If keys cannot read newer firmware or an update, dump compatible keys from
+your own console on that firmware or newer. The key-generation index is not a firmware version.
+If the version cannot be decrypted, Jadyx cannot name it reliably.
+
+For USB import, put your keys in one folder and your firmware ZIP (or extracted NCAs) in another.
+Select the corresponding folder in **Settings > File manager**. The picker selects folders,
+including when importing a ZIP inside one. For games, add an external folder or USB drive there.
+
+For manual copies, close Jadyx first and open **Device Portal > File explorer > LocalAppData >
+Jadyx > LocalState** (select the installed Jadyx package if a family name is shown):
+
+| Files | Destination under LocalState |
+| --- | --- |
+| `prod.keys`, optional `title.keys` | `jadyx/keys` |
+| Extracted firmware `.nca` files (not the ZIP) | `jadyx/nand/system/Contents/registered` |
+| Base games | `games` |
+
+Manual copies bypass import review; prefer the app's import or Jadyx Portal.
+
+While uploading, watch the received and confirmed byte counts. **Validating** checks the package;
+**Adding** publishes it to the library. A firmware operation with no progress for 60 seconds names
+the current file. Check the USB connection and available storage before retrying. A full-storage
+message reports decimal GB free and the space needed for the current operation, including temporary
+storage; ZIP extraction can only estimate the current entry, not the entire archive in advance.
+An update/DLC sent to **Games** now points to the correct library page; it is not installed there.
+Discard that pending upload before sending it again in the indicated page.
+
+To update Jadyx, install over the old package. **Do not uninstall first**: uninstalling deletes
+internal keys, firmware, saves and games. Diagnostics are in `LocalState/jadyx/log`.
+
+Beginner guides: [Português brasileiro](docs/xbox/guia-instalacao.md) ·
+[Español](docs/xbox/guia-instalacion.md). See also [deployment](docs/xbox/xbox_deploy.md).
 
 ## Building
 

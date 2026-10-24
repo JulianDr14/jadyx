@@ -7,6 +7,8 @@ namespace Jadyx {
 struct SystemUploadedFile { std::string name,fingerprint; std::uint64_t length{}; };
 struct SystemUploadStatus {
     std::string id,kind,format,phase{"idle"},error;
+    std::string current_file;
+    std::uint64_t no_progress_seconds{}, free_bytes{}, required_bytes{};
     unsigned count{},completed{},processed{};
     std::uint64_t bytes{};
     bool busy{},available{};

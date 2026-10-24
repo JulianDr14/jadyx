@@ -16,13 +16,14 @@ struct UploadPerformance {
 struct UploadSnapshot {
     std::string id, name, fingerprint, phase{"idle"}, error;
     std::string tag; ///< Caller-defined destination (content uploads: "update:<application>").
-    std::uint64_t length{}, offset{}, received{}, free_bytes{};
+    std::uint64_t length{}, offset{}, received{}, free_bytes{}, required_bytes{};
     bool busy{}, available{};
     UploadPerformance performance;
 };
 struct UploadResult {
     int status{204};
     std::string error;
+    std::uint64_t free_bytes{}, required_bytes{};
 };
 using UploadSink = std::function<bool(const char*, std::size_t)>;
 using UploadReader = std::function<bool(const UploadSink&)>;

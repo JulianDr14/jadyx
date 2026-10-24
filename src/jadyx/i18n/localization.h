@@ -23,6 +23,24 @@
 namespace Jadyx::I18n {
 
 enum class Text : std::uint16_t {
+    // First-run guidance
+    SetupHeading,
+    SetupFound,
+    SetupMissing,
+    SetupWrong,
+    SetupKeys,
+    SetupFirmware,
+    SetupGames,
+    SetupWays,
+    SetupTitleKeys,
+    GameModeHeading,
+    GameModeHelp,
+    StorageFull,
+    ImportStalled,
+    KeysOlderFirmware,
+    SelectedFirmware,
+    FirmwareKeysHelp,
+
     // Library
     LibraryHeading,
     GamesCountOne,
