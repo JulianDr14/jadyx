@@ -201,7 +201,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     std::optional<GameFiles> removal_request; ///< Confirmed in the game's options.
     struct MoveRequest {
         LibraryEntry game;
-        StorageFolder destination{nullptr};
+        winrt::Windows::Storage::StorageFolder destination{nullptr};
     };
     std::optional<MoveRequest> move_request;
     std::optional<LibraryEntry> move_selection;
@@ -2159,12 +2159,12 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     game_options.open = false;
                 else if (actions & (Play | Left | Right | Swap | AddFolder)) {
                     const auto program_id = scan.entries[game_options.game].program_id;
-                    const auto next =
+                    const auto language =
                         actions & (Swap | AddFolder)
                             ? std::optional<Settings::Language>{}
                             : StepGameLanguage(game_options.language, (actions & Left) != 0);
-                    if (SaveGameLanguageOverride(program_id, next)) {
-                        game_options.language = next;
+                    if (SaveGameLanguageOverride(program_id, language)) {
+                        game_options.language = language;
                         notify(T::SettingsSaved);
                         reload_metadata();
                     } else
