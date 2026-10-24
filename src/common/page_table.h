@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 
 #include "common/common_types.h"
 #include "common/sparse_large_vector.h"
@@ -167,6 +168,10 @@ struct PageTable {
     static_assert(sizeof(PageEntryData) == 8);
     SparseLargeVector<JitPageEntry> jit_entries;
     static_assert(sizeof(JitPageEntry) == sizeof(uintptr_t));
+
+    // Serialize canonical/JIT updates across mapping, debug and rasterizer writers.
+    // Readers remain lock-free; address-space resize requires a quiescent process.
+    std::mutex writer_mutex;
 
     u8* fastmem_arena{};
     std::size_t current_address_space_width_in_bits{};

@@ -396,6 +396,7 @@ struct Memory::Impl {
         if (vaddr == 0 || !AddressSpaceContains(*current_page_table, vaddr, size)) {
             return;
         }
+        std::scoped_lock writer_lock{current_page_table->writer_mutex};
 
         if (current_page_table->fastmem_arena) {
             const auto perm{debug ? Common::MemoryPermission{}
@@ -459,6 +460,7 @@ struct Memory::Impl {
         if (vaddr == 0 || !AddressSpaceContains(*current_page_table, vaddr, size)) {
             return;
         }
+        std::scoped_lock writer_lock{current_page_table->writer_mutex};
 
         if (current_page_table->fastmem_arena) {
             Common::MemoryPermission perm{};
@@ -548,6 +550,7 @@ struct Memory::Impl {
     void MapPages(Common::PageTable& page_table, Common::ProcessAddress base_address, u64 size,
                   Common::PhysicalAddress target, Common::PageType type) {
         auto base = GetInteger(base_address);
+        std::scoped_lock writer_lock{page_table.writer_mutex};
 
         LOG_DEBUG(HW_Memory, "Mapping {:016X} onto {:016X}-{:016X}", GetInteger(target),
                   base * YUZU_PAGESIZE, (base + size) * YUZU_PAGESIZE);
