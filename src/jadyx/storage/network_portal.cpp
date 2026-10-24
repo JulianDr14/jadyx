@@ -237,7 +237,7 @@ Json UploadJson(const UploadSnapshot& info) {
     const auto& p=info.performance;
     return {{"id",info.id}, {"name",info.name}, {"fingerprint",info.fingerprint}, {"tag",info.tag},
         {"phase",info.phase}, {"error",info.error}, {"length",info.length}, {"offset",info.offset},
-        {"received",info.received}, {"free_bytes",info.free_bytes}, {"busy",info.busy}, {"available",info.available},
+        {"received",info.received}, {"free_bytes",info.free_bytes}, {"required_bytes",info.required_bytes}, {"busy",info.busy}, {"available",info.available},
         {"performance",{{"confirmed_offset",p.confirmed_offset},{"bytes",p.bytes},{"total_us",p.total_us},
             {"write_us",p.write_us},{"flush_us",p.flush_us},{"checkpoint_us",p.checkpoint_us},{"reader_calls",p.reader_calls}}}};
 }
@@ -250,7 +250,8 @@ Json SystemJson(const SystemUploadStatus& info){
     const auto& r=info.review;
     auto files=Json::array();for(const auto& f:info.files)files.push_back({{"name",f.name},{"length",f.length},{"fingerprint",f.fingerprint}});
     return {{"id",info.id},{"kind",info.kind},{"format",info.format},{"phase",info.phase},{"error",info.error},
-        {"count",info.count},{"completed",info.completed},{"processed",info.processed},{"bytes",info.bytes},{"busy",info.busy},{"available",info.available},
+        {"current_file",info.current_file},{"no_progress_seconds",info.no_progress_seconds},
+        {"free_bytes",info.free_bytes},{"required_bytes",info.required_bytes},{"count",info.count},{"completed",info.completed},{"processed",info.processed},{"bytes",info.bytes},{"busy",info.busy},{"available",info.available},
         {"file",UploadJson(info.file)},{"files",files},{"review",{{"installed_firmware",r.installed_firmware},{"incoming_firmware",r.incoming_firmware},
             {"installed_generation",r.installed_generation},{"incoming_generation",r.incoming_generation},{"required_generation",r.required_generation},{"warnings",r.warnings}}}};
 }
@@ -848,7 +849,7 @@ struct NetworkPortal::Impl {
         };
         const auto result=[](auto& response, const UploadResult& value) {
             response.status=value.status;
-            if (!value.error.empty()) Reply(response, value.status, {{"error",value.error}});
+            if (!value.error.empty()) Reply(response, value.status, {{"error",value.error},{"free_bytes",value.free_bytes},{"required_bytes",value.required_bytes}});
         };
         server->Options(base, [](const auto&, auto& response) {
             response.status=204;
@@ -945,7 +946,7 @@ struct NetworkPortal::Impl {
     void SystemRoutes(){
         const auto result=[](auto& response,const UploadResult& value){
             response.status=value.status;if(!value.error.empty()){
-                response.set_header("Connection","close");Reply(response,value.status,{{"error",value.error}});
+                response.set_header("Connection","close");Reply(response,value.status,{{"error",value.error},{"free_bytes",value.free_bytes},{"required_bytes",value.required_bytes}});
             }
         };
         const auto version=[this](const auto& request,auto& response){

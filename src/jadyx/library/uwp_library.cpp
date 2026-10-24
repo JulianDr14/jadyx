@@ -14,11 +14,13 @@
 #include "jadyx/storage/storage_path.h"
 #include "jadyx/storage/uwp_file_manager.h"
 #include "jadyx/storage/nsp_import.h"
+#include "jadyx/storage/friendly_setup.h"
 #include "jadyx/storage/portal_fault_log.h"
 #include "jadyx/storage/ftp/ftp_server.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <future>
 #include <thread>
 #include <windows.h>
@@ -109,6 +111,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     auto battery_read_at = std::chrono::steady_clock::time_point{};
     bool dirty = true, loading = true, settings = false;
     ConfigurationPanel configuration;
+    const auto* setup_switch = std::getenv("NXBOX_SETUP_CHECKLIST");
+    configuration.setup_requested = setup_switch && std::string_view{setup_switch} == "1";
     Updates::Updater updater;
     // Declared before the portal: its workers read this view until the portal is destroyed.
     PortalLibrarySource portal_library{root, DefaultLibraryCacheDirectory()};
@@ -210,6 +214,12 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     unsigned setting_row = 0;
     ControllerPanel panel;
     panel.xbox = winrt::Windows::System::Profile::AnalyticsInfo::VersionInfo().DeviceFamily() == L"Windows.Xbox";
+    try {
+        const auto platform_limit = winrt::Windows::System::MemoryManager::AppMemoryUsageLimit();
+        configuration.low_memory_mode = panel.xbox && NeedsGameMode(platform_limit);
+    } catch (...) {
+        LOG_WARNING(Frontend, "Setup: platform memory limit unavailable");
+    }
     ControllerOptions options = LoadControllerOptions();
     if (panel.xbox) options.controller_id.clear();
     panel.keyboard.bindings = LoadKeyboardBindings();
@@ -648,6 +658,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             e.Handled(true);
         }
     });
+    FileSetupStatus scanned_setup;
     std::future<LibraryScan> future;
     std::jthread scanner;
     struct MetadataBatch {
@@ -781,7 +792,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (reload_keys)
                 Core::Crypto::KeyManager::Instance().ReloadKeys();
             // Recover interrupted publication before a metadata worker constructs NCA readers.
-            ReadFileSetupStatus();
+            scanned_setup = ReadFileSetupStatus();
             std::error_code ec;
             std::filesystem::create_directories(root, ec);
             auto result = ScanGameLibrary(root, stop);
@@ -1439,6 +1450,11 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     } else if (picker_kind >= 3) {} // A page's folder whose page closed meanwhile.
                     else if (folder) {
                         configuration.busy = true;
+                        storage_job = StorageJob::Files;
+                        {
+                            std::lock_guard lock{import_progress.review_mutex};
+                            import_progress.current_file.clear();
+                        }
                         configuration.notice.clear();
                         import_progress.completed = 0;
                         import_progress.total = 0;
@@ -1501,6 +1517,19 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         if (configuration.busy) {
             if (actions & Quit) { import_worker.request_stop(); configuration.notice = Tr(T::CancellingImport); }
             actions = 0;
+            if (storage_job == StorageJob::Files && picker_kind == 2 &&
+                !import_progress.confirmation.load()) {
+                std::lock_guard lock{import_progress.review_mutex};
+                if (!import_progress.current_file.empty() &&
+                    now - import_progress.progress_at >= std::chrono::seconds{60}) {
+                    configuration.notice =
+                        I18n::Format(T::ImportStalled, {Wide(import_progress.current_file)});
+                    dirty = true;
+                } else if (!configuration.notice.empty()) {
+                    configuration.notice.clear();
+                    dirty = true;
+                }
+            }
             const auto done = import_progress.completed.load(std::memory_order_relaxed);
             const auto total = import_progress.total.load(std::memory_order_relaxed);
             if (storage_job == StorageJob::MoveToUsb) {
@@ -2369,6 +2398,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             const auto kept = selected < scan.entries.size() ? scan.entries[selected].launch_path : std::string{};
             try {
                 auto rescanned = future.get();
+                configuration.status = scanned_setup;
+                configuration.setup_checked = true;
                 if (keep_titles) KeepKnownTitles(scan.entries, rescanned.entries);
                 scan = std::move(rescanned);
                 if (keep_titles && *keep_titles) forget_content(*keep_titles);

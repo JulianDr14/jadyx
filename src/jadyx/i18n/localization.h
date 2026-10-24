@@ -33,6 +33,23 @@ enum class Text : std::uint16_t {
     NxboxUsbHint,
     NxboxUsbAdd,
     NxboxWelcomeDone,
+    // First-run guidance
+    SetupHeading,
+    SetupFound,
+    SetupMissing,
+    SetupWrong,
+    SetupKeys,
+    SetupFirmware,
+    SetupGames,
+    SetupWays,
+    SetupTitleKeys,
+    GameModeHeading,
+    GameModeHelp,
+    StorageFull,
+    ImportStalled,
+    KeysOlderFirmware,
+    SelectedFirmware,
+    FirmwareKeysHelp,
 
     // Library
     CompatibilityUntested,

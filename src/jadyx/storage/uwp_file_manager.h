@@ -11,11 +11,14 @@
 #include "jadyx/storage/network_portal.h"
 #include "jadyx/storage/system_import.h"
 #include <mutex>
+#include <chrono>
 
 namespace Jadyx {
 struct GameFolderSource { std::string token; std::wstring name; };
 struct FileSetupStatus {
     bool keys_ready{};
+    bool keys_present{};
+    bool firmware_ready{};
     unsigned firmware_files{};
     std::vector<GameFolderSource> sources;
 };
@@ -37,6 +40,9 @@ struct ConfigurationPanel {
     size_t network_action{};
     std::vector<PortalAddress> network_addresses;
     size_t network_selected{};
+    bool setup_checked{};
+    bool setup_requested{};
+    bool low_memory_mode{};
     bool confirm_import{};
     std::wstring review_text;
 };
@@ -63,6 +69,8 @@ struct FileImportProgress {
     std::atomic<bool> confirmation{};
     std::mutex review_mutex;
     std::wstring review_text;
+    std::string current_file;
+    std::chrono::steady_clock::time_point progress_at{};
 };
 // These operations run on an MTA worker while the guest is stopped.
 FileSetupStatus ReadFileSetupStatus();

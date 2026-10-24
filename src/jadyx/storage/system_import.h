@@ -6,9 +6,12 @@
 #include <memory>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <algorithm>
 #include <cctype>
+#include <concepts>
+#include <utility>
 
 namespace Jadyx {
 enum class FileImport { Keys, Firmware };
@@ -17,7 +20,28 @@ struct SystemReview {
     int installed_generation{-1}, incoming_generation{-1}, required_generation{-1};
     std::vector<std::string> warnings;
 };
-using SystemProgress = std::function<void(unsigned,unsigned)>;
+struct SystemProgress {
+    std::function<void(unsigned, unsigned)> counts;
+    std::function<void(std::string_view)> current_file;
+    SystemProgress() = default;
+    template <typename Callback>
+        requires std::invocable<Callback, unsigned, unsigned>
+    SystemProgress(Callback callback) : counts{std::move(callback)} {}
+    explicit operator bool() const { return static_cast<bool>(counts); }
+    void operator()(unsigned done, unsigned total) const {
+        if (counts)
+            counts(done, total);
+    }
+    void File(std::string_view name) const {
+        if (current_file)
+            current_file(name);
+    }
+};
+struct InstalledFirmwareStatus {
+    bool ready{};
+    std::string version;
+};
+InstalledFirmwareStatus ReadInstalledFirmwareStatus();
 std::filesystem::path SystemDestination(FileImport kind);
 bool RecoverSystemDirectory(const std::filesystem::path& destination);
 // Fresh sibling of the destination. Extract/copy directly here, never into live data.

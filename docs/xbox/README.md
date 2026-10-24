@@ -80,3 +80,8 @@ un arranque en PC no certifica gameplay, rendimiento ni funcionamiento en Series
   host evidence and pending console navigation/locale gate.
 
 - [Integration4: feature union and recovery seams](nxbox-jx-50-integration4.md): local merge order, host before/after results and pending console gate.
+## First installation
+
+- [Português brasileiro](guia-instalacao.md)
+- [Español](guia-instalacion.md)
+- [First-run implementation and console checks](nxbox-jx-26-friendly-setup.md)

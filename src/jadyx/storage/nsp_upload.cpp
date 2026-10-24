@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/storage/nsp_upload.h"
+#include "jadyx/storage/friendly_setup.h"
 #include <windows.h>
 #include <fileapifromapp.h>
 #include <openssl/rand.h>
@@ -24,6 +25,9 @@ std::uint64_t Elapsed(Clock::time_point start) {
 namespace fs = std::filesystem;
 constexpr std::uint64_t Reserve = 64ULL << 20;
 
+std::runtime_error WriteFailure() {
+    return std::runtime_error(IsDiskFull(GetLastError()) ? "space" : "disk");
+}
 struct File {
     HANDLE handle{INVALID_HANDLE_VALUE};
     File(const fs::path& path, DWORD access, DWORD mode) {
@@ -31,26 +35,31 @@ struct File {
         parameters.dwSize = sizeof(parameters);
         parameters.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
         handle = CreateFile2FromAppW(path.c_str(), access, FILE_SHARE_READ, mode, &parameters);
-        if (handle == INVALID_HANDLE_VALUE) throw std::runtime_error("disk");
+        if (handle == INVALID_HANDLE_VALUE)
+            throw WriteFailure();
     }
     ~File() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
     void Seek(std::uint64_t offset) {
         LARGE_INTEGER position{}; position.QuadPart = static_cast<LONGLONG>(offset);
-        if (!SetFilePointerEx(handle, position, nullptr, FILE_BEGIN)) throw std::runtime_error("disk");
+        if (!SetFilePointerEx(handle, position, nullptr, FILE_BEGIN)) throw WriteFailure();
     }
-    void Truncate(std::uint64_t offset) { Seek(offset); if (!SetEndOfFile(handle)) throw std::runtime_error("disk"); }
+    void Truncate(std::uint64_t offset) { Seek(offset); if (!SetEndOfFile(handle)) throw WriteFailure(); }
     void Write(const char* bytes, std::size_t length) {
         while (length) {
             DWORD written{};
             const auto count = static_cast<DWORD>((std::min)(length, std::size_t{1 << 20}));
-            if (!WriteFile(handle, bytes, count, &written, nullptr) || !written) throw std::runtime_error("disk");
+            if (!WriteFile(handle, bytes, count, &written, nullptr) || !written) throw WriteFailure();
             bytes += written; length -= written;
         }
     }
-    void Flush() { if (!FlushFileBuffers(handle)) throw std::runtime_error("disk"); }
+    void Flush() {
+        if (!FlushFileBuffers(handle))
+            throw WriteFailure();
+    }
     BY_HANDLE_FILE_INFORMATION Identity() const {
         BY_HANDLE_FILE_INFORMATION identity{};
-        if (!GetFileInformationByHandle(handle, &identity)) throw std::runtime_error("disk");
+        if (!GetFileInformationByHandle(handle, &identity))
+            throw WriteFailure();
         return identity;
     }
 };
@@ -190,6 +199,8 @@ UploadSnapshot NspUpload::Snapshot() const {
     UploadSnapshot result;
     { std::lock_guard lock{impl->mutex}; result = impl->info; }
     result.free_bytes = Free(impl->games);
+    result.required_bytes = result.length - (std::min)(result.offset, result.length) +
+                            (impl->consume ? result.length : 0) + Reserve;
     return result;
 }
 
@@ -229,7 +240,13 @@ UploadResult NspUpload::Create(std::string name, std::string fingerprint, std::u
     try {
         if (!impl->consume && fs::exists(impl->games / Filename(name))) return {409, "exists"};
         // A consumed package is copied once more while it is installed.
-        if (Free(impl->games) < (impl->consume ? 2 * length : length) + Reserve) return {507, "space"};
+        const auto required = (impl->consume ? 2 * length : length) + Reserve;
+        const auto available = Free(impl->games);
+        if (available < required)
+            return {.status = 507,
+                    .error = "space",
+                    .free_bytes = available,
+                    .required_bytes = required};
         // Previous complete state is cleared only after its destination has been published.
         for (const auto* checkpoint : {"checkpoint0.json", "checkpoint1.json", "checkpoint.tmp"})
             fs::remove(impl->folder / checkpoint);
@@ -238,10 +255,31 @@ UploadResult NspUpload::Create(std::string name, std::string fingerprint, std::u
         const auto identity = file.Identity();
         impl->file_id = FileId(identity); impl->volume = identity.dwVolumeSerialNumber;
         impl->info = {.id=Id(), .name=std::move(name), .fingerprint=std::move(fingerprint),
-            .phase="receiving", .tag=std::move(tag), .length=length, .busy=true, .available=true};
+            .phase="receiving", .tag=std::move(tag), .length=length, .required_bytes=required, .busy=true, .available=true};
         file.Flush(); impl->Checkpoint();
         return {201, {}};
-    } catch (...) { impl->info.busy=false; impl->info.error="disk"; return {507, "disk"}; }
+    } catch (const fs::filesystem_error &failure) {
+        impl->info.busy = false;
+        impl->info.error = failure.code() == std::errc::no_space_on_device ||
+                                   IsDiskFull(static_cast<std::uint32_t>(failure.code().value()))
+                               ? "space"
+                               : "disk";
+        return {.status = 507,
+                .error = impl->info.error,
+                .free_bytes = Free(impl->games),
+                .required_bytes = (impl->consume ? 2 * length : length) + Reserve};
+    } catch (const std::exception &failure) {
+        impl->info.busy = false;
+        impl->info.error = std::string_view{failure.what()} == "space" ? "space" : "disk";
+        return {.status = 507,
+                .error = impl->info.error,
+                .free_bytes = Free(impl->games),
+                .required_bytes = (impl->consume ? 2 * length : length) + Reserve};
+    } catch (...) {
+        impl->info.busy = false;
+        impl->info.error = "disk";
+        return {507, "disk"};
+    }
 }
 
 UploadResult NspUpload::Append(const std::string& id, std::uint64_t offset, std::uint64_t length, const UploadReader& reader) {
@@ -300,13 +338,16 @@ UploadResult NspUpload::Append(const std::string& id, std::uint64_t offset, std:
         performance.bytes=length; performance.confirmed_offset=offset+length;
         impl->info.performance=performance;
         return {};
+    } catch (const fs::filesystem_error& failure) {
+        error = failure.code() == std::errc::no_space_on_device || IsDiskFull(static_cast<std::uint32_t>(failure.code().value())) ? "space" : "disk";
     } catch (const std::exception& e) { error=e.what(); }
     catch (...) { error="disk"; }
     try { File file{impl->payload, GENERIC_WRITE, OPEN_EXISTING}; file.Truncate(offset); } catch (...) {}
     std::lock_guard lock{impl->mutex};
     impl->info.offset=impl->info.received=offset;
     impl->info.busy=false; impl->info.phase="paused"; impl->info.error=error;
-    return {error == "interrupted" ? 400 : 507, error};
+    return {.status = error == "interrupted" ? 400 : 507, .error = error,
+            .free_bytes = Free(impl->games), .required_bytes = impl->info.length - offset + (impl->consume ? impl->info.length : 0) + Reserve};
 }
 
 UploadResult NspUpload::Discard(const std::string& id) {
@@ -389,7 +430,7 @@ std::string NspUpload::Finalize(const NspValidator& validate) {
                 // Win32 move without replace: never overwrite a file that arrived since the check.
                 if (!MoveFileFromAppW(impl->payload.c_str(), target.c_str())) {
                     const auto failure=GetLastError();
-                    error=(failure == ERROR_ALREADY_EXISTS || failure == ERROR_FILE_EXISTS) ? "exists" : "disk";
+                    error=(failure == ERROR_ALREADY_EXISTS || failure == ERROR_FILE_EXISTS) ? "exists" : IsDiskFull(failure) ? "space" : "disk";
                 }
                 else {
                     impl->info.phase="complete"; impl->info.busy=false;
@@ -399,7 +440,16 @@ std::string NspUpload::Finalize(const NspValidator& validate) {
                 }
             }
         }
-    } catch (...) { error="disk"; }
+    } catch (const fs::filesystem_error &failure) {
+        error = failure.code() == std::errc::no_space_on_device ||
+                        IsDiskFull(static_cast<std::uint32_t>(failure.code().value()))
+                    ? "space"
+                    : "disk";
+    } catch (const std::exception &failure) {
+        error = std::string_view{failure.what()} == "space" ? "space" : "disk";
+    } catch (...) {
+        error = "disk";
+    }
     std::lock_guard lock{impl->mutex};
     impl->info.phase="paused"; impl->info.busy=false; impl->info.error=error;
     return error;
