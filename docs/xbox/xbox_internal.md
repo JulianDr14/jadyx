@@ -4317,3 +4317,14 @@ FTP safety/transfer ASan/UBSan pass. No Windows build or network/device test was
 performed. Findings, limits and exact pending console checks:
 [nxbox-jx-21-ftp-fixes.md](nxbox-jx-21-ftp-fixes.md) and
 [nxbox-ftp-server.md](nxbox-ftp-server.md).
+## USB automatic discovery (jx-40, 24 Oct 2026)
+
+Jadyx already had token-scoped play in place through StorageFolder and
+CreateFile2FromAppW/WinRT VFS; the missing path was automatic removable-drive
+enumeration and its manifest declarations. Opt-in `NXBOX_USB_PLAY_IN_PLACE=1`
+(environment or package boot.cfg) now registers discovered roots before the
+normal external scan. Read boot.cfg before ShowGameLibrary: the later guest
+configuration parser runs too late for discovery. Existing selected subfolders
+win over overlapping roots, and discovery limits must not stop saved-source scans.
+Host baseline 3/3; final USB suite 5/5. MSVC and console gate unexecuted.
+Design, caveats and exact gate: [nxbox-usb-play-in-place.md](nxbox-usb-play-in-place.md).

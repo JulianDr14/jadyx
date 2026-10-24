@@ -61,6 +61,18 @@
         <!-- The splash art is transparent: this colour fills the whole screen behind it. -->
         <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#000000" />
       </uap:VisualElements>
+      <Extensions>
+        <!-- Removable storage exposes only declared file types. No game is copied on discovery. -->
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="jadyxgames">
+            <uap:SupportedFileTypes>
+              <uap:FileType>.nsp</uap:FileType>
+              <uap:FileType>.xci</uap:FileType>
+              <uap:FileType>.nro</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+      </Extensions>
     </Application>
   </Applications>
 
@@ -73,6 +85,8 @@
     <Capability Name="internetClient" />
     <!-- User-started library portal: receive HTTP connections from the local network. -->
     <Capability Name="privateNetworkClientServer" />
+    <!-- Opt-in USB discovery; picker-authorized sources continue to work independently. -->
+    <uap:Capability Name="removableStorage" />
     <!-- Native self-update of the installed Jadyx package in Xbox Developer Mode. -->
     <rescap:Capability Name="packageManagement" />
     <!-- PC Nintendo Pro USB transport; joystick usage is allowed by UWP HID. -->
