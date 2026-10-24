@@ -66,3 +66,24 @@ handler, and exercise an unwind: they must reach that handler, not the fastmem
 callback. Test deliberately absent call/resume mappings and require continue
 search. This requires native Windows/Series exception dispatch; the portable
 adapter cannot certify handler chaining.
+
+## Signed rel32 calls
+
+Reference: `d33eeea3d`. `IsWithin2G` accepted forward displacements up to 4 GiB
+and rejected valid backward calls. Check the signed 32-bit displacement from the
+end of the five-byte call. Out-of-range targets retain the existing full-address
+indirect-call fallback.
+
+`python3 -B tools/xbox/tests/jit-rel32.py` failed on the old predicate and now
+passes 11 targets: both signed endpoints, adjacent out-of-range values, near
+calls in either direction and distances around 4 GiB. It compiles the production
+predicate, rather than a duplicate implementation.
+
+Console gate: in an original native x64 diagnostic allocate JIT code and targets
+at signed displacements -2147483648, -2147483649, 2147483647 and 2147483648 from
+CALL+5 (where address-space placement permits). Emit via `CallFarFunction`;
+require near calls only for the two in-range values and successful sentinel
+returns for every target. Report unavailable placements as skipped, not passed.
+Then boot the original boot NRO, return to library and relaunch twice. A normal
+console layout may never exercise a far target; host boundary tests remain
+mandatory.
