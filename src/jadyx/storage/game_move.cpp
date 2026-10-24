@@ -334,8 +334,8 @@ std::string MoveInternalGame(const fs::path& games, const LibraryEntry& game,
         };
         io.remove = [&](const File& file) {
             auto& source = *sources.at(file.relative);
-            FILE_DISPOSITION_INFO disposition{};
-            disposition.DeleteFile = TRUE;
+            // Positional: windows.h maps the DeleteFile member name to DeleteFileW.
+            FILE_DISPOSITION_INFO disposition{TRUE};
             if (!SetFileInformationByHandle(source.handle, FileDispositionInfo, &disposition,
                                             sizeof(disposition)))
                 return false;
