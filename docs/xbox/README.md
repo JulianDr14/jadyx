@@ -30,6 +30,7 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 - [Direct3D 12, fase 4](xbox_d3d12_phase4.md): pipelines y shaders del guest.
 - [Audio XAudio2](xbox_audio.md): salida de audio para PC y Series.
 - [Actualizaciones y DLC](xbox_content.md): almacenamiento, selección y recorrido de importación.
+- [Game information in Menu options](nxbox-jx-1a-game-info-menu.md): read-only metadata, community report and existing removal confirmation; host evidence and pending console gate.
 - [Biblioteca e interfaz](xbox_frontend.md): carátulas, navegación, mandos y teclado.
 - [Contratos compartidos del frontend](xbox_frontend_refactor.md): catálogo de mandos, acciones, captura modal y listas; migración y gates.
 - [Descubrimiento USB y juego sin copia](nxbox-usb-play-in-place.md): detección automática opt-in, VFS existente y gate de consola pendiente.

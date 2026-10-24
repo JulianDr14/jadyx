@@ -4433,3 +4433,15 @@ settings and legacy sensor delivery remain the baseline with switches absent.
 Host evidence and exact pending console acceptance:
 [`nxbox-37-controllers-motion.md`](nxbox-37-controllers-motion.md).
 No Windows/UWP build, console test or performance certification in this work.
+
+### 2026-10-24 — Game information in Menu options
+
+The `nxbox/integration3` management shell now has Information as its first
+category, using existing library metadata, covers/history and the Jadyx-only
+compatibility selection. Size/catalog reads run on an MTA worker; external
+storage is a source plus relative path, not a physical drive path. Report date
+is optional and unknown in old catalogs. Remove opens the existing confirmation
+flow; View/Select mappings are untouched. Host frontend gates: 9 pass / 3 existing
+failures before, 10 pass / same 3 failures after. JSON parser gate lacks its
+existing nlohmann dependency on this Mac; UWP and console gates are pending.
+See [scope, evidence and exact console gate](nxbox-jx-1a-game-info-menu.md).

@@ -49,6 +49,15 @@ int main() {
         wrong_type["titles"]["010028600EBDA000"][0][field] = 123;
         assert(!Parse(wrong_type.dump()));
     }
+    // The information page can display a dated report without invalidating schema-1 catalogs.
+    auto dated = good_json;
+    dated["titles"]["010028600EBDA000"][0]["date"] = "2026-10-20";
+    assert(Lookup(*Parse(dated.dump()), 0x010028600EBDA000).date == "2026-10-20");
+    assert(Lookup(*parsed, 0x010028600EBDA000).date.empty());
+    dated["titles"]["010028600EBDA000"][0]["date"] = 123;
+    assert(!Parse(dated.dump()));
+    dated["titles"]["010028600EBDA000"][0]["date"] = std::string(65, 'x');
+    assert(!Parse(dated.dump()));
     auto playable = good_json;
     playable["titles"]["010028600EBDA000"][0]["status"] = "playable";
     auto broken = good_json;

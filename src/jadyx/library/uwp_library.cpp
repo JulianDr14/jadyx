@@ -38,6 +38,8 @@
 #include "jadyx/library/game_library.h"
 #include "jadyx/library/game_options_page.h"
 #include "jadyx/content/content_view.h"
+#include "jadyx/content/content_service.h"
+#include "core/file_sys/vfs/vfs.h"
 #include "jadyx/mods/mod_session.h"
 #include "jadyx/mods/mod_web.h"
 #include "jadyx/mods/mods_page.h"
@@ -130,6 +132,16 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     system_page.updated = updater.CurrentPhase() == Updates::Phase::Confirmed;
     // The selected game's options (Menu), and its cheats page while open.
     GameOptionsPage game_options;
+    GameInformationFacts information;
+    struct InformationResult {
+        std::string path;
+        std::uint64_t generation{};
+        GameInformationFacts facts;
+    };
+    std::future<InformationResult> information_pending;
+    std::string information_path;
+    bool information_requested{};
+    std::uint64_t information_generation{};
     std::optional<std::size_t> requested_game_option;
     std::optional<std::size_t> requested_manager_tab;
     std::unique_ptr<Content::ContentSession> content_session;
@@ -1513,6 +1525,24 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             dirty = true;
             }
         }
+        if (information_pending.valid() &&
+            information_pending.wait_for(std::chrono::seconds{0}) == std::future_status::ready) {
+            try {
+                auto completed = information_pending.get();
+                if (completed.path == information_path &&
+                    completed.generation == information_generation)
+                    information = std::move(completed.facts);
+            } catch (...) { /* Optional metadata remains unknown; navigation stays available. */
+            }
+            dirty = true;
+        }
+        if (!game_options.open) {
+            if (!information_path.empty())
+                ++information_generation;
+            information_path.clear();
+            information_requested = false;
+            information = {};
+        }
         if (game_options.open) {
             // A rescan may have replaced the list under the page.
             if (!content_session && game_options.game >= scan.entries.size()) {
@@ -1521,6 +1551,52 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 mod_session.reset();
                 actions = 0; dirty = true;
                 continue;
+            }
+            const auto& information_game = scan.entries[game_options.game];
+            if (information_path != information_game.launch_path) {
+                ++information_generation;
+                information_path = information_game.launch_path;
+                information_requested = false;
+                information = {};
+            }
+            if (GameOptions()[game_options.selected] == GameOption::Information &&
+                information_game.title_loaded && !information_requested &&
+                !information_pending.valid()) {
+                information_requested = true;
+                const auto information_application =
+                    FileSys::GetBaseTitleID(information_game.program_id);
+                try {
+                    information_pending =
+                        std::async(std::launch::async, [path = information_path,
+                                                        request_generation = information_generation,
+                                                        information_application] {
+                            InformationResult result;
+                            result.path = path;
+                            result.generation = request_generation;
+                            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+                            struct InformationApartment {
+                                ~InformationApartment() {
+                                    winrt::uninit_apartment();
+                                }
+                            } information_apartment;
+                            try {
+                                auto filesystem = MakeUwpFilesystem();
+                                if (auto file = filesystem->OpenFile(path, FileSys::OpenMode::Read))
+                                    result.facts.bytes = file->GetSize();
+                            } catch (...) { /* Removed USB or inaccessible file: unknown size. */
+                            }
+                            try {
+                                Content::Catalog catalog;
+                                if (Content::DefaultStore().Load(catalog) == Content::Error::None) {
+                                    result.facts.content = CountGameContent(
+                                        catalog.revisions, information_application);
+                                }
+                            } catch (...) { /* Keep unreadable counts distinct from zero. */
+                            }
+                            return result;
+                        });
+                } catch (...) { /* Failure to start optional work must not close the library. */
+                }
             }
             const bool mods_active = game_options.page == GameOption::Mods && mod_session;
             const bool cheats_active = game_options.page == GameOption::Cheats && cheat_session;
@@ -1577,6 +1653,11 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     std::optional{content_session->Application()} : std::nullopt;
                 content_session.reset(); requested_manager_tab.reset();
                 SelectGameOption(game_options, *requested_game_option);
+                if (game_options.page == GameOption::Information) {
+                    ++information_generation;
+                    information_requested = false;
+                    information = {};
+                }
                 requested_game_option.reset(); options_notice.clear();
                 if (changed) {
                     mod_session.reset(); cheat_session.reset();
@@ -1862,6 +1943,14 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 };
 
                 const auto option = GameOptions()[game_options.selected];
+                if (option == GameOption::Information && (actions & Play) &&
+                    CanRemoveGame(scan.entries[game_options.game])) {
+                    const auto option_list = GameOptions();
+                    const auto remove =
+                        std::find(option_list.begin(), option_list.end(), GameOption::Remove);
+                    requested_game_option = static_cast<std::size_t>(remove - option_list.begin());
+                    actions &= ~Play;
+                }
                 if (!GameOptionHasManager(option)) send(Play, GameOptionsInput::Confirm);
                 send(Quit, GameOptionsInput::Back);
                 if (option == GameOption::Remove && (game_options.confirm_discard || game_options.discard)) {
@@ -2341,10 +2430,21 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         const bool draw = dirty || canvas->Animating();
         if (draw) {
             const GameOptionsView options_view{
-                game_options, game_options.open && !configuration.open && game_options.game < scan.entries.size() ? &scan.entries[game_options.game] : nullptr,
-                cheat_session ? &*cheat_session : nullptr, cheats_page, options_notice, content_session.get(),
-                mod_session.get(), &mods_page,
-                game_options.open && game_options.game < scan.entries.size() &&
+                .page = game_options,
+                .game = game_options.open && !configuration.open &&
+                                game_options.game < scan.entries.size()
+                            ? &scan.entries[game_options.game]
+                            : nullptr,
+                .cheats = cheat_session ? &*cheat_session : nullptr,
+                .cheats_page = cheats_page,
+                .notice = options_notice,
+                .content = content_session.get(),
+                .mods = mod_session.get(),
+                .mods_page = &mods_page,
+                .information = &information,
+                .compatibility = &compatibility,
+                .other_copies =
+                    game_options.open && game_options.game < scan.entries.size() &&
                     FindDumpFiles(scan.entries, scan.entries[game_options.game].launch_path).kept};
             // Titles, Pulse sessions and plays arrive after the shelf was made: keep it current,
             // the focus on the same game.

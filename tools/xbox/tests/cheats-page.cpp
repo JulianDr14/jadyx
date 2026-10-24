@@ -112,7 +112,8 @@ int main() {
     check(options.selected == GameOptions().size() - 1); // the list wraps
     HandleGameOptionsInput(options, GameOptionsInput::Down);
     HandleGameOptionsInput(options, GameOptionsInput::Down);
-    check(GameOptions()[options.selected] == GameOption::Cheats); // Mods, then Cheats
+    HandleGameOptionsInput(options, GameOptionsInput::Down); // Information, then Mods, then Cheats
+    check(GameOptions()[options.selected] == GameOption::Cheats);
     check(options.page == GameOption::Cheats && options.activate && (options.focus == GameOptionsFocus::Content));
     HandleGameOptionsInput(options, GameOptionsInput::Confirm);
     check(options.page == GameOption::Cheats && options.open && !(options.focus == GameOptionsFocus::Sections));

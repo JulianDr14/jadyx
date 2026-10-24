@@ -15,6 +15,7 @@ enum class Status { Untested, Playable, Issues, Broken };
 struct Report {
     std::string name, console, fps_note, jadyx_version, note, source, product;
     Status status{Status::Untested};
+    std::string date; ///< Optional report date; old catalogs leave it unknown.
 };
 using Table = std::map<std::uint64_t, std::vector<Report>>;
 /// Invalid files fail as a whole, so they cannot hide the last valid cached or bundled list.
