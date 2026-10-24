@@ -97,12 +97,19 @@ void MaxwellDMA::Launch() {
         if (regs.launch_dma.remap_enable != 0 && is_const_a_dst) {
             const u32 component_size = regs.remap_const.component_size_minus_one + 1;
             ASSERT(component_size == 1 || component_size == 2 || component_size == 4);
-            if (component_size == 4) {
-                accelerate.BufferClear(regs.offset_out, regs.line_length_in, regs.remap_const.remap_consta_value);
-            }
+            const bool accelerated =
+                component_size == 4 && accelerate.BufferClear(regs.offset_out, regs.line_length_in,
+                                                              regs.remap_const.remap_consta_value);
             read_buffer.resize_destructive(regs.line_length_in * sizeof(u32));
             std::ranges::fill(std::span<u32>(reinterpret_cast<u32*>(read_buffer.data()), regs.line_length_in), regs.remap_const.remap_consta_value);
-            memory_manager.WriteBlockUnsafe(regs.offset_out, reinterpret_cast<u8*>(read_buffer.data()), static_cast<size_t>(regs.line_length_in) * component_size);
+            const size_t size = static_cast<size_t>(regs.line_length_in) * component_size;
+            if (accelerated) {
+                // The buffer cache owns the accelerated fill; only mirror guest memory.
+                memory_manager.WriteBlockUnsafe(regs.offset_out, read_buffer.data(), size);
+            } else {
+                // Software fills must invalidate cached copies before their next use.
+                memory_manager.WriteBlock(regs.offset_out, read_buffer.data(), size);
+            }
         } else {
             memory_manager.FlushCaching();
             const auto convert_linear_2_blocklinear_addr = [](u64 address) {

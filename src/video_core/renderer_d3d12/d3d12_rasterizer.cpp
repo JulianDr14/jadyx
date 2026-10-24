@@ -788,12 +788,8 @@ void RasterizerD3D12::InvalidateRegion(DAddr address, u64 size, VideoCommon::Cac
 
 void RasterizerD3D12::InnerInvalidation(
     std::span<const std::pair<DAddr, std::size_t>> sequences) {
-    // The ranges written through the GPU memory manager since the last draw: one lock per cache
-    // for the batch instead of two per range, with the same caches and setting as the default
-    // per-range InvalidateRegion.
-    if (Settings::values.skip_cpu_inner_invalidation.GetValue()) {
-        return;
-    }
+    // FlushCaching drains guest inline writes, independently of optional CPU invalidation.
+    // Match Vulkan: invalidate every drained range, with one lock per cache for the batch.
     {
         std::scoped_lock lock{texture_cache.mutex};
         for (const auto& [address, size] : sequences) {
