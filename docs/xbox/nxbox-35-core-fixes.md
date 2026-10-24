@@ -86,3 +86,27 @@ Console test (pending; requires an original diagnostic payload):
    Pulse restore rejection. Collect jadyx log/diag. The current ordinary boot
    payload alone does not exercise concurrent debug/cache marks; implementing
    and running the diagnostic wrapper in step 2 remains a console gate.
+
+## 2. Exception-safe destructive ScratchBuffer growth
+
+Reference: NXbox `e178234e2bc37fe418a63eeb7b3b8e0345c5f517`.
+
+`resize_destructive` raised capacity before allocating. A failed allocation left
+an empty/undersized buffer claiming the new capacity, and a retry skipped the
+allocation. Allocate first, then publish capacity. Ownership, previous size,
+capacity and data now remain intact on failure. Successful destructive growth
+still makes no promise to preserve previous contents.
+
+`run.py scratch-buffer` fails before the fix on the capacity/size invariant.
+Afterwards it passes with a deterministic throwing element-array allocator:
+empty and populated buffers, two failed retries each, preserved pointer/data,
+successful recovery, shrink/regrow without allocation, resize to zero and move.
+It includes the real header and requests only 32 elements, never actual OOM.
+
+Console test (pending): build/package as in section 1. Run the original 600-frame
+homebrew to completion, return to library and launch it ten more times. Require
+unchanged output, successful diagnostics and no Render/Critical error. Exercise
+normal rendering/texture upload paths with an owned local title if available;
+leave gameplay duration under manual control. Do not deliberately exhaust console
+memory. The host throwing-allocation test establishes the failure guarantee;
+the ordinary console smoke cannot establish that guarantee by itself.
