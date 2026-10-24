@@ -150,6 +150,9 @@ public:
                 Type(Tr(i==0?T::Cancel:T::Import),TypeRole::LabelLarge,x+20,611,500,focused?Palette::OnAccent:Palette::Text);
                 AddHit(x,590,540,64,LibraryHit::NetworkAction,i);
             }
+        } else if (configuration.ftp_screen) {
+            rows_shown = false;
+            DrawFtpConnection(configuration);
         } else if (configuration.network_screen && configuration.network_update) {
             rows_shown = false; DrawUpdateGuide(configuration, view.system.update);
         } else if (view.system.updates_open) {
@@ -1190,6 +1193,8 @@ private:
                 std::wstring{Tr(!network.running ? T::NetworkStopped : network.paired ? T::NetworkPaired :
                     network.code_expired ? T::NetworkCodeExpired : T::NetworkCodeHint)},
                 network.running && !network.code_expired ? std::wstring{winrt::to_hstring(network.code)} : std::wstring{L"—"}});
+            rows.push_back({Kind::Open, std::wstring{Tr(T::FtpTitle)},
+                            std::wstring{Tr(T::FtpSummary)}, std::wstring{Tr(T::NetworkStart)}});
             for (const auto& source : status.sources)
                 rows.push_back({Kind::Open, I18n::Format(T::RemoveFolder, {source.name})});
         }
@@ -1201,6 +1206,24 @@ private:
     static constexpr float SettingsPaneWidth = 1280 - LibraryLayout::Margin - SettingsPaneX;
     static constexpr float SettingsRowsTop = 226, SettingsRowStride = 58, SettingsRowHeight = 52;
     static constexpr std::size_t SettingsVisibleRows = 7;
+    void DrawFtpConnection(const ConfigurationPanel& configuration) {
+        Type(Tr(T::FtpTitle), TypeRole::HeadlineLarge, 80, 100, 1120, Palette::Text);
+        Type(configuration.ftp_address, TypeRole::HeadlineMedium, 80, 176, 1120, Palette::Accent);
+        Type(Tr(T::FtpCredentials), TypeRole::Body, 80, 240, 1120, Palette::TextSecondary);
+        Type(configuration.ftp_password, TypeRole::HeadlineLarge, 80, 285, 1120, Palette::Text);
+        Type(Tr(T::FtpFolders), TypeRole::Body, 80, 365, 1120, Palette::TextSecondary, 1,
+             TextAlign::Leading, 3);
+        Type(Tr(T::FtpHint), TypeRole::Body, 80, 475, 1120, Palette::TextHint, 1,
+             TextAlign::Leading, 3);
+        for (size_t i = 0; i < 2; ++i) {
+            const float x = 80 + static_cast<float>(i) * 570;
+            const bool focused = configuration.network_action == i;
+            Round(x, 594, 540, 60, 16, focused ? Palette::Accent : Palette::Surface);
+            Type(Tr(i == 0 ? T::Back : T::NetworkStop), TypeRole::LabelLarge, x + 20, 614, 500,
+                 focused ? Palette::OnAccent : Palette::Text);
+            AddHit(x, 594, 540, 60, LibraryHit::NetworkAction, i);
+        }
+    }
     void DrawNetworkConnection(const ConfigurationPanel& configuration) {
         const auto& network = configuration.network;
         Type(L"J A D Y X", TypeRole::HeadlineSmall, 80, 44, 400, Palette::Text);

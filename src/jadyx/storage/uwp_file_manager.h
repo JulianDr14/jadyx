@@ -28,6 +28,8 @@ struct ConfigurationPanel {
     unsigned completed{}, total{};
     PortalStatus network;
     bool network_screen{};
+    bool ftp_screen{}; ///< Exclusive FTP page; readers resume after the server joins.
+    std::wstring ftp_address, ftp_password;
     bool network_update{}; ///< The screen guides the app update instead of the file portal.
     size_t network_action{};
     std::vector<PortalAddress> network_addresses;
@@ -37,7 +39,13 @@ struct ConfigurationPanel {
 };
 /// Rows of the settings home, in order.
 enum ConfigurationHomeRow : size_t { HomeSystem, HomeControllers, HomeFiles, HomeRowCount };
-enum FileManagerNetworkRow : size_t { FilesNetwork = 5, FilesNetworkAddress, FilesNetworkCode, FilesSources };
+enum FileManagerNetworkRow : size_t {
+    FilesNetwork = 5,
+    FilesNetworkAddress,
+    FilesNetworkCode,
+    FilesFtp,
+    FilesSources
+};
 inline size_t ConfigurationRowCount(const ConfigurationPanel& panel) {
     return panel.files ? FilesSources + panel.status.sources.size() : HomeRowCount;
 }

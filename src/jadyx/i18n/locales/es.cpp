@@ -4,6 +4,15 @@
 
 namespace Jadyx::I18n {
 const Catalog SpanishCatalog = MakeCatalog({
+    {Text::FtpTitle, L"Servidor FTP"},
+    {Text::FtpSummary, L"Envía archivos grandes desde un cliente FTP"},
+    {Text::FtpCredentials, L"Usuario: jadyx · Contraseña:"},
+    {Text::FtpFolders,
+     L"/games · /keys · /firmware · /saves\nUsa archivos extraídos de tu propia consola y juegos."},
+    {Text::FtpHint, L"FTP pasivo · Una conexión · Sin cifrar, solo en una red local de "
+                    L"confianza.\nVolver detiene las transferencias y actualiza la biblioteca."},
+    {Text::FtpStartFailed,
+     L"No se pudo iniciar FTP. Revisa la red local y el puerto 2121 e inténtalo de nuevo."},
     {Text::UpdaterTitle, L"Actualizaciones"},
     {Text::UpdaterHint, L"Busca e instala versiones nuevas de Jadyx"},
     {Text::UpdaterCheck, L"Buscar actualizaciones"},

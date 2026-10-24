@@ -4277,3 +4277,21 @@ de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificaci�
 global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
 excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
+
+
+## FTP library transport — 24 October 2026
+
+The GPL NXbox FTP transport is ported under `src/jadyx/storage/ftp/`, owned by the
+library and off until its dedicated page opens. Its virtual roots use the existing
+game root and `SystemDestination` helpers; NXbox's `interno`, USB discovery,
+`ftp-autostart` and `Common::FS::Uwp::ForEachEntry` are not carried over (the last
+helper does not exist in Jadyx). Directory listings use the same standard filesystem
+facilities as Jadyx storage. Do not expose the whole LocalState as a shortcut.
+
+FTP holds exclusive access until its sockets close and the active session joins.
+Only then reload keys/firmware and rescan the library, including after suspend.
+Keep its modal input handling separate from the HTTP page's running-state check:
+the HTTP portal is intentionally stopped while FTP owns storage. Portable CMake
+checks pass on macOS; the WinRT implementation/full UWP build and Series transfers
+remain untested. Commands, folder mappings, numbers and the complete pending gate:
+[nxbox-ftp-server.md](nxbox-ftp-server.md).
