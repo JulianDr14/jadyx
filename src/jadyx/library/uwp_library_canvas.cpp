@@ -1233,9 +1233,14 @@ private:
         const auto& system=network.system;
         if (system.busy) {
             const auto& file=system.file;
+            // Keys and firmware have their own phases; the NSP wording does not apply here.
             progress=system.phase=="receiving"&&file.busy ? I18n::Format(T::NetworkUploading,
                 {winrt::to_hstring(file.name).c_str(),std::to_wstring(file.received >> 20),std::to_wstring(file.length >> 20)}) :
-                system.phase=="review" ? std::wstring{Tr(T::SystemReviewReady)} : std::wstring{Tr(T::NetworkValidating)};
+                std::wstring{Tr(system.phase=="receiving" ? T::SystemWaiting :
+                                system.phase=="review" ? T::SystemReviewReady :
+                                system.phase=="failed" ? T::ImportFailedKept :
+                                system.phase=="commit_pending"||system.phase=="publishing" ? T::SystemInstalling :
+                                T::SystemValidating)};
             progress+=L" · "+std::to_wstring(system.completed)+L" / "+std::to_wstring(system.count);
             const float fraction=file.length?static_cast<float>(static_cast<double>(file.received)/file.length):0;
             Round(100,560,1080,4,2,Palette::Graphite);
