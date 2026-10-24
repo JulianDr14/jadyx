@@ -4277,3 +4277,15 @@ de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificaci�
 global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
 excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
+
+## R040: exact native MSAA allocation checks (24 Oct 2026)
+
+`nxbox/33-msaa-validation` adapts NXbox's allocation checks to Jadyx's resource
+owner. Invalid counts/shapes/sample grids now reject before `SamplesLog2` and
+allocation; typed physical RTV/DSV queries require nonzero quality levels for the
+exact requested count, without lowering samples. Rejection uses existing logged
+GPU exception recovery, not nullable images. Single-sample/settings/Pulse formats
+are unchanged. Two wiring regressions fail before/pass after; 122 portable cases
+and five existing Python suites pass. No UWP/Series gate or transfer parity claimed.
+Evidence, local provenance and the exact pending console matrix:
+[nxbox-33-msaa-validation.md](nxbox-33-msaa-validation.md).
