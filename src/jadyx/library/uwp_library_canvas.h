@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <memory>
+#include "jadyx/library/compatibility.h"
 #include <vector>
 #include "jadyx/content/content_session.h"
 #include <string_view>
@@ -57,6 +58,7 @@ struct LibraryView {
     std::size_t shelf_focus{};               ///< In `shelf`; its size is the import tile.
     bool filter_focus{};                     ///< The Library tab's focus is on the filter bar.
     ControllerBattery battery{};
+    const Compatibility::Table* compatibility{};
 };
 /// What the pointer can press on the library screen.
 enum class LibraryHit : unsigned {
