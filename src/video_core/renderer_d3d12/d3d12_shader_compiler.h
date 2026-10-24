@@ -12,6 +12,7 @@
 
 #include "common/dynamic_library.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
+#include "video_core/renderer_d3d12/d3d12_shader_workers.h"
 
 struct IDxcValidator;
 
@@ -82,6 +83,9 @@ public:
 
 private:
     void Sign(std::vector<u8>& dxil, u64 trace_pipeline = 0) const;
+    void SignWithValidator(IDxcValidator* instance, std::vector<u8>& dxil,
+                           u64 trace_pipeline) const;
+    ComPtr<IDxcValidator> CreateValidator() const;
     dxil_spirv_runtime_conf MakeConf() const;
 
     using PFN_spirv_to_dxil = decltype(&::spirv_to_dxil);
@@ -97,6 +101,8 @@ private:
     ComPtr<IDxcValidator> validator;
     /// The validator is shared by the pipeline workers.
     mutable std::mutex validator_mutex;
+    // Declared after the libraries: all idle COM instances are released before DLL unload.
+    mutable ShaderResourcePool<ComPtr<IDxcValidator>> validators;
     bool lowers_integer_sampling{};
     bool available{};
 };
