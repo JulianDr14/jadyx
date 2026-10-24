@@ -36,7 +36,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
 > See [Legal](#legal).
 
 **Contents:** [Progress](#progress) ([the memory wall](#the-memory-wall)) ·
-[Architecture](#architecture) · [Running it on a console](#running-it-on-a-console) ·
+[Architecture](#architecture) · [Install guide](docs/user/guide.md) ([PT-BR](docs/user/guide.pt-BR.md) · [ES](docs/user/guide.es.md)) ·
+[Running it on a console](#running-it-on-a-console) ·
 [Building](#building) · [Documentation](#documentation) · [Acknowledgements](#acknowledgements) ·
 [Legal](#legal) · [License](#license)
 
@@ -608,17 +609,21 @@ Design, phases and evidence: [docs/xbox/xbox_pulse.md](docs/xbox/xbox_pulse.md) 
 
 ## Running it on a console
 
+First time using Device Portal? Follow the beginner guide: [English](docs/user/guide.md) ·
+[Português (Brasil)](docs/user/guide.pt-BR.md) · [Español](docs/user/guide.es.md).
+
 Requirements: an Xbox Series X|S in Developer Mode, the package from the
 [latest release](https://github.com/JulianDr14/jadyx/releases/latest) (or one you built, see
 [Building](#building)), and the keys, firmware and games dumped from your own Switch.
 
 1. Open the Device Portal at `https://<console-ip>:11443`.
 2. Install `Jadyx_<version>_x64.appx` together with its `Microsoft.VCLibs.x64.14.00.appx`
-   dependency and the `Jadyx.cer` certificate.
+   dependency.
+   Note: `Jadyx.cer` is optional and is not needed on Xbox Developer Mode (maintainer-confirmed).
 3. In the app's settings on the console, set it to **Game** mode. Otherwise the memory limit is much
    lower than the 5120 MiB the emulator expects.
 4. Start the app and send your keys, firmware and games from a PC or phone with the
-   [Jadyx Portal](#jadyx-portal): **Settings > File manager > Network connection > Start server**,
+   [Jadyx Portal](#jadyx-portal): **Settings > File manager > Jadyx Portal** (**Start portal**),
    open the address it shows in a browser on the same network and enter the connection code.
 5. Other ways to add them: import keys and firmware from a folder or ZIP on a USB drive in
    **Settings > File manager**, and add games from an external folder or USB drive, or copy them to
