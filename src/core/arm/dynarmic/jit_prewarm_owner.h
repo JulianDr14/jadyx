@@ -82,7 +82,7 @@ public:
     std::size_t PrepareCandidates();
     /// The warm pass: compiles candidates, best first, until `code_budget` bytes of host code.
     /// Runs on its own thread, one per owner; `progress` reports (done, total).
-    void Warm(const Progress& progress, std::size_t code_budget);
+    void Warm(const Progress& progress, std::size_t code_budget, std::stop_token stop = {});
     /// Merges what this session learned and replaces the file atomically. The guest must be
     /// stopped; reads no guest memory, so it is safe while the process is torn down.
     void Save();

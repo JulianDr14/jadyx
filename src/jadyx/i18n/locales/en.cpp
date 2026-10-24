@@ -704,5 +704,17 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::UpdateGuideWarning, L"Do not uninstall Jadyx: that deletes your saves and settings. Install over it."},
     {Text::UpdaterUpdatedTo, L"Jadyx was updated to {0}"},
 
+    {Text::WarmupTitle, L"Preparing to play"},
+    {Text::WarmupShaders, L"Shaders and pipelines"},
+    {Text::WarmupCpu, L"CPU code"},
+    {Text::WarmupReading, L"Reading saved preparation…"},
+    {Text::WarmupCount, L"{0} / {1} processed"},
+    {Text::WarmupElapsed, L"{0} s elapsed"},
+    {Text::WarmupSkipping, L"Skipping — finishing active work…"},
+    {Text::WarmupCancelling, L"Returning to library — finishing active work…"},
+    {Text::WarmupSkip, L"Skip preparation"},
+    {Text::WarmupCancel, L"Back to library"},
+    {Text::WarmupHint, L"Skipping may cause stutters while playing. Active compilations must "
+                       L"finish before continuing."},
 });
 } // namespace Jadyx::I18n

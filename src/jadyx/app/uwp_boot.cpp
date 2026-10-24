@@ -95,6 +95,7 @@
 #include "jadyx/game/game_screenshot.h"
 #include "jadyx/app/headless_emu_window.h"
 #include "jadyx/app/prewarm_budget.h"
+#include "jadyx/app/warmup_screen.h"
 #include "jadyx/pulse/pulse_gate.h"
 #include "jadyx/pulse/pulse_screen.h"
 #include "jadyx/library/play_history.h"
@@ -305,6 +306,7 @@ struct BootConfig {
     /// Per-game JIT profile, compiled before the guest runs ("jit_prewarm=1", the default),
     /// only learned ("jit_prewarm=record") or disabled ("jit_prewarm=0").
     enum class JitPrewarm { Off, Record, Warm } jit_prewarm{JitPrewarm::Warm};
+    bool warmup_control{}; ///< Opt-in startup skip/cancel; no persisted setting changes.
     /// XAudio2 performance samples and queue counters ("audio_profile=1").
     bool audio_profile{};
     /// Timed silent output for comparison and audio-device diagnosis ("audio=null").
@@ -583,9 +585,12 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     // Shown while Pulse saves or resumes a session (pulse_screen.h); it draws through the GPU
     // thread, so it goes before anything is torn down.
     std::optional<PulseScreen> pulse_screen;
+    WarmupControl warmup_control;
+    std::optional<WarmupScreen> warmup_screen;
     std::optional<std::jthread> trim_worker;
     const auto shutdown = [&] {
         trim_worker.reset();
+        warmup_screen.reset();
         pulse_screen.reset();
         Common::SamplingProfiler::Stop(); // writes the window in progress, if it runs
         if (config.gpu_failure_probe) WriteDiag("GPU recovery shutdown: input.Stop");
@@ -777,6 +782,20 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         system.GetCpuManager().OnGpuReady();
     }
 
+    // Pulse keeps its own presenter and restore semantics. Only fresh interactive launches
+    // opt into these controls; without the switch the existing presentation is unchanged.
+    if (!resumed && config.play &&
+        Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Direct3D12 &&
+        (config.warmup_control || WarmupControlEnabled(std::getenv("NXBOX_WARMUP_CONTROL")))) {
+        try {
+            warmup_screen.emplace(system, warmup_control);
+            WriteDiag("warmup: controls enabled (skip preparation / back to library)");
+        } catch (const std::exception& e) {
+            WriteDiag(std::string{"warmup: controls unavailable; using normal preparation: "} +
+                      e.what());
+        }
+    }
+
     if (Settings::values.use_disk_shader_cache.GetValue()) {
         // As yuzu_cmd: build the pipelines earlier sessions saved (LocalState/jadyx/shader/<title>/
         // d3d12.bin) before the guest runs, so they do not stutter in; the ones the game meets
@@ -785,18 +804,24 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         VideoCore::RendererBase& renderer = system.Renderer();
         if (pulse_screen) pulse_screen->ShadersStarting();
         renderer.ReadRasterizer()->LoadDiskResources(
-            system.GetApplicationProcessProgramID(), std::stop_token{},
-            [&renderer, &pulse_screen](VideoCore::LoadCallbackStage, size_t done, size_t total) {
+            system.GetApplicationProcessProgramID(), warmup_control.Token(),
+            [&renderer, &pulse_screen, &warmup_screen](VideoCore::LoadCallbackStage, size_t done,
+                                                       size_t total) {
                 // A resume's screen shows the count itself; two presenters would race.
-                if (pulse_screen) pulse_screen->Shaders(done, total);
-                else D3D12::ShowLoadProgress(renderer, done, total);
+                if (warmup_screen)
+                    warmup_screen->Progress(done, total);
+                else if (pulse_screen)
+                    pulse_screen->Shaders(done, total);
+                else
+                    D3D12::ShowLoadProgress(renderer, done, total);
             });
         WriteDiag("step: disk shader cache built | " + MemoryReport());
     }
 
     const u64 program_id = system.GetApplicationProcessProgramID();
     PrewarmBudget prewarm_budget{LoadPrewarmStep(program_id)};
-    if (config.jit_prewarm != BootConfig::JitPrewarm::Off && !resumed) {
+    if (config.jit_prewarm != BootConfig::JitPrewarm::Off && !resumed &&
+        !warmup_control.Cancelled()) {
         // All guest cores are still stopped. Each owns a separate JIT; never
         // compile into an instance concurrently with Run or another compiler.
         if (auto* process = system.ApplicationProcess()) {
@@ -804,14 +829,33 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
                       (process->Is64Bit() ? "A64" : "A32") + "), " +
                       std::to_string(prewarm_budget.MiBPerCore()) + " MiB per core | " +
                       MemoryReport());
-            Core::ConfigureApplicationPrewarm(system,
-                config.jit_prewarm == BootConfig::JitPrewarm::Warm,
-                [&system](size_t done, size_t total) {
-                    D3D12::ShowCpuLoadProgress(system.Renderer(), done, total);
+            if (warmup_screen)
+                warmup_screen->Stage(WarmupPhase::Cpu);
+            Core::ConfigureApplicationPrewarm(
+                system,
+                config.jit_prewarm == BootConfig::JitPrewarm::Warm &&
+                    !warmup_control.Token().stop_requested(),
+                [&system, &warmup_screen](size_t done, size_t total) {
+                    if (warmup_screen)
+                        warmup_screen->Progress(done, total);
+                    else
+                        D3D12::ShowCpuLoadProgress(system.Renderer(), done, total);
                 },
-                prewarm_budget.BytesPerCore());
+                prewarm_budget.BytesPerCore(), warmup_control.Token());
             WriteDiag("step: CPU JIT profile/prewarm ready | " + MemoryReport());
         }
+    }
+
+    // All callbacks/workers have drained; join the painter before Run or teardown. A
+    // last-moment cancel wins over skip, including while the current compilation finishes.
+    warmup_screen.reset();
+    if (warmup_control.Token().stop_requested()) {
+        WriteDiag(warmup_control.Cancelled() ? "warmup: cancelled; workers drained"
+                                             : "warmup: skipped; workers drained");
+    }
+    if (warmup_control.Cancelled()) {
+        shutdown();
+        return RETURN_TO_LIBRARY;
     }
 
     if (config.profile) {
@@ -2690,6 +2734,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.null_audio = false;
                             WriteDiag("boot.cfg: unknown audio backend '" + line.substr(6) +
                                       "', using XAudio2");
+                        } else if (line == "NXBOX_WARMUP_CONTROL=1" ||
+                                   line == "NXBOX_WARMUP_CONTROL=0") {
+                            config.warmup_control = line.back() == '1';
                         } else if (line == "NXBOX_D3D12_RESOLUTION_SCALE=1") {
                             config.resolution_scale = true;
                         } else if (line.starts_with("upscaling=")) {

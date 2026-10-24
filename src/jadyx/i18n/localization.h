@@ -732,6 +732,18 @@ enum class Text : std::uint16_t {
     UpdateGuidePortalBody,
     UpdateGuideWarning,
     UpdaterUpdatedTo,
+    // Optional startup preparation controls.
+    WarmupTitle,
+    WarmupShaders,
+    WarmupCpu,
+    WarmupReading,
+    WarmupCount,
+    WarmupElapsed,
+    WarmupSkipping,
+    WarmupCancelling,
+    WarmupSkip,
+    WarmupCancel,
+    WarmupHint,
     Count
 };
 inline constexpr std::size_t TextCount = static_cast<std::size_t>(Text::Count);

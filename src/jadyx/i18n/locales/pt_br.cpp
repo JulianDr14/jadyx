@@ -705,5 +705,17 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::UpdateGuideWarning, L"Não desinstale o Jadyx: isso apaga seus saves e configurações. Instale por cima."},
     {Text::UpdaterUpdatedTo, L"Jadyx foi atualizado para {0}"},
 
+    {Text::WarmupTitle, L"Preparando para jogar"},
+    {Text::WarmupShaders, L"Shaders e pipelines"},
+    {Text::WarmupCpu, L"Código da CPU"},
+    {Text::WarmupReading, L"Lendo a preparação salva…"},
+    {Text::WarmupCount, L"{0} / {1} processados"},
+    {Text::WarmupElapsed, L"{0} s decorridos"},
+    {Text::WarmupSkipping, L"Pulando — concluindo o trabalho em andamento…"},
+    {Text::WarmupCancelling, L"Voltando à biblioteca — concluindo o trabalho em andamento…"},
+    {Text::WarmupSkip, L"Pular preparação"},
+    {Text::WarmupCancel, L"Voltar à biblioteca"},
+    {Text::WarmupHint, L"Pular pode causar travamentos ao jogar. As compilações em andamento "
+                       L"precisam terminar antes de continuar."},
 });
 } // namespace Jadyx::I18n

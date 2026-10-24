@@ -24,6 +24,9 @@ add_executable(jadyx WIN32
     library/play_history.h
     library/portal_library.cpp
     library/portal_library.h
+    app/warmup_control.h
+    app/warmup_screen.h
+    app/warmup_screen.cpp
     pulse/pulse_screen.cpp
     pulse/pulse_screen.h
     pulse/pulse_store_gate.cpp

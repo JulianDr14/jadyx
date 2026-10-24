@@ -19,7 +19,7 @@
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
-#include "video_core/gpu_thread.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/environment.h"
@@ -31,6 +31,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/frame_trace.h"
+#include "video_core/gpu_thread.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_local_memory_scratch.h"
@@ -784,22 +785,30 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         bool has_loaded{};
     } state;
 
+    // Also drain on coordinator exceptions: queued tasks capture state/callback by reference.
+    SCOPE_EXIT {
+        workers.WaitForRequests();
+    };
+
     const auto load_compute{[&](std::ifstream& file, FileEnvironment env) {
         ComputePipelineCacheKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
 
-        workers.QueueWork([this, key, env_ = std::move(env), &state, &callback]() mutable {
-            ShaderPools pools;
-            auto pipeline{CreateComputePipeline(pools, key, env_, false)};
-            std::scoped_lock lock{state.mutex};
-            if (pipeline) {
-                compute_cache.emplace(key, std::move(pipeline));
-            }
-            ++state.built;
-            if (state.has_loaded) {
-                callback(VideoCore::LoadCallbackStage::Build, state.built, state.total);
-            }
-        });
+        workers.QueueWork(
+            [this, key, env_ = std::move(env), &state, &callback, stop_loading]() mutable {
+                if (stop_loading.stop_requested())
+                    return;
+                ShaderPools pools;
+                auto pipeline{CreateComputePipeline(pools, key, env_, false)};
+                std::scoped_lock lock{state.mutex};
+                if (pipeline) {
+                    compute_cache.emplace(key, std::move(pipeline));
+                }
+                ++state.built;
+                if (state.has_loaded) {
+                    callback(VideoCore::LoadCallbackStage::Build, state.built, state.total);
+                }
+            });
         ++state.total;
     }};
     const auto load_graphics{[&](std::ifstream& file, std::vector<FileEnvironment> envs) {
@@ -811,7 +820,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         state.prewarmed += build_pso ? 1 : 0;
 
         workers.QueueWork([this, key, envs_ = std::move(envs), &state, &callback, build_pso,
-                           file_index]() mutable {
+                           file_index, stop_loading]() mutable {
+            if (stop_loading.stop_requested())
+                return;
             ShaderPools pools;
             boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
             for (auto& env : envs_) {
@@ -850,7 +861,13 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     state.has_loaded = true;
     lock.unlock();
 
-    workers.WaitForRequests(stop_loading);
+    // Drain in-flight callbacks before local state dies. Passing the token here
+    // stops the persistent pool, preventing later on-demand gameplay compilation.
+    workers.WaitForRequests();
+    if (stop_loading.stop_requested()) {
+        LOG_INFO(Render, "D3D12: startup shader preparation stopped ({} built, {} queued)",
+                 state.built, state.total);
+    }
     const auto preparation = VideoCore::Perf::Read();
     LOG_INFO(Render,
              "D3D12 PSO preparation after disk load (session totals): {} requests, {} hits, "
