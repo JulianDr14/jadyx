@@ -44,3 +44,25 @@ return/stack sentinels, and the expected resumed PC. Keep fastmem disabled for
 normal original-homebrew boot and library/relaunch smoke tests; do not enable
 regional fastmem merely to reach this path. Such a diagnostic is not supplied by
 the existing boot NRO; a normal boot alone does not pass this ABI gate.
+
+## Exception fault filtering and disposition
+
+Reference: selected `cb6cc4fef` hunks only, without its fastmem allocator changes.
+Forward the exception record in the third callback argument, accept only read or
+write AVs with at least two parameters, reject unwind dispatch, and decline an
+empty callback/resume address. Return the callback's disposition rather than
+unconditionally continuing execution. Declined faults leave the context and
+saved stack untouched. This prevents unrelated exceptions from being redirected.
+
+`python3 -B tools/xbox/tests/jit-exception-filter.py` failed before this change
+on an unrelated breakpoint invoking the callback. Afterward all nine cases pass:
+read/write, breakpoint, short record, execute AV, unwind/exit-unwind, missing call
+and missing resume. The home-space regression still passes.
+
+Console gate: extend the original native diagnostic above with all nine cases.
+Record callback count, disposition, PC/SP and stack sentinel; only read/write
+cases may redirect. Raise a controlled breakpoint under an outer diagnostic
+handler, and exercise an unwind: they must reach that handler, not the fastmem
+callback. Test deliberately absent call/resume mappings and require continue
+search. This requires native Windows/Series exception dispatch; the portable
+adapter cannot certify handler chaining.

@@ -191,16 +191,29 @@ struct ExceptionHandler::Impl final {
 
         // Reserve 32 bytes of Windows x64 home space plus the alignment slot.
         code.lea(code.rsp, code.ptr[code.rsp - 40]);
+        // Preserve the exception record before replacing the first ABI argument.
+        code.mov(code.ABI_PARAM4, code.ABI_PARAM1);
         code.mov(code.ABI_PARAM1, std::bit_cast<u64>(&cb));
         code.mov(code.ABI_PARAM2, code.ABI_PARAM3);
-        code.CallLambda([](const std::function<FakeCall(u64)>& cb_, PCONTEXT ctx) {
+        code.mov(code.ABI_PARAM3, code.ABI_PARAM4);
+        code.CallLambda([](const std::function<FakeCall(u64)>& cb_, PCONTEXT ctx,
+                           const EXCEPTION_RECORD* record) {
+            // Only unresolved read/write access violations belong to fastmem.
+            if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION ||
+                record->NumberParameters < 2 || record->ExceptionInformation[0] > 1 ||
+                (record->ExceptionFlags & (EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND)) != 0) {
+                return ExceptionContinueSearch;
+            }
             FakeCall fc = cb_(ctx->Rip);
+            if (!fc.call_rip || !fc.ret_rip) {
+                return ExceptionContinueSearch;
+            }
             ctx->Rsp -= sizeof(u64);
             *std::bit_cast<u64*>(ctx->Rsp) = fc.ret_rip;
             ctx->Rip = fc.call_rip;
+            return ExceptionContinueExecution;
         });
         code.add(code.rsp, 40);
-        code.mov(code.eax, u32(ExceptionContinueExecution));
         code.ret();
 
         exception_handler_without_cb_offset = ULONG(exception_handler_without_cb - code.getCode<u8*>());
