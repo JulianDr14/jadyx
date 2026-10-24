@@ -106,6 +106,12 @@ add_executable(jadyx WIN32
     settings/uwp_system_settings.h
     library/library_cache.cpp
     library/library_cache.h
+    storage/game_move.cpp
+    storage/game_move.h
+    storage/game_move_catalog.h
+    storage/move_option.h
+    storage/move_digest.h
+    storage/verified_move.h
     storage/atomic_file.h
     storage/utf8.h
     # Drawing shared by the library and the in-game menu (real text over the paused game).

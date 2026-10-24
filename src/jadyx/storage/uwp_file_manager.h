@@ -24,6 +24,7 @@ struct ConfigurationPanel {
     bool files{};
     FilesBrowser browser;
     bool busy{};
+    bool moving_game{}; ///< The serial storage worker is moving a game to USB.
     size_t selected{};
     FileSetupStatus status;
     std::wstring notice;

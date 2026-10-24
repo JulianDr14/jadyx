@@ -587,6 +587,26 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::PulseDiscardConfirm, L"Pulsa {0} otra vez para descartar la sesión. Tus partidas guardadas no se tocan."},
     {Text::PulseDiscarded, L"Sesión descartada"},
     {Text::PulseDiscardFailed, L"No se pudo descartar la sesión"},
+    {Text::GameMove, L"Mover a USB"},
+    {Text::GameMoveHint,
+     L"Mueve esta copia interna y todas las actualizaciones/DLC instalados a una carpeta USB. Se "
+     L"verifican tamaños y SHA-256 antes de borrar originales. Las partidas quedan dentro."},
+    {Text::GameMoveConfirm, L"Pulsa {0} otra vez y elige una carpeta USB. Nunca se reemplazan "
+                            L"archivos de destino existentes."},
+    {Text::GameMovePreparing, L"Preparando y verificando originales. Puedes cancelar."},
+    {Text::GameMoveProgress, L"Moviendo y verificando: {0} / {1} MiB. Puedes cancelar."},
+    {Text::GameMoved, L"Movido y verificado. Las partidas siguen dentro."},
+    {Text::GameMoveFailed, L"Falló la mudanza. Se conservaron los originales. Puede quedar una "
+                           L"copia USB publicada; revísala antes de reintentar."},
+    {Text::GameMoveCancelled, L"Mudanza cancelada. Se conservaron los originales."},
+    {Text::GameMoveConflict,
+     L"La carpeta del juego ya existe en el USB. Elige otra carpeta; no se reemplazó nada."},
+    {Text::GameMoveSpace,
+     L"Capacidad USB desconocida o insuficiente. Libera espacio, reconecta e inténtalo otra vez."},
+    {Text::GameMoveCleanup, L"Copia USB verificada y registrada. Quedan archivos internos; vuelve "
+                            L"a escanear antes de borrar duplicados."},
+    {Text::GameMoveUnavailable,
+     L"Elige un juego interno. Descarta su sesión Pulse guardada antes de moverlo."},
     {Text::GameRemove, L"Eliminar juego"},
     {Text::GameRemoveHint, L"Borra el juego de la consola"},
     {Text::GameRemoveWarning, L"Se borrarán de la consola el juego, sus partidas guardadas, sus actualizaciones y DLC y su sesión Pulse. Los mods y trucos se conservan. No se puede deshacer."},

@@ -36,6 +36,7 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 - [Biblioteca e interfaz](xbox_frontend.md): carátulas, navegación, mandos y teclado.
 - [Contratos compartidos del frontend](xbox_frontend_refactor.md): catálogo de mandos, acciones, captura modal y listas; migración y gates.
 - [Descubrimiento USB y juego sin copia](nxbox-usb-play-in-place.md): detección automática opt-in, VFS existente y gate de consola pendiente.
+- [Mudanza verificada a USB (candidato opt-in)](nxbox-jx-21-move-to-usb.md): base, updates/DLC, SHA-256 y catálogo; gate Series pendiente.
 - [Carpetas y almacenamiento USB](xbox_rom_storage.md): acceso UWP persistente y apertura de juegos sin copiarlos.
 - [Portal local de importación](xbox_network_portal.md): exportación completa de logs/capturas en tar.zst con descarga reanudable (.16, AppContainer PC correcto); NSP real validado por HTTP en AppContainer; claves/firmware ZIP y sueltos con revisión de versiones en 0.3.4.3, gates PC correctos y prueba Series pendiente.
 

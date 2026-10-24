@@ -4517,3 +4517,14 @@ inject a newly selected override. Host frontend gates remain 9 pass/3 pre-existi
 failures, plus the new passing language gate. UWP build and console validation are
 pending. Implementation, reference evidence and exact acceptance steps:
 [nxbox-jx-23b-game-language.md](nxbox-jx-23b-game-language.md).
+## 24 October 2026 — verified internal game move candidate (jx-21)
+
+Default-off `NXBOX_MOVE_TO_USB=1` adds a Jadyx game-options action through the
+existing picker, serial storage worker and authorized-folder broker. Copies the
+selected base plus all registered internal update/DLC revisions, verifies size and
+SHA-256 before and after folder publication, publishes both content catalog
+generations, then deletes locked source handles. Saves remain internal; a saved
+Pulse session blocks movement because it captures the original launch identity.
+Host transaction/hash/catalog/options gates pass; existing host failure set is
+unchanged. No MSVC/UWP build, PC/Series test or package. Recovery boundaries and
+exact pending console gate: [jx-21](nxbox-jx-21-move-to-usb.md).

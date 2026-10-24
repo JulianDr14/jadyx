@@ -15,24 +15,31 @@
 #include "jadyx/i18n/localization.h"
 #include "jadyx/settings/game_language.h"
 #include "jadyx/ui/ui_icon.h"
+#include "jadyx/storage/move_option.h"
 
 namespace Jadyx {
 
 /// Pulse's pane shows the kept session and Remove's what deleting the game takes with it. Both
 /// act in place and only on a second confirmation.
-enum class GameOption : std::uint8_t { Information, Cheats, Mods, Updates, Dlc, Pulse, Remove, Language };
+enum class GameOption : std::uint8_t { Information, Cheats, Mods, Updates, Dlc, Pulse, Remove, Language, MoveToUsb };
 
 /// The options shown, in order.
 inline std::span<const GameOption> GameOptions() {
     static constexpr std::array options{
         GameOption::Information, GameOption::Mods,  GameOption::Cheats, GameOption::Updates,
         GameOption::Dlc, GameOption::Language, GameOption::Pulse, GameOption::Remove};
-    return options;
+    static constexpr std::array with_move{
+        GameOption::Information, GameOption::Mods, GameOption::Cheats, GameOption::Updates,
+        GameOption::Dlc, GameOption::Language, GameOption::Pulse, GameOption::Remove,
+        GameOption::MoveToUsb};
+    return MoveToUsbEnabled() ? std::span<const GameOption>{with_move}
+                             : std::span<const GameOption>{options};
 }
 
 /// False for the panes that act in place (with a second press) instead of opening a manager.
 inline bool GameOptionHasManager(GameOption option) {
-    return option != GameOption::Pulse && option != GameOption::Remove;
+    return option != GameOption::Pulse && option != GameOption::Remove &&
+           option != GameOption::MoveToUsb;
 }
 
 inline I18n::Text GameOptionTitle(GameOption option) {
@@ -46,6 +53,8 @@ inline I18n::Text GameOptionTitle(GameOption option) {
     case GameOption::Pulse: return I18n::Text::PulseSession;
     case GameOption::Language:
         return I18n::Text::GameLanguage;
+    case GameOption::MoveToUsb:
+        return I18n::Text::GameMove;
     case GameOption::Remove: return I18n::Text::GameRemove;
     }
     return I18n::Text::CheatsTitle;
@@ -62,6 +71,8 @@ inline I18n::Text GameOptionHint(GameOption option) {
     case GameOption::Pulse: return I18n::Text::PulseNone;
     case GameOption::Language:
         return I18n::Text::TitleLanguageHint;
+    case GameOption::MoveToUsb:
+        return I18n::Text::GameMoveHint;
     case GameOption::Remove: return I18n::Text::GameRemoveHint;
     }
     return I18n::Text::CheatsHint;
@@ -78,6 +89,8 @@ inline UiIcon GameOptionIcon(GameOption option) {
     case GameOption::Pulse: return UiIcon::Archive;
     case GameOption::Language:
         return UiIcon::Settings;
+    case GameOption::MoveToUsb:
+        return UiIcon::Folder;
     case GameOption::Remove: return UiIcon::Remove;
     }
     return UiIcon::Settings;

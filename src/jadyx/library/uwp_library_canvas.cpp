@@ -1049,6 +1049,11 @@ private:
         float x = Margin;
         const auto& entries = view.scan.entries;
         const bool game = !view.loading && view.selected < entries.size();
+        if (view.configuration.busy && view.configuration.moving_game) {
+            ControlPrompt(Navigation::Back, Tr(T::Cancel), x, y);
+            Type(view.notice, TypeRole::Label, Margin + 160, y + 8, 1060, Palette::TextHint);
+            return;
+        }
         // Only what a press does here: moving with the d-pad and the tabs' bumpers (shown on
         // the header) go without saying.
         if (view.tab == LibraryTab::Settings) {
@@ -2313,6 +2318,11 @@ private:
                     I18n::Format(game.pulse_current ? T::PulseSavedOn : T::PulseSavedOther, {game.pulse_saved});
                 const auto discard = I18n::Format(T::PulseDiscardConfirm, {PromptKey(Navigation::Play).letters});
                 in_place(option, pulse, game.pulse_saved.empty() ? std::wstring_view{} : std::wstring_view{discard});
+            } else if (option == GameOption::MoveToUsb) {
+                const bool available =
+                    !IsStoragePath(game.launch_path) && game.program_id && game.pulse_saved.empty();
+                in_place(option, Tr(available ? T::GameMoveHint : T::GameMoveUnavailable),
+                         available ? Tr(T::GameMove) : std::wstring_view{});
             } else if (option == GameOption::Remove) {
                 const bool external = IsStoragePath(game.launch_path);
                 in_place(option, Tr(external ? T::GameRemoveExternal :

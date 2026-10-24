@@ -364,6 +364,9 @@ void ScanFolder(StorageFolder folder, const std::string& token, const std::wstri
             const auto name = winrt::to_string(item.Name());
             const auto child = relative.empty() ? name : relative + "/" + name;
             if (!ValidStorageRelative(child)) continue;
+            // Interrupted move staging is never a launchable library copy.
+            if (name.starts_with(".jadyx-move"))
+                continue;
             if (item.IsOfType(StorageItemTypes::Folder)) {
                 if (drive_root ? ShouldDescendUsbFolder(child) : depth < 4) {
                     try {

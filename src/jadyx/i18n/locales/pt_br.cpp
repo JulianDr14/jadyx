@@ -587,6 +587,26 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::PulseDiscardConfirm, L"Pressione {0} de novo para descartar a sessão. Seus jogos salvos não são afetados."},
     {Text::PulseDiscarded, L"Sessão descartada"},
     {Text::PulseDiscardFailed, L"Não foi possível descartar a sessão"},
+    {Text::GameMove, L"Mover para USB"},
+    {Text::GameMoveHint, L"Move esta cópia interna e todas as atualizações/DLC instalados para uma "
+                         L"pasta USB. Tamanhos e SHA-256 são verificados antes de apagar os "
+                         L"originais. Os saves ficam no armazenamento interno."},
+    {Text::GameMoveConfirm, L"Pressione {0} novamente e escolha uma pasta USB. Arquivos existentes "
+                            L"no destino nunca são substituídos."},
+    {Text::GameMovePreparing, L"Preparando e verificando originais. Você pode cancelar."},
+    {Text::GameMoveProgress, L"Movendo e verificando: {0} / {1} MiB. Você pode cancelar."},
+    {Text::GameMoved, L"Movido e verificado. Os saves continuam no armazenamento interno."},
+    {Text::GameMoveFailed, L"Falha ao mover. Os originais foram mantidos. Uma cópia publicada pode "
+                           L"permanecer no USB; confira antes de tentar novamente."},
+    {Text::GameMoveCancelled, L"Movimentação cancelada. Os originais foram mantidos."},
+    {Text::GameMoveConflict,
+     L"A pasta do jogo já existe no USB. Escolha outra pasta; nada foi substituído."},
+    {Text::GameMoveSpace,
+     L"Capacidade USB desconhecida ou insuficiente. Libere espaço, reconecte e tente novamente."},
+    {Text::GameMoveCleanup, L"Cópia USB verificada e registrada. Restam arquivos internos; "
+                            L"atualize a biblioteca antes de apagar duplicatas."},
+    {Text::GameMoveUnavailable,
+     L"Escolha um jogo interno. Descarte a sessão Pulse salva antes de movê-lo."},
     {Text::GameRemove, L"Excluir jogo"},
     {Text::GameRemoveHint, L"Remove o jogo do console"},
     {Text::GameRemoveWarning, L"O jogo, seus jogos salvos, suas atualizações e DLC e sua sessão Pulse serão excluídos do console. Mods e trapaças são mantidos. Não é possível desfazer."},

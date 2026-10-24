@@ -108,6 +108,7 @@
 #include "jadyx/input/keyboard_bindings.h"
 #include "jadyx/library/uwp_library.h"
 #include "jadyx/storage/ftp/ftp_test_hook.h"
+#include "jadyx/storage/move_option.h"
 #include "jadyx/storage/uwp_rom_storage.h"
 #include "jadyx/content/content_service.h"
 #include "jadyx/mods/mod_settings.h"
@@ -2528,6 +2529,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 std::ifstream cfg{install / L"boot.cfg"};
                 for (std::string line; std::getline(cfg, line);) {
                     if (line == "library=1") show_library = true;
+                    else if (line == "NXBOX_MOVE_TO_USB=1")
+                        Jadyx::move_to_usb_boot_option = true;
                     else if (line.starts_with("library_pick=")) library_pick = line.substr(13);
                     else if (line == "NXBOX_USB_PLAY_IN_PLACE=1")
                         Jadyx::SetUsbPlayInPlace(true);
