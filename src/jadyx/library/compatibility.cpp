@@ -3,15 +3,55 @@
 #include "jadyx/library/compatibility.h"
 
 #include <charconv>
+#include <chrono>
 #include <nlohmann/json.hpp>
 
 namespace Jadyx::Compatibility {
+namespace {
+// ISO 8601 UTC, with optional fractional seconds (up to nanosecond precision).
+// Normalize fractions so lexical order also handles whole seconds and milliseconds.
+std::optional<std::string> Timestamp(std::string_view text) {
+    if (text.size() < 20 || text[4] != '-' || text[7] != '-' || text[10] != 'T' ||
+        text[13] != ':' || text[16] != ':' || text.back() != 'Z')
+        return std::nullopt;
+    const auto number = [text](std::size_t offset, std::size_t length) {
+        if (text.substr(offset, length).find_first_not_of("0123456789") != std::string_view::npos)
+            return -1;
+        int value{};
+        const auto result =
+            std::from_chars(text.data() + offset, text.data() + offset + length, value);
+        return result.ec == std::errc{} && result.ptr == text.data() + offset + length ? value : -1;
+    };
+    const int year = number(0, 4);
+    const int month = number(5, 2);
+    const int day = number(8, 2);
+    const auto date = std::chrono::year_month_day{std::chrono::year{year},
+                                                  std::chrono::month{static_cast<unsigned>(month)},
+                                                  std::chrono::day{static_cast<unsigned>(day)}};
+    if (year < 1 || !date.ok() || number(11, 2) < 0 || number(11, 2) > 23 || number(14, 2) < 0 ||
+        number(14, 2) > 59 || number(17, 2) < 0 || number(17, 2) > 59)
+        return std::nullopt;
+    std::string fraction;
+    if (text.size() != 20) {
+        if (text.size() < 22 || text.size() > 30 || text[19] != '.')
+            return std::nullopt;
+        fraction = text.substr(20, text.size() - 21);
+        if (fraction.find_first_not_of("0123456789") != std::string::npos)
+            return std::nullopt;
+    }
+    fraction.resize(9, '0');
+    return std::string{text.substr(0, 19)} + "." + fraction + "Z";
+}
+} // namespace
 std::optional<Table> Parse(std::string_view bytes) {
     if (bytes.size() > MaxBytes)
         return std::nullopt;
     const auto root = nlohmann::json::parse(bytes, nullptr, false);
     if (!root.is_object() || !root.contains("schema_version") || root["schema_version"] != 1 ||
         !root.contains("titles") || !root["titles"].is_object())
+        return std::nullopt;
+    if (root.contains("generated") &&
+        (!root["generated"].is_string() || !Timestamp(root["generated"].get<std::string>())))
         return std::nullopt;
     Table table;
     for (const auto& [key, rows] : root["titles"].items()) {
@@ -26,23 +66,29 @@ std::optional<Table> Parse(std::string_view bytes) {
         for (const auto& row : rows) {
             if (!row.is_object())
                 return std::nullopt;
-            for (const auto* field : {"title_id", "name", "status", "console", "fps_note",
-                                      "jadyx_version", "note", "source", "product"}) {
+            for (const auto* field :
+                 {"title_id", "name", "status", "console", "fps_note", "note", "product"}) {
                 if (!row.contains(field) || !row[field].is_string() ||
                     row[field].get_ref<const std::string&>().size() > 1024)
                     return std::nullopt;
             }
+            for (const auto* field : {"jadyx_version", "report_url", "date", "source"}) {
+                if (row.contains(field) && (!row[field].is_string() ||
+                                            row[field].get_ref<const std::string&>().size() > 1024))
+                    return std::nullopt;
+            }
             if (row["title_id"] != key || (row["console"] != "X" && row["console"] != "S") ||
-                (row["product"] != "Jadyx" && row["product"] != "NXbox") || row["name"] == "" ||
-                row["source"] == "")
+                (row["product"] != "Jadyx" && row["product"] != "NXbox") || row["name"] == "")
                 return std::nullopt;
             Report report;
             report.name = row["name"];
             report.console = row["console"];
             report.fps_note = row["fps_note"];
-            report.jadyx_version = row["jadyx_version"];
+            report.jadyx_version = row.value("jadyx_version", "");
+            report.report_url = row.value("report_url", "");
+            report.date = row.value("date", "");
             report.note = row["note"];
-            report.source = row["source"];
+            report.source = row.value("source", "");
             report.product = row["product"];
             const std::string status = row["status"];
             if (status == "playable")
@@ -57,30 +103,28 @@ std::optional<Table> Parse(std::string_view bytes) {
     return table;
 }
 
-bool RefreshEnabled(std::string_view environment, std::string_view configuration) {
-    if (!environment.empty())
-        return environment == "1";
-    bool enabled = false;
-    while (!configuration.empty()) {
-        const auto end = configuration.find('\n');
-        auto line = configuration.substr(0, end);
-        if (line.ends_with('\r'))
-            line.remove_suffix(1);
-        if (line.starts_with("NXBOX_COMPAT_REFRESH="))
-            enabled = line == "NXBOX_COMPAT_REFRESH=1";
-        if (end == std::string_view::npos)
-            break;
-        configuration.remove_prefix(end + 1);
+std::optional<std::string_view> Newest(std::string_view remote, std::string_view cached,
+                                       std::string_view bundled) {
+    std::optional<std::string_view> selected;
+    std::string newest;
+    // Stable ties: downloaded, cached, bundled. Undated legacy documents rank below dated ones.
+    for (const auto bytes : {remote, cached, bundled}) {
+        if (!Parse(bytes))
+            continue;
+        const auto root = nlohmann::json::parse(bytes);
+        const auto generated = root.value("generated", "");
+        const auto timestamp = generated.empty() ? std::string{} : *Timestamp(generated);
+        if (!selected || timestamp > newest) {
+            selected = bytes;
+            newest = timestamp;
+        }
     }
-    return enabled;
+    return selected;
 }
 
 Table Select(std::string_view remote, std::string_view cached, std::string_view bundled) {
-    for (const auto bytes : {remote, cached, bundled}) {
-        if (auto table = Parse(bytes))
-            return std::move(*table);
-    }
-    return {};
+    const auto selected = Newest(remote, cached, bundled);
+    return selected ? std::move(*Parse(*selected)) : Table{};
 }
 
 const Report& Lookup(const Table& table, std::uint64_t title_id, std::string_view console) {

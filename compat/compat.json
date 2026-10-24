@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "generated": "2026-10-24T13:00:00.000Z",
+  "titles": {
+    "0100152000022000": [
+      {
+        "title_id": "0100152000022000",
+        "name": "Mario Kart 8 Deluxe",
+        "status": "playable",
+        "console": "X",
+        "fps_note": "50–60 FPS in game",
+        "jadyx_version": "0.3.0.0",
+        "note": "Jadyx 0.3.0.0; separate community report",
+        "source": "Jadyx README.md Games table (community)",
+        "product": "Jadyx"
+      },
+      {
+        "title_id": "0100152000022000",
+        "name": "Mario Kart 8 Deluxe",
+        "status": "playable",
+        "console": "X",
+        "fps_note": "60 FPS in races, stable",
+        "jadyx_version": "",
+        "note": "No graphical errors. Frames of 16.7 ms, slowest 17.1 ms mid-race; rain, reflections and particles included",
+        "source": "Jadyx README.md Games table",
+        "product": "Jadyx"
+      },
+      {
+        "title_id": "0100152000022000",
+        "name": "Mario Kart 8 Deluxe",
+        "status": "issues",
+        "console": "X",
+        "fps_note": "",
+        "jadyx_version": "",
+        "note": "Mario Kart 8 Deluxe: needs firmware",
+        "source": "NXbox tools/nxbox-pack/src/compat.json (local read-only snapshot, 2026-10-24)",
+        "product": "NXbox"
+      }
+    ],
+    "010028600EBDA000": [
+      {
+        "title_id": "010028600EBDA000",
+        "name": "Super Mario 3D World + Bowser's Fury",
+        "status": "playable",
+        "console": "X",
+        "fps_note": "60 FPS, stable",
+        "jadyx_version": "",
+        "note": "In-game",
+        "source": "Jadyx README.md Games table",
+        "product": "Jadyx"
+      },
+      {
+        "title_id": "010028600EBDA000",
+        "name": "Super Mario 3D World + Bowser's Fury",
+        "status": "issues",
+        "console": "X",
+        "fps_note": "",
+        "jadyx_version": "",
+        "note": "Super Mario 3D World: menus 60 fps; level lighting incomplete on D3D12",
+        "source": "NXbox tools/nxbox-pack/src/compat.json (local read-only snapshot, 2026-10-24)",
+        "product": "NXbox"
+      }
+    ],
+    "01005CA01580E000": [
+      {
+        "title_id": "01005CA01580E000",
+        "name": "Persona 5 Royal",
+        "status": "broken",
+        "console": "X",
+        "fps_note": "",
+        "jadyx_version": "",
+        "note": "Persona 5 Royal: black screen on OpenGL path",
+        "source": "NXbox tools/nxbox-pack/src/compat.json (local read-only snapshot, 2026-10-24)",
+        "product": "NXbox"
+      }
+    ],
+    "01007EF00011E000": [
+      {
+        "title_id": "01007EF00011E000",
+        "name": "The Legend of Zelda: Breath of the Wild",
+        "status": "issues",
+        "console": "X",
+        "fps_note": "27–29 FPS observed in the open world with shaders compiled",
+        "jadyx_version": "",
+        "note": "Previously about 23 FPS in the tested open area. Holds 30 FPS in lighter areas; work in progress",
+        "source": "Jadyx README.md Games table",
+        "product": "Jadyx"
+      },
+      {
+        "title_id": "01007EF00011E000",
+        "name": "The Legend of Zelda: Breath of the Wild",
+        "status": "issues",
+        "console": "X",
+        "fps_note": "",
+        "jadyx_version": "",
+        "note": "Zelda: Breath of the Wild: slow, GPU-thread bound",
+        "source": "NXbox tools/nxbox-pack/src/compat.json (local read-only snapshot, 2026-10-24)",
+        "product": "NXbox"
+      }
+    ]
+  }
+}

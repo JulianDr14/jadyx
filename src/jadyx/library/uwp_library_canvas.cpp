@@ -745,10 +745,15 @@ private:
     std::wstring CompatibilityLabel(const Compatibility::Report& report) const {
         if (report.console.empty())
             return std::wstring{Tr(T::CompatibilityUntested)};
+        const auto version =
+            report.jadyx_version.empty()
+                ? std::wstring{}
+                : L" · Jadyx " + std::wstring{winrt::to_hstring(report.jadyx_version)};
         return I18n::Format(T::CompatibilityReport,
                             {Tr(CompatibilityText(report.status)),
                              std::wstring{winrt::to_hstring(report.fps_note)},
-                             std::wstring{winrt::to_hstring(report.console)}});
+                             std::wstring{winrt::to_hstring(report.console)}}) +
+               version;
     }
     void DrawCompatibility(Compatibility::Status status, float cx, float cy, float alpha) {
         unsigned color = Palette::TextSecondary;
