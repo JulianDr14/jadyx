@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <memory>
+
 #include "core/hle/result.h"
 #include "core/hle/service/am/frontend/applets.h"
 
@@ -22,7 +24,7 @@ enum class ErrorAppletMode : u8 {
     ShowUpdateEula = 8,
 };
 
-class Error final : public FrontendApplet {
+class Error final : public FrontendApplet, public std::enable_shared_from_this<Error> {
 public:
     explicit Error(Core::System& system_, std::shared_ptr<Applet> applet_,
                    LibraryAppletMode applet_mode_, const Core::Frontend::ErrorApplet& frontend_);

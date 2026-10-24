@@ -4528,3 +4528,21 @@ Pulse session blocks movement because it captures the original launch identity.
 Host transaction/hash/catalog/options gates pass; existing host failure set is
 unchanged. No MSVC/UWP build, PC/Series test or package. Recovery boundaries and
 exact pending console gate: [jx-21](nxbox-jx-21-move-to-usb.md).
+## NXbox applet port 38 (2026-10-24)
+
+Shared buffers now publish pixel stride (1280), preserving byte allocations.
+An opt-in `play=1` / `nxbox_error_overlay=1` UWP error frontend uses the existing
+menu surface and modal input; selection defaults unchanged. HLE completion now
+uses weak ownership and rejects duplicates. Portable queue/adapter/stride tests
+pass; existing game-menu fixture aborts both before and after. No UWP/console
+validation here. Evidence, limits and exact synthetic console gates:
+[nxbox-38-applet-errors.md](nxbox-38-applet-errors.md).
+
+
+## 2026-10-24: shared-buffer stride opt-in (jx-39)
+
+The applet-errors branch now keeps the original 5120 shared-buffer stride unless
+`shared_buffer_stride_fix=1` is set in boot.cfg. The independent switch defaults
+off, is not persisted, and is restored after a session. Host regression covers
+all seven slots off/on/off; Xbox/MSVC validation is pending. Evidence and exact
+console steps: [jx-39](nxbox-jx-39-applet-errors-optin.md).

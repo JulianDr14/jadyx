@@ -169,7 +169,10 @@ void Error::Execute() {
         return;
     }
 
-    const auto callback = [this] { DisplayCompleted(); };
+    const auto callback = [owner = weak_from_this()] {
+        if (const auto instance = owner.lock())
+            instance->DisplayCompleted();
+    };
     const auto title_id = system.GetApplicationProcessProgramID();
     const auto& reporter{system.GetReporter()};
 
@@ -209,6 +212,8 @@ void Error::Execute() {
 }
 
 void Error::DisplayCompleted() {
+    if (complete)
+        return;
     complete = true;
     PushOutData(std::make_shared<IStorage>(system, std::vector<u8>(0x1000)));
     Exit();

@@ -687,6 +687,21 @@ D3D12::MenuImage GameMenuSurface::DrawCheats(const Cheats::CheatsView& view, con
     return impl->RenderScreen(screen, false, [&] { impl->DrawCheats(view, scene); });
 }
 
+D3D12::MenuImage GameMenuSurface::DrawError(const ErrorDisplay::Message& message,
+                                            std::pair<u32, u32> screen) {
+    return impl->Render(960, 600, screen, [&] {
+        impl->Type(I18n::Tr(Text::GuestErrorTitle), TypeRole::Hero, 32, 28, 896, Palette::Text);
+        impl->Type(Utf8ToUtf16(message.code), TypeRole::HeadlineSmall, 32, 94, 896,
+                   Palette::TextSecondary);
+        const auto text = message.message.empty() ? std::wstring{I18n::Tr(Text::GuestErrorFallback)}
+                                                  : Utf8ToUtf16(message.message);
+        impl->Type(text, TypeRole::BodyLarge, 32, 148, 896, Palette::Text, 1, TextAlign::Leading,
+                   10);
+        impl->Prompt(L"A", ButtonColor::A, I18n::Tr(Text::GuestErrorDismiss), 32, 548);
+        impl->Prompt(L"B", ButtonColor::B, I18n::Tr(Text::GuestErrorDismiss), 260, 548);
+    });
+}
+
 D3D12::MenuImage GameMenuSurface::DrawKeyboard(const TextEntryPanelView& view, bool can_cancel,
                                               std::pair<u32, u32> screen) {
     using K = TextEntryPanelLayout;

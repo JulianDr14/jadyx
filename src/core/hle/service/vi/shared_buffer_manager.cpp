@@ -11,6 +11,7 @@
 #include "common/assert.h"
 #include "common/logging.h"
 #include "common/scratch_buffer.h"
+#include "common/settings.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_page_group.h"
 #include "core/hle/kernel/k_process.h"
@@ -172,6 +173,7 @@ constexpr u32 SharedBufferBlockLinearBpp = 4;
 
 constexpr u32 SharedBufferBlockLinearWidth = 1280;
 constexpr u32 SharedBufferBlockLinearHeight = 768;
+// Preserve the original byte stride unless the unvalidated pixel-stride fix is opted in.
 constexpr u32 SharedBufferBlockLinearStride =
     SharedBufferBlockLinearWidth * SharedBufferBlockLinearBpp;
 
@@ -254,7 +256,8 @@ void MakeGraphicBuffer(android::BufferQueueProducer& producer, u32 producer_slot
     auto buffer = std::make_shared<android::NvGraphicBuffer>();
     buffer->width = SharedBufferWidth;
     buffer->height = SharedBufferHeight;
-    buffer->stride = SharedBufferBlockLinearStride;
+    buffer->stride = Settings::values.shared_buffer_stride_fix ? SharedBufferBlockLinearWidth
+                                                               : SharedBufferBlockLinearStride;
     buffer->format = SharedBufferBlockLinearFormat;
     buffer->external_format = SharedBufferBlockLinearFormat;
     buffer->buffer_id = handle;

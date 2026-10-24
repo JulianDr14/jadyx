@@ -116,6 +116,7 @@
 #include "jadyx/storage/network_import_gate.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/game/uwp_software_keyboard.h"
+#include "jadyx/game/uwp_error_applet.h"
 #include "jadyx/settings/nacp_language.h"
 #include "jadyx/settings/uwp_system_settings.h"
 #include "video_core/performance_overlay.h"
@@ -258,6 +259,8 @@ static void ApplyGameLanguage(Core::System& system, bool fresh_start) {
 struct BootConfig {
     bool synthetic_motion{};  // Opt-in View/L3 + sticks six-axis input.
     bool joycon_preference{}; // Opt-in restricted-title automatic controller policy.
+    bool nxbox_error_overlay{};
+    bool shared_buffer_stride_fix{};
     /// > 0: the payload does not emit the sentinels (deko3d examples, games, ...); run it this long.
     u32 run_seconds{};
     /// PC test budget; hard process-commit enforcement belongs to local-run.ps1.
@@ -444,6 +447,20 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
               std::to_string(std::chrono::duration<double, std::milli>(timer_resolution).count()) +
               " ms");
     ApplyHeadlessBootSettings(config.null_renderer ? BootSurface{} : surface);
+    // Session-only override: old settings remain intact when this opt-in is absent.
+    struct RestoreErrorMode {
+        Settings::AppletMode mode;
+        bool stride_fix;
+        ~RestoreErrorMode() {
+            Settings::values.error_applet_mode.SetValue(mode);
+            Settings::values.shared_buffer_stride_fix = stride_fix;
+        }
+    } restore_error_mode{.mode = Settings::values.error_applet_mode.GetValue(),
+                         .stride_fix = Settings::values.shared_buffer_stride_fix};
+    Settings::values.shared_buffer_stride_fix = config.shared_buffer_stride_fix;
+    if (config.play && config.nxbox_error_overlay) {
+        Settings::values.error_applet_mode.SetValue(Settings::AppletMode::HLE);
+    }
     if (config.null_audio) {
         Settings::values.sink_id = Settings::AudioEngine::Null;
     }
@@ -564,7 +581,14 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
                                        .diag = [](const std::string& line) { WriteDiag(line); }});
     }
 
+    auto error_display = std::make_shared<Jadyx::ErrorDisplay>();
     Core::System system{};
+    struct StopErrorDisplay {
+        std::shared_ptr<Jadyx::ErrorDisplay> display;
+        ~StopErrorDisplay() {
+            display->Stop();
+        }
+    } stop_error_display{.display = error_display};
     g_gpu_command_failed.store(false, std::memory_order_release);
     VideoCommon::GPUThread::SetExceptionObserver([](const char* message) {
         // Logged here, on the GPU thread: tells a stuck recovery apart from a GPU thread that
@@ -594,6 +618,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     std::optional<WarmupScreen> warmup_screen;
     std::optional<std::jthread> trim_worker;
     const auto shutdown = [&] {
+        error_display->Stop();
         trim_worker.reset();
         warmup_screen.reset();
         pulse_screen.reset();
@@ -645,6 +670,9 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         keyboard_applet = keyboard.get();
         Service::AM::Frontend::FrontendAppletSet applets; // The others stay the core's.
         applets.software_keyboard = std::move(keyboard);
+        if (config.nxbox_error_overlay) {
+            applets.error = std::make_unique<Jadyx::UwpErrorApplet>(error_display);
+        }
         system.SetFrontendAppletSet(std::move(applets));
     }
     if (const auto file = system.GetFilesystem()->OpenFile(nro_path, FileSys::OpenMode::Read);
@@ -918,6 +946,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         // the running game. The menu opens on top of it and gives it back when it closes.
         GameKeyboard game_keyboard;
         bool keyboard_shown = false;
+        std::optional<ErrorDisplay::Message> error_message;
         struct TextEntryOff {
             ~TextEntryOff() { SetTextEntryActive(false); }
         } text_entry_off;
@@ -950,10 +979,13 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
             try {
                 menu_surface->SetPromptMapping(input.MenuPromptMapping());
                 const GameMenuScene scene{game_title, game_details, session_text};
-                image = cheats ? menu_surface->DrawCheats({*cheats, cheats_page, game_title, cheats_notice, true},
-                                                          scene, screen)
+                image = error_message ? menu_surface->DrawError(*error_message, screen)
+                        : cheats      ? menu_surface->DrawCheats(
+                                            {*cheats, cheats_page, game_title, cheats_notice, true},
+                                            scene, screen)
                         : menu ? menu_surface->DrawMenu(*menu, scene, screen)
-                               : menu_surface->DrawKeyboard(game_keyboard.View(), game_keyboard.CanCancel(), screen);
+                               : menu_surface->DrawKeyboard(game_keyboard.View(),
+                                                            game_keyboard.CanCancel(), screen);
             } catch (const winrt::hresult_error& e) {
                 WriteDiag("menu: not drawn: " + winrt::to_string(e.message()));
                 return;
@@ -964,7 +996,8 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         const auto sync_keyboard = [&] {
             const bool open = game_keyboard.IsOpen();
             const bool was_shown = std::exchange(keyboard_shown, open);
-            if (menu) return;
+            if (menu || error_message)
+                return;
             if (open) {
                 if (!was_shown) {
                     input.SetMenuOpen(true);
@@ -990,6 +1023,35 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         const auto keyboard_press = [&](std::optional<KeyboardReply> reply) {
             if (reply && keyboard_applet) keyboard_applet->Reply(*reply);
             sync_keyboard();
+        };
+        const auto sync_error = [&] {
+            error_display->CompleteDismissed();
+            auto current = error_display->Current();
+            const bool changed = current.has_value() != error_message.has_value() ||
+                                 (current && error_message && current->id != error_message->id);
+            if (!changed)
+                return;
+            error_message = std::move(current);
+            if (error_message) {
+                input.SetMenuOpen(true);
+                SetTextEntryActive(false);
+                try {
+                    if (!menu_surface)
+                        menu_surface.emplace();
+                    draw_menu();
+                } catch (const winrt::hresult_error& e) {
+                    WriteDiag("error applet: no surface: " + winrt::to_string(e.message()));
+                }
+                WriteDiag("error applet: shown " + error_message->code);
+            } else if (menu || game_keyboard.IsOpen()) {
+                SetTextEntryActive(!menu && game_keyboard.IsOpen());
+                if (menu_surface)
+                    draw_menu();
+            } else {
+                menu_surface.reset();
+                system.GPU().RunOnGpuThread([&] { D3D12::HideGameMenu(system.Renderer()); });
+                input.SetMenuOpen(false);
+            }
         };
         constexpr auto TICK = std::chrono::milliseconds(20);
         constexpr u32 TICKS_PER_MINUTE = 3000;
@@ -1122,18 +1184,25 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
                 LOG_INFO(Frontend, "Headless boot: session closed with Q.");
                 return 0;
             }
+            if (config.nxbox_error_overlay) sync_error();
             if (keyboard_applet) {
                 bool changed = false;
                 for (const KeyboardEvent& event : keyboard_applet->TakeEvents())
                     changed |= game_keyboard.Apply(event);
                 if (changed || game_keyboard.IsOpen() != keyboard_shown) sync_keyboard();
                 for (const TextEntryKey& key : TakeTextEntryKeys()) {
-                    if (menu || !game_keyboard.IsOpen()) break;
+                    if (menu || error_message || !game_keyboard.IsOpen())
+                        break;
                     keyboard_press(key.command ? game_keyboard.Handle(*key.command)
                                                : game_keyboard.Type(key.character));
                 }
             }
             for (const MenuAction action : input.TakeMenuActions()) {
+                if (error_message) {
+                    if (action == MenuAction::Confirm || action == MenuAction::Back)
+                        error_display->Dismiss(error_message->id);
+                    continue; // The whole batch belongs to the error, including menu shortcuts.
+                }
                 if (!menu && action != MenuAction::Toggle && game_keyboard.IsOpen()) {
                     if (const auto command = TextEntryCommand(action))
                         keyboard_press(game_keyboard.Handle(*command));
@@ -2945,6 +3014,16 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "pulse_diag=1") {
                             Common::Pulse::SetDiagnostics(true);
                             WriteDiag("boot.cfg: Pulse diagnostics on (GPU VA, shader code, page watch)");
+                        } else if (line == "nxbox_error_overlay=1") {
+                            config.nxbox_error_overlay = true;
+                            WriteDiag("boot.cfg: experimental HLE error overlay on");
+                        } else if (line == "nxbox_error_overlay=0") {
+                            config.nxbox_error_overlay = false;
+                        } else if (line == "shared_buffer_stride_fix=1") {
+                            config.shared_buffer_stride_fix = true;
+                            WriteDiag("boot.cfg: experimental shared buffer pixel stride on");
+                        } else if (line == "shared_buffer_stride_fix=0") {
+                            config.shared_buffer_stride_fix = false;
                         } else if (line == "play=1") {
                             config.play = true;
                             WriteDiag("boot.cfg: played by hand, no time limit or frame dumps");

@@ -337,6 +337,10 @@ enum class Text : std::uint16_t {
     DeleteKey,
     DoneKey,
 
+    GuestErrorTitle,
+    GuestErrorFallback,
+    GuestErrorDismiss,
+
     // Keyboard a game opens
     TextInputTitle,
     TextInputTooShort,

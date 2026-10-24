@@ -137,6 +137,9 @@ struct TouchFromButtonMap {
 struct Values {
     Linkage linkage{};
 
+    // Experimental boot.cfg override, session-only and never persisted.
+    bool shared_buffer_stride_fix{};
+
     // Applet
     SwitchableSetting<AppletMode> cabinet_applet_mode{linkage, AppletMode::LLE, "cabinet_applet_mode",
                                             Category::LibraryApplet};

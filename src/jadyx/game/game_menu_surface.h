@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "common/common_types.h"
+#include "jadyx/game/error_display.h"
 #include "video_core/renderer_d3d12/d3d12_menu_image.h"
 
 namespace Jadyx {
@@ -51,6 +52,7 @@ public:
     /// The cheats page.
     D3D12::MenuImage DrawCheats(const Cheats::CheatsView& view, const GameMenuScene& scene,
                                 std::pair<u32, u32> screen);
+    D3D12::MenuImage DrawError(const ErrorDisplay::Message& message, std::pair<u32, u32> screen);
     /// The keyboard a game opened (game_keyboard.h); B's prompt only when the game lets it cancel.
     D3D12::MenuImage DrawKeyboard(const TextEntryPanelView& view, bool can_cancel, std::pair<u32, u32> screen);
 

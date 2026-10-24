@@ -102,6 +102,9 @@ add_executable(jadyx WIN32
     game/game_keyboard.h
     game/uwp_software_keyboard.cpp
     game/uwp_software_keyboard.h
+    game/error_display.h
+    game/uwp_error_applet.cpp
+    game/uwp_error_applet.h
     settings/uwp_system_settings.cpp
     settings/uwp_system_settings.h
     library/library_cache.cpp
