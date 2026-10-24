@@ -451,9 +451,10 @@ std::optional<InputStep> ParseInputStep(std::string_view spec) {
     return step;
 }
 
-GamepadInput::GamepadInput(std::vector<InputStep> script_)
+GamepadInput::GamepadInput(std::vector<InputStep> script_, bool joycon_preference_)
     : gamepad{std::make_shared<InputCommon::VirtualGamepad>(std::string{ENGINE})},
-      script{std::move(script_)}, options{LoadControllerOptions()} {
+      script{std::move(script_)}, options{LoadControllerOptions()},
+      joycon_preference{joycon_preference_} {
     InitializeKeyboardBindings();
     Common::Input::RegisterInputFactory(std::string{ENGINE},
                                         std::make_shared<InputCommon::InputFactory>(gamepad));
@@ -544,8 +545,13 @@ ConsoleControllerStyle GamepadInput::SyncControllerStyle() {
     const auto supported = SupportedStyles(*hid);
     // Keep whatever the guest already accepts, including Eden's own Pro -> dual Joy-Con fallback.
     const bool active = handheld->IsConnected() || player->IsConnected();
-    if (!forced && active && IsStyleSupported(current, supported)) return current;
-    const auto wanted = chosen != ConsoleControllerStyle::Auto ? chosen : AutoControllerStyle(supported);
+    const auto preferred = PreferredControllerStyle(
+        supported, program_id, joycon_preference,
+        Settings::values.use_docked_mode.GetValue() == Settings::ConsoleMode::Docked);
+    const bool override_auto = joycon_preference && chosen == ConsoleControllerStyle::Auto &&
+                               preferred != AutoControllerStyle(supported);
+    if (!forced && !override_auto && active && IsStyleSupported(current, supported)) return current;
+    const auto wanted = chosen != ConsoleControllerStyle::Auto ? chosen : preferred;
     if (!IsStyleSupported(wanted, supported)) {
         if (forced) {
             LOG_WARNING(Input, "UWP input: this game does not accept {}",
@@ -599,8 +605,9 @@ void GamepadInput::SetOptions(const ControllerOptions& next) {
     }
 }
 
-void GamepadInput::Start(Core::HID::HIDCore& hid_) {
+void GamepadInput::Start(Core::HID::HIDCore& hid_, u64 program_id_) {
     hid = &hid_;
+    program_id = program_id_;
     // A focus lost while the game was still loading does not pause it once it starts.
     game_menu_open_requested.store(false, std::memory_order_relaxed);
     if (!thread.joinable()) {

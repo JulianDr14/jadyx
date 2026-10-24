@@ -84,7 +84,7 @@ void ApplyControllerStyleSettings(ConsoleControllerStyle style);
 class GamepadInput {
 public:
     /// Registers the virtual_gamepad engine; do it before HIDCore().ReloadInputDevices().
-    explicit GamepadInput(std::vector<InputStep> script);
+    explicit GamepadInput(std::vector<InputStep> script, bool joycon_preference = false);
     /// Unregisters the engine; call HIDCore().UnloadInputDevices() first.
     ~GamepadInput();
 
@@ -93,7 +93,7 @@ public:
 
     /// Starts polling the gamepad and the script clock (call when the guest starts running). In
     /// automatic style it also reconnects player 1 as a controller the game accepts.
-    void Start(Core::HID::HIDCore& hid);
+    void Start(Core::HID::HIDCore& hid, u64 program_id = 0);
     /// Stops polling and releases every input.
     void Stop();
 
@@ -117,6 +117,8 @@ private:
     std::mutex options_mutex;
     ControllerOptions options;
     std::atomic<bool> style_changed{};
+    bool joycon_preference{}; // Boot-only opt-in; never changes persisted controller options.
+    u64 program_id{};
     bool extra_players{true}; // Settings > System; read once per game, before the input thread.
     std::atomic<bool> menu_open{};
     std::atomic<u8> menu_prompt_mapping{};
