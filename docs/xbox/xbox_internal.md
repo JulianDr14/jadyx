@@ -4277,3 +4277,16 @@ de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificaci�
 global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
 excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
+
+## Experimental resolution choices (24 October 2026)
+
+`nxbox/60-resolution-options` adds the NXbox six-scale global/per-game setting to
+Jadyx, using LocalSettings and I18n. D3D12 scaling is default off behind
+`NXBOX_D3D12_RESOLUTION_SCALE=1` (also a packaged boot.cfg line). The partial
+single-layer, single-sample color/depth-only path preserves native transfers,
+scales shader flags/coordinates and leaves unsupported framebuffer groups native.
+Non-native tests bypass Pulse; native sessions remain stored. Portable settings,
+mask/arithmetic, FSR and catalog tests pass; existing menu/system harness failures
+are reproduced on main. No UWP compile or console verification on this Mac.
+Comparison, limitations and exact 3D World/BotW test:
+[nxbox-resolution-options.md](nxbox-resolution-options.md).

@@ -313,6 +313,7 @@ struct BootConfig {
     /// This boot's image upscaling instead of the saved one, for test runs ("upscaling=fsr";
     /// upscaling.h ParseUpscaling lists the values). Not saved.
     std::optional<Upscaling> upscaling;
+    bool resolution_scale{};
     /// Make the D3D12 command list calls on a thread of their own, so the GPU thread only records
     /// them ("async_record=0" makes them on the GPU thread, as before the recorder).
     bool async_record{true};
@@ -640,6 +641,18 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
         WriteDiag("content: launch blocked error=" + std::to_string(static_cast<int>(content.error)));
         shutdown(); return 16;
     }
+    // Resolve before Load constructs the renderer and before Pulse restores any GPU resources.
+    const auto requested_resolution = LoadResolution(content.application);
+    const char* resolution_switch = std::getenv("NXBOX_D3D12_RESOLUTION_SCALE");
+    const bool resolution_enabled =
+        config.resolution_scale ||
+        (resolution_switch && std::string_view{resolution_switch} == "1");
+    Settings::values.resolution_setup.SetValue(
+        EffectiveResolution(requested_resolution, resolution_enabled));
+    Settings::UpdateRescalingInfo();
+    WriteDiag("resolution: requested=" + std::to_string(static_cast<int>(requested_resolution)) +
+              " effective=" +
+              std::to_string(static_cast<int>(Settings::values.resolution_setup.GetValue())));
     if (content.managed)
         system.GetContentProviderUnion().SetApplicationContentOverride(content.application, &manual_provider);
     // The player's mod choices (which are off, and their order) before the loader reads any mod,
@@ -656,7 +669,8 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     };
     // Pulse: the identity this boot would save under, and the session it resumes if one matches.
     std::optional<Common::Pulse::Identity> pulse_identity;
-    if (config.pulse_sessions && PulseSessions::Enabled()) {
+    if (config.pulse_sessions && PulseSessions::Enabled() &&
+        !Settings::values.resolution_info.active) {
         try {
             const auto file = system.GetFilesystem()->OpenFile(nro_path, FileSys::OpenMode::Read);
             const auto user = system.GetProfileManager().GetUser(0);
@@ -1094,15 +1108,23 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
                     capture_frame();
                     // Upscaling as this boot applied it (a boot.cfg override included); only the
                     // GPU thread writes it while the game runs, and it is paused now.
-                    menu.emplace(GameMenuSettings{options.style, options.swap_face_buttons,
-                                                  options.deadzone, g_can_fullscreen.load(),
-                                                  g_fullscreen.load(), LoadSystemSettings().show_performance_stats,
-                                                  pulse_identity.has_value(),
-                                                  FromSettings(Settings::values.scaling_filter.GetValue(),
-                                                               Settings::values.fsr_sharpening_slider.GetValue()),
-                                                  config.material_capture_menu, config.hunt_menu,
-                                                  !game_frame.pixels.empty()},
-                                 program_id != 0);
+                    menu.emplace(
+                        GameMenuSettings{
+                            .style = options.style,
+                            .swap_face_buttons = options.swap_face_buttons,
+                            .deadzone = options.deadzone,
+                            .can_fullscreen = g_can_fullscreen.load(),
+                            .fullscreen = g_fullscreen.load(),
+                            .show_performance_stats = LoadSystemSettings().show_performance_stats,
+                            .pulse_sessions = pulse_identity.has_value(),
+                            .upscaling =
+                                FromSettings(Settings::values.scaling_filter.GetValue(),
+                                             Settings::values.fsr_sharpening_slider.GetValue()),
+                            .material_capture = config.material_capture_menu,
+                            .performance_capture = config.hunt_menu,
+                            .screenshot = !game_frame.pixels.empty(),
+                            .resolution = LoadResolution(program_id)},
+                        program_id != 0);
                     if (game_title.empty()) {
                         std::string title;
                         void(system.GetAppLoader().ReadTitle(title));
@@ -1292,6 +1314,15 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
                     settings.show_performance_stats = menu->Settings().show_performance_stats;
                     if (!SaveSystemSettings(settings)) WriteDiag("menu: statistics preference could not be saved");
                     VideoCore::performance_overlay_enabled.store(settings.show_performance_stats, std::memory_order_relaxed);
+                }
+                if (result == GameMenuResult::ResolutionChanged) {
+                    const auto choice = menu->Settings().resolution;
+                    const bool saved = SaveResolution(program_id, choice);
+                    menu->SetResolutionSaveResult(saved ? choice : LoadResolution(program_id),
+                                                  saved);
+                    // Never mutate scaling under live images, shaders or a resumed Pulse session.
+                    WriteDiag(saved ? "menu: resolution saved for next fresh launch"
+                                    : "menu: resolution preference could not be saved");
                 }
                 if (result == GameMenuResult::UpscalingChanged) {
                     const Upscaling upscaling = menu->Settings().upscaling;
@@ -2635,6 +2666,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.null_audio = false;
                             WriteDiag("boot.cfg: unknown audio backend '" + line.substr(6) +
                                       "', using XAudio2");
+                        } else if (line == "NXBOX_D3D12_RESOLUTION_SCALE=1") {
+                            config.resolution_scale = true;
                         } else if (line.starts_with("upscaling=")) {
                             config.upscaling =
                                 Jadyx::ParseUpscaling(std::string_view{line}.substr(10));

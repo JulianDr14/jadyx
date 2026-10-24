@@ -18,7 +18,21 @@
 namespace Jadyx {
 
 struct SystemPage {
-    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, AdultMods, PerformanceStats, PulseSessions, PlayTime, MultipleControllers, ClearCache, Updates, RowCount };
+    enum Row : std::size_t {
+        UserName,
+        InterfaceLanguage,
+        GameLanguage,
+        Region,
+        AdultMods,
+        PerformanceStats,
+        PulseSessions,
+        PlayTime,
+        MultipleControllers,
+        ClearCache,
+        Updates,
+        Resolution,
+        RowCount
+    };
 
     bool updates_open{};
     std::size_t update_row{}, update_detail{}, update_scroll{};
@@ -77,6 +91,9 @@ inline SystemPageEffect HandleSystemInput(SystemPage& page, SystemInput input) {
     const bool back = input == SystemInput::Left;
     auto& settings = page.settings;
     switch (static_cast<Row>(page.selected)) {
+    case Row::Resolution:
+        settings.resolution = StepResolution(settings.resolution, back);
+        return SystemPageEffect::Changed;
     case Row::UserName:
         if (input != SystemInput::Confirm) return SystemPageEffect::None;
         page.name_editor.emplace(settings.user_name, MaxUserNameLength);
@@ -137,6 +154,8 @@ inline SystemPageEffect FinishNameEditor(SystemPage& page, bool accept) {
 inline I18n::Text SystemRowTitle(SystemPage::Row row) {
     using I18n::Text;
     switch (row) {
+    case SystemPage::Resolution:
+        return Text::Resolution;
     case SystemPage::Updates:           return Text::UpdaterTitle;
     case SystemPage::UserName:          return Text::UserName;
     case SystemPage::InterfaceLanguage: return Text::InterfaceLanguage;
@@ -154,6 +173,8 @@ inline I18n::Text SystemRowTitle(SystemPage::Row row) {
 inline I18n::Text SystemRowHint(SystemPage::Row row) {
     using I18n::Text;
     switch (row) {
+    case SystemPage::Resolution:
+        return Text::ResolutionHint;
     case SystemPage::Updates:           return Text::UpdaterHint;
     case SystemPage::UserName:          return Text::UserNameHint;
     case SystemPage::InterfaceLanguage: return Text::InterfaceLanguageHint;
@@ -176,6 +197,8 @@ inline std::wstring SystemRowValue(const SystemPage& page, SystemPage::Row row) 
         return I18n::Format(Text::AutomaticValue, {value});
     };
     switch (row) {
+    case SystemPage::Resolution:
+        return std::wstring{I18n::Tr(ResolutionText(settings.resolution))};
     case SystemPage::UserName:
         return settings.user_name.empty() ? std::wstring{DefaultUserName} : settings.user_name;
     case SystemPage::InterfaceLanguage:

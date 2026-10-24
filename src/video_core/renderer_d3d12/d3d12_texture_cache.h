@@ -333,9 +333,9 @@ public:
     void DiagnosticTransition(ID3D12Resource* tracked_resource, D3D12_RESOURCE_STATES next);
     ID3D12Resource* DiagnosticSliceArray() const noexcept { return slice_array.Get(); }
     ID3D12Resource* DiagnosticReinterpreted() const noexcept { return reinterpreted.Get(); }
-    bool IsRescaled() const noexcept { return false; }
-    bool ScaleUp(bool = false) { return false; }
-    bool ScaleDown(bool = false) { return false; }
+    bool IsRescaled() const noexcept { return True(flags & VideoCommon::ImageFlagBits::Rescaled); }
+    bool ScaleUp(bool ignore = false);
+    bool ScaleDown(bool ignore = false);
 
     /// 2D array holding the depth slices of this 3D image, for shaders that sample it as a 2D
     /// array (Vulkan's 2D_ARRAY_COMPATIBLE views; D3D12 has no such view, and a 3D SRV where the
@@ -425,6 +425,10 @@ private:
     void DownloadDepthStencil(std::span<ID3D12Resource*> buffers, std::span<size_t> offsets,
                               std::span<const VideoCommon::BufferImageCopy> copies);
 
+    void SwapResolutionResources();
+    void BlitResolution(Image& destination, Image& source);
+    // Owns the inactive allocation. Swapping includes its state and placed-resource lifetime.
+    std::unique_ptr<Image> alternate_resolution;
     TextureCacheRuntime* runtime{};
     ComPtr<ID3D12Resource> resource;
     std::shared_ptr<TextureResourceAllocator::Allocation> resource_allocation;

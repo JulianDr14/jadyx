@@ -18,6 +18,7 @@
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_draw_sampler_cache.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
+#include "video_core/renderer_d3d12/d3d12_resolution.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/surface.h"
 #include "video_core/textures/texture.h"
@@ -186,6 +187,28 @@ private:
     boost::container::small_vector<D3D12_CPU_DESCRIPTOR_HANDLE, 32> handles;
     boost::container::small_vector<u64, 32> keys;
 };
+
+// Descriptor-level flags in the same order as SPIR-V's rescaling pass (one bit per
+// descriptor, including arrays, with texture and image indices independent).
+template <typename Info>
+void AppendResolutionFlags(const Info& info, TextureCache& texture_cache,
+                           const VideoCommon::ImageViewInOut*& views, ResolutionFlags& flags) {
+    views += Shader::NumDescriptors(info.texture_buffer_descriptors);
+    views += Shader::NumDescriptors(info.image_buffer_descriptors);
+    const auto append = [&](const auto& descriptors, bool storage) {
+        for (const auto& descriptor : descriptors) {
+            bool scaled = false;
+            for (u32 element = 0; element < descriptor.count; ++element)
+                scaled |= texture_cache.IsRescaling(texture_cache.GetImageView((views++)->id));
+            if (storage)
+                flags.PushImage(scaled);
+            else
+                flags.PushTexture(scaled);
+        }
+    };
+    append(info.texture_descriptors, false);
+    append(info.image_descriptors, true);
+}
 
 /// Push constants with no resolution scaling (all rescaling bits clear, down factor 1).
 inline void ResetPushConstants(std::array<u32, PUSH_CONSTANT_WORDS>& words) {

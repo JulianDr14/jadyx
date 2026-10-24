@@ -811,7 +811,11 @@ bool TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
         WarnOnce(logged_no_blit_helper, "scaled blits need the shader path; skipped");
         return false;
     }
-    const VideoCommon::Extent2D src_size{src.size.width, src.size.height};
+    const auto source_desc = src_image->Handle()->GetDesc();
+    const VideoCommon::Extent2D src_size{
+        src.IsRescaled() ? std::max(1U, static_cast<u32>(source_desc.Width) >> src_place.level)
+                         : src.size.width,
+        src.IsRescaled() ? std::max(1U, source_desc.Height >> src_place.level) : src.size.height};
     if (src_color) {
         if (VideoCore::Surface::IsPixelFormatInteger(src.format) ||
             VideoCore::Surface::IsPixelFormatInteger(dst.format)) {

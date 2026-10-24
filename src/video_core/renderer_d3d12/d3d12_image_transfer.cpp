@@ -134,6 +134,17 @@ void Image::UploadMemory(ID3D12Resource* buffer, size_t base_offset,
 
 void Image::UploadMemoryImpl(ID3D12Resource* buffer, size_t base_offset, u8* mapped_at_base,
                              std::span<const BufferImageCopy> copies) {
+    if (IsRescaled()) {
+        ScaleDown();
+        try {
+            UploadMemoryImpl(buffer, base_offset, mapped_at_base, copies);
+        } catch (...) {
+            ScaleUp(true); // Restore resource identity without recording work during unwinding.
+            throw;
+        }
+        ScaleUp();
+        return;
+    }
     if (!CanTransfer() || copies.empty()) {
         return;
     }
@@ -335,6 +346,17 @@ void Image::DownloadMemory(ID3D12Resource* buffer, size_t offset,
 
 void Image::DownloadMemory(std::span<ID3D12Resource*> buffers, std::span<size_t> offsets,
                            std::span<const BufferImageCopy> copies) {
+    if (IsRescaled()) {
+        ScaleDown();
+        try {
+            DownloadMemory(buffers, offsets, copies);
+        } catch (...) {
+            ScaleUp(true);
+            throw;
+        }
+        ScaleUp(true); // Readback leaves the higher-resolution representation unchanged.
+        return;
+    }
     if (!CanTransfer() || copies.empty()) {
         return;
     }

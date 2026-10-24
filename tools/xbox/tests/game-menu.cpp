@@ -141,20 +141,22 @@ int main() {
     GameMenu pc{{ConsoleControllerStyle::Auto, false, 0.12f, true, false}};
     while (pc.SelectedItem() != GameMenu::DisplayPage) pc.Apply(MenuAction::Down);
     check(pc.Apply(MenuAction::Right) == GameMenuResult::None && pc.CurrentPage() == GameMenu::Page::Display);
-    check(pc.Rows().size() == 3 && pc.Rows()[2].label == L"Pantalla completa" && pc.Rows()[2].value == L"No");
+    check(pc.Rows().size() == 4 && pc.Rows()[3].label == L"Pantalla completa" &&
+          pc.Rows()[3].value == L"No");
     pc.Apply(MenuAction::Up);
-    check(pc.SelectedItem() == GameMenu::FullScreen && pc.Selected() == 2);
+    check(pc.SelectedItem() == GameMenu::FullScreen && pc.Selected() == 3);
     check(pc.Apply(MenuAction::Confirm) == GameMenuResult::FullScreen && pc.Settings().fullscreen);
     check(pc.Apply(MenuAction::Right) == GameMenuResult::FullScreen && !pc.Settings().fullscreen);
     GameMenu series{{}};
     series.Apply(MenuAction::Down);
     series.Apply(MenuAction::Down);
     series.Apply(MenuAction::Confirm);
-    check(series.CurrentPage() == GameMenu::Page::Display && series.Rows().size() == 2);
+    check(series.CurrentPage() == GameMenu::Page::Display && series.Rows().size() == 3);
     for (const auto& row : series.Rows()) check(row.label != L"Pantalla completa");
     // The same menu follows the interface language.
     I18n::SetUiLanguage(*I18n::FindUiLanguage(L"en"));
-    check(pc.PageTitle() == L"Display" && pc.Rows()[2].label == L"Full screen" && pc.Rows()[2].value == L"No");
+    check(pc.PageTitle() == L"Display" && pc.Rows()[3].label == L"Full screen" &&
+          pc.Rows()[3].value == L"No");
     check(pc.Apply(MenuAction::Back) == GameMenuResult::None && pc.Rows()[0].label == L"Resume");
     // Both entry points start off and toggle the same persisted setting model.
     SystemPage system_page;

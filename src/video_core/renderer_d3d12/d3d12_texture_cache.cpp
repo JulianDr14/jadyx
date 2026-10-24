@@ -26,6 +26,9 @@
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/texture_cache.h"
 
+#include "common/settings.h"
+#include "video_core/renderer_d3d12/d3d12_resolution.h"
+
 namespace D3D12 {
 std::optional<D3D12_RESOURCE_STATES> Image::DiagnosticState(ID3D12Resource* tracked_resource) const {
     if (!tracked_resource) return std::nullopt;
@@ -64,6 +67,11 @@ bool TextureCacheRuntime::CanCheckpointImage(
 
 std::vector<u8> TextureCacheRuntime::ReadCheckpointImage(
     Image& image, std::span<const VideoCommon::BufferImageCopy> copies) {
+    const bool restore_scaled = image.ScaleDown();
+    SCOPE_EXIT {
+        if (restore_scaled)
+            image.ScaleUp(true);
+    };
     if (!CanCheckpointImage(image, copies)) {
         throw std::runtime_error("Pulse: texture requires an unsupported or oversized readback");
     }
@@ -252,7 +260,7 @@ bool TextureCacheRuntime::PrepareGcDownload(Image& image,
     const u64 size = image.unswizzled_size_bytes;
     // Large/unsupported transfers and real allocation emergencies preserve the original
     // recovery path. Bound pinned readback memory by the dedicated pool's actual power-of-two size.
-    if (recover_now || size > PendingBudget || !image.CanTransfer()) {
+    if (recover_now || size > PendingBudget || !image.CanTransfer() || image.IsRescaled()) {
         VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::TextureGcSyncReason,
                                     recover_now ? 1 : size > PendingBudget ? 2 : 3, image.gpu_addr);
         {
@@ -526,6 +534,135 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
     runtime->device.Get()->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr,
                                                  nullptr);
     footprint_format = footprint.Footprint.Format;
+    // The float blitter cannot preserve integer values or the stencil plane. Keep every
+    // attachment in such a framebuffer native via the shared cache's ImageCanRescale.
+    if (Settings::values.resolution_info.active) {
+        const auto& resolution = Settings::values.resolution_info;
+        const ResolutionScale scale{.numerator = resolution.up_scale,
+                                    .shift = resolution.down_shift};
+        constexpr u32 MaxExtent = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
+        const bool renderable = (resource_flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
+                                                   D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) != 0;
+        this->info.rescaleable &=
+            info_.type == ImageType::e2D && info_.num_samples == 1 && info_.resources.levels == 1 &&
+            info_.resources.layers == 1 && !format.converted && !gpu_decoded && block_w == 1 &&
+            block_h == 1 && !VideoCore::Surface::IsPixelFormatInteger(info_.format) &&
+            type != SurfaceType::DepthStencil && renderable && runtime->blit_helper &&
+            runtime->blit_helper->IsAvailable() && scale.Size(info_.size.width) <= MaxExtent &&
+            scale.Size(info_.size.height) <= MaxExtent;
+        if (info_.rescaleable && !this->info.rescaleable) {
+            static std::atomic<u32> logged_native{};
+            if (logged_native.fetch_add(1, std::memory_order_relaxed) < 16)
+                LOG_INFO(Render,
+                         "D3D12: resolution target kept native: {} {}x{} layers {} samples {}",
+                         info_.format, info_.size.width, info_.size.height, info_.resources.layers,
+                         info_.num_samples);
+        }
+    }
+}
+
+void Image::SwapResolutionResources() {
+    std::swap(resource, alternate_resolution->resource);
+    std::swap(resource_allocation, alternate_resolution->resource_allocation);
+    std::swap(state, alternate_resolution->state);
+    std::swap(needs_placed_init, alternate_resolution->needs_placed_init);
+    // Existing reinterpretation/feedback snapshots are rebuilt on the next read.
+    ++write_version;
+}
+
+void Image::BlitResolution(Image& destination, Image& source) {
+    const auto dst_desc = destination.Handle()->GetDesc();
+    const auto src_desc = source.Handle()->GetDesc();
+    const bool depth = format.dsv != DXGI_FORMAT_UNKNOWN;
+    const VideoCommon::Region2D dst_region{
+        .start = {0, 0},
+        .end = {static_cast<s32>(dst_desc.Width), static_cast<s32>(dst_desc.Height)}};
+    const VideoCommon::Region2D src_region{
+        .start = {0, 0},
+        .end = {static_cast<s32>(src_desc.Width), static_cast<s32>(src_desc.Height)}};
+    source.Transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    destination.Transition(depth ? D3D12_RESOURCE_STATE_DEPTH_WRITE
+                                 : D3D12_RESOURCE_STATE_RENDER_TARGET);
+    {
+        const auto srv = runtime->view_descriptors.Allocate();
+        const auto target =
+            depth ? runtime->dsv_descriptors.Allocate() : runtime->rtv_descriptors.Allocate();
+        SCOPE_EXIT {
+            runtime->view_descriptors.Free(srv);
+            if (depth)
+                runtime->dsv_descriptors.Free(target);
+            else
+                runtime->rtv_descriptors.Free(target);
+        };
+        // A single layer is a Texture2D view, matching the helper shader's declaration.
+        // Restrict scaling to one layer until the helper can sample arbitrary array slices.
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc{};
+        srv_desc.Format = format.srv;
+        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv_desc.Texture2D.MipLevels = 1;
+        runtime->device.Get()->CreateShaderResourceView(source.Handle(), &srv_desc, srv);
+        bool drawn = false;
+        if (depth) {
+            D3D12_DEPTH_STENCIL_VIEW_DESC desc{};
+            desc.Format = format.dsv;
+            desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+            runtime->device.Get()->CreateDepthStencilView(destination.Handle(), &desc, target);
+            drawn = runtime->blit_helper->BlitDepth(
+                {.view = target, .format = format.dsv, .samples = 1}, srv, dst_region, src_region,
+                {.width = static_cast<u32>(src_desc.Width), .height = src_desc.Height});
+        } else {
+            D3D12_RENDER_TARGET_VIEW_DESC desc{};
+            desc.Format = format.view;
+            desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+            runtime->device.Get()->CreateRenderTargetView(destination.Handle(), &desc, target);
+            drawn = runtime->blit_helper->BlitColor(
+                {.view = target, .format = format.view, .samples = 1}, srv,
+                runtime->blit_helper->LinearSampler(), dst_region, src_region,
+                {.width = static_cast<u32>(src_desc.Width), .height = src_desc.Height});
+        }
+        if (!drawn)
+            throw std::runtime_error("D3D12: resolution blit failed");
+    }
+}
+
+bool Image::ScaleUp(bool ignore) {
+    const auto& resolution = Settings::values.resolution_info;
+    if (!resolution.active || IsRescaled() || !info.rescaleable)
+        return false;
+    if (!alternate_resolution) {
+        const ResolutionScale scale{.numerator = resolution.up_scale,
+                                    .shift = resolution.down_shift};
+        auto scaled_info = info;
+        scaled_info.size.width = scale.Size(info.size.width);
+        scaled_info.size.height = scale.Size(info.size.height);
+        scaled_info.rescaleable = false;
+        try {
+            alternate_resolution = std::make_unique<Image>(*runtime, scaled_info, 0, 0);
+        } catch (const std::exception& error) {
+            LOG_ERROR(Render, "D3D12: resolution allocation failed: {}", error.what());
+            throw;
+        }
+        ignore = false;
+        LOG_INFO(Render, "D3D12: resolution image {}x{} -> {}x{}", info.size.width,
+                 info.size.height, scaled_info.size.width, scaled_info.size.height);
+    }
+    if (!ignore)
+        BlitResolution(*alternate_resolution, *this);
+    SwapResolutionResources();
+    flags |= VideoCommon::ImageFlagBits::Rescaled;
+    has_scaled = true;
+    return true;
+}
+
+bool Image::ScaleDown(bool ignore) {
+    if (!IsRescaled())
+        return false;
+    if (!ignore)
+        BlitResolution(*alternate_resolution, *this);
+    SwapResolutionResources();
+    flags &= ~VideoCommon::ImageFlagBits::Rescaled;
+    return true;
 }
 
 Image::Image(const VideoCommon::NullImageParams& params) : VideoCommon::ImageBase{params} {}
@@ -567,6 +704,7 @@ Image& Image::operator=(Image&& other) noexcept {
         allocation_tick = other.allocation_tick;
         runtime = other.runtime;
         gc_readback = std::move(other.gc_readback);
+        alternate_resolution = std::move(other.alternate_resolution);
         resource = std::move(other.resource);
         resource_allocation = std::move(other.resource_allocation);
         format = other.format;
@@ -596,8 +734,14 @@ Image* Image::PrepareDepthFeedback() {
     if (depth_feedback_failed || !runtime || !resource) {
         return nullptr;
     }
-    if (!depth_feedback) {
-        depth_feedback = std::make_unique<Image>(*runtime, info, 0, 0);
+    const auto desc = resource->GetDesc();
+    if (!depth_feedback || depth_feedback->Handle()->GetDesc().Width != desc.Width ||
+        depth_feedback->Handle()->GetDesc().Height != desc.Height) {
+        auto feedback_info = info;
+        feedback_info.size.width = static_cast<u32>(desc.Width);
+        feedback_info.size.height = desc.Height;
+        feedback_info.rescaleable = false;
+        depth_feedback = std::make_unique<Image>(*runtime, feedback_info, 0, 0);
         if (!depth_feedback->Handle()) {
             depth_feedback.reset();
             depth_feedback_failed = true;

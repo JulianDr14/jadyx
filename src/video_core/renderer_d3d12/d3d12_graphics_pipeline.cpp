@@ -677,9 +677,22 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     out.integer_samplers = integer_samplers.Upload(buffer_cache);
     lap.Lap(VideoCore::Perf::Counter::DrawSamplersNs);
 
-    // Push constants: no resolution scaling yet (all rescaling bits clear, down factor 1), then
-    // the render area, which shares the first words exactly as in the Vulkan backend.
+    // Descriptor flags and fragment-coordinate correction, as in the Vulkan backend.
     ResetPushConstants(out.push_constants);
+    if (Settings::values.resolution_info.active) {
+        const ImageViewInOut* resolution_views = views.data();
+        ResolutionFlags resolution_flags;
+        for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+            if (HasStage(stage))
+                AppendResolutionFlags(*stage_infos[stage], texture_cache, resolution_views,
+                                      resolution_flags);
+        }
+        std::ranges::copy(resolution_flags.words, out.push_constants.begin());
+    }
+    constexpr u32 factor_word =
+        Shader::Backend::SPIRV::RESCALING_LAYOUT_DOWN_FACTOR_OFFSET / sizeof(u32);
+    out.push_constants[factor_word] = std::bit_cast<u32>(
+        texture_cache.IsRescaling() ? Settings::values.resolution_info.down_factor : 1.0f);
     if (uses_render_area) {
         out.push_constants[0] = std::bit_cast<u32>(static_cast<f32>(regs.surface_clip.width));
         out.push_constants[1] = std::bit_cast<u32>(static_cast<f32>(regs.surface_clip.height));
