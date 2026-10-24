@@ -59,6 +59,19 @@ constexpr ConsoleControllerStyle AutoControllerStyle(SupportedControllerStyles s
     return ConsoleControllerStyle::Pro;
 }
 
+/// Opt-in title policy from NXbox (3946ecf16/a2aafaeb6). Manual styles bypass this helper.
+constexpr ConsoleControllerStyle PreferredControllerStyle(SupportedControllerStyles supported,
+                                                         std::uint64_t program_id,
+                                                         bool enabled, bool docked) {
+    const bool restricted = program_id == 0x010003F003A34000ULL ||
+                            program_id == 0x0100187003A36000ULL;
+    if (enabled && restricted) {
+        if (supported.joycon_dual) return ConsoleControllerStyle::DualJoycon;
+        if (docked && supported.joycon_right) return ConsoleControllerStyle::RightJoycon;
+    }
+    return AutoControllerStyle(supported);
+}
+
 /// Players 2-8 look like player 1 when the game accepts that, so a party plays with matching
 /// controllers; handheld is the console itself and only ever player 1, so they never take it.
 constexpr ConsoleControllerStyle ExtraPlayerStyle(ConsoleControllerStyle first,

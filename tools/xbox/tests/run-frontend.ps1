@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
-param([string[]]$Tests = @('frontend-input', 'controller-selection', 'player-slots', 'stick-navigation',
+param([string[]]$Tests = @('frontend-input', 'controller-selection', 'controller-preference', 'stick-motion', 'player-slots', 'stick-navigation',
     'game-menu', 'game-keyboard', 'system-settings', 'cheats-page', 'mods-page',
     'text-entry', 'localization-catalogs', 'play-history', 'themes', 'theme-settings', 'themes-integration'))
 $ErrorActionPreference = 'Stop'

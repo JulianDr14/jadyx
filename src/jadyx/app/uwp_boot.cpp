@@ -250,6 +250,8 @@ static void ApplyGameLanguage(Core::System& system) {
 
 /// Optional boot.cfg next to boot.nro (written by package-appx.ps1 -RunSeconds).
 struct BootConfig {
+    bool synthetic_motion{};  // Opt-in View/L3 + sticks six-axis input.
+    bool joycon_preference{}; // Opt-in restricted-title automatic controller policy.
     /// > 0: the payload does not emit the sentinels (deko3d examples, games, ...); run it this long.
     u32 run_seconds{};
     /// PC test budget; hard process-commit enforcement belongs to local-run.ps1.
@@ -573,7 +575,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     HeadlessEmuWindow emu_window{surface.core_window, surface.width, surface.height};
 
     // Before Load, so HID starts with player 1 connected and bound to the gamepad engine.
-    GamepadInput input{config.input_script};
+    GamepadInput input{config.input_script, config.joycon_preference, config.synthetic_motion};
     system.HIDCore().ReloadInputDevices();
     // Set only after a failed Load has returned from Core's own synchronous cleanup.
     // Other early Load failures still require the frontend to tear down the kernel.
@@ -825,7 +827,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     // A resume's screen stays over it until the game presents.
     if (pulse_screen) pulse_screen->GameStarting();
     void(system.Run());
-    input.Start(system.HIDCore());
+    input.Start(system.HIDCore(), system.GetApplicationProcessProgramID());
     if (config.gpu_failure_probe) {
         WriteDiag("GPU recovery probe: injecting callback failure");
         system.GPU().RunOnGpuThread([&] {
@@ -2542,6 +2544,12 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.run_seconds =
                                 static_cast<u32>(std::strtoul(line.c_str() + key.size(), nullptr, 10));
                             WriteDiag("boot.cfg: run " + std::to_string(config.run_seconds) + " s");
+                        } else if (line == "synthetic_motion=1") {
+                            config.synthetic_motion = true;
+                            WriteDiag("boot.cfg: player-one synthetic motion enabled");
+                        } else if (line == "joycon_preference=1") {
+                            config.joycon_preference = true;
+                            WriteDiag("boot.cfg: restricted-title Joy-Con preference enabled");
                         } else if (line == "descriptor_checks=1") {
                             config.descriptor_checks = true;
                             WriteDiag("boot.cfg: device removal checks after every draw descriptor");

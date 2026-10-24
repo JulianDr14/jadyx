@@ -21,6 +21,7 @@ SixAxis::SixAxis(Core::HID::HIDCore& hid_core_, std::shared_ptr<NPad> npad_)
     for (std::size_t i = 0; i < controller_data.size(); ++i) {
         auto& controller = controller_data[i];
         controller.device = hid_core.GetEmulatedControllerByIndex(i);
+        controller.device->ClearSixAxisSensorRequests();
     }
 }
 
@@ -80,7 +81,8 @@ void SixAxis::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
             sixaxis_left_lifo_state = {};
             sixaxis_right_lifo_state = {};
 
-            if (controller.sixaxis_sensor_enabled && Settings::values.motion_enabled.GetValue()) {
+            if (controller.device->IsSixAxisDeliveryEnabled(controller.sixaxis_sensor_enabled) &&
+                Settings::values.motion_enabled.GetValue()) {
                 controller.sixaxis_at_rest = true;
                 for (std::size_t e = 0; e < motion_state.size(); ++e) {
                     controller.sixaxis_at_rest =
@@ -89,7 +91,8 @@ void SixAxis::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
             }
 
             const auto set_motion_state = [&](Core::HID::SixAxisSensorState& state,
-                                              const Core::HID::ControllerMotion& hid_state) {
+                                              const Core::HID::ControllerMotion& hid_state,
+                                              int device_index = -1) {
                 using namespace std::literals::chrono_literals;
                 static constexpr Core::HID::SixAxisSensorState default_motion_state = {
                     .delta_time = std::chrono::nanoseconds(5ms).count(),
@@ -102,7 +105,8 @@ void SixAxis::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
                         },
                     .attribute = {1},
                 };
-                if (!controller.sixaxis_sensor_enabled) {
+                if (!controller.device->IsSixAxisDeliveryEnabled(controller.sixaxis_sensor_enabled,
+                                                                 device_index)) {
                     state = default_motion_state;
                     return;
                 }
@@ -129,8 +133,8 @@ void SixAxis::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
                 set_motion_state(sixaxis_handheld_state, motion_state[0]);
                 break;
             case Core::HID::NpadStyleIndex::JoyconDual:
-                set_motion_state(sixaxis_dual_left_state, motion_state[0]);
-                set_motion_state(sixaxis_dual_right_state, motion_state[1]);
+                set_motion_state(sixaxis_dual_left_state, motion_state[0], 0);
+                set_motion_state(sixaxis_dual_right_state, motion_state[1], 1);
                 break;
             case Core::HID::NpadStyleIndex::JoyconLeft:
                 set_motion_state(sixaxis_left_lifo_state, motion_state[0]);
@@ -285,6 +289,8 @@ Result SixAxis::SetSixAxisEnabled(const Core::HID::SixAxisSensorHandle& sixaxis_
 
     auto& controller = GetControllerFromHandle(sixaxis_handle);
     controller.sixaxis_sensor_enabled = sixaxis_status;
+    controller.device->SetSixAxisSensorRequested(sixaxis_handle.npad_type,
+                                                 sixaxis_handle.device_index, sixaxis_status);
     return ResultSuccess;
 }
 

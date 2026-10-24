@@ -22,6 +22,7 @@
 #include "common/settings.h"
 #include "common/vector_math.h"
 #include "hid_core/frontend/motion_input.h"
+#include "hid_core/frontend/six_axis_requests.h"
 #include "hid_core/hid_types.h"
 #include "hid_core/irsensor/irs_types.h"
 
@@ -253,6 +254,25 @@ public:
     /// Returns true if the emulated controller is in configuring mode
     bool IsConfiguring() const;
 
+    // Guest sensor requests are observed by optional synthetic input only. Legacy HID
+    // delivery and persisted controller settings remain unchanged.
+    void SetSixAxisSensorRequested(NpadStyleIndex style, DeviceIndex device, bool requested) {
+        six_axis_requests.Set(static_cast<u8>(style), static_cast<u8>(device), requested);
+    }
+    bool IsSixAxisSensorRequested() const {
+        return six_axis_requests.Any(static_cast<u8>(npad_type.load()));
+    }
+    void SetSyntheticMotionEnabled(bool enabled) {
+        six_axis_requests.SetSyntheticEnabled(enabled);
+    }
+    bool IsSixAxisDeliveryEnabled(bool legacy_enabled, int device_index = -1) const {
+        return six_axis_requests.DeliveryEnabled(legacy_enabled, static_cast<u8>(npad_type.load()),
+                                                 device_index);
+    }
+    void ClearSixAxisSensorRequests() {
+        six_axis_requests.Clear();
+    }
+
     /// Reload all input devices
     void ReloadInput();
 
@@ -475,6 +495,7 @@ public:
     void StatusUpdate();
 
 private:
+    SixAxisRequests six_axis_requests;
     /// creates input devices from params
     void LoadDevices();
 

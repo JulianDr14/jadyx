@@ -17,6 +17,7 @@ add_library(hid_core STATIC
     frontend/input_interpreter.h
     frontend/motion_input.cpp
     frontend/motion_input.h
+    frontend/six_axis_requests.h
     hidbus/hidbus_base.cpp
     hidbus/hidbus_base.h
     hidbus/ringcon.cpp

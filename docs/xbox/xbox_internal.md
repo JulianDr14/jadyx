@@ -4425,3 +4425,11 @@ saturation 1,444,512 vectors pass. Native Dynarmic/Unicorn 10,624 cases added bu
 not run; MSVC/UWP/Series gates pending. No cache/profile format or setting change,
 no package/version bump; no network or push. Per-fix console protocols and
 adapter limits remain in the linked port report.
+## NXbox controller/motion port (24 October 2026)
+
+Default-off boot switches `joycon_preference=1` and `synthetic_motion=1` add the
+restricted-title automatic policy and player-one six-axis input. Existing styles,
+settings and legacy sensor delivery remain the baseline with switches absent.
+Host evidence and exact pending console acceptance:
+[`nxbox-37-controllers-motion.md`](nxbox-37-controllers-motion.md).
+No Windows/UWP build, console test or performance certification in this work.

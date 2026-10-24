@@ -32,6 +32,8 @@ add_executable(jadyx WIN32
     app/alloc_watch.h
     input/uwp_input.cpp
     input/uwp_input.h
+    input/stick_motion.h
+    input/synthetic_motion.h
     library/uwp_library.cpp
     library/uwp_library_canvas.cpp
     library/uwp_library_canvas.h
