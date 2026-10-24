@@ -95,6 +95,14 @@ jobs:
           name: jadyx-package
           path: out
 
+      # The build artifact retains the public certificate for Windows sideloading. Xbox users
+      # install the signed APPX; removing the separate export does not change its signature.
+      - name: Prepare Xbox release assets
+        run: |
+          test -f "out/Jadyx_${PACKAGE_VERSION}_x64.appx"
+          test -f out/Microsoft.VCLibs.x64.14.00.appx
+          rm out/Jadyx.cer
+
       - name: Sign update metadata
         shell: pwsh
         env:
@@ -134,20 +142,18 @@ jobs:
           You need an Xbox Series X|S in Dev Mode. No keys, firmware or games are included: use your
           own dumps.
 
-          1. Download \`Jadyx_${PACKAGE_VERSION}_x64.appx\`, \`Microsoft.VCLibs.x64.14.00.appx\` and
-             \`Jadyx.cer\` from the assets below.
-          2. On a PC on the same network, open Device Portal at \`https://<xbox-ip>:11443\` (Dev Home
-             shows the address) and accept the browser's certificate warning.
-          3. Choose **Add**, pick the Jadyx appx, add the VCLibs appx as a dependency and \`Jadyx.cer\`
-             as the certificate, and install.
-          4. In Dev Home, select Jadyx → **View details** and set **App type** to **Game**. In App mode
-             it runs out of memory.
-          5. Start Jadyx and send your keys, firmware and games from a PC or phone with the
-             **Jadyx Portal**: **Settings → File manager → Network connection → Start server**, open
-             the address it shows in a browser on the same network and enter the connection code.
-          6. Other ways: import keys and firmware from a folder or ZIP on a USB drive in
-             **Settings → File manager**, and add games from an external folder or USB drive, or copy
-             them to the app's \`LocalState\games\` folder with the Device Portal file explorer.
+          1. Download **\`Jadyx_${PACKAGE_VERSION}_x64.appx\`** below and install it through **Add** in
+             Device Portal at \`https://<xbox-ip>:11443\` (Dev Home shows the address).
+             **If Device Portal asks for a dependency**, download \`Microsoft.VCLibs.x64.14.00.appx\`
+             below and add it as a dependency. VCLibs remains required; once installed at a compatible
+             version, it does not need to be uploaded again.
+          2. In Dev Home, select Jadyx → **View details** and set **App type** to **Game**. App mode
+             has much less memory than the 5120 MiB the emulator expects.
+          3. Start Jadyx and import your own keys and firmware in **Settings → File manager**, from
+             a folder or ZIP on USB, or with the **Jadyx Portal**: **Network connection → Start
+             server**, then open its address on a PC or phone on the same network and enter the code.
+          4. Add your own games from a USB drive or external folder, send them with the Jadyx Portal,
+             or copy them to \`LocalState\games\` with the Device Portal file explorer.
 
           A newer version installs over the previous one and keeps your games, saves and settings. Do
           not uninstall to update: uninstalling deletes them.
@@ -183,7 +189,13 @@ jobs:
           if [ "$PRERELEASE" = "true" ]; then flags=(--prerelease --latest=false); fi
           draft_flags=()
           if [ "$PRERELEASE" = "true" ]; then draft_flags=(--prerelease); fi
-          gh release create "$TAG" out/* --repo JulianDr14/jadyx --verify-tag --draft --title "$title" --notes-file "$RUNNER_TEMP/notes.md" \
+          # Put the clearly labelled installer first; keep dependency, symbols and metadata separate.
+          installer="out/Jadyx_${PACKAGE_VERSION}_x64.appx"
+          assets=("$installer#Jadyx Xbox installer")
+          for file in out/*; do
+              if [ "$file" != "$installer" ]; then assets+=("$file"); fi
+          done
+          gh release create "$TAG" "${assets[@]}" --repo JulianDr14/jadyx --verify-tag --draft --title "$title" --notes-file "$RUNNER_TEMP/notes.md" \
               "${draft_flags[@]}"
           test "$(gh api 'repos/JulianDr14/jadyx/git/ref/tags/'"$TAG" --jq .object.sha)" = "$GITHUB_SHA"
           mkdir -p "$RUNNER_TEMP/update-verify"
