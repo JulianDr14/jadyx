@@ -110,3 +110,38 @@ normal rendering/texture upload paths with an owned local title if available;
 leave gameplay duration under manual control. Do not deliberately exhaust console
 memory. The host throwing-allocation test establishes the failure guarantee;
 the ordinary console smoke cannot establish that guarantee by itself.
+
+## 3. BSD Read receives socket data
+
+Reference: NXbox `52f2eb0c0f8678ed44cf859507899ecaba95ac6e`.
+
+BSD Read always returned success with zero bytes, fabricating EOF on a live
+socket. Delegate to Jadyx's existing deferred RecvWork with flags zero and an
+output vector sized to the IPC buffer, exactly as Recv does. Do not introduce a
+second socket/error/blocking implementation. No service endpoint, online default
+or network feature is added.
+
+`run.py bsd-read` fails before the change: four synthetic available bytes produce
+return zero. After the change it passes eight calls: payload, bounded partial
+receive, zero-sized output, real EOF, two invalid descriptors, would-block and
+interrupted receive. It executes the production Read, RecvWork Execute/Response
+and RecvImpl with a fake socket/IPC scheduler. Descriptor nonblocking state and
+existing errno/response shape are preserved. No host socket or peer is opened.
+
+Console test (pending; original diagnostic homebrew and separately authorized
+controlled local peer required):
+
+1. Build/package as in section 1. Start a peer on the private LAN serving the
+   literal eight bytes `JADYX35!`, then closing. Use an original homebrew client
+   calling BSD Read (command 25), with a three-byte receive buffer, until EOF.
+   Require concatenated `JADYX35!`, positive partial returns and zero only after
+   peer close; sentinel bytes around the IPC buffer must remain unchanged.
+2. Have the peer hold the connection open with no data. A blocking Read must
+   remain pending, then complete when the peer sends one byte. With the socket
+   nonblocking, require would-block and unchanged flags; invalid fd must report
+   BADF. Exercise an interrupted pending receive using the platform's supported
+   interruption path and compare to Recv flags=0 on the same setup.
+3. Repeat after returning to library/relaunching the diagnostic, and with the
+   normal original boot homebrew. Require no stuck worker, crash or unexpected
+   error. These payload/peer fixtures are a future console gate; the mock host
+   tests do not establish actual Xbox network permission or wake behavior.
