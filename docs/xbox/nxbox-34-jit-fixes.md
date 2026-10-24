@@ -165,7 +165,7 @@ precision status. Its `vector` variant independently reproduced the vector bug.
 Both now pass: 256 modeled result/sticky-flag cases across scalar/vector,
 FP32/64 and four modes, plus 16 signaling-NaN invalid-preservation cases.
 The adapter models ROUND semantics, not real MXCSR execution. Added Dynarmic
-`A64: Vector rounding differential` (1792 Unicorn cases, including IXC); the
+`A64: Vector rounding differential` (896 Unicorn cases, including IXC); the
 scalar test above covers scalar native behavior. Native x64 execution is pending.
 
 Console gate: extend the scalar FRINT diagnostic above with 2S/4S/2D vector
@@ -176,3 +176,79 @@ signed-zero lanes with the oracle's result bits. Clear host MXCSR status between
 Windows diagnostic cases and verify only precision suppression, not invalid
 suppression. Run the normally selected SSE4.1 console path and a forced software
 fallback on the Windows host; require matching result/FPSR for each instruction.
+
+## Macro x64 JIT immediate two
+
+Reference: `411a196ee`, adapted and expanded from its GPL test fixture.
+`Compile_AddImmediate` and `Compile_Read` skipped exactly 2: they used ADD for
+values greater than 2, INC for 1 and SUB for negative values. Include 2 in ADD.
+No macro-cache format, optimizer setting or interpreter change.
+
+`python3 -B tools/xbox/tests/jit-macro-immediate.py` ran 8,388,608 comparisons
+before the fix and found 30 mismatches, all at immediate 2. Afterward the same
+comparisons have zero mismatches. This covers every signed 18-bit immediate,
+eight source registers, zero-register optimization on/off and both operations.
+It executes the production emitter operations in an x86 adapter and compares
+the result/address with the interpreter's production address expression. Read
+addresses outside the synthetic register file use an explicit deterministic
+sentinel; the fixture never dereferences an invalid host address. This is not an
+integrated native macro execution test.
+
+Console gate: upload an original synthetic macro (no game-derived program) that
+loads r1 with 100, adds immediate 2 and emits the result to a scratch method;
+require 102. A second synthetic macro reads from r1+2, with registers 100 and 102
+initialized to distinct sentinels, and emits the read value; require register
+102's sentinel. Compare the full emitted method/value stream with the macro
+interpreter. Repeat with r0, immediate -2/0/1/2/3 and values wrapping at UINT32_MAX,
+zero-register optimization enabled and disabled. On Windows additionally run
+both production x64 macro JIT and interpreter on the exhaustive host corpus.
+
+## Reproduce the host gate and future delivery
+
+Run from the repository root, offline:
+
+```sh
+python3 -B tools/xbox/tests/jit-fixes.py
+```
+
+Final result on 2026-10-24: **8/8 new regression scripts and 3/3 existing trace
+baselines pass**. Every fix had an observed failing host regression before its
+production edit. The scalar and vector precision defects were each reproduced
+independently. C++ adapters compile with Clang C++20, `-Wall -Wextra -Werror` and
+UBSan. Ruff check/format and `git diff --check` pass. Tests use temporary build
+directories and require no downloads or new dependencies. Set `CXX` to another
+compatible Clang executable if needed; the UBSan driver is not an MSVC command.
+
+The additional **10,624** Dynarmic/Unicorn native cases are added, **not run**.
+On an already configured x64 host with `DYNARMIC_TESTS_USE_UNICORN=ON`, build
+`dynarmic_tests` and run these Catch2 filters individually:
+
+```text
+dynarmic_tests "A64: SM4 rounds differential"
+dynarmic_tests "A64: Scalar rounding differential"
+dynarmic_tests "A64: Signed to unsigned saturating shifts differential"
+dynarmic_tests "A64: Vector rounding differential"
+```
+
+For a future authorized console delivery, build Jadyx on the Windows host:
+
+```powershell
+tools\xbox\build-env.bat cmake --build --preset uwp-x64 --target jadyx
+```
+
+Keep C4456/C4457/C4459/C4244 fatal. Increment the fourth package-version component,
+then use the existing `tools\xbox\package-appx.ps1 -BootNro <original-probe.nro>`
+workflow and only `build-uwp/package/jadyx.appx`; preserve matching EXE/PDB symbols.
+Install on Series X/S in **Game** mode, run each probe specified above, require
+zero mismatches, then run the normal original boot NRO and two library/relaunch
+cycles. Do not replace the boot NRO with a native SEH test: the latter needs a
+separate native diagnostic harness. Those console harnesses are not implemented
+by this source port, and **console coverage is pending for every fix**.
+
+Record source revision, package version, console model, probe version and enabled
+settings. Export `LocalState\jadyx\log\jadyx_diag.txt` and `jadyx_log.txt`; require
+clean exit, no new Critical/Render errors, intact sentinels and the specified
+result/FPSR comparisons. Existing gameplay/Pulse save-resume smoke tests use only
+the owner's local content and unchanged settings, with manual Q closure and no
+timeout. No package, version bump, performance claim or console certification is
+part of this Mac-only task.
