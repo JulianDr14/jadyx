@@ -10,6 +10,7 @@
 #include "jadyx/cheats/cheats_page.h"
 #include "jadyx/library/game_library.h"
 #include "jadyx/library/game_options_page.h"
+#include "jadyx/library/game_information.h"
 #include "jadyx/library/library_layout.h"
 #include "jadyx/mods/mod_session.h"
 #include "jadyx/mods/mods_page.h"
@@ -28,6 +29,8 @@ struct GameOptionsView {
     const Content::ContentSession* content{};
     const Mods::ModSession* mods{};      ///< The open mods page's.
     const Mods::ModsPage* mods_page{};
+    const GameInformationFacts* information{};
+    const Compatibility::Table* compatibility{};
     bool other_copies{};                 ///< Another dump of the game stays if this one is deleted.
 };
 /// The active controller's battery, as Windows.Gaming.Input reports it; unknown when it does not.

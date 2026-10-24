@@ -9,6 +9,20 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::ThemeJadyx, L"Jadyx"},
     {Text::ThemeOldNxbox, L"Old NXbox"},
 
+    // Game information
+    {Text::GameInfoTitle, L"More information"},
+    {Text::GameInfoUnknown, L"Unknown"},
+    {Text::GameInfoExternal, L"USB / external · {0}"},
+    {Text::GameInfoProgramId, L"Program ID: {0}"},
+    {Text::GameInfoVersion, L"Version: {0}"},
+    {Text::GameInfoFormat, L"Format: {0} · Size on disk: {1}"},
+    {Text::GameInfoStorage, L"Storage: {0}"},
+    {Text::GameInfoContent, L"Installed updates: {0} · DLC: {1}"},
+    {Text::GameInfoReport, L"Community report · Series {0} · {1}"},
+    {Text::GameInfoReportBuild, L"Jadyx version: {0}"},
+    {Text::GameInfoDate, L"Report date: {0}"},
+    {Text::GameInfoPlayTime, L"Play time: {0}"},
+
     // Library
     {Text::CompatibilityUntested, L"Untested"},
     {Text::CompatibilityPlayable, L"Playable"},

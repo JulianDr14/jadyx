@@ -80,7 +80,12 @@ std::optional<Table> Parse(std::string_view bytes) {
             if (row["title_id"] != key || (row["console"] != "X" && row["console"] != "S") ||
                 (row["product"] != "Jadyx" && row["product"] != "NXbox") || row["name"] == "")
                 return std::nullopt;
+            if (row.contains("date") &&
+                (!row["date"].is_string() || row["date"].get_ref<const std::string&>().size() > 64))
+                return std::nullopt;
             Report report;
+            if (row.contains("date"))
+                report.date = row["date"];
             report.name = row["name"];
             report.console = row["console"];
             report.fps_note = row["fps_note"];

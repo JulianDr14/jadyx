@@ -732,6 +732,19 @@ enum class Text : std::uint16_t {
     UpdateGuidePortalBody,
     UpdateGuideWarning,
     UpdaterUpdatedTo,
+    // Game information
+    GameInfoTitle,
+    GameInfoUnknown,
+    GameInfoExternal,
+    GameInfoProgramId,
+    GameInfoVersion,
+    GameInfoFormat,
+    GameInfoStorage,
+    GameInfoContent,
+    GameInfoReport,
+    GameInfoReportBuild,
+    GameInfoDate,
+    GameInfoPlayTime,
     Count
 };
 inline constexpr std::size_t TextCount = static_cast<std::size_t>(Text::Count);

@@ -2012,6 +2012,57 @@ private:
         return tween.Value(now);
     }
     /// The game's options, and the option page open over them.
+    void DrawGameInformation(const GameOptionsView& view) {
+        const auto& game = *view.game;
+        static const Compatibility::Report untested;
+        const auto& report = view.compatibility
+                                 ? Compatibility::Lookup(*view.compatibility, game.program_id)
+                                 : untested;
+        const auto data = BuildGameInformation(
+            game, view.information ? *view.information : GameInformationFacts{}, report);
+        const auto wide = [](const std::string& text) {
+            return text.empty() ? std::wstring{Tr(T::GameInfoUnknown)}
+                                : std::wstring{winrt::to_hstring(text)};
+        };
+        Cover(game, 56, 218, 300);
+        Type(game.name, TypeRole::HeadlineMedium, 392, 214, 832, Palette::Text, 1,
+             TextAlign::Leading, 2);
+        const auto line = [&](std::wstring_view text, float top) {
+            Type(text, TypeRole::Body, 392, top, 832, Palette::TextHint);
+        };
+        line(I18n::Format(T::GameInfoProgramId, {data.program_id}), 292);
+        line(I18n::Format(T::GameInfoVersion, {data.version}), 318);
+        line(I18n::Format(T::GameInfoFormat, {data.format, data.size}), 344);
+        line(I18n::Format(T::GameInfoStorage, {data.storage}), 370);
+        Type(data.path, TypeRole::Body, 392, 396, 832, Palette::TextHint, 1, TextAlign::Leading, 2);
+        line(I18n::Format(T::GameInfoContent, {data.updates, data.dlc}), 448);
+        DrawCompatibility(data.reported ? data.report.status : Compatibility::Status::Untested, 406,
+                          488, 1);
+        Type(Tr(data.compatibility), TypeRole::BodyLarge, 430, 478, 794, Palette::Text);
+        if (data.reported) {
+            Type(I18n::Format(T::GameInfoReport,
+                              {wide(data.report.console), wide(data.report.fps_note)}),
+                 TypeRole::Body, 392, 508, 832, Palette::TextHint, 1, TextAlign::Leading, 2);
+            line(I18n::Format(T::GameInfoReportBuild, {wide(data.report.jadyx_version)}), 558);
+            line(I18n::Format(T::GameInfoDate, {wide(data.report.date)}), 584);
+        }
+        if (!data.last_played.empty())
+            line(I18n::Format(T::LastPlayed, {data.last_played}), 610);
+        if (!data.play_time.empty())
+            line(I18n::Format(T::GameInfoPlayTime, {data.play_time}), 636);
+        if (CanRemoveGame(game)) {
+            // Opening Remove never confirms it. Its existing pane explains the consequences
+            // and still requires the same two presses before submitting a storage job.
+            Round(56, 550, 300, 52, 26, Palette::RowActive);
+            Prompt(PromptKey(Navigation::Play).letters, Palette::Text, Tr(T::GameRemove), 76, 560);
+            const auto sections = GameOptions();
+            const auto remove = std::find(sections.begin(), sections.end(), GameOption::Remove);
+            AddHit(56, 550, 300, 52, LibraryHit::GameOptionSelect,
+                   static_cast<std::size_t>(remove - sections.begin()));
+        }
+        ControlPrompt(Navigation::Back, Tr(T::Back), 1100, GameOptionsLayout::Footer);
+    }
+
     void DrawGameOptions(const GameOptionsView& view) {
         hits.clear();
         manager_targets = (view.page.page == GameOption::Cheats && view.cheats) ||
@@ -2072,7 +2123,9 @@ private:
 
         Round(Canvas::Unit0, Canvas::Unit0, Canvas::Unit1280, Canvas::Unit720, Canvas::Unit0,
               Palette::Canvas, Canvas::Unit0_86F);
-        if (view.page.page == GameOption::Cheats && view.cheats) {
+        if (view.page.page == GameOption::Information) {
+            DrawGameInformation(view);
+        } else if (view.page.page == GameOption::Cheats && view.cheats) {
             using L = Cheats::CheatsLayout;
             constexpr float x = (Canvas::Unit1280 - L::Width) / Canvas::Unit2,
                             y = (Canvas::Unit720 - L::Height) / Canvas::Unit2;
