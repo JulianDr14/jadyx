@@ -130,6 +130,8 @@ public:
         D3D12_CPU_DESCRIPTOR_HANDLE srv;
         u32 width;
         u32 height;
+        u32 guest_width;
+        u32 guest_height;
     };
 
     /// The texture cache image holding the framebuffer at framebuffer_addr, transitioned for

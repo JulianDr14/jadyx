@@ -20,6 +20,7 @@
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
+#include "video_core/renderer_d3d12/d3d12_resolution.h"
 
 // The graphics state of a draw: render targets, viewports, scissors, dynamic state and
 // root arguments, set only when they differ from what the command list holds.
@@ -169,10 +170,12 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
         command_state.depth_target = depth.ptr;
     }
 
-    if (!command_state.valid || state_tracker.TouchViewports()) {
+    if (Settings::values.resolution_info.active || !command_state.valid ||
+        state_tracker.TouchViewports()) {
         command_state.viewport = UpdateViewports(cmd);
     }
-    if (!command_state.valid || state_tracker.TouchScissors()) {
+    if (Settings::values.resolution_info.active || !command_state.valid ||
+        state_tracker.TouchScissors()) {
         UpdateScissors(cmd);
     }
     // Constant-alpha factors in the color equation read the constant's RGB on D3D12.
@@ -376,6 +379,15 @@ RasterizerD3D12::ViewportState RasterizerD3D12::ComputeViewports(
         viewport.Width = std::min(viewport.Width, 32767.0f - viewport.TopLeftX);
         viewport.Height = std::min(viewport.Height, 32767.0f - viewport.TopLeftY);
     }
+    if (texture_cache.IsRescaling()) {
+        const float factor = Settings::values.resolution_info.up_factor;
+        for (auto& viewport : viewports) {
+            viewport.TopLeftX *= factor;
+            viewport.TopLeftY *= factor;
+            viewport.Width *= factor;
+            viewport.Height *= factor;
+        }
+    }
     state.width = viewports[0].Width;
     state.height = viewports[0].Height;
     return state;
@@ -406,6 +418,13 @@ D3D12_RECT RasterizerD3D12::ScissorRect(size_t index) const {
     max_y = std::clamp<s32>(max_y, min_y, MAX_EXTENT);
     const s32 min_x = std::clamp<s32>(static_cast<s32>(src.min_x), 0, MAX_EXTENT);
     const s32 max_x = std::clamp<s32>(static_cast<s32>(src.max_x), min_x, MAX_EXTENT);
+    if (texture_cache.IsRescaling()) {
+        const auto& resolution = Settings::values.resolution_info;
+        const ResolutionScale scale{.numerator = resolution.up_scale,
+                                    .shift = resolution.down_shift};
+        const auto rect = scale.Rect(min_x, min_y, max_x, max_y);
+        return {rect.left, rect.top, rect.right, rect.bottom};
+    }
     return {min_x, min_y, max_x, max_y};
 }
 

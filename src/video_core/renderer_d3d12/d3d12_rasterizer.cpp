@@ -203,6 +203,8 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
             }
         }
     }
+    if (Settings::values.resolution_info.active)
+        InvalidateGraphicsState();
     pipeline->Configure(is_indexed,
                         {*maxwell3d, *gpu_memory, buffer_cache, texture_cache, descriptor_queue,
                          sampler_heap, scheduler},
@@ -579,10 +581,16 @@ std::optional<RasterizerD3D12::DisplayTexture> RasterizerD3D12::AccelerateDispla
         return std::nullopt;
     }
     image_view->TransitionImage(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    const auto& resolution = Settings::values.resolution_info;
+    const auto scale_size = [&](u32 size) {
+        return scaled ? std::max(1U, (size * resolution.up_scale) >> resolution.down_shift) : size;
+    };
     return DisplayTexture{
         .srv = image_view->Handle(Shader::TextureType::Color2D),
-        .width = image_view->size.width,
-        .height = image_view->size.height,
+        .width = scale_size(image_view->size.width),
+        .height = scale_size(image_view->size.height),
+        .guest_width = image_view->size.width,
+        .guest_height = image_view->size.height,
     };
 }
 

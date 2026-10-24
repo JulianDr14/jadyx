@@ -13,6 +13,7 @@
 #include "jadyx/i18n/localization.h"
 #include "jadyx/ui/ui_text.h"
 #include "jadyx/settings/upscaling.h"
+#include "jadyx/settings/resolution_options.h"
 
 namespace Jadyx {
 // In-game menu: View + Menu held for a second (Escape on a keyboard) pauses the game and opens it.
@@ -106,16 +107,25 @@ struct GameMenuSettings {
     bool performance_capture{};
     /// The paused frame was read back: the menu can save it as a screenshot.
     bool screenshot{};
+    Settings::ResolutionSetup resolution{Settings::ResolutionSetup::Res1X};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
 /// player chose to leave without one.
 enum class GameMenuResult : std::uint8_t {
-    None, Resume, Library, SettingsChanged, FullScreen, Cheats, PerformanceStatsChanged, UpscalingChanged,
+    None,
+    Resume,
+    Library,
+    SettingsChanged,
+    FullScreen,
+    Cheats,
+    PerformanceStatsChanged,
+    UpscalingChanged,
     LibraryWithoutSession,
     CaptureGraphics,
     CapturePerformance,
     Screenshot,
+    ResolutionChanged,
 };
 
 /// One row as drawn: a label, a line under it, and the value of a setting (changed with
@@ -135,8 +145,22 @@ struct GameMenuRow {
 class GameMenu {
 public:
     enum Item : std::size_t {
-        Continue, Cheats, Mods, Style, FaceButtons, Deadzone, FullScreen, ImageUpscaling, PerformanceStats, Library,
-        CaptureGraphics, CapturePerformance, Screenshot, ControllerPage, DisplayPage,
+        Continue,
+        Cheats,
+        Mods,
+        Style,
+        FaceButtons,
+        Deadzone,
+        FullScreen,
+        ImageUpscaling,
+        PerformanceStats,
+        Library,
+        CaptureGraphics,
+        CapturePerformance,
+        Screenshot,
+        ControllerPage,
+        DisplayPage,
+        Resolution,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display };
 
@@ -150,12 +174,16 @@ public:
         if (settings.performance_capture) quick.push_back(CapturePerformance);
         quick.push_back(Library);
         controller = {Style, FaceButtons, Deadzone};
-        display = {ImageUpscaling, PerformanceStats};
+        display = {ImageUpscaling, PerformanceStats, Resolution};
         if (settings.can_fullscreen) display.push_back(FullScreen);
     }
 
     /// How many cheats are on, shown on the Cheats row.
     void SetCheatsOn(std::size_t count) { cheats_on = count; }
+    void SetResolutionSaveResult(Settings::ResolutionSetup choice, bool saved) {
+        settings.resolution = choice;
+        resolution_save_failed = !saved;
+    }
 
     /// How many mods are on: with any, a row says so. It only informs; mods change in the library,
     /// and a game reads them when it boots.
@@ -269,6 +297,12 @@ private:
                     Choice};
         case Deadzone:
             return {Tr(Text::DeadZone), DeadzoneText(), Choice};
+        case Resolution:
+            return {.label = Tr(Text::Resolution),
+                    .value = Tr(ResolutionText(settings.resolution)),
+                    .kind = Choice,
+                    .detail =
+                        Tr(resolution_save_failed ? Text::SystemSaveFailed : Text::ResolutionHint)};
         case ImageUpscaling:
             return {Tr(Text::Upscaling), Tr(UpscalingText(settings.upscaling)), Choice};
         case PerformanceStats:
@@ -331,6 +365,9 @@ private:
             settings.deadzone = steps[i];
             return GameMenuResult::SettingsChanged;
         }
+        case Resolution:
+            settings.resolution = StepResolution(settings.resolution, back);
+            return GameMenuResult::ResolutionChanged;
         case ImageUpscaling:
             settings.upscaling = StepUpscaling(settings.upscaling, back);
             return GameMenuResult::UpscalingChanged;
@@ -345,6 +382,7 @@ private:
     }
 
     GameMenuSettings settings;
+    bool resolution_save_failed{};
     std::vector<Item> quick, controller, display;
     Page page{Page::Quick};
     std::size_t selected{};

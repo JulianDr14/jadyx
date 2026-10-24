@@ -760,7 +760,12 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         return;
     }
     pipeline_cache_filename = base_dir / "d3d12.bin";
-    hot_pipelines_filename = base_dir / "d3d12_hot.bin";
+    hot_pipelines_filename =
+        base_dir /
+        (Settings::values.resolution_info.active
+             ? fmt::format("d3d12_hot_resolution_{}.bin",
+                           static_cast<u32>(Settings::values.resolution_setup.GetValue()))
+             : "d3d12_hot.bin");
     {
         std::ifstream file(hot_pipelines_filename, std::ios::binary);
         const std::vector<u8> bytes{std::istreambuf_iterator<char>(file),

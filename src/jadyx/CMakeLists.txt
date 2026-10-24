@@ -81,6 +81,7 @@ add_executable(jadyx WIN32
     settings/system_settings.h
     settings/nacp_language.h
     settings/system_page.h
+    settings/resolution_options.h
     settings/upscaling.h
     ui/text_entry.h
     ui/text_entry_panel.cpp

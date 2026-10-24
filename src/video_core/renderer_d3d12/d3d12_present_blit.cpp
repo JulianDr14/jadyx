@@ -140,8 +140,8 @@ bool RendererD3D12::CompositeAccelerated(const Tegra::FramebufferConfig& framebu
     RecordComposite(frame, {.srv = texture->srv,
                             .width = texture->width,
                             .height = texture->height,
-                            .crop = Tegra::NormalizeCrop(framebuffer, texture->width,
-                                                         texture->height)});
+                            .crop = Tegra::NormalizeCrop(framebuffer, texture->guest_width,
+                                                         texture->guest_height)});
     if (!logged_accelerated) {
         LOG_INFO(Render, "D3D12: presenting the GPU-rendered guest image ({}x{} image, {}x{} "
                  "framebuffer)", texture->width, texture->height, framebuffer.width,

@@ -7,6 +7,7 @@
 #include "common/bug_tracker.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
+#include "common/settings.h"
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
@@ -97,6 +98,8 @@ void RasterizerD3D12::DrawIndirect() {
     }
     SCOPE_EXIT { buffer_runtime.SetTraceBuffers(nullptr); };
     buffer_cache.SetDrawIndirect(&params);
+    if (Settings::values.resolution_info.active)
+        InvalidateGraphicsState();
     pipeline->Configure(params.is_indexed,
                         {*maxwell3d, *gpu_memory, buffer_cache, texture_cache, descriptor_queue,
                          sampler_heap, scheduler},

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "jadyx/settings/resolution_options.h"
 #include "jadyx/settings/system_settings.h"
 
 namespace Service::Account {
@@ -22,6 +23,8 @@ ResolvedSystem ApplySystemSettings();
 /// Makes upscaling Eden's scaling settings, which the D3D12 present reads every frame. On the GPU
 /// thread while a game runs (GPU::RunOnGpuThread), the thread that reads them.
 void ApplyUpscaling(Upscaling upscaling);
+Settings::ResolutionSetup LoadResolution(std::uint64_t application);
+bool SaveResolution(std::uint64_t application, Settings::ResolutionSetup choice);
 
 /// Renames the active profile to the saved user name (the default one when none is saved), before
 /// a game starts. Returns false when the profile could not be written.

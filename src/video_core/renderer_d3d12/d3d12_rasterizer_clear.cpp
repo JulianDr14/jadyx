@@ -6,6 +6,8 @@
 
 #include "common/bug_tracker.h"
 #include "common/scope_exit.h"
+#include "common/settings.h"
+#include "video_core/renderer_d3d12/d3d12_resolution.h"
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
@@ -45,12 +47,23 @@ void RasterizerD3D12::DrawTexture() {
         WarnOnceLog(logged_draw_texture, "DrawTexture with integer formats is skipped");
         return;
     }
-    const VideoCommon::Region2D dst_region{
+    VideoCommon::Region2D dst_region{
         {static_cast<s32>(state.dst_x0), static_cast<s32>(state.dst_y0)},
         {static_cast<s32>(state.dst_x1), static_cast<s32>(state.dst_y1)}};
-    const VideoCommon::Region2D src_region{
+    VideoCommon::Region2D src_region{
         {static_cast<s32>(state.src_x0), static_cast<s32>(state.src_y0)},
         {static_cast<s32>(state.src_x1), static_cast<s32>(state.src_y1)}};
+    const auto& resolution = Settings::values.resolution_info;
+    const ResolutionScale scale{.numerator = resolution.up_scale, .shift = resolution.down_shift};
+    const auto scale_region = [&](VideoCommon::Region2D& region) {
+        const auto rect = scale.BlitRect(region.start.x, region.start.y, region.end.x, region.end.y);
+        region.start = {rect.left, rect.top};
+        region.end = {rect.right, rect.bottom};
+    };
+    if (framebuffer->IsRescaled())
+        scale_region(dst_region);
+    if (texture.IsRescaled())
+        scale_region(src_region);
     framebuffer->PrepareAttachments(scheduler);
     hunt.Target(framebuffer);
     hunt.Geometry(4, 1, 0);
@@ -79,8 +92,10 @@ void RasterizerD3D12::DrawTexture() {
                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     blit_helper.BlitColor(
         {framebuffer->ColorTargets()[0], framebuffer->ColorFormat(0), framebuffer->Samples()},
-        texture.Handle(Shader::TextureType::Color2D), {sampler.Handle(), sampler.Key()},
-        dst_region, src_region, {texture.size.width, texture.size.height});
+        texture.Handle(Shader::TextureType::Color2D), {sampler.Handle(), sampler.Key()}, dst_region,
+        src_region,
+        {.width = texture.IsRescaled() ? scale.Size(texture.size.width) : texture.size.width,
+         .height = texture.IsRescaled() ? scale.Size(texture.size.height) : texture.size.height});
     hunt.Recorded();
     InvalidateGraphicsState();
     if (full) CaptureFullImages({}, framebuffer, true);

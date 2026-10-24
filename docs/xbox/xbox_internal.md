@@ -4339,3 +4339,15 @@ gates pass; Windows build, Series memory and cold-stall A/B remain pending.
 First-use frontend and compute conversion still run on the GPU thread; no
 single-conversion speedup or 500 -> 60 ms result is claimed for Jadyx.
 See [audit, host commands and exact console gate](nxbox-parallel-shaders.md).
+## Experimental resolution choices (24 October 2026)
+
+`nxbox/60-resolution-options` adds the NXbox six-scale global/per-game setting to
+Jadyx, using LocalSettings and I18n. D3D12 scaling is default off behind
+`NXBOX_D3D12_RESOLUTION_SCALE=1` (also a packaged boot.cfg line). The partial
+single-layer, single-sample color/depth-only path preserves native transfers,
+scales shader flags/coordinates and leaves unsupported framebuffer groups native.
+Non-native tests bypass Pulse; native sessions remain stored. Portable settings,
+mask/arithmetic, FSR and catalog tests pass; existing menu/system harness failures
+are reproduced on main. No UWP compile or console verification on this Mac.
+Comparison, limitations and exact 3D World/BotW test:
+[nxbox-resolution-options.md](nxbox-resolution-options.md).

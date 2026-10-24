@@ -175,8 +175,14 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
     out.resource_table = queue.Table();
     out.integer_samplers = integer_samplers.Upload(buffer_cache);
 
-    // No resolution scaling yet.
+    // Compute can access scaled images left by graphics.
     ResetPushConstants(out.push_constants);
+    if (Settings::values.resolution_info.active) {
+        const ImageViewInOut* resolution_views = views.data();
+        ResolutionFlags resolution_flags;
+        AppendResolutionFlags(info, texture_cache, resolution_views, resolution_flags);
+        std::ranges::copy(resolution_flags.words, out.push_constants.begin());
+    }
 }
 
 void ComputePipeline::Build() {

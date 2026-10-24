@@ -42,6 +42,7 @@ int32_t ChoiceValue(std::optional<T> choice) {
 
 SystemSettings LoadSystemSettings() {
     SystemSettings settings;
+    settings.resolution = LoadResolution(0);
     try {
         const auto values = winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
         if (values.HasKey(UiLanguageKey)) {
@@ -79,7 +80,7 @@ bool SaveSystemSettings(const SystemSettings& settings) {
         values.Insert(PlayTimeKey, winrt::box_value(settings.track_play_time));
         values.Insert(MultipleControllersKey, winrt::box_value(settings.multiple_controllers));
         values.Insert(UpscalingKey, winrt::box_value(static_cast<int32_t>(settings.upscaling)));
-        return true;
+        return SaveResolution(0, settings.resolution);
     } catch (...) { return false; }
 }
 
@@ -119,6 +120,26 @@ void ApplyUpscaling(Upscaling upscaling) {
     const UpscalingSettings values = ToSettings(upscaling);
     Settings::values.scaling_filter.SetValue(values.filter);
     Settings::values.fsr_sharpening_slider.SetValue(values.fsr_sharpening_slider);
+}
+
+Settings::ResolutionSetup LoadResolution(std::uint64_t application) {
+    return ReadResolution(application, [](const std::wstring& key) -> std::optional<std::int32_t> {
+        try {
+            const auto values =
+                winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+            if (values.HasKey(key))
+                return winrt::unbox_value<std::int32_t>(values.Lookup(key));
+        } catch (...) {
+        }
+        return std::nullopt;
+    });
+}
+
+bool SaveResolution(std::uint64_t application, Settings::ResolutionSetup choice) {
+    return StoreResolution(application, choice, [](const std::wstring& key, std::int32_t value) {
+        winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values().Insert(
+            key, winrt::box_value(value));
+    });
 }
 
 bool ApplyUserName(Service::Account::ProfileManager& profiles, std::wstring_view name) {

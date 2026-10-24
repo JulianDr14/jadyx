@@ -576,6 +576,7 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_swapchain.cpp
         renderer_d3d12/d3d12_swapchain.h
         renderer_d3d12/d3d12_texture_cache.cpp
+        renderer_d3d12/d3d12_resolution.h
         renderer_d3d12/d3d12_texture_cache.h
         renderer_d3d12/d3d12_astc_gpu_decoder.cpp
         renderer_d3d12/d3d12_depth_stencil_transfer.cpp

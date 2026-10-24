@@ -583,6 +583,14 @@ enum class Text : std::uint16_t {
     PulseNotSavedTitle,
     PulseRestoredTitle,
     PulseKeepOn,
+    Resolution,
+    ResolutionHint,
+    ResolutionHalf,
+    ResolutionThreeQuarters,
+    ResolutionNative,
+    ResolutionOneHalf,
+    ResolutionDouble,
+    ResolutionTriple,
     Upscaling,
     UpscalingBilinear,
     UpscalingFsrSharp,
@@ -639,7 +647,6 @@ enum class Text : std::uint16_t {
     MenuDisplay,
     MenuStatsShort,
     MenuBackTo,
-
 
     UpdaterTitle,
     UpdaterHint,
