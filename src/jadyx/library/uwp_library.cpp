@@ -148,6 +148,22 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     unsigned picker_kind = 0; // 0 games, 1 keys, 2 firmware
     std::future<FileSetupStatus> setup_future;
     std::jthread setup_worker;
+    std::future<FilesPage> files_future;
+    std::jthread files_worker;
+    auto read_files = [&] {
+        auto& browser = configuration.browser;
+        if (files_future.valid())
+            return;
+        browser.busy = true;
+        browser.page = {};
+        browser.selected = 0;
+        std::packaged_task<FilesPage(std::stop_token)> task{
+            [roots = browser.roots, location = browser.location, offset = browser.offset](
+                std::stop_token stop) { return ReadFilesPage(roots, location, offset, stop); }};
+        files_future = task.get_future();
+        files_worker = std::jthread(std::move(task));
+        dirty = true;
+    };
     FileImportProgress import_progress;
     std::future<std::string> import_future;
     std::jthread import_worker;
@@ -330,6 +346,25 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         const auto scale = std::max(0.01f, std::min(width / 1280.0f, height / 720.0f));
         const float x = static_cast<float>((p.X * dpi - (width - 1280 * scale) / 2) / scale);
         const float y = static_cast<float>((p.Y * dpi - (height - 720 * scale) / 2) / scale);
+        if (configuration.browser.open) {
+            const auto target = canvas->HitAt(x, y);
+            if (target.hit == LibraryHit::FilesEntry && !configuration.browser.busy) {
+                configuration.browser.selected = target.index;
+                actions |= Play;
+            } else if (target.hit == LibraryHit::FilesAction) {
+                if (target.index == 0)
+                    actions |= Quit;
+                if (target.index == 1)
+                    actions |= Refresh;
+                if (target.index == 2)
+                    actions |= Left;
+                if (target.index == 3)
+                    actions |= Right;
+            }
+            dirty = true;
+            e.Handled(true);
+            return;
+        }
         if (configuration.network_screen || configuration.confirm_import) {
             const auto hit = canvas->HitAt(x, y);
             if (hit.hit == LibraryHit::NetworkAction && hit.index < 3) {
@@ -915,6 +950,15 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     Compatibility::Loader compatibility_loader;
     Compatibility::Table compatibility;
     while (true) {
+        if (files_future.valid() &&
+            files_future.wait_for(std::chrono::seconds{0}) == std::future_status::ready) {
+            auto result = files_future.get();
+            if (configuration.browser.open)
+                configuration.browser.Apply(std::move(result));
+            else
+                configuration.browser.busy = false;
+            dirty = true;
+        }
         if (auto updated = compatibility_loader.Take()) {
             compatibility = std::move(*updated);
             dirty = true;
@@ -1162,7 +1206,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         const bool library = !settings && !configuration.open && !game_options.open &&
                                              !missing_content;
                         if (hit(GamepadButtons::X)) {
-                            if (system_page.updates_open) actions |= Quit;
+                            if (configuration.browser.open)
+                                actions |= Refresh;
+                            else if (system_page.updates_open)
+                                actions |= Quit;
                             else if (settings || content_session || missing_content) actions |= Swap;
                             else if (library) actions |= Refresh;
                             else if (!configuration.open) actions |= AddFolder;
@@ -1201,6 +1248,34 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (!(read == battery)) { battery = read; dirty = true; }
         }
         if (window_closed || QuitRequested()) return std::nullopt;
+        if (configuration.browser.open) {
+            auto& browser = configuration.browser;
+            if (actions & Quit) {
+                if (browser.busy || !browser.Back()) {
+                    browser.open = false;
+                    files_worker.request_stop();
+                } else
+                    read_files();
+            } else if (!browser.busy) {
+                const auto count = browser.page.entries.size();
+                if (count && actions & Up)
+                    browser.selected = (browser.selected + count - 1) % count;
+                if (count && actions & Down)
+                    browser.selected = (browser.selected + 1) % count;
+                if (actions & Refresh)
+                    read_files();
+                else if (actions & Left && browser.PreviousPage())
+                    read_files();
+                else if (actions & Right && browser.NextPage())
+                    read_files();
+                else if (actions & Play && browser.Enter(browser.selected))
+                    read_files();
+            }
+            if (actions)
+                dirty = true;
+            actions = 0; // The Files page captures all input, including tab changes and launch.
+            pressed_tab.reset();
+        }
         if (actions && system_page.updated) { system_page.updated = false; dirty = true; }
         if(import_progress.confirmation.load()&&!configuration.confirm_import){
             std::lock_guard lock{import_progress.review_mutex};configuration.review_text=import_progress.review_text;
@@ -2007,6 +2082,14 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         } else {
                             configuration.notice = Tr(T::FtpStartFailed);
                         }
+                    }
+                } else if (configuration.selected == FilesBrowse) {
+                    if (files_future.valid())
+                        configuration.notice = Tr(T::WaitForCheck);
+                    else {
+                        configuration.browser = {};
+                        configuration.browser.open = true;
+                        read_files();
                     }
                 } else if (configuration.selected >= FilesSources) {
                     try {

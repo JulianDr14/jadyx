@@ -4433,3 +4433,17 @@ settings and legacy sensor delivery remain the baseline with switches absent.
 Host evidence and exact pending console acceptance:
 [`nxbox-37-controllers-motion.md`](nxbox-37-controllers-motion.md).
 No Windows/UWP build, console test or performance certification in this work.
+
+## 24 October 2026 — read-only on-console Files browser
+
+`nxbox/20-files-browser`, based on `nxbox/integration3`: Settings/File manager now
+opens a separate Jadyx painter page for LocalState and existing authorized/session
+USB roots. Broker name-sorted shallow pages hold 64 entries plus one lookahead;
+metadata only, no generic file operations. One MTA worker with cancellable bounded
+async waits owns each request; late closed-page results are discarded. EN/ES/PT-BR,
+Palette/TypeRole, controller/keyboard/pointer input and recovery states are wired.
+No persistent schema or emulation default changes. Portable policy gate: 30
+assertions pass after failing before implementation; existing macOS selection
+remains 26/31 passing with the same five pre-existing failures. No Windows build,
+package, PC app or Xbox execution. Exact console gate and limitations:
+[`nxbox-jx-20-files-browser.md`](nxbox-jx-20-files-browser.md).

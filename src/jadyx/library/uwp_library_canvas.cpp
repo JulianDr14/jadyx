@@ -139,13 +139,16 @@ public:
         }
         const bool management = view.game_options.game || view.game_options.content;
         // Only the active library content prepares and draws its backdrop.
-        if (!management && !configuration.network_screen) UpdateBackdrop(game, now);
+        if (!management && !configuration.network_screen && !configuration.browser.open)
+            UpdateBackdrop(game, now);
         hits.clear();
         target->BeginDraw();
         target->Clear(Ink(Palette::Canvas));
-        if (!management && !configuration.network_screen) DrawBackdrop(now);
+        if (!management && !configuration.network_screen && !configuration.browser.open)
+            DrawBackdrop(now);
         // The backdrop moves on its own while it shows (AmbientDue).
-        ambient = !management && !configuration.network_screen && !backdrop_now.empty();
+        ambient = !management && !configuration.network_screen && !configuration.browser.open &&
+                  !backdrop_now.empty();
         last_frame = now;
         if(configuration.confirm_import){
             rows_shown=false;
@@ -163,6 +166,9 @@ public:
                 AddHit(x, Canvas::Unit590, Canvas::Unit540, Canvas::Unit64,
                        LibraryHit::NetworkAction, i);
             }
+        } else if (configuration.browser.open) {
+            rows_shown = false;
+            DrawFilesBrowser(configuration.browser);
         } else if (configuration.ftp_screen) {
             rows_shown = false;
             DrawFtpConnection(configuration);
@@ -201,7 +207,8 @@ public:
                 Type(view.notice, TypeRole::Body, LibraryLayout::Margin, Canvas::Unit430,
                      Canvas::Unit1000, Palette::Warning, Canvas::Unit1, TextAlign::Leading, 2);
         }
-        if (!management && !configuration.network_screen && !configuration.confirm_import && !view.system.updates_open) {
+        if (!management && !configuration.network_screen && !configuration.browser.open &&
+            !configuration.confirm_import && !view.system.updates_open) {
             DrawHeader(view, now);
             DrawFooter(view);
         }
@@ -217,8 +224,10 @@ public:
                   Palette::Canvas);
             DrawHeader(view, now);
         }
-        if (!view.system.updates_open && !management && !configuration.network_screen && !configuration.open &&
-            view.tab != LibraryTab::Settings && !view.controller_panel && !view.missing_content && !panel.keyboard.open) {
+        if (!view.system.updates_open && !management && !configuration.network_screen &&
+            !configuration.browser.open && !configuration.open &&
+            view.tab != LibraryTab::Settings && !view.controller_panel && !view.missing_content &&
+            !panel.keyboard.open) {
             if (view.system.updated) DrawUpdatedNotice(view.system.update.installed);
             else if (view.system.update.notice && view.system.update.release) DrawUpdateNotice(*view.system.update.release);
         }
@@ -1456,6 +1465,11 @@ private:
                 network.running && !network.code_expired ? std::wstring{winrt::to_hstring(network.code)} : std::wstring{L"—"}});
             rows.push_back({Kind::Open, std::wstring{Tr(T::FtpTitle)},
                             std::wstring{Tr(T::FtpSummary)}, std::wstring{Tr(T::NetworkStart)}});
+            SettingsRow browse;
+            browse.kind = Kind::Open;
+            browse.title = Tr(T::FilesBrowse);
+            browse.hint = Tr(T::FilesReadOnly);
+            rows.push_back(std::move(browse));
             for (const auto& source : status.sources)
                 rows.push_back({Kind::Open, I18n::Format(T::RemoveFolder, {source.name})});
         }
@@ -1471,6 +1485,74 @@ private:
     static constexpr float SettingsRowsTop = Canvas::Unit226, SettingsRowStride = Canvas::Unit58,
                            SettingsRowHeight = Canvas::Unit52;
     static constexpr std::size_t SettingsVisibleRows = 7;
+    void DrawFilesBrowser(const FilesBrowser& browser) {
+        Type(Tr(T::FilesBrowse), TypeRole::HeadlineLarge, Canvas::Unit80, Canvas::Unit80,
+             Canvas::Unit1120, Palette::Text);
+        Type(Tr(T::FilesReadOnly), TypeRole::Body, Canvas::Unit80, Canvas::Unit132,
+             Canvas::Unit1120, Palette::TextSecondary);
+        const auto path = browser.roots
+                              ? std::wstring{Tr(T::FilesBrowse)}
+                              : browser.root_name + L" / " +
+                                    std::wstring{winrt::to_hstring(browser.location.relative)};
+        Type(path, TypeRole::LabelLarge, Canvas::Unit80, Canvas::Unit190,
+             (Canvas::Unit1000 - Canvas::Unit40), Palette::Text);
+        Type(I18n::Format(T::FilesPageLabel, {std::to_wstring(browser.offset / FilesPageSize + 1)}),
+             TypeRole::Label, (Canvas::Unit1000 + Canvas::Unit40), Canvas::Unit190, Canvas::Unit160,
+             Palette::TextHint, Canvas::Unit1, TextAlign::Trailing);
+        const auto& page = browser.page;
+        if (browser.busy || page.error != FilesError::None || page.entries.empty()) {
+            const auto message = browser.busy                            ? T::FilesLoading
+                                 : page.error == FilesError::Permission  ? T::FilesPermission
+                                 : page.error == FilesError::Unavailable ? T::FilesUnavailable
+                                                                         : T::FilesEmpty;
+            Type(Tr(message), TypeRole::BodyLarge, Canvas::Unit80,
+                 (Canvas::Unit300 - Canvas::Unit20), Canvas::Unit1120,
+                 page.error == FilesError::None ? Palette::TextHint : Palette::Warning,
+                 Canvas::Unit1, TextAlign::Leading, 3);
+        } else {
+            constexpr std::size_t visible = 8;
+            const auto first = (browser.selected / visible) * visible;
+            for (std::size_t index = first; index < std::min(first + visible, page.entries.size());
+                 ++index) {
+                const auto& entry = page.entries[index];
+                const float y =
+                    Canvas::Unit240 + static_cast<float>(index - first) * Canvas::Unit44;
+                if (index == browser.selected)
+                    Round(Canvas::Unit80, y, Canvas::Unit1120, Canvas::Unit44, Canvas::Unit16,
+                          Palette::RowActive);
+                Type(entry.name, TypeRole::Body, Canvas::Unit100, y + Canvas::Unit8,
+                     (Canvas::Unit400 * Canvas::Unit2), Palette::Text);
+                Type(entry.folder ? std::wstring{Tr(T::FilesFolder)}
+                                  : I18n::Format(T::FilesBytes, {std::to_wstring(entry.size)}),
+                     TypeRole::Label, (Canvas::Unit900 + Canvas::Unit20), y + Canvas::Unit10,
+                     (Canvas::Unit240 + Canvas::Unit20), Palette::TextSecondary, Canvas::Unit1,
+                     TextAlign::Trailing);
+                AddHit(Canvas::Unit80, y, Canvas::Unit1120, Canvas::Unit44, LibraryHit::FilesEntry,
+                       index);
+            }
+            ScrollIndicator((Canvas::Unit1200 + Canvas::Unit10), Canvas::Unit240,
+                            (Canvas::Unit44 * 8), first, std::min(visible, page.entries.size()),
+                            page.entries.size(), page.more);
+        }
+        if (browser.roots && !browser.busy)
+            Type(Tr(page.sources_unavailable ? T::FilesSourcesUnavailable : T::FilesRootsHint),
+                 TypeRole::Label, Canvas::Unit80, Canvas::Unit594, Canvas::Unit1120,
+                 Palette::TextSecondary);
+        Type(Tr(prompt_family == PromptFamily::Keyboard ? T::FilesKeyboardHelp : T::FilesHelp),
+             TypeRole::Label, Canvas::Unit80, Canvas::Unit680, Canvas::Unit1120, Palette::TextHint);
+        const std::array<std::wstring_view, 4> labels{Tr(T::Back), Tr(T::Refresh), L"<", L">"};
+        for (std::size_t index = 0; index < labels.size(); ++index) {
+            const float x =
+                Canvas::Unit80 + static_cast<float>(index) * (Canvas::Unit300 - Canvas::Unit20);
+            Round(x, Canvas::Unit620, (Canvas::Unit240 + Canvas::Unit20), Canvas::Unit44,
+                  Canvas::Unit22, Palette::Row);
+            Type(labels[index], TypeRole::Label, x, (Canvas::Unit620 + Canvas::Unit12),
+                 (Canvas::Unit240 + Canvas::Unit20), Palette::Text, Canvas::Unit1,
+                 TextAlign::Center);
+            AddHit(x, Canvas::Unit620, (Canvas::Unit240 + Canvas::Unit20), Canvas::Unit44,
+                   LibraryHit::FilesAction, index);
+        }
+    }
     void DrawFtpConnection(const ConfigurationPanel& configuration) {
         Type(Tr(T::FtpTitle), TypeRole::HeadlineLarge, 80, 100, 1120, Palette::Text);
         Type(configuration.ftp_address, TypeRole::HeadlineMedium, 80, 176, 1120, Palette::Accent);

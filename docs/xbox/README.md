@@ -68,3 +68,5 @@ un arranque en PC no certifica gameplay, rendimiento ni funcionamiento en Series
 - [Experimental resolution options from NXbox](nxbox-resolution-options.md): global/per-game
   scale, D3D12 coverage limits, host checks and 3D World/BotW console protocol.
 - [Opt-in controller preference and synthetic motion](nxbox-37-controllers-motion.md): NXbox input port, host evidence and pending Series acceptance.
+
+- [Read-only on-console Files browser](nxbox-jx-20-files-browser.md): LocalState and authorized USB folders, bounded pages and host evidence; Series gate pending.
