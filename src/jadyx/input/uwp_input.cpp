@@ -27,6 +27,7 @@
 #include "jadyx/input/uwp_controllers.h"
 #include "jadyx/input/controller_catalog.h"
 #include "jadyx/input/menu_input_capture.h"
+#include "jadyx/input/synthetic_motion.h"
 #include "jadyx/input/player_slots.h"
 #include "jadyx/settings/uwp_system_settings.h"
 #include "jadyx/game/game_menu.h"
@@ -451,10 +452,11 @@ std::optional<InputStep> ParseInputStep(std::string_view spec) {
     return step;
 }
 
-GamepadInput::GamepadInput(std::vector<InputStep> script_, bool joycon_preference_)
+GamepadInput::GamepadInput(std::vector<InputStep> script_, bool joycon_preference_,
+                           bool synthetic_motion_)
     : gamepad{std::make_shared<InputCommon::VirtualGamepad>(std::string{ENGINE})},
       script{std::move(script_)}, options{LoadControllerOptions()},
-      joycon_preference{joycon_preference_} {
+      joycon_preference{joycon_preference_}, synthetic_motion{synthetic_motion_} {
     InitializeKeyboardBindings();
     Common::Input::RegisterInputFactory(std::string{ENGINE},
                                         std::make_shared<InputCommon::InputFactory>(gamepad));
@@ -608,6 +610,11 @@ void GamepadInput::SetOptions(const ControllerOptions& next) {
 void GamepadInput::Start(Core::HID::HIDCore& hid_, u64 program_id_) {
     hid = &hid_;
     program_id = program_id_;
+    if (synthetic_motion) {
+        for (const std::size_t port : {PLAYER, HANDHELD_PORT}) {
+            hid->GetEmulatedControllerByIndex(port)->SetSyntheticMotionEnabled(true);
+        }
+    }
     // A focus lost while the game was still loading does not pause it once it starts.
     game_menu_open_requested.store(false, std::memory_order_relaxed);
     if (!thread.joinable()) {
@@ -621,8 +628,18 @@ void GamepadInput::Stop() {
     if (thread.joinable()) {
         thread.request_stop();
         thread.join();
+        if (synthetic_motion) {
+            for (const std::size_t port : {PLAYER, HANDHELD_PORT}) {
+                hid->GetEmulatedControllerByIndex(port)->SetSyntheticMotionEnabled(false);
+            }
+        }
     }
     gamepad->ResetControllers();
+    if (synthetic_motion) {
+        for (const std::size_t port : {PLAYER, HANDHELD_PORT}) {
+            gamepad->SetMotionState(port, 4000, 0, 0, 0, 0, 0, -1);
+        }
+    }
     ResetKeyboardKeys();
 }
 
@@ -644,6 +661,7 @@ void GamepadInput::Run(std::stop_token stop) {
     ConsoleControllerStyle style = ConsoleControllerStyle::Pro;
     u32 style_polls = 0;
     MenuComboFilter combo;
+    SyntheticMotion motion;
     u32 menu_held = 0; // Navigation bits held last poll, for press edges.
     MenuInputCapture menu_capture;
     ControllerCatalog<ControllerDevice> controllers;
@@ -792,6 +810,36 @@ void GamepadInput::Run(std::stop_token stop) {
         const bool toggle = combo.Filter(plus, minus, elapsed) |
                             game_menu_requested.exchange(false, std::memory_order_relaxed) |
                             (game_menu_open_requested.exchange(false, std::memory_order_relaxed) && !in_menu);
+        if (synthetic_motion) {
+            // Preserve the established raw View+Menu shortcut before motion consumes View.
+            // A modal cancels gestures and retains held controls until they are released.
+            const bool motion_blocked = in_menu || toggle || TextEntryActive();
+            StylePad motion_pad{.buttons = state.buttons,
+                                .left_x = state.left_x,
+                                .left_y = state.left_y,
+                                .right_x = state.right_x,
+                                .right_y = state.right_y};
+            auto* motion_controller = hid->GetEmulatedController(
+                style == ConsoleControllerStyle::Handheld ? Core::HID::NpadIdType::Handheld
+                                                          : Core::HID::NpadIdType::Player1);
+            const bool sensor_requested = motion_controller->IsConnected() &&
+                                          motion_controller->IsSixAxisSensorRequested() &&
+                                          Settings::values.motion_enabled.GetValue();
+            const auto sensor =
+                motion.FilterCaptured(motion_pad, synthetic_motion, sensor_requested,
+                                      motion_blocked, minus, std::chrono::steady_clock::now());
+            // Same sensor feeds both motion mappings; extra players never enter this path.
+            for (const std::size_t port : {PLAYER, HANDHELD_PORT}) {
+                gamepad->SetMotionState(port, sensor.delta_timestamp, sensor.gyro[0],
+                                        sensor.gyro[1], sensor.gyro[2], sensor.accel[0],
+                                        sensor.accel[1], sensor.accel[2]);
+            }
+            state = {.buttons = motion_pad.buttons,
+                     .left_x = motion_pad.left_x,
+                     .left_y = motion_pad.left_y,
+                     .right_x = motion_pad.right_x,
+                     .right_y = motion_pad.right_y};
+        }
         state.buttons &= ~(Bit(VirtualButton::ButtonPlus) | Bit(VirtualButton::ButtonMinus));
         state.buttons |= (plus ? Bit(VirtualButton::ButtonPlus) : 0) |
                          (minus ? Bit(VirtualButton::ButtonMinus) : 0);
@@ -825,7 +873,7 @@ void GamepadInput::Run(std::stop_token stop) {
                     if (pressed & (1U << i)) menu_actions.push_back(NAV[i]);
             }
         }
-        menu_capture.Filter(state, in_menu);
+        menu_capture.Filter(state, in_menu || (synthetic_motion && (toggle || TextEntryActive())));
         const StylePad styled = MapPadToStyle(
             {state.buttons, state.left_x, state.left_y, state.right_x, state.right_y}, style);
         state = {styled.buttons, styled.left_x, styled.left_y, styled.right_x, styled.right_y};

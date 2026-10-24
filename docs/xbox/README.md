@@ -50,3 +50,5 @@ un arranque en PC no certifica gameplay, rendimiento ni funcionamiento en Series
 - [Geometry shader passthrough](xbox_geometry_passthrough.md): Game B, lowering, interfaces SPIR-V/DXIL y gates de componentes.
 
 - [Magnesis PC/Series](xbox_magnesis.md): antecedentes resueltos y plan de captura diferencial del fallo de enganche exclusivo de Series.
+
+- [Opt-in controller preference and synthetic motion](nxbox-37-controllers-motion.md): NXbox input port, host evidence and pending Series acceptance.

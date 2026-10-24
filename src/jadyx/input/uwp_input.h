@@ -84,7 +84,8 @@ void ApplyControllerStyleSettings(ConsoleControllerStyle style);
 class GamepadInput {
 public:
     /// Registers the virtual_gamepad engine; do it before HIDCore().ReloadInputDevices().
-    explicit GamepadInput(std::vector<InputStep> script, bool joycon_preference = false);
+    explicit GamepadInput(std::vector<InputStep> script, bool joycon_preference = false,
+                          bool synthetic_motion = false);
     /// Unregisters the engine; call HIDCore().UnloadInputDevices() first.
     ~GamepadInput();
 
@@ -119,6 +120,7 @@ private:
     std::atomic<bool> style_changed{};
     bool joycon_preference{}; // Boot-only opt-in; never changes persisted controller options.
     u64 program_id{};
+    bool synthetic_motion{};  // Boot-only opt-in; routes motion to player one only.
     bool extra_players{true}; // Settings > System; read once per game, before the input thread.
     std::atomic<bool> menu_open{};
     std::atomic<u8> menu_prompt_mapping{};

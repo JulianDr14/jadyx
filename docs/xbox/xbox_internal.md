@@ -4277,3 +4277,12 @@ de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificaci�
 global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
 excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
+
+## NXbox controller/motion port (24 October 2026)
+
+Default-off boot switches `joycon_preference=1` and `synthetic_motion=1` add the
+restricted-title automatic policy and player-one six-axis input. Existing styles,
+settings and legacy sensor delivery remain the baseline with switches absent.
+Host evidence and exact pending console acceptance:
+[`nxbox-37-controllers-motion.md`](nxbox-37-controllers-motion.md).
+No Windows/UWP build, console test or performance certification in this work.
