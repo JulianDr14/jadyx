@@ -14,9 +14,11 @@ namespace Jadyx {
 // The seeding callback and directory scan run off the UI thread. A non-empty auto_pick (a path
 // relative to the root, boot.cfg "library_pick=") is chosen two seconds after the scan, for
 // unattended library -> game -> library runs.
+// ftp_test_password is test-only, supplied exclusively by the installed package boot.cfg parser.
 std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, unsigned height,
                                          const std::filesystem::path& root,
                                          const std::function<void()>& seed,
                                          std::string_view auto_pick = {},
-                                         std::string_view initial_notice = {});
+                                         std::string_view initial_notice = {},
+                                         std::string_view ftp_test_password = {});
 } // namespace Jadyx

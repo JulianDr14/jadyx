@@ -106,6 +106,7 @@
 #include "jadyx/input/uwp_controllers.h"
 #include "jadyx/input/keyboard_bindings.h"
 #include "jadyx/library/uwp_library.h"
+#include "jadyx/storage/ftp/ftp_test_hook.h"
 #include "jadyx/storage/uwp_rom_storage.h"
 #include "jadyx/content/content_service.h"
 #include "jadyx/mods/mod_settings.h"
@@ -2483,7 +2484,12 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     else if (line == "NXBOX_USB_PLAY_IN_PLACE=0")
                         Jadyx::SetUsbPlayInPlace(false);
                 }
+                // This test-only credential is read exclusively from the installed package.
+                std::ifstream ftp_test_cfg{install / L"boot.cfg"};
+                const auto ftp_test_password = Jadyx::Ftp::ReadTestPassword(ftp_test_cfg);
                 if (show_library) {
+                    if (!ftp_test_password.empty())
+                        WriteDiag("FTP test hook on");
                     if (session > 1) {
                         WriteDiag("library: back from the game | " + MemoryReport());
                         WriteDiag("heaps: " + HeapReport() + " | " + MemoryReport());
@@ -2496,7 +2502,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     library_game = Jadyx::ShowGameLibrary(surface.core_window, surface.width,
                         surface.height, local / L"games", [install, local] { SeedUserData(install, local); },
                         session <= 2 && library_error.empty() ? std::string_view{library_pick} : std::string_view{},
-                        library_error);
+                        library_error, ftp_test_password);
                     library_active = false;
                     if (!library_game) {
                         WriteDiag("library: closed by user");

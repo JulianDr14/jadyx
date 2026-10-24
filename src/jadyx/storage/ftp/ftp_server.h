@@ -2,10 +2,11 @@
 // Ported from NXbox src/eden_uwp/ftp (GPL-3.0-or-later).
 #pragma once
 #include <cstdint>
-#include "jadyx/storage/ftp/ftp_paths.h"
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
+#include "jadyx/storage/ftp/ftp_paths.h"
 
 namespace Jadyx::Ftp {
 // Lifetime owns all sockets. Stop also cancels pending data I/O and removes partial uploads.
@@ -15,7 +16,7 @@ class Server {
     ~Server();
     Server(const Server&) = delete;
     Server& operator=(const Server&) = delete;
-    bool Start(const Roots& roots, const std::string& ipv4);
+    bool Start(const Roots& roots, const std::string& ipv4, std::string_view test_password = {});
     void Stop();
     bool Running() const;
     std::wstring Address() const;

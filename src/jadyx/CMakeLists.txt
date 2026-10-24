@@ -50,6 +50,7 @@ add_executable(jadyx WIN32
     storage/ftp/ftp_paths.h
     storage/ftp/ftp_server.cpp
     storage/ftp/ftp_server.h
+    storage/ftp/ftp_test_hook.h
     storage/network_portal.cpp
     storage/network_portal.h
     storage/log_export.cpp

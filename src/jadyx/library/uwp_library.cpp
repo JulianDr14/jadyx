@@ -81,7 +81,8 @@ std::wstring Wide(std::string_view utf8) {
 std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, unsigned height,
                                          const std::filesystem::path& root,
                                          const std::function<void()>& seed,
-                                         std::string_view auto_pick, std::string_view initial_notice) {
+                                         std::string_view auto_pick, std::string_view initial_notice,
+                                         std::string_view ftp_test_password) {
     using namespace winrt::Windows::UI::Core;
     auto window = CoreWindow::GetForCurrentThread();
     auto canvas = std::make_unique<LibraryCanvas>(core_window, width, height);
@@ -107,6 +108,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     PortalLibrarySource portal_library{root, DefaultLibraryCacheDirectory()};
     Ftp::Server ftp_server;
     std::uint64_t ftp_changes{};
+    bool ftp_test_pending = !ftp_test_password.empty();
+    bool ftp_test_active = false;
     NetworkPortal network_portal{root,DefaultSystemImportBackend()};
     network_portal.SetLogDirectory(Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir));
     PortalFaultLog portal_faults{Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir)};
@@ -118,6 +121,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     // Revoked before the library-owned portal is destroyed. No background server survives play.
     auto network_suspending = winrt::Windows::ApplicationModel::Core::CoreApplication::Suspending(
         winrt::auto_revoke, [&](const auto&, const winrt::Windows::ApplicationModel::SuspendingEventArgs&) {
+            ftp_test_pending = false;
             updater.Pause();
             network_portal.Stop();
             ftp_server.Stop();
@@ -233,6 +237,12 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         e.Handled(true);
     });
     auto keyboard = window.KeyDown(winrt::auto_revoke, [&](auto&&, KeyEventArgs const& e) {
+        if (ftp_test_pending || ftp_test_active) {
+            if (e.VirtualKey() == VirtualKey::Escape)
+                actions |= Quit;
+            e.Handled(true);
+            return;
+        }
         if (e.KeyStatus().WasKeyDown && e.VirtualKey() != VirtualKey::Up &&
             e.VirtualKey() != VirtualKey::Down && e.VirtualKey() != VirtualKey::Left &&
             e.VirtualKey() != VirtualKey::Right) return;
@@ -311,6 +321,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         e.Handled(true);
     });
     auto pointer = window.PointerPressed(winrt::auto_revoke, [&](auto&&, PointerEventArgs const& e) {
+        if (ftp_test_pending || ftp_test_active) {
+            e.Handled(true);
+            return;
+        }
         const auto p = e.CurrentPoint().Position();
         const auto dpi = winrt::Windows::Graphics::Display::DisplayInformation::GetForCurrentView().RawPixelsPerViewPixel();
         const auto scale = std::max(0.01f, std::min(width / 1280.0f, height / 720.0f));
@@ -529,6 +543,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         e.Handled(true);
     });
     auto wheel = window.PointerWheelChanged(winrt::auto_revoke, [&](auto&&, PointerEventArgs const& e) {
+        if (ftp_test_pending || ftp_test_active) {
+            e.Handled(true);
+            return;
+        }
         if (configuration.network_screen) {
             const int delta = e.CurrentPoint().Properties().MouseWheelDelta();
             if (delta) { actions |= delta > 0 ? Left : Right; dirty = true; }
@@ -854,8 +872,35 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         configuration.network_action = 0;
         dirty = true;
     };
+    // Both entry points acquire the same exclusive storage ownership and expose the same roots.
+    const auto start_ftp = [&](std::string_view test_password = {}) {
+        network_portal.Stop();
+        configuration.network = network_portal.Status();
+        updater.Pause();
+        metadata_worker.request_stop();
+        if (metadata_worker.joinable())
+            metadata_worker.join();
+        metadata = {};
+        reload_metadata();
+        const auto addresses = PortalAddresses();
+        std::string ipv4;
+        for (const auto& address : addresses) {
+            if (Ftp::PrivateIPv4(address.ipv4)) {
+                ipv4 = address.ipv4;
+                break;
+            }
+        }
+        Ftp::Roots ftp_roots;
+        ftp_roots.games = root;
+        ftp_roots.keys = SystemDestination(FileImport::Keys);
+        ftp_roots.firmware = SystemDestination(FileImport::Firmware);
+        ftp_roots.saves = Common::FS::GetEdenPath(Common::FS::EdenPath::SaveDir) / "user" / "save";
+        return ftp_server.Start(ftp_roots, ipv4, test_password);
+    };
     const auto close_ftp = [&] {
         ftp_server.Stop();
+        ftp_test_active = false;
+        ftp_test_pending = false;
         configuration.ftp_screen = configuration.network_screen = false;
         configuration.ftp_password.clear();
         configuration.ftp_address.clear();
@@ -876,7 +921,15 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         }
         window.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
         const auto now = std::chrono::steady_clock::now();
-        network_portal.SetUploadsAvailable(!configuration.ftp_screen && !configuration.busy &&
+        if (ftp_test_active && !ftp_server.Running())
+            close_ftp();
+        // Let the initial seed/scan finish before any FTP writes. No retry after suspend/stop.
+        if (ftp_test_pending && !loading && !setup_future.valid() && !configuration.busy) {
+            ftp_test_pending = false;
+            if (network_portal.BlockForLocalOperation())
+                ftp_test_active = start_ftp(ftp_test_password);
+        }
+        network_portal.SetUploadsAvailable(!configuration.ftp_screen && !ftp_test_active && !configuration.busy &&
                                            !picker && !validation.valid() && !game_options.open &&
                                            !content_session && !settings && !system_page.open &&
                                            updater.CurrentPhase() != Updates::Phase::Downloading &&
@@ -888,7 +941,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (update.revision != system_page.update.revision) dirty = true;
             system_page.update = std::move(update);
             if (system_page.updates_open && system_page.update.phase == Updates::Phase::Ready) {
-                const bool storage_idle = !configuration.ftp_screen && !configuration.busy &&
+                const bool storage_idle = !configuration.ftp_screen && !ftp_test_active && !configuration.busy &&
                                           !picker && !validation.valid() && !content_session &&
                                           !loading && !setup_future.valid() &&
                                           network_portal.BlockForLocalOperation();
@@ -937,7 +990,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 system_pending ? StorageJob::PortalSystem : state.removal.phase == "pending" ? StorageJob::PortalRemoval :
                 state.transfer.phase == "ready" ? StorageJob::PortalGame :
                 state.content.phase == "ready" ? std::optional{StorageJob::PortalContent} : std::nullopt;
-            if (next_job && !configuration.ftp_screen && !configuration.busy && !loading &&
+            if (next_job && !configuration.ftp_screen && !ftp_test_active && !configuration.busy && !loading &&
                 !setup_future.valid() && !picker && !validation.valid() && !content_session &&
                 !game_options.open) {
                 configuration.busy=true;
@@ -1161,6 +1214,13 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 import_progress.decision.notify_all();configuration.confirm_import=false;dirty=true;
             }
             dirty|=actions!=0;actions=0;pressed_tab.reset();
+        }
+        if (ftp_test_pending || ftp_test_active) {
+            // The hook has no page; Back releases storage just like the manual FTP page.
+            if (actions & Quit)
+                close_ftp();
+            actions = 0;
+            pressed_tab.reset();
         }
         if (configuration.ftp_screen) {
             if (actions & (Left | Right | Up | Down))
@@ -1937,29 +1997,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     if (!network_portal.BlockForLocalOperation()) {
                         configuration.notice = Tr(T::NetworkBusy);
                     } else {
-                        network_portal.Stop();
-                        configuration.network = network_portal.Status();
-                        updater.Pause();
-                        metadata_worker.request_stop();
-                        if (metadata_worker.joinable())
-                            metadata_worker.join();
-                        metadata = {};
-                        reload_metadata();
-                        const auto addresses = PortalAddresses();
-                        std::string ipv4;
-                        for (const auto& address : addresses) {
-                            if (Ftp::PrivateIPv4(address.ipv4)) {
-                                ipv4 = address.ipv4;
-                                break;
-                            }
-                        }
-                        Ftp::Roots ftp_roots;
-                        ftp_roots.games = root;
-                        ftp_roots.keys = SystemDestination(FileImport::Keys);
-                        ftp_roots.firmware = SystemDestination(FileImport::Firmware);
-                        ftp_roots.saves = Common::FS::GetEdenPath(Common::FS::EdenPath::SaveDir) /
-                                          "user" / "save";
-                        if (ftp_server.Start(ftp_roots, ipv4)) {
+                        if (start_ftp()) {
                             configuration.ftp_address = ftp_server.Address();
                             configuration.ftp_password = ftp_server.Password();
                             configuration.ftp_screen = configuration.network_screen = true;
@@ -2023,7 +2061,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (scan.limited) notice = Tr(T::ScanLimit);
             dirty = true;
         }
-        if (!auto_pick.empty() && !configuration.open && !loading && !picker && !validation.valid()) {
+        if (!ftp_test_pending && !ftp_test_active && !auto_pick.empty() && !configuration.open && !loading && !picker && !validation.valid()) {
             if (auto_pick_at == std::chrono::steady_clock::time_point{})
                 auto_pick_at = std::chrono::steady_clock::now() + std::chrono::seconds{2};
             if (std::chrono::steady_clock::now() >= auto_pick_at) {
@@ -2236,7 +2274,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         const bool covers_due = !configuration.open && (metadata_dirty || retained_page != page);
         if (metadata.valid() && metadata_background && covers_due)
             metadata_worker.request_stop();
-        if (!configuration.ftp_screen && !configuration.busy && !setup_future.valid() &&
+        if (!configuration.ftp_screen && !ftp_test_active && !ftp_test_pending &&
+            !configuration.busy && !setup_future.valid() &&
             !content_session && !validation.valid() && !missing_content && !loading &&
             !metadata.valid() && !scan.entries.empty()) {
             MetadataOptions request{title_language};
