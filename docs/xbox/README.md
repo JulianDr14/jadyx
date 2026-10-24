@@ -20,6 +20,9 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 
 ## Diseño y funciones
 
+- [Breadth-first scans on integration5](nxbox-jx-43-scan-bfs-on-int5.md): retained per-source budgets, USB filters, host regression and pending console gate.
+- [Original breadth-first scan report (jx-42)](nxbox-scan-breadth-first.md): historical source port and test fixture.
+
 - [Curated compatibility freshness](nxbox-jx-19-compat-fresh.md): background refresh, timestamp selection and manual Bun curation without a new release.
 - [NXbox migration contract](nxbox-import.md): versioned metadata, preserved user settings, pending USB title history, welcome and console gate.
 

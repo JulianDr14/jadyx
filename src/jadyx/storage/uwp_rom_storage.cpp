@@ -353,50 +353,63 @@ public:
 };
 
 void ScanFolder(StorageFolder folder, const std::string& token, const std::wstring& source,
-                std::string relative, unsigned depth, StorageScanBudget& budget, bool drive_root,
-                LibraryScan& scan, std::stop_token stop) {
-    for (unsigned start = 0; !stop.stop_requested(); start += PageSize) {
-        auto items = folder.GetItemsAsync(start, PageSize).get();
-        for (const auto& item : items) {
-            if (stop.stop_requested()) return;
-            if (!budget.Visit()) {
-                scan.limited = true;
-                return;
-            }
-            const auto name = winrt::to_string(item.Name());
-            const auto child = relative.empty() ? name : relative + "/" + name;
-            if (!ValidStorageRelative(child)) continue;
-            // Interrupted move staging is never a launchable library copy.
-            if (VerifiedMove::IsMoveStaging(name))
-                continue;
-            if (item.IsOfType(StorageItemTypes::Folder)) {
-                if (drive_root ? ShouldDescendUsbFolder(child) : depth < 4) {
-                    try {
-                        ScanFolder(item.as<StorageFolder>(), token, source, child, depth + 1,
-                                   budget, drive_root, scan, stop);
-                    } catch (const winrt::hresult_error& e) {
-                        AddError(scan, ErrorText(e));
+                StorageScanBudget& budget, bool drive_root, LibraryScan& scan,
+                std::stop_token stop) {
+    struct FolderToScan {
+        StorageFolder handle;
+        std::string relative;
+    };
+    ScanLibraryFolders(
+        FolderToScan{.handle = std::move(folder), .relative = {}}, budget.visited, budget.limited,
+        stop, [&](const FolderToScan& current, auto visit, auto descend) {
+            try {
+                for (unsigned start = 0; !stop.stop_requested(); start += PageSize) {
+                    auto items = current.handle.GetItemsAsync(start, PageSize).get();
+                    for (const auto& item : items) {
+                        if (!visit())
+                            return;
+                        const auto name = winrt::to_string(item.Name());
+                        const auto child =
+                            current.relative.empty() ? name : current.relative + "/" + name;
+                        if (!ValidStorageRelative(child) || VerifiedMove::IsMoveStaging(name))
+                            continue;
+                        if (item.IsOfType(StorageItemTypes::Folder)) {
+                            // Whole-drive discovery keeps integration5's allowlist.
+                            // Selected folders use the helper's depth < 4 limit.
+                            if (!drive_root || ShouldDescendUsbFolder(child)) {
+                                descend(FolderToScan{.handle = item.as<StorageFolder>(),
+                                                     .relative = child});
+                            }
+                        } else {
+                            const auto p = std::filesystem::path{winrt::to_hstring(child).c_str()};
+                            auto ext = p.extension().string();
+                            std::transform(
+                                ext.begin(), ext.end(), ext.begin(),
+                                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                            if (ext != ".nsp" && ext != ".xci" && ext != ".nro")
+                                continue;
+                            LibraryEntry entry{};
+                            entry.relative_path = p;
+                            entry.name = p.stem().wstring();
+                            entry.launch_path = MakeStoragePath(token, child);
+                            entry.source_name = source;
+                            // Enumerated items carry their dates: no extra call per file.
+                            try {
+                                entry.added = static_cast<std::int64_t>(
+                                    winrt::clock::to_time_t(item.DateCreated()));
+                            } catch (const winrt::hresult_error&) {
+                            }
+                            scan.entries.push_back(std::move(entry));
+                        }
                     }
+                    if (items.Size() < PageSize)
+                        break;
                 }
-            } else {
-                const auto p = std::filesystem::path{winrt::to_hstring(child).c_str()};
-                auto ext = p.extension().string();
-                std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                if (ext != ".nsp" && ext != ".xci" && ext != ".nro") continue;
-                LibraryEntry entry{};
-                entry.relative_path = p;
-                entry.name = p.stem().wstring();
-                entry.launch_path = MakeStoragePath(token, child);
-                entry.source_name = source;
-                // Enumerated items carry their dates: no extra call per file.
-                try { entry.added = static_cast<std::int64_t>(winrt::clock::to_time_t(item.DateCreated())); }
-                catch (const winrt::hresult_error&) {}
-                scan.entries.push_back(std::move(entry));
+            } catch (const winrt::hresult_error& e) {
+                AddError(scan, ErrorText(e));
             }
-            if (scan.limited) return;
-        }
-        if (items.Size() < PageSize) break;
-    }
+        });
+    scan.limited |= budget.limited;
 }
 } // namespace
 
@@ -689,7 +702,7 @@ LibraryScan ScanExternalGameFolders(std::stop_token stop) {
         LibraryScan partial;
         try {
             CleanupGameMoveStaging(source.folder, stop);
-            ScanFolder(source.folder, source.token, std::wstring{source.folder.Name()}, "", 0,
+            ScanFolder(source.folder, source.token, std::wstring{source.folder.Name()},
                        budget, source.drive_root, partial, stop);
         } catch (const winrt::hresult_error& e) {
             AddError(partial, ErrorText(e));

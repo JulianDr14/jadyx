@@ -4579,3 +4579,14 @@ are not firmware versions. A failed decrypt cannot always reveal SystemVersion.
 Host results, additive portal error/progress fields and the exact pending console
 gate are documented in [the first-install report](nxbox-jx-26-friendly-setup.md).
 No package, Windows run or console validation was performed for this change.
+
+## 2026-10-24 — jx-43 breadth-first scans on integration5
+
+Ported `ScanLibraryFolders` and the jx-42 regression from `928018bd2e` onto local
+integration5 `2262038a46`. Both native and WinRT scans use FIFO traversal. Retain
+per-source `StorageScanBudget`, USB root allowlist, selected-folder depth, move
+staging exclusion, overlap checks and partial results. Native regression fails
+before and passes after; library/USB/path standalone tests pass. Frontend tests
+remain blocked by existing duplicate locale IDs. No network or console run.
+Details, numbers and exact pending Series gate:
+[nxbox-jx-43-scan-bfs-on-int5.md](nxbox-jx-43-scan-bfs-on-int5.md).

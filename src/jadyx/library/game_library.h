@@ -10,6 +10,7 @@
 #include <stop_token>
 #include <string>
 #include <vector>
+#include "jadyx/library/library_scan.h"
 
 namespace Jadyx {
 struct LibraryEntry {
@@ -51,34 +52,43 @@ inline LibraryScan ScanGameLibrary(const std::filesystem::path& root,
         if (ec) result.error = ec.message();
         return result;
     }
-    auto it = std::filesystem::recursive_directory_iterator{
-        root, std::filesystem::directory_options::skip_permission_denied, ec};
-    const auto end = std::filesystem::recursive_directory_iterator{};
     unsigned visited = 0;
-    for (; !ec && it != end && !stop.stop_requested(); it.increment(ec)) {
-        if (++visited > 10000) {
-            result.limited = true;
-            break;
-        }
-        const auto status = it->symlink_status(ec);
-        if (ec) break;
-        if (std::filesystem::is_symlink(status)) {
-            it.disable_recursion_pending();
-            continue;
-        }
-        if (it.depth() >= 4) it.disable_recursion_pending();
-        if (!std::filesystem::is_regular_file(status)) continue;
-        auto ext = it->path().extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (ext != ".nsp" && ext != ".xci" && ext != ".nro") continue;
-        result.entries.push_back({it->path().lexically_relative(root),
-                                  it->path().stem().wstring()});
-    }
-    if (ec) result.error = ec.message();
-    std::sort(result.entries.begin(), result.entries.end(), [](const auto& a, const auto& b) {
-        return a.relative_path < b.relative_path;
-    });
+    ScanLibraryFolders(
+        root, visited, result.limited, stop,
+        [&](const std::filesystem::path& folder, auto visit, auto descend) {
+            std::error_code folder_error;
+            auto it = std::filesystem::directory_iterator{
+                folder, std::filesystem::directory_options::skip_permission_denied, folder_error};
+            const auto end = std::filesystem::directory_iterator{};
+            for (; !folder_error && it != end; it.increment(folder_error)) {
+                if (!visit())
+                    break;
+                const auto status = it->symlink_status(folder_error);
+                if (folder_error)
+                    break;
+                if (std::filesystem::is_symlink(status))
+                    continue;
+                if (std::filesystem::is_directory(status)) {
+                    descend(it->path());
+                    continue;
+                }
+                if (!std::filesystem::is_regular_file(status))
+                    continue;
+                auto ext = it->path().extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (ext != ".nsp" && ext != ".xci" && ext != ".nro")
+                    continue;
+                LibraryEntry entry{};
+                entry.relative_path = it->path().lexically_relative(root);
+                entry.name = it->path().stem().wstring();
+                result.entries.push_back(std::move(entry));
+            }
+            if (folder_error)
+                result.error = folder_error.message();
+        });
+    std::sort(result.entries.begin(), result.entries.end(),
+              [](const auto& a, const auto& b) { return a.relative_path < b.relative_path; });
     return result;
 }
 
