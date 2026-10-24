@@ -1106,10 +1106,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                                                         import_progress.total =
                                                             static_cast<unsigned>(total >> 20);
                                                     });
-                        case StorageJob::Removal:
-                            return RemoveGame(root, removal);
-                        case StorageJob::PortalSystem:
-                            return network_portal.RunSystemImport(stop);
+                        case StorageJob::Removal: return RemoveGame(root, removal);
+                        case StorageJob::PortalSystem: return network_portal.RunSystemImport(stop);
                         case StorageJob::PortalRemoval:
                             return network_portal.RunRemoval([&](const PortalRemoval& r) { return portal_library.Remove(r); });
                         case StorageJob::PortalContent: return network_portal.FinalizeContent(install);
@@ -1405,8 +1403,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         move_request = MoveRequest{.game = *move_selection, .destination = folder};
                         game_options.open = false;
                         options_notice.clear();
-                    } else if (picker_kind >= 3) {
-                    } // A page's folder whose page closed meanwhile.
+                    } else if (picker_kind >= 3) {} // A page's folder whose page closed meanwhile.
                     else if (folder) {
                         configuration.busy = true;
                         configuration.notice.clear();
@@ -1489,6 +1486,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         after_scan = Tr(error.empty()          ? T::GameMoved
                                         : error == "space"     ? T::GameMoveSpace
                                         : error == "conflict"  ? T::GameMoveConflict
+                                        : error == "verify"    ? T::GameMoveVerify
                                         : error == "cleanup"   ? T::GameMoveCleanup
                                         : error == "cancelled" ? T::GameMoveCancelled
                                                                : T::GameMoveFailed);

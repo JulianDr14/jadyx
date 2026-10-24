@@ -6,13 +6,14 @@
 int main() {
     using namespace Jadyx;
     // Run in a clean environment. The opt-in adds exactly one in-place action.
-    assert(!MoveToUsbEnabled() && GameOptions().size() == 6);
+    assert(!MoveToUsbEnabled() && GameOptions().size() == 8);
     move_to_usb_boot_option = true;
-    assert(GameOptions().size() == 7 && GameOptions().back() == GameOption::MoveToUsb);
+    assert(GameOptions().size() == 9 &&
+           GameOptions().back() == GameOption::MoveToUsb);
     assert(!GameOptionHasManager(GameOption::MoveToUsb));
     GameOptionsPage page;
     page.open = true;
-    SelectGameOption(page, 6);
+    SelectGameOption(page, GameOptions().size() - 1);
     HandleGameOptionsInput(page, GameOptionsInput::Confirm);
     assert(page.confirm_discard && !page.discard);
     HandleGameOptionsInput(page, GameOptionsInput::Confirm);
@@ -22,6 +23,6 @@ int main() {
     HandleGameOptionsInput(page, GameOptionsInput::Up);
     assert(!page.confirm_discard && !page.discard);
     move_to_usb_boot_option = false;
-    assert(GameOptions().size() == 6);
+    assert(GameOptions().size() == 8);
     std::cout << "move options: default off, opt-in, confirmation and navigation PASS\n";
 }

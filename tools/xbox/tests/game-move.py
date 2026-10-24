@@ -19,7 +19,7 @@ crypto_flags = shlex.split(
     )
 )
 with tempfile.TemporaryDirectory(prefix="jadyx-game-move-") as temporary:
-    for name in ("game-move", "game-move-data", "game-move-options"):
+    for name in ("game-move", "game-move-data", "game-move-options", "move-recovery"):
         binary = str(Path(temporary) / name)
         command = [
             os.environ.get("CXX", "clang++"),

@@ -16,8 +16,8 @@ No network, PC run, console access, push or package build was used for this work
 - The single curated source is now `compat/compat.json`, moved from `dist/compat`.
   Packaging still installs it as `compat/compat.json`. Existing reports and their
   attribution are preserved; the document adds `generated` and sorted title IDs.
-- `jadyx_version`, `report_url`, `date` and `source` are optional strings, bounded
-  to 1024 bytes each. New reports use `source: "community"`; curators may set
+- `jadyx_version`, `report_url`, `date` and `source` are optional strings. In the
+  combined integration, `date` is bounded to 64 bytes and the others to 1024 bytes. New reports use `source: "community"`; curators may set
   `"manual"`. Legacy descriptive source strings remain accepted for old files.
 - `generated` is optional for legacy documents. New documents use ISO 8601 UTC
   (`YYYY-MM-DDTHH:MM:SS[.fraction]Z`, 1–9 fractional digits). Invalid timestamps,

@@ -77,3 +77,5 @@ un arranque en PC no certifica gameplay, rendimiento ni funcionamiento en Series
 - [Optional startup warmup controls](nxbox-jx-22-warmup-skip.md): safe shader/JIT skip, return to library, host gates and pending Series acceptance.
 - [Translation/dub language filter](nxbox-jx-24-mod-language-filter.md): optional catalog filter,
   host evidence and pending console navigation/locale gate.
+
+- [Integration4: feature union and recovery seams](nxbox-jx-50-integration4.md): local merge order, host before/after results and pending console gate.

@@ -4374,8 +4374,8 @@ Comparison, limitations and exact 3D World/BotW test:
 
 The Jadyx library now consumes packaged compatibility metadata keyed by base title ID,
 with drawn status badges and en/es/pt-BR focus text. Loading starts after first draw;
-refresh is opt-in via NXBOX_COMPAT_REFRESH, bounded to three seconds and 256 KiB.
-LocalState cache falls back to the bundle; NXbox reports retain provenance and never
+refresh is now enabled by default, bounded to three seconds and 256 KiB (jx-19).
+The current `LocalState/jadyx/compat_cache.json` falls back to the bundle; NXbox reports retain provenance and never
 certify Jadyx. Four titles/eight reports seeded from local sources; unmapped IDs omitted.
 Host parsing/library/history/localization pass; UWP build and console layout/timing
 remain pending. Maintenance rules, exact commands and evidence limits are in
@@ -4546,3 +4546,18 @@ The applet-errors branch now keeps the original 5120 shared-buffer stride unless
 off, is not persisted, and is restored after a session. Host regression covers
 all seven slots off/on/off; Xbox/MSVC validation is pending. Evidence and exact
 console steps: [jx-39](nxbox-jx-39-applet-errors-optin.md).
+
+
+## 2026-10-24: integration4 feature union and recovery (jx-50)
+
+Branch `nxbox/integration4` starts at integration3; merges 19, 1a, 1b, 20, 22,
+24 and 23b in order, then transplants 21 and 39 as one squash each. All appended
+documentation is retained. Duplicate report date and locale source-order failures
+are reproduced/fixed; metadata recovery retains per-title language and retry
+policy. USB recovery removes only staging in authorized roots when enabled, and
+recognizes a hash-verified published copy without automatic deletion or catalog
+changes. Applet UI/stride stay opt-in; weak callback/complete guards unconditional.
+Broad host inventory has no newly failing baseline gate; existing frontend aborts
+and other baseline/platform failures remain explicit. No UWP/MSVC, network, PC
+application, console, package or push. Exact counts, limitations and pending Series
+fault-injection test: [integration4 report](nxbox-jx-50-integration4.md).

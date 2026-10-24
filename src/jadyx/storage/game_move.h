@@ -11,6 +11,10 @@
 #include "jadyx/storage/move_option.h"
 
 namespace Jadyx {
+// Clean interrupted copies before the startup scan, using the same serial worker ownership.
+void CleanupGameMoveStaging(const winrt::Windows::Storage::StorageFolder& destination,
+                            std::stop_token stop);
+
 // Called only by the library's serial MTA storage worker, with portal mutations blocked.
 std::string MoveInternalGame(const std::filesystem::path& games, const LibraryEntry& game,
                              const winrt::Windows::Storage::StorageFolder& destination,

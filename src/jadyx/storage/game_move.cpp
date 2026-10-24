@@ -11,12 +11,14 @@
 #include <fileapifromapp.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Storage.FileProperties.h>
+#include <winrt/Windows.Storage.Search.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include "common/logging.h"
 #include "core/file_sys/vfs/vfs.h"
 #include "jadyx/content/content_service.h"
 #include "jadyx/storage/game_move_catalog.h"
 #include "jadyx/storage/move_digest.h"
+#include "jadyx/storage/move_recovery.h"
 #include "jadyx/storage/storage_path.h"
 #include "jadyx/storage/uwp_rom_storage.h"
 #include "jadyx/storage/verified_move.h"
@@ -81,7 +83,69 @@ StorageFolder Parent(StorageFolder folder, std::string_view relative, bool creat
 std::string Leaf(std::string_view path) {
     return std::string{path.substr(path.rfind('/') + 1)};
 }
+bool VerifyOutput(const StorageFolder& folder, const std::string& token,
+                  const VerifiedMove::File& file, const VerifiedMove::Digest& expected,
+                  std::stop_token stop) {
+    const auto parent = Parent(folder, file.relative, false);
+    const auto output = parent.GetFileAsync(winrt::to_hstring(Leaf(file.relative))).get();
+    const auto path = MakeStoragePath(token, winrt::to_string(folder.Name()) + "/" + file.relative);
+    auto vfs = MakeUwpFilesystem();
+    auto reopened = vfs->OpenFile(path, FileSys::OpenMode::Read);
+    if (!reopened || reopened->GetSize() != file.bytes ||
+        output.GetBasicPropertiesAsync().get().Size() != file.bytes)
+        return false;
+    const auto digest = VerifiedMove::Hash(
+        [&](auto buffer, auto offset) {
+            return reopened->Read(buffer.data(), buffer.size(), static_cast<std::size_t>(offset));
+        },
+        file.bytes, stop);
+    return digest && *digest == expected;
+}
 } // namespace
+
+void CleanupGameMoveStaging(const StorageFolder& destination, std::stop_token stop) {
+    if (!MoveToUsbEnabled())
+        return;
+    try {
+        // Snapshot names before deleting: removal must not shift the broker's page offsets.
+        std::vector<std::string> names;
+        constexpr unsigned page_size = 64;
+        constexpr unsigned max_folders = 10000;
+        for (unsigned start = 0; start < max_folders && !stop.stop_requested();
+             start += page_size) {
+            const auto folders =
+                destination
+                    .GetFoldersAsync(
+                        winrt::Windows::Storage::Search::CommonFolderQuery::DefaultQuery, start,
+                        std::min(page_size, max_folders - start))
+                    .get();
+            for (const auto& folder : folders)
+                names.push_back(winrt::to_string(folder.Name()));
+            if (folders.Size() < page_size)
+                break;
+        }
+        VerifiedMove::CleanupStaging(
+            names,
+            [&](const std::string& name) {
+                try {
+                    const auto folder = destination.GetFolderAsync(winrt::to_hstring(name)).get();
+                    const auto attributes = GetFileAttributesW(folder.Path().c_str());
+                    if (attributes == INVALID_FILE_ATTRIBUTES ||
+                        (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+                        return;
+                    folder.DeleteAsync(StorageDeleteOption::PermanentDelete).get();
+                    LOG_INFO(Frontend, "Game move: removed interrupted staging={}", name);
+                } catch (const winrt::hresult_error& error) {
+                    LOG_WARNING(Frontend, "Game move: retained staging={} reason={}", name,
+                                winrt::to_string(error.message()));
+                }
+            },
+            [&] { return stop.stop_requested(); });
+    } catch (const winrt::hresult_error& error) {
+        LOG_WARNING(Frontend, "Game move: staging recovery unavailable reason={}",
+                    winrt::to_string(error.message()));
+    }
+}
 
 std::string MoveInternalGame(const fs::path& games, const LibraryEntry& game,
                              const StorageFolder& destination, std::stop_token stop,
@@ -110,7 +174,8 @@ std::string MoveInternalGame(const fs::path& games, const LibraryEntry& game,
         if (store.Load(catalog) != Content::Error::None)
             return "registry";
         const auto bundle = fmt::format("Jadyx-{:016X}", application);
-        if (destination.TryGetItemAsync(winrt::to_hstring(bundle)).get())
+        const auto existing = destination.TryGetItemAsync(winrt::to_hstring(bundle)).get();
+        if (existing && !existing.IsOfType(StorageItemTypes::Folder))
             return "conflict";
         std::vector<File> files;
         std::map<std::string, std::shared_ptr<Source>> sources;
@@ -172,6 +237,24 @@ std::string MoveInternalGame(const fs::path& games, const LibraryEntry& game,
         }
         if (stop.stop_requested())
             return "cancelled";
+        if (existing) {
+            const auto token = RememberGameFolder(destination);
+            ExistingCopy recovery = ExistingCopy::Conflict;
+            try {
+                recovery = CheckPublished(
+                    files,
+                    [&](const File& file) {
+                        return VerifyOutput(existing.as<StorageFolder>(), token, file,
+                                            sources.at(file.relative)->digest, stop);
+                    },
+                    [&] { return stop.stop_requested(); });
+            } catch (const winrt::hresult_error&) {
+                return stop.stop_requested() ? "cancelled" : "conflict";
+            }
+            if (recovery == ExistingCopy::Cancelled)
+                return "cancelled";
+            return recovery == ExistingCopy::Verified ? "verify" : "conflict";
+        }
         // Broker metadata, never a guessed drive letter. Unknown capacity fails closed.
         std::optional<std::uint64_t> available;
         const auto properties =
@@ -224,22 +307,7 @@ std::string MoveInternalGame(const fs::path& games, const LibraryEntry& game,
             return true;
         };
         io.verify = [&](const File& file) {
-            const auto parent = Parent(staging, file.relative, false);
-            const auto output = parent.GetFileAsync(winrt::to_hstring(Leaf(file.relative))).get();
-            const auto path =
-                MakeStoragePath(token, winrt::to_string(staging.Name()) + "/" + file.relative);
-            auto vfs = MakeUwpFilesystem();
-            auto reopened = vfs->OpenFile(path, FileSys::OpenMode::Read);
-            if (!reopened || reopened->GetSize() != file.bytes ||
-                output.GetBasicPropertiesAsync().get().Size() != file.bytes)
-                return false;
-            const auto digest = Hash(
-                [&](auto buffer, auto offset) {
-                    return reopened->Read(buffer.data(), buffer.size(),
-                                          static_cast<std::size_t>(offset));
-                },
-                file.bytes, stop);
-            return digest && *digest == sources.at(file.relative)->digest;
+            return VerifyOutput(staging, token, file, sources.at(file.relative)->digest, stop);
         };
         io.publish = [&] {
             staging.RenameAsync(winrt::to_hstring(bundle), NameCollisionOption::FailIfExists).get();

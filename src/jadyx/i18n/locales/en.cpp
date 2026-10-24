@@ -9,20 +9,6 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::ThemeJadyx, L"Jadyx"},
     {Text::ThemeOldNxbox, L"Old NXbox"},
 
-    // Game information
-    {Text::GameInfoTitle, L"More information"},
-    {Text::GameInfoUnknown, L"Unknown"},
-    {Text::GameInfoExternal, L"USB / external · {0}"},
-    {Text::GameInfoProgramId, L"Program ID: {0}"},
-    {Text::GameInfoVersion, L"Version: {0}"},
-    {Text::GameInfoFormat, L"Format: {0} · Size on disk: {1}"},
-    {Text::GameInfoStorage, L"Storage: {0}"},
-    {Text::GameInfoContent, L"Installed updates: {0} · DLC: {1}"},
-    {Text::GameInfoReport, L"Community report · Series {0} · {1}"},
-    {Text::GameInfoReportBuild, L"Jadyx version: {0}"},
-    {Text::GameInfoDate, L"Report date: {0}"},
-    {Text::GameInfoPlayTime, L"Play time: {0}"},
-
     // Library
     {Text::CompatibilityUntested, L"Untested"},
     {Text::CompatibilityPlayable, L"Playable"},
@@ -60,9 +46,6 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::Open, L"Open"},
     {Text::Cancel, L"Cancel"},
     {Text::Controller, L"Controller"},
-    {Text::GuestErrorTitle, L"The game reported an error"},
-    {Text::GuestErrorFallback, L"Dismiss this message to return to the game."},
-    {Text::GuestErrorDismiss, L"Dismiss"},
     {Text::Keyboard, L"Keyboard"},
     {Text::Arrows, L"Arrows"},
     {Text::DPad, L"D-pad"},
@@ -330,6 +313,9 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::SpaceKey, L"Space"},
     {Text::DeleteKey, L"Delete"},
     {Text::DoneKey, L"Done"},
+    {Text::GuestErrorTitle, L"The game reported an error"},
+    {Text::GuestErrorFallback, L"Dismiss this message to return to the game."},
+    {Text::GuestErrorDismiss, L"Dismiss"},
     // Keyboard a game opens
     {Text::TextInputTitle, L"Enter text"},
     {Text::TextInputTooShort, L"Type at least {0} characters."},
@@ -603,6 +589,8 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::GameMoveCancelled, L"Move cancelled. Originals were kept."},
     {Text::GameMoveConflict,
      L"That game folder already exists on USB. Choose another folder; nothing was replaced."},
+    {Text::GameMoveVerify, L"A matching USB copy is already published. Verify its registration and "
+                           L"retained originals before cleanup; nothing was replaced or deleted."},
     {Text::GameMoveSpace,
      L"USB capacity is unknown or insufficient. Free space and reconnect, then retry."},
     {Text::GameMoveCleanup, L"USB copy verified and registered. Some internal files remain; rescan "
@@ -776,6 +764,19 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::UpdateGuidePortalBody, L"Add → choose the downloaded file → Next → Install."},
     {Text::UpdateGuideWarning, L"Do not uninstall Jadyx: that deletes your saves and settings. Install over it."},
     {Text::UpdaterUpdatedTo, L"Jadyx was updated to {0}"},
+    // Game information
+    {Text::GameInfoTitle, L"More information"},
+    {Text::GameInfoUnknown, L"Unknown"},
+    {Text::GameInfoExternal, L"USB / external · {0}"},
+    {Text::GameInfoProgramId, L"Program ID: {0}"},
+    {Text::GameInfoVersion, L"Version: {0}"},
+    {Text::GameInfoFormat, L"Format: {0} · Size on disk: {1}"},
+    {Text::GameInfoStorage, L"Storage: {0}"},
+    {Text::GameInfoContent, L"Installed updates: {0} · DLC: {1}"},
+    {Text::GameInfoReport, L"Community report · Series {0} · {1}"},
+    {Text::GameInfoReportBuild, L"Jadyx version: {0}"},
+    {Text::GameInfoDate, L"Report date: {0}"},
+    {Text::GameInfoPlayTime, L"Play time: {0}"},
 
     {Text::WarmupTitle, L"Preparing to play"},
     {Text::WarmupShaders, L"Shaders and pipelines"},

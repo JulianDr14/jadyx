@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "jadyx/storage/uwp_rom_storage.h"
-#include "jadyx/storage/storage_path.h"
-#include "jadyx/storage/files_browser.h"
-#include "jadyx/storage/usb_discovery.h"
 #include "jadyx/i18n/localization.h"
+#include "jadyx/storage/files_browser.h"
+#include "jadyx/storage/game_move.h"
+#include "jadyx/storage/move_recovery.h"
+#include "jadyx/storage/storage_path.h"
+#include "jadyx/storage/usb_discovery.h"
+#include "jadyx/storage/uwp_rom_storage.h"
 
 #include <algorithm>
 #include <array>
@@ -365,7 +367,7 @@ void ScanFolder(StorageFolder folder, const std::string& token, const std::wstri
             const auto child = relative.empty() ? name : relative + "/" + name;
             if (!ValidStorageRelative(child)) continue;
             // Interrupted move staging is never a launchable library copy.
-            if (name.starts_with(".jadyx-move"))
+            if (VerifiedMove::IsMoveStaging(name))
                 continue;
             if (item.IsOfType(StorageItemTypes::Folder)) {
                 if (drive_root ? ShouldDescendUsbFolder(child) : depth < 4) {
@@ -686,6 +688,7 @@ LibraryScan ScanExternalGameFolders(std::stop_token stop) {
         StorageScanBudget budget{};
         LibraryScan partial;
         try {
+            CleanupGameMoveStaging(source.folder, stop);
             ScanFolder(source.folder, source.token, std::wstring{source.folder.Name()}, "", 0,
                        budget, source.drive_root, partial, stop);
         } catch (const winrt::hresult_error& e) {

@@ -113,6 +113,7 @@ add_executable(jadyx WIN32
     storage/game_move.h
     storage/game_move_catalog.h
     storage/move_option.h
+    storage/move_recovery.h
     storage/move_digest.h
     storage/verified_move.h
     storage/atomic_file.h

@@ -84,8 +84,6 @@ std::optional<Table> Parse(std::string_view bytes) {
                 (!row["date"].is_string() || row["date"].get_ref<const std::string&>().size() > 64))
                 return std::nullopt;
             Report report;
-            if (row.contains("date"))
-                report.date = row["date"];
             report.name = row["name"];
             report.console = row["console"];
             report.fps_note = row["fps_note"];

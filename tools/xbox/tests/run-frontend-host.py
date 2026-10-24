@@ -11,19 +11,27 @@ import tempfile
 from pathlib import Path
 
 TESTS = (
+    "files-browser",
     "frontend-input",
     "controller-selection",
+    "controller-preference",
+    "stick-motion",
     "player-slots",
     "stick-navigation",
     "game-menu",
     "game-keyboard",
+    "game-language",
     "system-settings",
     "cheats-page",
     "mods-page",
+    "mod-language-filter",
     "text-entry",
     "localization-catalogs",
     "play-history",
     "game-information",
+    "themes",
+    "theme-settings",
+    "themes-integration",
 )
 
 

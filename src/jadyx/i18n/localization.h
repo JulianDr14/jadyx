@@ -611,6 +611,7 @@ enum class Text : std::uint16_t {
     GameMoveFailed,
     GameMoveCancelled,
     GameMoveConflict,
+    GameMoveVerify,
     GameMoveSpace,
     GameMoveCleanup,
     GameMoveUnavailable,
