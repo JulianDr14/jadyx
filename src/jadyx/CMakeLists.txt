@@ -162,6 +162,7 @@ add_executable(jadyx WIN32
     mods/mod_installer.h
     mods/mod_layout.cpp
     mods/mod_layout.h
+    mods/mod_language_filter.h
     mods/mod_manifest.cpp
     mods/mod_manifest.h
     mods/mod_model.h

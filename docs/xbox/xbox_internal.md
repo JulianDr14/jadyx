@@ -4498,3 +4498,13 @@ Host baseline remains 10 passing / 2 pre-existing failing executables
 No UWP build, console or performance validation in this task. Cooperative
 stop cannot interrupt an active driver call. Full design and exact Series
 gate: [jx-22 warmup controls](nxbox-jx-22-warmup-skip.md).
+## 24 October 2026 — translation/dub catalog filter
+
+Branch `nxbox/24-mod-language-filter` from local `nxbox/integration3`. Added an
+opt-in, session-only Explore language filter over existing GameBanana/CNX metadata;
+unknown-language translations stay visible. All mods remains the default, and
+settings/library/mod manifests and the storage broker are unchanged. An explicit
+Load more action avoids filtered-page dead ends without crawling the catalog.
+Host policy/navigation/catalog tests pass; no network, Windows PC, console, UWP
+build/package or push performed. Console/visual gate remains pending. Details and
+reproduction: [nxbox-jx-24-mod-language-filter.md](nxbox-jx-24-mod-language-filter.md).

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 param([string[]]$Tests = @('files-browser', 'frontend-input', 'controller-selection', 'controller-preference', 'stick-motion', 'player-slots', 'stick-navigation',
     'game-menu', 'game-keyboard', 'system-settings', 'cheats-page', 'mods-page',
-    'text-entry', 'localization-catalogs', 'play-history', 'game-information', 'themes', 'theme-settings', 'themes-integration'))
+    'mod-language-filter', 'text-entry', 'localization-catalogs', 'play-history', 'game-information', 'themes', 'theme-settings', 'themes-integration'))
 $ErrorActionPreference = 'Stop'
 $frontendOutput = New-Item -ItemType Directory -Force build-uwp/test-results/frontend-refactor
 $frontendVs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath

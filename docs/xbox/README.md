@@ -74,3 +74,5 @@ un arranque en PC no certifica gameplay, rendimiento ni funcionamiento en Series
 
 - [Read-only on-console Files browser](nxbox-jx-20-files-browser.md): LocalState and authorized USB folders, bounded pages and host evidence; Series gate pending.
 - [Optional startup warmup controls](nxbox-jx-22-warmup-skip.md): safe shader/JIT skip, return to library, host gates and pending Series acceptance.
+- [Translation/dub language filter](nxbox-jx-24-mod-language-filter.md): optional catalog filter,
+  host evidence and pending console navigation/locale gate.

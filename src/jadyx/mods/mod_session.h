@@ -123,6 +123,9 @@ public:
     void OpenStore() { store.Open(); }
     void RetryStore() { store.Retry(); }
     void Want(std::size_t card) { store.Want(card); }
+    void CycleLanguage() {
+        store.CycleLanguage();
+    }
     void CycleSort() { store.CycleSort(); }
     void Search(std::string text) { store.Search(std::move(text)); }
     void SwitchSource() { store.SwitchSource(); }

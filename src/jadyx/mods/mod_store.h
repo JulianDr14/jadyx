@@ -23,6 +23,7 @@
 #include "jadyx/mods/cnx_index.h"
 #include "jadyx/mods/gamebanana.h"
 #include "jadyx/mods/mod_downloads.h"
+#include "jadyx/mods/mod_language_filter.h"
 #include "jadyx/mods/mod_thumbnails.h"
 #include "jadyx/mods/work_queue.h"
 
@@ -80,6 +81,7 @@ struct ModUpdate {
 
 struct StoreState {
     StoreSource source{StoreSource::GameBanana};
+    ModLanguageFilter language{ModLanguageFilter::AllMods};
     GameBanana::Sort sort{GameBanana::Sort::Popular};
     std::string search;
     /// The category the list shows, with the ones above it (empty: all of them).
@@ -126,6 +128,7 @@ public:
     void Retry() { Restart(); }
     /// The cursor is on card `index`: near the end, the next page loads.
     void Want(std::size_t index);
+    void CycleLanguage(); ///< Refilters loaded cards only; no request or settings write.
     void CycleSort();
     void Search(std::string text);
     void SwitchSource();
@@ -156,6 +159,7 @@ private:
     using Change = std::function<void()>;
     void Post(std::function<Change(std::stop_token)> job, bool urgent = false);
     void Restart();
+    void FilterCards();
     void LookUpGame(std::string name, bool pick);
     void LoadPage();
     void LoadCnx();
@@ -169,6 +173,7 @@ private:
     bool show_sensitive;
     std::filesystem::path data;
     StoreState state;
+    std::vector<StoreCard> unfiltered_cards; ///< Current list, after the adult-content policy.
     std::vector<Cnx::Entry> cnx; ///< The game's entries in the CNX index.
     unsigned generation{};        ///< Bumped whenever the list starts over.
     unsigned pages{};

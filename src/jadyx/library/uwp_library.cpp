@@ -1925,6 +1925,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                             notify(T::ModsDownloadRefused);
                         }
                         break;
+                    case Kind::Language:
+                        mod_session->CycleLanguage();
+                        break;
                     case Kind::Sort: mod_session->CycleSort(); break;
                     case Kind::Search: mod_session->Search(I18n::ToUtf8(command.text)); break;
                     case Kind::Source: mod_session->SwitchSource(); break;

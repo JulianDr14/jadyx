@@ -3,6 +3,7 @@
 #include "jadyx/mods/mods_view.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <set>
@@ -20,6 +21,18 @@ using L = ModsLayout;
 
 constexpr float RowWidth = L::Width - 2 * L::Margin;
 const std::wstring Dot =L"  ·  ";
+
+Text LanguageFilterText(ModLanguageFilter filter) {
+    static constexpr std::array labels{
+        Text::ModsLanguageAllMods, Text::ModsLanguageAll,     Text::ModsLanguagePortuguese,
+        Text::ModsLanguageEnglish, Text::ModsLanguageSpanish, Text::ModsLanguageFrench,
+        Text::ModsLanguageGerman,  Text::ModsLanguageItalian, Text::ModsLanguageJapanese,
+        Text::ModsLanguageKorean,  Text::ModsLanguageChinese,
+    };
+    static_assert(labels.size() == ModLanguageFilterCount);
+    const auto index = static_cast<std::size_t>(filter);
+    return labels[index < labels.size() ? index : 0];
+}
 
 /// "512 KB", "37 MB", "1.4 GB".
 std::wstring Size(std::uint64_t bytes) {
@@ -431,6 +444,14 @@ void DrawExplore(UiPainter& paint, const ModsView& view, float x, float y) {
             DrawMessage(paint, UiIcon::Mods, I18n::Format(Text::ModsStoreOffline, {Tr(SourceText(store.source)), view.confirm}), x, y + 40);
             return;
         case StoreStatus::Empty:
+            if (store.language != ModLanguageFilter::AllMods) {
+                const auto message = store.loading_more ? std::wstring{Tr(Text::ModsLoadingMore)}
+                                     : !store.complete
+                                         ? I18n::Format(Text::ModsLanguageMore, {view.confirm})
+                                         : std::wstring{Tr(Text::ModsLanguageEmpty)};
+                DrawMessage(paint, UiIcon::Language, message, x, y + 40);
+                return;
+            }
             DrawMessage(paint, UiIcon::Mods,
                         Tr(store.search.empty() && store.category.empty() && !store.adult ? Text::ModsStoreEmpty
                                                                                            : Text::ModsStoreNoResults),
@@ -483,6 +504,15 @@ void DrawExploreFilters(UiPainter& paint, const ModsView& view, float x, float y
     const auto& store = view.session.Store();
     const float left = x + L::Margin, top = y + L::FilterTop + 2;
     float chip = left;
+    if (store.language != ModLanguageFilter::AllMods) {
+        // Bound the summary so category/search chips cannot push it off the screen.
+        paint.Type(std::wstring{Tr(Text::ModsLanguageFilter)} + Dot +
+                       std::wstring{Tr(LanguageFilterText(store.language))},
+                   TypeRole::LabelLarge, left, top + 4, RowWidth * 0.52f, Palette::Accent);
+        paint.Type(Tr(Text::ModsLanguageHint), TypeRole::Label, left + RowWidth * 0.54f, top + 6,
+                   RowWidth * 0.46f, Palette::TextSecondary, 1, TextAlign::Trailing);
+        return;
+    }
     if (store.source == StoreSource::GameBanana) {
         const bool filtered = store.adult || !store.category.empty();
         chip += paint.Chip(CategoryLabel(store), chip, top, filtered ? Palette::Text : Palette::TextHint) + 8;
@@ -627,22 +657,32 @@ void DrawDetail(UiPainter& paint, const ModsView& view, float x, float y) {
 void DrawStoreMenu(UiPainter& paint, const ModsView& view, float x, float y) {
     const auto& store = view.session.Store();
     const auto downloads = view.session.Downloads();
-    const auto actions = StoreActions({store.source == StoreSource::GameBanana, !store.search.empty(), !downloads.empty()});
+    const auto actions = StoreActions(CountsFor(view.session, view.page, view.game).store);
     constexpr float width = 700;
-    const float height = 90 + static_cast<float>(actions.size()) * 62;
+    const auto visible = std::min(actions.size(), L::SheetRows);
+    const auto first = view.page.menu >= visible ? view.page.menu + 1 - visible : 0;
+    const auto end = std::min(actions.size(), first + visible);
+    const float height = 90 + static_cast<float>(visible) * 62;
     Sheet(paint, x, y, width, height);
     const float left = x + (L::Width - width) / 2 + 30;
     const float top = y + std::max(104.0f, (L::Height - height) / 2) + 24;
     const float inner = width - 60;
     paint.Text(Tr(Text::ModsStoreMenuTitle), left, top, 22, Palette::Text, inner, 32, true);
-    for (std::size_t i = 0; i < actions.size(); ++i) {
-        const float row = top + 50 + static_cast<float>(i) * 62;
+    for (std::size_t i = first; i < end; ++i) {
+        const float row = top + 50 + static_cast<float>(i - first) * 62;
         const bool active = i == view.page.menu;
         paint.Round(left, row, inner, 54, 12, active ? Palette::RowActive : Palette::Row);
         if (active) paint.Round(left, row + 14, 3, 26, 1.5f, Palette::Accent);
         Text label{};
         std::wstring value;
         switch (actions[i]) {
+        case StoreAction::More:
+            label = Text::ModsPromptMore;
+            break;
+        case StoreAction::Language:
+            label = Text::ModsLanguageFilter;
+            value = Tr(LanguageFilterText(store.language));
+            break;
         case StoreAction::Category:
             label = Text::ModsStoreCategory;
             value = CategoryLabel(store);
@@ -675,6 +715,8 @@ void DrawStoreMenu(UiPainter& paint, const ModsView& view, float x, float y) {
         paint.Text(value, left + inner / 2, row + 15, 17, active ? Palette::Accent : Palette::TextSecondary,
                    inner / 2 - 20, 26, false, false, false, true);
     }
+    paint.ScrollIndicator(left + inner + 14, top + 50, static_cast<float>(visible) * 62 - 8, first,
+                          visible, actions.size());
 }
 
 void DrawKeyboard(UiPainter& paint, const ModsView& view, float x, float y) {
@@ -1047,6 +1089,8 @@ std::vector<ModsPrompt> ModsPrompts(const ModSession& session, const ModsPage& p
         if (!store.cards.empty()) prompts.push_back({B::A, Text::ModsPromptOpen});
         else if (store.status == StoreStatus::NoGame) prompts.push_back({B::A, Text::ModsPromptFindGame});
         else if (store.status == StoreStatus::Offline) prompts.push_back({B::A, Text::ModsPromptRetry});
+        else if (store.status == StoreStatus::Empty && !store.complete && !store.loading_more)
+            prompts.push_back({B::A, Text::ModsPromptMore});
         prompts.push_back({B::X, Text::ModsPromptSearch});
         if (store.source == StoreSource::GameBanana) prompts.push_back({B::Menu, Text::ModsPromptCategories});
         prompts.push_back({B::Y, Text::ModsPromptOptions});
@@ -1077,6 +1121,8 @@ ModsCounts CountsFor(const ModSession& session, const ModsPage& page, std::wstri
     counts.busy = session.Busy();
     counts.update = session.HasUpdate(page.selected);
     counts.cards = store.cards.size();
+    counts.more_cards =
+        store.status == StoreStatus::Empty && !store.complete && !store.loading_more;
     counts.no_game = store.status == StoreStatus::NoGame;
     counts.offline = store.status == StoreStatus::Offline;
     if (store.detail) {
@@ -1088,7 +1134,12 @@ ModsCounts CountsFor(const ModSession& session, const ModsPage& page, std::wstri
     for (const auto& row : session.CategoryRows())
         counts.category_nested.push_back(row.kind == CategoryRow::Kind::Category && store.categories[row.index].nested);
     counts.category_top = store.browse.empty();
-    counts.store = {store.source == StoreSource::GameBanana, !store.search.empty(), !session.Downloads().empty()};
+    counts.store.gamebanana = store.source == StoreSource::GameBanana;
+    counts.store.search = !store.search.empty();
+    counts.store.downloads = !session.Downloads().empty();
+    counts.store.more = store.source == StoreSource::GameBanana && !store.complete &&
+                        !store.loading_more &&
+                        (store.status == StoreStatus::Ready || store.status == StoreStatus::Empty);
     counts.search = Utf8ToUtf16(store.search);
     counts.game_name = std::wstring{game_name};
     return counts;
