@@ -135,6 +135,23 @@ path mapper and transfer code compile on macOS. The WinRT server, UI and full UW
 link require Windows SDK/MSVC; they were not built here. No network, PC app or
 console was used. Console gates below remain **pending**.
 
+## Unattended library testing (jx-22)
+
+For TEST-ONLY packages, an installed-package `boot.cfg` line
+`ftp_test_password=<at least 12 characters>` starts FTP after the library's initial
+scan without console input. It uses user `jadyx`, port 2121, the same roots and
+safety rules. No FTP page opens. The diagnostic `FTP test hook on` reports that the
+hook is enabled and never includes the password. Missing/short values leave it
+off; LocalState and other user-file paths are never read for this setting.
+Back/Escape stops the server; suspend cancels pending/active startup and resume
+leaves it off. Input mutations and background readers are held while FTP owns
+storage. Test credentials belong only in a private installed test package.
+
+See [jx-22 test hook](nxbox-jx-22-ftp-test-hook.md) for host before/after results,
+credential-safe packaging commands and an exact console round-trip/negative gate.
+Do not supply the credential to `package-appx.ps1 -BootCfg`, which prints its
+arguments. No console/Windows validation has been performed for this hook.
+
 ## Exact console gate
 
 1. On the Windows build machine, build the existing UWP preset, then prepare the

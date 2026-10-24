@@ -630,7 +630,7 @@ struct Server::State {
 };
 Server::Server() : state_(std::make_shared<State>()) {}
 Server::~Server() { Stop(); }
-bool Server::Start(const Roots& roots, const std::string& ipv4) {
+bool Server::Start(const Roots& roots, const std::string& ipv4, std::string_view test_password) {
     Stop();
     std::lock_guard lock(state_->mutex);
     try {
@@ -642,7 +642,8 @@ bool Server::Start(const Roots& roots, const std::string& ipv4) {
         do {
             random = CryptographicBuffer::GenerateRandomNumber();
         } while (random >= 4294800000u);
-        state_->password = std::to_string(100000u + random % 900000u);
+        state_->password = test_password.empty() ? std::to_string(100000u + random % 900000u)
+                                                 : std::string{test_password};
         for (const auto& directory : {roots.games, roots.keys, roots.firmware, roots.saves}) {
             if (directory.empty())
                 throw std::runtime_error("missing root");
