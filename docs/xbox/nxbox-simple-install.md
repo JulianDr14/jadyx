@@ -1,4 +1,7 @@
 <!--
+
+> **Status:** the certificate step is kept in the README and deploy guide for now. Removing it is
+> still being validated on more consoles.
 SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 SPDX-License-Identifier: GPL-3.0-or-later
 -->
