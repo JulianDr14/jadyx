@@ -52,6 +52,19 @@ class UsbPlayInPlaceTests(unittest.TestCase):
     def test_discovery_policy(self):
         self.compile_and_run("usb-discovery")
 
+    def test_discovery_vfs_integration(self):
+        source = (ROOT / "src/jadyx/storage/uwp_rom_storage.cpp").read_text()
+        scan = source.split("LibraryScan ScanExternalGameFolders", 1)[1].split(
+            "void SetUsbPlayInPlace", 1
+        )[0]
+        self.assertNotIn("RememberGameFolder(", scan)
+        self.assertNotIn("AddOrReplace(", scan)
+        self.assertIn("SessionGameFolder(drive)", scan)
+        self.assertIn("source.drive_root = true", scan)
+        self.assertIn("SourceFolder(path.token)", source)
+        # OpenFile must accept session tokens as well as FutureAccessList tokens.
+        self.assertNotIn("ContainsItem(", source)
+
     def test_manifest_usb_access(self):
         manifest = ET.parse(ROOT / "dist/uwp/AppxManifest.xml").getroot()
         uap = "{http://schemas.microsoft.com/appx/manifest/uap/windows10}"
