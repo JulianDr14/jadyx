@@ -102,6 +102,10 @@ add_executable(jadyx WIN32
     settings/uwp_system_settings.h
     library/library_cache.cpp
     library/library_cache.h
+    storage/nxbox_import_store.h
+    storage/nxbox_import.h
+    storage/uwp_nxbox_import.h
+    storage/uwp_nxbox_import.cpp
     storage/atomic_file.h
     storage/utf8.h
     # Drawing shared by the library and the in-game menu (real text over the paused game).

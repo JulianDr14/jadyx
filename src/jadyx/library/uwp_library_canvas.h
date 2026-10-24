@@ -18,6 +18,7 @@
 #include "jadyx/input/uwp_controllers.h"
 #include "jadyx/storage/uwp_file_manager.h"
 namespace Jadyx {
+struct NxboxWelcome;
 /// The selected game's options page, when open.
 struct GameOptionsView {
     const GameOptionsPage& page;
@@ -59,6 +60,7 @@ struct LibraryView {
     bool filter_focus{};                     ///< The Library tab's focus is on the filter bar.
     ControllerBattery battery{};
     const Compatibility::Table* compatibility{};
+    const NxboxWelcome* nxbox_welcome{};
 };
 /// What the pointer can press on the library screen.
 enum class LibraryHit : unsigned {
@@ -68,6 +70,7 @@ enum class LibraryHit : unsigned {
     SettingRow, ///< A row of the settings category shown.
     UpdateAction,  ///< A row of the update page, or UpdateBackHit for its Back prompt.
     NetworkAction, ///< Full-screen network page: back, renew code, stop.
+    NxboxWelcome, ///< Migration welcome: 0 authorizes USB, 1 dismisses.
     UpdateNotice,  ///< The library's new-version notice: 0 opens the update page, 1 hides it.
 };
 inline constexpr std::size_t UpdateBackHit = 99;

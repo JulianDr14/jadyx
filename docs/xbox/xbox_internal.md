@@ -4433,3 +4433,14 @@ settings and legacy sensor delivery remain the baseline with switches absent.
 Host evidence and exact pending console acceptance:
 [`nxbox-37-controllers-motion.md`](nxbox-37-controllers-motion.md).
 No Windows/UWP build, console test or performance certification in this work.
+
+
+## 2026-10-24: NXbox setup import (jx-25)
+
+Version 1 transfer contract and exact console gate: [nxbox-import.md](nxbox-import.md).
+The library accepts completed LocalState/nxbox-import metadata, writes only absent
+LocalSettings keys, and resolves pending title-ID favorites/history after metadata
+loads or USB authorization. The welcome uses the existing canvas and three locales.
+A host regression exposed atomic-file rename failures being masked by successful
+temporary-file cleanup; cleanup now preserves the original failure. No network,
+Windows runtime, console or payload compatibility was tested in this task.

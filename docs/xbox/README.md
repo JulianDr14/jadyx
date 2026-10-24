@@ -20,6 +20,8 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 
 ## Diseño y funciones
 
+- [NXbox migration contract](nxbox-import.md): versioned metadata, preserved user settings, pending USB title history, welcome and console gate.
+
 - [Compatibility badges](nxbox-compat-badges.md): report metadata, offline fallback, opt-in refresh and console test.
 
 - [Actualizador de Jadyx](xbox_updater.md): versiones firmadas, descarga reanudable, pantalla de actualizaciones y asistencia web; instalación interna Xbox pendiente de gate.

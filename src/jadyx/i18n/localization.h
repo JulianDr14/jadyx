@@ -28,6 +28,12 @@ enum class Text : std::uint16_t {
     ThemeJadyx,
     ThemeOldNxbox,
 
+    NxboxWelcomeTitle,
+    NxboxWelcomeSummary,
+    NxboxUsbHint,
+    NxboxUsbAdd,
+    NxboxWelcomeDone,
+
     // Library
     CompatibilityUntested,
     CompatibilityPlayable,

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/uwp_library_canvas.h"
 #include "jadyx/updates/update_ui.h"
+#include "jadyx/storage/uwp_nxbox_import.h"
+#include "jadyx/storage/utf8.h"
 #include <ctime>
 #include "jadyx/input/pro_controller_geometry.h"
 
@@ -224,6 +226,8 @@ public:
         }
         if (!view.game_options.game) management_collapse.Snap(0);
         if (view.missing_content) Content::DrawMissingContent(*this);
+        if (view.nxbox_welcome && view.nxbox_welcome->visible)
+            DrawNxboxWelcome(*view.nxbox_welcome);
         // A text whose fallback font the system cannot read (0x8007067D, now and then on the
         // console) fails the frame, not the library: the next frame draws again.
         if (const HRESULT drawn = target->EndDraw(); FAILED(drawn)) {
@@ -236,6 +240,46 @@ public:
                     hero.Running(now) || backdrop_fade.Running(now) || tab_slide.Running(now) ||
                     filter_slide.Running(now) || management_collapse.Running(now) ||
                     list_scroll.Running(now) || grid_scroll.Running(now);
+    }
+    void DrawNxboxWelcome(const NxboxWelcome& welcome) {
+        Round(Canvas::Unit0, Canvas::Unit0, Canvas::Unit1280, Canvas::Unit720, Canvas::Unit0,
+              Palette::Canvas, Canvas::Unit0_62F);
+        const float x = Canvas::Unit240, y = Canvas::Unit120,
+                    width = (Canvas::Unit1280 - Canvas::Unit480);
+        Card(x, y, width, Canvas::Unit480, Canvas::Unit24);
+        Type(Tr(T::NxboxWelcomeTitle), TypeRole::HeadlineMedium, x + Canvas::Unit32,
+             y + Canvas::Unit24, width - Canvas::Unit64, Palette::Text, Canvas::Unit1,
+             TextAlign::Leading, 2);
+        const auto summary = I18n::Format(
+            T::NxboxWelcomeSummary,
+            {Tr(welcome.receipt.keys ? T::Yes : T::No),
+             welcome.receipt.firmware.empty()
+                 ? Tr(T::No)
+                 : std::wstring_view{Utf8ToUtf16(welcome.receipt.firmware)},
+             std::to_wstring(welcome.receipt.saves), std::to_wstring(welcome.receipt.mods)});
+        Type(summary, TypeRole::Body, x + Canvas::Unit32, y + Canvas::Unit120,
+             width - Canvas::Unit64, Palette::TextSecondary, Canvas::Unit1, TextAlign::Leading, 2);
+        if (!welcome.usb_folders.empty()) {
+            Type(Tr(T::NxboxUsbHint), TypeRole::Body, x + Canvas::Unit32, y + Canvas::Unit200,
+                 width - Canvas::Unit64, Palette::Text, Canvas::Unit1, TextAlign::Leading, 2);
+            std::wstring folders;
+            for (std::size_t i = 0; i < std::min(std::size_t{3}, welcome.usb_folders.size()); ++i) {
+                if (i)
+                    folders += L"\n";
+                folders += Utf8ToUtf16(welcome.usb_folders[i]);
+            }
+            Type(folders, TypeRole::Body, x + Canvas::Unit32,
+                 y + (Canvas::Unit240 + Canvas::Unit40), width - Canvas::Unit64,
+                 Palette::TextSecondary, Canvas::Unit1, TextAlign::Leading, 3);
+            AddHit(x + Canvas::Unit32, y + Canvas::Unit400, (Canvas::Unit400 + Canvas::Unit40),
+                   Canvas::Unit48, LibraryHit::NxboxWelcome, 0);
+            ControlPrompt(Navigation::Play, Tr(T::NxboxUsbAdd), x + Canvas::Unit32,
+                          y + Canvas::Unit400);
+        }
+        AddHit(x + Canvas::Unit520, y + Canvas::Unit400, Canvas::Unit240, Canvas::Unit48,
+               LibraryHit::NxboxWelcome, 1);
+        ControlPrompt(Navigation::Back, Tr(T::NxboxWelcomeDone), x + Canvas::Unit520,
+                      y + Canvas::Unit400);
     }
     /// The library's corner card for a new version: Y opens the update page, X hides it a day.
     void DrawUpdateNotice(const Updates::Release& release) {
