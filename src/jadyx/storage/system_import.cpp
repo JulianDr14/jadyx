@@ -6,8 +6,10 @@
 #include <cctype>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 #include <archive.h>
 #include <archive_entry.h>
@@ -105,8 +107,12 @@ struct ZipSource {
 };
 FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress progress,std::stop_token stop) {
     FirmwareInfo info;bool system=false,mii=false,update=false;unsigned count{};
-    std::set<u64> outside,listed;
-    std::map<u64,std::vector<fs::path>> game_files;
+    std::set<u64> listed;
+    // Titles outside 0x010000000000xxxx wait for the meta: only the NCAs that stay count.
+    struct Outside{fs::path path;int generation;std::optional<std::pair<int,int>> area;};
+    std::map<u64,std::vector<Outside>> outside;
+    const auto keep=[&info](int generation,const std::optional<std::pair<int,int>>& area){
+        info.generation=(std::max)(info.generation,generation);if(area)info.areas.insert(*area);};
     if(!fs::exists(folder)){Require(!strict,"firmware_incomplete");return info;}
     FileSys::RealVfsFilesystem vfs;
     for(const auto& file:fs::directory_iterator{folder}) {
@@ -121,18 +127,17 @@ FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress p
         if(nca.GetStatus()!=Loader::ResultStatus::Success){Require(!strict,"firmware_keys");continue;}
         // Firmware also ships a few system titles outside 0x010000000000xxxx (e.g. 01008BB00013C000);
         // those are allowed only when the SystemUpdate meta lists them.
-        if((nca.GetTitleId()>>16)!=(0x0100000000000000ULL>>16)) {
-            outside.insert(nca.GetTitleId());
-            game_files[nca.GetTitleId()].push_back(file.path());
-        }
+        const int generation=static_cast<int>((std::max)(nca.GetKeyGeneration(),u8{1})-1);
+        std::optional<std::pair<int,int>> area;
+        if(header.GetKeyIndex()<3)area=std::pair{static_cast<int>((std::max)(header.GetKeyGeneration(),u8{1})-1),static_cast<int>(header.GetKeyIndex())};
+        if((nca.GetTitleId()>>16)!=(0x0100000000000000ULL>>16))outside[nca.GetTitleId()].push_back({file.path(),generation,area});
+        else keep(generation,area);
         if(nca.GetTitleId()==0x0100000000000816ULL&&nca.GetType()==FileSys::NCAContentType::Meta&&
            !nca.GetSubdirectories().empty())
             if(const auto cnmt=nca.GetSubdirectories()[0]->GetFile("SystemUpdate_0100000000000816.cnmt")) {
                 update=true;
                 for(const auto& record:FileSys::CNMT{cnmt}.GetMetaRecords())listed.insert(record.title_id);
             }
-        info.generation=(std::max)(info.generation,static_cast<int>((std::max)(nca.GetKeyGeneration(),u8{1})-1));
-        if(header.GetKeyIndex()<3)info.areas.emplace(static_cast<int>((std::max)(header.GetKeyGeneration(),u8{1})-1),header.GetKeyIndex());
         if(nca.GetTitleId()==0x0100000000000809ULL&&nca.GetType()==FileSys::NCAContentType::Data) {
             const auto romfs=nca.GetRomFS()?FileSys::ExtractRomFS(nca.GetRomFS()):nullptr;
             const auto version=romfs?romfs->GetFile("file"):nullptr;
@@ -151,14 +156,16 @@ FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress p
     // import is a copy: leaving those files out installs the firmware and loses nothing, instead
     // of refusing the whole package. Titles the SystemUpdate meta lists are real system content
     // and stay; the installed folder is only inspected, never trimmed.
-    for(const auto title:outside) {
-        if(update&&listed.contains(title))continue;
-        if(!strict)continue;
-        for(const auto& path:game_files[title]) {
+    for(const auto& [title,files]:outside) {
+        if((update&&listed.contains(title))||!strict) {
+            for(const auto& file:files)keep(file.generation,file.area);
+            continue;
+        }
+        for(const auto& file:files) {
             LOG_INFO(Frontend, "Firmware import: leaving out the game NCA {:016X} ('{}')", title,
-                     Utf8(path.filename()));
+                     Utf8(file.path.filename()));
             // A file left behind would be published inside the firmware folder.
-            std::error_code error;Require(fs::remove(path,error)&&!error,"disk");
+            std::error_code error;Require(fs::remove(file.path,error)&&!error,"disk");
         }
     }
     Require(!strict||(system&&mii),"firmware_incomplete");return info;
