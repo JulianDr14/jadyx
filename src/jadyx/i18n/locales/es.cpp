@@ -4,6 +4,11 @@
 
 namespace Jadyx::I18n {
 const Catalog SpanishCatalog = MakeCatalog({
+    {Text::Theme, L"Tema"},
+    {Text::ThemeHint, L"Cambia la apariencia de la interfaz"},
+    {Text::ThemeJadyx, L"Jadyx"},
+    {Text::ThemeOldNxbox, L"Old NXbox"},
+
     // Library
     {Text::CompatibilityUntested, L"Sin probar"},
     {Text::CompatibilityPlayable, L"Jugable"},

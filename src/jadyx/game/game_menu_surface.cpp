@@ -49,7 +49,7 @@ struct Screen {
 };
 
 /// Text under a focused (white) row.
-constexpr unsigned OnAccentSecondary = 0x5c5f64;
+constexpr unsigned OnAccentSecondary = Palette::OnAccentSecondary;
 
 std::wstring Upper(std::wstring_view text) {
     std::wstring upper(text);
@@ -145,7 +145,7 @@ struct GameMenuSurface::Impl : UiPainter {
         SyncLanguage();
         target->BeginDraw();
         // The image is copied, not blended: the panel's color fills it to its square corners.
-        target->Clear(D2D1::ColorF(Palette::Panel));
+        target->Clear(Ink(Palette::Panel));
         target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
         draw();
         // A text the system's fallback font cannot draw spoils the frame, not the game.
@@ -165,7 +165,7 @@ struct GameMenuSurface::Impl : UiPainter {
         const auto h = static_cast<float>(height);
         target->BeginDraw();
         target->SetTransform(D2D1::Matrix3x2F::Identity());
-        target->Clear(D2D1::ColorF(Palette::Canvas));
+        target->Clear(Ink(Palette::Canvas));
         if (ID2D1Bitmap* const picture = Backdrop(sharp)) {
             target->DrawBitmap(picture, D2D1::RectF(0, 0, w, h), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
             const float strength = sharp ? 0.7f : 0.85f;
@@ -182,7 +182,7 @@ struct GameMenuSurface::Impl : UiPainter {
         (void)target->EndDraw();
         auto image = Pixels();
         image.fill_screen = true;
-        image.fill = Palette::Canvas;
+        image.fill = Theme().Color(Palette::Canvas).rgb;
         return image;
     }
 
@@ -190,8 +190,8 @@ struct GameMenuSurface::Impl : UiPainter {
     void Scrim(D2D1_POINT_2F from, D2D1_POINT_2F to, float alpha, float w, float h, bool rising = false) {
         if (alpha <= 0) return;
         const D2D1_GRADIENT_STOP stops[] = {
-            {0.0f, D2D1::ColorF(Palette::Canvas, rising ? 0.0f : alpha)},
-            {1.0f, D2D1::ColorF(Palette::Canvas, rising ? alpha : 0.0f)},
+            {.position = 0.0f, .color = Ink(Palette::Canvas, rising ? 0.0f : alpha)},
+            {.position = 1.0f, .color = Ink(Palette::Canvas, rising ? alpha : 0.0f)},
         };
         ComPtr<ID2D1GradientStopCollection> collection;
         ComPtr<ID2D1LinearGradientBrush> gradient;

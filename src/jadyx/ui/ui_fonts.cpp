@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-FileCopyrightText: Copyright 2026 NSPX
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/ui/ui_fonts.h"
 
@@ -46,6 +47,21 @@ ComPtr<IDWriteFontCollection> LoadInter(IDWriteFactory* write) {
 }
 
 } // Anonymous namespace
+
+InterfaceTypeface SystemInterfaceFonts(IDWriteFactory* write, bool monospace) {
+    if (monospace) {
+        ComPtr<IDWriteFontCollection> fonts;
+        if (SUCCEEDED(write->GetSystemFontCollection(&fonts, FALSE))) {
+            for (const auto* family : {L"Consolas", L"Cascadia Mono", L"Courier New"}) {
+                UINT32 index{};
+                BOOL exists{};
+                if (SUCCEEDED(fonts->FindFamilyName(family, &index, &exists)) && exists)
+                    return {.collection = nullptr, .family = family};
+            }
+        }
+    }
+    return {.collection = nullptr, .family = L"Segoe UI"};
+}
 
 InterfaceTypeface InterfaceFonts(IDWriteFactory* write) {
     static std::once_flag once;

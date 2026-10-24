@@ -37,6 +37,8 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 - [Portal local de importación](xbox_network_portal.md): exportación completa de logs/capturas en tar.zst con descarga reanudable (.16, AppContainer PC correcto); NSP real validado por HTTP en AppContainer; claves/firmware ZIP y sueltos con revisión de versiones en 0.3.4.3, gates PC correctos y prueba Series pendiente.
 
 - [FTP server](nxbox-ftp-server.md): large local transfers from the library, folder mapping, host checks and pending console gate.
+- [Themes on integration](nxbox-jx-18-themes-on-integration.md): merge resolutions, host results and pending console gate.
+- [Jadyx and Old NXbox themes](nxbox-themes.md): tokens, live preference, host gates and console comparison.
 
 ## Rendimiento y evidencia
 

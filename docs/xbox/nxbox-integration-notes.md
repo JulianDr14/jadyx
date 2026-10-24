@@ -161,3 +161,28 @@ Record package version, switches, languages, screenshots, fresh diagnostics,
 transfer hashes and launch/return results. Host checks cannot certify MSVC warning
 behavior, WinRT worker lifetime, rendering, physical USB, FTP sockets, console
 activation or performance. Those gates remain open.
+
+## Themes resolution on integration2 (jx-18, 24 October 2026)
+
+The themes branch subsequently advanced to `4fc8c8eaff`; its earlier no-op status
+above is historical. Task branch `nxbox/18-themes-on-integration` was reset to
+`nxbox/integration2` (`2a25d4862e`) and merged with `nxbox/16-themes`, keeping one
+merge commit. Seven conflicts were resolved by retaining both features: all
+three catalogs (681 entries in exact enum order), shelf compatibility text with
+themed headings, Resolution followed by Theme, both settings includes/fields,
+and the theme-aware painter definitions. FTP, USB, resolution, shader signing,
+compatibility metadata and test-hook code remain integrated.
+
+The badge draw call now resolves semantic colors through `Ink`; otherwise theme
+handles would be interpreted as raw RGB. Two palette slots retain integration's
+Playable/Broken colors in both themes; default Jadyx geometry/type/colors remain
+covered by frozen-token tests. Console pixel equality is still pending.
+
+Before/after host gates have no new failures: FTP 4/4, USB 5/5, launch 17/17,
+locales, compatibility, shader/cache and diagnostic-parser checks pass. Existing
+frontend failures remain game-menu, system-settings and cheats-page (the resolution
+runner repeats two). The two inherited theme gates and two new integration gates
+pass after reproducing the missing tokens/raw-color bug. Full resolutions,
+commands, limits and the exact console procedure are in
+[nxbox-jx-18-themes-on-integration.md](nxbox-jx-18-themes-on-integration.md).
+No network, push, PC runtime or console was used.

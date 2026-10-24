@@ -19,6 +19,7 @@
 #include "jadyx/i18n/localization.h"
 #include "jadyx/settings/upscaling.h"
 #include "jadyx/settings/resolution_options.h"
+#include "jadyx/ui/ui_theme.h"
 
 namespace Jadyx {
 
@@ -36,6 +37,7 @@ struct SystemSettings {
     bool pulse_sessions{true}; ///< Back to home keeps the game where it is (pulse_sessions.h).
     bool track_play_time{true}; ///< Counts play time per game and orders the library by it (play_history.h).
     bool multiple_controllers{true}; ///< Extra pads play as players 2-8 (uwp_input.cpp); off keeps one.
+    ThemeId theme{ThemeId::Jadyx};   ///< Library appearance; applied without restarting.
     Upscaling upscaling{Upscaling::Bilinear};         ///< Set from the in-game menu.
 
     Settings::ResolutionSetup resolution{Settings::ResolutionSetup::Res1X};

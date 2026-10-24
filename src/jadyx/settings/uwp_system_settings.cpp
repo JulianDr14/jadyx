@@ -60,6 +60,15 @@ SystemSettings LoadSystemSettings() {
         if (values.HasKey(PlayTimeKey)) settings.track_play_time = winrt::unbox_value<bool>(values.Lookup(PlayTimeKey));
         if (values.HasKey(MultipleControllersKey))
             settings.multiple_controllers = winrt::unbox_value<bool>(values.Lookup(MultipleControllersKey));
+        settings.theme = LoadThemePreference([&](std::wstring_view key) -> std::optional<int32_t> {
+            // An invalid preference must not prevent the remaining settings from loading.
+            try {
+                if (values.HasKey(winrt::hstring{key}))
+                    return winrt::unbox_value<int32_t>(values.Lookup(winrt::hstring{key}));
+            } catch (...) {
+            }
+            return std::nullopt;
+        });
         if (values.HasKey(UpscalingKey))
             settings.upscaling = UpscalingFromValue(winrt::unbox_value<int32_t>(values.Lookup(UpscalingKey)))
                                      .value_or(Upscaling::Bilinear);
@@ -79,6 +88,9 @@ bool SaveSystemSettings(const SystemSettings& settings) {
         values.Insert(PulseSessionsKey, winrt::box_value(settings.pulse_sessions));
         values.Insert(PlayTimeKey, winrt::box_value(settings.track_play_time));
         values.Insert(MultipleControllersKey, winrt::box_value(settings.multiple_controllers));
+        SaveThemePreference(settings.theme, [&](std::wstring_view key, int32_t value) {
+            values.Insert(winrt::hstring{key}, winrt::box_value(value));
+        });
         values.Insert(UpscalingKey, winrt::box_value(static_cast<int32_t>(settings.upscaling)));
         return SaveResolution(0, settings.resolution);
     } catch (...) { return false; }
@@ -100,6 +112,7 @@ SystemLocale DetectSystemLocale() {
 ResolvedSystem ApplySystemSettings() {
     const auto locale = DetectSystemLocale();
     const auto settings = LoadSystemSettings();
+    SetUiTheme(settings.theme);
     VideoCore::performance_overlay_enabled.store(settings.show_performance_stats, std::memory_order_relaxed);
     ApplyUpscaling(settings.upscaling);
     const auto resolved = ResolveSystem(settings, locale);
