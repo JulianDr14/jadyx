@@ -116,6 +116,7 @@ void ModStore::Restart() {
     ++generation;
     pages = 0;
     state.cards.clear();
+    unfiltered_cards.clear();
     state.hidden = 0;
     state.complete = false;
     state.loading_more = false;
@@ -199,13 +200,24 @@ void ModStore::LoadPage() {
                     ++state.hidden;
                     continue;
                 }
-                state.cards.push_back({mod.id, mod.name, mod.author, mod.category, {}, mod.thumbnail,
-                                       mod.likes, mod.views, mod.sensitive, false});
+                unfiltered_cards.push_back({.id = mod.id,
+                                            .name = mod.name,
+                                            .author = mod.author,
+                                            .category = mod.category,
+                                            .thumbnail = mod.thumbnail,
+                                            .likes = mod.likes,
+                                            .views = mod.views,
+                                            .sensitive = mod.sensitive});
             }
+            FilterCards();
             state.complete = list->complete;
             if (!state.cards.empty()) state.status = StoreStatus::Ready;
             else if (state.complete) state.status = StoreStatus::Empty;
-            else LoadPage(); // A page of hidden mods only: the next may have some to show.
+            else if (unfiltered_cards.empty())
+                LoadPage(); // Preserve the existing adult-filter paging.
+            else
+                state.status =
+                    StoreStatus::Empty; // A requests more; filtering does not crawl the catalog.
         };
     });
 }
@@ -235,8 +247,15 @@ void ModStore::LoadAdult() {
                 return;
             }
             for (const auto& mod : mods)
-                state.cards.push_back({mod.id, mod.name, mod.author, mod.category, {}, mod.thumbnail, mod.likes,
-                                       mod.views, true, false});
+                unfiltered_cards.push_back({.id = mod.id,
+                                            .name = mod.name,
+                                            .author = mod.author,
+                                            .category = mod.category,
+                                            .thumbnail = mod.thumbnail,
+                                            .likes = mod.likes,
+                                            .views = mod.views,
+                                            .sensitive = true});
+            FilterCards();
             state.status = state.cards.empty() ? StoreStatus::Empty : StoreStatus::Ready;
         };
     });
@@ -345,17 +364,30 @@ void ModStore::LoadCnx() {
                 card.name = cnx[i].name;
                 card.size = cnx[i].size;
                 card.translation = cnx[i].kind == Cnx::Kind::Translation;
-                state.cards.push_back(std::move(card));
+                unfiltered_cards.push_back(std::move(card));
             }
+            FilterCards();
             state.status = state.cards.empty() ? StoreStatus::Empty : StoreStatus::Ready;
         };
     });
 }
 
 void ModStore::Want(std::size_t index) {
-    if (state.source == StoreSource::GameBanana && state.status == StoreStatus::Ready &&
+    if (state.source == StoreSource::GameBanana &&
+        (state.status == StoreStatus::Ready || state.status == StoreStatus::Empty) &&
         index + LoadAhead >= state.cards.size())
         LoadPage();
+}
+
+void ModStore::FilterCards() {
+    state.cards = FilterModCards(unfiltered_cards, state.language);
+}
+
+void ModStore::CycleLanguage() {
+    state.language = NextModLanguageFilter(state.language);
+    FilterCards();
+    if (state.status == StoreStatus::Ready || state.status == StoreStatus::Empty)
+        state.status = state.cards.empty() ? StoreStatus::Empty : StoreStatus::Ready;
 }
 
 void ModStore::CycleSort() {

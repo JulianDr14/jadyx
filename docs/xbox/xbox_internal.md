@@ -4433,3 +4433,15 @@ settings and legacy sensor delivery remain the baseline with switches absent.
 Host evidence and exact pending console acceptance:
 [`nxbox-37-controllers-motion.md`](nxbox-37-controllers-motion.md).
 No Windows/UWP build, console test or performance certification in this work.
+
+
+## 24 October 2026 — translation/dub catalog filter
+
+Branch `nxbox/24-mod-language-filter` from local `nxbox/integration3`. Added an
+opt-in, session-only Explore language filter over existing GameBanana/CNX metadata;
+unknown-language translations stay visible. All mods remains the default, and
+settings/library/mod manifests and the storage broker are unchanged. An explicit
+Load more action avoids filtered-page dead ends without crawling the catalog.
+Host policy/navigation/catalog tests pass; no network, Windows PC, console, UWP
+build/package or push performed. Console/visual gate remains pending. Details and
+reproduction: [nxbox-jx-24-mod-language-filter.md](nxbox-jx-24-mod-language-filter.md).

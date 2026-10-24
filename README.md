@@ -536,7 +536,10 @@ The mods page has three tabs:
   fan translations and modifications, as a grid of pictures. A mod's page shows its pictures,
   description and files; **A** downloads one. Search, categories and sort order are at hand, and
   mods rated for adults stay hidden unless turned on. The game is matched to GameBanana by its
-  name, and the match can be changed by hand.
+  name, and the match can be changed by hand. **Y → Translations / dubs**, then **A**, cycles
+  through all mods, all translation/dub mods and nine languages. Mods without a named language
+  stay visible. This filters the loaded catalog pages; an empty filtered page offers **A** to
+  load more; **Options → Load more** is also available while results are visible. The choice lasts until you leave this game's mods page.
 - **Files**: the `.zip`, `.7z` and `.rar` archives in the folders you gave the app, internal
   storage first. When an archive holds several mods (variants), you tick which to install.
 

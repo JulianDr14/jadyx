@@ -80,10 +80,21 @@ struct StoreFlags {
     bool gamebanana{true}; ///< The source is GameBanana (else the CNX index).
     bool search{};         ///< A search filters the list.
     bool downloads{};      ///< Something downloads.
+    bool more{};           ///< Another catalog page is available.
 };
 
 /// Rows of the store's options.
-enum class StoreAction : std::uint8_t { Category, Sort, Search, ClearSearch, Source, ChangeGame, CancelDownloads };
+enum class StoreAction : std::uint8_t {
+    Category,
+    Sort,
+    Search,
+    ClearSearch,
+    Source,
+    ChangeGame,
+    CancelDownloads,
+    More,
+    Language
+};
 
 inline std::vector<StoreAction> StoreActions(const StoreFlags& flags) {
     std::vector<StoreAction> actions;
@@ -94,6 +105,9 @@ inline std::vector<StoreAction> StoreActions(const StoreFlags& flags) {
     actions.push_back(StoreAction::Source);
     if (flags.gamebanana) actions.push_back(StoreAction::ChangeGame);
     if (flags.downloads) actions.push_back(StoreAction::CancelDownloads);
+    if (flags.more)
+        actions.push_back(StoreAction::More);
+    actions.push_back(StoreAction::Language);
     return actions;
 }
 
@@ -150,6 +164,7 @@ struct ModsCommand {
         Update,      ///< Open the page of installed mod `index`'s update.
         CloseDetail,
         Download,    ///< Download file `index` of the open page.
+        Language, ///< Cycle the local translation/dub filter.
         Sort,        ///< The next order.
         Search,      ///< Filter by `text` (empty clears it).
         Source,      ///< Switch between GameBanana and the CNX index.
@@ -176,6 +191,7 @@ struct ModsCounts {
     bool busy{};              ///< A job runs: only Back is taken, and it cancels the job.
     bool update{};            ///< The selected installed mod has an update.
     std::size_t cards{};      ///< Explore's cards.
+    bool more_cards{};        ///< An empty filtered page can request another catalog page.
     bool no_game{};           ///< The store could not match the game: A picks it.
     bool offline{};           ///< The store could not be reached: A asks again.
     std::size_t detail_files{};
@@ -338,6 +354,12 @@ inline ModsCommand HandleStoreMenu(ModsPage& page, const ModsCounts& counts, Mod
     switch (actions[page.menu]) {
     case StoreAction::Category:
         return OpenCategories(page);
+    case StoreAction::More:
+        page.screen = ModsScreen::List;
+        return {Kind::Want, counts.cards};
+    case StoreAction::Language:
+        page.card = page.card_first = 0;
+        return {Kind::Language};
     case StoreAction::Sort:
         // The order changes in place, so pressing again goes through them all.
         page.card = page.card_first = 0;
@@ -399,7 +421,9 @@ inline ModsCommand HandleExplore(ModsPage& page, const ModsCounts& counts, ModsI
             OpenKeyboard(page, KeyboardFor::Game, counts.game_name);
             return {Kind::Moved};
         }
-        return counts.offline ? ModsCommand{Kind::Retry} : ModsCommand{};
+        if (counts.offline)
+            return {Kind::Retry};
+        return counts.more_cards ? ModsCommand{Kind::Want} : ModsCommand{};
     case ModsInput::Alternate:
         OpenKeyboard(page, KeyboardFor::Search, counts.search);
         return {Kind::Moved};

@@ -177,8 +177,8 @@ int main() {
         ModsCounts store = counts;
         store.store = {true, true, true};
         store.search = L"fps";
-        Check(StoreActions(store.store).size() == 7, "all options");
-        Check(StoreActions({false, false, false}).size() == 2, "CNX: search and source");
+        Check(StoreActions(store.store).size() == 8, "all options");
+        Check(StoreActions({false, false, false}).size() == 3, "CNX: search, source and language");
         HandleModsInput(page, store, In::Menu);
         Check(Is(HandleModsInput(page, store, In::Confirm), Kind::Categories) && page.screen == ModsScreen::Categories,
               "category opens the sheet");
