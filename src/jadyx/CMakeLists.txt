@@ -40,6 +40,12 @@ add_executable(jadyx WIN32
     storage/uwp_rom_storage.h
     storage/uwp_file_manager.cpp
     storage/uwp_file_manager.h
+    storage/ftp/ftp_protocol.h
+    storage/ftp/ftp_safety.h
+    storage/ftp/ftp_transfer.h
+    storage/ftp/ftp_paths.h
+    storage/ftp/ftp_server.cpp
+    storage/ftp/ftp_server.h
     storage/network_portal.cpp
     storage/network_portal.h
     storage/log_export.cpp

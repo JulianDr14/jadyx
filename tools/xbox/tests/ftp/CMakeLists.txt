@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+# SPDX-License-Identifier: GPL-3.0-or-later
+cmake_minimum_required(VERSION 3.22)
+project(JadyxFtpTests LANGUAGES CXX)
+enable_testing()
+get_filename_component(JADYX_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
+foreach(test_name IN ITEMS ftp-protocol ftp-transfer ftp-safety)
+    add_executable(${test_name} ../${test_name}.cpp)
+    target_include_directories(${test_name} PRIVATE "${JADYX_ROOT}/src")
+    target_compile_features(${test_name} PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(${test_name} PRIVATE /W4 /WX /we4456 /we4457 /we4459 /we4244)
+    else()
+        target_compile_options(${test_name} PRIVATE -Wall -Wextra -Werror -Wconversion -Wshadow)
+    endif()
+    add_test(NAME ${test_name} COMMAND ${test_name})
+endforeach()

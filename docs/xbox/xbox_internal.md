@@ -4286,3 +4286,34 @@ and executable import symbol sets; missing-file regression not established. Pack
 now checks PE dependencies and required launch files before packing/signing. Host
 checks pass; no PC/Series run or activation repair claimed. Evidence, hashes, limits
 and console protocol: [launch audit](nxbox-launch-80070002.md).
+## FTP library transport — 24 October 2026
+
+The GPL NXbox FTP transport is ported under `src/jadyx/storage/ftp/`, owned by the
+library and off until its dedicated page opens. Its virtual roots use the existing
+game root and `SystemDestination` helpers; NXbox's `interno`, USB discovery,
+`ftp-autostart` and `Common::FS::Uwp::ForEachEntry` are not carried over (the last
+helper does not exist in Jadyx). Directory listings use the same standard filesystem
+facilities as Jadyx storage. Do not expose the whole LocalState as a shortcut.
+
+FTP holds exclusive access until its sockets close and the active session joins.
+Only then reload keys/firmware and rescan the library, including after suspend.
+Keep its modal input handling separate from the HTTP page's running-state check:
+the HTTP portal is intentionally stopped while FTP owns storage. Portable CMake
+checks pass on macOS; the WinRT implementation/full UWP build and Series transfers
+remain untested. Commands, folder mappings, numbers and the complete pending gate:
+[nxbox-ftp-server.md](nxbox-ftp-server.md).
+
+
+## FTP review fixes (24 October 2026, jx-21)
+
+The FTP port `8d9079ee68` was cherry-picked onto main as `95d7cfe35d`. Follow-up
+requires ALLO/exact incoming byte counts before STOR/APPE publication, adds
+30-second login and 300-second idle deadlines, per-peer reconnect login backoff
+and non-replacing RNTO outside games. Default clients without ALLO need adapting;
+SIZE is a query and data EOF alone cannot prove upload completion. WinRT reads
+register a single Completed delegate; a future supports repeated deadline polls.
+Host FTP suite 2/2 before, 3/3 after; original storage/text/localization gates and
+FTP safety/transfer ASan/UBSan pass. No Windows build or network/device test was
+performed. Findings, limits and exact pending console checks:
+[nxbox-jx-21-ftp-fixes.md](nxbox-jx-21-ftp-fixes.md) and
+[nxbox-ftp-server.md](nxbox-ftp-server.md).
