@@ -4,6 +4,11 @@
 
 namespace Jadyx::I18n {
 const Catalog EnglishCatalog = MakeCatalog({
+    {Text::CompatibilityUntested, L"Untested"},
+    {Text::CompatibilityPlayable, L"Playable"},
+    {Text::CompatibilityIssues, L"Issues"},
+    {Text::CompatibilityBroken, L"Broken"},
+    {Text::CompatibilityReport, L"{0}: {1} on Series {2}"},
     {Text::UpdaterTitle, L"Updates"},
     {Text::UpdaterHint, L"Find and install new versions of Jadyx"},
     {Text::UpdaterCheck, L"Check for updates"},

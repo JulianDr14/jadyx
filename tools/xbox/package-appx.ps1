@@ -124,6 +124,7 @@ New-Item -ItemType Directory -Path $layout -Force | Out-Null
 Copy-Item $exe $layout
 Copy-Item (Join-Path $repo "dist\uwp\AppxManifest.xml") $layout
 Copy-Item (Join-Path $repo "dist\uwp\Assets") $layout -Recurse
+Copy-Item (Join-Path $repo "dist\compat") $layout -Recurse
 
 # Any runtime DLLs the link produced land next to the exe; carry them along.
 Get-ChildItem (Split-Path $exe) -Filter *.dll -ErrorAction SilentlyContinue |

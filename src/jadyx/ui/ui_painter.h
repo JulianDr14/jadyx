@@ -39,6 +39,8 @@ inline constexpr unsigned OnAccent = 0x08090b;
 inline constexpr unsigned Text = 0xf5f5f7;
 inline constexpr unsigned TextSecondary = 0x92959a;
 inline constexpr unsigned TextHint = 0xb4b7bb;
+inline constexpr unsigned CompatibilityPlayable = 0x73d69b;
+inline constexpr unsigned CompatibilityBroken = 0xf08b8b;
 inline constexpr unsigned Warning = 0xf0c27a;
 inline constexpr unsigned Track = Graphite;
 } // namespace Palette
