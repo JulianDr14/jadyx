@@ -4277,3 +4277,12 @@ de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificaci�
 global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
 excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
+
+
+## 2026-10-24: launch dependency audit
+
+Compared local 0.3.8.0/0.3.8.5 APPX files: same 38 entries, identical PRI, shader DLLs
+and executable import symbol sets; missing-file regression not established. Packaging
+now checks PE dependencies and required launch files before packing/signing. Host
+checks pass; no PC/Series run or activation repair claimed. Evidence, hashes, limits
+and console protocol: [launch audit](nxbox-launch-80070002.md).

@@ -27,11 +27,12 @@ concurrency:
 
 jobs:
   scripts:
-    name: release scripts
+    name: release and packaging scripts
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - run: python3 tools/xbox/tests/release.py
+      - run: python3 -B tools/xbox/tests/package-launch.py
 
   build:
     uses: ./.github/workflows/build.yml

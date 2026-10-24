@@ -255,6 +255,34 @@ $priXml.Save($priConfig)
     /of (Join-Path $layout "resources.pri") /o | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "MakePri failed ($LASTEXITCODE)." }
 
+# --- launch dependencies: stage the framework before validating/packing -----------------
+# The exe hard-imports the Store CRT, which lives in the Microsoft.VCLibs.140.00 framework
+# package rather than ours (see the PackageDependency in the manifest). The console needs it
+# installed too, so hand it over next to our package instead of leaving the user to find it.
+# It ships with the VS "C++ (v143) UWP tools" component, as an Extension SDK.
+$vclibs = $null
+foreach ($pf in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
+    if (-not $pf) { continue }
+    $cand = Join-Path $pf "Microsoft SDKs\Windows Kits\10\ExtensionSDKs\Microsoft.VCLibs\14.0\Appx\Retail\x64\Microsoft.VCLibs.x64.14.00.appx"
+    if (Test-Path -LiteralPath $cand) { $vclibs = $cand; break }
+}
+if ($vclibs) {
+    $vcOut = Join-Path $repo "$OutDir\Microsoft.VCLibs.x64.14.00.appx"
+    Copy-Item -LiteralPath $vclibs -Destination $vcOut -Force
+} else {
+    if ($Release) { throw "Microsoft.VCLibs.x64.14.00.appx not found: a release must ship it." }
+    Write-Warning ("Microsoft.VCLibs.x64.14.00.appx not found. The app will FAIL TO ACTIVATE on-console " +
+                   "without it. Install the VS component Microsoft.VisualStudio.ComponentGroup.UWP.VC.")
+}
+
+# Inspect the actual staged EXE and DLL import tables, including transitive and delay imports.
+# Presence checks run for local packages too; releases also require both dynamic shader DLLs.
+$launchArgs = @((Join-Path $PSScriptRoot 'check-package-launch.py'), $layout)
+if ($vclibs) { $launchArgs += @('--framework', $vcOut) }
+if ($Release) { $launchArgs += '--release' }
+& python @launchArgs
+if ($LASTEXITCODE -ne 0) { throw "Launch dependency check failed ($LASTEXITCODE); refusing to pack." }
+
 # --- 3. pack -----------------------------------------------------------------------------
 $makeappx = Find-SdkTool "MakeAppx.exe"
 $appx = Join-Path $repo "$OutDir\jadyx.appx"
@@ -294,26 +322,6 @@ if ($PfxPath) {
 
     # The console must trust the signer: upload this .cer alongside the appx in the Device Portal.
     Export-Certificate -Cert $cert -FilePath $cer -Type CERT | Out-Null
-}
-
-# --- 5. the VCLibs framework package ------------------------------------------------------
-# The exe hard-imports the Store CRT, which lives in the Microsoft.VCLibs.140.00 framework
-# package rather than ours (see the PackageDependency in the manifest). The console needs it
-# installed too, so hand it over next to our package instead of leaving the user to find it.
-# It ships with the VS "C++ (v143) UWP tools" component, as an Extension SDK.
-$vclibs = $null
-foreach ($pf in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
-    if (-not $pf) { continue }
-    $cand = Join-Path $pf "Microsoft SDKs\Windows Kits\10\ExtensionSDKs\Microsoft.VCLibs\14.0\Appx\Retail\x64\Microsoft.VCLibs.x64.14.00.appx"
-    if (Test-Path -LiteralPath $cand) { $vclibs = $cand; break }
-}
-if ($vclibs) {
-    $vcOut = Join-Path $repo "$OutDir\Microsoft.VCLibs.x64.14.00.appx"
-    Copy-Item -LiteralPath $vclibs -Destination $vcOut -Force
-} else {
-    if ($Release) { throw "Microsoft.VCLibs.x64.14.00.appx not found: a release must ship it." }
-    Write-Warning ("Microsoft.VCLibs.x64.14.00.appx not found. The app will FAIL TO ACTIVATE on-console " +
-                   "without it. Install the VS component Microsoft.VisualStudio.ComponentGroup.UWP.VC.")
 }
 
 Write-Host ""

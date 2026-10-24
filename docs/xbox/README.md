@@ -13,6 +13,8 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 - [Compilación UWP](uwp_build.md): toolchain y configuración inicial; conserva el contexto histórico de la fase 2.
 - [Despliegue en Series](xbox_deploy.md): empaquetado, instalación y diagnóstico de activación.
 
+- [Investigación de activación 0x80070002](nxbox-launch-80070002.md): comparación 0.3.8.0/0.3.8.5 y comprobación de dependencias al empaquetar; causa Series pendiente.
+
 ## Diseño y funciones
 
 - [Actualizador de Jadyx](xbox_updater.md): versiones firmadas, descarga reanudable, pantalla de actualizaciones y asistencia web; instalación interna Xbox pendiente de gate.
