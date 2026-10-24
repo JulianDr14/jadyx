@@ -4295,3 +4295,18 @@ the HTTP portal is intentionally stopped while FTP owns storage. Portable CMake
 checks pass on macOS; the WinRT implementation/full UWP build and Series transfers
 remain untested. Commands, folder mappings, numbers and the complete pending gate:
 [nxbox-ftp-server.md](nxbox-ftp-server.md).
+
+
+## FTP review fixes (24 October 2026, jx-21)
+
+The FTP port `8d9079ee68` was cherry-picked onto main as `95d7cfe35d`. Follow-up
+requires ALLO/exact incoming byte counts before STOR/APPE publication, adds
+30-second login and 300-second idle deadlines, per-peer reconnect login backoff
+and non-replacing RNTO outside games. Default clients without ALLO need adapting;
+SIZE is a query and data EOF alone cannot prove upload completion. WinRT reads
+register a single Completed delegate; a future supports repeated deadline polls.
+Host FTP suite 2/2 before, 3/3 after; original storage/text/localization gates and
+FTP safety/transfer ASan/UBSan pass. No Windows build or network/device test was
+performed. Findings, limits and exact pending console checks:
+[nxbox-jx-21-ftp-fixes.md](nxbox-jx-21-ftp-fixes.md) and
+[nxbox-ftp-server.md](nxbox-ftp-server.md).

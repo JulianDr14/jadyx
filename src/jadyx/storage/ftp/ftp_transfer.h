@@ -13,7 +13,7 @@ namespace Jadyx::Ftp {
 inline constexpr std::uint32_t BufferSize = 1024 * 1024;
 
 // A single bounded buffer for every transfer. No file size is narrowed to a socket/block size.
-// With a known size, early EOF is an error. Uploads finish at the data stream's orderly EOF.
+// With a known size, early EOF is an error. Data EOF alone does not authorize publication.
 // read/write/active are injected so the exact streaming loop can run in host tests without WinRT.
 template <typename Read, typename Write, typename Active>
 std::uint64_t CopyStream(Read read, Write write, Active active,

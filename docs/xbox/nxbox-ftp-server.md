@@ -59,16 +59,40 @@ upload. Reopening generates a new password; resume never restarts the server.
   `REST` supports zero only: retry with **overwrite**, not resume. Use binary mode.
 - Sibling `.part` files publish only after flush/commit through the app-safe Windows
   move/replace APIs. ABOR, server stop and I/O failures remove the owned temporary
-  file and retain the previous destination. An orderly data EOF is FTP completion:
-  a client that simply closes data early without ABOR may produce a shorter upload.
-  Verify important transfers by downloading and comparing hashes.
+  file and retain the previous destination. `STOR` and `APPE` now require
+  `ALLO <bytes>` before each upload; the announced count is the number of incoming
+  bytes (for `APPE`, excluding the existing prefix). Publication requires an exact
+  match after data EOF. Missing ALLO returns `503`; short/excess data returns `426`
+  and deletes the partial. An empty upload requires `ALLO 0`. `SIZE <path>` only
+  queries a stored file: it cannot prove how many bytes the client meant to send.
+  There is no standard client acknowledgement of the server's final `226`, so
+  unknown-length uploads are refused rather than guessed complete. Clients that
+  do not send ALLO, including default FileZilla/ftplib upload flows, need explicit
+  ALLO support; the Python example below supplies it. Download/hash verification
+  is still recommended for important transfers.
 - `.part` names, traversal above `/`, Windows device names/streams and reparse-point
   descendants are rejected. Virtual roots cannot be deleted or renamed. A pre-existing
   `.part` is never overwritten; an app termination/power loss can leave one for manual
   removal through Device Portal while FTP is off.
+- `RNTO` replaces an existing destination only under `/games`. Under `/keys`,
+  `/saves` and `/firmware`, it returns `550` until the client explicitly deletes
+  the destination. The final move itself is non-replacing outside `/games`, so a
+  destination appearing after the check is also protected.
+- Control sessions close after **30 seconds without completing login**, or after
+  **300 seconds idle after login**. Unauthenticated commands/partial lines do not
+  extend the login deadline; complete authenticated commands and actual data
+  progress extend the idle deadline. A stalled transfer is cancelled on expiry.
+  Pending reads are checked every **250 ms**; blocked filesystem/WinRT work may
+  extend observed shutdown latency. Timeouts close the connection and free the
+  single session; no final control reply is required.
 - Plain FTP exposes credentials and data to the local network. Use a trusted LAN,
-  not an internet port forward. Wrong login waits about two seconds and closes the
-  control session after five failures.
+  not an internet port forward. Failed logins delay **1, 2, 4, 8, 16, 30, 30…
+  seconds per peer IP**, shared across reconnects and FTP stop/start for the same
+  server instance. The 30-second login deadline takes precedence over a longer
+  remaining delay; at most five failures are allowed per session. Stop cancels
+  waits. State is in memory, reset on server destruction/app exit; 1024 peer
+  entries are retained without eviction, and additional unknown peers receive
+  the maximum delay.
 
 ## macOS checks (24 October 2026)
 
@@ -133,7 +157,8 @@ console was used. Console gates below remain **pending**.
    connections = 1**, transfer type **Binary**. Confirm exactly `/games`, `/keys`,
    `/firmware`, `/saves` at `/`. Exercise both PASV and EPSV with a supporting client.
 4. Upload a synthetic file larger than **2 GiB** to `/games/ftp-large.bin`, then
-   another larger than **10 GiB** if disk space permits. Require `226`, matching
+   another larger than **10 GiB** if disk space permits. Send `ALLO <exact incoming
+   bytes>` before each STOR/APPE (including retries). Require `226`, matching
    `SIZE`, download each and compare SHA-256 with its local source. Delete both
    test files afterwards. Record source sizes, hashes, peak app memory and time;
    memory must not grow proportionally to file size. These are not game files.
@@ -149,10 +174,18 @@ console was used. Console gates below remain **pending**.
 7. Upload over a small existing test file, explicitly send **ABOR** during transfer,
    then reconnect: the original hash must remain and the partial must be absent.
    Repeat using **Stop** on the TV and by disconnecting the network. Retry using
-   **overwrite**. Compare hashes, not just client queue state.
+   **overwrite** with a fresh ALLO. Compare hashes, not just client queue state.
 8. While the first client remains connected, connect another: require `421`.
-   Try an incorrect password five times on one control connection: require `530`
-   delays and closure. A data connection from a different client IP must be rejected.
+   Without logging in, leave it silent for 31 seconds and verify a new client can
+   connect. Repeat after login with 301 seconds idle. Partial command bytes and
+   unauthenticated NOOPs must not extend the 30-second deadline. Send authenticated
+   NOOP before 300 seconds and confirm the idle window restarts. A progressing
+   transfer lasting over five minutes must remain active; a stalled one must close.
+   Try wrong passwords on successive fresh connections from the same IP: measure
+   growing 1/2/4/8/16-second reply delays; at the 30-second cap expect closure at the
+   login deadline if no time remains for `530`. A different IP starts at one second.
+   Stop during a penalty and verify prompt shutdown. A data connection from a
+   different client IP must be rejected.
 9. Suspend/resume during an upload: require cancellation and FTP off after resume.
    Close/reopen the library and launch/exit homebrew: require no surviving FTP
    listener. Check the HTTP portal still starts and imports normally after FTP stops.
@@ -160,3 +193,44 @@ console was used. Console gates below remain **pending**.
     appear in FTP logs and no unhandled exceptions occur. If data connections fail,
     verify inbound TCP **2121 and 50000–50009** in the Dev Mode firewall and disable
     LAN client isolation. Do not expose these ports on the internet.
+
+
+## Review regression gate (jx-21)
+
+The host-only follow-up is documented in [nxbox-jx-21-ftp-fixes.md](nxbox-jx-21-ftp-fixes.md).
+In addition to the checks above, use synthetic files only for these destructive tests:
+
+1. Create `existing.bin` containing a known marker under each exposed root and
+   record its SHA-256. Send `ALLO 1048576`, then STOR that path, send only 4096 bytes
+   and close the data socket cleanly without ABOR. Require `426`, the original
+   SHA-256 and no owned `.part`. Repeat by dropping the control connection during
+   the transfer, resetting the data connection, stopping FTP and suspending.
+2. Without ALLO require `503` and no partial. With `ALLO 4096`, send 4097 bytes:
+   require `426` and preservation. Send exactly 4096: require `226` and the new
+   hash. Test `ALLO 0` with an empty STOR; a subsequent upload without a new ALLO
+   must again return `503`. Test APPE with ALLO counting only appended bytes and
+   verify the original prefix; repeat with a short append and require no change.
+3. Create `source.bin` and `target.bin` in `/keys`, `/saves` and `/firmware`.
+   RNFR source then RNTO target must return `550` with both hashes unchanged.
+   DELE target, then repeat RNFR/RNTO: require `250`. In `/games`, replacement
+   remains supported. Remove all synthetic fixtures afterward.
+
+For a client that explicitly supplies the required byte count (run on the LAN
+client, with the address/password displayed on the TV):
+
+```python
+from ftplib import FTP
+from pathlib import Path
+
+source = Path("ftp-test.bin")  # Synthetic local file; use >2 GiB for the large-file gate.
+with FTP() as ftp:
+    ftp.connect("192.168.1.42", 2121)  # Replace with the displayed private IPv4.
+    ftp.login("jadyx", input("FTP password: "))
+    ftp.voidcmd(f"ALLO {source.stat().st_size}")
+    with source.open("rb") as stream:
+        ftp.storbinary("STOR /games/ftp-test.bin", stream)
+    assert ftp.size("/games/ftp-test.bin") == source.stat().st_size
+```
+
+Console execution, Windows/MSVC compilation and real WinRT timeout/cancellation
+behavior remain pending. No device/network tests were performed for this follow-up.

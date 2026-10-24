@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Ported from NXbox src/eden_uwp/ftp (GPL-3.0-or-later).
 #include "jadyx/storage/ftp/ftp_protocol.h"
+#include "jadyx/storage/ftp/ftp_safety.h"
 #include "jadyx/storage/ftp/ftp_server.h"
 #include "jadyx/storage/ftp/ftp_transfer.h"
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <future>
 #include <mutex>
 #include <span>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <windows.h>
@@ -66,8 +69,8 @@ void Write(const StreamSocket& socket, std::string_view text) {
     writer.StoreAsync().get();
     writer.DetachStream();
 }
-bool Publish(const fs::path& source, const fs::path& destination) {
-    return Common::FS::Exists(destination)
+bool Publish(const fs::path& source, const fs::path& destination, bool replace = true) {
+    return replace && Common::FS::Exists(destination)
                ? ReplaceFileFromAppW(destination.c_str(), source.c_str(), nullptr, 0, nullptr,
                                      nullptr) != 0
                : MoveFileFromAppW(source.c_str(), destination.c_str()) != 0;
@@ -96,6 +99,9 @@ struct Session : std::enable_shared_from_this<Session> {
     bool authenticated = false;
     bool username_ok = false;
     int failures = 0;
+    SessionDeadline deadline;
+    std::shared_ptr<LoginBackoff> login_backoff;
+    std::optional<std::uint64_t> allocation;
 
     void Reply(std::string_view text) {
         std::lock_guard lock(reply_mutex);
@@ -188,7 +194,7 @@ struct Session : std::enable_shared_from_this<Session> {
             throw std::runtime_error("data connection unavailable");
         return data;
     }
-    void Transfer(std::string verb, std::string relative) {
+    void Transfer(std::string verb, std::string relative, std::optional<std::uint64_t> expected) {
         const bool upload = verb == "STOR" || verb == "APPE";
         const bool listing = verb == "LIST" || verb == "NLST" || verb == "MLSD";
         std::uint64_t bytes = 0;
@@ -238,6 +244,8 @@ struct Session : std::enable_shared_from_this<Session> {
                         if (count != 0)
                             reader.ReadBytes(winrt::array_view<std::uint8_t>(
                                 buffer.data(), buffer.data() + count));
+                        if (count != 0)
+                            deadline.Activity();
                         return static_cast<std::size_t>(count);
                     },
                     [&](std::span<const std::uint8_t> buffer) {
@@ -245,11 +253,19 @@ struct Session : std::enable_shared_from_this<Session> {
                     },
                     [&] { return !stopped && transferring; });
                 reader.DetachStream();
-                if (!output.Flush() || !output.Commit() || stopped || !transferring)
-                    throw std::runtime_error("upload cancelled");
-                output.Close();
-                if (!Publish(partial, target))
-                    throw std::runtime_error("upload rename failed");
+                CompleteUpload(
+                    expected, bytes, [&] { return !stopped && transferring; },
+                    [&] {
+                        if (!output.Flush() || !output.Commit())
+                            throw std::runtime_error("upload flush failed");
+                        output.Close();
+                        if (stopped || !transferring || !Publish(partial, target))
+                            throw std::runtime_error("upload cancelled or rename failed");
+                    },
+                    [&] {
+                        output.Close();
+                        DeleteFileFromAppW(partial.c_str());
+                    });
                 partial.clear();
                 Changed();
             } else if (listing) {
@@ -272,6 +288,7 @@ struct Session : std::enable_shared_from_this<Session> {
                     else
                         line = ListLine(filename, directory, size, utc);
                     Write(socket, line);
+                    deadline.Activity();
                     bytes += line.size();
                 };
                 if (relative.empty()) {
@@ -310,6 +327,7 @@ struct Session : std::enable_shared_from_this<Session> {
                     [&](std::span<const std::uint8_t> buffer) {
                         Write(socket, std::string_view(reinterpret_cast<const char*>(buffer.data()),
                                                        buffer.size()));
+                        deadline.Activity();
                         return buffer.size();
                     },
                     [&] { return !stopped && transferring; }, input.GetSize());
@@ -351,7 +369,10 @@ struct Session : std::enable_shared_from_this<Session> {
             return false;
         }
         if (verb == "USER" && !transferring) {
+            if (authenticated)
+                deadline.Login(false);
             authenticated = false;
+            allocation.reset();
             username_ok = argument == "jadyx";
             rename_from.reset();
             CloseData();
@@ -359,14 +380,24 @@ struct Session : std::enable_shared_from_this<Session> {
         } else if (verb == "PASS" && !transferring) {
             if (username_ok && argument == password) {
                 authenticated = true;
+                deadline.Login(true);
                 Reply("230 Logged in.\r\n");
                 LOG_INFO(Frontend, "FTP login accepted");
             } else {
+                if (authenticated)
+                    deadline.Login(false);
                 authenticated = false;
+                allocation.reset();
                 ++failures;
                 std::unique_lock lock(sockets_mutex);
-                ready.wait_for(lock, 2s, [&] { return stopped.load(); });
+                const auto delay = login_backoff->Failure(peer);
+                ready.wait_for(
+                    lock,
+                    std::min(std::chrono::steady_clock::duration(delay), deadline.Remaining()),
+                    [&] { return stopped.load(); });
                 lock.unlock();
+                if (stopped || deadline.Expired())
+                    return false;
                 Reply("530 Login incorrect.\r\n");
                 if (failures >= 5)
                     return false;
@@ -391,6 +422,10 @@ struct Session : std::enable_shared_from_this<Session> {
                 Reply("522 Use IPv4.\r\n");
             else
                 Passive(verb == "EPSV");
+        } else if (verb == "ALLO") {
+            allocation = ParseAllocation(argument);
+            Reply(allocation ? "200 Upload size accepted for next upload.\r\n"
+                             : "501 Expected an unsigned byte count.\r\n");
         } else if (verb == "PWD") {
             std::string quoted;
             for (const char letter : cwd) {
@@ -441,7 +476,9 @@ struct Session : std::enable_shared_from_this<Session> {
                     if (!source) {
                         Reply("503 Send RNFR first.\r\n");
                     } else {
-                        if (relative->empty() || !Publish(Resolve(*source), target))
+                        if (relative->empty() ||
+                            !CanRenameTo(*relative, Common::FS::Exists(target)) ||
+                            !Publish(Resolve(*source), target, InGames(*relative)))
                             throw std::runtime_error("rename failed");
                         Changed();
                         Reply("250 Renamed.\r\n");
@@ -468,6 +505,13 @@ struct Session : std::enable_shared_from_this<Session> {
                         (!Common::FS::IsDir(target.parent_path()) ||
                          (Common::FS::Exists(target) && !Common::FS::IsFile(target))))
                         throw std::runtime_error("invalid upload target");
+                    const bool upload = verb == "STOR" || verb == "APPE";
+                    const auto expected = upload ? std::exchange(allocation, std::nullopt)
+                                                 : std::optional<std::uint64_t>{};
+                    if (upload && !expected) {
+                        Reply("503 Send ALLO with exact upload byte count first.\r\n");
+                        return true;
+                    }
                     bool has_passive;
                     {
                         std::lock_guard lock(sockets_mutex);
@@ -482,12 +526,12 @@ struct Session : std::enable_shared_from_this<Session> {
                         Reply("150 Opening data connection.\r\n");
                         try {
                             transfer = std::thread([self = shared_from_this(), verb,
-                                                    path = *relative] {
+                                                    path = *relative, expected] {
                                 bool initialized = false;
                                 try {
                                     winrt::init_apartment(winrt::apartment_type::multi_threaded);
                                     initialized = true;
-                                    self->Transfer(verb, path);
+                                    self->Transfer(verb, path, expected);
                                 } catch (...) {
                                     self->transferring = false;
                                     self->Stop();
@@ -521,7 +565,21 @@ struct Session : std::enable_shared_from_this<Session> {
             std::string pending;
             bool keep = true;
             while (keep && !stopped) {
-                if (reader.LoadAsync(1024).get() == 0)
+                if (deadline.Expired())
+                    break;
+                const auto load = reader.LoadAsync(1024);
+                // A WinRT operation accepts only one Completed delegate. Poll a future,
+                // rather than repeatedly installing a delegate through load.wait_for().
+                const auto completion = std::make_shared<std::promise<void>>();
+                auto completed = completion->get_future();
+                load.Completed([completion](const auto&, const auto) { completion->set_value(); });
+                while (completed.wait_for(250ms) != std::future_status::ready) {
+                    if (stopped || deadline.Expired()) {
+                        load.Cancel();
+                        throw std::runtime_error("control session timed out");
+                    }
+                }
+                if (load.get() == 0 || deadline.Expired())
                     break;
                 while (reader.UnconsumedBufferLength() != 0) {
                     const auto byte = reader.ReadByte();
@@ -529,7 +587,12 @@ struct Session : std::enable_shared_from_this<Session> {
                         throw std::runtime_error("invalid command");
                     pending += static_cast<char>(byte);
                     if (pending.ends_with("\r\n")) {
-                        keep = Handle(ParseCommand(pending));
+                        if (deadline.Expired()) {
+                            keep = false;
+                        } else {
+                            deadline.Activity();
+                            keep = Handle(ParseCommand(pending));
+                        }
                         pending.clear();
                         if (!keep)
                             break;
@@ -560,6 +623,7 @@ struct Server::State {
     std::shared_ptr<Session> session;
     std::shared_ptr<std::atomic<std::uint64_t>> changes =
         std::make_shared<std::atomic<std::uint64_t>>(0);
+    std::shared_ptr<LoginBackoff> login_backoff = std::make_shared<LoginBackoff>();
     std::string ip;
     std::string password;
     bool running = false;
@@ -630,6 +694,7 @@ bool Server::Start(const Roots& roots, const std::string& ipv4) {
             session->ip = owner->ip;
             session->password = owner->password;
             session->changes = owner->changes;
+            session->login_backoff = owner->login_backoff;
             session->peer = winrt::to_string(socket.Information().RemoteAddress().CanonicalName());
             try {
                 std::thread worker([session] { session->Run(); });
