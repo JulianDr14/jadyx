@@ -9,6 +9,7 @@
 #include <type_traits>
 #include <bitset>
 #include <initializer_list>
+#include <limits>
 #include "common/assert.h"
 
 // xbyak hates human beings
@@ -264,8 +265,10 @@ enum {
 };
 
 constexpr bool IsWithin2G(uintptr_t ref, uintptr_t target) noexcept {
-    u64 const distance = target - (ref + 5);
-    return (distance & 0xffff'ffff) == distance;
+    // rel32 is signed and measured from the end of the five-byte call.
+    const s64 distance = static_cast<s64>(target - (ref + 5));
+    return distance >= (std::numeric_limits<s32>::min)() &&
+           distance <= (std::numeric_limits<s32>::max)();
 }
 
 template <typename T>

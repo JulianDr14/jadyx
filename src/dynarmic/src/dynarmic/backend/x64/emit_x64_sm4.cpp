@@ -50,11 +50,11 @@ alignas(64) static constexpr std::array<u8, 256> substitution_box = {
 void EmitX64::EmitSM4AccessSubstitutionBox(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const Xbyak::Reg64 tmp0 = ctx.reg_alloc.UseScratchGpr(code, args[0]);
-    const Xbyak::Reg tmp1 = ctx.reg_alloc.ScratchGpr(code);
-    // return subtitution_box[index * 1];
+    const Xbyak::Reg64 tmp1 = ctx.reg_alloc.ScratchGpr(code);
+    // Load the full host address; the table may be outside RIP-relative reach.
     code.movzx(tmp0.cvt32(), tmp0.cvt8());
-    code.lea(tmp1, code.ptr[std::addressof(substitution_box)]);
-    code.movzx(tmp1, code.byte[tmp1 + tmp0 * 1]);
+    code.mov(tmp1, reinterpret_cast<u64>(substitution_box.data()));
+    code.movzx(tmp1.cvt32(), code.byte[tmp1 + tmp0]);
     ctx.reg_alloc.DefineValue(code, inst, tmp1);
 }
 

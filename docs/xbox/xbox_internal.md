@@ -4411,3 +4411,17 @@ are unchanged. Two wiring regressions fail before/pass after; 122 portable cases
 and five existing Python suites pass. No UWP/Series gate or transfer parity claimed.
 Evidence, local provenance and the exact pending console matrix:
 [nxbox-33-msaa-validation.md](nxbox-33-msaa-validation.md).
+## NXbox JIT correctness port (2026-10-24)
+
+Branch `nxbox/34-jit-fixes` starts at main `0fc5c0183694`; local-only work,
+no Windows/Series execution. Findings, host negative controls and per-fix console
+protocols: [nxbox-34-jit-fixes.md](nxbox-34-jit-fixes.md). ARM64 emitter models
+cannot certify x64 machine execution or Windows SEH.
+
+JIT port host gate: `python3 -B tools/xbox/tests/jit-fixes.py` passes eight new
+regressions plus three pre-existing trace fixtures; every source fix reproduced
+with a failing host test first. Macro corpus 8,388,608 cases: 30 -> 0 mismatches;
+saturation 1,444,512 vectors pass. Native Dynarmic/Unicorn 10,624 cases added but
+not run; MSVC/UWP/Series gates pending. No cache/profile format or setting change,
+no package/version bump; no network or push. Per-fix console protocols and
+adapter limits remain in the linked port report.
