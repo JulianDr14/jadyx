@@ -16,6 +16,8 @@ namespace Jadyx {
 // there so reconnecting a USB does not silently forget the user's library.
 std::string RememberGameFolder(const winrt::Windows::Storage::StorageFolder& folder);
 std::string RememberContentFolder(const winrt::Windows::Storage::StorageFolder& folder);
+// The boot-file equivalent of the opt-in NXBOX_USB_PLAY_IN_PLACE environment switch.
+void SetUsbPlayInPlace(bool enabled);
 LibraryScan ScanExternalGameFolders(std::stop_token stop);
 FileSys::VirtualFilesystem MakeUwpFilesystem();
 struct StorageBrowserEntry { std::string path; std::wstring name; bool folder{}; std::uint64_t size{}; };

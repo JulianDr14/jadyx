@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/storage/uwp_rom_storage.h"
 #include "jadyx/storage/storage_path.h"
+#include "jadyx/storage/usb_discovery.h"
 #include "jadyx/i18n/localization.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <cstdlib>
 #include <mutex>
 #include <thread>
 #include <windows.h>
@@ -31,6 +33,7 @@ constexpr unsigned PageSize = 64;
 constexpr unsigned MaxSources = 16;
 constexpr unsigned MaxEntries = 10000;
 std::atomic<bool> storage_read_failure{};
+std::atomic<bool> usb_play_in_place{};
 constexpr unsigned ReadChunk = 1024 * 1024;
 
 void EnsureStorageApartment() {
@@ -332,7 +335,9 @@ void ScanFolder(StorageFolder folder, const std::string& token, const std::wstri
                 auto ext = p.extension().string();
                 std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 if (ext != ".nsp" && ext != ".xci" && ext != ".nro") continue;
-                LibraryEntry entry{p, p.stem().wstring()};
+                LibraryEntry entry{};
+                entry.relative_path = p;
+                entry.name = p.stem().wstring();
                 entry.launch_path = MakeStoragePath(token, child);
                 entry.source_name = source;
                 // Enumerated items carry their dates: no extra call per file.
@@ -442,8 +447,67 @@ std::vector<StorageBrowserEntry> ContentFolderSources() {
 LibraryScan ScanExternalGameFolders(std::stop_token stop) {
     EnsureStorageApartment();
     LibraryScan result;
+    bool discovery_limited = false;
     unsigned visited = 0, sources = 0;
     auto list = StorageApplicationPermissions::FutureAccessList();
+    if (!stop.stop_requested() && (usb_play_in_place.load() ||
+                                   UsbPlayInPlaceEnabled(std::getenv("NXBOX_USB_PLAY_IN_PLACE")))) {
+        // Use the broker for enumeration as well as reads. std::filesystem and ordinary
+        // Win32 opens cannot enumerate removable storage in the Xbox AppContainer.
+        std::vector<std::wstring> registered;
+        for (const auto& entry : list.Entries()) {
+            if (stop.stop_requested()) {
+                return result;
+            }
+            if (IsGameToken(winrt::to_string(entry.Token))) {
+                try {
+                    registered.push_back(
+                        std::wstring{list.GetFolderAsync(entry.Token).get().Path()});
+                } catch (const winrt::hresult_error&) {
+                    // Retain disconnected sources; a missing USB must not forget a selection.
+                    registered.push_back(std::wstring{entry.Metadata});
+                }
+            }
+        }
+        try {
+            const auto devices = KnownFolders::RemovableDevices();
+            for (unsigned start = 0; !stop.stop_requested() && start < MaxEntries;
+                 start += PageSize) {
+                const auto drives =
+                    devices
+                        .GetFoldersAsync(Search::CommonFolderQuery::DefaultQuery, start,
+                                         std::min(PageSize, MaxEntries - start))
+                        .get();
+                for (const auto& drive : drives) {
+                    if (stop.stop_requested())
+                        break;
+                    const std::wstring drive_path{drive.Path()};
+                    if (drive_path.empty() ||
+                        std::any_of(registered.begin(), registered.end(), [&](const auto& path) {
+                            return StorageFoldersOverlap(drive_path, path);
+                        })) {
+                        continue;
+                    }
+                    if (registered.size() >= MaxSources) {
+                        discovery_limited = true;
+                        break;
+                    }
+                    try {
+                        const auto token = RememberGameFolder(drive);
+                        registered.push_back(drive_path);
+                        LOG_INFO(Frontend, "ROM storage: discovered USB source={} token={}",
+                                 winrt::to_string(drive.Path()), token);
+                    } catch (const winrt::hresult_error& e) {
+                        AddError(result, ErrorText(e));
+                    }
+                }
+                if (drives.Size() < PageSize || discovery_limited)
+                    break;
+            }
+        } catch (const winrt::hresult_error& e) {
+            AddError(result, ErrorText(e));
+        }
+    }
     for (const auto& entry : list.Entries()) {
         if (stop.stop_requested()) break;
         const auto token = winrt::to_string(entry.Token);
@@ -455,8 +519,11 @@ LibraryScan ScanExternalGameFolders(std::stop_token stop) {
         } catch (const winrt::hresult_error& e) { AddError(result, ErrorText(e)); }
         if (result.limited) break;
     }
+    result.limited |= discovery_limited;
     return result;
 }
+
+void SetUsbPlayInPlace(bool enabled) { usb_play_in_place.store(enabled); }
 
 FileSys::VirtualFilesystem MakeUwpFilesystem() { return std::make_shared<UwpFilesystem>(); }
 

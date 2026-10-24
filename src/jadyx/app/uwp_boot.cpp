@@ -2444,6 +2444,10 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 for (std::string line; std::getline(cfg, line);) {
                     if (line == "library=1") show_library = true;
                     else if (line.starts_with("library_pick=")) library_pick = line.substr(13);
+                    else if (line == "NXBOX_USB_PLAY_IN_PLACE=1")
+                        Jadyx::SetUsbPlayInPlace(true);
+                    else if (line == "NXBOX_USB_PLAY_IN_PLACE=0")
+                        Jadyx::SetUsbPlayInPlace(false);
                 }
                 if (show_library) {
                     if (session > 1) {
