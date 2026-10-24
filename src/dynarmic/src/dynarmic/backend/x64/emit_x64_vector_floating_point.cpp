@@ -1659,7 +1659,7 @@ void EmitFPVectorRoundInt(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
         if (code.HasHostFeature(HostFeature::SSE41) && rounding != FP::RoundingMode::ToNearest_TieAwayFromZero && !exact) {
             const auto round_imm = ConvertRoundingModeToX64Immediate(rounding);
             EmitTwoOpVectorOperation<fsize, DefaultIndexer, 3>(code, ctx, inst, [&](const Xbyak::Xmm& result, const Xbyak::Xmm& xmm_a) {
-                FCODE(roundp)(result, xmm_a, *round_imm);
+                FCODE(roundp)(result, xmm_a, u8(*round_imm | 0x08));
             });
             return;
         }

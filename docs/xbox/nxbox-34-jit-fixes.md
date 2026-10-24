@@ -151,3 +151,28 @@ Compare every output lane and FPSR.QC against a wider-integer saturating oracle;
 repeat with QC initially set to verify sticky behavior. Require zero mismatches.
 Exercise the fallback without AVX2 on the Windows host as well as the normally
 selected console path; this fix does not alter the existing AVX2 lowering.
+
+## Non-exact scalar and vector rounding exceptions
+
+References: `0cfb629d7`, `c66da1b35`. Set ROUND immediate bit 3 on the existing
+SSE4.1 non-exact scalar/vector paths. Without it fractional inputs set host
+precision status, which can leak into guest IXC even though the instruction does
+not request an inexact exception. Preserve prior sticky flags and invalid
+exceptions; exact rounds retain the software path.
+
+`python3 -B tools/xbox/tests/jit-round-exceptions.py` failed before on added
+precision status. Its `vector` variant independently reproduced the vector bug.
+Both now pass: 256 modeled result/sticky-flag cases across scalar/vector,
+FP32/64 and four modes, plus 16 signaling-NaN invalid-preservation cases.
+The adapter models ROUND semantics, not real MXCSR execution. Added Dynarmic
+`A64: Vector rounding differential` (1792 Unicorn cases, including IXC); the
+scalar test above covers scalar native behavior. Native x64 execution is pending.
+
+Console gate: extend the scalar FRINT diagnostic above with 2S/4S/2D vector
+FRINTN/P/M/Z/A/X/I. Run fractional lanes ±1.25 and ±2.5 with FPSR initially
+clear, then IXC set. Non-exact forms must leave IXC unchanged; FRINTX must set
+IXC on fractional operands. Include sNaN lanes and require IOC, and qNaN/±Inf/
+signed-zero lanes with the oracle's result bits. Clear host MXCSR status between
+Windows diagnostic cases and verify only precision suppression, not invalid
+suppression. Run the normally selected SSE4.1 console path and a forced software
+fallback on the Windows host; require matching result/FPSR for each instruction.

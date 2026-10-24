@@ -1065,8 +1065,8 @@ static void EmitFPRound(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, siz
     auto const round_imm = ConvertRoundingModeToX64Immediate(rounding_mode);
     if (fsize != 16 && code.HasHostFeature(HostFeature::SSE41) && round_imm && !exact) {
         fsize == 64
-            ? FPTwoOp<64>(code, ctx, inst, [&](Xbyak::Xmm result) { code.roundsd(result, result, *round_imm); })
-            : FPTwoOp<32>(code, ctx, inst, [&](Xbyak::Xmm result) { code.roundss(result, result, *round_imm); });
+            ? FPTwoOp<64>(code, ctx, inst, [&](Xbyak::Xmm result) { code.roundsd(result, result, u8(*round_imm | 0x08)); })
+            : FPTwoOp<32>(code, ctx, inst, [&](Xbyak::Xmm result) { code.roundss(result, result, u8(*round_imm | 0x08)); });
     } else {
         auto args = ctx.reg_alloc.GetArgumentInfo(inst);
         // See EmitFPRoundThunk
