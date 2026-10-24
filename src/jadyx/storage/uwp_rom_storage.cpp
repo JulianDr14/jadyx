@@ -13,9 +13,9 @@
 #include <map>
 #include <mutex>
 #include <thread>
+#include <windows.h>
 #include <fileapifromapp.h>
 #include <objbase.h>
-#include <windows.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Storage.AccessCache.h>
 #include <winrt/Windows.Storage.FileProperties.h>
