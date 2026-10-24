@@ -18,7 +18,21 @@
 namespace Jadyx {
 
 struct SystemPage {
-    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, AdultMods, PerformanceStats, PulseSessions, PlayTime, MultipleControllers, ClearCache, Updates, RowCount };
+    enum Row : std::size_t {
+        UserName,
+        InterfaceLanguage,
+        GameLanguage,
+        Region,
+        AdultMods,
+        PerformanceStats,
+        PulseSessions,
+        PlayTime,
+        MultipleControllers,
+        ClearCache,
+        Updates,
+        Theme,
+        RowCount
+    };
 
     bool updates_open{};
     std::size_t update_row{}, update_detail{}, update_scroll{};
@@ -82,6 +96,9 @@ inline SystemPageEffect HandleSystemInput(SystemPage& page, SystemInput input) {
         page.name_editor.emplace(settings.user_name, MaxUserNameLength);
         page.editor_notice.clear();
         return SystemPageEffect::EditName;
+    case Row::Theme:
+        settings.theme = settings.theme == ThemeId::Jadyx ? ThemeId::OldNxbox : ThemeId::Jadyx;
+        return SystemPageEffect::Changed;
     case Row::InterfaceLanguage:
         settings.ui_language = *SystemPageDetail::StepUiLanguage(settings.ui_language, back);
         return SystemPageEffect::Changed;
@@ -138,6 +155,8 @@ inline I18n::Text SystemRowTitle(SystemPage::Row row) {
     using I18n::Text;
     switch (row) {
     case SystemPage::Updates:           return Text::UpdaterTitle;
+    case SystemPage::Theme:
+        return Text::Theme;
     case SystemPage::UserName:          return Text::UserName;
     case SystemPage::InterfaceLanguage: return Text::InterfaceLanguage;
     case SystemPage::GameLanguage:      return Text::GameLanguage;
@@ -155,6 +174,8 @@ inline I18n::Text SystemRowHint(SystemPage::Row row) {
     using I18n::Text;
     switch (row) {
     case SystemPage::Updates:           return Text::UpdaterHint;
+    case SystemPage::Theme:
+        return Text::ThemeHint;
     case SystemPage::UserName:          return Text::UserNameHint;
     case SystemPage::InterfaceLanguage: return Text::InterfaceLanguageHint;
     case SystemPage::GameLanguage:      return Text::GameLanguageHint;
@@ -176,6 +197,9 @@ inline std::wstring SystemRowValue(const SystemPage& page, SystemPage::Row row) 
         return I18n::Format(Text::AutomaticValue, {value});
     };
     switch (row) {
+    case SystemPage::Theme:
+        return std::wstring{
+            I18n::Tr(settings.theme == ThemeId::OldNxbox ? Text::ThemeOldNxbox : Text::ThemeJadyx)};
     case SystemPage::UserName:
         return settings.user_name.empty() ? std::wstring{DefaultUserName} : settings.user_name;
     case SystemPage::InterfaceLanguage:

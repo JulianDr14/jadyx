@@ -4277,3 +4277,11 @@ de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificaci�
 global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
 excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
+
+## 24 October 2026 — optional Old NXbox frontend theme
+
+The library's Theme setting persists as `system_theme` through the existing SystemSettings path
+and applies live. `ui/ui_theme.h` owns the default Jadyx tokens and the GPL NXbox palette/type/focus
+adaptation. Jadyx remains the default; text, focus-brush, cover-mask and scrim caches invalidate
+on a theme change. Host gates and the pending console comparison are recorded in
+[nxbox-themes.md](nxbox-themes.md). No UWP/console visual certification or package was produced.

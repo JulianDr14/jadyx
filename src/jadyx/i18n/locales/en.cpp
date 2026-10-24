@@ -4,6 +4,10 @@
 
 namespace Jadyx::I18n {
 const Catalog EnglishCatalog = MakeCatalog({
+    {Text::Theme, L"Theme"},
+    {Text::ThemeHint, L"Change the appearance of the interface"},
+    {Text::ThemeJadyx, L"Jadyx"},
+    {Text::ThemeOldNxbox, L"Old NXbox"},
     {Text::UpdaterTitle, L"Updates"},
     {Text::UpdaterHint, L"Find and install new versions of Jadyx"},
     {Text::UpdaterCheck, L"Check for updates"},

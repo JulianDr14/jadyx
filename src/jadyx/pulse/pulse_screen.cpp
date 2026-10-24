@@ -139,13 +139,13 @@ struct Painter : UiPainter {
         SyncLanguage();
         target->BeginDraw();
         // The renderer fills the rest of the screen with the same color: the image has no edge.
-        target->Clear(D2D1::ColorF(Palette::Backdrop));
+        target->Clear(Ink(Palette::Backdrop));
         target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
         DrawRing(view);
         DrawTexts(view, kind, game);
         // Fades in from the backdrop.
         if (const float fade = std::clamp(view.t / 0.3f, 0.0f, 1.0f); fade < 1) {
-            brush->SetColor(D2D1::ColorF(Palette::Backdrop, 1 - fade));
+            brush->SetColor(Ink(Palette::Backdrop, 1 - fade));
             surface->FillRectangle(D2D1::RectF(0, 0, L::Width, L::Height), brush.Get());
         }
         // A text the system's fallback font cannot draw spoils the frame, not the game.
@@ -160,7 +160,7 @@ private:
     }
 
     void Color(unsigned rgb, float alpha) {
-        brush->SetColor(D2D1::ColorF(rgb, std::clamp(alpha, 0.0f, 1.0f)));
+        brush->SetColor(Ink(rgb, std::clamp(alpha, 0.0f, 1.0f)));
     }
 
     void Disc(float cx, float cy, float radius, unsigned rgb, float alpha) {
@@ -347,7 +347,11 @@ private:
 
     /// The bitmap as RGBA rows, the swapchain's order (D2D draws BGRA).
     D3D12::MenuImage Pixels() {
-        D3D12::MenuImage image{bitmap_width, bitmap_height, {}, true, Palette::Backdrop};
+        D3D12::MenuImage image{.width = bitmap_width,
+                               .height = bitmap_height,
+                               .pixels = {},
+                               .fill_screen = true,
+                               .fill = Theme().Color(Palette::Backdrop).rgb};
         image.pixels.resize(static_cast<std::size_t>(bitmap_width) * bitmap_height * 4);
         const WICRect rect{0, 0, static_cast<INT>(bitmap_width), static_cast<INT>(bitmap_height)};
         ComPtr<IWICBitmapLock> lock;

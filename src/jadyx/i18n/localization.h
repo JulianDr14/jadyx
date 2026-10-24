@@ -23,6 +23,11 @@
 namespace Jadyx::I18n {
 
 enum class Text : std::uint16_t {
+    Theme,
+    ThemeHint,
+    ThemeJadyx,
+    ThemeOldNxbox,
+
     // Library
     LibraryHeading,
     GamesCountOne,

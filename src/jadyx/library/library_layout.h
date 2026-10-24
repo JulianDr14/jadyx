@@ -16,28 +16,30 @@
 #include <vector>
 
 #include "jadyx/library/game_library.h"
+#include "jadyx/ui/ui_theme.h"
 
 namespace Jadyx::LibraryLayout {
+using Canvas = ThemeTokens::Canvas;
 
-inline constexpr float Margin = 64;
+inline constexpr float Margin = Canvas::Unit64;
 inline constexpr std::size_t Columns = 7;
-inline constexpr float Tile = 144;
-inline constexpr float Gutter = 24;
+inline constexpr float Tile = Canvas::Unit144;
+inline constexpr float Gutter = Canvas::Unit24;
 inline constexpr float Stride = Tile + Gutter; ///< 7 tiles and 6 gutters fill 1152 = 1280 - 2x64.
 /// The focused row's covers, on screen.
-inline constexpr float RowTop = 474;
+inline constexpr float RowTop = Canvas::Unit474;
 /// One row: the cover, its title and meta line, and the gap to the next.
-inline constexpr float RowHeight = 216;
+inline constexpr float RowHeight = Canvas::Unit216;
 /// A section title above a section's first row.
-inline constexpr float HeadingHeight = 42;
+inline constexpr float HeadingHeight = Canvas::Unit42;
 
 // The header's two buttons and the hero's actions (their widths follow their labels: the canvas
 // reports them for the pointer, see Hits).
-inline constexpr float HeaderTop = 34;
-inline constexpr float HeaderButtonHeight = 40;
-inline constexpr float PillTop = 360;
-inline constexpr float PillHeight = 44;
-inline constexpr float FooterTop = 664;
+inline constexpr float HeaderTop = Canvas::Unit34;
+inline constexpr float HeaderButtonHeight = Canvas::Unit40;
+inline constexpr float PillTop = Canvas::Unit360;
+inline constexpr float PillHeight = Canvas::Unit44;
+inline constexpr float FooterTop = Canvas::Unit664;
 
 /// The rail holds the pinned games, then the played ones (the library's order puts them first),
 /// at most one row of them.
@@ -66,7 +68,8 @@ inline std::size_t RowOf(Focus focus, std::size_t rail_count) {
 
 /// Where a row's covers are in the scrolling content (the rail, or the first row, at 0).
 inline float RowContentTop(std::size_t row, std::size_t rail_count) {
-    if (rail_count && row > 0) return RowHeight + HeadingHeight + (row - 1) * RowHeight;
+    if (rail_count && row > Canvas::Unit0)
+        return RowHeight + HeadingHeight + (row - Canvas::Unit1) * RowHeight;
     return static_cast<float>(row) * RowHeight;
 }
 
@@ -126,11 +129,11 @@ enum class Filter : unsigned { All, Played, Alphabetical, Pinned, Recent, Pulse,
 inline constexpr std::size_t FilterCount = static_cast<std::size_t>(Filter::Count);
 
 /// The heading, its count and the filter bar on one line; the grid under them.
-inline constexpr float ShelfHeadingTop = 100;
-inline constexpr float FilterTop = 106;
-inline constexpr float FilterHeight = 36;
-inline constexpr float ShelfTop = 206;
-inline constexpr float ShelfRowHeight = 204;
+inline constexpr float ShelfHeadingTop = Canvas::Unit100;
+inline constexpr float FilterTop = Canvas::Unit106;
+inline constexpr float FilterHeight = Canvas::Unit36;
+inline constexpr float ShelfTop = Canvas::Unit206;
+inline constexpr float ShelfRowHeight = Canvas::Unit204;
 
 /// The entries the filter shows, as indices into `entries`, in the order it shows them. All keeps
 /// the library's order (pinned and played first); A-Z is by title; Recently added newest first.

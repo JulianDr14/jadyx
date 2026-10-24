@@ -98,7 +98,7 @@ public:
             asset_root = std::filesystem::path{
                 winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path().c_str()} / L"Assets";
         } catch (const winrt::hresult_error&) { /* Pictures from the package stay unavailable. */ }
-        const float scale = std::min(width / 1280.0f, height / 720.0f);
+        const float scale = std::min(width / Canvas::Unit1280_0F, height / Canvas::Unit720_0F);
         target->SetTransform(D2D1::Matrix3x2F::Scale(std::max(scale, 0.01f), std::max(scale, 0.01f)) *
             D2D1::Matrix3x2F::Translation((width - 1280 * scale) / 2, (height - 720 * scale) / 2));
     }
@@ -115,6 +115,12 @@ public:
         const auto& panel = view.panel;
         const auto& configuration = view.configuration;
         const auto now = Tween::Clock::now();
+        if (canvas_theme != UiTheme()) {
+            canvas_theme = UiTheme();
+            for (auto& scrim : scrims)
+                scrim.Reset();
+            cover_mask.Reset();
+        }
         SyncLanguage();
         prompt_family = PromptFamily::Keyboard;
         if (panel.xbox) prompt_family = PromptFamily::Xbox;
@@ -136,19 +142,26 @@ public:
         if (!management && !configuration.network_screen) UpdateBackdrop(game, now);
         hits.clear();
         target->BeginDraw();
-        target->Clear(D2D1::ColorF(Palette::Canvas));
+        target->Clear(Ink(Palette::Canvas));
         if (!management && !configuration.network_screen) DrawBackdrop(now);
         // The backdrop moves on its own while it shows (AmbientDue).
         ambient = !management && !configuration.network_screen && !backdrop_now.empty();
         last_frame = now;
         if(configuration.confirm_import){
             rows_shown=false;
-            Type(Tr(T::SystemImportReview),TypeRole::HeadlineLarge,80,80,1120,Palette::Text);
-            Type(configuration.review_text,TypeRole::BodyLarge,80,190,1120,Palette::Warning,1,TextAlign::Leading,10);
-            for(size_t i=0;i<2;++i){const float x=80+static_cast<float>(i)*570;const bool focused=configuration.network_action==i;
-                Round(x,590,540,64,14,focused?Palette::Accent:Palette::Surface);
-                Type(Tr(i==0?T::Cancel:T::Import),TypeRole::LabelLarge,x+20,611,500,focused?Palette::OnAccent:Palette::Text);
-                AddHit(x,590,540,64,LibraryHit::NetworkAction,i);
+            Type(Tr(T::SystemImportReview), TypeRole::HeadlineLarge, Canvas::Unit80, Canvas::Unit80,
+                 Canvas::Unit1120, Palette::Text);
+            Type(configuration.review_text, TypeRole::BodyLarge, Canvas::Unit80, Canvas::Unit190,
+                 Canvas::Unit1120, Palette::Warning, Canvas::Unit1, TextAlign::Leading, 10);
+            for (size_t i = 0; i < 2; ++i) {
+                const float x = Canvas::Unit80 + static_cast<float>(i) * Canvas::Unit570;
+                const bool focused = configuration.network_action == i;
+                Round(x, Canvas::Unit590, Canvas::Unit540, Canvas::Unit64, Canvas::Unit14,
+                      focused ? Palette::Accent : Palette::Surface);
+                Type(Tr(i == 0 ? T::Cancel : T::Import), TypeRole::LabelLarge, x + Canvas::Unit20,
+                     Canvas::Unit611, Canvas::Unit500, focused ? Palette::OnAccent : Palette::Text);
+                AddHit(x, Canvas::Unit590, Canvas::Unit540, Canvas::Unit64,
+                       LibraryHit::NetworkAction, i);
             }
         } else if (configuration.network_screen && configuration.network_update) {
             rows_shown = false; DrawUpdateGuide(configuration, view.system.update);
@@ -163,7 +176,8 @@ public:
         } else if (view.tab == LibraryTab::Settings) {
             rows_shown = false;
             // Settings dims the art further: its own page, not a dialog over the library.
-            Round(0, 0, 1280, 720, 0, Palette::Canvas, 0.62f);
+            Round(Canvas::Unit0, Canvas::Unit0, Canvas::Unit1280, Canvas::Unit720, Canvas::Unit0,
+                  Palette::Canvas, Canvas::Unit0_62F);
             DrawSettings(view);
         } else if (game) {
             if (view.tab == LibraryTab::Home) {
@@ -175,12 +189,14 @@ public:
         } else {
             rows_shown = false;
             Type(Tr(view.loading ? T::LoadingTitle : T::EmptyTitle), TypeRole::HeadlineLarge,
-                 LibraryLayout::Margin, 220, 1000, Palette::Text, 1, TextAlign::Leading, 2);
+                 LibraryLayout::Margin, Canvas::Unit220, Canvas::Unit1000, Palette::Text,
+                 Canvas::Unit1, TextAlign::Leading, 2);
             Type(Tr(view.loading ? T::LoadingBody : T::EmptyBody), TypeRole::BodyLarge,
-                 LibraryLayout::Margin, 330, 900, Palette::TextSecondary, 1, TextAlign::Leading, 3);
+                 LibraryLayout::Margin, Canvas::Unit330, Canvas::Unit900, Palette::TextSecondary,
+                 Canvas::Unit1, TextAlign::Leading, 3);
             if (!view.notice.empty())
-                Type(view.notice, TypeRole::Body, LibraryLayout::Margin, 430, 1000, Palette::Warning,
-                     1, TextAlign::Leading, 2);
+                Type(view.notice, TypeRole::Body, LibraryLayout::Margin, Canvas::Unit430,
+                     Canvas::Unit1000, Palette::Warning, Canvas::Unit1, TextAlign::Leading, 2);
         }
         if (!management && !configuration.network_screen && !configuration.confirm_import && !view.system.updates_open) {
             DrawHeader(view, now);
@@ -194,7 +210,8 @@ public:
         if (management) {
             DrawGameOptions(view.game_options);
             // The library owns the header. Pages replace its content, never its chrome.
-            Round(0, 0, 1280, 94, 0, Palette::Canvas);
+            Round(Canvas::Unit0, Canvas::Unit0, Canvas::Unit1280, Canvas::Unit94, Canvas::Unit0,
+                  Palette::Canvas);
             DrawHeader(view, now);
         }
         if (!view.system.updates_open && !management && !configuration.network_screen && !configuration.open &&
@@ -222,39 +239,52 @@ public:
         const auto version = winrt::to_hstring(Updates::FormatVersion(release.version));
         const auto text = I18n::Format(T::UpdaterNotice, {version.c_str()});
         const auto view_label = Tr(T::UpdaterView), hide_label = Tr(T::UpdaterHide);
-        const float text_width = std::min(300.0f, MeasureType(text, TypeRole::LabelLarge) + 4);
+        const float text_width =
+            std::min(Canvas::Unit300_0F, MeasureType(text, TypeRole::LabelLarge) + Canvas::Unit4);
         const float view_width = PromptWidth(Navigation::Pin, view_label);
-        const float width = 20 + text_width + 24 + view_width + PromptWidth(Navigation::Rescan, hide_label) - 28 + 16;
-        const float x = 1280 - LibraryLayout::Margin - width, y = 98;
+        const float width = Canvas::Unit20 + text_width + Canvas::Unit24 + view_width +
+                            PromptWidth(Navigation::Rescan, hide_label) - Canvas::Unit28 +
+                            Canvas::Unit16;
+        const float x = Canvas::Unit1280 - LibraryLayout::Margin - width, y = Canvas::Unit98;
         // Dot, text (20 px line) and prompts (32 px line) share the card's center line.
-        const float center = y + 24;
-        Card(x, y, width, 48, 14);
-        Round(x + 12, center - 4, 8, 8, 4, Palette::Accent);
-        Type(text, TypeRole::LabelLarge, x + 28, center - 10, text_width, Palette::Text);
-        float next = x + 28 + text_width + 16;
-        AddHit(next - 4, y, view_width - 20, 48, LibraryHit::UpdateNotice, 0);
-        next += ControlPrompt(Navigation::Pin, view_label, next, center - 16);
-        AddHit(next - 4, y, x + width - next + 4, 48, LibraryHit::UpdateNotice, 1);
-        ControlPrompt(Navigation::Rescan, hide_label, next, center - 16);
+        const float center = y + Canvas::Unit24;
+        Card(x, y, width, Canvas::Unit48, Canvas::Unit14);
+        Round(x + Canvas::Unit12, center - Canvas::Unit4, Canvas::Unit8, Canvas::Unit8,
+              Canvas::Unit4, Palette::Accent);
+        Type(text, TypeRole::LabelLarge, x + Canvas::Unit28, center - Canvas::Unit10, text_width,
+             Palette::Text);
+        float next = x + Canvas::Unit28 + text_width + Canvas::Unit16;
+        AddHit(next - Canvas::Unit4, y, view_width - Canvas::Unit20, Canvas::Unit48,
+               LibraryHit::UpdateNotice, 0);
+        next += ControlPrompt(Navigation::Pin, view_label, next, center - Canvas::Unit16);
+        AddHit(next - Canvas::Unit4, y, x + width - next + Canvas::Unit4, Canvas::Unit48,
+               LibraryHit::UpdateNotice, 1);
+        ControlPrompt(Navigation::Rescan, hide_label, next, center - Canvas::Unit16);
     }
     /// The library's corner card after a guided install: this launch runs the new version.
     void DrawUpdatedNotice(const Updates::Version& installed) {
         const auto version = winrt::to_hstring(Updates::FormatVersion(installed));
         const auto text = I18n::Format(T::UpdaterUpdatedTo, {version.c_str()});
-        const float text_width = std::min(360.0f, MeasureType(text, TypeRole::LabelLarge) + 4);
-        const float width = 28 + text_width + 20;
-        const float x = 1280 - LibraryLayout::Margin - width, y = 98, center = y + 24;
-        Card(x, y, width, 48, 14);
-        Round(x + 12, center - 4, 8, 8, 4, Palette::Accent);
-        Type(text, TypeRole::LabelLarge, x + 28, center - 10, text_width, Palette::Text);
+        const float text_width =
+            std::min(Canvas::Unit360_0F, MeasureType(text, TypeRole::LabelLarge) + Canvas::Unit4);
+        const float width = Canvas::Unit28 + text_width + Canvas::Unit20;
+        const float x = Canvas::Unit1280 - LibraryLayout::Margin - width, y = Canvas::Unit98,
+                    center = y + Canvas::Unit24;
+        Card(x, y, width, Canvas::Unit48, Canvas::Unit14);
+        Round(x + Canvas::Unit12, center - Canvas::Unit4, Canvas::Unit8, Canvas::Unit8,
+              Canvas::Unit4, Palette::Accent);
+        Type(text, TypeRole::LabelLarge, x + Canvas::Unit28, center - Canvas::Unit10, text_width,
+             Palette::Text);
     }
     /// The update page's footer: A selects (when a row is there), B goes back.
     void DrawUpdatesFooter(bool select) {
-        const float y = LibraryLayout::FooterTop + 12;
+        const float y = LibraryLayout::FooterTop + Canvas::Unit12;
         float x = LibraryLayout::Margin;
         if (select) x += ControlPrompt(Navigation::Play, Tr(T::Select), x, y);
         const auto back = Tr(T::UpdaterBack);
-        AddHit(x - 4, y - 6, PromptWidth(Navigation::Back, back) - 20, 44, LibraryHit::UpdateAction, UpdateBackHit);
+        AddHit(x - Canvas::Unit4, y - Canvas::Unit6,
+               PromptWidth(Navigation::Back, back) - Canvas::Unit20, Canvas::Unit44,
+               LibraryHit::UpdateAction, UpdateBackHit);
         ControlPrompt(Navigation::Back, back, x, y);
     }
     void DrawUpdates(const SystemPage& page) {
@@ -262,10 +292,12 @@ public:
         const auto& state = page.update;
         const auto release_version =
             state.release ? std::wstring{winrt::to_hstring(Updates::FormatVersion(state.release->version))} : std::wstring{};
-        Round(0, 0, 1280, 720, 0, Palette::Canvas);
+        Round(Canvas::Unit0, Canvas::Unit0, Canvas::Unit1280, Canvas::Unit720, Canvas::Unit0,
+              Palette::Canvas);
         if (page.update_detail && state.release) {
             // Every note, scrolled with the d-pad.
-            Type(I18n::Format(T::UpdaterNotesTitle, {release_version}), TypeRole::HeadlineLarge, Margin, 40, 1150, Palette::Text);
+            Type(I18n::Format(T::UpdaterNotesTitle, {release_version}), TypeRole::HeadlineLarge,
+                 Margin, Canvas::Unit40, Canvas::Unit1150, Palette::Text);
             const auto language = I18n::CurrentUiLanguage().tag;
             if (update_detail_revision != state.revision || update_detail_language != language) {
                 update_detail_revision = state.revision; update_detail_language = language;
@@ -286,32 +318,42 @@ public:
             constexpr std::size_t shown = 16;
             const auto first = std::min(page.update_scroll, lines.size() > shown ? lines.size() - shown : 0);
             for (std::size_t n = 0; n < shown && first + n < lines.size(); ++n)
-                Type(lines[first + n], TypeRole::Body, Margin, 116 + static_cast<float>(n) * 32, 1150, Palette::Text);
+                Type(lines[first + n], TypeRole::Body, Margin,
+                     Canvas::Unit116 + static_cast<float>(n) * Canvas::Unit32, Canvas::Unit1150,
+                     Palette::Text);
             DrawUpdatesFooter(false);
             return;
         }
-        Type(Tr(T::UpdaterTitle), TypeRole::HeadlineLarge, Margin, 40, 700, Palette::Text);
+        Type(Tr(T::UpdaterTitle), TypeRole::HeadlineLarge, Margin, Canvas::Unit40, Canvas::Unit700,
+             Palette::Text);
         // The state card: what is happening, the versions and what comes next.
-        constexpr float card_x = Margin, card_y = 112, card_w = 660, card_h = 236, inner = card_x + 28, inner_w = card_w - 56;
+        constexpr float card_x = Margin, card_y = Canvas::Unit112, card_w = Canvas::Unit660,
+                        card_h = Canvas::Unit236, inner = card_x + Canvas::Unit28,
+                        inner_w = card_w - Canvas::Unit56;
         Card(card_x, card_y, card_w, card_h);
-        Type(Tr(Updates::PhaseText(state)), TypeRole::HeadlineMedium, inner, card_y + 24, inner_w, Palette::Text);
+        Type(Tr(Updates::PhaseText(state)), TypeRole::HeadlineMedium, inner,
+             card_y + Canvas::Unit24, inner_w, Palette::Text);
         const auto installed = winrt::to_hstring(Updates::FormatVersion(state.installed));
         Type(state.release ? I18n::Format(T::UpdaterVersions, {installed.c_str(), release_version})
                            : I18n::Format(T::UpdaterInstalled, {installed.c_str()}),
-             TypeRole::BodyLarge, inner, card_y + 70, inner_w, Palette::TextHint);
+             TypeRole::BodyLarge, inner, card_y + Canvas::Unit70, inner_w, Palette::TextHint);
         if (state.release) {
             const auto published = winrt::to_hstring(state.release->published.substr(0, 10));
-            Type(I18n::Format(T::UpdaterReleaseInfo, {std::to_wstring(state.release->size / (1024 * 1024)), published.c_str()}),
-                 TypeRole::Body, inner, card_y + 100, inner_w, Palette::TextSecondary);
+            Type(I18n::Format(
+                     T::UpdaterReleaseInfo,
+                     {std::to_wstring(state.release->size / (1024 * 1024)), published.c_str()}),
+                 TypeRole::Body, inner, card_y + Canvas::Unit100, inner_w, Palette::TextSecondary);
         }
         const bool progress = state.received && state.total &&
             (state.phase == Updates::Phase::Downloading || state.phase == Updates::Phase::Paused ||
              state.phase == Updates::Phase::Verifying || state.phase == Updates::Phase::Failed);
-        float body_y = card_y + 140;
+        float body_y = card_y + Canvas::Unit140;
         if (progress) {
             const auto pct = std::min<std::uint64_t>(100, state.received * 100 / state.total);
-            Round(inner, body_y, inner_w, 10, 5, Palette::Graphite);
-            if (pct) Round(inner, body_y, inner_w * static_cast<float>(pct) / 100, 10, 5, Palette::Accent);
+            Round(inner, body_y, inner_w, Canvas::Unit10, Canvas::Unit5, Palette::Graphite);
+            if (pct)
+                Round(inner, body_y, inner_w * static_cast<float>(pct) / Canvas::Unit100,
+                      Canvas::Unit10, Canvas::Unit5, Palette::Accent);
             auto eta = std::wstring{Tr(T::UpdaterEta)};
             if (state.bytes_per_second > 0 && state.total >= state.received) {
                 const auto seconds = static_cast<unsigned>(std::min(3599999.0, (state.total - state.received) / state.bytes_per_second));
@@ -320,12 +362,16 @@ public:
             const auto speed = std::to_wstring(static_cast<unsigned>(state.bytes_per_second * 10 / (1024 * 1024)));
             const auto speed_text = speed.size() > 1 ? speed.substr(0, speed.size() - 1) + L"." + speed.back() : L"0." + speed;
             const bool moving = state.phase == Updates::Phase::Downloading;
-            Type(moving ? I18n::Format(T::UpdaterProgress, {std::to_wstring(pct), std::to_wstring(state.received / (1024 * 1024)),
-                              std::to_wstring(state.total / (1024 * 1024)), speed_text, eta})
-                        : std::to_wstring(pct) + L"% · " + std::to_wstring(state.received / (1024 * 1024)) + L" / " +
-                              std::to_wstring(state.total / (1024 * 1024)) + L" MiB",
-                 TypeRole::Body, inner, body_y + 16, inner_w, Palette::TextSecondary);
-            body_y += 46;
+            Type(moving
+                     ? I18n::Format(T::UpdaterProgress,
+                                    {std::to_wstring(pct),
+                                     std::to_wstring(state.received / (1024 * 1024)),
+                                     std::to_wstring(state.total / (1024 * 1024)), speed_text, eta})
+                     : std::to_wstring(pct) + L"% · " +
+                           std::to_wstring(state.received / (1024 * 1024)) + L" / " +
+                           std::to_wstring(state.total / (1024 * 1024)) + L" MiB",
+                 TypeRole::Body, inner, body_y + Canvas::Unit16, inner_w, Palette::TextSecondary);
+            body_y += Canvas::Unit46;
         }
         // One line on what happens next, or what went wrong.
         std::optional<T> body;
@@ -343,39 +389,47 @@ public:
         case Updates::Phase::Assistance: body = T::UpdaterHelp; break;
         default: break;
         }
-        if (body) Type(Tr(*body), TypeRole::Body, inner, body_y, inner_w, body_color, 1, TextAlign::Leading,
-                       static_cast<unsigned>(std::max(1.0f, (card_y + card_h - 16 - body_y) / 22)));
+        if (body)
+            Type(Tr(*body), TypeRole::Body, inner, body_y, inner_w, body_color, Canvas::Unit1,
+                 TextAlign::Leading,
+                 static_cast<unsigned>(std::max(1.0f, (card_y + card_h - 16 - body_y) / 22)));
         // The release notes, on the page: the full list is one row away.
         if (state.release && !state.release->notes.empty()) {
-            Type(I18n::Format(T::UpdaterNotesTitle, {release_version}), TypeRole::HeadlineSmall, Margin, 376, card_w, Palette::Text);
-            Type(winrt::to_hstring(state.release->notes).c_str(), TypeRole::Body, Margin, 414, card_w, Palette::TextHint, 1,
-                 TextAlign::Leading, 9);
+            Type(I18n::Format(T::UpdaterNotesTitle, {release_version}), TypeRole::HeadlineSmall,
+                 Margin, Canvas::Unit376, card_w, Palette::Text);
+            Type(winrt::to_hstring(state.release->notes).c_str(), TypeRole::Body, Margin,
+                 Canvas::Unit414, card_w, Palette::TextHint, Canvas::Unit1, TextAlign::Leading, 9);
         }
         std::wstring checked = std::wstring{Tr(T::UpdaterNever)};
         if (state.last_check) {
             const std::time_t stamp = state.last_check; std::tm local{}; localtime_s(&local, &stamp);
             wchar_t date[64]{}; std::wcsftime(date, 64, L"%Y-%m-%d %H:%M", &local); checked = date;
         }
-        Type(I18n::Format(T::UpdaterLastCheck, {checked}), TypeRole::Label, 1280 - Margin - 400, FooterTop + 20, 400,
-             Palette::TextSecondary, 1, TextAlign::Trailing);
+        Type(I18n::Format(T::UpdaterLastCheck, {checked}), TypeRole::Label,
+             Canvas::Unit1280 - Margin - Canvas::Unit400, FooterTop + Canvas::Unit20,
+             Canvas::Unit400, Palette::TextSecondary, Canvas::Unit1, TextAlign::Trailing);
         // The rows: only what can be done now; the focused one explains itself underneath.
         const auto actions = Updates::Actions(state);
-        constexpr float rows_x = 780, rows_w = 1280 - Margin - rows_x;
+        constexpr float rows_x = Canvas::Unit780, rows_w = Canvas::Unit1280 - Margin - rows_x;
         for (std::size_t i = 0; i < actions.size(); ++i) {
             const bool focused = i == std::min(page.update_row, actions.size() - 1);
-            const float y = card_y + static_cast<float>(i) * 64;
-            Round(rows_x, y, rows_w, 54, 12, focused ? Palette::Accent : Palette::Surface);
-            Type(Updates::ActionLabel(actions[i], state), TypeRole::BodyLarge, rows_x + 20, y + 14, rows_w - 40,
+            const float y = card_y + static_cast<float>(i) * Canvas::Unit64;
+            Round(rows_x, y, rows_w, Canvas::Unit54, Canvas::Unit12,
+                  focused ? Palette::Accent : Palette::Surface);
+            Type(Updates::ActionLabel(actions[i], state), TypeRole::BodyLarge,
+                 rows_x + Canvas::Unit20, y + Canvas::Unit14, rows_w - Canvas::Unit40,
                  focused ? Palette::OnAccent : Palette::Text);
-            AddHit(rows_x, y, rows_w, 54, LibraryHit::UpdateAction, i);
+            AddHit(rows_x, y, rows_w, Canvas::Unit54, LibraryHit::UpdateAction, i);
         }
         if (!actions.empty()) {
             const auto focused = actions[std::min(page.update_row, actions.size() - 1)];
-            float y = card_y + static_cast<float>(actions.size()) * 64 + 8;
-            y += Type(Tr(Updates::ActionHint(focused, state)), TypeRole::Body, rows_x + 4, y, rows_w - 8, Palette::TextSecondary, 1,
-                      TextAlign::Leading, 5);
+            float y = card_y + static_cast<float>(actions.size()) * Canvas::Unit64 + Canvas::Unit8;
+            y += Type(Tr(Updates::ActionHint(focused, state)), TypeRole::Body,
+                      rows_x + Canvas::Unit4, y, rows_w - Canvas::Unit8, Palette::TextSecondary,
+                      Canvas::Unit1, TextAlign::Leading, 5);
             if (focused == Updates::Action::Channel && state.channel == Updates::Channel::Preview)
-                Type(Tr(T::UpdaterPreviewWarning), TypeRole::Body, rows_x + 4, y + 8, rows_w - 8, Palette::Warning, 1,
+                Type(Tr(T::UpdaterPreviewWarning), TypeRole::Body, rows_x + Canvas::Unit4,
+                     y + Canvas::Unit8, rows_w - Canvas::Unit8, Palette::Warning, Canvas::Unit1,
                      TextAlign::Leading, 3);
         }
         DrawUpdatesFooter(!actions.empty());
@@ -419,9 +473,9 @@ private:
     struct Segment {
         float x, width;
     };
-    static constexpr float SegmentPad = 18, SegmentInset = 4;
+    static constexpr float SegmentPad = Canvas::Unit18, SegmentInset = Canvas::Unit4;
     float SegmentedWidth(const std::vector<std::wstring_view>& labels) {
-        float width = 2 * SegmentInset;
+        float width = Canvas::Unit2 * SegmentInset;
         for (const auto label : labels) width += MeasureType(label, TypeRole::LabelLarge) + 2 * SegmentPad;
         return width;
     }
@@ -432,34 +486,44 @@ private:
         std::vector<Segment> places;
         float cursor = x + SegmentInset;
         for (const auto label : labels) {
-            const float width = MeasureType(label, TypeRole::LabelLarge) + 2 * SegmentPad;
+            const float width =
+                MeasureType(label, TypeRole::LabelLarge) + Canvas::Unit2 * SegmentPad;
             places.push_back({cursor, width});
             cursor += width;
         }
         const float total = cursor + SegmentInset - x;
-        Round(x, y, total, height, height / 2, Palette::Graphite, 0.78f);
-        Outline(x + 0.5f, y + 0.5f, total - 1, height - 1, height / 2 - 0.5f, 0xffffff, focused ? 0.85f : 0.12f,
-                focused ? 1.5f : 1.0f);
+        Round(x, y, total, height, height / Canvas::Unit2, Palette::TabTrack, Theme().tab_opacity);
+        Outline(x + Canvas::Unit0_5F, y + Canvas::Unit0_5F, total - Canvas::Unit1,
+                height - Canvas::Unit1, height / Canvas::Unit2 - Canvas::Unit0_5F, Palette::White,
+                focused ? Canvas::Unit0_85F : Canvas::Unit0_12F,
+                focused ? Canvas::Unit1_5F : Canvas::Unit1_0F);
         // The capsule between the two segments it is passing.
         const std::size_t from = std::min(static_cast<std::size_t>(std::max(slide, 0.0f)), places.size() - 1);
         const std::size_t to = std::min(from + 1, places.size() - 1);
-        const float t = std::clamp(slide - static_cast<float>(from), 0.0f, 1.0f);
+        const float t =
+            std::clamp(slide - static_cast<float>(from), Canvas::Unit0_0F, Canvas::Unit1_0F);
         const float capsule_x = places[from].x + (places[to].x - places[from].x) * t;
         const float capsule_w = places[from].width + (places[to].width - places[from].width) * t;
         constexpr float inset = SegmentInset;
-        Round(capsule_x, y + inset, capsule_w, height - 2 * inset, (height - 2 * inset) / 2, Palette::Accent);
+        Round(capsule_x, y + inset, capsule_w, height - Canvas::Unit2 * inset,
+              (height - Canvas::Unit2 * inset) / Canvas::Unit2, Palette::Accent);
         for (std::size_t i = 0; i < labels.size(); ++i) {
-            Type(labels[i], TypeRole::LabelLarge, places[i].x, y + (height - 20) / 2, places[i].width,
-                 i == active ? Palette::OnAccent : Palette::TextSecondary, 1, TextAlign::Center);
+            Type(labels[i], TypeRole::LabelLarge, places[i].x,
+                 y + (height - Canvas::Unit20) / Canvas::Unit2, places[i].width,
+                 i == active ? Palette::OnAccent : Palette::TextSecondary, Canvas::Unit1,
+                 TextAlign::Center);
             AddHit(places[i].x, y, places[i].width, height, hit, i);
         }
     }
     /// The wordmark; the tabs in the middle; the controller, the time and the user at the right.
     void DrawHeader(const LibraryView& view, Tween::Clock::time_point now) {
         using namespace LibraryLayout;
-        Type(L"J A D Y X", TypeRole::HeadlineSmall, Margin, HeaderTop + 6, 200, Palette::Text);
-        const float mark = Margin + MeasureType(L"J A D Y X", TypeRole::HeadlineSmall) + 14;
-        Type(view.panel.xbox ? L"SERIES X|S" : L"PC", TypeRole::Caps, mark, HeaderTop + 13, 160, Palette::TextSecondary);
+        Type(L"J A D Y X", TypeRole::HeadlineSmall, Margin, HeaderTop + Canvas::Unit6,
+             Canvas::Unit200, Palette::Text);
+        const float mark =
+            Margin + MeasureType(L"J A D Y X", TypeRole::HeadlineSmall) + Canvas::Unit14;
+        Type(view.panel.xbox ? L"SERIES X|S" : L"PC", TypeRole::Caps, mark,
+             HeaderTop + Canvas::Unit13, Canvas::Unit160, Palette::TextSecondary);
         // The tabs, with the bumpers that switch them at their ends.
         const std::vector<std::wstring_view> tabs{Tr(T::TabHome), Tr(T::TabLibrary), Tr(T::TabSettings)};
         const auto active = static_cast<std::size_t>(view.tab);
@@ -467,53 +531,61 @@ private:
         else tab_slide.Snap(static_cast<float>(active));
         header_shown = true;
         const float width = SegmentedWidth(tabs);
-        const float left = (1280 - width) / 2;
+        const float left = (Canvas::Unit1280 - width) / Canvas::Unit2;
         Segmented(tabs, left, HeaderTop, HeaderButtonHeight, tab_slide.Value(now), active, false, LibraryHit::Tab);
-        const float middle = HeaderTop + HeaderButtonHeight / 2;
+        const float middle = HeaderTop + HeaderButtonHeight / Canvas::Unit2;
         const bool keyboard = prompt_family == PromptFamily::Keyboard;
         const bool nintendo = prompt_family == PromptFamily::Nintendo;
         const std::wstring_view previous = keyboard ? L"Q" : nintendo ? L"L" : L"LB";
         const std::wstring_view next = keyboard ? L"E" : nintendo ? L"R" : L"RB";
         // On a management page bumpers belong to its categories, as in the reference.
         if (!view.game_options.game && !view.game_options.content) {
-            Badge(previous, left - 10 - BadgeWidth(previous) / 2, middle, Palette::TextSecondary);
-            Badge(next, left + width + 10 + BadgeWidth(next) / 2, middle, Palette::TextSecondary);
+            Badge(previous, left - Canvas::Unit10 - BadgeWidth(previous) / Canvas::Unit2, middle,
+                  Palette::TextSecondary);
+            Badge(next, left + width + Canvas::Unit10 + BadgeWidth(next) / Canvas::Unit2, middle,
+                  Palette::TextSecondary);
         }
         // Right to left: the user, a hairline, the time and the controller (pressing it opens its panel).
         const std::wstring_view name = view.system.settings.user_name.empty()
                                            ? DefaultUserName
                                            : std::wstring_view{view.system.settings.user_name};
-        const float name_width = std::min(MeasureType(name, TypeRole::LabelLarge) + 2, 150.0f);
-        float right = 1280 - Margin - name_width;
-        Type(name, TypeRole::LabelLarge, right, middle - 10, name_width, Palette::Text);
-        right -= 10 + 30;
-        Round(right, middle - 15, 30, 30, 15, Palette::Graphite);
-        Outline(right + 0.5f, middle - 14.5f, 29, 29, 14.5f, 0xffffff, 0.2f);
-        Type(Upper(name.substr(0, 1)), TypeRole::LabelLarge, right, middle - 10, 30, Palette::Text, 1,
-             TextAlign::Center);
-        right -= 16;
-        Round(right, middle - 11, 1, 22, 0, 0xffffff, 0.18f);
+        const float name_width =
+            std::min(MeasureType(name, TypeRole::LabelLarge) + Canvas::Unit2, Canvas::Unit150_0F);
+        float right = Canvas::Unit1280 - Margin - name_width;
+        Type(name, TypeRole::LabelLarge, right, middle - Canvas::Unit10, name_width, Palette::Text);
+        right -= Canvas::Unit10 + Canvas::Unit30;
+        Round(right, middle - Canvas::Unit15, Canvas::Unit30, Canvas::Unit30, Canvas::Unit15,
+              Palette::Graphite);
+        Outline(right + Canvas::Unit0_5F, middle - Canvas::Unit14_5F, Canvas::Unit29,
+                Canvas::Unit29, Canvas::Unit14_5F, Palette::White, Canvas::Unit0_2F);
+        Type(Upper(name.substr(0, 1)), TypeRole::LabelLarge, right, middle - Canvas::Unit10,
+             Canvas::Unit30, Palette::Text, Canvas::Unit1, TextAlign::Center);
+        right -= Canvas::Unit16;
+        Round(right, middle - Canvas::Unit11, Canvas::Unit1, Canvas::Unit22, Canvas::Unit0,
+              Palette::White, Canvas::Unit0_18F);
         wchar_t clock[32]{};
         if (GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, TIME_NOSECONDS, nullptr, nullptr, clock, 32) > 0) {
-            const float clock_width = MeasureType(clock, TypeRole::LabelLarge) + 2;
-            right -= 16 + clock_width;
-            Type(clock, TypeRole::LabelLarge, right, middle - 10, clock_width, Palette::Text);
+            const float clock_width = MeasureType(clock, TypeRole::Clock) + Canvas::Unit2;
+            right -= Canvas::Unit16 + clock_width;
+            Type(clock, TypeRole::Clock, right, middle - Canvas::Unit10, clock_width,
+                 Palette::Text);
         }
-        const float status_right = right - 16;
+        const float status_right = right - Canvas::Unit16;
         if (view.battery.known) {
-            right -= 16 + BatteryWidth;
+            right -= Canvas::Unit16 + BatteryWidth;
             DrawBattery(view.battery, right, middle);
-            right += 8; // The battery sits close to its controller.
+            right += Canvas::Unit8; // The battery sits close to its controller.
         }
-        right -= 16 + PadWidth;
+        right -= Canvas::Unit16 + PadWidth;
         const bool connected = view.panel.xbox || !view.panel.devices.empty();
         DrawPadGlyph(right, middle, connected ? Palette::Text : Palette::TextSecondary, connected ? 1.0f : 0.7f);
-        AddHit(right - 6, HeaderTop, status_right - right + 12, HeaderButtonHeight, LibraryHit::Controller);
+        AddHit(right - Canvas::Unit6, HeaderTop, status_right - right + Canvas::Unit12,
+               HeaderButtonHeight, LibraryHit::Controller);
     }
     /// The header's controller: an Xbox pad's silhouette, drawn as a line icon in a 32x22 box.
-    static constexpr float PadWidth = 30;
+    static constexpr float PadWidth = Canvas::Unit30;
     void DrawPadGlyph(float x, float middle, unsigned color, float alpha) {
-        const float scale = PadWidth / 32;
+        const float scale = PadWidth / Canvas::Unit32;
         if (!pad_outline) {
             ComPtr<ID2D1Factory> factory;
             target->GetFactory(&factory);
@@ -547,41 +619,58 @@ private:
         target->GetTransform(&previous);
         target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) *
                              D2D1::Matrix3x2F::Translation(x, middle - 11 * scale) * previous);
-        brush->SetColor(D2D1::ColorF(color, 0.10f * alpha));
+        brush->SetColor(Ink(color, Canvas::Unit0_10F * alpha));
         target->FillGeometry(pad_outline.Get(), brush.Get());
-        brush->SetColor(D2D1::ColorF(color, alpha));
+        brush->SetColor(Ink(color, alpha));
         target->DrawGeometry(pad_outline.Get(), brush.Get(), 1.7f);
         // As on an Xbox Series pad: the left stick high and the face buttons' diamond across
         // from it, the d-pad and the right stick low and inward, the Xbox button between the
         // bumpers with View and Menu under it.
-        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(8.4f, 7), 2.4f, 2.4f), brush.Get(), 1.4f);
-        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(20, 11.8f), 2.1f, 2.1f), brush.Get(), 1.4f);
+        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(Canvas::Unit8_4F, Canvas::Unit7),
+                                          Canvas::Unit2_4F, Canvas::Unit2_4F),
+                            brush.Get(), 1.4f);
+        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(Canvas::Unit20, Canvas::Unit11_8F),
+                                          Canvas::Unit2_1F, Canvas::Unit2_1F),
+                            brush.Get(), 1.4f);
         target->DrawLine(D2D1::Point2F(10.3f, 11.8f), D2D1::Point2F(13.7f, 11.8f), brush.Get(), 1.4f);
         target->DrawLine(D2D1::Point2F(12, 10.1f), D2D1::Point2F(12, 13.5f), brush.Get(), 1.4f);
         constexpr D2D1_POINT_2F face[] = {{23.6f, 4.8f}, {23.6f, 9.2f}, {21.4f, 7}, {25.8f, 7}};
-        for (const auto button : face) target->FillEllipse(D2D1::Ellipse(button, 1.05f, 1.05f), brush.Get());
-        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(16, 4.4f), 1.7f, 1.7f), brush.Get(), 1.2f);
-        target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(16, 4.4f), 0.8f, 0.8f), brush.Get());
+        for (const auto button : face)
+            target->FillEllipse(D2D1::Ellipse(button, Canvas::Unit1_05F, Canvas::Unit1_05F),
+                                brush.Get());
+        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(Canvas::Unit16, Canvas::Unit4_4F),
+                                          Canvas::Unit1_7F, Canvas::Unit1_7F),
+                            brush.Get(), 1.2f);
+        target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(Canvas::Unit16, Canvas::Unit4_4F),
+                                          Canvas::Unit0_8F, Canvas::Unit0_8F),
+                            brush.Get());
         for (const float side : {13.8f, 18.2f})
-            target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(side, 8), 0.6f, 0.6f), brush.Get());
+            target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(side, Canvas::Unit8), Canvas::Unit0_6F,
+                                              Canvas::Unit0_6F),
+                                brush.Get());
         target->SetTransform(previous);
     }
     /// The battery: four bars inside a rounded case, amber when low, a bolt while charging.
-    static constexpr float BatteryWidth = 24;
+    static constexpr float BatteryWidth = Canvas::Unit24;
     void DrawBattery(const ControllerBattery& battery, float x, float middle) {
-        const float height = 12, top = middle - height / 2, body = BatteryWidth - 3;
+        const float height = Canvas::Unit12, top = middle - height / Canvas::Unit2,
+                    body = BatteryWidth - Canvas::Unit3;
         const bool low = battery.level < 0.2f && !battery.charging;
         const unsigned color = low ? Palette::Warning : Palette::Text;
-        Outline(x + 0.5f, top + 0.5f, body - 1, height - 1, 3, color, 0.75f, 1.2f);
-        Round(x + body, middle - 2.5f, 2, 5, 1, color, 0.75f);
+        Outline(x + Canvas::Unit0_5F, top + Canvas::Unit0_5F, body - Canvas::Unit1,
+                height - Canvas::Unit1, Canvas::Unit3, color, Canvas::Unit0_75F, Canvas::Unit1_2F);
+        Round(x + body, middle - Canvas::Unit2_5F, Canvas::Unit2, Canvas::Unit5, Canvas::Unit1,
+              color, Canvas::Unit0_75F);
         // Bars from the level, at least one while there is charge left.
         const int bars = battery.level <= 0 ? 0 : std::clamp(static_cast<int>(std::ceil(battery.level * 4 - 0.01f)), 1, 4);
-        const float inner = body - 6, gap = 1.5f, bar = (inner - 3 * gap) / 4;
+        const float inner = body - Canvas::Unit6, gap = Canvas::Unit1_5F,
+                    bar = (inner - Canvas::Unit3 * gap) / Canvas::Unit4;
         for (int i = 0; i < bars; ++i)
-            Round(x + 3 + i * (bar + gap), top + 3, bar, height - 6, 0.8f, color);
+            Round(x + Canvas::Unit3 + i * (bar + gap), top + Canvas::Unit3, bar,
+                  height - Canvas::Unit6, Canvas::Unit0_8F, color);
         if (battery.charging) {
             // A bolt over the case, cut out of it with the canvas colour.
-            const float cx = x + body / 2, cy = middle;
+            const float cx = x + body / Canvas::Unit2, cy = middle;
             ComPtr<ID2D1Factory> factory;
             target->GetFactory(&factory);
             ComPtr<ID2D1PathGeometry> bolt;
@@ -593,9 +682,9 @@ private:
                 sink->AddLines(points, 5);
                 sink->EndFigure(D2D1_FIGURE_END_CLOSED);
                 if (SUCCEEDED(sink->Close())) {
-                    brush->SetColor(D2D1::ColorF(Palette::Canvas));
+                    brush->SetColor(Ink(Palette::Canvas));
                     target->DrawGeometry(bolt.Get(), brush.Get(), 2.4f);
-                    brush->SetColor(D2D1::ColorF(Palette::Text));
+                    brush->SetColor(Ink(Palette::Text));
                     target->FillGeometry(bolt.Get(), brush.Get());
                 }
             }
@@ -628,7 +717,9 @@ private:
         }
     }
     float TileAmount(TileKey tile, Tween::Clock::time_point now) const {
-        return tile == focused_tile ? focus_in.Value(now) : tile == left_tile ? focus_out.Value(now) : 0.0f;
+        return tile == focused_tile ? focus_in.Value(now)
+               : tile == left_tile  ? focus_out.Value(now)
+                                    : Canvas::Unit0_0F;
     }
     /// The focused game, large: who makes it, its title, what is known about it, and its actions.
     void DrawHero(const LibraryView& view, const LibraryEntry& game, Tween::Clock::time_point now) {
@@ -639,17 +730,18 @@ private:
             hero.Set(1, now);
         }
         const float shown = hero.Value(now);
-        const float lift = (1 - shown) * 10;
-        constexpr float width = 860;
+        const float lift = (Canvas::Unit1 - shown) * Canvas::Unit10;
+        constexpr float width = Canvas::Unit860;
         const unsigned lines = MeasureType(game.name, TypeRole::Hero) > width ? 2 : 1;
-        const float title = 304 - 64.0f * lines + lift;
+        const float title = Canvas::Unit304 - Canvas::Unit64_0F * lines + lift;
         std::wstring kicker{L"NINTENDO SWITCH"};
         if (!game.developer.empty()) kicker += L"  ·  " + Upper(game.developer);
-        Type(kicker, TypeRole::Caps, Margin, title - 24, width, Palette::TextSecondary, shown);
+        Type(kicker, TypeRole::Caps, Margin, title - Canvas::Unit24, width, Palette::TextSecondary,
+             shown);
         Type(game.name, TypeRole::Hero, Margin, title, width, Palette::Text, shown, TextAlign::Leading, lines);
         // Only what the game and the play history say; a chip that would not fit is left out.
         float x = Margin;
-        const float y = 314 + lift;
+        const float y = Canvas::Unit314 + lift;
         const auto chip = [&](std::wstring_view text, unsigned color = Palette::TextHint) {
             if (x + MeasureType(text, TypeRole::Label) + 24 > 1280 - Margin) return;
             x += Chip(text, x, y, color, shown) + 8;
@@ -671,13 +763,14 @@ private:
         const auto menu = PromptKey(Navigation::Options);
         const float play_width = PillButton(Tr(T::Play), play.letters, play.color, Margin, PillTop, true, PillHeight);
         AddHit(Margin, PillTop, play_width, PillHeight, LibraryHit::Play);
-        const float options_x = Margin + play_width + 14;
+        const float options_x = Margin + play_width + Canvas::Unit14;
         const float options_width = PillButton(Tr(T::Options), menu.letters, menu.color, options_x, PillTop,
                                                false, PillHeight);
         AddHit(options_x, PillTop, options_width, PillHeight, LibraryHit::Options);
         if (!view.notice.empty()) {
-            const float notice_x = options_x + options_width + 24;
-            Type(view.notice, TypeRole::Body, notice_x, PillTop + 11, 1280 - Margin - notice_x, Palette::Warning);
+            const float notice_x = options_x + options_width + Canvas::Unit24;
+            Type(view.notice, TypeRole::Body, notice_x, PillTop + Canvas::Unit11,
+                 Canvas::Unit1280 - Margin - notice_x, Palette::Warning);
         }
     }
     /// The rows of covers: the focused one where the hero ends, the rows above fading under it.
@@ -708,13 +801,15 @@ private:
             const std::size_t first = in_rail ? 0 : (row - (rail ? 1 : 0)) * Columns;
             const std::size_t end = in_rail ? rail : std::min(count, first + Columns);
             if (in_rail || first == 0) {
-                Type(Tr(in_rail ? T::RecentAndPinned : T::FullCollection), TypeRole::HeadlineSmall, Margin,
-                     top - HeadingHeight, 700, Palette::Text, alpha);
+                Type(Tr(in_rail ? T::RecentAndPinned : T::FullCollection), TypeRole::HeadlineSmall,
+                     Margin, top - HeadingHeight, Canvas::Unit700, Palette::Text, alpha);
                 const auto kicker = in_rail ? Upper(TitlesCount(rail))
                                   : focus.rail ? TitlesCount(count)
                                                : std::to_wstring(focus.selected + 1) + L" / " + std::to_wstring(count);
-                Type(kicker, in_rail ? TypeRole::Caps : TypeRole::Label, 1280 - Margin - 240,
-                     top - HeadingHeight + 8, 240, Palette::TextSecondary, alpha, TextAlign::Trailing);
+                Type(kicker, in_rail ? TypeRole::Caps : TypeRole::Label,
+                     Canvas::Unit1280 - Margin - Canvas::Unit240,
+                     top - HeadingHeight + Canvas::Unit8, Canvas::Unit240, Palette::TextSecondary,
+                     alpha, TextAlign::Trailing);
             }
             for (std::size_t i = first; i < end; ++i) {
                 const float x = TileLeft(i - first);
@@ -723,37 +818,43 @@ private:
                 if (amount > 0.001f) lifted[tile == focused_tile ? 1 : 0] = {&entries[i], x, top, amount, alpha};
                 else DrawTile(view, entries[i], x, top, 0, alpha);
                 // Rows fading under the hero do not take presses.
-                if (alpha > 0.5f) AddHit(x, top, Tile, Tile + 44, in_rail ? LibraryHit::RailTile : LibraryHit::Tile, i);
+                if (alpha > 0.5f)
+                    AddHit(x, top, Tile, Tile + Canvas::Unit44,
+                           in_rail ? LibraryHit::RailTile : LibraryHit::Tile, i);
             }
         }
         for (const auto& tile : lifted)
             if (tile.entry) DrawTile(view, *tile.entry, tile.x, tile.y, tile.amount, tile.alpha);
         // The last row's covers end under the prompts: say there is more down there.
         if (rows && RowTop + RowContentTop(rows - 1, rail) - offset + Tile > FooterTop)
-            MoreBelow(1280 - Margin / 2, FooterTop - 20, 0.8f);
+            MoreBelow(Canvas::Unit1280 - Margin / Canvas::Unit2, FooterTop - Canvas::Unit20,
+                      Canvas::Unit0_8F);
     }
     /// Rows settle at RowTop; above it they fade out before reaching the hero's actions.
     static float RowAlpha(float top) {
-        return std::clamp((top - 330) / 144, 0.0f, 1.0f);
+        return std::clamp((top - Canvas::Unit330) / Canvas::Unit144, Canvas::Unit0_0F,
+                          Canvas::Unit1_0F);
     }
     /// A cover, its title and its meta line; `amount` (0..1) of the way into focus: larger,
     /// lifted, ringed and with a brighter title.
     void DrawTile(const LibraryView& view, const LibraryEntry& entry, float x, float y, float amount, float alpha) {
         using LibraryLayout::Tile;
-        const float size = Tile * (1 + 0.06f * amount);
-        const float left = x + (Tile - size) / 2;
-        const float top = y + (Tile - size) / 2 - 8 * amount;
-        FocusGlow(left, top, size, size, 12, amount * alpha);
+        const float size = Tile * (Canvas::Unit1 + Canvas::Unit0_06F * amount);
+        const float left = x + (Tile - size) / Canvas::Unit2;
+        const float top = y + (Tile - size) / Canvas::Unit2 - Canvas::Unit8 * amount;
+        FocusGlow(left, top, size, size, Theme().cover_radius, amount * alpha);
         Cover(entry, left, top, size, alpha);
         if (entry.pinned) {
             // A pin's head: a white dot in a graphite disc, at the top right.
-            const float cx = left + size - 18, cy = top + 18;
-            Round(cx - 10, cy - 10, 20, 20, 10, Palette::Graphite, 0.9f * alpha);
-            Round(cx - 4, cy - 4, 8, 8, 4, Palette::Text, alpha);
+            const float cx = left + size - Canvas::Unit18, cy = top + Canvas::Unit18;
+            Round(cx - Canvas::Unit10, cy - Canvas::Unit10, Canvas::Unit20, Canvas::Unit20,
+                  Canvas::Unit10, Palette::Graphite, Canvas::Unit0_9F * alpha);
+            Round(cx - Canvas::Unit4, cy - Canvas::Unit4, Canvas::Unit8, Canvas::Unit8,
+                  Canvas::Unit4, Palette::Text, alpha);
         }
-        const float text = y + Tile + 10 + 6 * amount;
-        Type(entry.name, TypeRole::LabelLarge, x, text, Tile, amount > 0.5f ? Palette::Text : Palette::TextSecondary,
-             alpha);
+        const float text = y + Tile + Canvas::Unit10 + Canvas::Unit6 * amount;
+        Type(entry.name, TypeRole::CoverTitle, x, text, Tile,
+             amount > 0.5f ? Palette::Text : Palette::TextSecondary, alpha);
         std::wstring under = entry.display_version.empty() ? L"" : L"v" + entry.display_version;
         if (view.system.settings.track_play_time && entry.play_seconds >= 60) {
             if (!under.empty()) under += L" · ";
@@ -761,7 +862,8 @@ private:
         }
         if (!entry.pulse_saved.empty()) under += under.empty() ? L"Pulse" : L" · Pulse";
         if (!under.empty())
-            Type(under, TypeRole::Label, x, text + 20, Tile, Palette::TextSecondary, alpha * (0.7f + 0.3f * amount));
+            Type(under, TypeRole::Label, x, text + Canvas::Unit20, Tile, Palette::TextSecondary,
+                 alpha * (Canvas::Unit0_7F + Canvas::Unit0_3F * amount));
     }
     /// The Library tab: the heading and the filter on one line, the filtered collection under them.
     void DrawShelf(const LibraryView& view, Tween::Clock::time_point now) {
@@ -771,8 +873,10 @@ private:
         const auto& shelf = view.shelf ? *view.shelf : none;
         const bool import = HasImportTile(view.filter);
         const std::size_t count = shelf.size() + (import ? 1 : 0);
-        Type(Tr(T::FullCollection), TypeRole::HeadlineLarge, Margin, ShelfHeadingTop - 6, 560, Palette::Text);
-        Type(TitlesCount(shelf.size()), TypeRole::Body, Margin, ShelfHeadingTop + 46, 400, Palette::TextSecondary);
+        Type(Tr(T::FullCollection), TypeRole::HeadlineLarge, Margin,
+             ShelfHeadingTop - Canvas::Unit6, Canvas::Unit560, Palette::Text);
+        Type(TitlesCount(shelf.size()), TypeRole::Body, Margin, ShelfHeadingTop + Canvas::Unit46,
+             Canvas::Unit400, Palette::TextSecondary);
         const std::vector<std::wstring_view> filters{Tr(T::FilterAll),    Tr(T::FilterPlayed), Tr(T::FilterAlphabetical),
                                                      Tr(T::FilterPinned), Tr(T::FilterRecent), Tr(T::FilterPulse)};
         const auto active = static_cast<std::size_t>(view.filter);
@@ -791,8 +895,8 @@ private:
             const auto message = view.filter == Filter::Pinned
                                      ? I18n::Format(T::FilterPinnedEmpty, {std::wstring{PromptKey(Navigation::Pin).letters}})
                                      : std::wstring{Tr(T::FilterEmpty)};
-            Type(message, TypeRole::BodyLarge, Margin, ShelfTop + 20, 900, Palette::TextSecondary, 1,
-                 TextAlign::Leading, 2);
+            Type(message, TypeRole::BodyLarge, Margin, ShelfTop + Canvas::Unit20, Canvas::Unit900,
+                 Palette::TextSecondary, Canvas::Unit1, TextAlign::Leading, 2);
             return;
         }
         const float offset = scroll.Value(now);
@@ -806,8 +910,10 @@ private:
             const float top = ShelfTop + static_cast<float>(i / Columns) * ShelfRowHeight - offset;
             if (top < ShelfTop - ShelfRowHeight || top > FooterTop) continue;
             // Rows fade out under the heading and into the prompts.
-            const float alpha = std::clamp((top - (ShelfTop - 150)) / 150, 0.0f, 1.0f) *
-                                std::clamp((FooterTop - 8 - top) / 130, 0.0f, 1.0f);
+            const float alpha = std::clamp((top - (ShelfTop - Canvas::Unit150)) / Canvas::Unit150,
+                                           Canvas::Unit0_0F, Canvas::Unit1_0F) *
+                                std::clamp((FooterTop - Canvas::Unit8 - top) / Canvas::Unit130,
+                                           Canvas::Unit0_0F, Canvas::Unit1_0F);
             if (alpha <= 0) continue;
             const TileKey tile{i, false};
             const float amount = TileAmount(tile, now);
@@ -815,37 +921,45 @@ private:
             else if (amount > 0.001f) lifted[tile == focused_tile ? 1 : 0] = {&entries[shelf[i]], x, top, amount, alpha};
             else DrawTile(view, entries[shelf[i]], x, top, 0, alpha);
             if (alpha > 0.5f)
-                AddHit(x, top, Tile, Tile + 44, i == shelf.size() ? LibraryHit::Import : LibraryHit::ShelfTile, i);
+                AddHit(x, top, Tile, Tile + Canvas::Unit44,
+                       i == shelf.size() ? LibraryHit::Import : LibraryHit::ShelfTile, i);
         }
         for (const auto& tile : lifted)
             if (tile.entry) DrawTile(view, *tile.entry, tile.x, tile.y, tile.amount, tile.alpha);
         // The last row's covers end under the prompts: say there is more down there.
         if (ShelfTop + static_cast<float>((count - 1) / Columns) * ShelfRowHeight - offset + Tile > FooterTop)
-            MoreBelow(1280 - Margin / 2, FooterTop - 20, 0.8f);
+            MoreBelow(Canvas::Unit1280 - Margin / Canvas::Unit2, FooterTop - Canvas::Unit20,
+                      Canvas::Unit0_8F);
     }
     /// The collection's last tile: opens the file manager to add games.
     void DrawImportTile(float x, float y, float amount, float alpha) {
         using LibraryLayout::Tile;
-        const float size = Tile * (1 + 0.06f * amount);
-        const float left = x + (Tile - size) / 2;
-        const float top = y + (Tile - size) / 2 - 8 * amount;
-        FocusGlow(left, top, size, size, 12, amount * alpha);
-        Round(left, top, size, size, 12, Palette::Graphite, 0.55f * alpha);
-        Outline(left + 0.5f, top + 0.5f, size - 1, size - 1, 11.5f, 0xffffff, 0.16f * alpha);
-        const float cx = left + size / 2, cy = top + size / 2 - 8;
-        Round(cx - 14, cy - 1.5f, 28, 3, 1.5f, Palette::Text, alpha);
-        Round(cx - 1.5f, cy - 14, 3, 28, 1.5f, Palette::Text, alpha);
-        Type(L"NSP · XCI", TypeRole::Caps, left, cy + 26, size, Palette::TextSecondary, alpha, TextAlign::Center);
-        const float text = y + Tile + 10 + 6 * amount;
+        const float size = Tile * (Canvas::Unit1 + Canvas::Unit0_06F * amount);
+        const float left = x + (Tile - size) / Canvas::Unit2;
+        const float top = y + (Tile - size) / Canvas::Unit2 - Canvas::Unit8 * amount;
+        FocusGlow(left, top, size, size, Theme().cover_radius, amount * alpha);
+        Round(left, top, size, size, Canvas::Unit12, Palette::Graphite, Canvas::Unit0_55F * alpha);
+        Outline(left + Canvas::Unit0_5F, top + Canvas::Unit0_5F, size - Canvas::Unit1,
+                size - Canvas::Unit1, Theme().cover_radius - Canvas::Unit0_5F, Palette::White,
+                Canvas::Unit0_16F * alpha);
+        const float cx = left + size / Canvas::Unit2,
+                    cy = top + size / Canvas::Unit2 - Canvas::Unit8;
+        Round(cx - Canvas::Unit14, cy - Canvas::Unit1_5F, Canvas::Unit28, Canvas::Unit3,
+              Canvas::Unit1_5F, Palette::Text, alpha);
+        Round(cx - Canvas::Unit1_5F, cy - Canvas::Unit14, Canvas::Unit3, Canvas::Unit28,
+              Canvas::Unit1_5F, Palette::Text, alpha);
+        Type(L"NSP · XCI", TypeRole::Caps, left, cy + Canvas::Unit26, size, Palette::TextSecondary,
+             alpha, TextAlign::Center);
+        const float text = y + Tile + Canvas::Unit10 + Canvas::Unit6 * amount;
         Type(Tr(T::ImportTitle), TypeRole::LabelLarge, x, text, Tile,
              amount > 0.5f ? Palette::Text : Palette::TextSecondary, alpha);
-        Type(Tr(T::ImportTitleHint), TypeRole::Label, x, text + 20, Tile, Palette::TextSecondary,
-             alpha * (0.7f + 0.3f * amount));
+        Type(Tr(T::ImportTitleHint), TypeRole::Label, x, text + Canvas::Unit20, Tile,
+             Palette::TextSecondary, alpha * (Canvas::Unit0_7F + Canvas::Unit0_3F * amount));
     }
     /// What the tab's buttons do, along the bottom; the installed version at the right.
     void DrawFooter(const LibraryView& view) {
         using namespace LibraryLayout;
-        const float y = FooterTop + 12;
+        const float y = FooterTop + Canvas::Unit12;
         float x = Margin;
         const auto& entries = view.scan.entries;
         const bool game = !view.loading && view.selected < entries.size();
@@ -870,7 +984,8 @@ private:
                 notice = configuration.notice;
                 color = Palette::Warning;
             }
-            Type(notice, TypeRole::Label, 1280 - Margin - 600, y + 8, 600, color, 1, TextAlign::Trailing);
+            Type(notice, TypeRole::Label, Canvas::Unit1280 - Margin - Canvas::Unit600,
+                 y + Canvas::Unit8, Canvas::Unit600, color, Canvas::Unit1, TextAlign::Trailing);
             return;
         } else {
             const bool shelf = view.tab == LibraryTab::Library;
@@ -887,31 +1002,42 @@ private:
             x += ControlPrompt(Navigation::Rescan, Tr(T::Refresh), x, y);
             ControlPrompt(Navigation::Back, Tr(shelf ? T::Back : T::Exit), x, y);
         }
-        Type(version_text, TypeRole::Label, 1280 - Margin - 160, y + 8, 160, Palette::TextSecondary, 0.7f,
+        Type(version_text, TypeRole::Label, Canvas::Unit1280 - Margin - Canvas::Unit160,
+             y + Canvas::Unit8, Canvas::Unit160, Palette::TextSecondary, Canvas::Unit0_7F,
              TextAlign::Trailing);
     }
     void DrawControllerPanel(const LibraryView& view) {
         const auto& options = view.options;
         const auto& panel = view.panel;
-        brush->SetColor(D2D1::ColorF(0, 0, 0, 0.72f));
-        target->FillRectangle(D2D1::RectF(0, 0, 1280, 720), brush.Get());
-        Round(620, 133, 586, 487, 24, Palette::Surface);
-        Text(Tr(T::ControllerTitle), 658, 168, 34, Palette::Text, 490, 55, true);
-        Text(Tr(T::ControllerSubtitle), 658, 227, 21, Palette::TextSecondary, 490);
+        brush->SetColor(Ink(Palette::Black, Canvas::Unit0_72F));
+        target->FillRectangle(
+            D2D1::RectF(Canvas::Unit0, Canvas::Unit0, Canvas::Unit1280, Canvas::Unit720),
+            brush.Get());
+        Round(Canvas::Unit620, Canvas::Unit133, Canvas::Unit586, Canvas::Unit487, Canvas::Unit24,
+              Palette::Surface);
+        Text(Tr(T::ControllerTitle), Canvas::Unit658, Canvas::Unit168, Canvas::Unit34,
+             Palette::Text, Canvas::Unit490, Canvas::Unit55, true);
+        Text(Tr(T::ControllerSubtitle), Canvas::Unit658, Canvas::Unit227, Canvas::Unit21,
+             Palette::TextSecondary, Canvas::Unit490);
         const unsigned offset = panel.xbox ? 0 : 1;
         const auto active = SelectController(panel.devices, options.controller_id);
         const bool nintendo = active && panel.devices[*active].nintendo;
         for (unsigned row = 0; row < 3 + offset; ++row) {
             const float y = ControllerRowTop + row * ControllerRowHeight;
-            Round(648, y, 530, 56, 14, row == view.controller_row ? Palette::RowActive : Palette::Row);
+            Round(Canvas::Unit648, y, Canvas::Unit530, Canvas::Unit56, Canvas::Unit14,
+                  row == view.controller_row ? Palette::RowActive : Palette::Row);
             const bool device = offset && row == 0;
             const bool type = row == offset;
             const bool face = row == offset + 1;
-            Text(Tr(device ? T::ControllerDevice : type ? T::ControllerSeenAs :
-                    face ? T::FaceButtons : T::DeadZone),
-                 669, y + 2, 19, Palette::Text, 400, 28, true);
+            Text(Tr(device ? T::ControllerDevice
+                    : type ? T::ControllerSeenAs
+                    : face ? T::FaceButtons
+                           : T::DeadZone),
+                 Canvas::Unit669, y + Canvas::Unit2, Canvas::Unit19, Palette::Text, Canvas::Unit400,
+                 Canvas::Unit28, true);
             if (device || type)
-                Text(device ? L"v" : L"<  >", 1080, y + 2, 19, Palette::Text, 80, 28, true, false, false, true);
+                Text(device ? L"v" : L"<  >", Canvas::Unit1080, y + Canvas::Unit2, Canvas::Unit19,
+                     Palette::Text, Canvas::Unit80, Canvas::Unit28, true, false, false, true);
             std::wstring value;
             if (device) {
                 const auto label = ControllerLabel(panel.devices, options.controller_id);
@@ -924,30 +1050,39 @@ private:
             } else {
                 value = std::to_wstring(static_cast<int>(options.deadzone * 100)) + L"%";
             }
-            Text(value, 669, y + 28, 18, Palette::Accent, 460, 26);
+            Text(value, Canvas::Unit669, y + Canvas::Unit28, Canvas::Unit18, Palette::Accent,
+                 Canvas::Unit460, Canvas::Unit26);
         }
         if (!panel.xbox) {
-            Round(648, 510, 530, 34, 10, view.controller_row == 4 ? Palette::RowActive : Palette::Row);
-            Text(std::wstring{Tr(T::SetUpKeyboard)} + L"   >", 669, 512, 19, Palette::Accent, 460, 30, true);
+            Round(Canvas::Unit648, Canvas::Unit510, Canvas::Unit530, Canvas::Unit34, Canvas::Unit10,
+                  view.controller_row == 4 ? Palette::RowActive : Palette::Row);
+            Text(std::wstring{Tr(T::SetUpKeyboard)} + L"   >", Canvas::Unit669, Canvas::Unit512,
+                 Canvas::Unit19, Palette::Accent, Canvas::Unit460, Canvas::Unit30, true);
         }
-        ControlPrompt(Navigation::Play, Tr(T::Change), 658, 551);
-        ControlPrompt(Navigation::Back, Tr(T::Back), 1018, 551);
-        if (!panel.notice.empty()) Text(panel.notice, 658, 594, 16, Palette::Accent, 515, 25);
+        ControlPrompt(Navigation::Play, Tr(T::Change), Canvas::Unit658, Canvas::Unit551);
+        ControlPrompt(Navigation::Back, Tr(T::Back), Canvas::Unit1018, Canvas::Unit551);
+        if (!panel.notice.empty())
+            Text(panel.notice, Canvas::Unit658, Canvas::Unit594, Canvas::Unit16, Palette::Accent,
+                 Canvas::Unit515, Canvas::Unit25);
         if (panel.expanded) DrawControllerChoices(view, false);
     }
     /// The controllers to choose from; `dim` darkens what is under it.
     void DrawControllerChoices(const LibraryView& view, bool dim) {
         const auto& panel = view.panel;
-        if (dim) Round(0, 0, 1280, 720, 0, Palette::Canvas, 0.6f);
+        if (dim)
+            Round(Canvas::Unit0, Canvas::Unit0, Canvas::Unit1280, Canvas::Unit720, Canvas::Unit0,
+                  Palette::Canvas, Canvas::Unit0_6F);
         {
             const size_t first = ControllerChoiceFirst(panel);
             const size_t count = panel.devices.size() + 2;
             const size_t end = std::min(count, first + ControllerVisibleChoices);
-            Round(648, ControllerChoiceTop - 4, 530,
-                  (end - first) * ControllerChoiceHeight + 8, 12, Palette::RowActive);
+            Round(Canvas::Unit648, ControllerChoiceTop - Canvas::Unit4, Canvas::Unit530,
+                  (end - first) * ControllerChoiceHeight + Canvas::Unit8, Canvas::Unit12,
+                  Palette::RowActive);
             for (size_t i = first; i < end; ++i) {
                 const float y = ControllerChoiceTop + (i - first) * ControllerChoiceHeight;
-                Round(652, y, 522, 40, 8, i == panel.choice ? Palette::RowActive : Palette::Row);
+                Round(Canvas::Unit652, y, Canvas::Unit522, Canvas::Unit40, Canvas::Unit8,
+                      i == panel.choice ? Palette::RowActive : Palette::Row);
                 const bool session = i >= 2 && panel.devices[i - 2].id.starts_with(L"session:");
                 const bool supported = i < 2 || (bool(panel.devices[i - 2]) && !session);
                 std::wstring label;
@@ -956,24 +1091,35 @@ private:
                 else label = panel.devices[i - 2].name + L" · " +
                     std::wstring{Tr(supported ? (panel.devices[i - 2].wireless ? T::Wireless : T::Usb) :
                                     session ? T::AutomaticOnly : T::NoCompatibleMapping)};
-                Text(label, 665, y + 6, 18, supported ? Palette::Text : Palette::TextSecondary, 480, 30);
+                Text(label, Canvas::Unit665, y + Canvas::Unit6, Canvas::Unit18,
+                     supported ? Palette::Text : Palette::TextSecondary, Canvas::Unit480,
+                     Canvas::Unit30);
             }
-            ScrollIndicator(1187, ControllerChoiceTop, ControllerVisibleChoices * ControllerChoiceHeight,
-                            first, ControllerVisibleChoices, count);
+            ScrollIndicator(Canvas::Unit1187, ControllerChoiceTop,
+                            ControllerVisibleChoices * ControllerChoiceHeight, first,
+                            ControllerVisibleChoices, count);
         }
     }
     void DrawKeyboard(const KeyboardEditor& editor) {
-        brush->SetColor(D2D1::ColorF(0, 0, 0, 0.86f));
-        target->FillRectangle(D2D1::RectF(0, 0, 1280, 720), brush.Get());
-        Round(80, 88, 1120, 584, 22, Palette::Surface);
-        Text(Tr(T::KeyboardTitle), 120, 118, 28, Palette::Text, 900, 44, true);
-        Text(Tr(T::KeyboardSubtitle), 120, 166, 17, Palette::TextSecondary, 650, 30);
-        Round(1120, 112, 48, 40, 10, Palette::Graphite);
-        brush->SetColor(D2D1::ColorF(Palette::TextHint));
+        brush->SetColor(Ink(Palette::Black, Canvas::Unit0_86F));
+        target->FillRectangle(
+            D2D1::RectF(Canvas::Unit0, Canvas::Unit0, Canvas::Unit1280, Canvas::Unit720),
+            brush.Get());
+        Round(Canvas::Unit80, Canvas::Unit88, Canvas::Unit1120, Canvas::Unit584, Canvas::Unit22,
+              Palette::Surface);
+        Text(Tr(T::KeyboardTitle), Canvas::Unit120, Canvas::Unit118, Canvas::Unit28, Palette::Text,
+             Canvas::Unit900, Canvas::Unit44, true);
+        Text(Tr(T::KeyboardSubtitle), Canvas::Unit120, Canvas::Unit166, Canvas::Unit17,
+             Palette::TextSecondary, Canvas::Unit650, Canvas::Unit30);
+        Round(Canvas::Unit1120, Canvas::Unit112, Canvas::Unit48, Canvas::Unit40, Canvas::Unit10,
+              Palette::Graphite);
+        brush->SetColor(Ink(Palette::TextHint));
         target->DrawLine(D2D1::Point2F(1137, 125), D2D1::Point2F(1151, 139), brush.Get(), 2);
         target->DrawLine(D2D1::Point2F(1151, 125), D2D1::Point2F(1137, 139), brush.Get(), 2);
-        Round(120, 210, 480, 342, 16, Palette::Row);
-        Text(Tr(T::ControllerView), 143, 225, 13, Palette::TextSecondary, 220, 24, true);
+        Round(Canvas::Unit120, Canvas::Unit210, Canvas::Unit480, Canvas::Unit342, Canvas::Unit16,
+              Palette::Row);
+        Text(Tr(T::ControllerView), Canvas::Unit143, Canvas::Unit225, Canvas::Unit13,
+             Palette::TextSecondary, Canvas::Unit220, Canvas::Unit24, true);
         // Reuse Eden Qt's original Pro Controller contours and button coordinates.
         // Create paths once; fills/strokes/highlights share cached GPU resources.
         if (!controller_paths[0]) {
@@ -984,7 +1130,8 @@ private:
                 ComPtr<ID2D1GeometrySink> sink;
                 winrt::check_hresult(controller_paths[index]->Open(&sink));
                 auto point = [&](size_t i, bool reflected) {
-                    const float x = points[i * 2] * (reflected ? -1.0f : 1.0f);
+                    const float x = points[i * Canvas::Unit2] *
+                                    (reflected ? -Canvas::Unit1_0F : Canvas::Unit1_0F);
                     return D2D1::Point2F(350 + x, 390 + points[i * 2 + 1]);
                 };
                 sink->BeginFigure(point(0, mirror), D2D1_FIGURE_BEGIN_FILLED);
@@ -999,18 +1146,24 @@ private:
             polygon(3, pro_left_trigger, false, false); polygon(4, pro_left_trigger, true, false);
         }
         auto path = [&](size_t i, unsigned color) {
-            brush->SetColor(D2D1::ColorF(color)); target->FillGeometry(controller_paths[i].Get(), brush.Get());
-            brush->SetColor(D2D1::ColorF(0x45484d)); target->DrawGeometry(controller_paths[i].Get(), brush.Get(), 1.2f);
+            brush->SetColor(Ink(color));
+            target->FillGeometry(controller_paths[i].Get(), brush.Get());
+            brush->SetColor(Ink(Palette::ControllerOutline));
+            target->DrawGeometry(controller_paths[i].Get(), brush.Get(), 1.2f);
         };
         const size_t action = editor.selected;
         path(1, Palette::Graphite); path(2, Palette::Graphite); path(0, Palette::Graphite);
         path(3, action == 6 ? Palette::Accent : Palette::RowActive); path(4, action == 7 ? Palette::Accent : Palette::RowActive);
-        auto circle = [&](float x, float y, float radius, const wchar_t* label, bool active, float font = 16) {
+        auto circle = [&](float x, float y, float radius, const wchar_t* label, bool active,
+                          float font = Canvas::Unit16) {
             const auto shape = D2D1::Ellipse(D2D1::Point2F(x, y), radius, radius);
-            brush->SetColor(D2D1::ColorF(active ? Palette::Accent : Palette::Row)); target->FillEllipse(shape, brush.Get());
-            brush->SetColor(D2D1::ColorF(active ? Palette::Text : 0x45484d)); target->DrawEllipse(shape, brush.Get(), 1.4f);
-            Text(label, x - radius, y - radius, font, active ? Palette::OnAccent : Palette::TextHint,
-                 radius * 2, radius * 2, true, false, true);
+            brush->SetColor(Ink(active ? Palette::Accent : Palette::Row));
+            target->FillEllipse(shape, brush.Get());
+            brush->SetColor(Ink(active ? Palette::Text : Palette::ControllerOutline));
+            target->DrawEllipse(shape, brush.Get(), 1.4f);
+            Text(label, x - radius, y - radius, font,
+                 active ? Palette::OnAccent : Palette::TextHint, radius * Canvas::Unit2,
+                 radius * Canvas::Unit2, true, false, true);
         };
         auto stick = [&](float x, float y, const wchar_t* label, bool active) {
             circle(x, y, 32, L"", active);
@@ -1020,56 +1173,95 @@ private:
         stick(401, 390, L"R3", action == 5 || action >= 24);
         circle(486, 334, 15, L"A", action == 0); circle(455, 365, 15, L"B", action == 1);
         circle(455, 303, 15, L"X", action == 2); circle(424, 334, 15, L"Y", action == 3);
-        Round(278, 359, 22, 62, 4, Palette::Row); Round(258, 379, 62, 22, 4, Palette::Row);
+        Round(Canvas::Unit278, Canvas::Unit359, Canvas::Unit22, Canvas::Unit62, Canvas::Unit4,
+              Palette::Row);
+        Round(Canvas::Unit258, Canvas::Unit379, Canvas::Unit62, Canvas::Unit22, Canvas::Unit4,
+              Palette::Row);
         for (size_t i = 12; i <= 15; ++i) {
             const auto tile = KeyboardDiagramTile(i);
-            Round(tile.x, tile.y, tile.w, tile.h, 3, action == i ? Palette::Accent : Palette::RowActive);
+            Round(tile.x, tile.y, tile.w, tile.h, Canvas::Unit3,
+                  action == i ? Palette::Accent : Palette::RowActive);
         }
         circle(300, 304, 10, L"-", action == 11, 14); circle(400, 304, 10, L"+", action == 10, 14);
         circle(379, 334, 10, L"", action == 18);
-        brush->SetColor(D2D1::ColorF(action == 18 ? Palette::OnAccent : Palette::TextHint));
+        brush->SetColor(Ink(action == 18 ? Palette::OnAccent : Palette::TextHint));
         target->DrawLine(D2D1::Point2F(374, 334), D2D1::Point2F(379, 330), brush.Get(), 1.4f);
         target->DrawLine(D2D1::Point2F(379, 330), D2D1::Point2F(384, 334), brush.Get(), 1.4f);
-        target->DrawRectangle(D2D1::RectF(376, 334, 382, 339), brush.Get(), 1.2f);
-        Round(314, 327, 14, 14, 3, action == 19 ? Palette::Accent : Palette::Row);
-        brush->SetColor(D2D1::ColorF(Palette::TextSecondary));
-        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(321, 334), 4, 4), brush.Get(), 1.2f);
+        target->DrawRectangle(
+            D2D1::RectF(Canvas::Unit376, Canvas::Unit334, Canvas::Unit382, Canvas::Unit339),
+            brush.Get(), 1.2f);
+        Round(Canvas::Unit314, Canvas::Unit327, Canvas::Unit14, Canvas::Unit14, Canvas::Unit3,
+              action == 19 ? Palette::Accent : Palette::Row);
+        brush->SetColor(Ink(Palette::TextSecondary));
+        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(Canvas::Unit321, Canvas::Unit334),
+                                          Canvas::Unit4, Canvas::Unit4),
+                            brush.Get(), 1.2f);
         for (const auto i : {size_t{8}, size_t{9}}) {
             const auto tile = KeyboardDiagramTile(i);
-            Round(tile.x, tile.y, tile.w, tile.h, 8, action == i ? Palette::Accent : Palette::Graphite);
-            Text(i == 8 ? L"ZL" : L"ZR", tile.x, tile.y, 14, action == i ? Palette::OnAccent : Palette::TextHint,
-                 tile.w, tile.h, true, false, true);
+            Round(tile.x, tile.y, tile.w, tile.h, Canvas::Unit8,
+                  action == i ? Palette::Accent : Palette::Graphite);
+            Text(i == 8 ? L"ZL" : L"ZR", tile.x, tile.y, Canvas::Unit14,
+                 action == i ? Palette::OnAccent : Palette::TextHint, tile.w, tile.h, true, false,
+                 true);
         }
-        Text(L"L", 220, 252, 14, action == 6 ? Palette::OnAccent : Palette::TextHint, 60, 22, true, false, true);
-        Text(L"R", 450, 252, 14, action == 7 ? Palette::OnAccent : Palette::TextHint, 40, 22, true, false, true);
-        Round(120, 564, 480, 67, 12, Palette::RowActive);
-        Text(Tr(T::SelectedBinding), 140, 574, 11, Palette::TextSecondary, 300, 19, true);
-        Text(KeyboardActionName(action), 140, 594, 20, Palette::Text, 285, 30, true);
-        Round(436, 579, 142, 38, 8, Palette::Row);
-        Text(editor.capturing ? std::wstring{Tr(T::PressAKey)} : KeyboardKeyName(editor.bindings[action]),
-             436, 579, 16, Palette::Accent, 142, 38, true, false, true);
+        Text(L"L", Canvas::Unit220, Canvas::Unit252, Canvas::Unit14,
+             action == 6 ? Palette::OnAccent : Palette::TextHint, Canvas::Unit60, Canvas::Unit22,
+             true, false, true);
+        Text(L"R", Canvas::Unit450, Canvas::Unit252, Canvas::Unit14,
+             action == 7 ? Palette::OnAccent : Palette::TextHint, Canvas::Unit40, Canvas::Unit22,
+             true, false, true);
+        Round(Canvas::Unit120, Canvas::Unit564, Canvas::Unit480, Canvas::Unit67, Canvas::Unit12,
+              Palette::RowActive);
+        Text(Tr(T::SelectedBinding), Canvas::Unit140, Canvas::Unit574, Canvas::Unit11,
+             Palette::TextSecondary, Canvas::Unit300, Canvas::Unit19, true);
+        Text(KeyboardActionName(action), Canvas::Unit140, Canvas::Unit594, Canvas::Unit20,
+             Palette::Text, Canvas::Unit285, Canvas::Unit30, true);
+        Round(Canvas::Unit436, Canvas::Unit579, Canvas::Unit142, Canvas::Unit38, Canvas::Unit8,
+              Palette::Row);
+        Text(editor.capturing ? std::wstring{Tr(T::PressAKey)}
+                              : KeyboardKeyName(editor.bindings[action]),
+             Canvas::Unit436, Canvas::Unit579, Canvas::Unit16, Palette::Accent, Canvas::Unit142,
+             Canvas::Unit38, true, false, true);
         const std::array<std::wstring_view, 3> pages{Tr(T::KeyPageButtons), Tr(T::KeyPageSystem), Tr(T::KeyPageSticks)};
         for (unsigned page = 0; page < pages.size(); ++page) {
-            const float x = 635 + page * 174.0f;
-            Round(x, 203, 166, 36, 9, page == editor.page ? Palette::RowActive : Palette::Graphite);
-            Text(pages[page], x, 203, 15, page == editor.page ? Palette::Text : Palette::TextSecondary,
-                 166, 36, true, false, true);
+            const float x = Canvas::Unit635 + page * Canvas::Unit174_0F;
+            Round(x, Canvas::Unit203, Canvas::Unit166, Canvas::Unit36, Canvas::Unit9,
+                  page == editor.page ? Palette::RowActive : Palette::Graphite);
+            Text(pages[page], x, Canvas::Unit203, Canvas::Unit15,
+                 page == editor.page ? Palette::Text : Palette::TextSecondary, Canvas::Unit166,
+                 Canvas::Unit36, true, false, true);
         }
         for (const size_t i : KeyboardPageActions(editor.page)) {
             const auto tile = KeyboardTileFor(i);
-            Round(tile.x, tile.y, tile.w, tile.h, 9, i == action ? Palette::RowActive : Palette::Row);
-            Text(KeyboardActionName(i), tile.x + 14, tile.y, 15, Palette::TextHint, 136, tile.h, false, false, true);
-            Round(tile.x + 153, tile.y + 9, 86, 27, 6, Palette::Row);
-            Text(i == action && editor.capturing ? std::wstring{L"..."} : KeyboardKeyName(editor.bindings[i]),
-                 tile.x + 153, tile.y + 9, 14, i == action ? Palette::Accent : Palette::TextSecondary, 86, 27, true, false, true);
+            Round(tile.x, tile.y, tile.w, tile.h, Canvas::Unit9,
+                  i == action ? Palette::RowActive : Palette::Row);
+            Text(KeyboardActionName(i), tile.x + Canvas::Unit14, tile.y, Canvas::Unit15,
+                 Palette::TextHint, Canvas::Unit136, tile.h, false, false, true);
+            Round(tile.x + Canvas::Unit153, tile.y + Canvas::Unit9, Canvas::Unit86, Canvas::Unit27,
+                  Canvas::Unit6, Palette::Row);
+            Text(i == action && editor.capturing ? std::wstring{L"..."}
+                                                 : KeyboardKeyName(editor.bindings[i]),
+                 tile.x + Canvas::Unit153, tile.y + Canvas::Unit9, Canvas::Unit14,
+                 i == action ? Palette::Accent : Palette::TextSecondary, Canvas::Unit86,
+                 Canvas::Unit27, true, false, true);
         }
-        Round(635, 603, 155, 36, 8, Palette::Graphite); Text(Tr(T::ClearBinding), 635, 603, 15, Palette::TextHint, 155, 36, false, false, true);
-        Round(806, 603, 170, 36, 8, Palette::Graphite); Text(Tr(T::RestoreDefaults), 806, 603, 15, Palette::TextHint, 170, 36, false, false, true);
-        if (!editor.notice.empty()) Text(editor.notice, 990, 609, 13, Palette::TextSecondary, 172, 30);
-        Text(Tr(editor.capturing ? T::WaitingForKey : T::KeyboardHelp),
-             120, 644, 13, Palette::TextSecondary, prompt_family == PromptFamily::Keyboard ? 1030.0f : 860.0f, 22);
+        Round(Canvas::Unit635, Canvas::Unit603, Canvas::Unit155, Canvas::Unit36, Canvas::Unit8,
+              Palette::Graphite);
+        Text(Tr(T::ClearBinding), Canvas::Unit635, Canvas::Unit603, Canvas::Unit15,
+             Palette::TextHint, Canvas::Unit155, Canvas::Unit36, false, false, true);
+        Round(Canvas::Unit806, Canvas::Unit603, Canvas::Unit170, Canvas::Unit36, Canvas::Unit8,
+              Palette::Graphite);
+        Text(Tr(T::RestoreDefaults), Canvas::Unit806, Canvas::Unit603, Canvas::Unit15,
+             Palette::TextHint, Canvas::Unit170, Canvas::Unit36, false, false, true);
+        if (!editor.notice.empty())
+            Text(editor.notice, Canvas::Unit990, Canvas::Unit609, Canvas::Unit13,
+                 Palette::TextSecondary, Canvas::Unit172, Canvas::Unit30);
+        Text(Tr(editor.capturing ? T::WaitingForKey : T::KeyboardHelp), Canvas::Unit120,
+             Canvas::Unit644, Canvas::Unit13, Palette::TextSecondary,
+             prompt_family == PromptFamily::Keyboard ? Canvas::Unit1030_0F : Canvas::Unit860_0F,
+             Canvas::Unit22);
         if (prompt_family != PromptFamily::Keyboard)
-            ControlPrompt(Navigation::Back, Tr(T::Back), 1010, 637);
+            ControlPrompt(Navigation::Back, Tr(T::Back), Canvas::Unit1010, Canvas::Unit637);
     }
     ComPtr<ID2D1Bitmap1> LoadAssetBitmap(const std::filesystem::path& relative) {
         ComPtr<ID2D1Bitmap1> bitmap;
@@ -1195,38 +1387,45 @@ private:
         }
         return rows;
     }
-    static constexpr float SettingsListX = LibraryLayout::Margin, SettingsListWidth = 360;
-    static constexpr float SettingsListTop = 132, SettingsListStride = 66, SettingsListHeight = 58;
-    static constexpr float SettingsPaneX = SettingsListX + SettingsListWidth + 40;
-    static constexpr float SettingsPaneWidth = 1280 - LibraryLayout::Margin - SettingsPaneX;
-    static constexpr float SettingsRowsTop = 226, SettingsRowStride = 58, SettingsRowHeight = 52;
+    static constexpr float SettingsListX = LibraryLayout::Margin,
+                           SettingsListWidth = Canvas::Unit360;
+    static constexpr float SettingsListTop = Canvas::Unit132, SettingsListStride = Canvas::Unit66,
+                           SettingsListHeight = Canvas::Unit58;
+    static constexpr float SettingsPaneX = SettingsListX + SettingsListWidth + Canvas::Unit40;
+    static constexpr float SettingsPaneWidth =
+        Canvas::Unit1280 - LibraryLayout::Margin - SettingsPaneX;
+    static constexpr float SettingsRowsTop = Canvas::Unit226, SettingsRowStride = Canvas::Unit58,
+                           SettingsRowHeight = Canvas::Unit52;
     static constexpr std::size_t SettingsVisibleRows = 7;
     void DrawNetworkConnection(const ConfigurationPanel& configuration) {
         const auto& network = configuration.network;
-        Type(L"J A D Y X", TypeRole::HeadlineSmall, 80, 44, 400, Palette::Text);
+        Type(L"J A D Y X", TypeRole::HeadlineSmall, Canvas::Unit80, Canvas::Unit44, Canvas::Unit400,
+             Palette::Text);
         if (network.paired)
-            Type(Tr(T::NetworkPaired), TypeRole::LabelLarge, 720, 52, 480,
-                 Palette::TextHint, 1, TextAlign::Trailing);
-        Type(Tr(T::NetworkConnection), TypeRole::HeadlineLarge, 80, 100, 1120,
-             Palette::Text, 1, TextAlign::Center);
-        Type(winrt::to_hstring(network.url).c_str(), TypeRole::HeadlineMedium, 80, 176, 1120,
-             Palette::Text, 1, TextAlign::Center);
-        Type(Tr(T::NetworkOpenHint), TypeRole::Body, 80, 222, 1120,
-             Palette::TextSecondary, 1, TextAlign::Center);
-        Card(80, 274, 1120, 210, 20);
-        Type(Tr(T::NetworkCodeLabel), TypeRole::Caps, 100, 296, 1080,
-             Palette::TextSecondary, 1, TextAlign::Center);
+            Type(Tr(T::NetworkPaired), TypeRole::LabelLarge, Canvas::Unit720, Canvas::Unit52,
+                 Canvas::Unit480, Palette::TextHint, Canvas::Unit1, TextAlign::Trailing);
+        Type(Tr(T::NetworkConnection), TypeRole::HeadlineLarge, Canvas::Unit80, Canvas::Unit100,
+             Canvas::Unit1120, Palette::Text, Canvas::Unit1, TextAlign::Center);
+        Type(winrt::to_hstring(network.url).c_str(), TypeRole::HeadlineMedium, Canvas::Unit80,
+             Canvas::Unit176, Canvas::Unit1120, Palette::Text, Canvas::Unit1, TextAlign::Center);
+        Type(Tr(T::NetworkOpenHint), TypeRole::Body, Canvas::Unit80, Canvas::Unit222,
+             Canvas::Unit1120, Palette::TextSecondary, Canvas::Unit1, TextAlign::Center);
+        Card(Canvas::Unit80, Canvas::Unit274, Canvas::Unit1120, Canvas::Unit210, Canvas::Unit20);
+        Type(Tr(T::NetworkCodeLabel), TypeRole::Caps, Canvas::Unit100, Canvas::Unit296,
+             Canvas::Unit1080, Palette::TextSecondary, Canvas::Unit1, TextAlign::Center);
         if (network.running && !network.code_expired && network.code.size() == 8) {
             const auto digits = winrt::to_hstring(network.code.substr(0, 4) + " " + network.code.substr(4));
             D2D1_MATRIX_3X2_F transform;
             target->GetTransform(&transform);
             // Hero is 56px at the reference resolution: 112px here, independent of settings rows.
             target->SetTransform(D2D1::Matrix3x2F::Scale(2, 2, D2D1::Point2F(640, 334)) * transform);
-            Type(digits.c_str(), TypeRole::Hero, 360, 334, 560, Palette::Text, 1, TextAlign::Center);
+            Type(digits.c_str(), TypeRole::Hero, Canvas::Unit360, Canvas::Unit334, Canvas::Unit560,
+                 Palette::Text, Canvas::Unit1, TextAlign::Center);
             target->SetTransform(transform);
         } else {
             Type(Tr(network.paired ? T::NetworkPaired : T::NetworkCodeExpired),
-                 TypeRole::HeadlineMedium, 110, 366, 1060, Palette::Text, 1, TextAlign::Center);
+                 TypeRole::HeadlineMedium, Canvas::Unit110, Canvas::Unit366, Canvas::Unit1060,
+                 Palette::Text, Canvas::Unit1, TextAlign::Center);
         }
         std::wstring progress;
         const auto& transfer=network.transfer;
@@ -1237,109 +1436,159 @@ private:
                 {winrt::to_hstring(file.name).c_str(),std::to_wstring(file.received >> 20),std::to_wstring(file.length >> 20)}) :
                 system.phase=="review" ? std::wstring{Tr(T::SystemReviewReady)} : std::wstring{Tr(T::NetworkValidating)};
             progress+=L" · "+std::to_wstring(system.completed)+L" / "+std::to_wstring(system.count);
-            const float fraction=file.length?static_cast<float>(static_cast<double>(file.received)/file.length):0;
-            Round(100,560,1080,4,2,Palette::Graphite);
-            Round(100,560,1080*std::clamp(fraction,0.0f,1.0f),4,2,Palette::Accent);
+            const float fraction =
+                file.length ? static_cast<float>(static_cast<double>(file.received) / file.length)
+                            : Canvas::Unit0;
+            Round(Canvas::Unit100, Canvas::Unit560, Canvas::Unit1080, Canvas::Unit4, Canvas::Unit2,
+                  Palette::Graphite);
+            Round(Canvas::Unit100, Canvas::Unit560,
+                  Canvas::Unit1080 * std::clamp(fraction, Canvas::Unit0_0F, Canvas::Unit1_0F),
+                  Canvas::Unit4, Canvas::Unit2, Palette::Accent);
         } else if (transfer.busy) {
             progress=transfer.phase == "receiving" ? I18n::Format(T::NetworkUploading,
                 {winrt::to_hstring(transfer.name).c_str(),std::to_wstring(transfer.received >> 20),std::to_wstring(transfer.length >> 20)}) :
                 std::wstring{Tr(T::NetworkValidating)};
-            const float fraction=transfer.length ? static_cast<float>(static_cast<double>(transfer.received)/transfer.length) : 0;
-            Round(100,560,1080,4,2,Palette::Graphite);
-            Round(100,560,1080*std::clamp(fraction,0.0f,1.0f),4,2,Palette::Accent);
+            const float fraction =
+                transfer.length
+                    ? static_cast<float>(static_cast<double>(transfer.received) / transfer.length)
+                    : Canvas::Unit0;
+            Round(Canvas::Unit100, Canvas::Unit560, Canvas::Unit1080, Canvas::Unit4, Canvas::Unit2,
+                  Palette::Graphite);
+            Round(Canvas::Unit100, Canvas::Unit560,
+                  Canvas::Unit1080 * std::clamp(fraction, Canvas::Unit0_0F, Canvas::Unit1_0F),
+                  Canvas::Unit4, Canvas::Unit2, Palette::Accent);
         }
-        Type(!progress.empty() ? std::wstring_view{progress} : configuration.notice.empty() ? Tr(T::NetworkCodeHint) : std::wstring_view{configuration.notice},
-             TypeRole::Body, 100, 510, 1080, Palette::TextSecondary, 1, TextAlign::Center, 2);
+        Type(!progress.empty()              ? std::wstring_view{progress}
+             : configuration.notice.empty() ? Tr(T::NetworkCodeHint)
+                                            : std::wstring_view{configuration.notice},
+             TypeRole::Body, Canvas::Unit100, Canvas::Unit510, Canvas::Unit1080,
+             Palette::TextSecondary, Canvas::Unit1, TextAlign::Center, 2);
         const std::array<T, 3> labels{T::Back, T::NetworkCode, T::NetworkStop};
         for (size_t i = 0; i < labels.size(); ++i) {
-            const float x = 80 + static_cast<float>(i) * 380;
+            const float x = Canvas::Unit80 + static_cast<float>(i) * Canvas::Unit380;
             const bool focused = configuration.network_action == i;
-            if (focused) FocusGlow(x, 594, 360, 60, 14, 1);
-            Round(x, 594, 360, 60, 14, focused ? Palette::Accent : Palette::Surface);
-            Type(Tr(labels[i]), TypeRole::LabelLarge, x + 14, 614, 332,
-                 focused ? Palette::OnAccent : Palette::Text, 1, TextAlign::Center);
-            AddHit(x, 594, 360, 60, LibraryHit::NetworkAction, i);
+            if (focused)
+                FocusGlow(x, Canvas::Unit594, Canvas::Unit360, Canvas::Unit60, Canvas::Unit14,
+                          Canvas::Unit1);
+            Round(x, Canvas::Unit594, Canvas::Unit360, Canvas::Unit60, Canvas::Unit14,
+                  focused ? Palette::Accent : Palette::Surface);
+            Type(Tr(labels[i]), TypeRole::LabelLarge, x + Canvas::Unit14, Canvas::Unit614,
+                 Canvas::Unit332, focused ? Palette::OnAccent : Palette::Text, Canvas::Unit1,
+                 TextAlign::Center);
+            AddHit(x, Canvas::Unit594, Canvas::Unit360, Canvas::Unit60, LibraryHit::NetworkAction,
+                   i);
         }
-        ControlPrompt(Navigation::Play, Tr(T::Select), 80, 676);
-        ControlPrompt(Navigation::Back, Tr(T::Back), 400, 676);
+        ControlPrompt(Navigation::Play, Tr(T::Select), Canvas::Unit80, Canvas::Unit676);
+        ControlPrompt(Navigation::Back, Tr(T::Back), Canvas::Unit400, Canvas::Unit676);
     }
     /// The guided app update: where to point a browser and its code at the left, the three steps
     /// at the right over the warning that keeps the user's data. Laid out like the portal screen.
     void DrawUpdateGuide(const ConfigurationPanel& configuration, const Updates::Snapshot& update) {
         const auto& network = configuration.network;
         const bool code = network.running && !network.code_expired && network.code.size() == 8;
-        Type(L"J A D Y X", TypeRole::HeadlineSmall, 80, 44, 400, Palette::Text);
+        Type(L"J A D Y X", TypeRole::HeadlineSmall, Canvas::Unit80, Canvas::Unit44, Canvas::Unit400,
+             Palette::Text);
         const std::wstring installed{winrt::to_hstring(Updates::FormatVersion(update.installed))};
         const std::wstring incoming = update.release ?
             std::wstring{winrt::to_hstring(Updates::FormatVersion(update.release->version))} : installed;
         if (network.paired) {
             const float width = MeasureType(Tr(T::NetworkPaired), TypeRole::LabelLarge);
-            Round(1200 - width - 18, 58, 8, 8, 4, Palette::Accent);
-            Type(Tr(T::NetworkPaired), TypeRole::LabelLarge, 720, 52, 480, Palette::TextHint, 1, TextAlign::Trailing);
+            Round(Canvas::Unit1200 - width - Canvas::Unit18, Canvas::Unit58, Canvas::Unit8,
+                  Canvas::Unit8, Canvas::Unit4, Palette::Accent);
+            Type(Tr(T::NetworkPaired), TypeRole::LabelLarge, Canvas::Unit720, Canvas::Unit52,
+                 Canvas::Unit480, Palette::TextHint, Canvas::Unit1, TextAlign::Trailing);
         } else {
-            Type(installed + L"  \u2192  " + incoming, TypeRole::LabelLarge, 720, 52, 480, Palette::TextHint, 1,
+            Type(installed + L"  \u2192  " + incoming, TypeRole::LabelLarge, Canvas::Unit720,
+                 Canvas::Unit52, Canvas::Unit480, Palette::TextHint, Canvas::Unit1,
                  TextAlign::Trailing);
         }
-        Type(I18n::Format(T::UpdateGuideTitle, {incoming}), TypeRole::HeadlineLarge, 80, 96, 1120, Palette::Text);
-        Type(Tr(T::UpdateGuideIntro), TypeRole::BodyLarge, 80, 150, 1120, Palette::TextSecondary);
+        Type(I18n::Format(T::UpdateGuideTitle, {incoming}), TypeRole::HeadlineLarge, Canvas::Unit80,
+             Canvas::Unit96, Canvas::Unit1120, Palette::Text);
+        Type(Tr(T::UpdateGuideIntro), TypeRole::BodyLarge, Canvas::Unit80, Canvas::Unit150,
+             Canvas::Unit1120, Palette::TextSecondary);
         // The address and the code, drawn as large as the portal screen draws them.
-        constexpr float card_x = 80, card_y = 200, card_w = 560, card_h = 330, inner = card_x + 28, inner_w = card_w - 56;
-        Card(card_x, card_y, card_w, card_h, 20);
-        Type(Upper(Tr(T::UpdateGuideAddress)), TypeRole::Caps, inner, card_y + 24, inner_w, Palette::TextSecondary);
+        constexpr float card_x = Canvas::Unit80, card_y = Canvas::Unit200, card_w = Canvas::Unit560,
+                        card_h = Canvas::Unit330, inner = card_x + Canvas::Unit28,
+                        inner_w = card_w - Canvas::Unit56;
+        Card(card_x, card_y, card_w, card_h, Canvas::Unit20);
+        Type(Upper(Tr(T::UpdateGuideAddress)), TypeRole::Caps, inner, card_y + Canvas::Unit24,
+             inner_w, Palette::TextSecondary);
         const std::wstring url = network.running ? std::wstring{winrt::to_hstring(network.url)} : std::wstring{L"\u2014"};
-        Type(url, TypeRole::HeadlineMedium, inner, card_y + 50, inner_w, Palette::Text);
-        Round(inner, card_y + 106, inner_w, 1, 0.5f, Palette::Graphite);
-        Type(Upper(Tr(T::NetworkCodeLabel)), TypeRole::Caps, inner, card_y + 128, inner_w, Palette::TextSecondary);
+        Type(url, TypeRole::HeadlineMedium, inner, card_y + Canvas::Unit50, inner_w, Palette::Text);
+        Round(inner, card_y + Canvas::Unit106, inner_w, Canvas::Unit1, Canvas::Unit0_5F,
+              Palette::Graphite);
+        Type(Upper(Tr(T::NetworkCodeLabel)), TypeRole::Caps, inner, card_y + Canvas::Unit128,
+             inner_w, Palette::TextSecondary);
         if (code) {
             const auto digits = winrt::to_hstring(network.code.substr(0, 4) + " " + network.code.substr(4));
             D2D1_MATRIX_3X2_F transform;
             target->GetTransform(&transform);
             // Hero is 56px at the reference resolution: 84px here, centred in the card.
-            const float center = card_x + card_w / 2, top = card_y + 156;
+            const float center = card_x + card_w / Canvas::Unit2, top = card_y + Canvas::Unit156;
             target->SetTransform(D2D1::Matrix3x2F::Scale(1.5f, 1.5f, D2D1::Point2F(center, top)) * transform);
-            Type(digits.c_str(), TypeRole::Hero, inner, top, inner_w, Palette::Text, 1, TextAlign::Center);
+            Type(digits.c_str(), TypeRole::Hero, inner, top, inner_w, Palette::Text, Canvas::Unit1,
+                 TextAlign::Center);
             target->SetTransform(transform);
         } else {
-            Type(Tr(network.paired ? T::NetworkPaired : network.running ? T::NetworkCodeExpired : T::NetworkStopped),
-                 TypeRole::HeadlineMedium, inner, card_y + 180, inner_w, Palette::Text, 1, TextAlign::Center);
+            Type(Tr(network.paired    ? T::NetworkPaired
+                    : network.running ? T::NetworkCodeExpired
+                                      : T::NetworkStopped),
+                 TypeRole::HeadlineMedium, inner, card_y + Canvas::Unit180, inner_w, Palette::Text,
+                 Canvas::Unit1, TextAlign::Center);
         }
         const bool problem = !configuration.notice.empty();
-        Type(problem ? std::wstring_view{configuration.notice} : Tr(T::NetworkCodeHint), TypeRole::Body, inner,
-             card_y + 270, inner_w, problem ? Palette::Warning : Palette::TextSecondary, 1, TextAlign::Center, 2);
+        Type(problem ? std::wstring_view{configuration.notice} : Tr(T::NetworkCodeHint),
+             TypeRole::Body, inner, card_y + Canvas::Unit270, inner_w,
+             problem ? Palette::Warning : Palette::TextSecondary, Canvas::Unit1, TextAlign::Center,
+             2);
         // The steps: the done and current ones lit, the rest waiting.
-        constexpr float steps_x = 680, steps_w = 520;
+        constexpr float steps_x = Canvas::Unit680, steps_w = Canvas::Unit520;
         const std::array<std::pair<T, T>, 3> steps{{{T::UpdateGuideConnect, T::UpdateGuideConnectBody},
             {T::UpdateGuideDownload, T::UpdateGuideDownloadBody}, {T::UpdateGuidePortal, T::UpdateGuidePortalBody}}};
         const std::size_t current = network.paired ? 1 : 0;
         for (std::size_t i = 0; i < steps.size(); ++i) {
-            const float y = card_y + 8 + static_cast<float>(i) * 84;
+            const float y = card_y + Canvas::Unit8 + static_cast<float>(i) * Canvas::Unit84;
             const bool lit = i <= current;
             if (i + 1 < steps.size())
-                Round(steps_x + 17, y + 44, 2, 36, 1, i < current ? Palette::Accent : Palette::Graphite);
-            if (i == current) FocusGlow(steps_x, y, 36, 36, 18, 1);
-            Round(steps_x, y, 36, 36, 18, lit ? Palette::Accent : Palette::Surface);
-            Type(std::to_wstring(i + 1), TypeRole::LabelLarge, steps_x, y + 8, 36,
-                 lit ? Palette::OnAccent : Palette::TextSecondary, 1, TextAlign::Center);
-            Type(Tr(steps[i].first), TypeRole::LabelLarge, steps_x + 56, y + 2, steps_w - 56,
+                Round(steps_x + Canvas::Unit17, y + Canvas::Unit44, Canvas::Unit2, Canvas::Unit36,
+                      Canvas::Unit1, i < current ? Palette::Accent : Palette::Graphite);
+            if (i == current)
+                FocusGlow(steps_x, y, Canvas::Unit36, Canvas::Unit36, Canvas::Unit18,
+                          Canvas::Unit1);
+            Round(steps_x, y, Canvas::Unit36, Canvas::Unit36, Canvas::Unit18,
+                  lit ? Palette::Accent : Palette::Surface);
+            Type(std::to_wstring(i + 1), TypeRole::LabelLarge, steps_x, y + Canvas::Unit8,
+                 Canvas::Unit36, lit ? Palette::OnAccent : Palette::TextSecondary, Canvas::Unit1,
+                 TextAlign::Center);
+            Type(Tr(steps[i].first), TypeRole::LabelLarge, steps_x + Canvas::Unit56,
+                 y + Canvas::Unit2, steps_w - Canvas::Unit56,
                  lit ? Palette::Text : Palette::TextHint);
-            Type(Tr(steps[i].second), TypeRole::Body, steps_x + 56, y + 28, steps_w - 56, Palette::TextSecondary, 1,
+            Type(Tr(steps[i].second), TypeRole::Body, steps_x + Canvas::Unit56, y + Canvas::Unit28,
+                 steps_w - Canvas::Unit56, Palette::TextSecondary, Canvas::Unit1,
                  TextAlign::Leading, 2);
         }
-        Round(steps_x, card_y + card_h - 66, steps_w, 66, 14, Palette::Warning, 0.12f);
-        Type(Tr(T::UpdateGuideWarning), TypeRole::Body, steps_x + 20, card_y + card_h - 56, steps_w - 40,
-             Palette::Warning, 1, TextAlign::Leading, 2);
+        Round(steps_x, card_y + card_h - Canvas::Unit66, steps_w, Canvas::Unit66, Canvas::Unit14,
+              Palette::Warning, Canvas::Unit0_12F);
+        Type(Tr(T::UpdateGuideWarning), TypeRole::Body, steps_x + Canvas::Unit20,
+             card_y + card_h - Canvas::Unit56, steps_w - Canvas::Unit40, Palette::Warning,
+             Canvas::Unit1, TextAlign::Leading, 2);
         const std::array<T, 3> labels{T::UpdaterBack, T::NetworkCode, T::NetworkStop};
         for (size_t i = 0; i < labels.size(); ++i) {
-            const float x = 80 + static_cast<float>(i) * 380;
+            const float x = Canvas::Unit80 + static_cast<float>(i) * Canvas::Unit380;
             const bool focused = configuration.network_action == i;
-            if (focused) FocusGlow(x, 594, 360, 60, 14, 1);
-            Round(x, 594, 360, 60, 14, focused ? Palette::Accent : Palette::Surface);
-            Type(Tr(labels[i]), TypeRole::LabelLarge, x + 14, 614, 332,
-                 focused ? Palette::OnAccent : Palette::Text, 1, TextAlign::Center);
-            AddHit(x, 594, 360, 60, LibraryHit::NetworkAction, i);
+            if (focused)
+                FocusGlow(x, Canvas::Unit594, Canvas::Unit360, Canvas::Unit60, Canvas::Unit14,
+                          Canvas::Unit1);
+            Round(x, Canvas::Unit594, Canvas::Unit360, Canvas::Unit60, Canvas::Unit14,
+                  focused ? Palette::Accent : Palette::Surface);
+            Type(Tr(labels[i]), TypeRole::LabelLarge, x + Canvas::Unit14, Canvas::Unit614,
+                 Canvas::Unit332, focused ? Palette::OnAccent : Palette::Text, Canvas::Unit1,
+                 TextAlign::Center);
+            AddHit(x, Canvas::Unit594, Canvas::Unit360, Canvas::Unit60, LibraryHit::NetworkAction,
+                   i);
         }
-        ControlPrompt(Navigation::Play, Tr(T::Select), 80, 676);
-        ControlPrompt(Navigation::Back, Tr(T::Back), 400, 676);
+        ControlPrompt(Navigation::Play, Tr(T::Select), Canvas::Unit80, Canvas::Unit676);
+        ControlPrompt(Navigation::Back, Tr(T::Back), Canvas::Unit400, Canvas::Unit676);
     }
     /// The Settings tab: the categories at the left with the emulator's data under them, and the
     /// rows of the focused category at the right, live while the list has the focus.
@@ -1352,9 +1601,12 @@ private:
         // The page's kicker: what it is and which build is installed.
         const auto kicker = Upper(Tr(T::SettingsTitle));
         const float kicker_width = MeasureType(kicker, TypeRole::Caps);
-        Type(kicker, TypeRole::Caps, Margin, 92, kicker_width + 4, Palette::TextSecondary);
-        Type(L"·", TypeRole::Label, Margin + kicker_width + 12, 92, 12, Palette::TextSecondary, 0.6f);
-        Type(L"Jadyx " + version_text, TypeRole::Label, Margin + kicker_width + 28, 92, 300, Palette::TextHint);
+        Type(kicker, TypeRole::Caps, Margin, Canvas::Unit92, kicker_width + Canvas::Unit4,
+             Palette::TextSecondary);
+        Type(L"·", TypeRole::Label, Margin + kicker_width + Canvas::Unit12, Canvas::Unit92,
+             Canvas::Unit12, Palette::TextSecondary, Canvas::Unit0_6F);
+        Type(L"Jadyx " + version_text, TypeRole::Label, Margin + kicker_width + Canvas::Unit28,
+             Canvas::Unit92, Canvas::Unit300, Palette::TextHint);
         // The categories.
         static constexpr std::array<ConfigurationIcon, HomeRowCount> icons{
             ConfigurationIcon::Settings, ConfigurationIcon::Controller, ConfigurationIcon::Folder};
@@ -1364,10 +1616,11 @@ private:
             const float w = SettingsListWidth, h = SettingsListHeight;
             const bool chosen = i == category;
             if (chosen && !in_pane) {
-                FocusGlow(x, y, w, h, 14, 1);
-                Round(x, y, w, h, 14, 0x333537);
+                FocusGlow(x, y, w, h, Theme().settings_category_radius, Canvas::Unit1);
+                Round(x, y, w, h, Theme().settings_category_radius, Palette::FocusSurface);
             } else if (chosen) {
-                Round(x, y, w, h, 14, Palette::RowActive, 0.9f);
+                Round(x, y, w, h, Theme().settings_category_radius, Palette::RowActive,
+                      Canvas::Unit0_9F);
             }
             std::wstring summary;
             if (i == HomeSystem) {
@@ -1381,42 +1634,54 @@ private:
                           I18n::Format(T::FirmwareFiles, {std::to_wstring(status.firmware_files)});
             }
             const unsigned color = chosen ? Palette::Text : Palette::TextSecondary;
-            Icon(icons[i], x + 18, y + (h - 22) / 2, color, 22);
+            Icon(icons[i], x + Canvas::Unit18, y + (h - Canvas::Unit22) / Canvas::Unit2, color,
+                 Canvas::Unit22);
             // Focus only brightens the entry: its text keeps its size and place.
-            Type(Tr(titles[i]), TypeRole::LabelLarge, x + 56, y + 10, w - 92, chosen ? Palette::Text : Palette::TextHint);
-            Type(summary, TypeRole::Label, x + 56, y + 31, w - 92, chosen ? Palette::TextHint : Palette::TextSecondary,
-                 chosen ? 0.85f : 0.7f);
-            Chevron(x + w - 22, y + h / 2, color);
+            Type(Tr(titles[i]), TypeRole::LabelLarge, x + Canvas::Unit56, y + Canvas::Unit10,
+                 w - Canvas::Unit92, chosen ? Palette::Text : Palette::TextHint);
+            Type(summary, TypeRole::Label, x + Canvas::Unit56, y + Canvas::Unit31,
+                 w - Canvas::Unit92, chosen ? Palette::TextHint : Palette::TextSecondary,
+                 chosen ? Canvas::Unit0_85F : Canvas::Unit0_7F);
+            Chevron(x + w - Canvas::Unit22, y + h / Canvas::Unit2, color);
             AddHit(x, y, w, h, LibraryHit::Category, i);
         }
         // The emulator's data: what the files on the console add up to.
         {
             const float x = SettingsListX, w = SettingsListWidth;
-            const float y = SettingsListTop + static_cast<float>(HomeRowCount) * SettingsListStride + 18;
-            Round(x, y, w, 176, 18, Palette::Surface, 0.82f);
-            Outline(x + 0.5f, y + 0.5f, w - 1, 175, 18, 0xffffff, 0.06f);
-            Type(Tr(T::EmulatorData), TypeRole::Caps, x + 20, y + 20, 200, Palette::TextSecondary);
+            const float y = SettingsListTop +
+                            static_cast<float>(HomeRowCount) * SettingsListStride + Canvas::Unit18;
+            Round(x, y, w, Canvas::Unit176, Canvas::Unit18, Palette::Surface, Canvas::Unit0_82F);
+            Outline(x + Canvas::Unit0_5F, y + Canvas::Unit0_5F, w - Canvas::Unit1, Canvas::Unit175,
+                    Canvas::Unit18, Palette::White, Canvas::Unit0_06F);
+            Type(Tr(T::EmulatorData), TypeRole::Caps, x + Canvas::Unit20, y + Canvas::Unit20,
+                 Canvas::Unit200, Palette::TextSecondary);
             const auto keys = Tr(status.keys_ready ? T::KeysReady : T::KeysMissing);
-            const float chip = MeasureType(keys, TypeRole::Label) + 24;
-            Chip(keys, x + w - 20 - chip, y + 15, status.keys_ready ? Palette::Text : Palette::Warning);
-            const float tile_w = (w - 40 - 12) / 2;
+            const float chip = MeasureType(keys, TypeRole::Label) + Canvas::Unit24;
+            Chip(keys, x + w - Canvas::Unit20 - chip, y + Canvas::Unit15,
+                 status.keys_ready ? Palette::Text : Palette::Warning);
+            const float tile_w = (w - Canvas::Unit40 - Canvas::Unit12) / Canvas::Unit2;
             const auto tile = [&](float tx, std::wstring_view label, std::size_t count) {
-                Round(tx, y + 54, tile_w, 68, 12, Palette::Canvas, 0.7f);
-                Type(label, TypeRole::Label, tx + 12, y + 64, tile_w - 24, Palette::TextSecondary);
-                Type(std::to_wstring(count), TypeRole::HeadlineSmall, tx + 12, y + 84, tile_w - 24, Palette::Text);
+                Round(tx, y + Canvas::Unit54, tile_w, Canvas::Unit68, Canvas::Unit12,
+                      Palette::Canvas, Canvas::Unit0_7F);
+                Type(label, TypeRole::Label, tx + Canvas::Unit12, y + Canvas::Unit64,
+                     tile_w - Canvas::Unit24, Palette::TextSecondary);
+                Type(std::to_wstring(count), TypeRole::HeadlineSmall, tx + Canvas::Unit12,
+                     y + Canvas::Unit84, tile_w - Canvas::Unit24, Palette::Text);
             };
             tile(x + 20, Tr(T::SettingsFirmwareFiles), status.firmware_files);
             tile(x + 20 + tile_w + 12, Tr(T::SettingsGameFolders), status.sources.size());
-            Type(Tr(T::SettingsLibraryGames), TypeRole::Label, x + 20, y + 140, w - 120, Palette::TextSecondary);
-            Type(view.loading ? std::wstring{L"…"} : std::to_wstring(view.scan.entries.size()), TypeRole::Label,
-                 x + w - 120, y + 140, 100, Palette::Text, 1, TextAlign::Trailing);
+            Type(Tr(T::SettingsLibraryGames), TypeRole::Label, x + Canvas::Unit20,
+                 y + Canvas::Unit140, w - Canvas::Unit120, Palette::TextSecondary);
+            Type(view.loading ? std::wstring{L"…"} : std::to_wstring(view.scan.entries.size()),
+                 TypeRole::Label, x + w - Canvas::Unit120, y + Canvas::Unit140, Canvas::Unit100,
+                 Palette::Text, Canvas::Unit1, TextAlign::Trailing);
         }
         // The category's page.
         static constexpr std::array<T, HomeRowCount> pages{T::SystemTitle, T::ControllersAndKeyboard, T::FileManager};
         static constexpr std::array<T, HomeRowCount> about{T::SystemSubtitle, T::ControllerSubtitle, T::FilesSubtitle};
         const float px = SettingsPaneX, pw = SettingsPaneWidth;
-        Type(Tr(pages[category]), TypeRole::HeadlineLarge, px, 122, pw, Palette::Text);
-        Type(Tr(about[category]), TypeRole::Body, px, 176, pw, Palette::TextSecondary);
+        Type(Tr(pages[category]), TypeRole::HeadlineLarge, px, Canvas::Unit122, pw, Palette::Text);
+        Type(Tr(about[category]), TypeRole::Body, px, Canvas::Unit176, pw, Palette::TextSecondary);
         const auto rows = SettingsRows(view, category);
         if (rows.empty()) return;
         const std::size_t selected = !in_pane ? SIZE_MAX :
@@ -1424,103 +1689,132 @@ private:
             category == HomeFiles ? configuration.selected : view.controller_row;
         const std::size_t visible = std::min(rows.size(), SettingsVisibleRows);
         const std::size_t first = selected != SIZE_MAX && selected >= visible ? selected - visible + 1 : 0;
-        const float card_h = visible * SettingsRowStride - (SettingsRowStride - SettingsRowHeight) + 24;
-        Round(px, SettingsRowsTop - 12, pw, card_h, 18, Palette::Surface, 0.82f);
-        Outline(px + 0.5f, SettingsRowsTop - 11.5f, pw - 1, card_h - 1, 18, 0xffffff, 0.06f);
+        const float card_h =
+            visible * SettingsRowStride - (SettingsRowStride - SettingsRowHeight) + Canvas::Unit24;
+        if (Theme().settings_groups) {
+            Round(px, SettingsRowsTop - Canvas::Unit12, pw, card_h, Canvas::Unit18,
+                  Palette::Surface, Canvas::Unit0_82F);
+            Outline(px + Canvas::Unit0_5F, SettingsRowsTop - Canvas::Unit11_5F, pw - Canvas::Unit1,
+                    card_h - Canvas::Unit1, Canvas::Unit18, Palette::White, Canvas::Unit0_06F);
+        }
         for (std::size_t i = first; i < first + visible; ++i) {
             const float y = SettingsRowsTop + (i - first) * SettingsRowStride;
-            DrawSettingsRow(rows[i], px + 12, y, pw - 24, SettingsRowHeight, i == selected, in_pane ? 1.0f : 0.75f);
-            AddHit(px + 12, y, pw - 24, SettingsRowHeight, LibraryHit::SettingRow, i);
+            DrawSettingsRow(rows[i], px + Canvas::Unit12, y, pw - Canvas::Unit24, SettingsRowHeight,
+                            i == selected, in_pane ? Canvas::Unit1_0F : Canvas::Unit0_75F);
+            AddHit(px + Canvas::Unit12, y, pw - Canvas::Unit24, SettingsRowHeight,
+                   LibraryHit::SettingRow, i);
         }
-        ScrollIndicator(px + pw + 8, SettingsRowsTop, card_h - 24, first, visible, rows.size());
+        ScrollIndicator(px + pw + Canvas::Unit8, SettingsRowsTop, card_h - Canvas::Unit24, first,
+                        visible, rows.size());
     }
     void DrawSettingsRow(const SettingsRow& row, float x, float y, float w, float h, bool focused, float alpha) {
         using Kind = SettingsRow::Kind;
         if (focused) {
-            FocusGlow(x, y, w, h, 12, 1);
-            Round(x, y, w, h, 12, 0x333537);
+            FocusGlow(x, y, w, h, Theme().settings_row_radius, Canvas::Unit1);
+            Round(x, y, w, h, Theme().settings_row_radius, Palette::FocusSurface);
         } else {
-            Round(x, y, w, h, 12, Palette::Canvas, 0.55f);
+            Round(x, y, w, h, Theme().settings_row_radius, Palette::Canvas,
+                  Theme().settings_idle_opacity);
         }
-        const float middle = y + h / 2;
-        float right = x + w - 16;
+        const float middle = y + h / Canvas::Unit2;
+        float right = x + w - Canvas::Unit16;
         // The control at the right, drawn first: the texts take the room it leaves.
         switch (row.kind) {
         case Kind::Toggle:
-            right -= 52;
-            Switch(right, middle - 14, row.on, focused);
+            right -= Canvas::Unit52;
+            Switch(right, middle - Canvas::Unit14, row.on, focused);
             break;
         case Kind::Segments: {
-            constexpr float pad = 14, inset = 3, height = 32;
-            float width = 2 * inset;
+            constexpr float pad = Canvas::Unit14, inset = Canvas::Unit3, height = Canvas::Unit32;
+            float width = Canvas::Unit2 * inset;
             for (const auto& label : row.segments) width += MeasureType(label, TypeRole::LabelLarge) + 2 * pad;
             right -= width;
-            Round(right, middle - height / 2, width, height, 9, Palette::Graphite, 0.9f);
+            Round(right, middle - height / Canvas::Unit2, width, height, Canvas::Unit9,
+                  Palette::Graphite, Canvas::Unit0_9F);
             float cursor = right + inset;
             for (std::size_t i = 0; i < row.segments.size(); ++i) {
-                const float segment = MeasureType(row.segments[i], TypeRole::LabelLarge) + 2 * pad;
+                const float segment =
+                    MeasureType(row.segments[i], TypeRole::LabelLarge) + Canvas::Unit2 * pad;
                 const bool on = i == row.on_segment;
-                if (on) Round(cursor, middle - height / 2 + inset, segment, height - 2 * inset, 7, Palette::Accent);
-                Type(row.segments[i], TypeRole::LabelLarge, cursor, middle - 10, segment,
-                     on ? Palette::OnAccent : Palette::TextSecondary, alpha, TextAlign::Center);
+                if (on)
+                    Round(cursor, middle - height / Canvas::Unit2 + inset, segment,
+                          height - Canvas::Unit2 * inset, Canvas::Unit7, Palette::Accent);
+                Type(row.segments[i], TypeRole::LabelLarge, cursor, middle - Canvas::Unit10,
+                     segment, on ? Palette::OnAccent : Palette::TextSecondary, alpha,
+                     TextAlign::Center);
                 cursor += segment;
             }
             break;
         }
         case Kind::Choice: {
             // A capsule with the value; the arrows say left and right change it.
-            const float text = std::min(MeasureType(row.value, TypeRole::LabelLarge) + 4, w * 0.45f);
-            const float width = text + 2 * 30;
+            const float text =
+                std::min(MeasureType(row.value, TypeRole::LabelLarge) + Canvas::Unit4,
+                         w * Canvas::Unit0_45F);
+            const float width = text + Canvas::Unit2 * Canvas::Unit30;
             right -= width;
-            Round(right, middle - 16, width, 32, 9, Palette::Graphite, 0.9f);
-            Type(row.value, TypeRole::LabelLarge, right + 30, middle - 10, text, Palette::Text, alpha);
+            Round(right, middle - Canvas::Unit16, width, Canvas::Unit32, Canvas::Unit9,
+                  Palette::Graphite, Canvas::Unit0_9F);
+            Type(row.value, TypeRole::LabelLarge, right + Canvas::Unit30, middle - Canvas::Unit10,
+                 text, Palette::Text, alpha);
             const unsigned arrows = focused ? Palette::Text : Palette::TextSecondary;
-            Chevron(right + 16, middle, arrows, true);
-            Chevron(right + width - 14, middle, arrows);
+            Chevron(right + Canvas::Unit16, middle, arrows, true);
+            Chevron(right + width - Canvas::Unit14, middle, arrows);
             break;
         }
         case Kind::Open:
         case Kind::Value: {
             if (row.kind == Kind::Open) {
-                Chevron(right - 4, middle, focused ? Palette::Text : Palette::TextSecondary);
-                right -= 22;
+                Chevron(right - Canvas::Unit4, middle,
+                        focused ? Palette::Text : Palette::TextSecondary);
+                right -= Canvas::Unit22;
             }
             if (!row.value.empty()) {
-                const float text = std::min(MeasureType(row.value, TypeRole::LabelLarge) + 4, w * 0.5f);
+                const float text =
+                    std::min(MeasureType(row.value, TypeRole::LabelLarge) + Canvas::Unit4,
+                             w * Canvas::Unit0_5F);
                 right -= text;
-                Type(row.value, TypeRole::LabelLarge, right, middle - 10, text,
-                     row.warning ? Palette::Warning : focused ? Palette::Text : Palette::TextHint, alpha);
+                Type(row.value, TypeRole::LabelLarge, right, middle - Canvas::Unit10, text,
+                     row.warning ? Palette::Warning
+                     : focused   ? Palette::Text
+                                 : Palette::TextHint,
+                     alpha);
             }
             break;
         }
         }
-        const float text_w = right - (x + 18) - 20;
+        const float text_w = right - (x + Canvas::Unit18) - Canvas::Unit20;
         if (row.hint.empty()) {
-            Type(row.title, TypeRole::LabelLarge, x + 18, middle - 10, text_w, Palette::Text, alpha);
+            Type(row.title, TypeRole::SettingsTitle, x + Canvas::Unit18, middle - Canvas::Unit10,
+                 text_w, Palette::Text, alpha);
         } else {
-            Type(row.title, TypeRole::LabelLarge, x + 18, y + 7, text_w, Palette::Text, alpha);
-            Type(row.hint, TypeRole::Label, x + 18, y + 28, text_w, focused ? Palette::TextHint : Palette::TextSecondary,
-                 alpha);
+            Type(row.title, TypeRole::SettingsTitle, x + Canvas::Unit18, y + Canvas::Unit7, text_w,
+                 Palette::Text, alpha);
+            Type(row.hint, TypeRole::SettingsDetail, x + Canvas::Unit18, y + Canvas::Unit28, text_w,
+                 focused ? Palette::TextHint : Palette::TextSecondary, alpha);
         }
     }
     void DrawNameEditor(const SystemPage& page) {
         using L = SystemPageLayout;
         using K = TextEntryPanelLayout;
-        brush->SetColor(D2D1::ColorF(0, 0, 0, 0.86f));
-        target->FillRectangle(D2D1::RectF(0, 0, 1280, 720), brush.Get());
-        Round(L::EditorX, L::EditorY, K::Width, K::Height, 22, Palette::Surface);
+        brush->SetColor(Ink(Palette::Black, Canvas::Unit0_86F));
+        target->FillRectangle(
+            D2D1::RectF(Canvas::Unit0, Canvas::Unit0, Canvas::Unit1280, Canvas::Unit720),
+            brush.Get());
+        Round(L::EditorX, L::EditorY, K::Width, K::Height, Canvas::Unit22, Palette::Surface);
         DrawTextEntryPanel(*this, {*page.name_editor, Tr(T::UserName), Tr(T::NameEditorHint), page.editor_notice},
                            L::EditorX, L::EditorY);
         const float left = L::EditorX + K::Left;
         const float footer = L::EditorY + K::Footer;
         if (prompt_family == PromptFamily::Keyboard) {
-            Text(Tr(T::NameEditorKeyboardHelp), left, footer + 6, 15, Palette::TextSecondary, K::BoxWidth, 24);
+            Text(Tr(T::NameEditorKeyboardHelp), left, footer + Canvas::Unit6, Canvas::Unit15,
+                 Palette::TextSecondary, K::BoxWidth, Canvas::Unit24);
         } else {
             ControlPrompt(Navigation::Play, Tr(T::TypeKey), left, footer);
-            ControlPrompt(Navigation::AddFolder, Tr(T::DeleteKey), left + 190, footer);
-            ControlPrompt(Navigation::Space, Tr(T::SpaceKey), left + 380, footer);
-            ControlPrompt(Navigation::Options, Tr(T::DoneKey), left + 570, footer);
-            ControlPrompt(Navigation::Back, Tr(T::Cancel), left + 760, footer);
+            ControlPrompt(Navigation::AddFolder, Tr(T::DeleteKey), left + Canvas::Unit190, footer);
+            ControlPrompt(Navigation::Space, Tr(T::SpaceKey), left + Canvas::Unit380, footer);
+            ControlPrompt(Navigation::Options, Tr(T::DoneKey), left + Canvas::Unit570, footer);
+            ControlPrompt(Navigation::Back, Tr(T::Cancel), left + Canvas::Unit760, footer);
         }
     }
     struct KeyFace {
@@ -1573,8 +1867,9 @@ private:
     }
     /// A prompt's label after its badges; returns the label's width.
     float PromptLabel(std::wstring_view label, float x, float y) {
-        const float width = MeasureType(label, TypeRole::LabelLarge);
-        Type(label, TypeRole::LabelLarge, x, y + 6, width + 4, Palette::TextSecondary);
+        const float width = MeasureType(label, TypeRole::ControlLabel);
+        Type(label, TypeRole::ControlLabel, x, y + Canvas::Unit6, width + Canvas::Unit4,
+             Palette::TextSecondary);
         return width;
     }
     /// The badge of the button that does `action`, and its label, on a 32 px line; returns the
@@ -1582,11 +1877,15 @@ private:
     float ControlPrompt(Navigation action, std::wstring_view label, float x, float y) {
         if (action == Navigation::Explore) {
             // The d-pad (the arrow keys on a keyboard): a cross in the badge.
-            Round(x, y + 5, 22, 22, 11, Palette::Graphite);
-            Outline(x + 0.5f, y + 5.5f, 21, 21, 10.5f, 0xffffff, 0.15f);
-            Round(x + 9, y + 10, 4, 12, 1, Palette::Text);
-            Round(x + 5, y + 14, 12, 4, 1, Palette::Text);
-            return 30 + PromptLabel(label, x + 30, y) + 28;
+            Round(x, y + Canvas::Unit5, Canvas::Unit22, Canvas::Unit22, Canvas::Unit11,
+                  Palette::Graphite);
+            Outline(x + Canvas::Unit0_5F, y + Canvas::Unit5_5F, Canvas::Unit21, Canvas::Unit21,
+                    Canvas::Unit10_5F, Palette::White, Canvas::Unit0_15F);
+            Round(x + Canvas::Unit9, y + Canvas::Unit10, Canvas::Unit4, Canvas::Unit12,
+                  Canvas::Unit1, Palette::Text);
+            Round(x + Canvas::Unit5, y + Canvas::Unit14, Canvas::Unit12, Canvas::Unit4,
+                  Canvas::Unit1, Palette::Text);
+            return Canvas::Unit30 + PromptLabel(label, x + Canvas::Unit30, y) + Canvas::Unit28;
         }
         if (action == Navigation::Tabs) {
             const bool keyboard = prompt_family == PromptFamily::Keyboard;
@@ -1594,17 +1893,19 @@ private:
             const std::wstring_view previous = keyboard ? L"Q" : nintendo ? L"L" : L"LB";
             const std::wstring_view next = keyboard ? L"E" : nintendo ? L"R" : L"RB";
             const float first = BadgeWidth(previous), second = BadgeWidth(next);
-            Badge(previous, x + first / 2, y + 16, Palette::Text);
-            Badge(next, x + first + 6 + second / 2, y + 16, Palette::Text);
-            const float badges = first + 6 + second + 8;
-            return badges + PromptLabel(label, x + badges, y) + 28;
+            Badge(previous, x + first / Canvas::Unit2, y + Canvas::Unit16, Palette::Text);
+            Badge(next, x + first + Canvas::Unit6 + second / Canvas::Unit2, y + Canvas::Unit16,
+                  Palette::Text);
+            const float badges = first + Canvas::Unit6 + second + Canvas::Unit8;
+            return badges + PromptLabel(label, x + badges, y) + Canvas::Unit28;
         }
         const auto key = PromptKey(action);
         return Prompt(key.letters, key.color, label, x, y);
     }
     /// The width ControlPrompt takes for a one-badge prompt, to lay it out before drawing it.
     float PromptWidth(Navigation action, std::wstring_view label) {
-        return BadgeWidth(PromptKey(action).letters) + 8 + MeasureType(label, TypeRole::LabelLarge) + 28;
+        return BadgeWidth(PromptKey(action).letters) + Canvas::Unit8 +
+               MeasureType(label, TypeRole::ControlLabel) + Canvas::Unit28;
     }
     /// Eases `tween` toward the row `first`; a jump of more than a page (a new tab) lands at once.
     static float FollowRow(Tween& tween, std::size_t first, float page, Tween::Clock::time_point now) {
@@ -1631,7 +1932,7 @@ private:
             view.mods_page->tab == Mods::ModsTab::Explore ? GameOptionsLayout::GridBottom : GameOptionsLayout::ListBottom;
         const auto now = Tween::Clock::now();
         management_collapse.Set(expandable && view.page.focus == GameOptionsFocus::Content ? GameOptionsLayout::HeroCollapse : 0.0f, now);
-        const float offset = expandable && !modal ? management_collapse.Value(now) : 0;
+        const float offset = expandable && !modal ? management_collapse.Value(now) : Canvas::Unit0;
         const bool keyboard = prompt_family == PromptFamily::Keyboard;
         const bool nintendo = prompt_family == PromptFamily::Nintendo;
         const std::wstring_view previous_tab = keyboard ? L"PgUp" : nintendo ? L"ZL" : L"LT";
@@ -1639,15 +1940,18 @@ private:
         constexpr float footer = GameOptionsLayout::Footer;
         // B, the way out, always ends the bar at the right margin.
         const auto back_prompt = [&](std::wstring_view label) {
-            const float width = BadgeWidth(PromptKey(Navigation::Back).letters) + 8 +
+            const float width = BadgeWidth(PromptKey(Navigation::Back).letters) + Canvas::Unit8 +
                                 MeasureType(label, TypeRole::LabelLarge);
-            ControlPrompt(Navigation::Back, label, 1224 - width, footer);
+            ControlPrompt(Navigation::Back, label, Canvas::Unit1224 - width, footer);
         };
         D2D1_MATRIX_3X2_F base_transform;
         target->GetTransform(&base_transform);
         const auto begin_body = [&] {
             if (modal) return;
-            target->PushAxisAlignedClip(D2D1::RectF(0, GameOptionsLayout::BodyTop - offset, 1280, body_bottom), D2D1_ANTIALIAS_MODE_ALIASED);
+            target->PushAxisAlignedClip(D2D1::RectF(Canvas::Unit0,
+                                                    GameOptionsLayout::BodyTop - offset,
+                                                    Canvas::Unit1280, body_bottom),
+                                        D2D1_ANTIALIAS_MODE_ALIASED);
             target->SetTransform(D2D1::Matrix3x2F::Translation(0, -offset) * base_transform);
             manager_offset = offset;
             manager_bottom = body_bottom;
@@ -1663,25 +1967,31 @@ private:
         // The triggers move between the page's own tabs; the bumpers between the game's options.
         const auto internal_prompt = [&](std::wstring_view label, float left) {
             const float first = BadgeWidth(previous_tab);
-            Badge(previous_tab, left + first / 2, footer + 16, Palette::Text);
-            return first + 6 + Prompt(next_tab, Palette::Text, label, left + first + 6, footer);
+            Badge(previous_tab, left + first / Canvas::Unit2, footer + Canvas::Unit16,
+                  Palette::Text);
+            return first + 6 +
+                   Prompt(next_tab, Palette::Text, label, left + first + Canvas::Unit6, footer);
         };
 
-        Round(0, 0, 1280, 720, 0, Palette::Canvas, 0.86f);
+        Round(Canvas::Unit0, Canvas::Unit0, Canvas::Unit1280, Canvas::Unit720, Canvas::Unit0,
+              Palette::Canvas, Canvas::Unit0_86F);
         if (view.page.page == GameOption::Cheats && view.cheats) {
             using L = Cheats::CheatsLayout;
-            constexpr float x = (1280 - L::Width) / 2, y = (720 - L::Height) / 2;
+            constexpr float x = (Canvas::Unit1280 - L::Width) / Canvas::Unit2,
+                            y = (Canvas::Unit720 - L::Height) / Canvas::Unit2;
             const Cheats::CheatsView manager{*view.cheats, view.cheats_page, game.name, view.notice, false,
                 view.page.focus == GameOptionsFocus::Content, view.page.focus == GameOptionsFocus::ManagerTabs,
                 previous_tab, next_tab, FollowRow(list_scroll, view.cheats_page.first, L::VisibleRows, now)};
             begin_body();
             Cheats::DrawCheatsPanel(*this, manager, x, y);
             end_body();
-            Round(0, body_bottom, 1280, 720 - body_bottom, 0, Palette::Canvas);
-            Round(40, GameOptionsLayout::FooterLine, 1200, 1, 0, Palette::Graphite);
+            Round(Canvas::Unit0, body_bottom, Canvas::Unit1280, Canvas::Unit720 - body_bottom,
+                  Canvas::Unit0, Palette::Canvas);
+            Round(Canvas::Unit40, GameOptionsLayout::FooterLine, Canvas::Unit1200, Canvas::Unit1,
+                  Canvas::Unit0, Palette::Graphite);
             Cheats::DrawCheatsStatus(*this, manager, x, y);
             if (view.page.focus == GameOptionsFocus::Content) {
-                float next = 56;
+                float next = Canvas::Unit56;
                 next += ControlPrompt(Navigation::Play, Tr(T::ToggleCheat), next, footer);
                 next += ControlPrompt(Navigation::AddFolder, Tr(T::AllCheats), next, footer);
                 if (Cheats::CheatTabCount(view.cheats->Catalog()) > 1)
@@ -1692,7 +2002,8 @@ private:
         } else if (view.page.page == GameOption::Mods && view.mods && view.mods_page) {
             using L = Mods::ModsLayout;
             using Button = Mods::ModsPrompt::Button;
-            constexpr float x = (1280 - L::Width) / 2, y = (720 - L::Height) / 2;
+            constexpr float x = (Canvas::Unit1280 - L::Width) / Canvas::Unit2,
+                            y = (Canvas::Unit720 - L::Height) / Canvas::Unit2;
             const Mods::ModsView manager{*view.mods, *view.mods_page, game.name, view.notice,
                 view.page.focus == GameOptionsFocus::Content, view.page.focus == GameOptionsFocus::ManagerTabs,
                 previous_tab, next_tab, PromptKey(Navigation::Play).letters, PromptKey(Navigation::Play).color,
@@ -1702,11 +2013,13 @@ private:
             Mods::DrawModsPanel(*this, manager, x, y);
             end_body();
             if (!modal) {
-                Round(0, body_bottom, 1280, 720 - body_bottom, 0, Palette::Canvas);
-                Round(40, GameOptionsLayout::FooterLine, 1200, 1, 0, Palette::Graphite);
+                Round(Canvas::Unit0, body_bottom, Canvas::Unit1280, Canvas::Unit720 - body_bottom,
+                      Canvas::Unit0, Palette::Canvas);
+                Round(Canvas::Unit40, GameOptionsLayout::FooterLine, Canvas::Unit1200,
+                      Canvas::Unit1, Canvas::Unit0, Palette::Graphite);
                 Mods::DrawModsStatus(*this, manager, x, y);
             }
-            float next = 56;
+            float next = Canvas::Unit56;
             for (const auto& prompt : Mods::ModsPrompts(*view.mods, *view.mods_page)) {
                 // On the tab bars, the bars' own prompts below speak instead.
                 if (!modal && view.page.focus != GameOptionsFocus::Content) break;
@@ -1728,12 +2041,18 @@ private:
         } else {
             ManagementSurface(0, 0, 1280, 720, GameOptionsLayout::Footer);
             // The panes that act in place: what A does, explained, and A once more confirms it.
-            const auto in_place = [&](GameOption option, std::wstring_view body, std::wstring_view action) {
-                Card(56, 214, 1168, 264, 24);
-                Icon(GameOptionIcon(option), 80, 240, Palette::Text);
-                Type(Tr(GameOptionTitle(option)), TypeRole::HeadlineMedium, 132, 234, 1056, Palette::Text);
-                Type(body, TypeRole::BodyLarge, 80, 298, 1120, Palette::TextHint, 1, TextAlign::Leading, 3);
-                if (!action.empty()) Prompt(PromptKey(Navigation::Play).letters, Palette::Text, action, 80, 404);
+            const auto in_place = [&](GameOption option, std::wstring_view body,
+                                      std::wstring_view action) {
+                Card(Canvas::Unit56, Canvas::Unit214, Canvas::Unit1168, Canvas::Unit264,
+                     Canvas::Unit24);
+                Icon(GameOptionIcon(option), Canvas::Unit80, Canvas::Unit240, Palette::Text);
+                Type(Tr(GameOptionTitle(option)), TypeRole::HeadlineMedium, Canvas::Unit132,
+                     Canvas::Unit234, Canvas::Unit1056, Palette::Text);
+                Type(body, TypeRole::BodyLarge, Canvas::Unit80, Canvas::Unit298, Canvas::Unit1120,
+                     Palette::TextHint, Canvas::Unit1, TextAlign::Leading, 3);
+                if (!action.empty())
+                    Prompt(PromptKey(Navigation::Play).letters, Palette::Text, action,
+                           Canvas::Unit80, Canvas::Unit404);
             };
             const auto option = GameOptions()[view.page.selected];
             if (option == GameOption::Pulse) {
@@ -1747,23 +2066,28 @@ private:
                                     view.other_copies ? T::GameRemoveCopyWarning : T::GameRemoveWarning),
                          external ? std::wstring_view{} : Tr(T::GameRemove));
             } else {
-                Type(view.notice.empty() ? Tr(T::CheckingGame) : view.notice, TypeRole::BodyLarge, 56, 230, 1168, Palette::TextHint,
-                     1, TextAlign::Leading, 3);
+                Type(view.notice.empty() ? Tr(T::CheckingGame) : view.notice, TypeRole::BodyLarge,
+                     Canvas::Unit56, Canvas::Unit230, Canvas::Unit1168, Palette::TextHint,
+                     Canvas::Unit1, TextAlign::Leading, 3);
             }
         }
         if (view.mods_page && view.page.page == GameOption::Mods &&
             view.mods_page->screen != Mods::ModsScreen::List) return; // A modal covers the game content.
         // The global header stays fixed; the game's line folds up behind it.
         using G = GameOptionsLayout;
-        Round(0, G::GlobalHeaderBottom, 1280, G::BodyTop - G::GlobalHeaderBottom - offset, 0, Palette::Canvas);
+        Round(Canvas::Unit0, G::GlobalHeaderBottom, Canvas::Unit1280,
+              G::BodyTop - G::GlobalHeaderBottom - offset, Canvas::Unit0, Palette::Canvas);
         if (offset < G::HeroCollapse) {
-            target->PushAxisAlignedClip(D2D1::RectF(0, G::GlobalHeaderBottom, 1280, G::HeroClipBottom - offset),
+            target->PushAxisAlignedClip(D2D1::RectF(Canvas::Unit0, G::GlobalHeaderBottom,
+                                                    Canvas::Unit1280, G::HeroClipBottom - offset),
                                         D2D1_ANTIALIAS_MODE_ALIASED);
             const float top = G::HeroTop - offset;
             Cover(game, 56, top, G::HeroHeight);
-            const float title_left = 56 + G::HeroHeight + 16;
-            const float title_width = std::min(MeasureType(game.name, TypeRole::HeadlineMedium), 640.0f);
-            Type(game.name, TypeRole::HeadlineMedium, title_left, top + 6, title_width + 4, Palette::Text);
+            const float title_left = Canvas::Unit56 + G::HeroHeight + Canvas::Unit16;
+            const float title_width =
+                std::min(MeasureType(game.name, TypeRole::HeadlineMedium), Canvas::Unit640_0F);
+            Type(game.name, TypeRole::HeadlineMedium, title_left, top + Canvas::Unit6,
+                 title_width + Canvas::Unit4, Palette::Text);
             // Who made it, its version and its build, on the title's line.
             std::wstring about = game.developer;
             const auto add = [&](std::wstring_view part) {
@@ -1778,36 +2102,52 @@ private:
                 for (auto byte : game.build_id) { build += hex[byte >> 4]; build += hex[byte & 15]; }
                 add(build);
             }
-            const float about_left = title_left + title_width + 20;
-            Type(about, TypeRole::Label, about_left, top + 17, 1224 - about_left, Palette::TextHint);
+            const float about_left = title_left + title_width + Canvas::Unit20;
+            Type(about, TypeRole::Label, about_left, top + Canvas::Unit17,
+                 Canvas::Unit1224 - about_left, Palette::TextHint);
             target->PopAxisAlignedClip();
         }
         const auto options = GameOptions();
         const float sections = G::SectionsTop - offset;
-        Round(56, sections, 1168, G::SectionsHeight, G::SectionsHeight / 2, Palette::Surface);
-        Badge(keyboard ? L"Q" : nintendo ? L"L" : L"LB", 80, sections + G::SectionsHeight / 2, Palette::Text);
-        Badge(keyboard ? L"E" : nintendo ? L"R" : L"RB", 1200, sections + G::SectionsHeight / 2, Palette::Text);
+        Round(Canvas::Unit56, sections, Canvas::Unit1168, G::SectionsHeight,
+              G::SectionsHeight / Canvas::Unit2, Palette::Surface);
+        Badge(keyboard   ? L"Q"
+              : nintendo ? L"L"
+                         : L"LB",
+              Canvas::Unit80, sections + G::SectionsHeight / Canvas::Unit2, Palette::Text);
+        Badge(keyboard   ? L"E"
+              : nintendo ? L"R"
+                         : L"RB",
+              Canvas::Unit1200, sections + G::SectionsHeight / Canvas::Unit2, Palette::Text);
         // The bar spans the bumpers' gap, shared by however many options there are.
-        const float tab_width = 1080.0f / static_cast<float>(options.size());
+        const float tab_width = Canvas::Unit1080_0F / static_cast<float>(options.size());
         for (std::size_t i = 0; i < options.size(); ++i) {
-            const float left = 100 + static_cast<float>(i) * tab_width;
+            const float left = Canvas::Unit100 + static_cast<float>(i) * tab_width;
             const bool active = i == view.page.selected;
-            if (active) Round(left, sections + 4, tab_width - 4, 36, 18,
-                (view.page.focus == GameOptionsFocus::Sections) ? Palette::Accent : Palette::RowActive);
-            Type(Tr(GameOptionTitle(options[i])), TypeRole::LabelLarge, left + 6, sections + 12,
-                tab_width - 16, active && (view.page.focus == GameOptionsFocus::Sections) ? Palette::OnAccent :
-                active ? Palette::Text : Palette::TextHint, 1, TextAlign::Center);
-            AddHit(left, sections + 4, tab_width - 4, 36, LibraryHit::GameOptionSelect, i);
+            if (active)
+                Round(left, sections + Canvas::Unit4, tab_width - Canvas::Unit4, Canvas::Unit36,
+                      Canvas::Unit18,
+                      (view.page.focus == GameOptionsFocus::Sections) ? Palette::Accent
+                                                                      : Palette::RowActive);
+            Type(Tr(GameOptionTitle(options[i])), TypeRole::LabelLarge, left + Canvas::Unit6,
+                 sections + Canvas::Unit12, tab_width - Canvas::Unit16,
+                 active && (view.page.focus == GameOptionsFocus::Sections) ? Palette::OnAccent
+                 : active                                                  ? Palette::Text
+                                                                           : Palette::TextHint,
+                 Canvas::Unit1, TextAlign::Center);
+            AddHit(left, sections + Canvas::Unit4, tab_width - Canvas::Unit4, Canvas::Unit36,
+                   LibraryHit::GameOptionSelect, i);
         }
         // A confirmation names the key that confirms on this controller ("{0}").
         if (!view.notice.empty() && view.page.page != GameOption::Mods && view.page.page != GameOption::Cheats)
-            Type(I18n::Format(view.notice, {PromptKey(Navigation::Play).letters}), TypeRole::Label, 56, G::Status,
-                 1168, Palette::Warning);
+            Type(I18n::Format(view.notice, {PromptKey(Navigation::Play).letters}), TypeRole::Label,
+                 Canvas::Unit56, G::Status, Canvas::Unit1168, Palette::Warning);
         // The panes that act in place have no prompts of their own; on the manager's tabs (a
         // pointer put the focus there), the bar's prompts speak over the pane's.
         if (view.page.focus != GameOptionsFocus::Content || !view.page.page) {
-            Round(0, G::FooterLine + 1, 1280, 720 - G::FooterLine - 1, 0, Palette::Canvas);
-            float next = 56;
+            Round(Canvas::Unit0, G::FooterLine + Canvas::Unit1, Canvas::Unit1280,
+                  Canvas::Unit720 - G::FooterLine - Canvas::Unit1, Canvas::Unit0, Palette::Canvas);
+            float next = Canvas::Unit56;
             next += view.page.focus == GameOptionsFocus::ManagerTabs ? internal_prompt(Tr(T::Category), next) :
                 ControlPrompt(Navigation::Tabs, Tr(T::Category), next, footer);
             if (view.page.focus == GameOptionsFocus::ManagerTabs)
@@ -1852,8 +2192,9 @@ private:
         }
         return found->second.Get();
     }
-    void Cover(const LibraryEntry& entry, float x, float y, float size, float alpha = 1) {
-        Round(x, y, size, size, 12, Palette::Graphite, alpha);
+    void Cover(const LibraryEntry& entry, float x, float y, float size,
+               float alpha = Canvas::Unit1) {
+        Round(x, y, size, size, Theme().cover_radius, Palette::Graphite, alpha);
         if (auto* bitmap = CoverBitmap(entry)) {
             // One unit mask for every size: the layer's transform places and scales it, so a
             // cover growing into focus allocates nothing.
@@ -1861,7 +2202,10 @@ private:
                 ComPtr<ID2D1Factory> factory;
                 target->GetFactory(&factory);
                 winrt::check_hresult(factory->CreateRoundedRectangleGeometry(
-                    D2D1::RoundedRect(D2D1::RectF(0, 0, 1, 1), 1 / 12.0f, 1 / 12.0f), &cover_mask));
+                    D2D1::RoundedRect(
+                        D2D1::RectF(Canvas::Unit0, Canvas::Unit0, Canvas::Unit1, Canvas::Unit1),
+                        Theme().cover_mask_radius, Theme().cover_mask_radius),
+                    &cover_mask));
             }
             D2D1_LAYER_PARAMETERS1 layer{};
             layer.contentBounds = D2D1::RectF(x, y, x + size, y + size);
@@ -1873,11 +2217,14 @@ private:
             target->DrawBitmap(bitmap, D2D1::RectF(x, y, x + size, y + size), 1, D2D1_INTERPOLATION_MODE_LINEAR);
             target->PopLayer();
         } else {
-            Outline(x + 0.5f, y + 0.5f, size - 1, size - 1, 11.5f, 0xffffff, 0.08f * alpha);
+            Outline(x + Canvas::Unit0_5F, y + Canvas::Unit0_5F, size - Canvas::Unit1,
+                    size - Canvas::Unit1, Theme().cover_radius - Canvas::Unit0_5F, Palette::White,
+                    Canvas::Unit0_08F * alpha);
             const auto extension = entry.relative_path.extension().wstring();
             if (extension.size() > 1)
-                Type(Upper(std::wstring_view{extension}.substr(1)), TypeRole::Caps, x, y + size / 2 - 8, size,
-                     Palette::TextSecondary, alpha, TextAlign::Center);
+                Type(Upper(std::wstring_view{extension}.substr(1)), TypeRole::Caps, x,
+                     y + size / Canvas::Unit2 - Canvas::Unit8, size, Palette::TextSecondary, alpha,
+                     TextAlign::Center);
         }
     }
     /// The focused game's cover behind the screen: blurred, a touch more saturated, cropped to
@@ -1915,8 +2262,8 @@ private:
     }
     static D2D1_MATRIX_5X4_F Saturation(float amount) {
         // Rec. 709 luma stays; chroma scales by `amount`.
-        constexpr float r = 0.2126f, g = 0.7152f, b = 0.0722f;
-        const float k = 1 - amount;
+        constexpr float r = Canvas::Unit0_2126F, g = Canvas::Unit0_7152F, b = Canvas::Unit0_0722F;
+        const float k = Canvas::Unit1 - amount;
         return D2D1::Matrix5x4F(r * k + amount, r * k, r * k, 0,
                                 g * k, g * k + amount, g * k, 0,
                                 b * k, b * k, b * k + amount, 0,
@@ -1956,7 +2303,7 @@ private:
         backdrop_border->SetInput(0, cover);
         target->SetTarget(bitmap.Get());
         target->BeginDraw();
-        target->Clear(D2D1::ColorF(0, 0, 0, 0));
+        target->Clear(Ink(Palette::Black, Canvas::Unit0));
         // The square cover fills the width; its middle band shows.
         const auto size = cover->GetSize();
         const float scale = BackdropWidth / size.width;
@@ -1976,18 +2323,20 @@ private:
         // A slow drift: the art breathes and wanders, and a larger, fainter copy of it flows the
         // other way. The periods share no factor, so the motion never visibly repeats; each copy
         // is scaled enough that its edges stay off screen. Two quads of the cached bitmap a frame.
-        constexpr float Tau = 6.2831853f;
+        constexpr float Tau = Canvas::Unit6_2831853F;
         const float s = std::chrono::duration<float>(now - ambient_epoch).count();
         const auto rect = [](float scale, float dx, float dy) {
-            const float w = 640 * scale, h = 360 * scale;
-            return D2D1::RectF(640 - w + dx, 360 - h + dy, 640 + w + dx, 360 + h + dy);
+            const float w = Canvas::Unit640 * scale, h = Canvas::Unit360 * scale;
+            return D2D1::RectF(Canvas::Unit640 - w + dx, Canvas::Unit360 - h + dy,
+                               Canvas::Unit640 + w + dx, Canvas::Unit360 + h + dy);
         };
         const auto art = rect(1.2f + 0.08f * std::sin(Tau * s / 17), 60 * std::sin(Tau * s / 19),
                               36 * std::sin(Tau * s / 13 + 1.3f));
         const auto glow = rect(1.7f + 0.15f * std::sin(Tau * s / 23 + 2), -100 * std::sin(Tau * s / 17 + 0.7f),
                                60 * std::sin(Tau * s / 11));
         // The flowing copy also swells and fades, as light passing over the art.
-        const float shine = 0.3f + 0.2f * std::sin(Tau * s / 9 + 0.4f);
+        const float shine = Canvas::Unit0_3F +
+                            Canvas::Unit0_2F * std::sin(Tau * s / Canvas::Unit9 + Canvas::Unit0_4F);
         const auto layer = [&](const std::string& key, float opacity) {
             if (key.empty() || opacity <= 0.002f) return;
             if (auto* bitmap = FindBackdrop(key)) {
@@ -1999,10 +2348,13 @@ private:
         layer(backdrop_now, BackdropOpacity * t);
         if (!scrims[0]) MakeScrims();
         for (const auto& scrim : scrims)
-            if (scrim) target->FillRectangle(D2D1::RectF(0, 0, 1280, 720), scrim.Get());
+            if (scrim)
+                target->FillRectangle(
+                    D2D1::RectF(Canvas::Unit0, Canvas::Unit0, Canvas::Unit1280, Canvas::Unit720),
+                    scrim.Get());
     }
     void MakeScrims() {
-        const auto canvas = [](float alpha) { return D2D1::ColorF(Palette::Canvas, alpha); };
+        const auto canvas = [&](float alpha) { return Ink(Palette::Canvas, alpha); };
         const auto stops = [&](std::initializer_list<D2D1_GRADIENT_STOP> list) {
             ComPtr<ID2D1GradientStopCollection> collection;
             winrt::check_hresult(target->CreateGradientStopCollection(list.begin(), static_cast<UINT32>(list.size()),
@@ -2016,13 +2368,21 @@ private:
             return ComPtr<ID2D1Brush>{brush};
         };
         // The hero's side, the header and the bottom with the rows and the prompts.
-        scrims[0] = linear({0, 0}, {820, 0}, {{0, canvas(0.85f)}, {0.5f, canvas(0.55f)}, {1, canvas(0)}});
-        scrims[1] = linear({0, 0}, {0, 160}, {{0, canvas(0.7f)}, {1, canvas(0)}});
-        scrims[2] = linear({0, 380}, {0, 720}, {{0, canvas(0)}, {0.5f, canvas(0.7f)}, {1, canvas(0.92f)}});
+        scrims[0] = linear({0, 0}, {820, 0},
+                           {{0, canvas(Canvas::Unit0_85F)},
+                            {0.5f, canvas(Canvas::Unit0_55F)},
+                            {1, canvas(Canvas::Unit0)}});
+        scrims[1] =
+            linear({0, 0}, {0, 160}, {{0, canvas(Canvas::Unit0_7F)}, {1, canvas(Canvas::Unit0)}});
+        scrims[2] = linear({0, 380}, {0, 720},
+                           {{0, canvas(Canvas::Unit0)},
+                            {0.5f, canvas(Canvas::Unit0_7F)},
+                            {1, canvas(Canvas::Unit0_92F)}});
         ComPtr<ID2D1RadialGradientBrush> vignette;
         winrt::check_hresult(target->CreateRadialGradientBrush(
             D2D1::RadialGradientBrushProperties({640, 320}, {0, 0}, 860, 520),
-            stops({{0.6f, canvas(0)}, {1, canvas(0.55f)}}).Get(), &vignette));
+            stops({{0.6f, canvas(Canvas::Unit0)}, {1, canvas(Canvas::Unit0_55F)}}).Get(),
+            &vignette));
         scrims[3] = vignette;
     }
     /// `text` in capitals by the user's locale (unchanged when that would change its length).
@@ -2050,14 +2410,17 @@ private:
         float crop_w = size.width, crop_h = size.height;
         if (crop_w / crop_h > w / h) crop_w = crop_h * w / h;
         else crop_h = crop_w * h / w;
-        const auto source = D2D1::RectF((size.width - crop_w) / 2, (size.height - crop_h) / 2,
-                                        (size.width + crop_w) / 2, (size.height + crop_h) / 2);
+        const auto source = D2D1::RectF(
+            (size.width - crop_w) / Canvas::Unit2, (size.height - crop_h) / Canvas::Unit2,
+            (size.width + crop_w) / Canvas::Unit2, (size.height + crop_h) / Canvas::Unit2);
         auto& mask = picture_masks[(static_cast<unsigned>(w) << 16) | static_cast<unsigned>(h)];
         if (!mask) {
             ComPtr<ID2D1Factory> factory;
             target->GetFactory(&factory);
             if (FAILED(factory->CreateRoundedRectangleGeometry(
-                    D2D1::RoundedRect(D2D1::RectF(0, 0, w, h), 12, 12), &mask)))
+                    D2D1::RoundedRect(D2D1::RectF(Canvas::Unit0, Canvas::Unit0, w, h),
+                                      Canvas::Unit12, Canvas::Unit12),
+                    &mask)))
                 return false;
         }
         D2D1_LAYER_PARAMETERS1 layer{};
@@ -2098,10 +2461,11 @@ private:
         }
         return bitmap;
     }
+    ThemeId canvas_theme{ThemeId::Jadyx};
     static constexpr size_t MaxCovers = 48;
     static constexpr size_t MaxBackdrops = 8;
     static constexpr unsigned BackdropWidth = 320, BackdropHeight = 180;
-    static constexpr float BackdropOpacity = 0.58f;
+    static constexpr float BackdropOpacity = Canvas::Unit0_58F;
     /// The backdrop's drift moves a pixel or so a frame over blurred art: 30 frames a second show
     /// it as smooth as 60, at half the redraws of an idle library. Presses still draw at once.
     static constexpr auto AmbientFrame = std::chrono::milliseconds{30};
