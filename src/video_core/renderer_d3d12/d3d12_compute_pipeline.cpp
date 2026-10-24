@@ -122,7 +122,8 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
     // buffer cache binds them, then textures and images.
     // A full sampler heap can Finish/reset: do this before reserving descriptors and UBOs.
     SamplerTableBuilder sampler_table;
-    for (const SamplerId id : samplers) sampler_table.Add(texture_cache.GetSampler(id));
+    const SamplerId* table_samplers_it = samplers.data();
+    sampler_table.AddStage(info, texture_cache, table_samplers_it);
     out.sampler_table = sampler_table.Table(context.sampler_heap);
     GuestDescriptorQueue& queue = context.descriptor_queue;
     queue.Acquire(layout.NumResourceDescriptors());
@@ -143,10 +144,11 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
             image_view.PrepareRead(desc.type);
             queue.AddCopy(image_view.Handle(desc.type));
             const SamplerId sampler_id = *(samplers_it++);
-            if (out.trace_filters) out.trace_filters->push_back(fmt::format(
-                "binding={} type={} srv=[{}] sampler=[{}]", texture_binding,
-                static_cast<u32>(desc.type), image_view.DescribeSrv(desc.type, false),
-                texture_cache.GetSampler(sampler_id).Describe()));
+            if (out.trace_filters)
+                out.trace_filters->push_back(fmt::format(
+                    "binding={} type={} srv=[{}] sampler=[{}]", texture_binding,
+                    static_cast<u32>(desc.type), image_view.DescribeSrv(desc.type, false),
+                    texture_cache.GetSampler(sampler_id).Describe(desc.is_depth)));
             if (has_integer_samplers && desc.is_integer) {
                 integer_samplers.Add(texture_binding, texture_cache.GetSampler(sampler_id), image_view);
             }

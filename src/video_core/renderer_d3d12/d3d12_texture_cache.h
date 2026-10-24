@@ -580,18 +580,24 @@ public:
     Sampler(Sampler&& other) noexcept;
     Sampler& operator=(Sampler&& other) noexcept;
 
-    [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE Handle() const noexcept { return handle; }
+    [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE Handle(bool shader_compares = false) const noexcept {
+        return shader_compares && comparison_handle.ptr ? comparison_handle : handle;
+    }
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE HandleWithDefaultAnisotropy() const noexcept {
         return handle;
     }
     [[nodiscard]] bool HasAddedAnisotropy() const noexcept { return false; }
 
     /// Never reused by another sampler: SamplerHeap deduplicates tables by these keys.
-    [[nodiscard]] u64 Key() const noexcept { return key; }
+    [[nodiscard]] u64 Key(bool shader_compares = false) const noexcept {
+        return shader_compares && comparison_handle.ptr ? comparison_key : key;
+    }
     /// The D3D12 filter it was created with (draw trace).
-    [[nodiscard]] D3D12_FILTER Filter() const noexcept { return filter; }
+    [[nodiscard]] D3D12_FILTER Filter(bool shader_compares = false) const noexcept {
+        return shader_compares && comparison_handle.ptr ? comparison_filter : filter;
+    }
     /// Everything it was created with, for the draw trace.
-    [[nodiscard]] std::string Describe() const;
+    [[nodiscard]] std::string Describe(bool shader_compares = false) const;
     /// What spirv_to_dxil's integer texture lowering emulates of this sampler, for a view whose
     /// last mip level (relative to the view) is last_level.
     [[nodiscard]] eden_integer_sampler_state IntegerState(u32 last_level) const;
@@ -601,6 +607,9 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE handle{};
     u64 key{};
     D3D12_FILTER filter{};
+    D3D12_CPU_DESCRIPTOR_HANDLE comparison_handle{};
+    u64 comparison_key{};
+    D3D12_FILTER comparison_filter{};
     D3D12_SAMPLER_DESC desc{};
     std::array<u64, 4> guest_raw{}; ///< Original TSC words, diagnostic comparison only.
 };

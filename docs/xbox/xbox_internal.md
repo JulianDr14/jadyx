@@ -25,6 +25,18 @@ and synthetic console acceptance protocols: [nxbox-31-cache-coherence.md](nxbox-
 
 ---
 
+## Comparison sampler instruction contract (24 Oct 2026)
+
+R048/R102 port from local NXbox reference `9c878c47d`: graphics/compute now select
+normal versus comparison descriptors from shader `is_depth`, with separate table
+keys; DrawTexture uses normal sampling. Host regression compiled the production
+Sampler against a recording API shim: failed on the original comparison filter
+for a plain read, passes after the fix. Six existing macOS checks also pass before
+and after. CPU BC-array/cube decoding remains: documented copy/layout faults and
+non-aligned BC dimensions are independent of comparison sampling. No UWP/console
+validation or performance claim. Full evidence and console protocols:
+[`nxbox-32-3dw-compare-sampler.md`](nxbox-32-3dw-compare-sampler.md).
+
 ## 1. Carpetas
 
 ```

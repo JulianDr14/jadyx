@@ -71,7 +71,7 @@ void RasterizerD3D12::DrawTexture() {
     if (full) {
         ++full_capture_operation;
         VideoCommon::FullCapture::Event("draw_texture", fmt::format("{{\"op\":{}}}", full_capture_operation));
-        VideoCommon::FullCapture::Text("draw_texture_sampler", sampler.Describe());
+        VideoCommon::FullCapture::Text("draw_texture_sampler", sampler.Describe(false));
         VideoCommon::FullCapture::Data("draw_texture_state", "{}",
             {reinterpret_cast<const u8*>(&state), sizeof(state)});
         if (auto* image = texture.SourceImage(); image && image->Handle() == texture.ImageHandle()) {
@@ -92,7 +92,7 @@ void RasterizerD3D12::DrawTexture() {
                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     blit_helper.BlitColor(
         {framebuffer->ColorTargets()[0], framebuffer->ColorFormat(0), framebuffer->Samples()},
-        texture.Handle(Shader::TextureType::Color2D), {sampler.Handle(), sampler.Key()}, dst_region,
+        texture.Handle(Shader::TextureType::Color2D), {sampler.Handle(false), sampler.Key(false)}, dst_region,
         src_region,
         {.width = texture.IsRescaled() ? scale.Size(texture.size.width) : texture.size.width,
          .height = texture.IsRescaled() ? scale.Size(texture.size.height) : texture.size.height});

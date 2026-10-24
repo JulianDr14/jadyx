@@ -169,9 +169,19 @@ void PushStorageImages(const Info& info, TextureCache& texture_cache,
 /// The samplers of one draw or dispatch, uploaded (or reused) as one sampler table.
 class SamplerTableBuilder {
 public:
-    void Add(const Sampler& sampler) {
-        handles.push_back(sampler.Handle());
-        keys.push_back(sampler.Key());
+    void Add(const Sampler& sampler, bool shader_compares = false) {
+        handles.push_back(sampler.Handle(shader_compares));
+        keys.push_back(sampler.Key(shader_compares));
+    }
+
+    template <typename Info>
+    void AddStage(const Info& info, TextureCache& texture_cache,
+                  const VideoCommon::SamplerId*& samplers_it) {
+        for (const auto& descriptor : info.texture_descriptors) {
+            for (u32 index = 0; index < descriptor.count; ++index) {
+                Add(texture_cache.GetSampler(*(samplers_it++)), descriptor.is_depth);
+            }
+        }
     }
 
     [[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE Table(SamplerHeap& heap) const {
