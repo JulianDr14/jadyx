@@ -157,7 +157,8 @@ FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress p
         for(const auto& path:game_files[title]) {
             LOG_INFO(Frontend, "Firmware import: leaving out the game NCA {:016X} ('{}')", title,
                      Utf8(path.filename()));
-            std::error_code ignored;fs::remove(path,ignored);
+            // A file left behind would be published inside the firmware folder.
+            std::error_code error;Require(fs::remove(path,error)&&!error,"disk");
         }
     }
     Require(!strict||(system&&mii),"firmware_incomplete");return info;
