@@ -569,3 +569,27 @@ TEST_CASE("A64: Scalar rounding differential", "[a64][unicorn][conformance]") {
         }
     }
 }
+
+TEST_CASE("A64: Signed to unsigned saturating shifts differential", "[a64][unicorn][conformance]") {
+    A64TestEnv jit_env{};
+    A64TestEnv uni_env{};
+    auto conf = GetUserConfig(jit_env);
+    A64::Jit jit{conf};
+    A64Unicorn uni{uni_env};
+    std::mt19937 random{0x1951};
+    A64Unicorn::RegisterArray regs{};
+
+    for (const u32 element_size : {8U, 16U, 32U, 64U}) {
+        for (u32 shift = 0; shift < element_size; ++shift) {
+            for (size_t iteration = 0; iteration < 32; ++iteration) {
+                A64Unicorn::VectorArray vecs{};
+                for (auto &part : vecs[1]) {
+                    part = (static_cast<u64>(random()) << 32) | static_cast<u64>(random());
+                }
+                const u32 instruction = 0x6f006420 | ((element_size + shift) << 16) | static_cast<u32>(iteration % 2);
+                INFO("element_size=" << element_size << " shift=" << shift);
+                RunTestInstance(jit, uni, jit_env, uni_env, conf, regs, vecs, 0, {instruction}, 0, 0);
+            }
+        }
+    }
+}

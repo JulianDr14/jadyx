@@ -5139,15 +5139,15 @@ static bool VectorSignedSaturatedShiftLeftUnsigned(VectorArray<T>& dst, const Ve
     bool qc_flag = false;
     for (size_t i = 0; i < dst.size(); i++) {
         auto const element = data[i];
-        auto const shifted = U(element) << U(T(shift_amount));
-        auto const shifted_test = shifted >> U(T(shift_amount));
-        auto result = 0;
+        const U shifted = static_cast<U>(U(element) << shift_amount);
+        const U shifted_test = static_cast<U>(shifted >> shift_amount);
+        U result = 0;
         if (element > 0 && shifted_test != U(element))
-            result = T((std::numeric_limits<U>::max)());
+            result = (std::numeric_limits<U>::max)();
         if (element > 0 && shifted_test == U(element))
             result = shifted;
         qc_flag |= element < 0 || (element > 0 && shifted_test != U(element));
-        dst[i] = result;
+        dst[i] = static_cast<T>(result);
     }
     return qc_flag;
 }

@@ -129,3 +129,25 @@ in half/single/double precision with each FPCR rounding mode. Inputs: ±0, ±0.5
 before each instruction. Compare result bits and IOC/IXC/IDC against Dynarmic's
 software FP oracle with matching FZ/DN/AHP. Require zero mismatches, including
 FRINTX exactness. Keep the diagnostic source original and independent of games.
+
+## Signed-to-unsigned saturating shift fallback
+
+Reference: saturation hunks of `0e9cc0f0b`. Integer promotion made 8/16-bit
+shift/reverse-shift overflow checks run at host int width, and `auto result = 0`
+truncated wider results. Keep shifted values and results in the unsigned lane
+type; narrow explicitly when storing the lane. Negative inputs saturate to zero,
+positive overflow to unsigned maximum, setting QC in either case.
+
+`python3 -B tools/xbox/tests/jit-unsigned-saturation.py` failed before on QC.
+Afterward 1,444,512 vectors pass against an unsigned 128-bit arithmetic oracle:
+exhaustive 8/16-bit inputs at every legal shift, plus boundary/random 32/64-bit
+inputs. UBSan reports no issue. Added Dynarmic/Unicorn SQSHLU differential test
+(3840 cases across four widths); its native execution is pending.
+
+Console gate: original A64 SQSHLU diagnostic uses every legal immediate for
+8/16/32/64-bit lanes, both scalar and vector forms, with zero, -1, signed minimum,
+signed maximum, 1, and values immediately below/at/above the overflow threshold.
+Compare every output lane and FPSR.QC against a wider-integer saturating oracle;
+repeat with QC initially set to verify sticky behavior. Require zero mismatches.
+Exercise the fallback without AVX2 on the Windows host as well as the normally
+selected console path; this fix does not alter the existing AVX2 lowering.
