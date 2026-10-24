@@ -4277,3 +4277,10 @@ de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificaci�
 global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
 excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
+
+## NXbox JIT correctness port (2026-10-24)
+
+Branch `nxbox/34-jit-fixes` starts at main `0fc5c0183694`; local-only work,
+no Windows/Series execution. Findings, host negative controls and per-fix console
+protocols: [nxbox-34-jit-fixes.md](nxbox-34-jit-fixes.md). ARM64 emitter models
+cannot certify x64 machine execution or Windows SEH.
