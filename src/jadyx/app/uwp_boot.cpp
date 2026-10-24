@@ -85,6 +85,7 @@
 #include "video_core/renderer_base.h"
 #include "video_core/renderer_d3d12/d3d12_menu_image.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_mode.h"
+#include "video_core/renderer_d3d12/d3d12_shader_workers.h"
 
 #include "jadyx/app/alloc_watch.h"
 #include "jadyx/cheats/cheat_session.h"
@@ -321,6 +322,7 @@ struct BootConfig {
     /// drawn with another pipeline). Off by default until a gain is measured on the console.
     D3D12::PipelineKeyTracking::Mode pipeline_key_reuse{D3D12::PipelineKeyTracking::Mode::Off};
     bool upload_copy{}; ///< Experimental short uniform copies; default off.
+    bool parallel_shaders{}; ///< Three foreground workers and independent validators; default off.
     bool draw_sampler_reuse{}; ///< Experimental gather-local TSC resolution; default off.
     /// Where pixel shaders keep large local memory: 0 auto (boot probe), 1 pool, 2 private arrays
     /// ("ps_scratch=auto|uav|native", D3D12::PixelShaderScratchMode).
@@ -503,6 +505,7 @@ int RunHeadlessBoot(const std::string& nro_path, const BootSurface& surface,
     D3D12::SetCloseProbeEnabled(config.close_probe);
     D3D12::SetPipelineEviction(config.pso_eviction);
     D3D12::SetPipelinePrewarm(config.pso_prewarm);
+    D3D12::SetParallelShaders(config.parallel_shaders);
     VideoCore::Perf::SetDetailedGpuProfile(config.gpu_profile);
     if (config.dump_guest_shaders) Settings::values.dump_guest_shaders.SetValue(true);
     VideoCommon::FullCapture::Enable(config.full_gpu_capture);
@@ -2534,6 +2537,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "upload_copy=1") {
                             config.upload_copy = true;
                             WriteDiag("boot.cfg: short uniform write-combined copy enabled");
+                        } else if (line == "parallel_shaders=1" || line == "parallel_shaders=0") {
+                            config.parallel_shaders = line == "parallel_shaders=1";
+                            WriteDiag("boot.cfg: " + line);
                         } else if (line == "draw_sampler_reuse=1") {
                             config.draw_sampler_reuse = true;
                             WriteDiag("boot.cfg: draw-local sampler resolution reuse enabled");

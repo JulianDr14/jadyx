@@ -569,6 +569,7 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_root_signature.h
         renderer_d3d12/d3d12_shader_compiler.cpp
         renderer_d3d12/d3d12_shader_compiler.h
+        renderer_d3d12/d3d12_shader_workers.h
         renderer_d3d12/d3d12_staging_buffer_pool.cpp
         renderer_d3d12/d3d12_staging_buffer_pool.h
         renderer_d3d12/d3d12_memory_guard.h

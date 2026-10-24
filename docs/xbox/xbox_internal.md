@@ -4277,3 +4277,16 @@ de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificaci�
 global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
 excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
+
+
+## Parallel shader experiment (jx-70, 2026-10-24)
+
+Code audit: Jadyx already uses up to four background pipeline workers; graphics
+Mesa conversion is not globally locked. DXIL signing shares one locked validator.
+`parallel_shaders=1` in boot.cfg opts into up to three normal-priority workers and
+exclusive reusable validators with no operation-wide pool lock. Default remains
+off; exact-draw inline claiming is preserved. Host concurrency/cache/trace/residency
+gates pass; Windows build, Series memory and cold-stall A/B remain pending.
+First-use frontend and compute conversion still run on the GPU thread; no
+single-conversion speedup or 500 -> 60 ms result is claimed for Jadyx.
+See [audit, host commands and exact console gate](nxbox-parallel-shaders.md).

@@ -311,8 +311,7 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
 /// Pipeline workers. Capped: each one holds a recompiler and a translator's worth of memory, and
 /// the console's game partition has 5 GB in total.
 size_t GetTotalPipelineWorkers() {
-    const size_t threads = std::max<size_t>(std::thread::hardware_concurrency(), 2) - 1;
-    return std::min<size_t>(threads, 4);
+    return PipelineWorkerCount(std::thread::hardware_concurrency(), ParallelShadersEnabled());
 }
 
 /// Shader capabilities from D3D12's feature queries (logged at boot by Device::LogCapabilities).
@@ -390,10 +389,10 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                              const TextureCacheRuntime& texture_runtime_,
                              VideoCore::ShaderNotify& shader_notify_)
     : VideoCommon::ShaderCache{device_memory_}, device{device_}, compiler{compiler_},
-      texture_runtime{texture_runtime_}, shader_notify{shader_notify_},
-      root_signatures{device_},
+      texture_runtime{texture_runtime_}, shader_notify{shader_notify_}, root_signatures{device_},
       workers(GetTotalPipelineWorkers(), "D3D12PipelineBuilder", {},
-              Common::ThreadPlacement::Background),
+              ParallelShadersEnabled() ? Common::ThreadPlacement::Default
+                                       : Common::ThreadPlacement::Background),
       serialization_thread(1, "D3D12PipelineSerialization", {},
                            Common::ThreadPlacement::Background),
       prewarm_thread(1, "D3D12PipelinePrewarm", {}, Common::ThreadPlacement::Background) {
@@ -490,9 +489,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
 
     LOG_INFO(Render,
              "D3D12: pipeline cache ready ({} workers, waves up to {} lanes, int64 {}, "
-             "VP/RT index outside GS {}, dependent draws preserved)",
+             "VP/RT index outside GS {}, dependent draws preserved, parallel shaders {})",
              GetTotalPipelineWorkers(), caps.wave_lane_count_max, caps.int64,
-             caps.vp_and_rt_index_from_any_stage);
+             caps.vp_and_rt_index_from_any_stage, ParallelShadersEnabled());
 }
 
 PipelineCache::~PipelineCache() {

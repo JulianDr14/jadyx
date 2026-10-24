@@ -250,17 +250,45 @@ dxil_spirv_runtime_conf ShaderCompiler::MakeConf() const {
     return conf;
 }
 
+ComPtr<IDxcValidator> ShaderCompiler::CreateValidator() const {
+    DxcCreateInstanceProc create_instance{};
+    if (!dxil_library.GetSymbol("DxcCreateInstance", &create_instance)) {
+        throw std::runtime_error("D3D12: dxil.dll lacks DxcCreateInstance");
+    }
+    ComPtr<IDxcValidator> instance;
+    ThrowIfFailed(create_instance(CLSID_DxcValidator, IID_PPV_ARGS(&instance)),
+                  "creating an independent DXIL validator");
+    LOG_INFO(Render, "D3D12: independent DXIL validator created");
+    return instance;
+}
+
 void ShaderCompiler::Sign(std::vector<u8>& dxil, u64 trace_pipeline) const {
-    // The runtime refuses unsigned DXIL outside developer mode; the validator writes the hash in place.
-    BorrowedBlob blob{dxil.data(), dxil.size()};
-    ComPtr<IDxcOperationResult> result;
+    if (ParallelShadersEnabled()) {
+        VideoCore::FrameTrace::ScopedSpan acquire_span{
+            VideoCore::FrameTrace::Event::PipelineValidatorLockLong, trace_pipeline,
+            trace_pipeline != 0};
+        validators.Use([this] { return CreateValidator(); },
+                       [&](auto& instance) {
+                           acquire_span.Finish();
+                           SignWithValidator(instance.Get(), dxil, trace_pipeline);
+                       });
+        return;
+    }
     VideoCore::FrameTrace::ScopedSpan lock_span{
         VideoCore::FrameTrace::Event::PipelineValidatorLockLong, trace_pipeline, trace_pipeline != 0};
     std::scoped_lock lock{validator_mutex};
     lock_span.Finish();
+    SignWithValidator(validator.Get(), dxil, trace_pipeline);
+}
+
+void ShaderCompiler::SignWithValidator(IDxcValidator* instance, std::vector<u8>& dxil,
+                                       u64 trace_pipeline) const {
+    // The validator writes the signature in place; each call exclusively owns its instance.
+    BorrowedBlob blob{dxil.data(), dxil.size()};
+    ComPtr<IDxcOperationResult> result;
     VideoCore::FrameTrace::ScopedSpan sign_span{
         VideoCore::FrameTrace::Event::PipelineSignLong, trace_pipeline, trace_pipeline != 0};
-    ThrowIfFailed(validator->Validate(&blob, DxcValidatorFlags_InPlaceEdit, &result),
+    ThrowIfFailed(instance->Validate(&blob, DxcValidatorFlags_InPlaceEdit, &result),
                   "IDxcValidator::Validate");
     HRESULT status = E_FAIL;
     result->GetStatus(&status);
