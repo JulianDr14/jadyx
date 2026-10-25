@@ -28,6 +28,7 @@ enum class Kind : u8 {
     Blit,    ///< Fermi2D surface copy
     DmaCopy, ///< DMA engine buffer copy, clear or buffer/image copy
     ListEnd, ///< what a command list records after its last call (composite, resolves, copies)
+    DispatchSetup, ///< what a dispatch records before itself (uploads, copies, barriers)
 };
 
 enum class Outcome : u8 {

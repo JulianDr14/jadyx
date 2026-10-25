@@ -16,6 +16,8 @@ GPU times are timestamp deltas: each call's time runs from the previous call of 
 list, so barriers, copies and uploads recorded in between count for the call after them. The first
 call of a command list has a time since the list opened (newer captures). "list tail" is what a
 list records after its last call: the composite, query resolves and copies before the submit.
+"dispatch setup" is what a dispatch's bindings record before it (newer captures): uploads, copies
+and barriers, kept apart from the shader's own time.
 Timestamps are bottom-of-pipe, so overlapping draws share time loosely; a pass's total is sound.
 """
 import argparse
@@ -25,8 +27,8 @@ import subprocess
 import sys
 
 KINDS = ["draw", "draw indexed", "draw indirect", "draw texture", "clear", "dispatch", "2D blit",
-         "DMA copy", "list tail"]
-LIST_END = 8
+         "DMA copy", "list tail", "dispatch setup"]
+LIST_END, DISPATCH_SETUP = 8, 9
 OUTCOMES = ["recorded", "skipped", "conditional", "culled", "no pipeline", "PSO rejected",
             "skipped shader", "empty", "no target", "expanded on CPU"]
 RECORDED, EXPANDED = 0, 9
@@ -280,8 +282,9 @@ def report(c, top, out):
     group(out, "Render targets (passes)", known, frames, top,
           key=lambda r: r.pass_, label=lambda k: c.passes.get(k, "no target (dispatches, blits, DMA, list tails)"),
           extra=pass_entries(c.records))
-    group(out, "Pipelines", known, frames, top, key=lambda r: (r.vs, r.ps),
-          label=lambda k: shader(*k))
+    group(out, "Pipelines", known, frames, top,
+          key=lambda r: (r.vs, r.ps, r.kind == DISPATCH_SETUP),
+          label=lambda k: shader(k[0], k[1]) + (" setup" if k[2] else ""))
     macro_records = [r for r in c.records if r.outcome != EXPANDED]
     group(out, "Guest macros that issue the calls", macro_records, frames, top,
           key=lambda r: r.macro, label=lambda k: f"macro 0x{k:x}" if k else "no macro (direct)")

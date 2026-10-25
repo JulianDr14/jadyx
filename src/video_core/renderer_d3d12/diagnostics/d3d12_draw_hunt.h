@@ -110,6 +110,9 @@ public:
     }
     /// The target the call draws to (none for a dispatch); call before recording it.
     void Target(const Framebuffer* framebuffer);
+    /// The call's bindings are in the list: timestamps them as a record of their own, so the
+    /// uploads, copies and barriers they recorded do not count for the call.
+    void Setup(Hunt::Kind kind);
     /// The call is in the list: timestamps it.
     void Recorded();
 

@@ -437,6 +437,7 @@ void RasterizerD3D12::DispatchCompute() {
         hunt.Outcome(Hunt::Outcome::PsoRejected);
         return; // D3D12 rejected the PSO (logged when it was built)
     }
+    hunt.Setup(Hunt::Kind::DispatchSetup);
     hunt.Target(nullptr);
 
     const auto& qmd = kepler_compute->launch_description;

@@ -314,6 +314,21 @@ void HuntScope::Target(const Framebuffer* framebuffer) {
     hunt->Baseline();
 }
 
+void HuntScope::Setup(Hunt::Kind kind) {
+    // As for a list tail: without a baseline the setup has nothing to be timed from.
+    if (!hunt || !hunt->heap || !hunt->capture.HasBaseline(hunt->scheduler.CurrentTick())) {
+        return;
+    }
+    Hunt::Record setup;
+    setup.kind = kind;
+    setup.outcome = Hunt::Outcome::Recorded;
+    setup.frame = hunt->capture.Frame();
+    setup.vs = record.vs;
+    setup.ps = record.ps;
+    setup.timestamp = hunt->Stamp();
+    hunt->capture.Add(setup);
+}
+
 void HuntScope::Recorded() {
     if (!hunt) [[likely]] {
         return;
