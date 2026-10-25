@@ -1353,11 +1353,19 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
                     program.info.global_memory_unresolved, program.info.stores_global_memory);
     }
     const std::vector<u32> code{EmitSPIRV(profile, program)};
+    const bool dumped{IsDumpedShader(key.unique_hash)};
+    if (dumped) [[unlikely]] {
+        DumpShader(key.unique_hash, 0, program, code);
+    }
 
     const std::array<ShaderCompiler::PipelineStage, 1> stages{{
         {.spirv = code, .stage = DXIL_SPIRV_SHADER_COMPUTE},
     }};
     auto compiled = compiler.CompilePipeline(stages, {.emulate_reduction = emulate_reduction});
+    if (dumped) [[unlikely]] {
+        // The emulating build overwrites the plain one: the DXIL that runs is the last dumped.
+        DumpDxil(0, key.unique_hash, key.Hash(), std::span{&compiled[0].dxil, 1});
+    }
     const std::array<const Shader::Info*, 1> infos{&program.info};
     const PipelineLayout& layout = root_signatures.Get(infos, true, false, emulate_reduction);
 
