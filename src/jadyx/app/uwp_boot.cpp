@@ -132,6 +132,7 @@ void TraceNextFrames(u32 count);
 void TraceNextMaterialFrame(u64 pixel_shader = 0);
 void HuntNextFrames(u32 frames = 8);     // diagnostics/d3d12_draw_hunt.h
 void HuntOnCompute(u64 hash);            // diagnostics/d3d12_draw_hunt.h
+void SetComputeInputsShader(u64 hash);   // diagnostics/d3d12_compute_inputs.h
 void SetMaterialProbe(s32 x, s32 y);
 void SetMaterialCaptureFrame(u32 frame);
 void SetMaterialSnapshotShaders(u64 first, u64 second);
@@ -273,6 +274,8 @@ struct BootConfig {
     u32 hunt_at{};
     /// The bottleneck capture starts at the 64th dispatch of this compute shader ("hunt_cs=").
     u64 hunt_cs{};
+    /// The storage buffers of this compute shader are dumped around four dispatches ("cs_inputs=").
+    u64 cs_inputs{};
     /// > 0: the session closes this many seconds in ("quit_at="), for unattended PC runs.
     u32 quit_at{};
     /// PC test budget; hard process-commit enforcement belongs to local-run.ps1.
@@ -583,6 +586,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetSkipMinMaxFilter(config.skip_min_max_filter);
     D3D12::SetEmulateMinMaxFilter(config.emulate_min_max_filter);
     D3D12::HuntOnCompute(config.hunt_cs);
+    D3D12::SetComputeInputsShader(config.cs_inputs);
     VideoCore::Perf::SetDetailedGpuProfile(config.gpu_profile);
     if (config.dump_guest_shaders) Settings::values.dump_guest_shaders.SetValue(true);
     VideoCommon::FullCapture::Enable(config.full_gpu_capture);
@@ -2712,6 +2716,10 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.hunt_cs = std::strtoull(line.c_str() + 8, nullptr, 16);
                             WriteDiag("boot.cfg: bottleneck capture when compute shader " +
                                       line.substr(8) + " is warm");
+                        } else if (line.starts_with("cs_inputs=")) {
+                            config.cs_inputs = std::strtoull(line.c_str() + 10, nullptr, 16);
+                            WriteDiag("boot.cfg: storage buffers of compute shader " +
+                                      line.substr(10) + " dumped");
                         } else if (line.starts_with("quit_at=")) {
                             config.quit_at =
                                 static_cast<u32>(std::strtoul(line.c_str() + 8, nullptr, 10));

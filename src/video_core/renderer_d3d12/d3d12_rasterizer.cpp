@@ -27,6 +27,7 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_tracking.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
+#include "video_core/renderer_d3d12/diagnostics/d3d12_compute_inputs.h"
 
 namespace D3D12 {
 
@@ -426,6 +427,9 @@ void RasterizerD3D12::DispatchCompute() {
     if (full) {
         bindings.trace_all_views = &full_views;
         bindings.trace_filters = &full_samplers;
+    }
+    const bool dump_inputs = ComputeInputsWanted(pipeline->UniqueHash(), dispatch_count);
+    if (full || dump_inputs) {
         buffer_runtime.SetTraceBuffers(&full_buffers);
     }
     SCOPE_EXIT { buffer_runtime.SetTraceBuffers(nullptr); };
@@ -445,6 +449,10 @@ void RasterizerD3D12::DispatchCompute() {
     const auto& qmd = kepler_compute->launch_description;
     const PipelineLayout& layout = pipeline->Layout();
     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
+    if (dump_inputs) {
+        DumpComputeInputs(scheduler, staging, full_buffers, pipeline->UniqueHash(),
+                          dispatch_count, dim, false);
+    }
     if (full) {
         const auto meta = fmt::format("{{\"op\":{},\"shader\":{}}}", full_capture_operation, pipeline->UniqueHash());
         VideoCommon::FullCapture::Data("compute_dxil", meta, pipeline->DiagnosticDxil());
@@ -477,6 +485,10 @@ void RasterizerD3D12::DispatchCompute() {
     }
     bool dispatched = false;
     SCOPE_EXIT {
+        if (dump_inputs && dispatched) {
+            DumpComputeInputs(scheduler, staging, full_buffers, pipeline->UniqueHash(),
+                              dispatch_count, dim, true);
+        }
         if (full) {
             if (dispatched) {
                 CaptureFullBuffers(full_buffers, true);

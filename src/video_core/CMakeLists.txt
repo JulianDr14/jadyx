@@ -504,6 +504,8 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_descriptor_heap.cpp
         renderer_d3d12/d3d12_descriptor_heap.h
         renderer_d3d12/diagnostics/d3d12_astc_verify.cpp
+        renderer_d3d12/diagnostics/d3d12_compute_inputs.cpp
+        renderer_d3d12/diagnostics/d3d12_compute_inputs.h
         renderer_d3d12/diagnostics/d3d12_draw_hunt.cpp
         renderer_d3d12/diagnostics/d3d12_draw_hunt.h
         renderer_d3d12/diagnostics/d3d12_draw_trace.cpp
