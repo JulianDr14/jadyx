@@ -115,6 +115,19 @@ struct GPU::Impl {
         renderer->ReadRasterizer()->FlushCommands();
     }
 
+    /// Queues a flush on the GPU thread and returns. Requests made before the GPU thread reaches
+    /// the queued one are folded into it.
+    void RequestFlushCommands() {
+        if (flush_requested.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
+        static_cast<void>(RequestSyncOperation([this] {
+            flush_requested.store(false, std::memory_order_release);
+            FlushCommands();
+        }));
+        gpu_thread.TickGPU(is_async);
+    }
+
     /// Synchronizes CPU writes with Host GPU memory.
     void InvalidateGPUCache() {
         std::function<void(PAddr, size_t)> callback_writes([this](PAddr address, size_t size) {
@@ -433,6 +446,8 @@ struct GPU::Impl {
     std::deque<size_t> request_swap_counters;
     std::mutex request_swap_mutex;
     u64 pending_composite_fence{};
+
+    std::atomic_bool flush_requested{};
 };
 
 GPU::GPU(Core::System& system, bool is_async, bool use_nvdec)
@@ -467,6 +482,10 @@ void GPU::BindRenderer(std::unique_ptr<VideoCore::RendererBase> renderer) {
 
 void GPU::FlushCommands() {
     impl->FlushCommands();
+}
+
+void GPU::RequestFlushCommands() {
+    impl->RequestFlushCommands();
 }
 
 void GPU::InvalidateGPUCache() {

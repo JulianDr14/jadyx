@@ -28,6 +28,15 @@
 
 namespace Service::Nvidia::Devices {
 
+namespace {
+std::atomic_bool failing_event_stall{};
+std::atomic_bool failing_event_flush_logged{};
+} // namespace
+
+void nvhost_ctrl::SetFailingEventStall(bool stall) {
+    failing_event_stall.store(stall, std::memory_order_relaxed);
+}
+
 nvhost_ctrl::nvhost_ctrl(Core::System& system_, EventInterface& events_interface_,
                          NvCore::Container& core_)
     : nvdevice{system_}, events_interface{events_interface_}, core{core_},
@@ -191,6 +200,14 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
     auto& host1x_syncpoint_manager = system.Host1x().GetSyncpointManager();
     const u32 target_value = params.fence.value;
 
+    // Asked for once the events lock is released: the GPU thread may signal events meanwhile.
+    bool request_flush = false;
+    SCOPE_EXIT {
+        if (request_flush) {
+            system.GPU().RequestFlushCommands();
+        }
+    };
+
     auto lock = NvEventsLock();
 
     u32 slot = [&]() {
@@ -205,6 +222,19 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
     must_unmark_fail = false;
 
     const auto check_failing = [&]() {
+        if (events[slot].fails > 2 && !failing_event_stall.load(std::memory_order_relaxed)) {
+            // The commands that reach the value may still sit on the GPU thread. Flush them and
+            // let the wait go on as usual: the guest keeps running and the event signals.
+            events[slot].fails = 0;
+            request_flush = true;
+            if (!failing_event_flush_logged.exchange(true, std::memory_order_relaxed)) {
+                LOG_INFO(Service_NVDRV,
+                         "failing event {} on syncpt_id={} threshold={}: flushing instead of "
+                         "stalling",
+                         slot, fence_id, target_value);
+            }
+            return false;
+        }
         if (events[slot].fails > 2) {
             // The wait below blocks nvservices until the GPU reaches the value; one it never
             // reaches stalls the guest, so the values are kept in the log.
