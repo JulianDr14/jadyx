@@ -121,7 +121,6 @@ std::optional<PendingReport> QueryCache::PeekReport(VAddr addr) {
                 report.complete = false;
                 break;
             }
-            report.known += counter->BaseResult();
             std::shared_ptr<HostCounter> next = counter->Dependency();
             report.slices[report.num_slices++] = std::move(counter);
             counter = std::move(next);
@@ -187,6 +186,17 @@ u64 HostCounter::BlockingQuery([[maybe_unused]] bool async) const {
         const_cast<HostCounter*>(this)->EndQuery();
     }
     cache.GetScheduler().Wait(tick);
+    return ReadResolved();
+}
+
+std::optional<u64> HostCounter::TryQuery() const {
+    if (!ended || !cache.GetScheduler().IsFree(tick)) {
+        return std::nullopt;
+    }
+    return ReadResolved();
+}
+
+u64 HostCounter::ReadResolved() const {
     void* mapped_page{};
     const D3D12_RANGE read_range{static_cast<SIZE_T>(slot.offset),
                                  static_cast<SIZE_T>(slot.offset + GetQueryInfo(type).bytes)};

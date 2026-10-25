@@ -117,6 +117,9 @@ public:
 
 private:
     u64 BlockingQuery(bool async = false) const override;
+    std::optional<u64> TryQuery() const override;
+    /// The value ResolveQueryData wrote, once the GPU is past the query's list.
+    u64 ReadResolved() const;
 
     QueryCache& cache;
     VideoCore::QueryType type;
