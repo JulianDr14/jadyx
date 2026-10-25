@@ -109,7 +109,7 @@ struct GameMenuSettings {
     /// Opt-in diagnostic package ("diag_menu=1"): the display page can switch the suspects of
     /// missing geometry without another package.
     bool diag_toggles{};
-    /// How draws and dispatches order their UAV writes (D3D12::DiagSync, six modes); applies
+    /// How draws and dispatches order their UAV writes (D3D12::DiagSync, seven modes); applies
     /// at once.
     std::uint8_t gpu_sync{};
     /// Occlusion results reach the game as never zero (VideoCommon::force_occlusion_visible):
@@ -293,8 +293,9 @@ private:
                                        Text::MenuGpuSyncWorkBarriers,
                                        Text::MenuGpuSyncDispatchBarriers,
                                        Text::MenuGpuSyncDrawBarriers,
-                                       Text::MenuGpuSyncGlobalBarrier};
-            return {Tr(Text::MenuGpuSync), Tr(values[settings.gpu_sync % 6]), Choice};
+                                       Text::MenuGpuSyncGlobalBarrier,
+                                       Text::MenuGpuSyncReadsFirst};
+            return {Tr(Text::MenuGpuSync), Tr(values[settings.gpu_sync % 7]), Choice};
         }
         case OcclusionVisible:
             return {Tr(Text::MenuOcclusionVisible), Tr(settings.occlusion_visible ? Text::Yes : Text::No),
@@ -365,7 +366,7 @@ private:
             settings.fullscreen = !settings.fullscreen;
             return GameMenuResult::FullScreen;
         case GpuSync:
-            settings.gpu_sync = static_cast<std::uint8_t>((settings.gpu_sync + (back ? 5 : 1)) % 6);
+            settings.gpu_sync = static_cast<std::uint8_t>((settings.gpu_sync + (back ? 6 : 1)) % 7);
             return GameMenuResult::GpuSyncChanged;
         case OcclusionVisible:
             settings.occlusion_visible = !settings.occlusion_visible;

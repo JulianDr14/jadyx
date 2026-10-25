@@ -30,8 +30,10 @@ void SetAsyncRecording(bool enabled);
 /// Diagnostic: how draws and dispatches order their UAV writes before later work. Normal; the
 /// previous tracking, where the last binding of a resource sets its state even if an earlier one
 /// writes it (Scheduler::BeginWork); normal plus a UAV barrier on every resource each draw and
-/// dispatch, each dispatch only or each draw only made a UAV; or normal plus a global UAV
-/// barrier after every draw and dispatch. Applies at once.
+/// dispatch, each dispatch only or each draw only made a UAV; normal plus a global UAV barrier
+/// after every draw and dispatch; or the previous order, where a draw or dispatch transitions
+/// its sampled images before its storage images and buffers get no UAV barrier when a work
+/// takes them out of UAV and back (ForEachImageTransition). Applies at once.
 enum class DiagSync : u8 {
     Normal,
     LastBindingWins,
@@ -39,6 +41,7 @@ enum class DiagSync : u8 {
     DispatchUavBarriers,
     DrawUavBarriers,
     GlobalUavBarrier,
+    ReadsBeforeStores,
 };
 void SetDiagSync(DiagSync mode);
 [[nodiscard]] DiagSync GetDiagSync();

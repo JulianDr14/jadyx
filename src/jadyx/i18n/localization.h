@@ -152,6 +152,7 @@ enum class Text : std::uint16_t {
     MenuGpuSyncDispatchBarriers,
     MenuGpuSyncDrawBarriers,
     MenuGpuSyncGlobalBarrier,
+    MenuGpuSyncReadsFirst,
     MenuOcclusionVisible,
     MenuBackToHome,
 

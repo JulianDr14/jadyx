@@ -240,8 +240,8 @@ int main() {
     check(toggles.Rows()[toggles.Selected()].label == L"GPU synchronization (diagnostic)");
     check(toggles.Rows()[toggles.Selected()].value == L"Normal");
     check(toggles.Apply(MenuAction::Left) == GameMenuResult::GpuSyncChanged);
-    check(toggles.Settings().gpu_sync == 5 &&
-          toggles.Rows()[toggles.Selected()].value == L"Global UAV barrier after everything");
+    check(toggles.Settings().gpu_sync == 6 &&
+          toggles.Rows()[toggles.Selected()].value == L"Previous order: reads before stores");
     check(toggles.Apply(MenuAction::Right) == GameMenuResult::GpuSyncChanged);
     check(toggles.Apply(MenuAction::Right) == GameMenuResult::GpuSyncChanged);
     check(toggles.Settings().gpu_sync == 1 && toggles.Rows()[toggles.Selected()].value == L"Previous state tracking");

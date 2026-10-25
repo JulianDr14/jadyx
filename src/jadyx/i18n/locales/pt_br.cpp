@@ -208,6 +208,7 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::MenuGpuSyncDispatchBarriers, L"Barreiras UAV só após compute"},
     {Text::MenuGpuSyncDrawBarriers, L"Barreiras UAV só após desenhos"},
     {Text::MenuGpuSyncGlobalBarrier, L"Barreira UAV global após tudo"},
+    {Text::MenuGpuSyncReadsFirst, L"Ordem anterior: leituras antes das escritas"},
     {Text::MenuOcclusionVisible, L"Oclusão sempre visível (diagnóstico)"},
     {Text::MenuBackToHome, L"Voltar ao início"},
     {Text::Options, L"Opções"},

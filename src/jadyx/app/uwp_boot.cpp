@@ -1433,7 +1433,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                     g_fullscreen_request.store(menu->Settings().fullscreen ? 1 : 0);
                 }
                 if (result == GameMenuResult::GpuSyncChanged) {
-                    const std::uint8_t sync = menu->Settings().gpu_sync % 6;
+                    const std::uint8_t sync = menu->Settings().gpu_sync % 7;
                     // Read at every draw and frame on the GPU thread: the next frames see it.
                     D3D12::SetDiagSync(static_cast<D3D12::DiagSync>(sync));
                     constexpr const char* names[] = {"normal",
@@ -1441,7 +1441,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                                                      "UAV barriers on what each draw and dispatch wrote",
                                                      "UAV barriers on what each dispatch wrote",
                                                      "UAV barriers on what each draw wrote",
-                                                     "global UAV barrier after every draw and dispatch"};
+                                                     "global UAV barrier after every draw and dispatch",
+                                                     "previous order (sampled images before storage images)"};
                     WriteDiag(std::string("diag menu: GPU synchronization ") + names[sync]);
                 }
                 if (result == GameMenuResult::OcclusionChanged) {
