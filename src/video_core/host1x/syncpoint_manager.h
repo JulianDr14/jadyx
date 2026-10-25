@@ -46,6 +46,8 @@ public:
                               expected_value, std::move(action));
     }
 
+    /// Drops an action that has not run yet. One already taken to run is waited for, so what it
+    /// uses can be freed after the call.
     void DeregisterGuestAction(u32 syncpoint_id, const ActionHandle& handle);
 
     void DeregisterHostAction(u32 syncpoint_id, const ActionHandle& handle);
@@ -77,6 +79,12 @@ private:
     void Increment(std::atomic<u32>& syncpoint, std::condition_variable& wait_cv,
                    std::list<RegisteredAction>& action_storage);
 
+    /// Moves the actions a value satisfies out of their storage, oldest first.
+    static void TakeReady(std::list<RegisteredAction>& action_storage, u32 value,
+                          std::list<RegisteredAction>& ready);
+    /// Runs actions taken under the guard once it is released, in the order they were taken.
+    void RunReady(std::unique_lock<std::mutex>& lk, std::list<RegisteredAction>& ready);
+
     ActionHandle RegisterAction(std::atomic<u32>& syncpoint,
                                 std::list<RegisteredAction>& action_storage, u32 expected_value,
                                 std::function<void()>&& action);
@@ -96,6 +104,13 @@ private:
     std::mutex guard;
     std::condition_variable wait_guest_cv;
     std::condition_variable wait_host_cv;
+
+    // Actions run outside the guard, one batch at a time in ticket order, so a long one (a
+    // composite) does not hold back waits, registrations and increments on other syncpoints.
+    // Under the guard: the ticket the next batch takes and the one whose batch may run.
+    std::condition_variable turn_cv;
+    u64 next_ticket{};
+    u64 serving_ticket{};
 };
 
 } // namespace Host1x
