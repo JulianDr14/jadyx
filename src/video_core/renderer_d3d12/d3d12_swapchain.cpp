@@ -1,10 +1,17 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <chrono>
+#include <functional>
+#include <mutex>
+#include <thread>
+#include <utility>
+
 #include <dxgi1_3.h>
 
 #include "common/logging.h"
 #include "video_core/frame_trace.h"
+#include "video_core/renderer_d3d12/d3d12_menu_image.h"
 #include "video_core/renderer_d3d12/d3d12_swapchain.h"
 
 namespace D3D12 {
@@ -14,8 +21,18 @@ namespace {
 /// A wait longer than this means the swapchain stopped presenting (a suspended app, a lost
 /// device): the frame is dropped, and a lost device is reported by the next submission.
 constexpr DWORD FRAME_WAIT_TIMEOUT_MS = 1000;
+/// How long the window may stay bound to the frontend's swapchain after the handoff.
+constexpr int HANDOFF_RETRIES = 40, HANDOFF_RETRY_MS = 50;
+
+std::mutex handoff_mutex;
+std::function<void()> window_handoff;
 
 } // Anonymous namespace
+
+void SetWindowHandoff(std::function<void()> release) {
+    std::scoped_lock lock{handoff_mutex};
+    window_handoff = std::move(release);
+}
 
 Swapchain::Swapchain(const Device& device, IUnknown* core_window, u32 width_, u32 height_)
     : width{width_}, height{height_} {
@@ -32,9 +49,26 @@ Swapchain::Swapchain(const Device& device, IUnknown* core_window, u32 width_, u3
         .AlphaMode = DXGI_ALPHA_MODE_IGNORE,
         .Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
     };
+    std::function<void()> handoff;
+    {
+        std::scoped_lock lock{handoff_mutex};
+        handoff = std::exchange(window_handoff, nullptr);
+    }
+    if (handoff) handoff();
     ComPtr<IDXGISwapChain1> swapchain1;
     HRESULT hr = device.Factory()->CreateSwapChainForCoreWindow(device.Queue(), core_window, &desc,
                                                                 nullptr, &swapchain1);
+    // DXGI may unbind the frontend's swapchain from the window a moment after its last
+    // reference goes: until then the window refuses a new one with E_INVALIDARG.
+    for (int attempt = 0; handoff && hr == E_INVALIDARG && attempt < HANDOFF_RETRIES; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{HANDOFF_RETRY_MS});
+        hr = device.Factory()->CreateSwapChainForCoreWindow(device.Queue(), core_window, &desc,
+                                                            nullptr, &swapchain1);
+        if (SUCCEEDED(hr)) {
+            LOG_INFO(Render, "D3D12: window free after the handoff in {} ms",
+                     (attempt + 1) * HANDOFF_RETRY_MS);
+        }
+    }
     if (FAILED(hr)) {
         LOG_WARNING(Render, "D3D12: waitable swapchain rejected (0x{:08X}); Present will block",
                     static_cast<u32>(hr));
