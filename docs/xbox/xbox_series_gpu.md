@@ -116,7 +116,8 @@ punto del juego.
    mas que micro-optimizar.
 2. **Los atomicos que devuelven valor son caros y en serie.** Cientos de ciclos cada uno. Solo se
    pagan bien con muchas waves en vuelo, y solo si van a direcciones distintas: a una misma
-   direccion L2 los atiende de uno en uno. Uno sin valor de retorno no bloquea a la wave.
+   direccion L2 los atiende de uno en uno. Uno sin valor de retorno no bloquea a la wave. Antes
+   de agregarlos en el host, mirar el IR: muchos juegos ya los agregan por warp con un ballot.
 3. **Cuidar los registros.** Un shader con muchos VGPR baja las waves por SIMD. Variantes que
    agregan codigo (emulaciones, rutas de fallback) pueden costar ocupacion aunque no se ejecuten.
 4. **Evitar esperas CPU-GPU.** Lecturas de GPU a CPU, fences en mitad del frame y descargas de
@@ -145,15 +146,50 @@ una captura nueva. Los que bajo la .67 eran identicos byte a byte a los de la .6
 que no median la version nueva. Antes de comparar tiempos de `hunt`, confirmar que el archivo
 cambio (md5 o numero de records) frente a la descarga anterior.
 
+### Resultado en 0.3.8.68 (`cs_split=16`)
+
+Primera captura `hunt` valida con la division activa (md5 distinto al de la .67):
+
+| | sin division (captura de la .66) | `cs_split=16` (.68) |
+|---|---|---|
+| Dispatch de `8ad2228` (GPU) | 80--85 ms | 2,5--6,3 ms |
+| Dispatches por frame (GPU) | 82,42 ms | 4,52 ms |
+| GPU ocupada por frame | 91,19 ms (80 %) | 12,83 ms (29 %) |
+| Frame en la captura | 113,42 ms | 43,77 ms |
+
+Ritmo de presentacion en la .68, ventanas de 300 frames: la primera, con la carga, da 11,85 FPS;
+las siguientes 22,02, 21,71, 24,97 y 24,63 FPS (p50 36--40 ms, p95 47--81 ms). La .67 solo tuvo
+una ventana, la de la carga (13,89 FPS), asi que no se puede decir aun si 16 gana a 8.
+
+El dispatch dejo de ser el cuello: la GPU pasa el 71 % del frame libre y `hunt-report.py` ya no
+marca el frame como limitado por GPU. Lo siguiente esta del lado CPU (hilo de GPU grabando
+llamadas y emulacion del juego).
+
+### A/B `cs_split=8` (.69) contra `cs_split=16` (.68)
+
+Mismo punto, emulacion de MIN/MAX activa en ambas (el log dice `emulating it in the shader`).
+Ventanas despues de la carga:
+
+| Factor | FPS por ventana | p50 |
+|---|---|---|
+| 16 | 22,02 / 21,71 / 24,97 / 24,63 | 36--40 ms |
+| 8 | 22,98 / 24,67 / 24,16 | 35--41 ms |
+
+En FPS empatan: el frame ya no lo limita ese dispatch. En GPU 16 rinde mas: 2,5--6,5 ms por
+dispatch contra 5--13 ms con 8 (las capturas no son del mismo instante, 680 contra 309 draws
+indexados por frame, asi que es orientativo). Se queda `cs_split=16`.
+
 ## Pendiente
 
-- Captura `hunt` nueva en la .67 para ver cuanto bajo el dispatch frente a los 71--84 ms.
-- Probar `cs_split=16` y ver si el beneficio sigue o se satura.
-- Agregacion de atomicos por wave: los atomicos del bucle van a direcciones uniformes
-  (`registro * 128 + 96`, un contador por registro, y una direccion fija del cbuf +864). Si la
-  direccion es igual en toda la wave, un solo hilo puede hacer el atomico con la suma de la wave y
-  cada hilo recuperar su valor con `WavePrefixSum`: entre 32 y 64 veces menos atomicos sobre la
-  misma palabra, que L2 atiende de uno en uno.
+- Buscar el cuello nuevo en CPU: perfil del hilo de GPU (texture bindings, descriptores,
+  buffers) y del hilo del juego.
+- Agregacion de atomicos por wave: descartada para este shader. El IR muestra que el juego ya
+  agrega por warp: `SubgroupBallot #true`, lider = `FindUMsb(ballot) == LaneId`, y solo el lider
+  hace `StorageAtomicIAdd32` con `BitCount(ballot)`; los atomicos sin retorno del cbuf +864 suman
+  tambien conteos de ballot. Ya es un atomico por cada 32 hilos. El backend emula el warp de 32
+  dentro de una wave64 (`WarpExtract`), asi que agregar en el host juntaria como mucho dos warps:
+  2x en wave64 y nada en wave32. El coste que queda es la cadena de atomicos con retorno del
+  lider, y eso se ataca con ocupacion (`cs_split`), no con menos atomicos.
 
 ## Fuentes
 
