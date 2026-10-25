@@ -163,6 +163,7 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
         state = other.state;
         state_tick = other.state_tick;
         uav_work = other.uav_work;
+        read_work = other.read_work;
         charge = std::move(other.charge);
     }
     return *this;
@@ -187,6 +188,18 @@ void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
         // Another binding of this draw or dispatch writes it: it stays a UAV (Scheduler::BeginWork),
         // and its UAV barrier is in. AMD hardware, the Series included, reads buffers in any state.
         return;
+    }
+    // A read binding of this draw or dispatch took it out of a previous one's UAV and a later
+    // binding writes it: those writes then reach this work only through a transition to a read
+    // state and back, which nets out to UAV to UAV (see ForEachImageTransition). The cache binds
+    // uniform and storage buffers in a fixed order, so the back transition gets a UAV barrier.
+    const bool back_to_uav = work != 0 && read_work == work &&
+                             next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
+                             current != D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
+                             GetDiagSync() != DiagSync::ReadsBeforeStores;
+    if (work != 0 && current == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
+        next != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+        read_work = work;
     }
     if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && work != 0) {
         uav_work = work;
@@ -214,6 +227,10 @@ void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
         }
     } else {
         TransitionResource(cmd, buffer.Get(), current, next);
+        if (back_to_uav) {
+            const D3D12_RESOURCE_BARRIER barrier = UavBarrier(buffer.Get());
+            cmd->ResourceBarrier(1, &barrier);
+        }
     }
     state = next;
     state_tick = tick;

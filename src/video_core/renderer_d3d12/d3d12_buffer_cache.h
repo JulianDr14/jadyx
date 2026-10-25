@@ -72,6 +72,7 @@ private:
     D3D12_RESOURCE_STATES state{D3D12_RESOURCE_STATE_COMMON};
     u64 state_tick{}; ///< scheduler tick of the list that set state
     u64 uav_work{};   ///< Scheduler::Work() that last made it a UAV
+    u64 read_work{};  ///< Scheduler::Work() that last took it from UAV to a read state
     Common::MemoryCharge charge;
 };
 
