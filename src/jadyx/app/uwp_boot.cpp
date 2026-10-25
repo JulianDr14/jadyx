@@ -150,6 +150,7 @@ void SetAstcGpuDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuVerify(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuSync(bool enabled); // d3d12_texture_cache.h
 void SetForceMinMaxFilter(bool enabled); // d3d12_texture_cache.h
+void SetSkipMinMaxFilter(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuFresh(bool enabled); // d3d12_texture_cache.h
 void SetGpuBasedValidation(bool enabled); // d3d12_device.h
 void SetDredEnabled(bool enabled);         // d3d12_device.h
@@ -300,6 +301,9 @@ struct BootConfig {
     /// Filtered MIN/MAX sampler reductions go to the hardware although the device reports no
     /// support ("min_max_filter=force").
     bool force_min_max_filter{};
+    /// Filtered MIN/MAX samplers filter normally with no shader emulation ("min_max_filter=off"):
+    /// A/B for the cost of the emulation; results are wrong.
+    bool skip_min_max_filter{};
     /// Look for a removed device after every descriptor a draw writes ("descriptor_checks=1"), to
     /// name the view that removed it; costs a kernel call per descriptor.
     bool descriptor_checks{};
@@ -562,6 +566,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     VideoCommon::force_occlusion_visible.store(config.occlusion_force_visible,
                                                std::memory_order_relaxed);
     D3D12::SetForceMinMaxFilter(config.force_min_max_filter);
+    D3D12::SetSkipMinMaxFilter(config.skip_min_max_filter);
     VideoCore::Perf::SetDetailedGpuProfile(config.gpu_profile);
     if (config.dump_guest_shaders) Settings::values.dump_guest_shaders.SetValue(true);
     VideoCommon::FullCapture::Enable(config.full_gpu_capture);
@@ -2703,6 +2708,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "min_max_filter=force") {
                             config.force_min_max_filter = true;
                             WriteDiag("boot.cfg: filtered min/max sampler reduction forced on");
+                        } else if (line == "min_max_filter=off") {
+                            config.skip_min_max_filter = true;
+                            WriteDiag("boot.cfg: filtered min/max sampler reduction not emulated");
                         } else if (line == "pso_prewarm=0") {
                             config.pso_prewarm = false;
                             WriteDiag("boot.cfg: dormant PSOs wait for their first draw");

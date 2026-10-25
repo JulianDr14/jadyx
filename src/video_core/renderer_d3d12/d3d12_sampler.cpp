@@ -45,6 +45,14 @@ Sampler::Sampler(TextureCacheRuntime& runtime_, const Tegra::Texture::TSCEntry& 
                 LOG_INFO(Render, "D3D12: point MIN/MAX sampler uses its exact single-texel "
                                  "equivalent (no reduction hardware required)");
             }
+        } else if (!runtime->supports_min_max_filter &&
+                   skip_min_max_filter.load(std::memory_order_relaxed)) {
+            if (!logged_min_max_filter) {
+                logged_min_max_filter = true;
+                LOG_WARNING(Render, "D3D12: filtered MIN/MAX sampler reduction skipped by "
+                                    "boot.cfg; those samplers filter normally");
+            }
+            reduction = D3D12_FILTER_REDUCTION_TYPE_STANDARD;
         } else if (!runtime->supports_min_max_filter) {
             // Creating it removes the device. The sampler filters normally and the pipelines
             // that use it reduce in the shader (EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION).

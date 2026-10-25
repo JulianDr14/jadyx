@@ -121,6 +121,10 @@ void SetForceMinMaxFilter(bool enabled) {
     force_min_max_filter.store(enabled, std::memory_order_relaxed);
 }
 
+void SetSkipMinMaxFilter(bool enabled) {
+    skip_min_max_filter.store(enabled, std::memory_order_relaxed);
+}
+
 void SetAstcGpuVerify(bool enabled) {
     gpu_astc_verify.store(enabled ? 64 : 0, std::memory_order_relaxed);
 }

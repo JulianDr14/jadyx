@@ -582,6 +582,9 @@ void SetAstcGpuFresh(bool enabled);
 /// Diagnostic ("min_max_filter=force"): filtered MIN/MAX sampler reductions go to the hardware
 /// even when the device reports no support for them. Applies to runtimes created from now on.
 void SetForceMinMaxFilter(bool enabled);
+/// Diagnostic ("min_max_filter=off"): filtered MIN/MAX samplers the device cannot reduce filter
+/// normally and no shader emulates the reduction. Wrong results, to time the emulation.
+void SetSkipMinMaxFilter(bool enabled);
 
 class Sampler {
 public:
