@@ -15,7 +15,7 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 
 ## Diseño y funciones
 
-- [Compatibility badges](nxbox-compat-badges.md): report metadata, offline fallback, opt-in refresh and console test.
+- [Insignias de compatibilidad](xbox_compat_badges.md): formato de `compat.json`, carga sin bloquear la biblioteca, refresco opcional y prueba pendiente en consola.
 
 - [Actualizador de Jadyx](xbox_updater.md): versiones firmadas, descarga reanudable, pantalla de actualizaciones y asistencia web; instalación interna Xbox pendiente de gate.
 

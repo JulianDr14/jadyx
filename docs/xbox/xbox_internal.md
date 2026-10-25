@@ -4279,13 +4279,10 @@ excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
 
 
-## Library compatibility badges (2026-10-24)
+## Insignias de compatibilidad (2026-10-24)
 
-The Jadyx library now consumes packaged compatibility metadata keyed by base title ID,
-with drawn status badges and en/es/pt-BR focus text. Loading starts after first draw;
-refresh is opt-in via NXBOX_COMPAT_REFRESH, bounded to three seconds and 256 KiB.
-LocalState cache falls back to the bundle; NXbox reports retain provenance and never
-certify Jadyx. Four titles/eight reports seeded from local sources; unmapped IDs omitted.
-Host parsing/library/history/localization pass; UWP build and console layout/timing
-remain pending. Maintenance rules, exact commands and evidence limits are in
-[nxbox-compat-badges.md](nxbox-compat-badges.md). No upstream or network operations.
+La biblioteca dibuja una insignia por portada (Playable, Issues, Broken, Untested) a partir de
+`dist/compat/compat.json`, indexado por title ID base. La carga va en un hilo después del primer
+dibujo; el refresco remoto es opcional (`JADYX_COMPAT_REFRESH=1`, 3 s, 256 KiB) y se cachea en
+LocalState solo si valida. Test de host en `tools/xbox/tests/compatibility.cpp`; diseño visual y
+tiempos en consola pendientes. Formato y checklist: [xbox_compat_badges.md](xbox_compat_badges.md).
