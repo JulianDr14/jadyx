@@ -18,6 +18,7 @@
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_draw_sampler_cache.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
+#include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/surface.h"
 #include "video_core/textures/texture.h"
@@ -33,6 +34,37 @@ using SamplerIdList = boost::container::small_vector<VideoCommon::SamplerId, 64>
 /// each one is a storage image.
 using ImageTransitionList =
     boost::container::small_vector<std::pair<VideoCommon::ImageViewId, bool>, 32>;
+
+/// Calls func(view_id, is_storage) for each transition in the order they must be recorded: reads
+/// through a reinterpreted copy first, since refreshing the copy reads the image; then storage
+/// images; then the other reads. An image this draw or dispatch both stores and samples (a depth
+/// pyramid writes each level from the one below) then stays a UAV through its reads
+/// (Image::Transition), and the previous work's writes into it reach this one through a UAV
+/// barrier. With reads first, the dependency was only a transition to a read state and back
+/// within one ResourceBarrier call, which nets out to UAV to UAV: the Series flickered until a
+/// UAV barrier followed every dispatch.
+template <typename Func>
+void ForEachImageTransition(const ImageTransitionList& transitions, TextureCache& texture_cache,
+                            Func&& func) {
+    if (GetDiagSync() == DiagSync::ReadsBeforeStores) {
+        for (const auto& [view_id, is_storage] : transitions) {
+            func(view_id, is_storage);
+        }
+        return;
+    }
+    const auto pass = [&](int rank) {
+        for (const auto& [view_id, is_storage] : transitions) {
+            const int view_rank =
+                is_storage ? 1 : texture_cache.GetImageView(view_id).ReadsReinterpretedCopy() ? 0 : 2;
+            if (view_rank == rank) {
+                func(view_id, is_storage);
+            }
+        }
+    };
+    pass(0);
+    pass(1);
+    pass(2);
+}
 
 /// Explicit format of a typed image buffer.
 [[nodiscard]] inline std::optional<VideoCore::Surface::PixelFormat> PixelFormatFromImageFormat(

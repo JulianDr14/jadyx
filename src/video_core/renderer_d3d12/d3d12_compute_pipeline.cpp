@@ -162,7 +162,8 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
     PushStorageImages(info, texture_cache, queue, views_it, image_transitions);
 
     BarrierBatch barriers{context.scheduler};
-    for (const auto& [view_id, is_storage] : image_transitions) {
+    ForEachImageTransition(image_transitions, texture_cache, [&](VideoCommon::ImageViewId view_id,
+                                                                 bool is_storage) {
         if (out.trace_all_views && is_storage) out.trace_all_views->push_back({view_id, true});
         if (GpuDiagnosticsEnabled()) {
             const auto& view = texture_cache.GetImageView(view_id);
@@ -174,7 +175,7 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
             is_storage ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                        : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             &barriers);
-    }
+    });
     barriers.Flush();
 
     out.resource_table = queue.Table();

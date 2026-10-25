@@ -655,7 +655,8 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     // Depth-based effects sample the bound depth buffer: both uses then share a read-only state
     // (DEPTH_SAMPLED_STATE) and the draw binds the read-only DSV.
     BarrierBatch barriers{context.scheduler};
-    for (const auto& [view_id, is_storage] : image_transitions) {
+    ForEachImageTransition(image_transitions, texture_cache, [&](VideoCommon::ImageViewId view_id,
+                                                                 bool is_storage) {
         if (out.trace_all_views && is_storage) out.trace_all_views->push_back({view_id, true});
         if (GpuDiagnosticsEnabled()) {
             const auto& view = texture_cache.GetImageView(view_id);
@@ -670,13 +671,13 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                 out.depth_sampled = true;
                 image_view.TransitionImage(DEPTH_SAMPLED_STATE, &barriers);
             }
-            continue;
+            return;
         }
         image_view.TransitionImage(is_storage ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                                               : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                                                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                                    &barriers);
-    }
+    });
     barriers.Flush();
     target_lap.Lap(VideoCore::Perf::Counter::DrawImageTransitionsNs);
     if (out.depth_sampled && writable_depth) {

@@ -510,6 +510,12 @@ public:
     /// Transitions the whole image this view belongs to (no-op for null and buffer views).
     void TransitionImage(D3D12_RESOURCE_STATES state, BarrierBatch* batch = nullptr) const;
 
+    /// Whether its SRVs read the image's reinterpreted copy, which reading refreshes from the
+    /// image (Image::ReadReinterpreted).
+    [[nodiscard]] bool ReadsReinterpretedCopy() const noexcept {
+        return srv_resource && srv_resource != image;
+    }
+
     /// Records what reading Handle(texture_type) needs first (a 3D image read as a 2D array
     /// refreshes its slice copy); call before the draw or dispatch, outside any other copy.
     void PrepareRead(Shader::TextureType texture_type) const;
