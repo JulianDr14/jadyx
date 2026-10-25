@@ -1202,6 +1202,13 @@ private:
     static constexpr float SettingsPaneWidth = 1280 - LibraryLayout::Margin - SettingsPaneX;
     static constexpr float SettingsRowsTop = 226, SettingsRowStride = 58, SettingsRowHeight = 52;
     static constexpr std::size_t SettingsVisibleRows = 7;
+    /// The code spaced out so it reads at a distance, as the browser asks for it.
+    static std::wstring PortalDigits(const std::string& code) {
+        std::wstring digits;
+        for (const char c : code) { if (!digits.empty()) digits += L"  "; digits += static_cast<wchar_t>(c); }
+        return digits;
+    }
+
     void DrawNetworkConnection(const ConfigurationPanel& configuration) {
         const auto& network = configuration.network;
         Type(L"J A D Y X", TypeRole::HeadlineSmall, 80, 44, 400, Palette::Text);
@@ -1217,13 +1224,12 @@ private:
         Card(80, 274, 1120, 210, 20);
         Type(Tr(T::NetworkCodeLabel), TypeRole::Caps, 100, 296, 1080,
              Palette::TextSecondary, 1, TextAlign::Center);
-        if (network.running && !network.code_expired && network.code.size() == 8) {
-            const auto digits = winrt::to_hstring(network.code.substr(0, 4) + " " + network.code.substr(4));
+        if (network.running && !network.code_expired && network.code.size() == 4) {
             D2D1_MATRIX_3X2_F transform;
             target->GetTransform(&transform);
             // Hero is 56px at the reference resolution: 112px here, independent of settings rows.
             target->SetTransform(D2D1::Matrix3x2F::Scale(2, 2, D2D1::Point2F(640, 334)) * transform);
-            Type(digits.c_str(), TypeRole::Hero, 360, 334, 560, Palette::Text, 1, TextAlign::Center);
+            Type(PortalDigits(network.code), TypeRole::Hero, 360, 334, 560, Palette::Text, 1, TextAlign::Center);
             target->SetTransform(transform);
         } else {
             Type(Tr(network.paired ? T::NetworkPaired : T::NetworkCodeExpired),
@@ -1273,7 +1279,7 @@ private:
     /// at the right over the warning that keeps the user's data. Laid out like the portal screen.
     void DrawUpdateGuide(const ConfigurationPanel& configuration, const Updates::Snapshot& update) {
         const auto& network = configuration.network;
-        const bool code = network.running && !network.code_expired && network.code.size() == 8;
+        const bool code = network.running && !network.code_expired && network.code.size() == 4;
         Type(L"J A D Y X", TypeRole::HeadlineSmall, 80, 44, 400, Palette::Text);
         const std::wstring installed{winrt::to_hstring(Updates::FormatVersion(update.installed))};
         const std::wstring incoming = update.release ?
@@ -1297,13 +1303,12 @@ private:
         Round(inner, card_y + 106, inner_w, 1, 0.5f, Palette::Graphite);
         Type(Upper(Tr(T::NetworkCodeLabel)), TypeRole::Caps, inner, card_y + 128, inner_w, Palette::TextSecondary);
         if (code) {
-            const auto digits = winrt::to_hstring(network.code.substr(0, 4) + " " + network.code.substr(4));
             D2D1_MATRIX_3X2_F transform;
             target->GetTransform(&transform);
             // Hero is 56px at the reference resolution: 84px here, centred in the card.
             const float center = card_x + card_w / 2, top = card_y + 156;
             target->SetTransform(D2D1::Matrix3x2F::Scale(1.5f, 1.5f, D2D1::Point2F(center, top)) * transform);
-            Type(digits.c_str(), TypeRole::Hero, inner, top, inner_w, Palette::Text, 1, TextAlign::Center);
+            Type(PortalDigits(network.code), TypeRole::Hero, inner, top, inner_w, Palette::Text, 1, TextAlign::Center);
             target->SetTransform(transform);
         } else {
             Type(Tr(network.paired ? T::NetworkPaired : network.running ? T::NetworkCodeExpired : T::NetworkStopped),

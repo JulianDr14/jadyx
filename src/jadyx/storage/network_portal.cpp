@@ -183,9 +183,10 @@ std::string RandomSession() {
 }
 
 std::string RandomCode() {
-    // Rejection sampling avoids modulo bias in the eight decimal digits.
+    // Rejection sampling avoids modulo bias in the four decimal digits. Four are enough on a LAN:
+    // five tries a minute and five minutes per code leave a guess at 25 in 10000.
     std::string result;
-    while (result.size() < 8) {
+    while (result.size() < 4) {
         unsigned char byte{};
         if (RAND_bytes(&byte, 1) != 1) return {};
         if (byte < 250) result += static_cast<char>('0' + byte % 10);

@@ -100,7 +100,7 @@ async function browserScenario(options){
   const offset=4*1024**3+1048576;
   job={...job,id,name,fingerprint:options.different?'b'.repeat(64):signature,length,offset,received:offset,phase:'paused'};
  }
- element('code').value='12345678';await callbacks.get('pair:submit')({preventDefault(){}});
+ element('code').value='1234';await callbacks.get('pair:submit')({preventDefault(){}});
  element('files').files=options.queue?[selected,{...selected,name:'second.nsp'}]:[selected];callbacks.get('files:change')();
  await callbacks.get('send:click')();
  if(controlPromise)await controlPromise;
@@ -153,7 +153,7 @@ async function systemScenario(kind,zip,language){
   performance,XMLHttpRequest:XHR,fetch,btoa:v=>Buffer.from(v,'binary').toString('base64'),setTimeout:cb=>{queueMicrotask(cb);return 1;},setInterval:()=>1,clearInterval:()=>{}});
  vm.runInContext(script,context);
  assert.equal(element('keys-title').textContent,language==='es'?'Importar claves':language==='pt-BR'?'Importar chaves':'Import keys','initial keys card is a title, never an error');
- element('code').value='12345678';await callbacks.get('pair:submit')({preventDefault(){}});
+ element('code').value='1234';await callbacks.get('pair:submit')({preventDefault(){}});
  element(kind+'-files').files=[selected];await callbacks.get(kind+'-send:click')();
  assert.equal(writes,1);assert.equal(system.phase,'review');assert.equal(confirmations,0);
  assert.equal(element('system-confirm').disabled,true);assert.match(element('system-versions').textContent,/20\.0\.0/);
@@ -210,7 +210,7 @@ async function libraryScenario(language){
   performance,XMLHttpRequest:XHR,fetch,URL:{createObjectURL:()=>'blob:x',revokeObjectURL(){}},btoa:v=>Buffer.from(v,'binary').toString('base64'),
   setTimeout:(cb,ms)=>{if(!(ms>=6000))queueMicrotask(cb);return 1;},clearTimeout:()=>{},setInterval:()=>1,clearInterval:()=>{}});
  vm.runInContext(script,context);
- element('code').value='12345678';await element('pair').listeners.submit({preventDefault(){}});
+ element('code').value='1234';await element('pair').listeners.submit({preventDefault(){}});
  assert.equal(element('cat-library').hidden,false);
  click(element('cat-library'));await delay();
  assert.equal(element('upload').hidden,true);assert.equal(element('library').hidden,false);assert.equal(element('games').children.length,1);

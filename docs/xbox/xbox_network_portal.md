@@ -101,7 +101,7 @@ enumera Ethernet/Wi-Fi operativas con gateway primero; no se usa NetworkInformat
 limitado en Xbox. Solo los gates admiten loopback. Conexión/emparejamiento LAN Series
 confirmados por el usuario.
 
-Código8 dígitos CSPRNG/5min consumido al emparejar, sesión256bits en RAM. Cinco intentos
+Código 4 dígitos CSPRNG/5min consumido al emparejar, sesión256bits en RAM. Cinco intentos
 por minuto globales; renovar no reinicia limitador. No código/sesión en logs, URLs o
 almacenamiento persistente del navegador. HTTP LAN sin cifrado, sin UPnP ni CORS abierto;
 Host exacto IP:puerto, Origin exacto cuando existe y obligatorio al emparejar. CSP,

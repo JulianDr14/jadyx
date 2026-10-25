@@ -404,7 +404,7 @@ verificar la firma, servir el paquete y abrir el Portal) lo hace Jadyx.
 
 1. **Consola:** con la versión verificada (fase Ready), *Instalar desde el móvil o PC* abre la
    pantalla de instalación sobre la página de actualizaciones. El portal de red arranca solo y
-   la pantalla muestra la dirección, el código de 8 dígitos, los tres pasos y el aviso de no
+   la pantalla muestra la dirección, el código de 4 dígitos, los tres pasos y el aviso de no
    desinstalar. B vuelve a la página de actualizaciones; Detener apaga el portal sin salir.
 2. **Navegador:** mientras la consola está en Assistance, `/api/v1/status` lleva
    `update.offered=true` y la página, tras emparejar, abre directamente en *Actualizar Jadyx*
