@@ -10,6 +10,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "video_core/host1x/gpu_device_memory_manager.h"
@@ -108,7 +109,13 @@ public:
     /// presented. Empty when it is not a GPU image. GPU thread only, while the guest is paused.
     [[nodiscard]] MenuImage CaptureFrame();
 
+    /// Stops the boot screen's thread (SetBootScreen) and drops its image, leaving its last
+    /// frame on screen.
+    void EndBootScreen();
+
 private:
+    /// Presents the boot screen from a thread of its own until EndBootScreen.
+    void StartBootScreen(BootScreen draw);
     /// Copies the frontend menu, centered, into frame (in RENDER_TARGET state, as it leaves it).
     void DrawGameMenu(CommandStream* cmd, PresentFrame& frame);
     /// While pipelines build (VideoCore::ShaderNotify), a small panel in the bottom-right corner
@@ -281,6 +288,8 @@ private:
     VideoCore::Perf::Snapshot perf_frame{};  ///< counters at the previous present
     VideoCore::Perf::Snapshot perf_window{}; ///< counters at the start of the pacing window
     std::chrono::steady_clock::time_point last_hitch_report{};
+    /// Last: it presents with everything above.
+    std::jthread boot_screen;
 };
 
 } // namespace D3D12

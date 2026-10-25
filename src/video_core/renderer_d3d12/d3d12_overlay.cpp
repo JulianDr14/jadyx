@@ -4,8 +4,11 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <exception>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -24,6 +27,7 @@
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_overlay_memory.h"
 #include "video_core/renderer_d3d12/renderer_d3d12.h"
+#include "video_core/renderer_d3d12/renderer_d3d12_internal.h"
 #include "video_core/shader_notify.h"
 
 // Overlays drawn over the presented image: performance HUD, trace and shader indicators, load
@@ -300,6 +304,58 @@ MenuImage CaptureGameFrame(VideoCore::RendererBase& renderer) {
         return {};
     }
     return static_cast<RendererD3D12&>(renderer).CaptureFrame();
+}
+
+namespace {
+std::mutex boot_screen_mutex;
+BootScreen boot_screen_drawer;
+} // Anonymous namespace
+
+void SetBootScreen(BootScreen draw) {
+    std::scoped_lock lock{boot_screen_mutex};
+    boot_screen_drawer = std::move(draw);
+}
+
+BootScreen PresentDetail::TakeBootScreen() {
+    std::scoped_lock lock{boot_screen_mutex};
+    return std::exchange(boot_screen_drawer, nullptr);
+}
+
+void EndBootScreen(VideoCore::RendererBase& renderer) {
+    if (Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Direct3D12) {
+        static_cast<RendererD3D12&>(renderer).EndBootScreen();
+    }
+}
+
+void RendererD3D12::StartBootScreen(BootScreen draw) {
+    boot_screen = std::jthread{[this, draw = std::move(draw)](std::stop_token stop) {
+        constexpr auto period = std::chrono::milliseconds{33};
+        std::mutex mutex;
+        std::condition_variable_any wake;
+        auto next = std::chrono::steady_clock::now();
+        while (!stop.stop_requested()) {
+            MenuImage image;
+            try {
+                image = draw(ScreenSize());
+            } catch (...) {
+                // The screen keeps its last frame; the boot goes on without it.
+                LOG_WARNING(Render, "D3D12: boot screen stopped drawing");
+                return;
+            }
+            if (!image.pixels.empty()) ShowGameMenu(std::move(image));
+            next += period;
+            if (const auto now = std::chrono::steady_clock::now(); next < now) next = now;
+            std::unique_lock lock{mutex};
+            wake.wait_until(lock, stop, next, [] { return false; });
+        }
+    }};
+}
+
+void RendererD3D12::EndBootScreen() {
+    if (!boot_screen.joinable()) return;
+    boot_screen.request_stop();
+    boot_screen.join();
+    game_menu.reset();
 }
 
 void ShowCpuLoadProgress(VideoCore::RendererBase& renderer, size_t done, size_t total) {

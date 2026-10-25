@@ -144,6 +144,12 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& emu_window,
     blit_ready = CreateBlitPipeline();
     if (VideoCommon::FullCapture::TakeSelfTest()) rasterizer.RunFullCaptureSelfTest();
 
+    if (BootScreen draw = TakeBootScreen()) {
+        // The frontend's loading screen, until the guest is about to run.
+        StartBootScreen(std::move(draw));
+        LOG_INFO(Render, "D3D12: boot screen shown (tick {})", scheduler.CurrentTick());
+        return;
+    }
     // Present one dark-blue frame straight away: on-console, a blue screen before the guest draws
     // anything proves the device and swapchain work independently of the emulation.
     FrameLease frame = present_manager.AcquireFrame();
@@ -162,6 +168,7 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& emu_window,
 }
 
 RendererD3D12::~RendererD3D12() {
+    EndBootScreen();
     rasterizer.EndMaterialTrace(false);
     try {
         present_manager.WaitIdle();
