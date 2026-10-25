@@ -389,6 +389,10 @@ struct BootConfig {
     /// Host timing waits sleep on a high-resolution timer and wait only its lateness on the CPU
     /// ("timer_sleep=0" waits the last timer tick on the CPU, as before).
     bool timer_sleep{true};
+    /// Most microseconds a host timing wait spends on the CPU before its deadline
+    /// ("timer_spin=<us>"); past that a late timer makes the event late. Unset follows the
+    /// timer's learned lateness, which on Series keeps nearly every wait on the CPU.
+    std::optional<u32> timer_spin_us;
     bool timer_profile{}; ///< HostTiming waits only; opt-in, separate from draw profiling.
     /// File name of a game in LocalState\games to boot instead of boot.nro (package-appx.ps1 -Game).
     std::string game;
@@ -520,6 +524,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     Kernel::PhysicalCore::SetIdleSpinPolicy(config.idle_spin);
     // Read by the host timing thread's first wait.
     Common::SetPreciseTimerSleeps(config.timer_sleep);
+    if (config.timer_spin_us) {
+        Common::SetPreciseTimerSpinCap(std::chrono::microseconds{*config.timer_spin_us});
+    }
     Common::Windows::TimedWaitProfile::enabled.store(config.timer_profile, std::memory_order_relaxed);
     // Read by HostMemory when Core::System builds the DRAM, so it has to be set before that.
     // The 384-MiB Series experiment covered only 388 of 2637 MiB requested by Game C (15%). The
@@ -2930,6 +2937,17 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                       std::string(value == "check" ? "checked"
                                                   : value == "1"   ? "on"
                                                                    : "off"));
+                        } else if (line.starts_with("timer_spin=")) {
+                            const auto value = line.substr(11);
+                            u32 parsed{};
+                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() && parsed <= 100000) {
+                                config.timer_spin_us = parsed;
+                                WriteDiag("boot.cfg: host timing waits at most " + value +
+                                          " us on the CPU");
+                            } else {
+                                WriteDiag("boot.cfg: invalid timer_spin, ignored");
+                            }
                         } else if (line == "timer_sleep=0" || line == "timer_sleep=1") {
                             config.timer_sleep = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: host timing sleeps on ") +
