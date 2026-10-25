@@ -126,6 +126,14 @@ FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress p
         if(R_FAILED(header.Initialize(raw,FileSys::GetCryptoConfiguration(),FileSys::GetNcaCompressionConfiguration()))){Require(!strict,"firmware_keys");continue;}
         FileSys::NCA nca{raw};
         if(nca.GetStatus()!=Loader::ResultStatus::Success){Require(!strict,"firmware_keys");continue;}
+        // A meta NCA always holds a PFS0. Opening without one means the keys read the header but not
+        // the content (e.g. a wrong key_area_key_application_00): the SystemUpdate meta is lost and
+        // system titles outside 0x010000000000xxxx would be taken for games.
+        if(nca.GetType()==FileSys::NCAContentType::Meta&&nca.GetSubdirectories().empty()) {
+            LOG_WARNING(Frontend, "Firmware import: the meta NCA '{}' ({:016X}, key generation {}) could not be decrypted",
+                        Utf8(file.path().filename()), nca.GetTitleId(), header.GetKeyGeneration());
+            Require(!strict,"firmware_keys");continue;
+        }
         // Firmware also ships a few system titles outside 0x010000000000xxxx (e.g. 01008BB00013C000);
         // those are allowed only when the SystemUpdate meta lists them.
         const int generation=static_cast<int>((std::max)(nca.GetKeyGeneration(),u8{1})-1);
