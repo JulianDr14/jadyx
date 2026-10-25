@@ -20,7 +20,8 @@
 
 param([int] $TimeoutSec = 75, [switch] $NoBuild, [string] $BootNro, [int] $RunSeconds = 0,
       [switch] $DebugLayer, [string] $Game, [string] $StageScript, [string[]] $BootCfg = @(),
-      [ValidateRange(0, 1048576)] [int] $MemoryLimitMiB = 5120, [switch] $Library, [switch] $AllowVersionDowngrade)
+      [ValidateRange(0, 1048576)] [int] $MemoryLimitMiB = 5120, [switch] $Library, [switch] $AllowVersionDowngrade,
+      [string] $Version)
 $ErrorActionPreference = 'Stop'
 # Match package-appx's comma-separated -BootCfg handling before applying defaults.
 # Otherwise an explicit developer_hotkeys=0 later in the string gets overridden.
@@ -47,7 +48,8 @@ Get-Process -Name jadyx -ErrorAction SilentlyContinue | Stop-Process -Force
 Push-Location $r
 try {
     & "$r\tools\xbox\package-appx.ps1" -BootNro $BootNro -RunSeconds $RunSeconds `
-        -DebugLayer:$DebugLayer -Game $Game -StageScript $StageScript -BootCfg $BootCfg *> $null
+        -DebugLayer:$DebugLayer -Game $Game -StageScript $StageScript -BootCfg $BootCfg `
+        -Version $Version *> $null
 } finally {
     Pop-Location
 }
