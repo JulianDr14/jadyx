@@ -67,7 +67,10 @@ try {
         $code = ($state | Select-Object -Last 1)
     } while ($code -eq '204' -and (Get-Date) -lt $deadline)
     if ($code -ne '200') { throw "install did not finish (HTTP $code): $($state -join ' ')" }
-    Write-Host "installed $Version on ${Console}: $(($state | Select-Object -SkipLast 1) -join ' ')"
+    $result = ($state | Select-Object -SkipLast 1) -join ' '
+    # A finished install can still be a rejected one (a higher version installed, for one).
+    if (-not ($result | ConvertFrom-Json).Success) { throw "install of $Version failed: $result" }
+    Write-Host "installed $Version on ${Console}: $result"
 } finally {
     Remove-Item -LiteralPath $jar -ErrorAction SilentlyContinue
 }
