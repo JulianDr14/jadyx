@@ -188,6 +188,8 @@ add_library(shader_recompiler STATIC
     ir_opt/texture_pass.cpp
     ir_opt/vendor_workaround_pass.cpp
     ir_opt/verification_pass.cpp
+    ir_opt/workgroup_split_pass.cpp
+    ir_opt/workgroup_split_pass.h
     object_pool.h
     local_memory_scratch.h
     profile.h
