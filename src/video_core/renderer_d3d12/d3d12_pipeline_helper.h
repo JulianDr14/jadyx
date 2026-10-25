@@ -46,12 +46,6 @@ using ImageTransitionList =
 template <typename Func>
 void ForEachImageTransition(const ImageTransitionList& transitions, TextureCache& texture_cache,
                             Func&& func) {
-    if (GetDiagSync() == DiagSync::ReadsBeforeStores) {
-        for (const auto& [view_id, is_storage] : transitions) {
-            func(view_id, is_storage);
-        }
-        return;
-    }
     const auto pass = [&](int rank) {
         for (const auto& [view_id, is_storage] : transitions) {
             const int view_rank =

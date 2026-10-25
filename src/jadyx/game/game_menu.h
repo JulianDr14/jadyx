@@ -109,8 +109,7 @@ struct GameMenuSettings {
     /// Opt-in diagnostic package ("diag_menu=1"): the display page can switch the suspects of
     /// missing geometry without another package.
     bool diag_toggles{};
-    /// How draws and dispatches order their UAV writes (D3D12::DiagSync, seven modes); applies
-    /// at once.
+    /// How dispatches order their UAV writes (D3D12::DiagSync, three modes); applies at once.
     std::uint8_t gpu_sync{};
     /// Occlusion results reach the game as never zero (VideoCommon::force_occlusion_visible):
     /// whether objects flicker because the game culls them on its queries; applies at once.
@@ -289,13 +288,10 @@ private:
         case FullScreen:
             return {Tr(Text::MenuFullScreen), Tr(settings.fullscreen ? Text::Yes : Text::No), Choice};
         case GpuSync: {
-            constexpr Text values[] = {Text::MenuGpuSyncNormal, Text::MenuGpuSyncLastBinding,
-                                       Text::MenuGpuSyncWorkBarriers,
-                                       Text::MenuGpuSyncDispatchBarriers,
-                                       Text::MenuGpuSyncDrawBarriers,
-                                       Text::MenuGpuSyncGlobalBarrier,
-                                       Text::MenuGpuSyncReadsFirst};
-            return {Tr(Text::MenuGpuSync), Tr(values[settings.gpu_sync % 7]), Choice};
+            constexpr Text values[] = {Text::MenuGpuSyncNormal,
+                                       Text::MenuGpuSyncDispatchBufferBarriers,
+                                       Text::MenuGpuSyncDispatchImageBarriers};
+            return {Tr(Text::MenuGpuSync), Tr(values[settings.gpu_sync % 3]), Choice};
         }
         case OcclusionVisible:
             return {Tr(Text::MenuOcclusionVisible), Tr(settings.occlusion_visible ? Text::Yes : Text::No),
@@ -366,7 +362,7 @@ private:
             settings.fullscreen = !settings.fullscreen;
             return GameMenuResult::FullScreen;
         case GpuSync:
-            settings.gpu_sync = static_cast<std::uint8_t>((settings.gpu_sync + (back ? 6 : 1)) % 7);
+            settings.gpu_sync = static_cast<std::uint8_t>((settings.gpu_sync + (back ? 2 : 1)) % 3);
             return GameMenuResult::GpuSyncChanged;
         case OcclusionVisible:
             settings.occlusion_visible = !settings.occlusion_visible;

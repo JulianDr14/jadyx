@@ -183,8 +183,7 @@ void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
     const u64 work = scheduler->Work();
     if (work != 0 && uav_work == work && current == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
         (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
-         next == D3D12_RESOURCE_STATE_GENERIC_READ) &&
-        GetDiagSync() != DiagSync::LastBindingWins) {
+         next == D3D12_RESOURCE_STATE_GENERIC_READ)) {
         // Another binding of this draw or dispatch writes it: it stays a UAV (Scheduler::BeginWork),
         // and its UAV barrier is in. AMD hardware, the Series included, reads buffers in any state.
         return;
@@ -195,15 +194,14 @@ void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
     // uniform and storage buffers in a fixed order, so the back transition gets a UAV barrier.
     const bool back_to_uav = work != 0 && read_work == work &&
                              next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
-                             current != D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
-                             GetDiagSync() != DiagSync::ReadsBeforeStores;
+                             current != D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     if (work != 0 && current == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
         next != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
         read_work = work;
     }
     if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && work != 0) {
         uav_work = work;
-        if (scheduler->CollectsWorkUavs()) {
+        if (scheduler->CollectsBufferUavs()) {
             scheduler->WorkUavs().push_back(buffer.Get());
         }
     }

@@ -653,15 +653,14 @@ void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
     const u64 work = runtime->scheduler.Work();
     if (work != 0 && uav_work == work && state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
         (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
-         ((next & WRITE_STATES) == 0 && next != D3D12_RESOURCE_STATE_COPY_SOURCE)) &&
-        GetDiagSync() != DiagSync::LastBindingWins) {
+         ((next & WRITE_STATES) == 0 && next != D3D12_RESOURCE_STATE_COPY_SOURCE))) {
         // Another binding of this draw or dispatch writes it: it stays a UAV (Scheduler::BeginWork),
         // and its UAV barrier is in. AMD hardware, the Series included, samples it there too.
         return;
     }
     if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && work != 0) {
         uav_work = work;
-        if (runtime->scheduler.CollectsWorkUavs()) {
+        if (runtime->scheduler.CollectsImageUavs()) {
             runtime->scheduler.WorkUavs().push_back(resource.Get());
         }
     }

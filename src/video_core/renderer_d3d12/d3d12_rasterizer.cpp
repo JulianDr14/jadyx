@@ -940,19 +940,24 @@ void RasterizerD3D12::FlushCommands() {
 }
 void RasterizerD3D12::FlushIfUploadHeavy() {
     if (removal_tripwire::removal_tripped.load(std::memory_order_relaxed)) return;
-    // Diagnostic (DiagSync's UAV barrier modes): a UAV barrier on every resource the draw or
-    // dispatch just ended made a UAV, or a global one.
+    // Diagnostic (DiagSync's UAV barrier modes): a UAV barrier on every buffer or image the
+    // dispatch just ended made a UAV.
     std::vector<ID3D12Resource*>& written = scheduler.WorkUavs();
-    if (GetDiagSync() == DiagSync::GlobalUavBarrier) {
-        BarrierBatch barriers{scheduler};
-        barriers.Uav(nullptr);
-    } else if (!written.empty()) {
+    if (!written.empty()) {
         std::ranges::sort(written);
         const auto [first, last] = std::ranges::unique(written);
         written.erase(first, last);
         BarrierBatch barriers{scheduler};
         for (ID3D12Resource* const resource : written) {
             barriers.Uav(resource);
+            // Names what the barriers cover, once per resource.
+            if (logged_work_uavs.size() < 64 && logged_work_uavs.insert(resource).second) {
+                const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+                LOG_INFO(Render, "D3D12: diag UAV barrier on {} DXGI {} {}x{}x{} levels {}",
+                         desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? "buffer" : "image",
+                         static_cast<u32>(desc.Format), desc.Width, desc.Height,
+                         desc.DepthOrArraySize, desc.MipLevels);
+            }
         }
         written.clear();
     }

@@ -27,21 +27,13 @@ namespace D3D12 {
 /// every call itself, as the renderer did before the recorder.
 void SetAsyncRecording(bool enabled);
 
-/// Diagnostic: how draws and dispatches order their UAV writes before later work. Normal; the
-/// previous tracking, where the last binding of a resource sets its state even if an earlier one
-/// writes it (Scheduler::BeginWork); normal plus a UAV barrier on every resource each draw and
-/// dispatch, each dispatch only or each draw only made a UAV; normal plus a global UAV barrier
-/// after every draw and dispatch; or the previous order, where a draw or dispatch transitions
-/// its sampled images before its storage images and buffers get no UAV barrier when a work
-/// takes them out of UAV and back (ForEachImageTransition). Applies at once.
+/// Diagnostic: how dispatches order their UAV writes before later work. Normal, or normal plus
+/// a UAV barrier on the buffers only, or the images only, each dispatch made a UAV. Applies at
+/// once.
 enum class DiagSync : u8 {
     Normal,
-    LastBindingWins,
-    WorkUavBarriers,
-    DispatchUavBarriers,
-    DrawUavBarriers,
-    GlobalUavBarrier,
-    ReadsBeforeStores,
+    DispatchBufferUavBarriers,
+    DispatchImageUavBarriers,
 };
 void SetDiagSync(DiagSync mode);
 [[nodiscard]] DiagSync GetDiagSync();
@@ -184,9 +176,8 @@ public:
     void BeginWork(bool dispatch) noexcept {
         work = ++work_serial;
         const DiagSync sync = GetDiagSync();
-        collect_uavs = sync == DiagSync::WorkUavBarriers ||
-                       sync == (dispatch ? DiagSync::DispatchUavBarriers
-                                         : DiagSync::DrawUavBarriers);
+        collect_buffer_uavs = dispatch && sync == DiagSync::DispatchBufferUavBarriers;
+        collect_image_uavs = dispatch && sync == DiagSync::DispatchImageUavBarriers;
     }
     void EndWork() noexcept {
         work = 0;
@@ -197,9 +188,12 @@ public:
     }
 
     /// Diagnostic (DiagSync's UAV barrier modes): whether the current draw or dispatch collects
-    /// the resources it makes UAVs in WorkUavs.
-    [[nodiscard]] bool CollectsWorkUavs() const noexcept {
-        return collect_uavs;
+    /// the buffers, and the images, it makes UAVs in WorkUavs.
+    [[nodiscard]] bool CollectsBufferUavs() const noexcept {
+        return collect_buffer_uavs;
+    }
+    [[nodiscard]] bool CollectsImageUavs() const noexcept {
+        return collect_image_uavs;
     }
     [[nodiscard]] std::vector<ID3D12Resource*>& WorkUavs() noexcept {
         return work_uavs;
@@ -217,7 +211,8 @@ private:
 
     u64 work_serial{};
     u64 work{};
-    bool collect_uavs{};
+    bool collect_buffer_uavs{};
+    bool collect_image_uavs{};
     std::vector<ID3D12Resource*> work_uavs;
 
     /// Closes the list, submits it to signal tick and resets it for the next one. Recorded by
