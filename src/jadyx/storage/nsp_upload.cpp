@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/storage/nsp_upload.h"
+#include "jadyx/storage/storage_location.h"
 #include <windows.h>
 #include <fileapifromapp.h>
 #include <openssl/rand.h>
@@ -22,7 +23,6 @@ std::uint64_t Elapsed(Clock::time_point start) {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now()-start).count());
 }
 namespace fs = std::filesystem;
-constexpr std::uint64_t Reserve = 64ULL << 20;
 
 struct File {
     HANDLE handle{INVALID_HANDLE_VALUE};
@@ -103,26 +103,35 @@ std::uint64_t Free(const fs::path& path) {
 } // namespace
 
 struct NspUpload::Impl {
-    fs::path games, folder, payload;
+    fs::path games, folder, payload; ///< Internal destination; the checkpoints always stay in `folder`.
     mutable std::mutex mutex;
     std::mutex operation;
     UploadSnapshot info;
     std::uint64_t generation{}, file_id{};
     DWORD volume{};
     std::stop_source cancellation;
-    bool system_files{}, consume{};
+    bool system_files{}, consume{}, developer{};
 
-    explicit Impl(fs::path games_, bool system_files_, fs::path temporary, bool consume_) : games{std::move(games_)},
+    explicit Impl(fs::path games_, bool system_files_, fs::path temporary, bool consume_, bool developer_) :
+        games{std::move(games_)},
         folder{temporary.empty() ? games.parent_path() / "jadyx/transfers/nsp" : std::move(temporary)},
-        payload{folder / "payload.part"}, system_files{system_files_}, consume{consume_} {
+        payload{folder / "payload.part"}, system_files{system_files_}, consume{consume_}, developer{developer_} {
         fs::create_directories(games);
         fs::create_directories(folder);
         Recover();
     }
+    fs::path GamesFor(bool on_developer) const { return on_developer ? DeveloperGames() : games; }
+    fs::path PayloadFor(bool on_developer) const {
+        return on_developer ? DeveloperTransfers() / "payload.part" : payload;
+    }
+    bool OnDeveloper() const { return info.destination == "developer"; }
+    fs::path Games() const { return GamesFor(OnDeveloper()); }
+    fs::path Payload() const { return PayloadFor(OnDeveloper()); }
     void Checkpoint() {
         const Json json{{"version", 1}, {"generation", generation + 1}, {"id", info.id},
             {"name", info.name}, {"fingerprint", info.fingerprint}, {"tag", info.tag}, {"length", info.length},
-            {"offset", info.offset}, {"phase", info.phase}, {"file_id", file_id}, {"volume", volume}};
+            {"offset", info.offset}, {"phase", info.phase}, {"file_id", file_id}, {"volume", volume},
+            {"destination", info.destination}};
         const auto bytes = json.dump();
         const auto temporary = folder / "checkpoint.tmp";
         { File out{temporary, GENERIC_WRITE, CREATE_ALWAYS}; out.Write(bytes.data(), bytes.size()); out.Flush(); }
@@ -146,6 +155,11 @@ struct NspUpload::Impl {
                 const auto id = json.at("id").get<std::string>();
                 const auto fingerprint = json.at("fingerprint").get<std::string>();
                 const auto tag = json.value("tag", std::string{});
+                const auto destination = json.value("destination", std::string{"internal"});
+                const bool on_developer = destination == "developer";
+                if ((destination != "internal" && !on_developer) || (on_developer && !developer)) continue;
+                const auto target_games = GamesFor(on_developer);
+                const auto data_path = PayloadFor(on_developer);
                 if (json.at("version") != 1 || next <= generation || !ValidName(filename,system_files) || !ValidTag(tag) ||
                     !Hex(id, 32) || !Hex(fingerprint, 64) || !length || length > MaxLength || offset > length) continue;
                 const auto identity = json.at("file_id").get<std::uint64_t>();
@@ -155,27 +169,32 @@ struct NspUpload::Impl {
                 // A game deleted since its upload is not published any more, and opening it would throw.
                 std::error_code missing;
                 if (!consume && (json.at("phase") == "publishing" || json.at("phase") == "complete") &&
-                    fs::exists(games / Filename(filename), missing)) {
+                    fs::exists(target_games / Filename(filename), missing)) {
                     try {
-                        File target{games / Filename(filename), GENERIC_READ, OPEN_EXISTING};
+                        File target{target_games / Filename(filename), GENERIC_READ, OPEN_EXISTING};
                         const auto target_id = target.Identity();
                         published = FileId(target_id) == identity && target_id.dwVolumeSerialNumber == serial &&
                             ((std::uint64_t{target_id.nFileSizeHigh} << 32) | target_id.nFileSizeLow) == length;
                     } catch (...) {}
                 }
                 if (!published) {
-                    if (!fs::exists(payload) || fs::file_size(payload) < offset) continue;
-                    File data{payload,GENERIC_READ,OPEN_EXISTING};
+                    if (!fs::exists(data_path) || fs::file_size(data_path) < offset) continue;
+                    File data{data_path,GENERIC_READ,OPEN_EXISTING};
                     const auto data_id=data.Identity();
                     if (FileId(data_id) != identity || data_id.dwVolumeSerialNumber != serial) continue;
                 }
                 info = {.id=id, .name=filename, .fingerprint=fingerprint,
-                    .phase=published ? "complete" : "paused", .tag=tag, .length=length, .offset=offset, .received=offset};
+                    .phase=published ? "complete" : "paused", .tag=tag, .destination=destination, .length=length, .offset=offset,
+                    .received=offset};
                 generation = next; file_id = identity; volume = serial;
             } catch (...) {} // Try the independent older checkpoint; never trust a partial JSON write.
         }
         if (consume && info.phase == "complete") { std::error_code ignored; fs::remove(payload, ignored); }
-        if (info.id.empty() && fs::exists(payload)) {
+        std::error_code absent;
+        // Its checkpoints are gone: a payload left on D: is offered for discarding like an internal one.
+        if (info.id.empty() && developer && !fs::exists(payload, absent) && fs::exists(PayloadFor(true), absent))
+            info.destination = "developer";
+        if (info.id.empty() && fs::exists(Payload(), absent)) {
             info.id=Id(); info.phase="paused"; info.error="recovery";
         } else if (info.id.empty()) {
             // Nothing left to resume: drop the checkpoints so later starts do not read them again.
@@ -184,20 +203,26 @@ struct NspUpload::Impl {
             fs::remove(folder / "checkpoint1.json", ignored);
         }
         if (!info.id.empty() && info.phase != "complete" && info.error != "recovery") {
-            try { File file{payload, GENERIC_WRITE, OPEN_EXISTING}; file.Truncate(info.offset); }
+            try { File file{Payload(), GENERIC_WRITE, OPEN_EXISTING}; file.Truncate(info.offset); }
             catch (...) { info.error = "disk"; }
         }
     }
 };
 
-NspUpload::NspUpload(fs::path games, bool system_files, fs::path temporary, bool consume) :
-    impl{std::make_unique<Impl>(std::move(games),system_files,std::move(temporary),consume)} {}
+NspUpload::NspUpload(fs::path games, bool system_files, fs::path temporary, bool consume, bool developer) :
+    impl{std::make_unique<Impl>(std::move(games),system_files,std::move(temporary),consume,developer)} {}
 NspUpload::~NspUpload() { Cancel(); }
 
 UploadSnapshot NspUpload::Snapshot() const {
     UploadSnapshot result;
     { std::lock_guard lock{impl->mutex}; result = impl->info; }
     result.free_bytes = Free(impl->games);
+    if (impl->developer && DeveloperStorageAvailable()) {
+        result.developer_available = true;
+        // What games can still take there: app updates keep their reserve.
+        const auto space = Free(DeveloperFiles()), reserve = StorageReserveFor(DeveloperFiles());
+        result.developer_free_bytes = space > reserve ? space - reserve : 0;
+    }
     return result;
 }
 
@@ -227,26 +252,38 @@ void NspUpload::Resume() {
     impl->cancellation = std::stop_source{};
 }
 
-UploadResult NspUpload::Create(std::string name, std::string fingerprint, std::uint64_t length, std::string tag) {
+UploadResult NspUpload::Create(std::string name, std::string fingerprint, std::uint64_t length, std::string tag,
+                              bool developer) {
     if (!ValidName(name,impl->system_files) || !Hex(fingerprint, 64) || !ValidTag(tag) || !length || length > MaxLength) return {400, "file"};
+    if (developer && !impl->developer) return {400, "destination"};
     std::unique_lock operation{impl->operation, std::try_to_lock};
     if (!operation.owns_lock()) return {409, "busy"};
     std::lock_guard lock{impl->mutex};
     if (!impl->info.available || impl->cancellation.stop_requested()) return {409, "busy"};
     if ((!impl->info.id.empty() && impl->info.phase != "complete") || !impl->info.error.empty()) return {409, "partial"};
     try {
-        if (!impl->consume && fs::exists(impl->games / Filename(name))) return {409, "exists"};
+        const auto games = impl->GamesFor(developer);
+        const auto payload = impl->PayloadFor(developer);
+        if (developer) {
+            std::error_code ec;
+            if (!DeveloperStorageAvailable()) return {409, "destination"};
+            fs::create_directories(games, ec);
+            if (!ec) fs::create_directories(payload.parent_path(), ec);
+            if (ec) return {409, "destination"};
+        }
+        if (!impl->consume && fs::exists(games / Filename(name))) return {409, "exists"};
         // A consumed package is copied once more while it is installed.
-        if (Free(impl->games) < (impl->consume ? 2 * length : length) + Reserve) return {507, "space"};
+        if (Free(games) < (impl->consume ? 2 * length : length) + StorageReserveFor(games)) return {507, "space"};
         // Previous complete state is cleared only after its destination has been published.
         for (const auto* checkpoint : {"checkpoint0.json", "checkpoint1.json", "checkpoint.tmp"})
             fs::remove(impl->folder / checkpoint);
         impl->generation = 0;
-        File file{impl->payload, GENERIC_WRITE, CREATE_ALWAYS};
+        File file{payload, GENERIC_WRITE, CREATE_ALWAYS};
         const auto identity = file.Identity();
         impl->file_id = FileId(identity); impl->volume = identity.dwVolumeSerialNumber;
         impl->info = {.id=Id(), .name=std::move(name), .fingerprint=std::move(fingerprint),
-            .phase="receiving", .tag=std::move(tag), .length=length, .busy=true, .available=true};
+            .phase="receiving", .tag=std::move(tag), .destination=developer ? "developer" : "internal",
+            .length=length, .busy=true, .available=true};
         file.Flush(); impl->Checkpoint();
         return {201, {}};
     } catch (...) { impl->info.busy=false; impl->info.error="disk"; return {507, "disk"}; }
@@ -269,8 +306,9 @@ UploadResult NspUpload::Append(const std::string& id, std::uint64_t offset, std:
     UploadPerformance performance;
     std::string error;
     try {
-        if (Free(impl->games) < length + Reserve) throw std::runtime_error("space");
-        File file{impl->payload, GENERIC_WRITE, OPEN_EXISTING};
+        const auto games = impl->Games();
+        if (Free(games) < length + StorageReserveFor(games)) throw std::runtime_error("space");
+        File file{impl->Payload(), GENERIC_WRITE, OPEN_EXISTING};
         file.Truncate(offset);
         // Aggregate httplib's small recv buffers into sequential 1 MiB WriteFile calls.
         std::vector<char> buffer(1 << 20);
@@ -310,7 +348,7 @@ UploadResult NspUpload::Append(const std::string& id, std::uint64_t offset, std:
         return {};
     } catch (const std::exception& e) { error=e.what(); }
     catch (...) { error="disk"; }
-    try { File file{impl->payload, GENERIC_WRITE, OPEN_EXISTING}; file.Truncate(offset); } catch (...) {}
+    try { File file{impl->Payload(), GENERIC_WRITE, OPEN_EXISTING}; file.Truncate(offset); } catch (...) {}
     std::lock_guard lock{impl->mutex};
     impl->info.offset=impl->info.received=offset;
     impl->info.busy=false; impl->info.phase="paused"; impl->info.error=error;
@@ -323,7 +361,8 @@ UploadResult NspUpload::Discard(const std::string& id) {
     std::lock_guard lock{impl->mutex};
     if (id != impl->info.id) return {404, "upload"};
     try {
-        for (const auto* file : {"checkpoint0.json", "checkpoint1.json", "checkpoint.tmp", "payload.part"}) fs::remove(impl->folder / file);
+        fs::remove(impl->Payload());
+        for (const auto* file : {"checkpoint0.json", "checkpoint1.json", "checkpoint.tmp"}) fs::remove(impl->folder / file);
         const bool available=impl->info.available;
         impl->info = {}; impl->info.available=available; impl->generation=0;
         return {};
@@ -360,7 +399,7 @@ UploadResult NspUpload::Rename(const std::string& id, std::string name) {
     if (impl->info.error == "recovery") return {409,"recovery"};
     if (impl->info.phase == "validating" || impl->info.phase == "ready" || impl->info.phase == "complete") return {409, "busy"};
     try {
-        if (!impl->consume && fs::exists(impl->games / Filename(name))) return {409, "exists"};
+        if (!impl->consume && fs::exists(impl->Games() / Filename(name))) return {409, "exists"};
         const auto previous=impl->info.name;
         impl->info.name=std::move(name);
         try { impl->Checkpoint(); } catch (...) { impl->info.name=previous; throw; }
@@ -377,7 +416,7 @@ std::string NspUpload::Finalize(const NspValidator& validate) {
     }
     std::string error;
     try {
-        error=validate(impl->payload, impl->cancellation.get_token());
+        error=validate(impl->Payload(), impl->cancellation.get_token());
         if (impl->cancellation.stop_requested()) error="interrupted";
         if (error.empty() && impl->consume) {
             std::lock_guard lock{impl->mutex};
@@ -385,17 +424,17 @@ std::string NspUpload::Finalize(const NspValidator& validate) {
             // Installed: a crash before the removal deletes the payload on recovery.
             try { impl->Checkpoint(); } catch (...) {}
             std::error_code ignored;
-            fs::remove(impl->payload, ignored);
+            fs::remove(impl->Payload(), ignored);
             return {};
         }
         if (error.empty()) {
             std::lock_guard lock{impl->mutex};
-            const auto target=impl->games / Filename(impl->info.name);
+            const auto target=impl->Games() / Filename(impl->info.name);
             if (fs::exists(target)) error="exists";
             else {
                 impl->info.phase="publishing"; impl->Checkpoint();
                 // Win32 move without replace: never overwrite a file that arrived since the check.
-                if (!MoveFileFromAppW(impl->payload.c_str(), target.c_str())) {
+                if (!MoveFileFromAppW(impl->Payload().c_str(), target.c_str())) {
                     const auto failure=GetLastError();
                     error=(failure == ERROR_ALREADY_EXISTS || failure == ERROR_FILE_EXISTS) ? "exists" : "disk";
                 }

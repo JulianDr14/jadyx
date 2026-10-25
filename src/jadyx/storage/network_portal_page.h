@@ -59,7 +59,7 @@ button.cat[aria-selected=true]{background:var(--active);border-color:rgba(255,25
 button.cat:disabled{opacity:1;color:var(--muted)}.cat:disabled .ico{opacity:.6}
 .tag{font-size:10px;line-height:20px;font-style:normal;font-weight:600;letter-spacing:.08em;text-transform:uppercase;padding:0 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
 .store{display:flex;align-items:center;gap:14px;margin-top:16px;padding:16px;border-radius:16px;background:var(--surface);border:1px solid var(--line);color:var(--hint)}
-#space{font-size:14px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums}#space:empty::before{content:"—"}
+#space{font-size:14px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums;white-space:pre-line}#space:empty::before{content:"—"}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:32px;box-shadow:0 32px 64px -32px rgba(0,0,0,.7)}
 .head{margin-bottom:24px}.head p{margin-top:6px;max-width:44em}
 .drop{position:relative;display:flex;flex-direction:column;align-items:center;gap:6px;padding:40px 20px;border:1.5px dashed rgba(255,255,255,.16);border-radius:16px;
@@ -180,7 +180,8 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <button class="cat" id="cat-library" aria-selected="false" hidden><svg class="ico" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
 <span><b id="cat-library-title">Library</b><small id="cat-library-sub">Updates · DLC · delete</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
 <div class="store"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13 7.5 5h9L19 13M7 16.5h.01"/></svg><span id="space"></span></div></nav>
-<section id="upload" class="card" hidden><div class="head"><h2 id="uploadtitle">Import NSP games</h2><p id="uploadintro">Base games only. Files are copied to your console's internal storage.</p></div>
+<section id="upload" class="card" hidden><div class="head"><h2 id="uploadtitle">Import NSP games</h2><p id="uploadintro">Base games only. Choose where your console keeps them.</p></div>
+<nav class="seg" id="where" role="tablist" hidden><button id="where-internal" role="tab" aria-selected="true">Internal storage</button><button id="where-developer" role="tab" aria-selected="false">Dev storage (D:)</button></nav>
 <label class="drop" id="files-zone"><input id="files" type="file" accept=".nsp" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
 <strong id="fileslabel">Choose NSP files</strong><span id="files-drop">or drop them here</span><span class="picked" id="files-picked"></span></label>
 <div class="field"><label id="namelabel" for="name">Destination name (one file)</label><input id="name" maxlength="100" autocomplete="off"></div>
@@ -234,7 +235,7 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 const $=id=>document.getElementById(id),lang=navigator.language.toLowerCase(),es=lang.startsWith('es'),pt=lang.startsWith('pt');
 const words=pt?{
  title:'Conecte-se ao seu console',intro:'Digite o código temporário que o Jadyx mostra. Mantenha o app aberto na biblioteca.',label:'Código de conexão',connect:'Conectar',
- uploadtitle:'Importar jogos NSP',uploadintro:'Somente jogos base. Os arquivos são copiados para o armazenamento interno do console.',fileslabel:'Selecionar arquivos NSP',
+ uploadtitle:'Importar jogos NSP',uploadintro:'Somente jogos base. Escolha onde o console os guarda.','where-internal':'Armazenamento interno','where-developer':'Armazenamento dev (D:)',fileslabel:'Selecionar arquivos NSP',
  namelabel:'Nome de destino (um único arquivo)',send:'Enviar / retomar',rename:'Renomear arquivo pendente',pause:'Pausar',discard:'Apagar arquivo parcial',
  kicker:'Portal da rede local','status-off':'Desconectado','status-on':'Conectado','code-hint':'4 dígitos · muda cada vez que você abre o portal','files-drop':'ou arraste-os para cá',files:'arquivos',
  privacy:'Rede local · Conexão HTTP sem criptografia.',ok:'Conexão estabelecida.',bad:'Código incorreto ou expirado. Gere outro no Jadyx.',
@@ -245,11 +246,11 @@ const words=pt?{
  file:'Nome ou arquivo inválido. Selecione um NSP.',base:'Somente jogos base são aceitos; não atualizações, DLC nem pacotes mistos.',
  nsp:'A estrutura do NSP é inválida.',incomplete:'O NSP está incompleto.',keys:'Não foi possível ler os metadados. Verifique as chaves do seu console e o arquivo NSP.',
  disk:'Não foi possível gravar ou publicar o arquivo.',interrupted:'Transferência interrompida. Você pode retomar a partir do progresso confirmado.',
- partial:'Há uma transferência pendente. Retome ou apague.',recovery:'Não foi possível recuperar o arquivo parcial. Apague-o antes de iniciar outro.',unavailable:'A importação não está disponível no momento.',
+ partial:'Há uma transferência pendente. Retome ou apague.',recovery:'Não foi possível recuperar o arquivo parcial. Apague-o antes de iniciar outro.',unavailable:'A importação não está disponível no momento.',destination:'O armazenamento dev (D:) não está disponível. Escolha o armazenamento interno.',
  attempts:'Tentativas demais. Aguarde um minuto.',version:'Versão de transferência incompatível. Recarregue a página.',idle:'Pronto para importar.'
 }:es?{
  title:'Conecta con tu consola',intro:'Introduce el código temporal que muestra Jadyx. Mantén la app abierta en la biblioteca.',label:'Código de conexión',connect:'Conectar',
- uploadtitle:'Importar juegos NSP',uploadintro:'Solo juegos base. Los archivos se copian al almacenamiento interno de la consola.',fileslabel:'Seleccionar archivos NSP',
+ uploadtitle:'Importar juegos NSP',uploadintro:'Solo juegos base. Elige dónde los guarda la consola.','where-internal':'Almacenamiento interno','where-developer':'Almacenamiento dev (D:)',fileslabel:'Seleccionar archivos NSP',
  namelabel:'Nombre de destino (un solo archivo)',send:'Subir / reanudar',rename:'Renombrar archivo pendiente',pause:'Pausar',discard:'Eliminar archivo parcial',
  kicker:'Portal de red local','status-off':'Sin conectar','status-on':'Conectado','code-hint':'4 dígitos · cambia cada vez que abres el portal','files-drop':'o arrástralos aquí',files:'archivos',
  privacy:'Red local · Conexión HTTP sin cifrado.',ok:'Conexión establecida.',bad:'Código incorrecto o caducado. Genera otro en Jadyx.',
@@ -260,20 +261,20 @@ const words=pt?{
  file:'Nombre o archivo no válido. Selecciona un NSP.',base:'Solo se admiten juegos base; no actualizaciones, DLC ni paquetes mezclados.',
  nsp:'La estructura del NSP no es válida.',incomplete:'El NSP está incompleto.',keys:'No se pueden leer sus metadatos. Revisa las claves de tu consola y el archivo NSP.',
  disk:'No se pudo escribir o publicar el archivo.',interrupted:'Transferencia interrumpida. Puedes reanudar desde el progreso confirmado.',
- partial:'Hay una transferencia pendiente. Reanúdala o elimínala.',recovery:'No se pudo recuperar el parcial. Elimínalo antes de iniciar otro.',unavailable:'La importación no está disponible en este momento.',
+ partial:'Hay una transferencia pendiente. Reanúdala o elimínala.',recovery:'No se pudo recuperar el parcial. Elimínalo antes de iniciar otro.',unavailable:'La importación no está disponible en este momento.',destination:'El almacenamiento dev (D:) no está disponible. Elige el almacenamiento interno.',
  attempts:'Demasiados intentos. Espera un minuto.',version:'Versión de transferencia incompatible. Recarga la página.',idle:'Listo para importar.'
 }:{ok:'Connected.',bad:'Incorrect or expired code. Generate another in Jadyx.',lost:'Connection closed. Reconnect in Jadyx; confirmed progress is retained.',
- free:'Free space',confirmed:'Confirmed',speed:'Speed',eta:'Time left',queue:'Queued',choose:'Choose one or more NSP files.',files:'files',
+ free:'Free space','where-internal':'Internal storage','where-developer':'Dev storage (D:)',confirmed:'Confirmed',speed:'Speed',eta:'Time left',queue:'Queued',choose:'Choose one or more NSP files.',files:'files',
  same:'A different file is pending. Select the same file to resume, or discard the partial upload.',receiving:'Receiving',paused:'Paused. Select the same file to continue.',
  ready:'Waiting for validation',validating:'Validating NSP',publishing:'Adding to library',complete:'Installed in your library',busy:'Wait for the operation in Jadyx to finish.',
  exists:'This destination already exists. Change its name and try again.',space:'Not enough free space.',file:'Invalid filename or file. Choose an NSP.',
  base:'Base games only; updates, DLC and mixed packages are not supported.',nsp:'Invalid NSP structure.',incomplete:'The NSP is incomplete.',
  keys:'Cannot read its metadata. Check your console keys and NSP file.',disk:'Could not write or publish this file.',
  interrupted:'Transfer interrupted. You can resume from confirmed progress.',partial:'An upload is pending. Resume or discard it.',
- recovery:'Cannot recover the partial file. Discard it before starting another.',unavailable:'Import is currently unavailable.',
+ recovery:'Cannot recover the partial file. Discard it before starting another.',unavailable:'Import is currently unavailable.',destination:'Dev storage (D:) is not available. Choose internal storage.',
  attempts:'Too many attempts. Wait one minute.',version:'Incompatible upload version. Reload this page.',idle:'Ready to import.'};
 if(es||pt){document.documentElement.lang=pt?'pt-BR':'es';for(const id of ['title','intro','label','connect','uploadtitle','uploadintro','fileslabel','namelabel','send','rename','pause','discard','privacy',
- 'kicker','status-off','status-on','code-hint','files-drop'])$(id).textContent=words[id];}
+ 'kicker','status-off','status-on','code-hint','files-drop','where-internal','where-developer'])$(id).textContent=words[id];}
 const labels=pt?{'tab-content':'Conteúdo','tab-system':'Sistema','content-kicker':'Instalar','cat-games-title':'Jogos','cat-games-sub':'NSP · jogo base',
  'cat-library-title':'Biblioteca','cat-library-sub':'Atualizações · DLC · apagar','system-kicker':'Arquivos do sistema','cat-keys-title':'Chaves'}
 :es?{'tab-content':'Contenido','tab-system':'Sistema','content-kicker':'Instalar','cat-games-title':'Juegos','cat-games-sub':'NSP · juego base',
@@ -286,7 +287,7 @@ function choose(group,chosen){for(const [button,view]of group){$(button).ariaSel
 for(const group of [tabs,categories])for(const [button]of group)$(button).addEventListener('click',()=>choose(group,button));
 const selectedChunk=Number(new URLSearchParams(location.search).get('chunk'));
 const chunk=(selectedChunk===4||selectedChunk===16||selectedChunk===64?selectedChunk:16)*1048576;
-let session='',timer,state={},running=false,stopped=false,currentXHR=null,currentId='',rates=[],pane='games',contentRunning=false;
+let session='',timer,state={},running=false,stopped=false,currentXHR=null,currentId='',rates=[],pane='games',contentRunning=false,where='internal';
 let systemRunning=false,systemReviewId='';
 const delay=ms=>new Promise(r=>setTimeout(r,ms)),mib=n=>(n/1048576).toFixed(1),reason=e=>words[e.message]||words.interrupted;
 const size=n=>n>=1073741824?(n/1073741824).toFixed(2)+' GiB':mib(n)+' MiB',percent=(done,total)=>total?Math.floor(100*Math.min(1,done/total))+' %':'';
@@ -312,7 +313,13 @@ function render(){
  renderUpdate();
  const s=state.transfer||{};
  $('upload').hidden=!session||!state.uploads||pane!=='games';
- $('space').textContent=words.free+': '+((s.free_bytes||0)/1073741824).toFixed(2)+' GiB';
+ const pending=!!s.id&&s.phase!=='complete';
+ if(pending)where=s.destination==='developer'?'developer':'internal';else if(!s.developer_available)where='internal';
+ $('where').hidden=!s.developer_available&&where!=='developer';
+ for(const id of ['internal','developer']){const b=$('where-'+id);b.setAttribute('aria-selected',String(where===id));b.disabled=running||pending;}
+ // Both volumes: the internal one and, when present, Dev Mode's storage on D:.
+ const gib=bytes=>((bytes||0)/1073741824).toFixed(2)+' GiB';
+ $('space').textContent=words.free+': '+(s.developer_available?'\n'+words['where-internal']+' · '+gib(s.free_bytes)+'\n'+words['where-developer']+' · '+gib(s.developer_free_bytes):gib(s.free_bytes));
  $('job').textContent=(s.name?s.name+'\n':'')+(words[s.phase]||words.idle);
  $('progress').value=s.length?Math.min(1,(s.received||0)/s.length):0;
  $('percent').textContent=percent(s.received||0,s.length);
@@ -380,7 +387,8 @@ function patch(url,offset,blob){return new Promise((resolve,reject)=>{
 });}
 // Games and updates/DLC share this resumable client. A target names the status record, its
 // route, the extra metadata (an update/DLC names its kind and game) and where speed is shown.
-const gameTarget={key:'transfer',base:'/api/v1/uploads',tag:'',metadata:{},rate:'rate',eta:'eta'};
+const gameTarget={key:'transfer',base:'/api/v1/uploads',tag:'',get metadata(){return {destination:where};},rate:'rate',eta:'eta'};
+for(const id of ['internal','developer'])$('where-'+id).addEventListener('click',()=>{if(!running){where=id;render();}});
 async function sendFile(file,name,target=gameTarget){
  const signature=await fingerprint(file);if(stopped)throw Error('paused');
  await refresh();let s=state[target.key];

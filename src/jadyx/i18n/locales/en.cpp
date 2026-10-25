@@ -92,6 +92,7 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::PersonalLibrary, L"Your personal library"},
     {Text::YourGames, L"Your games"},
     {Text::SourceInternal, L"Internal"},
+    {Text::SourceDeveloper, L"Dev storage"},
     {Text::CheckingGame, L"Checking access to the game..."},
     {Text::MissingKeys, L"Your keys are missing. Open Settings > File manager > Import keys."},
     {Text::ScanLimit, L"Scan limit reached: 10000 entries, 5 levels."},

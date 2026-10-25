@@ -19,7 +19,7 @@ namespace Jadyx {
 /// The dumps of one application to delete.
 struct GameFiles {
     std::uint64_t application{};
-    std::vector<std::filesystem::path> files; ///< Internal dumps to delete, relative to the games root.
+    std::vector<std::filesystem::path> files; ///< Dumps to delete: relative to the games root, or absolute in Dev Mode's storage.
     std::vector<std::string> launch_paths;    ///< Those dumps, as the Pulse sessions name them.
     bool external{}; ///< Nothing to delete: the dumps live in external folders Jadyx does not delete from.
     bool kept{};     ///< Another dump stays (external, or not chosen): so do the saves and updates/DLC.
