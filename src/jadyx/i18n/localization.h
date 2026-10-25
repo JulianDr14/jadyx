@@ -521,6 +521,8 @@ enum class Text : std::uint16_t {
     ModsDownloadQueued,
     ModsDownloadRefused,
     ModsUpdated,
+    ModsErrorNeedsSkyline,
+    ModsErrorNeedsArcropolis,
     ModsAdult,
     ModsAdultHint,
     PerformanceStats,

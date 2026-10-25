@@ -139,6 +139,23 @@ int main() {
         Check(plan_with({"Other/thing.bin"}).candidates.empty(), "not this game's");
     }
     {
+        // Skyline plugins alone: nothing that loads, and the player is told why.
+        const auto plugin = Plan({"x/atmosphere/contents/0100AAAABBBB0000/romfs/skyline/plugins/libx.nro",
+                                  "x/Script/tool.py", "x/README.txt"});
+        Check(plugin.candidates.empty() && plugin.need == ModNeed::Skyline, "skyline plugin");
+        // Beside a mod, the plugin is left out and the mod installs.
+        const auto beside = Plan({"m/romfs/skyline/plugins/libx.nro", "m/romfs/Model/a.bfres", "m/exefs/a.ips"});
+        Check(beside.candidates.size() == 1 && Targets(beside.candidates[0]) == V{"exefs/a.ips", "romfs/Model/a.bfres"} &&
+                  beside.candidates[0].parts == (RomFs | Patch) && beside.candidates[0].bytes == 20,
+              "plugin dropped");
+        // ARCropolis: its mods folder, or files packed in data.arc, even beside a plugin.
+        const auto arc = Plan({"atmosphere/contents/0100AAAABBBB0000/romfs/skyline/plugins/liby.nro",
+                               "ultimate/mods/Pack/ui/a.bntx"});
+        Check(arc.candidates.empty() && arc.need == ModNeed::Arcropolis, "arcropolis folder");
+        const auto bare = Plan({"Skin/fighter/x/model/body/c04/def.nutexb", "Skin/ui/replace/a.bntx"});
+        Check(bare.candidates.empty() && bare.need == ModNeed::Arcropolis, "arcropolis files");
+    }
+    {
         Check(SafeRelativePath("a/b.txt"), "safe");
         Check(!SafeRelativePath("a//b") && !SafeRelativePath("./a") && !SafeRelativePath("a\\b") &&
                   !SafeRelativePath(""),

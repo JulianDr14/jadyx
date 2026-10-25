@@ -7,7 +7,8 @@
 // exefs_patches/<name>/<build id>.ips, loose .ips or .pchtxt files, the game's own folders with no
 // romfs/ around them, or several of these side by side as variants (30 and 60 FPS, one per
 // language...). This reads only the list of paths, so it is decided before anything is extracted,
-// and the player picks among variants.
+// and the player picks among variants. Mods made for loaders this one is not are found too, to tell
+// the player why they do not install.
 
 #include <cstdint>
 #include <string>
@@ -41,9 +42,17 @@ struct ModCandidate {
     bool other_title{};
 };
 
+/// A loader the archive was made for and that the emulator does not run.
+enum class ModNeed : std::uint8_t {
+    None,
+    Skyline,    ///< Skyline plugins (.nro under skyline/plugins) and nothing else.
+    Arcropolis, ///< ARCropolis' mods (ultimate/mods/, or files only it reads out of data.arc).
+};
+
 /// The mods of an archive. Empty when nothing in it is a mod.
 struct LayoutPlan {
     std::vector<ModCandidate> candidates;
+    ModNeed need{}; ///< Set when the candidates are empty because of it.
 };
 
 /// Reads the mods out of `items`. `title_id` is the game's (16 upper-case hex digits), used to

@@ -939,6 +939,8 @@ I18n::Text ErrorText(ModError error) {
     case ModError::Unavailable: return Text::ModsErrorUnavailable;
     case ModError::Network: return Text::ModsErrorNetwork;
     case ModError::Checksum: return Text::ModsErrorChecksum;
+    case ModError::NeedsSkyline: return Text::ModsErrorNeedsSkyline;
+    case ModError::NeedsArcropolis: return Text::ModsErrorNeedsArcropolis;
     case ModError::None: break;
     }
     return Text::ModsErrorWrite;

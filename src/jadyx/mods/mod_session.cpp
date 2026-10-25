@@ -101,6 +101,16 @@ bool KeepDownload(ModError error) {
     return error == ModError::Space || error == ModError::Cancelled || error == ModError::Write;
 }
 
+/// Why an archive with no mods in it installs nothing.
+ModError NothingIn(const LayoutPlan& plan) {
+    switch (plan.need) {
+    case ModNeed::Skyline: return ModError::NeedsSkyline;
+    case ModNeed::Arcropolis: return ModError::NeedsArcropolis;
+    case ModNeed::None: break;
+    }
+    return ModError::NotAMod;
+}
+
 bool IsArchiveName(std::string_view name) {
     return Detail::ParseVolume(name).has_value();
 }
@@ -357,7 +367,7 @@ void ModSession::Open(std::size_t row) {
         auto plan = PlanLayout(listing.items, TitleFolder(title_id), Utf8(archive_name), RomFsTop());
         LOG_INFO(Frontend, "Mods: {} ({}) has {} files, {} mods", Utf16ToUtf8(file.name), listing.format,
                  listing.items.size(), plan.candidates.size());
-        if (plan.candidates.empty()) state.error = ModError::NotAMod;
+        if (plan.candidates.empty()) state.error = NothingIn(plan);
         state.candidates = std::move(plan.candidates);
     });
 }
@@ -474,7 +484,7 @@ void ModSession::InstallDownload(FinishedDownload download) {
         if (plan.candidates.empty()) {
             for (std::size_t i = 0; i < listing.items.size() && i < 12; ++i)
                 LOG_INFO(Frontend, "Mods:   {}", listing.items[i].path);
-            state.error = ModError::NotAMod;
+            state.error = NothingIn(plan);
             forget();
             return;
         }

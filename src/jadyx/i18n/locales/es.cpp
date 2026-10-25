@@ -571,6 +571,8 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::ModsDownloadQueued, L"Descargando {0}. Puedes seguir explorando."},
     {Text::ModsDownloadRefused, L"Ese archivo no se puede descargar: el sitio no lo ha verificado."},
     {Text::ModsUpdated, L"Mod actualizado."},
+    {Text::ModsErrorNeedsSkyline, L"Este mod es un plugin de Skyline, y Jadyx aún no soporta Skyline."},
+    {Text::ModsErrorNeedsArcropolis, L"Este mod necesita ARCropolis (un plugin de Skyline), y Jadyx aún no lo soporta."},
     {Text::ModsAdult, L"Mods para adultos"},
     {Text::PerformanceStats, L"Estadísticas de rendimiento"},
     {Text::PerformanceStatsHint, L"Mostrar FPS y estadísticas de CPU/GPU/RAM"},

@@ -34,6 +34,8 @@ enum class ModError : std::uint8_t {
     Unavailable, ///< The source (a USB drive, a file) went away.
     Network,    ///< A download failed: no connection, or the site did not answer.
     Checksum,   ///< A download is not the file the site describes.
+    NeedsSkyline,    ///< Only Skyline plugins, which the emulator does not load.
+    NeedsArcropolis, ///< Made for ARCropolis, which needs Skyline.
 };
 
 ModError FromArchiveError(ArchiveError error);
