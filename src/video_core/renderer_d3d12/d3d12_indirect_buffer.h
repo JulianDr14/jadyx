@@ -36,7 +36,8 @@ public:
 
     /// size bytes in COPY_DEST, for the caller's copies.
     [[nodiscard]] Range Allocate(u64 size);
-    /// Like Allocate, filled with words first (the values the CPU knows).
+    /// Like Allocate, filled with words first (the values the CPU knows). The caller's copies over
+    /// them are ordered after the fill.
     [[nodiscard]] Range Upload(std::span<const u32> words);
     /// Moves the range's buffer to INDIRECT_ARGUMENT once its copies are recorded.
     void Ready(const Range& range);

@@ -98,8 +98,18 @@ IndirectArgumentRing::Range IndirectArgumentRing::Upload(std::span<const u32> wo
     const StagingBufferRef upload = staging.Request(size, MemoryUsage::Upload);
     std::memcpy(upload.mapped_span.data(), words.data(), size);
     const Range range = Allocate(size);
-    scheduler.CommandList()->CopyBufferRegion(range.buffer, range.offset, upload.buffer,
-                                              upload.offset, size);
+    CommandStream* const cmd = scheduler.CommandList();
+    cmd->CopyBufferRegion(range.buffer, range.offset, upload.buffer, upload.offset, size);
+    // The caller copies the GPU's words over this record. Copies into one resource are unordered
+    // without a barrier between them, and the Series runs them in parallel: this copy's zeros
+    // could land over the guest's draw arguments. A round trip through COMMON waits for it.
+    const D3D12_RESOURCE_BARRIER barriers[2]{
+        TransitionBarrier(range.buffer, D3D12_RESOURCE_STATE_COPY_DEST,
+                          D3D12_RESOURCE_STATE_COMMON),
+        TransitionBarrier(range.buffer, D3D12_RESOURCE_STATE_COMMON,
+                          D3D12_RESOURCE_STATE_COPY_DEST),
+    };
+    cmd->ResourceBarrier(2, barriers);
     return range;
 }
 
