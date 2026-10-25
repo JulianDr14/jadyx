@@ -1208,72 +1208,91 @@ private:
         for (const char c : code) { if (!digits.empty()) digits += L"  "; digits += static_cast<wchar_t>(c); }
         return digits;
     }
-
+    /// The portal screen, laid out like the update page: the address and the code in the card at
+    /// the left, the two actions as rows at the right with the focused one explained underneath.
     void DrawNetworkConnection(const ConfigurationPanel& configuration) {
+        using namespace LibraryLayout;
         const auto& network = configuration.network;
-        Type(L"J A D Y X", TypeRole::HeadlineSmall, 80, 44, 400, Palette::Text);
-        if (network.paired)
-            Type(Tr(T::NetworkPaired), TypeRole::LabelLarge, 720, 52, 480,
-                 Palette::TextHint, 1, TextAlign::Trailing);
-        Type(Tr(T::NetworkConnection), TypeRole::HeadlineLarge, 80, 100, 1120,
-             Palette::Text, 1, TextAlign::Center);
-        Type(winrt::to_hstring(network.url).c_str(), TypeRole::HeadlineMedium, 80, 176, 1120,
-             Palette::Text, 1, TextAlign::Center);
-        Type(Tr(T::NetworkOpenHint), TypeRole::Body, 80, 222, 1120,
-             Palette::TextSecondary, 1, TextAlign::Center);
-        Card(80, 274, 1120, 210, 20);
-        Type(Tr(T::NetworkCodeLabel), TypeRole::Caps, 100, 296, 1080,
-             Palette::TextSecondary, 1, TextAlign::Center);
+        Type(Tr(T::NetworkConnection), TypeRole::HeadlineLarge, Margin, 40, 700, Palette::Text);
+        constexpr float card_x = Margin, card_y = 112, card_w = 660, card_h = 330, inner = card_x + 28, inner_w = card_w - 56;
+        Card(card_x, card_y, card_w, card_h);
+        Type(Upper(Tr(T::UpdateGuideAddress)), TypeRole::Caps, inner, card_y + 24, inner_w, Palette::TextSecondary);
+        Type(winrt::to_hstring(network.url).c_str(), TypeRole::HeadlineMedium, inner, card_y + 50, inner_w, Palette::Text);
+        Round(inner, card_y + 106, inner_w, 1, 0.5f, Palette::Graphite);
+        Type(Upper(Tr(T::NetworkCodeLabel)), TypeRole::Caps, inner, card_y + 128, inner_w, Palette::TextSecondary);
         if (network.running && !network.code_expired && network.code.size() == 4) {
             D2D1_MATRIX_3X2_F transform;
             target->GetTransform(&transform);
-            // Hero is 56px at the reference resolution: 112px here, independent of settings rows.
-            target->SetTransform(D2D1::Matrix3x2F::Scale(2, 2, D2D1::Point2F(640, 334)) * transform);
-            Type(PortalDigits(network.code), TypeRole::Hero, 360, 334, 560, Palette::Text, 1, TextAlign::Center);
+            // Hero is 56px at the reference resolution: 84px here, centred in the card.
+            const float center = card_x + card_w / 2, top = card_y + 156;
+            target->SetTransform(D2D1::Matrix3x2F::Scale(1.5f, 1.5f, D2D1::Point2F(center, top)) * transform);
+            Type(PortalDigits(network.code), TypeRole::Hero, inner, top, inner_w, Palette::Text, 1, TextAlign::Center);
             target->SetTransform(transform);
         } else {
-            Type(Tr(network.paired ? T::NetworkPaired : T::NetworkCodeExpired),
-                 TypeRole::HeadlineMedium, 110, 366, 1060, Palette::Text, 1, TextAlign::Center);
+            Type(Tr(network.paired ? T::NetworkPaired : T::NetworkCodeExpired), TypeRole::HeadlineMedium, inner,
+                 card_y + 180, inner_w, Palette::Text, 1, TextAlign::Center);
         }
+        const bool problem = !configuration.notice.empty();
+        Type(problem ? std::wstring_view{configuration.notice} : Tr(T::NetworkCodeHint), TypeRole::Body, inner,
+             card_y + 270, inner_w, problem ? Palette::Warning : Palette::TextSecondary, 1, TextAlign::Center, 2);
+        // Under the card: what the browser is sending, with its bar.
         std::wstring progress;
-        const auto& transfer=network.transfer;
-        const auto& system=network.system;
+        float fraction = 0;
+        const auto& transfer = network.transfer;
+        const auto& system = network.system;
         if (system.busy) {
-            const auto& file=system.file;
+            const auto& file = system.file;
             // Keys and firmware have their own phases; the NSP wording does not apply here.
-            progress=system.phase=="receiving"&&file.busy ? I18n::Format(T::NetworkUploading,
-                {winrt::to_hstring(file.name).c_str(),std::to_wstring(file.received >> 20),std::to_wstring(file.length >> 20)}) :
-                std::wstring{Tr(system.phase=="receiving" ? T::SystemWaiting :
-                                system.phase=="review" ? T::SystemReviewReady :
-                                system.phase=="failed" ? T::ImportFailedKept :
-                                system.phase=="commit_pending"||system.phase=="publishing" ? T::SystemInstalling :
+            progress = system.phase == "receiving" && file.busy ? I18n::Format(T::NetworkUploading,
+                {winrt::to_hstring(file.name).c_str(), std::to_wstring(file.received >> 20), std::to_wstring(file.length >> 20)}) :
+                std::wstring{Tr(system.phase == "receiving" ? T::SystemWaiting :
+                                system.phase == "review" ? T::SystemReviewReady :
+                                system.phase == "failed" ? T::ImportFailedKept :
+                                system.phase == "commit_pending" || system.phase == "publishing" ? T::SystemInstalling :
                                 T::SystemValidating)};
-            progress+=L" · "+std::to_wstring(system.completed)+L" / "+std::to_wstring(system.count);
-            const float fraction=file.length?static_cast<float>(static_cast<double>(file.received)/file.length):0;
-            Round(100,560,1080,4,2,Palette::Graphite);
-            Round(100,560,1080*std::clamp(fraction,0.0f,1.0f),4,2,Palette::Accent);
+            progress += L" · " + std::to_wstring(system.completed) + L" / " + std::to_wstring(system.count);
+            fraction = file.length ? static_cast<float>(static_cast<double>(file.received) / file.length) : 0;
         } else if (transfer.busy) {
-            progress=transfer.phase == "receiving" ? I18n::Format(T::NetworkUploading,
-                {winrt::to_hstring(transfer.name).c_str(),std::to_wstring(transfer.received >> 20),std::to_wstring(transfer.length >> 20)}) :
+            progress = transfer.phase == "receiving" ? I18n::Format(T::NetworkUploading,
+                {winrt::to_hstring(transfer.name).c_str(), std::to_wstring(transfer.received >> 20), std::to_wstring(transfer.length >> 20)}) :
                 std::wstring{Tr(T::NetworkValidating)};
-            const float fraction=transfer.length ? static_cast<float>(static_cast<double>(transfer.received)/transfer.length) : 0;
-            Round(100,560,1080,4,2,Palette::Graphite);
-            Round(100,560,1080*std::clamp(fraction,0.0f,1.0f),4,2,Palette::Accent);
+            fraction = transfer.length ? static_cast<float>(static_cast<double>(transfer.received) / transfer.length) : 0;
         }
-        Type(!progress.empty() ? std::wstring_view{progress} : configuration.notice.empty() ? Tr(T::NetworkCodeHint) : std::wstring_view{configuration.notice},
-             TypeRole::Body, 100, 510, 1080, Palette::TextSecondary, 1, TextAlign::Center, 2);
-        const std::array<T, 3> labels{T::Back, T::NetworkCode, T::NetworkStop};
-        for (size_t i = 0; i < labels.size(); ++i) {
-            const float x = 80 + static_cast<float>(i) * 380;
-            const bool focused = configuration.network_action == i;
-            if (focused) FocusGlow(x, 594, 360, 60, 14, 1);
-            Round(x, 594, 360, 60, 14, focused ? Palette::Accent : Palette::Surface);
-            Type(Tr(labels[i]), TypeRole::LabelLarge, x + 14, 614, 332,
-                 focused ? Palette::OnAccent : Palette::Text, 1, TextAlign::Center);
-            AddHit(x, 594, 360, 60, LibraryHit::NetworkAction, i);
+        if (!progress.empty()) {
+            const float y = card_y + card_h + 32;
+            Round(card_x, y, card_w, 10, 5, Palette::Graphite);
+            if (fraction > 0) Round(card_x, y, card_w * std::clamp(fraction, 0.0f, 1.0f), 10, 5, Palette::Accent);
+            Type(progress, TypeRole::Body, card_x, y + 20, card_w, Palette::TextSecondary, 1, TextAlign::Leading, 2);
+        } else {
+            Type(Tr(T::NetworkOpenHint), TypeRole::Body, card_x, card_y + card_h + 28, card_w, Palette::TextHint, 1,
+                 TextAlign::Leading, 2);
         }
-        ControlPrompt(Navigation::Play, Tr(T::Select), 80, 676);
-        ControlPrompt(Navigation::Back, Tr(T::Back), 400, 676);
+        if (network.paired) {
+            const auto paired = Tr(T::NetworkPaired);
+            const float width = MeasureType(paired, TypeRole::Label);
+            Round(1280 - Margin - width - 18, FooterTop + 26, 8, 8, 4, Palette::Accent);
+            Type(paired, TypeRole::Label, 1280 - Margin - 400, FooterTop + 20, 400, Palette::TextSecondary, 1,
+                 TextAlign::Trailing);
+        }
+        // The rows (network_action 1 and 2; 0 is going back).
+        const std::array<std::pair<T, T>, 2> rows{{{T::NetworkCode, T::NetworkCodeRowHint}, {T::NetworkStop, T::NetworkStopRowHint}}};
+        constexpr float rows_x = 780, rows_w = 1280 - Margin - rows_x;
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            const bool focused = configuration.network_action == i + 1;
+            const float y = card_y + static_cast<float>(i) * 64;
+            Round(rows_x, y, rows_w, 54, 12, focused ? Palette::Accent : Palette::Surface);
+            Type(Tr(rows[i].first), TypeRole::BodyLarge, rows_x + 20, y + 14, rows_w - 40, focused ? Palette::OnAccent : Palette::Text);
+            AddHit(rows_x, y, rows_w, 54, LibraryHit::NetworkAction, i + 1);
+        }
+        if (configuration.network_action >= 1 && configuration.network_action <= rows.size())
+            Type(Tr(rows[configuration.network_action - 1].second), TypeRole::Body, rows_x + 4,
+                 card_y + static_cast<float>(rows.size()) * 64 + 8, rows_w - 8, Palette::TextSecondary, 1, TextAlign::Leading, 5);
+        const float y = FooterTop + 12;
+        float x = Margin;
+        x += ControlPrompt(Navigation::Play, Tr(T::Select), x, y);
+        const auto back = Tr(T::UpdaterBack);
+        AddHit(x - 4, y - 6, PromptWidth(Navigation::Back, back) - 20, 44, LibraryHit::NetworkAction, 0);
+        ControlPrompt(Navigation::Back, back, x, y);
     }
     /// The guided app update: where to point a browser and its code at the left, the three steps
     /// at the right over the warning that keeps the user's data. Laid out like the portal screen.

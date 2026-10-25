@@ -1143,8 +1143,14 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             dirty|=actions!=0;actions=0;pressed_tab.reset();
         }
         if (configuration.network_screen) {
-            if (actions & (Left | Up)) configuration.network_action = (configuration.network_action + 2) % 3;
-            if (actions & (Right | Down)) configuration.network_action = (configuration.network_action + 1) % 3;
+            if (!configuration.network_update) {
+                // The portal's two rows (code, stop); going back is B or the footer.
+                if (actions & (Left | Right | Up | Down))
+                    configuration.network_action = configuration.network_action == 1 ? 2 : 1;
+            } else {
+                if (actions & (Left | Up)) configuration.network_action = (configuration.network_action + 2) % 3;
+                if (actions & (Right | Down)) configuration.network_action = (configuration.network_action + 1) % 3;
+            }
             if (actions & Quit || (actions & Play && configuration.network_action == 0))
                 configuration.network_screen = false;
             else if (actions & Refresh || (actions & Play && configuration.network_action == 1)) {
@@ -1882,11 +1888,11 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 else if (configuration.selected == FilesNetwork) {
                     if (network_portal.Status().running) {
                         configuration.network_screen = true;
-                        configuration.network_action = 0;
+                        configuration.network_action = 1;
                         configuration.notice.clear();
                     } else {
                         configuration.network_screen = start_portal();
-                        configuration.network_action = 0;
+                        configuration.network_action = 1;
                     }
                     configuration.network = network_portal.Status();
                 }

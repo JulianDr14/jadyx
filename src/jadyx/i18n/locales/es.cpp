@@ -271,6 +271,8 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::NetworkAdapter, L"Dirección de red local"},
     {Text::NetworkCode, L"Generar código de conexión"},
     {Text::NetworkCodeHint, L"Introduce este código en el navegador. Válido durante 5 minutos."},
+    {Text::NetworkCodeRowHint, L"Un código nuevo reemplaza al actual; el navegador ya conectado sigue conectado."},
+    {Text::NetworkStopRowHint, L"Cierra el portal en esta consola. Las subidas en curso se detienen."},
     {Text::NetworkCodeExpired, L"Código caducado. Selecciona para generar otro."},
     {Text::NetworkPaired, L"Navegador conectado"},
     {Text::NetworkUnavailable, L"No hay una dirección local Ethernet o Wi-Fi disponible."},

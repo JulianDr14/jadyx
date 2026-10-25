@@ -206,6 +206,8 @@ enum class Text : std::uint16_t {
     NetworkAdapter,
     NetworkCode,
     NetworkCodeHint,
+    NetworkCodeRowHint,
+    NetworkStopRowHint,
     NetworkCodeExpired,
     NetworkPaired,
     NetworkUnavailable,
