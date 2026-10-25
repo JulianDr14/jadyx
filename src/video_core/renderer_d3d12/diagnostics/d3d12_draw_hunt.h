@@ -18,6 +18,12 @@ class Scheduler;
 /// tools/xbox/hunt-report.py.
 void HuntNextFrames(u32 frames = 8);
 
+/// Diagnostic ("hunt_cs="): the capture starts once, at the 64th dispatch of this compute shader
+/// (warm, in the scene that runs it). 0 turns it off.
+void HuntOnCompute(u64 hash);
+/// Counts a dispatch of `hash` toward HuntOnCompute; `count` is its dispatches so far.
+void NoteComputeDispatch(u64 hash, u64 count);
+
 /// The D3D12 side of the bottleneck hunt (hunt_capture.h): a timestamp after every recorded
 /// call while a capture runs, resolved once at its end and written when the GPU is done with
 /// them. Idle, it costs each call one branch. GPU thread only.

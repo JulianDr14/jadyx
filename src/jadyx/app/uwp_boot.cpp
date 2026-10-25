@@ -131,6 +131,7 @@ void SetTracedFrame(u32 frame, u32 count);
 void TraceNextFrames(u32 count);
 void TraceNextMaterialFrame(u64 pixel_shader = 0);
 void HuntNextFrames(u32 frames = 8);     // diagnostics/d3d12_draw_hunt.h
+void HuntOnCompute(u64 hash);            // diagnostics/d3d12_draw_hunt.h
 void SetMaterialProbe(s32 x, s32 y);
 void SetMaterialCaptureFrame(u32 frame);
 void SetMaterialSnapshotShaders(u64 first, u64 second);
@@ -267,6 +268,13 @@ static void ApplyGameLanguage(Core::System& system) {
 struct BootConfig {
     /// > 0: the payload does not emit the sentinels (deko3d examples, games, ...); run it this long.
     u32 run_seconds{};
+    /// > 0: the game's bottleneck capture starts this many seconds into the session ("hunt_at="),
+    /// so PC runs time a scene with no one at the pad.
+    u32 hunt_at{};
+    /// The bottleneck capture starts at the 64th dispatch of this compute shader ("hunt_cs=").
+    u64 hunt_cs{};
+    /// > 0: the session closes this many seconds in ("quit_at="), for unattended PC runs.
+    u32 quit_at{};
     /// PC test budget; hard process-commit enforcement belongs to local-run.ps1.
     u32 memory_limit_mib{};
     /// Per-core JIT code cache ("jit_cache_mib="). Full, it is cleared with all the blocks'
@@ -574,6 +582,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetForceMinMaxFilter(config.force_min_max_filter);
     D3D12::SetSkipMinMaxFilter(config.skip_min_max_filter);
     D3D12::SetEmulateMinMaxFilter(config.emulate_min_max_filter);
+    D3D12::HuntOnCompute(config.hunt_cs);
     VideoCore::Perf::SetDetailedGpuProfile(config.gpu_profile);
     if (config.dump_guest_shaders) Settings::values.dump_guest_shaders.SetValue(true);
     VideoCommon::FullCapture::Enable(config.full_gpu_capture);
@@ -1179,6 +1188,16 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                               std::to_string(frames - resume_frames) + " frames" +
                               (menu ? " (menu)" : ""));
                 resume_frames = frames;
+            }
+            if (config.hunt_at > 0 && tick == config.hunt_at * TICKS_PER_SECOND) {
+                D3D12::HuntNextFrames();
+                WriteDiag("hunt_at: bottleneck capture requested for next guest frames");
+            }
+            if (config.quit_at > 0 && tick == config.quit_at * TICKS_PER_SECOND) {
+                WriteDiag("quit_at: shutting down | " + MemoryReport());
+                finish_prewarm_budget(tick);
+                shutdown();
+                return 0;
             }
             if (Jadyx::QuitRequested()) {
                 WriteDiag("step: Q pressed after " + std::to_string(tick / 50) +
@@ -2683,7 +2702,22 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     std::ifstream cfg{install_path + "\\boot.cfg"};
                     for (std::string line; std::getline(cfg, line);) {
                         constexpr std::string_view key = "run_seconds=";
-                        if (line.starts_with(key)) {
+                        constexpr std::string_view hunt_at_key = "hunt_at=";
+                        if (line.starts_with(hunt_at_key)) {
+                            config.hunt_at = static_cast<u32>(
+                                std::strtoul(line.c_str() + hunt_at_key.size(), nullptr, 10));
+                            WriteDiag("boot.cfg: bottleneck capture at " +
+                                      std::to_string(config.hunt_at) + " s");
+                        } else if (line.starts_with("hunt_cs=")) {
+                            config.hunt_cs = std::strtoull(line.c_str() + 8, nullptr, 16);
+                            WriteDiag("boot.cfg: bottleneck capture when compute shader " +
+                                      line.substr(8) + " is warm");
+                        } else if (line.starts_with("quit_at=")) {
+                            config.quit_at =
+                                static_cast<u32>(std::strtoul(line.c_str() + 8, nullptr, 10));
+                            WriteDiag("boot.cfg: session closes at " +
+                                      std::to_string(config.quit_at) + " s");
+                        } else if (line.starts_with(key)) {
                             config.run_seconds =
                                 static_cast<u32>(std::strtoul(line.c_str() + key.size(), nullptr, 10));
                             WriteDiag("boot.cfg: run " + std::to_string(config.run_seconds) + " s");

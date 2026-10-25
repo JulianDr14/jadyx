@@ -406,15 +406,17 @@ void RasterizerD3D12::DispatchCompute() {
         return;
     }
     hunt.Shaders(0, pipeline->UniqueHash());
+    // Diagnostic: how often each compute shader is dispatched (logged at 1, 2, 4, 8... and
+    // every 1024th dispatch, so the last line per hash approximates its total).
+    static std::unordered_map<u64, u64> dispatch_counts;
+    const u64 dispatch_count = ++dispatch_counts[pipeline->UniqueHash()];
     {
-        // Diagnostic: how often each compute shader is dispatched (logged at 1, 2, 4, 8... and
-        // every 1024th dispatch, so the last line per hash approximates its total).
-        static std::unordered_map<u64, u64> dispatch_counts;
         const u64 hash = pipeline->UniqueHash();
-        const u64 count = ++dispatch_counts[hash];
+        const u64 count = dispatch_count;
         if ((count & (count - 1)) == 0 || (count & 1023) == 0) {
             LOG_WARNING(Render, "D3D12: compute shader {:016x} dispatched {} times", hash, count);
         }
+        NoteComputeDispatch(hash, count);
     }
     std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
     PipelineBindings bindings;

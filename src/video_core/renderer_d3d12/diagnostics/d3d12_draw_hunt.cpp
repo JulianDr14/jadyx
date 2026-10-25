@@ -32,6 +32,7 @@ constexpr u32 PROFILE_HZ = 500;
 constexpr u32 WARMUP_FRAMES = 30;
 
 std::atomic<u32> hunt_requested{};
+std::atomic<u64> hunt_on_compute{};
 
 struct NamedCounter {
     Counter counter;
@@ -92,6 +93,18 @@ u32 ElapsedNs(std::chrono::steady_clock::time_point since) {
 
 void HuntNextFrames(u32 frames) {
     hunt_requested.store(std::clamp<u32>(frames, 1, 120), std::memory_order_relaxed);
+}
+
+void HuntOnCompute(u64 hash) {
+    hunt_on_compute.store(hash, std::memory_order_relaxed);
+}
+
+void NoteComputeDispatch(u64 hash, u64 count) {
+    constexpr u64 WARM_DISPATCHES = 64;
+    if (count == WARM_DISPATCHES && hash == hunt_on_compute.load(std::memory_order_relaxed)) {
+        LOG_INFO(Render, "D3D12 hunt: compute shader {:016x} warm, capturing", hash);
+        HuntNextFrames();
+    }
 }
 
 DrawHunt::DrawHunt(const Device& device_, Scheduler& scheduler_)
