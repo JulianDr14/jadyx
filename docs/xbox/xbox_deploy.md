@@ -72,13 +72,9 @@ base C++ toolset alone links the app fine but does not ship this package.
 ## Deploy
 
 1. Open `https://<xbox-ip>:11443` and accept the self-signed certificate warning.
-2. **Add** → upload the signed `jadyx.appx` and install. If Device Portal asks for a dependency,
-   add `Microsoft.VCLibs.x64.14.00.appx` as a **dependency package**. The manifest still requires
-   a compatible VCLibs framework; a missing framework can prevent installation or activation.
-   The Xbox instructions do not require uploading `jadyx.cer` (the local export remains available
-   for Windows sideloading). Clean-console installation without a certificate upload is an
-   explicit [pending console gate](nxbox-simple-install.md#pending-console-test), not a new
-   claim of verified deployment.
+2. **Add** → upload `jadyx.appx`, with `jadyx.cer` as the certificate and
+   `Microsoft.VCLibs.x64.14.00.appx` as a **dependency package**. The console must trust the signer
+   and must have the framework package, or installation or activation fails with a generic error.
 3. Set the app to **Game mode**, not App mode. App mode caps a UWP app at roughly a gigabyte of
    memory; Game mode is what makes the emulated DRAM reservation viable — especially on Series S.
 4. Launch it.
