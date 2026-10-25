@@ -152,7 +152,10 @@ struct NspUpload::Impl {
                 const auto serial = json.at("volume").get<DWORD>();
                 // A consumed payload is deleted only after its completion checkpoint.
                 bool published = consume && json.at("phase") == "complete";
-                if (!consume && (json.at("phase") == "publishing" || json.at("phase") == "complete")) {
+                // A game deleted since its upload is not published any more, and opening it would throw.
+                std::error_code missing;
+                if (!consume && (json.at("phase") == "publishing" || json.at("phase") == "complete") &&
+                    fs::exists(games / Filename(filename), missing)) {
                     try {
                         File target{games / Filename(filename), GENERIC_READ, OPEN_EXISTING};
                         const auto target_id = target.Identity();
@@ -174,6 +177,11 @@ struct NspUpload::Impl {
         if (consume && info.phase == "complete") { std::error_code ignored; fs::remove(payload, ignored); }
         if (info.id.empty() && fs::exists(payload)) {
             info.id=Id(); info.phase="paused"; info.error="recovery";
+        } else if (info.id.empty()) {
+            // Nothing left to resume: drop the checkpoints so later starts do not read them again.
+            std::error_code ignored;
+            fs::remove(folder / "checkpoint0.json", ignored);
+            fs::remove(folder / "checkpoint1.json", ignored);
         }
         if (!info.id.empty() && info.phase != "complete" && info.error != "recovery") {
             try { File file{payload, GENERIC_WRITE, OPEN_EXISTING}; file.Truncate(info.offset); }
