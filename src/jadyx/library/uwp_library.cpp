@@ -675,6 +675,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             seed();
             // Recover interrupted publication before a metadata worker constructs NCA readers.
             ReadFileSetupStatus();
+            RefreshSystemVersions(stop);
             std::error_code ec;
             std::filesystem::create_directories(root, ec);
             auto result = ScanGameLibrary(root, stop);
@@ -722,6 +723,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         future = task.get_future();
         scanner = std::jthread(std::move(task));
     };
+    bool open_mii_editor = false;
     // Saves and applies the System page; the interface switches language on the next frame.
     auto apply_system_effect = [&](SystemPageEffect effect, std::chrono::steady_clock::time_point now) {
         switch (effect) {
@@ -751,6 +753,17 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             system_notice_until = now + std::chrono::seconds{3};
             break;
         }
+        case SystemPageEffect::OpenMiiEditor:
+            if (!HasUsableHeaderKey()) {
+                system_page.notice = Tr(T::MissingKeys);
+                system_notice_until = now + std::chrono::seconds{3};
+            } else if (!network_portal.BlockForLocalOperation()) {
+                system_page.notice = Tr(T::NetworkBusy);
+                system_notice_until = now + std::chrono::seconds{3};
+            } else {
+                open_mii_editor = true;
+            }
+            break;
         case SystemPageEffect::None:
         case SystemPageEffect::EditName:
             break;
@@ -1131,8 +1144,14 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             dirty|=actions!=0;actions=0;pressed_tab.reset();
         }
         if (configuration.network_screen) {
-            if (actions & (Left | Up)) configuration.network_action = (configuration.network_action + 2) % 3;
-            if (actions & (Right | Down)) configuration.network_action = (configuration.network_action + 1) % 3;
+            if (!configuration.network_update) {
+                // The portal's two rows (code, stop); going back is B or the footer.
+                if (actions & (Left | Right | Up | Down))
+                    configuration.network_action = configuration.network_action == 1 ? 2 : 1;
+            } else {
+                if (actions & (Left | Up)) configuration.network_action = (configuration.network_action + 2) % 3;
+                if (actions & (Right | Down)) configuration.network_action = (configuration.network_action + 1) % 3;
+            }
             if (actions & Quit || (actions & Play && configuration.network_action == 0))
                 configuration.network_screen = false;
             else if (actions & Refresh || (actions & Play && configuration.network_action == 1)) {
@@ -1388,7 +1407,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 send(Up, SystemInput::Up);
                 send(Down, SystemInput::Down);
                 const bool opens = system_page.selected == SystemPage::UserName ||
-                                   system_page.selected == SystemPage::ClearCache || system_page.selected == SystemPage::Updates;
+                                   system_page.selected == SystemPage::ClearCache || system_page.selected == SystemPage::Updates ||
+                                   system_page.selected == SystemPage::MiiEditor;
                 send(Left, opens ? SystemInput::Back : SystemInput::Left);
                 send(Right, SystemInput::Right);
                 send(Play, SystemInput::Confirm);
@@ -1396,6 +1416,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 if (!system_page.open) configuration.selected = HomeSystem;
             }
             actions = 0;
+            if (open_mii_editor) {
+                network_portal.Stop();
+                return std::string{MiiEditorLaunch};
+            }
         }
         const bool on_game = tab == LibraryTab::Home ||
                              (tab == LibraryTab::Library && !filter_focus && shelf_focus < shelf.size());
@@ -1606,8 +1630,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         // store, the player stays where they browse.
                         if (!online) Mods::ShowInstalled(mods_page);
                         if (result.error == Mods::ModError::None) {
-                            options_notice = result.updated ? std::wstring{Tr(T::ModsUpdated)}
-                                                            : I18n::Plural(T::ModsInstalledOne, T::ModsInstalledOther,
+                            options_notice = result.save      ? std::wstring{Tr(T::ModsSaveInstalled)}
+                                             : result.updated ? std::wstring{Tr(T::ModsUpdated)}
+                                                              : I18n::Plural(T::ModsInstalledOne, T::ModsInstalledOther,
                                                                            result.installed);
                             options_notice_until = now + std::chrono::seconds{4};
                         }
@@ -1865,11 +1890,11 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 else if (configuration.selected == FilesNetwork) {
                     if (network_portal.Status().running) {
                         configuration.network_screen = true;
-                        configuration.network_action = 0;
+                        configuration.network_action = 1;
                         configuration.notice.clear();
                     } else {
                         configuration.network_screen = start_portal();
-                        configuration.network_action = 0;
+                        configuration.network_action = 1;
                     }
                     configuration.network = network_portal.Status();
                 }
@@ -2237,9 +2262,25 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     if (shelf[i] == focused) shelf_focus = i;
                 if (shelf_focus < shelf.size()) selected = shelf[shelf_focus];
             }
-            canvas->Draw({scan, selected, loading, settings, setting_row, options, notice, panel,
-                          configuration, system_page, options_view, missing_content, rail, tab, filter,
-                          &shelf, shelf_focus, filter_focus, battery});
+            canvas->Draw({.scan = scan,
+                          .selected = selected,
+                          .loading = loading,
+                          .controller_panel = settings,
+                          .controller_row = setting_row,
+                          .options = options,
+                          .notice = notice,
+                          .panel = panel,
+                          .configuration = configuration,
+                          .system = system_page,
+                          .game_options = options_view,
+                          .missing_content = missing_content,
+                          .rail = rail,
+                          .tab = tab,
+                          .filter = filter,
+                          .shelf = &shelf,
+                          .shelf_focus = shelf_focus,
+                          .filter_focus = filter_focus,
+                          .battery = battery});
             dirty = false;
         }
         // A drawn frame already waited for the display in Present(1); sleeping after it too made

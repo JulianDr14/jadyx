@@ -117,6 +117,7 @@ private:
     std::mutex options_mutex;
     ControllerOptions options;
     std::atomic<bool> style_changed{};
+    bool extra_players{true}; // Settings > System; read once per game, before the input thread.
     std::atomic<bool> menu_open{};
     std::atomic<u8> menu_prompt_mapping{};
     std::mutex menu_mutex;

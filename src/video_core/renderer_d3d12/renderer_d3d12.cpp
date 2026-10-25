@@ -144,6 +144,12 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& emu_window,
     blit_ready = CreateBlitPipeline();
     if (VideoCommon::FullCapture::TakeSelfTest()) rasterizer.RunFullCaptureSelfTest();
 
+    if (BootScreen draw = TakeBootScreen()) {
+        // The frontend's loading screen, until the guest is about to run.
+        StartBootScreen(std::move(draw));
+        LOG_INFO(Render, "D3D12: boot screen shown (tick {})", scheduler.CurrentTick());
+        return;
+    }
     // Present one dark-blue frame straight away: on-console, a blue screen before the guest draws
     // anything proves the device and swapchain work independently of the emulation.
     FrameLease frame = present_manager.AcquireFrame();
@@ -162,6 +168,7 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& emu_window,
 }
 
 RendererD3D12::~RendererD3D12() {
+    EndBootScreen();
     rasterizer.EndMaterialTrace(false);
     try {
         present_manager.WaitIdle();
@@ -192,7 +199,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
     if (framebuffers.empty()) {
         return;
     }
-    last_framebuffer = framebuffers.front();
+    last_framebuffers.assign(framebuffers.begin(), framebuffers.end());
     if (!present_failed) {
         try {
             if (std::optional<std::string> error = present_manager.TakeError()) {
@@ -204,7 +211,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
             const auto wait_start = std::chrono::steady_clock::now();
             FrameLease frame = present_manager.AcquireFrame();
             const auto wait_end = std::chrono::steady_clock::now();
-            if (blit_ready && CompositeAccelerated(framebuffer, *frame)) {
+            if (blit_ready && CompositeLayers(framebuffers, *frame)) {
                 // frame.bmp once the guest has had two seconds to settle, then frame_<n>.bmp
                 // every ten seconds or so, to follow a game's progress in a headless run.
                 constexpr u32 DUMP_FRAME = 120;
@@ -265,10 +272,12 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
                 // CopyGuestImage already cropped and flipped the image: its first row is the top
                 // of the screen, as ScaleGuestImage and the GPU path (Tegra::NormalizeCrop) show
                 // it. Flipping it again here showed a resumed game's first frames upside down.
-                RecordComposite(*frame, {.srv = guest_srv,
-                                         .width = guest_width,
-                                         .height = guest_height,
-                                         .crop = {0.0f, 0.0f, 1.0f, 1.0f}});
+                const CompositeLayer layer{.srv = guest_srv,
+                                           .width = guest_width,
+                                           .height = guest_height,
+                                           .crop = {0.0f, 0.0f, 1.0f, 1.0f},
+                                           .blending = Tegra::BlendMode::Opaque};
+                RecordComposite(*frame, std::span<const CompositeLayer>(&layer, 1));
                 CaptureGuestPresent(frame);
                 Present(std::move(frame));
             } else {

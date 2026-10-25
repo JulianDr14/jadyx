@@ -98,7 +98,18 @@ void NameAfter(std::vector<ModCandidate>& candidates, const std::string& name) {
 /// A download that can not be installed again is deleted; one that stopped for a reason the
 /// player can fix (space, a cancel) stays, and asking for it again installs it without a download.
 bool KeepDownload(ModError error) {
-    return error == ModError::Space || error == ModError::Cancelled || error == ModError::Write;
+    return error == ModError::Space || error == ModError::Cancelled || error == ModError::Write ||
+           error == ModError::NoSave;
+}
+
+/// Why an archive with no mods in it installs nothing.
+ModError NothingIn(const LayoutPlan& plan) {
+    switch (plan.need) {
+    case ModNeed::Skyline: return ModError::NeedsSkyline;
+    case ModNeed::Arcropolis: return ModError::NeedsArcropolis;
+    case ModNeed::None: break;
+    }
+    return ModError::NotAMod;
 }
 
 bool IsArchiveName(std::string_view name) {
@@ -357,7 +368,7 @@ void ModSession::Open(std::size_t row) {
         auto plan = PlanLayout(listing.items, TitleFolder(title_id), Utf8(archive_name), RomFsTop());
         LOG_INFO(Frontend, "Mods: {} ({}) has {} files, {} mods", Utf16ToUtf8(file.name), listing.format,
                  listing.items.size(), plan.candidates.size());
-        if (plan.candidates.empty()) state.error = ModError::NotAMod;
+        if (plan.candidates.empty()) state.error = NothingIn(plan);
         state.candidates = std::move(plan.candidates);
     });
 }
@@ -396,10 +407,23 @@ void ModSession::InstallPicked(ModsSnapshot& state, const std::vector<ModCandida
                                std::stop_token stop) {
     state.candidates.clear();
     state.updated = false;
+    state.save = false;
     {
         auto volumes = OpenVolumes(state.archive_volumes);
         if (volumes.empty()) {
             state.error = ModError::Unavailable;
+        } else if (picked.front().save) {
+            // A save goes over the game's own: one of them, even when several were ticked.
+            std::string detail;
+            state.error = library.InstallSave(volumes, picked.front(), stop,
+                                              [this](std::uint64_t d, std::uint64_t t) { done = d; total = t; },
+                                              detail);
+            state.save = state.error == ModError::None;
+            state.installed = state.save ? 1 : 0;
+            if (state.save)
+                LOG_INFO(Frontend, "Mods: installed a save from {}", state.origin.archive);
+            else
+                LOG_WARNING(Frontend, "Mods: save not installed: {}", detail);
         } else {
             auto records = library.Load(Now());
             std::string detail;
@@ -474,12 +498,13 @@ void ModSession::InstallDownload(FinishedDownload download) {
         if (plan.candidates.empty()) {
             for (std::size_t i = 0; i < listing.items.size() && i < 12; ++i)
                 LOG_INFO(Frontend, "Mods:   {}", listing.items[i].path);
-            state.error = ModError::NotAMod;
+            state.error = NothingIn(plan);
             forget();
             return;
         }
         NameAfter(plan.candidates, request.name);
-        if (plan.candidates.size() == 1) {
+        // A save replaces the player's: it waits for them to say so, as several mods do.
+        if (plan.candidates.size() == 1 && !plan.candidates.front().save) {
             InstallPicked(state, plan.candidates, stop);
             return;
         }

@@ -6,8 +6,12 @@
 #include <cctype>
 #include <fstream>
 #include <map>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 #include <archive.h>
 #include <archive_entry.h>
 #include <openssl/rand.h>
@@ -16,15 +20,18 @@
 #include <winrt/Windows.Storage.h>
 #include <winrt/Windows.Foundation.h>
 #include "common/fs/path_util.h"
+#include "common/logging.h"
 #include "common/scope_exit.h"
 #include "core/crypto/key_manager.h"
 #include "core/file_sys/content_archive.h"
+#include "core/file_sys/nca_metadata.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/fssystem/fssystem_crypto_configuration.h"
 #include "core/file_sys/fssystem/fssystem_compression_configuration.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/loader/loader.h"
 #include "jadyx/i18n/localization.h"
+#include "jadyx/storage/atomic_file.h"
 
 namespace Jadyx {
 namespace {
@@ -83,6 +90,7 @@ struct FirmwareInfo {
     std::string display;
     int generation{-1};
     std::set<std::pair<int,int>> areas;
+    unsigned removed{};
 };
 // The bundled libarchive intentionally excludes platform filename openers.
 // Supply bounded seekable input, as the mod importer already does.
@@ -101,7 +109,13 @@ struct ZipSource {
     }
 };
 FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress progress,std::stop_token stop) {
-    FirmwareInfo info;bool system=false,mii=false;unsigned count{};
+    FirmwareInfo info;bool system=false,mii=false,update=false;unsigned count{};
+    std::set<u64> listed;
+    // Titles outside 0x010000000000xxxx wait for the meta: only the NCAs that stay count.
+    struct Outside{fs::path path;int generation;std::optional<std::pair<int,int>> area;};
+    std::map<u64,std::vector<Outside>> outside;
+    const auto keep=[&info](int generation,const std::optional<std::pair<int,int>>& area){
+        info.generation=(std::max)(info.generation,generation);if(area)info.areas.insert(*area);};
     if(!fs::exists(folder)){Require(!strict,"firmware_incomplete");return info;}
     FileSys::RealVfsFilesystem vfs;
     for(const auto& file:fs::directory_iterator{folder}) {
@@ -114,9 +128,27 @@ FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress p
         if(R_FAILED(header.Initialize(raw,FileSys::GetCryptoConfiguration(),FileSys::GetNcaCompressionConfiguration()))){Require(!strict,"firmware_keys");continue;}
         FileSys::NCA nca{raw};
         if(nca.GetStatus()!=Loader::ResultStatus::Success){Require(!strict,"firmware_keys");continue;}
-        Require((nca.GetTitleId()>>16)==(0x0100000000000000ULL>>16),"firmware_game");
-        info.generation=(std::max)(info.generation,static_cast<int>((std::max)(nca.GetKeyGeneration(),u8{1})-1));
-        if(header.GetKeyIndex()<3)info.areas.emplace(static_cast<int>((std::max)(header.GetKeyGeneration(),u8{1})-1),header.GetKeyIndex());
+        // A meta NCA always holds a PFS0. Opening without one means the keys read the header but not
+        // the content (e.g. a wrong key_area_key_application_00): the SystemUpdate meta is lost and
+        // system titles outside 0x010000000000xxxx would be taken for games.
+        if(nca.GetType()==FileSys::NCAContentType::Meta&&nca.GetSubdirectories().empty()) {
+            LOG_WARNING(Frontend, "Firmware import: the meta NCA '{}' ({:016X}, key generation {}) could not be decrypted",
+                        Utf8(file.path().filename()), nca.GetTitleId(), header.GetKeyGeneration());
+            Require(!strict,"firmware_keys");continue;
+        }
+        // Firmware also ships a few system titles outside 0x010000000000xxxx (e.g. 01008BB00013C000);
+        // those are allowed only when the SystemUpdate meta lists them.
+        const int generation=static_cast<int>((std::max)(nca.GetKeyGeneration(),u8{1})-1);
+        std::optional<std::pair<int,int>> area;
+        if(header.GetKeyIndex()<3)area=std::pair{static_cast<int>((std::max)(header.GetKeyGeneration(),u8{1})-1),static_cast<int>(header.GetKeyIndex())};
+        if((nca.GetTitleId()>>16)!=(0x0100000000000000ULL>>16))outside[nca.GetTitleId()].push_back({file.path(),generation,area});
+        else keep(generation,area);
+        if(nca.GetTitleId()==0x0100000000000816ULL&&nca.GetType()==FileSys::NCAContentType::Meta&&
+           !nca.GetSubdirectories().empty())
+            if(const auto cnmt=nca.GetSubdirectories()[0]->GetFile("SystemUpdate_0100000000000816.cnmt")) {
+                update=true;
+                for(const auto& record:FileSys::CNMT{cnmt}.GetMetaRecords())listed.insert(record.title_id);
+            }
         if(nca.GetTitleId()==0x0100000000000809ULL&&nca.GetType()==FileSys::NCAContentType::Data) {
             const auto romfs=nca.GetRomFS()?FileSys::ExtractRomFS(nca.GetRomFS()):nullptr;
             const auto version=romfs?romfs->GetFile("file"):nullptr;
@@ -130,6 +162,22 @@ FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress p
         }
         mii|=nca.GetTitleId()==0x0100000000001009ULL&&nca.GetType()==FileSys::NCAContentType::Program;
         if(progress)progress(count,0);
+    }
+    // Players keep their dumps together, so a game NCA often sits next to the firmware. A staged
+    // import is a copy: leaving those files out installs the firmware and loses nothing, instead
+    // of refusing the whole package. Titles the SystemUpdate meta lists are real system content
+    // and stay; the installed folder is only inspected, never trimmed.
+    for(const auto& [title,files]:outside) {
+        if((update&&listed.contains(title))||!strict) {
+            for(const auto& file:files)keep(file.generation,file.area);
+            continue;
+        }
+        for(const auto& file:files) {
+            LOG_INFO(Frontend, "Firmware import: leaving out the game NCA {:016X} ('{}')", title,
+                     Utf8(file.path.filename()));
+            // A file left behind would be published inside the firmware folder.
+            std::error_code error;Require(fs::remove(file.path,error)&&!error,"disk");++info.removed;
+        }
     }
     Require(!strict||(system&&mii),"firmware_incomplete");return info;
 }
@@ -223,6 +271,7 @@ void PreparedSystemImport::Commit(std::stop_token stop) {
         folder.RenameAsync(destination.filename().wstring(),winrt::Windows::Storage::NameCollisionOption::FailIfExists).get();
         published=true;
         if(kind==FileImport::Keys)Core::Crypto::KeyManager::Instance().ReloadKeys();
+        InvalidateSystemVersions();
     }catch(...){
         if(published)fs::rename(destination,stage);
         if(exists)fs::rename(previous,destination);
@@ -244,6 +293,7 @@ std::unique_ptr<PreparedSystemImport> InspectSystemStage(fs::path stage,FileImpo
         review.incoming_firmware=incoming.display;review.required_generation=incoming.generation;
         review.incoming_generation=review.installed_generation;
         if(!installed.display.empty()&&incoming.version<installed.version)review.warnings.push_back("firmware_downgrade");
+        if(incoming.removed)review.warnings.push_back("firmware_games_removed");
     }else{
         review.incoming_firmware=installed.display;
         const auto destination=SystemDestination(kind);
@@ -300,8 +350,70 @@ std::wstring DescribeSystemReview(const SystemReview& review) {
         wide(review.incoming_firmware.empty()?"—":review.incoming_firmware),review.installed_generation<0?L"—":std::to_wstring(review.installed_generation),
         review.incoming_generation<0?L"—":std::to_wstring(review.incoming_generation)});
     for(const auto& warning:review.warnings){result+=L"\n";result+=Tr(warning=="firmware_downgrade"?Text::SystemFirmwareDowngrade:
-        warning=="keys_downgrade"?Text::SystemKeysDowngrade:warning=="keys_firmware_old"?Text::SystemKeysFirmwareWarning:Text::SystemVersionUnknown);}
+        warning=="keys_downgrade"?Text::SystemKeysDowngrade:warning=="keys_firmware_old"?Text::SystemKeysFirmwareWarning:
+        warning=="firmware_games_removed"?Text::SystemFirmwareGamesRemoved:Text::SystemVersionUnknown);}
     return result;
 }
 SystemImportBackend DefaultSystemImportBackend(){return {SystemDestination,CreateSystemStage,RemoveSystemStage,ExtractSystemZip,InspectSystemStage};}
+namespace {
+fs::path VersionsCache() { return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir)/"system_versions.txt"; }
+// What the cached versions were read from: the firmware's files and the keys that opened them.
+std::string VersionsSignature() {
+    std::uintmax_t count{},size{};std::error_code error;
+    for(fs::directory_iterator it{SystemDestination(FileImport::Firmware),error},end;!error&&it!=end;it.increment(error))
+        if(it->is_regular_file(error)&&Lower(Utf8(it->path().extension()))==".nca"){++count;size+=it->file_size(error);}
+    const auto keys=SystemDestination(FileImport::Keys)/"prod.keys";
+    const auto keys_size=fs::file_size(keys,error);
+    const auto keys_time=error?0:fs::last_write_time(keys,error).time_since_epoch().count();
+    return std::to_string(count)+" "+std::to_string(size)+" "+std::to_string(error?0:keys_size)+" "+std::to_string(keys_time);
+}
+// Settings read the versions every time they open; they change only on an import, so they are
+// kept in memory and in a small file, and dropped by InvalidateSystemVersions().
+// Settings show "22.5.0"; the revision suffix only matters to the import review.
+std::string ShortVersion(std::string display) { if(const auto at=display.find(" (");at!=std::string::npos)display.resize(at);return display; }
+struct VersionsMemo { std::string signature; InstalledSystemVersions versions; };
+std::mutex versions_mutex;
+std::optional<VersionsMemo> versions_memo;
+std::optional<VersionsMemo> LoadVersions() {
+    const auto bytes=ReadWholeFile(VersionsCache());
+    if(!bytes)return std::nullopt;
+    std::vector<std::string> lines;std::size_t at=0;
+    for(std::size_t end;(end=bytes->find('\n',at))!=std::string::npos;at=end+1)lines.push_back(bytes->substr(at,end-at));
+    if(lines.size()!=3)return std::nullopt;
+    VersionsMemo memo{lines[0],{ShortVersion(lines[1]),-1}};
+    try{memo.versions.key_generation=std::stoi(lines[2]);}catch(...){return std::nullopt;}
+    return memo;
+}
+}
+InstalledSystemVersions ReadInstalledSystemVersions() {
+    const std::scoped_lock lock{versions_mutex};
+    if(!versions_memo)versions_memo=LoadVersions();
+    return versions_memo?versions_memo->versions:InstalledSystemVersions{};
+}
+void InvalidateSystemVersions() noexcept {
+    const std::scoped_lock lock{versions_mutex};
+    versions_memo.reset();
+    std::error_code error;fs::remove(VersionsCache(),error);
+}
+void RefreshSystemVersions(std::stop_token stop) noexcept {
+    try{
+        const auto signature=VersionsSignature();
+        {
+            const std::scoped_lock lock{versions_mutex};
+            if(!versions_memo)versions_memo=LoadVersions();
+            if(versions_memo&&versions_memo->signature==signature)return;
+        }
+        VersionsMemo memo{signature,{}};
+        try{const auto generations=Generations(ReadKeys(SystemDestination(FileImport::Keys)/"prod.keys"));
+            if(!generations.empty())memo.versions.key_generation=*generations.rbegin();}catch(...){}
+        // An unreadable version is cached too, so a scan does not reopen every NCA again; new keys
+        // or new firmware change the signature and read it once more.
+        try{memo.versions.firmware=ShortVersion(InspectFirmware(SystemDestination(FileImport::Firmware),false,{},stop).display);}
+        catch(...){if(stop.stop_requested())return;}
+        WriteFileAtomically(VersionsCache(),memo.signature+"\n"+memo.versions.firmware+"\n"+
+            std::to_string(memo.versions.key_generation)+"\n");
+        const std::scoped_lock lock{versions_mutex};
+        versions_memo=std::move(memo);
+    }catch(...){}
+}
 }

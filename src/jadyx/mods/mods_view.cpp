@@ -867,8 +867,10 @@ void DrawVariants(UiPainter& paint, const ModsView& view, float x, float y) {
     const float inner = width - 60;
     paint.Icon(UiIcon::Archive, left, top + 2, Palette::Accent);
     paint.Text(snapshot.archive, left + 46, top, 22, Palette::Text, inner - 46, 34, true);
-    paint.Text(Tr(several ? Text::ModsVariantsHint : Text::ModsInstallOneHint), left, top + 42, 16,
-               Palette::TextHint, inner, 26);
+    // A save replaces the player's: the sheet says so before anything else.
+    const bool save = !candidates.empty() && candidates.front().save;
+    paint.Text(Tr(save ? Text::ModsSaveHint : several ? Text::ModsVariantsHint : Text::ModsInstallOneHint), left,
+               top + 42, 16, save ? Palette::Warning : Palette::TextHint, inner, 26);
     constexpr std::size_t visible = 5;
     const std::size_t first = view.page.variant >= visible ? view.page.variant + 1 - visible : 0;
     const std::size_t end = std::min(candidates.size(), first + visible);
@@ -887,7 +889,8 @@ void DrawVariants(UiPainter& paint, const ModsView& view, float x, float y) {
             text_left = left + 62;
         }
         paint.Text(Utf8ToUtf16(candidate.name), text_left, row + 8, 19, Palette::Text, inner - 90, 28, active);
-        std::wstring detail = Parts(candidate.parts) + std::wstring{Dot} + Size(candidate.bytes);
+        std::wstring detail = (candidate.save ? std::wstring{Tr(Text::ModsPartSave)} : Parts(candidate.parts)) +
+                              std::wstring{Dot} + Size(candidate.bytes);
         paint.Text(detail, text_left, row + 38, 14, Palette::TextSecondary, inner - 90, 22);
         if (candidate.other_title)
             paint.Text(Tr(Text::ModsOtherTitle), text_left + paint.MeasureText(detail, 14, false) + 12, row + 38, 14,
@@ -939,6 +942,9 @@ I18n::Text ErrorText(ModError error) {
     case ModError::Unavailable: return Text::ModsErrorUnavailable;
     case ModError::Network: return Text::ModsErrorNetwork;
     case ModError::Checksum: return Text::ModsErrorChecksum;
+    case ModError::NeedsSkyline: return Text::ModsErrorNeedsSkyline;
+    case ModError::NeedsArcropolis: return Text::ModsErrorNeedsArcropolis;
+    case ModError::NoSave: return Text::ModsErrorNoSave;
     case ModError::None: break;
     }
     return Text::ModsErrorWrite;

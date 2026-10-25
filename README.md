@@ -61,14 +61,20 @@ report.
 | Under Night In-Birth II Sys:Celes *(community)* | Series S | **60 FPS** | In-game; community report |
 | Naruto x Boruto: Connections *(community)* | Series S | **30 FPS**, reported stable | No FPS drops reported by the tester |
 | Mario 3D World | Series X | **60 FPS**, stable | In-game |
+| Hades II *(community)* | Series S | **60 FPS**, reported smooth with no drops | Jadyx 0.3.8.0; community report |
+| Bayonetta *(community)* | Series S | **60 FPS**, dropping to **42 FPS** during combos | Jadyx 0.3.8.0; community report |
+| Bayonetta 2 *(community)* | Series S | **60 FPS**, dropping to **30–40 FPS** during heavy action and combat | Jadyx 0.3.8.0; community report |
 | Super Mario Odyssey | Series X | **45–50 FPS** in very open areas; **60 FPS** in more enclosed areas and in certain levels | In-game |
 | 13 Sentinels *(community)* | Series X | **60 FPS** in battles and exploration | Playable |
 | NEO TWEWY *(community)* | Series X | **20–30 FPS** in game, 50 in menus | In-game; drops to 10–17 FPS while new shaders compile |
 | Pokémon Sword *(community)* | Series S | **20–30 FPS** | Reported stable apart from roughly one-second stutters, possibly shader compilation. Open areas still to be tested; build not specified |
 | Yo-kai Watch 4++ *(community)* | Series S | **30 FPS** in the intro and menus; **20 FPS** reported in the open world | In 0.3.0 it froze on a white screen when starting the game; 0.3.5 gets past it. The tester now confirms gameplay and reports stable operation despite open-world FPS drops. Work in progress |
 | Hyrule Warriors AoC *(community)* | Series X | **30 FPS** in cutscenes | In 0.3.0 it crashed at the same point after the first cutscene; 0.3.5 gets in-game. Work in progress |
-| Zelda BotW | Series X | **About 20 FPS** in the open world, of the game's 30 | **Work in progress.** Renders without graphical errors; holds 30 FPS in lighter areas (under 2 000 draws per frame). With the whole world in view: 21 FPS, GPU 9.5 ms per frame |
+| The Legend of Zelda: Breath of the Wild | Series X | **27–29 FPS** observed in the open world with shaders compiled | Previously about 23 FPS in the tested open area. Holds 30 FPS in lighter areas; work in progress |
 | Zelda TotK | Series X | Renders **without graphical errors**, then **hits the memory wall** | The heaviest loads need more than the app's 5120 MiB, see [The memory wall](#the-memory-wall). On PC it reaches the open world at **30 FPS** |
+
+For Hades II and both Bayonetta reports, Series S is inferred from the same tester's explicit
+console identification and other compatibility reports; those three posts do not repeat the model.
 
 Where the open world loses its frames: the renderer's GPU thread spends about 32 ms of host CPU
 time recording some 4 000 draws per frame (about 8 µs per draw), while the GPU itself needs only
@@ -606,17 +612,18 @@ Requirements: an Xbox Series X|S in Developer Mode, the package from the
 [latest release](https://github.com/JulianDr14/jadyx/releases/latest) (or one you built, see
 [Building](#building)), and the keys, firmware and games dumped from your own Switch.
 
-1. Open the Device Portal at `https://<console-ip>:11443`.
-2. Install `Jadyx_<version>_x64.appx` together with its `Microsoft.VCLibs.x64.14.00.appx`
-   dependency and the `Jadyx.cer` certificate.
-3. In the app's settings on the console, set it to **Game** mode. Otherwise the memory limit is much
-   lower than the 5120 MiB the emulator expects.
-4. Start the app and send your keys, firmware and games from a PC or phone with the
-   [Jadyx Portal](#jadyx-portal): **Settings > File manager > Network connection > Start server**,
-   open the address it shows in a browser on the same network and enter the connection code.
-5. Other ways to add them: import keys and firmware from a folder or ZIP on a USB drive in
-   **Settings > File manager**, and add games from an external folder or USB drive, or copy them to
-   the app's `LocalState\games` folder with the Device Portal file explorer.
+1. Download **`Jadyx_<version>_x64.appx`**, **`Jadyx.cer`** and
+   **`Microsoft.VCLibs.x64.14.00.appx`** from the release. Open Device Portal at
+   `https://<console-ip>:11443` (Dev Home shows the address), choose **Add**, select the appx, add
+   `Jadyx.cer` as the certificate and `Microsoft.VCLibs.x64.14.00.appx` as a dependency. Once
+   VCLibs is on the console, later installs can skip it.
+2. In Dev Home, select Jadyx → **View details** and set **App type** to **Game**. App mode has
+   much less memory than the 5120 MiB the emulator expects.
+3. Start Jadyx and import your own keys and firmware in **Settings > File manager**, from a
+   folder or ZIP on USB, or with the [Jadyx Portal](#jadyx-portal): **Network connection > Start
+   server**, then open its address on a PC or phone on the same network and enter the code.
+4. Add your own games from a USB drive or external folder, send them with the Jadyx Portal, or
+   copy them to `LocalState\games` with the Device Portal file explorer.
 
 To update Jadyx, install the new package over the old one. Do not uninstall first: that deletes
 the keys, firmware, saves and games stored in the app.

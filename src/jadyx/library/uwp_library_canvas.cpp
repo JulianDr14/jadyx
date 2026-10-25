@@ -41,6 +41,18 @@ namespace Jadyx {
 using Microsoft::WRL::ComPtr;
 using I18n::Tr;
 using T = I18n::Text;
+namespace {
+/// What settings show for the keys and the firmware: their versions once they are known.
+std::wstring KeysValue(const FileSetupStatus& status) {
+    if (!status.keys_ready) return std::wstring{Tr(T::KeysMissing)};
+    return status.versions.key_generation < 0 ? std::wstring{Tr(T::KeysReady)} :
+        I18n::Format(T::KeysGeneration, {std::to_wstring(status.versions.key_generation)});
+}
+std::wstring FirmwareValue(const FileSetupStatus& status) {
+    return status.versions.firmware.empty() ? I18n::Format(T::FirmwareFiles, {std::to_wstring(status.firmware_files)}) :
+        I18n::Format(T::FirmwareVersion, {std::wstring{winrt::to_hstring(status.versions.firmware)}});
+}
+} // namespace
 // The launcher owns a small D3D11/Direct2D surface only while selecting a game.
 // Release every reference (including the swapchain) before D3D12 starts.
 struct LibraryCanvas::Impl : UiPainter {
@@ -1124,10 +1136,12 @@ private:
                 case SystemPage::UserName: item.kind = Kind::Open; break;
                 case SystemPage::Updates: item.kind = Kind::Open; break;
                 case SystemPage::ClearCache: item.kind = Kind::Open; break;
+                case SystemPage::MiiEditor: item.kind = Kind::Open; break;
                 case SystemPage::AdultMods: item.kind = Kind::Toggle; item.on = settings.show_adult_mods; break;
                 case SystemPage::PerformanceStats: item.kind = Kind::Toggle; item.on = settings.show_performance_stats; break;
                 case SystemPage::PulseSessions: item.kind = Kind::Toggle; item.on = settings.pulse_sessions; break;
                 case SystemPage::PlayTime: item.kind = Kind::Toggle; item.on = settings.track_play_time; break;
+                case SystemPage::MultipleControllers: item.kind = Kind::Toggle; item.on = settings.multiple_controllers; break;
                 default: break;
                 }
                 rows.push_back(std::move(item));
@@ -1162,12 +1176,10 @@ private:
         } else {
             const auto& status = view.configuration.status;
             rows.push_back({Kind::Open, std::wstring{Tr(T::AddGamesFolder)}});
-            SettingsRow keys{Kind::Open, std::wstring{Tr(T::ImportKeys)}, {},
-                             std::wstring{Tr(status.keys_ready ? T::KeysReady : T::KeysMissing)}};
+            SettingsRow keys{Kind::Open, std::wstring{Tr(T::ImportKeys)}, {}, KeysValue(status)};
             keys.warning = !status.keys_ready;
             rows.push_back(std::move(keys));
-            rows.push_back({Kind::Open, std::wstring{Tr(T::ImportFirmware)}, {},
-                            I18n::Format(T::FirmwareFiles, {std::to_wstring(status.firmware_files)})});
+            rows.push_back({Kind::Open, std::wstring{Tr(T::ImportFirmware)}, {}, FirmwareValue(status)});
             rows.push_back({Kind::Open, std::wstring{Tr(T::ContentUpdates)}});
             rows.push_back({Kind::Open, std::wstring{Tr(T::ContentDlc)}});
             const auto& network = view.configuration.network;
@@ -1200,73 +1212,103 @@ private:
     static constexpr float SettingsPaneWidth = 1280 - LibraryLayout::Margin - SettingsPaneX;
     static constexpr float SettingsRowsTop = 226, SettingsRowStride = 58, SettingsRowHeight = 52;
     static constexpr std::size_t SettingsVisibleRows = 7;
+    /// The code spaced out so it reads at a distance, as the browser asks for it.
+    static std::wstring PortalDigits(const std::string& code) {
+        std::wstring digits;
+        for (const char c : code) { if (!digits.empty()) digits += L"  "; digits += static_cast<wchar_t>(c); }
+        return digits;
+    }
+    /// The portal screen, laid out like the update page: the address and the code in the card at
+    /// the left, the two actions as rows at the right with the focused one explained underneath.
     void DrawNetworkConnection(const ConfigurationPanel& configuration) {
+        using namespace LibraryLayout;
         const auto& network = configuration.network;
-        Type(L"J A D Y X", TypeRole::HeadlineSmall, 80, 44, 400, Palette::Text);
-        if (network.paired)
-            Type(Tr(T::NetworkPaired), TypeRole::LabelLarge, 720, 52, 480,
-                 Palette::TextHint, 1, TextAlign::Trailing);
-        Type(Tr(T::NetworkConnection), TypeRole::HeadlineLarge, 80, 100, 1120,
-             Palette::Text, 1, TextAlign::Center);
-        Type(winrt::to_hstring(network.url).c_str(), TypeRole::HeadlineMedium, 80, 176, 1120,
-             Palette::Text, 1, TextAlign::Center);
-        Type(Tr(T::NetworkOpenHint), TypeRole::Body, 80, 222, 1120,
-             Palette::TextSecondary, 1, TextAlign::Center);
-        Card(80, 274, 1120, 210, 20);
-        Type(Tr(T::NetworkCodeLabel), TypeRole::Caps, 100, 296, 1080,
-             Palette::TextSecondary, 1, TextAlign::Center);
-        if (network.running && !network.code_expired && network.code.size() == 8) {
-            const auto digits = winrt::to_hstring(network.code.substr(0, 4) + " " + network.code.substr(4));
+        Type(Tr(T::NetworkConnection), TypeRole::HeadlineLarge, Margin, 40, 700, Palette::Text);
+        constexpr float card_x = Margin, card_y = 112, card_w = 660, card_h = 330, inner = card_x + 28, inner_w = card_w - 56;
+        Card(card_x, card_y, card_w, card_h);
+        Type(Upper(Tr(T::UpdateGuideAddress)), TypeRole::Caps, inner, card_y + 24, inner_w, Palette::TextSecondary);
+        Type(winrt::to_hstring(network.url).c_str(), TypeRole::HeadlineMedium, inner, card_y + 50, inner_w, Palette::Text);
+        Round(inner, card_y + 106, inner_w, 1, 0.5f, Palette::Graphite);
+        Type(Upper(Tr(T::NetworkCodeLabel)), TypeRole::Caps, inner, card_y + 128, inner_w, Palette::TextSecondary);
+        if (network.running && !network.code_expired && network.code.size() == 4) {
             D2D1_MATRIX_3X2_F transform;
             target->GetTransform(&transform);
-            // Hero is 56px at the reference resolution: 112px here, independent of settings rows.
-            target->SetTransform(D2D1::Matrix3x2F::Scale(2, 2, D2D1::Point2F(640, 334)) * transform);
-            Type(digits.c_str(), TypeRole::Hero, 360, 334, 560, Palette::Text, 1, TextAlign::Center);
+            // Hero is 56px at the reference resolution: 84px here, centred in the card.
+            const float center = card_x + card_w / 2, top = card_y + 156;
+            target->SetTransform(D2D1::Matrix3x2F::Scale(1.5f, 1.5f, D2D1::Point2F(center, top)) * transform);
+            Type(PortalDigits(network.code), TypeRole::Hero, inner, top, inner_w, Palette::Text, 1, TextAlign::Center);
             target->SetTransform(transform);
         } else {
-            Type(Tr(network.paired ? T::NetworkPaired : T::NetworkCodeExpired),
-                 TypeRole::HeadlineMedium, 110, 366, 1060, Palette::Text, 1, TextAlign::Center);
+            Type(Tr(network.paired ? T::NetworkPaired : T::NetworkCodeExpired), TypeRole::HeadlineMedium, inner,
+                 card_y + 180, inner_w, Palette::Text, 1, TextAlign::Center);
         }
+        const bool problem = !configuration.notice.empty();
+        Type(problem ? std::wstring_view{configuration.notice} : Tr(T::NetworkCodeHint), TypeRole::Body, inner,
+             card_y + 270, inner_w, problem ? Palette::Warning : Palette::TextSecondary, 1, TextAlign::Center, 2);
+        // Under the card: what the browser is sending, with its bar.
         std::wstring progress;
-        const auto& transfer=network.transfer;
-        const auto& system=network.system;
+        float fraction = 0;
+        const auto& transfer = network.transfer;
+        const auto& system = network.system;
         if (system.busy) {
-            const auto& file=system.file;
-            progress=system.phase=="receiving"&&file.busy ? I18n::Format(T::NetworkUploading,
-                {winrt::to_hstring(file.name).c_str(),std::to_wstring(file.received >> 20),std::to_wstring(file.length >> 20)}) :
-                system.phase=="review" ? std::wstring{Tr(T::SystemReviewReady)} : std::wstring{Tr(T::NetworkValidating)};
-            progress+=L" · "+std::to_wstring(system.completed)+L" / "+std::to_wstring(system.count);
-            const float fraction=file.length?static_cast<float>(static_cast<double>(file.received)/file.length):0;
-            Round(100,560,1080,4,2,Palette::Graphite);
-            Round(100,560,1080*std::clamp(fraction,0.0f,1.0f),4,2,Palette::Accent);
+            const auto& file = system.file;
+            // Keys and firmware have their own phases; the NSP wording does not apply here.
+            progress = system.phase == "receiving" && file.busy ? I18n::Format(T::NetworkUploading,
+                {winrt::to_hstring(file.name).c_str(), std::to_wstring(file.received >> 20), std::to_wstring(file.length >> 20)}) :
+                std::wstring{Tr(system.phase == "receiving" ? T::SystemWaiting :
+                                system.phase == "review" ? T::SystemReviewReady :
+                                system.phase == "failed" ? T::ImportFailedKept :
+                                system.phase == "commit_pending" || system.phase == "publishing" ? T::SystemInstalling :
+                                T::SystemValidating)};
+            progress += L" · " + std::to_wstring(system.completed) + L" / " + std::to_wstring(system.count);
+            fraction = file.length ? static_cast<float>(static_cast<double>(file.received) / file.length) : 0;
         } else if (transfer.busy) {
-            progress=transfer.phase == "receiving" ? I18n::Format(T::NetworkUploading,
-                {winrt::to_hstring(transfer.name).c_str(),std::to_wstring(transfer.received >> 20),std::to_wstring(transfer.length >> 20)}) :
+            progress = transfer.phase == "receiving" ? I18n::Format(T::NetworkUploading,
+                {winrt::to_hstring(transfer.name).c_str(), std::to_wstring(transfer.received >> 20), std::to_wstring(transfer.length >> 20)}) :
                 std::wstring{Tr(T::NetworkValidating)};
-            const float fraction=transfer.length ? static_cast<float>(static_cast<double>(transfer.received)/transfer.length) : 0;
-            Round(100,560,1080,4,2,Palette::Graphite);
-            Round(100,560,1080*std::clamp(fraction,0.0f,1.0f),4,2,Palette::Accent);
+            fraction = transfer.length ? static_cast<float>(static_cast<double>(transfer.received) / transfer.length) : 0;
         }
-        Type(!progress.empty() ? std::wstring_view{progress} : configuration.notice.empty() ? Tr(T::NetworkCodeHint) : std::wstring_view{configuration.notice},
-             TypeRole::Body, 100, 510, 1080, Palette::TextSecondary, 1, TextAlign::Center, 2);
-        const std::array<T, 3> labels{T::Back, T::NetworkCode, T::NetworkStop};
-        for (size_t i = 0; i < labels.size(); ++i) {
-            const float x = 80 + static_cast<float>(i) * 380;
-            const bool focused = configuration.network_action == i;
-            if (focused) FocusGlow(x, 594, 360, 60, 14, 1);
-            Round(x, 594, 360, 60, 14, focused ? Palette::Accent : Palette::Surface);
-            Type(Tr(labels[i]), TypeRole::LabelLarge, x + 14, 614, 332,
-                 focused ? Palette::OnAccent : Palette::Text, 1, TextAlign::Center);
-            AddHit(x, 594, 360, 60, LibraryHit::NetworkAction, i);
+        if (!progress.empty()) {
+            const float y = card_y + card_h + 32;
+            Round(card_x, y, card_w, 10, 5, Palette::Graphite);
+            if (fraction > 0) Round(card_x, y, card_w * std::clamp(fraction, 0.0f, 1.0f), 10, 5, Palette::Accent);
+            Type(progress, TypeRole::Body, card_x, y + 20, card_w, Palette::TextSecondary, 1, TextAlign::Leading, 2);
+        } else {
+            Type(Tr(T::NetworkOpenHint), TypeRole::Body, card_x, card_y + card_h + 28, card_w, Palette::TextHint, 1,
+                 TextAlign::Leading, 2);
         }
-        ControlPrompt(Navigation::Play, Tr(T::Select), 80, 676);
-        ControlPrompt(Navigation::Back, Tr(T::Back), 400, 676);
+        if (network.paired) {
+            const auto paired = Tr(T::NetworkPaired);
+            const float width = MeasureType(paired, TypeRole::Label);
+            Round(1280 - Margin - width - 18, FooterTop + 26, 8, 8, 4, Palette::Accent);
+            Type(paired, TypeRole::Label, 1280 - Margin - 400, FooterTop + 20, 400, Palette::TextSecondary, 1,
+                 TextAlign::Trailing);
+        }
+        // The rows (network_action 1 and 2; 0 is going back).
+        const std::array<std::pair<T, T>, 2> rows{{{T::NetworkCode, T::NetworkCodeRowHint}, {T::NetworkStop, T::NetworkStopRowHint}}};
+        constexpr float rows_x = 780, rows_w = 1280 - Margin - rows_x;
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            const bool focused = configuration.network_action == i + 1;
+            const float y = card_y + static_cast<float>(i) * 64;
+            Round(rows_x, y, rows_w, 54, 12, focused ? Palette::Accent : Palette::Surface);
+            Type(Tr(rows[i].first), TypeRole::BodyLarge, rows_x + 20, y + 14, rows_w - 40, focused ? Palette::OnAccent : Palette::Text);
+            AddHit(rows_x, y, rows_w, 54, LibraryHit::NetworkAction, i + 1);
+        }
+        if (configuration.network_action >= 1 && configuration.network_action <= rows.size())
+            Type(Tr(rows[configuration.network_action - 1].second), TypeRole::Body, rows_x + 4,
+                 card_y + static_cast<float>(rows.size()) * 64 + 8, rows_w - 8, Palette::TextSecondary, 1, TextAlign::Leading, 5);
+        const float y = FooterTop + 12;
+        float x = Margin;
+        x += ControlPrompt(Navigation::Play, Tr(T::Select), x, y);
+        const auto back = Tr(T::UpdaterBack);
+        AddHit(x - 4, y - 6, PromptWidth(Navigation::Back, back) - 20, 44, LibraryHit::NetworkAction, 0);
+        ControlPrompt(Navigation::Back, back, x, y);
     }
     /// The guided app update: where to point a browser and its code at the left, the three steps
     /// at the right over the warning that keeps the user's data. Laid out like the portal screen.
     void DrawUpdateGuide(const ConfigurationPanel& configuration, const Updates::Snapshot& update) {
         const auto& network = configuration.network;
-        const bool code = network.running && !network.code_expired && network.code.size() == 8;
+        const bool code = network.running && !network.code_expired && network.code.size() == 4;
         Type(L"J A D Y X", TypeRole::HeadlineSmall, 80, 44, 400, Palette::Text);
         const std::wstring installed{winrt::to_hstring(Updates::FormatVersion(update.installed))};
         const std::wstring incoming = update.release ?
@@ -1290,13 +1332,12 @@ private:
         Round(inner, card_y + 106, inner_w, 1, 0.5f, Palette::Graphite);
         Type(Upper(Tr(T::NetworkCodeLabel)), TypeRole::Caps, inner, card_y + 128, inner_w, Palette::TextSecondary);
         if (code) {
-            const auto digits = winrt::to_hstring(network.code.substr(0, 4) + " " + network.code.substr(4));
             D2D1_MATRIX_3X2_F transform;
             target->GetTransform(&transform);
             // Hero is 56px at the reference resolution: 84px here, centred in the card.
             const float center = card_x + card_w / 2, top = card_y + 156;
             target->SetTransform(D2D1::Matrix3x2F::Scale(1.5f, 1.5f, D2D1::Point2F(center, top)) * transform);
-            Type(digits.c_str(), TypeRole::Hero, inner, top, inner_w, Palette::Text, 1, TextAlign::Center);
+            Type(PortalDigits(network.code), TypeRole::Hero, inner, top, inner_w, Palette::Text, 1, TextAlign::Center);
             target->SetTransform(transform);
         } else {
             Type(Tr(network.paired ? T::NetworkPaired : network.running ? T::NetworkCodeExpired : T::NetworkStopped),
@@ -1376,8 +1417,7 @@ private:
                 const auto label = ControllerLabel(view.panel.devices, view.options.controller_id);
                 summary = view.options.controller_id.empty() ? I18n::Format(T::AutomaticValue, {label}) : label;
             } else {
-                summary = std::wstring{Tr(status.keys_ready ? T::KeysReady : T::KeysMissing)} + L" · " +
-                          I18n::Format(T::FirmwareFiles, {std::to_wstring(status.firmware_files)});
+                summary = KeysValue(status) + L" · " + FirmwareValue(status);
             }
             const unsigned color = chosen ? Palette::Text : Palette::TextSecondary;
             Icon(icons[i], x + 18, y + (h - 22) / 2, color, 22);
@@ -1392,23 +1432,31 @@ private:
         {
             const float x = SettingsListX, w = SettingsListWidth;
             const float y = SettingsListTop + static_cast<float>(HomeRowCount) * SettingsListStride + 18;
-            Round(x, y, w, 176, 18, Palette::Surface, 0.82f);
-            Outline(x + 0.5f, y + 0.5f, w - 1, 175, 18, 0xffffff, 0.06f);
+            Round(x, y, w, 204, 18, Palette::Surface, 0.82f);
+            Outline(x + 0.5f, y + 0.5f, w - 1, 203, 18, 0xffffff, 0.06f);
             Type(Tr(T::EmulatorData), TypeRole::Caps, x + 20, y + 20, 200, Palette::TextSecondary);
             const auto keys = Tr(status.keys_ready ? T::KeysReady : T::KeysMissing);
             const float chip = MeasureType(keys, TypeRole::Label) + 24;
             Chip(keys, x + w - 20 - chip, y + 15, status.keys_ready ? Palette::Text : Palette::Warning);
             const float tile_w = (w - 40 - 12) / 2;
-            const auto tile = [&](float tx, std::wstring_view label, std::size_t count) {
+            const auto tile = [&](float tx, std::wstring_view label, const std::wstring& value) {
                 Round(tx, y + 54, tile_w, 68, 12, Palette::Canvas, 0.7f);
                 Type(label, TypeRole::Label, tx + 12, y + 64, tile_w - 24, Palette::TextSecondary);
-                Type(std::to_wstring(count), TypeRole::HeadlineSmall, tx + 12, y + 84, tile_w - 24, Palette::Text);
+                Type(value, TypeRole::HeadlineSmall, tx + 12, y + 84, tile_w - 24, Palette::Text);
             };
-            tile(x + 20, Tr(T::SettingsFirmwareFiles), status.firmware_files);
-            tile(x + 20 + tile_w + 12, Tr(T::SettingsGameFolders), status.sources.size());
-            Type(Tr(T::SettingsLibraryGames), TypeRole::Label, x + 20, y + 140, w - 120, Palette::TextSecondary);
-            Type(view.loading ? std::wstring{L"…"} : std::to_wstring(view.scan.entries.size()), TypeRole::Label,
-                 x + w - 120, y + 140, 100, Palette::Text, 1, TextAlign::Trailing);
+            // The version once it has been read; until then (or when unreadable) the file count.
+            const auto& firmware = status.versions.firmware;
+            tile(x + 20, Tr(firmware.empty() ? T::SettingsFirmwareFiles : T::SettingsFirmwareVersion),
+                 firmware.empty() ? std::to_wstring(status.firmware_files) : std::wstring{winrt::to_hstring(firmware)});
+            const int generation = status.keys_ready ? status.versions.key_generation : -1;
+            tile(x + 20 + tile_w + 12, Tr(T::SettingsKeyGeneration), generation < 0 ? std::wstring{L"—"} : std::to_wstring(generation));
+            const auto line = [&](float ly, std::wstring_view label, const std::wstring& value) {
+                Type(label, TypeRole::Label, x + 20, ly, w - 120, Palette::TextSecondary);
+                Type(value, TypeRole::Label, x + w - 120, ly, 100, Palette::Text, 1, TextAlign::Trailing);
+            };
+            line(y + 140, Tr(T::SettingsGameFolders), std::to_wstring(status.sources.size()));
+            line(y + 168, Tr(T::SettingsLibraryGames),
+                 view.loading ? std::wstring{L"…"} : std::to_wstring(view.scan.entries.size()));
         }
         // The category's page.
         static constexpr std::array<T, HomeRowCount> pages{T::SystemTitle, T::ControllersAndKeyboard, T::FileManager};

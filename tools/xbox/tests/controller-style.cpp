@@ -20,6 +20,14 @@ int main() {
     check(AutoControllerStyle({.joycon_left = true}) == S::LeftJoycon);
     check(!IsStyleSupported(S::Auto, {.fullkey = true}));
 
+    // Players 2-8 match player 1 when they can, and are never handheld.
+    check(ExtraPlayerStyle(S::DualJoycon, {.fullkey = true, .joycon_dual = true}) == S::DualJoycon);
+    check(ExtraPlayerStyle(S::Auto, {.fullkey = true, .joycon_dual = true}) == S::Pro);
+    check(ExtraPlayerStyle(S::Handheld, {.fullkey = true, .handheld = true}) == S::Pro);
+    check(ExtraPlayerStyle(S::Handheld, {.handheld = true, .joycon_right = true}) == S::RightJoycon);
+    check(ExtraPlayerStyle(S::Pro, {.joycon_dual = true}) == S::DualJoycon);
+    check(ExtraPlayerStyle(S::Pro, {.handheld = true}) == S::Pro);
+
     // Cycling visits every style and wraps both ways.
     check(StepConsoleControllerStyle(S::Auto, true) == S::RightJoycon);
     check(StepConsoleControllerStyle(S::RightJoycon, false) == S::Auto);

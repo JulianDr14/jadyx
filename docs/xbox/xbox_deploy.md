@@ -75,9 +75,24 @@ base C++ toolset alone links the app fine but does not ship this package.
 2. **Add** → upload `jadyx.appx`, with `jadyx.cer` as the certificate and
    `Microsoft.VCLibs.x64.14.00.appx` as a **dependency package**. The console must trust the signer
    and must have the framework package, or installation or activation fails with a generic error.
+   Once a compatible VCLibs is installed, later installs can leave the dependency out.
 3. Set the app to **Game mode**, not App mode. App mode caps a UWP app at roughly a gigabyte of
    memory; Game mode is what makes the emulated DRAM reservation viable — especially on Series S.
 4. Launch it.
+
+### Installing without the certificate (pending)
+
+One Series X installed a release appx without `Jadyx.cer`. Until more consoles confirm it, the
+public guide and release notes keep the certificate step. To drop it, check on a console that never
+had Jadyx installed, on both Series X and Series S:
+
+- [ ] A fresh install of the release appx with no `.cer` succeeds and launches.
+- [ ] A fresh console without VCLibs reports the missing dependency clearly, and the install
+      succeeds once it is added.
+- [ ] Game mode can be set and the app reaches the library.
+- [ ] Installing the new version over an existing one keeps keys, firmware, saves and games.
+
+Only then update the README, `release.yml` notes and step 2 above together.
 
 ## Audio gate
 

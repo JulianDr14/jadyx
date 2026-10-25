@@ -6,10 +6,14 @@
 // Shared by the files implementing RendererD3D12 (renderer_d3d12.cpp, d3d12_present_*.cpp,
 // d3d12_overlay.cpp, diagnostics/). Not meant for other users.
 
+#include "video_core/renderer_d3d12/d3d12_menu_image.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_staging_buffer_pool.h"
 
 namespace D3D12::PresentDetail {
+
+/// The drawer SetBootScreen left for this renderer, if any; it is consumed.
+[[nodiscard]] BootScreen TakeBootScreen();
 
 inline D3D12_RESOURCE_DESC Texture2DDesc(u32 width, u32 height, DXGI_FORMAT format) {
     return D3D12_RESOURCE_DESC{

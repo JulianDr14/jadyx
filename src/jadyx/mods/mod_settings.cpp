@@ -15,7 +15,8 @@ namespace Jadyx::Mods {
 
 ModPaths DefaultModPaths() {
     return {Common::FS::GetEdenPath(Common::FS::EdenPath::LoadDir),
-            Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) / "mods"};
+            Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) / "mods",
+            Common::FS::GetEdenPath(Common::FS::EdenPath::SaveDir)};
 }
 
 void ApplyModChoices(const ModPaths& paths) {

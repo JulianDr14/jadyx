@@ -27,6 +27,8 @@
 #include "jadyx/input/uwp_controllers.h"
 #include "jadyx/input/controller_catalog.h"
 #include "jadyx/input/menu_input_capture.h"
+#include "jadyx/input/player_slots.h"
+#include "jadyx/settings/uwp_system_settings.h"
 #include "jadyx/game/game_menu.h"
 #include "hid_core/frontend/emulated_controller.h"
 #include "hid_core/hid_core.h"
@@ -163,25 +165,53 @@ PadState ReadGamepad(const ControllerDevice& pad, const ControllerOptions& optio
     if (reading.RightTrigger > TRIGGER_THRESHOLD) {
         state.buttons |= Bit(VirtualButton::TriggerZR);
     }
-    {
-        // Diagnostic: press/release of L, A and ZR, to line up guest GPU activity with them.
-        static std::atomic<u64> last_logged{};
-        const u64 watched = state.buttons & (Bit(VirtualButton::TriggerL) |
-                                             Bit(VirtualButton::ButtonA) |
-                                             Bit(VirtualButton::TriggerZR));
-        const u64 previous = last_logged.exchange(watched);
-        if (previous != watched) {
-            LOG_WARNING(Input, "Pad: L {} A {} ZR {}",
-                        (watched & Bit(VirtualButton::TriggerL)) ? "down" : "up",
-                        (watched & Bit(VirtualButton::ButtonA)) ? "down" : "up",
-                        (watched & Bit(VirtualButton::TriggerZR)) ? "down" : "up");
-        }
-    }
     ApplyDeadzone(reading.LeftThumbstickX, reading.LeftThumbstickY, options.deadzone, state.left_x, state.left_y);
     ApplyDeadzone(reading.RightThumbstickX, reading.RightThumbstickY, options.deadzone, state.right_x,
                   state.right_y);
     return state;
 }
+
+/// Diagnostic: player 1's press/release of L, A and ZR, to line up guest GPU activity with them.
+void LogWatchedButtons(const PadState& state) {
+    static std::atomic<u64> last_logged{};
+    const u64 watched = state.buttons & (Bit(VirtualButton::TriggerL) |
+                                         Bit(VirtualButton::ButtonA) |
+                                         Bit(VirtualButton::TriggerZR));
+    const u64 previous = last_logged.exchange(watched);
+    if (previous != watched) {
+        LOG_WARNING(Input, "Pad: L {} A {} ZR {}",
+                    (watched & Bit(VirtualButton::TriggerL)) ? "down" : "up",
+                    (watched & Bit(VirtualButton::ButtonA)) ? "down" : "up",
+                    (watched & Bit(VirtualButton::TriggerZR)) ? "down" : "up");
+    }
+}
+
+/// Sends what changed from `applied` to `state` to one virtual_gamepad port.
+void ApplyPadState(InputCommon::VirtualGamepad& gamepad, std::size_t port, const PadState& state,
+                   const PadState& applied) {
+    for (u32 button = 0; button < NUM_BUTTONS; ++button) {
+        const u32 bit = 1U << button;
+        if ((state.buttons ^ applied.buttons) & bit) {
+            gamepad.SetButtonState(port, static_cast<int>(button), (state.buttons & bit) != 0);
+        }
+    }
+    if (state.left_x != applied.left_x || state.left_y != applied.left_y) {
+        gamepad.SetStickPosition(port, VirtualStick::Left, state.left_x, state.left_y);
+    }
+    if (state.right_x != applied.right_x || state.right_y != applied.right_y) {
+        gamepad.SetStickPosition(port, VirtualStick::Right, state.right_x, state.right_y);
+    }
+}
+
+/// A pad playing one of players 2-8: it only reaches the game; the keyboard, the boot.cfg script
+/// and the in-game menu stay player 1's.
+struct ExtraPlayer {
+    std::optional<ControllerDevice> pad;
+    ConsoleControllerStyle style{ConsoleControllerStyle::Pro}; // As last connected.
+    PadState applied;
+    u32 held{}; // Buttons down last poll, to reconnect on a press.
+    MenuInputCapture capture;
+};
 
 } // namespace
 
@@ -457,6 +487,23 @@ Settings::ControllerType ToSettingsType(ConsoleControllerStyle style) {
     default:                                  return Settings::ControllerType::ProController;
     }
 }
+
+/// The style of a player controller (handheld is its own controller, see SyncControllerStyle).
+ConsoleControllerStyle FromNpadStyle(Core::HID::NpadStyleIndex style) {
+    switch (style) {
+    case Core::HID::NpadStyleIndex::JoyconDual:  return ConsoleControllerStyle::DualJoycon;
+    case Core::HID::NpadStyleIndex::JoyconLeft:  return ConsoleControllerStyle::LeftJoycon;
+    case Core::HID::NpadStyleIndex::JoyconRight: return ConsoleControllerStyle::RightJoycon;
+    default:                                     return ConsoleControllerStyle::Pro;
+    }
+}
+
+SupportedControllerStyles SupportedStyles(const Core::HID::HIDCore& hid) {
+    const auto tag = hid.GetSupportedStyleTag();
+    return {.fullkey = tag.fullkey != 0, .joycon_dual = tag.joycon_dual != 0,
+            .handheld = tag.handheld != 0, .joycon_left = tag.joycon_left != 0,
+            .joycon_right = tag.joycon_right != 0};
+}
 } // namespace
 
 void ApplyControllerStyleSettings(ConsoleControllerStyle style) {
@@ -464,6 +511,11 @@ void ApplyControllerStyleSettings(ConsoleControllerStyle style) {
     const bool handheld = style == ConsoleControllerStyle::Handheld;
     players[PLAYER].connected = !handheld;
     players[PLAYER].controller_type = ToSettingsType(style);
+    // Players 2-8 start disconnected; the input loop connects one per extra pad it finds.
+    for (std::size_t player = PLAYER + 1; player < MaxPlayers; ++player) {
+        players[player].connected = false;
+        players[player].controller_type = Settings::ControllerType::ProController;
+    }
     players[HANDHELD_PORT].connected = handheld;
     players[HANDHELD_PORT].controller_type = Settings::ControllerType::Handheld;
     if (handheld) {
@@ -481,12 +533,7 @@ ConsoleControllerStyle GamepadInput::SyncControllerStyle() {
     auto* handheld = hid->GetEmulatedController(NpadIdType::Handheld);
     const auto seen = [&] {
         if (handheld->IsConnected()) return ConsoleControllerStyle::Handheld;
-        switch (player->GetNpadStyleIndex()) {
-        case NpadStyleIndex::JoyconDual:  return ConsoleControllerStyle::DualJoycon;
-        case NpadStyleIndex::JoyconLeft:  return ConsoleControllerStyle::LeftJoycon;
-        case NpadStyleIndex::JoyconRight: return ConsoleControllerStyle::RightJoycon;
-        default:                          return ConsoleControllerStyle::Pro;
-        }
+        return FromNpadStyle(player->GetNpadStyleIndex());
     };
     const auto current = seen();
     const auto chosen = Options().style;
@@ -494,11 +541,7 @@ ConsoleControllerStyle GamepadInput::SyncControllerStyle() {
     // Eden, which already reconnects it as it did at boot.
     const bool forced = style_changed.exchange(false);
     if (chosen != ConsoleControllerStyle::Auto && !forced) return current;
-    const auto tag = hid->GetSupportedStyleTag();
-    const SupportedControllerStyles supported{
-        .fullkey = tag.fullkey != 0, .joycon_dual = tag.joycon_dual != 0,
-        .handheld = tag.handheld != 0, .joycon_left = tag.joycon_left != 0,
-        .joycon_right = tag.joycon_right != 0};
+    const auto supported = SupportedStyles(*hid);
     // Keep whatever the guest already accepts, including Eden's own Pro -> dual Joy-Con fallback.
     const bool active = handheld->IsConnected() || player->IsConnected();
     if (!forced && active && IsStyleSupported(current, supported)) return current;
@@ -561,6 +604,8 @@ void GamepadInput::Start(Core::HID::HIDCore& hid_) {
     // A focus lost while the game was still loading does not pause it once it starts.
     game_menu_open_requested.store(false, std::memory_order_relaxed);
     if (!thread.joinable()) {
+        extra_players = LoadSystemSettings().multiple_controllers;
+        LOG_INFO(Input, "UWP input: multiple controllers {}", extra_players ? "on" : "off");
         thread = std::jthread([this](std::stop_token stop) { Run(stop); });
     }
 }
@@ -596,7 +641,53 @@ void GamepadInput::Run(std::stop_token stop) {
     MenuInputCapture menu_capture;
     ControllerCatalog<ControllerDevice> controllers;
     std::vector<bool> announced(script.size());
+    PlayerSlots slots;
+    std::array<ExtraPlayer, MaxPlayers> extras; // Index 0 unused: player 1 is `pad`.
+    // Player 1's pad, kept while a read fails so it is not handed to another player meanwhile.
+    std::wstring player1_id;
+    SupportedControllerStyles supported{};
+    // Eden binds player N to virtual_gamepad port N; connecting it is all the game needs to see
+    // a new controller, as when a pad is paired on a Switch.
+    const auto connect_extra = [&](std::size_t player) {
+        auto& extra = extras[player];
+        const auto wanted = ExtraPlayerStyle(style, supported);
+        // Connect would refuse it; trying again every poll would only fill the log.
+        if (!IsStyleSupported(wanted, supported)) return;
+        auto* controller = hid->GetEmulatedControllerByIndex(player);
+        if (controller->IsConnected() && controller->GetNpadStyleIndex() == ToNpadStyle(wanted)) {
+            extra.style = wanted;
+            return;
+        }
+        controller->Disconnect();
+        controller->SetNpadStyleIndex(ToNpadStyle(wanted));
+        controller->Connect();
+        extra.style = wanted;
+        LOG_INFO(Input, "UWP input: player {} is {} as {}", player + 1,
+                 winrt::to_string(extra.pad->name), ConsoleControllerStyleLogName(wanted));
+    };
+    const auto release_extra = [&](std::size_t player) {
+        auto& extra = extras[player];
+        ApplyPadState(*gamepad, player, {}, extra.applied);
+        hid->GetEmulatedControllerByIndex(player)->Disconnect();
+        LOG_INFO(Input, "UWP input: player {} left", player + 1);
+        extra = {};
+    };
     while (!stop.stop_requested()) {
+        // Games declare the controllers they accept after boot: check again twice a second, and
+        // at once after the menu picked another style.
+        if (style_polls++ % 125 == 0 || style_changed.load()) {
+            style = SyncControllerStyle();
+            supported = SupportedStyles(*hid);
+            // A player keeps the style the game (or its controller applet) connected it as while
+            // the game accepts it; one the game dropped stays out until its pad presses a button.
+            for (std::size_t player = 1; player < MaxPlayers; ++player) {
+                auto* controller = hid->GetEmulatedControllerByIndex(player);
+                if (!extras[player].pad || !controller->IsConnected()) continue;
+                const auto current = FromNpadStyle(controller->GetNpadStyleIndex());
+                if (IsStyleSupported(current, supported)) extras[player].style = current;
+                else connect_extra(player);
+            }
+        }
         // The gamepad list is cheap to query but changes rarely: look again twice a second.
         const ControllerOptions current_options = Options();
         if (controller_api_ready) {
@@ -604,7 +695,14 @@ void GamepadInput::Run(std::stop_token stop) {
                 const bool catalog_changed = controllers.Update(std::chrono::steady_clock::now(),
                                    EnumerateControllers, SameControllerList);
                 const auto& devices = controllers.Devices();
-                const auto selected = controllers.Select(current_options.controller_id);
+                const auto& chosen_id = current_options.controller_id;
+                const auto selected = controllers.Select(chosen_id.empty() ?
+                    PreferredPlayerOne(player1_id, slots, [&](const std::wstring& id) {
+                        return controllers.Select(id) != nullptr;
+                    }) : chosen_id);
+                if (selected) player1_id = selected->id;
+                else if (!chosen_id.empty())
+                    player1_id = chosen_id == KeyboardControllerId ? std::wstring{} : chosen_id;
                 const bool selection_changed = bool(pad) != bool(selected) ||
                     (pad && selected && pad->id != selected->id);
                 if (catalog_changed || selection_changed)
@@ -620,17 +718,32 @@ void GamepadInput::Run(std::stop_token stop) {
                                  devices.size());
                     }
                 }
+                if (catalog_changed || selection_changed) {
+                    // Every other pad plays players 2-8, unless Settings > System turned them off.
+                    std::vector<std::wstring> ids;
+                    for (const auto& device : devices) {
+                        if (extra_players && device && device.id != player1_id) ids.push_back(device.id);
+                    }
+                    const auto changed = slots.Assign(ids);
+                    for (std::size_t player = 1; player < MaxPlayers; ++player) {
+                        const auto& id = slots.Id(player);
+                        const bool moved = std::ranges::find(changed, player) != changed.end();
+                        if (moved && extras[player].pad) release_extra(player);
+                        if (id.empty()) continue;
+                        // Refresh the device too: a catalog change can bring a new WinRT object.
+                        extras[player].pad = *std::ranges::find(devices, id, &ControllerDevice::id);
+                        if (moved) connect_extra(player);
+                    }
+                }
             } catch (...) {
                 pad.reset();
             }
         }
-        // Games declare the controllers they accept after boot: check again twice a second, and
-        // at once after the menu picked another style.
-        if (style_polls++ % 125 == 0 || style_changed.load()) style = SyncControllerStyle();
         PadState state{};
         if (pad) {
             try {
                 state = ReadGamepad(*pad, current_options);
+                LogWatchedButtons(state);
             } catch (...) {
                 controllers.ReadFailed();
                 pad.reset();
@@ -712,23 +825,32 @@ void GamepadInput::Run(std::stop_token stop) {
         if (state != applied) {
             // Player 1 and the handheld controller both mirror the pad; only one is connected.
             for (const std::size_t port : {PLAYER, HANDHELD_PORT}) {
-                for (u32 button = 0; button < NUM_BUTTONS; ++button) {
-                    const u32 bit = 1U << button;
-                    if ((state.buttons ^ applied.buttons) & bit) {
-                        gamepad->SetButtonState(port, static_cast<int>(button),
-                                                (state.buttons & bit) != 0);
-                    }
-                }
-                if (state.left_x != applied.left_x || state.left_y != applied.left_y) {
-                    gamepad->SetStickPosition(port, VirtualStick::Left, state.left_x,
-                                              state.left_y);
-                }
-                if (state.right_x != applied.right_x || state.right_y != applied.right_y) {
-                    gamepad->SetStickPosition(port, VirtualStick::Right, state.right_x,
-                                              state.right_y);
-                }
+                ApplyPadState(*gamepad, port, state, applied);
             }
             applied = state;
+        }
+        for (std::size_t player = 1; player < MaxPlayers; ++player) {
+            auto& extra = extras[player];
+            if (!extra.pad) continue;
+            PadState extra_state{};
+            try {
+                extra_state = ReadGamepad(*extra.pad, current_options);
+            } catch (...) {} // Gone: the next catalog check frees the player.
+            // A pad the game disconnected (the controller applet, single-player modes) joins
+            // again with a press, like a paired pad on a Switch.
+            const bool joined = (extra_state.buttons & ~extra.held) != 0;
+            extra.held = extra_state.buttons;
+            if (joined && !in_menu && !hid->GetEmulatedControllerByIndex(player)->IsConnected())
+                connect_extra(player);
+            extra.capture.Filter(extra_state, in_menu);
+            const StylePad extra_styled = MapPadToStyle({extra_state.buttons, extra_state.left_x,
+                extra_state.left_y, extra_state.right_x, extra_state.right_y}, extra.style);
+            extra_state = {extra_styled.buttons, extra_styled.left_x, extra_styled.left_y,
+                           extra_styled.right_x, extra_styled.right_y};
+            if (extra_state != extra.applied) {
+                ApplyPadState(*gamepad, player, extra_state, extra.applied);
+                extra.applied = extra_state;
+            }
         }
         std::this_thread::sleep_for(POLL_INTERVAL);
     }

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -44,5 +45,19 @@ void HideGameMenu(VideoCore::RendererBase& renderer);
 /// or the menu: RGBA at the back buffer's size. Empty unless the renderer is the D3D12 one and
 /// that frame is a GPU image. GPU thread only, with the guest paused.
 [[nodiscard]] MenuImage CaptureGameFrame(VideoCore::RendererBase& renderer);
+
+/// Called once, right before the next swapchain binds to the window: whatever else presents to
+/// it lets the window go (a window takes one swapchain at a time). Any thread.
+void SetWindowHandoff(std::function<void()> release);
+
+/// Draws the screen the next renderer shows from its creation until EndBootScreen, in place of
+/// its first plain frame, so the window never goes blank while the game loads. Called with the
+/// screen size about 30 times a second from a thread of the renderer's own. Any thread.
+using BootScreen = std::function<MenuImage(std::pair<u32, u32>)>;
+void SetBootScreen(BootScreen draw);
+
+/// Stops the boot screen; its last frame stays until the next present. Before anything else
+/// presents (the GPU thread's first work, the disk shader cache's progress).
+void EndBootScreen(VideoCore::RendererBase& renderer);
 
 } // namespace D3D12
