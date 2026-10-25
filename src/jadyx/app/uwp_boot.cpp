@@ -444,7 +444,9 @@ struct BootConfig {
     bool pulse_store{};
     /// Played from the library: Pulse sessions (pulse_sessions.h), when the player has them on.
     bool pulse_sessions{};
-    bool pulse_resume{true}; ///< Off after a failed resume, for the fresh boot that follows.
+    /// Off after a failed resume, for the fresh boot that follows, or by "pulse_resume=0": the
+    /// game boots fresh and the stored session is left as it was.
+    bool pulse_resume{true};
 };
 
 /// Games never emit the sentinels; without an explicit time they run this long.
@@ -2716,6 +2718,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "min_max_filter=off") {
                             config.skip_min_max_filter = true;
                             WriteDiag("boot.cfg: filtered min/max sampler reduction not emulated");
+                        } else if (line == "pulse_resume=0") {
+                            config.pulse_resume = false;
+                            WriteDiag("boot.cfg: Pulse sessions are not resumed");
                         } else if (line == "min_max_filter=emulate") {
                             config.emulate_min_max_filter = true;
                             WriteDiag("boot.cfg: filtered min/max sampler reduction always emulated");
