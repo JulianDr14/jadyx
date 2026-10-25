@@ -64,6 +64,7 @@ struct ModsSnapshot {
     ModError error{};         ///< The last job's outcome.
     std::size_t installed{};  ///< Mods the last install added.
     bool updated{};           ///< The last install replaced an older version of a mod.
+    bool save{};              ///< The last install put a save in place (and `installed` is 1).
     std::uint64_t free_space{};
     std::uint64_t mods_bytes{}; ///< What the installed mods take.
     bool loaded{};

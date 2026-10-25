@@ -161,6 +161,83 @@ ModError ModLibrary::Install(std::vector<std::unique_ptr<ArchiveSource>>& volume
     return ModError::None;
 }
 
+fs::path ModLibrary::SaveFolder() const {
+    // The save factory's layouts: user/save/0000000000000000/<user>/<title id>, and the newer
+    // user/save/account/<user>/<title id>/0 that it prefers when it exists.
+    std::vector<fs::path> saves;
+    std::error_code ec;
+    const auto title = TitleFolder(title_id);
+    for (fs::directory_iterator it{paths.saves / "user" / "save" / "0000000000000000", ec}, end; !ec && it != end;
+         it.increment(ec))
+        saves.push_back(it->path() / title);
+    ec.clear();
+    for (fs::directory_iterator it{paths.saves / "user" / "save" / "account", ec}, end; !ec && it != end;
+         it.increment(ec))
+        saves.push_back(it->path() / title / "0");
+    // A directory's time moves when files are added, not when they are rewritten: its files' too.
+    fs::path newest;
+    fs::file_time_type newest_time{};
+    for (const auto& save : saves) {
+        std::error_code inner;
+        if (!fs::is_directory(save, inner)) continue;
+        auto written = fs::last_write_time(save, inner);
+        for (fs::directory_iterator it{save, inner}, end; !inner && it != end; it.increment(inner)) {
+            std::error_code time;
+            const auto when = fs::last_write_time(it->path(), time);
+            if (!time) written = std::max(written, when);
+        }
+        if (newest.empty() || written > newest_time) {
+            newest = save;
+            newest_time = written;
+        }
+    }
+    return newest;
+}
+
+ModError ModLibrary::InstallSave(std::vector<std::unique_ptr<ArchiveSource>>& volumes, const ModCandidate& save,
+                                 std::stop_token stop, const ArchiveProgress& progress, std::string& detail) {
+    const auto target = SaveFolder();
+    if (target.empty()) return ModError::NoSave;
+    const auto free = FreeSpace();
+    if (free < SpaceMargin || save.bytes > free - SpaceMargin) return ModError::Space;
+    // The new save is built beside the old one, from a copy of it: files the archive does not
+    // bring stay as they were.
+    const auto staging = NewScratch("staging");
+    std::error_code ec;
+    fs::create_directories(staging.parent_path(), ec);
+    fs::copy(target, staging, fs::copy_options::recursive, ec);
+    if (ec) {
+        detail = "cannot copy the save: " + ec.message();
+        fs::remove_all(staging, ec);
+        return ModError::Write;
+    }
+    const auto limit = FreeSpace() > SpaceMargin ? FreeSpace() - SpaceMargin : 0;
+    const auto error = ExtractArchive(volumes, save.files, staging, limit, stop, progress, &detail);
+    if (error != ArchiveError::None) {
+        fs::remove_all(staging, ec);
+        return FromArchiveError(error);
+    }
+    const auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::system_clock::now().time_since_epoch()).count();
+    const auto backup = paths.data / "save-backups" / TitleFolder(title_id) / std::to_string(stamp);
+    fs::create_directories(backup.parent_path(), ec);
+    fs::rename(target, backup, ec);
+    if (ec) {
+        detail = "cannot back up the save: " + ec.message();
+        fs::remove_all(staging, ec);
+        return ModError::Write;
+    }
+    fs::rename(staging, target, ec);
+    if (ec) {
+        detail = "cannot place the save: " + ec.message();
+        std::error_code undo;
+        fs::rename(backup, target, undo);
+        fs::remove_all(staging, undo);
+        return ModError::Write;
+    }
+    return ModError::None;
+}
+
 ModError ModLibrary::Remove(std::vector<ModRecord>& mods, const std::string& folder) {
     const auto record = std::find_if(mods.begin(), mods.end(),
                                      [&](const ModRecord& mod) { return mod.folder == folder; });

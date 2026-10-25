@@ -139,6 +139,15 @@ int main() {
         Check(plan_with({"Other/thing.bin"}).candidates.empty(), "not this game's");
     }
     {
+        // A save pack: what is under save_data/ is the save's root, named after the archive.
+        const auto plan = Plan({"save_data/system_data.bin", "save_data/mii/mii_0.bin", "readme.txt"}, "Full Save.7z");
+        Check(plan.candidates.size() == 1 && plan.candidates[0].save && plan.need == ModNeed::None, "save");
+        Check(Targets(plan.candidates[0]) == V{"mii/mii_0.bin", "system_data.bin"}, "save root");
+        Check(plan.candidates[0].name == "Full Save", "save name");
+        // Mods with a save/ folder of the game's stay mods.
+        Check(!Plan({"Mod/romfs/save/a.bin"}).candidates[0].save, "romfs save folder");
+    }
+    {
         // Skyline plugins alone: nothing that loads, and the player is told why.
         const auto plugin = Plan({"x/atmosphere/contents/0100AAAABBBB0000/romfs/skyline/plugins/libx.nro",
                                   "x/Script/tool.py", "x/README.txt"});

@@ -90,6 +90,7 @@ struct Placement {
     std::string to;   ///< Its path inside the mod.
     std::uint8_t part{};
     bool other_title{};
+    bool save{};
 };
 
 /// Atmosphere packs a mod as <...>/atmosphere/contents/<id>/... and <...>/atmosphere/exefs_patches/:
@@ -139,6 +140,14 @@ std::optional<Placement> PlaceLoose(const std::vector<std::string_view>& steps) 
     if (IsPatchFile(name)) return Placement{parent, "exefs/" + std::string{name}, Patch};
     if (SameName(Extension(name), ".txt") && IsTitleId(Stem(name)))
         return Placement{parent, "cheats/" + std::string{name}, Cheats};
+    return std::nullopt;
+}
+
+/// Saves packed as save_data/... (or savedata/, save/): what is under that folder is the save's root.
+std::optional<Placement> PlaceSave(const std::vector<std::string_view>& steps) {
+    for (std::size_t i = 0; i + 1 < steps.size(); ++i)
+        if (SameName(steps[i], "save_data") || SameName(steps[i], "savedata") || SameName(steps[i], "save"))
+            return Placement{Join(steps, 0, i + 1), Join(steps, i + 1, steps.size()), 0, false, true};
     return std::nullopt;
 }
 
@@ -292,7 +301,8 @@ std::string CandidateName(std::string_view root, std::string_view archive_name) 
     for (auto it = steps.rbegin(); it != steps.rend(); ++it) {
         if (it->empty() || IsTitleId(*it)) continue;
         if (SameName(*it, "contents") || SameName(*it, "atmosphere") ||
-            SameName(*it, "exefs_patches") || SameName(*it, "switch"))
+            SameName(*it, "exefs_patches") || SameName(*it, "switch") || SameName(*it, "save_data") ||
+            SameName(*it, "savedata") || SameName(*it, "save"))
             continue;
         return std::string{*it};
     }
@@ -330,6 +340,7 @@ LayoutPlan PlanLayout(const std::vector<ArchiveItem>& items, std::string_view ti
             candidate.parts |= placement->part;
             candidate.bytes += item.size;
             candidate.other_title |= placement->other_title;
+            candidate.save |= placement->save;
         }
         LayoutPlan result;
         for (auto& [root, candidate] : by_root) {
@@ -364,6 +375,7 @@ LayoutPlan PlanLayout(const std::vector<ArchiveItem>& items, std::string_view ti
     });
     if (plugins && result.candidates.empty()) return {{}, ModNeed::Skyline};
     if (result.candidates.empty()) result = plan(PlaceLoose);
+    if (result.candidates.empty()) result = plan(PlaceSave);
     if (result.candidates.empty()) {
         std::vector<std::string> paths;
         std::map<std::string, std::uint64_t> sizes;

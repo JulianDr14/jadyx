@@ -98,7 +98,8 @@ void NameAfter(std::vector<ModCandidate>& candidates, const std::string& name) {
 /// A download that can not be installed again is deleted; one that stopped for a reason the
 /// player can fix (space, a cancel) stays, and asking for it again installs it without a download.
 bool KeepDownload(ModError error) {
-    return error == ModError::Space || error == ModError::Cancelled || error == ModError::Write;
+    return error == ModError::Space || error == ModError::Cancelled || error == ModError::Write ||
+           error == ModError::NoSave;
 }
 
 /// Why an archive with no mods in it installs nothing.
@@ -406,10 +407,23 @@ void ModSession::InstallPicked(ModsSnapshot& state, const std::vector<ModCandida
                                std::stop_token stop) {
     state.candidates.clear();
     state.updated = false;
+    state.save = false;
     {
         auto volumes = OpenVolumes(state.archive_volumes);
         if (volumes.empty()) {
             state.error = ModError::Unavailable;
+        } else if (picked.front().save) {
+            // A save goes over the game's own: one of them, even when several were ticked.
+            std::string detail;
+            state.error = library.InstallSave(volumes, picked.front(), stop,
+                                              [this](std::uint64_t d, std::uint64_t t) { done = d; total = t; },
+                                              detail);
+            state.save = state.error == ModError::None;
+            state.installed = state.save ? 1 : 0;
+            if (state.save)
+                LOG_INFO(Frontend, "Mods: installed a save from {}", state.origin.archive);
+            else
+                LOG_WARNING(Frontend, "Mods: save not installed: {}", detail);
         } else {
             auto records = library.Load(Now());
             std::string detail;
@@ -489,7 +503,8 @@ void ModSession::InstallDownload(FinishedDownload download) {
             return;
         }
         NameAfter(plan.candidates, request.name);
-        if (plan.candidates.size() == 1) {
+        // A save replaces the player's: it waits for them to say so, as several mods do.
+        if (plan.candidates.size() == 1 && !plan.candidates.front().save) {
             InstallPicked(state, plan.candidates, stop);
             return;
         }
