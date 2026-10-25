@@ -162,7 +162,9 @@ def verdict(c, frames, avg):
         cause = f"**Locked to {60 / vsyncs:.0f} FPS**: steady frames on {vsyncs} refreshes. If the " \
                 "game targets that rate this is its cap, not a bottleneck; otherwise the shares " \
                 "above say which side is slow."
-    elif shares["gpu"] >= 0.85:
+    # Present and submit gaps keep a GPU-bound frame a little short of 100% busy; a GPU busy for
+    # far longer than the GPU thread records calls is the limit even below that.
+    elif shares["gpu"] >= 0.75 or shares["gpu"] * avg >= 2 * calls_ms:
         cause = "**GPU-bound**: the GPU is busy almost all the time. Cut GPU work (passes and " \
                 "pipelines with most GPU ms below), not draw count alone."
     elif shares["idle"] >= 0.30:
