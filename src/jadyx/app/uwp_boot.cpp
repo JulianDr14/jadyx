@@ -197,6 +197,7 @@ std::atomic<int> g_fullscreen_request{-1};
 void WriteDiag(const std::string& msg); // defined with the UWP entry point below
 void WritePulseLog(const std::string& msg); // jadyx_pulse.txt, defined next to WriteDiag
 std::string MemoryReport();             // likewise
+std::string CpuSetReport();             // likewise
 std::string MemoryOwners();             // likewise
 std::string GuestMemoryReport(Core::System& system); // likewise
 u64 TrimFreeGuestMemory(Core::System& system, u64 budget); // likewise
@@ -509,6 +510,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     WriteDiag("step: timer resolution " +
               std::to_string(std::chrono::duration<double, std::milli>(timer_resolution).count()) +
               " ms");
+    WriteDiag("step: CPU " + CpuSetReport());
     ApplyHeadlessBootSettings(config.null_renderer ? BootSurface{} : surface);
     // After the System settings, which turn the overlay on when the player has it on.
     if (mii_editor) VideoCore::performance_overlay_enabled.store(false, std::memory_order_relaxed);
@@ -1743,6 +1745,48 @@ void SavePrewarmStep(u64 program_id, std::int32_t step) {
     } catch (...) {
         WriteDiag("WARNING: JIT prewarm budget not saved");
     }
+}
+
+/// The system's CPU sets as this process sees them: how many logical processors and cores there
+/// are, which the system allocated to this app, and which are parked.
+std::string CpuSetReport() {
+    ULONG length{};
+    GetSystemCpuSetInformation(nullptr, 0, &length, GetCurrentProcess(), 0);
+    std::vector<std::byte> buffer(length);
+    auto* const first = reinterpret_cast<SYSTEM_CPU_SET_INFORMATION*>(buffer.data());
+    if (length == 0 || !GetSystemCpuSetInformation(first, length, &length, GetCurrentProcess(), 0)) {
+        return "CPU sets unavailable (error " + std::to_string(GetLastError()) + ")";
+    }
+    unsigned sets{}, allocated{}, to_us{}, parked{}, realtime{};
+    std::vector<BYTE> cores;
+    std::string list;
+    for (ULONG offset = 0; offset < length;) {
+        const auto& info = *reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + offset);
+        offset += info.Size;
+        if (info.Type != CpuSetInformation) {
+            continue;
+        }
+        const auto& set = info.CpuSet;
+        ++sets;
+        allocated += set.Allocated;
+        to_us += set.AllocatedToTargetProcess;
+        parked += set.Parked;
+        realtime += set.RealTime;
+        if (std::find(cores.begin(), cores.end(), set.CoreIndex) == cores.end()) {
+            cores.push_back(set.CoreIndex);
+        }
+        list += " " + std::to_string(set.Id) + ":c" + std::to_string(set.CoreIndex) + "/lp" +
+                std::to_string(set.LogicalProcessorIndex) + (set.Parked ? "P" : "") +
+                (set.Allocated ? "A" : "") + (set.AllocatedToTargetProcess ? "T" : "") +
+                (set.RealTime ? "R" : "");
+    }
+    SYSTEM_INFO system{};
+    GetNativeSystemInfo(&system);
+    return std::to_string(system.dwNumberOfProcessors) + " logical processors; " +
+           std::to_string(sets) + " CPU sets on " + std::to_string(cores.size()) + " cores, " +
+           std::to_string(allocated) + " allocated (" + std::to_string(to_us) + " to this app), " +
+           std::to_string(parked) + " parked, " + std::to_string(realtime) +
+           " real-time; id:core/logical [P parked, A allocated, T to us, R real-time]:" + list;
 }
 
 std::string MemoryReport() {
