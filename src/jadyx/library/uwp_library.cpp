@@ -10,6 +10,7 @@
 #include "jadyx/library/uwp_library_canvas.h"
 #include "jadyx/storage/uwp_rom_storage.h"
 #include "jadyx/storage/storage_path.h"
+#include "jadyx/storage/storage_location.h"
 #include "jadyx/storage/uwp_file_manager.h"
 #include "jadyx/storage/nsp_import.h"
 #include "jadyx/storage/portal_fault_log.h"
@@ -684,20 +685,34 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 LOG_WARNING(Frontend, "Library scan: internal folder: {}", result.error);
                 result.error = I18n::ToUtf8(Tr(T::LibraryScanFailed));
             }
-            const std::wstring internal{Tr(T::SourceInternal)};
-            for (auto& entry : result.entries) {
-                const auto path = (root / entry.relative_path).u8string();
-                entry.launch_path.assign(reinterpret_cast<const char*>(path.data()), path.size());
-                entry.source_name = internal;
-                // When the file arrived: copies keep the source's write time but not its creation.
-                WIN32_FILE_ATTRIBUTE_DATA data{};
-                if (GetFileAttributesExW((root / entry.relative_path).c_str(), GetFileExInfoStandard, &data)) {
-                    const auto ticks = (static_cast<std::uint64_t>(data.ftCreationTime.dwHighDateTime) << 32) |
-                                       data.ftCreationTime.dwLowDateTime;
-                    // 100 ns ticks since 1601 to Unix seconds.
-                    if (ticks > 116444736000000000ULL)
-                        entry.added = static_cast<std::int64_t>((ticks - 116444736000000000ULL) / 10000000ULL);
+            const auto adopt = [&](std::span<LibraryEntry> entries, const std::wstring& source) {
+                for (auto& entry : entries) {
+                    const auto path = (root / entry.relative_path).u8string();
+                    entry.launch_path.assign(reinterpret_cast<const char*>(path.data()), path.size());
+                    entry.source_name = source;
+                    // When the file arrived: copies keep the source's write time but not its creation.
+                    WIN32_FILE_ATTRIBUTE_DATA data{};
+                    if (GetFileAttributesExW((root / entry.relative_path).c_str(), GetFileExInfoStandard, &data)) {
+                        const auto ticks = (static_cast<std::uint64_t>(data.ftCreationTime.dwHighDateTime) << 32) |
+                                           data.ftCreationTime.dwLowDateTime;
+                        // 100 ns ticks since 1601 to Unix seconds.
+                        if (ticks > 116444736000000000ULL)
+                            entry.added = static_cast<std::int64_t>((ticks - 116444736000000000ULL) / 10000000ULL);
+                    }
                 }
+            };
+            adopt(result.entries, std::wstring{Tr(T::SourceInternal)});
+            // Games Jadyx Portal sent to Dev Mode's storage. Their relative path is absolute, so
+            // `root / relative_path` names them wherever the library resolves a dump.
+            if (DeveloperStorageAvailable()) {
+                auto developer = ScanGameLibrary(DeveloperGames(), stop);
+                if (!developer.error.empty() && !developer.missing_root)
+                    LOG_WARNING(Frontend, "Library scan: developer folder: {}", developer.error);
+                for (auto& entry : developer.entries) entry.relative_path = DeveloperGames() / entry.relative_path;
+                adopt(developer.entries, std::wstring{Tr(T::SourceDeveloper)});
+                result.limited |= developer.limited;
+                result.entries.insert(result.entries.end(), std::make_move_iterator(developer.entries.begin()),
+                                      std::make_move_iterator(developer.entries.end()));
             }
             try {
                 if (added) RememberGameFolder(added);

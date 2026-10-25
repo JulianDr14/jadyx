@@ -92,6 +92,7 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::PersonalLibrary, L"Sua biblioteca pessoal"},
     {Text::YourGames, L"Seus jogos"},
     {Text::SourceInternal, L"Interno"},
+    {Text::SourceDeveloper, L"Armazenamento dev"},
     {Text::CheckingGame, L"Verificando o acesso ao jogo..."},
     {Text::MissingKeys, L"Suas chaves estão faltando. Abra Configurações > Gerenciador de arquivos > Importar chaves."},
     {Text::ScanLimit, L"Limite de busca atingido: 10000 entradas, 5 níveis."},

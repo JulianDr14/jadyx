@@ -9,6 +9,7 @@
 #include "jadyx/content/content_actions.h"
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/storage/storage_path.h"
+#include "jadyx/storage/storage_location.h"
 
 namespace Jadyx {
 namespace {
@@ -87,11 +88,15 @@ GameFiles FindDumpFiles(std::span<const LibraryEntry> entries, const std::string
 
 std::string RemoveGame(const fs::path& root, const GameFiles& game) {
     if (game.external) return "external";
+    // A dump Jadyx Portal sent to Dev Mode's storage is named by its absolute path.
+    const auto developer = [](const fs::path& file) { return file.is_absolute() && InDeveloperGames(file); };
     if (!game.application || game.files.empty() ||
-        !std::all_of(game.files.begin(), game.files.end(), Inside)) return "game";
+        !std::all_of(game.files.begin(), game.files.end(), [&](const auto& f) { return Inside(f) || developer(f); }))
+        return "game";
     // The game first: if its file is locked nothing else is lost.
     for (const auto& file : game.files)
-        if (!RemoveDump(root, file)) return "game";
+        if (!(developer(file) ? RemoveDump(DeveloperGames(), file.lexically_normal().lexically_relative(DeveloperGames()))
+                              : RemoveDump(root, file))) return "game";
     for (const auto& path : game.launch_paths) PulseSessions::Discard(path);
     // Another copy still plays: its saves and updates/DLC are its own too.
     if (game.kept) return {};

@@ -36,6 +36,7 @@ enum class Text : std::uint16_t {
     PersonalLibrary,
     YourGames,
     SourceInternal,
+    SourceDeveloper,
     CheckingGame,
     MissingKeys,
     ScanLimit,

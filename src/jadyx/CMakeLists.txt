@@ -40,6 +40,7 @@ add_executable(jadyx WIN32
     storage/uwp_rom_storage.h
     storage/uwp_file_manager.cpp
     storage/uwp_file_manager.h
+    storage/storage_location.h
     storage/network_portal.cpp
     storage/network_portal.h
     storage/log_export.cpp
