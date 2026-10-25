@@ -11,6 +11,7 @@ void SystemUploadTests(int port) {
     fs::create_directories(live);
     { std::ofstream out{live/"marker"}; out << "previous"; }
     unsigned publications{}, extractions{};
+    bool reject_keys{};
     struct Prepared final : Jadyx::SystemPrepared {
         fs::path stage,live;
         unsigned& publications;
@@ -35,6 +36,7 @@ void SystemUploadTests(int port) {
     };
     backend.inspect=[&](auto stage,auto,auto,auto)->std::unique_ptr<Jadyx::SystemPrepared>{
         Check(fs::exists(stage/"prod.keys"),"only staged files reach validation");
+        if(reject_keys)throw std::runtime_error("firmware_keys");
         return std::make_unique<Prepared>(std::move(stage),live,publications);
     };
     const std::string payload="synthetic, never real keys";
@@ -72,7 +74,32 @@ void SystemUploadTests(int port) {
         Check(upload.Append(file,0,payload.size(),[&](const auto& sink){return sink(payload.data(),payload.size());}).status==204,"ZIP source streamed");
         Check(upload.FinishFile(file).status==204&&upload.Prepare(job).status==202&&upload.RunPending({}).empty(),"ZIP extraction precedes review");
         Check(extractions==1&&publications==1,"ZIP review does not publish");
+        Check(!upload.BlockForLocalOperation(),"review excludes local operations");
         Check(upload.Discard(job).status==204&&fs::exists(live/"prod.keys")&&publications==1,"cancel leaves installed data intact");
+        reject_keys=true;
+        Check(upload.Create("firmware","zip",1).status==201,"create rejected firmware batch");job=upload.Snapshot().id;
+        Check(upload.BeginFile(job,"firmware.zip",fingerprint,payload.size()).status==201,"rejected ZIP accepted");file=upload.Snapshot().file.id;
+        Check(upload.Append(file,0,payload.size(),[&](const auto& sink){return sink(payload.data(),payload.size());}).status==204,"rejected ZIP streamed");
+        Check(upload.FinishFile(file).status==204&&upload.Prepare(job).status==202&&upload.RunPending({})=="firmware_keys","validation failure reported");
+        Check(upload.BlockForLocalOperation(),"failed batch does not hold local operations");
+        Check(upload.Snapshot().phase=="failed"&&upload.Discard(job).status==204,"failed batch stays discardable");
+        upload.Suspend();
+    }
+    {
+        Jadyx::SystemUpload upload{root,backend};upload.Resume();upload.SetAvailable(true);
+        Check(upload.Create("firmware","zip",1).status==201,"create parked firmware batch");job=upload.Snapshot().id;
+        Check(upload.BeginFile(job,"firmware.zip",fingerprint,payload.size()).status==201,"parked ZIP accepted");file=upload.Snapshot().file.id;
+        Check(upload.Append(file,0,payload.size(),[&](const auto& sink){return sink(payload.data(),payload.size());}).status==204&&upload.FinishFile(file).status==204,"parked ZIP received");
+        upload.Suspend();
+    }
+    {
+        Jadyx::SystemUpload upload{root,backend};upload.Resume();upload.SetAvailable(true);
+        Check(upload.Snapshot().busy&&upload.Snapshot().phase=="receiving","restart recovers the parked batch");
+        Check(upload.BlockForLocalOperation(),"parked batch does not hold local operations");
+        Check(upload.Prepare(job).status==409,"a local operation holds preparation back");
+        upload.SetAvailable(true);
+        Check(upload.Discard(job).status==204,"parked batch discarded");
+        reject_keys=false;
     }
     {
         Jadyx::NetworkPortal portal{root/"games",backend};
@@ -95,6 +122,6 @@ void SystemUploadTests(int port) {
         Check(portal.Status().system.phase=="complete"&&publications==2,"system API reports committed completion");portal.Stop();
     }
     fs::remove_all(root);
-    std::puts("PASS: system batches and authenticated HTTP, streamed resume/restart, ZIP dispatch, explicit warnings, NSP exclusion, publication and discard (synthetic backend)");
+    std::puts("PASS: system batches and authenticated HTTP, streamed resume/restart, ZIP dispatch, explicit warnings, NSP exclusion, parked and failed batches not blocking play, publication and discard (synthetic backend)");
 }
 }

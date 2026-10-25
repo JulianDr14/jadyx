@@ -20,6 +20,7 @@ public:
     ~SystemUpload();
     SystemUploadStatus Snapshot() const;
     void SetAvailable(bool enabled);
+    bool BlockForLocalOperation();   ///< Excludes the batch unless bytes or a phase are in flight.
     UploadResult Create(std::string kind,std::string format,unsigned count);
     UploadResult BeginFile(const std::string& id,std::string name,std::string fingerprint,std::uint64_t length);
     UploadResult Append(const std::string& id,std::uint64_t offset,std::uint64_t length,const UploadReader& reader);
