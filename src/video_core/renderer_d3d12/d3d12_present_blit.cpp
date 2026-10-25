@@ -7,6 +7,8 @@
 #include <span>
 #include <utility>
 
+#include <boost/container/small_vector.hpp>
+
 #include "common/logging.h"
 #include "common/settings.h"
 #include "core/frontend/emu_window.h"
@@ -85,7 +87,6 @@ bool RendererD3D12::CreateBlitPipeline() {
         pso.pRootSignature = blit_root_signature.Get();
         pso.VS = {vs.data(), vs.size()};
         pso.PS = {ps.data(), ps.size()};
-        pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
         pso.SampleMask = UINT_MAX;
         pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
         pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
@@ -94,8 +95,32 @@ bool RendererD3D12::CreateBlitPipeline() {
         pso.NumRenderTargets = 1;
         pso.RTVFormats[0] = Swapchain::FORMAT;
         pso.SampleDesc.Count = 1;
-        ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&blit_pipeline)),
-                      "CreateGraphicsPipelineState");
+        // One pipeline per blend mode, indexed by Tegra::BlendMode: nvdisp hands over every guest
+        // layer of the frame (the game, an applet over it), each with the blending the guest set.
+        // As the Vulkan and OpenGL presenters do, premultiplied is one / one-minus-source-alpha and
+        // coverage is source-alpha / one-minus-source-alpha, both keeping the source alpha in the
+        // framebuffer alpha, exactly as glBlendFuncSeparate(..., GL_ONE, GL_ZERO) does.
+        constexpr std::array<Tegra::BlendMode, 3> BLEND_MODES{
+            Tegra::BlendMode::Opaque, Tegra::BlendMode::Premultiplied, Tegra::BlendMode::Coverage};
+        static_assert(BLEND_MODES.size() == 3);
+        for (const Tegra::BlendMode blending : BLEND_MODES) {
+            auto& target = pso.BlendState.RenderTarget[0];
+            target = D3D12_RENDER_TARGET_BLEND_DESC{};
+            target.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+            if (blending != Tegra::BlendMode::Opaque) {
+                target.BlendEnable = TRUE;
+                target.SrcBlend = blending == Tegra::BlendMode::Premultiplied ? D3D12_BLEND_ONE
+                                                                            : D3D12_BLEND_SRC_ALPHA;
+                target.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+                target.BlendOp = D3D12_BLEND_OP_ADD;
+                target.SrcBlendAlpha = D3D12_BLEND_ONE;
+                target.DestBlendAlpha = D3D12_BLEND_ZERO;
+                target.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+            }
+            auto& pipeline = blit_pipelines[static_cast<size_t>(blending)];
+            ThrowIfFailed(dev->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&pipeline)),
+                          "CreateGraphicsPipelineState");
+        }
 
         const D3D12_SAMPLER_DESC sampler{
             .Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR,
@@ -122,50 +147,72 @@ bool RendererD3D12::CreateBlitPipeline() {
     }
 }
 
-bool RendererD3D12::CompositeAccelerated(const Tegra::FramebufferConfig& framebuffer,
-                                         PresentFrame& frame) {
-    const DAddr framebuffer_addr = framebuffer.address + framebuffer.offset;
-    const auto texture = rasterizer.AccelerateDisplay(framebuffer, framebuffer_addr);
-    if (!texture || texture->srv.ptr == 0 || texture->width == 0 || texture->height == 0) {
-        if (accelerated_frames != 0 && !logged_fallback) {
-            // Alternating GPU and CPU frames flicker: the CPU path shows guest memory, which
-            // GPU rendering never writes. Seen when render target changes went unnoticed.
-            LOG_WARNING(Render, "D3D12: framebuffer {:#x} is not a GPU image after {} GPU frames; "
-                        "presenting it from guest memory", framebuffer_addr, accelerated_frames);
-            logged_fallback = true;
+bool RendererD3D12::CompositeLayers(std::span<const Tegra::FramebufferConfig> framebuffers,
+                                    PresentFrame& frame) {
+    // nvdisp sorts the display stack back to front: the game's layer first, an applet over it
+    // last. Every layer is scaled into the same screen rectangle, only its crop and blend mode
+    // differ, as the Vulkan and OpenGL presenters do.
+    boost::container::small_vector<CompositeLayer, 4> layers;
+    layers.reserve(framebuffers.size());
+    for (const Tegra::FramebufferConfig& framebuffer : framebuffers) {
+        const DAddr framebuffer_addr = framebuffer.address + framebuffer.offset;
+        const auto texture = rasterizer.AccelerateDisplay(framebuffer, framebuffer_addr);
+        if (!texture || texture->srv.ptr == 0 || texture->width == 0 || texture->height == 0) {
+            if (accelerated_frames != 0 && !logged_fallback) {
+                // Alternating GPU and CPU frames flicker: the CPU path shows guest memory, which
+                // GPU rendering never writes. Seen when render target changes went unnoticed.
+                LOG_WARNING(Render, "D3D12: framebuffer {:#x} is not a GPU image after {} GPU frames; "
+                            "presenting it from guest memory", framebuffer_addr, accelerated_frames);
+                logged_fallback = true;
+            }
+            return false;
         }
-        return false;
+        layers.push_back(CompositeLayer{
+            .srv = texture->srv,
+            .width = texture->width,
+            .height = texture->height,
+            // Same crop and flips as the Vulkan presenter (Tegra::NormalizeCrop).
+            .crop = Tegra::NormalizeCrop(framebuffer, texture->width, texture->height),
+            .blending = framebuffer.blending,
+        });
     }
-    // Same crop and flips as the Vulkan presenter (Tegra::NormalizeCrop).
-    RecordComposite(frame, {.srv = texture->srv,
-                            .width = texture->width,
-                            .height = texture->height,
-                            .crop = Tegra::NormalizeCrop(framebuffer, texture->width,
-                                                         texture->height)});
-    if (!logged_accelerated) {
+    if (layers.size() != logged_layer_count) {
+        LOG_INFO(Render, "D3D12: compositing {} guest {} back to front{}", layers.size(),
+                 layers.size() == 1 ? "layer" : "layers",
+                 layers.size() == 1 ? "" : " (the applet over the game)");
+        logged_layer_count = layers.size();
+    }
+    if (layers.size() == 1 && !logged_accelerated) {
         LOG_INFO(Render, "D3D12: presenting the GPU-rendered guest image ({}x{} image, {}x{} "
-                 "framebuffer)", texture->width, texture->height, framebuffer.width,
-                 framebuffer.height);
+                 "framebuffer)", layers.front().width, layers.front().height, framebuffers.front().width,
+                 framebuffers.front().height);
         logged_accelerated = true;
     }
+    RecordComposite(frame, layers);
     return true;
 }
 
-void RendererD3D12::RecordComposite(PresentFrame& frame, const CompositeSource& source) {
+void RendererD3D12::RecordComposite(PresentFrame& frame, std::span<const CompositeLayer> layers) {
     // Everything that may flush the list comes first: the FSR target (its creation defers the old
-    // one to the current tick), then every descriptor of the frame. The source and, with FSR, the
+    // one to the current tick), then every descriptor of the frame. The layers and, with FSR, the
     // EASU target go into one range, so no second allocation can retire the first.
-    std::optional<Fsr::Plan> fsr = PlanFsr(source);
+    const bool single_layer = layers.size() == 1;
+    std::optional<Fsr::Plan> fsr = single_layer ? PlanFsr(layers.front(), true) : std::nullopt;
     if (fsr && !present_fsr.PrepareTarget(*fsr)) {
         fsr.reset();
     }
     constexpr u64 LINEAR_SAMPLER_KEY = 0;
     const D3D12_GPU_DESCRIPTOR_HANDLE sampler_table =
         sampler_heap.GetTable({&LINEAR_SAMPLER_KEY, 1}, {&linear_sampler, 1});
-    const std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 2> srvs{source.srv, present_fsr.TargetSrv()};
-    const u32 srv_count = fsr ? 2 : 1;
-    const D3D12_GPU_DESCRIPTOR_HANDLE source_table =
-        descriptor_ring.Upload(std::span{srvs}.first(srv_count));
+    std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> srvs;
+    srvs.reserve(layers.size() + (fsr ? 1 : 0));
+    for (const CompositeLayer& layer : layers) {
+        srvs.push_back(layer.srv);
+    }
+    if (fsr) {
+        srvs.push_back(present_fsr.TargetSrv());
+    }
+    const D3D12_GPU_DESCRIPTOR_HANDLE source_table = descriptor_ring.Upload(srvs);
 
     // Descriptor heaps are command-list state; nothing below can reset the list.
     CommandStream* const cmd = scheduler.CommandList();
@@ -179,7 +226,11 @@ void RendererD3D12::RecordComposite(PresentFrame& frame, const CompositeSource& 
         present_fsr.RecordRcas(cmd, *fsr, target_table);
     } else {
         BeginComposite(cmd, frame);
-        RecordBlit(cmd, source, source_table, sampler_table);
+        for (size_t i = 0; i < layers.size(); ++i) {
+            const D3D12_GPU_DESCRIPTOR_HANDLE layer_table{source_table.ptr +
+                                                          i * descriptor_ring.Stride()};
+            RecordBlit(cmd, layers[i], layer_table, sampler_table);
+        }
     }
     if (bare_composite) {
         return;
@@ -190,24 +241,29 @@ void RendererD3D12::RecordComposite(PresentFrame& frame, const CompositeSource& 
     DrawGameMenu(cmd, frame);
 }
 
-std::optional<Fsr::Plan> RendererD3D12::PlanFsr(const CompositeSource& source) {
+std::optional<Fsr::Plan> RendererD3D12::PlanFsr(const CompositeLayer& layer, bool single_layer) {
     // Read on the GPU thread, which is also where the frontend changes it (RunOnGpuThread).
     // A failure to build FSR is logged once by PresentFsr, and FSR then counts as off.
+    // An applet over the game leaves FSR off without logging: the filter is still selected and the
+    // next frame with a single layer logs its state again when it changed.
+    if (!single_layer) {
+        return std::nullopt;
+    }
     const bool enabled =
         Settings::values.scaling_filter.GetValue() == Settings::ScalingFilter::Fsr &&
         present_fsr.EnsurePipelines();
     const auto& screen = render_window.GetFramebufferLayout().screen;
     std::optional<Fsr::Plan> plan;
     if (enabled) {
-        plan = Fsr::MakePlan(source.width, source.height, source.crop, screen.GetWidth(),
+        plan = Fsr::MakePlan(layer.width, layer.height, layer.crop, screen.GetWidth(),
                              screen.GetHeight(), Settings::values.fsr_sharpening_slider.GetValue());
     }
 
     // One line whenever what the screen shows changes, not every frame.
     const FsrLogState state{
         .active = plan.has_value(),
-        .source_width = source.width,
-        .source_height = source.height,
+        .source_width = layer.width,
+        .source_height = layer.height,
         .output_width = screen.GetWidth(),
         .output_height = screen.GetHeight(),
         .sharpness = plan ? plan->sharpness : 0.0f,
@@ -215,13 +271,13 @@ std::optional<Fsr::Plan> RendererD3D12::PlanFsr(const CompositeSource& source) {
     if (enabled && fsr_logged != state) {
         if (plan) {
             LOG_INFO(Render, "D3D12: FSR 1 {}x{} -> {}x{} ({:.2f}x{:.2f}), RCAS {:.2f} stops{}",
-                     source.width, source.height, plan->output_width, plan->output_height,
+                     layer.width, layer.height, plan->output_width, plan->output_height,
                      plan->scale_x, plan->scale_y, plan->sharpness,
                      plan->WithinTunedRange() ? "" : "; beyond EASU's 2x, softer");
         } else {
             LOG_INFO(Render, "D3D12: FSR 1 selected, bilinear blit: the {}x{} screen does not "
                      "enlarge the {}x{} image", screen.GetWidth(), screen.GetHeight(),
-                     source.width, source.height);
+                     layer.width, layer.height);
         }
         fsr_logged = state;
     } else if (!enabled && fsr_logged) {
@@ -257,16 +313,17 @@ void RendererD3D12::BeginComposite(CommandStream* cmd, PresentFrame& frame) {
     cmd->RSSetScissorRects(1, &scissor);
 }
 
-void RendererD3D12::RecordBlit(CommandStream* cmd, const CompositeSource& source,
+void RendererD3D12::RecordBlit(CommandStream* cmd, const CompositeLayer& layer,
                                D3D12_GPU_DESCRIPTOR_HANDLE source_table,
                                D3D12_GPU_DESCRIPTOR_HANDLE sampler_table) {
     // The quad runs from the bottom of the screen (y = -1 in D3D12 clip space: tex_offset) to the
     // top (tex_offset + tex_scale), so the top edge samples crop.top.
-    const Common::Rectangle<f32>& crop = source.crop;
+    const Common::Rectangle<f32>& crop = layer.crop;
     const std::array<float, 4> tex_scale_offset{crop.right - crop.left, crop.top - crop.bottom,
                                                 crop.left, crop.bottom};
     cmd->SetGraphicsRootSignature(blit_root_signature.Get());
-    scheduler.SetPipelineState(blit_pipeline.Get());
+    // blit_pipelines is the per-blend-mode present pipeline, indexed by Tegra::BlendMode.
+    scheduler.SetPipelineState(blit_pipelines[static_cast<size_t>(layer.blending)].Get());
     cmd->SetGraphicsRoot32BitConstants(0, 4, tex_scale_offset.data(), 0);
     const u32 runtime_data[12]{};
     cmd->SetGraphicsRoot32BitConstants(1, 12, runtime_data, 0);
