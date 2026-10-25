@@ -16,6 +16,7 @@ struct GameFolderSource { std::string token; std::wstring name; };
 struct FileSetupStatus {
     bool keys_ready{};
     unsigned firmware_files{};
+    InstalledSystemVersions versions;
     std::vector<GameFolderSource> sources;
 };
 struct ConfigurationPanel {

@@ -6,6 +6,7 @@
 #include <cctype>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -30,6 +31,7 @@
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/loader/loader.h"
 #include "jadyx/i18n/localization.h"
+#include "jadyx/storage/atomic_file.h"
 
 namespace Jadyx {
 namespace {
@@ -269,6 +271,7 @@ void PreparedSystemImport::Commit(std::stop_token stop) {
         folder.RenameAsync(destination.filename().wstring(),winrt::Windows::Storage::NameCollisionOption::FailIfExists).get();
         published=true;
         if(kind==FileImport::Keys)Core::Crypto::KeyManager::Instance().ReloadKeys();
+        InvalidateSystemVersions();
     }catch(...){
         if(published)fs::rename(destination,stage);
         if(exists)fs::rename(previous,destination);
@@ -352,4 +355,65 @@ std::wstring DescribeSystemReview(const SystemReview& review) {
     return result;
 }
 SystemImportBackend DefaultSystemImportBackend(){return {SystemDestination,CreateSystemStage,RemoveSystemStage,ExtractSystemZip,InspectSystemStage};}
+namespace {
+fs::path VersionsCache() { return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir)/"system_versions.txt"; }
+// What the cached versions were read from: the firmware's files and the keys that opened them.
+std::string VersionsSignature() {
+    std::uintmax_t count{},size{};std::error_code error;
+    for(fs::directory_iterator it{SystemDestination(FileImport::Firmware),error},end;!error&&it!=end;it.increment(error))
+        if(it->is_regular_file(error)&&Lower(Utf8(it->path().extension()))==".nca"){++count;size+=it->file_size(error);}
+    const auto keys=SystemDestination(FileImport::Keys)/"prod.keys";
+    const auto keys_size=fs::file_size(keys,error);
+    const auto keys_time=error?0:fs::last_write_time(keys,error).time_since_epoch().count();
+    return std::to_string(count)+" "+std::to_string(size)+" "+std::to_string(error?0:keys_size)+" "+std::to_string(keys_time);
+}
+// Settings read the versions every time they open; they change only on an import, so they are
+// kept in memory and in a small file, and dropped by InvalidateSystemVersions().
+// Settings show "22.5.0"; the revision suffix only matters to the import review.
+std::string ShortVersion(std::string display) { if(const auto at=display.find(" (");at!=std::string::npos)display.resize(at);return display; }
+struct VersionsMemo { std::string signature; InstalledSystemVersions versions; };
+std::mutex versions_mutex;
+std::optional<VersionsMemo> versions_memo;
+std::optional<VersionsMemo> LoadVersions() {
+    const auto bytes=ReadWholeFile(VersionsCache());
+    if(!bytes)return std::nullopt;
+    std::vector<std::string> lines;std::size_t at=0;
+    for(std::size_t end;(end=bytes->find('\n',at))!=std::string::npos;at=end+1)lines.push_back(bytes->substr(at,end-at));
+    if(lines.size()!=3)return std::nullopt;
+    VersionsMemo memo{lines[0],{ShortVersion(lines[1]),-1}};
+    try{memo.versions.key_generation=std::stoi(lines[2]);}catch(...){return std::nullopt;}
+    return memo;
+}
+}
+InstalledSystemVersions ReadInstalledSystemVersions() {
+    const std::scoped_lock lock{versions_mutex};
+    if(!versions_memo)versions_memo=LoadVersions();
+    return versions_memo?versions_memo->versions:InstalledSystemVersions{};
+}
+void InvalidateSystemVersions() noexcept {
+    const std::scoped_lock lock{versions_mutex};
+    versions_memo.reset();
+    std::error_code error;fs::remove(VersionsCache(),error);
+}
+void RefreshSystemVersions(std::stop_token stop) noexcept {
+    try{
+        const auto signature=VersionsSignature();
+        {
+            const std::scoped_lock lock{versions_mutex};
+            if(!versions_memo)versions_memo=LoadVersions();
+            if(versions_memo&&versions_memo->signature==signature)return;
+        }
+        VersionsMemo memo{signature,{}};
+        try{const auto generations=Generations(ReadKeys(SystemDestination(FileImport::Keys)/"prod.keys"));
+            if(!generations.empty())memo.versions.key_generation=*generations.rbegin();}catch(...){}
+        // An unreadable version is cached too, so a scan does not reopen every NCA again; new keys
+        // or new firmware change the signature and read it once more.
+        try{memo.versions.firmware=ShortVersion(InspectFirmware(SystemDestination(FileImport::Firmware),false,{},stop).display);}
+        catch(...){if(stop.stop_requested())return;}
+        WriteFileAtomically(VersionsCache(),memo.signature+"\n"+memo.versions.firmware+"\n"+
+            std::to_string(memo.versions.key_generation)+"\n");
+        const std::scoped_lock lock{versions_mutex};
+        versions_memo=std::move(memo);
+    }catch(...){}
+}
 }

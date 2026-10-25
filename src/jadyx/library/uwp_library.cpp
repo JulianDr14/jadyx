@@ -675,6 +675,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             seed();
             // Recover interrupted publication before a metadata worker constructs NCA readers.
             ReadFileSetupStatus();
+            RefreshSystemVersions(stop);
             std::error_code ec;
             std::filesystem::create_directories(root, ec);
             auto result = ScanGameLibrary(root, stop);

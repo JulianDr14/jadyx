@@ -98,6 +98,7 @@ FileSetupStatus ReadFileSetupStatus() {
     for (std::filesystem::directory_iterator it{FirmwarePath(), error}, end; !error && it != end; it.increment(error)) {
         if (it->is_regular_file(error) && it->path().extension() == ".nca") ++result.firmware_files;
     }
+    result.versions = ReadInstalledSystemVersions();
     for (const auto& entry : StorageApplicationPermissions::FutureAccessList().Entries()) {
         const auto token = winrt::to_string(entry.Token);
         if (!Jadyx::IsGameToken(token)) continue;
