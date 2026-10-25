@@ -585,6 +585,9 @@ void SetForceMinMaxFilter(bool enabled);
 /// Diagnostic ("min_max_filter=off"): filtered MIN/MAX samplers the device cannot reduce filter
 /// normally and no shader emulates the reduction. Wrong results, to time the emulation.
 void SetSkipMinMaxFilter(bool enabled);
+/// Diagnostic ("min_max_filter=emulate"): the shader emulates filtered MIN/MAX reductions even
+/// when the device has them, so a desktop GPU times the path consoles without them take.
+void SetEmulateMinMaxFilter(bool enabled);
 
 class Sampler {
 public:
