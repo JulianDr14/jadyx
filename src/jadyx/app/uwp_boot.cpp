@@ -1658,6 +1658,27 @@ std::string MemoryReport() {
     }
 }
 
+// Free space where Jadyx Portal can put games: LocalState and Dev Mode's storage on D:.
+std::string StorageReport() {
+    std::string out = "storage:";
+    const auto describe = [&out](const char* name, const std::wstring& path) {
+        ULARGE_INTEGER available{}, total{};
+        if (!GetDiskFreeSpaceExW(path.c_str(), &available, &total, nullptr)) {
+            out += std::string(" ") + name + " unavailable (" + std::to_string(GetLastError()) + ");";
+            return;
+        }
+        out += std::string(" ") + name + " " + std::to_string(available.QuadPart >> 20) + " of " +
+               std::to_string(total.QuadPart >> 20) + " MiB free;";
+    };
+    try {
+        describe("local", std::wstring{winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()});
+    } catch (...) {
+        out += " local unavailable;";
+    }
+    describe("developer", L"D:\\DevelopmentFiles\\");
+    return out;
+}
+
 // The app's commit split by owner: the emulated DRAM, the JIT's code, the renderer's accounts
 // (Common::MemoryLedger) and the rest, which no account covers: driver objects such as compiled
 // PSOs, the smaller GPU resources, the heaps and the executable.
@@ -2406,6 +2427,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
     void Run() {
         WriteDiag("BootView::Run entered"); // also resolves + caches the diag path
         WriteDiag(MemoryReport());
+        WriteDiag(StorageReport());
         InstallCrashHandlers();
 
         // A UWP app MUST activate its CoreWindow and pump the dispatcher, or the OS terminates it a
