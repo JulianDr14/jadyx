@@ -1629,8 +1629,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         // store, the player stays where they browse.
                         if (!online) Mods::ShowInstalled(mods_page);
                         if (result.error == Mods::ModError::None) {
-                            options_notice = result.updated ? std::wstring{Tr(T::ModsUpdated)}
-                                                            : I18n::Plural(T::ModsInstalledOne, T::ModsInstalledOther,
+                            options_notice = result.save      ? std::wstring{Tr(T::ModsSaveInstalled)}
+                                             : result.updated ? std::wstring{Tr(T::ModsUpdated)}
+                                                              : I18n::Plural(T::ModsInstalledOne, T::ModsInstalledOther,
                                                                            result.installed);
                             options_notice_until = now + std::chrono::seconds{4};
                         }

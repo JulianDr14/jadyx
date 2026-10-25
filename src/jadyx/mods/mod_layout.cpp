@@ -90,6 +90,7 @@ struct Placement {
     std::string to;   ///< Its path inside the mod.
     std::uint8_t part{};
     bool other_title{};
+    bool save{};
 };
 
 /// Atmosphere packs a mod as <...>/atmosphere/contents/<id>/... and <...>/atmosphere/exefs_patches/:
@@ -140,6 +141,32 @@ std::optional<Placement> PlaceLoose(const std::vector<std::string_view>& steps) 
     if (SameName(Extension(name), ".txt") && IsTitleId(Stem(name)))
         return Placement{parent, "cheats/" + std::string{name}, Cheats};
     return std::nullopt;
+}
+
+/// Saves packed as save_data/... (or savedata/, save/): what is under that folder is the save's root.
+std::optional<Placement> PlaceSave(const std::vector<std::string_view>& steps) {
+    for (std::size_t i = 0; i + 1 < steps.size(); ++i)
+        if (SameName(steps[i], "save_data") || SameName(steps[i], "savedata") || SameName(steps[i], "save"))
+            return Placement{Join(steps, 0, i + 1), Join(steps, i + 1, steps.size()), 0, false, true};
+    return std::nullopt;
+}
+
+/// A Skyline plugin: <...>/skyline/plugins/<name>.nro.
+bool IsSkylinePlugin(const std::vector<std::string_view>& steps) {
+    return steps.size() >= 3 && SameName(steps[steps.size() - 3], "skyline") &&
+           SameName(steps[steps.size() - 2], "plugins") && SameName(Extension(steps.back()), ".nro");
+}
+
+/// Made for ARCropolis: its mods folder (ultimate/mods/<mod>/...), its own config, or the formats
+/// packed in data.arc, which no RomFS has loose and so only ARCropolis can put in the game.
+bool ForArcropolis(const std::vector<std::string_view>& steps) {
+    for (std::size_t i = 0; i + 1 < steps.size(); ++i)
+        if (SameName(steps[i], "arcropolis") || (SameName(steps[i], "ultimate") && SameName(steps[i + 1], "mods")))
+            return true;
+    static constexpr std::array packed{".nutexb", ".numdlb", ".numshb", ".numatb", ".nuanmb", ".nusktb",
+                                       ".nuhlpb", ".numshexb", ".nus3audio", ".nus3bank", ".prcxml", ".prcx"};
+    const auto extension = Extension(steps.back());
+    return std::any_of(packed.begin(), packed.end(), [&](std::string_view p) { return SameName(extension, p); });
 }
 
 /// Files authors put beside a mod for people, not for the game: readmes, previews, links.
@@ -274,7 +301,8 @@ std::string CandidateName(std::string_view root, std::string_view archive_name) 
     for (auto it = steps.rbegin(); it != steps.rend(); ++it) {
         if (it->empty() || IsTitleId(*it)) continue;
         if (SameName(*it, "contents") || SameName(*it, "atmosphere") ||
-            SameName(*it, "exefs_patches") || SameName(*it, "switch"))
+            SameName(*it, "exefs_patches") || SameName(*it, "switch") || SameName(*it, "save_data") ||
+            SameName(*it, "savedata") || SameName(*it, "save"))
             continue;
         return std::string{*it};
     }
@@ -312,6 +340,7 @@ LayoutPlan PlanLayout(const std::vector<ArchiveItem>& items, std::string_view ti
             candidate.parts |= placement->part;
             candidate.bytes += item.size;
             candidate.other_title |= placement->other_title;
+            candidate.save |= placement->save;
         }
         LayoutPlan result;
         for (auto& [root, candidate] : by_root) {
@@ -322,8 +351,31 @@ LayoutPlan PlanLayout(const std::vector<ArchiveItem>& items, std::string_view ti
         }
         return result;
     };
+    if (std::any_of(items.begin(), items.end(), [](const ArchiveItem& item) {
+            return SafeRelativePath(item.path) && ForArcropolis(Steps(item.path));
+        }))
+        return {{}, ModNeed::Arcropolis};
     auto result = plan([&](const std::vector<std::string_view>& steps) { return Place(steps, title_id); });
+    // Skyline plugins never load here: a mod is what it brings besides them, if anything.
+    bool plugins = false;
+    std::erase_if(result.candidates, [&](ModCandidate& candidate) {
+        const auto before = candidate.files.size();
+        std::erase_if(candidate.files, [](const LayoutFile& file) { return IsSkylinePlugin(Steps(file.from)); });
+        if (candidate.files.size() == before) return false;
+        plugins = true;
+        candidate.bytes = 0;
+        candidate.parts = 0;
+        for (const auto& file : candidate.files) {
+            candidate.bytes += file.size;
+            const auto to = Steps(file.to);
+            if (const auto kind = FindKind(to.front()))
+                candidate.parts |= kind->part == ExeFs && IsPatchFile(to.back()) ? Patch : kind->part;
+        }
+        return candidate.files.empty();
+    });
+    if (plugins && result.candidates.empty()) return {{}, ModNeed::Skyline};
     if (result.candidates.empty()) result = plan(PlaceLoose);
+    if (result.candidates.empty()) result = plan(PlaceSave);
     if (result.candidates.empty()) {
         std::vector<std::string> paths;
         std::map<std::string, std::uint64_t> sizes;

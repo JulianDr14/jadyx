@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <chrono>
+#include <iterator>
 #include "jadyx/mods/mod_installer.h"
 #include "stored_zip.h"
 
@@ -27,7 +29,7 @@ void Check(bool ok, const char* what) {
 int main() {
     const auto root = fs::temp_directory_path() / "eden-mod-installer";
     fs::remove_all(root);
-    const ModPaths paths{root / "load", root / "mods"};
+    const ModPaths paths{root / "load", root / "mods", root / "nand"};
     const auto title = paths.load / "0100AAAABBBB0000";
     Check(TitleFolder(Title) == "0100AAAABBBB0000", "title folder");
 
@@ -84,6 +86,31 @@ int main() {
     // A folder deleted by hand drops from the list on the next load.
     fs::remove_all(title / "Manual (2)");
     Check(library.Load(4).size() == 1, "vanished folder");
+
+    // A save goes over the save of the profile that played last, keeping the files it does not
+    // bring; the save as it was is backed up first. A game with no save has nowhere to put one.
+    auto save_volumes = TestArchives::Volumes(TestArchives::StoredZip({{"save_data/system_data.bin", "new"}}));
+    const auto save_plan = PlanLayout(ListArchive(save_volumes).items, TitleFolder(Title), "save.zip");
+    Check(save_plan.candidates.size() == 1 && save_plan.candidates[0].save, "save plan");
+    Check(library.InstallSave(save_volumes, save_plan.candidates[0], {}, {}, detail) == ModError::NoSave, "no save");
+    const auto users = paths.saves / "user" / "save" / "0000000000000000";
+    const auto old_save = users / "00000000000000000000000000000001" / "0100AAAABBBB0000";
+    const auto played = users / "00000000000000000000000000000002" / "0100AAAABBBB0000";
+    fs::create_directories(old_save);
+    fs::create_directories(played);
+    std::ofstream{played / "system_data.bin"} << "old";
+    std::ofstream{played / "options.bin"} << "kept";
+    fs::last_write_time(old_save, fs::last_write_time(played) - std::chrono::hours{1});
+    Check(library.SaveFolder() == played, "last played save");
+    Check(library.InstallSave(save_volumes, save_plan.candidates[0], {}, {}, detail) == ModError::None, "save");
+    const auto read = [](const fs::path& file) {
+        std::ifstream in{file};
+        return std::string{std::istreambuf_iterator<char>{in}, {}};
+    };
+    Check(read(played / "system_data.bin") == "new" && read(played / "options.bin") == "kept", "save in place");
+    const auto backups = paths.data / "save-backups" / "0100AAAABBBB0000";
+    Check(fs::exists(backups) && read(fs::directory_iterator{backups}->path() / "system_data.bin") == "old",
+          "save backed up");
 
     fs::remove_all(root);
     std::puts("mod-installer PASS");

@@ -9,6 +9,8 @@
 //    never boots with half a mod, and a crash leaves only staging behind, cleared on the next open;
 //  - an uninstall renames the folder into mods/trash/ before deleting it, so it is gone for the
 //    loader at once even if deleting thousands of files is cut short.
+// A save from an archive goes over the game's save instead, after the save it replaces is copied
+// to mods/save-backups/.
 
 #include <cstdint>
 #include <filesystem>
@@ -34,6 +36,9 @@ enum class ModError : std::uint8_t {
     Unavailable, ///< The source (a USB drive, a file) went away.
     Network,    ///< A download failed: no connection, or the site did not answer.
     Checksum,   ///< A download is not the file the site describes.
+    NeedsSkyline,    ///< Only Skyline plugins, which the emulator does not load.
+    NeedsArcropolis, ///< Made for ARCropolis, which needs Skyline.
+    NoSave,     ///< A save for a game never played: there is no save of it to put it in.
 };
 
 ModError FromArchiveError(ArchiveError error);
@@ -42,6 +47,7 @@ ModError FromArchiveError(ArchiveError error);
 struct ModPaths {
     std::filesystem::path load;  ///< load/: the loader's mod root.
     std::filesystem::path data;  ///< mods/: manifests, staging, trash.
+    std::filesystem::path saves; ///< nand/: the emulated saves.
 };
 
 /// The game's title id as the loader names its folder: 16 upper-case hex digits.
@@ -74,6 +80,14 @@ public:
     /// An update: puts mod `fresh` where `old` is, in the order and on or off like it, then
     /// uninstalls `old`. What the player chose for a mod survives its new versions.
     ModError Replace(std::vector<ModRecord>& mods, const std::string& old, const std::string& fresh);
+
+    /// Writes a save candidate's files over the game's save (the profile's that was played
+    /// last), keeping its other files. The save as it was is first copied to mods/save-backups/.
+    ModError InstallSave(std::vector<std::unique_ptr<ArchiveSource>>& volumes, const ModCandidate& save,
+                         std::stop_token stop, const ArchiveProgress& progress, std::string& detail);
+
+    /// The game's save of the profile that played it last; empty when it has none.
+    std::filesystem::path SaveFolder() const;
 
     std::uint64_t FreeSpace() const;
 
