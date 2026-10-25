@@ -74,6 +74,8 @@
 #include "core/hle/service/am/applet_manager.h"
 #include "core/hle/service/am/frontend/applets.h"
 #include "core/hle/service/filesystem/filesystem.h"
+#include "core/hle/service/nvdrv/devices/nvdisp_disp0.h"
+#include "core/hle/service/nvdrv/devices/nvhost_ctrl.h"
 #include "core/loader/loader.h"
 #include "core/memory/cheat_engine.h"
 #include "hid_core/hid_core.h"
@@ -348,6 +350,12 @@ struct BootConfig {
     /// Make the D3D12 command list calls on a thread of their own, so the GPU thread only records
     /// them ("async_record=0" makes them on the GPU thread, as before the recorder).
     bool async_record{true};
+    /// An NV event the guest keeps giving up on stalls the guest until the GPU reaches it
+    /// ("nv_event_stall=1", as before); by default the GPU commands are flushed and the wait goes on.
+    bool nv_event_stall{false};
+    /// Release the displayed buffers with a fence on the composite ("nv_release_fence=0" releases
+    /// them with none and waits for every composite, as before).
+    bool nv_release_fence{true};
     /// Keep the previous draw's pipeline while no register its key reads changed
     /// ("pipeline_key_reuse=1"; "=check" refreshes the key and logs every reuse that would have
     /// drawn with another pipeline). Off by default until a gain is measured on the console.
@@ -573,6 +581,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     Settings::values.async_presentation.SetValue(config.async_present);
     if (config.upscaling) ApplyUpscaling(*config.upscaling); // before the renderer exists
     D3D12::SetAsyncRecording(config.async_record);
+    Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);
+    Service::Nvidia::Devices::nvdisp_disp0::SetReleaseFence(config.nv_release_fence);
     D3D12::PipelineKeyTracking::SetMode(config.pipeline_key_reuse);
     D3D12::SetUniformUploadCopy(config.upload_copy);
     D3D12::SetDrawSamplerReuse(config.draw_sampler_reuse);
@@ -2809,6 +2819,14 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.async_present = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: presentation thread ") +
                                       (config.async_present ? "on" : "off"));
+                        } else if (line == "nv_event_stall=0" || line == "nv_event_stall=1") {
+                            config.nv_event_stall = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: failing NV events ") +
+                                      (config.nv_event_stall ? "stall the guest" : "flush the GPU"));
+                        } else if (line == "nv_release_fence=0" || line == "nv_release_fence=1") {
+                            config.nv_release_fence = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: display release fence ") +
+                                      (config.nv_release_fence ? "on" : "off"));
                         } else if (line == "async_record=0" || line == "async_record=1") {
                             config.async_record = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: command list recording thread ") +
