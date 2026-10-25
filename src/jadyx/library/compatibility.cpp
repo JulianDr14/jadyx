@@ -33,7 +33,7 @@ std::optional<Table> Parse(std::string_view bytes) {
                     return std::nullopt;
             }
             if (row["title_id"] != key || (row["console"] != "X" && row["console"] != "S") ||
-                (row["product"] != "Jadyx" && row["product"] != "NXbox") || row["name"] == "" ||
+                row["product"] == "" || row["name"] == "" ||
                 row["source"] == "")
                 return std::nullopt;
             Report report;
@@ -66,8 +66,8 @@ bool RefreshEnabled(std::string_view environment, std::string_view configuration
         auto line = configuration.substr(0, end);
         if (line.ends_with('\r'))
             line.remove_suffix(1);
-        if (line.starts_with("NXBOX_COMPAT_REFRESH="))
-            enabled = line == "NXBOX_COMPAT_REFRESH=1";
+        if (line.starts_with("JADYX_COMPAT_REFRESH="))
+            enabled = line == "JADYX_COMPAT_REFRESH=1";
         if (end == std::string_view::npos)
             break;
         configuration.remove_prefix(end + 1);
@@ -88,7 +88,7 @@ const Report& Lookup(const Table& table, std::uint64_t title_id, std::string_vie
     static const Report untested;
     if (found == table.end())
         return untested;
-    // Reports on another emulator/model are never a claim about this one. With no known model,
+    // Reports on another product or model are never a claim about this one. With no known model,
     // choose the most cautious Jadyx report and keep its model visible in the focus text.
     const Report* selected = nullptr;
     const auto rank = [](Status status) {

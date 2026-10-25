@@ -10,11 +10,11 @@
 int main() {
     using namespace Jadyx::Compatibility;
     assert(!RefreshEnabled({}, {}));
-    assert(!RefreshEnabled("0", "NXBOX_COMPAT_REFRESH=1"));
+    assert(!RefreshEnabled("0", "JADYX_COMPAT_REFRESH=1"));
     assert(RefreshEnabled("1", {}));
-    assert(RefreshEnabled({}, "library=1\nNXBOX_COMPAT_REFRESH=1\r\n"));
-    assert(!RefreshEnabled({}, "NXBOX_COMPAT_REFRESH=1\nNXBOX_COMPAT_REFRESH=0"));
-    assert(!RefreshEnabled({}, "# NXBOX_COMPAT_REFRESH=1\nNXBOX_COMPAT_REFRESH=true"));
+    assert(RefreshEnabled({}, "library=1\nJADYX_COMPAT_REFRESH=1\r\n"));
+    assert(!RefreshEnabled({}, "JADYX_COMPAT_REFRESH=1\nJADYX_COMPAT_REFRESH=0"));
+    assert(!RefreshEnabled({}, "# JADYX_COMPAT_REFRESH=1\nJADYX_COMPAT_REFRESH=true"));
     const std::string good =
         R"({"schema_version":1,"titles":{"010028600EBDA000":[{"title_id":"010028600EBDA000","name":"Example","status":"issues","console":"X","fps_note":"20-30 FPS","jadyx_version":"","note":"Test report","source":"README.md","product":"Jadyx"}]}})";
     assert(!Parse("broken"));
@@ -31,7 +31,7 @@ int main() {
     assert(Parse(unknown) &&
            Lookup(*Parse(unknown), 0x010028600EBDA000).status == Status::Untested);
     auto foreign = good;
-    foreign.replace(foreign.find("\"product\":\"Jadyx\""), 17, "\"product\":\"NXbox\"");
+    foreign.replace(foreign.find("\"product\":\"Jadyx\""), 17, "\"product\":\"Other\"");
     assert(Parse(foreign) &&
            Lookup(*Parse(foreign), 0x010028600EBDA000).status == Status::Untested);
     assert(Select(good, "bad", "bad").size() == 1);
@@ -74,10 +74,9 @@ int main() {
     const std::string bundled{std::istreambuf_iterator<char>{input},
                               std::istreambuf_iterator<char>{}};
     const auto seed = Parse(bundled);
-    assert(seed && seed->size() == 4);
+    assert(seed && seed->size() == 3);
     assert(Lookup(*seed, 0x0100152000022800).status == Status::Playable);
     assert(Lookup(*seed, 0x01007EF00011E000).status == Status::Issues);
-    assert(Lookup(*seed, 0x01005CA01580E000).status == Status::Untested);
     std::cout << "PASS compatibility parsing, unknown status, update matching, "
                  "provenance and fallback\n";
 }

@@ -66,7 +66,7 @@ struct Loader::Impl {
             }
             Publish(
                 Select({}, cached.empty() ? std::string{} : ReadBounded(cached), bundled_bytes));
-            const char* refresh = std::getenv("NXBOX_COMPAT_REFRESH");
+            const char* refresh = std::getenv("JADYX_COMPAT_REFRESH");
             if (!RefreshEnabled(refresh ? refresh : "",
                                 ReadBounded(bundled.parent_path().parent_path() / L"boot.cfg")) ||
                 stop.stop_requested())
