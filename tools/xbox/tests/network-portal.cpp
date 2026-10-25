@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "common/httplib.h"
 #include "jadyx/storage/network_portal.h"
+#include "jadyx/storage/network_portal_page.h"
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <cstdio>
@@ -76,16 +77,16 @@ int main(int argc,char** argv) {
     const auto report = Jadyx::PortalAdapterReport();
     Check(report.find("adapter '") != std::string::npos && report.find("ipv4 127.0.0.1") != std::string::npos,
           "adapter report lists every adapter");
-    Check(initial.code.size() == 8 && initial.code.find_first_not_of("0123456789") == std::string::npos,
-          "eight random digits");
+    Check(initial.code.size() == 4 && initial.code.find_first_not_of("0123456789") == std::string::npos,
+          "four random digits");
     httplib::Client client("127.0.0.1", port);
     client.set_read_timeout(4);
     const auto origin = "http://127.0.0.1:" + std::to_string(port);
     httplib::Headers headers{{"Origin", origin}};
     const auto page = client.Get("/");
     if (Status(page) != 200) std::fprintf(stderr, "HTTP page status=%d transport=%d\n", Status(page), static_cast<int>(page.error()));
-    Check(Status(page) == 200 && page->body.find(initial.code) == std::string::npos,
-          "page never contains pairing secret");
+    // Four digits turn up in any page by chance; the page being the fixed one is what keeps the code out.
+    Check(Status(page) == 200 && page->body == Jadyx::PortalWeb::Page, "page never contains pairing secret");
     Check(page->get_header_value("Cache-Control") == "no-store" &&
           !page->get_header_value("Content-Security-Policy").empty(), "page security headers");
     Check(Status(client.Get("/api/v1/status")) == 401, "anonymous status rejected");
@@ -104,7 +105,7 @@ int main(int argc,char** argv) {
     auto status = client.Get("/api/v1/status", authenticated);
     Check(Status(status) == 200 && !Json::parse(status->body).at("uploads").get<bool>(),
           "authenticated connection gate, no upload endpoints");
-    Check(status->body.find(token) == std::string::npos && status->body.find(initial.code) == std::string::npos,
+    Check(status->body.find(token) == std::string::npos && !Json::parse(status->body).contains("code"),
           "status never returns secrets");
     LogExportTests(portal,client,authenticated,log_root);
     // Exercise the production update routes over real native TCP, not a mocked server.

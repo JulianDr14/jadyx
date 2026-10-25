@@ -271,6 +271,8 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::NetworkAdapter, L"Endereço da rede local"},
     {Text::NetworkCode, L"Gerar código de conexão"},
     {Text::NetworkCodeHint, L"Digite este código no navegador. Válido por 5 minutos."},
+    {Text::NetworkCodeRowHint, L"Um código novo substitui o atual; o navegador já conectado continua conectado."},
+    {Text::NetworkStopRowHint, L"Fecha o portal neste console. Os envios em andamento param."},
     {Text::NetworkCodeExpired, L"Código expirado. Selecione para gerar outro."},
     {Text::NetworkPaired, L"Navegador conectado"},
     {Text::NetworkUnavailable, L"Nenhum endereço local de Ethernet ou Wi-Fi disponível."},

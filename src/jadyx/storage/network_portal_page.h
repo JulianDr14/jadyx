@@ -158,8 +158,8 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <main class="gate"><img src="/logo.png" alt="" width="132" height="132"><p class="kicker" id="kicker">Local network portal</p><h1 id="title">Connect to your console</h1>
 <p id="intro">Enter the temporary code shown in Jadyx. Keep the app open in the library.</p>
 <form id="pair"><label id="label" for="code">Connection code</label>
-<input id="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{8}" maxlength="8" placeholder="00000000" required>
-<button id="connect" class="primary">Connect</button><p class="hint" id="code-hint">8 digits · it changes every time you open the portal</p></form>
+<input id="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{4}" maxlength="4" placeholder="0000" required>
+<button id="connect" class="primary">Connect</button><p class="hint" id="code-hint">4 digits · it changes every time you open the portal</p></form>
 <p id="connection" role="status" aria-live="polite"></p></main>
 <div class="app">
 <section class="card" id="view-update" aria-live="polite"><div class="update-top"><div><p class="kicker" id="update-kicker">Jadyx update</p><h1 id="update-title">Update Jadyx</h1>
@@ -236,7 +236,7 @@ const words=pt?{
  title:'Conecte-se ao seu console',intro:'Digite o código temporário que o Jadyx mostra. Mantenha o app aberto na biblioteca.',label:'Código de conexão',connect:'Conectar',
  uploadtitle:'Importar jogos NSP',uploadintro:'Somente jogos base. Os arquivos são copiados para o armazenamento interno do console.',fileslabel:'Selecionar arquivos NSP',
  namelabel:'Nome de destino (um único arquivo)',send:'Enviar / retomar',rename:'Renomear arquivo pendente',pause:'Pausar',discard:'Apagar arquivo parcial',
- kicker:'Portal da rede local','status-off':'Desconectado','status-on':'Conectado','code-hint':'8 dígitos · muda cada vez que você abre o portal','files-drop':'ou arraste-os para cá',files:'arquivos',
+ kicker:'Portal da rede local','status-off':'Desconectado','status-on':'Conectado','code-hint':'4 dígitos · muda cada vez que você abre o portal','files-drop':'ou arraste-os para cá',files:'arquivos',
  privacy:'Rede local · Conexão HTTP sem criptografia.',ok:'Conexão estabelecida.',bad:'Código incorreto ou expirado. Gere outro no Jadyx.',
  lost:'A conexão foi encerrada. Conecte-se de novo pelo Jadyx; o progresso confirmado é mantido.',free:'Espaço livre',confirmed:'Confirmado',
  speed:'Velocidade',eta:'Tempo restante',queue:'Na fila',choose:'Selecione um ou mais arquivos NSP.',same:'Há outro arquivo pendente. Selecione o mesmo arquivo para retomá-lo ou apague a transferência parcial.',
@@ -251,7 +251,7 @@ const words=pt?{
  title:'Conecta con tu consola',intro:'Introduce el código temporal que muestra Jadyx. Mantén la app abierta en la biblioteca.',label:'Código de conexión',connect:'Conectar',
  uploadtitle:'Importar juegos NSP',uploadintro:'Solo juegos base. Los archivos se copian al almacenamiento interno de la consola.',fileslabel:'Seleccionar archivos NSP',
  namelabel:'Nombre de destino (un solo archivo)',send:'Subir / reanudar',rename:'Renombrar archivo pendiente',pause:'Pausar',discard:'Eliminar archivo parcial',
- kicker:'Portal de red local','status-off':'Sin conectar','status-on':'Conectado','code-hint':'8 dígitos · cambia cada vez que abres el portal','files-drop':'o arrástralos aquí',files:'archivos',
+ kicker:'Portal de red local','status-off':'Sin conectar','status-on':'Conectado','code-hint':'4 dígitos · cambia cada vez que abres el portal','files-drop':'o arrástralos aquí',files:'archivos',
  privacy:'Red local · Conexión HTTP sin cifrado.',ok:'Conexión establecida.',bad:'Código incorrecto o caducado. Genera otro en Jadyx.',
  lost:'La conexión se ha cerrado. Vuelve a conectarte desde Jadyx; el progreso confirmado se conserva.',free:'Espacio libre',confirmed:'Confirmado',
  speed:'Velocidad',eta:'Tiempo restante',queue:'En cola',choose:'Selecciona uno o varios archivos NSP.',same:'Hay un archivo pendiente distinto. Selecciona el mismo archivo para reanudarlo o elimina la transferencia parcial.',
@@ -343,8 +343,8 @@ $('pair').addEventListener('submit',async event=>{
  }catch{$('connection').textContent=words.lost;}finally{$('connect').disabled=false;}
 });
 // Only digits; the eighth one connects without reaching for the button.
-$('code').addEventListener('input',()=>{const code=$('code').value.replace(/\D/g,'').slice(0,8);$('code').value=code;
- if(code.length===8&&!$('connect').disabled)$('pair').requestSubmit?.();});
+$('code').addEventListener('input',()=>{const code=$('code').value.replace(/\D/g,'').slice(0,4);$('code').value=code;
+ if(code.length===4&&!$('connect').disabled)$('pair').requestSubmit?.();});
 // SHA-256 fallback is required because WebCrypto is not available on ordinary HTTP LAN origins.
 // Only first/last 64 KiB + file identity are sampled: this is a resume fingerprint, not full integrity validation.
 function sha256(input){

@@ -7,11 +7,11 @@ if ($Address.Scheme -ne 'http' -or $Address.AbsolutePath -ne '/' -or $Address.Qu
     throw 'Use the HTTP address shown by Jadyx, with no path, query or credentials.'
 }
 $portalOrigin = $Address.GetLeftPart([System.UriPartial]::Authority)
-$portalSecret = Read-Host 'Enter the 8-digit code shown in Jadyx' -AsSecureString
+$portalSecret = Read-Host 'Enter the 4-digit code shown in Jadyx' -AsSecureString
 $portalCode = [System.Net.NetworkCredential]::new('', $portalSecret).Password
 $portalSession = $null
 try {
-    if ($portalCode -notmatch '^\d{8}$') { throw 'Expected eight digits.' }
+    if ($portalCode -notmatch '^\d{4}$') { throw 'Expected four digits.' }
     $portalPage = Invoke-WebRequest -UseBasicParsing -Uri "$portalOrigin/" -TimeoutSec 5
     if ($portalPage.StatusCode -ne 200) { throw 'Landing page did not return HTTP 200.' }
     $portalPair = Invoke-RestMethod -Uri "$portalOrigin/api/v1/pair" -Method Post -Headers @{Origin=$portalOrigin} `
