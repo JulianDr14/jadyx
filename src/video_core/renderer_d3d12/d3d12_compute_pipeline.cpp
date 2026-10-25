@@ -40,9 +40,10 @@ bool ComputePipelineCacheKey::operator==(const ComputePipelineCacheKey& rhs) con
 ComputePipeline::ComputePipeline(const Device& device_, VideoCore::ShaderNotify* shader_notify,
                                  Common::ThreadWorker* worker_thread, u64 unique_hash_,
                                  std::vector<u8> dxil_, const Shader::Info& info_,
-                                 const PipelineLayout& layout_, bool emulate_reduction_)
+                                 const PipelineLayout& layout_, bool emulate_reduction_,
+                                 u32 workgroup_split_)
     : device{device_}, unique_hash{unique_hash_}, emulate_reduction{emulate_reduction_},
-      layout{layout_}, dxil{std::move(dxil_)},
+      workgroup_split{workgroup_split_}, layout{layout_}, dxil{std::move(dxil_)},
       dxil_charge{Common::MemoryAccount::ShaderBytecode, dxil.capacity()}, info{info_} {
     std::ranges::copy(info.constant_buffer_used_sizes, uniform_buffer_sizes.begin());
     if (shader_notify) {

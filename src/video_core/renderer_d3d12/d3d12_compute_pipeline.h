@@ -78,7 +78,7 @@ public:
     ComputePipeline(const Device& device, VideoCore::ShaderNotify* shader_notify,
                     Common::ThreadWorker* worker_thread, u64 unique_hash, std::vector<u8> dxil,
                     const Shader::Info& info, const PipelineLayout& layout,
-                    bool emulate_reduction = false);
+                    bool emulate_reduction = false, u32 workgroup_split = 1);
     ~ComputePipeline();
 
     ComputePipeline(const ComputePipeline&) = delete;
@@ -114,6 +114,9 @@ public:
     [[nodiscard]] std::span<const u8> DiagnosticDxil() const noexcept { return dxil; }
     /// Built with EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION (PipelineCache::EmulateReduction).
     [[nodiscard]] bool EmulatesReduction() const noexcept { return emulate_reduction; }
+    /// Real groups per guest group along X (Shader::Optimization::WorkgroupSplitPass): the
+    /// dispatch multiplies its X group count by it. 1 for an unsplit shader.
+    [[nodiscard]] u32 WorkgroupSplit() const noexcept { return workgroup_split; }
 
 private:
     void Build();
@@ -121,6 +124,7 @@ private:
     const Device& device;
     const u64 unique_hash;
     const bool emulate_reduction;
+    const u32 workgroup_split;
     const PipelineLayout& layout;
     std::vector<u8> dxil;
     Common::MemoryCharge dxil_charge;

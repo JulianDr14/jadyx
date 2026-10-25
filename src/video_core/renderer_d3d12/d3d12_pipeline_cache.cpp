@@ -27,6 +27,7 @@
 #include "shader_recompiler/frontend/ir/program.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/ir_opt/demote_return_pass.h"
+#include "shader_recompiler/ir_opt/workgroup_split_pass.h"
 #include "shader_recompiler/program_header.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -78,6 +79,27 @@ bool HasShaderHash(const std::array<std::atomic<u64>, 4>& slots, u64 unique_hash
 }
 std::atomic_bool pipeline_eviction{true};
 std::atomic_bool pipeline_prewarm{true};
+std::atomic<u32> compute_workgroup_split{1};
+
+/// Launches with more groups than this fill the GPU without splitting them further.
+constexpr u64 MAX_SPLIT_GROUPS = 256;
+
+/// The WorkgroupSplitPass factor for the current launch, or 1 to run it as written. Indirect
+/// launches keep their group count on the GPU, where it is not multiplied.
+u32 WorkgroupSplitFor(const Tegra::Engines::KeplerCompute& kepler_compute) {
+    const u32 factor = compute_workgroup_split.load(std::memory_order_relaxed);
+    if (factor <= 1 || kepler_compute.GetIndirectComputeAddress()) {
+        return 1;
+    }
+    const auto& qmd = kepler_compute.launch_description;
+    const u64 groups_x = qmd.grid_dim_x;
+    const u64 groups = groups_x * qmd.grid_dim_y * qmd.grid_dim_z;
+    if (groups == 0 || groups > MAX_SPLIT_GROUPS ||
+        groups_x * factor > D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION) {
+        return 1;
+    }
+    return factor;
+}
 std::atomic_bool transform_feedback_storage{false};
 
 /// Writes a translated stage's IR and SPIR-V next to the log (SetDumpedShader).
@@ -396,6 +418,10 @@ bool PipelineCache::NativeStreamOutput() const {
 
 void SetPipelinePrewarm(bool enabled) {
     pipeline_prewarm.store(enabled, std::memory_order_relaxed);
+}
+
+void SetComputeWorkgroupSplit(u32 factor) {
+    compute_workgroup_split.store(factor, std::memory_order_relaxed);
 }
 
 PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
@@ -778,13 +804,19 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
     };
     const bool emulate_reduction =
         !reduction_shaders.empty() && reduction_shaders.contains(key.unique_hash);
-    auto& cache = emulate_reduction ? compute_reduction_cache : compute_cache;
+    // The two variants are independent: the emulation rewrites samples, the split ids and loops.
+    const u32 workgroup_split = WorkgroupSplitFor(*kepler_compute);
+    auto& cache = emulate_reduction
+                      ? (workgroup_split > 1 ? compute_reduction_split_cache
+                                             : compute_reduction_cache)
+                  : workgroup_split > 1 ? compute_split_cache
+                                        : compute_cache;
     const auto [pair, is_new]{cache.try_emplace(key)};
     auto& pipeline{pair->second};
     if (is_new) {
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PipelineStallUs};
         VideoCore::Perf::ScopedTimer frontend{VideoCore::Perf::Counter::PipelineFrontendUs};
-        pipeline = CreateComputePipeline(key, shader, emulate_reduction);
+        pipeline = CreateComputePipeline(key, shader, emulate_reduction, workgroup_split);
     }
     if (!pipeline) {
         BUG_TRACK_KEY(DrawSkipped, key.unique_hash,
@@ -1317,17 +1349,19 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
 
 std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     const ComputePipelineCacheKey& key, const VideoCommon::ShaderInfo* shader,
-    bool emulate_reduction) {
+    bool emulate_reduction, u32 workgroup_split) {
     const GPUVAddr program_base{kepler_compute->regs.code_loc.Address()};
     const auto& qmd{kepler_compute->launch_description};
     ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
     env.SetCachedSize(shader->size_bytes);
 
     main_pools.ReleaseContents();
-    auto pipeline{CreateComputePipeline(main_pools, key, env, true, emulate_reduction)};
-    // The emulating variant is not stored: the disk cache rebuilds the plain pipeline, and the
-    // first dispatch with the sampler switches again.
-    if (!pipeline || pipeline_cache_filename.empty() || emulate_reduction) {
+    auto pipeline{
+        CreateComputePipeline(main_pools, key, env, true, emulate_reduction, workgroup_split)};
+    // Variants are not stored: the disk cache rebuilds the plain pipeline, and the first dispatch
+    // that needs a variant builds it again.
+    if (!pipeline || pipeline_cache_filename.empty() || emulate_reduction ||
+        workgroup_split > 1) {
         return pipeline;
     }
     serialization_thread.QueueWork([this, key, env_ = std::move(env)] {
@@ -1339,7 +1373,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
 
 std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     ShaderPools& pools, const ComputePipelineCacheKey& key, Shader::Environment& env,
-    bool build_in_parallel, bool emulate_reduction) try {
+    bool build_in_parallel, bool emulate_reduction, u32 workgroup_split) try {
     Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
     if (Settings::values.dump_guest_shaders) {
         env.Dump(key.Hash(), key.unique_hash);
@@ -1351,6 +1385,20 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
                     "{} unresolved, stores {}",
                     key.unique_hash, program.info.global_memory_fallbacks,
                     program.info.global_memory_unresolved, program.info.stores_global_memory);
+    }
+    u32 split{1};
+    if (workgroup_split > 1) {
+        using Shader::Optimization::WorkgroupSplitVerdict;
+        const WorkgroupSplitVerdict verdict{
+            Shader::Optimization::WorkgroupSplitPass(program, workgroup_split)};
+        if (verdict == WorkgroupSplitVerdict::Split) {
+            split = workgroup_split;
+            LOG_INFO(Render, "D3D12: compute shader {:016x} split: each group of {} runs as {}",
+                     key.unique_hash, key.workgroup_size[0], split);
+        } else {
+            LOG_INFO(Render, "D3D12: compute shader {:016x} not split ({})", key.unique_hash,
+                     Shader::Optimization::Name(verdict));
+        }
     }
     const std::vector<u32> code{EmitSPIRV(profile, program)};
     const bool dumped{IsDumpedShader(key.unique_hash)};
@@ -1372,7 +1420,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
     return std::make_unique<ComputePipeline>(device, &shader_notify, thread_worker,
                                              key.unique_hash, std::move(compiled[0].dxil),
-                                             program.info, layout, emulate_reduction);
+                                             program.info, layout, emulate_reduction, split);
 
 } catch (const Shader::Exception& exception) {
     BUG_TRACK_KEY(ShaderCompile, key.unique_hash, "recompiling compute {:016x} failed: {}",

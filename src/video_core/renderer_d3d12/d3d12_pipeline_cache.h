@@ -76,6 +76,12 @@ void SetTransformFeedbackStorage(bool enabled);
 /// background prewarm. Set before boot (boot.cfg "pso_prewarm=0").
 void SetPipelinePrewarm(bool enabled);
 
+/// Compute shaders dispatched with few groups, whose work is a stride loop over their local id,
+/// run each guest group as `factor` real groups (Shader::Optimization::WorkgroupSplitPass) to
+/// fill a GPU that a handful of persistent groups leaves mostly idle. 1, the default, disables
+/// it; otherwise a power of two. Set before boot (boot.cfg "cs_split=").
+void SetComputeWorkgroupSplit(u32 factor);
+
 class ShaderCompiler;
 class TextureCacheRuntime;
 
@@ -182,13 +188,15 @@ private:
 
     std::unique_ptr<ComputePipeline> CreateComputePipeline(const ComputePipelineCacheKey& key,
                                                            const VideoCommon::ShaderInfo* shader,
-                                                           bool emulate_reduction = false);
+                                                           bool emulate_reduction = false,
+                                                           u32 workgroup_split = 1);
 
     std::unique_ptr<ComputePipeline> CreateComputePipeline(ShaderPools& pools,
                                                            const ComputePipelineCacheKey& key,
                                                            Shader::Environment& env,
                                                            bool build_in_parallel,
-                                                           bool emulate_reduction = false);
+                                                           bool emulate_reduction = false,
+                                                           u32 workgroup_split = 1);
 
     /// Whether a stage of the key uses a shader in reduction_shaders.
     [[nodiscard]] bool UsesReductionShader(const std::array<u64, 6>& unique_hashes) const;
@@ -211,6 +219,13 @@ private:
     /// Emulating variants of compute_cache's pipelines, built on demand (not on disk).
     ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
         compute_reduction_cache;
+    /// Variants of compute_cache's pipelines for launches SetComputeWorkgroupSplit applies to,
+    /// built on demand (not on disk); a shader the pass rejects is stored here unsplit.
+    ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
+        compute_split_cache;
+    /// Split variants of compute_reduction_cache's pipelines, as compute_split_cache.
+    ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
+        compute_reduction_split_cache;
     /// Shaders (unique hashes) that sample with an emulated MIN/MAX reduction. GPU thread only.
     std::unordered_set<u64> reduction_shaders;
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>>

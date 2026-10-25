@@ -594,7 +594,9 @@ void RasterizerD3D12::DispatchCompute() {
         }
         return;
     }
-    cmd->Dispatch(dim[0], dim[1], dim[2]);
+    // A split shader runs each guest group as WorkgroupSplit() real ones; the runtime data above
+    // keeps the guest's count.
+    cmd->Dispatch(dim[0] * pipeline->WorkgroupSplit(), dim[1], dim[2]);
     dispatched = true;
     hunt.Geometry(dim[0] * dim[1] * dim[2], 1, 0);
     hunt.Recorded();

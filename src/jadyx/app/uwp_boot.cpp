@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <charconv>
 #include <chrono>
 #include <condition_variable>
@@ -161,6 +162,7 @@ void SetGpuBreadcrumbsEnabled(bool enabled); // d3d12_device.h
 void SetCloseProbeEnabled(bool enabled);     // d3d12_device.h
 void SetPipelineEviction(bool enabled);      // d3d12_pipeline_cache.h
 void SetPipelinePrewarm(bool enabled);       // d3d12_pipeline_cache.h
+void SetComputeWorkgroupSplit(u32 factor);   // d3d12_pipeline_cache.h
 void SetTransformFeedbackStorage(bool enabled); // d3d12_pipeline_cache.h
 void SetDescriptorRemovalChecks(bool enabled); // d3d12_device.h
 void SetUniformUploadCopy(bool enabled);
@@ -2970,6 +2972,16 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                 D3D12::SetDumpedShader(hash);
                             }
                             WriteDiag("boot.cfg: dumping shader " + line.substr(12));
+                        } else if (line.starts_with("cs_split=")) {
+                            const u32 factor = static_cast<u32>(
+                                std::strtoul(line.c_str() + 9, nullptr, 10));
+                            if (factor >= 2 && factor <= 16 && std::has_single_bit(factor)) {
+                                D3D12::SetComputeWorkgroupSplit(factor);
+                                WriteDiag("boot.cfg: small compute dispatches split by " +
+                                          std::to_string(factor));
+                            } else {
+                                WriteDiag("boot.cfg: cs_split wants 2, 4, 8 or 16; ignored");
+                            }
                         } else if (line.starts_with("skip_shader=")) {
                             const u64 hash = std::strtoull(line.c_str() + 12, nullptr, 16);
                             if (hash != 0) {
