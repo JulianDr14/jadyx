@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/uwp_library.h"
-#include "jadyx/library/compatibility_loader.h"
 #include "jadyx/input/stick_navigation.h"
 #include "jadyx/input/controller_catalog.h"
 #include "jadyx/ui/text_entry_input.h"
@@ -860,13 +859,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         configuration.network_action = 0;
         dirty = true;
     };
-    Compatibility::Loader compatibility_loader;
-    Compatibility::Table compatibility;
     while (true) {
-        if (auto updated = compatibility_loader.Take()) {
-            compatibility = std::move(*updated);
-            dirty = true;
-        }
         window.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
         const auto now = std::chrono::steady_clock::now();
         network_portal.SetUploadsAvailable(!configuration.busy && !picker && !validation.valid() &&
@@ -2287,9 +2280,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                           .shelf = &shelf,
                           .shelf_focus = shelf_focus,
                           .filter_focus = filter_focus,
-                          .battery = battery,
-                          .compatibility = &compatibility});
-            compatibility_loader.Start();
+                          .battery = battery});
             dirty = false;
         }
         // A drawn frame already waited for the display in Present(1); sleeping after it too made
