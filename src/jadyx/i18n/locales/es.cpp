@@ -4,11 +4,6 @@
 
 namespace Jadyx::I18n {
 const Catalog SpanishCatalog = MakeCatalog({
-    {Text::CompatibilityUntested, L"Sin probar"},
-    {Text::CompatibilityPlayable, L"Jugable"},
-    {Text::CompatibilityIssues, L"Con problemas"},
-    {Text::CompatibilityBroken, L"No funciona"},
-    {Text::CompatibilityReport, L"{0}: {1} en Series {2}"},
     {Text::UpdaterTitle, L"Actualizaciones"},
     {Text::UpdaterHint, L"Busca e instala versiones nuevas de Jadyx"},
     {Text::UpdaterCheck, L"Buscar actualizaciones"},

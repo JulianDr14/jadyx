@@ -4277,12 +4277,3 @@ de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificaci�
 global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
 excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
-
-
-## Insignias de compatibilidad (2026-10-24)
-
-La biblioteca dibuja una insignia por portada (Playable, Issues, Broken, Untested) a partir de
-`dist/compat/compat.json`, indexado por title ID base. La carga va en un hilo después del primer
-dibujo; el refresco remoto es opcional (`JADYX_COMPAT_REFRESH=1`, 3 s, 256 KiB) y se cachea en
-LocalState solo si valida. Test de host en `tools/xbox/tests/compatibility.cpp`; diseño visual y
-tiempos en consola pendientes. Formato y checklist: [xbox_compat_badges.md](xbox_compat_badges.md).
