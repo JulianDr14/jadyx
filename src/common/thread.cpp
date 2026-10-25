@@ -632,6 +632,7 @@ void PollThreadPolicies() {
 namespace {
 
 std::atomic<bool> precise_timer_sleeps{true};
+std::atomic<s64> precise_timer_spin_cap{-1};
 
 /// How long before a deadline a wait stops sleeping in the OS and waits on the CPU instead: an OS
 /// wake lands on the next timer interrupt, so it can come up to one timer period late.
@@ -651,6 +652,10 @@ void SetPreciseTimerSleeps(bool enabled) {
 
 bool IsPreciseTimerSleeps() {
     return precise_timer_sleeps;
+}
+
+void SetPreciseTimerSpinCap(std::chrono::nanoseconds cap) {
+    precise_timer_spin_cap = cap.count();
 }
 
 void Event::WakeTimedWaiter() {
@@ -681,7 +686,11 @@ bool Event::WaitFor(const std::chrono::nanoseconds time) {
         }
     }
     if (timer) {
-        profile.Margin(timer_slack->Margin());
+        const s64 cap = precise_timer_spin_cap.load(std::memory_order_relaxed);
+        const auto margin = [&] {
+            return cap < 0 ? timer_slack->Margin() : std::min(timer_slack->Margin(), cap);
+        };
+        profile.Margin(margin());
         // Sleeps on the timer until its usual lateness before the deadline, re-sleeping after a
         // wake that did not come from Set, and waits only that last stretch on the CPU.
         const s64 deadline_ns = (clock.GetTimeNS() + time).count();
@@ -690,7 +699,7 @@ bool Event::WaitFor(const std::chrono::nanoseconds time) {
                 return true;
             }
             const s64 now = clock.GetTimeNS().count();
-            const s64 wake_at = deadline_ns - timer_slack->Margin();
+            const s64 wake_at = deadline_ns - margin();
             if (wake_at <= now) {
                 break;
             }
