@@ -37,10 +37,18 @@ public:
     void OnOpen(NvCore::SessionId session_id, DeviceFD fd) override;
     void OnClose(DeviceFD fd) override;
 
-    /// Performs a screen flip, compositing each buffer.
-    void Composite(std::span<const Nvnflinger::HwcLayer> sorted_layers);
+    /// Performs a screen flip, compositing each buffer. Returns the fence the buffers are
+    /// released with: signalled once the composite read them, or NoFence without a release
+    /// syncpoint.
+    android::Fence Composite(std::span<const Nvnflinger::HwcLayer> sorted_layers);
 
+    /// Waits before the next composite. Buffers released with a fence leave one composite in
+    /// flight; without one, the last composite is waited for.
     void WaitForComposite();
+
+    /// Release the composited buffers with a fence on a display syncpoint (the default) instead
+    /// of NoFence. Read when the device is created.
+    static void SetReleaseFence(bool enabled);
 
     Kernel::KEvent* QueryEvent(u32 event_id) override;
 
@@ -52,6 +60,9 @@ public:
 private:
     NvCore::Container& container;
     NvCore::NvMap& nvmap;
+    /// The display's release syncpoint, 0 without one. It has the same id on every boot, so a
+    /// Pulse restore of the syncpoints raises the values the checkpoint's buffers wait on.
+    u32 release_syncpoint{};
 };
 
 } // namespace Service::Nvidia::Devices

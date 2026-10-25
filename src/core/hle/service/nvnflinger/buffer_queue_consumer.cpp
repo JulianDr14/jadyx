@@ -7,6 +7,8 @@
 // Parts of this implementation were based on:
 // https://cs.android.com/android/platform/superproject/+/android-5.1.1_r38:frameworks/native/libs/gui/BufferQueueConsumer.cpp
 
+#include <algorithm>
+
 #include "common/assert.h"
 #include "common/logging.h"
 #include "core/hle/service/nvnflinger/buffer_item.h"
@@ -147,10 +149,29 @@ Status BufferQueueConsumer::ReleaseBuffer(s32 slot, u64 frame_number, const Fenc
         }
 
         if (slots[slot].buffer_state == BufferState::Acquired) {
-            // TODO: for now, avoid resetting the fence, so that when we next return this
-            // slot to the producer, it can wait for its own fence to pass. We should fix this
-            // by properly waiting for the fence in the BufferItemConsumer.
-            // slots[slot].fence = release_fence;
+            // The slot keeps the producer's fence, so the next dequeue still waits for its own
+            // rendering, and gains the consumer's, so it also waits for the composite to read it.
+            auto& fence = slots[slot].fence;
+            for (u32 i = 0; i < release_fence.num_fences; ++i) {
+                const auto& added = release_fence.fences[i];
+                if (added.id < 0) {
+                    continue;
+                }
+                const auto end = fence.fences.begin() + fence.num_fences;
+                const auto same = std::find_if(fence.fences.begin(), end,
+                                               [&](const auto& held) { return held.id == added.id; });
+                if (same != end) {
+                    // One syncpoint: the later value covers the earlier one.
+                    if (static_cast<s32>(added.value - same->value) > 0) {
+                        same->value = added.value;
+                    }
+                } else if (fence.num_fences < fence.fences.size()) {
+                    fence.fences[fence.num_fences++] = added;
+                } else {
+                    LOG_WARNING(Service_Nvnflinger, "slot {} has no room for a release fence",
+                                slot);
+                }
+            }
             slots[slot].buffer_state = BufferState::Free;
             VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::ReleaseBuffer,
                                         static_cast<u64>(slot), frame_number);

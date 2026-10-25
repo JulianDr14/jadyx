@@ -39,6 +39,8 @@ private:
         ReleaseFrameNumber release_frame_number{};
         u64 last_acquire_frame{0};
         bool is_acquired{false};
+        /// Signalled once the last composite that read the buffer is done with it.
+        android::Fence release_fence{android::Fence::NoFence()};
     };
 
     enum class CacheStatus : u32 {

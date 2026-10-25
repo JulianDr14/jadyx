@@ -4,6 +4,9 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <optional>
+
 #include <boost/container/small_vector.hpp>
 
 #include "common/adpf.h"
@@ -13,6 +16,7 @@
 #include "core/core_timing.h"
 #include "core/hle/service/nvdrv/core/container.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
+#include "core/hle/service/nvdrv/core/syncpoint_manager.h"
 #include "core/hle/service/nvdrv/devices/nvdisp_disp0.h"
 #include "core/perf_stats.h"
 #include "video_core/gpu.h"
@@ -35,11 +39,32 @@ Tegra::BlendMode ConvertBlending(Service::Nvnflinger::LayerBlending blending) {
     }
 }
 
+// The last syncpoint: guests are given the free ones from the bottom, so no checkpoint has one
+// of theirs here.
+constexpr u32 ReleaseSyncpointId = MaxSyncPoints - 1;
+
+std::atomic_bool release_fence_enabled{true};
+
 } // namespace
 
+void nvdisp_disp0::SetReleaseFence(bool enabled) {
+    release_fence_enabled.store(enabled, std::memory_order_relaxed);
+}
+
 nvdisp_disp0::nvdisp_disp0(Core::System& system_, NvCore::Container& core)
-    : nvdevice{system_}, container{core}, nvmap{core.GetNvMapFile()} {}
-nvdisp_disp0::~nvdisp_disp0() = default;
+    : nvdevice{system_}, container{core}, nvmap{core.GetNvMapFile()} {
+    if (release_fence_enabled.load(std::memory_order_relaxed)) {
+        release_syncpoint =
+            container.GetSyncpointManager().AllocateSyncpointAt(ReleaseSyncpointId, false);
+        LOG_INFO(Service_NVDRV, "display buffers released on syncpoint {}", release_syncpoint);
+    }
+}
+
+nvdisp_disp0::~nvdisp_disp0() {
+    if (release_syncpoint != 0) {
+        container.GetSyncpointManager().FreeSyncpoint(release_syncpoint);
+    }
+}
 
 NvResult nvdisp_disp0::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
                               std::span<u8> output) {
@@ -62,7 +87,7 @@ NvResult nvdisp_disp0::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> in
 void nvdisp_disp0::OnOpen(NvCore::SessionId session_id, DeviceFD fd) {}
 void nvdisp_disp0::OnClose(DeviceFD fd) {}
 
-void nvdisp_disp0::Composite(std::span<const Nvnflinger::HwcLayer> sorted_layers) {
+android::Fence nvdisp_disp0::Composite(std::span<const Nvnflinger::HwcLayer> sorted_layers) {
     std::vector<Tegra::FramebufferConfig> output_layers;
     std::vector<Service::Nvidia::NvFence> output_fences;
     output_layers.reserve(sorted_layers.size());
@@ -91,16 +116,31 @@ void nvdisp_disp0::Composite(std::span<const Nvnflinger::HwcLayer> sorted_layers
 
     VideoCore::Perf::Add(VideoCore::Perf::Counter::VsyncFrames, 1);
     VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::VsyncComposed, 1);
-    system.GPU().RequestComposite(std::move(output_layers), std::move(output_fences));
+    android::Fence release_fence = android::Fence::NoFence();
+    std::optional<NvFence> release;
+    if (release_syncpoint != 0) {
+        release = NvFence{
+            .id = static_cast<s32>(release_syncpoint),
+            .value = container.GetSyncpointManager().IncrementSyncpointMaxExt(release_syncpoint, 1),
+        };
+        release_fence.num_fences = 1;
+        release_fence.fences[0] = *release;
+    }
+    system.GPU().RequestComposite(std::move(output_layers), std::move(output_fences), release);
     Common::ADPF::ReportFrameInterval();
     system.SpeedLimiter().DoSpeedLimiting(system.CoreTiming().GetGlobalTimeUs());
     system.GetPerfStats().EndSystemFrame();
     system.GetPerfStats().BeginSystemFrame();
+    return release_fence;
 }
 
 void nvdisp_disp0::WaitForComposite() {
     const auto start = std::chrono::steady_clock::now();
-    system.GPU().WaitForComposite();
+    if (release_syncpoint != 0) {
+        system.GPU().WaitForEarlierComposite();
+    } else {
+        system.GPU().WaitForComposite();
+    }
     const u64 waited_us = VideoCore::Perf::ElapsedUs(start);
     VideoCore::Perf::Add(VideoCore::Perf::Counter::VsyncComposeWaitUs, waited_us);
     VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::ComposeWaitEnd, waited_us);
