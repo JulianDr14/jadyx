@@ -24,6 +24,9 @@
 namespace D3D12 {
 namespace {
 std::atomic_bool uniform_upload_copy_enabled{};
+// Buffer::Transition logs the first upload into a buffer between a work's bindings. The GPU
+// thread alone records bindings.
+bool logged_upload_into_uav{};
 }
 void SetUniformUploadCopy(bool enabled) {
     uniform_upload_copy_enabled.store(enabled, std::memory_order_relaxed);
@@ -181,11 +184,26 @@ void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
     const u64 tick = scheduler->CurrentTick();
     const D3D12_RESOURCE_STATES current = state_tick == tick ? state : D3D12_RESOURCE_STATE_COMMON;
     const u64 work = scheduler->Work();
-    if (work != 0 && uav_work == work && current == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
-        (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
-         next == D3D12_RESOURCE_STATE_GENERIC_READ)) {
+    if (work != 0 && uav_work == work && next == D3D12_RESOURCE_STATE_GENERIC_READ) {
         // Another binding of this draw or dispatch writes it: it stays a UAV (Scheduler::BeginWork),
         // and its UAV barrier is in. AMD hardware, the Series included, reads buffers in any state.
+        if (current == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+            return;
+        }
+        // A later binding's upload (SynchronizeBuffer) took it out of UAV to COPY_DEST. Left in a
+        // read state, the work's writes were lost from its state, and the next reader got no
+        // barrier: it read the buffer while the dispatch still wrote it (geometry flickering as
+        // the camera turned). Keep this when optimizing transitions: skipping it, or letting the
+        // last binding's read state win, brings that flicker back. It costs one transition only
+        // in this case.
+        if (!logged_upload_into_uav) {
+            LOG_INFO(Render, "D3D12: a buffer a work writes took an upload between its bindings");
+            logged_upload_into_uav = true;
+        }
+        next = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    } else if (work != 0 && uav_work == work &&
+               current == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
+               next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
         return;
     }
     // A read binding of this draw or dispatch took it out of a previous one's UAV and a later
