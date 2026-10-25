@@ -722,6 +722,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         future = task.get_future();
         scanner = std::jthread(std::move(task));
     };
+    bool open_mii_editor = false;
     // Saves and applies the System page; the interface switches language on the next frame.
     auto apply_system_effect = [&](SystemPageEffect effect, std::chrono::steady_clock::time_point now) {
         switch (effect) {
@@ -751,6 +752,17 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             system_notice_until = now + std::chrono::seconds{3};
             break;
         }
+        case SystemPageEffect::OpenMiiEditor:
+            if (!HasUsableHeaderKey()) {
+                system_page.notice = Tr(T::MissingKeys);
+                system_notice_until = now + std::chrono::seconds{3};
+            } else if (!network_portal.BlockForLocalOperation()) {
+                system_page.notice = Tr(T::NetworkBusy);
+                system_notice_until = now + std::chrono::seconds{3};
+            } else {
+                open_mii_editor = true;
+            }
+            break;
         case SystemPageEffect::None:
         case SystemPageEffect::EditName:
             break;
@@ -1388,7 +1400,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 send(Up, SystemInput::Up);
                 send(Down, SystemInput::Down);
                 const bool opens = system_page.selected == SystemPage::UserName ||
-                                   system_page.selected == SystemPage::ClearCache || system_page.selected == SystemPage::Updates;
+                                   system_page.selected == SystemPage::ClearCache || system_page.selected == SystemPage::Updates ||
+                                   system_page.selected == SystemPage::MiiEditor;
                 send(Left, opens ? SystemInput::Back : SystemInput::Left);
                 send(Right, SystemInput::Right);
                 send(Play, SystemInput::Confirm);
@@ -1396,6 +1409,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 if (!system_page.open) configuration.selected = HomeSystem;
             }
             actions = 0;
+            if (open_mii_editor) {
+                network_portal.Stop();
+                return std::string{MiiEditorLaunch};
+            }
         }
         const bool on_game = tab == LibraryTab::Home ||
                              (tab == LibraryTab::Library && !filter_focus && shelf_focus < shelf.size());
