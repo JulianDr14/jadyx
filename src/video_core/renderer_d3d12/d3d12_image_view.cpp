@@ -39,6 +39,16 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
         format_info = AstcFormat(info.format, VideoCommon::AstcRecompressionFor(source.info));
     }
     auto swizzle = info.Swizzle();
+    // As the Vulkan backend (ImageViewAspectMask): a sampled view of a depth-stencil image reads
+    // its stencil when the swizzle selects the stencil component (R of S8_UINT_D24_UNORM, any
+    // but R of the others). Reading depth there instead hands the shader float bits where it
+    // tests stencil flags: lighting passes then discard bands and hatching of pixels.
+    const bool any_r = std::ranges::any_of(swizzle, [](Tegra::Texture::SwizzleSource s) {
+        return s == Tegra::Texture::SwizzleSource::R;
+    });
+    const bool reads_stencil = !info.IsRenderTarget() &&
+                               format_info.stencil_srv != DXGI_FORMAT_UNKNOWN &&
+                               (info.format == PixelFormat::S8_UINT_D24_UNORM ? any_r : !any_r);
     if (const SurfaceType surface_type = VideoCore::Surface::GetFormatType(info.format);
         surface_type == SurfaceType::Depth || surface_type == SurfaceType::DepthStencil) {
         // As the Vulkan backend (ConvertGreenRed): guest depth views read depth from G, the
@@ -47,6 +57,13 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
         std::ranges::transform(swizzle, swizzle.begin(), [](Tegra::Texture::SwizzleSource s) {
             return s == Tegra::Texture::SwizzleSource::G ? Tegra::Texture::SwizzleSource::R : s;
         });
+    }
+    if (reads_stencil) {
+        // The stencil SRVs (X24_TYPELESS_G8_UINT, X32_TYPELESS_G8X24_UINT) hold it in G.
+        std::ranges::transform(swizzle, swizzle.begin(), [](Tegra::Texture::SwizzleSource s) {
+            return s == Tegra::Texture::SwizzleSource::R ? Tegra::Texture::SwizzleSource::G : s;
+        });
+        format_info.srv = format_info.stencil_srv;
     }
     switch (info.format) {
     case PixelFormat::B5G6R5_UNORM:
@@ -416,6 +433,11 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::CreateSrv(Shader::TextureType texture_typ
     }
     D3D12_SHADER_RESOURCE_VIEW_DESC desc{.Format = p.format,
                                          .Shader4ComponentMapping = p.mapping};
+    // A depth-stencil resource keeps its stencil in plane 1.
+    const UINT plane = p.format == DXGI_FORMAT_X24_TYPELESS_G8_UINT ||
+                               p.format == DXGI_FORMAT_X32_TYPELESS_G8X24_UINT
+                           ? 1U
+                           : 0U;
     const u32 cubes = std::max(1U, p.layers / 6);
     switch (texture_type) {
     case TextureType::Buffer:
@@ -459,7 +481,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::CreateSrv(Shader::TextureType texture_typ
             desc.Texture2DMSArray = {p.base_layer, p.layers};
         } else {
             desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-            desc.Texture2DArray = {p.base_level, p.levels, p.base_layer, p.layers, 0, 0.0f};
+            desc.Texture2DArray = {p.base_level, p.levels, p.base_layer, p.layers, plane, 0.0f};
         }
         break;
     default: // Color2D, Color2DRect
@@ -470,13 +492,13 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::CreateSrv(Shader::TextureType texture_typ
                 desc.Texture2DMSArray = {p.base_layer, 1};
             } else {
                 desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-                desc.Texture2DArray = {p.base_level, p.levels, p.base_layer, 1, 0, 0.0f};
+                desc.Texture2DArray = {p.base_level, p.levels, p.base_layer, 1, plane, 0.0f};
             }
         } else if (p.is_msaa) {
             desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
         } else {
             desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            desc.Texture2D = {p.base_level, p.levels, 0, 0.0f};
+            desc.Texture2D = {p.base_level, p.levels, plane, 0.0f};
         }
         break;
     }
