@@ -97,6 +97,7 @@
 #include "jadyx/app/prewarm_budget.h"
 #include "jadyx/pulse/pulse_gate.h"
 #include "jadyx/pulse/pulse_screen.h"
+#include "jadyx/ui/launch_splash.h"
 #include "jadyx/library/game_library.h"
 #include "jadyx/library/play_history.h"
 #include "jadyx/pulse/pulse_sessions.h"
@@ -594,10 +595,13 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     // Shown while Pulse saves or resumes a session (pulse_screen.h); it draws through the GPU
     // thread, so it goes before anything is torn down.
     std::optional<PulseScreen> pulse_screen;
+    // The splash over the guest's first frames (launch_splash.h); it draws as the Pulse screen.
+    std::optional<LaunchScreen> launch_screen;
     std::optional<std::jthread> trim_worker;
     const auto shutdown = [&] {
         trim_worker.reset();
         pulse_screen.reset();
+        launch_screen.reset();
         Common::SamplingProfiler::Stop(); // writes the window in progress, if it runs
         if (config.gpu_failure_probe) WriteDiag("GPU recovery shutdown: input.Stop");
         input.Stop();
@@ -715,6 +719,20 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
             WritePulseLog(std::string("no identity: ") + e.what());
         }
     }
+    // Played by hand: the launch splash stays up from the library's exit to the game's first
+    // frame. The renderer takes the window from the frontend's splash, then draws it itself until
+    // the guest is about to run.
+    const bool boot_screen = config.play && surface.core_window != nullptr && !config.null_renderer;
+    if (boot_screen) {
+        D3D12::SetWindowHandoff(ReleaseLaunchSplash);
+        D3D12::SetBootScreen(DrawLaunchSplash);
+    }
+    // Stops the renderer's splash before anything else presents.
+    const auto end_boot_screen = [&] {
+        if (!boot_screen) return;
+        D3D12::EndBootScreen(system.Renderer());
+        SetLaunchStep(LaunchStep::Starting);
+    };
     Core::SystemResultStatus load_result{Core::SystemResultStatus::ErrorNotInitialized};
     bool gpu_started = false, resumed = false;
     if (pulse_identity && config.pulse_resume && PulseSessions::CanResume(*pulse_identity)) {
@@ -732,6 +750,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                     throw std::runtime_error("system.Load failed");
                 }
                 // The services the restore rebuilds talk to the GPU, as in the test bench.
+                end_boot_screen();
                 system.GPU().Start();
                 system.GetCpuManager().OnGpuReady();
                 gpu_started = true;
@@ -760,6 +779,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         load_already_shutdown = load_result != Core::SystemResultStatus::Success &&
                                 system.IsShuttingDown();
     }
+    // Unused when Load failed before the renderer came up.
+    D3D12::SetWindowHandoff(nullptr);
+    D3D12::SetBootScreen(nullptr);
     WriteDiag("step: system.Load() returned status " +
               std::to_string(static_cast<int>(load_result)) + " | " + MemoryReport());
     WriteDiag("memory map: " + LargestAllocations());
@@ -812,9 +834,11 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         if (pulse_screen) pulse_screen->ShadersStarting();
         renderer.ReadRasterizer()->LoadDiskResources(
             system.GetApplicationProcessProgramID(), std::stop_token{},
-            [&renderer, &pulse_screen](VideoCore::LoadCallbackStage, size_t done, size_t total) {
-                // A resume's screen shows the count itself; two presenters would race.
+            [&renderer, &pulse_screen, boot_screen](VideoCore::LoadCallbackStage, size_t done, size_t total) {
+                // A resume's screen and the splash show the count themselves; two presenters
+                // would race.
                 if (pulse_screen) pulse_screen->Shaders(done, total);
+                else if (boot_screen) SetLaunchStep(LaunchStep::Shaders, done, total);
                 else D3D12::ShowLoadProgress(renderer, done, total);
             });
         WriteDiag("step: disk shader cache built | " + MemoryReport());
@@ -832,8 +856,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                       MemoryReport());
             Core::ConfigureApplicationPrewarm(system,
                 config.jit_prewarm == BootConfig::JitPrewarm::Warm,
-                [&system](size_t done, size_t total) {
-                    D3D12::ShowCpuLoadProgress(system.Renderer(), done, total);
+                [&system, boot_screen](size_t done, size_t total) {
+                    if (boot_screen) SetLaunchStep(LaunchStep::Cpu, done, total);
+                    else D3D12::ShowCpuLoadProgress(system.Renderer(), done, total);
                 },
                 prewarm_budget.BytesPerCore());
             WriteDiag("step: CPU JIT profile/prewarm ready | " + MemoryReport());
@@ -852,6 +877,11 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     // Run the guest. CpuManager spins up guest threads; dynarmic compiles + executes their code.
     // A resume's screen stays over it until the game presents.
     if (pulse_screen) pulse_screen->GameStarting();
+    // The splash goes on over the guest until the game presents (a resume's screen ended it).
+    if (boot_screen && !pulse_screen) {
+        end_boot_screen();
+        launch_screen.emplace(system);
+    }
     void(system.Run());
     input.Start(system.HIDCore());
     if (config.gpu_failure_probe) {
@@ -923,6 +953,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         };
         const auto draw_menu = [&] {
             pulse_screen.reset(); // The menu takes the screen.
+            launch_screen.reset();
             const auto screen = D3D12::GameMenuScreenSize(system.Renderer());
             D3D12::MenuImage image;
             try {
@@ -2520,6 +2551,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     }
                     WriteDiag("library: selected " + *library_game);
                     library_error.clear();
+                    // The window is never left blank while the game loads.
+                    Jadyx::ShowLaunchSplash(surface.core_window, surface.width, surface.height);
                 }
             } catch (const std::exception& e) {
                 WriteDiag(std::string("library: failed: ") + e.what());
@@ -2972,6 +3005,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 }
             }
             worker.join();
+            // Still up when the boot ended before its renderer took the window; the library needs it.
+            Jadyx::ReleaseLaunchSplash();
             if (show_library && boot_status.load() == 2) {
                 library_error = Jadyx::I18n::ToUtf8(Jadyx::I18n::Tr(Jadyx::I18n::Text::GameLoadFailed));
                 WriteDiag("boot load failed; returning to library for recovery");

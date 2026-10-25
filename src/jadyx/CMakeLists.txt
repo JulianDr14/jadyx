@@ -97,6 +97,8 @@ add_executable(jadyx WIN32
     ui/ui_icon.h
     ui/ui_fonts.cpp
     ui/ui_fonts.h
+    ui/launch_splash.cpp
+    ui/launch_splash.h
     ui/ui_painter.cpp
     ui/ui_painter.h
     ui/tween.h
@@ -187,7 +189,7 @@ target_link_libraries(jadyx PRIVATE common core video_core audio_core frontend_c
 
 # WinRT (CoreApplication, IFrameworkView, ApplicationData) comes from the Store umbrella import lib.
 target_link_libraries(jadyx PRIVATE WindowsApp.lib)
-target_link_libraries(jadyx PRIVATE d3d11 d2d1 dwrite dxgi dxguid windowscodecs)
+target_link_libraries(jadyx PRIVATE d3d11 d3d12 d2d1 dwrite dxgi dxguid windowscodecs)
 
 # Win32 networking used by core's network_interface (ConvertLengthToIpv4Mask etc.), plus crypt32 +
 # user32 which the from-source OpenSSL pulls (cert store + its fatal-error/service-detection code).
