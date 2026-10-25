@@ -95,7 +95,10 @@ void HuntNextFrames(u32 frames) {
 }
 
 DrawHunt::DrawHunt(const Device& device_, Scheduler& scheduler_)
-    : device{device_}, scheduler{scheduler_} {}
+    : device{device_}, scheduler{scheduler_} {
+    scheduler.RegisterOnSubmit([this] { ListEnd(); });
+    scheduler.RegisterOnReset([this] { ListStart(); });
+}
 
 DrawHunt::~DrawHunt() {
     if (owns_profiler) {
@@ -241,6 +244,25 @@ u32 DrawHunt::PassOf(const Framebuffer& framebuffer) {
                             ? static_cast<u32>(framebuffer.DepthFormat())
                             : 0,
     });
+}
+
+void DrawHunt::ListStart() {
+    if (state == State::Capturing) {
+        Baseline();
+    }
+}
+
+void DrawHunt::ListEnd() {
+    // A list the capture began in the middle of has no baseline: its tail stays unmeasured.
+    if (state != State::Capturing || !heap || !capture.HasBaseline(scheduler.CurrentTick())) {
+        return;
+    }
+    Hunt::Record record;
+    record.kind = Hunt::Kind::ListEnd;
+    record.outcome = Hunt::Outcome::Recorded;
+    record.frame = capture.Frame();
+    record.timestamp = Stamp();
+    capture.Add(record);
 }
 
 void DrawHunt::Baseline() {

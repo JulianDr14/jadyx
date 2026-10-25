@@ -6,22 +6,34 @@
 
 namespace D3D12 {
 
-AccelerateDMA::AccelerateDMA(BufferCache& buffers, TextureCache& textures)
-    : buffer_cache{buffers}, texture_cache{textures} {}
+AccelerateDMA::AccelerateDMA(BufferCache& buffers, TextureCache& textures, DrawHunt& hunt)
+    : buffer_cache{buffers}, texture_cache{textures}, draw_hunt{hunt} {}
 bool AccelerateDMA::BufferCopy(GPUVAddr src, GPUVAddr dst, u64 amount) {
     if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Event("dma_buffer_copy",
         fmt::format("{{\"src\":{},\"dst\":{},\"size\":{}}}", src, dst, amount));
-    std::scoped_lock lock{buffer_cache.mutex}; return buffer_cache.DMACopy(src, dst, amount);
+    HuntScope hunt{draw_hunt, Hunt::Kind::DmaCopy};
+    hunt.Target(nullptr);
+    std::scoped_lock lock{buffer_cache.mutex};
+    if (!buffer_cache.DMACopy(src, dst, amount)) return false;
+    hunt.Recorded();
+    return true;
 }
 bool AccelerateDMA::BufferClear(GPUVAddr address, u64 amount, u32 value) {
     if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Event("dma_buffer_clear",
         fmt::format("{{\"address\":{},\"size\":{},\"value\":{}}}", address, amount, value));
-    std::scoped_lock lock{buffer_cache.mutex}; return buffer_cache.DMAClear(address, amount, value);
+    HuntScope hunt{draw_hunt, Hunt::Kind::DmaCopy};
+    hunt.Target(nullptr);
+    std::scoped_lock lock{buffer_cache.mutex};
+    if (!buffer_cache.DMAClear(address, amount, value)) return false;
+    hunt.Recorded();
+    return true;
 }
 template <bool IS_UPLOAD>
 bool AccelerateDMA::BufferImageCopy(const Tegra::DMA::ImageCopy& info,
                                     const Tegra::DMA::BufferOperand& buffer_operand,
                                     const Tegra::DMA::ImageOperand& image_operand) {
+    HuntScope hunt{draw_hunt, Hunt::Kind::DmaCopy};
+    hunt.Target(nullptr);
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Event("dma_image_buffer",
         fmt::format("{{\"upload\":{},\"buffer_address\":{},\"pitch\":{},\"height\":{}}}",
@@ -47,6 +59,7 @@ bool AccelerateDMA::BufferImageCopy(const Tegra::DMA::ImageCopy& info,
         texture_cache.DownloadImageIntoBuffer(image, buffer->Handle(), offset, copies,
                                               buffer_operand.address, size);
     }
+    hunt.Recorded();
     return true;
 }
 bool AccelerateDMA::ImageToBuffer(const Tegra::DMA::ImageCopy& i,

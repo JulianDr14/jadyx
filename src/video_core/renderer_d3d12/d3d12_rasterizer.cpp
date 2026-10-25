@@ -97,7 +97,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
       local_memory_pool{device, scheduler_},
       query_cache{*this, device_memory_, device, scheduler_},
       conditional_rendering{device, scheduler_, query_cache},
-      accelerate_dma{buffer_cache, texture_cache},
+      accelerate_dma{buffer_cache, texture_cache, draw_hunt},
       fence_manager{*this, gpu_, texture_cache, buffer_cache, query_cache, scheduler_},
       draw_hunt{device, scheduler_} {
     buffer_runtime.SetDescriptorQueue(&descriptor_queue);
@@ -1000,9 +1000,12 @@ void RasterizerD3D12::TickFrame() {
 bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
                                             const Tegra::Engines::Fermi2D::Surface& dst,
                                             const Tegra::Engines::Fermi2D::Config& config) {
+    HuntScope hunt{draw_hunt, Hunt::Kind::Blit};
     std::scoped_lock lock{texture_cache.mutex};
+    hunt.Target(nullptr);
     const bool blitted = texture_cache.BlitImage(dst, src, config);
     if (blitted) {
+        hunt.Recorded();
         InvalidateGraphicsState();
     }
     if (trace_draws) {

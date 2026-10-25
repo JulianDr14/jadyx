@@ -40,7 +40,7 @@ void SetMaterialGpuProbeEnabled(bool enabled);
 
 class AccelerateDMA final : public Tegra::Engines::AccelerateDMAInterface {
 public:
-    AccelerateDMA(BufferCache& buffer_cache, TextureCache& texture_cache);
+    AccelerateDMA(BufferCache& buffer_cache, TextureCache& texture_cache, DrawHunt& draw_hunt);
     bool BufferCopy(GPUVAddr src, GPUVAddr dst, u64 amount) override;
     bool BufferClear(GPUVAddr address, u64 amount, u32 value) override;
     bool ImageToBuffer(const Tegra::DMA::ImageCopy&, const Tegra::DMA::ImageOperand&,
@@ -54,6 +54,7 @@ private:
                          const Tegra::DMA::ImageOperand&);
     BufferCache& buffer_cache;
     TextureCache& texture_cache;
+    DrawHunt& draw_hunt; ///< constructed after this; only used once the rasterizer runs
 };
 
 class RasterizerD3D12 final : public VideoCore::RasterizerInterface,

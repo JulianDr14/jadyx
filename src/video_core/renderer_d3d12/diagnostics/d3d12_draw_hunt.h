@@ -42,6 +42,10 @@ private:
 
     void Begin();
     void Finish();
+    /// Scheduler callbacks: each list gets a timestamp when it opens, so its first call is timed,
+    /// and one before it is submitted, for the work recorded after its last call.
+    void ListStart();
+    void ListEnd();
     void Write();
     [[nodiscard]] u32 PassOf(const Framebuffer& framebuffer);
     /// A timestamp to measure the next call from, when the list being recorded has none yet.
