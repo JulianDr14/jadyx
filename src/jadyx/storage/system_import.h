@@ -60,4 +60,16 @@ struct SystemImportBackend {
     std::function<std::unique_ptr<SystemPrepared>(std::filesystem::path,FileImport,SystemProgress,std::stop_token)> inspect;
 };
 SystemImportBackend DefaultSystemImportBackend();
+struct InstalledSystemVersions {
+    std::string firmware; ///< Empty when unknown: no firmware, or not read yet.
+    int key_generation{-1};
+};
+/// The cached versions (memory, then a small file); opens nothing else, so it is safe anytime.
+InstalledSystemVersions ReadInstalledSystemVersions();
+/// Drops the cached versions. Every keys or firmware import calls it once it is published.
+void InvalidateSystemVersions() noexcept;
+/// Reads the versions again only when the cache is missing or the files differ from what it was
+/// read from (e.g. copied by hand). Opens NCAs: call only where system data is recovered before a
+/// metadata worker starts.
+void RefreshSystemVersions(std::stop_token stop) noexcept;
 }

@@ -41,6 +41,18 @@ namespace Jadyx {
 using Microsoft::WRL::ComPtr;
 using I18n::Tr;
 using T = I18n::Text;
+namespace {
+/// What settings show for the keys and the firmware: their versions once they are known.
+std::wstring KeysValue(const FileSetupStatus& status) {
+    if (!status.keys_ready) return std::wstring{Tr(T::KeysMissing)};
+    return status.versions.key_generation < 0 ? std::wstring{Tr(T::KeysReady)} :
+        I18n::Format(T::KeysGeneration, {std::to_wstring(status.versions.key_generation)});
+}
+std::wstring FirmwareValue(const FileSetupStatus& status) {
+    return status.versions.firmware.empty() ? I18n::Format(T::FirmwareFiles, {std::to_wstring(status.firmware_files)}) :
+        I18n::Format(T::FirmwareVersion, {std::wstring{winrt::to_hstring(status.versions.firmware)}});
+}
+} // namespace
 // The launcher owns a small D3D11/Direct2D surface only while selecting a game.
 // Release every reference (including the swapchain) before D3D12 starts.
 struct LibraryCanvas::Impl : UiPainter {
@@ -1233,12 +1245,10 @@ private:
         } else {
             const auto& status = view.configuration.status;
             rows.push_back({Kind::Open, std::wstring{Tr(T::AddGamesFolder)}});
-            SettingsRow keys{Kind::Open, std::wstring{Tr(T::ImportKeys)}, {},
-                             std::wstring{Tr(status.keys_ready ? T::KeysReady : T::KeysMissing)}};
+            SettingsRow keys{Kind::Open, std::wstring{Tr(T::ImportKeys)}, {}, KeysValue(status)};
             keys.warning = !status.keys_ready;
             rows.push_back(std::move(keys));
-            rows.push_back({Kind::Open, std::wstring{Tr(T::ImportFirmware)}, {},
-                            I18n::Format(T::FirmwareFiles, {std::to_wstring(status.firmware_files)})});
+            rows.push_back({Kind::Open, std::wstring{Tr(T::ImportFirmware)}, {}, FirmwareValue(status)});
             rows.push_back({Kind::Open, std::wstring{Tr(T::ContentUpdates)}});
             rows.push_back({Kind::Open, std::wstring{Tr(T::ContentDlc)}});
             const auto& network = view.configuration.network;
@@ -1476,8 +1486,7 @@ private:
                 const auto label = ControllerLabel(view.panel.devices, view.options.controller_id);
                 summary = view.options.controller_id.empty() ? I18n::Format(T::AutomaticValue, {label}) : label;
             } else {
-                summary = std::wstring{Tr(status.keys_ready ? T::KeysReady : T::KeysMissing)} + L" · " +
-                          I18n::Format(T::FirmwareFiles, {std::to_wstring(status.firmware_files)});
+                summary = KeysValue(status) + L" · " + FirmwareValue(status);
             }
             const unsigned color = chosen ? Palette::Text : Palette::TextSecondary;
             Icon(icons[i], x + 18, y + (h - 22) / 2, color, 22);
@@ -1492,23 +1501,31 @@ private:
         {
             const float x = SettingsListX, w = SettingsListWidth;
             const float y = SettingsListTop + static_cast<float>(HomeRowCount) * SettingsListStride + 18;
-            Round(x, y, w, 176, 18, Palette::Surface, 0.82f);
-            Outline(x + 0.5f, y + 0.5f, w - 1, 175, 18, 0xffffff, 0.06f);
+            Round(x, y, w, 204, 18, Palette::Surface, 0.82f);
+            Outline(x + 0.5f, y + 0.5f, w - 1, 203, 18, 0xffffff, 0.06f);
             Type(Tr(T::EmulatorData), TypeRole::Caps, x + 20, y + 20, 200, Palette::TextSecondary);
             const auto keys = Tr(status.keys_ready ? T::KeysReady : T::KeysMissing);
             const float chip = MeasureType(keys, TypeRole::Label) + 24;
             Chip(keys, x + w - 20 - chip, y + 15, status.keys_ready ? Palette::Text : Palette::Warning);
             const float tile_w = (w - 40 - 12) / 2;
-            const auto tile = [&](float tx, std::wstring_view label, std::size_t count) {
+            const auto tile = [&](float tx, std::wstring_view label, const std::wstring& value) {
                 Round(tx, y + 54, tile_w, 68, 12, Palette::Canvas, 0.7f);
                 Type(label, TypeRole::Label, tx + 12, y + 64, tile_w - 24, Palette::TextSecondary);
-                Type(std::to_wstring(count), TypeRole::HeadlineSmall, tx + 12, y + 84, tile_w - 24, Palette::Text);
+                Type(value, TypeRole::HeadlineSmall, tx + 12, y + 84, tile_w - 24, Palette::Text);
             };
-            tile(x + 20, Tr(T::SettingsFirmwareFiles), status.firmware_files);
-            tile(x + 20 + tile_w + 12, Tr(T::SettingsGameFolders), status.sources.size());
-            Type(Tr(T::SettingsLibraryGames), TypeRole::Label, x + 20, y + 140, w - 120, Palette::TextSecondary);
-            Type(view.loading ? std::wstring{L"…"} : std::to_wstring(view.scan.entries.size()), TypeRole::Label,
-                 x + w - 120, y + 140, 100, Palette::Text, 1, TextAlign::Trailing);
+            // The version once it has been read; until then (or when unreadable) the file count.
+            const auto& firmware = status.versions.firmware;
+            tile(x + 20, Tr(firmware.empty() ? T::SettingsFirmwareFiles : T::SettingsFirmwareVersion),
+                 firmware.empty() ? std::to_wstring(status.firmware_files) : std::wstring{winrt::to_hstring(firmware)});
+            const int generation = status.keys_ready ? status.versions.key_generation : -1;
+            tile(x + 20 + tile_w + 12, Tr(T::SettingsKeyGeneration), generation < 0 ? std::wstring{L"—"} : std::to_wstring(generation));
+            const auto line = [&](float ly, std::wstring_view label, const std::wstring& value) {
+                Type(label, TypeRole::Label, x + 20, ly, w - 120, Palette::TextSecondary);
+                Type(value, TypeRole::Label, x + w - 120, ly, 100, Palette::Text, 1, TextAlign::Trailing);
+            };
+            line(y + 140, Tr(T::SettingsGameFolders), std::to_wstring(status.sources.size()));
+            line(y + 168, Tr(T::SettingsLibraryGames),
+                 view.loading ? std::wstring{L"…"} : std::to_wstring(view.scan.entries.size()));
         }
         // The category's page.
         static constexpr std::array<T, HomeRowCount> pages{T::SystemTitle, T::ControllersAndKeyboard, T::FileManager};
