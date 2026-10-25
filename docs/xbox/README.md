@@ -33,6 +33,7 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 - [Operaciones Fermi2D](xbox_fermi2d.md): diagnóstico 0.3.4.9 para identificar operación, ROP, superficies y ruta antes de corregir efectos.
 
 - [Rendimiento](xbox_performance.md): perfiles, optimizaciones y prioridades pendientes.
+- [GPU de la Series](xbox_series_gpu.md): ocupacion, atomicos, division de grupos compute y como medir.
 - [Preparación y reutilización de PSO](xbox_pipeline_preparation.md): identidad host, trabajo único, residencia por fence y gates Game A.
 - [Preparación CPU de draws](xbox_draw_preparation.md): baseline Game D, metadata, samplers y subasignación de uniform buffers.
 - [Memoria de texturas](xbox_texture_memory.md): packing, readbacks, staging y comparación con Vulkan.
