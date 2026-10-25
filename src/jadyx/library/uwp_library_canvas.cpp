@@ -1124,6 +1124,7 @@ private:
                 case SystemPage::UserName: item.kind = Kind::Open; break;
                 case SystemPage::Updates: item.kind = Kind::Open; break;
                 case SystemPage::ClearCache: item.kind = Kind::Open; break;
+                case SystemPage::MiiEditor: item.kind = Kind::Open; break;
                 case SystemPage::AdultMods: item.kind = Kind::Toggle; item.on = settings.show_adult_mods; break;
                 case SystemPage::PerformanceStats: item.kind = Kind::Toggle; item.on = settings.show_performance_stats; break;
                 case SystemPage::PulseSessions: item.kind = Kind::Toggle; item.on = settings.pulse_sessions; break;

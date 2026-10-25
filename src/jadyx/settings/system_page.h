@@ -18,7 +18,7 @@
 namespace Jadyx {
 
 struct SystemPage {
-    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, AdultMods, PerformanceStats, PulseSessions, PlayTime, MultipleControllers, ClearCache, Updates, RowCount };
+    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, AdultMods, PerformanceStats, PulseSessions, PlayTime, MultipleControllers, MiiEditor, ClearCache, Updates, RowCount };
 
     bool updates_open{};
     std::size_t update_row{}, update_detail{}, update_scroll{};
@@ -40,6 +40,7 @@ enum class SystemPageEffect : std::uint8_t {
     NameDone,   ///< The editor closed with a new name in settings: save and apply.
     OpenUpdates,
     ClearCache, ///< Clear the library cache.
+    OpenMiiEditor, ///< Leave the library to run the firmware's Mii editor.
 };
 
 enum class SystemInput : std::uint8_t { Up, Down, Left, Right, Confirm, Back };
@@ -110,6 +111,8 @@ inline SystemPageEffect HandleSystemInput(SystemPage& page, SystemInput input) {
         return input == SystemInput::Confirm ? SystemPageEffect::OpenUpdates : SystemPageEffect::None;
     case Row::ClearCache:
         return input == SystemInput::Confirm ? SystemPageEffect::ClearCache : SystemPageEffect::None;
+    case Row::MiiEditor:
+        return input == SystemInput::Confirm ? SystemPageEffect::OpenMiiEditor : SystemPageEffect::None;
     case Row::RowCount:
         break;
     }
@@ -147,6 +150,7 @@ inline I18n::Text SystemRowTitle(SystemPage::Row row) {
     case SystemPage::PulseSessions:     return Text::PulseSessions;
     case SystemPage::PlayTime:          return Text::PlayTimeTracking;
     case SystemPage::MultipleControllers: return Text::MultipleControllers;
+    case SystemPage::MiiEditor:         return Text::MiiEditor;
     default:                            return Text::ClearLibraryCache;
     }
 }
@@ -164,6 +168,7 @@ inline I18n::Text SystemRowHint(SystemPage::Row row) {
     case SystemPage::PulseSessions:     return Text::PulseSessionsHint;
     case SystemPage::PlayTime:          return Text::PlayTimeTrackingHint;
     case SystemPage::MultipleControllers: return Text::MultipleControllersHint;
+    case SystemPage::MiiEditor:         return Text::MiiEditorHint;
     default:                            return Text::ClearLibraryCacheHint;
     }
 }

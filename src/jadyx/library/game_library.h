@@ -9,9 +9,13 @@
 #include <filesystem>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Jadyx {
+/// Launch path the library returns to run the firmware's Mii editor instead of a game.
+inline constexpr std::string_view MiiEditorLaunch = "jadyx:mii-editor";
+
 struct LibraryEntry {
     std::filesystem::path relative_path;
     std::wstring name;
