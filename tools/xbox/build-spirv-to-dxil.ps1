@@ -82,6 +82,23 @@ Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
 Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
     "    eden_spirv_to_dxil_pipeline_v4`n" `
     "    eden_spirv_to_dxil_pipeline_v4`n    eden_spirv_to_dxil_supported_flags`n"
+# Per-phase translation time (eden_spirv_to_dxil_phase_times), for the renderer's pipeline log.
+Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
+    "    eden_spirv_to_dxil_supported_flags`n" `
+    "    eden_spirv_to_dxil_supported_flags`n    eden_spirv_to_dxil_phase_times`n"
+# The optimize_nir loops and emit_module inside nir_to_dxil, added to eden_pipeline.c's counters.
+Patch-File "src\microsoft\compiler\nir_to_dxil.c" `
+    "#include `"nir_to_dxil.h`"`n" `
+    "#include `"nir_to_dxil.h`"`n#include `"util/os_time.h`"`n#include `"util/u_atomic.h`"`nextern uint64_t eden_phase_ns[];`n"
+Patch-File "src\microsoft\compiler\nir_to_dxil.c" `
+    "might be too opaque for the pass to see that they're next to each other. */`n   optimize_nir(s, opts);`n" `
+    "might be too opaque for the pass to see that they're next to each other. */`n   int64_t eden_start = os_time_get_nano();`n   optimize_nir(s, opts);`n   p_atomic_add(&eden_phase_ns[4], (uint64_t)(os_time_get_nano() - eden_start));`n"
+Patch-File "src\microsoft\compiler\nir_to_dxil.c" `
+    "      NIR_PASS(_, s, dxil_nir_fixup_tess_level_for_domain);`n   }`n`n   optimize_nir(s, opts);`n" `
+    "      NIR_PASS(_, s, dxil_nir_fixup_tess_level_for_domain);`n   }`n`n   eden_start = os_time_get_nano();`n   optimize_nir(s, opts);`n   p_atomic_add(&eden_phase_ns[4], (uint64_t)(os_time_get_nano() - eden_start));`n"
+Patch-File "src\microsoft\compiler\nir_to_dxil.c" `
+    "   if (!emit_module(ctx, opts)) {" `
+    "   eden_start = os_time_get_nano();`n   const bool eden_emitted = emit_module(ctx, opts);`n   p_atomic_add(&eden_phase_ns[5], (uint64_t)(os_time_get_nano() - eden_start));`n   if (!eden_emitted) {"
 Patch-File "src\microsoft\spirv_to_dxil\meson.build" `
     "      'spirv_to_dxil.h',`n" `
     "      'spirv_to_dxil.h',`n      'eden_pipeline.c',`n      'eden_spirv_to_dxil.h',`n"

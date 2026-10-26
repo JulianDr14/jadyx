@@ -131,6 +131,23 @@ struct eden_spirv_to_dxil_stream_output {
    struct eden_spirv_to_dxil_so_entry entries[EDEN_SPIRV_TO_DXIL_SO_MAX_ENTRIES];
 };
 
+/* Time spent in each phase of the pipeline entry points since the DLL was loaded, in
+ * nanoseconds, indexed by enum eden_spirv_to_dxil_phase. Writes at most count values. */
+enum eden_spirv_to_dxil_phase {
+   EDEN_PHASE_SPIRV_TO_NIR = 0,
+   EDEN_PHASE_NIR_PASSES,  /* dxil_spirv_nir_prep, dxil_spirv_nir_passes and our lowering */
+   EDEN_PHASE_LINK,
+   EDEN_PHASE_NIR_TO_DXIL, /* whole nir_to_dxil call */
+   EDEN_PHASE_NTD_OPTIMIZE, /* its two optimize_nir loops */
+   EDEN_PHASE_NTD_EMIT,     /* its emit_module */
+   EDEN_PHASE_PIPELINES,    /* count of pipelines, not time */
+   EDEN_PHASE_STAGES,       /* count of stages, not time */
+   EDEN_PHASE_COUNT,
+};
+
+void
+eden_spirv_to_dxil_phase_times(uint64_t *ns, unsigned count);
+
 /* stream_output may be NULL; otherwise it is filled on success (entry_count 0: no Xfb outputs). */
 bool
 eden_spirv_to_dxil_pipeline_v4(const struct eden_spirv_to_dxil_stage *stages, unsigned count,

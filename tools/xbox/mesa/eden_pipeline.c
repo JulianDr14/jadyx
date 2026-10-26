@@ -20,6 +20,8 @@
 #include "spirv/nir_spirv.h"
 #include "spirv/spirv_info.h"
 #include "util/blob.h"
+#include "util/os_time.h"
+#include "util/u_atomic.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -231,6 +233,22 @@ fill_stream_output(nir_shader *s, struct eden_spirv_to_dxil_stream_output *so)
    free(outputs);
 }
 
+/* The NIR-to-DXIL parts are added by the nir_to_dxil.c patch of build-spirv-to-dxil.ps1. */
+uint64_t eden_phase_ns[EDEN_PHASE_COUNT];
+
+static void
+add_phase(enum eden_spirv_to_dxil_phase phase, int64_t start)
+{
+   p_atomic_add(&eden_phase_ns[phase], (uint64_t)(os_time_get_nano() - start));
+}
+
+void
+eden_spirv_to_dxil_phase_times(uint64_t *ns, unsigned count)
+{
+   for (unsigned i = 0; i < count && i < EDEN_PHASE_COUNT; ++i)
+      ns[i] = p_atomic_read(&eden_phase_ns[i]);
+}
+
 static bool
 translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count,
                    enum dxil_validator_version validator_version_max,
@@ -251,6 +269,8 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
          return false;
    }
    memset(out, 0, sizeof(*out) * count);
+   p_atomic_inc(&eden_phase_ns[EDEN_PHASE_PIPELINES]);
+   p_atomic_add(&eden_phase_ns[EDEN_PHASE_STAGES], count);
 
    glsl_type_singleton_init_or_ref();
 
@@ -277,13 +297,16 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
       nir_options[i].lower_base_vertex =
          conf->first_vertex_and_base_instance_mode != DXIL_SPIRV_SYSVAL_TYPE_ZERO;
 
+      int64_t start = os_time_get_nano();
       nir[i] = spirv_to_nir(stages[i].words, stages[i].word_count, NULL,
                             (mesa_shader_stage)stages[i].stage, stages[i].entry_point,
                             spirv_opts, &nir_options[i]);
+      add_phase(EDEN_PHASE_SPIRV_TO_NIR, start);
       if (!nir[i]) {
          success = false;
          break;
       }
+      start = os_time_get_nano();
       nir_validate_shader(nir[i], "Validate before feeding NIR to the DXIL compiler");
       dxil_spirv_nir_prep(nir[i]);
       dxil_spirv_nir_passes(nir[i], conf, &out[i].metadata);
@@ -293,9 +316,11 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
          eden_lower_integer_sampling(nir[i]);
       if (flags & EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION)
          eden_lower_reduction_sampling(nir[i]);
+      add_phase(EDEN_PHASE_NIR_PASSES, start);
    }
 
    if (success) {
+      const int64_t start = os_time_get_nano();
       /* Reverse order, so outputs the next stage never reads are gone before the previous stage
        * is linked against its own predecessor. */
       for (unsigned i = count; i-- > 0;) {
@@ -314,6 +339,7 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
          out[i].metadata.requires_runtime_data |= link_metadata.requires_runtime_data;
          out[i].metadata.needs_draw_sysvals |= link_metadata.needs_draw_sysvals;
       }
+      add_phase(EDEN_PHASE_LINK, start);
    }
 
    struct dxil_logger logger_inner = {.priv = logger->priv, .log = logger->log};
@@ -337,7 +363,10 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
          .validator_version_max = validator_version_max,
       };
       struct blob dxil_blob;
-      if (!nir_to_dxil(nir[i], &opts, &logger_inner, &dxil_blob)) {
+      const int64_t start = os_time_get_nano();
+      const bool translated = nir_to_dxil(nir[i], &opts, &logger_inner, &dxil_blob);
+      add_phase(EDEN_PHASE_NIR_TO_DXIL, start);
+      if (!translated) {
          if (dxil_blob.allocated)
             blob_finish(&dxil_blob);
          success = false;
