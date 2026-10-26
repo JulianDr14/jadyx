@@ -599,6 +599,7 @@ Image& Image::operator=(Image&& other) noexcept {
         guest_blocks_upload_pending = other.guest_blocks_upload_pending;
         depth_feedback = std::move(other.depth_feedback);
         depth_feedback_failed = other.depth_feedback_failed;
+        depth_feedback_stale = other.depth_feedback_stale;
         slice_array = std::move(other.slice_array);
         slice_array_state = other.slice_array_state;
         slice_array_version = other.slice_array_version;
@@ -624,16 +625,57 @@ Image* Image::PrepareDepthFeedback() {
         LOG_INFO(Render, "D3D12: depth feedback snapshot allocated ({} {}x{}, {} samples)",
                  info.format, info.size.width, info.size.height, info.num_samples);
     }
-    // CopyResource preserves every mip, layer and both depth/stencil planes, including MSAA.
     // The direct queue orders earlier draws, this copy and the next draw; no CPU fence is needed.
+    const s32 levels = info.resources.levels;
+    const u64 all_levels = levels >= 64 ? ~u64{} : (u64{1} << levels) - 1;
+    const u64 stale = depth_feedback_stale & all_levels;
+    if (stale == 0) {
+        return depth_feedback.get();
+    }
     Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
     depth_feedback->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
-    runtime->scheduler.CommandList()->CopyResource(depth_feedback->Handle(), Handle());
+    auto* const commands = runtime->scheduler.CommandList();
+    if (stale == all_levels || info.num_samples > 1) {
+        // CopyResource preserves every mip, layer and both depth/stencil planes, including MSAA.
+        commands->CopyResource(depth_feedback->Handle(), Handle());
+    } else {
+        // A depth pyramid rendered level by level: only the levels drawn since the last
+        // snapshot, each copied whole as depth-stencil subresources must be.
+        const s32 layers = info.type == ImageType::e3D ? 1 : info.resources.layers;
+        const u32 planes = IsDepthStencilPlanar() ? 2 : 1;
+        for (s32 level = 0; level < levels; ++level) {
+            if (((stale >> level) & 1) == 0) {
+                continue;
+            }
+            for (s32 layer = 0; layer < layers; ++layer) {
+                for (u32 plane = 0; plane < planes; ++plane) {
+                    const u32 subresource = Subresource(level, layer, plane);
+                    const D3D12_TEXTURE_COPY_LOCATION source{
+                        .pResource = Handle(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                        .SubresourceIndex = subresource};
+                    const D3D12_TEXTURE_COPY_LOCATION target{
+                        .pResource = depth_feedback->Handle(),
+                        .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                        .SubresourceIndex = subresource};
+                    commands->CopyTextureRegion(&target, 0, 0, 0, &source, nullptr);
+                }
+            }
+        }
+    }
     depth_feedback->Transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     Transition(D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    depth_feedback_stale = 0;
     ++runtime->depth_feedback_copies;
     return depth_feedback.get();
+}
+
+void Image::TransitionDepthTarget(s32 level, D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
+    const u64 stale = depth_feedback_stale;
+    Transition(next, batch);
+    if ((next & D3D12_RESOURCE_STATE_DEPTH_WRITE) != 0 && level >= 0 && level < 64) {
+        depth_feedback_stale = stale | (u64{1} << level);
+    }
 }
 
 u32 Image::Subresource(s32 level, s32 layer, u32 plane) const noexcept {
@@ -644,6 +686,14 @@ u32 Image::Subresource(s32 level, s32 layer, u32 plane) const noexcept {
 
 void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
     if (!resource) return;
+    constexpr D3D12_RESOURCE_STATES WRITE_STATES =
+        D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+        D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_COPY_DEST |
+        D3D12_RESOURCE_STATE_RESOLVE_DEST;
+    if ((next & WRITE_STATES) != 0 || reinterpreted_ahead || needs_placed_init) {
+        // Any write but a depth target's (TransitionDepthTarget) outdates the whole snapshot.
+        depth_feedback_stale = ~u64{};
+    }
     if (reinterpreted_ahead || needs_placed_init) {
         // Both record commands on the image: its pending barriers must come first.
         if (batch) {
@@ -656,10 +706,6 @@ void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
             InitializePlacedResource();
         }
     }
-    constexpr D3D12_RESOURCE_STATES WRITE_STATES =
-        D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
-        D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_COPY_DEST |
-        D3D12_RESOURCE_STATE_RESOLVE_DEST;
     const u64 work = runtime->scheduler.Work();
     if (work != 0 && uav_work == work && state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
         (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||

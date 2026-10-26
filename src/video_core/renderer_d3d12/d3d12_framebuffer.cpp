@@ -222,9 +222,9 @@ void Framebuffer::PrepareAttachments(Scheduler& scheduler, bool depth_sampled) c
         }
     }
     if (depth_image != ImageId{}) {
-        (*images)[depth_image].Transition(depth_sampled ? DEPTH_SAMPLED_STATE
-                                                        : D3D12_RESOURCE_STATE_DEPTH_WRITE,
-                                          &barriers);
+        (*images)[depth_image].TransitionDepthTarget(
+            depth_base.level,
+            depth_sampled ? DEPTH_SAMPLED_STATE : D3D12_RESOURCE_STATE_DEPTH_WRITE, &barriers);
     }
 }
 

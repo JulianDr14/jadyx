@@ -334,6 +334,9 @@ public:
     /// Records the barriers into next, or adds them to batch (flushed first when the transition
     /// must record other commands).
     void Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch = nullptr);
+    /// Transition for binding level as the depth target: the depth feedback snapshot of the
+    /// other levels stays valid.
+    void TransitionDepthTarget(s32 level, D3D12_RESOURCE_STATES next, BarrierBatch* batch);
     [[nodiscard]] D3D12_RESOURCE_STATES State() const noexcept { return state; }
     /// Readback diagnostics: barriers only, without marking image contents modified.
     std::optional<D3D12_RESOURCE_STATES> DiagnosticState(ID3D12Resource* tracked_resource) const;
@@ -451,6 +454,8 @@ private:
     bool guest_blocks_upload_pending{};
     std::unique_ptr<Image> depth_feedback;
     bool depth_feedback_failed{};
+    /// Levels written since the depth feedback snapshot, one bit each.
+    u64 depth_feedback_stale{~u64{}};
     ComPtr<ID3D12Resource> slice_array;
     D3D12_RESOURCE_STATES slice_array_state{D3D12_RESOURCE_STATE_COMMON};
     u64 slice_array_version{};
