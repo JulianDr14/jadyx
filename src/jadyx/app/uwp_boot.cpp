@@ -288,7 +288,9 @@ struct BootConfig {
     /// Per-core JIT code cache ("jit_cache_mib="). Full, it is cleared with all the blocks'
     /// metadata, so it bounds the JIT's memory: a large game compiled 400+ MiB in two minutes on
     /// the default 512 MiB per core, and 1 GiB with the metadata, without ever releasing any.
-    u32 jit_cache_mib{128};
+    /// At 128 the same game filled it twice during its load (~150 MiB a core) and recompiled
+    /// everything; it is committed as it fills, so a smaller game never pays for the rest.
+    u32 jit_cache_mib{256};
     /// D3D12 debug layer (renderer_debug); PC only, the console has no SDK layers.
     bool debug_layer{};
     /// With the debug layer, GPU-based validation too ("debug_layer=gbv").
