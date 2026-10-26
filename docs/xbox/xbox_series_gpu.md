@@ -102,7 +102,7 @@ de verdad es el modificado, no solo el primero que se compilo.
 | `hunt=1` | Tiempo GPU por draw/dispatch, blits 2D, copias DMA y colas de command list. `tools/xbox/hunt-report.py` lo resume y dice si el frame esta limitado por GPU. |
 | `cs_inputs=<hash>` | Vuelca los buffers de un compute shader antes y despues del dispatch. `tools/xbox/cs-inputs-report.py LOG_DIR --hash H --jobs` muestra la lista de trabajos y las iteraciones por grupo. |
 | `dump_shader=<hash>` | IR y DXIL del shader, incluidos compute. Sirve para leer offsets y confirmar que la variante esperada es la que corre. |
-| `cs_split=2\|4\|8\|16` | Factor de division para los compute que la admitan. El log dice `split: each group of 64 runs as N` o el motivo del rechazo. |
+| `cs_split=1\|2\|4\|8\|16` | Factor de division para los compute que la admitan. Desde 0.3.8.82 es 16 por defecto (experimental: solo medido en un juego); `cs_split=1` la apaga. El log dice `split: each group of 64 runs as N` o el motivo del rechazo. |
 | `min_max_filter=off` | Salta la emulacion de filtros MIN/MAX, para aislar su coste. |
 
 Flujo: paquete con la opcion, partida hasta el punto, `tools/xbox/fetch-logs.ps1 -OutDir <dir>`,
