@@ -264,7 +264,8 @@ static U1 GetFlowTest(IREmitter& ir, FlowTest flow_test) {
     case FlowTest::RGT:
         return ir.LogicalAnd(ir.LogicalNot(ir.GetSFlag()), ir.LogicalNot(ir.GetZFlag()));
     case FlowTest::FCSM_TR:
-        LOG_WARNING(Shader, "(STUBBED) FCSM_TR");
+        // Part of the viewport multicast prologue NVN puts in vertex shaders; multicast is never
+        // active on the host, so the test is always false.
         return ir.Imm1(false);
     case FlowTest::CSM_TA:
     case FlowTest::CSM_TR:
