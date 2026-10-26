@@ -2265,7 +2265,58 @@ ImageViewId TextureCache<P>::FindDepthBuffer() {
         return ImageViewId{};
     }
     const ImageInfo info(regs.zeta, regs.zeta_size, regs.anti_alias_samples_mode);
+    if (MipRenderTargets()) {
+        if (const ImageViewId view_id = FindMipRenderTargetView(info, gpu_addr)) {
+            return view_id;
+        }
+    }
     return FindRenderTargetView(info, gpu_addr);
+}
+
+template <class P>
+ImageViewId TextureCache<P>::FindMipRenderTargetView(const ImageInfo& info, GPUVAddr gpu_addr) {
+    // Depth pyramids are rendered level by level, each target at its level's offset with a
+    // width rounded up to the pitch, so only the relaxed size matches. A separate image there
+    // reaches the pyramid only through alias copies; rendering into the level is what the
+    // hardware does.
+    if (info.type == ImageType::Linear) {
+        return ImageViewId{};
+    }
+    const std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+    if (!cpu_addr) {
+        return ImageViewId{};
+    }
+    const bool broken_views = runtime.HasBrokenTextureViewFormats();
+    const bool native_bgr = runtime.HasNativeBgr();
+    ImageId image_id{};
+    SubresourceBase base{};
+    ForEachImageInRegion(*cpu_addr, CalculateGuestSizeInBytes(info),
+                         [&](ImageId existing_id, ImageBase& existing) {
+                             if (True(existing.flags & ImageFlagBits::Remapped) ||
+                                 existing.info.type == ImageType::Linear ||
+                                 existing.info.resources.levels < 2 ||
+                                 existing.info.format != info.format) {
+                                 return false;
+                             }
+                             const std::optional<SubresourceBase> found =
+                                 FindSubresource(info, existing, gpu_addr, RelaxedOptions::Size,
+                                                 broken_views, native_bgr);
+                             if (!found || found->level == 0) {
+                                 return false;
+                             }
+                             image_id = existing_id;
+                             base = *found;
+                             return true;
+                         });
+    if (!image_id) {
+        return ImageViewId{};
+    }
+    const SubresourceRange range{
+        .base = base,
+        .extent = {.levels = 1, .layers = info.resources.layers},
+    };
+    return FindOrEmplaceImageView(image_id,
+                                  ImageViewInfo(RenderTargetImageViewType(info), info.format, range));
 }
 
 template <class P>

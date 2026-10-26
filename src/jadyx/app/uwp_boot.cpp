@@ -184,6 +184,7 @@ void SetXAudio2ProfileEnabled(bool enabled) noexcept; // audio_core/sink/xaudio2
 namespace VideoCommon {
 void SetAstcArrayRecompression(bool enabled) noexcept; // texture_cache/util.h
 void SetOpaqueAstcToBc1(bool enabled) noexcept;        // texture_cache/util.h
+void SetMipRenderTargets(bool enabled) noexcept;       // texture_cache/texture_cache_base.h
 } // namespace VideoCommon
 
 namespace {
@@ -313,6 +314,9 @@ struct BootConfig {
     /// Sample counts reach the guest as never zero ("occlusion_force_visible=1"): A/B for
     /// objects the game's occlusion culling drops.
     bool occlusion_force_visible{};
+    /// Depth targets at a mip level of a mipmapped image become separate aliased images again
+    /// ("mip_rt=0"): reproduces the alias path depth pyramids took before.
+    bool mip_render_targets{true};
     /// Filtered MIN/MAX sampler reductions go to the hardware although the device reports no
     /// support ("min_max_filter=force").
     bool force_min_max_filter{};
@@ -603,6 +607,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     Tegra::SetIndirectMacroCpuRead(config.indirect_macro_cpu);
     VideoCommon::force_occlusion_visible.store(config.occlusion_force_visible,
                                                std::memory_order_relaxed);
+    VideoCommon::SetMipRenderTargets(config.mip_render_targets);
     D3D12::SetForceMinMaxFilter(config.force_min_max_filter);
     D3D12::SetSkipMinMaxFilter(config.skip_min_max_filter);
     D3D12::SetEmulateMinMaxFilter(config.emulate_min_max_filter);
@@ -2799,6 +2804,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "occlusion_force_visible=1") {
                             config.occlusion_force_visible = true;
                             WriteDiag("boot.cfg: occlusion results reach the game as never zero");
+                        } else if (line == "mip_rt=0") {
+                            config.mip_render_targets = false;
+                            WriteDiag("boot.cfg: depth targets at a mip level use aliased images");
                         } else if (line == "min_max_filter=force") {
                             config.force_min_max_filter = true;
                             WriteDiag("boot.cfg: filtered min/max sampler reduction forced on");

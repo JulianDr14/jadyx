@@ -56,6 +56,12 @@ using Tegra::Texture::TSCEntry;
 using VideoCore::Surface::PixelFormat;
 using namespace Common::Literals;
 
+/// Depth targets at a mip level of an existing mipmapped image render into that level (default)
+/// instead of a separate aliased image. Boot.cfg "mip_rt=0" turns it off to reproduce the alias
+/// path.
+void SetMipRenderTargets(bool enabled) noexcept;
+[[nodiscard]] bool MipRenderTargets() noexcept;
+
 struct ImageViewInOut {
     u32 index{};
     bool blacklist{};
@@ -383,6 +389,9 @@ private:
 
     /// Find or create a view for a render target with the given image parameters
     [[nodiscard]] ImageViewId FindRenderTargetView(const ImageInfo& info, GPUVAddr gpu_addr);
+
+    /// Find a view of the mip level of a mipmapped image that a render target starts at, or null
+    [[nodiscard]] ImageViewId FindMipRenderTargetView(const ImageInfo& info, GPUVAddr gpu_addr);
 
     /// Iterates over all the images in a region calling func
     template <typename Func>
