@@ -225,6 +225,8 @@ constexpr int RETURN_TO_LIBRARY = 10;
 constexpr int PULSE_RESUME_FAILED = 18;
 /// The library asked for the Mii editor and the firmware does not have it.
 constexpr int MII_EDITOR_MISSING = 19;
+/// The game's program has no ExeFS of its own (a sparse base) and no update brings one.
+constexpr int UPDATE_REQUIRED = 20;
 
 /// Where the renderer presents: the CoreWindow (as IUnknown*) and its size in physical pixels.
 /// A null window selects the Null renderer.
@@ -897,6 +899,11 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         // Some early Load failures leave kernel objects; others already shut Core down.
         // Stop frontend owners in both cases, but never run the kernel's teardown twice.
         shutdown();
+        // The loader already looked for the ExeFS in an installed update before giving up.
+        if (load_result == Core::SystemResultStatus(u32(Core::SystemResultStatus::ErrorLoader) +
+                                                    u32(Loader::ResultStatus::ErrorNoExeFS))) {
+            return UPDATE_REQUIRED;
+        }
         return 2;
     }
     ApplyGameLanguage(system);
@@ -3315,6 +3322,11 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
             if (show_library && boot_status.load() == 2) {
                 library_error = Jadyx::I18n::ToUtf8(Jadyx::I18n::Tr(Jadyx::I18n::Text::GameLoadFailed));
                 WriteDiag("boot load failed; returning to library for recovery");
+                continue;
+            }
+            if (show_library && boot_status.load() == Jadyx::UPDATE_REQUIRED) {
+                library_error = Jadyx::I18n::ToUtf8(Jadyx::I18n::Tr(Jadyx::I18n::Text::GameNeedsUpdate));
+                WriteDiag("game has no ExeFS without its update; returning to library");
                 continue;
             }
             if (show_library && boot_status.load() == 16) {

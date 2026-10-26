@@ -349,6 +349,7 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::MiiEditor, L"Editor de Mii"},
     {Text::MiiEditorHint, L"Crea y edita Miis con el editor del firmware; los juegos los usan"},
     {Text::MiiEditorMissing, L"No se encontró el editor de Mii. Importa el firmware desde el Portal Jadyx."},
+    {Text::GameNeedsUpdate, L"Este juego necesita su actualización para arrancar. Añade la actualización e inténtalo de nuevo."},
     {Text::LibraryCacheCleared, L"Caché de la biblioteca borrada."},
     {Text::SystemSaveFailed, L"No se pudieron guardar los ajustes"},
     {Text::RegionJapan, L"Japón"},

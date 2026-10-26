@@ -295,6 +295,7 @@ enum class Text : std::uint16_t {
     MiiEditor,
     MiiEditorHint,
     MiiEditorMissing,
+    GameNeedsUpdate,
     LibraryCacheCleared,
     SystemSaveFailed,
     RegionJapan,
