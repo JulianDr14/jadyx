@@ -50,6 +50,7 @@
 #include "common/scm_rev.h"
 #include "common/settings.h"
 #include "common/thread.h"
+#include "common/windows/cpu_pin.h"
 #include "common/windows/timed_wait_profile.h"
 #include "common/windows/sampling_profiler.h"
 #include "common/windows/timer_resolution.h"
@@ -395,6 +396,13 @@ struct BootConfig {
     /// ("timer_spin=<us>"); past that a late timer makes the event late. Unset follows the
     /// timer's learned lateness, which on Series keeps nearly every wait on the CPU.
     std::optional<u32> timer_spin_us;
+    /// Exclusive loads and stores emitted inline through the page table ("inline_exclusives=0"
+    /// calls the exclusive monitor for each one, as before 0.3.8.71).
+    bool inline_exclusives{true};
+    /// Where the guest cores and other named threads run among the app's cores ("cpu_pin=cores"
+    /// gives each guest core a physical core, "cpu_pin=split" its first logical processor and the
+    /// rest the second ones); off leaves them to the scheduler.
+    Common::Windows::CpuPin cpu_pin{Common::Windows::CpuPin::Off};
     bool cpu_probe{}; ///< Measures the app's logical processors before the guest (cpu_probe.h).
     bool timer_profile{}; ///< HostTiming waits only; opt-in, separate from draw profiling.
     /// File name of a game in LocalState\games to boot instead of boot.nro (package-appx.ps1 -Game).
@@ -513,6 +521,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
               std::to_string(std::chrono::duration<double, std::milli>(timer_resolution).count()) +
               " ms");
     WriteDiag("step: CPU " + CpuSetReport());
+    // Read by each emulator thread when it is named.
+    Common::Windows::SetCpuPin(config.cpu_pin);
     if (config.cpu_probe) Jadyx::RunCpuProbe(WriteDiag);
     ApplyHeadlessBootSettings(config.null_renderer ? BootSurface{} : surface);
     // After the System settings, which turn the overlay on when the player has it on.
@@ -566,6 +576,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     // caches evict against what the whole app has left, not DXGI's budget.
     g_test_memory_limit = u64{config.memory_limit_mib} << 20;
     Core::SetJitCodeCacheSize(config.jit_cache_mib << 20);
+    Core::SetPageTableExclusives(config.inline_exclusives);
     D3D12::SetAppMemoryQuery(QueryAppMemory);
     D3D12::SetBcArrayDecode(!config.bc_arrays_native);
     // RGBA8 ASTC made loading frames upload 150-260 MiB at once and the console run out of memory
@@ -967,6 +978,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         launch_screen.emplace(system);
     }
     void(system.Run());
+    WriteDiag("step: CPU pin " + Common::Windows::CpuPinReport());
     input.Start(system.HIDCore());
     if (config.gpu_failure_probe) {
         WriteDiag("GPU recovery probe: injecting callback failure");
@@ -2987,6 +2999,18 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                       std::string(value == "check" ? "checked"
                                                   : value == "1"   ? "on"
                                                                    : "off"));
+                        } else if (line == "inline_exclusives=0" || line == "inline_exclusives=1") {
+                            config.inline_exclusives = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: exclusive accesses ") +
+                                      (config.inline_exclusives ? "inline" : "through the monitor"));
+                        } else if (line == "cpu_pin=off" || line == "cpu_pin=cores" ||
+                                   line == "cpu_pin=split") {
+                            using Common::Windows::CpuPin;
+                            const auto value = line.substr(8);
+                            config.cpu_pin = value == "cores"   ? CpuPin::Cores
+                                             : value == "split" ? CpuPin::Split
+                                                                : CpuPin::Off;
+                            WriteDiag("boot.cfg: cpu_pin " + value);
                         } else if (line.starts_with("timer_spin=")) {
                             const auto value = line.substr(11);
                             u32 parsed{};
