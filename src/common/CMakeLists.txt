@@ -169,7 +169,9 @@ set_source_files_properties(zbic_compression.cpp PROPERTIES
     COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:Clang,GNU>:-Wno-unused-function;-Wno-missing-declarations;-Wno-shadow>;$<$<CXX_COMPILER_ID:MSVC>:/wd4505;/wd5245>")
 
 if(WIN32)
-    target_sources(common PRIVATE windows/precise_timer.cpp
+    target_sources(common PRIVATE windows/cpu_pin.cpp
+        windows/cpu_pin.h
+        windows/precise_timer.cpp
         windows/precise_timer.h
         windows/timer_resolution.cpp
         windows/timer_resolution.h)

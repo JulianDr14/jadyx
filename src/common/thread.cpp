@@ -22,6 +22,7 @@
 #elif defined(_WIN32)
 #include <windows.h>
 #include "common/string_util.h"
+#include "common/windows/cpu_pin.h"
 #include "common/windows/timer_resolution.h"
 #include "common/windows/timed_wait_profile.h"
 #ifdef _MSC_VER
@@ -509,6 +510,8 @@ void SetCurrentThreadName(const char* name) {
         ; // No-op
     // Named threads are the ones the in-process profiler samples.
     SamplingProfiler::RegisterCurrentThread(name);
+    // And the ones placed on the app's cores (cpu_pin.h).
+    Windows::PinCurrentThread(name);
 #elif  defined(__APPLE__)
     pthread_setname_np(name);
 #elif defined(__HAIKU__)
