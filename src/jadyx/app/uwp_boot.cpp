@@ -394,8 +394,9 @@ struct BootConfig {
     bool timer_sleep{true};
     /// Most microseconds a host timing wait spends on the CPU before its deadline
     /// ("timer_spin=<us>"); past that a late timer makes the event late. Unset follows the
-    /// timer's learned lateness, which on Series keeps nearly every wait on the CPU.
-    std::optional<u32> timer_spin_us;
+    /// timer's learned lateness ("timer_spin=auto"), which on Series keeps nearly every wait on
+    /// the CPU: 0.3.8.70 measured a whole core spent there and 2-3 FPS less than with 100 us.
+    std::optional<u32> timer_spin_us{100};
     /// Exclusive loads and stores emitted inline through the page table ("inline_exclusives=0"
     /// calls the exclusive monitor for each one, as before 0.3.8.71).
     bool inline_exclusives{true};
@@ -2999,6 +3000,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                       std::string(value == "check" ? "checked"
                                                   : value == "1"   ? "on"
                                                                    : "off"));
+                        } else if (line == "timer_spin=auto") {
+                            config.timer_spin_us.reset();
+                            WriteDiag("boot.cfg: host timing follows the timer's lateness");
                         } else if (line == "inline_exclusives=0" || line == "inline_exclusives=1") {
                             config.inline_exclusives = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: exclusive accesses ") +
