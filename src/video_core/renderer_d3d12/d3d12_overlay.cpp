@@ -153,8 +153,19 @@ void RendererD3D12::DrawPerformanceOverlay(CommandStream* cmd,
             hud.memory_line = FormatOverlayResidentMemory(QueryOverlayResidentMemory());
             hud.memory_sample_time = now;
         }
-        std::array<std::string, 5> lines{
-            "FPS --", "FRAME -- MS MAX --", "CPU --", "GPUQ --", hud.memory_line};
+        // The latest hitch for ten seconds, by the short name of its likely cause (the log has
+        // the numbers). Indexed by HitchCause.
+        static constexpr std::array<const char*, 11> HITCH_CAUSES{
+            "PSO", "JIT", "DISCO", "LIMPIEZA", "RECURSOS", "TEXTURAS", "LECTURA GPU", "GPU",
+            "CPU JUEGO", "MEMORIA", "RENDER"};
+        std::string hitch_line = "TIRON --";
+        if (hitch.last_time != std::chrono::steady_clock::time_point{} &&
+            now - hitch.last_time < std::chrono::seconds{10}) {
+            hitch_line = fmt::format("TIRON {:.0f} MS {}", hitch.last_ms,
+                                     HITCH_CAUSES[static_cast<size_t>(hitch.last_cause)]);
+        }
+        std::array<std::string, 6> lines{
+            "FPS --", "FRAME -- MS MAX --", "CPU --", "GPUQ --", hud.memory_line, hitch_line};
         if (!first && hud.frames != 0) {
             const double frames = static_cast<double>(hud.frames);
             lines[0] = fmt::format("FPS {:.1f}", frames * 1000.0 / elapsed_ms);
