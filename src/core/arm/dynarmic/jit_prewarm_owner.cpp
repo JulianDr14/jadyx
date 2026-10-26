@@ -185,6 +185,8 @@ void Owner::Warm(const Progress& progress, std::size_t code_budget) {
         const auto start = std::chrono::steady_clock::now();
         const auto space = target->CodeCacheSpaceRemaining();
         const auto used = [&] { return space - target->CodeCacheSpaceRemaining(); };
+        // A quarter of the cache stays for play: filled, it is cleared with every warmed block.
+        code_budget = std::min(code_budget, space - space / 4);
         target->BeginWarm();
         for (std::size_t n = 0; n < plan.size(); ++n) {
             if (used() >= code_budget) {
