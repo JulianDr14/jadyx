@@ -15,6 +15,7 @@
 #include "common/bug_tracker.h"
 #include "common/cityhash.h"
 #include "common/logging.h"
+#include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/frame_trace.h"
 
 namespace D3D12 {
@@ -205,6 +206,7 @@ std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
         VideoCore::FrameTrace::Event::PipelineTranslateLong, trace_pipeline, trace_pipeline != 0};
     const u32 flags = (options.flatten_vertex ? EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX : 0) |
                       (options.emulate_reduction ? EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION : 0);
+    const u64 translate_start = SteadyMicros();
     if (options.emulate_reduction && !emulates_reduction) {
         throw std::runtime_error("D3D12: spirv_to_dxil.dll cannot emulate sampler reduction");
     }
@@ -247,6 +249,7 @@ std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
     }
 
     translate_span.Finish();
+    GetPipelineStats().Record(D3D12::PipelineStage::Translate, SteadyMicros() - translate_start);
     std::vector<CompiledStage> result(stages.size());
     for (size_t i = 0; i < stages.size(); ++i) {
         const auto* data = static_cast<const u8*>(objects[i].binary.buffer);
@@ -277,12 +280,16 @@ void ShaderCompiler::Sign(std::vector<u8>& dxil, u64 trace_pipeline) const {
     ComPtr<IDxcOperationResult> result;
     VideoCore::FrameTrace::ScopedSpan lock_span{
         VideoCore::FrameTrace::Event::PipelineValidatorLockLong, trace_pipeline, trace_pipeline != 0};
+    const u64 lock_start = SteadyMicros();
     std::scoped_lock lock{validator_mutex};
+    const u64 sign_start = SteadyMicros();
+    GetPipelineStats().Record(D3D12::PipelineStage::SignLock, sign_start - lock_start);
     lock_span.Finish();
     VideoCore::FrameTrace::ScopedSpan sign_span{
         VideoCore::FrameTrace::Event::PipelineSignLong, trace_pipeline, trace_pipeline != 0};
     ThrowIfFailed(validator->Validate(&blob, DxcValidatorFlags_InPlaceEdit, &result),
                   "IDxcValidator::Validate");
+    GetPipelineStats().Record(D3D12::PipelineStage::Sign, SteadyMicros() - sign_start);
     HRESULT status = E_FAIL;
     result->GetStatus(&status);
     if (SUCCEEDED(status)) {
