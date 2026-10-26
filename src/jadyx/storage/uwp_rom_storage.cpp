@@ -18,6 +18,7 @@
 #include <winrt/Windows.Storage.Streams.h>
 #include <winrt/Windows.Storage.Search.h>
 #include <winrt/Windows.Storage.FileProperties.h>
+#include "common/host_stalls.h"
 #include "common/logging.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/loader/nro.h"
@@ -112,6 +113,7 @@ public:
     size_t Read(u8* data, size_t length, size_t offset) const override {
         if (offset >= size || !length || !data) return 0;
         length = std::min(length, size - offset);
+        const Common::HostStalls::FileReadTimer read_timer;
         std::scoped_lock lock{mutex}; // Serialize seek+read on this file, not the whole VFS.
         size_t done = 0;
         try {
@@ -154,6 +156,7 @@ public:
             LogReadFailure(static_cast<unsigned>(e.code().value));
         }
         if (done != length) LogReadFailure(ERROR_READ_FAULT);
+        read_timer.Done(done);
         return done;
     }
 private:
