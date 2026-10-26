@@ -184,6 +184,7 @@ LaunchResolution ResolveLaunchContent(FileSys::VfsFilesystem& vfs, const std::st
                 if (VerifyContent(*found, stop) != Error::None) { result.unavailable.push_back(r); continue; }
             }
             if (!RequirementsSatisfied(r, result.version, SupportedSystemVersion())) {
+                if (r.required_application <= result.version) result.required_system = r.required_system;
                 result.error = Error::Requirements; return result;
             }
             RegisterContent(provider, *found);

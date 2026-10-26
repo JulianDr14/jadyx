@@ -340,6 +340,7 @@ enum class Text : std::uint16_t {
     ContentSpace,
     ContentRegistryError,
     ContentRequirements,
+    ContentRequiresFirmware,
     ContentIo,
     ContentUpdateItem,
     ContentDlcItem,

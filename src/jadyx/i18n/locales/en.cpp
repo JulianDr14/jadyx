@@ -391,6 +391,7 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::ContentSpace, L"Not enough free space for this import."},
     {Text::ContentRegistryError, L"The content catalog could not be recovered. Existing files were preserved."},
     {Text::ContentRequirements, L"This content requires a newer game or emulated system version."},
+    {Text::ContentRequiresFirmware, L"This game requires firmware {0} and you have {1}."},
     {Text::ContentIo, L"The operation could not be saved. Previously installed content is preserved."},
     {Text::ContentUpdateItem, L"Game update"},
     {Text::ContentDlcItem, L"Additional content"},

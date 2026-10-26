@@ -391,6 +391,7 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::ContentSpace, L"Não há espaço livre suficiente para esta importação."},
     {Text::ContentRegistryError, L"Não foi possível recuperar o catálogo de conteúdo. Os arquivos existentes foram preservados."},
     {Text::ContentRequirements, L"Este conteúdo exige uma versão mais nova do jogo ou do sistema emulado."},
+    {Text::ContentRequiresFirmware, L"Este jogo exige o firmware {0} e você tem o {1}."},
     {Text::ContentIo, L"Não foi possível salvar a operação. O conteúdo instalado antes foi preservado."},
     {Text::ContentUpdateItem, L"Atualização do jogo"},
     {Text::ContentDlcItem, L"Conteúdo adicional"},

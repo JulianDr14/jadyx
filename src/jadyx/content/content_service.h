@@ -24,6 +24,8 @@ struct LaunchResolution {
     bool managed{};
     std::array<std::uint8_t, 8> build_id{};
     std::vector<Revision> unavailable;
+    // With Error::Requirements: the system version the content asked for when that was the cause.
+    std::uint32_t required_system{};
 };
 // Populate the same provider used by PatchManager/AOC. Never change persistent choices here.
 LaunchResolution ResolveLaunchContent(FileSys::VfsFilesystem& vfs, const std::string& base_path,
