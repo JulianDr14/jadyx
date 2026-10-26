@@ -7,7 +7,10 @@
 #include <utility>
 
 #include <fmt/format.h>
+#include <windows.h>
+#include <psapi.h>
 
+#include "common/host_stalls.h"
 #include "common/logging.h"
 #include "core/arm/cpu_profile.h"
 #include "common/windows/timed_wait_profile.h"
@@ -62,6 +65,7 @@ void RendererD3D12::RecordPacing(double wait_ms, double present_ms) {
                  1000.0 * pacing.frames / pacing.total_ms, percentile(50), percentile(95),
                  percentile(99), pacing.frames);
         ReportPerfWindow(pacing.frames, pacing.total_ms);
+        ReportHitchWindow(pacing.frames);
         pacing = PacingStats{.last_composite = now};
     }
 }
@@ -317,22 +321,189 @@ const char* LikelyCause(const VideoCore::Perf::Snapshot& d, double interval_ms) 
     return best->second;
 }
 
+/// Indexed by RendererD3D12::HitchCause.
+constexpr std::array<const char*, 11> HITCH_CAUSE_NAMES{
+    "pipeline builds",
+    "JIT compilation (new guest code)",
+    "game file reads",
+    "cache garbage collection",
+    "creating GPU resources",
+    "decoding textures on the CPU",
+    "guest reading back GPU memory",
+    "GPU work (the GPU thread waited for the GPU)",
+    "game CPU work (the GPU thread waited for the game)",
+    "memory page faults",
+    "GPU thread recording and caches",
+};
+
+const char* HitchCauseName(size_t cause) {
+    return cause < HITCH_CAUSE_NAMES.size() ? HITCH_CAUSE_NAMES[cause] : "unknown";
+}
+
 } // Anonymous namespace
 
+RendererD3D12::HitchProbe::HostTotals RendererD3D12::ReadHostTotals() const {
+    using Dynarmic::JitProfile::Phase;
+    using Common::HostStalls::Counter;
+    const auto compile = Dynarmic::JitProfile::Read(Phase::Compile);
+    PROCESS_MEMORY_COUNTERS memory{};
+    memory.cb = sizeof(memory);
+    const bool have_memory = K32GetProcessMemoryInfo(GetCurrentProcess(), &memory, sizeof(memory));
+    return {
+        .jit_compiles = compile.calls,
+        .jit_compile_ns = compile.ns,
+        .jit_invalidations = Dynarmic::JitProfile::Read(Phase::Invalidate).calls,
+        .file_reads = Common::HostStalls::Read(Counter::FileReads),
+        .file_read_bytes = Common::HostStalls::Read(Counter::FileReadBytes),
+        .file_read_us = Common::HostStalls::Read(Counter::FileReadUs),
+        .page_faults = have_memory ? memory.PageFaultCount : hitch.host.page_faults,
+    };
+}
+
+RendererD3D12::HitchProbe::HostTotals RendererD3D12::HostDelta(const HitchProbe::HostTotals& now,
+                                                               const HitchProbe::HostTotals& before) {
+    return {
+        .jit_compiles = now.jit_compiles - before.jit_compiles,
+        .jit_compile_ns = now.jit_compile_ns - before.jit_compile_ns,
+        .jit_invalidations = now.jit_invalidations - before.jit_invalidations,
+        .file_reads = now.file_reads - before.file_reads,
+        .file_read_bytes = now.file_read_bytes - before.file_read_bytes,
+        .file_read_us = now.file_read_us - before.file_read_us,
+        .page_faults = now.page_faults - before.page_faults,
+    };
+}
+
 void RendererD3D12::ReportPerf(double interval_ms) {
-    constexpr double REPORT_MS = 100.0;
+    using HostTotals = HitchProbe::HostTotals;
     const VideoCore::Perf::Snapshot now = VideoCore::Perf::Read();
     const VideoCore::Perf::Snapshot delta = Delta(now, perf_frame);
     perf_frame = now;
-    const auto time = std::chrono::steady_clock::now();
-    // At most one per second, so a stretch of slow frames does not flood the log.
-    if (interval_ms < REPORT_MS || time - last_hitch_report < std::chrono::seconds{1}) {
+    const HostTotals host = ReadHostTotals();
+    const HostTotals host_delta = HostDelta(host, hitch.host);
+    hitch.host = host;
+
+    // A second without a present is a pause (menus, loading screens), not a hitch.
+    constexpr double PAUSE_MS = 1000.0;
+    if (interval_ms >= PAUSE_MS) {
         return;
     }
-    last_hitch_report = time;
-    LOG_INFO(Render, "D3D12 hitch: {:.0f} ms frame, likely {} | {}", interval_ms,
-             LikelyCause(delta, interval_ms), DescribePerf(delta, interval_ms));
-    LOG_INFO(Render, "D3D12 hitch detail: {}", DescribeDrawCosts(delta, interval_ms));
+    if (hitch.normal_ms == 0.0) {
+        hitch.normal_ms = std::clamp(interval_ms, 1000.0 / 60.0, 100.0);
+    }
+    const double normal = hitch.normal_ms;
+    // Clamped so a single hitch barely moves the average, while a lower frame rate that lasts
+    // still becomes the new normal within a few dozen frames.
+    hitch.normal_ms += (std::min(interval_ms, 2.0 * normal) - normal) / 16.0;
+
+    std::array<double, NUM_TIMED_HITCH_CAUSES> ms{};
+    const auto set = [&ms](HitchCause cause, double value) {
+        ms[static_cast<size_t>(cause)] = value;
+    };
+    set(HitchCause::Pipelines, Ms(delta, Counter::PipelineStallUs));
+    set(HitchCause::JitCompile, static_cast<double>(host_delta.jit_compile_ns) / 1e6);
+    set(HitchCause::FileReads, static_cast<double>(host_delta.file_read_us) / 1000.0);
+    set(HitchCause::CacheGc, Ms(delta, Counter::CacheGcUs));
+    set(HitchCause::NewResources, Ms(delta, Counter::ResourceCreateUs));
+    set(HitchCause::TextureDecode, Ms(delta, Counter::TextureDecodeUs));
+    set(HitchCause::GuestReadback, Ms(delta, Counter::GpuThreadFlushUs));
+    set(HitchCause::Gpu, Ms(delta, Counter::FenceWaitUs));
+    set(HitchCause::GameCpu, Ms(delta, Counter::GpuThreadIdleUs));
+
+    // A dropped frame at 60 FPS (33 ms against 17) or at 30 FPS (50 ms against 33) counts.
+    const double excess = interval_ms - normal;
+    if (interval_ms < normal * 1.5 || excess < 12.0) {
+        for (size_t i = 0; i < ms.size(); ++i) {
+            hitch.usual_ms[i] += (ms[i] - hitch.usual_ms[i]) / 16.0;
+        }
+        return;
+    }
+
+    // The cause is what grew the most over its usual share, if it covers a quarter of the extra
+    // time. JIT and file reads also show as the GPU thread idling, so those are checked first.
+    HitchCause cause = HitchCause::Count;
+    double best = excess * 0.25;
+    for (size_t i = 0; i < static_cast<size_t>(HitchCause::GameCpu); ++i) {
+        const double grown = ms[i] - hitch.usual_ms[i];
+        if (grown >= best) {
+            best = grown;
+            cause = static_cast<HitchCause>(i);
+        }
+    }
+    if (cause == HitchCause::Count) {
+        const size_t idle = static_cast<size_t>(HitchCause::GameCpu);
+        // 16 MiB of pages touched for the first time (or brought back) in one frame.
+        if (host_delta.page_faults >= 4096) {
+            cause = HitchCause::PageFaults;
+        } else if (ms[idle] - hitch.usual_ms[idle] >= excess * 0.5) {
+            cause = HitchCause::GameCpu;
+        } else {
+            cause = HitchCause::Render;
+        }
+    }
+
+    const auto time = std::chrono::steady_clock::now();
+    ++hitch.window_hitches;
+    ++hitch.window_causes[static_cast<size_t>(cause)];
+    if (interval_ms > hitch.window_worst_ms) {
+        hitch.window_worst_ms = interval_ms;
+        hitch.window_worst = cause;
+    }
+    hitch.last_ms = interval_ms;
+    hitch.last_cause = cause;
+    hitch.last_time = time;
+
+    // At most a few lines per second, so a slow stretch does not flood the log; the pacing window
+    // summary still counts every hitch.
+    if (time - hitch.log_second >= std::chrono::seconds{1}) {
+        hitch.log_second = time;
+        hitch.logged_this_second = 0;
+    }
+    if (++hitch.logged_this_second > 4) {
+        ++hitch.window_unlogged;
+        return;
+    }
+    const auto get = [&delta](Counter counter) { return VideoCore::Perf::Get(delta, counter); };
+    const auto at = [&ms](HitchCause c) { return ms[static_cast<size_t>(c)]; };
+    LOG_INFO(Render,
+             "Hitch: {:.0f} ms frame, normally {:.0f} ms; likely {} | JIT {:.1f} ms ({} blocks, "
+             "{} code invalidations), file reads {:.1f} ms ({}, {:.2f} MiB), cache GC {:.1f} ms "
+             "({}), page faults {} | GPU thread: idle {:.1f} ms, fence waits {:.1f} ms, pipeline "
+             "stalls {:.1f} ms ({}), guest readbacks {:.1f} ms ({}), new resources {:.1f} ms ({}), "
+             "CPU texture decode {:.1f} ms | game queued {} frames, GPU busy {:.1f} ms",
+             interval_ms, normal, HitchCauseName(static_cast<size_t>(cause)),
+             at(HitchCause::JitCompile), host_delta.jit_compiles, host_delta.jit_invalidations,
+             at(HitchCause::FileReads), host_delta.file_reads,
+             static_cast<double>(host_delta.file_read_bytes) / (1024.0 * 1024.0),
+             at(HitchCause::CacheGc), get(Counter::CacheGcRuns), host_delta.page_faults,
+             at(HitchCause::GameCpu), at(HitchCause::Gpu), at(HitchCause::Pipelines),
+             get(Counter::PipelineStalls), at(HitchCause::GuestReadback),
+             get(Counter::GpuThreadFlushes), at(HitchCause::NewResources),
+             get(Counter::ResourcesCreated), at(HitchCause::TextureDecode),
+             get(Counter::GuestFramesQueued), Ms(delta, Counter::GpuBusyUs));
+    if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
+        LOG_INFO(Render, "Hitch detail: {}", DescribeDrawCosts(delta, interval_ms));
+    }
+}
+
+void RendererD3D12::ReportHitchWindow(u32 frames) {
+    if (hitch.window_hitches != 0) {
+        std::string causes;
+        for (size_t i = 0; i < hitch.window_causes.size(); ++i) {
+            if (hitch.window_causes[i] == 0) {
+                continue;
+            }
+            causes += fmt::format("{}{} {}", causes.empty() ? "" : ", ", HitchCauseName(i),
+                                  hitch.window_causes[i]);
+        }
+        LOG_INFO(Render,
+                 "Hitches over {} frames: {} ({}); worst {:.0f} ms, {}; {} past the log limit",
+                 frames, hitch.window_hitches, causes, hitch.window_worst_ms,
+                 HitchCauseName(static_cast<size_t>(hitch.window_worst)), hitch.window_unlogged);
+    }
+    hitch.window_causes = {};
+    hitch.window_hitches = 0;
+    hitch.window_unlogged = 0;
+    hitch.window_worst_ms = 0.0;
 }
 
 void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {

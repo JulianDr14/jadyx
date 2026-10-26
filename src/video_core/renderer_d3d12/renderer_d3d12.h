@@ -287,7 +287,47 @@ private:
     void ReportPerfWindow(u32 frames, double total_ms);
     VideoCore::Perf::Snapshot perf_frame{};  ///< counters at the previous present
     VideoCore::Perf::Snapshot perf_window{}; ///< counters at the start of the pacing window
-    std::chrono::steady_clock::time_point last_hitch_report{};
+
+    /// What a hitch spent its time on. The first ones up to GameCpu are timed per frame and
+    /// compared with their usual share; PageFaults and Render are what is left when none stands out.
+    enum class HitchCause : u8 {
+        Pipelines, JitCompile, FileReads, CacheGc, NewResources, TextureDecode, GuestReadback,
+        Gpu, GameCpu, PageFaults, Render, Count,
+    };
+    static constexpr size_t NUM_TIMED_HITCH_CAUSES = static_cast<size_t>(HitchCause::GameCpu) + 1;
+    /// Always-on hitch detection (d3d12_perf_report.cpp): each presented interval is compared with
+    /// the recent normal one, and a slow frame is logged with its likely cause. Per frame it costs
+    /// the counter reads the perf report already did, a few loads and one process memory query.
+    struct HitchProbe {
+        struct HostTotals {
+            u64 jit_compiles{};
+            u64 jit_compile_ns{};
+            u64 jit_invalidations{};
+            u64 file_reads{};
+            u64 file_read_bytes{};
+            u64 file_read_us{};
+            u64 page_faults{};
+        };
+        HostTotals host{};                ///< totals at the previous present
+        double normal_ms{};               ///< moving average of the presented interval
+        std::array<double, NUM_TIMED_HITCH_CAUSES> usual_ms{}; ///< moving average of each cause
+        std::chrono::steady_clock::time_point log_second{};
+        u32 logged_this_second{};
+        // Over the pacing window.
+        std::array<u32, static_cast<size_t>(HitchCause::Count)> window_causes{};
+        u32 window_hitches{};
+        u32 window_unlogged{};
+        double window_worst_ms{};
+        HitchCause window_worst{};
+        // The latest one, for the performance overlay.
+        double last_ms{};
+        HitchCause last_cause{};
+        std::chrono::steady_clock::time_point last_time{};
+    } hitch;
+    [[nodiscard]] HitchProbe::HostTotals ReadHostTotals() const;
+    [[nodiscard]] static HitchProbe::HostTotals HostDelta(const HitchProbe::HostTotals& now,
+                                                          const HitchProbe::HostTotals& before);
+    void ReportHitchWindow(u32 frames);
     /// Last: it presents with everything above.
     std::jthread boot_screen;
 };
