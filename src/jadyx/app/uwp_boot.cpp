@@ -116,6 +116,7 @@
 #include "jadyx/input/uwp_controllers.h"
 #include "jadyx/input/keyboard_bindings.h"
 #include "jadyx/library/uwp_library.h"
+#include "jadyx/storage/storage_path.h"
 #include "jadyx/storage/uwp_rom_storage.h"
 #include "jadyx/content/content_service.h"
 #include "jadyx/mods/mod_settings.h"
@@ -3239,7 +3240,10 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         config.pulse_sessions = *library_game != Jadyx::MiiEditorLaunch;
                     }
                     if (library_game || !config.game.empty()) {
-                        nro_path = library_game ? *library_game : local_path + "\\games\\" + config.game;
+                        // A game= path on the player's storage (jadyx-usb:/...) opens as in the library.
+                        nro_path = library_game                       ? *library_game
+                                   : Jadyx::IsStoragePath(config.game) ? config.game
+                                                                       : local_path + "\\games\\" + config.game;
                         if (config.run_seconds == 0 && !config.play) {
                             config.run_seconds = Jadyx::DEFAULT_GAME_RUN_SECONDS;
                         }
