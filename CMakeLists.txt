@@ -386,6 +386,15 @@ if (CXX_GCC OR CXX_CLANG)
     endif()
 endif()
 
+# The Xbox build only runs on the Series' Zen 2, which always has AVX2; MSVC otherwise targets
+# SSE2. C and C++ only: ml64 does not take /arch.
+if (MSVC AND ARCHITECTURE_x86_64 AND CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+    option(JADYX_HOST_AVX2 "Compile for AVX2 hosts (the Series' Zen 2)" ON)
+    if (JADYX_HOST_AVX2)
+        add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/arch:AVX2>)
+    endif()
+endif()
+
 # Configure C++ standard
 # ===========================
 
