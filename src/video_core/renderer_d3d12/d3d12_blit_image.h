@@ -136,6 +136,17 @@ public:
                    const VideoCommon::Region2D& dst_region,
                    const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size);
 
+    /// Same for depth and stencil, without shader stencil export (the Series has no
+    /// SV_StencilRef): one draw writes depth and a zero stencil, then one draw per bit sets that
+    /// bit (write mask 1 << bit, reference 0xFF) where the texel of stencil_srv, a Texture2DArray
+    /// SRV of the source's stencil plane with the value in red, has it. Draws nothing unless
+    /// every pipeline is available, so the target never keeps half a copy.
+    bool BlitDepthStencil(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE depth_srv,
+                          D3D12_CPU_DESCRIPTOR_HANDLE stencil_srv,
+                          const VideoCommon::Region2D& dst_region,
+                          const VideoCommon::Region2D& src_region,
+                          const VideoCommon::Extent2D& src_size);
+
     /// Writes color into the channels of color_mask (bit 0 red ... bit 3 alpha) inside rect.
     void ClearColor(const Target& dst, u8 color_mask, const std::array<f32, 4>& color,
                     const D3D12_RECT& rect);
@@ -177,6 +188,8 @@ private:
         BlitDepth,
         ClearColor,
         ClearDepthStencil,
+        BlitStencilBit,
+        BlitDepthStencil, ///< BlitDepth's program, also zeroing the stencil
     };
 
     struct Program {
@@ -192,6 +205,11 @@ private:
     /// Binds the root signature, the PSO, the target and the viewport and scissor of rect.
     void Begin(ID3D12PipelineState* pipeline, const Target& target, bool is_depth,
                const D3D12_RECT& rect);
+    /// Begin, then the source mapping of a blit and its descriptor tables.
+    void BeginBlit(ID3D12PipelineState* pipeline, const Target& dst, bool is_depth,
+                   const D3D12_RECT& rect, D3D12_GPU_DESCRIPTOR_HANDLE srv_table,
+                   D3D12_GPU_DESCRIPTOR_HANDLE sampler_table,
+                   const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size);
     bool Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
               const Sampling& sampler, const VideoCommon::Region2D& dst_region,
               const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size);
@@ -209,7 +227,7 @@ private:
     SamplerHeap& sampler_heap;
 
     ComPtr<ID3D12RootSignature> root_signature;
-    std::array<Program, 4> programs;
+    std::array<Program, 5> programs;
     std::unordered_map<u64, ComPtr<ID3D12PipelineState>> pipelines;
     Sampling nearest_sampler{};
     Sampling linear_sampler{};
