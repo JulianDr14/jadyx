@@ -360,6 +360,9 @@ bool Jit::PrecompileBlock(const BlockProfile& block) {
         impl->block_of_code.SpaceRemaining() < 1024 * 1024) {
         return false;
     }
+    // Apply what was requested before the warm (code loaded or reprotected at boot) now, as Run
+    // would: left pending, the first Run drops the blocks warmed in those ranges.
+    impl->PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&impl->jit_state.halt_reason)));
     return impl->GetBlock(descriptor, &block) != nullptr;
 }
 

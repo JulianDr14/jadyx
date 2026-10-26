@@ -253,8 +253,13 @@ struct Jit::Impl {
         if (location.SingleStepping() || (location.PC() & alignment_mask) ||
             location.UniqueHash() != block.descriptor || block.code_bytes == 0 ||
             block.code_bytes > BlockProfile::MaxCodeBytes || (block.code_bytes & 3) ||
-            block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE ||
-            emitter.GetBasicBlock(descriptor)) {
+            block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
+            return false;
+        }
+        // Apply what was requested before the warm (code loaded or reprotected at boot) now, as Run
+        // would: left pending, the first Run drops the blocks warmed in those ranges.
+        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
+        if (emitter.GetBasicBlock(descriptor)) {
             return false;
         }
         return Compile(descriptor, &block).has_value();
