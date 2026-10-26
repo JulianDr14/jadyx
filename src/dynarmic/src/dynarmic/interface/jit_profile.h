@@ -40,12 +40,19 @@ inline thread_local std::uint64_t local_compile_ns{};
 
 inline void SetEnabled(bool value) { enabled.store(value, std::memory_order_relaxed); }
 
-// Cold compilation/protection paths only. No timestamp when disabled. Measurements are
-// elapsed times summed across JIT instances, including host preemption. Compile contains
-// Translate/Optimize/Emit, and Emit may contain Protect; these totals are not additive.
+/// Measured even with profiling off: the renderer's hitch report names JIT compilation from them.
+/// A block compile takes tens of microseconds; two clock reads and two atomic adds are noise.
+[[nodiscard]] constexpr bool AlwaysTimed(Phase phase) {
+    return phase == Phase::Compile || phase == Phase::Invalidate;
+}
+
+// Cold compilation/protection paths only. No timestamp when disabled, except AlwaysTimed phases.
+// Measurements are elapsed times summed across JIT instances, including host preemption. Compile
+// contains Translate/Optimize/Emit, and Emit may contain Protect; these totals are not additive.
 class Timer {
 public:
-    explicit Timer(Phase phase_) : phase{phase_}, active{enabled.load(std::memory_order_relaxed)} {
+    explicit Timer(Phase phase_)
+        : phase{phase_}, active{AlwaysTimed(phase_) || enabled.load(std::memory_order_relaxed)} {
         if (active) start = std::chrono::steady_clock::now();
     }
     ~Timer() { Stop(); }
@@ -77,6 +84,11 @@ private:
         snapshot[i].ns = counters[i].ns.load(std::memory_order_relaxed);
     }
     return snapshot;
+}
+
+[[nodiscard]] inline Measurement Read(Phase phase) {
+    const auto& counter = counters[static_cast<std::size_t>(phase)];
+    return {counter.calls.load(std::memory_order_relaxed), counter.ns.load(std::memory_order_relaxed)};
 }
 
 // Single consumer (renderer): retain the preceding snapshot instead of clearing totals.

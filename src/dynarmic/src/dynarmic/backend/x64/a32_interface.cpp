@@ -28,6 +28,7 @@
 #include "dynarmic/common/atomic.h"
 #include "dynarmic/frontend/A32/a32_location_descriptor.h"
 #include "dynarmic/frontend/A32/translate/a32_translate.h"
+#include "dynarmic/interface/jit_profile.h"
 #include "dynarmic/frontend/A32/translate/translate_callbacks.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/ir/basic_block.h"
@@ -294,6 +295,7 @@ private:
     /// Compiles a block that is not in the cache. With `expected`, the guest code must be
     /// exactly the recorded block or nothing is emitted (std::nullopt, never without it).
     std::optional<A32EmitX64::BlockDescriptor> Compile(IR::LocationDescriptor descriptor, const BlockProfile* expected) {
+        const JitProfile::Timer compile_timer{JitProfile::Phase::Compile};
         if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
             invalidate_entire_cache = true;
             PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
@@ -336,6 +338,7 @@ private:
                 return;
             }
 
+            const JitProfile::Timer invalidate_timer{JitProfile::Phase::Invalidate};
             jit_state.ResetRSB();
             if (invalidate_entire_cache) {
                 block_of_code.ClearCache();
