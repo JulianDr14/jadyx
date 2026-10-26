@@ -856,16 +856,23 @@ bool TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
                  dst.format);
         return false;
     }
-    if (dst_type == SurfaceType::DepthStencil) {
-        // Writing stencil from a shader needs SV_StencilRef, which the Series lacks.
-        WarnOnce(logged_stencil_blit, "depth-stencil blits copy depth only ({})", dst.format);
-    }
+    const BlitImageHelper::Target target{dst.DepthStencil(), Format(dst.format).dsv, 1};
     src_image->Transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     dst_image->Transition(D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    const bool drawn = blit_helper->BlitDepth({dst.DepthStencil(), Format(dst.format).dsv, 1},
-                                              src.Handle(Shader::TextureType::Color2D),
-                                              dst_region, src_region, src_size);
-    return drawn && dst_type == SurfaceType::Depth;
+    // As Vulkan's blits, stencil moves only when both sides have it.
+    const D3D12_CPU_DESCRIPTOR_HANDLE src_stencil =
+        dst_type == SurfaceType::DepthStencil ? src.StencilHandle() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+    if (!src_stencil.ptr) {
+        return blit_helper->BlitDepth(target, src.Handle(Shader::TextureType::Color2D), dst_region,
+                                      src_region, src_size);
+    }
+    if (!logged_stencil_blit) {
+        logged_stencil_blit = true;
+        LOG_INFO(Render, "D3D12: depth-stencil blits copy stencil in 8 bit passes ({} -> {})",
+                 src.format, dst.format);
+    }
+    return blit_helper->BlitDepthStencil(target, src.Handle(Shader::TextureType::Color2D),
+                                         src_stencil, dst_region, src_region, src_size);
 }
 void TextureCacheRuntime::BlitWithinImage(ImageView& dst, ImageView& src,
                                           const Region2D& dst_region, const Region2D& src_region,
