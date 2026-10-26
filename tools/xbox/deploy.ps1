@@ -4,7 +4,7 @@
 # Builds jadyx, packages it into build-uwp\package and installs it, on the console or on this PC.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\xbox\deploy.ps1 -Version 0.3.8.31
-#       [-Target Console|Pc] [-BootCfg "async_record=1,diag_menu=1"] [-NoBuild] [-Console 192.168.1.50]
+#       [-Target Console|Pc] [-BootCfg "async_record=1"] [-NoBuild] [-Console 192.168.1.50]
 #
 # Console: uploads the package, its VCLibs dependency and the certificate through the Device
 # Portal REST API and waits for the install to finish. The app keeps its Game mode setting.
@@ -12,7 +12,7 @@
 param(
     [Parameter(Mandatory)] [string] $Version,
     [ValidateSet('Console', 'Pc')] [string] $Target = 'Console',
-    [string] $BootCfg = 'async_record=1,diag_menu=1',
+    [string] $BootCfg = 'async_record=1',
     [switch] $NoBuild,
     [string] $Console = $(if ($env:JADYX_CONSOLE) { $env:JADYX_CONSOLE } else { '192.168.1.50' })
 )

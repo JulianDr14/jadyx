@@ -173,9 +173,6 @@ void SetDrawSamplerReuse(bool enabled);
 enum class PixelShaderScratchMode : u8; // d3d12_local_memory_scratch.h: Auto, Uav, Native
 void SetPixelShaderScratchMode(PixelShaderScratchMode mode);
 void SetAsyncRecording(bool enabled);          // d3d12_scheduler.h
-enum class DiagSync : u8;                     // d3d12_scheduler.h
-void SetDiagSync(DiagSync mode);              // d3d12_scheduler.h
-DiagSync GetDiagSync();                       // d3d12_scheduler.h
 using AppMemoryQuery = bool (*)(u64& used, u64& limit); // d3d12_device.h
 void SetAppMemoryQuery(AppMemoryQuery query);            // d3d12_device.h
 } // namespace D3D12
@@ -330,9 +327,6 @@ struct BootConfig {
     bool descriptor_checks{};
     /// Controller-accessible bounded F7 equivalent, shown only in diagnostic packages.
     bool material_capture_menu{};
-    /// "diag_menu=1": the in-game display page switches where the renderer adds UAV barriers, so
-    /// one package narrows down the missing one.
-    bool diag_menu{};
     /// Controller bottleneck capture ("hunt=1"): LocalState/jadyx/log/jadyx_hunt.txt, read by
     /// tools/xbox/hunt-report.py. Shown only in diagnostic packages (package-appx.ps1 -Hunt).
     bool hunt_menu{};
@@ -1294,10 +1288,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                                                   FromSettings(Settings::values.scaling_filter.GetValue(),
                                                                Settings::values.fsr_sharpening_slider.GetValue()),
                                                   config.material_capture_menu, config.hunt_menu,
-                                                  !game_frame.pixels.empty(), config.diag_menu,
-                                                  static_cast<std::uint8_t>(D3D12::GetDiagSync()),
-                                                  VideoCommon::force_occlusion_visible.load(
-                                                      std::memory_order_relaxed)},
+                                                  !game_frame.pixels.empty()},
                                  program_id != 0 && !mii_editor);
                     if (game_title.empty()) {
                         std::string title;
@@ -1504,22 +1495,6 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                 }
                 if (result == GameMenuResult::FullScreen) {
                     g_fullscreen_request.store(menu->Settings().fullscreen ? 1 : 0);
-                }
-                if (result == GameMenuResult::GpuSyncChanged) {
-                    const std::uint8_t sync = menu->Settings().gpu_sync % 3;
-                    // Read at every draw and frame on the GPU thread: the next frames see it.
-                    D3D12::SetDiagSync(static_cast<D3D12::DiagSync>(sync));
-                    constexpr const char* names[] = {"normal",
-                                                     "UAV barriers on the buffers each dispatch wrote",
-                                                     "UAV barriers on the images each dispatch wrote"};
-                    WriteDiag(std::string("diag menu: GPU synchronization ") + names[sync]);
-                }
-                if (result == GameMenuResult::OcclusionChanged) {
-                    // Read by the query cache at every result it writes to the guest.
-                    const bool visible = menu->Settings().occlusion_visible;
-                    VideoCommon::force_occlusion_visible.store(visible, std::memory_order_relaxed);
-                    WriteDiag(std::string("diag menu: occlusion results ") +
-                              (visible ? "never zero" : "as measured"));
                 }
 
                 if (menu_surface) draw_menu();
@@ -3047,9 +3022,6 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "hunt=1") {
                             config.hunt_menu = true;
                             WriteDiag("boot.cfg: controller bottleneck capture menu enabled");
-                        } else if (line == "diag_menu=1") {
-                            config.diag_menu = true;
-                            WriteDiag("boot.cfg: diagnostic toggles on the display page");
                         } else if (line == "material_capture_menu=1") {
                             config.material_capture_menu = true;
                             WriteDiag("boot.cfg: controller graphics capture menu enabled");

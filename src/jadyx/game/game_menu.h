@@ -106,14 +106,6 @@ struct GameMenuSettings {
     bool performance_capture{};
     /// The paused frame was read back: the menu can save it as a screenshot.
     bool screenshot{};
-    /// Opt-in diagnostic package ("diag_menu=1"): the display page can switch the suspects of
-    /// missing geometry without another package.
-    bool diag_toggles{};
-    /// How dispatches order their UAV writes (D3D12::DiagSync, three modes); applies at once.
-    std::uint8_t gpu_sync{};
-    /// Occlusion results reach the game as never zero (VideoCommon::force_occlusion_visible):
-    /// whether objects flicker because the game culls them on its queries; applies at once.
-    bool occlusion_visible{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -124,8 +116,6 @@ enum class GameMenuResult : std::uint8_t {
     CaptureGraphics,
     CapturePerformance,
     Screenshot,
-    GpuSyncChanged,
-    OcclusionChanged,
 };
 
 /// One row as drawn: a label, a line under it, and the value of a setting (changed with
@@ -147,7 +137,6 @@ public:
     enum Item : std::size_t {
         Continue, Cheats, Mods, Style, FaceButtons, Deadzone, FullScreen, ImageUpscaling, PerformanceStats, Library,
         CaptureGraphics, CapturePerformance, Screenshot, ControllerPage, DisplayPage,
-        GpuSync, OcclusionVisible,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display };
 
@@ -163,7 +152,6 @@ public:
         controller = {Style, FaceButtons, Deadzone};
         display = {ImageUpscaling, PerformanceStats};
         if (settings.can_fullscreen) display.push_back(FullScreen);
-        if (settings.diag_toggles) display.insert(display.end(), {GpuSync, OcclusionVisible});
     }
 
     /// How many cheats are on, shown on the Cheats row.
@@ -287,15 +275,6 @@ private:
             return {Tr(Text::PerformanceStats), Tr(settings.show_performance_stats ? Text::Yes : Text::No), Choice};
         case FullScreen:
             return {Tr(Text::MenuFullScreen), Tr(settings.fullscreen ? Text::Yes : Text::No), Choice};
-        case GpuSync: {
-            constexpr Text values[] = {Text::MenuGpuSyncNormal,
-                                       Text::MenuGpuSyncDispatchBufferBarriers,
-                                       Text::MenuGpuSyncDispatchImageBarriers};
-            return {Tr(Text::MenuGpuSync), Tr(values[settings.gpu_sync % 3]), Choice};
-        }
-        case OcclusionVisible:
-            return {Tr(Text::MenuOcclusionVisible), Tr(settings.occlusion_visible ? Text::Yes : Text::No),
-                    Choice};
         case Library:
             if (!settings.pulse_sessions) return {Tr(Text::MenuBackToHome), {}, Action, {}, UiIcon::Exit};
             return {Tr(Text::MenuBackToHome), {}, Choice,
@@ -361,12 +340,6 @@ private:
         case FullScreen:
             settings.fullscreen = !settings.fullscreen;
             return GameMenuResult::FullScreen;
-        case GpuSync:
-            settings.gpu_sync = static_cast<std::uint8_t>((settings.gpu_sync + (back ? 2 : 1)) % 3);
-            return GameMenuResult::GpuSyncChanged;
-        case OcclusionVisible:
-            settings.occlusion_visible = !settings.occlusion_visible;
-            return GameMenuResult::OcclusionChanged;
         }
         return GameMenuResult::None;
     }
