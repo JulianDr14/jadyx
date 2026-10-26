@@ -24,9 +24,10 @@
 namespace D3D12 {
 namespace {
 std::atomic_bool uniform_upload_copy_enabled{};
-// Buffer::Transition logs the first upload into a buffer between a work's bindings. The GPU
-// thread alone records bindings.
+// Buffer::Transition logs the first upload into a buffer between a work's bindings, and Copy the
+// first one it returns to UAV. The GPU thread alone records bindings.
 bool logged_upload_into_uav{};
+bool logged_upload_left_uav{};
 }
 void SetUniformUploadCopy(bool enabled) {
     uniform_upload_copy_enabled.store(enabled, std::memory_order_relaxed);
@@ -343,6 +344,12 @@ void BufferCacheRuntime::Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src,
     // Cache buffers are tracked (Buffer::Transition). Raw resources are staging memory, whose
     // state never changes, or the scratch buffer above, promoted from COMMON.
     const bool restore_read = dst && dst->State() == D3D12_RESOURCE_STATE_GENERIC_READ;
+    // An upload between the bindings of a work that writes the buffer. Left in COPY_DEST, the
+    // work's writes raced the copy, and the next reader's transition out of COPY_DEST waited for
+    // the copy alone, not for the work (the buffer side of Image::Transition's left_uav_in_work).
+    // Buffer::Transition's own case only covers a later read binding of the same work.
+    const bool restore_uav = dst && dst->State() == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
+                             dst->WrittenByWork(scheduler.Work());
     if (dst) dst->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
     if (src) src->Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
     for (const auto& copy : copies) {
@@ -357,6 +364,15 @@ void BufferCacheRuntime::Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src,
     // An upload can touch a vertex/index buffer whose IA binding is still cached. Restore its
     // readable state: the generic cache may skip rebinding an unchanged guest vertex stream.
     if (restore_read) dst->Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
+    // Back to UAV with a UAV barrier (Buffer::Transition's back_to_uav): the work runs after the
+    // copy. Keep this when optimizing transitions; it costs one transition only in this case.
+    if (restore_uav) {
+        if (!logged_upload_left_uav) {
+            LOG_INFO(Render, "D3D12: a buffer a work writes went back to UAV after an upload");
+            logged_upload_left_uav = true;
+        }
+        dst->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, false);
+    }
 }
 void BufferCacheRuntime::CopyBuffer(Buffer& dst, Buffer& src, std::span<const VideoCommon::BufferCopy> copies, bool, bool) { Copy(&dst, dst.Handle(), &src, src.Handle(), copies); }
 void BufferCacheRuntime::CopyBuffer(Buffer& dst, ID3D12Resource* src, std::span<const VideoCommon::BufferCopy> copies, bool, bool) { Copy(&dst, dst.Handle(), nullptr, src, copies); }

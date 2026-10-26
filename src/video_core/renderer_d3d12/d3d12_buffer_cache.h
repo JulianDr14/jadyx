@@ -55,6 +55,10 @@ public:
     /// only holds within the list that set it.
     void Transition(D3D12_RESOURCE_STATES next, bool mark_written = true);
     [[nodiscard]] D3D12_RESOURCE_STATES State() const noexcept { return state; }
+    /// Whether a binding of this draw or dispatch (Scheduler::Work) made it a UAV.
+    [[nodiscard]] bool WrittenByWork(u64 work) const noexcept {
+        return work != 0 && uav_work == work;
+    }
 
     /// Unique among the buffers of a runtime, never 0 (IndexRewriteCache keys).
     [[nodiscard]] u64 Id() const noexcept { return id; }
