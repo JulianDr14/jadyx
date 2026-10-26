@@ -38,6 +38,8 @@ std::optional<D3D12_RESOURCE_STATES> Image::DiagnosticState(ID3D12Resource* trac
     if (tracked_resource == Handle()) return state;
     if (tracked_resource == reinterpreted.Get()) return reinterpreted_state;
     if (tracked_resource == slice_array.Get()) return slice_array_state;
+    if (tracked_resource == volume.Get()) return volume_state;
+    if (tracked_resource == cube.Get()) return cube_state;
     if (depth_feedback && tracked_resource == depth_feedback->Handle()) return depth_feedback->State();
     return std::nullopt;
 }
@@ -45,7 +47,9 @@ std::optional<D3D12_RESOURCE_STATES> Image::DiagnosticState(ID3D12Resource* trac
 void Image::DiagnosticTransition(ID3D12Resource* tracked_resource, D3D12_RESOURCE_STATES next) {
     if (!tracked_resource) throw std::runtime_error("null diagnostic resource");
     auto* tracked = tracked_resource == Handle() ? &state : tracked_resource == reinterpreted.Get()
-        ? &reinterpreted_state : tracked_resource == slice_array.Get() ? &slice_array_state : nullptr;
+        ? &reinterpreted_state : tracked_resource == slice_array.Get() ? &slice_array_state
+        : tracked_resource == volume.Get() ? &volume_state
+        : tracked_resource == cube.Get() ? &cube_state : nullptr;
     if (tracked) {
         if (*tracked != next) TextureDetail::TransitionBuffer(runtime->scheduler.CommandList(), tracked_resource, *tracked, next);
         *tracked = next;
@@ -567,6 +571,12 @@ Image::~Image() {
     if (runtime && slice_array) {
         runtime->scheduler.DeferRelease(std::move(slice_array));
     }
+    if (runtime && volume) {
+        runtime->scheduler.DeferRelease(std::move(volume));
+    }
+    if (runtime && cube) {
+        runtime->scheduler.DeferRelease(std::move(cube));
+    }
     if (runtime && reinterpreted) {
         runtime->scheduler.DeferRelease(std::move(reinterpreted));
     }
@@ -582,6 +592,12 @@ Image& Image::operator=(Image&& other) noexcept {
         }
         if (runtime && slice_array) {
             runtime->scheduler.DeferRelease(std::move(slice_array));
+        }
+        if (runtime && volume) {
+            runtime->scheduler.DeferRelease(std::move(volume));
+        }
+        if (runtime && cube) {
+            runtime->scheduler.DeferRelease(std::move(cube));
         }
         if (runtime && reinterpreted) {
             runtime->scheduler.DeferRelease(std::move(reinterpreted));
@@ -610,6 +626,12 @@ Image& Image::operator=(Image&& other) noexcept {
         slice_array = std::move(other.slice_array);
         slice_array_state = other.slice_array_state;
         slice_array_version = other.slice_array_version;
+        volume = std::move(other.volume);
+        volume_state = other.volume_state;
+        volume_version = other.volume_version;
+        cube = std::move(other.cube);
+        cube_state = other.cube_state;
+        cube_version = other.cube_version;
         reinterpreted = std::move(other.reinterpreted);
         reinterpreted_state = other.reinterpreted_state;
         reinterpreted_version = other.reinterpreted_version;
@@ -839,6 +861,105 @@ ID3D12Resource* Image::SliceArray() {
     LOG_INFO(Render, "D3D12: 3D image {} {}x{}x{} @{:x} read as a 2D array through a slice copy",
              info.format, desc.Width, desc.Height, desc.DepthOrArraySize, gpu_addr);
     return slice_array.Get();
+}
+
+ID3D12Resource* Image::Volume() {
+    if (volume || !resource || info.type != ImageType::e2D) {
+        return volume.Get();
+    }
+    D3D12_RESOURCE_DESC desc = resource->GetDesc();
+    if (desc.DepthOrArraySize != 1 || desc.SampleDesc.Count > 1 ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) {
+        return nullptr;
+    }
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+    desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+    ThrowIfFailed(runtime->device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                  D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&volume)),
+                  "Create 2D image volume");
+    CheckRemovedAfter(runtime->device.Get(), [&] {
+        return fmt::format("creating the volume of 2D image {} (format {} {}x{} levels {})",
+                           info.format, static_cast<u32>(desc.Format), desc.Width, desc.Height,
+                           desc.MipLevels);
+    });
+    volume_state = D3D12_RESOURCE_STATE_COMMON;
+    volume_version = 0;
+    LOG_INFO(Render, "D3D12: 2D image {} {}x{} @{:x} read as 3D through a one-slice copy",
+             info.format, desc.Width, desc.Height, gpu_addr);
+    return volume.Get();
+}
+
+void Image::RefreshVolume() {
+    if (!Volume() || volume_version == write_version || !CanTransfer()) {
+        return;
+    }
+    // A 2D level and the matching one-slice 3D level share the buffer footprint.
+    Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
+    auto* const commands = runtime->scheduler.CommandList();
+    if (volume_state != D3D12_RESOURCE_STATE_COPY_DEST) {
+        TransitionBuffer(commands, volume.Get(), volume_state, D3D12_RESOURCE_STATE_COPY_DEST);
+    }
+    CopyThroughBuffer(resource.Get(), volume.Get());
+    volume_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    TransitionBuffer(commands, volume.Get(), D3D12_RESOURCE_STATE_COPY_DEST, volume_state);
+    volume_version = write_version;
+}
+
+ID3D12Resource* Image::Cube() {
+    if (cube || !resource || info.type != ImageType::e2D) {
+        return cube.Get();
+    }
+    D3D12_RESOURCE_DESC desc = resource->GetDesc();
+    if (desc.DepthOrArraySize != 1 || desc.Width != desc.Height || desc.SampleDesc.Count > 1 ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) {
+        return nullptr;
+    }
+    desc.DepthOrArraySize = 6;
+    desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+    ThrowIfFailed(runtime->device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                  D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&cube)),
+                  "Create 2D image cube");
+    CheckRemovedAfter(runtime->device.Get(), [&] {
+        return fmt::format("creating the cube of 2D image {} (format {} {}x{} levels {})",
+                           info.format, static_cast<u32>(desc.Format), desc.Width, desc.Height,
+                           desc.MipLevels);
+    });
+    cube_state = D3D12_RESOURCE_STATE_COMMON;
+    cube_version = 0;
+    LOG_INFO(Render, "D3D12: 2D image {} {}x{} @{:x} read as a cube through a six-face copy",
+             info.format, desc.Width, desc.Height, gpu_addr);
+    return cube.Get();
+}
+
+void Image::RefreshCube() {
+    if (!Cube() || cube_version == write_version || !CanTransfer()) {
+        return;
+    }
+    // Same dimension and format: each level copies straight into every face.
+    Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
+    auto* const commands = runtime->scheduler.CommandList();
+    if (cube_state != D3D12_RESOURCE_STATE_COPY_DEST) {
+        TransitionBuffer(commands, cube.Get(), cube_state, D3D12_RESOURCE_STATE_COPY_DEST);
+    }
+    const u32 levels = resource->GetDesc().MipLevels;
+    for (u32 face = 0; face < 6; ++face) {
+        for (u32 level = 0; level < levels; ++level) {
+            const D3D12_TEXTURE_COPY_LOCATION from{
+                .pResource = resource.Get(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                .SubresourceIndex = level};
+            const D3D12_TEXTURE_COPY_LOCATION to{
+                .pResource = cube.Get(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                .SubresourceIndex = face * levels + level};
+            commands->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+        }
+    }
+    cube_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    TransitionBuffer(commands, cube.Get(), D3D12_RESOURCE_STATE_COPY_DEST, cube_state);
+    cube_version = write_version;
 }
 
 ID3D12Resource* Image::Reinterpreted(DXGI_FORMAT family) {

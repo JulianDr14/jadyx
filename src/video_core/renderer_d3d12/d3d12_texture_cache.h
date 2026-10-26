@@ -342,6 +342,8 @@ public:
     std::optional<D3D12_RESOURCE_STATES> DiagnosticState(ID3D12Resource* tracked_resource) const;
     void DiagnosticTransition(ID3D12Resource* tracked_resource, D3D12_RESOURCE_STATES next);
     ID3D12Resource* DiagnosticSliceArray() const noexcept { return slice_array.Get(); }
+    ID3D12Resource* DiagnosticVolume() const noexcept { return volume.Get(); }
+    ID3D12Resource* DiagnosticCube() const noexcept { return cube.Get(); }
     ID3D12Resource* DiagnosticReinterpreted() const noexcept { return reinterpreted.Get(); }
     bool IsRescaled() const noexcept { return false; }
     bool ScaleUp(bool = false) { return false; }
@@ -354,6 +356,21 @@ public:
     /// Copies the slices again if the image was written since the last copy; call before a
     /// draw or dispatch that reads SliceArray().
     void RefreshSliceArray();
+
+    /// One-slice 3D copy of this single-layer 2D image, for shaders that sample it as 3D (D3D12
+    /// has no 3D view of a 2D resource). Null when it cannot be made. Created on first use.
+    [[nodiscard]] ID3D12Resource* Volume();
+    /// Copies the texels again if the image was written since the last copy; call before a
+    /// draw or dispatch that reads Volume().
+    void RefreshVolume();
+
+    /// Six-face copy of this single-layer square 2D image, every face holding it, for shaders
+    /// that sample it as a cube (D3D12 has no cube view of one layer). Null when it cannot be
+    /// made. Created on first use.
+    [[nodiscard]] ID3D12Resource* Cube();
+    /// Copies the texels again if the image was written since the last copy; call before a
+    /// draw or dispatch that reads Cube().
+    void RefreshCube();
 
     /// Snapshot before a draw that samples and writes this depth/stencil attachment. Reuses the
     /// allocation; copies on the GPU without waiting. Null keeps the read-only fallback on failure.
@@ -461,6 +478,12 @@ private:
     ComPtr<ID3D12Resource> slice_array;
     D3D12_RESOURCE_STATES slice_array_state{D3D12_RESOURCE_STATE_COMMON};
     u64 slice_array_version{};
+    ComPtr<ID3D12Resource> volume;
+    D3D12_RESOURCE_STATES volume_state{D3D12_RESOURCE_STATE_COMMON};
+    u64 volume_version{};
+    ComPtr<ID3D12Resource> cube;
+    D3D12_RESOURCE_STATES cube_state{D3D12_RESOURCE_STATE_COMMON};
+    u64 cube_version{};
     ComPtr<ID3D12Resource> reinterpreted;
     D3D12_RESOURCE_STATES reinterpreted_state{D3D12_RESOURCE_STATE_COMMON};
     u64 reinterpreted_version{};

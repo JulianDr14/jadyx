@@ -319,6 +319,20 @@ std::string ImageView::DescribeSrv(Shader::TextureType texture_type, bool depth_
             layers = resource->GetDesc().DepthOrArraySize;
             route = "slice-array";
         }
+        if (texture_type == Shader::TextureType::Color3D &&
+            srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && source->Volume()) {
+            resource = source->Volume();
+            base_layer = 0;
+            layers = 1;
+            route = "volume";
+        }
+        if (texture_type == Shader::TextureType::ColorCube &&
+            srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && source->Cube()) {
+            resource = source->Cube();
+            base_layer = 0;
+            layers = 6;
+            route = "cube";
+        }
     }
     const auto desc = resource ? resource->GetDesc() : D3D12_RESOURCE_DESC{};
     const bool compatible = resource &&
@@ -344,6 +358,18 @@ ImageView::DiagnosticView ImageView::DiagnosticSrv(Shader::TextureType declared,
             result.resource = source->DiagnosticSliceArray();
             result.base_layer = 0;
             result.layers = result.resource ? result.resource->GetDesc().DepthOrArraySize : 0;
+        }
+        if (declared == Shader::TextureType::Color3D &&
+            srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && source->DiagnosticVolume()) {
+            result.resource = source->DiagnosticVolume();
+            result.base_layer = 0;
+            result.layers = 1;
+        }
+        if (declared == Shader::TextureType::ColorCube &&
+            srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && source->DiagnosticCube()) {
+            result.resource = source->DiagnosticCube();
+            result.base_layer = 0;
+            result.layers = 6;
         }
     }
     result.null_srv = !result.resource || !IsSrvDimensionCompatible(declared,
@@ -405,6 +431,50 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::CreateSrv(Shader::TextureType texture_typ
                                    format, static_cast<u32>(desc.Format), p.base_level, p.levels,
                                    slices->GetDesc().MipLevels, depth,
                                    static_cast<u32>(slices->GetDesc().Format));
+            });
+            return handle;
+        }
+    }
+    if (texture_type == TextureType::Color3D && p.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        image && !override_resource) {
+        // The shader samples a 2D image as 3D (a 1x1 placeholder bound to a volume slot); D3D12
+        // has no such view, so read a one-slice 3D copy of it.
+        Image* const source = SourceImage();
+        if (ID3D12Resource* const volume = source ? source->Volume() : nullptr) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC desc{.Format = p.format,
+                                                 .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D,
+                                                 .Shader4ComponentMapping = p.mapping};
+            desc.Texture3D = {p.base_level, p.levels, 0.0f};
+            const D3D12_CPU_DESCRIPTOR_HANDLE handle = runtime->view_descriptors.Allocate();
+            runtime->device.Get()->CreateShaderResourceView(volume, &desc, handle);
+            CheckRemovedAfterDescriptor(runtime->device.Get(), [&] {
+                return fmt::format("volume SRV of {} (format {} levels {}+{} of {}, resource "
+                                   "format {})",
+                                   format, static_cast<u32>(desc.Format), p.base_level, p.levels,
+                                   volume->GetDesc().MipLevels,
+                                   static_cast<u32>(volume->GetDesc().Format));
+            });
+            return handle;
+        }
+    }
+    if (texture_type == TextureType::ColorCube && p.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        p.layers == 1 && image && !override_resource) {
+        // The shader samples a one-layer 2D image as a cube (a 1x1 placeholder bound to a cube
+        // slot); D3D12 needs six faces, so read a copy with the image on every face.
+        Image* const source = SourceImage();
+        if (ID3D12Resource* const faces = source ? source->Cube() : nullptr) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC desc{.Format = p.format,
+                                                 .ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE,
+                                                 .Shader4ComponentMapping = p.mapping};
+            desc.TextureCube = {p.base_level, p.levels, 0.0f};
+            const D3D12_CPU_DESCRIPTOR_HANDLE handle = runtime->view_descriptors.Allocate();
+            runtime->device.Get()->CreateShaderResourceView(faces, &desc, handle);
+            CheckRemovedAfterDescriptor(runtime->device.Get(), [&] {
+                return fmt::format("cube SRV of {} (format {} levels {}+{} of {}, resource "
+                                   "format {})",
+                                   format, static_cast<u32>(desc.Format), p.base_level, p.levels,
+                                   faces->GetDesc().MipLevels,
+                                   static_cast<u32>(faces->GetDesc().Format));
             });
             return handle;
         }
@@ -563,6 +633,18 @@ void ImageView::PrepareRead(Shader::TextureType texture_type) const {
         srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D) {
         if (Image* const source = SourceImage()) {
             source->RefreshSliceArray();
+        }
+    }
+    if (texture_type == Shader::TextureType::Color3D &&
+        srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+        if (Image* const source = SourceImage()) {
+            source->RefreshVolume();
+        }
+    }
+    if (texture_type == Shader::TextureType::ColorCube &&
+        srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && srv_params.layers == 1) {
+        if (Image* const source = SourceImage()) {
+            source->RefreshCube();
         }
     }
 }
