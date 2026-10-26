@@ -79,7 +79,10 @@ bool HasShaderHash(const std::array<std::atomic<u64>, 4>& slots, u64 unique_hash
 }
 std::atomic_bool pipeline_eviction{true};
 std::atomic_bool pipeline_prewarm{true};
-std::atomic<u32> compute_workgroup_split{1};
+// EXPERIMENTAL default: 16 is only measured in one game so far, where it took a persistent compute
+// dispatch from ~82 ms to ~4.5 ms per frame on Series. If another game shows broken compute
+// results (particles, physics, culling) or hangs, try boot.cfg "cs_split=1" first.
+std::atomic<u32> compute_workgroup_split{16};
 
 /// Launches with more groups than this fill the GPU without splitting them further.
 constexpr u64 MAX_SPLIT_GROUPS = 256;

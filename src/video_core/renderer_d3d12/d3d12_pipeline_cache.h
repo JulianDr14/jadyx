@@ -78,8 +78,9 @@ void SetPipelinePrewarm(bool enabled);
 
 /// Compute shaders dispatched with few groups, whose work is a stride loop over their local id,
 /// run each guest group as `factor` real groups (Shader::Optimization::WorkgroupSplitPass) to
-/// fill a GPU that a handful of persistent groups leaves mostly idle. 1, the default, disables
-/// it; otherwise a power of two. Set before boot (boot.cfg "cs_split=").
+/// fill a GPU that a handful of persistent groups leaves mostly idle. 1 disables it; otherwise a
+/// power of two. Defaults to 16, still experimental (see the .cpp). Set before boot (boot.cfg
+/// "cs_split=").
 void SetComputeWorkgroupSplit(u32 factor);
 
 class ShaderCompiler;
