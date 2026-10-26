@@ -68,10 +68,26 @@ namespace Dynarmic {
 namespace {
 /// Committed bytes of every BlockOfCode alive (CommittedCodeBytes).
 std::atomic<size_t> s_committed_code_bytes{0};
+/// SetCodeCacheCap; SIZE_MAX when uncapped. Each call bumps the epoch for the caches to see.
+std::atomic<size_t> s_code_cache_cap{SIZE_MAX};
+std::atomic<size_t> s_code_cache_cap_epoch{0};
+/// What a capped cache may still emit past the pages it had committed: one block's worth
+/// (MINIMUM_REMAINING_CODESIZE) and its commit ahead, so it is not cleared on the spot.
+constexpr size_t CAP_SLACK = 2 * 1024 * 1024;
 } // anonymous namespace
 
 size_t CommittedCodeBytes() noexcept {
     return s_committed_code_bytes.load(std::memory_order_relaxed);
+}
+
+void SetCodeCacheCap(size_t bytes) noexcept {
+    s_code_cache_cap.store(bytes != 0 ? bytes : SIZE_MAX, std::memory_order_relaxed);
+    s_code_cache_cap_epoch.fetch_add(1, std::memory_order_release);
+}
+
+size_t CodeCacheCap() noexcept {
+    const size_t cap = s_code_cache_cap.load(std::memory_order_relaxed);
+    return cap != SIZE_MAX ? cap : 0;
 }
 } // namespace Dynarmic
 
@@ -405,9 +421,22 @@ void BlockOfCode::ClearCache() {
 size_t BlockOfCode::SpaceRemaining() const {
     ASSERT(prelude_complete);
     const u8* current_ptr = getCurr<const u8*>();
-    if (current_ptr >= &top_[maxSize_])
+    // Capped, a cache keeps the pages it has: clearing every cache at once recompiled 260k blocks
+    // in 30 s. It is cleared only when it fills those, and commits no more.
+    if (const size_t epoch = s_code_cache_cap_epoch.load(std::memory_order_acquire); epoch != cap_epoch) {
+        cap_epoch = epoch;
+        const size_t cap = s_code_cache_cap.load(std::memory_order_relaxed);
+#ifdef _WIN32
+        const size_t committed = committed_size;
+#else
+        const size_t committed = maxSize_;
+#endif
+        cap_end = cap == SIZE_MAX ? SIZE_MAX : std::max(cap, committed + CAP_SLACK);
+    }
+    const u8* const end = &top_[std::min(maxSize_, cap_end)];
+    if (current_ptr >= end)
         return 0;
-    return &top_[maxSize_] - current_ptr;
+    return end - current_ptr;
 }
 
 void BlockOfCode::EnsureMemoryCommitted([[maybe_unused]] size_t codesize) {

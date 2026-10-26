@@ -12,4 +12,10 @@ namespace Dynarmic {
 /// elsewhere the whole cache is committed up front and this stays 0.
 std::size_t CommittedCodeBytes() noexcept;
 
+/// Caps every x64 code cache, created or not, at `bytes` of code or what it had committed when
+/// it saw the cap, whichever is more: the JIT stops committing memory, and a cache is cleared
+/// only when it fills the pages it has. For when the app runs short of memory; 0 lifts the cap.
+void SetCodeCacheCap(std::size_t bytes) noexcept;
+[[nodiscard]] std::size_t CodeCacheCap() noexcept;
+
 } // namespace Dynarmic

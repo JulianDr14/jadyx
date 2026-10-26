@@ -290,6 +290,8 @@ struct BootConfig {
     /// the default 512 MiB per core, and 1 GiB with the metadata, without ever releasing any.
     /// At 128 the same game filled it twice during its load (~150 MiB a core) and recompiled
     /// everything; it is committed as it fills, so a smaller game never pays for the rest.
+    /// Short of memory, the caches stop growing instead (JIT_CAP_FLOOR): at 128 for a game that
+    /// had come close, it compiled 1.2M blocks loading.
     u32 jit_cache_mib{256};
     /// D3D12 debug layer (renderer_debug); PC only, the console has no SDK layers.
     bool debug_layer{};
@@ -582,6 +584,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     // caches evict against what the whole app has left, not DXGI's budget.
     g_test_memory_limit = u64{config.memory_limit_mib} << 20;
     Core::SetJitCodeCacheSize(config.jit_cache_mib << 20);
+    Dynarmic::SetCodeCacheCap(0);
     Core::SetPageTableExclusives(config.inline_exclusives);
     D3D12::SetAppMemoryQuery(QueryAppMemory);
     D3D12::SetBcArrayDecode(!config.bc_arrays_native);
@@ -1128,6 +1131,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         constexpr u64 LOW_HEADROOM_STEP = 50ULL << 20;
         u64 low_snapshot_headroom = ~u64{};
         u32 low_snapshot_tick = 0;
+        // Short of memory, each JIT code cache keeps what it has committed, or this much.
+        constexpr size_t JIT_CAP_FLOOR = 64ULL << 20;
         constexpr u64 POOL_TRIM_PER_SECOND = 64ULL << 20;
         constexpr u64 POOL_TRIM_ALL_HEADROOM = 512ULL << 20;
         constexpr u64 TRIM_SLICE = 32ULL << 20;
@@ -1194,12 +1199,20 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                     WriteDiag("low headroom memory map: " + LargestAllocations());
                 }
             }
-            if (u64 used{}, limit{}; tick % TICKS_PER_SECOND == 0 && QueryAppMemory(used, limit) &&
-                                     prewarm_budget.Observe(limit > used ? limit - used : 0)) {
-                SavePrewarmStep(program_id, static_cast<std::int32_t>(prewarm_budget.Step()));
-                WriteDiag("JIT prewarm budget lowered to " +
-                          std::to_string(prewarm_budget.MiBPerCore()) +
-                          " MiB per core for this game's next session | " + MemoryReport());
+            if (u64 used{}, limit{}; tick % TICKS_PER_SECOND == 0 && QueryAppMemory(used, limit)) {
+                const u64 headroom = limit > used ? limit - used : 0;
+                if (prewarm_budget.Observe(headroom)) {
+                    SavePrewarmStep(program_id, static_cast<std::int32_t>(prewarm_budget.Step()));
+                    WriteDiag("JIT prewarm budget lowered to " +
+                              std::to_string(prewarm_budget.MiBPerCore()) +
+                              " MiB per core for this game's next session | " + MemoryReport());
+                }
+                // Short of memory, the JIT stops committing: each cache keeps the pages it has
+                // and is cleared when it fills them. Recompiling costs less than running out.
+                if (headroom < PrewarmBudget::LOW_HEADROOM && Dynarmic::CodeCacheCap() == 0) {
+                    Dynarmic::SetCodeCacheCap(JIT_CAP_FLOOR);
+                    WriteDiag("JIT code caches stop growing | " + MemoryReport());
+                }
             }
             if (config.host_trim) {
                 trim_paused.store(menu.has_value(), std::memory_order_relaxed);
