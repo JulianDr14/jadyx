@@ -16,7 +16,9 @@
 #include "common/alignment.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
+#include <fmt/format.h>
 #include "video_core/control/channel_state.h"
+#include "video_core/diagnostics/full_capture.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/guest_memory.h"
@@ -40,6 +42,35 @@ using VideoCore::Surface::GetFormatType;
 using VideoCore::Surface::PixelFormat;
 using VideoCore::Surface::SurfaceType;
 using namespace Common::Literals;
+
+namespace AliasCapture {
+/// Diagnostic capture of depth images' alias traffic, the path depth pyramids take.
+inline bool Wants(const ImageBase& image) {
+    return FullCapture::Active() && GetFormatType(image.info.format) != SurfaceType::ColorTexture;
+}
+
+inline std::string Describe(const ImageBase& image) {
+    return fmt::format("{{\"gpu\":{},\"format\":{},\"width\":{},\"height\":{},\"levels\":{},"
+                       "\"layers\":{},\"tick\":{},\"flags\":{}}}",
+                       image.gpu_addr, static_cast<u32>(image.info.format), image.info.size.width,
+                       image.info.size.height, image.info.resources.levels,
+                       image.info.resources.layers, image.modification_tick,
+                       static_cast<u32>(image.flags));
+}
+
+inline std::string DescribeCopies(std::span<const ImageCopy> copies) {
+    std::string out = "[";
+    for (const ImageCopy& copy : copies) {
+        fmt::format_to(std::back_inserter(out),
+                       "{}{{\"src_level\":{},\"dst_level\":{},\"layers\":{},\"width\":{},"
+                       "\"height\":{},\"blocks\":{}}}",
+                       out.size() > 1 ? "," : "", copy.src_subresource.base_level,
+                       copy.dst_subresource.base_level, copy.src_subresource.num_layers,
+                       copy.extent.width, copy.extent.height, copy.extent_in_blocks);
+    }
+    return out + "]";
+}
+} // namespace AliasCapture
 
 template <class P>
 TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManager& device_memory_)
@@ -2023,6 +2054,23 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         DeleteImage(copy_object.id);
     }
 
+    if (AliasCapture::Wants(new_image)) {
+        const auto ids = [this](std::span<const ImageId> list) {
+            std::string out = "[";
+            for (const ImageId id : list) {
+                fmt::format_to(std::back_inserter(out), "{}{}", out.size() > 1 ? "," : "",
+                               AliasCapture::Describe(slot_images[id]));
+            }
+            return out + "]";
+        };
+        FullCapture::Event("tc_join",
+            fmt::format("{{\"image\":{},\"aliases\":{},\"resolved\":{},\"left\":{},\"right\":{},"
+                        "\"bad\":{},\"ignored\":{}}}",
+                        AliasCapture::Describe(new_image), new_image.aliased_images.size(),
+                        join_overlap_ids.size(), ids(join_left_aliased_ids),
+                        ids(join_right_aliased_ids), ids(join_bad_overlap_ids),
+                        join_ignore_textures.size()));
+    }
     {
         VideoCore::Perf::ScopedNsTimer timer{
             VideoCore::Perf::Counter::TextureCacheRegisterNs};
@@ -2734,6 +2782,11 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
 template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     ImageBase& image = slot_images[image_id];
+    if (AliasCapture::Wants(image)) {
+        FullCapture::Event("tc_delete", fmt::format("{{\"image\":{},\"aliases\":{}}}",
+                                                    AliasCapture::Describe(image),
+                                                    image.aliased_images.size()));
+    }
     if (image.HasScaled()) {
         total_used_memory -= GetScaledImageSizeBytes(image);
     }
@@ -2904,6 +2957,13 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     });
     const auto& resolution = Settings::values.resolution_info;
     for (const AliasedImage* const aliased : aliased_images) {
+        if (AliasCapture::Wants(image)) {
+            FullCapture::Event("tc_alias_sync",
+                               fmt::format("{{\"dst\":{},\"src\":{},\"rescaled\":{},\"copies\":{}}}",
+                                           AliasCapture::Describe(image),
+                                           AliasCapture::Describe(slot_images[aliased->id]),
+                                           any_rescaled, AliasCapture::DescribeCopies(aliased->copies)));
+        }
         if (!resolution.active || !any_rescaled) {
             CopyImage(image_id, aliased->id, aliased->copies);
             continue;
@@ -2929,6 +2989,17 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
         }
     } else {
         RefreshContents(image, image_id);
+        if (AliasCapture::Wants(image) && image.info.resources.levels > 1) {
+            std::string aliases = "[";
+            for (const AliasedImage& aliased : image.aliased_images) {
+                fmt::format_to(std::back_inserter(aliases), "{}{}", aliases.size() > 1 ? "," : "",
+                               AliasCapture::Describe(slot_images[aliased.id]));
+            }
+            FullCapture::Event("tc_alias_state",
+                               fmt::format("{{\"image\":{},\"modification\":{},\"aliases\":{}]}}",
+                                           AliasCapture::Describe(image), is_modification,
+                                           aliases));
+        }
         if (!image.aliased_images.empty()) {
             SynchronizeAliases(image_id);
         }

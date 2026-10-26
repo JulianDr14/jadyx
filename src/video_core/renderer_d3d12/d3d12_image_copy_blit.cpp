@@ -12,6 +12,7 @@
 #include "video_core/renderer_d3d12/d3d12_blit_image.h"
 #include "video_core/renderer_d3d12/d3d12_bc_copy.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
+#include "video_core/diagnostics/full_capture.h"
 #include "video_core/surface.h"
 
 // Image to image copies and blits.
@@ -41,6 +42,15 @@ bool CoversSubresources(const Image& dst, const Image& src, const ImageCopy& cop
     return covers(src, copy.src_subresource.base_level, copy.src_offset) &&
            covers(dst, copy.dst_subresource.base_level, copy.dst_offset);
 }
+
+/// Diagnostic capture: an image copy the runtime drops.
+void CaptureCopySkip(const Image& dst, const Image& src, std::string_view reason) {
+    if (!VideoCommon::FullCapture::Active()) return;
+    VideoCommon::FullCapture::Event("tc_copy_skip",
+        fmt::format("{{\"reason\":\"{}\",\"src\":{},\"dst\":{},\"src_format\":{},"
+                    "\"dst_format\":{}}}", reason, src.gpu_addr, dst.gpu_addr,
+                    static_cast<u32>(src.info.format), static_cast<u32>(dst.info.format)));
+}
 } // namespace
 
 void TextureCacheRuntime::CopyImage(Image& dst, Image& src, std::span<const ImageCopy> copies) {
@@ -53,6 +63,7 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src, std::span<const Imag
             const s32 level = copy.src_subresource.base_level;
             if (level < 0 || level >= src.info.resources.levels) {
                 WarnOnce(logged_decoded_copy, "alias copy has invalid source mip; skipped");
+                CaptureCopySkip(dst, src, "invalid source mip");
                 return;
             }
             const auto width = AliasBlockExtent(copy.extent.width, copy.src_offset.x,
@@ -63,6 +74,7 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src, std::span<const Imag
                 VideoCore::Surface::DefaultBlockHeight(src.info.format));
             if (!width || !height) {
                 WarnOnce(logged_decoded_copy, "alias copy exceeds source blocks; skipped");
+                CaptureCopySkip(dst, src, "exceeds source blocks");
                 return;
             }
             copy.extent.width = *width;
@@ -75,9 +87,11 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src, std::span<const Imag
     if (&dst == &src) {
         // Whole-resource state tracking cannot hold COPY_SOURCE and COPY_DEST at once.
         WarnOnce(logged_self_copy, "copies within one image are not supported yet; skipped");
+        CaptureCopySkip(dst, src, "self copy");
         return;
     }
     if (!src.Handle() || !dst.Handle()) {
+        CaptureCopySkip(dst, src, "no resource");
         return;
     }
     if (!Image::AreCopyCompatible(src, dst)) {
@@ -90,6 +104,7 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src, std::span<const Imag
         // Plain texels on one side, compressed blocks on the other: not copyable.
         WarnOnce(logged_decoded_copy, "copy between a host-decoded and a compressed image ({} -> "
                  "{}) skipped", src.info.format, dst.info.format);
+        CaptureCopySkip(dst, src, "decoded and compressed");
         return;
     }
     // Keep exact blocks coherent for copies between decoded arrays. Capture validity before
@@ -104,6 +119,7 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src, std::span<const Imag
             dst.info.num_samples > 1) {
             WarnOnce(logged_depth_stencil_copy, "depth-stencil copy {} -> {} needs a conversion; "
                      "skipped", src.info.format, dst.info.format);
+            CaptureCopySkip(dst, src, "depth-stencil conversion");
             return;
         }
         dst.CopyDepthStencilFrom(src, copies);

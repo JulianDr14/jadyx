@@ -12,6 +12,7 @@
 #include "video_core/renderer_d3d12/d3d12_blit_image.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
+#include "video_core/diagnostics/full_capture.h"
 #include "video_core/surface.h"
 
 // Depth-stencil images split into and merged from their planes (D3D12 copies one plane at a
@@ -334,6 +335,16 @@ void Image::CopyDepthStencilFrom(Image& src, std::span<const ImageCopy> copies) 
         const bool whole = src_x == 0 && src_y == 0 && dst_x == 0 && dst_y == 0 &&
                            width == src_size.Width && height == src_size.Height &&
                            width == dst_size.Width && height == dst_size.Height;
+        if (VideoCommon::FullCapture::Active()) {
+            VideoCommon::FullCapture::Event("ds_copy",
+                fmt::format("{{\"src\":{},\"dst\":{},\"src_level\":{},\"dst_level\":{},"
+                            "\"src_x\":{},\"src_y\":{},\"dst_x\":{},\"dst_y\":{},\"width\":{},"
+                            "\"height\":{},\"src_size\":[{},{}],\"dst_size\":[{},{}],\"whole\":{}}}",
+                            src.gpu_addr, gpu_addr, copy.src_subresource.base_level,
+                            copy.dst_subresource.base_level, src_x, src_y, dst_x, dst_y, width,
+                            height, src_size.Width, src_size.Height, dst_size.Width,
+                            dst_size.Height, whole));
+        }
         for (s32 layer = 0; layer < copy.src_subresource.num_layers; ++layer) {
             const s32 src_layer = copy.src_subresource.base_layer + layer;
             const s32 dst_layer = copy.dst_subresource.base_layer + layer;
