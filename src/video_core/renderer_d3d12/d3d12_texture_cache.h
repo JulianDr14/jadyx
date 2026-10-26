@@ -185,6 +185,8 @@ public:
     }
 
 private:
+    /// Clears a 1x1 D24 image to 0.5 and reads its depth plane back to set depth24_readback_float.
+    void ProbeDepth24Readback();
     void EnsureAstcRgbaScratch(u32 width, u32 height);
     /// One band of a GPU ASTC upload, as VerifyGpuAstcBand compares it.
     struct AstcVerifyBand {
@@ -246,6 +248,10 @@ private:
     /// MIN/MAX sampler reductions need tiled resources tier 2; the Xbox Series reports tier 1 and
     /// creating such a sampler there removes the device (DXGI_ERROR_INVALID_CALL).
     bool supports_min_max_filter{};
+    /// The Xbox Series keeps D24 depth as 32-bit float and copies those bits to buffers unchanged,
+    /// while a buffer -> texture copy reads 24-bit UNORM: depth footprints read back from a D24
+    /// image are then converted to UNORM before they go anywhere (ProbeDepth24Readback).
+    bool depth24_readback_float{};
     u64 depth_feedback_copies{};
     struct MrtScratch {
         std::unique_ptr<Image> image;

@@ -166,6 +166,7 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
     LOG_INFO(Render, "D3D12: texture cache runtime ready (min/max sampler reduction {}{})",
              supports_min_max_filter ? "yes" : "no",
              supports_min_max_filter != reported_min_max ? ", forced by boot.cfg" : "");
+    ProbeDepth24Readback();
 }
 
 TextureCacheRuntime::~TextureCacheRuntime() {

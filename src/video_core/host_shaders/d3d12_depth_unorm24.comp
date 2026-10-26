@@ -1,0 +1,43 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Rewrites, in place, the depth footprint of a D24 subresource copied to a buffer from float bits
+// into 24-bit UNORM (D3D12 renderer). Some drivers (the Xbox Series) keep D24 depth as 32-bit
+// float and copy those bits out unchanged, while a copy back into the texture reads the low 24
+// bits as UNORM; without this pass a texture -> buffer -> texture round trip corrupts the depth.
+
+#version 460 core
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(std430, set = 0, binding = 1) buffer Planes {
+    uint plane_words[];
+};
+
+// The layout of d3d12_depth_stencil_merge.comp; only the depth footprint fields are read.
+layout(push_constant) uniform Params {
+    uint packed_offset;
+    uint packed_row;
+    uint depth_pitch; // words per depth footprint row
+    uint stencil_offset;
+    uint stencil_pitch;
+    uint region_x;
+    uint region_y;
+    uint width;
+    uint height;
+    uint row_texels;
+    uint layout_mode;
+    uint unused;
+};
+
+void main() {
+    const uint x = gl_GlobalInvocationID.x;
+    const uint y = gl_GlobalInvocationID.y;
+    if (x >= width || y >= height) {
+        return;
+    }
+    const uint index = y * depth_pitch + x;
+    const float depth = uintBitsToFloat(plane_words[index]);
+    const float clamped = isnan(depth) ? 0.0 : clamp(depth, 0.0, 1.0);
+    plane_words[index] = uint(clamped * 16777215.0 + 0.5);
+}

@@ -154,6 +154,10 @@ public:
     void SplitDepthStencil(const DepthStencilPack& pack);
     /// Both footprints -> guest texels (d3d12_depth_stencil_merge.comp), same states.
     void MergeDepthStencil(const DepthStencilPack& pack);
+    /// Float bits -> 24-bit UNORM in the depth footprint at pack.destination, in place
+    /// (d3d12_depth_unorm24.comp); reads depth_pitch, width and height. The caller puts the
+    /// footprints in UNORDERED_ACCESS.
+    void DepthFloatToUnorm24(const DepthStencilPack& pack);
 
     /// False when the ASTC decoder failed to translate or build (logged): ASTC is then decoded
     /// on the CPU.
@@ -214,6 +218,7 @@ private:
     ComPtr<ID3D12RootSignature> pack_root_signature;
     ComPtr<ID3D12PipelineState> split_pipeline;
     ComPtr<ID3D12PipelineState> merge_pipeline;
+    ComPtr<ID3D12PipelineState> unorm24_pipeline;
     bool pack_available{};
 
     ComPtr<ID3D12RootSignature> astc_root_signature;
