@@ -779,7 +779,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     }
     const auto content = mii_editor ? Content::LaunchResolution{} :
         Content::ResolveLaunchContent(*system.GetFilesystem(), nro_path, manual_provider,
-                                      Content::ConsumeAllowMissing(nro_path), {}, Content::ReportedSystemVersion(system));
+                                      Content::ConsumeAllowMissing(nro_path));
     if (content.error != Content::Error::None) {
         WriteDiag("content: launch blocked error=" + std::to_string(static_cast<int>(content.error)));
         shutdown(); return 16;

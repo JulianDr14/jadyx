@@ -40,10 +40,6 @@ std::uint32_t SupportedSystemVersion() {
            (u32{HLE::ApiVersion::HOS_VERSION_MINOR} << 20) |
            (u32{HLE::ApiVersion::HOS_VERSION_MICRO} << 16);
 }
-std::uint32_t ReportedSystemVersion(Core::System& system) {
-    const auto* cache = system.GetFileSystemController().GetSystemNANDContents();
-    return cache ? cache->GetEntryVersion(0x0100000000000809ULL).value_or(SupportedSystemVersion()) : SupportedSystemVersion();
-}
 std::uint32_t PackageBaseVersion(FileSys::VfsFilesystem& vfs, const std::string& path, std::uint64_t application) {
     FileSys::ManualContentProvider provider;
     const auto file = vfs.OpenFile(path, FileSys::OpenMode::Read);
@@ -149,7 +145,7 @@ Error ExecuteImport(ContentStore& store, Catalog& catalog, FileSys::VfsFilesyste
 
 LaunchResolution ResolveLaunchContent(FileSys::VfsFilesystem& vfs, const std::string& base_path,
                                      FileSys::ManualContentProvider& provider,
-                                     bool omit_unavailable, std::stop_token stop, std::uint32_t system_version) {
+                                     bool omit_unavailable, std::stop_token stop) {
     using namespace FileSys;
     LaunchResolution result;
     ManualContentProvider base;
@@ -187,7 +183,7 @@ LaunchResolution ResolveLaunchContent(FileSys::VfsFilesystem& vfs, const std::st
             if (!r.internal && (r.source_stamp == 0 || StorageFileStamp(r.source) != r.source_stamp)) {
                 if (VerifyContent(*found, stop) != Error::None) { result.unavailable.push_back(r); continue; }
             }
-            if (!RequirementsSatisfied(r, result.version, system_version)) {
+            if (!RequirementsSatisfied(r, result.version, SupportedSystemVersion())) {
                 result.error = Error::Requirements; return result;
             }
             RegisterContent(provider, *found);

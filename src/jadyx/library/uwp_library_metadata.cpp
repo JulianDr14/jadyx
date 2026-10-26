@@ -97,7 +97,7 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
                 entry.relative_path.extension() != L".nro")
             {
                 FileSys::ManualContentProvider selected;
-                const auto resolved = Content::ResolveLaunchContent(*system->GetFilesystem(), entry.launch_path, selected, false, stop, Content::ReportedSystemVersion(*system));
+                const auto resolved = Content::ResolveLaunchContent(*system->GetFilesystem(), entry.launch_path, selected, false, stop);
                 if (resolved.error == Content::Error::None) {
                     record.build_id = resolved.build_id;
                     if (resolved.application) record.display_version = winrt::to_hstring(resolved.display_version).c_str();
