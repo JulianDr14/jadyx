@@ -448,6 +448,8 @@ private:
     /// Bumped by every transition into a writable state: every GPU write to the image follows one.
     u64 write_version{1};
     u64 uav_work{}; ///< Scheduler::Work() that last made it a UAV
+    /// The work that wrote it as a UAV and then left it in a copy state; 0 once ordered.
+    u64 left_uav_in_work{};
     std::unique_ptr<Image> guest_blocks;
     BcBlockCoverage guest_blocks_coverage;
     u64 guest_blocks_version{};

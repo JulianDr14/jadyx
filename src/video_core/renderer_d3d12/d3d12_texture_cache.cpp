@@ -27,6 +27,12 @@
 #include "video_core/texture_cache/texture_cache.h"
 
 namespace D3D12 {
+namespace {
+// Image::Transition logs the first case of each; the GPU thread alone records bindings.
+bool logged_copy_into_uav{};
+bool logged_copy_after_uav_work{};
+bool logged_copy_left_after_uav_work{};
+} // Anonymous namespace
 std::optional<D3D12_RESOURCE_STATES> Image::DiagnosticState(ID3D12Resource* tracked_resource) const {
     if (!tracked_resource) return std::nullopt;
     if (tracked_resource == Handle()) return state;
@@ -593,6 +599,7 @@ Image& Image::operator=(Image&& other) noexcept {
         needs_placed_init = other.needs_placed_init;
         write_version = other.write_version;
         uav_work = other.uav_work;
+        left_uav_in_work = other.left_uav_in_work;
         guest_blocks = std::move(other.guest_blocks);
         guest_blocks_coverage = std::move(other.guest_blocks_coverage);
         guest_blocks_version = other.guest_blocks_version;
@@ -714,16 +721,50 @@ void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
         // and its UAV barrier is in. AMD hardware, the Series included, samples it there too.
         return;
     }
+    if (work != 0 && uav_work == work &&
+        (state == D3D12_RESOURCE_STATE_COPY_SOURCE || state == D3D12_RESOURCE_STATE_COPY_DEST) &&
+        (next & WRITE_STATES) == 0 && next != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+        // The images' side of Buffer::Transition's upload between bindings: a copy or upload
+        // between this work's bindings took the image it writes out of UAV, and a later read
+        // binding would leave it in a read state. The next reader in that state then got no
+        // barrier and sampled it while the work still wrote it. Keep it a UAV; do not drop this
+        // when optimizing transitions. It costs one transition only in this case.
+        if (!logged_copy_into_uav) {
+            const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+            LOG_INFO(Render, "D3D12: an image a work writes took a copy between its bindings "
+                             "({} {}x{}x{})",
+                     info.format, desc.Width, desc.Height, desc.DepthOrArraySize);
+            logged_copy_into_uav = true;
+        }
+        next = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
     if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && work != 0) {
         uav_work = work;
     }
     BarrierBatch local{runtime->scheduler};
     BarrierBatch& barriers = batch ? *batch : local;
+    // A work wrote it as a UAV but left it in a copy state (its last binding was a copy). The
+    // copy's transition ran before the work, so the next use in that same state needs its own
+    // wait for the work's writes.
+    const bool unordered_write = left_uav_in_work != 0 && left_uav_in_work != work;
+    if (unordered_write) {
+        left_uav_in_work = 0;
+    }
     if (state == next) {
         // Writes in one state are unordered without a barrier (see Buffer::Transition).
         if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
             ++write_version;
             barriers.Uav(resource.Get());
+        } else if (unordered_write) {
+            if (!logged_copy_after_uav_work) {
+                LOG_INFO(Render, "D3D12: an image a work wrote was used again in its copy state");
+                logged_copy_after_uav_work = true;
+            }
+            if (next == D3D12_RESOURCE_STATE_COPY_DEST) {
+                ++write_version;
+            }
+            barriers.Transition(resource.Get(), next, D3D12_RESOURCE_STATE_COMMON);
+            barriers.Transition(resource.Get(), D3D12_RESOURCE_STATE_COMMON, next);
         } else if (next == D3D12_RESOURCE_STATE_COPY_DEST) {
             ++write_version;
             barriers.Transition(resource.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
@@ -735,8 +776,20 @@ void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
         if ((next & WRITE_STATES) != 0) {
             ++write_version;
         }
+        if (unordered_write) {
+            // The transition out of the copy state waits for the copy, not for the work's UAV
+            // writes after it: a texture read in the next draw sampled the image half written.
+            if (!logged_copy_left_after_uav_work) {
+                LOG_INFO(Render, "D3D12: an image a work wrote left its copy state for another");
+                logged_copy_left_after_uav_work = true;
+            }
+            barriers.Uav(resource.Get());
+        }
         barriers.Transition(resource.Get(), state, next);
         state = next;
+    }
+    if (work != 0 && uav_work == work && next != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+        left_uav_in_work = work;
     }
     if (!batch) {
         local.Flush();
