@@ -174,7 +174,7 @@ void A32EmitX64::EmitA32ClearExclusive(A32EmitContext&, IR::Inst*) {
 }
 
 void A32EmitX64::EmitA32ExclusiveReadMemory8(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access || conf.page_table_exclusive_access) {
         EmitExclusiveReadMemoryInline<8, &A32::UserCallbacks::MemoryRead>(ctx, inst);
     } else {
         EmitExclusiveReadMemory<8, &A32::UserCallbacks::MemoryRead>(ctx, inst);
@@ -182,7 +182,7 @@ void A32EmitX64::EmitA32ExclusiveReadMemory8(A32EmitContext& ctx, IR::Inst* inst
 }
 
 void A32EmitX64::EmitA32ExclusiveReadMemory16(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access || conf.page_table_exclusive_access) {
         EmitExclusiveReadMemoryInline<16, &A32::UserCallbacks::MemoryRead>(ctx, inst);
     } else {
         EmitExclusiveReadMemory<16, &A32::UserCallbacks::MemoryRead>(ctx, inst);
@@ -190,7 +190,7 @@ void A32EmitX64::EmitA32ExclusiveReadMemory16(A32EmitContext& ctx, IR::Inst* ins
 }
 
 void A32EmitX64::EmitA32ExclusiveReadMemory32(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access || conf.page_table_exclusive_access) {
         EmitExclusiveReadMemoryInline<32, &A32::UserCallbacks::MemoryRead>(ctx, inst);
     } else {
         EmitExclusiveReadMemory<32, &A32::UserCallbacks::MemoryRead>(ctx, inst);
@@ -198,7 +198,7 @@ void A32EmitX64::EmitA32ExclusiveReadMemory32(A32EmitContext& ctx, IR::Inst* ins
 }
 
 void A32EmitX64::EmitA32ExclusiveReadMemory64(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access || conf.page_table_exclusive_access) {
         EmitExclusiveReadMemoryInline<64, &A32::UserCallbacks::MemoryRead>(ctx, inst);
     } else {
         EmitExclusiveReadMemory<64, &A32::UserCallbacks::MemoryRead>(ctx, inst);
@@ -206,7 +206,7 @@ void A32EmitX64::EmitA32ExclusiveReadMemory64(A32EmitContext& ctx, IR::Inst* ins
 }
 
 void A32EmitX64::EmitA32ExclusiveWriteMemory8(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access || conf.page_table_exclusive_access) {
         EmitExclusiveWriteMemoryInline<8, &A32::UserCallbacks::MemoryWriteExclusive8>(ctx, inst);
     } else {
         EmitExclusiveWriteMemory<8, &A32::UserCallbacks::MemoryWriteExclusive8>(ctx, inst);
@@ -214,7 +214,7 @@ void A32EmitX64::EmitA32ExclusiveWriteMemory8(A32EmitContext& ctx, IR::Inst* ins
 }
 
 void A32EmitX64::EmitA32ExclusiveWriteMemory16(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access || conf.page_table_exclusive_access) {
         EmitExclusiveWriteMemoryInline<16, &A32::UserCallbacks::MemoryWriteExclusive16>(ctx, inst);
     } else {
         EmitExclusiveWriteMemory<16, &A32::UserCallbacks::MemoryWriteExclusive16>(ctx, inst);
@@ -222,7 +222,7 @@ void A32EmitX64::EmitA32ExclusiveWriteMemory16(A32EmitContext& ctx, IR::Inst* in
 }
 
 void A32EmitX64::EmitA32ExclusiveWriteMemory32(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access || conf.page_table_exclusive_access) {
         EmitExclusiveWriteMemoryInline<32, &A32::UserCallbacks::MemoryWriteExclusive32>(ctx, inst);
     } else {
         EmitExclusiveWriteMemory<32, &A32::UserCallbacks::MemoryWriteExclusive32>(ctx, inst);
@@ -230,7 +230,7 @@ void A32EmitX64::EmitA32ExclusiveWriteMemory32(A32EmitContext& ctx, IR::Inst* in
 }
 
 void A32EmitX64::EmitA32ExclusiveWriteMemory64(A32EmitContext& ctx, IR::Inst* inst) {
-    if (conf.fastmem_exclusive_access) {
+    if (conf.fastmem_exclusive_access || conf.page_table_exclusive_access) {
         EmitExclusiveWriteMemoryInline<64, &A32::UserCallbacks::MemoryWriteExclusive64>(ctx, inst);
     } else {
         EmitExclusiveWriteMemory<64, &A32::UserCallbacks::MemoryWriteExclusive64>(ctx, inst);
