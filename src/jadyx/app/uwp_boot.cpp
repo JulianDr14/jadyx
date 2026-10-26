@@ -155,6 +155,8 @@ void SetBcArrayDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuVerify(bool enabled); // d3d12_texture_cache.h
 void SetStencilBlitVerify(bool enabled); // d3d12_texture_cache.h
+enum class DxilSignMode; // d3d12_shader_compiler.h
+void SetDxilSignMode(DxilSignMode mode);
 void SetAstcGpuSync(bool enabled); // d3d12_texture_cache.h
 void SetForceMinMaxFilter(bool enabled); // d3d12_texture_cache.h
 void SetSkipMinMaxFilter(bool enabled); // d3d12_texture_cache.h
@@ -450,6 +452,8 @@ struct BootConfig {
     bool astc_opaque_bc3{};
     bool astc_verify{};
     bool stencil_blit_verify{};
+    /// DXIL signing: 0 the validator, 1 own digest ("dxil_sign=hash"), 2 both ("dxil_sign=verify").
+    int dxil_sign{};
     bool gpu_failure_probe{};
     bool gpu_removal_probe{};
     unsigned rom_storage_checks{}; // 1=record token, 2=restore after a process restart
@@ -611,6 +615,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                             config.astc == BootConfig::Astc::GpuRgba);
     D3D12::SetAstcGpuVerify(config.astc_verify);
     D3D12::SetStencilBlitVerify(config.stencil_blit_verify);
+    D3D12::SetDxilSignMode(static_cast<D3D12::DxilSignMode>(config.dxil_sign));
     D3D12::SetAstcGpuSync(config.astc_sync);
     D3D12::SetAstcGpuFresh(config.astc_fresh);
     D3D12::SetDescriptorRemovalChecks(config.descriptor_checks);
@@ -3201,6 +3206,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "astc_verify=1") {
                             config.astc_verify = true;
                             WriteDiag("boot.cfg: verify first GPU BC3 upload against CPU");
+                        } else if (line == "dxil_sign=hash" || line == "dxil_sign=verify") {
+                            config.dxil_sign = line == "dxil_sign=hash" ? 1 : 2;
+                            WriteDiag("boot.cfg: " + line);
                         } else if (line == "stencil_blit_verify=1") {
                             config.stencil_blit_verify = true;
                             WriteDiag("boot.cfg: read back the first depth-stencil blits");

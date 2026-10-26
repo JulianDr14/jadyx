@@ -644,6 +644,7 @@ void PipelineCache::LogPipelineStats(std::string_view when) const {
              when, stats.inline_builds.load(std::memory_order_relaxed),
              stats.prewarm_queued.load(std::memory_order_relaxed),
              stats.prewarm_hits.load(std::memory_order_relaxed), line);
+    LogDxilDigestChecks();
 }
 
 void PipelineCache::SaveHotPipelines() {

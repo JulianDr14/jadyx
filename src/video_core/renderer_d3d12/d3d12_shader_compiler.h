@@ -22,6 +22,16 @@ namespace D3D12 {
 constexpr u32 PUSH_CONSTANT_SPACE = 30;
 constexpr u32 RUNTIME_DATA_SPACE = 31;
 
+/// How translated DXIL gets the digest the runtime checks ("dxil_sign=" in boot.cfg).
+enum class DxilSignMode {
+    Validator, ///< dxil.dll validates and signs each stage, one stage at a time.
+    Hash,      ///< The digest is computed here, without validation.
+    Verify,    ///< Both: the validator's digest is kept and compared with the computed one.
+};
+void SetDxilSignMode(DxilSignMode mode);
+/// Logs how many computed digests matched the validator's (Verify only).
+void LogDxilDigestChecks();
+
 /// SPIR-V -> signed DXIL, via Mesa's spirv_to_dxil and the DXIL validator in dxil.dll.
 ///
 /// Both DLLs ship in the package and are loaded at runtime, so a console that rejects either one
