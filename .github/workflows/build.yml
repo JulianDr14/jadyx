@@ -17,6 +17,10 @@ on:
         description: Package version for a release (MAJOR.MINOR.BUILD.REVISION); empty keeps the manifest's
         type: string
         default: ""
+      lto:
+        description: Link-time optimize the emulator's libraries (JADYX_HOST_LTO), as releases ship
+        type: boolean
+        default: false
     secrets:
       JADYX_PFX_BASE64:
         required: false
@@ -167,6 +171,7 @@ jobs:
           tools\xbox\build-env.bat cmake --preset uwp-x64
           -DUSE_CCACHE=ON -DCCACHE_BINARY=sccache
           -DCMAKE_POLICY_DEFAULT_CMP0141=NEW -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+          -DJADYX_HOST_LTO=${{ inputs.lto && 'ON' || 'OFF' }}
 
       - name: Build
         shell: cmd
