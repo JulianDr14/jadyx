@@ -157,6 +157,7 @@ void SetAstcGpuVerify(bool enabled); // d3d12_texture_cache.h
 void SetStencilBlitVerify(bool enabled); // d3d12_texture_cache.h
 enum class DxilSignMode; // d3d12_shader_compiler.h
 void SetDxilSignMode(DxilSignMode mode);
+void SetDxilDiskCacheEnabled(bool enabled); // d3d12_dxil_disk_cache.h
 void SetAstcGpuSync(bool enabled); // d3d12_texture_cache.h
 void SetForceMinMaxFilter(bool enabled); // d3d12_texture_cache.h
 void SetSkipMinMaxFilter(bool enabled); // d3d12_texture_cache.h
@@ -454,6 +455,8 @@ struct BootConfig {
     bool stencil_blit_verify{};
     /// DXIL signing: 0 the validator, 1 own digest ("dxil_sign=hash"), 2 both ("dxil_sign=verify").
     int dxil_sign{};
+    /// Keep signed DXIL across sessions, on by default ("dxil_cache=0" turns it off).
+    bool dxil_cache{true};
     bool gpu_failure_probe{};
     bool gpu_removal_probe{};
     unsigned rom_storage_checks{}; // 1=record token, 2=restore after a process restart
@@ -616,6 +619,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetAstcGpuVerify(config.astc_verify);
     D3D12::SetStencilBlitVerify(config.stencil_blit_verify);
     D3D12::SetDxilSignMode(static_cast<D3D12::DxilSignMode>(config.dxil_sign));
+    D3D12::SetDxilDiskCacheEnabled(config.dxil_cache);
     D3D12::SetAstcGpuSync(config.astc_sync);
     D3D12::SetAstcGpuFresh(config.astc_fresh);
     D3D12::SetDescriptorRemovalChecks(config.descriptor_checks);
@@ -3208,6 +3212,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             WriteDiag("boot.cfg: verify first GPU BC3 upload against CPU");
                         } else if (line == "dxil_sign=hash" || line == "dxil_sign=verify") {
                             config.dxil_sign = line == "dxil_sign=hash" ? 1 : 2;
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "dxil_cache=0" || line == "dxil_cache=1") {
+                            config.dxil_cache = line == "dxil_cache=1";
                             WriteDiag("boot.cfg: " + line);
                         } else if (line == "stencil_blit_verify=1") {
                             config.stencil_blit_verify = true;

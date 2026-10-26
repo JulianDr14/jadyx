@@ -12,6 +12,7 @@
 
 #include "common/dynamic_library.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
+#include "video_core/renderer_d3d12/d3d12_dxil_disk_cache.h"
 
 struct IDxcValidator;
 
@@ -73,6 +74,10 @@ public:
         return emulates_reduction;
     }
 
+    /// Identifies what CompilePipeline() produces: the loaded spirv_to_dxil.dll and the
+    /// configuration given to it. 0 when the DLL could not be read (no disk cache then).
+    u64 TranslatorGeneration() const;
+
     /// Translates and signs one stage. Throws std::runtime_error with the translator's or the
     /// validator's message on failure. Vertex-pipeline stages get Vulkan's Y-down clip space flipped
     /// to D3D's when flip_y is set.
@@ -110,6 +115,8 @@ public:
 
 private:
     void Sign(std::vector<u8>& dxil, u64 trace_pipeline = 0) const;
+    DxilDiskCache::Key DiskCacheKey(std::span<const PipelineStage> stages,
+                                    const PipelineOptions& options, u32 flags) const;
     dxil_spirv_runtime_conf MakeConf() const;
 
     using PFN_spirv_to_dxil = decltype(&::spirv_to_dxil);
@@ -129,6 +136,8 @@ private:
     bool lowers_integer_sampling{};
     bool emulates_reduction{};
     bool available{};
+    /// Hash of the loaded spirv_to_dxil.dll; 0 keeps the DXIL disk cache off.
+    u64 translator_id{};
 };
 
 } // namespace D3D12

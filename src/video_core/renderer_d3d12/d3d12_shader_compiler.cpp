@@ -5,6 +5,9 @@
 #include <atomic>
 #include <bit>
 #include <cstring>
+#include <fstream>
+#include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -17,6 +20,7 @@
 #include "common/bug_tracker.h"
 #include "common/cityhash.h"
 #include "common/logging.h"
+#include "video_core/renderer_d3d12/d3d12_dxil_disk_cache.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/frame_trace.h"
 
@@ -173,6 +177,85 @@ void CountDigest(const std::vector<u8>& signed_dxil, const std::array<u8, DXIL_D
     }
 }
 
+/// Bumped when MakeConf() or the record layout below changes what a cached pipeline means.
+constexpr u32 DXIL_CACHE_FORMAT = 1;
+
+/// The translator's identity: a rebuilt spirv_to_dxil.dll misses the old records.
+u64 HashLoadedModule(const wchar_t* name) {
+    const HMODULE module = GetModuleHandleW(name);
+    std::array<wchar_t, MAX_PATH> path{};
+    if (!module || GetModuleFileNameW(module, path.data(), static_cast<DWORD>(path.size())) == 0) {
+        return 0;
+    }
+    std::ifstream file(path.data(), std::ios::binary);
+    const std::vector<char> bytes{std::istreambuf_iterator<char>(file),
+                                  std::istreambuf_iterator<char>()};
+    return Common::CityHash64(bytes.data(), bytes.size());
+}
+
+template <typename T>
+void Append(std::vector<u8>& out, const T& value) {
+    const auto* bytes = reinterpret_cast<const u8*>(&value);
+    out.insert(out.end(), bytes, bytes + sizeof(T));
+}
+
+template <typename T>
+bool Take(std::span<const u8>& in, T& value) {
+    if (in.size() < sizeof(T)) {
+        return false;
+    }
+    std::memcpy(&value, in.data(), sizeof(T));
+    in = in.subspan(sizeof(T));
+    return true;
+}
+
+/// Record: stage count, then per stage its size, both metadata flags and the signed DXIL, then
+/// the stream output declaration when the pipeline asked for one.
+std::vector<u8> EncodeStages(std::span<const ShaderCompiler::CompiledStage> stages,
+                             const eden_spirv_to_dxil_stream_output* stream_output) {
+    std::vector<u8> out;
+    Append(out, static_cast<u32>(stages.size()));
+    for (const auto& stage : stages) {
+        Append(out, static_cast<u32>(stage.dxil.size()));
+        Append(out, static_cast<u8>(stage.metadata.requires_runtime_data));
+        Append(out, static_cast<u8>(stage.metadata.needs_draw_sysvals));
+        out.insert(out.end(), stage.dxil.begin(), stage.dxil.end());
+    }
+    if (stream_output) {
+        Append(out, *stream_output);
+    }
+    return out;
+}
+
+std::optional<std::vector<ShaderCompiler::CompiledStage>> DecodeStages(
+    std::span<const u8> in, size_t count, eden_spirv_to_dxil_stream_output* stream_output) {
+    u32 stored_count{};
+    if (!Take(in, stored_count) || stored_count != count) {
+        return std::nullopt;
+    }
+    std::vector<ShaderCompiler::CompiledStage> stages(count);
+    for (auto& stage : stages) {
+        u32 size{};
+        u8 runtime_data{};
+        u8 draw_sysvals{};
+        if (!Take(in, size) || !Take(in, runtime_data) || !Take(in, draw_sysvals) ||
+            in.size() < size) {
+            return std::nullopt;
+        }
+        stage.dxil.assign(in.begin(), in.begin() + size);
+        stage.metadata.requires_runtime_data = runtime_data != 0;
+        stage.metadata.needs_draw_sysvals = draw_sysvals != 0;
+        in = in.subspan(size);
+    }
+    if (stream_output && !Take(in, *stream_output)) {
+        return std::nullopt;
+    }
+    if (!in.empty()) {
+        return std::nullopt;
+    }
+    return stages;
+}
+
 void LogTranslatorMessage(void*, const char* msg) {
     // Validation errors (e.g. sampling an integer texture) name the failing instruction: each
     // distinct message is its own bug.
@@ -246,6 +329,7 @@ ShaderCompiler::ShaderCompiler() {
     if (SUCCEEDED(validator.As(&version))) {
         version->GetVersion(&major, &minor);
     }
+    translator_id = HashLoadedModule(L"spirv_to_dxil.dll");
     LOG_INFO(Render, "D3D12: shader path ready (spirv_to_dxil{}{}, DXIL validator {}.{})",
              translate_pipeline ? " with stage linking" : "",
              lowers_integer_sampling ? " and integer sampling" : "", major, minor);
@@ -325,13 +409,25 @@ std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
                      .conf = &confs[i]};
     }
 
+    const u32 flags = (options.flatten_vertex ? EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX : 0) |
+                      (options.emulate_reduction ? EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION : 0);
+    DxilDiskCache& disk_cache = GetDxilDiskCache();
+    const bool use_disk_cache = disk_cache.IsOpen() && translator_id != 0;
+    DxilDiskCache::Key disk_key{};
+    if (use_disk_cache) {
+        disk_key = DiskCacheKey(stages, options, flags);
+        if (const auto payload = disk_cache.Find(disk_key)) {
+            if (auto cached = DecodeStages(*payload, stages.size(), options.stream_output)) {
+                return std::move(*cached);
+            }
+        }
+    }
+
     const dxil_spirv_debug_options debug_options{};
     const dxil_spirv_logger logger{.priv = nullptr, .log = LogTranslatorMessage};
     std::array<dxil_spirv_object, EDEN_SPIRV_TO_DXIL_MAX_STAGES> objects{};
     VideoCore::FrameTrace::ScopedSpan translate_span{
         VideoCore::FrameTrace::Event::PipelineTranslateLong, trace_pipeline, trace_pipeline != 0};
-    const u32 flags = (options.flatten_vertex ? EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX : 0) |
-                      (options.emulate_reduction ? EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION : 0);
     const u64 translate_start = SteadyMicros();
     if (options.emulate_reduction && !emulates_reduction) {
         throw std::runtime_error("D3D12: spirv_to_dxil.dll cannot emulate sampler reduction");
@@ -386,7 +482,42 @@ std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
     for (CompiledStage& stage : result) {
         Sign(stage.dxil, trace_pipeline);
     }
+    if (use_disk_cache) {
+        disk_cache.Store(disk_key, EncodeStages(result, options.stream_output));
+    }
     return result;
+}
+
+u64 ShaderCompiler::TranslatorGeneration() const {
+    return translator_id == 0 ? 0 : translator_id ^ DXIL_CACHE_FORMAT;
+}
+
+DxilDiskCache::Key ShaderCompiler::DiskCacheKey(std::span<const PipelineStage> stages,
+                                                const PipelineOptions& options, u32 flags) const {
+    // Everything that reaches the translator besides MakeConf(), which DXIL_CACHE_FORMAT covers.
+    std::vector<u32> words{DXIL_CACHE_FORMAT,
+                           static_cast<u32>(translator_id),
+                           static_cast<u32>(translator_id >> 32),
+                           static_cast<u32>(SHADER_MODEL),
+                           static_cast<u32>(VALIDATOR_VERSION),
+                           flags,
+                           static_cast<u32>(options.yz_flip),
+                           options.y_flip_mask,
+                           options.z_flip_mask,
+                           static_cast<u32>(options.first_vertex_and_base_instance),
+                           options.stream_output != nullptr ? 1U : 0U,
+                           static_cast<u32>(stages.size())};
+    for (const auto& stage : stages) {
+        words.push_back(static_cast<u32>(stage.stage));
+        words.push_back(static_cast<u32>(stage.spirv.size()));
+    }
+    u128 hash = Common::CityHash128(reinterpret_cast<const char*>(words.data()),
+                                    words.size() * sizeof(u32));
+    for (const auto& stage : stages) {
+        hash = Common::CityHash128WithSeed(reinterpret_cast<const char*>(stage.spirv.data()),
+                                           stage.spirv.size_bytes(), hash);
+    }
+    return {.lo = hash[0], .hi = hash[1]};
 }
 
 dxil_spirv_runtime_conf ShaderCompiler::MakeConf() const {

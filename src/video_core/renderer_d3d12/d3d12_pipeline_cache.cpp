@@ -38,6 +38,7 @@
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
+#include "video_core/renderer_d3d12/d3d12_dxil_disk_cache.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
 #include "video_core/renderer_d3d12/d3d12_stream_output.h"
@@ -859,6 +860,11 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }
     pipeline_cache_filename = base_dir / "d3d12.bin";
     hot_pipelines_filename = base_dir / "d3d12_hot.bin";
+    if (IsDxilDiskCacheEnabled() && compiler.TranslatorGeneration() != 0) {
+        GetDxilDiskCache().Open(base_dir / "d3d12_dxil.bin", compiler.TranslatorGeneration());
+    } else {
+        GetDxilDiskCache().Close();
+    }
     {
         std::ifstream file(hot_pipelines_filename, std::ios::binary);
         const std::vector<u8> bytes{std::istreambuf_iterator<char>(file),
@@ -978,6 +984,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     prewarm_cursor = 0;
     prewarm_last = nullptr;
     LogPipelineStats("boot");
+    GetDxilDiskCache().LogStats("boot");
 }
 
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
