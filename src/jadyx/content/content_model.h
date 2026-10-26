@@ -19,7 +19,11 @@ struct Revision {
     bool internal{}, verified{}, enabled{};
 };
 inline bool RequirementsSatisfied(const Revision& r, std::uint32_t application, std::uint32_t system) {
-    return r.required_application <= application && r.required_system <= system;
+    // Only major.minor of the system version count: micro releases (and the relstep below them)
+    // are bug fixes that add no API, and content asking for 23.0.1 runs on HLE 23.0.0.
+    constexpr std::uint32_t major_minor = 0xFFF00000;
+    return r.required_application <= application &&
+           (r.required_system & major_minor) <= (system & major_minor);
 }
 inline bool ValidId(const std::string& id) {
     return id.size() == 64 && std::all_of(id.begin(), id.end(), [](char c) {
