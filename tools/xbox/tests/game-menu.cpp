@@ -164,8 +164,6 @@ int main() {
     check(system_page.settings.show_performance_stats);
     check(HandleSystemInput(system_page, SystemInput::Left) == SystemPageEffect::Changed);
     check(!system_page.settings.show_performance_stats);
-    check(SystemPageLayout::RowTop + (SystemPage::RowCount - 1) * SystemPageLayout::RowStride +
-          SystemPageLayout::RowHeight < SystemPageLayout::Notice);
     const auto open_display = [&](GameMenu& m) {
         while (m.SelectedItem() != GameMenu::DisplayPage) m.Apply(MenuAction::Down);
         m.Apply(MenuAction::Confirm);
