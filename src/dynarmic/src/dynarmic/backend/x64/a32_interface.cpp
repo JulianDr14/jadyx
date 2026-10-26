@@ -302,6 +302,7 @@ private:
     std::optional<A32EmitX64::BlockDescriptor> Compile(IR::LocationDescriptor descriptor, const BlockProfile* expected) {
         const JitProfile::Timer compile_timer{JitProfile::Phase::Compile};
         if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
+            JitProfile::full_cache_clears.fetch_add(1, std::memory_order_relaxed);
             invalidate_entire_cache = true;
             PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
         }

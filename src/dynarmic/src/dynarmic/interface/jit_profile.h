@@ -34,6 +34,8 @@ struct Counters {
 };
 inline std::array<Counters, static_cast<std::size_t>(Phase::Count)> counters;
 inline std::atomic_bool enabled{};
+/// Code caches emptied because they filled up, all their blocks dropped with them. Always counted.
+inline std::atomic<std::uint64_t> full_cache_clears{};
 // Monotonic on this host thread; sampled around one guest Run to exclude other cores.
 inline thread_local std::uint64_t local_compile_ns{};
 [[nodiscard]] inline std::uint64_t ReadLocalCompileNs() { return local_compile_ns; }

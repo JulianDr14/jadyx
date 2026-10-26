@@ -612,6 +612,8 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
              VideoCore::Perf::Get(delta, Counter::PsoCreates), Ms(delta, Counter::PsoCreateUs));
     LOG_INFO(Render, "D3D12 depth feedback: {} GPU copies in total",
              texture_cache_runtime.DepthFeedbackCopies());
+    LOG_INFO(Render, "D3D12 guest JIT: {} full code cache clears in total",
+             Dynarmic::JitProfile::full_cache_clears.load(std::memory_order_relaxed));
     if (Core::CpuProfile::Enabled()) {
         const auto jit = Dynarmic::JitProfile::Take();
         const auto measurement = [&](Dynarmic::JitProfile::Phase phase) -> const auto& {
