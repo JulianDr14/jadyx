@@ -173,6 +173,7 @@ void ArmDynarmic32::MakeJit(Common::PageTable* page_table) {
 
         config.fastmem_exclusive_access = config.fastmem_pointer  != std::nullopt;
         config.recompile_on_exclusive_fastmem_failure = true;
+        config.page_table_exclusive_access = g_page_table_exclusives.load(std::memory_order_relaxed);
 
         config.page_table_sign_extension = std::nullopt;
     }
@@ -236,6 +237,7 @@ void ArmDynarmic32::MakeJit(Common::PageTable* page_table) {
         }
         if (!Settings::values.cpuopt_fastmem_exclusives) {
             config.fastmem_exclusive_access = false;
+            config.page_table_exclusive_access = false;
         }
         if (!Settings::values.cpuopt_recompile_exclusives) {
             config.recompile_on_exclusive_fastmem_failure = false;
