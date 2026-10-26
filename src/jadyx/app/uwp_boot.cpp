@@ -93,6 +93,7 @@
 #include "video_core/renderer_d3d12/d3d12_menu_image.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_mode.h"
 
+#include "jadyx/app/cpu_probe.h"
 #include "jadyx/app/alloc_watch.h"
 #include "jadyx/cheats/cheat_session.h"
 #include "jadyx/cheats/cheats_page.h"
@@ -394,6 +395,7 @@ struct BootConfig {
     /// ("timer_spin=<us>"); past that a late timer makes the event late. Unset follows the
     /// timer's learned lateness, which on Series keeps nearly every wait on the CPU.
     std::optional<u32> timer_spin_us;
+    bool cpu_probe{}; ///< Measures the app's logical processors before the guest (cpu_probe.h).
     bool timer_profile{}; ///< HostTiming waits only; opt-in, separate from draw profiling.
     /// File name of a game in LocalState\games to boot instead of boot.nro (package-appx.ps1 -Game).
     std::string game;
@@ -511,6 +513,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
               std::to_string(std::chrono::duration<double, std::milli>(timer_resolution).count()) +
               " ms");
     WriteDiag("step: CPU " + CpuSetReport());
+    if (config.cpu_probe) Jadyx::RunCpuProbe(WriteDiag);
     ApplyHeadlessBootSettings(config.null_renderer ? BootSurface{} : surface);
     // After the System settings, which turn the overlay on when the player has it on.
     if (mii_editor) VideoCore::performance_overlay_enabled.store(false, std::memory_order_relaxed);
@@ -2854,6 +2857,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                                 : line == "ps_scratch=native" ? 2
                                                                               : 0;
                             WriteDiag("boot.cfg: " + line);
+                        } else if (line == "cpu_probe=1") {
+                            config.cpu_probe = true;
+                            WriteDiag("boot.cfg: CPU probe before the guest");
                         } else if (line == "timer_profile=1") {
                             config.timer_profile = true;
                             WriteDiag("boot.cfg: HostTiming requested waits/sleeps/spin elapsed profiling enabled");
