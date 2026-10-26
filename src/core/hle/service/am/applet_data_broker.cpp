@@ -53,6 +53,11 @@ Kernel::KReadableEvent* AppletStorageChannel::GetEvent() {
     return m_event.GetHandle();
 }
 
+std::vector<std::shared_ptr<IStorage>> AppletStorageChannel::PulseData() {
+    std::scoped_lock lk{m_lock};
+    return {m_data.begin(), m_data.end()};
+}
+
 AppletDataBroker::AppletDataBroker(Core::System& system_)
     : system(system_), context(system_, "AppletDataBroker"), in_data(context),
       interactive_in_data(context), out_data(context), interactive_out_data(context) {}

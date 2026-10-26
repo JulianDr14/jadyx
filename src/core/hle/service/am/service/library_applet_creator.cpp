@@ -133,6 +133,8 @@ std::shared_ptr<ILibraryAppletAccessor> CreateGuestApplet(Core::System& system,
     return {};
 }
 
+} // namespace
+
 std::shared_ptr<ILibraryAppletAccessor> CreateFrontendApplet(Core::System& system,
                                                              WindowSystem& window_system,
                                                              std::shared_ptr<Applet> caller_applet,
@@ -158,8 +160,6 @@ std::shared_ptr<ILibraryAppletAccessor> CreateFrontendApplet(Core::System& syste
     return std::make_shared<ILibraryAppletAccessor>(system, storage, applet);
 }
 
-} // namespace
-
 ILibraryAppletCreator::ILibraryAppletCreator(Core::System& system_, std::shared_ptr<Applet> applet,
                                              WindowSystem& window_system)
     : ServiceFramework{system_, "ILibraryAppletCreator"},
@@ -181,7 +181,7 @@ ILibraryAppletCreator::~ILibraryAppletCreator() = default;
 Result ILibraryAppletCreator::CreateLibraryApplet(
     Out<SharedPointer<ILibraryAppletAccessor>> out_library_applet_accessor, AppletId applet_id,
     LibraryAppletMode library_applet_mode) {
-    LOG_DEBUG(Service_AM, "called with applet_id={} applet_mode={}", applet_id,
+    LOG_INFO(Service_AM, "called with applet_id={} applet_mode={}", applet_id,
               library_applet_mode);
 
     std::shared_ptr<ILibraryAppletAccessor> library_applet;
@@ -207,7 +207,7 @@ Result ILibraryAppletCreator::CreateLibraryApplet(
 Result ILibraryAppletCreator::CreateLibraryAppletEx(
     Out<SharedPointer<ILibraryAppletAccessor>> out_library_applet_accessor, AppletId applet_id,
     LibraryAppletMode library_applet_mode, u64 thread_id) {
-    LOG_DEBUG(Service_AM, "called with applet_id={} applet_mode={} thread_id={}", applet_id,
+    LOG_INFO(Service_AM, "called with applet_id={} applet_mode={} thread_id={}", applet_id,
               library_applet_mode, thread_id);
 
     std::shared_ptr<ILibraryAppletAccessor> library_applet;

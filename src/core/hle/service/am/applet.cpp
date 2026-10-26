@@ -4,8 +4,12 @@
 // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator
 // Project// SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <stdexcept>
+#include <string>
+
+#include <fmt/format.h>
 
 #include "common/settings.h"
 #include "core/core.h"
@@ -65,8 +69,18 @@ std::vector<std::vector<u8>> LoadBuffers(Pulse::StateReader& in) {
 void Applet::PulseSave(Core::System& system, Pulse::StateWriter& out) {
     std::unique_lock lk{lock, std::try_to_lock};
     if (!lk.owns_lock()) throw Pulse::ServiceRejected(true, "am: the application applet is busy");
-    if (!child_applets.empty() || reserved_applet || is_winding) {
-        throw Pulse::ServiceRejected(true, "am: a library applet is open");
+    // A library applet created but not started is stored by its accessor.
+    const bool child_running = std::any_of(child_applets.begin(), child_applets.end(),
+                                           [](const auto& child) { return child->started; });
+    if (child_running || reserved_applet || is_winding) {
+        std::string reason{"am: a library applet is open"};
+        for (const auto& child : child_applets) {
+            reason += fmt::format(" (applet {:#x} mode {}{}{})", static_cast<u32>(child->applet_id),
+                                  static_cast<u32>(child->library_applet_mode),
+                                  child->frontend ? "" : ", no frontend",
+                                  child->is_completed ? ", completed" : "");
+        }
+        throw Pulse::ServiceRejected(true, reason);
     }
     out.U32(terminate_result.raw);
     out.S32(display_logical_width);

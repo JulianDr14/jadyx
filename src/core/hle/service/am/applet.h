@@ -114,6 +114,8 @@ struct Applet {
     std::shared_ptr<AppletDataBroker> caller_applet_broker{};
     std::list<std::shared_ptr<Applet>> child_applets{};
     bool is_completed{};
+    // Set by ILibraryAppletAccessor::Start; Pulse can store a library applet only before it.
+    bool started{};
 
     std::shared_ptr<Applet> reserved_applet{};
     bool unwind_after_reserved{};
