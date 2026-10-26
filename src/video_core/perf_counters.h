@@ -171,6 +171,9 @@ enum class Counter : size_t {
     OcclusionResults,         ///< results written
     OcclusionResultsZero,     ///< of those, zero samples passed
     OcclusionResultLatencyUs, ///< summed time from the guest's report to the write
+    // Cache garbage collection under memory pressure (always counted, once per frame at most).
+    CacheGcRuns,              ///< texture and buffer cache collections
+    CacheGcUs,                ///< time they took, including buffer downloads before deletion
     Count,
 };
 
