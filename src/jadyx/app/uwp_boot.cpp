@@ -644,7 +644,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     }
     VideoCore::Perf::SetForceSwapIntervalOne(config.force_swap_interval_one);
     Settings::values.async_presentation.SetValue(config.async_present);
-    Settings::values.airplane_mode.SetValue(config.airplane_mode);
+    if (config.airplane_mode) Settings::values.airplane_mode.SetValue(true); // else Settings > System
     if (config.upscaling) ApplyUpscaling(*config.upscaling); // before the renderer exists
     D3D12::SetAsyncRecording(config.async_record);
     Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);

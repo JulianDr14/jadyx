@@ -623,6 +623,8 @@ enum class Text : std::uint16_t {
     LastPlayedSorted,
     MultipleControllers,
     MultipleControllersHint,
+    OfflineMode,
+    OfflineModeHint,
 
     // Tabs, sections and filters
     TabHome,

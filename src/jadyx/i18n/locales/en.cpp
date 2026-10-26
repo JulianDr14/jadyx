@@ -673,6 +673,8 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::LastPlayedSorted, L"Recently played"},
     {Text::MultipleControllers, L"Multiple controllers"},
     {Text::MultipleControllersHint, L"Each extra controller plays as players 2 to 8. Applies when a game starts"},
+    {Text::OfflineMode, L"Offline mode"},
+    {Text::OfflineModeHint, L"Games see no internet connection, as in airplane mode, and skip online logins. Applies when a game starts"},
 
     // Tabs, sections and filters
     {Text::TabHome, L"Home"},
