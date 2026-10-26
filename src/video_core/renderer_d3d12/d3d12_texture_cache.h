@@ -560,6 +560,11 @@ public:
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE DepthFeedbackHandle(
         Shader::TextureType texture_type) const;
 
+    /// Texture2DArray SRV of the stencil plane of the view's first level and layer, the value
+    /// in every component, for blits that copy stencil. Null when the image has no stencil.
+    /// Created on first use.
+    [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE StencilHandle() const;
+
     /// A sampler's border color as samples through this view return it (SampledBorderColor).
     [[nodiscard]] std::array<u32, 4> SampledBorder(const std::array<u32, 4>& raw) const noexcept {
         return SampledBorderColor(raw, srv_params.format, srv_params.mapping);
@@ -592,6 +597,7 @@ private:
     mutable std::array<D3D12_CPU_DESCRIPTOR_HANDLE, Shader::NUM_TEXTURE_TYPES> srvs{};
     mutable std::unique_ptr<std::array<D3D12_CPU_DESCRIPTOR_HANDLE, Shader::NUM_TEXTURE_TYPES>>
         depth_feedback_srvs;
+    mutable D3D12_CPU_DESCRIPTOR_HANDLE stencil_srv{};
     D3D12_CPU_DESCRIPTOR_HANDLE uav{};
     D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
     bool rtv_on_copy{};

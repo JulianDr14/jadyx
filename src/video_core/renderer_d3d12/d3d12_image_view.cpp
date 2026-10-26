@@ -404,6 +404,41 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::DepthFeedbackHandle(Shader::TextureType t
     return handle;
 }
 
+D3D12_CPU_DESCRIPTOR_HANDLE ImageView::StencilHandle() const {
+    if (stencil_srv.ptr || !runtime || !image || srv_params.is_msaa ||
+        srv_params.dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+        return stencil_srv;
+    }
+    DXGI_FORMAT plane_format;
+    switch (image->GetDesc().Format) {
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+        plane_format = DXGI_FORMAT_X24_TYPELESS_G8_UINT;
+        break;
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+        plane_format = DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;
+        break;
+    default:
+        return {};
+    }
+    // The stencil formats hold the value in G.
+    D3D12_SHADER_RESOURCE_VIEW_DESC desc{
+        .Format = plane_format,
+        .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
+        .Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(1, 1, 1, 1),
+    };
+    desc.Texture2DArray = {.MostDetailedMip = srv_params.base_level,
+                           .MipLevels = 1,
+                           .FirstArraySlice = srv_params.base_layer,
+                           .ArraySize = 1,
+                           .PlaneSlice = 1,
+                           .ResourceMinLODClamp = 0.0f};
+    stencil_srv = runtime->view_descriptors.Allocate();
+    runtime->device.Get()->CreateShaderResourceView(image, &desc, stencil_srv);
+    return stencil_srv;
+}
+
 D3D12_CPU_DESCRIPTOR_HANDLE ImageView::CreateSrv(Shader::TextureType texture_type,
                                                ID3D12Resource* override_resource) const {
     using Shader::TextureType;
@@ -661,6 +696,8 @@ void ImageView::Release() {
         if (handle.ptr) runtime->view_descriptors.Free(handle);
         handle = {};
     }
+    if (stencil_srv.ptr) runtime->view_descriptors.Free(stencil_srv);
+    stencil_srv = {};
     if (uav.ptr) runtime->view_descriptors.Free(uav);
     if (rtv.ptr) runtime->rtv_descriptors.Free(rtv);
     if (dsv.ptr) runtime->dsv_descriptors.Free(dsv);
@@ -669,12 +706,13 @@ void ImageView::Release() {
 }
 ImageView::ImageView(ImageView&& other) noexcept : VideoCommon::ImageViewBase{std::move(other)}, runtime{std::exchange(other.runtime, nullptr)},
     slot_images{other.slot_images}, image{other.image}, srv_resource{other.srv_resource}, srv_params{other.srv_params}, natural_type{other.natural_type},
-    srvs{std::exchange(other.srvs, {})}, depth_feedback_srvs{std::move(other.depth_feedback_srvs)}, uav{other.uav}, rtv{other.rtv}, rtv_on_copy{other.rtv_on_copy}, dsv{other.dsv}, dsv_read_only{other.dsv_read_only}, buffer_size{other.buffer_size} {}
+    srvs{std::exchange(other.srvs, {})}, depth_feedback_srvs{std::move(other.depth_feedback_srvs)}, stencil_srv{std::exchange(other.stencil_srv, {})}, uav{other.uav}, rtv{other.rtv}, rtv_on_copy{other.rtv_on_copy}, dsv{other.dsv}, dsv_read_only{other.dsv_read_only}, buffer_size{other.buffer_size} {}
 ImageView& ImageView::operator=(ImageView&& other) noexcept {
     if (this != &other) { Release(); static_cast<VideoCommon::ImageViewBase&>(*this) = std::move(other);
         runtime = std::exchange(other.runtime, nullptr); slot_images = other.slot_images; image = other.image; srv_resource = other.srv_resource;
         srv_params = other.srv_params; natural_type = other.natural_type; srvs = std::exchange(other.srvs, {});
         depth_feedback_srvs = std::move(other.depth_feedback_srvs);
+        stencil_srv = std::exchange(other.stencil_srv, {});
         uav = other.uav; rtv = other.rtv; rtv_on_copy = other.rtv_on_copy; dsv = other.dsv; dsv_read_only = other.dsv_read_only; buffer_size = other.buffer_size; }
     return *this;
 }
