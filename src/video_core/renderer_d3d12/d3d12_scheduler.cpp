@@ -38,6 +38,7 @@ HANDLE ThreadWaitEvent() {
 }
 
 std::atomic<bool> async_recording{false};
+std::atomic<bool> diag_uav_sync_enabled{false};
 
 void StoreMax(std::atomic<u64>& target, u64 value) {
     u64 current = target.load(std::memory_order_relaxed);
@@ -53,7 +54,15 @@ void SetAsyncRecording(bool enabled) {
     async_recording.store(enabled, std::memory_order_relaxed);
 }
 
+void SetDiagUavSync(bool enabled) {
+    diag_uav_sync_enabled.store(enabled, std::memory_order_relaxed);
+}
+
 Scheduler::Scheduler(Device& device_) : device{device_} {
+    diag_uav_sync = diag_uav_sync_enabled.load(std::memory_order_relaxed);
+    if (diag_uav_sync) {
+        LOG_WARNING(Render, "D3D12: diagnostic UAV barrier after every draw and dispatch");
+    }
     ID3D12Device* const dev = device.Get();
     ThrowIfFailed(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)),
                   "CreateFence (scheduler)");

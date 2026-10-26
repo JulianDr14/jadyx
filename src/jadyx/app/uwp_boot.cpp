@@ -173,6 +173,7 @@ void SetDrawSamplerReuse(bool enabled);
 enum class PixelShaderScratchMode : u8; // d3d12_local_memory_scratch.h: Auto, Uav, Native
 void SetPixelShaderScratchMode(PixelShaderScratchMode mode);
 void SetAsyncRecording(bool enabled);          // d3d12_scheduler.h
+void SetDiagUavSync(bool enabled);             // d3d12_scheduler.h
 using AppMemoryQuery = bool (*)(u64& used, u64& limit); // d3d12_device.h
 void SetAppMemoryQuery(AppMemoryQuery query);            // d3d12_device.h
 } // namespace D3D12
@@ -314,6 +315,9 @@ struct BootConfig {
     /// Sample counts reach the guest as never zero ("occlusion_force_visible=1"): A/B for
     /// objects the game's occlusion culling drops.
     bool occlusion_force_visible{};
+    /// A global UAV barrier after every draw and dispatch ("uav_sync=1"): A/B for flicker from a
+    /// barrier the renderer misses.
+    bool uav_sync{};
     /// Depth targets at a mip level of a mipmapped image become separate aliased images again
     /// ("mip_rt=0"): reproduces the alias path depth pyramids took before.
     bool mip_render_targets{true};
@@ -607,6 +611,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     Tegra::SetIndirectMacroCpuRead(config.indirect_macro_cpu);
     VideoCommon::force_occlusion_visible.store(config.occlusion_force_visible,
                                                std::memory_order_relaxed);
+    D3D12::SetDiagUavSync(config.uav_sync);
     VideoCommon::SetMipRenderTargets(config.mip_render_targets);
     D3D12::SetForceMinMaxFilter(config.force_min_max_filter);
     D3D12::SetSkipMinMaxFilter(config.skip_min_max_filter);
@@ -2804,6 +2809,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "occlusion_force_visible=1") {
                             config.occlusion_force_visible = true;
                             WriteDiag("boot.cfg: occlusion results reach the game as never zero");
+                        } else if (line == "uav_sync=1") {
+                            config.uav_sync = true;
+                            WriteDiag("boot.cfg: UAV barrier after every draw and dispatch");
                         } else if (line == "mip_rt=0") {
                             config.mip_render_targets = false;
                             WriteDiag("boot.cfg: depth targets at a mip level use aliased images");
