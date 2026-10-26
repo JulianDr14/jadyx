@@ -337,8 +337,6 @@ private:
     bool logged_indirect_draw{};
     bool logged_cpu_indirect_draw{};
     bool logged_byte_count_draw{};
-    /// Diagnostic: the resources DiagSync's UAV barrier modes already named in the log.
-    std::unordered_set<ID3D12Resource*> logged_work_uavs;
     /// Draws, clears and dispatches since the last FlushCommands submission.
     u32 draw_counter{};
     /// Diagnostic: what the draws between a ZPass counter reset and its report did.

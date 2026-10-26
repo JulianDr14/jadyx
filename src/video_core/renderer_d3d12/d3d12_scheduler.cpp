@@ -38,7 +38,6 @@ HANDLE ThreadWaitEvent() {
 }
 
 std::atomic<bool> async_recording{false};
-std::atomic<DiagSync> diag_sync{DiagSync::Normal};
 
 void StoreMax(std::atomic<u64>& target, u64 value) {
     u64 current = target.load(std::memory_order_relaxed);
@@ -52,14 +51,6 @@ void StoreMax(std::atomic<u64>& target, u64 value) {
 
 void SetAsyncRecording(bool enabled) {
     async_recording.store(enabled, std::memory_order_relaxed);
-}
-
-void SetDiagSync(DiagSync mode) {
-    diag_sync.store(mode, std::memory_order_relaxed);
-}
-
-DiagSync GetDiagSync() {
-    return diag_sync.load(std::memory_order_relaxed);
 }
 
 Scheduler::Scheduler(Device& device_) : device{device_} {

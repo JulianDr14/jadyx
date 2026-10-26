@@ -669,9 +669,6 @@ void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
     }
     if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && work != 0) {
         uav_work = work;
-        if (runtime->scheduler.CollectsImageUavs()) {
-            runtime->scheduler.WorkUavs().push_back(resource.Get());
-        }
     }
     BarrierBatch local{runtime->scheduler};
     BarrierBatch& barriers = batch ? *batch : local;

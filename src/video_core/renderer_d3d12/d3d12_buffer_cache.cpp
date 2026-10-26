@@ -219,9 +219,6 @@ void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
     }
     if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && work != 0) {
         uav_work = work;
-        if (scheduler->CollectsBufferUavs()) {
-            scheduler->WorkUavs().push_back(buffer.Get());
-        }
     }
     CommandStream* const cmd = scheduler->CommandList();
     if (current == next) {

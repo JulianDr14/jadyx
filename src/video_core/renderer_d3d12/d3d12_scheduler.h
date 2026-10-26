@@ -27,17 +27,6 @@ namespace D3D12 {
 /// every call itself, as the renderer did before the recorder.
 void SetAsyncRecording(bool enabled);
 
-/// Diagnostic: how dispatches order their UAV writes before later work. Normal, or normal plus
-/// a UAV barrier on the buffers only, or the images only, each dispatch made a UAV. Applies at
-/// once.
-enum class DiagSync : u8 {
-    Normal,
-    DispatchBufferUavBarriers,
-    DispatchImageUavBarriers,
-};
-void SetDiagSync(DiagSync mode);
-[[nodiscard]] DiagSync GetDiagSync();
-
 /// Owns the direct command list and tracks GPU progress with monotonically increasing ticks, the
 /// same model as the Vulkan backend's scheduler: CurrentTick() is the value the list being recorded
 /// will signal when it is flushed, and every other object (staging memory, descriptor ranges,
@@ -173,11 +162,8 @@ public:
     /// read binding came last (one cache buffer behind a written and a read storage buffer, an
     /// image stored by one stage and sampled by another), and later readers of that state got
     /// no barrier at all.
-    void BeginWork(bool dispatch) noexcept {
+    void BeginWork() noexcept {
         work = ++work_serial;
-        const DiagSync sync = GetDiagSync();
-        collect_buffer_uavs = dispatch && sync == DiagSync::DispatchBufferUavBarriers;
-        collect_image_uavs = dispatch && sync == DiagSync::DispatchImageUavBarriers;
     }
     void EndWork() noexcept {
         work = 0;
@@ -185,18 +171,6 @@ public:
     /// The draw or dispatch binding resources now; 0 between them.
     [[nodiscard]] u64 Work() const noexcept {
         return work;
-    }
-
-    /// Diagnostic (DiagSync's UAV barrier modes): whether the current draw or dispatch collects
-    /// the buffers, and the images, it makes UAVs in WorkUavs.
-    [[nodiscard]] bool CollectsBufferUavs() const noexcept {
-        return collect_buffer_uavs;
-    }
-    [[nodiscard]] bool CollectsImageUavs() const noexcept {
-        return collect_image_uavs;
-    }
-    [[nodiscard]] std::vector<ID3D12Resource*>& WorkUavs() noexcept {
-        return work_uavs;
     }
 
 private:
@@ -211,9 +185,6 @@ private:
 
     u64 work_serial{};
     u64 work{};
-    bool collect_buffer_uavs{};
-    bool collect_image_uavs{};
-    std::vector<ID3D12Resource*> work_uavs;
 
     /// Closes the list, submits it to signal tick and resets it for the next one. Recorded by
     /// Flush, so it runs where the list is recorded (the worker or the recording thread).
