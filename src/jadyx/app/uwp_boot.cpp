@@ -154,6 +154,7 @@ void RemoveDeviceForProbe(VideoCore::RendererBase& renderer);
 void SetBcArrayDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuVerify(bool enabled); // d3d12_texture_cache.h
+void SetStencilBlitVerify(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuSync(bool enabled); // d3d12_texture_cache.h
 void SetForceMinMaxFilter(bool enabled); // d3d12_texture_cache.h
 void SetSkipMinMaxFilter(bool enabled); // d3d12_texture_cache.h
@@ -448,6 +449,7 @@ struct BootConfig {
     /// the rest ("astc_opaque=bc3").
     bool astc_opaque_bc3{};
     bool astc_verify{};
+    bool stencil_blit_verify{};
     bool gpu_failure_probe{};
     bool gpu_removal_probe{};
     unsigned rom_storage_checks{}; // 1=record token, 2=restore after a process restart
@@ -608,6 +610,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetAstcGpuDecode(config.astc == BootConfig::Astc::Gpu ||
                             config.astc == BootConfig::Astc::GpuRgba);
     D3D12::SetAstcGpuVerify(config.astc_verify);
+    D3D12::SetStencilBlitVerify(config.stencil_blit_verify);
     D3D12::SetAstcGpuSync(config.astc_sync);
     D3D12::SetAstcGpuFresh(config.astc_fresh);
     D3D12::SetDescriptorRemovalChecks(config.descriptor_checks);
@@ -3198,6 +3201,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "astc_verify=1") {
                             config.astc_verify = true;
                             WriteDiag("boot.cfg: verify first GPU BC3 upload against CPU");
+                        } else if (line == "stencil_blit_verify=1") {
+                            config.stencil_blit_verify = true;
+                            WriteDiag("boot.cfg: read back the first depth-stencil blits");
                         } else if (line == "fastmem=0" || line == "fastmem=1" ||
                                    line == "fastmem=hybrid" || line == "fastmem=full") {
                             using Fastmem = decltype(config.fastmem);

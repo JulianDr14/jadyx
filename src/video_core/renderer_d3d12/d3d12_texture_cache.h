@@ -204,6 +204,12 @@ private:
     /// SetAstcGpuVerify (diagnostics/d3d12_astc_verify.cpp): reads the band's GPU BC3 and RGBA
     /// back, waits, and logs how they differ from the CPU decoder's.
     void VerifyGpuAstcBand(const AstcVerifyBand& band);
+    /// SetStencilBlitVerify (diagnostics/d3d12_stencil_blit_verify.cpp): after a recorded
+    /// depth-stencil blit, reads the stencil plane of both subresources back, waits, and logs the
+    /// texels that differ from the expected copy.
+    void VerifyStencilBlit(Image& dst_image, u32 dst_subresource, Image& src_image,
+                           u32 src_subresource, const Region2D& dst_region,
+                           const Region2D& src_region);
     void EnsureAstcBcScratch(u64 size);
     /// A blit whose source and destination are the same image (a mip chain built level by level,
     /// a copy between layers or regions): the source region goes through a scratch texture.
@@ -617,6 +623,9 @@ void SetBcArrayDecode(bool enabled);
 void SetAstcGpuDecode(bool enabled);
 /// One-shot diagnostic: compare the first GPU BC3 result with the existing CPU pipeline.
 void SetAstcGpuVerify(bool enabled);
+/// Diagnostic ("stencil_blit_verify=1"): the first scaled depth-stencil blits read both stencil
+/// planes back and log how the copy differs from the nearest-texel mapping the shader follows.
+void SetStencilBlitVerify(bool enabled);
 /// Diagnostic: wait for the GPU after every GPU ASTC upload (tells races from wrong results).
 void SetAstcGpuSync(bool enabled);
 /// Diagnostic: new scratch resources for every GPU ASTC upload (no reuse between images).

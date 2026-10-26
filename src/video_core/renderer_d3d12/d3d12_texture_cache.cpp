@@ -143,6 +143,10 @@ void SetAstcGpuVerify(bool enabled) {
     gpu_astc_verify.store(enabled ? 64 : 0, std::memory_order_relaxed);
 }
 
+void SetStencilBlitVerify(bool enabled) {
+    stencil_blit_verify.store(enabled ? 8 : 0, std::memory_order_relaxed);
+}
+
 TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& scheduler_,
                                          StagingBufferPool& staging_,
                                          TransferBufferPool& transfer_buffers_,

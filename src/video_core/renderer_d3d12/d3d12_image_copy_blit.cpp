@@ -871,8 +871,16 @@ bool TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
         LOG_INFO(Render, "D3D12: depth-stencil blits copy stencil in 8 bit passes ({} -> {})",
                  src.format, dst.format);
     }
-    return blit_helper->BlitDepthStencil(target, src.Handle(Shader::TextureType::Color2D),
-                                         src_stencil, dst_region, src_region, src_size);
+    if (!blit_helper->BlitDepthStencil(target, src.Handle(Shader::TextureType::Color2D),
+                                       src_stencil, dst_region, src_region, src_size)) {
+        return false;
+    }
+    if (stencil_blit_verify.load(std::memory_order_relaxed) > 0 &&
+        stencil_blit_verify.fetch_sub(1, std::memory_order_relaxed) > 0) {
+        VerifyStencilBlit(*dst_image, dst_place.subresource, *src_image, src_place.subresource,
+                          dst_region, src_region);
+    }
+    return true;
 }
 void TextureCacheRuntime::BlitWithinImage(ImageView& dst, ImageView& src,
                                           const Region2D& dst_region, const Region2D& src_region,
