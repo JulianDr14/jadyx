@@ -485,6 +485,8 @@ struct BootConfig {
     /// Off after a failed resume, for the fresh boot that follows, or by "pulse_resume=0": the
     /// game boots fresh and the stored session is left as it was.
     bool pulse_resume{true};
+    /// "airplane=1": the game sees no internet connection, as in the Switch's airplane mode.
+    bool airplane_mode{};
 };
 
 /// Games never emit the sentinels; without an explicit time they run this long.
@@ -642,6 +644,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     }
     VideoCore::Perf::SetForceSwapIntervalOne(config.force_swap_interval_one);
     Settings::values.async_presentation.SetValue(config.async_present);
+    Settings::values.airplane_mode.SetValue(config.airplane_mode);
     if (config.upscaling) ApplyUpscaling(*config.upscaling); // before the renderer exists
     D3D12::SetAsyncRecording(config.async_record);
     Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);
@@ -2854,6 +2857,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "min_max_filter=emulate") {
                             config.emulate_min_max_filter = true;
                             WriteDiag("boot.cfg: filtered min/max sampler reduction always emulated");
+                        } else if (line == "airplane=1") {
+                            config.airplane_mode = true;
+                            WriteDiag("boot.cfg: airplane mode, the game sees no internet");
                         } else if (line == "pso_prewarm=0") {
                             config.pso_prewarm = false;
                             WriteDiag("boot.cfg: dormant PSOs wait for their first draw");
