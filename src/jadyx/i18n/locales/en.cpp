@@ -675,6 +675,8 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::MultipleControllersHint, L"Each extra controller plays as players 2 to 8. Applies when a game starts"},
     {Text::OfflineMode, L"Offline mode"},
     {Text::OfflineModeHint, L"Games see no internet connection, as in airplane mode, and skip online logins. Applies when a game starts"},
+    {Text::MenuOfflineSystem, L"System · {0}"},
+    {Text::MenuOfflineThisGame, L"Only for this game. Some games notice it after a restart"},
 
     // Tabs, sections and filters
     {Text::TabHome, L"Home"},

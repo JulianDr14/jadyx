@@ -375,6 +375,12 @@ void UiPainter::Icon(UiIcon icon, float x, float y, unsigned color, float size) 
         line(18, 5, 6, 5); line(6, 5, 6, 27); line(6, 27, 18, 27);
         line(13, 16, 29, 16); line(29, 16, 24, 11); line(29, 16, 24, 21);
         break;
+    case UiIcon::Airplane:
+        // Seen from above: the body, the wings and the tail.
+        line(16, 3, 16, 27);
+        line(3, 19, 16, 11); line(16, 11, 29, 19);
+        line(10, 29, 16, 25); line(16, 25, 22, 29);
+        break;
     }
 }
 

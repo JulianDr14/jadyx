@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <cstdint>
+#include <optional>
 #include "jadyx/settings/system_settings.h"
 
 namespace Service::Account {
@@ -11,6 +13,10 @@ namespace Jadyx {
 /// Saved in the app's LocalSettings, like the controller options.
 SystemSettings LoadSystemSettings();
 bool SaveSystemSettings(const SystemSettings& settings);
+
+/// A game's own offline mode, set from the in-game menu; nullopt follows SystemSettings.
+std::optional<bool> LoadGameOfflineMode(std::uint64_t program_id);
+bool SaveGameOfflineMode(std::uint64_t program_id, std::optional<bool> offline);
 
 /// Windows' preferred languages and home region (the console's, on Xbox). Never throws.
 SystemLocale DetectSystemLocale();

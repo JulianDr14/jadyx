@@ -961,6 +961,12 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     }
 
     const u64 program_id = system.GetApplicationProcessProgramID();
+    // The game's own offline mode over Settings > System's, before any guest code runs; boot.cfg's
+    // airplane=1 wins over both.
+    if (const auto offline = LoadGameOfflineMode(program_id); offline && !config.airplane_mode)
+        Settings::values.airplane_mode.SetValue(*offline);
+    WriteDiag(Settings::values.airplane_mode.GetValue() ? "network: offline mode, the game sees no internet"
+                                                        : "network: the game sees the internet");
     PrewarmBudget prewarm_budget{LoadPrewarmStep(program_id)};
     if (config.jit_prewarm != BootConfig::JitPrewarm::Off) {
         // All guest cores are still stopped. Each owns a separate JIT; never
@@ -1321,14 +1327,16 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                     capture_frame();
                     // Upscaling as this boot applied it (a boot.cfg override included); only the
                     // GPU thread writes it while the game runs, and it is paused now.
+                    const SystemSettings system_settings = LoadSystemSettings();
                     menu.emplace(GameMenuSettings{options.style, options.swap_face_buttons,
                                                   options.deadzone, g_can_fullscreen.load(),
-                                                  g_fullscreen.load(), LoadSystemSettings().show_performance_stats,
+                                                  g_fullscreen.load(), system_settings.show_performance_stats,
                                                   pulse_identity.has_value(),
                                                   FromSettings(Settings::values.scaling_filter.GetValue(),
                                                                Settings::values.fsr_sharpening_slider.GetValue()),
                                                   config.material_capture_menu, config.hunt_menu,
-                                                  !game_frame.pixels.empty()},
+                                                  !game_frame.pixels.empty(), LoadGameOfflineMode(program_id),
+                                                  system_settings.offline_mode},
                                  program_id != 0 && !mii_editor);
                     if (game_title.empty()) {
                         std::string title;
@@ -1535,6 +1543,15 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                 }
                 if (result == GameMenuResult::FullScreen) {
                     g_fullscreen_request.store(menu->Settings().fullscreen ? 1 : 0);
+                }
+                if (result == GameMenuResult::OfflineModeChanged) {
+                    const auto offline = menu->Settings().offline_mode;
+                    if (!SaveGameOfflineMode(program_id, offline)) WriteDiag("menu: offline mode could not be saved");
+                    // Seen by the game's next network query; boot.cfg's airplane=1 still wins.
+                    if (!config.airplane_mode)
+                        Settings::values.airplane_mode.SetValue(offline.value_or(menu->Settings().offline_default));
+                    WriteDiag(std::string{"menu: offline mode "} +
+                              (Settings::values.airplane_mode.GetValue() ? "on" : "off"));
                 }
 
                 if (menu_surface) draw_menu();

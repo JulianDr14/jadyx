@@ -99,6 +99,33 @@ SystemLocale DetectSystemLocale() {
     return locale;
 }
 
+namespace {
+winrt::hstring GameOfflineModeKey(std::uint64_t program_id) {
+    wchar_t key[40];
+    swprintf(key, std::size(key), L"game_offline_mode_%016llx", static_cast<unsigned long long>(program_id));
+    return key;
+}
+} // namespace
+
+std::optional<bool> LoadGameOfflineMode(std::uint64_t program_id) {
+    try {
+        const auto values = winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        const auto key = GameOfflineModeKey(program_id);
+        if (values.HasKey(key)) return winrt::unbox_value<bool>(values.Lookup(key));
+    } catch (...) { /* A missing or invalid value follows the system setting. */ }
+    return std::nullopt;
+}
+
+bool SaveGameOfflineMode(std::uint64_t program_id, std::optional<bool> offline) {
+    try {
+        const auto values = winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        const auto key = GameOfflineModeKey(program_id);
+        if (offline) values.Insert(key, winrt::box_value(*offline));
+        else if (values.HasKey(key)) values.Remove(key);
+        return true;
+    } catch (...) { return false; }
+}
+
 ResolvedSystem ApplySystemSettings() {
     const auto locale = DetectSystemLocale();
     const auto settings = LoadSystemSettings();

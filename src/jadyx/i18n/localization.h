@@ -625,6 +625,8 @@ enum class Text : std::uint16_t {
     MultipleControllersHint,
     OfflineMode,
     OfflineModeHint,
+    MenuOfflineSystem,
+    MenuOfflineThisGame,
 
     // Tabs, sections and filters
     TabHome,
