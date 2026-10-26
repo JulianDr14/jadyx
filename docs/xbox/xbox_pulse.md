@@ -521,7 +521,8 @@ presupuesto; la barrera se baja siempre (RAII).
   el juego con el layout fijado, restaura y consume la sesión. Si falla antes de
   cargar, arranca normal en el mismo System; si falla después, ese System se
   descarta y el juego arranca de cero (`PULSE_RESUME_FAILED`), con aviso. La
-  sesión consumida no reaparece. Al reanudar no se ejecuta el prewarm JIT.
+  sesión consumida no reaparece. Al reanudar también se ejecuta el prewarm JIT
+  (el JIT empieza vacío; sin él el juego entero se compilaba en su primer minuto).
 - **Biblioteca**: distintivo "Pulse · fecha" en el juego y en su tarjeta (gris
   si es de otra compilación). En las opciones del juego, "Sesión Pulse" descarta
   tras una segunda pulsación de confirmación; nunca toca las partidas normales.

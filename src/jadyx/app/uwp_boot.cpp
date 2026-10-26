@@ -947,9 +947,12 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
 
     const u64 program_id = system.GetApplicationProcessProgramID();
     PrewarmBudget prewarm_budget{LoadPrewarmStep(program_id)};
-    if (config.jit_prewarm != BootConfig::JitPrewarm::Off && !resumed) {
+    if (config.jit_prewarm != BootConfig::JitPrewarm::Off) {
         // All guest cores are still stopped. Each owns a separate JIT; never
         // compile into an instance concurrently with Run or another compiler.
+        // A resume warms too: its JIT starts empty like a boot's, and without the pass the
+        // whole game compiled in its first minute (bursts of 25k blocks in one frame). The
+        // blocks are checked against the restored code, so a session's own loads are safe.
         if (auto* process = system.ApplicationProcess()) {
             WriteDiag(std::string{"step: CPU JIT profile/prewarm starting ("} +
                       (process->Is64Bit() ? "A64" : "A32") + "), " +
@@ -957,7 +960,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                       MemoryReport());
             Core::ConfigureApplicationPrewarm(system,
                 config.jit_prewarm == BootConfig::JitPrewarm::Warm,
-                [&system, boot_screen](size_t done, size_t total) {
+                [&system, &pulse_screen, boot_screen](size_t done, size_t total) {
+                    // A resume's screen keeps its ring moving; two presenters would race.
+                    if (pulse_screen) return;
                     if (boot_screen) SetLaunchStep(LaunchStep::Cpu, done, total);
                     else D3D12::ShowCpuLoadProgress(system.Renderer(), done, total);
                 },
