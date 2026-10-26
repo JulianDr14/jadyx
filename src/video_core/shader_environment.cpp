@@ -44,7 +44,12 @@ static u64 MakeCbufKey(u32 index, u32 offset) {
     return (static_cast<u64>(index) << 32) | offset;
 }
 
-static Shader::TextureType ConvertTextureType(const Tegra::Texture::TICEntry& entry) {
+static Shader::TextureType ConvertTextureType(const std::optional<Tegra::Texture::TICEntry>& tic) {
+    // A handle past the table or an unwritten descriptor is bound as a null texture at draw time.
+    if (!tic) {
+        return Shader::TextureType::Color2D;
+    }
+    const Tegra::Texture::TICEntry& entry{*tic};
     switch (entry.texture_type) {
     case Tegra::Texture::TextureType::Texture1D:
         return Shader::TextureType::Color1D;
@@ -70,7 +75,12 @@ static Shader::TextureType ConvertTextureType(const Tegra::Texture::TICEntry& en
     }
 }
 
-static Shader::TexturePixelFormat ConvertTexturePixelFormat(const Tegra::Texture::TICEntry& entry) {
+static Shader::TexturePixelFormat ConvertTexturePixelFormat(
+    const std::optional<Tegra::Texture::TICEntry>& tic) {
+    if (!tic) {
+        return static_cast<Shader::TexturePixelFormat>(VideoCore::Surface::PixelFormat::A8B8G8R8_UNORM);
+    }
+    const Tegra::Texture::TICEntry& entry{*tic};
     return static_cast<Shader::TexturePixelFormat>(
         PixelFormatFromTextureInfo(entry.format, entry.r_type, entry.g_type, entry.b_type,
                                    entry.a_type, entry.srgb_conversion));
@@ -325,13 +335,22 @@ std::optional<u64> GenericEnvironment::TryFindSize() {
     return std::nullopt;
 }
 
-Tegra::Texture::TICEntry GenericEnvironment::ReadTextureInfo(GPUVAddr tic_addr, u32 tic_limit,
-                                                             bool via_header_index, u32 raw) {
+std::optional<Tegra::Texture::TICEntry> GenericEnvironment::ReadTextureInfo(
+    GPUVAddr tic_addr, u32 tic_limit, bool via_header_index, u32 raw) {
     const auto handle{Tegra::Texture::TexturePair(raw, via_header_index)};
-    ASSERT(handle.first <= tic_limit);
+    // Unused texture slots keep whatever the guest left in the constant buffer (0xffffffff, or an
+    // index whose descriptor was never written); the draw binds a null texture to them.
+    if (handle.first > tic_limit) {
+        LOG_DEBUG(Shader, "Texture handle {} is past the TIC limit {}", handle.first, tic_limit);
+        return std::nullopt;
+    }
     const GPUVAddr descriptor_addr{tic_addr + handle.first * sizeof(Tegra::Texture::TICEntry)};
     Tegra::Texture::TICEntry entry;
     gpu_memory->ReadBlock(descriptor_addr, &entry, sizeof(entry));
+    if (static_cast<u32>(entry.format.Value()) == 0) {
+        LOG_DEBUG(Shader, "Texture handle {} has an unwritten descriptor", handle.first);
+        return std::nullopt;
+    }
     return entry;
 }
 
