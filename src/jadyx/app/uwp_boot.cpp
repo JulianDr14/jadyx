@@ -2948,7 +2948,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.jit_prewarm = Jadyx::BootConfig::JitPrewarm::Warm;
                         } else if (line == "jit_prewarm=0") {
                             config.jit_prewarm = Jadyx::BootConfig::JitPrewarm::Off;
-                            WriteDiag("boot.cfg: per-core guest CPU profiling enabled");
+                            WriteDiag("boot.cfg: JIT prewarm off");
                         } else if (line == "audio_profile=1") {
                             config.audio_profile = true;
                             WriteDiag("boot.cfg: XAudio2 profiling enabled");
