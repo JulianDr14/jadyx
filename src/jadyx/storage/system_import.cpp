@@ -117,6 +117,12 @@ FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress p
     const auto keep=[&info](int generation,const std::optional<std::pair<int,int>>& area){
         info.generation=(std::max)(info.generation,generation);if(area)info.areas.insert(*area);};
     if(!fs::exists(folder)){Require(!strict,"firmware_incomplete");return info;}
+    // An NCA that does not open because the installed keys lack its key generation means the
+    // firmware is newer than the keys, not that the keys are wrong.
+    const auto keys_error=[](const FileSys::NcaReader& reader){
+        const u64 generation=(std::max)(reader.GetKeyGeneration(),u8{1})-1;
+        return reader.GetKeyIndex()<3&&!Core::Crypto::KeyManager::Instance().HasKey(
+            Core::Crypto::S128KeyType::KeyArea,generation,reader.GetKeyIndex())?"firmware_keys_newer":"firmware_keys";};
     FileSys::RealVfsFilesystem vfs;
     for(const auto& file:fs::directory_iterator{folder}) {
         CheckStop(stop);
@@ -127,14 +133,14 @@ FirmwareInfo InspectFirmware(const fs::path& folder,bool strict,SystemProgress p
         FileSys::NcaReader header;
         if(R_FAILED(header.Initialize(raw,FileSys::GetCryptoConfiguration(),FileSys::GetNcaCompressionConfiguration()))){Require(!strict,"firmware_keys");continue;}
         FileSys::NCA nca{raw};
-        if(nca.GetStatus()!=Loader::ResultStatus::Success){Require(!strict,"firmware_keys");continue;}
+        if(nca.GetStatus()!=Loader::ResultStatus::Success){Require(!strict,keys_error(header));continue;}
         // A meta NCA always holds a PFS0. Opening without one means the keys read the header but not
         // the content (e.g. a wrong key_area_key_application_00): the SystemUpdate meta is lost and
         // system titles outside 0x010000000000xxxx would be taken for games.
         if(nca.GetType()==FileSys::NCAContentType::Meta&&nca.GetSubdirectories().empty()) {
             LOG_WARNING(Frontend, "Firmware import: the meta NCA '{}' ({:016X}, key generation {}) could not be decrypted",
                         Utf8(file.path().filename()), nca.GetTitleId(), header.GetKeyGeneration());
-            Require(!strict,"firmware_keys");continue;
+            Require(!strict,keys_error(header));continue;
         }
         // Firmware also ships a few system titles outside 0x010000000000xxxx (e.g. 01008BB00013C000);
         // those are allowed only when the SystemUpdate meta lists them.

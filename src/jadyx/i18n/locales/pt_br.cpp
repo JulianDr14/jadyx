@@ -304,6 +304,7 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::CancellingImport, L"Cancelando importação..."},
     {Text::ImportDone, L"Importação concluída. Os dados estão prontos no armazenamento interno."},
     {Text::ImportFailedKept, L"Não foi possível importar; a instalação anterior foi mantida."},
+    {Text::FirmwareKeysNewer, L"Este firmware é mais novo que as chaves instaladas. Importe primeiro um prod.keys de um console com este firmware ou mais recente; a instalação anterior foi mantida."},
     {Text::WaitForCheck, L"Aguarde o fim da verificação dos arquivos."},
     {Text::FolderRemoved, L"Pasta removida da biblioteca. Seus jogos continuam no USB."},
     {Text::FolderRemoveFailed, L"Não foi possível remover a pasta."},

@@ -250,6 +250,7 @@ enum class Text : std::uint16_t {
     CancellingImport,
     ImportDone,
     ImportFailedKept,
+    FirmwareKeysNewer,
     WaitForCheck,
     FolderRemoved,
     FolderRemoveFailed,

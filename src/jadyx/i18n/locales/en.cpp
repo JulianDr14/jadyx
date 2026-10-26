@@ -304,6 +304,7 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::CancellingImport, L"Cancelling import..."},
     {Text::ImportDone, L"Import complete. Data is ready in internal storage."},
     {Text::ImportFailedKept, L"Couldn't import; the previous installation was kept."},
+    {Text::FirmwareKeysNewer, L"This firmware is newer than the installed keys. Import a prod.keys from a console on this firmware or a later one first; the previous installation was kept."},
     {Text::WaitForCheck, L"Wait for the file check to finish."},
     {Text::FolderRemoved, L"Folder removed from the library. Your games are still on the USB drive."},
     {Text::FolderRemoveFailed, L"Couldn't remove the folder."},
