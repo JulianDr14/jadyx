@@ -5,6 +5,7 @@
 
 #include <mutex>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include <eden_spirv_to_dxil.h>
@@ -32,6 +33,9 @@ enum class DxilSignMode {
 void SetDxilSignMode(DxilSignMode mode);
 /// Logs how many computed digests matched the validator's (Verify only).
 void LogDxilDigestChecks();
+
+/// Logs where spirv_to_dxil.dll spent its time, when the DLL reports it.
+void LogTranslatorPhases(std::string_view when);
 
 /// SPIR-V -> signed DXIL, via Mesa's spirv_to_dxil and the DXIL validator in dxil.dll.
 ///

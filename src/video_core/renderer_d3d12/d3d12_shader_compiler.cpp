@@ -267,6 +267,32 @@ void LogTranslatorMessage(void*, const char* msg) {
 
 } // Anonymous namespace
 
+/// Set once the DLL is loaded; read by LogTranslatorPhases.
+static std::atomic<decltype(&::eden_spirv_to_dxil_phase_times)> translator_phase_times{};
+
+void LogTranslatorPhases(std::string_view when) {
+    const auto phase_times = translator_phase_times.load(std::memory_order_acquire);
+    if (!phase_times) {
+        return;
+    }
+    std::array<u64, EDEN_PHASE_COUNT> ns{};
+    phase_times(ns.data(), static_cast<unsigned>(ns.size()));
+    const u64 pipelines = ns[EDEN_PHASE_PIPELINES];
+    if (pipelines == 0) {
+        return;
+    }
+    const auto mean = [&](eden_spirv_to_dxil_phase phase) {
+        return static_cast<double>(ns[phase]) / 1e6 / static_cast<double>(pipelines);
+    };
+    LOG_INFO(Render,
+             "D3D12 translator phases ({}, ms per pipeline over {} pipelines, {} stages): "
+             "spirv_to_nir {:.2f}, nir passes {:.2f}, link {:.2f}, nir_to_dxil {:.2f} "
+             "(optimize {:.2f}, emit {:.2f})",
+             when, pipelines, ns[EDEN_PHASE_STAGES], mean(EDEN_PHASE_SPIRV_TO_NIR),
+             mean(EDEN_PHASE_NIR_PASSES), mean(EDEN_PHASE_LINK), mean(EDEN_PHASE_NIR_TO_DXIL),
+             mean(EDEN_PHASE_NTD_OPTIMIZE), mean(EDEN_PHASE_NTD_EMIT));
+}
+
 void SetDxilSignMode(DxilSignMode mode) {
     sign_mode.store(mode, std::memory_order_relaxed);
 }
@@ -301,6 +327,10 @@ ShaderCompiler::ShaderCompiler() {
         if (translate_pipeline_v3 &&
             spirv_to_dxil_library.GetSymbol("eden_spirv_to_dxil_supported_flags", &supported_flags)) {
             emulates_reduction = (supported_flags() & EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION) != 0;
+        }
+        decltype(&::eden_spirv_to_dxil_phase_times) phase_times{};
+        if (spirv_to_dxil_library.GetSymbol("eden_spirv_to_dxil_phase_times", &phase_times)) {
+            translator_phase_times.store(phase_times, std::memory_order_release);
         }
     } else if (!spirv_to_dxil_library.GetSymbol("eden_spirv_to_dxil_pipeline",
                                                 &translate_pipeline)) {
