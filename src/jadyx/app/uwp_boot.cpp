@@ -3072,12 +3072,15 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line.starts_with("cs_split=")) {
                             const u32 factor = static_cast<u32>(
                                 std::strtoul(line.c_str() + 9, nullptr, 10));
-                            if (factor >= 2 && factor <= 16 && std::has_single_bit(factor)) {
+                            // 16 by default (experimental); cs_split=1 turns the split off.
+                            if (factor >= 1 && factor <= 16 && std::has_single_bit(factor)) {
                                 D3D12::SetComputeWorkgroupSplit(factor);
-                                WriteDiag("boot.cfg: small compute dispatches split by " +
-                                          std::to_string(factor));
+                                WriteDiag(factor == 1
+                                              ? std::string("boot.cfg: compute dispatches not split")
+                                              : "boot.cfg: small compute dispatches split by " +
+                                                    std::to_string(factor));
                             } else {
-                                WriteDiag("boot.cfg: cs_split wants 2, 4, 8 or 16; ignored");
+                                WriteDiag("boot.cfg: cs_split wants 1, 2, 4, 8 or 16; ignored");
                             }
                         } else if (line.starts_with("skip_shader=")) {
                             const u64 hash = std::strtoull(line.c_str() + 12, nullptr, 16);
