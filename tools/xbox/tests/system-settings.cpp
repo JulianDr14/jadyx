@@ -120,8 +120,14 @@ int main() {
     check(HandleSystemInput(page, SystemInput::Right) == SystemPageEffect::Changed &&
           page.settings.multiple_controllers);
     check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
+          page.selected == SystemPage::MiiEditor);
+    check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::OpenMiiEditor);
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
           page.selected == SystemPage::ClearCache);
     check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::ClearCache);
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
+          page.selected == SystemPage::Updates);
+    check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::OpenUpdates);
     check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
           page.selected == SystemPage::UserName);
     check(HandleSystemInput(page, SystemInput::Left) == SystemPageEffect::None && !page.name_editor);
