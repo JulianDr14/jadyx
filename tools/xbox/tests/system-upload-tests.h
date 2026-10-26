@@ -44,6 +44,8 @@ void SystemUploadTests(int port) {
     std::string job,file;
     {
         Jadyx::SystemUpload upload{root,backend};upload.SetAvailable(true);
+        Check(upload.Snapshot().phase=="idle"&&upload.BlockForLocalOperation(),"no batch does not hold local operations");
+        upload.SetAvailable(true);
         Check(upload.Create("keys","files",3).status==400,"key batch count bounded");
         Check(upload.Create("keys","files",1).status==201,"create key batch");job=upload.Snapshot().id;
         Check(upload.BeginFile(job,"../prod.keys","fixture",payload.size()).status==400,"reject key traversal");

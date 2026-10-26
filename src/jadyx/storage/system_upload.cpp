@@ -123,7 +123,7 @@ bool SystemUpload::BlockForLocalOperation(){
     // bytes in flight and the extract/review/publish phases hold local operations back.
     std::unique_lock operation{impl->operation,std::try_to_lock};if(!operation.owns_lock())return false;
     std::lock_guard lock{impl->mutex};const auto& phase=impl->info.phase;
-    if(!phase.empty()&&phase!="receiving"&&phase!="failed"&&phase!="complete")return false;
+    if(phase!="idle"&&phase!="receiving"&&phase!="failed"&&phase!="complete")return false;
     if(impl->file&&!impl->file->BlockForLocalOperation())return false;
     impl->info.available=false;return true;}
 UploadResult SystemUpload::Create(std::string kind,std::string format,unsigned count){
