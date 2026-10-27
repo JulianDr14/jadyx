@@ -529,6 +529,9 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
                  get(Counter::TransferPoolMissBusy), get(Counter::TransferPoolMissNoFit),
                  mib(get(Counter::TransferPoolMissBytes)), get(Counter::TransferPoolOverflows),
                  mib(get(Counter::TransferPoolOverflowBytes)), mib(transfer_buffers.PooledBytes()));
+        if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
+            LOG_INFO(Render, "D3D12 transfer buffer users: {}", transfer_buffers.TakeUserReport());
+        }
     }
     if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
         std::array<u64, 64> bins{};

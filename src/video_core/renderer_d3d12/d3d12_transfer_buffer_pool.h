@@ -4,7 +4,10 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <mutex>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "video_core/renderer_d3d12/d3d12_device.h"
@@ -28,8 +31,13 @@ public:
     TransferBufferPool(const TransferBufferPool&) = delete;
     TransferBufferPool& operator=(const TransferBufferPool&) = delete;
 
-    /// A buffer of at least size bytes in COMMON (with UAV access when unordered_access).
-    [[nodiscard]] ComPtr<ID3D12Resource> Acquire(u64 size, bool unordered_access = false);
+    /// A buffer of at least size bytes in COMMON (with UAV access when unordered_access). user, a
+    /// string literal, names the caller in the gpu_profile report.
+    [[nodiscard]] ComPtr<ID3D12Resource> Acquire(u64 size, bool unordered_access = false,
+                                                 const char* user = "other");
+
+    /// gpu_profile only: acquisitions and misses per user since the last call, as one line.
+    [[nodiscard]] std::string TakeUserReport();
 
     /// Returns a buffer once the commands recorded so far are done with it. Buffers past the pool's
     /// budget are released instead.
@@ -70,10 +78,17 @@ private:
     /// instead made a game recreate ~11 buffers per frame (~6 MiB, ~20 ms of the GPU thread).
     static constexpr u64 STALE_TICKS = 16;
 
+    struct UserStats {
+        u64 acquires = 0;
+        u64 misses = 0;
+        u64 miss_bytes = 0;
+    };
+
     const Device& device;
     Scheduler& scheduler;
     mutable std::mutex mutex;
     std::vector<Entry> entries;
+    std::map<std::string_view, UserStats> user_stats;
     u64 pooled_bytes{};
     std::function<void()> reclaimer;
 

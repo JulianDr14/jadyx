@@ -318,7 +318,7 @@ void BufferCacheRuntime::Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src,
             return;
         }
         // In COMMON, new or reused: the copy below promotes it to COPY_DEST.
-        ComPtr<ID3D12Resource> scratch = transfer_buffers.Acquire(scratch_size);
+        ComPtr<ID3D12Resource> scratch = transfer_buffers.Acquire(scratch_size, false, "buffer copy");
         std::vector<VideoCommon::BufferCopy> to_scratch;
         std::vector<VideoCommon::BufferCopy> from_scratch;
         u64 offset = 0;

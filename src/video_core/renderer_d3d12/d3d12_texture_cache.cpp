@@ -1064,7 +1064,8 @@ void Image::CopyThroughBuffer(ID3D12Resource* src, ID3D12Resource* dst) {
     u64 total_bytes = 0;
     runtime->device.Get()->GetCopyableFootprints(&src_desc, 0, count, 0, footprints.data(),
                                                  nullptr, nullptr, &total_bytes);
-    ComPtr<ID3D12Resource> transfer = runtime->transfer_buffers.Acquire(total_bytes);
+    ComPtr<ID3D12Resource> transfer =
+        runtime->transfer_buffers.Acquire(total_bytes, false, "reinterpret");
     auto* const commands = runtime->scheduler.CommandList();
     for (u32 subresource = 0; subresource < count; ++subresource) {
         const D3D12_TEXTURE_COPY_LOCATION from{
@@ -1105,7 +1106,8 @@ void Image::RefreshSliceArray() {
     u64 total_bytes = 0;
     runtime->device.Get()->GetCopyableFootprints(&desc, 0, count, 0, footprints.data(), nullptr,
                                                  nullptr, &total_bytes);
-    ComPtr<ID3D12Resource> transfer = runtime->transfer_buffers.Acquire(total_bytes);
+    ComPtr<ID3D12Resource> transfer =
+        runtime->transfer_buffers.Acquire(total_bytes, false, "slice array");
     auto* const commands = runtime->scheduler.CommandList();
     Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
     const auto slices = [&](u32 level) { return std::min(layers, std::max(1U, layers >> level)); };

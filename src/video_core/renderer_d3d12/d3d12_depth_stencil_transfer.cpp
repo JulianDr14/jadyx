@@ -191,7 +191,7 @@ void Image::UploadDepthStencil(ID3D12Resource* buffer, size_t base_offset,
             }
             auto* const commands = runtime->scheduler.CommandList();
             ComPtr<ID3D12Resource> planes =
-                runtime->transfer_buffers.Acquire(footprints.size, true);
+                runtime->transfer_buffers.Acquire(footprints.size, true, "depth upload");
             if (whole) {
                 TransitionBuffer(commands, planes.Get(), D3D12_RESOURCE_STATE_COMMON,
                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -266,11 +266,12 @@ void Image::DownloadDepthStencil(std::span<ID3D12Resource*> buffers, std::span<s
             auto* const commands = runtime->scheduler.CommandList();
             // With UAV access: a D24 depth plane may be converted in place (CopyPlanes).
             ComPtr<ID3D12Resource> planes =
-                runtime->transfer_buffers.Acquire(footprints.size, true);
+                runtime->transfer_buffers.Acquire(footprints.size, true, "depth download");
             CopyPlanes(level, image_layer, planes.Get(), footprints, true);
             TransitionBuffer(commands, planes.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            ComPtr<ID3D12Resource> packed = runtime->transfer_buffers.Acquire(packed_size, true);
+            ComPtr<ID3D12Resource> packed =
+                runtime->transfer_buffers.Acquire(packed_size, true, "depth download packed");
             TransitionBuffer(commands, packed.Get(), D3D12_RESOURCE_STATE_COMMON,
                              D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             helper->MergeDepthStencil({

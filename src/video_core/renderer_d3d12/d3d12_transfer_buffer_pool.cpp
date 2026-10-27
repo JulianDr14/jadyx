@@ -3,6 +3,8 @@
 
 #include <algorithm>
 
+#include <fmt/format.h>
+
 #include "common/alignment.h"
 #include "common/logging.h"
 #include "video_core/perf_counters.h"
@@ -24,10 +26,16 @@ TransferBufferPool::TransferBufferPool(const Device& device_, Scheduler& schedul
 
 TransferBufferPool::~TransferBufferPool() = default;
 
-ComPtr<ID3D12Resource> TransferBufferPool::Acquire(u64 size, bool unordered_access) {
+ComPtr<ID3D12Resource> TransferBufferPool::Acquire(u64 size, bool unordered_access,
+                                                   const char* user) {
     size = Common::AlignUp(std::max<u64>(size, 1), SIZE_GRANULARITY);
     {
         std::scoped_lock lock{mutex};
+        UserStats* const stats =
+            VideoCore::Perf::DetailedGpuProfileEnabled() ? &user_stats[user] : nullptr;
+        if (stats) {
+            ++stats->acquires;
+        }
         // Best fit among the idle buffers, and at most twice the size so a large buffer is not
         // tied up by small copies.
         auto best = entries.end();
@@ -57,6 +65,10 @@ ComPtr<ID3D12Resource> TransferBufferPool::Acquire(u64 size, bool unordered_acce
                                       : VideoCore::Perf::Counter::TransferPoolMissNoFit,
                              1);
         VideoCore::Perf::Add(VideoCore::Perf::Counter::TransferPoolMissBytes, size);
+        if (stats) {
+            ++stats->misses;
+            stats->miss_bytes += size;
+        }
     }
     HRESULT hr = S_OK;
     const auto create = [&] {
@@ -144,6 +156,18 @@ void TransferBufferPool::TrimOlderThan(u64 idle_ticks) {
         scheduler.DeferRelease(std::move(entry.buffer));
         return true;
     });
+}
+
+std::string TransferBufferPool::TakeUserReport() {
+    std::scoped_lock lock{mutex};
+    std::string report;
+    for (const auto& [user, stats] : user_stats) {
+        report += fmt::format("{}{} {} ({} created, {:.1f} MiB)", report.empty() ? "" : "; ",
+                              user, stats.acquires, stats.misses,
+                              static_cast<double>(stats.miss_bytes) / (1 << 20));
+    }
+    user_stats.clear();
+    return report;
 }
 
 u64 TransferBufferPool::PooledBytes() const {
