@@ -99,6 +99,11 @@ Patch-File "src\microsoft\compiler\nir_to_dxil.c" `
 Patch-File "src\microsoft\compiler\nir_to_dxil.c" `
     "   if (!emit_module(ctx, opts)) {" `
     "   eden_start = os_time_get_nano();`n   const bool eden_emitted = emit_module(ctx, opts);`n   p_atomic_add(&eden_phase_ns[5], (uint64_t)(os_time_get_nano() - eden_start));`n   if (!eden_emitted) {"
+# The z flip runs on the clip-space position, before the divide by w: depth 1 - z/w is w - z there,
+# not 1 - z (which pushes every perspective vertex far behind the near plane).
+Patch-File "src\microsoft\spirv_to_dxil\dxil_spirv_nir.c" `
+    "nir_fadd_imm(builder, nir_fneg(builder, z_pos), 1.0f)," `
+    "nir_fsub(builder, nir_channel(builder, pos, 3), z_pos),"
 Patch-File "src\microsoft\spirv_to_dxil\meson.build" `
     "      'spirv_to_dxil.h',`n" `
     "      'spirv_to_dxil.h',`n      'eden_pipeline.c',`n      'eden_spirv_to_dxil.h',`n"
