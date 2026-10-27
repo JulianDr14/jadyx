@@ -27,6 +27,7 @@
 #include "video_core/frame_trace.h"
 #include "video_core/readback_trace.h"
 #include "video_core/texture_cache/blit_coverage.h"
+#include "video_core/texture_cache/formatter.h"
 #include "video_core/texture_cache/gc_policy.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/samples_helper.h"
@@ -238,6 +239,8 @@ void TextureCache<P>::RunGarbageCollector() {
         if (True(image.flags & ImageFlagBits::Tracked)) {
             UntrackImage(image, image_id);
         }
+        NoteImageDeleted(image, must_download ? ImageDeleteReason::EvictedWithDownload
+                                              : ImageDeleteReason::Evicted);
         UnregisterImage(image_id);
         DeleteImage(image_id, image.scale_tick > frame_tick + 5);
         if (!backend_policy && aggressive_mode && total_used_memory < critical_memory) {
@@ -276,6 +279,7 @@ void TextureCache<P>::TickFrame() {
 
     runtime.TickFrame();
     ++frame_tick;
+    ReportImageChurn();
 
     if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
         for (auto& buffer : async_buffers_death_ring) {
@@ -886,6 +890,7 @@ void TextureCache<P>::UnmapMemory(DAddr cpu_addr, size_t size) {
         if (True(image.flags & ImageFlagBits::Tracked)) {
             UntrackImage(image, id);
         }
+        NoteImageDeleted(image, ImageDeleteReason::Unmapped);
         UnregisterImage(id);
         DeleteImage(id);
     }
@@ -1961,6 +1966,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
                                 new_image.gpu_addr, new_image.guest_size_bytes);
 
     new_image.allocation_tick = frame_tick;
+    NoteImageCreated(new_image);
 
     if (!gpu_memory->IsContinuousRange(new_image.gpu_addr, new_image.guest_size_bytes) &&
         new_info.is_sparse) {
@@ -1975,6 +1981,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         if (True(overlap.flags & ImageFlagBits::Tracked)) {
             UntrackImage(overlap, overlap_id);
         }
+        NoteImageDeleted(overlap, ImageDeleteReason::JoinDropped);
         UnregisterImage(overlap_id);
         DeleteImage(overlap_id);
     }
@@ -2062,6 +2069,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         if (True(overlap.flags & ImageFlagBits::Tracked)) {
             UntrackImage(overlap, copy_object.id);
         }
+        NoteImageDeleted(overlap, ImageDeleteReason::JoinMerged);
         UnregisterImage(copy_object.id);
         DeleteImage(copy_object.id);
     }
@@ -2789,6 +2797,84 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
         const std::size_t size = map.size;
         device_memory.UpdatePagesCachedCount(cpu_addr, size, -1);
     }
+}
+
+template <class P>
+void TextureCache<P>::NoteImageCreated(const Image& image) {
+    if (!VideoCore::Perf::DetailedGpuProfileEnabled()) {
+        return;
+    }
+    ChurnAddress& entry = churn_addresses[image.gpu_addr];
+    ++entry.creates;
+    entry.info = image.info;
+}
+
+template <class P>
+void TextureCache<P>::NoteImageDeleted(const Image& image, ImageDeleteReason reason) {
+    if (!VideoCore::Perf::DetailedGpuProfileEnabled()) {
+        return;
+    }
+    const size_t index = static_cast<size_t>(reason);
+    const bool young = frame_tick <= image.allocation_tick + 2;
+    ++churn_deletes[index];
+    churn_young_deletes[index] += young ? 1 : 0;
+    churn_deleted_bytes[index] += image.guest_size_bytes;
+    ChurnAddress& entry = churn_addresses[image.gpu_addr];
+    ++entry.deletes;
+    entry.young_deletes += young ? 1 : 0;
+    entry.info = image.info;
+    entry.last_reason = reason;
+    entry.gpu_modified = True(image.flags & ImageFlagBits::GpuModified);
+}
+
+template <class P>
+void TextureCache<P>::ReportImageChurn() {
+    static constexpr u64 WINDOW_FRAMES = 300;
+    if (!VideoCore::Perf::DetailedGpuProfileEnabled() ||
+        frame_tick < churn_window_start + WINDOW_FRAMES) {
+        return;
+    }
+    static constexpr std::array<const char*, NUM_DELETE_REASONS> REASON_NAMES{
+        "evicted", "evicted+download", "unmapped", "join dropped", "join merged"};
+    std::string reasons;
+    for (size_t i = 0; i < NUM_DELETE_REASONS; ++i) {
+        reasons += fmt::format("{}{} {} ({} within 2 frames, {} MiB)", i ? "; " : "",
+                               REASON_NAMES[i], churn_deletes[i], churn_young_deletes[i],
+                               churn_deleted_bytes[i] >> 20);
+    }
+    std::vector<std::pair<GPUVAddr, const ChurnAddress*>> hot;
+    for (const auto& [addr, entry] : churn_addresses) {
+        if (entry.creates >= 2) {
+            hot.emplace_back(addr, &entry);
+        }
+    }
+    std::ranges::sort(hot, [](const auto& lhs, const auto& rhs) {
+        return lhs.second->creates > rhs.second->creates;
+    });
+    LOG_INFO(HW_GPU,
+             "Texture churn over {} frames: {} addresses, {} recreated at least twice | "
+             "deletes: {}",
+             frame_tick - churn_window_start, churn_addresses.size(), hot.size(), reasons);
+    for (size_t i = 0; i < (std::min)(hot.size(), size_t{12}); ++i) {
+        const ChurnAddress& entry = *hot[i].second;
+        const ImageInfo& info = entry.info;
+        LOG_INFO(HW_GPU,
+                 "Texture churn: {:#x} created {}x, deleted {}x ({} within 2 frames, last: {}{}) | "
+                 "{} {} {}x{}x{} levels {} layers {} samples {} block {}x{}x{} pitch {}",
+                 hot[i].first, entry.creates, entry.deletes, entry.young_deletes,
+                 entry.last_reason == ImageDeleteReason::Count
+                     ? "none"
+                     : REASON_NAMES[static_cast<size_t>(entry.last_reason)],
+                 entry.gpu_modified ? ", GPU-modified" : "", info.type, info.format,
+                 info.size.width, info.size.height, info.size.depth, info.resources.levels,
+                 info.resources.layers, info.num_samples, info.block.width, info.block.height,
+                 info.block.depth, info.pitch);
+    }
+    churn_addresses.clear();
+    churn_deletes = {};
+    churn_young_deletes = {};
+    churn_deleted_bytes = {};
+    churn_window_start = frame_tick;
 }
 
 template <class P>

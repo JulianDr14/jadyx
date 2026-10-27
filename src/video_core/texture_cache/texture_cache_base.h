@@ -425,6 +425,22 @@ private:
     /// Delete image from the cache
     void DeleteImage(ImageId image, bool immediate_delete = false);
 
+    /// Why an image left the cache, for the gpu_profile churn report.
+    enum class ImageDeleteReason : u8 {
+        Evicted,             ///< garbage collector, contents dropped
+        EvictedWithDownload, ///< garbage collector, GPU contents written back first
+        Unmapped,            ///< the guest unmapped its memory
+        JoinDropped,         ///< a new overlapping image replaced it without copying
+        JoinMerged,          ///< a new overlapping image absorbed it
+        Count,
+    };
+
+    /// gpu_profile only: counts image creations and deletions per guest address and logs, every
+    /// few hundred frames, which addresses keep being recreated and why they were deleted.
+    void NoteImageCreated(const Image& image);
+    void NoteImageDeleted(const Image& image, ImageDeleteReason reason);
+    void ReportImageChurn();
+
     /// Remove image views references from the cache
     void RemoveImageViewReferences(std::span<const ImageViewId> removed_views);
 
@@ -550,6 +566,21 @@ private:
 
     u64 modification_tick = 0;
     u64 frame_tick = 0;
+
+    struct ChurnAddress {
+        u32 creates = 0;
+        u32 deletes = 0;
+        u32 young_deletes = 0; ///< deleted within two frames of being created
+        ImageInfo info{};
+        ImageDeleteReason last_reason = ImageDeleteReason::Count;
+        bool gpu_modified = false;
+    };
+    static constexpr size_t NUM_DELETE_REASONS = static_cast<size_t>(ImageDeleteReason::Count);
+    std::unordered_map<GPUVAddr, ChurnAddress> churn_addresses;
+    std::array<u32, NUM_DELETE_REASONS> churn_deletes{};
+    std::array<u32, NUM_DELETE_REASONS> churn_young_deletes{};
+    std::array<u64, NUM_DELETE_REASONS> churn_deleted_bytes{};
+    u64 churn_window_start = 0;
 
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},
                                                Common::ThreadPlacement::Efficiency};
