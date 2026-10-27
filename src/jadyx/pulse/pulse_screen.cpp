@@ -117,7 +117,7 @@ struct Painter : UiPainter {
         using L = Layout;
         const auto [screen_width, screen_height] = screen;
         if (screen_width == 0 || screen_height == 0) return {};
-        const float scale = std::min({static_cast<float>(screen_height) / 720.0f, 1.5f,
+        const float scale = std::min({static_cast<float>(screen_height) / 720.0f,
                                       static_cast<float>(screen_width) * 0.95f / L::Width,
                                       static_cast<float>(screen_height) * 0.95f / L::Height});
         const auto wide = static_cast<UINT>(std::ceil(L::Width * scale));
