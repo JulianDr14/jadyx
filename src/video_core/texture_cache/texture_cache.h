@@ -1856,6 +1856,33 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
 }
 
 template <class P>
+bool TextureCache<P>::IsResizedImage(const ImageBase& new_image, const ImageBase& old) const {
+    // Not when the old size was used this frame: a pass alternating two sizes would then copy
+    // and re-create on every draw.
+    if (!ReclaimSupersededImages() || old.gpu_addr != new_image.gpu_addr ||
+        lru_cache.Tick(old.lru_index) >= frame_tick) {
+        return false;
+    }
+    const ImageInfo& a = old.info;
+    const ImageInfo& b = new_image.info;
+    return a.type == ImageType::e2D && b.type == ImageType::e2D && a.format == b.format &&
+           a.num_samples == b.num_samples && a.resources.levels == 1 &&
+           b.resources.levels == 1 && a.resources.layers == 1 && b.resources.layers == 1 &&
+           a.size != b.size && old.aliased_images.size() == 1 && old.overlapping_images.empty() &&
+           False(old.flags & (ImageFlagBits::Sparse | ImageFlagBits::Remapped));
+}
+
+template <class P>
+bool TextureCache<P>::IsSupersededOverlap(const ImageBase& old) const {
+    // The GC evicts these BadOverlap images without a download. Two frames unused keeps the ones
+    // a frame still samples or renders to.
+    return ReclaimSupersededImages() && old.info.resources.levels == 1 &&
+           old.info.block.depth == 0 && lru_cache.Tick(old.lru_index) + 2 <= frame_tick &&
+           False(old.flags & (ImageFlagBits::Sparse | ImageFlagBits::Remapped |
+                              ImageFlagBits::IsDecoding | ImageFlagBits::CostlyLoad));
+}
+
+template <class P>
 ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr) {
     VideoCore::Perf::LapTimer phase_timer;
     ImageInfo new_info = info;
@@ -2089,6 +2116,21 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             new_image.flags |= ImageFlagBits::BadOverlap;
         }
     }
+    join_bad_overlap_ids.erase(
+        std::remove_if(join_bad_overlap_ids.begin(), join_bad_overlap_ids.end(),
+                       [&](ImageId overlap_id) {
+                           Image& overlap = slot_images[overlap_id];
+                           if (!IsSupersededOverlap(overlap)) {
+                               return false;
+                           }
+                           if (True(overlap.flags & ImageFlagBits::Tracked)) {
+                               UntrackImage(overlap, overlap_id);
+                           }
+                           UnregisterImage(overlap_id);
+                           DeleteImage(overlap_id);
+                           return true;
+                       }),
+        join_bad_overlap_ids.end());
 
     for (const auto& copy_object : join_copies_to_do) {
         Image& overlap = slot_images[copy_object.id];
@@ -2106,6 +2148,13 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             const AliasedImage& aliased = new_image.aliased_images[alias_pointer->second];
             CopyImage(new_image_id, aliased.id, aliased.copies);
             new_image.modification_tick = overlap.modification_tick;
+            if (IsResizedImage(new_image, overlap)) {
+                if (True(overlap.flags & ImageFlagBits::Tracked)) {
+                    UntrackImage(overlap, copy_object.id);
+                }
+                UnregisterImage(copy_object.id);
+                DeleteImage(copy_object.id);
+            }
             continue;
         }
         if (True(overlap.flags & ImageFlagBits::GpuModified)) {

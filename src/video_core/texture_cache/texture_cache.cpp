@@ -14,7 +14,16 @@ namespace VideoCommon {
 namespace {
 std::atomic<bool> mip_render_targets{true};
 std::atomic<bool> render_target_inheritance{true};
+std::atomic<bool> reclaim_superseded_images{true};
 } // namespace
+
+void SetReclaimSupersededImages(bool enabled) noexcept {
+    reclaim_superseded_images.store(enabled, std::memory_order_relaxed);
+}
+
+bool ReclaimSupersededImages() noexcept {
+    return reclaim_superseded_images.load(std::memory_order_relaxed);
+}
 
 void SetMipRenderTargets(bool enabled) noexcept {
     mip_render_targets.store(enabled, std::memory_order_relaxed);

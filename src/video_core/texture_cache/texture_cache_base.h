@@ -61,6 +61,14 @@ using namespace Common::Literals;
 /// path.
 void SetMipRenderTargets(bool enabled) noexcept;
 [[nodiscard]] bool MipRenderTargets() noexcept;
+/// Images a new one supersedes are released when it is created instead of when the GC ages them
+/// out: a single-level 2D image re-created at the same address and format with another size gives
+/// the new one its contents, and a single-level image overlapping it in an incompatible layout
+/// (what the GC already evicts without a download) goes when unused for two frames. Dynamic
+/// resolution re-creates every render target in the same memory with each size; the old ones
+/// held gigabytes until the GC reached them. Boot.cfg "rt_reclaim=0" leaves them to the GC.
+void SetReclaimSupersededImages(bool enabled) noexcept;
+[[nodiscard]] bool ReclaimSupersededImages() noexcept;
 
 /// A render target drawn to or sampled at another size (dynamic resolution) takes its contents
 /// from the previous size on the GPU, which is then deleted, instead of uploading stale guest
@@ -370,6 +378,11 @@ private:
     /// Create a new image and join perfectly matching existing images
     /// Remove joined images from the cache
     [[nodiscard]] ImageId JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr);
+
+    /// Whether the new image replaces an aliased one (SetReclaimSupersededImages).
+    [[nodiscard]] bool IsResizedImage(const ImageBase& new_image, const ImageBase& old) const;
+    /// Whether a bad overlap of a new image can go now (SetReclaimSupersededImages).
+    [[nodiscard]] bool IsSupersededOverlap(const ImageBase& old) const;
 
     [[nodiscard]] ImageId FindDMAImage(const ImageInfo& info, GPUVAddr gpu_addr);
 
