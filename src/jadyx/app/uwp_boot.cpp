@@ -1861,7 +1861,8 @@ std::string MemoryReport() {
         return "app memory " + std::to_string(MemoryManager::AppMemoryUsage() >> 20) + " MiB of " +
                std::to_string(MemoryManager::AppMemoryUsageLimit() >> 20) + " MiB limit, commit " +
                std::to_string(report.TotalCommitUsage() >> 20) + " of " +
-               std::to_string(report.TotalCommitLimit() >> 20) + " MiB" +
+               std::to_string(report.TotalCommitLimit() >> 20) + " MiB, peak private commit " +
+               std::to_string(report.PeakPrivateCommitUsage() >> 20) + " MiB" +
                (g_test_memory_limit.load() == 0 ? "" : ", PC test budget " +
                     std::to_string(g_test_memory_limit.load() >> 20) + " MiB, headroom " +
                     std::to_string((g_test_memory_limit.load() > report.TotalCommitUsage()

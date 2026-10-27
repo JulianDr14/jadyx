@@ -665,10 +665,14 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
     }
     const DXGI_QUERY_VIDEO_MEMORY_INFO video = device.QueryVideoMemory();
     const CacheMemorySnapshot snapshot = device.QueryCacheMemoryPressure();
+    // Highest GPU usage seen at these reports, so a session's peak survives in the log.
+    static u64 peak_gpu = 0;
+    peak_gpu = std::max<u64>(peak_gpu, video.CurrentUsage);
     LOG_INFO(Render,
-             "D3D12 memory: GPU {} MiB, DXGI budget {} MiB, cache budget {} MiB, caches see {} MiB "
-             "used, app {} of {} MiB ({} MiB free)",
-             video.CurrentUsage >> 20, video.Budget >> 20, device.CacheMemoryBudget() >> 20,
+             "D3D12 memory: GPU {} MiB (peak {} MiB), DXGI budget {} MiB, cache budget {} MiB, "
+             "caches see {} MiB used, app {} of {} MiB ({} MiB free)",
+             video.CurrentUsage >> 20, peak_gpu >> 20, video.Budget >> 20,
+             device.CacheMemoryBudget() >> 20,
              device.CacheMemoryUsage(snapshot) >> 20, snapshot.app_used >> 20,
              snapshot.app_limit >> 20, snapshot.AppFree() >> 20);
 }
