@@ -412,6 +412,10 @@ void StagingBufferPool::ReleaseRetiredDownloads() {
     ReleaseAllRetired(download_cache);
 }
 
+void StagingBufferPool::ReleaseRetiredUploads() {
+    ReleaseAllRetired(upload_cache);
+}
+
 void StagingBufferPool::ReleaseAllRetired(StagingBuffersCache& cache) {
     for (size_t level = 0; level < NUM_LEVELS; ++level) {
         cache[level].delete_index = 0;

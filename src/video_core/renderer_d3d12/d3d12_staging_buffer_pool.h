@@ -71,6 +71,10 @@ public:
     /// once, at sizes the game never asks for again; kept, they outlive the save.
     void ReleaseRetiredDownloads();
 
+    /// Frees every upload buffer the GPU is done with. Recording thread only (as uploads are):
+    /// the reclaim after another allocation was refused for lack of memory.
+    void ReleaseRetiredUploads();
+
     /// Upload bytes requested for the command list being recorded (stream and dedicated).
     [[nodiscard]] u64 PendingUploadBytes() const noexcept;
 

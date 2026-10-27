@@ -157,8 +157,11 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
     : device{device_}, scheduler{scheduler_}, staging{staging_}, view_descriptors{views},
       sampler_descriptors{samplers}, rtv_descriptors{rtvs}, dsv_descriptors{dsvs},
       texture_allocator{device_, scheduler_}, transfer_buffers{transfer_buffers_} {
-    transfer_buffers.SetReclaimer(
-        [this] { texture_allocator.TrimEmptyHeaps(TextureResourceAllocator::TrimMode::All); });
+    // Retired dedicated uploads too: a loading frame can leave 100+ MiB of them behind.
+    transfer_buffers.SetReclaimer([this] {
+        staging.ReleaseRetiredUploads();
+        texture_allocator.TrimEmptyHeaps(TextureResourceAllocator::TrimMode::All);
+    });
     null_rtv = rtv_descriptors.Allocate();
     D3D12_RENDER_TARGET_VIEW_DESC null_desc{
         .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
