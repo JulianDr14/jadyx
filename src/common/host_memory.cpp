@@ -13,6 +13,7 @@
 #include <boost/icl/separate_interval_set.hpp>
 #include <windows.h>
 #include <winioctl.h>
+#include <psapi.h>
 #include "common/dynamic_library.h"
 
 #else // ^^^ Windows ^^^ vvv POSIX vvv
@@ -253,6 +254,25 @@ std::atomic<u64> g_page_retry_saves{0};
 std::atomic<u32> g_last_commit_error{0};
 std::atomic<uintptr_t> g_last_failed_address{0};
 std::atomic<u64> g_last_failed_length{0};
+std::atomic<u32> g_last_failed_thread{0};
+std::atomic<u64> g_last_failed_process_commit{0};
+
+// Private commit of the whole process, for the failure record and the crash report.
+u64 ProcessCommitBytes() {
+    PROCESS_MEMORY_COUNTERS counters{};
+    return K32GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))
+               ? counters.PagefileUsage
+               : 0;
+}
+
+void RecordCommitFailure(uintptr_t begin, size_t length) {
+    g_last_commit_error.store(GetLastError(), std::memory_order_relaxed);
+    g_last_failed_address.store(begin, std::memory_order_relaxed);
+    g_last_failed_length.store(length, std::memory_order_relaxed);
+    g_last_failed_thread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    g_last_failed_process_commit.store(ProcessCommitBytes(), std::memory_order_relaxed);
+    g_commit_failures.fetch_add(1, std::memory_order_relaxed);
+}
 
 std::atomic<uintptr_t> g_held_span{0};
 std::atomic<u32> g_commits_in_flight{0};
@@ -273,10 +293,7 @@ bool CommitSectionRange(uintptr_t begin, uintptr_t end) {
         g_section_commit_bytes.fetch_add(end - begin, std::memory_order_relaxed);
         return true;
     }
-    g_last_commit_error.store(GetLastError(), std::memory_order_relaxed);
-    g_last_failed_address.store(begin, std::memory_order_relaxed);
-    g_last_failed_length.store(end - begin, std::memory_order_relaxed);
-    g_commit_failures.fetch_add(1, std::memory_order_relaxed);
+    RecordCommitFailure(begin, end - begin);
     return false;
 }
 
@@ -434,6 +451,9 @@ LONG NTAPI BackingDemandCommitHandler(EXCEPTION_POINTERS* ep) {
     }
     const bool committed = g_pfn_virtual_alloc_from_app(base + commit_offset, commit_len,
                                                         MEM_COMMIT, PAGE_READWRITE) != nullptr;
+    if (!committed) {
+        RecordCommitFailure(reinterpret_cast<uintptr_t>(base + commit_offset), commit_len);
+    }
     g_commits_in_flight.fetch_sub(1);
     if (committed) {
         return EXCEPTION_CONTINUE_EXECUTION; // page committed — retry the faulting access
@@ -2226,7 +2246,13 @@ std::string HostMemoryCommitStats() {
         if (g_backing_base.load(std::memory_order_acquire) == nullptr) {
             return {};
         }
-        return "emulated DRAM " + std::to_string(*EmulatedDramCommittedBytes() >> 20) + " MiB";
+        std::string stats =
+            "emulated DRAM " + std::to_string(*EmulatedDramCommittedBytes() >> 20) + " MiB";
+        if (const u64 failures = g_commit_failures.load(std::memory_order_relaxed); failures != 0) {
+            stats += ", " + std::to_string(failures) + " DRAM commit failures (last error " +
+                     std::to_string(g_last_commit_error.load(std::memory_order_relaxed)) + ")";
+        }
+        return stats;
     }
     if (g_backing_is_file.load(std::memory_order_acquire)) {
         if (const u64 hot_size = g_fastmem_hot_size_actual.load(std::memory_order_acquire);
@@ -2285,6 +2311,47 @@ std::string HostMemoryCommitStats() {
     return stats;
 #else
     return {};
+#endif
+}
+
+void FormatBackingFault(char* out, size_t out_size, uintptr_t address) {
+    if (out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+#ifdef HOST_MEMORY_USE_FROM_APP
+    const auto base = reinterpret_cast<uintptr_t>(g_backing_base.load(std::memory_order_acquire));
+    const size_t size = g_backing_size.load(std::memory_order_acquire);
+    char where[64];
+    if (base == 0) {
+        std::snprintf(where, sizeof(where), "no DRAM backing");
+    } else if (address >= base && address < base + size) {
+        std::snprintf(where, sizeof(where), "DRAM offset 0x%llx",
+                      static_cast<unsigned long long>(address - base));
+    } else {
+        std::snprintf(where, sizeof(where), "outside the DRAM backing");
+    }
+    std::snprintf(out, out_size,
+                  "fault at 0x%llx: %s (backing 0x%llx + %llu MiB, %s); process commit %llu MiB; "
+                  "%llu commit failures, last error %u for %llu KiB at 0x%llx on thread %u with "
+                  "process commit %llu MiB; %u commits in flight",
+                  static_cast<unsigned long long>(address), where,
+                  static_cast<unsigned long long>(base),
+                  static_cast<unsigned long long>(size >> 20),
+                  g_backing_is_section.load(std::memory_order_acquire) ? "section" : "private",
+                  static_cast<unsigned long long>(ProcessCommitBytes() >> 20),
+                  static_cast<unsigned long long>(g_commit_failures.load(std::memory_order_relaxed)),
+                  g_last_commit_error.load(std::memory_order_relaxed),
+                  static_cast<unsigned long long>(
+                      g_last_failed_length.load(std::memory_order_relaxed) >> 10),
+                  static_cast<unsigned long long>(
+                      g_last_failed_address.load(std::memory_order_relaxed)),
+                  g_last_failed_thread.load(std::memory_order_relaxed),
+                  static_cast<unsigned long long>(
+                      g_last_failed_process_commit.load(std::memory_order_relaxed) >> 20),
+                  g_commits_in_flight.load(std::memory_order_relaxed));
+#else
+    (void)address;
 #endif
 }
 

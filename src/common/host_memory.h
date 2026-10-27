@@ -117,6 +117,10 @@ private:
 /// diag. Empty elsewhere.
 std::string HostMemoryCommitStats();
 
+/// Xbox: where `address` falls against the DRAM backing, the process commit and the last
+/// demand-commit failure, as one line in `out`. Allocates nothing, for the crash handler.
+void FormatBackingFault(char* out, size_t out_size, uintptr_t address);
+
 /// Bytes of the emulated DRAM committed in the app (Xbox host memory). Empty where it cannot be
 /// told apart, such as a file-backed section.
 std::optional<u64> EmulatedDramCommittedBytes();
