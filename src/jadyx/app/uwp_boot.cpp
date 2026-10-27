@@ -2233,6 +2233,17 @@ LONG WINAPI OnUnhandledException(EXCEPTION_POINTERS* info) {
                       GetCurrentThreadId());
     }
     WriteDiagRaw(line);
+    // Before the stack: out of commit, the unwind can overflow the stack and lose both.
+    if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2) {
+        char fault[512];
+        Common::FormatBackingFault(fault, sizeof(fault), rec->ExceptionInformation[1]);
+        if (fault[0] != '\0') {
+            std::snprintf(line, sizeof(line), "[jadyx] [+%llums] ", ElapsedMs());
+            WriteDiagRaw(line);
+            WriteDiagRaw(fault);
+            WriteDiagRaw("\n");
+        }
+    }
     WriteDiagRaw(FormatFaultStack(*info->ContextRecord, "[jadyx] crash stack:").c_str());
     Common::BugTracker::DrainForCrash(); // first occurrences still queued for jadyx_graphics_bugs.log
     Common::Log::Stop(); // flush jadyx_log.txt
@@ -3341,14 +3352,22 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
             });
 
             // Heartbeat every 10 s: if steps stop but heartbeats continue, the boot hung rather than
-            // crashed, and the last step names where.
+            // crashed, and the last step names where. The first 30 s also log the memory every
+            // second, since a boot can run out of commit before the first heartbeat.
             CoreDispatcher dispatcher = window.Dispatcher();
-            ULONGLONG next_heartbeat = GetTickCount64() + 10'000;
+            const ULONGLONG boot_start = GetTickCount64();
+            ULONGLONG next_heartbeat = boot_start + 10'000;
+            ULONGLONG next_boot_memory = boot_start + 1'000;
             while (!done.load()) {
                 Jadyx::RefreshProControllers();
                 ApplyWindowMode();
                 dispatcher.ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
                 ::Sleep(50);
+                if (const ULONGLONG now = GetTickCount64();
+                    now >= next_boot_memory && now < boot_start + 30'000 && now < next_heartbeat) {
+                    WriteDiag("boot memory: " + MemoryReport());
+                    next_boot_memory = now + 1'000;
+                }
                 if (GetTickCount64() >= next_heartbeat) {
                     WriteDiag("heartbeat: boot worker still running | " + MemoryReport());
                     WriteDiag("memory by owner: " + MemoryOwners());
