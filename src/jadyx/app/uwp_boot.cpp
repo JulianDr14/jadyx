@@ -192,6 +192,7 @@ void SetAstcArrayRecompression(bool enabled) noexcept; // texture_cache/util.h
 void SetOpaqueAstcToBc1(bool enabled) noexcept;        // texture_cache/util.h
 void SetMipRenderTargets(bool enabled) noexcept;       // texture_cache/texture_cache_base.h
 void SetRenderTargetInheritance(bool enabled) noexcept; // texture_cache/texture_cache_base.h
+void SetReclaimSupersededImages(bool enabled) noexcept; // texture_cache/texture_cache_base.h
 } // namespace VideoCommon
 
 namespace {
@@ -336,6 +337,7 @@ struct BootConfig {
     /// A render target redrawn at another size uploads guest memory again instead of taking the
     /// previous size's contents on the GPU ("rt_inherit=0").
     bool render_target_inheritance{true};
+    bool reclaim_superseded_images{true};
     /// Filtered MIN/MAX sampler reductions go to the hardware although the device reports no
     /// support ("min_max_filter=force").
     bool force_min_max_filter{};
@@ -647,6 +649,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetDiagUavSync(config.uav_sync);
     VideoCommon::SetMipRenderTargets(config.mip_render_targets);
     VideoCommon::SetRenderTargetInheritance(config.render_target_inheritance);
+    VideoCommon::SetReclaimSupersededImages(config.reclaim_superseded_images);
     D3D12::SetForceMinMaxFilter(config.force_min_max_filter);
     D3D12::SetSkipMinMaxFilter(config.skip_min_max_filter);
     D3D12::SetEmulateMinMaxFilter(config.emulate_min_max_filter);
@@ -2934,6 +2937,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "uav_sync=1") {
                             config.uav_sync = true;
                             WriteDiag("boot.cfg: UAV barrier after every draw and dispatch");
+                        } else if (line == "rt_reclaim=0") {
+                            config.reclaim_superseded_images = false;
+                            WriteDiag("boot.cfg: superseded render targets wait for the GC");
                         } else if (line == "mip_rt=0") {
                             config.mip_render_targets = false;
                             WriteDiag("boot.cfg: depth targets at a mip level use aliased images");
