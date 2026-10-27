@@ -1687,6 +1687,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Graphics.Display.h>
+#include <winrt/Windows.Graphics.Display.Core.h>
 #include <winrt/Windows.Storage.h>
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.System.Profile.h>
@@ -2772,6 +2773,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
             std::optional<std::string> library_game;
             bool show_library = false;
             std::string library_pick;
+            bool output_4k = false;
             try {
                 const auto install = std::filesystem::path{
                     Windows::ApplicationModel::Package::Current().InstalledLocation().Path().c_str()};
@@ -2779,6 +2781,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 for (std::string line; std::getline(cfg, line);) {
                     if (line == "library=1") show_library = true;
                     else if (line.starts_with("library_pick=")) library_pick = line.substr(13);
+                    else if (line == "output=4k") output_4k = true;
                 }
                 if (show_library) {
                     if (session > 1) {
@@ -2815,9 +2818,33 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 return;
             }
 
+            // Experimental: the game presents on a swapchain the size of the TV's current mode
+            // (3840x2160 on a 4K TV) while it still renders at its own resolution, and the present
+            // upscales (FSR 1 when the in-game menu selects it). The library stays at window size.
+            Jadyx::BootSurface game_surface = surface;
+            if (output_4k && surface.core_window != nullptr) {
+                try {
+                    const auto hdmi = Windows::Graphics::Display::Core::HdmiDisplayInformation::
+                        GetForCurrentView();
+                    const auto mode = hdmi ? hdmi.GetCurrentDisplayMode() : nullptr;
+                    if (mode && mode.ResolutionWidthInRawPixels() > surface.width) {
+                        game_surface.width = mode.ResolutionWidthInRawPixels();
+                        game_surface.height = mode.ResolutionHeightInRawPixels();
+                        WriteDiag("boot.cfg: output " + std::to_string(game_surface.width) + "x" +
+                                  std::to_string(game_surface.height) + " (display mode)");
+                    } else {
+                        WriteDiag("boot.cfg: output=4k ignored, the display mode is not larger than " +
+                                  std::to_string(surface.width) + "x" + std::to_string(surface.height));
+                    }
+                } catch (const winrt::hresult_error& e) {
+                    WriteDiag("boot.cfg: output=4k ignored, no display mode: " +
+                              winrt::to_string(e.message()));
+                }
+            }
+
             std::atomic<bool> done{false};
             std::atomic<int> boot_status{0};
-            std::thread worker([&done, &boot_status, surface, library_game]() {
+            std::thread worker([&done, &boot_status, surface = game_surface, library_game]() {
                 winrt::init_apartment(winrt::apartment_type::multi_threaded);
                 std::set_terminate(OnTerminate); // per-thread in the MSVC runtime
                 std::string nro_path;
