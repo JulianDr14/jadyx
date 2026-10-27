@@ -543,7 +543,16 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
                             (resource_flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
                                                D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) != 0;
         if (!resource) {
-            throw std::runtime_error("D3D12: texture allocator returned no resource");
+            // Name the image: an invalid desc (size UINT64_MAX) fails without any other log line.
+            const D3D12_RESOURCE_ALLOCATION_INFO allocation_info =
+                runtime->device.Get()->GetResourceAllocationInfo(0, 1, &desc);
+            throw std::runtime_error(fmt::format(
+                "D3D12: texture allocator returned no resource for image {} (format {} dim {} "
+                "{}x{}x{} levels {} samples {} flags 0x{:x}; allocation size 0x{:x} align 0x{:x})",
+                info_.format, static_cast<u32>(desc.Format), static_cast<u32>(desc.Dimension),
+                desc.Width, desc.Height, desc.DepthOrArraySize, desc.MipLevels,
+                desc.SampleDesc.Count, static_cast<u32>(desc.Flags), allocation_info.SizeInBytes,
+                allocation_info.Alignment));
         }
     }
     CheckRemovedAfter(runtime->device.Get(), [&] {
