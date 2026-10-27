@@ -60,8 +60,10 @@ void Image::CopyPlanes(s32 level, s32 layer, ID3D12Resource* buffer,
         }
     }
     BlitImageHelper* const helper = runtime->blit_helper;
+    // S8_UINT has no depth to convert.
     if (!to_buffer || !runtime->depth24_readback_float || !helper ||
-        resource->GetDesc().Format != DXGI_FORMAT_R24G8_TYPELESS) {
+        resource->GetDesc().Format != DXGI_FORMAT_R24G8_TYPELESS ||
+        info.format == VideoCore::Surface::PixelFormat::S8_UINT) {
         return;
     }
     // The depth plane came out as float bits: make it the UNORM a copy back in reads. The buffer

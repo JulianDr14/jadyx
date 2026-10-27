@@ -26,6 +26,7 @@ enum class DepthStencilLayout : u32 {
     S8Z24,      ///< D24_UNORM_S8_UINT: stencil in bits 31:24, depth in 23:0
     X8Z24,      ///< X8_D24_UNORM: depth in bits 23:0, nothing in 31:24
     ZF32_X24S8, ///< D32_FLOAT_S8_UINT: the float depth, then a word with the stencil in 7:0
+    S8,         ///< S8_UINT: one stencil byte, kept in the stencil plane of a D24S8 resource
 };
 
 /// One region repacked between guest depth-stencil texels and the copy footprints of both planes

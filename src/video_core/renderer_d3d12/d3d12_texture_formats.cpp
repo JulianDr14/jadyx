@@ -255,6 +255,7 @@ std::optional<DepthStencilLayout> GuestDepthStencilLayout(PixelFormat format) {
     case PixelFormat::D24_UNORM_S8_UINT: return DepthStencilLayout::S8Z24;
     case PixelFormat::X8_D24_UNORM: return DepthStencilLayout::X8Z24;
     case PixelFormat::D32_FLOAT_S8_UINT: return DepthStencilLayout::ZF32_X24S8;
+    case PixelFormat::S8_UINT: return DepthStencilLayout::S8;
     default: return std::nullopt;
     }
 }
