@@ -52,6 +52,10 @@ public:
 
     [[nodiscard]] u64 PooledBytes() const;
 
+    /// Bytes of buffers released past the pool's budget while recording the current submission:
+    /// they stay allocated until it completes, so the recorder submits once they add up.
+    [[nodiscard]] u64 PendingReleaseBytes() const;
+
     /// After the commit limit refused a resource of size bytes: frees what finished work no longer
     /// needs, so the caller can try once more. False (nothing freed) off the recording thread.
     bool ReclaimAfterOutOfMemory(u64 size, const char* what);
@@ -90,6 +94,8 @@ private:
     std::vector<Entry> entries;
     std::map<std::string_view, UserStats> user_stats;
     u64 pooled_bytes{};
+    u64 pending_release_bytes{};
+    u64 pending_release_tick{};
     std::function<void()> reclaimer;
 
     void TrimOlderThan(u64 idle_ticks);

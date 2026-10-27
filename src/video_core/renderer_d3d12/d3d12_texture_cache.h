@@ -175,6 +175,11 @@ public:
     bool HasNativeASTC() const noexcept { return false; }
     void BarrierFeedbackLoop() {}
 
+    /// Copy scratch the submission being recorded still holds (TransferBufferPool).
+    [[nodiscard]] u64 PendingTransferBytes() const {
+        return transfer_buffers.PendingReleaseBytes();
+    }
+
     [[nodiscard]] FormatInfo Format(VideoCore::Surface::PixelFormat format) const;
     /// Whether a typed view format supports all the given capabilities on this device.
     [[nodiscard]] bool SupportsView(DXGI_FORMAT format, D3D12_FORMAT_SUPPORT1 support1,

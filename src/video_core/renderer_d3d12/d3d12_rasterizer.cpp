@@ -949,7 +949,8 @@ void RasterizerD3D12::FlushCommands() {
     // left unsubmitted, the staging stream cannot be reused and every upload became a new
     // committed buffer until the console ran out of memory (0.2.49, 125 s into Game C).
     constexpr u64 UPLOAD_FLUSH_BYTES = 8ULL << 20;
-    if (draw_counter == 0 && staging.PendingUploadBytes() < UPLOAD_FLUSH_BYTES) {
+    if (draw_counter == 0 && staging.PendingUploadBytes() < UPLOAD_FLUSH_BYTES &&
+        texture_runtime.PendingTransferBytes() < UPLOAD_FLUSH_BYTES) {
         return;
     }
     draw_counter = 0;
@@ -966,7 +967,10 @@ void RasterizerD3D12::FlushIfUploadHeavy() {
     // whole list was recorded (~50 ms), and the guest waited for both in turn every frame.
     // Submitting every few hundred draws lets the GPU execute while the rest is recorded.
     constexpr u32 SUBMIT_DRAWS = 512;
-    if (staging.PendingUploadBytes() < UPLOAD_SUBMIT_BYTES && draw_counter < SUBMIT_DRAWS) {
+    // Copy scratch past the transfer pool's budget is freed only with the list that used it: a
+    // loading screen's conversions held ~600 MiB of 8 MiB buffers in one list and ran out.
+    if (staging.PendingUploadBytes() < UPLOAD_SUBMIT_BYTES && draw_counter < SUBMIT_DRAWS &&
+        texture_runtime.PendingTransferBytes() < UPLOAD_SUBMIT_BYTES) {
         return;
     }
     draw_counter = 0;

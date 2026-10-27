@@ -133,6 +133,15 @@ void TransferBufferPool::Release(ComPtr<ID3D12Resource>&& buffer) {
     }
     VideoCore::Perf::Add(VideoCore::Perf::Counter::TransferPoolOverflows, 1);
     VideoCore::Perf::Add(VideoCore::Perf::Counter::TransferPoolOverflowBytes, desc.Width);
+    {
+        std::scoped_lock lock{mutex};
+        const u64 tick = scheduler.CurrentTick();
+        if (pending_release_tick != tick) {
+            pending_release_tick = tick;
+            pending_release_bytes = 0;
+        }
+        pending_release_bytes += desc.Width;
+    }
     scheduler.DeferRelease(std::move(buffer));
 }
 
@@ -173,6 +182,11 @@ std::string TransferBufferPool::TakeUserReport() {
 u64 TransferBufferPool::PooledBytes() const {
     std::scoped_lock lock{mutex};
     return pooled_bytes;
+}
+
+u64 TransferBufferPool::PendingReleaseBytes() const {
+    std::scoped_lock lock{mutex};
+    return pending_release_tick == scheduler.CurrentTick() ? pending_release_bytes : 0;
 }
 
 } // namespace D3D12
