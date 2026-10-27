@@ -250,6 +250,9 @@ struct BufferCacheParams {
     static constexpr bool USE_MEMORY_MAPS = true;
     static constexpr bool SEPARATE_IMAGE_BUFFER_BINDINGS = true;
     static constexpr bool USE_MEMORY_MAPS_FOR_UPLOADS = true;
+    /// ~Buffer defers the resource to the tick being recorded (Scheduler::DeferRelease).
+    static constexpr bool BUFFER_RELEASE_WAITS_FOR_GPU = true;
+    static constexpr u64 IMMEDIATE_RELEASE_SIZE = 1ULL << 20;
 };
 
 using BufferCache = VideoCommon::BufferCache<BufferCacheParams>;
