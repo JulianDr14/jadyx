@@ -197,7 +197,9 @@ jobs:
 
       # The release is already out, so a Discord failure only warns. Pings Release Ping only for
       # full releases, not pre-releases.
+      # Disabled: releases are announced on Discord by hand. Remove `if: false` to re-enable.
       - name: Announce on Discord
+        if: false
         continue-on-error: true
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
