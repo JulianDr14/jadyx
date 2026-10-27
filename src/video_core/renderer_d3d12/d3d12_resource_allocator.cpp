@@ -125,6 +125,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
     size_t selected = SIZE_MAX;
     u64 selected_offset{};
     u64 best_waste = UINT64_MAX;
+    u64 best_block_free = UINT64_MAX;
     const auto reserve_space = [&] {
         auto& ranges = state->blocks[selected].free_ranges;
         auto containing = ranges.upper_bound(selected_offset);
@@ -146,18 +147,26 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
 
     const auto find_space = [&] {
         std::scoped_lock lock{state->mutex};
-        for (size_t index = 0; index < state->blocks.size() && best_waste != 0; ++index) {
+        // Among equal fits, the fullest heap: resolution-scaled render targets are recreated every
+        // few frames, and spreading them over every heap left half of 1.5 GiB of heaps free but
+        // none empty enough to release. Packing the dense ones lets the sparse ones drain.
+        for (size_t index = 0; index < state->blocks.size(); ++index) {
             auto& block = state->blocks[index];
             if (!block.heap || block.heap_class != heap_class || block.alignment < heap_alignment) {
                 continue;
             }
+            u64 block_free = 0;
+            for (const auto& range : block.free_ranges) {
+                block_free += range.second;
+            }
             for (const auto& [offset, bytes] : block.free_ranges) {
                 const auto fit = HeapPacking::Fit(offset, bytes, info.SizeInBytes, info.Alignment);
-                if (fit && fit->waste < best_waste) {
+                if (fit && (fit->waste < best_waste ||
+                            (fit->waste == best_waste && block_free < best_block_free))) {
                     selected = index;
                     selected_offset = fit->offset;
                     best_waste = fit->waste;
-                    if (!best_waste) break;
+                    best_block_free = block_free;
                 }
             }
         }
