@@ -295,7 +295,16 @@ StagingBufferRef StagingBufferPool::CreateStagingBuffer(size_t size, MemoryUsage
     if (headroom.NeedsMeasure(bytes)) {
         MeasureHeadroom();
     }
-    if (!headroom.Fits(bytes)) {
+    // A request too large for the stream reclaims before it gets close to the reserve: it is the
+    // one that crosses it, and the buffers it would reuse or free are retired ones of its size.
+    // The estimate only counts staging; textures and transfer buffers created in the same loading
+    // frame are not in it, so a large request (rare) always measures.
+    const bool large = bytes >= MAX_STREAM_REQUEST;
+    if (large) {
+        MeasureHeadroom();
+    }
+    if (!headroom.Fits(bytes) ||
+        (large && headroom.Projected(bytes) < HeadroomTracker::RESERVE + HeadroomTracker::SLACK)) {
         if (const auto ref = RelieveMemoryPressure(size, usage, deferred, false)) {
             return *ref;
         }
