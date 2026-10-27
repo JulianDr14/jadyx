@@ -35,6 +35,19 @@ struct OverlapResult {
 
 [[nodiscard]] u32 CalculateUnswizzledSizeBytes(const ImageInfo& info) noexcept;
 
+/// How a backend wants unswizzled rows laid out in its staging memory. D3D12 copies only from
+/// footprints whose rows are 256-byte aligned and whose subresources start 512-byte aligned;
+/// unswizzling straight into that layout spares a repack that reads write-combined memory back.
+struct HostRowLayout {
+    u32 row_alignment = 1;   ///< bytes; each row of blocks starts at a multiple of this
+    u32 level_alignment = 1; ///< bytes; each mip level starts at a multiple of this
+};
+
+/// Bytes UnswizzleImage writes for this image in the given layout (unaligned images and the
+/// default layout: CalculateUnswizzledSizeBytes).
+[[nodiscard]] u32 CalculateHostUnswizzledSizeBytes(const ImageInfo& info,
+                                                   const HostRowLayout& host) noexcept;
+
 [[nodiscard]] u32 CalculateConvertedSizeBytes(const ImageInfo& info) noexcept;
 
 /// Keeps ASTC 2D arrays and 3D images decoded to RGBA8 even when astc_recompression asks for BC1
@@ -89,7 +102,7 @@ void DetectOpaqueAstc(ImageInfo& info, std::span<const u8> guest_blocks) noexcep
 
 [[nodiscard]] boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(
     Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
-    std::span<const u8> input, std::span<u8> output);
+    std::span<const u8> input, std::span<u8> output, const HostRowLayout& host = {});
 
 void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8> output,
                   std::span<BufferImageCopy> copies);

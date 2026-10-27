@@ -38,16 +38,15 @@ void incrpdep(u32& value) {
 
 template <bool TO_LINEAR, u32 BYTES_PER_PIXEL>
 void SwizzleImpl(std::span<u8> output, std::span<const u8> input, u32 width, u32 height, u32 depth,
-                 u32 block_height, u32 block_depth, u32 stride) {
+                 u32 block_height, u32 block_depth, u32 stride, u32 linear_pitch) {
     // The origin of the transformation can be configured here, leave it as zero as the current API
     // doesn't expose it.
     static constexpr u32 origin_x = 0;
     static constexpr u32 origin_y = 0;
     static constexpr u32 origin_z = 0;
 
-    // We can configure here a custom pitch
-    // As it's not exposed 'width * BYTES_PER_PIXEL' will be the expected pitch.
-    const u32 pitch = width * BYTES_PER_PIXEL;
+    // Bytes between linear rows: tight unless the caller pads them (D3D12 copy footprints).
+    const u32 pitch = linear_pitch != 0 ? linear_pitch : width * BYTES_PER_PIXEL;
 
     const u32 gobs_in_x = Common::DivCeilLog2(stride, GOB_SIZE_X_SHIFT);
     const u32 block_size = gobs_in_x << (GOB_SIZE_SHIFT + block_height + block_depth);
@@ -172,12 +171,13 @@ void SwizzleSubrectImpl(std::span<u8> output, std::span<const u8> input, u32 wid
 
 template <bool TO_LINEAR>
 void Swizzle(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel, u32 width,
-             u32 height, u32 depth, u32 block_height, u32 block_depth, u32 stride_alignment) {
+             u32 height, u32 depth, u32 block_height, u32 block_depth, u32 stride_alignment,
+             u32 linear_pitch) {
     switch (bytes_per_pixel) {
 #define BPP_CASE(x)                                                                                \
     case x:                                                                                        \
         return SwizzleImpl<TO_LINEAR, x>(output, input, width, height, depth, block_height,        \
-                                         block_depth, stride_alignment);
+                                         block_depth, stride_alignment, linear_pitch);
         BPP_CASE(1)
         BPP_CASE(2)
         BPP_CASE(3)
@@ -197,13 +197,13 @@ void Swizzle(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixe
 
 void UnswizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel,
                       u32 width, u32 height, u32 depth, u32 block_height, u32 block_depth,
-                      u32 stride_alignment) {
+                      u32 stride_alignment, u32 linear_pitch) {
     const u32 stride = Common::AlignUpLog2(width, stride_alignment) * bytes_per_pixel;
     const u32 new_bpp = (std::min)(4U, static_cast<u32>(std::countr_zero(width * bytes_per_pixel)));
     width = (width * bytes_per_pixel) >> new_bpp;
     bytes_per_pixel = 1U << new_bpp;
     Swizzle<false>(output, input, bytes_per_pixel, width, height, depth, block_height, block_depth,
-                   stride);
+                   stride, linear_pitch);
 }
 
 void SwizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel, u32 width,
@@ -214,7 +214,7 @@ void SwizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes_p
     width = (width * bytes_per_pixel) >> new_bpp;
     bytes_per_pixel = 1U << new_bpp;
     Swizzle<true>(output, input, bytes_per_pixel, width, height, depth, block_height, block_depth,
-                  stride);
+                  stride, 0);
 }
 
 void SwizzleSubrect(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel, u32 width,

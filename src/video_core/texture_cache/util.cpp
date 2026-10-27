@@ -639,6 +639,27 @@ u32 CalculateUnswizzledSizeBytes(const ImageInfo& info) noexcept {
     return NumBlocksPerLayer(info, tile_size) * info.resources.layers * BytesPerBlock(info.format);
 }
 
+u32 CalculateHostUnswizzledSizeBytes(const ImageInfo& info, const HostRowLayout& host) noexcept {
+    if (info.type == ImageType::Buffer || (host.row_alignment <= 1 && host.level_alignment <= 1)) {
+        return CalculateUnswizzledSizeBytes(info);
+    }
+    if (info.type == ImageType::Linear) {
+        // UnswizzleImage pads each guest row it reads.
+        const u32 rows = Common::DivCeil(CalculateGuestSizeInBytes(info), info.pitch);
+        return rows * Common::AlignUp(info.pitch, host.row_alignment);
+    }
+    const Extent2D tile_size = DefaultBlockSize(info.format);
+    const u32 bpp_log2 = BytesPerBlockLog2(info.format);
+    u32 size = 0;
+    for (s32 level = 0; level < info.resources.levels; ++level) {
+        const Extent3D num_tiles = AdjustTileSize(AdjustMipSize(info.size, level), tile_size);
+        const u32 host_pitch = Common::AlignUp(num_tiles.width << bpp_log2, host.row_alignment);
+        size = Common::AlignUp(size, host.level_alignment) +
+               host_pitch * num_tiles.height * num_tiles.depth * info.resources.layers;
+    }
+    return size;
+}
+
 namespace {
 std::atomic<bool> recompress_astc_arrays{true};
 std::atomic<bool> opaque_astc_to_bc1{false};
@@ -916,21 +937,36 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
                                                                    GPUVAddr gpu_addr,
                                                                    const ImageInfo& info,
                                                                    std::span<const u8> input,
-                                                                   std::span<u8> output) {
+                                                                   std::span<u8> output,
+                                                                   const HostRowLayout& host) {
     const size_t guest_size_bytes = input.size_bytes();
     const u32 bpp_log2 = BytesPerBlockLog2(info.format);
     const Extent2D tile_size = DefaultBlockSize(info.format);
     const Extent3D size = info.size;
 
     if (info.type == ImageType::Linear) {
-        ASSERT(output.size_bytes() >= guest_size_bytes);
-        gpu_memory.ReadBlockUnsafe(gpu_addr, output.data(), guest_size_bytes);
-
         ASSERT((info.pitch >> bpp_log2) << bpp_log2 == info.pitch);
+        const u32 host_pitch = Common::AlignUp(info.pitch, host.row_alignment);
+        size_t host_size_bytes = guest_size_bytes;
+        if (host_pitch == info.pitch) {
+            ASSERT(output.size_bytes() >= guest_size_bytes);
+            gpu_memory.ReadBlockUnsafe(gpu_addr, output.data(), guest_size_bytes);
+        } else {
+            // Row by row into the padded layout: the output may be write-combined upload memory,
+            // which must only be written, never read back to repack.
+            const size_t rows = Common::DivCeil(guest_size_bytes, size_t{info.pitch});
+            host_size_bytes = rows * host_pitch;
+            ASSERT(output.size_bytes() >= host_size_bytes);
+            for (size_t row = 0; row < rows; ++row) {
+                const size_t offset = row * info.pitch;
+                gpu_memory.ReadBlockUnsafe(gpu_addr + offset, output.data() + row * host_pitch,
+                                           (std::min)(size_t{info.pitch}, guest_size_bytes - offset));
+            }
+        }
         return {{
             .buffer_offset = 0,
-            .buffer_size = guest_size_bytes,
-            .buffer_row_length = info.pitch * tile_size.width >> bpp_log2,
+            .buffer_size = host_size_bytes,
+            .buffer_row_length = host_pitch * tile_size.width >> bpp_log2,
             .buffer_image_height = size.height,
             .image_subresource =
                 {
@@ -956,12 +992,15 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
 
     for (s32 level = 0; level < num_levels; ++level) {
         const Extent3D level_size = AdjustMipSize(size, level);
-        const u32 num_blocks_per_layer = NumBlocks(level_size, tile_size);
-        const u32 host_bytes_per_layer = num_blocks_per_layer << bpp_log2;
+        const Extent3D num_tiles = AdjustTileSize(level_size, tile_size);
+        const u32 row_bytes = num_tiles.width << bpp_log2;
+        const u32 host_pitch = Common::AlignUp(row_bytes, host.row_alignment);
+        const u32 host_bytes_per_layer = host_pitch * num_tiles.height * num_tiles.depth;
+        host_offset = Common::AlignUp(host_offset, host.level_alignment);
         copies[level] = BufferImageCopy{
             .buffer_offset = host_offset,
             .buffer_size = static_cast<size_t>(host_bytes_per_layer) * num_layers,
-            .buffer_row_length = Common::AlignUp(level_size.width, tile_size.width),
+            .buffer_row_length = (host_pitch >> bpp_log2) * tile_size.width,
             .buffer_image_height = Common::AlignUp(level_size.height, tile_size.height),
             .image_subresource =
                 {
@@ -972,7 +1011,6 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
             .image_offset = {0, 0, 0},
             .image_extent = level_size,
         };
-        const Extent3D num_tiles = AdjustTileSize(level_size, tile_size);
         const Extent3D block =
             AdjustMipBlockSize(num_tiles, level_info.block, level, level_info.num_levels);
         const u32 stride_alignment = StrideAlignment(num_tiles, info.block, gob, bpp_log2);
@@ -982,7 +1020,8 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
             const std::span<u8> dst = output.subspan(host_offset);
             const std::span<const u8> src = input.subspan(guest_offset + guest_layer_offset);
             UnswizzleTexture(dst, src, 1U << bpp_log2, num_tiles.width, num_tiles.height,
-                             num_tiles.depth, block.height, block.depth, stride_alignment);
+                             num_tiles.depth, block.height, block.depth, stride_alignment,
+                             host_pitch != row_bytes ? host_pitch : 0);
             guest_layer_offset += layer_stride;
             host_offset += host_bytes_per_layer;
         }

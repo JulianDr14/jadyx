@@ -1402,7 +1402,13 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     auto staging = [&] {
         const VideoCore::FrameTrace::ScopedSpan span{
             VideoCore::FrameTrace::Event::TextureUploadStaging, image.gpu_addr};
-        return runtime.UploadStagingBuffer(MapSizeBytes(image));
+        size_t size = MapSizeBytes(image);
+        if constexpr (requires { runtime.UploadRowLayout(); }) {
+            if (False(image.flags & (ImageFlagBits::AcceleratedUpload | ImageFlagBits::Converted))) {
+                size = CalculateHostUnswizzledSizeBytes(image.info, runtime.UploadRowLayout());
+            }
+        }
+        return runtime.UploadStagingBuffer(size);
     }();
     timer.Lap(VideoCore::Perf::Counter::TextureCacheStagingNs);
     UploadImageContents(image, staging);
@@ -1460,7 +1466,13 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
     } else {
         VideoCore::FrameTrace::ScopedSpan trace_unswizzle{
             VideoCore::FrameTrace::Event::TextureUploadUnswizzle, gpu_addr};
-        const auto copies = FixSmallVectorADL(UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, mapped_span));
+        // Straight into the backend's copy footprint when it has one (staging sized to match in
+        // UploadImage), so the backend copies the rows as they are.
+        HostRowLayout host_layout{};
+        if constexpr (requires { runtime.UploadRowLayout(); }) {
+            host_layout = runtime.UploadRowLayout();
+        }
+        const auto copies = FixSmallVectorADL(UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, mapped_span, host_layout));
         trace_unswizzle.Finish();
         timer.Lap(VideoCore::Perf::Counter::TextureCacheUnswizzleNs);
         const VideoCore::FrameTrace::ScopedSpan trace_backend{

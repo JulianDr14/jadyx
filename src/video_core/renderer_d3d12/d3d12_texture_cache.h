@@ -26,6 +26,7 @@
 #include "video_core/texture_cache/accelerated_swizzle.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/texture_cache_base.h"
+#include "video_core/texture_cache/util.h"
 
 namespace D3D12 {
 
@@ -89,6 +90,10 @@ public:
     /// Where shader blits go (set by the renderer once the helper exists; null means skip).
     void SetBlitHelper(BlitImageHelper* helper) noexcept { blit_helper = helper; }
     StagingBufferRef UploadStagingBuffer(size_t size, bool deferred = false);
+    /// Copy footprint layout uploads are unswizzled into, so they need no repack.
+    VideoCommon::HostRowLayout UploadRowLayout() const noexcept {
+        return {D3D12_TEXTURE_DATA_PITCH_ALIGNMENT, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT};
+    }
     StagingBufferRef DownloadStagingBuffer(size_t size, bool deferred = false);
     void ReleaseCheckpointStaging() {
         TrimCheckpointTransfers(0);
