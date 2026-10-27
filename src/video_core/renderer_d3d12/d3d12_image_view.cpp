@@ -46,9 +46,11 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
     const bool any_r = std::ranges::any_of(swizzle, [](Tegra::Texture::SwizzleSource s) {
         return s == Tegra::Texture::SwizzleSource::R;
     });
+    // S8_UINT has nothing but stencil.
     const bool reads_stencil = !info.IsRenderTarget() &&
                                format_info.stencil_srv != DXGI_FORMAT_UNKNOWN &&
-                               (info.format == PixelFormat::S8_UINT_D24_UNORM ? any_r : !any_r);
+                               (info.format == PixelFormat::S8_UINT ||
+                                (info.format == PixelFormat::S8_UINT_D24_UNORM ? any_r : !any_r));
     if (const SurfaceType surface_type = VideoCore::Surface::GetFormatType(info.format);
         surface_type == SurfaceType::Depth || surface_type == SurfaceType::DepthStencil) {
         // As the Vulkan backend (ConvertGreenRed): guest depth views read depth from G, the
