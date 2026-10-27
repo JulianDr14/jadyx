@@ -192,7 +192,11 @@ void TextureCache<P>::RunGarbageCollector() {
             std::chrono::steady_clock::now() - gc_start >= std::chrono::microseconds{time_budget_us})) {
             return true;
         }
-        --num_iterations;
+        // Under pressure with a time budget, the images kept do not use up the iterations: the
+        // oldest entries are often render targets that stay, and counting them held the walk on
+        // the same few each frame, never reaching the clean textures behind them.
+        const bool count_kept = time_budget_us == 0 || !high_priority_mode;
+        if (count_kept) --num_iterations;
         auto& image = slot_images[image_id];
         if (True(image.flags & ImageFlagBits::IsDecoding)) {
             return false;
@@ -202,6 +206,7 @@ void TextureCache<P>::RunGarbageCollector() {
             return false;
         }
         if (must_download && downloads_left == 0) return false;
+        if (!count_kept) --num_iterations;
         if (must_download) --downloads_left;
         if (must_download) {
             VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::TextureGcImageInfo,
