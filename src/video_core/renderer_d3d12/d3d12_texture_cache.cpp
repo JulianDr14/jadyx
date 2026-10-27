@@ -13,6 +13,7 @@
 #include <fmt/format.h>
 
 #include "common/alignment.h"
+#include "common/literals.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
 #include "video_core/frame_trace.h"
@@ -62,6 +63,7 @@ void Image::DiagnosticTransition(ID3D12Resource* tracked_resource, D3D12_RESOURC
 
 
 using namespace TextureDetail;
+using namespace Common::Literals;
 
 bool TextureCacheRuntime::CanCheckpointImage(
     const Image& image, std::span<const VideoCommon::BufferImageCopy> copies) const {
@@ -121,6 +123,10 @@ void SetAstcGpuDecode(bool enabled) {
 
 void SetAstcGpuFresh(bool enabled) {
     gpu_astc_fresh.store(enabled, std::memory_order_relaxed);
+}
+
+void SetTextureMemoryCap(u64 bytes) {
+    texture_memory_cap.store(bytes, std::memory_order_relaxed);
 }
 
 void SetAstcGpuSync(bool enabled) {
@@ -363,14 +369,33 @@ void TextureCacheRuntime::TickFrame() {
     // refuses still reclaims everything (TransferBufferPool::ReclaimAfterOutOfMemory).
     // In an Emergency every empty heap goes at once: waiting for them to settle kept 144 MiB of
     // them while a loading screen ran out of memory.
-    const bool release_idle = pressure_level >= CachePressure::Critical;
+    // Over the texture cap the heaps the GC drained are released too, after they settle, so the
+    // cap bounds the heaps and not only the textures living in them.
+    if (const u64 cap = texture_memory_cap.load(std::memory_order_relaxed); cap != 0) {
+        const auto stats = texture_allocator.GetStats();
+        // 64 MiB below the cap before leaving it, so one heap more or less does not flip it.
+        const bool over = over_texture_cap ? stats.heap_bytes + 64_MiB > cap
+                                           : stats.heap_bytes > cap;
+        if (over != over_texture_cap) {
+            over_texture_cap = over;
+            LOG_INFO(Render, "D3D12: texture cap {}: heaps {} MiB, live {} MiB, free {} MiB "
+                     "(largest {} MiB), pending {} MiB, cap {} MiB, pressure {}",
+                     over ? "exceeded" : "cleared", stats.heap_bytes / 1_MiB,
+                     stats.reserved_bytes / 1_MiB, stats.free_bytes / 1_MiB,
+                     stats.largest_free_range / 1_MiB, stats.pending_bytes / 1_MiB, cap / 1_MiB,
+                     static_cast<int>(pressure_level));
+        }
+    } else {
+        over_texture_cap = false;
+    }
+    const bool release_idle = pressure_level >= CachePressure::Critical || over_texture_cap;
     texture_allocator.TrimEmptyHeaps(
         pressure_level >= CachePressure::Emergency ? TextureResourceAllocator::TrimMode::All
         : release_idle                             ? TextureResourceAllocator::TrimMode::Settled
                                                    : TextureResourceAllocator::TrimMode::KeepWarm);
     if (pressure_level >= CachePressure::Emergency) {
         transfer_buffers.Trim(true);
-    } else if (release_idle) {
+    } else if (pressure_level >= CachePressure::Critical) {
         transfer_buffers.TrimStale();
     } else {
         transfer_buffers.Trim(false);
@@ -398,7 +423,13 @@ std::optional<VideoCommon::TextureGcPolicy> TextureCacheRuntime::GetTextureGcPol
                                     static_cast<u64>(pressure_level));
     }
     if (!pressure_snapshot.Known()) return std::nullopt;
-    return CachePressureController::Policy(pressure_level, second_pass,
+    // Over the texture cap the clean textures nobody sampled for a while go before the app runs
+    // short: they decode again from guest memory when used, and render targets are kept.
+    CachePressure level = pressure_level;
+    if (level == CachePressure::Normal && over_texture_cap) {
+        level = CachePressure::Pressure;
+    }
+    return CachePressureController::Policy(level, second_pass,
         CachePressureController::RequiresImmediateRecovery(pressure_snapshot));
 }
 u64 TextureCacheRuntime::GetDeviceLocalMemory() const { return device.CacheMemoryBudget(); }

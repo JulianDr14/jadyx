@@ -154,6 +154,7 @@ void ShowCpuLoadProgress(VideoCore::RendererBase& renderer, size_t done, size_t 
 void RemoveDeviceForProbe(VideoCore::RendererBase& renderer);
 void SetBcArrayDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuDecode(bool enabled); // d3d12_texture_cache.h
+void SetTextureMemoryCap(u64 bytes); // d3d12_texture_cache.h
 void SetAstcGpuVerify(bool enabled); // d3d12_texture_cache.h
 void SetStencilBlitVerify(bool enabled); // d3d12_texture_cache.h
 enum class DxilSignMode; // d3d12_shader_compiler.h
@@ -302,6 +303,9 @@ struct BootConfig {
     /// Short of memory, the caches stop growing instead (JIT_CAP_FLOOR): at 128 for a game that
     /// had come close, it compiled 1.2M blocks loading.
     u32 jit_cache_mib{256};
+    /// Texture memory past which clean textures unused for a while are evicted even with headroom
+    /// left ("texture_cap_mib=", 0 turns it off). They decode again from guest memory when used.
+    u32 texture_cap_mib{1024};
     /// D3D12 debug layer (renderer_debug); PC only, the console has no SDK layers.
     bool debug_layer{};
     /// With the debug layer, GPU-based validation too ("debug_layer=gbv").
@@ -615,6 +619,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     Core::SetPageTableExclusives(config.inline_exclusives);
     D3D12::SetAppMemoryQuery(QueryAppMemory);
     D3D12::SetBcArrayDecode(!config.bc_arrays_native);
+    D3D12::SetTextureMemoryCap(u64{config.texture_cap_mib} << 20);
     // RGBA8 ASTC made loading frames upload 150-260 MiB at once and the console run out of memory
     // (0.2.50): textures become BC3 (a quarter of the memory), 2D arrays too unless
     // astc_arrays=rgba (BootConfig::astc_arrays_rgba), all decoded and encoded on the GPU.
@@ -3035,6 +3040,16 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                 WriteDiag("boot.cfg: idle cores " + policy->Describe());
                             } else {
                                 WriteDiag("boot.cfg: invalid idle_spin, ignored");
+                            }
+                        } else if (line.starts_with("texture_cap_mib=")) {
+                            const auto value = line.substr(16);
+                            unsigned long parsed{};
+                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() && parsed <= 1048576) {
+                                config.texture_cap_mib = static_cast<u32>(parsed);
+                                WriteDiag("boot.cfg: texture cap " + std::to_string(parsed) + " MiB");
+                            } else {
+                                WriteDiag("boot.cfg: invalid texture_cap_mib, ignored");
                             }
                         } else if (line.starts_with("memory_limit_mib=")) {
                             const auto value = line.substr(17);

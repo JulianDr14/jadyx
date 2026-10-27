@@ -130,6 +130,8 @@ inline std::atomic<bool> force_min_max_filter{false};
 inline std::atomic<bool> skip_min_max_filter{false};
 inline std::atomic<bool> emulate_min_max_filter{false};
 inline std::atomic<bool> gpu_astc_fresh{false};
+/// Texture heap bytes above which clean textures are evicted with headroom left (0: no cap).
+inline std::atomic<u64> texture_memory_cap{0};
 
 constexpr u64 ASTC_RGBA_SCRATCH_BUDGET = 32ULL * 1024 * 1024;
 constexpr u64 ASTC_BC_SCRATCH_BUDGET = 8ULL * 1024 * 1024;

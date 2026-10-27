@@ -249,6 +249,7 @@ private:
     CachePressure pressure_level{};
     CacheMemorySnapshot pressure_snapshot{};
     bool pressure_sampled{};
+    bool over_texture_cap{}; ///< texture heaps above texture_memory_cap, sampled each frame
     u64 gc_pending_bytes{};
     u64 gc_peak_pending_bytes{};
     u64 gc_queued{}, gc_ready{}, gc_stale{}, gc_sync{};
@@ -647,6 +648,8 @@ void SetBcArrayDecode(bool enabled);
 /// Whether ASTC images kept as RGBA8 are decoded by the compute shader (the default) rather than
 /// the CPU. Applies to images created from now on.
 void SetAstcGpuDecode(bool enabled);
+/// Texture memory above which clean textures are evicted before the app runs short (0: none).
+void SetTextureMemoryCap(u64 bytes);
 /// One-shot diagnostic: compare the first GPU BC3 result with the existing CPU pipeline.
 void SetAstcGpuVerify(bool enabled);
 /// Diagnostic ("stencil_blit_verify=1"): the first scaled depth-stencil blits read both stencil
