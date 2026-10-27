@@ -16,6 +16,7 @@
 #include <bit>
 #include <map>
 #include <mutex>
+#include <tuple>
 #include <vector>
 
 namespace D3D12 {
@@ -71,9 +72,20 @@ struct TextureResourceAllocator::State {
     u64 pressure_waits{};
     // Accessed only by the recording thread, never by retirement callbacks.
     u64 pressure_wait_tick{};
+    // Diagnostic census of placed resources by shape (format, width, height, depth, mips, flags).
+    struct CensusEntry {
+        u64 created{}, live{}, live_bytes{};
+    };
+    using CensusKey = std::tuple<u32, u64, u32, u16, u16, u32>;
+    std::map<CensusKey, CensusEntry> census;
 
-    void Free(size_t block_index, u64 offset, u64 size, bool pending = false) {
+    void Free(size_t block_index, u64 offset, u64 size, bool pending = false,
+              CensusEntry* entry = nullptr) {
         std::scoped_lock lock{mutex};
+        if (entry) {
+            --entry->live;
+            entry->live_bytes -= size;
+        }
         if (block_index >= blocks.size()) {
             return;
         }
@@ -106,10 +118,11 @@ struct TextureResourceAllocator::Allocation {
     u64 offset{};
     u64 size{};
     bool pending{}; // guarded by State::mutex
+    State::CensusEntry* census{};
 
     ~Allocation() {
         if (state) {
-            state->Free(block_index, offset, size, pending);
+            state->Free(block_index, offset, size, pending, census);
         }
     }
 };
@@ -309,6 +322,13 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
             result.placed = true;
             std::scoped_lock lock{state->mutex};
             ++state->placed_resources;
+            auto& entry = state->census[{static_cast<u32>(desc.Format), desc.Width, desc.Height,
+                                         desc.DepthOrArraySize, desc.MipLevels,
+                                         static_cast<u32>(desc.Flags)}];
+            ++entry.created;
+            ++entry.live;
+            entry.live_bytes += info.SizeInBytes;
+            result.allocation->census = &entry;
             return result;
         }
         state->Free(selected, selected_offset, info.SizeInBytes);
@@ -394,6 +414,22 @@ void TextureResourceAllocator::TrimEmptyHeaps(TrimMode mode) {
 
 std::string TextureResourceAllocator::Report() const {
     std::scoped_lock lock{state->mutex};
+    // Diagnostic: per class heaps, empty heaps, free bytes and largest free range.
+    std::array<u64, 2> count{}, empty{}, free{}, largest{};
+    for (const auto& block : state->blocks) {
+        if (!block.heap) continue;
+        const size_t type = static_cast<size_t>(block.heap_class);
+        ++count[type];
+        for (const auto& [offset, bytes] : block.free_ranges) {
+            free[type] += bytes;
+            largest[type] = std::max(largest[type], bytes);
+            if (bytes == block.size) empty[type] += bytes;
+        }
+    }
+    LOG_INFO(Render, "D3D12: heap frag tex n {} free {} empty {} max {} | rt n {} free {} empty {} "
+             "max {} MiB, pending {} MiB",
+             count[0], free[0] / 1_MiB, empty[0] / 1_MiB, largest[0] / 1_MiB, count[1],
+             free[1] / 1_MiB, empty[1] / 1_MiB, largest[1] / 1_MiB, state->pending_bytes / 1_MiB);
     return fmt::format("texture heaps {} MiB, live {} MiB, peak {} MiB, placed {}, fallback {}, trimmed {} ({} MiB), "
                        "growth recoveries {}, pressure waits {}, pressure heaps {}, "
                        "avoided capacity {} MiB",
@@ -402,6 +438,32 @@ std::string TextureResourceAllocator::Report() const {
                        state->committed_fallbacks, state->trimmed_heaps, state->trimmed_bytes / 1_MiB,
                        state->growth_recoveries, state->pressure_waits, state->compact_heaps,
                        state->avoided_capacity / 1_MiB);
+}
+
+std::string TextureResourceAllocator::Census(size_t top) const {
+    std::scoped_lock lock{state->mutex};
+    std::vector<std::pair<State::CensusKey, State::CensusEntry>> entries(state->census.begin(),
+                                                                         state->census.end());
+    const auto list = [&](auto&& less, const char* name) {
+        std::sort(entries.begin(), entries.end(),
+                  [&](const auto& a, const auto& b) { return less(b.second, a.second); });
+        std::string out = fmt::format(" | top {}:", name);
+        for (size_t i = 0; i < std::min(top, entries.size()); ++i) {
+            const auto& [key, e] = entries[i];
+            const auto& [format, width, height, depth, mips, flags] = key;
+            out += fmt::format(" [fmt {} {}x{}x{} m{} f{:x}: live {} ({} MiB), created {}]",
+                               format, width, height, depth, mips, flags, e.live,
+                               e.live_bytes / 1_MiB, e.created);
+        }
+        return out;
+    };
+    u64 live_total{};
+    for (const auto& [key, e] : entries) live_total += e.live_bytes;
+    std::string out = fmt::format("texture census: {} shapes, placed live {} MiB", entries.size(),
+                                  live_total / 1_MiB);
+    out += list([](const auto& a, const auto& b) { return a.live_bytes < b.live_bytes; }, "live");
+    out += list([](const auto& a, const auto& b) { return a.created < b.created; }, "created");
+    return out;
 }
 
 TextureResourceAllocator::Stats TextureResourceAllocator::GetStats() const {

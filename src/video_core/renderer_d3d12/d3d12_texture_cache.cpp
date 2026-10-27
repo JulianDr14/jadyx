@@ -4,6 +4,7 @@
 #include "video_core/renderer_d3d12/d3d12_texture_cache_internal.h"
 
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cstring>
 #include <optional>
@@ -358,6 +359,21 @@ void TextureCacheRuntime::CompleteGcDownload(Image& image) {
 }
 void TextureCacheRuntime::TickFrame() {
     staging.TickFrame();
+    {
+        static auto last_census = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_census >= std::chrono::seconds(10)) {
+            last_census = now;
+            LOG_INFO(Render, "D3D12: {}", texture_allocator.Report());
+            LOG_INFO(Render, "D3D12: texture memory: pressure {}, over cap {}, cap {} MiB, "
+                     "app {}/{} MiB, gpu {}/{} MiB",
+                     static_cast<int>(pressure_level), over_texture_cap,
+                     texture_memory_cap.load(std::memory_order_relaxed) / 1_MiB,
+                     pressure_snapshot.app_used / 1_MiB, pressure_snapshot.app_limit / 1_MiB,
+                     pressure_snapshot.gpu_used / 1_MiB, pressure_snapshot.gpu_budget / 1_MiB);
+            LOG_INFO(Render, "D3D12: {}", texture_allocator.Census(6));
+        }
+    }
     if (!pressure_sampled) {
         pressure_snapshot = device.QueryCacheMemoryPressure();
         pressure_level = cache_pressure.Update(pressure_snapshot);

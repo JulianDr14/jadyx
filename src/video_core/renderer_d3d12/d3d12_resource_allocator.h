@@ -41,6 +41,8 @@ public:
     void TrimEmptyHeaps(TrimMode mode);
 
     [[nodiscard]] std::string Report() const;
+    /// Diagnostic: the placed-resource shapes holding the most memory and created most often.
+    [[nodiscard]] std::string Census(size_t top) const;
     struct Stats {
         u64 heap_bytes{}, reserved_bytes{}, pending_bytes{}, free_bytes{}, largest_free_range{};
     };

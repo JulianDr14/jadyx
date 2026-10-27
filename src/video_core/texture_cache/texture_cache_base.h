@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <deque>
 #include <functional>
@@ -619,6 +620,10 @@ private:
 
     u64 modification_tick = 0;
     u64 frame_tick = 0;
+    u64 replaced_resized_images = 0;
+    u64 reclaimed_overlaps = 0;
+    std::array<u64, 6> diag_join{};
+    std::array<u64, 4> diag_gc{};
 
     struct ChurnAddress {
         u32 creates = 0;

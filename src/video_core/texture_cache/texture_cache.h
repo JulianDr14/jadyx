@@ -203,10 +203,16 @@ void TextureCache<P>::RunGarbageCollector() {
         }
         const bool must_download = IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap);
         if ((!aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad)) || (!high_priority_mode && must_download)) {
+            ++diag_gc[must_download ? 2 : 3];
             return false;
         }
-        if (must_download && downloads_left == 0) return false;
+        if (must_download && downloads_left == 0) {
+            ++diag_gc[2];
+            return false;
+        }
         if (!count_kept) --num_iterations;
+        ++diag_gc[0];
+        diag_gc[1] += must_download;
         if (must_download) --downloads_left;
         if (must_download) {
             VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::TextureGcImageInfo,
@@ -281,6 +287,17 @@ void TextureCache<P>::TickFrame() {
     sentenced_image_view.Tick();
     TickAsyncDecode();
     TickAsyncUnswizzle();
+    static auto last_diag = std::chrono::steady_clock::now();
+    if (const auto now = std::chrono::steady_clock::now(); now - last_diag >= std::chrono::seconds(2)) {
+        last_diag = now;
+        LOG_INFO(HW_GPU, "Texture cache diag: {} resized replaced, {} overlaps reclaimed; joins none {} resolved {} "
+                 "left {} right {} bad {} ignored {}; gc evicted {} (downloaded {}), skipped "
+                 "download {} costly {}; used {} MiB expected {} critical {} images {}",
+                 replaced_resized_images, reclaimed_overlaps, diag_join[0], diag_join[1], diag_join[2],
+                 diag_join[3], diag_join[4], diag_join[5], diag_gc[0], diag_gc[1], diag_gc[2],
+                 diag_gc[3], total_used_memory >> 20, expected_memory >> 20,
+                 critical_memory >> 20, slot_images.size());
+    }
 
     runtime.TickFrame();
     ++frame_tick;
@@ -1960,6 +1977,12 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     ForEachSparseImageInRegion(channel_state->gpu_memory.GetID(), gpu_addr, size_bytes,
                                region_check_gpu);
     phase_timer.Lap(VideoCore::Perf::Counter::TextureCacheOverlapNs);
+    diag_join[0] += join_overlaps_found.empty() && join_ignore_textures.empty();
+    diag_join[1] += join_overlap_ids.size();
+    diag_join[2] += join_left_aliased_ids.size();
+    diag_join[3] += join_right_aliased_ids.size();
+    diag_join[4] += join_bad_overlap_ids.size();
+    diag_join[5] += join_ignore_textures.size();
 
     bool can_rescale = info.rescaleable;
     bool any_rescaled = false;
@@ -2133,6 +2156,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
                            }
                            UnregisterImage(overlap_id);
                            DeleteImage(overlap_id);
+                           ++reclaimed_overlaps;
                            return true;
                        }),
         join_bad_overlap_ids.end());
@@ -2159,6 +2183,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
                 }
                 UnregisterImage(copy_object.id);
                 DeleteImage(copy_object.id);
+                ++replaced_resized_images;
             }
             continue;
         }
