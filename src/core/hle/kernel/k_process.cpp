@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <random>
+#include "common/host_memory.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
@@ -1405,12 +1406,37 @@ Result KProcess::LoadFromMetadata(KernelCore& kernel, const FileSys::ProgramMeta
     R_SUCCEED();
 }
 
+// Zeroes a module's bss in place. DRAM the host never committed already reads as zero, so it is
+// skipped: writing it would commit host memory for nothing.
+static void ClearBssTail(Core::Memory::Memory& memory, KProcessAddress addr, std::size_t size) {
+    constexpr std::size_t page_size = Core::Memory::YUZU_PAGESIZE;
+    std::optional<Common::DramRegion> region;
+    for (std::size_t offset = 0; offset < size;) {
+        const KProcessAddress cur = addr + offset;
+        const std::size_t chunk =
+            (std::min)(size - offset, page_size - (GetInteger(cur) & (page_size - 1)));
+        u8* const host = memory.GetPointer(cur);
+        if (host == nullptr) {
+            memory.ZeroBlock(cur, chunk);
+        } else {
+            if (!region || host < region->begin || host >= region->end) {
+                region = Common::QueryDramRegion(host);
+            }
+            if (!region || !region->untouched) {
+                std::memset(host, 0, chunk);
+            }
+        }
+        offset += chunk;
+    }
+}
+
 void KProcess::LoadModule(KernelCore& kernel, CodeSet code_set, KProcessAddress base_addr) {
     const auto ReprotectSegment = [&](const CodeSet::Segment& segment, Svc::MemoryPermission permission) {
         m_page_table.SetProcessMemoryPermission(segment.addr + base_addr, segment.size, permission);
     };
 
     this->GetMemory().WriteBlock(base_addr, code_set.memory.data(), code_set.memory.size());
+    ClearBssTail(this->GetMemory(), base_addr + code_set.memory.size(), code_set.bss_tail);
 
     ReprotectSegment(code_set.CodeSegment(), Svc::MemoryPermission::ReadExecute);
     ReprotectSegment(code_set.RODataSegment(), Svc::MemoryPermission::Read);
