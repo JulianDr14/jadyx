@@ -361,9 +361,13 @@ void TextureCacheRuntime::TickFrame() {
     // at most a few tens of MiB. Only Critical and worse release the heaps; transfer buffers go
     // only in an Emergency, Critical keeps the ones recent copies used. An allocation the system
     // refuses still reclaims everything (TransferBufferPool::ReclaimAfterOutOfMemory).
+    // In an Emergency every empty heap goes at once: waiting for them to settle kept 144 MiB of
+    // them while a loading screen ran out of memory.
     const bool release_idle = pressure_level >= CachePressure::Critical;
-    texture_allocator.TrimEmptyHeaps(release_idle ? TextureResourceAllocator::TrimMode::Settled
-                                                  : TextureResourceAllocator::TrimMode::KeepWarm);
+    texture_allocator.TrimEmptyHeaps(
+        pressure_level >= CachePressure::Emergency ? TextureResourceAllocator::TrimMode::All
+        : release_idle                             ? TextureResourceAllocator::TrimMode::Settled
+                                                   : TextureResourceAllocator::TrimMode::KeepWarm);
     if (pressure_level >= CachePressure::Emergency) {
         transfer_buffers.Trim(true);
     } else if (release_idle) {
