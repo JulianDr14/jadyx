@@ -34,6 +34,11 @@ constexpr u64 MAX_STREAM_REQUEST = 32_MiB;
 /// Uploads at least this large wait for the GPU to release submitted regions instead of
 /// allocating a dedicated buffer; smaller ones never stall the CPU.
 constexpr u64 WAIT_FOR_STREAM_SIZE = 1_MiB;
+/// Below this much free memory, retired dedicated buffers over 4 MiB (LARGE_RELEASE_LEVEL and up)
+/// are released every frame instead of in the round-robin sweep. Matches the texture cache's
+/// pressure level.
+constexpr u64 LARGE_RELEASE_FREE = 768_MiB;
+constexpr size_t LARGE_RELEASE_LEVEL = 23;
 
 } // Anonymous namespace
 
@@ -155,6 +160,16 @@ bool StagingBufferPool::GuardMemory(const CacheMemorySnapshot& snapshot) {
             // Dedicated uploads remain available; back off instead of retrying every frame.
             ring_guard.OnAllocationFailed();
             LOG_WARNING(Render, "D3D12: memory guard ring allocation deferred: {}", e.what());
+        }
+    }
+    // Large dedicated buffers (a whole buffer or a batch of textures, up to 100+ MiB) otherwise wait
+    // for their level's turn in the per-frame sweep, up to NUM_LEVELS frames: four of them created
+    // within a second of an area load stacked 280 MiB of retired staging into an out-of-memory.
+    // Under pressure they go back as soon as the GPU is done with them.
+    if (snapshot.app_limit != 0 && snapshot.AppFree() <= LARGE_RELEASE_FREE) {
+        for (size_t level = LARGE_RELEASE_LEVEL; level < NUM_LEVELS; ++level) {
+            ReleaseLevel(upload_cache, level);
+            ReleaseLevel(download_cache, level);
         }
     }
     if (plan.trim) {
