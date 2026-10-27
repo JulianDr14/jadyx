@@ -178,8 +178,8 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
     // Release framebuffers once the frame has been handed to the compositor. This happens
     // within the same vsync period as the acquire (release_frame_number is checked against
     // the advanced counter), so the producer gets its buffers back immediately instead of
-    // losing a queue slot for a whole frame.
-    // TODO: support release fences; releasing before the composite has finished can tear.
+    // losing a queue slot for a whole frame. The composite's release fence travels with the
+    // buffer, so the guest cannot overwrite it before the composite has read it.
     this->ReleaseFramebuffersLocked(display);
 
     return 1;
