@@ -4,6 +4,10 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <chrono>
+#include <thread>
+
 #include "core/file_sys/errors.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/filesystem/fsp/fs_i_storage.h"
@@ -40,6 +44,20 @@ Result IStorage::Read(
 
     R_UNLESS(length >= 0, FileSys::ResultInvalidSize);
     R_UNLESS(offset >= 0, FileSys::ResultInvalidOffset);
+
+    // Read pacing from Eden #4525: caps each storage near Switch media speed (40 MB/s, at most
+    // 64 KiB charged per read, so ~1.6 ms per read at worst). Guests that stream movies can run
+    // out of memory or freeze when replies outpace them. It replaced our NVDEC-only 8 ms sleep
+    // per read. The backend read counts toward the budget, so a slow disk adds no extra wait,
+    // but loads made of many small reads may take longer: if a load time regression shows up
+    // on the Series, compare against a build without this block first.
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next_read_tick) {
+        std::this_thread::sleep_for(next_read_tick - now);
+    }
+    next_read_tick = std::chrono::steady_clock::now() +
+                     std::chrono::nanoseconds{std::min(length, MaxChargedReadSize) *
+                                              1'000'000'000 / ReadBytesPerSecond};
 
     // Read the data from the Storage backend
     backend->Read(out_bytes.data(), length, offset);
