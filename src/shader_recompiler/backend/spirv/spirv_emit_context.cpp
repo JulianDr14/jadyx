@@ -1644,7 +1644,9 @@ void EmitContext::DefineInputs(const IR::Program& program) {
             Decorate(subgroup_mask_ge, spv::Decoration::Flat);
         }
     }
+    // QuadSwap through quad broadcasts picks its lane from the invocation id.
     if ((info.uses_fswzadd || info.uses_subgroup_invocation_id || info.uses_subgroup_shuffles ||
+         (info.uses_quad_shuffles && profile.support_quad_shuffles) ||
          (profile.warp_size_potentially_larger_than_guest &&
           (info.uses_subgroup_vote || info.uses_subgroup_mask))) &&
         profile.SupportsSubgroupStage(stage)) {
