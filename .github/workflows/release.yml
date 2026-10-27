@@ -54,6 +54,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
+          # Without it, tee hides a failed check and the build runs an hour with no version.
+          set -o pipefail
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
           python3 tools/xbox/release.py version "$VERSION" --manifest dist/uwp/AppxManifest.xml \
               --releases "$RUNNER_TEMP/releases.json" --match-manifest \
