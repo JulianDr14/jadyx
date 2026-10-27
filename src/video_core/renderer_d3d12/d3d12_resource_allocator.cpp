@@ -35,6 +35,13 @@ D3D12_HEAP_FLAGS FlagsOf(HeapClass heap_class) {
     return heap_class == HeapClass::RenderTarget ? D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES
                                                  : D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
 }
+
+// Render targets are recreated at new sizes every few frames and pin whole heaps: one survivor
+// kept a 64 MiB heap from emptying, leaving 600 MiB free across RT heaps that could not be
+// released. Smaller RT heaps drain sooner and are trimmed.
+u64 PoolOf(HeapClass heap_class) {
+    return heap_class == HeapClass::RenderTarget ? 32_MiB : 64_MiB;
+}
 } // Anonymous namespace
 
 struct TextureResourceAllocator::State {
@@ -181,7 +188,8 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
         // Collect before growing, outside the pool lock: retirement callbacks acquire it.
         // This also runs during loading screens, without waiting for another present/GC frame.
         const auto before = device.QueryCacheMemoryPressure();
-        const u64 pooled_size = HeapGrowth::Capacity(info.SizeInBytes, info.Alignment, false);
+        const u64 pooled_size =
+            HeapGrowth::Capacity(info.SizeInBytes, info.Alignment, false, PoolOf(heap_class));
         if (!pooled_size) return {};
         const auto pressured = [pooled_size](const CacheMemorySnapshot& snapshot) {
             return HeapGrowth::UnderPressure(pooled_size,
@@ -240,7 +248,8 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
         std::scoped_lock lock{state->mutex};
 
         if (selected == SIZE_MAX) {
-            if (!wanted) wanted = HeapGrowth::Capacity(info.SizeInBytes, info.Alignment, compact);
+            if (!wanted) wanted = HeapGrowth::Capacity(info.SizeInBytes, info.Alignment, compact,
+                                                         PoolOf(heap_class));
             if (!wanted) return {};
             const D3D12_HEAP_DESC heap_desc{
                 .SizeInBytes = wanted,
@@ -258,7 +267,8 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
                 if (compact) {
                     ++state->compact_heaps;
                     state->avoided_capacity +=
-                        HeapGrowth::Capacity(info.SizeInBytes, info.Alignment, false) - wanted;
+                        HeapGrowth::Capacity(info.SizeInBytes, info.Alignment, false,
+                                             PoolOf(heap_class)) - wanted;
                 }
                 // Tombstones preserve outstanding Allocation indices. Reuse only slots with
                 // no heap: Trim proves there are no live or pending allocations in that slot.

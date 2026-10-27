@@ -26,8 +26,8 @@ struct Budget {
 // Under pressure allocate only the resource's required, heap-aligned capacity. Keep normal
 // pooling otherwise. Resource placement alignment can be 4 KiB; heap alignment cannot.
 [[nodiscard]] inline std::uint64_t Capacity(std::uint64_t size, std::uint64_t alignment,
-                                          bool pressure) {
-    return HeapPacking::BlockSize(size, alignment, pressure ? 0 : 64ULL << 20);
+                                          bool pressure, std::uint64_t pool = 64ULL << 20) {
+    return HeapPacking::BlockSize(size, alignment, pressure ? 0 : pool);
 }
 
 // Below this much free app memory after growing, padding stops and growth may wait on the GPU.
