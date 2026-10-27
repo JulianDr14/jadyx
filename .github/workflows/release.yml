@@ -70,6 +70,7 @@ jobs:
     with:
       package: true
       package_version: ${{ needs.version.outputs.package_version }}
+      lto: true
     secrets: inherit
 
   publish:

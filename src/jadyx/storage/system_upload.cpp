@@ -118,6 +118,14 @@ SystemUpload::SystemUpload(fs::path local,SystemImportBackend backend):impl{std:
 SystemUpload::~SystemUpload(){Cancel();}
 SystemUploadStatus SystemUpload::Snapshot() const {std::lock_guard lock{impl->mutex};auto result=impl->info;if(impl->file)result.file=impl->file->Snapshot();return result;}
 void SystemUpload::SetAvailable(bool enabled){std::lock_guard lock{impl->mutex};impl->info.available=enabled;if(impl->file)impl->file->SetAvailable(enabled);}
+bool SystemUpload::BlockForLocalOperation(){
+    // A batch left receiving or failed touches nothing outside its transfer directory, so only
+    // bytes in flight and the extract/review/publish phases hold local operations back.
+    std::unique_lock operation{impl->operation,std::try_to_lock};if(!operation.owns_lock())return false;
+    std::lock_guard lock{impl->mutex};const auto& phase=impl->info.phase;
+    if(phase!="idle"&&phase!="receiving"&&phase!="failed"&&phase!="complete")return false;
+    if(impl->file&&!impl->file->BlockForLocalOperation())return false;
+    impl->info.available=false;return true;}
 UploadResult SystemUpload::Create(std::string kind,std::string format,unsigned count){
     if((kind!="keys"&&kind!="firmware")||(format!="zip"&&format!="files")||!count||count>(format=="zip"?1U:kind=="keys"?2U:4096U))return {400,"file"};
     std::unique_lock operation{impl->operation,std::try_to_lock};if(!operation.owns_lock())return {409,"busy"};
@@ -163,6 +171,7 @@ UploadResult SystemUpload::FinishFile(const std::string& id){
 UploadResult SystemUpload::Prepare(const std::string& id){
     std::lock_guard lock{impl->mutex};auto& s=impl->info;
     if(id!=s.id||id.empty())return {404,"upload"};
+    if(!s.available)return {409,"busy"};
     if(s.phase!="receiving"||s.completed!=s.count)return {409,"incomplete"};
     if(impl->file&&impl->file->Snapshot().phase!="complete")return {409,"incomplete"};
     s.phase="prepare_pending";s.error.clear();return {202,{}};
@@ -170,7 +179,7 @@ UploadResult SystemUpload::Prepare(const std::string& id){
 UploadResult SystemUpload::Confirm(const std::string& id,bool accepted){
     std::lock_guard lock{impl->mutex};auto& s=impl->info;
     if(id!=s.id||id.empty())return {404,"upload"};
-    if(s.phase!="review"||!impl->prepared)return {409,"busy"};
+    if(!s.available||s.phase!="review"||!impl->prepared)return {409,"busy"};
     if(!s.review.warnings.empty()&&!accepted)return {409,"confirm_warnings"};
     s.phase="commit_pending";return {202,{}};
 }

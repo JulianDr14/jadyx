@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
-#include <limits>
 
 #include "common/cpu_features.h"
 #include "common/cpu_wait.h"
@@ -56,6 +55,9 @@ bool PauseWait(const std::atomic<u32>& word, u32 mask, s64 deadline) noexcept {
     return static_cast<s64>(__rdtsc());
 }
 
+/// About 3 us at a 3-4 GHz TSC; re-arming the monitor costs a few dozen cycles.
+constexpr s64 MonitorXSliceTicks = 10'000;
+
 CPU_WAIT_TARGET("mwaitx")
 bool MonitorXWait(const std::atomic<u32>& word, u32 mask, s64 deadline) noexcept {
     for (;;) {
@@ -69,9 +71,10 @@ bool MonitorXWait(const std::atomic<u32>& word, u32 mask, s64 deadline) noexcept
             return false;
         }
         // ECX bit 1 enables the timer, a delta in TSC ticks of at most 32 bits. Hint 0 rests in
-        // C1: under 0.1 us slower to wake than C0, and the SMT sibling gets the core.
-        _mm_mwaitx(1u << 1, 0, static_cast<u32>(
-                                   std::min<s64>(left, std::numeric_limits<u32>::max())));
+        // C1: under 0.1 us slower to wake than C0, and the SMT sibling gets the core. The timer
+        // is capped to a few microseconds: on some Zen parts a store from a core other than the
+        // SMT sibling does not end MWAITX, so the wait would only notice it at the timeout.
+        _mm_mwaitx(1u << 1, 0, static_cast<u32>(std::min<s64>(left, MonitorXSliceTicks)));
     }
 }
 

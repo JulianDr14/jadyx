@@ -55,6 +55,10 @@ public:
     /// only holds within the list that set it.
     void Transition(D3D12_RESOURCE_STATES next, bool mark_written = true);
     [[nodiscard]] D3D12_RESOURCE_STATES State() const noexcept { return state; }
+    /// Whether a binding of this draw or dispatch (Scheduler::Work) made it a UAV.
+    [[nodiscard]] bool WrittenByWork(u64 work) const noexcept {
+        return work != 0 && uav_work == work;
+    }
 
     /// Unique among the buffers of a runtime, never 0 (IndexRewriteCache keys).
     [[nodiscard]] u64 Id() const noexcept { return id; }
@@ -71,6 +75,8 @@ private:
     VideoCommon::UsageTracker tracker;
     D3D12_RESOURCE_STATES state{D3D12_RESOURCE_STATE_COMMON};
     u64 state_tick{}; ///< scheduler tick of the list that set state
+    u64 uav_work{};   ///< Scheduler::Work() that last made it a UAV
+    u64 read_work{};  ///< Scheduler::Work() that last took it from UAV to a read state
     Common::MemoryCharge charge;
 };
 
@@ -151,8 +157,22 @@ public:
     void BindVertexBuffer(u32 index, Buffer& buffer, u32 offset, u32 size, u32 stride);
     void BindVertexBuffer(u32 index, ID3D12Resource* buffer, u32 offset, u32 size, u32 stride);
     void BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bindings);
-    void BindTransformFeedbackBuffer(u32, Buffer&, u32, u32) {}
-    void BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>&) {}
+    /// A vertex buffer binding the draw keeps: storage writes to it since it was bound (a
+    /// dispatch or draw in the same command list) need a barrier before vertex fetch reads it.
+    void KeepVertexBufferReadable(Buffer& buffer);
+    void BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>& bindings);
+    /// Transform feedback buffers of the last draw that enabled it, still in their previous
+    /// state: stream output (StreamOutput) or the vertex shader's storage writes
+    /// (Shader::TransformFeedbackStorage) move them to theirs. Size 0: unbound.
+    struct TransformFeedbackBinding {
+        Buffer* buffer{};
+        D3D12_GPU_VIRTUAL_ADDRESS address{};
+        u32 size{};
+    };
+    [[nodiscard]] const std::array<TransformFeedbackBinding, 4>& TransformFeedbackBindings()
+        const noexcept {
+        return transform_feedback;
+    }
     std::span<u8> BindMappedUniformBuffer(size_t, u32, u32 size);
     bool UseWriteCombinedUniformCopy(u32 size) const noexcept {
         return uniform_upload_copy && !trace_buffers && size <= 512;
@@ -208,6 +228,7 @@ private:
     bool uniform_upload_copy{};
     u32 pending_vertex_mask{};
     std::optional<u32> rewritten_count;
+    std::array<TransformFeedbackBinding, 4> transform_feedback{};
     std::vector<u32> rewrite_scratch;
     IndexRewriteCache rewrite_cache;
     u64 next_buffer_id{1};

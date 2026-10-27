@@ -162,6 +162,18 @@ enum class Counter : size_t {
     GuestCoreIdleUs,       ///< emulated CPU cores with no guest thread to run, summed over cores
     GuestCoreWakesSpun,    ///< idle cores interrupted while spinning (no OS wake)
     GuestCoreWakesBlocked, ///< idle cores interrupted after blocking in the OS
+    // Indirect draw macros (DrawArraysIndirect / DrawIndexedIndirect).
+    IndirectMacroGpu,         ///< drawn from the GPU-side arguments (ExecuteIndirect)
+    IndirectMacroCpu,         ///< drawn directly from arguments read on the CPU
+    IndirectMacroCpuWritten,  ///< of those, arguments the GPU had written (read back with a flush)
+    IndirectMacroCpuZero,     ///< of those, draws with no instances
+    // Sample counts (occlusion queries) written back to guest memory.
+    OcclusionResults,         ///< results written
+    OcclusionResultsZero,     ///< of those, zero samples passed
+    OcclusionResultLatencyUs, ///< summed time from the guest's report to the write
+    // Cache garbage collection under memory pressure (always counted, once per frame at most).
+    CacheGcRuns,              ///< texture and buffer cache collections
+    CacheGcUs,                ///< time they took, including buffer downloads before deletion
     Count,
 };
 

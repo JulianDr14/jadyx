@@ -504,6 +504,9 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_descriptor_heap.cpp
         renderer_d3d12/d3d12_descriptor_heap.h
         renderer_d3d12/diagnostics/d3d12_astc_verify.cpp
+        renderer_d3d12/diagnostics/d3d12_stencil_blit_verify.cpp
+        renderer_d3d12/diagnostics/d3d12_compute_inputs.cpp
+        renderer_d3d12/diagnostics/d3d12_compute_inputs.h
         renderer_d3d12/diagnostics/d3d12_draw_hunt.cpp
         renderer_d3d12/diagnostics/d3d12_draw_hunt.h
         renderer_d3d12/diagnostics/d3d12_draw_trace.cpp
@@ -537,6 +540,8 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_pipeline_key_mode.h
         renderer_d3d12/d3d12_pipeline_key_tracking.cpp
         renderer_d3d12/d3d12_pipeline_key_tracking.h
+        renderer_d3d12/d3d12_dxil_disk_cache.cpp
+        renderer_d3d12/d3d12_dxil_disk_cache.h
         renderer_d3d12/d3d12_pipeline_residency.h
         renderer_d3d12/d3d12_pipeline_helper.h
         renderer_d3d12/d3d12_present_manager.cpp
@@ -571,6 +576,8 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_shader_compiler.h
         renderer_d3d12/d3d12_staging_buffer_pool.cpp
         renderer_d3d12/d3d12_staging_buffer_pool.h
+        renderer_d3d12/d3d12_stream_output.cpp
+        renderer_d3d12/d3d12_stream_output.h
         renderer_d3d12/d3d12_memory_guard.h
         renderer_d3d12/d3d12_swapchain.cpp
         renderer_d3d12/d3d12_swapchain.h
@@ -586,6 +593,7 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_draw_targets.h
         renderer_d3d12/d3d12_debug_messages.h
         renderer_d3d12/d3d12_sampler.cpp
+        renderer_d3d12/d3d12_border_color.h
         renderer_d3d12/d3d12_texture_cache_internal.h
         renderer_d3d12/d3d12_texture_formats.cpp
         renderer_d3d12/d3d12_transfer_buffer_pool.cpp

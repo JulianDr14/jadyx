@@ -81,8 +81,8 @@ public:
 protected:
     std::optional<u64> TryFindSize();
 
-    Tegra::Texture::TICEntry ReadTextureInfo(GPUVAddr tic_addr, u32 tic_limit,
-                                             bool via_header_index, u32 raw);
+    std::optional<Tegra::Texture::TICEntry> ReadTextureInfo(GPUVAddr tic_addr, u32 tic_limit,
+                                                            bool via_header_index, u32 raw);
 
     Tegra::MemoryManager* gpu_memory{};
     GPUVAddr program_base{};

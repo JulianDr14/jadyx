@@ -9,6 +9,7 @@
 #include <span>
 #include <string_view>
 #include <stop_token>
+#include <unordered_set>
 #include <vector>
 
 #include "common/container/unordered_map.h"
@@ -66,9 +67,21 @@ void SetGeometryDroppedShader(u64 unique_hash);
 /// "pso_eviction=0").
 void SetPipelineEviction(bool enabled);
 
+/// true writes transform feedback from the vertex shader to storage buffers instead of stream
+/// output: the fallback for a spirv_to_dxil.dll without it, for A/B comparison. Covers the vertex
+/// shader alone. Set before boot (boot.cfg "xfb=storage").
+void SetTransformFeedbackStorage(bool enabled);
+
 /// Diagnostics: false never builds dormant PSOs ahead of their first draw, for A/B timing of the
 /// background prewarm. Set before boot (boot.cfg "pso_prewarm=0").
 void SetPipelinePrewarm(bool enabled);
+
+/// Compute shaders dispatched with few groups, whose work is a stride loop over their local id,
+/// run each guest group as `factor` real groups (Shader::Optimization::WorkgroupSplitPass) to
+/// fill a GPU that a handful of persistent groups leaves mostly idle. 1 disables it; otherwise a
+/// power of two. Defaults to 16, still experimental (see the .cpp). Set before boot (boot.cfg
+/// "cs_split=").
+void SetComputeWorkgroupSplit(u32 factor);
 
 class ShaderCompiler;
 class TextureCacheRuntime;
@@ -88,7 +101,7 @@ struct ShaderPools {
 /// Linked DXIL as the linked shader cache holds it: charged to the memory ledger once, however
 /// many pipelines share it, until the last of them is gone.
 struct ChargedDxilStages {
-    GraphicsPipeline::DxilStages stages;
+    GraphicsPipeline::LinkedDxil linked;
     Common::MemoryCharge charge;
 };
 
@@ -131,6 +144,16 @@ public:
 
     [[nodiscard]] ComputePipeline* CurrentComputePipeline();
 
+    /// A draw sampled with a filtered MIN/MAX sampler the device cannot create through a pipeline
+    /// that does not emulate it (PipelineBindings::unemulated_reduction_stages): from the next
+    /// lookup on, pipelines with those stages' shaders take their emulating variant.
+    void EmulateReduction(const GraphicsPipelineCacheKey& key, u8 stages);
+    /// The same for a compute shader.
+    void EmulateReduction(u64 compute_hash);
+
+    /// Whether the pipelines that capture transform feedback do it through stream output.
+    [[nodiscard]] bool NativeStreamOutput() const;
+
     /// Lanes of the fragment local memory pool (Shader::LocalMemoryScratch), or 0 without it.
     [[nodiscard]] u32 FragmentScratchLanes() const noexcept {
         return profile.fragment_local_memory_scratch_lanes;
@@ -165,12 +188,19 @@ private:
         std::span<Shader::Environment* const> envs, bool build_in_parallel, bool build_pso = true);
 
     std::unique_ptr<ComputePipeline> CreateComputePipeline(const ComputePipelineCacheKey& key,
-                                                           const VideoCommon::ShaderInfo* shader);
+                                                           const VideoCommon::ShaderInfo* shader,
+                                                           bool emulate_reduction = false,
+                                                           u32 workgroup_split = 1);
 
     std::unique_ptr<ComputePipeline> CreateComputePipeline(ShaderPools& pools,
                                                            const ComputePipelineCacheKey& key,
                                                            Shader::Environment& env,
-                                                           bool build_in_parallel);
+                                                           bool build_in_parallel,
+                                                           bool emulate_reduction = false,
+                                                           u32 workgroup_split = 1);
+
+    /// Whether a stage of the key uses a shader in reduction_shaders.
+    [[nodiscard]] bool UsesReductionShader(const std::array<u64, 6>& unique_hashes) const;
 
     const Device& device;
     const ShaderCompiler& compiler;
@@ -187,6 +217,18 @@ private:
 
     ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
         compute_cache;
+    /// Emulating variants of compute_cache's pipelines, built on demand (not on disk).
+    ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
+        compute_reduction_cache;
+    /// Variants of compute_cache's pipelines for launches SetComputeWorkgroupSplit applies to,
+    /// built on demand (not on disk); a shader the pass rejects is stored here unsplit.
+    ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
+        compute_split_cache;
+    /// Split variants of compute_reduction_cache's pipelines, as compute_split_cache.
+    ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
+        compute_reduction_split_cache;
+    /// Shaders (unique hashes) that sample with an emulated MIN/MAX reduction. GPU thread only.
+    std::unordered_set<u64> reduction_shaders;
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>>
         graphics_cache;
 

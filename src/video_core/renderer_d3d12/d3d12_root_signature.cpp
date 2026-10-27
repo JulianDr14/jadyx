@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
@@ -15,6 +16,7 @@
 #include "common/cityhash.h"
 #include "common/logging.h"
 #include "shader_recompiler/local_memory_scratch.h"
+#include "shader_recompiler/transform_feedback_storage.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
@@ -160,17 +162,25 @@ void RootSignatureCache::CreateCommandSignatures(PipelineLayout& layout, bool is
 }
 
 const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* const> infos,
-                                              bool is_compute) {
+                                              bool is_compute, bool stream_output,
+                                              bool emulate_reduction) {
     bool integer_textures = false;
+    bool textures = false;
     bool local_memory_scratch = false;
+    u32 xfb_buffers = 0;
     for (const Shader::Info* info : infos) {
         if (info) {
             local_memory_scratch |= info->local_memory_scratch_words != 0;
+            xfb_buffers |= info->xfb_storage_buffers;
             for (const auto& desc : info->texture_descriptors) {
                 integer_textures |= desc.is_integer;
             }
+            textures |= !info->texture_descriptors.empty();
         }
     }
+    // The sampler table (eden_integer_sampler_state rows): integer samples always read it, float
+    // ones when the pipeline emulates MIN/MAX reduction.
+    const bool sampler_table = integer_textures || (emulate_reduction && textures);
     const u32 runtime_data_words =
         static_cast<u32>((is_compute ? sizeof(dxil_spirv_compute_runtime_data)
                                      : sizeof(dxil_spirv_vertex_runtime_data)) /
@@ -179,8 +189,12 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
     if (!is_compute) {
         // Root constants take a dword each, tables one, root descriptors two.
         constexpr u32 ROOT_DWORDS = 64;
+        const u32 xfb_words =
+            xfb_buffers != 0 ? Shader::TransformFeedbackStorage::CONSTANT_WORDS +
+                                   2 * static_cast<u32>(std::popcount(xfb_buffers))
+                             : 0;
         const u32 used = PUSH_CONSTANT_WORDS + runtime_data_words + 2 +
-                         (integer_textures ? 2 : 0) + (local_memory_scratch ? 2 : 0);
+                         (sampler_table ? 2 : 0) + (local_memory_scratch ? 2 : 0) + xfb_words;
         root.budget = std::min<size_t>(PipelineLayout::MAX_ROOT_CBVS,
                                        used < ROOT_DWORDS ? (ROOT_DWORDS - used) / 2 : 0);
     }
@@ -191,12 +205,13 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             AddStage(*info, binding, ranges, root);
         }
     }
-    if (integer_textures && binding > EDEN_INTEGER_SAMPLER_MAX_BINDINGS) {
+    if (sampler_table && binding > EDEN_INTEGER_SAMPLER_MAX_BINDINGS) {
         throw std::runtime_error(fmt::format(
             "D3D12: {} bindings exceed the integer sampler table", binding));
     }
-    std::vector<u32> key{(is_compute ? 1u : 0u) | (integer_textures ? 2u : 0u) |
-                         (local_memory_scratch ? 4u : 0u)};
+    std::vector<u32> key{(is_compute ? 1u : 0u) | (sampler_table ? 2u : 0u) |
+                         (local_memory_scratch ? 4u : 0u) | (xfb_buffers << 3) |
+                         (stream_output ? 1u << 7 : 0u)};
     AppendKey(key, ranges.resources);
     AppendKey(key, ranges.samplers);
     key.push_back(static_cast<u32>(root.registers.size()));
@@ -250,7 +265,7 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             .ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
         });
     }
-    if (integer_textures) {
+    if (sampler_table) {
         layout->integer_sampler_index = static_cast<u32>(params.size());
         params.push_back({
             .ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV,
@@ -267,6 +282,28 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             .ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL,
         });
     }
+    if (xfb_buffers != 0) {
+        namespace Xfb = Shader::TransformFeedbackStorage;
+        layout->xfb_constants_index = static_cast<u32>(params.size());
+        params.push_back({
+            .ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+            .Constants = {.ShaderRegister = Xfb::CONSTANTS_BINDING,
+                          .RegisterSpace = Xfb::DESCRIPTOR_SET,
+                          .Num32BitValues = Xfb::CONSTANT_WORDS},
+            .ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX,
+        });
+        for (u32 index = 0; index < Xfb::NUM_BUFFERS; ++index) {
+            if ((xfb_buffers & (1U << index)) == 0) {
+                continue;
+            }
+            layout->xfb_buffer_indices[index] = static_cast<u32>(params.size());
+            params.push_back({
+                .ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV,
+                .Descriptor = {.ShaderRegister = index, .RegisterSpace = Xfb::DESCRIPTOR_SET},
+                .ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX,
+            });
+        }
+    }
     if (!root.registers.empty()) {
         layout->root_cbv_index = static_cast<u32>(params.size());
         for (const u32 reg : root.registers) {
@@ -279,13 +316,19 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
     }
     layout->root_cbv_registers = std::move(root.registers);
     layout->cbv_root_slots = std::move(root.slots);
+    D3D12_ROOT_SIGNATURE_FLAGS flags =
+        is_compute ? D3D12_ROOT_SIGNATURE_FLAG_NONE
+                   : D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    if (stream_output) {
+        flags |= D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT;
+        layout->stream_output = true;
+    }
     const D3D12_ROOT_SIGNATURE_DESC desc{
         .NumParameters = static_cast<UINT>(params.size()),
         .pParameters = params.data(),
         .NumStaticSamplers = 0,
         .pStaticSamplers = nullptr,
-        .Flags = is_compute ? D3D12_ROOT_SIGNATURE_FLAG_NONE
-                            : D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+        .Flags = flags,
     };
     layout->root_signature = CreateRootSignature(device.Get(), desc, "guest root signature");
     CreateCommandSignatures(*layout, is_compute);

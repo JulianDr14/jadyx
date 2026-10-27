@@ -12,6 +12,7 @@
 #include "video_core/host_shaders/d3d12_bc3_encoder_comp_spv.h"
 #include "video_core/host_shaders/d3d12_depth_stencil_merge_comp_spv.h"
 #include "video_core/host_shaders/d3d12_depth_stencil_split_comp_spv.h"
+#include "video_core/host_shaders/d3d12_depth_unorm24_comp_spv.h"
 #include "video_core/renderer_d3d12/d3d12_blit_image.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
@@ -105,6 +106,7 @@ void BlitImageHelper::CreatePackPipelines(const ShaderCompiler& compiler) {
     };
     create(D3D12_DEPTH_STENCIL_SPLIT_COMP_SPV, split_pipeline);
     create(D3D12_DEPTH_STENCIL_MERGE_COMP_SPV, merge_pipeline);
+    create(D3D12_DEPTH_UNORM24_COMP_SPV, unorm24_pipeline);
 }
 
 void BlitImageHelper::CreateAstcPipeline(const ShaderCompiler& compiler) {
@@ -282,7 +284,9 @@ void BlitImageHelper::DispatchPack(ID3D12PipelineState* pipeline, const DepthSte
     };
     cmd->SetComputeRoot32BitConstants(PACK_CONSTANTS_PARAM, PACK_CONSTANT_WORDS, constants.data(),
                                       0);
-    cmd->SetComputeRootShaderResourceView(PACK_SOURCE_PARAM, pack.source);
+    if (pack.source != 0) {
+        cmd->SetComputeRootShaderResourceView(PACK_SOURCE_PARAM, pack.source);
+    }
     cmd->SetComputeRootUnorderedAccessView(PACK_DESTINATION_PARAM, pack.destination);
     cmd->Dispatch(groups_x, groups_y, 1);
 }
@@ -299,6 +303,13 @@ void BlitImageHelper::SplitDepthStencil(const DepthStencilPack& pack) {
                  Common::DivCeil(pack.height, PACK_GROUP_SIZE));
 }
 
+void BlitImageHelper::DepthFloatToUnorm24(const DepthStencilPack& pack) {
+    if (!pack_available || pack.width == 0 || pack.height == 0) {
+        return;
+    }
+    DispatchPack(unorm24_pipeline.Get(), pack, Common::DivCeil(pack.width, PACK_GROUP_SIZE),
+                 Common::DivCeil(pack.height, PACK_GROUP_SIZE));
+}
 void BlitImageHelper::MergeDepthStencil(const DepthStencilPack& pack) {
     if (!pack_available || pack.width == 0 || pack.height == 0) {
         return;

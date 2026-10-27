@@ -26,6 +26,7 @@ enum class DepthStencilLayout : u32 {
     S8Z24,      ///< D24_UNORM_S8_UINT: stencil in bits 31:24, depth in 23:0
     X8Z24,      ///< X8_D24_UNORM: depth in bits 23:0, nothing in 31:24
     ZF32_X24S8, ///< D32_FLOAT_S8_UINT: the float depth, then a word with the stencil in 7:0
+    S8,         ///< S8_UINT: one stencil byte, kept in the stencil plane of a D24S8 resource
 };
 
 /// One region repacked between guest depth-stencil texels and the copy footprints of both planes
@@ -136,6 +137,17 @@ public:
                    const VideoCommon::Region2D& dst_region,
                    const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size);
 
+    /// Same for depth and stencil, without shader stencil export (the Series has no
+    /// SV_StencilRef): one draw writes depth and a zero stencil, then one draw per bit sets that
+    /// bit (write mask 1 << bit, reference 0xFF) where the texel of stencil_srv, a Texture2DArray
+    /// SRV of the source's stencil plane with the value in red, has it. Draws nothing unless
+    /// every pipeline is available, so the target never keeps half a copy.
+    bool BlitDepthStencil(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE depth_srv,
+                          D3D12_CPU_DESCRIPTOR_HANDLE stencil_srv,
+                          const VideoCommon::Region2D& dst_region,
+                          const VideoCommon::Region2D& src_region,
+                          const VideoCommon::Extent2D& src_size);
+
     /// Writes color into the channels of color_mask (bit 0 red ... bit 3 alpha) inside rect.
     void ClearColor(const Target& dst, u8 color_mask, const std::array<f32, 4>& color,
                     const D3D12_RECT& rect);
@@ -154,6 +166,10 @@ public:
     void SplitDepthStencil(const DepthStencilPack& pack);
     /// Both footprints -> guest texels (d3d12_depth_stencil_merge.comp), same states.
     void MergeDepthStencil(const DepthStencilPack& pack);
+    /// Float bits -> 24-bit UNORM in the depth footprint at pack.destination, in place
+    /// (d3d12_depth_unorm24.comp); reads depth_pitch, width and height. The caller puts the
+    /// footprints in UNORDERED_ACCESS.
+    void DepthFloatToUnorm24(const DepthStencilPack& pack);
 
     /// False when the ASTC decoder failed to translate or build (logged): ASTC is then decoded
     /// on the CPU.
@@ -173,6 +189,8 @@ private:
         BlitDepth,
         ClearColor,
         ClearDepthStencil,
+        BlitStencilBit,
+        BlitDepthStencil, ///< BlitDepth's program, also zeroing the stencil
     };
 
     struct Program {
@@ -188,6 +206,11 @@ private:
     /// Binds the root signature, the PSO, the target and the viewport and scissor of rect.
     void Begin(ID3D12PipelineState* pipeline, const Target& target, bool is_depth,
                const D3D12_RECT& rect);
+    /// Begin, then the source mapping of a blit and its descriptor tables.
+    void BeginBlit(ID3D12PipelineState* pipeline, const Target& dst, bool is_depth,
+                   const D3D12_RECT& rect, D3D12_GPU_DESCRIPTOR_HANDLE srv_table,
+                   D3D12_GPU_DESCRIPTOR_HANDLE sampler_table,
+                   const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size);
     bool Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
               const Sampling& sampler, const VideoCommon::Region2D& dst_region,
               const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size);
@@ -205,7 +228,7 @@ private:
     SamplerHeap& sampler_heap;
 
     ComPtr<ID3D12RootSignature> root_signature;
-    std::array<Program, 4> programs;
+    std::array<Program, 5> programs;
     std::unordered_map<u64, ComPtr<ID3D12PipelineState>> pipelines;
     Sampling nearest_sampler{};
     Sampling linear_sampler{};
@@ -214,6 +237,7 @@ private:
     ComPtr<ID3D12RootSignature> pack_root_signature;
     ComPtr<ID3D12PipelineState> split_pipeline;
     ComPtr<ID3D12PipelineState> merge_pipeline;
+    ComPtr<ID3D12PipelineState> unorm24_pipeline;
     bool pack_available{};
 
     ComPtr<ID3D12RootSignature> astc_root_signature;

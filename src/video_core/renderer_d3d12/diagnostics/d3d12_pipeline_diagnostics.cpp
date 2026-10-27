@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <fstream>
@@ -24,6 +25,47 @@ std::atomic_int diagnosed_failures;
 constexpr int MAX_DIAGNOSED_FAILURES = 6;
 /// Pipelines whose DXIL is written out after they fault the driver.
 constexpr int MAX_DUMPED_FAULTS = 8;
+
+/// Logs the stream output of a failed pipeline and narrows down which part of it the driver
+/// rejects: none at all, the rasterized stream, or a single entry.
+template <typename TryVariant>
+void DiagnoseStreamOutput(const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,
+                          const TryVariant& try_variant) {
+    const D3D12_STREAM_OUTPUT_DESC& so = desc.StreamOutput;
+    if (so.NumEntries == 0) {
+        return;
+    }
+    LOG_ERROR(Render, "D3D12 PSO diag:   stream output {} entries, {} strides, rasterized {}",
+              so.NumEntries, so.NumStrides, so.RasterizedStream);
+    for (UINT i = 0; i < so.NumStrides; ++i) {
+        LOG_ERROR(Render, "D3D12 PSO diag:   SO slot {} stride {}", i, so.pBufferStrides[i]);
+    }
+    for (UINT i = 0; i < so.NumEntries; ++i) {
+        const D3D12_SO_DECLARATION_ENTRY& entry = so.pSODeclaration[i];
+        LOG_ERROR(Render,
+                  "D3D12 PSO diag:   SO entry {} stream {} {}{} components {}+{} slot {}", i,
+                  entry.Stream, entry.SemanticName ? entry.SemanticName : "(gap)",
+                  entry.SemanticIndex, entry.StartComponent, entry.ComponentCount,
+                  entry.OutputSlot);
+    }
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC v = desc;
+        v.StreamOutput = {};
+        try_variant("no stream output", v);
+    }
+    if (so.RasterizedStream == D3D12_SO_NO_RASTERIZED_STREAM) {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC v = desc;
+        v.StreamOutput.RasterizedStream = 0;
+        try_variant("stream output rasterized", v);
+    }
+    constexpr UINT MAX_SINGLE_ENTRIES = 8;
+    for (UINT i = 0; i < (std::min)(so.NumEntries, MAX_SINGLE_ENTRIES); ++i) {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC v = desc;
+        v.StreamOutput.pSODeclaration = so.pSODeclaration + i;
+        v.StreamOutput.NumEntries = 1;
+        try_variant(fmt::format("only SO entry {}", i).c_str(), v);
+    }
+}
 
 } // Anonymous namespace
 
@@ -106,7 +148,7 @@ void DiagnoseFailedPipeline(ID3D12Device* device, const D3D12_GRAPHICS_PIPELINE_
                   blend.RenderTargetWriteMask);
     }
 
-    const auto try_variant = [&](const char* name, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& v) {
+    const auto try_once = [&](const char* name, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& v) {
         ComPtr<ID3D12PipelineState> pso;
         DWORD fault_code = 0;
         // A pipeline that faulted the driver can fault it again in its variants.
@@ -115,14 +157,17 @@ void DiagnoseFailedPipeline(ID3D12Device* device, const D3D12_GRAPHICS_PIPELINE_
             fault_code);
         if (hr == DRIVER_FAULT_HRESULT) {
             pso.Detach();
-            LOG_ERROR(Render, "D3D12 PSO diag: variant '{}' -> driver fault 0x{:08X}", name,
-                      static_cast<u32>(fault_code));
-            return;
+            return fmt::format("driver fault 0x{:08X}", static_cast<u32>(fault_code));
         }
         CheckRemovedAfter(device, [&] { return fmt::format("PSO diag variant '{}'", name); });
-        LOG_ERROR(Render, "D3D12 PSO diag: variant '{}' -> {}", name,
-                  SUCCEEDED(hr) ? std::string("BUILDS")
-                                : fmt::format("fails 0x{:08X}", static_cast<u32>(hr)));
+        return SUCCEEDED(hr) ? std::string("BUILDS")
+                             : fmt::format("fails 0x{:08X}", static_cast<u32>(hr));
+    };
+    // Twice: a variant that builds once and faults once points at the driver, not at the state.
+    const auto try_variant = [&](const char* name, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& v) {
+        const std::string first = try_once(name, v);
+        const std::string second = try_once(name, v);
+        LOG_ERROR(Render, "D3D12 PSO diag: variant '{}' -> {}, again {}", name, first, second);
     };
     {
         D3D12_GRAPHICS_PIPELINE_STATE_DESC v = desc;
@@ -225,6 +270,7 @@ void DiagnoseFailedPipeline(ID3D12Device* device, const D3D12_GRAPHICS_PIPELINE_
         v.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
         try_variant("no strip cut", v);
     }
+    DiagnoseStreamOutput(desc, try_variant);
     {
         D3D12_GRAPHICS_PIPELINE_STATE_DESC v = desc;
         v.DepthStencilState.DepthEnable = FALSE;

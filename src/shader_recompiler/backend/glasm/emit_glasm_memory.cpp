@@ -373,6 +373,10 @@ void EmitStorageAtomicExchange32(EmitContext& ctx, IR::Inst& inst, const IR::Val
     Atom(ctx, inst, binding, offset, value, "EXCH", "U32");
 }
 
+void EmitStorageAtomicCompareExchange32(EmitContext&) {
+    throw NotImplementedException("GLASM instruction");
+}
+
 void EmitStorageAtomicIAdd64(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,
                              ScalarU32 offset, Register value) {
     Atom(ctx, inst, binding, offset, value, "ADD", "U64");
@@ -553,6 +557,10 @@ void EmitGlobalAtomicXor32(EmitContext&) {
 }
 
 void EmitGlobalAtomicExchange32(EmitContext&) {
+    throw NotImplementedException("GLASM instruction");
+}
+
+void EmitGlobalAtomicCompareExchange32(EmitContext&) {
     throw NotImplementedException("GLASM instruction");
 }
 

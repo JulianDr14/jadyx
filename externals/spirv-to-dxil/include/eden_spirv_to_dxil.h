@@ -33,8 +33,19 @@ struct eden_integer_sampler_state {
    uint32_t last_level;
    uint32_t wrap[3]; /* D3D12_TEXTURE_ADDRESS_MODE values */
    uint32_t padding;
-   uint32_t reserved[4];
+   /* Read by EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION only. */
+   uint32_t reduction; /* EDEN_SAMPLER_REDUCTION_* */
+   uint32_t filter;    /* EDEN_SAMPLER_FILTER_* bits */
+   uint32_t reserved[2];
 };
+
+#define EDEN_SAMPLER_REDUCTION_NONE 0u
+#define EDEN_SAMPLER_REDUCTION_MIN 1u
+#define EDEN_SAMPLER_REDUCTION_MAX 2u
+
+#define EDEN_SAMPLER_FILTER_MIN_LINEAR (1u << 0)
+#define EDEN_SAMPLER_FILTER_MAG_LINEAR (1u << 1)
+#define EDEN_SAMPLER_FILTER_MIP_LINEAR (1u << 2)
 
 struct eden_spirv_to_dxil_stage {
    const uint32_t *words;
@@ -68,6 +79,15 @@ eden_spirv_to_dxil_pipeline_v2(const struct eden_spirv_to_dxil_stage *stages, un
 /* Every branch of the vertex stage becomes selects, storage buffer loads included. Works around
  * the Xbox Series' shader compiler faulting on some vertex shaders; results are unchanged. */
 #define EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX (1u << 0)
+/* Float texture samples (not cube, not shadow) read their binding's row of the b0 space 29 table
+ * and, when its reduction is MIN or MAX, return the per-component minimum or maximum of the texels
+ * the filter would weigh, loaded one by one: filtered MIN/MAX samplers need tiled resources
+ * tier 2, which the Xbox Series does not report. Other reductions sample as before. */
+#define EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION (1u << 1)
+
+/* The flags this DLL understands. An older DLL lacks the symbol: it supports FLATTEN_VERTEX only. */
+uint32_t
+eden_spirv_to_dxil_supported_flags(void);
 
 bool
 eden_spirv_to_dxil_pipeline_v3(const struct eden_spirv_to_dxil_stage *stages, unsigned count,
@@ -75,6 +95,67 @@ eden_spirv_to_dxil_pipeline_v3(const struct eden_spirv_to_dxil_stage *stages, un
                                const struct dxil_spirv_debug_options *debug_options,
                                const struct dxil_spirv_logger *logger, uint32_t flags,
                                struct dxil_spirv_object *out);
+
+/* v4: stream output (transform feedback) of the last pre-rasterization stage, as a
+ * D3D12_SO_DECLARATION_ENTRY list whose semantics name that stage's DXIL output signature. Built
+ * from the SPIR-V Xfb decorations (XfbBuffer, Offset, Stream); words no output covers are gaps. */
+#define EDEN_SPIRV_TO_DXIL_SO_MAX_ENTRIES 512
+
+enum eden_so_semantic {
+   EDEN_SO_SEMANTIC_GAP = 0, /* SemanticName NULL: ComponentCount words skipped */
+   EDEN_SO_SEMANTIC_TEXCOORD,
+   EDEN_SO_SEMANTIC_POSITION,
+   EDEN_SO_SEMANTIC_CLIP_DISTANCE,
+   EDEN_SO_SEMANTIC_CULL_DISTANCE,
+   EDEN_SO_SEMANTIC_PRIMITIVE_ID,
+   EDEN_SO_SEMANTIC_VIEWPORT_ARRAY_INDEX,
+   EDEN_SO_SEMANTIC_RENDER_TARGET_ARRAY_INDEX,
+};
+
+struct eden_spirv_to_dxil_so_entry {
+   uint8_t stream;
+   uint8_t semantic; /* enum eden_so_semantic */
+   uint8_t semantic_index;
+   uint8_t start_component;
+   uint8_t component_count;
+   uint8_t output_slot;
+   uint8_t padding[2];
+};
+
+struct eden_spirv_to_dxil_stream_output {
+   uint32_t entry_count;
+   /* Captured outputs missing from the signature (written as gaps), and entries past the limit. */
+   uint32_t missing_outputs;
+   uint32_t dropped_entries;
+   uint32_t padding;
+   struct eden_spirv_to_dxil_so_entry entries[EDEN_SPIRV_TO_DXIL_SO_MAX_ENTRIES];
+};
+
+/* Time spent in each phase of the pipeline entry points since the DLL was loaded, in
+ * nanoseconds, indexed by enum eden_spirv_to_dxil_phase. Writes at most count values. */
+enum eden_spirv_to_dxil_phase {
+   EDEN_PHASE_SPIRV_TO_NIR = 0,
+   EDEN_PHASE_NIR_PASSES,  /* dxil_spirv_nir_prep, dxil_spirv_nir_passes and our lowering */
+   EDEN_PHASE_LINK,
+   EDEN_PHASE_NIR_TO_DXIL, /* whole nir_to_dxil call */
+   EDEN_PHASE_NTD_OPTIMIZE, /* its two optimize_nir loops */
+   EDEN_PHASE_NTD_EMIT,     /* its emit_module */
+   EDEN_PHASE_PIPELINES,    /* count of pipelines, not time */
+   EDEN_PHASE_STAGES,       /* count of stages, not time */
+   EDEN_PHASE_COUNT,
+};
+
+void
+eden_spirv_to_dxil_phase_times(uint64_t *ns, unsigned count);
+
+/* stream_output may be NULL; otherwise it is filled on success (entry_count 0: no Xfb outputs). */
+bool
+eden_spirv_to_dxil_pipeline_v4(const struct eden_spirv_to_dxil_stage *stages, unsigned count,
+                               enum dxil_validator_version validator_version_max,
+                               const struct dxil_spirv_debug_options *debug_options,
+                               const struct dxil_spirv_logger *logger, uint32_t flags,
+                               struct dxil_spirv_object *out,
+                               struct eden_spirv_to_dxil_stream_output *stream_output);
 
 #ifdef __cplusplus
 }

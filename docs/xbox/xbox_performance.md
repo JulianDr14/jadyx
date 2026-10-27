@@ -3153,3 +3153,33 @@ reciclaje, no inventar timeout (swapchain1000ms). Bootsegundotítulo acumulativo
 incluyeGame A: no interpretarlo como total propio3D. Evidencia ytabla detallada en
 xbox_pipeline_preparation.md y build-uwp/test-results/pso-series-0.2.87.33/.
 Sin cambios funcionales, commit ni push en esta revisión; visual/ABy60 pendientes.
+
+## Detector de tirones siempre activo
+
+Cada frame presentado se compara con la media móvil del intervalo normal; cuenta como
+tirón si dura 1,5 veces lo normal y al menos 12 ms más (un frame perdido a 60 o a 30 FPS).
+Más de un segundo sin presentar es una pausa (menú, carga) y no cuenta. El log escribe
+`Hitch: N ms frame, normally M ms; likely <causa> | ...` (como mucho cuatro por segundo) y,
+cada ventana de 300 frames con tirones, `Hitches over 300 frames: ...` con el reparto por causa.
+El panel de rendimiento muestra `TIRON N MS <CAUSA>` durante diez segundos.
+
+La causa es lo que más creció sobre su media habitual, si cubre un cuarto del tiempo de más:
+
+| Panel | Causa en el log | Medida |
+|---|---|---|
+| PSO | pipeline builds | draws que esperaron un pipeline |
+| JIT | JIT compilation | compilación de bloques A64/A32, siempre medida |
+| DISCO | game file reads | lecturas de archivos del juego (local y almacenamiento externo) |
+| LIMPIEZA | cache garbage collection | GC de las cachés de texturas y buffers |
+| RECURSOS | creating GPU resources | recursos D3D12 nuevos |
+| TEXTURAS | decoding textures on the CPU | decodificación en CPU |
+| LECTURA GPU | guest reading back GPU memory | FlushRegion del juego |
+| GPU | GPU work | el hilo de GPU esperando fences |
+| CPU JUEGO | game CPU work | el hilo de GPU sin trabajo y ninguna causa del host |
+| MEMORIA | memory page faults | 4096 fallos de página o más en el frame, sin causa medida |
+| RENDER | GPU thread recording and caches | el resto: grabar draws y cachés |
+
+Coste por frame: la lectura de contadores que el informe ya hacía, unas cargas atómicas y
+una llamada a `K32GetProcessMemoryInfo`. Solo se añadieron relojes en caminos lentos
+(compilar un bloque, leer un archivo, una pasada de GC). `CPU JUEGO` significa que no se vio
+ninguna espera del host; puede ser trabajo del propio juego o el sistema quitándole los cores.

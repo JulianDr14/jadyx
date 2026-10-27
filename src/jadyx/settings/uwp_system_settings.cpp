@@ -21,6 +21,7 @@ constexpr auto AdultModsKey = L"system_show_adult_mods";
 constexpr auto PulseSessionsKey = L"system_pulse_sessions";
 constexpr auto PlayTimeKey = L"system_track_play_time";
 constexpr auto MultipleControllersKey = L"system_multiple_controllers";
+constexpr auto OfflineModeKey = L"system_offline_mode";
 constexpr auto UpscalingKey = L"system_upscaling";
 
 /// Saved as the enum's value, or -1 for "follow the system". A value that is not a selectable
@@ -59,6 +60,7 @@ SystemSettings LoadSystemSettings() {
         if (values.HasKey(PlayTimeKey)) settings.track_play_time = winrt::unbox_value<bool>(values.Lookup(PlayTimeKey));
         if (values.HasKey(MultipleControllersKey))
             settings.multiple_controllers = winrt::unbox_value<bool>(values.Lookup(MultipleControllersKey));
+        if (values.HasKey(OfflineModeKey)) settings.offline_mode = winrt::unbox_value<bool>(values.Lookup(OfflineModeKey));
         if (values.HasKey(UpscalingKey))
             settings.upscaling = UpscalingFromValue(winrt::unbox_value<int32_t>(values.Lookup(UpscalingKey)))
                                      .value_or(Upscaling::Bilinear);
@@ -78,6 +80,7 @@ bool SaveSystemSettings(const SystemSettings& settings) {
         values.Insert(PulseSessionsKey, winrt::box_value(settings.pulse_sessions));
         values.Insert(PlayTimeKey, winrt::box_value(settings.track_play_time));
         values.Insert(MultipleControllersKey, winrt::box_value(settings.multiple_controllers));
+        values.Insert(OfflineModeKey, winrt::box_value(settings.offline_mode));
         values.Insert(UpscalingKey, winrt::box_value(static_cast<int32_t>(settings.upscaling)));
         return true;
     } catch (...) { return false; }
@@ -96,6 +99,33 @@ SystemLocale DetectSystemLocale() {
     return locale;
 }
 
+namespace {
+winrt::hstring GameOfflineModeKey(std::uint64_t program_id) {
+    wchar_t key[40];
+    swprintf(key, std::size(key), L"game_offline_mode_%016llx", static_cast<unsigned long long>(program_id));
+    return key;
+}
+} // namespace
+
+std::optional<bool> LoadGameOfflineMode(std::uint64_t program_id) {
+    try {
+        const auto values = winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        const auto key = GameOfflineModeKey(program_id);
+        if (values.HasKey(key)) return winrt::unbox_value<bool>(values.Lookup(key));
+    } catch (...) { /* A missing or invalid value follows the system setting. */ }
+    return std::nullopt;
+}
+
+bool SaveGameOfflineMode(std::uint64_t program_id, std::optional<bool> offline) {
+    try {
+        const auto values = winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        const auto key = GameOfflineModeKey(program_id);
+        if (offline) values.Insert(key, winrt::box_value(*offline));
+        else if (values.HasKey(key)) values.Remove(key);
+        return true;
+    } catch (...) { return false; }
+}
+
 ResolvedSystem ApplySystemSettings() {
     const auto locale = DetectSystemLocale();
     const auto settings = LoadSystemSettings();
@@ -107,6 +137,7 @@ ResolvedSystem ApplySystemSettings() {
     Settings::values.region_index = resolved.region;
     // The console's nickname, which some games show; Eden's default is its own name.
     Settings::values.device_name.SetValue("Jadyx");
+    Settings::values.airplane_mode.SetValue(settings.offline_mode);
     LOG_INFO(Frontend, "System: Windows language {}, region {}; interface {}, game language {}, region {}",
              locale.languages.empty() ? std::string{"(none)"} : I18n::ToUtf8(locale.languages.front()),
              locale.region.empty() ? std::string{"(none)"} : I18n::ToUtf8(locale.region),

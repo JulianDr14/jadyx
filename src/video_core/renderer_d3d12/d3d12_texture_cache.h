@@ -17,6 +17,7 @@
 #include "shader_recompiler/shader_info.h"
 #include "video_core/renderer_d3d12/d3d12_cache_policy.h"
 #include "video_core/renderer_d3d12/d3d12_bc_copy.h"
+#include "video_core/renderer_d3d12/d3d12_border_color.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_gc_readback.h"
 #include "video_core/renderer_d3d12/d3d12_resource_allocator.h"
@@ -184,6 +185,8 @@ public:
     }
 
 private:
+    /// Clears a 1x1 D24 image to 0.5 and reads its depth plane back to set depth24_readback_float.
+    void ProbeDepth24Readback();
     void EnsureAstcRgbaScratch(u32 width, u32 height);
     /// One band of a GPU ASTC upload, as VerifyGpuAstcBand compares it.
     struct AstcVerifyBand {
@@ -201,6 +204,12 @@ private:
     /// SetAstcGpuVerify (diagnostics/d3d12_astc_verify.cpp): reads the band's GPU BC3 and RGBA
     /// back, waits, and logs how they differ from the CPU decoder's.
     void VerifyGpuAstcBand(const AstcVerifyBand& band);
+    /// SetStencilBlitVerify (diagnostics/d3d12_stencil_blit_verify.cpp): after a recorded
+    /// depth-stencil blit, reads the stencil plane of both subresources back, waits, and logs the
+    /// texels that differ from the expected copy.
+    void VerifyStencilBlit(Image& dst_image, u32 dst_subresource, Image& src_image,
+                           u32 src_subresource, const Region2D& dst_region,
+                           const Region2D& src_region);
     void EnsureAstcBcScratch(u64 size);
     /// A blit whose source and destination are the same image (a mip chain built level by level,
     /// a copy between layers or regions): the source region goes through a scratch texture.
@@ -245,6 +254,10 @@ private:
     /// MIN/MAX sampler reductions need tiled resources tier 2; the Xbox Series reports tier 1 and
     /// creating such a sampler there removes the device (DXGI_ERROR_INVALID_CALL).
     bool supports_min_max_filter{};
+    /// The Xbox Series keeps D24 depth as 32-bit float and copies those bits to buffers unchanged,
+    /// while a buffer -> texture copy reads 24-bit UNORM: depth footprints read back from a D24
+    /// image are then converted to UNORM before they go anywhere (ProbeDepth24Readback).
+    bool depth24_readback_float{};
     u64 depth_feedback_copies{};
     struct MrtScratch {
         std::unique_ptr<Image> image;
@@ -327,11 +340,16 @@ public:
     /// Records the barriers into next, or adds them to batch (flushed first when the transition
     /// must record other commands).
     void Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch = nullptr);
+    /// Transition for binding level as the depth target: the depth feedback snapshot of the
+    /// other levels stays valid.
+    void TransitionDepthTarget(s32 level, D3D12_RESOURCE_STATES next, BarrierBatch* batch);
     [[nodiscard]] D3D12_RESOURCE_STATES State() const noexcept { return state; }
     /// Readback diagnostics: barriers only, without marking image contents modified.
     std::optional<D3D12_RESOURCE_STATES> DiagnosticState(ID3D12Resource* tracked_resource) const;
     void DiagnosticTransition(ID3D12Resource* tracked_resource, D3D12_RESOURCE_STATES next);
     ID3D12Resource* DiagnosticSliceArray() const noexcept { return slice_array.Get(); }
+    ID3D12Resource* DiagnosticVolume() const noexcept { return volume.Get(); }
+    ID3D12Resource* DiagnosticCube() const noexcept { return cube.Get(); }
     ID3D12Resource* DiagnosticReinterpreted() const noexcept { return reinterpreted.Get(); }
     bool IsRescaled() const noexcept { return false; }
     bool ScaleUp(bool = false) { return false; }
@@ -344,6 +362,21 @@ public:
     /// Copies the slices again if the image was written since the last copy; call before a
     /// draw or dispatch that reads SliceArray().
     void RefreshSliceArray();
+
+    /// One-slice 3D copy of this single-layer 2D image, for shaders that sample it as 3D (D3D12
+    /// has no 3D view of a 2D resource). Null when it cannot be made. Created on first use.
+    [[nodiscard]] ID3D12Resource* Volume();
+    /// Copies the texels again if the image was written since the last copy; call before a
+    /// draw or dispatch that reads Volume().
+    void RefreshVolume();
+
+    /// Six-face copy of this single-layer square 2D image, every face holding it, for shaders
+    /// that sample it as a cube (D3D12 has no cube view of one layer). Null when it cannot be
+    /// made. Created on first use.
+    [[nodiscard]] ID3D12Resource* Cube();
+    /// Copies the texels again if the image was written since the last copy; call before a
+    /// draw or dispatch that reads Cube().
+    void RefreshCube();
 
     /// Snapshot before a draw that samples and writes this depth/stencil attachment. Reuses the
     /// allocation; copies on the GPU without waiting. Null keeps the read-only fallback on failure.
@@ -437,15 +470,26 @@ private:
     bool needs_placed_init{};
     /// Bumped by every transition into a writable state: every GPU write to the image follows one.
     u64 write_version{1};
+    u64 uav_work{}; ///< Scheduler::Work() that last made it a UAV
+    /// The work that wrote it as a UAV and then left it in a copy state; 0 once ordered.
+    u64 left_uav_in_work{};
     std::unique_ptr<Image> guest_blocks;
     BcBlockCoverage guest_blocks_coverage;
     u64 guest_blocks_version{};
     bool guest_blocks_upload_pending{};
     std::unique_ptr<Image> depth_feedback;
     bool depth_feedback_failed{};
+    /// Levels written since the depth feedback snapshot, one bit each.
+    u64 depth_feedback_stale{~u64{}};
     ComPtr<ID3D12Resource> slice_array;
     D3D12_RESOURCE_STATES slice_array_state{D3D12_RESOURCE_STATE_COMMON};
     u64 slice_array_version{};
+    ComPtr<ID3D12Resource> volume;
+    D3D12_RESOURCE_STATES volume_state{D3D12_RESOURCE_STATE_COMMON};
+    u64 volume_version{};
+    ComPtr<ID3D12Resource> cube;
+    D3D12_RESOURCE_STATES cube_state{D3D12_RESOURCE_STATE_COMMON};
+    u64 cube_version{};
     ComPtr<ID3D12Resource> reinterpreted;
     D3D12_RESOURCE_STATES reinterpreted_state{D3D12_RESOURCE_STATE_COMMON};
     u64 reinterpreted_version{};
@@ -508,6 +552,12 @@ public:
     /// Transitions the whole image this view belongs to (no-op for null and buffer views).
     void TransitionImage(D3D12_RESOURCE_STATES state, BarrierBatch* batch = nullptr) const;
 
+    /// Whether its SRVs read the image's reinterpreted copy, which reading refreshes from the
+    /// image (Image::ReadReinterpreted).
+    [[nodiscard]] bool ReadsReinterpretedCopy() const noexcept {
+        return srv_resource && srv_resource != image;
+    }
+
     /// Records what reading Handle(texture_type) needs first (a 3D image read as a 2D array
     /// refreshes its slice copy); call before the draw or dispatch, outside any other copy.
     void PrepareRead(Shader::TextureType texture_type) const;
@@ -515,6 +565,16 @@ public:
     /// Same format, swizzle and subresources as Handle(), on the prepared depth snapshot.
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE DepthFeedbackHandle(
         Shader::TextureType texture_type) const;
+
+    /// Texture2DArray SRV of the stencil plane of the view's first level and layer, the value
+    /// in every component, for blits that copy stencil. Null when the image has no stencil.
+    /// Created on first use.
+    [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE StencilHandle() const;
+
+    /// A sampler's border color as samples through this view return it (SampledBorderColor).
+    [[nodiscard]] std::array<u32, 4> SampledBorder(const std::array<u32, 4>& raw) const noexcept {
+        return SampledBorderColor(raw, srv_params.format, srv_params.mapping);
+    }
 
 private:
     /// What the per-type SRVs are created from.
@@ -543,6 +603,7 @@ private:
     mutable std::array<D3D12_CPU_DESCRIPTOR_HANDLE, Shader::NUM_TEXTURE_TYPES> srvs{};
     mutable std::unique_ptr<std::array<D3D12_CPU_DESCRIPTOR_HANDLE, Shader::NUM_TEXTURE_TYPES>>
         depth_feedback_srvs;
+    mutable D3D12_CPU_DESCRIPTOR_HANDLE stencil_srv{};
     D3D12_CPU_DESCRIPTOR_HANDLE uav{};
     D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
     bool rtv_on_copy{};
@@ -562,10 +623,22 @@ void SetBcArrayDecode(bool enabled);
 void SetAstcGpuDecode(bool enabled);
 /// One-shot diagnostic: compare the first GPU BC3 result with the existing CPU pipeline.
 void SetAstcGpuVerify(bool enabled);
+/// Diagnostic ("stencil_blit_verify=1"): the first scaled depth-stencil blits read both stencil
+/// planes back and log how the copy differs from the nearest-texel mapping the shader follows.
+void SetStencilBlitVerify(bool enabled);
 /// Diagnostic: wait for the GPU after every GPU ASTC upload (tells races from wrong results).
 void SetAstcGpuSync(bool enabled);
 /// Diagnostic: new scratch resources for every GPU ASTC upload (no reuse between images).
 void SetAstcGpuFresh(bool enabled);
+/// Diagnostic ("min_max_filter=force"): filtered MIN/MAX sampler reductions go to the hardware
+/// even when the device reports no support for them. Applies to runtimes created from now on.
+void SetForceMinMaxFilter(bool enabled);
+/// Diagnostic ("min_max_filter=off"): filtered MIN/MAX samplers the device cannot reduce filter
+/// normally and no shader emulates the reduction. Wrong results, to time the emulation.
+void SetSkipMinMaxFilter(bool enabled);
+/// Diagnostic ("min_max_filter=emulate"): the shader emulates filtered MIN/MAX reductions even
+/// when the device has them, so a desktop GPU times the path consoles without them take.
+void SetEmulateMinMaxFilter(bool enabled);
 
 class Sampler {
 public:
@@ -591,6 +664,9 @@ public:
     /// What spirv_to_dxil's integer texture lowering emulates of this sampler, for a view whose
     /// last mip level (relative to the view) is last_level.
     [[nodiscard]] eden_integer_sampler_state IntegerState(u32 last_level) const;
+    /// EDEN_SAMPLER_REDUCTION_* the shader must apply: the guest asked for a filtered MIN/MAX
+    /// reduction this device cannot create, so the descriptor filters normally.
+    [[nodiscard]] u32 EmulatedReduction() const noexcept { return emulated_reduction; }
 
 private:
     TextureCacheRuntime* runtime{};
@@ -599,6 +675,8 @@ private:
     D3D12_FILTER filter{};
     D3D12_SAMPLER_DESC desc{};
     std::array<u64, 4> guest_raw{}; ///< Original TSC words, diagnostic comparison only.
+    u32 emulated_reduction{}; ///< EDEN_SAMPLER_REDUCTION_*
+    u32 emulated_filter{};    ///< EDEN_SAMPLER_FILTER_* bits, with emulated_reduction only
 };
 
 class Framebuffer {

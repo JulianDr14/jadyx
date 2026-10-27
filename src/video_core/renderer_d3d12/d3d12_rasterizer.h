@@ -23,6 +23,7 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_conditional_rendering.h"
 #include "video_core/renderer_d3d12/d3d12_query_cache.h"
+#include "video_core/renderer_d3d12/d3d12_stream_output.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_draw_hunt.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_material_trace.h"
@@ -39,7 +40,7 @@ void SetMaterialGpuProbeEnabled(bool enabled);
 
 class AccelerateDMA final : public Tegra::Engines::AccelerateDMAInterface {
 public:
-    AccelerateDMA(BufferCache& buffer_cache, TextureCache& texture_cache);
+    AccelerateDMA(BufferCache& buffer_cache, TextureCache& texture_cache, DrawHunt& draw_hunt);
     bool BufferCopy(GPUVAddr src, GPUVAddr dst, u64 amount) override;
     bool BufferClear(GPUVAddr address, u64 amount, u32 value) override;
     bool ImageToBuffer(const Tegra::DMA::ImageCopy&, const Tegra::DMA::ImageOperand&,
@@ -53,6 +54,7 @@ private:
                          const Tegra::DMA::ImageOperand&);
     BufferCache& buffer_cache;
     TextureCache& texture_cache;
+    DrawHunt& draw_hunt; ///< constructed after this; only used once the rasterizer runs
 };
 
 class RasterizerD3D12 final : public VideoCore::RasterizerInterface,
@@ -73,6 +75,7 @@ public:
     void ResetCounter(VideoCommon::QueryType type) override;
     void Query(GPUVAddr, VideoCommon::QueryType, VideoCommon::QueryPropertiesFlags, u32,
                u32) override;
+    bool HasDrawTransformFeedback() override;
     void BindGraphicsUniformBuffer(size_t, u32, GPUVAddr, u32) override;
     void DisableGraphicsUniformBuffer(size_t, u32) override;
     void FlushAll() override;
@@ -182,6 +185,9 @@ private:
         bool is_indexed;
         u32 runtime_first_vertex; ///< what gl_VertexIndex adds to SV_VertexID
     };
+    /// Root arguments of a vertex shader writing transform feedback (TransformFeedbackStorage).
+    void SetTransformFeedbackArguments(CommandStream* cmd, const PipelineLayout& layout,
+                                       const DrawParams& params);
     void CapturePickProbes(const GraphicsPipeline& pipeline, const PipelineBindings& bindings,
                            std::span<const TracedBuffer> geometry,
                            const Framebuffer& framebuffer, const DrawParams& params,
@@ -228,6 +234,10 @@ private:
     void UpdateScissors(CommandStream* cmd);
     [[nodiscard]] D3D12_RECT ScissorRect(size_t index) const;
     void QueryFallback(GPUVAddr, VideoCommon::QueryType, VideoCommon::QueryPropertiesFlags, u32);
+    /// StreamingByteCount from the stream output counters (see StreamOutput).
+    void QueryByteCount(GPUVAddr, VideoCommon::QueryPropertiesFlags, u32 stream);
+    /// DrawAuto: a draw of as many vertices as a transform feedback byte count holds.
+    void DrawByteCount(const IndirectParams& params);
 
     // Draw trace (diagnostics/d3d12_draw_trace.cpp).
     /// One trace line (SetDrawTrace): what was recorded or why it was skipped.
@@ -274,6 +284,7 @@ private:
     SamplerHeap& sampler_heap;
     BlitImageHelper& blit_helper;
     IndirectArgumentRing indirect_args;
+    StreamOutput stream_output;
     std::vector<u32> indirect_words; ///< CPU part of the ExecuteIndirect records
     GuestDescriptorQueue descriptor_queue;
     BufferCache buffer_cache;
@@ -316,6 +327,7 @@ private:
     FenceManager fence_manager;
     DrawHunt draw_hunt;
     bool logged_integer_clear{};
+    bool logged_indexed_transform_feedback{};
     bool logged_draw_texture{};
     bool logged_first_draw{};
     bool logged_stencil_ref{};
@@ -404,6 +416,11 @@ private:
     u64 material_sampled_depth_bytes{};
     void CaptureMaterialInputs(const GraphicsPipeline& pipeline,
                                std::span<const TracedBuffer> buffers, const DrawParams& params);
+    /// Menu capture: the stream output buffers and counters after a draw that captures transform
+    /// feedback natively, with its declaration and the guest's layout. Bounded per capture.
+    void CaptureMaterialStreamOutput(const GraphicsPipeline& pipeline, const DrawParams& params);
+    u32 material_xfb_draws{};
+    u64 material_xfb_bytes{};
     s32 material_probe_x{-1}, material_probe_y{-1};
     u32 material_probe_omitted{};
     void LogDrawTrace(std::string_view line);

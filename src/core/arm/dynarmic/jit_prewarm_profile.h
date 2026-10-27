@@ -62,7 +62,9 @@ struct Record : Dynarmic::BlockProfile {
     explicit Record(const Dynarmic::BlockProfile& block) : Dynarmic::BlockProfile{block} {}
 };
 using BuildId = std::array<std::uint8_t, 32>;
-constexpr std::size_t MaxRecords = 262144;
+// A large game compiles 330-440k distinct blocks per core by the time it reaches its world:
+// 262144 filled up and dropped the rest for good, which were then compiled during the load.
+constexpr std::size_t MaxRecords = 524288;
 constexpr std::size_t HeaderBytes = 8 + 8 + 32 + 4 + 4 + 8;
 constexpr std::size_t RecordBytes = 8 + 8 + 4 + 4;
 constexpr std::size_t LegacyRecordBytes = 8 + 8 + 4;

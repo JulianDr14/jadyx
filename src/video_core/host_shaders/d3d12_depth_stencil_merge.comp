@@ -30,7 +30,7 @@ layout(push_constant) uniform Params {
     uint width;
     uint height;
     uint row_texels;     // guest texels per row (at least width)
-    uint layout_mode;    // 0 Z24S8, 1 S8Z24, 2 X8Z24, 3 ZF32_X24S8 (d3d12_blit_image.h)
+    uint layout_mode;    // 0 Z24S8, 1 S8Z24, 2 X8Z24, 3 ZF32_X24S8, 4 S8 (d3d12_blit_image.h)
     uint unused;
 };
 
@@ -38,6 +38,24 @@ void main() {
     const uint x = gl_GlobalInvocationID.x;
     const uint y = gl_GlobalInvocationID.y;
     if (x >= row_texels || y >= height) {
+        return;
+    }
+    if (layout_mode == 4u) {
+        // S8: one stencil byte per texel, four to a word; the invocation of the first texel of
+        // each word writes it.
+        if (x % 4 != 0) {
+            return;
+        }
+        const uint fy = region_y + y;
+        uint word = 0u;
+        for (uint i = 0; i < 4; ++i) {
+            if (x + i < width) {
+                const uint fx = region_x + x + i;
+                const uint stencil_word = plane_words[stencil_offset + fy * stencil_pitch + fx / 4];
+                word |= ((stencil_word >> ((fx % 4) * 8)) & 0xFFu) << (i * 8);
+            }
+        }
+        packed_words[packed_offset + y * packed_row + x / 4] = word;
         return;
     }
     uint depth = 0u;

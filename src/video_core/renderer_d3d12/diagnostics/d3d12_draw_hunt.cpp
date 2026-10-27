@@ -32,6 +32,7 @@ constexpr u32 PROFILE_HZ = 500;
 constexpr u32 WARMUP_FRAMES = 30;
 
 std::atomic<u32> hunt_requested{};
+std::atomic<u64> hunt_on_compute{};
 
 struct NamedCounter {
     Counter counter;
@@ -94,8 +95,23 @@ void HuntNextFrames(u32 frames) {
     hunt_requested.store(std::clamp<u32>(frames, 1, 120), std::memory_order_relaxed);
 }
 
+void HuntOnCompute(u64 hash) {
+    hunt_on_compute.store(hash, std::memory_order_relaxed);
+}
+
+void NoteComputeDispatch(u64 hash, u64 count) {
+    constexpr u64 WARM_DISPATCHES = 64;
+    if (count == WARM_DISPATCHES && hash == hunt_on_compute.load(std::memory_order_relaxed)) {
+        LOG_INFO(Render, "D3D12 hunt: compute shader {:016x} warm, capturing", hash);
+        HuntNextFrames();
+    }
+}
+
 DrawHunt::DrawHunt(const Device& device_, Scheduler& scheduler_)
-    : device{device_}, scheduler{scheduler_} {}
+    : device{device_}, scheduler{scheduler_} {
+    scheduler.RegisterOnSubmit([this] { ListEnd(); });
+    scheduler.RegisterOnReset([this] { ListStart(); });
+}
 
 DrawHunt::~DrawHunt() {
     if (owns_profiler) {
@@ -243,6 +259,25 @@ u32 DrawHunt::PassOf(const Framebuffer& framebuffer) {
     });
 }
 
+void DrawHunt::ListStart() {
+    if (state == State::Capturing) {
+        Baseline();
+    }
+}
+
+void DrawHunt::ListEnd() {
+    // A list the capture began in the middle of has no baseline: its tail stays unmeasured.
+    if (state != State::Capturing || !heap || !capture.HasBaseline(scheduler.CurrentTick())) {
+        return;
+    }
+    Hunt::Record record;
+    record.kind = Hunt::Kind::ListEnd;
+    record.outcome = Hunt::Outcome::Recorded;
+    record.frame = capture.Frame();
+    record.timestamp = Stamp();
+    capture.Add(record);
+}
+
 void DrawHunt::Baseline() {
     const u64 tick = scheduler.CurrentTick();
     if (!heap || capture.HasBaseline(tick)) {
@@ -290,6 +325,21 @@ void HuntScope::Target(const Framebuffer* framebuffer) {
         record.pass = hunt->PassOf(*framebuffer);
     }
     hunt->Baseline();
+}
+
+void HuntScope::Setup(Hunt::Kind kind) {
+    // As for a list tail: without a baseline the setup has nothing to be timed from.
+    if (!hunt || !hunt->heap || !hunt->capture.HasBaseline(hunt->scheduler.CurrentTick())) {
+        return;
+    }
+    Hunt::Record setup;
+    setup.kind = kind;
+    setup.outcome = Hunt::Outcome::Recorded;
+    setup.frame = hunt->capture.Frame();
+    setup.vs = record.vs;
+    setup.ps = record.ps;
+    setup.timestamp = hunt->Stamp();
+    hunt->capture.Add(setup);
 }
 
 void HuntScope::Recorded() {

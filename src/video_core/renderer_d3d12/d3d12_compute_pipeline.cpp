@@ -40,8 +40,10 @@ bool ComputePipelineCacheKey::operator==(const ComputePipelineCacheKey& rhs) con
 ComputePipeline::ComputePipeline(const Device& device_, VideoCore::ShaderNotify* shader_notify,
                                  Common::ThreadWorker* worker_thread, u64 unique_hash_,
                                  std::vector<u8> dxil_, const Shader::Info& info_,
-                                 const PipelineLayout& layout_)
-    : device{device_}, unique_hash{unique_hash_}, layout{layout_}, dxil{std::move(dxil_)},
+                                 const PipelineLayout& layout_, bool emulate_reduction_,
+                                 u32 workgroup_split_)
+    : device{device_}, unique_hash{unique_hash_}, emulate_reduction{emulate_reduction_},
+      workgroup_split{workgroup_split_}, layout{layout_}, dxil{std::move(dxil_)},
       dxil_charge{Common::MemoryAccount::ShaderBytecode, dxil.capacity()}, info{info_} {
     std::ranges::copy(info.constant_buffer_used_sizes, uniform_buffer_sizes.begin());
     if (shader_notify) {
@@ -133,7 +135,7 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
     const ImageViewInOut* views_it = views.data();
     views_it += Shader::NumDescriptors(info.texture_buffer_descriptors);
     views_it += Shader::NumDescriptors(info.image_buffer_descriptors);
-    const bool has_integer_samplers = layout.IntegerSamplerIndex() != PipelineLayout::NO_TABLE;
+    const bool has_sampler_table = layout.IntegerSamplerIndex() != PipelineLayout::NO_TABLE;
     IntegerSamplerTable integer_samplers;
     u32 texture_binding = FirstTextureBinding(info, 0);
     for (const auto& desc : info.texture_descriptors) {
@@ -147,8 +149,12 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
                 "binding={} type={} srv=[{}] sampler=[{}]", texture_binding,
                 static_cast<u32>(desc.type), image_view.DescribeSrv(desc.type, false),
                 texture_cache.GetSampler(sampler_id).Describe()));
-            if (has_integer_samplers && desc.is_integer) {
-                integer_samplers.Add(texture_binding, texture_cache.GetSampler(sampler_id), image_view);
+            const Sampler& sampler = texture_cache.GetSampler(sampler_id);
+            if (has_sampler_table && (desc.is_integer || emulate_reduction)) {
+                integer_samplers.Add(texture_binding, sampler, image_view);
+            }
+            if (!emulate_reduction && sampler.EmulatedReduction() != 0 && ReducibleTexture(desc)) {
+                out.unemulated_reduction_stages = 1;
             }
             image_transitions.emplace_back(view_id, false);
             if (out.trace_all_views) out.trace_all_views->push_back({view_id, false, desc.type});
@@ -157,7 +163,8 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
     PushStorageImages(info, texture_cache, queue, views_it, image_transitions);
 
     BarrierBatch barriers{context.scheduler};
-    for (const auto& [view_id, is_storage] : image_transitions) {
+    ForEachImageTransition(image_transitions, texture_cache, [&](VideoCommon::ImageViewId view_id,
+                                                                 bool is_storage) {
         if (out.trace_all_views && is_storage) out.trace_all_views->push_back({view_id, true});
         if (GpuDiagnosticsEnabled()) {
             const auto& view = texture_cache.GetImageView(view_id);
@@ -169,7 +176,7 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
             is_storage ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                        : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             &barriers);
-    }
+    });
     barriers.Flush();
 
     out.resource_table = queue.Table();
@@ -189,9 +196,12 @@ void ComputePipeline::Build() {
     };
     ID3D12Device* const raw = device.Get();
     DWORD fault = 0;
-    const HRESULT hr = CallDriverGuarded(
-        [&] { return raw->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline_state)); },
-        fault);
+    const HRESULT hr = [&] {
+        std::shared_lock build_lock{PipelineBuildMutex()};
+        return CallDriverGuarded(
+            [&] { return raw->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline_state)); },
+            fault);
+    }();
     if (hr == DRIVER_FAULT_HRESULT) {
         pipeline_state.Detach(); // whatever the driver left there is not an object to release
         BUG_TRACK_KEY(PipelineRejected, unique_hash,

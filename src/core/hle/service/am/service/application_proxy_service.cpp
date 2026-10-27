@@ -18,6 +18,7 @@
 #include "core/hle/service/am/service/common_state_getter.h"
 #include "core/hle/service/am/service/debug_functions.h"
 #include "core/hle/service/am/service/display_controller.h"
+#include "core/hle/service/am/service/library_applet_accessor.h"
 #include "core/hle/service/am/service/library_applet_creator.h"
 #include "core/hle/service/am/service/process_winding_controller.h"
 #include "core/hle/service/am/service/self_controller.h"
@@ -101,11 +102,11 @@ Event* AppletEvent(Applet& applet, u32 slot) {
     }
 }
 
-constexpr std::array<std::string_view, 11> ChildKinds{
+constexpr std::array<std::string_view, 12> ChildKinds{
     "IApplicationProxy",     "ICommonStateGetter",        "ISelfController",
     "IWindowController",     "IAudioController",          "IDisplayController",
     "IDebugFunctions",       "IProcessWindingController", "ILibraryAppletCreator",
-    "IApplicationFunctions", "IStorage",
+    "IApplicationFunctions", "IStorage",                  "ILibraryAppletAccessor",
 };
 
 } // namespace
@@ -175,6 +176,13 @@ SessionRequestHandlerPtr IApplicationProxyService::PulseRestore(std::string_view
         out = std::make_shared<ILibraryAppletCreator>(system, applet, m_window_system);
     } else if (kind == "IApplicationFunctions") {
         out = std::make_shared<IApplicationFunctions>(system, applet);
+    } else if (kind == "ILibraryAppletAccessor") {
+        // A library applet the application created but had not started.
+        const auto applet_id = static_cast<AppletId>(in.U32());
+        const auto mode = static_cast<LibraryAppletMode>(in.U32());
+        auto accessor = CreateFrontendApplet(system, m_window_system, applet, applet_id, mode);
+        accessor->PulseLoad(in);
+        out = std::move(accessor);
     } else {
         std::vector<u8> data(in.Count(1));
         in.Bytes(data);

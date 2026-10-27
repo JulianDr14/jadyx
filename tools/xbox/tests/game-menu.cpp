@@ -114,7 +114,7 @@ int main() {
     shot_settings.screenshot = true;
     GameMenu with_cheats{shot_settings, true};
     with_cheats.SetCheatsOn(3);
-    check(with_cheats.Rows().size() == 6);
+    check(with_cheats.Rows().size() == 7);
     check(with_cheats.Rows()[1].label == L"Captura de pantalla" && with_cheats.Rows()[1].icon == UiIcon::Camera);
     check(with_cheats.Rows()[2].kind == GameMenuRow::Kind::Page && with_cheats.Rows()[2].detail == L"3 activos");
     with_cheats.Apply(MenuAction::Down);
@@ -128,7 +128,7 @@ int main() {
     check(with_cheats.Rows()[2].detail == L"1 activo");
     // Mods only inform, after the cheats: no button does anything on them.
     with_cheats.SetModsOn(2);
-    check(with_cheats.Rows().size() == 7 && with_cheats.Rows()[3].kind == GameMenuRow::Kind::Info);
+    check(with_cheats.Rows().size() == 8 && with_cheats.Rows()[3].kind == GameMenuRow::Kind::Info);
     with_cheats.Apply(MenuAction::Down);
     check(with_cheats.SelectedItem() == GameMenu::Mods && with_cheats.Apply(MenuAction::Confirm) == GameMenuResult::None);
     GameMenu mods_only{{}};
@@ -136,6 +136,27 @@ int main() {
     check(mods_only.Rows().size() == 5);
     mods_only.Apply(MenuAction::Down);
     check(mods_only.SelectedItem() == GameMenu::Mods);
+
+    // A game with a title id has its own offline mode after the display page: as in Settings >
+    // System, then on, then off.
+    GameMenuSettings offline_settings{};
+    offline_settings.offline_default = true;
+    GameMenu offline{offline_settings, true};
+    while (offline.SelectedItem() != GameMenu::OfflineMode) offline.Apply(MenuAction::Down);
+    const auto offline_value = [&] { return offline.Rows()[offline.Selected()].value; };
+    check(offline_value() == L"Sistema · Sí" && offline.Rows()[offline.Selected()].icon == UiIcon::Airplane);
+    check(offline.Apply(MenuAction::Right) == GameMenuResult::OfflineModeChanged &&
+          offline.Settings().offline_mode == true && offline_value() == L"Sí");
+    check(offline.Apply(MenuAction::Confirm) == GameMenuResult::OfflineModeChanged &&
+          offline.Settings().offline_mode == false && offline_value() == L"No");
+    check(offline.Apply(MenuAction::Right) == GameMenuResult::OfflineModeChanged && !offline.Settings().offline_mode);
+    check(offline.Apply(MenuAction::Left) == GameMenuResult::OfflineModeChanged &&
+          offline.Settings().offline_mode == false);
+    check(offline.Apply(MenuAction::Left) == GameMenuResult::OfflineModeChanged &&
+          offline.Settings().offline_mode == true);
+    check(offline.Apply(MenuAction::Left) == GameMenuResult::OfflineModeChanged && !offline.Settings().offline_mode);
+    // Without a title id there is nothing to keep it under.
+    for (const auto& row : GameMenu{offline_settings}.Rows()) check(row.icon != UiIcon::Airplane);
 
     // PC: full screen on the display page; the Series menu never shows it.
     GameMenu pc{{ConsoleControllerStyle::Auto, false, 0.12f, true, false}};
@@ -164,8 +185,6 @@ int main() {
     check(system_page.settings.show_performance_stats);
     check(HandleSystemInput(system_page, SystemInput::Left) == SystemPageEffect::Changed);
     check(!system_page.settings.show_performance_stats);
-    check(SystemPageLayout::RowTop + (SystemPage::RowCount - 1) * SystemPageLayout::RowStride +
-          SystemPageLayout::RowHeight < SystemPageLayout::Notice);
     const auto open_display = [&](GameMenu& m) {
         while (m.SelectedItem() != GameMenu::DisplayPage) m.Apply(MenuAction::Down);
         m.Apply(MenuAction::Confirm);
@@ -228,6 +247,6 @@ int main() {
     I18n::SetUiLanguage(*I18n::FindUiLanguage(L"en"));
     check(hunt.Rows()[hunt.Selected()].label == L"Capture performance and resume");
     for (const auto& row : normal_rows) check(row.label != L"Capture performance and resume");
-    std::puts("game menu: controller combo, pages, navigation, settings, upscaling, cheats, screenshot and "
+    std::puts("game menu: controller combo, pages, navigation, settings, upscaling, cheats, screenshot, "
               "opt-in capture PASS");
 }

@@ -119,9 +119,23 @@ int main() {
           SystemRowValue(page, SystemPage::MultipleControllers) == L"No");
     check(HandleSystemInput(page, SystemInput::Right) == SystemPageEffect::Changed &&
           page.settings.multiple_controllers);
+    // Games stay offline unless the player turns it off.
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
+          page.selected == SystemPage::OfflineMode && page.settings.offline_mode);
+    check(SystemRowValue(page, SystemPage::OfflineMode) == L"Sí");
+    check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::Changed &&
+          !page.settings.offline_mode && SystemRowValue(page, SystemPage::OfflineMode) == L"No");
+    check(HandleSystemInput(page, SystemInput::Right) == SystemPageEffect::Changed &&
+          page.settings.offline_mode);
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
+          page.selected == SystemPage::MiiEditor);
+    check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::OpenMiiEditor);
     check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
           page.selected == SystemPage::ClearCache);
     check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::ClearCache);
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
+          page.selected == SystemPage::Updates);
+    check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::OpenUpdates);
     check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
           page.selected == SystemPage::UserName);
     check(HandleSystemInput(page, SystemInput::Left) == SystemPageEffect::None && !page.name_editor);

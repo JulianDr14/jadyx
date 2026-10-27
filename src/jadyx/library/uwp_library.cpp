@@ -2026,9 +2026,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 system.SetFilesystem(MakeUwpFilesystem());
                 system.GetFileSystemController().CreateFactories(*system.GetFilesystem());
                 FileSys::ManualContentProvider provider;
-                const auto resolved = Content::ResolveLaunchContent(*system.GetFilesystem(), path, provider, false, {}, Content::ReportedSystemVersion(system));
+                const auto resolved = Content::ResolveLaunchContent(*system.GetFilesystem(), path, provider);
                 if (resolved.error == Content::Error::Unavailable) return std::string{"content-missing"};
-                return resolved.error == Content::Error::None ? std::string{} : I18n::ToUtf8(Tr(Content::ErrorText(resolved.error)));
+                return resolved.error == Content::Error::None ? std::string{} : I18n::ToUtf8(Content::LaunchErrorText(resolved));
             }};
             validation = task.get_future();
             validation_worker = std::jthread(std::move(task));

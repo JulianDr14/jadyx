@@ -36,6 +36,12 @@ void NetConnect::ExecuteInteractive() {
 void NetConnect::Execute() {
     if (complete)
         return;
+    // There is no connection UI: the applet ends as if closed without connecting. Left running,
+    // the guest waits on it forever and Pulse cannot save.
+    LOG_INFO(Service_AM, "NetConnect: no connection UI, closing");
+    complete = true;
+    PushOutData(std::make_shared<IStorage>(system, std::vector<u8>(0x1000)));
+    Exit();
 }
 
 Result NetConnect::RequestExit() {

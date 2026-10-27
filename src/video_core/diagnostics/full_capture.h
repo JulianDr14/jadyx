@@ -18,6 +18,10 @@ bool Enabled() noexcept;
 bool Active() noexcept;
 void SetSession(std::string_view detail) noexcept;
 void RequestSelfTest(bool value) noexcept;
+// Skips the before-operation render target readback; the previous operation's after copy
+// usually holds the same bytes, and the targets are most of a capture's cost.
+void SetTargetsAfterOnly(bool value) noexcept;
+bool TargetsAfterOnly() noexcept;
 bool TakeSelfTest() noexcept;
 bool Begin(const std::filesystem::path& directory) noexcept;
 void End(bool intervals_complete) noexcept;

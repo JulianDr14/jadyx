@@ -244,6 +244,20 @@ public:
                   return text;
               });
     }
+    void SOSetTargets(UINT start, UINT count, const D3D12_STREAM_OUTPUT_BUFFER_VIEW* views) {
+        Array("SOSetTargets", views, count,
+              [=](List* list, const D3D12_STREAM_OUTPUT_BUFFER_VIEW* copy) {
+                  list->SOSetTargets(start, count, copy);
+              },
+              [=](const D3D12_STREAM_OUTPUT_BUFFER_VIEW* copy) {
+                  std::string text = fmt::format("start={} count={}", start, count);
+                  for (UINT i = 0; i < count; ++i) {
+                      text += fmt::format(" [VA={:x} bytes={} filled={:x}]", copy[i].BufferLocation,
+                                          copy[i].SizeInBytes, copy[i].BufferFilledSizeLocation);
+                  }
+                  return text;
+              });
+    }
     void RSSetViewports(UINT count, const D3D12_VIEWPORT* viewports) {
         Array("RSSetViewports", viewports, count,
               [count](List* list, const D3D12_VIEWPORT* copy) { list->RSSetViewports(count, copy); },
@@ -529,6 +543,23 @@ public:
                                       static_cast<void*>(heap), static_cast<u32>(type), first,
                                       count, dst_offset, DescribeResource(dst));
                });
+    }
+    /// ID3D12GraphicsCommandList2::WriteBufferImmediate; the destinations are in COPY_DEST.
+    void WriteBufferImmediate(UINT count, const D3D12_WRITEBUFFERIMMEDIATE_PARAMETER* params) {
+        Array("WriteBufferImmediate", params, count,
+              [count](List* list, const D3D12_WRITEBUFFERIMMEDIATE_PARAMETER* copy) {
+                  ComPtr<ID3D12GraphicsCommandList2> list2;
+                  if (SUCCEEDED(list->QueryInterface(IID_PPV_ARGS(&list2)))) {
+                      list2->WriteBufferImmediate(count, copy, nullptr);
+                  }
+              },
+              [count](const D3D12_WRITEBUFFERIMMEDIATE_PARAMETER* copy) {
+                  std::string text = fmt::format("count={}", count);
+                  for (UINT i = 0; i < count; ++i) {
+                      text += fmt::format(" [VA={:x} value={:#x}]", copy[i].Dest, copy[i].Value);
+                  }
+                  return text;
+              });
     }
 
 private:

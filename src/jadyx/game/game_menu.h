@@ -106,6 +106,9 @@ struct GameMenuSettings {
     bool performance_capture{};
     /// The paused frame was read back: the menu can save it as a screenshot.
     bool screenshot{};
+    /// This game's own offline mode; nullopt follows Settings > System (`offline_default`).
+    std::optional<bool> offline_mode;
+    bool offline_default{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -116,6 +119,7 @@ enum class GameMenuResult : std::uint8_t {
     CaptureGraphics,
     CapturePerformance,
     Screenshot,
+    OfflineModeChanged,
 };
 
 /// One row as drawn: a label, a line under it, and the value of a setting (changed with
@@ -136,16 +140,17 @@ class GameMenu {
 public:
     enum Item : std::size_t {
         Continue, Cheats, Mods, Style, FaceButtons, Deadzone, FullScreen, ImageUpscaling, PerformanceStats, Library,
-        CaptureGraphics, CapturePerformance, Screenshot, ControllerPage, DisplayPage,
+        CaptureGraphics, CapturePerformance, Screenshot, ControllerPage, DisplayPage, OfflineMode,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display };
 
-    /// `cheats`: the game can have cheats (it has a title id), so the menu offers them.
+    /// `cheats`: the game has a title id, so the menu offers its cheats and its own offline mode.
     explicit GameMenu(GameMenuSettings settings_, bool cheats = false) : settings{settings_} {
         quick = {Continue};
         if (settings.screenshot) quick.push_back(Screenshot);
         if (cheats) quick.push_back(Cheats);
         quick.insert(quick.end(), {ControllerPage, DisplayPage});
+        if (cheats) quick.push_back(OfflineMode);
         if (settings.material_capture) quick.push_back(CaptureGraphics);
         if (settings.performance_capture) quick.push_back(CapturePerformance);
         quick.push_back(Library);
@@ -275,6 +280,13 @@ private:
             return {Tr(Text::PerformanceStats), Tr(settings.show_performance_stats ? Text::Yes : Text::No), Choice};
         case FullScreen:
             return {Tr(Text::MenuFullScreen), Tr(settings.fullscreen ? Text::Yes : Text::No), Choice};
+        case OfflineMode: {
+            const auto yes_no = [](bool on) { return Tr(on ? Text::Yes : Text::No); };
+            return {Tr(Text::OfflineMode),
+                    settings.offline_mode ? yes_no(*settings.offline_mode)
+                                          : I18n::Format(Text::MenuOfflineSystem, {yes_no(settings.offline_default)}),
+                    Choice, Tr(Text::MenuOfflineThisGame), UiIcon::Airplane};
+        }
         case Library:
             if (!settings.pulse_sessions) return {Tr(Text::MenuBackToHome), {}, Action, {}, UiIcon::Exit};
             return {Tr(Text::MenuBackToHome), {}, Choice,
@@ -340,6 +352,14 @@ private:
         case FullScreen:
             settings.fullscreen = !settings.fullscreen;
             return GameMenuResult::FullScreen;
+        case OfflineMode: {
+            // Steps through: as in Settings > System, on, off.
+            auto& offline = settings.offline_mode;
+            if (!offline) offline = !back;
+            else if (*offline == !back) offline = back;
+            else offline.reset();
+            return GameMenuResult::OfflineModeChanged;
+        }
         }
         return GameMenuResult::None;
     }

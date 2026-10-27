@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <charconv>
 #include <chrono>
 #include <condition_variable>
@@ -49,6 +50,7 @@
 #include "common/scm_rev.h"
 #include "common/settings.h"
 #include "common/thread.h"
+#include "common/windows/cpu_pin.h"
 #include "common/windows/timed_wait_profile.h"
 #include "common/windows/sampling_profiler.h"
 #include "common/windows/timer_resolution.h"
@@ -74,6 +76,8 @@
 #include "core/hle/service/am/applet_manager.h"
 #include "core/hle/service/am/frontend/applets.h"
 #include "core/hle/service/filesystem/filesystem.h"
+#include "core/hle/service/nvdrv/devices/nvdisp_disp0.h"
+#include "core/hle/service/nvdrv/devices/nvhost_ctrl.h"
 #include "core/loader/loader.h"
 #include "core/memory/cheat_engine.h"
 #include "hid_core/hid_core.h"
@@ -81,12 +85,16 @@
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
+#include "video_core/macro.h"
 #include "video_core/perf_counters.h"
+#include "video_core/query_cache.h"
+#include "video_core/readback_trace.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 #include "video_core/renderer_d3d12/d3d12_menu_image.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_mode.h"
 
+#include "jadyx/app/cpu_probe.h"
 #include "jadyx/app/alloc_watch.h"
 #include "jadyx/cheats/cheat_session.h"
 #include "jadyx/cheats/cheats_page.h"
@@ -108,6 +116,7 @@
 #include "jadyx/input/uwp_controllers.h"
 #include "jadyx/input/keyboard_bindings.h"
 #include "jadyx/library/uwp_library.h"
+#include "jadyx/storage/storage_path.h"
 #include "jadyx/storage/uwp_rom_storage.h"
 #include "jadyx/content/content_service.h"
 #include "jadyx/mods/mod_settings.h"
@@ -126,6 +135,8 @@ void SetTracedFrame(u32 frame, u32 count);
 void TraceNextFrames(u32 count);
 void TraceNextMaterialFrame(u64 pixel_shader = 0);
 void HuntNextFrames(u32 frames = 8);     // diagnostics/d3d12_draw_hunt.h
+void HuntOnCompute(u64 hash);            // diagnostics/d3d12_draw_hunt.h
+void SetComputeInputsShader(u64 hash);   // diagnostics/d3d12_compute_inputs.h
 void SetMaterialProbe(s32 x, s32 y);
 void SetMaterialCaptureFrame(u32 frame);
 void SetMaterialSnapshotShaders(u64 first, u64 second);
@@ -143,7 +154,14 @@ void RemoveDeviceForProbe(VideoCore::RendererBase& renderer);
 void SetBcArrayDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuVerify(bool enabled); // d3d12_texture_cache.h
+void SetStencilBlitVerify(bool enabled); // d3d12_texture_cache.h
+enum class DxilSignMode; // d3d12_shader_compiler.h
+void SetDxilSignMode(DxilSignMode mode);
+void SetDxilDiskCacheEnabled(bool enabled); // d3d12_dxil_disk_cache.h
 void SetAstcGpuSync(bool enabled); // d3d12_texture_cache.h
+void SetForceMinMaxFilter(bool enabled); // d3d12_texture_cache.h
+void SetSkipMinMaxFilter(bool enabled); // d3d12_texture_cache.h
+void SetEmulateMinMaxFilter(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuFresh(bool enabled); // d3d12_texture_cache.h
 void SetGpuBasedValidation(bool enabled); // d3d12_device.h
 void SetDredEnabled(bool enabled);         // d3d12_device.h
@@ -151,12 +169,15 @@ void SetGpuBreadcrumbsEnabled(bool enabled); // d3d12_device.h
 void SetCloseProbeEnabled(bool enabled);     // d3d12_device.h
 void SetPipelineEviction(bool enabled);      // d3d12_pipeline_cache.h
 void SetPipelinePrewarm(bool enabled);       // d3d12_pipeline_cache.h
+void SetComputeWorkgroupSplit(u32 factor);   // d3d12_pipeline_cache.h
+void SetTransformFeedbackStorage(bool enabled); // d3d12_pipeline_cache.h
 void SetDescriptorRemovalChecks(bool enabled); // d3d12_device.h
 void SetUniformUploadCopy(bool enabled);
 void SetDrawSamplerReuse(bool enabled);
 enum class PixelShaderScratchMode : u8; // d3d12_local_memory_scratch.h: Auto, Uav, Native
 void SetPixelShaderScratchMode(PixelShaderScratchMode mode);
 void SetAsyncRecording(bool enabled);          // d3d12_scheduler.h
+void SetDiagUavSync(bool enabled);             // d3d12_scheduler.h
 using AppMemoryQuery = bool (*)(u64& used, u64& limit); // d3d12_device.h
 void SetAppMemoryQuery(AppMemoryQuery query);            // d3d12_device.h
 } // namespace D3D12
@@ -168,6 +189,7 @@ void SetXAudio2ProfileEnabled(bool enabled) noexcept; // audio_core/sink/xaudio2
 namespace VideoCommon {
 void SetAstcArrayRecompression(bool enabled) noexcept; // texture_cache/util.h
 void SetOpaqueAstcToBc1(bool enabled) noexcept;        // texture_cache/util.h
+void SetMipRenderTargets(bool enabled) noexcept;       // texture_cache/texture_cache_base.h
 } // namespace VideoCommon
 
 namespace {
@@ -181,6 +203,7 @@ std::atomic<int> g_fullscreen_request{-1};
 void WriteDiag(const std::string& msg); // defined with the UWP entry point below
 void WritePulseLog(const std::string& msg); // jadyx_pulse.txt, defined next to WriteDiag
 std::string MemoryReport();             // likewise
+std::string CpuSetReport();             // likewise
 std::string MemoryOwners();             // likewise
 std::string GuestMemoryReport(Core::System& system); // likewise
 u64 TrimFreeGuestMemory(Core::System& system, u64 budget); // likewise
@@ -206,6 +229,8 @@ constexpr int RETURN_TO_LIBRARY = 10;
 constexpr int PULSE_RESUME_FAILED = 18;
 /// The library asked for the Mii editor and the firmware does not have it.
 constexpr int MII_EDITOR_MISSING = 19;
+/// The game's program has no ExeFS of its own (a sparse base) and no update brings one.
+constexpr int UPDATE_REQUIRED = 20;
 
 /// Where the renderer presents: the CoreWindow (as IUnknown*) and its size in physical pixels.
 /// A null window selects the Null renderer.
@@ -255,12 +280,25 @@ static void ApplyGameLanguage(Core::System& system) {
 struct BootConfig {
     /// > 0: the payload does not emit the sentinels (deko3d examples, games, ...); run it this long.
     u32 run_seconds{};
+    /// > 0: the game's bottleneck capture starts this many seconds into the session ("hunt_at="),
+    /// so PC runs time a scene with no one at the pad.
+    u32 hunt_at{};
+    /// The bottleneck capture starts at the 64th dispatch of this compute shader ("hunt_cs=").
+    u64 hunt_cs{};
+    /// The storage buffers of this compute shader are dumped around four dispatches ("cs_inputs=").
+    u64 cs_inputs{};
+    /// > 0: the session closes this many seconds in ("quit_at="), for unattended PC runs.
+    u32 quit_at{};
     /// PC test budget; hard process-commit enforcement belongs to local-run.ps1.
     u32 memory_limit_mib{};
     /// Per-core JIT code cache ("jit_cache_mib="). Full, it is cleared with all the blocks'
     /// metadata, so it bounds the JIT's memory: a large game compiled 400+ MiB in two minutes on
     /// the default 512 MiB per core, and 1 GiB with the metadata, without ever releasing any.
-    u32 jit_cache_mib{128};
+    /// At 128 the same game filled it twice during its load (~150 MiB a core) and recompiled
+    /// everything; it is committed as it fills, so a smaller game never pays for the rest.
+    /// Short of memory, the caches stop growing instead (JIT_CAP_FLOOR): at 128 for a game that
+    /// had come close, it compiled 1.2M blocks loading.
+    u32 jit_cache_mib{256};
     /// D3D12 debug layer (renderer_debug); PC only, the console has no SDK layers.
     bool debug_layer{};
     /// With the debug layer, GPU-based validation too ("debug_layer=gbv").
@@ -278,6 +316,30 @@ struct BootConfig {
     /// Build dormant PSOs in the background while memory is plentiful ("pso_prewarm=0" leaves
     /// them to their first draw).
     bool pso_prewarm{true};
+    /// Transform feedback through vertex shader storage writes instead of stream output
+    /// ("xfb=storage"): the fallback, for A/B comparison.
+    bool xfb_storage{};
+    /// Indirect draw macros read GPU-written arguments back on the CPU ("indirect_macro_cpu=1"):
+    /// A/B against drawing from the GPU-side arguments.
+    bool indirect_macro_cpu{};
+    /// Sample counts reach the guest as never zero ("occlusion_force_visible=1"): A/B for
+    /// objects the game's occlusion culling drops.
+    bool occlusion_force_visible{};
+    /// A global UAV barrier after every draw and dispatch ("uav_sync=1"): A/B for flicker from a
+    /// barrier the renderer misses.
+    bool uav_sync{};
+    /// Depth targets at a mip level of a mipmapped image become separate aliased images again
+    /// ("mip_rt=0"): reproduces the alias path depth pyramids took before.
+    bool mip_render_targets{true};
+    /// Filtered MIN/MAX sampler reductions go to the hardware although the device reports no
+    /// support ("min_max_filter=force").
+    bool force_min_max_filter{};
+    /// Filtered MIN/MAX samplers filter normally with no shader emulation ("min_max_filter=off"):
+    /// A/B for the cost of the emulation; results are wrong.
+    bool skip_min_max_filter{};
+    /// The shader emulates filtered MIN/MAX reductions the device has ("min_max_filter=emulate"):
+    /// times on a desktop GPU the path consoles without the reductions take.
+    bool emulate_min_max_filter{};
     /// Look for a removed device after every descriptor a draw writes ("descriptor_checks=1"), to
     /// name the view that removed it; costs a kernel call per descriptor.
     bool descriptor_checks{};
@@ -292,6 +354,10 @@ struct BootConfig {
     bool dump_guest_shaders{};
     bool full_gpu_capture{};
     bool full_gpu_capture_self_test{};
+    /// Render targets are read back only after each operation ("gpu_capture_targets=after").
+    bool full_gpu_capture_targets_after{};
+    /// Logs CPU buffer writes lost to GPU-written ranges ("buffer_write_origins=1").
+    bool buffer_write_origins{};
     /// Per-core JIT elapsed time and slow callback counts ("cpu_profile=1"). Diagnostic only.
     bool cpu_profile{};
     /// In-process sampling profiler over every named thread ("profile=1"; "profile=full" adds the
@@ -321,6 +387,12 @@ struct BootConfig {
     /// Make the D3D12 command list calls on a thread of their own, so the GPU thread only records
     /// them ("async_record=0" makes them on the GPU thread, as before the recorder).
     bool async_record{true};
+    /// An NV event the guest keeps giving up on stalls the guest until the GPU reaches it
+    /// ("nv_event_stall=1", as before); by default the GPU commands are flushed and the wait goes on.
+    bool nv_event_stall{false};
+    /// Release the displayed buffers with a fence on the composite ("nv_release_fence=0" releases
+    /// them with none and waits for every composite, as before).
+    bool nv_release_fence{true};
     /// Keep the previous draw's pipeline while no register its key reads changed
     /// ("pipeline_key_reuse=1"; "=check" refreshes the key and logs every reuse that would have
     /// drawn with another pipeline). Off by default until a gain is measured on the console.
@@ -333,6 +405,19 @@ struct BootConfig {
     /// Host timing waits sleep on a high-resolution timer and wait only its lateness on the CPU
     /// ("timer_sleep=0" waits the last timer tick on the CPU, as before).
     bool timer_sleep{true};
+    /// Most microseconds a host timing wait spends on the CPU before its deadline
+    /// ("timer_spin=<us>"); past that a late timer makes the event late. Unset follows the
+    /// timer's learned lateness ("timer_spin=auto"), which on Series keeps nearly every wait on
+    /// the CPU: 0.3.8.70 measured a whole core spent there and 2-3 FPS less than with 100 us.
+    std::optional<u32> timer_spin_us{100};
+    /// Exclusive loads and stores emitted inline through the page table ("inline_exclusives=0"
+    /// calls the exclusive monitor for each one, as before 0.3.8.71).
+    bool inline_exclusives{true};
+    /// Where the guest cores and other named threads run among the app's cores ("cpu_pin=cores"
+    /// gives each guest core a physical core, "cpu_pin=split" its first logical processor and the
+    /// rest the second ones); off leaves them to the scheduler.
+    Common::Windows::CpuPin cpu_pin{Common::Windows::CpuPin::Off};
+    bool cpu_probe{}; ///< Measures the app's logical processors before the guest (cpu_probe.h).
     bool timer_profile{}; ///< HostTiming waits only; opt-in, separate from draw profiling.
     /// File name of a game in LocalState\games to boot instead of boot.nro (package-appx.ps1 -Game).
     std::string game;
@@ -367,6 +452,11 @@ struct BootConfig {
     /// the rest ("astc_opaque=bc3").
     bool astc_opaque_bc3{};
     bool astc_verify{};
+    bool stencil_blit_verify{};
+    /// DXIL signing: 0 the validator, 1 own digest ("dxil_sign=hash"), 2 both ("dxil_sign=verify").
+    int dxil_sign{};
+    /// Keep signed DXIL across sessions, on by default ("dxil_cache=0" turns it off).
+    bool dxil_cache{true};
     bool gpu_failure_probe{};
     bool gpu_removal_probe{};
     unsigned rom_storage_checks{}; // 1=record token, 2=restore after a process restart
@@ -401,7 +491,11 @@ struct BootConfig {
     bool pulse_store{};
     /// Played from the library: Pulse sessions (pulse_sessions.h), when the player has them on.
     bool pulse_sessions{};
-    bool pulse_resume{true}; ///< Off after a failed resume, for the fresh boot that follows.
+    /// Off after a failed resume, for the fresh boot that follows, or by "pulse_resume=0": the
+    /// game boots fresh and the stored session is left as it was.
+    bool pulse_resume{true};
+    /// "airplane=1": the game sees no internet connection, as in the Switch's airplane mode.
+    bool airplane_mode{};
 };
 
 /// Games never emit the sentinels; without an explicit time they run this long.
@@ -447,6 +541,10 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     WriteDiag("step: timer resolution " +
               std::to_string(std::chrono::duration<double, std::milli>(timer_resolution).count()) +
               " ms");
+    WriteDiag("step: CPU " + CpuSetReport());
+    // Read by each emulator thread when it is named.
+    Common::Windows::SetCpuPin(config.cpu_pin);
+    if (config.cpu_probe) Jadyx::RunCpuProbe(WriteDiag);
     ApplyHeadlessBootSettings(config.null_renderer ? BootSurface{} : surface);
     // After the System settings, which turn the overlay on when the player has it on.
     if (mii_editor) VideoCore::performance_overlay_enabled.store(false, std::memory_order_relaxed);
@@ -462,6 +560,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     Kernel::PhysicalCore::SetIdleSpinPolicy(config.idle_spin);
     // Read by the host timing thread's first wait.
     Common::SetPreciseTimerSleeps(config.timer_sleep);
+    if (config.timer_spin_us) {
+        Common::SetPreciseTimerSpinCap(std::chrono::microseconds{*config.timer_spin_us});
+    }
     Common::Windows::TimedWaitProfile::enabled.store(config.timer_profile, std::memory_order_relaxed);
     // Read by HostMemory when Core::System builds the DRAM, so it has to be set before that.
     // The 384-MiB Series experiment covered only 388 of 2637 MiB requested by Game C (15%). The
@@ -496,6 +597,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     // caches evict against what the whole app has left, not DXGI's budget.
     g_test_memory_limit = u64{config.memory_limit_mib} << 20;
     Core::SetJitCodeCacheSize(config.jit_cache_mib << 20);
+    Dynarmic::SetCodeCacheCap(0);
+    Core::SetPageTableExclusives(config.inline_exclusives);
     D3D12::SetAppMemoryQuery(QueryAppMemory);
     D3D12::SetBcArrayDecode(!config.bc_arrays_native);
     // RGBA8 ASTC made loading frames upload 150-260 MiB at once and the console run out of memory
@@ -514,6 +617,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetAstcGpuDecode(config.astc == BootConfig::Astc::Gpu ||
                             config.astc == BootConfig::Astc::GpuRgba);
     D3D12::SetAstcGpuVerify(config.astc_verify);
+    D3D12::SetStencilBlitVerify(config.stencil_blit_verify);
+    D3D12::SetDxilSignMode(static_cast<D3D12::DxilSignMode>(config.dxil_sign));
+    D3D12::SetDxilDiskCacheEnabled(config.dxil_cache);
     D3D12::SetAstcGpuSync(config.astc_sync);
     D3D12::SetAstcGpuFresh(config.astc_fresh);
     D3D12::SetDescriptorRemovalChecks(config.descriptor_checks);
@@ -522,22 +628,39 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetCloseProbeEnabled(config.close_probe);
     D3D12::SetPipelineEviction(config.pso_eviction);
     D3D12::SetPipelinePrewarm(config.pso_prewarm);
+    D3D12::SetTransformFeedbackStorage(config.xfb_storage);
+    Tegra::SetIndirectMacroCpuRead(config.indirect_macro_cpu);
+    VideoCommon::force_occlusion_visible.store(config.occlusion_force_visible,
+                                               std::memory_order_relaxed);
+    D3D12::SetDiagUavSync(config.uav_sync);
+    VideoCommon::SetMipRenderTargets(config.mip_render_targets);
+    D3D12::SetForceMinMaxFilter(config.force_min_max_filter);
+    D3D12::SetSkipMinMaxFilter(config.skip_min_max_filter);
+    D3D12::SetEmulateMinMaxFilter(config.emulate_min_max_filter);
+    D3D12::HuntOnCompute(config.hunt_cs);
+    D3D12::SetComputeInputsShader(config.cs_inputs);
     VideoCore::Perf::SetDetailedGpuProfile(config.gpu_profile);
     if (config.dump_guest_shaders) Settings::values.dump_guest_shaders.SetValue(true);
     VideoCommon::FullCapture::Enable(config.full_gpu_capture);
     VideoCommon::FullCapture::RequestSelfTest(config.full_gpu_capture_self_test);
+    VideoCommon::FullCapture::SetTargetsAfterOnly(config.full_gpu_capture_targets_after);
+    VideoCommon::ReadbackTrace::SetWriteOrigins(config.buffer_write_origins);
     if (config.full_gpu_capture) {
         const auto version = winrt::Windows::ApplicationModel::Package::Current().Id().Version();
         VideoCommon::FullCapture::SetSession(fmt::format(
             "{{\"version\":\"{}.{}.{}.{}\",\"memory_limit_mib\":{},\"async_record\":{},"
-            "\"async_present\":{},\"async_shaders\":{}}}",
+            "\"async_present\":{},\"async_shaders\":{},\"targets_after_only\":{}}}",
             version.Major, version.Minor, version.Build, version.Revision, config.memory_limit_mib,
-            config.async_record, config.async_present, config.async_shaders));
+            config.async_record, config.async_present, config.async_shaders,
+            config.full_gpu_capture_targets_after));
     }
     VideoCore::Perf::SetForceSwapIntervalOne(config.force_swap_interval_one);
     Settings::values.async_presentation.SetValue(config.async_present);
+    if (config.airplane_mode) Settings::values.airplane_mode.SetValue(true); // else Settings > System
     if (config.upscaling) ApplyUpscaling(*config.upscaling); // before the renderer exists
     D3D12::SetAsyncRecording(config.async_record);
+    Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);
+    Service::Nvidia::Devices::nvdisp_disp0::SetReleaseFence(config.nv_release_fence);
     D3D12::PipelineKeyTracking::SetMode(config.pipeline_key_reuse);
     D3D12::SetUniformUploadCopy(config.upload_copy);
     D3D12::SetDrawSamplerReuse(config.draw_sampler_reuse);
@@ -671,7 +794,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     }
     const auto content = mii_editor ? Content::LaunchResolution{} :
         Content::ResolveLaunchContent(*system.GetFilesystem(), nro_path, manual_provider,
-                                      Content::ConsumeAllowMissing(nro_path), {}, Content::ReportedSystemVersion(system));
+                                      Content::ConsumeAllowMissing(nro_path));
     if (content.error != Content::Error::None) {
         WriteDiag("content: launch blocked error=" + std::to_string(static_cast<int>(content.error)));
         shutdown(); return 16;
@@ -791,6 +914,11 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         // Some early Load failures leave kernel objects; others already shut Core down.
         // Stop frontend owners in both cases, but never run the kernel's teardown twice.
         shutdown();
+        // The loader already looked for the ExeFS in an installed update before giving up.
+        if (load_result == Core::SystemResultStatus(u32(Core::SystemResultStatus::ErrorLoader) +
+                                                    u32(Loader::ResultStatus::ErrorNoExeFS))) {
+            return UPDATE_REQUIRED;
+        }
         return 2;
     }
     ApplyGameLanguage(system);
@@ -845,10 +973,19 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     }
 
     const u64 program_id = system.GetApplicationProcessProgramID();
+    // The game's own offline mode over Settings > System's, before any guest code runs; boot.cfg's
+    // airplane=1 wins over both.
+    if (const auto offline = LoadGameOfflineMode(program_id); offline && !config.airplane_mode)
+        Settings::values.airplane_mode.SetValue(*offline);
+    WriteDiag(Settings::values.airplane_mode.GetValue() ? "network: offline mode, the game sees no internet"
+                                                        : "network: the game sees the internet");
     PrewarmBudget prewarm_budget{LoadPrewarmStep(program_id)};
-    if (config.jit_prewarm != BootConfig::JitPrewarm::Off && !resumed) {
+    if (config.jit_prewarm != BootConfig::JitPrewarm::Off) {
         // All guest cores are still stopped. Each owns a separate JIT; never
         // compile into an instance concurrently with Run or another compiler.
+        // A resume warms too: its JIT starts empty like a boot's, and without the pass the
+        // whole game compiled in its first minute (bursts of 25k blocks in one frame). The
+        // blocks are checked against the restored code, so a session's own loads are safe.
         if (auto* process = system.ApplicationProcess()) {
             WriteDiag(std::string{"step: CPU JIT profile/prewarm starting ("} +
                       (process->Is64Bit() ? "A64" : "A32") + "), " +
@@ -856,7 +993,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                       MemoryReport());
             Core::ConfigureApplicationPrewarm(system,
                 config.jit_prewarm == BootConfig::JitPrewarm::Warm,
-                [&system, boot_screen](size_t done, size_t total) {
+                [&system, &pulse_screen, boot_screen](size_t done, size_t total) {
+                    // A resume's screen keeps its ring moving; two presenters would race.
+                    if (pulse_screen) return;
                     if (boot_screen) SetLaunchStep(LaunchStep::Cpu, done, total);
                     else D3D12::ShowCpuLoadProgress(system.Renderer(), done, total);
                 },
@@ -883,6 +1022,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         launch_screen.emplace(system);
     }
     void(system.Run());
+    WriteDiag("step: CPU pin " + Common::Windows::CpuPinReport());
     input.Start(system.HIDCore());
     if (config.gpu_failure_probe) {
         WriteDiag("GPU recovery probe: injecting callback failure");
@@ -1019,6 +1159,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         constexpr u64 LOW_HEADROOM_STEP = 50ULL << 20;
         u64 low_snapshot_headroom = ~u64{};
         u32 low_snapshot_tick = 0;
+        // Short of memory, each JIT code cache keeps what it has committed, or this much.
+        constexpr size_t JIT_CAP_FLOOR = 64ULL << 20;
         constexpr u64 POOL_TRIM_PER_SECOND = 64ULL << 20;
         constexpr u64 POOL_TRIM_ALL_HEADROOM = 512ULL << 20;
         constexpr u64 TRIM_SLICE = 32ULL << 20;
@@ -1085,12 +1227,20 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                     WriteDiag("low headroom memory map: " + LargestAllocations());
                 }
             }
-            if (u64 used{}, limit{}; tick % TICKS_PER_SECOND == 0 && QueryAppMemory(used, limit) &&
-                                     prewarm_budget.Observe(limit > used ? limit - used : 0)) {
-                SavePrewarmStep(program_id, static_cast<std::int32_t>(prewarm_budget.Step()));
-                WriteDiag("JIT prewarm budget lowered to " +
-                          std::to_string(prewarm_budget.MiBPerCore()) +
-                          " MiB per core for this game's next session | " + MemoryReport());
+            if (u64 used{}, limit{}; tick % TICKS_PER_SECOND == 0 && QueryAppMemory(used, limit)) {
+                const u64 headroom = limit > used ? limit - used : 0;
+                if (prewarm_budget.Observe(headroom)) {
+                    SavePrewarmStep(program_id, static_cast<std::int32_t>(prewarm_budget.Step()));
+                    WriteDiag("JIT prewarm budget lowered to " +
+                              std::to_string(prewarm_budget.MiBPerCore()) +
+                              " MiB per core for this game's next session | " + MemoryReport());
+                }
+                // Short of memory, the JIT stops committing: each cache keeps the pages it has
+                // and is cleared when it fills them. Recompiling costs less than running out.
+                if (headroom < PrewarmBudget::LOW_HEADROOM && Dynarmic::CodeCacheCap() == 0) {
+                    Dynarmic::SetCodeCacheCap(JIT_CAP_FLOOR);
+                    WriteDiag("JIT code caches stop growing | " + MemoryReport());
+                }
             }
             if (config.host_trim) {
                 trim_paused.store(menu.has_value(), std::memory_order_relaxed);
@@ -1122,6 +1272,16 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                               std::to_string(frames - resume_frames) + " frames" +
                               (menu ? " (menu)" : ""));
                 resume_frames = frames;
+            }
+            if (config.hunt_at > 0 && tick == config.hunt_at * TICKS_PER_SECOND) {
+                D3D12::HuntNextFrames();
+                WriteDiag("hunt_at: bottleneck capture requested for next guest frames");
+            }
+            if (config.quit_at > 0 && tick == config.quit_at * TICKS_PER_SECOND) {
+                WriteDiag("quit_at: shutting down | " + MemoryReport());
+                finish_prewarm_budget(tick);
+                shutdown();
+                return 0;
             }
             if (Jadyx::QuitRequested()) {
                 WriteDiag("step: Q pressed after " + std::to_string(tick / 50) +
@@ -1179,14 +1339,16 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                     capture_frame();
                     // Upscaling as this boot applied it (a boot.cfg override included); only the
                     // GPU thread writes it while the game runs, and it is paused now.
+                    const SystemSettings system_settings = LoadSystemSettings();
                     menu.emplace(GameMenuSettings{options.style, options.swap_face_buttons,
                                                   options.deadzone, g_can_fullscreen.load(),
-                                                  g_fullscreen.load(), LoadSystemSettings().show_performance_stats,
+                                                  g_fullscreen.load(), system_settings.show_performance_stats,
                                                   pulse_identity.has_value(),
                                                   FromSettings(Settings::values.scaling_filter.GetValue(),
                                                                Settings::values.fsr_sharpening_slider.GetValue()),
                                                   config.material_capture_menu, config.hunt_menu,
-                                                  !game_frame.pixels.empty()},
+                                                  !game_frame.pixels.empty(), LoadGameOfflineMode(program_id),
+                                                  system_settings.offline_mode},
                                  program_id != 0 && !mii_editor);
                     if (game_title.empty()) {
                         std::string title;
@@ -1393,6 +1555,15 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                 }
                 if (result == GameMenuResult::FullScreen) {
                     g_fullscreen_request.store(menu->Settings().fullscreen ? 1 : 0);
+                }
+                if (result == GameMenuResult::OfflineModeChanged) {
+                    const auto offline = menu->Settings().offline_mode;
+                    if (!SaveGameOfflineMode(program_id, offline)) WriteDiag("menu: offline mode could not be saved");
+                    // Seen by the game's next network query; boot.cfg's airplane=1 still wins.
+                    if (!config.airplane_mode)
+                        Settings::values.airplane_mode.SetValue(offline.value_or(menu->Settings().offline_default));
+                    WriteDiag(std::string{"menu: offline mode "} +
+                              (Settings::values.airplane_mode.GetValue() ? "on" : "off"));
                 }
 
                 if (menu_surface) draw_menu();
@@ -1635,6 +1806,48 @@ void SavePrewarmStep(u64 program_id, std::int32_t step) {
     } catch (...) {
         WriteDiag("WARNING: JIT prewarm budget not saved");
     }
+}
+
+/// The system's CPU sets as this process sees them: how many logical processors and cores there
+/// are, which the system allocated to this app, and which are parked.
+std::string CpuSetReport() {
+    ULONG length{};
+    GetSystemCpuSetInformation(nullptr, 0, &length, GetCurrentProcess(), 0);
+    std::vector<std::byte> buffer(length);
+    auto* const first = reinterpret_cast<SYSTEM_CPU_SET_INFORMATION*>(buffer.data());
+    if (length == 0 || !GetSystemCpuSetInformation(first, length, &length, GetCurrentProcess(), 0)) {
+        return "CPU sets unavailable (error " + std::to_string(GetLastError()) + ")";
+    }
+    unsigned sets{}, allocated{}, to_us{}, parked{}, realtime{};
+    std::vector<BYTE> cores;
+    std::string list;
+    for (ULONG offset = 0; offset < length;) {
+        const auto& info = *reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + offset);
+        offset += info.Size;
+        if (info.Type != CpuSetInformation) {
+            continue;
+        }
+        const auto& set = info.CpuSet;
+        ++sets;
+        allocated += set.Allocated;
+        to_us += set.AllocatedToTargetProcess;
+        parked += set.Parked;
+        realtime += set.RealTime;
+        if (std::find(cores.begin(), cores.end(), set.CoreIndex) == cores.end()) {
+            cores.push_back(set.CoreIndex);
+        }
+        list += " " + std::to_string(set.Id) + ":c" + std::to_string(set.CoreIndex) + "/lp" +
+                std::to_string(set.LogicalProcessorIndex) + (set.Parked ? "P" : "") +
+                (set.Allocated ? "A" : "") + (set.AllocatedToTargetProcess ? "T" : "") +
+                (set.RealTime ? "R" : "");
+    }
+    SYSTEM_INFO system{};
+    GetNativeSystemInfo(&system);
+    return std::to_string(system.dwNumberOfProcessors) + " logical processors; " +
+           std::to_string(sets) + " CPU sets on " + std::to_string(cores.size()) + " cores, " +
+           std::to_string(allocated) + " allocated (" + std::to_string(to_us) + " to this app), " +
+           std::to_string(parked) + " parked, " + std::to_string(realtime) +
+           " real-time; id:core/logical [P parked, A allocated, T to us, R real-time]:" + list;
 }
 
 std::string MemoryReport() {
@@ -2486,6 +2699,10 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 if (pressed) VideoCore::FrameTrace::Start(480);
                 return;
             }
+            if (developer_hotkeys && key == VirtualKey::F6) {
+                if (pressed) D3D12::TraceNextFrames(1);
+                return;
+            }
             if (developer_hotkeys && key == VirtualKey::F7) {
                 if (pressed) D3D12::TraceNextMaterialFrame();
                 return;
@@ -2603,7 +2820,26 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     std::ifstream cfg{install_path + "\\boot.cfg"};
                     for (std::string line; std::getline(cfg, line);) {
                         constexpr std::string_view key = "run_seconds=";
-                        if (line.starts_with(key)) {
+                        constexpr std::string_view hunt_at_key = "hunt_at=";
+                        if (line.starts_with(hunt_at_key)) {
+                            config.hunt_at = static_cast<u32>(
+                                std::strtoul(line.c_str() + hunt_at_key.size(), nullptr, 10));
+                            WriteDiag("boot.cfg: bottleneck capture at " +
+                                      std::to_string(config.hunt_at) + " s");
+                        } else if (line.starts_with("hunt_cs=")) {
+                            config.hunt_cs = std::strtoull(line.c_str() + 8, nullptr, 16);
+                            WriteDiag("boot.cfg: bottleneck capture when compute shader " +
+                                      line.substr(8) + " is warm");
+                        } else if (line.starts_with("cs_inputs=")) {
+                            config.cs_inputs = std::strtoull(line.c_str() + 10, nullptr, 16);
+                            WriteDiag("boot.cfg: storage buffers of compute shader " +
+                                      line.substr(10) + " dumped");
+                        } else if (line.starts_with("quit_at=")) {
+                            config.quit_at =
+                                static_cast<u32>(std::strtoul(line.c_str() + 8, nullptr, 10));
+                            WriteDiag("boot.cfg: session closes at " +
+                                      std::to_string(config.quit_at) + " s");
+                        } else if (line.starts_with(key)) {
                             config.run_seconds =
                                 static_cast<u32>(std::strtoul(line.c_str() + key.size(), nullptr, 10));
                             WriteDiag("boot.cfg: run " + std::to_string(config.run_seconds) + " s");
@@ -2623,6 +2859,36 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "pso_eviction=0") {
                             config.pso_eviction = false;
                             WriteDiag("boot.cfg: idle pipelines keep their PSOs");
+                        } else if (line == "xfb=storage") {
+                            config.xfb_storage = true;
+                            WriteDiag("boot.cfg: transform feedback through storage buffers");
+                        } else if (line == "indirect_macro_cpu=1") {
+                            config.indirect_macro_cpu = true;
+                            WriteDiag("boot.cfg: indirect draw macros read GPU-written arguments on the CPU");
+                        } else if (line == "occlusion_force_visible=1") {
+                            config.occlusion_force_visible = true;
+                            WriteDiag("boot.cfg: occlusion results reach the game as never zero");
+                        } else if (line == "uav_sync=1") {
+                            config.uav_sync = true;
+                            WriteDiag("boot.cfg: UAV barrier after every draw and dispatch");
+                        } else if (line == "mip_rt=0") {
+                            config.mip_render_targets = false;
+                            WriteDiag("boot.cfg: depth targets at a mip level use aliased images");
+                        } else if (line == "min_max_filter=force") {
+                            config.force_min_max_filter = true;
+                            WriteDiag("boot.cfg: filtered min/max sampler reduction forced on");
+                        } else if (line == "min_max_filter=off") {
+                            config.skip_min_max_filter = true;
+                            WriteDiag("boot.cfg: filtered min/max sampler reduction not emulated");
+                        } else if (line == "pulse_resume=0") {
+                            config.pulse_resume = false;
+                            WriteDiag("boot.cfg: Pulse sessions are not resumed");
+                        } else if (line == "min_max_filter=emulate") {
+                            config.emulate_min_max_filter = true;
+                            WriteDiag("boot.cfg: filtered min/max sampler reduction always emulated");
+                        } else if (line == "airplane=1") {
+                            config.airplane_mode = true;
+                            WriteDiag("boot.cfg: airplane mode, the game sees no internet");
                         } else if (line == "pso_prewarm=0") {
                             config.pso_prewarm = false;
                             WriteDiag("boot.cfg: dormant PSOs wait for their first draw");
@@ -2634,6 +2900,12 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.full_gpu_capture = true;
                             config.material_capture_menu = true;
                             WriteDiag("boot.cfg: full synchronous GPU capture enabled (menu)");
+                        } else if (line == "gpu_capture_targets=after") {
+                            config.full_gpu_capture_targets_after = true;
+                            WriteDiag("boot.cfg: full capture reads render targets after operations only");
+                        } else if (line == "buffer_write_origins=1") {
+                            config.buffer_write_origins = true;
+                            WriteDiag("boot.cfg: buffer GPU-write origins traced");
                         } else if (line == "dump_guest_shaders=1") {
                             config.dump_guest_shaders = true;
                             WriteDiag("boot.cfg: guest shader dump enabled");
@@ -2652,6 +2924,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                                 : line == "ps_scratch=native" ? 2
                                                                               : 0;
                             WriteDiag("boot.cfg: " + line);
+                        } else if (line == "cpu_probe=1") {
+                            config.cpu_probe = true;
+                            WriteDiag("boot.cfg: CPU probe before the guest");
                         } else if (line == "timer_profile=1") {
                             config.timer_profile = true;
                             WriteDiag("boot.cfg: HostTiming requested waits/sleeps/spin elapsed profiling enabled");
@@ -2730,7 +3005,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.jit_prewarm = Jadyx::BootConfig::JitPrewarm::Warm;
                         } else if (line == "jit_prewarm=0") {
                             config.jit_prewarm = Jadyx::BootConfig::JitPrewarm::Off;
-                            WriteDiag("boot.cfg: per-core guest CPU profiling enabled");
+                            WriteDiag("boot.cfg: JIT prewarm off");
                         } else if (line == "audio_profile=1") {
                             config.audio_profile = true;
                             WriteDiag("boot.cfg: XAudio2 profiling enabled");
@@ -2755,6 +3030,14 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.async_present = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: presentation thread ") +
                                       (config.async_present ? "on" : "off"));
+                        } else if (line == "nv_event_stall=0" || line == "nv_event_stall=1") {
+                            config.nv_event_stall = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: failing NV events ") +
+                                      (config.nv_event_stall ? "stall the guest" : "flush the GPU"));
+                        } else if (line == "nv_release_fence=0" || line == "nv_release_fence=1") {
+                            config.nv_release_fence = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: display release fence ") +
+                                      (config.nv_release_fence ? "on" : "off"));
                         } else if (line == "async_record=0" || line == "async_record=1") {
                             config.async_record = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: command list recording thread ") +
@@ -2771,6 +3054,32 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                       std::string(value == "check" ? "checked"
                                                   : value == "1"   ? "on"
                                                                    : "off"));
+                        } else if (line == "timer_spin=auto") {
+                            config.timer_spin_us.reset();
+                            WriteDiag("boot.cfg: host timing follows the timer's lateness");
+                        } else if (line == "inline_exclusives=0" || line == "inline_exclusives=1") {
+                            config.inline_exclusives = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: exclusive accesses ") +
+                                      (config.inline_exclusives ? "inline" : "through the monitor"));
+                        } else if (line == "cpu_pin=off" || line == "cpu_pin=cores" ||
+                                   line == "cpu_pin=split") {
+                            using Common::Windows::CpuPin;
+                            const auto value = line.substr(8);
+                            config.cpu_pin = value == "cores"   ? CpuPin::Cores
+                                             : value == "split" ? CpuPin::Split
+                                                                : CpuPin::Off;
+                            WriteDiag("boot.cfg: cpu_pin " + value);
+                        } else if (line.starts_with("timer_spin=")) {
+                            const auto value = line.substr(11);
+                            u32 parsed{};
+                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() && parsed <= 100000) {
+                                config.timer_spin_us = parsed;
+                                WriteDiag("boot.cfg: host timing waits at most " + value +
+                                          " us on the CPU");
+                            } else {
+                                WriteDiag("boot.cfg: invalid timer_spin, ignored");
+                            }
                         } else if (line == "timer_sleep=0" || line == "timer_sleep=1") {
                             config.timer_sleep = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: host timing sleeps on ") +
@@ -2810,6 +3119,19 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                 D3D12::SetDumpedShader(hash);
                             }
                             WriteDiag("boot.cfg: dumping shader " + line.substr(12));
+                        } else if (line.starts_with("cs_split=")) {
+                            const u32 factor = static_cast<u32>(
+                                std::strtoul(line.c_str() + 9, nullptr, 10));
+                            // 16 by default (experimental); cs_split=1 turns the split off.
+                            if (factor >= 1 && factor <= 16 && std::has_single_bit(factor)) {
+                                D3D12::SetComputeWorkgroupSplit(factor);
+                                WriteDiag(factor == 1
+                                              ? std::string("boot.cfg: compute dispatches not split")
+                                              : "boot.cfg: small compute dispatches split by " +
+                                                    std::to_string(factor));
+                            } else {
+                                WriteDiag("boot.cfg: cs_split wants 1, 2, 4, 8 or 16; ignored");
+                            }
                         } else if (line.starts_with("skip_shader=")) {
                             const u64 hash = std::strtoull(line.c_str() + 12, nullptr, 16);
                             if (hash != 0) {
@@ -2888,6 +3210,15 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "astc_verify=1") {
                             config.astc_verify = true;
                             WriteDiag("boot.cfg: verify first GPU BC3 upload against CPU");
+                        } else if (line == "dxil_sign=hash" || line == "dxil_sign=verify") {
+                            config.dxil_sign = line == "dxil_sign=hash" ? 1 : 2;
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "dxil_cache=0" || line == "dxil_cache=1") {
+                            config.dxil_cache = line == "dxil_cache=1";
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "stencil_blit_verify=1") {
+                            config.stencil_blit_verify = true;
+                            WriteDiag("boot.cfg: read back the first depth-stencil blits");
                         } else if (line == "fastmem=0" || line == "fastmem=1" ||
                                    line == "fastmem=hybrid" || line == "fastmem=full") {
                             using Fastmem = decltype(config.fastmem);
@@ -2971,7 +3302,10 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         config.pulse_sessions = *library_game != Jadyx::MiiEditorLaunch;
                     }
                     if (library_game || !config.game.empty()) {
-                        nro_path = library_game ? *library_game : local_path + "\\games\\" + config.game;
+                        // A game= path on the player's storage (jadyx-usb:/...) opens as in the library.
+                        nro_path = library_game                       ? *library_game
+                                   : Jadyx::IsStoragePath(config.game) ? config.game
+                                                                       : local_path + "\\games\\" + config.game;
                         if (config.run_seconds == 0 && !config.play) {
                             config.run_seconds = Jadyx::DEFAULT_GAME_RUN_SECONDS;
                         }
@@ -3032,6 +3366,11 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
             if (show_library && boot_status.load() == 2) {
                 library_error = Jadyx::I18n::ToUtf8(Jadyx::I18n::Tr(Jadyx::I18n::Text::GameLoadFailed));
                 WriteDiag("boot load failed; returning to library for recovery");
+                continue;
+            }
+            if (show_library && boot_status.load() == Jadyx::UPDATE_REQUIRED) {
+                library_error = Jadyx::I18n::ToUtf8(Jadyx::I18n::Tr(Jadyx::I18n::Text::GameNeedsUpdate));
+                WriteDiag("game has no ExeFS without its update; returning to library");
                 continue;
             }
             if (show_library && boot_status.load() == 16) {

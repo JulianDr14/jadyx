@@ -9,6 +9,7 @@
 #include "common/logging.h"
 #include "video_core/host_shaders/blit_color_float_frag_spv.h"
 #include "video_core/host_shaders/blit_depth_frag_spv.h"
+#include "video_core/host_shaders/d3d12_blit_stencil_bit_frag_spv.h"
 #include "video_core/host_shaders/full_screen_triangle_vert_spv.h"
 #include "video_core/host_shaders/vulkan_color_clear_frag_spv.h"
 #include "video_core/host_shaders/vulkan_color_clear_vert_spv.h"
@@ -23,12 +24,15 @@ namespace D3D12 {
 
 namespace {
 
-/// Root parameters (one signature for every helper pipeline): the four push-constant words each
-/// helper shader uses, spirv_to_dxil's vertex runtime data, then one SRV and one sampler table.
+/// Root parameters (one signature for every helper pipeline): the push-constant words the helper
+/// shaders use (four, a fifth for the stencil bit), spirv_to_dxil's vertex runtime data, then one
+/// SRV and one sampler table. The root constants cover two whole 16-byte registers.
 constexpr u32 PUSH_CONSTANTS_PARAM = 0;
 constexpr u32 SRV_TABLE_PARAM = 2;
 constexpr u32 SAMPLER_TABLE_PARAM = 3;
 constexpr u32 PUSH_CONSTANT_WORDS = 4;
+constexpr u32 STENCIL_BIT_WORD = 4;
+constexpr u32 ROOT_CONSTANT_WORDS = 8;
 constexpr u32 RUNTIME_DATA_WORDS = 12;
 
 /// Keys of the helper's samplers in SamplerHeap: guest samplers count up from 1 and the
@@ -43,6 +47,17 @@ D3D12_DEPTH_STENCILOP_DESC ReplaceStencil() {
         .StencilDepthFailOp = D3D12_STENCIL_OP_KEEP,
         .StencilPassOp = D3D12_STENCIL_OP_REPLACE,
         .StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS,
+    };
+}
+
+/// As Vulkan's BindBlitState: the destination is the region's bounding box (a mirrored
+/// destination is not mirrored).
+D3D12_RECT BlitRect(const VideoCommon::Region2D& region) {
+    return {
+        .left = std::min(region.start.x, region.end.x),
+        .top = std::min(region.start.y, region.end.y),
+        .right = std::max(region.start.x, region.end.x),
+        .bottom = std::max(region.start.y, region.end.y),
     };
 }
 
@@ -76,10 +91,12 @@ BlitImageHelper::BlitImageHelper(const Device& device_, Scheduler& scheduler_,
             compile(VULKAN_COLOR_CLEAR_VERT_SPV, VULKAN_COLOR_CLEAR_FRAG_SPV);
         programs[static_cast<size_t>(Kind::ClearDepthStencil)] =
             compile(VULKAN_COLOR_CLEAR_VERT_SPV, VULKAN_DEPTHSTENCIL_CLEAR_FRAG_SPV);
+        programs[static_cast<size_t>(Kind::BlitStencilBit)] =
+            compile(FULL_SCREEN_TRIANGLE_VERT_SPV, D3D12_BLIT_STENCIL_BIT_FRAG_SPV);
         CreateRootSignature();
         CreateSamplers(sampler_descriptors);
         available = true;
-        LOG_INFO(Render, "D3D12: blit and clear helpers ready (4 programs)");
+        LOG_INFO(Render, "D3D12: blit and clear helpers ready ({} programs)", programs.size());
     } catch (const std::exception& exception) {
         LOG_ERROR(Render, "D3D12: blit helpers unavailable: {}", exception.what());
     }
@@ -130,7 +147,7 @@ void BlitImageHelper::CreateRootSignature() {
     params[PUSH_CONSTANTS_PARAM].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[PUSH_CONSTANTS_PARAM].Constants = {.ShaderRegister = 0,
                                               .RegisterSpace = PUSH_CONSTANT_SPACE,
-                                              .Num32BitValues = PUSH_CONSTANT_WORDS};
+                                              .Num32BitValues = ROOT_CONSTANT_WORDS};
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[1].Constants = {.ShaderRegister = 0, .RegisterSpace = RUNTIME_DATA_SPACE,
                            .Num32BitValues = RUNTIME_DATA_WORDS};
@@ -183,7 +200,8 @@ ID3D12PipelineState* BlitImageHelper::Pipeline(Kind kind, const Target& target, 
     if (const auto it = pipelines.find(key); it != pipelines.end()) {
         return it->second.Get();
     }
-    const Program& program = programs[static_cast<size_t>(kind)];
+    const Program& program =
+        programs[static_cast<size_t>(kind == Kind::BlitDepthStencil ? Kind::BlitDepth : kind)];
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
     desc.pRootSignature = root_signature.Get();
     desc.VS = {program.vs.data(), program.vs.size()};
@@ -208,7 +226,11 @@ ID3D12PipelineState* BlitImageHelper::Pipeline(Kind kind, const Target& target, 
         desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
         desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
         break;
+    case Kind::BlitDepthStencil:
+    case Kind::BlitStencilBit:
     case Kind::ClearDepthStencil:
+        // Depth when asked (the depth-stencil blit and depth clears), the stencil bits of mask
+        // from the reference.
         desc.DSVFormat = target.format;
         desc.DepthStencilState = {
             .DepthEnable = depth,
@@ -268,14 +290,7 @@ bool BlitImageHelper::Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HA
     if (!available || src_size.width == 0 || src_size.height == 0) {
         return false;
     }
-    // As Vulkan's BindBlitState: the destination is the region's bounding box (a mirrored
-    // destination is not mirrored); a mirrored source is, through a negative scale.
-    const D3D12_RECT rect{
-        .left = std::min(dst_region.start.x, dst_region.end.x),
-        .top = std::min(dst_region.start.y, dst_region.end.y),
-        .right = std::max(dst_region.start.x, dst_region.end.x),
-        .bottom = std::max(dst_region.start.y, dst_region.end.y),
-    };
+    const D3D12_RECT rect = BlitRect(dst_region);
     if (rect.right <= rect.left || rect.bottom <= rect.top) {
         return false;
     }
@@ -287,9 +302,66 @@ bool BlitImageHelper::Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HA
     const D3D12_GPU_DESCRIPTOR_HANDLE srv_table = descriptor_ring.Upload({&src_srv, 1});
     const D3D12_GPU_DESCRIPTOR_HANDLE sampler_table =
         sampler_heap.GetTable({&sampler.key, 1}, {&sampler.handle, 1});
+    BeginBlit(pipeline, dst, kind != Kind::BlitColor, rect, srv_table, sampler_table, src_region,
+              src_size);
+    scheduler.CommandList()->DrawInstanced(3, 1, 0, 0);
+    return true;
+}
 
-    Begin(pipeline, dst, kind == Kind::BlitDepth, rect);
+bool BlitImageHelper::BlitDepthStencil(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE depth_srv,
+                                       D3D12_CPU_DESCRIPTOR_HANDLE stencil_srv,
+                                       const VideoCommon::Region2D& dst_region,
+                                       const VideoCommon::Region2D& src_region,
+                                       const VideoCommon::Extent2D& src_size) {
+    if (!available || src_size.width == 0 || src_size.height == 0) {
+        return false;
+    }
+    const D3D12_RECT rect = BlitRect(dst_region);
+    if (rect.right <= rect.left || rect.bottom <= rect.top) {
+        return false;
+    }
+    ID3D12PipelineState* const depth_pipeline = Pipeline(Kind::BlitDepthStencil, dst, 0xFF, true);
+    if (!depth_pipeline) {
+        return false;
+    }
+    std::array<ID3D12PipelineState*, 8> bit_pipelines{};
+    for (u32 bit = 0; bit < bit_pipelines.size(); ++bit) {
+        bit_pipelines[bit] = Pipeline(Kind::BlitStencilBit, dst, static_cast<u8>(1U << bit), false);
+        if (!bit_pipelines[bit]) {
+            return false;
+        }
+    }
+    // Both tables in one upload (a second could flush the list between them): depth, stencil.
+    const std::array srvs{depth_srv, stencil_srv};
+    const D3D12_GPU_DESCRIPTOR_HANDLE depth_table = descriptor_ring.Upload(srvs);
+    const D3D12_GPU_DESCRIPTOR_HANDLE stencil_table{depth_table.ptr + descriptor_ring.Stride()};
+    const D3D12_GPU_DESCRIPTOR_HANDLE sampler_table =
+        sampler_heap.GetTable({&nearest_sampler.key, 1}, {&nearest_sampler.handle, 1});
+
+    BeginBlit(depth_pipeline, dst, true, rect, depth_table, sampler_table, src_region, src_size);
     CommandStream* const cmd = scheduler.CommandList();
+    cmd->OMSetStencilRef(0);
+    cmd->DrawInstanced(3, 1, 0, 0);
+    // Same target, viewport and mapping: only the PSO (its write mask) and the bit change.
+    cmd->SetGraphicsRootDescriptorTable(SRV_TABLE_PARAM, stencil_table);
+    cmd->OMSetStencilRef(0xFF);
+    for (u32 bit = 0; bit < bit_pipelines.size(); ++bit) {
+        scheduler.SetPipelineState(bit_pipelines[bit]);
+        const u32 bit_mask = 1U << bit;
+        cmd->SetGraphicsRoot32BitConstants(PUSH_CONSTANTS_PARAM, 1, &bit_mask, STENCIL_BIT_WORD);
+        cmd->DrawInstanced(3, 1, 0, 0);
+    }
+    return true;
+}
+
+void BlitImageHelper::BeginBlit(ID3D12PipelineState* pipeline, const Target& dst, bool is_depth,
+                                const D3D12_RECT& rect, D3D12_GPU_DESCRIPTOR_HANDLE srv_table,
+                                D3D12_GPU_DESCRIPTOR_HANDLE sampler_table,
+                                const VideoCommon::Region2D& src_region,
+                                const VideoCommon::Extent2D& src_size) {
+    Begin(pipeline, dst, is_depth, rect);
+    CommandStream* const cmd = scheduler.CommandList();
+    // A mirrored source is mirrored, through a negative scale.
     // full_screen_triangle.vert computes texcoord = (x, y) / 2 * scale + offset with Vulkan's
     // clip space, where y = 0 is the top of the viewport; D3D12's y = 0 is the bottom, so the
     // vertical mapping is mirrored here: v' = (1 - v), hence scale -sy and offset oy + sy.
@@ -304,8 +376,6 @@ bool BlitImageHelper::Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HA
     cmd->SetGraphicsRoot32BitConstants(PUSH_CONSTANTS_PARAM, PUSH_CONSTANT_WORDS, push.data(), 0);
     cmd->SetGraphicsRootDescriptorTable(SRV_TABLE_PARAM, srv_table);
     cmd->SetGraphicsRootDescriptorTable(SAMPLER_TABLE_PARAM, sampler_table);
-    cmd->DrawInstanced(3, 1, 0, 0);
-    return true;
 }
 
 bool BlitImageHelper::BlitColor(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,

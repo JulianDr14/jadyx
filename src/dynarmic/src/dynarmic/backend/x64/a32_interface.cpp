@@ -28,6 +28,7 @@
 #include "dynarmic/common/atomic.h"
 #include "dynarmic/frontend/A32/a32_location_descriptor.h"
 #include "dynarmic/frontend/A32/translate/a32_translate.h"
+#include "dynarmic/interface/jit_profile.h"
 #include "dynarmic/frontend/A32/translate/translate_callbacks.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/ir/basic_block.h"
@@ -252,8 +253,13 @@ struct Jit::Impl {
         if (location.SingleStepping() || (location.PC() & alignment_mask) ||
             location.UniqueHash() != block.descriptor || block.code_bytes == 0 ||
             block.code_bytes > BlockProfile::MaxCodeBytes || (block.code_bytes & 3) ||
-            block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE ||
-            emitter.GetBasicBlock(descriptor)) {
+            block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
+            return false;
+        }
+        // Apply what was requested before the warm (code loaded or reprotected at boot) now, as Run
+        // would: left pending, the first Run drops the blocks warmed in those ranges.
+        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
+        if (emitter.GetBasicBlock(descriptor)) {
             return false;
         }
         return Compile(descriptor, &block).has_value();
@@ -294,7 +300,9 @@ private:
     /// Compiles a block that is not in the cache. With `expected`, the guest code must be
     /// exactly the recorded block or nothing is emitted (std::nullopt, never without it).
     std::optional<A32EmitX64::BlockDescriptor> Compile(IR::LocationDescriptor descriptor, const BlockProfile* expected) {
+        const JitProfile::Timer compile_timer{JitProfile::Phase::Compile};
         if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
+            JitProfile::full_cache_clears.fetch_add(1, std::memory_order_relaxed);
             invalidate_entire_cache = true;
             PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
         }
@@ -336,6 +344,7 @@ private:
                 return;
             }
 
+            const JitProfile::Timer invalidate_timer{JitProfile::Phase::Invalidate};
             jit_state.ResetRSB();
             if (invalidate_entire_cache) {
                 block_of_code.ClearCache();

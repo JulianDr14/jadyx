@@ -37,6 +37,10 @@ public:
 
     Kernel::KEvent* QueryEvent(u32 event_id) override;
 
+    /// An event the guest keeps giving up on: true stalls the guest until the GPU reaches its
+    /// value; false (the default) flushes the GPU commands and keeps waiting on the event.
+    static void SetFailingEventStall(bool stall);
+
     // Pulse: the registered events. One a syncpoint wait still holds rejects the checkpoint.
     bool PulseCapture(DeviceFD fd, Service::Pulse::StateWriter& out) const override;
     void PulseRestore(DeviceFD fd, Service::Pulse::StateReader& in) override;

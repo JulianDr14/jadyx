@@ -4,14 +4,12 @@
 #include <algorithm>
 #include <array>
 
-#include "common/bug_tracker.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_draw_metrics.h"
-#include "video_core/renderer_d3d12/d3d12_log.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 
@@ -33,12 +31,8 @@ void RasterizerD3D12::DrawIndirect() {
     ++draw_counter;
     HuntScope hunt{draw_hunt, Hunt::Kind::DrawIndirect};
     const IndirectParams& params = maxwell3d->draw_manager.indirect_state;
-    if (params.is_byte_count) {
-        // Transform feedback draws; HasDrawTransformFeedback() is false, so the macro should
-        // have drawn them directly.
-        BUG_TRACK(DrawSkipped, "byte-count (transform feedback) indirect draw skipped");
-        WarnOnceLog(logged_byte_count_draw, "byte-count indirect draws are skipped");
-        return;
+    if (maxwell3d->regs.transform_feedback_enabled == 0) {
+        stream_output.Disable();
     }
     if (params.max_draw_counts == 0) {
         hunt.Outcome(Hunt::Outcome::Empty);
@@ -50,6 +44,10 @@ void RasterizerD3D12::DrawIndirect() {
     }
     if (CullsEveryPrimitive()) {
         hunt.Outcome(Hunt::Outcome::Culled);
+        return;
+    }
+    if (params.is_byte_count) {
+        DrawByteCount(params);
         return;
     }
     if (BufferCacheRuntime::IsEmulatedTopology(maxwell3d->draw_manager.draw_state.topology)) {
@@ -66,12 +64,14 @@ void RasterizerD3D12::DrawIndirect() {
     }
     DrawMetrics::ScopedDrawTimer draw_timer;
     SCOPE_EXIT {
+        scheduler.EndWork();
         FlushIfUploadHeavy();
         gpu.TickWork();
     };
     gpu_memory->FlushCaching();
     ApplyPendingStateInvalidation();
 
+    scheduler.BeginWork();
     hunt.PipelineStart();
     GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
     hunt.PipelineEnd();
@@ -102,6 +102,9 @@ void RasterizerD3D12::DrawIndirect() {
                          sampler_heap, scheduler},
                         bindings);
     buffer_cache.SetDrawIndirect(nullptr);
+    if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
+        pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+    }
     if (!pipeline->Handle()) {
         hunt.Outcome(Hunt::Outcome::PsoRejected);
         return; // D3D12 rejected the PSO (logged when it was built)
@@ -260,6 +263,95 @@ void RasterizerD3D12::DrawIndirectOnCpu(const IndirectParams& params) {
     draw_state.index_buffer = saved_index_buffer;
     draw_state.base_index = saved_base_index;
     draw_state.base_instance = saved_base_instance;
+}
+
+void RasterizerD3D12::DrawByteCount(const IndirectParams& params) {
+    // DrawAuto: byte_count / stride vertices from vertex 0, one instance. The byte count is a
+    // StreamingByteCount report the guest points at (QueryByteCount writes it on the GPU).
+    auto& draw_state = maxwell3d->draw_manager.draw_state;
+    if (BufferCacheRuntime::IsEmulatedTopology(draw_state.topology)) {
+        // Rebuilt on the CPU, so the count is read there; ReadBlock waits for the GPU's value.
+        u32 byte_count = 0;
+        gpu_memory->ReadBlock(params.indirect_start_address, &byte_count, sizeof(byte_count));
+        const auto saved_vertex_buffer = draw_state.vertex_buffer;
+        const auto saved_base_instance = draw_state.base_instance;
+        draw_state.vertex_buffer.first = 0;
+        draw_state.vertex_buffer.count =
+            params.stride != 0 ? byte_count / static_cast<u32>(params.stride) : 0;
+        draw_state.base_instance = 0;
+        Draw(false, 1);
+        draw_state.vertex_buffer = saved_vertex_buffer;
+        draw_state.base_instance = saved_base_instance;
+        return;
+    }
+    DrawMetrics::ScopedDrawTimer draw_timer;
+    SCOPE_EXIT {
+        scheduler.EndWork();
+        FlushIfUploadHeavy();
+        gpu.TickWork();
+    };
+    gpu_memory->FlushCaching();
+    ApplyPendingStateInvalidation();
+    scheduler.BeginWork();
+    GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
+    if (!pipeline) {
+        return;
+    }
+    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+    // With the indirect state set, Configure also synchronizes the byte count.
+    PipelineBindings bindings;
+    buffer_cache.SetDrawIndirect(&params);
+    pipeline->Configure(false,
+                        {*maxwell3d, *gpu_memory, buffer_cache, texture_cache, descriptor_queue,
+                         sampler_heap, scheduler},
+                        bindings);
+    buffer_cache.SetDrawIndirect(nullptr);
+    if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
+        pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+    }
+    if (!pipeline->Handle() || UsesSkippedShader(pipeline->Key().unique_hashes)) {
+        return;
+    }
+    ID3D12CommandSignature* const signature = pipeline->Layout().DrawSignature(false);
+    const auto [buffer, offset] = buffer_cache.GetDrawIndirectBuffer();
+    if (!signature || !buffer->Handle()) {
+        buffer_runtime.ApplyGeometry(scheduler.CommandList());
+        return;
+    }
+    const Framebuffer* const framebuffer = texture_cache.GetFramebuffer();
+    framebuffer->PrepareAttachments(scheduler, bindings.depth_sampled);
+
+    std::array<D3D12_VIEWPORT, Maxwell::NumViewports> viewports{};
+    const ViewportState viewport_state = ComputeViewports(viewports);
+    CommandStream* const cmd = scheduler.CommandList();
+    buffer->Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
+    ID3D12Resource* const record = stream_output.BuildDrawAutoRecord(
+        cmd, buffer->Address() + offset, static_cast<u32>(params.stride),
+        viewport_state.yz_flip_mask);
+
+    const DrawParams draw_params{
+        .num_vertices = 0,
+        .num_instances = 0,
+        .first_index = 0,
+        .base_vertex = 0,
+        .base_instance = 0,
+        .is_indexed = false,
+        .runtime_first_vertex = 0,
+    };
+    const auto compatible = texture_runtime.PrepareCompatibleDrawTargets(
+        *framebuffer, pipeline->BoundColorTargets());
+    BindDrawState(*pipeline, bindings, *framebuffer, draw_params, draw_state.topology, compatible);
+    {
+        const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
+        cmd->ExecuteIndirect(signature, 1, record, 0, nullptr, 0);
+    }
+    texture_runtime.FinishCompatibleDrawTargets(*framebuffer);
+    // The command signature wrote the runtime data constants: the next draw sets them again.
+    command_state.root_args.valid = false;
+    if (!logged_byte_count_draw) {
+        LOG_INFO(Render, "D3D12: first byte-count (DrawAuto) draw recorded");
+        logged_byte_count_draw = true;
+    }
 }
 
 } // namespace D3D12

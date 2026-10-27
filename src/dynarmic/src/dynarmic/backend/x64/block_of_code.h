@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <type_traits>
@@ -196,6 +197,9 @@ private:
     bool wx_writing = false;
 #endif
     bool prelude_complete = false;
+    // SetCodeCacheCap as this cache applies it: the cap it last saw, and where its code ends.
+    mutable size_t cap_epoch = 0;
+    mutable size_t cap_end = SIZE_MAX;
 
     ConstantPool constant_pool;
     JitStateInfo jsi;

@@ -18,7 +18,18 @@
 /// Pure bookkeeping, so it is tested on the PC; d3d12_draw_hunt.cpp owns the D3D12 objects.
 namespace D3D12::Hunt {
 
-enum class Kind : u8 { Draw, DrawIndexed, DrawIndirect, DrawTexture, Clear, Dispatch };
+enum class Kind : u8 {
+    Draw,
+    DrawIndexed,
+    DrawIndirect,
+    DrawTexture,
+    Clear,
+    Dispatch,
+    Blit,    ///< Fermi2D surface copy
+    DmaCopy, ///< DMA engine buffer copy, clear or buffer/image copy
+    ListEnd, ///< what a command list records after its last call (composite, resolves, copies)
+    DispatchSetup, ///< what a dispatch records before itself (uploads, copies, barriers)
+};
 
 enum class Outcome : u8 {
     Recorded,

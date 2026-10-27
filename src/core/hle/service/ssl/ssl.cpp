@@ -694,6 +694,17 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             RegisterHandlers(functions);
         };
 
+        // Pulse: every command is a stub, so the service holds nothing.
+        std::string_view PulseKind() const override {
+            return "ssl:s";
+        }
+        SessionRequestHandlerPtr PulseRestore(std::string_view kind,
+                                              Pulse::HandlerRestore& restore) override {
+            if (kind != PulseKind()) return nullptr;
+            restore.state.End();
+            return shared_from_this();
+        }
+
         Result CreateContext() {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
 

@@ -256,6 +256,7 @@ private:
         constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
         if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
             // Immediately evacuate cache
+            JitProfile::full_cache_clears.fetch_add(1, std::memory_order_relaxed);
             invalidate_entire_cache = true;
             PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
         }
@@ -360,6 +361,9 @@ bool Jit::PrecompileBlock(const BlockProfile& block) {
         impl->block_of_code.SpaceRemaining() < 1024 * 1024) {
         return false;
     }
+    // Apply what was requested before the warm (code loaded or reprotected at boot) now, as Run
+    // would: left pending, the first Run drops the blocks warmed in those ranges.
+    impl->PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&impl->jit_state.halt_reason)));
     return impl->GetBlock(descriptor, &block) != nullptr;
 }
 

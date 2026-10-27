@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 
 #include "common/bit_field.h"
 #include "common/common_types.h"
@@ -146,6 +147,9 @@ public:
 
     /// Flush all current written commands into the host GPU for execution.
     void FlushCommands();
+
+    /// Asks the GPU thread to flush its commands to the host GPU, without waiting for it.
+    void RequestFlushCommands();
     /// Synchronizes CPU writes with Host GPU memory.
     void InvalidateGPUCache();
     /// Signal the ending of command list.
@@ -222,10 +226,16 @@ public:
 
     void RendererFrameEndNotify();
 
+    /// Composites the layers once their fences are reached. The release fence, when given, is
+    /// signalled after the composite, once the composites before it are signalled too.
     void RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers,
-                          std::vector<Service::Nvidia::NvFence>&& fences);
+                          std::vector<Service::Nvidia::NvFence>&& fences,
+                          std::optional<Service::Nvidia::NvFence> release = std::nullopt);
 
     void WaitForComposite();
+
+    /// Waits for the composite requested before the last one, leaving the last one in flight.
+    void WaitForEarlierComposite();
 
     std::vector<u8> GetAppletCaptureBuffer();
 

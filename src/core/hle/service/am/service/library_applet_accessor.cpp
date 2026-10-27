@@ -4,9 +4,13 @@
 // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+
 #include "common/settings.h"
 #include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/service/am/applet_data_broker.h"
+#include "core/hle/kernel/k_event.h"
+#include "core/hle/kernel/k_readable_event.h"
 #include "core/hle/service/am/applet_manager.h"
 #include "core/hle/service/am/frontend/applet_profile_select.h"
 #include "core/hle/service/am/frontend/applets.h"
@@ -113,7 +117,11 @@ Result ILibraryAppletAccessor::PresetLibraryAppletGpuTimeSliceZero() {
 }
 
 Result ILibraryAppletAccessor::Start() {
-    LOG_DEBUG(Service_AM, "called");
+    LOG_INFO(Service_AM, "called, applet_id={}", m_applet->applet_id);
+    {
+        std::scoped_lock lk{m_applet->lock};
+        m_applet->started = true;
+    }
     m_applet->process->Run();
     FrontendExecute();
     R_SUCCEED();
@@ -232,6 +240,70 @@ Result ILibraryAppletAccessor::Unknown170(OutCopyHandle<Kernel::KReadableEvent> 
     LOG_WARNING(Service_AM, "(STUBBED) called");
     *out_event = m_applet->unknown_event.GetHandle();
     R_SUCCEED();
+}
+
+namespace {
+
+// The broker channels in a fixed order; the events are exported under the same slots.
+std::array<AppletStorageChannel*, 4> PulseChannels(AppletDataBroker& broker) {
+    return {&broker.GetInData(), &broker.GetInteractiveInData(), &broker.GetOutData(),
+            &broker.GetInteractiveOutData()};
+}
+
+constexpr u32 StateChangedEventSlot = 4;
+constexpr u32 UnknownEventSlot = 5;
+
+} // namespace
+
+void ILibraryAppletAccessor::PulseCapture(Pulse::HandlerCapture& capture) const {
+    {
+        std::scoped_lock lk{m_applet->lock};
+        // A guest applet has a process of its own, which is not stored.
+        if (m_applet->started || !m_applet->frontend) {
+            throw Pulse::ServiceRejected(true, "am: a library applet is open");
+        }
+    }
+    PulseReferenceRoot(system, capture);
+    capture.state.U32(static_cast<u32>(m_applet->applet_id));
+    capture.state.U32(static_cast<u32>(m_applet->library_applet_mode));
+    size_t total{};
+    for (auto* channel : PulseChannels(*m_broker)) {
+        const auto storages = channel->PulseData();
+        capture.state.U32(static_cast<u32>(storages.size()));
+        for (const auto& storage : storages) {
+            const auto data = storage->GetData();
+            total += data.size();
+            if (total > Pulse::MaxHandlerState / 2) {
+                throw Pulse::ServiceRejected(false, "am: library applet data too large to checkpoint");
+            }
+            capture.state.U32(static_cast<u32>(data.size()));
+            capture.state.Bytes(data);
+        }
+    }
+    const auto channels = PulseChannels(*m_broker);
+    for (u32 slot = 0; slot < channels.size(); ++slot) {
+        capture.ExportEvent(slot, channels[slot]->GetEvent()->GetParent());
+    }
+    capture.ExportEvent(StateChangedEventSlot, m_applet->state_changed_event.GetHandle()->GetParent());
+    capture.ExportEvent(UnknownEventSlot, m_applet->unknown_event.GetHandle()->GetParent());
+}
+
+void ILibraryAppletAccessor::PulseLoad(Pulse::StateReader& in) {
+    for (auto* channel : PulseChannels(*m_broker)) {
+        for (u32 count = in.Count(4); count > 0; --count) {
+            std::vector<u8> data(in.Count(1));
+            in.Bytes(data);
+            channel->Push(system.Kernel(), std::make_shared<IStorage>(system, std::move(data)));
+        }
+    }
+}
+
+Kernel::KEvent* ILibraryAppletAccessor::PulseEvent(u32 slot) {
+    const auto channels = PulseChannels(*m_broker);
+    if (slot < channels.size()) return channels[slot]->GetEvent()->GetParent();
+    if (slot == StateChangedEventSlot) return m_applet->state_changed_event.GetHandle()->GetParent();
+    if (slot == UnknownEventSlot) return m_applet->unknown_event.GetHandle()->GetParent();
+    return nullptr;
 }
 
 void ILibraryAppletAccessor::FrontendExecute() {

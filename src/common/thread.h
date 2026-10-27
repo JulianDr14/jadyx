@@ -29,6 +29,10 @@ namespace Common {
 /// timed wait.
 void SetPreciseTimerSleeps(bool enabled);
 [[nodiscard]] bool IsPreciseTimerSleeps();
+/// Longest stretch before a deadline that a high-resolution timer wait spends on the CPU; a
+/// timer later than that makes the wait end late instead. Negative (the default) follows the
+/// timer's learned lateness. Read by every timed wait.
+void SetPreciseTimerSpinCap(std::chrono::nanoseconds cap);
 #endif
 
 class Event {

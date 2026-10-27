@@ -18,6 +18,13 @@ class ILibraryAppletAccessor;
 class IStorage;
 class WindowSystem;
 
+// A library applet run by the host frontend, open as a child of the caller.
+std::shared_ptr<ILibraryAppletAccessor> CreateFrontendApplet(Core::System& system,
+                                                             WindowSystem& window_system,
+                                                             std::shared_ptr<Applet> caller_applet,
+                                                             AppletId applet_id,
+                                                             LibraryAppletMode mode);
+
 class ILibraryAppletCreator final : public ServiceFramework<ILibraryAppletCreator> {
 public:
     explicit ILibraryAppletCreator(Core::System& system_, std::shared_ptr<Applet> applet,

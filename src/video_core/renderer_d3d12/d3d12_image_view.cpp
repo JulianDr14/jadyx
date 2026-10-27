@@ -39,6 +39,18 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
         format_info = AstcFormat(info.format, VideoCommon::AstcRecompressionFor(source.info));
     }
     auto swizzle = info.Swizzle();
+    // As the Vulkan backend (ImageViewAspectMask): a sampled view of a depth-stencil image reads
+    // its stencil when the swizzle selects the stencil component (R of S8_UINT_D24_UNORM, any
+    // but R of the others). Reading depth there instead hands the shader float bits where it
+    // tests stencil flags: lighting passes then discard bands and hatching of pixels.
+    const bool any_r = std::ranges::any_of(swizzle, [](Tegra::Texture::SwizzleSource s) {
+        return s == Tegra::Texture::SwizzleSource::R;
+    });
+    // S8_UINT has nothing but stencil.
+    const bool reads_stencil = !info.IsRenderTarget() &&
+                               format_info.stencil_srv != DXGI_FORMAT_UNKNOWN &&
+                               (info.format == PixelFormat::S8_UINT ||
+                                (info.format == PixelFormat::S8_UINT_D24_UNORM ? any_r : !any_r));
     if (const SurfaceType surface_type = VideoCore::Surface::GetFormatType(info.format);
         surface_type == SurfaceType::Depth || surface_type == SurfaceType::DepthStencil) {
         // As the Vulkan backend (ConvertGreenRed): guest depth views read depth from G, the
@@ -47,6 +59,13 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
         std::ranges::transform(swizzle, swizzle.begin(), [](Tegra::Texture::SwizzleSource s) {
             return s == Tegra::Texture::SwizzleSource::G ? Tegra::Texture::SwizzleSource::R : s;
         });
+    }
+    if (reads_stencil) {
+        // The stencil SRVs (X24_TYPELESS_G8_UINT, X32_TYPELESS_G8X24_UINT) hold it in G.
+        std::ranges::transform(swizzle, swizzle.begin(), [](Tegra::Texture::SwizzleSource s) {
+            return s == Tegra::Texture::SwizzleSource::R ? Tegra::Texture::SwizzleSource::G : s;
+        });
+        format_info.srv = format_info.stencil_srv;
     }
     switch (info.format) {
     case PixelFormat::B5G6R5_UNORM:
@@ -302,6 +321,20 @@ std::string ImageView::DescribeSrv(Shader::TextureType texture_type, bool depth_
             layers = resource->GetDesc().DepthOrArraySize;
             route = "slice-array";
         }
+        if (texture_type == Shader::TextureType::Color3D &&
+            srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && source->Volume()) {
+            resource = source->Volume();
+            base_layer = 0;
+            layers = 1;
+            route = "volume";
+        }
+        if (texture_type == Shader::TextureType::ColorCube &&
+            srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && source->Cube()) {
+            resource = source->Cube();
+            base_layer = 0;
+            layers = 6;
+            route = "cube";
+        }
     }
     const auto desc = resource ? resource->GetDesc() : D3D12_RESOURCE_DESC{};
     const bool compatible = resource &&
@@ -327,6 +360,18 @@ ImageView::DiagnosticView ImageView::DiagnosticSrv(Shader::TextureType declared,
             result.resource = source->DiagnosticSliceArray();
             result.base_layer = 0;
             result.layers = result.resource ? result.resource->GetDesc().DepthOrArraySize : 0;
+        }
+        if (declared == Shader::TextureType::Color3D &&
+            srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && source->DiagnosticVolume()) {
+            result.resource = source->DiagnosticVolume();
+            result.base_layer = 0;
+            result.layers = 1;
+        }
+        if (declared == Shader::TextureType::ColorCube &&
+            srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && source->DiagnosticCube()) {
+            result.resource = source->DiagnosticCube();
+            result.base_layer = 0;
+            result.layers = 6;
         }
     }
     result.null_srv = !result.resource || !IsSrvDimensionCompatible(declared,
@@ -361,6 +406,41 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::DepthFeedbackHandle(Shader::TextureType t
     return handle;
 }
 
+D3D12_CPU_DESCRIPTOR_HANDLE ImageView::StencilHandle() const {
+    if (stencil_srv.ptr || !runtime || !image || srv_params.is_msaa ||
+        srv_params.dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+        return stencil_srv;
+    }
+    DXGI_FORMAT plane_format;
+    switch (image->GetDesc().Format) {
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+        plane_format = DXGI_FORMAT_X24_TYPELESS_G8_UINT;
+        break;
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+        plane_format = DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;
+        break;
+    default:
+        return {};
+    }
+    // The stencil formats hold the value in G.
+    D3D12_SHADER_RESOURCE_VIEW_DESC desc{
+        .Format = plane_format,
+        .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
+        .Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(1, 1, 1, 1),
+    };
+    desc.Texture2DArray = {.MostDetailedMip = srv_params.base_level,
+                           .MipLevels = 1,
+                           .FirstArraySlice = srv_params.base_layer,
+                           .ArraySize = 1,
+                           .PlaneSlice = 1,
+                           .ResourceMinLODClamp = 0.0f};
+    stencil_srv = runtime->view_descriptors.Allocate();
+    runtime->device.Get()->CreateShaderResourceView(image, &desc, stencil_srv);
+    return stencil_srv;
+}
+
 D3D12_CPU_DESCRIPTOR_HANDLE ImageView::CreateSrv(Shader::TextureType texture_type,
                                                ID3D12Resource* override_resource) const {
     using Shader::TextureType;
@@ -392,6 +472,50 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::CreateSrv(Shader::TextureType texture_typ
             return handle;
         }
     }
+    if (texture_type == TextureType::Color3D && p.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        image && !override_resource) {
+        // The shader samples a 2D image as 3D (a 1x1 placeholder bound to a volume slot); D3D12
+        // has no such view, so read a one-slice 3D copy of it.
+        Image* const source = SourceImage();
+        if (ID3D12Resource* const volume = source ? source->Volume() : nullptr) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC desc{.Format = p.format,
+                                                 .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D,
+                                                 .Shader4ComponentMapping = p.mapping};
+            desc.Texture3D = {p.base_level, p.levels, 0.0f};
+            const D3D12_CPU_DESCRIPTOR_HANDLE handle = runtime->view_descriptors.Allocate();
+            runtime->device.Get()->CreateShaderResourceView(volume, &desc, handle);
+            CheckRemovedAfterDescriptor(runtime->device.Get(), [&] {
+                return fmt::format("volume SRV of {} (format {} levels {}+{} of {}, resource "
+                                   "format {})",
+                                   format, static_cast<u32>(desc.Format), p.base_level, p.levels,
+                                   volume->GetDesc().MipLevels,
+                                   static_cast<u32>(volume->GetDesc().Format));
+            });
+            return handle;
+        }
+    }
+    if (texture_type == TextureType::ColorCube && p.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        p.layers == 1 && image && !override_resource) {
+        // The shader samples a one-layer 2D image as a cube (a 1x1 placeholder bound to a cube
+        // slot); D3D12 needs six faces, so read a copy with the image on every face.
+        Image* const source = SourceImage();
+        if (ID3D12Resource* const faces = source ? source->Cube() : nullptr) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC desc{.Format = p.format,
+                                                 .ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE,
+                                                 .Shader4ComponentMapping = p.mapping};
+            desc.TextureCube = {p.base_level, p.levels, 0.0f};
+            const D3D12_CPU_DESCRIPTOR_HANDLE handle = runtime->view_descriptors.Allocate();
+            runtime->device.Get()->CreateShaderResourceView(faces, &desc, handle);
+            CheckRemovedAfterDescriptor(runtime->device.Get(), [&] {
+                return fmt::format("cube SRV of {} (format {} levels {}+{} of {}, resource "
+                                   "format {})",
+                                   format, static_cast<u32>(desc.Format), p.base_level, p.levels,
+                                   faces->GetDesc().MipLevels,
+                                   static_cast<u32>(faces->GetDesc().Format));
+            });
+            return handle;
+        }
+    }
     if (resource && !IsSrvDimensionCompatible(texture_type, resource_desc, p.base_layer, p.layers)) {
         const bool slices_pending = texture_type == TextureType::ColorArray2D && is_3d && image &&
                                     !slot_images; // replaced once the view knows its image
@@ -416,6 +540,11 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::CreateSrv(Shader::TextureType texture_typ
     }
     D3D12_SHADER_RESOURCE_VIEW_DESC desc{.Format = p.format,
                                          .Shader4ComponentMapping = p.mapping};
+    // A depth-stencil resource keeps its stencil in plane 1.
+    const UINT plane = p.format == DXGI_FORMAT_X24_TYPELESS_G8_UINT ||
+                               p.format == DXGI_FORMAT_X32_TYPELESS_G8X24_UINT
+                           ? 1U
+                           : 0U;
     const u32 cubes = std::max(1U, p.layers / 6);
     switch (texture_type) {
     case TextureType::Buffer:
@@ -459,7 +588,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::CreateSrv(Shader::TextureType texture_typ
             desc.Texture2DMSArray = {p.base_layer, p.layers};
         } else {
             desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-            desc.Texture2DArray = {p.base_level, p.levels, p.base_layer, p.layers, 0, 0.0f};
+            desc.Texture2DArray = {p.base_level, p.levels, p.base_layer, p.layers, plane, 0.0f};
         }
         break;
     default: // Color2D, Color2DRect
@@ -470,13 +599,13 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::CreateSrv(Shader::TextureType texture_typ
                 desc.Texture2DMSArray = {p.base_layer, 1};
             } else {
                 desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-                desc.Texture2DArray = {p.base_level, p.levels, p.base_layer, 1, 0, 0.0f};
+                desc.Texture2DArray = {p.base_level, p.levels, p.base_layer, 1, plane, 0.0f};
             }
         } else if (p.is_msaa) {
             desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
         } else {
             desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            desc.Texture2D = {p.base_level, p.levels, 0, 0.0f};
+            desc.Texture2D = {p.base_level, p.levels, plane, 0.0f};
         }
         break;
     }
@@ -543,6 +672,18 @@ void ImageView::PrepareRead(Shader::TextureType texture_type) const {
             source->RefreshSliceArray();
         }
     }
+    if (texture_type == Shader::TextureType::Color3D &&
+        srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+        if (Image* const source = SourceImage()) {
+            source->RefreshVolume();
+        }
+    }
+    if (texture_type == Shader::TextureType::ColorCube &&
+        srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && srv_params.layers == 1) {
+        if (Image* const source = SourceImage()) {
+            source->RefreshCube();
+        }
+    }
 }
 
 void ImageView::Release() {
@@ -557,6 +698,8 @@ void ImageView::Release() {
         if (handle.ptr) runtime->view_descriptors.Free(handle);
         handle = {};
     }
+    if (stencil_srv.ptr) runtime->view_descriptors.Free(stencil_srv);
+    stencil_srv = {};
     if (uav.ptr) runtime->view_descriptors.Free(uav);
     if (rtv.ptr) runtime->rtv_descriptors.Free(rtv);
     if (dsv.ptr) runtime->dsv_descriptors.Free(dsv);
@@ -565,12 +708,13 @@ void ImageView::Release() {
 }
 ImageView::ImageView(ImageView&& other) noexcept : VideoCommon::ImageViewBase{std::move(other)}, runtime{std::exchange(other.runtime, nullptr)},
     slot_images{other.slot_images}, image{other.image}, srv_resource{other.srv_resource}, srv_params{other.srv_params}, natural_type{other.natural_type},
-    srvs{std::exchange(other.srvs, {})}, depth_feedback_srvs{std::move(other.depth_feedback_srvs)}, uav{other.uav}, rtv{other.rtv}, rtv_on_copy{other.rtv_on_copy}, dsv{other.dsv}, dsv_read_only{other.dsv_read_only}, buffer_size{other.buffer_size} {}
+    srvs{std::exchange(other.srvs, {})}, depth_feedback_srvs{std::move(other.depth_feedback_srvs)}, stencil_srv{std::exchange(other.stencil_srv, {})}, uav{other.uav}, rtv{other.rtv}, rtv_on_copy{other.rtv_on_copy}, dsv{other.dsv}, dsv_read_only{other.dsv_read_only}, buffer_size{other.buffer_size} {}
 ImageView& ImageView::operator=(ImageView&& other) noexcept {
     if (this != &other) { Release(); static_cast<VideoCommon::ImageViewBase&>(*this) = std::move(other);
         runtime = std::exchange(other.runtime, nullptr); slot_images = other.slot_images; image = other.image; srv_resource = other.srv_resource;
         srv_params = other.srv_params; natural_type = other.natural_type; srvs = std::exchange(other.srvs, {});
         depth_feedback_srvs = std::move(other.depth_feedback_srvs);
+        stencil_srv = std::exchange(other.stencil_srv, {});
         uav = other.uav; rtv = other.rtv; rtv_on_copy = other.rtv_on_copy; dsv = other.dsv; dsv_read_only = other.dsv_read_only; buffer_size = other.buffer_size; }
     return *this;
 }

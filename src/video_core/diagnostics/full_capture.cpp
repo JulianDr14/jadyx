@@ -9,6 +9,7 @@ namespace VideoCommon::FullCapture {
 namespace {
 std::atomic_bool enabled{}, active{};
 std::atomic_bool self_test{};
+std::atomic_bool targets_after_only{};
 std::mutex mutex;
 Archive archive;
 std::string session{"{}"};
@@ -19,6 +20,8 @@ bool Enabled() noexcept { return enabled.load(std::memory_order_relaxed); }
 bool Active() noexcept { return active.load(std::memory_order_relaxed); }
 void RequestSelfTest(bool value) noexcept { self_test.store(value); }
 bool TakeSelfTest() noexcept { return self_test.exchange(false); }
+void SetTargetsAfterOnly(bool value) noexcept { targets_after_only.store(value); }
+bool TargetsAfterOnly() noexcept { return targets_after_only.load(std::memory_order_relaxed); }
 void SetSession(std::string_view detail) noexcept {
     try { std::scoped_lock lock{mutex}; session = detail; } catch (...) {}
 }

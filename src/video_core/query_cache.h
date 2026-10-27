@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <functional>
 #include <iterator>
@@ -28,6 +29,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/memory_manager.h"
+#include "video_core/perf_counters.h"
 #include "video_core/rasterizer_interface.h"
 
 namespace VideoCore {
@@ -45,6 +47,10 @@ namespace VideoCommon {
 using AsyncJobId = Common::SlotId;
 
 static constexpr AsyncJobId NULL_ASYNC_JOB_ID{0};
+
+/// Diagnostic ("occlusion_force_visible=1"): sample counts reach the guest as never zero, so
+/// occlusion culling built on them keeps every object, and every conditional draw renders.
+inline std::atomic<bool> force_occlusion_visible{};
 
 template <class QueryCache, class HostCounter>
 class CounterStreamBase {
@@ -174,7 +180,7 @@ public:
             async_job.value = *result;
             query->SetAsyncJob(NULL_ASYNC_JOB_ID);
         }
-        AsyncFlushQuery(query, timestamp, lock);
+        AsyncFlushQuery(query, type, timestamp, lock);
     }
 
     /// Enables all available GPU counters
@@ -325,8 +331,10 @@ private:
         return found != std::end(contents) ? &*found : nullptr;
     }
 
-    void AsyncFlushQuery(CachedQuery* query, std::optional<u64> timestamp,
+    void AsyncFlushQuery(CachedQuery* query, VideoCore::QueryType type,
+                         std::optional<u64> timestamp,
                          std::unique_lock<std::recursive_mutex>& lock) {
+        const auto reported = std::chrono::steady_clock::now();
         const AsyncJobId new_async_job_id = slot_async_jobs.insert();
         {
             AsyncJob& async_job = slot_async_jobs[new_async_job_id];
@@ -340,13 +348,24 @@ private:
             uncommitted_flushes->push_back(new_async_job_id);
         }
         lock.unlock();
-        std::function<void()> operation([this, new_async_job_id, timestamp] {
+        std::function<void()> operation([this, new_async_job_id, type, timestamp, reported] {
             std::unique_lock local_lock{mutex};
             AsyncJob& async_job = slot_async_jobs[new_async_job_id];
             u64 value = async_job.value;
             VAddr address = async_job.query_location;
             slot_async_jobs.erase(new_async_job_id);
             local_lock.unlock();
+            if (type == VideoCore::QueryType::SamplesPassed) {
+                namespace Perf = VideoCore::Perf;
+                const auto waited = std::chrono::steady_clock::now() - reported;
+                Perf::Add(Perf::Counter::OcclusionResults, 1);
+                Perf::Add(Perf::Counter::OcclusionResultsZero, value == 0 ? 1 : 0);
+                Perf::Add(Perf::Counter::OcclusionResultLatencyUs,
+                          std::chrono::duration_cast<std::chrono::microseconds>(waited).count());
+                if (force_occlusion_visible.load(std::memory_order_relaxed)) {
+                    value = (std::max<u64>)(value, 1ULL << 20);
+                }
+            }
             if (FullCapture::Active()) FullCapture::Event("query_guest_result", fmt::format(
                 "{{\"address\":{},\"value\":{},\"timestamped\":{}}}",
                 static_cast<u64>(address), value, timestamp.has_value()));
@@ -395,34 +414,43 @@ private:
     std::list<std::shared_ptr<std::vector<AsyncJobId>>> committed_flushes;
 }; // namespace VideoCommon
 
+/// A host query counting one slice of a guest counter, chained to the slices before it: its
+/// value is its own count plus its dependency's. Every link is resolved and released in loops,
+/// never by recursion, so a long chain costs neither a GPU wait to cut it short nor stack.
 template <class QueryCache, class HostCounter>
 class HostCounterBase {
 public:
     explicit HostCounterBase(std::shared_ptr<HostCounter> dependency_)
-        : dependency{std::move(dependency_)}, depth{dependency ? (dependency->Depth() + 1) : 0} {
-        // Avoid nesting too many dependencies to avoid a stack overflow when these are deleted.
-        constexpr u64 depth_threshold = 96;
-        if (depth > depth_threshold) {
-            depth = 0;
-            base_result = dependency->Query();
-            dependency = nullptr;
+        : dependency{std::move(dependency_)} {
+        if (!dependency) {
+            return;
+        }
+        depth = Link(dependency.get()).result ? 1 : Link(dependency.get()).depth + 1;
+        if (depth > SETTLE_DEPTH) {
+            // Settle the slices the GPU already counted instead of waiting for the whole chain.
+            depth = SettleReady(dependency.get()) + 1;
         }
     }
-    virtual ~HostCounterBase() = default;
+
+    virtual ~HostCounterBase() {
+        ReleaseChain(std::move(dependency));
+    }
 
     /// Returns the current value of the query.
     u64 Query(bool async = false) {
         if (result) {
             return *result;
         }
-
-        u64 value = BlockingQuery(async) + base_result;
-        if (dependency) {
-            value += dependency->Query();
-            dependency = nullptr;
+        std::vector<HostCounterBase*> chain = Unread(this);
+        u64 total = Settled(*chain.back());
+        // Oldest first: the GPU counts them in order, so once the first wait returns the newer
+        // slices are usually done too and read without one.
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+            HostCounterBase& link = **it;
+            const std::optional<u64> ready = link.TryQuery();
+            total += ready ? *ready : link.BlockingQuery(async);
+            link.Resolve(total);
         }
-
-        result = value;
         return *result;
     }
 
@@ -435,7 +463,7 @@ public:
         return depth;
     }
 
-    /// The value, once Query has read it.
+    /// The value, once Query or a newer counter's settling has read it.
     const std::optional<u64>& KnownResult() const noexcept {
         return result;
     }
@@ -445,20 +473,81 @@ public:
         return dependency;
     }
 
-    /// The value of the dependencies folded into this counter.
-    u64 BaseResult() const noexcept {
-        return base_result;
-    }
-
 protected:
     /// Returns the value of query from the backend API blocking as needed.
     virtual u64 BlockingQuery(bool async = false) const = 0;
 
+    /// Returns the value of query when the backend already has it, without waiting.
+    virtual std::optional<u64> TryQuery() const {
+        return std::nullopt;
+    }
+
 private:
-    std::shared_ptr<HostCounter> dependency; ///< Counter to add to this value.
-    std::optional<u64> result;               ///< Filled with the already returned value.
-    u64 depth;                               ///< Number of nested dependencies.
-    u64 base_result = 0;                     ///< Equivalent to nested dependencies value.
+    /// Unread links a new counter may sit on before it settles the ready ones below it.
+    static constexpr u64 SETTLE_DEPTH = 16;
+
+    static HostCounterBase& Link(HostCounter* counter) noexcept {
+        return *counter;
+    }
+
+    /// The links from head down to the first one already read, newest first.
+    static std::vector<HostCounterBase*> Unread(HostCounterBase* head) {
+        std::vector<HostCounterBase*> chain;
+        for (HostCounterBase* link = head; link && !link->result;
+             link = link->dependency ? &Link(link->dependency.get()) : nullptr) {
+            chain.push_back(link);
+        }
+        return chain;
+    }
+
+    /// The value below the oldest unread link: its read dependency's, or zero at the chain's end.
+    static u64 Settled(const HostCounterBase& oldest) noexcept {
+        return oldest.dependency ? *Link(oldest.dependency.get()).result : 0;
+    }
+
+    /// Reads, oldest first, the links below head the backend has finished without waiting, and
+    /// returns how many are still unread.
+    static u64 SettleReady(HostCounter* head) {
+        std::vector<HostCounterBase*> chain = Unread(&Link(head));
+        if (chain.empty()) {
+            return 0;
+        }
+        u64 total = Settled(*chain.back());
+        u64 unread = chain.size();
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it, --unread) {
+            const std::optional<u64> ready = (*it)->TryQuery();
+            if (!ready) {
+                break;
+            }
+            total += *ready;
+            (*it)->Resolve(total);
+        }
+        for (u64 i = 0; i < unread; ++i) {
+            chain[i]->depth = unread - i;
+        }
+        return unread;
+    }
+
+    /// Stores the value, which already includes the dependencies', and lets them go.
+    void Resolve(u64 value) {
+        result = value;
+        depth = 0;
+        ReleaseChain(std::move(dependency));
+    }
+
+    /// Drops one reference to a chain, destroying the links it was the last owner of one at a
+    /// time: letting each destructor release the next would recurse once per link.
+    static void ReleaseChain(std::shared_ptr<HostCounter> link) {
+        while (link && link.use_count() == 1) {
+            std::shared_ptr<HostCounter> next = std::move(Link(link.get()).dependency);
+            link.reset();
+            link = std::move(next);
+        }
+    }
+
+    std::shared_ptr<HostCounter> dependency; ///< Counter to add to this value, while unread.
+    std::optional<u64> result;               ///< The value, dependencies included, once read.
+    u64 depth = 0;                           ///< Unread links below this one (may overcount).
 };
 
 template <class HostCounter>

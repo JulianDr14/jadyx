@@ -43,4 +43,11 @@ inline u32 JitCodeCacheSize(u32 default_bytes) {
     return bytes != 0 ? bytes : default_bytes;
 }
 
+/// Whether JITs created afterwards emit exclusive loads and stores inline through the page table
+/// when fastmem is off, instead of calling into the exclusive monitor for each one. Defaults on.
+inline std::atomic<bool> g_page_table_exclusives{true};
+inline void SetPageTableExclusives(bool enabled) {
+    g_page_table_exclusives.store(enabled, std::memory_order_relaxed);
+}
+
 } // namespace Core

@@ -39,9 +39,9 @@ public:
         const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
 
         Lock();
-        exclusive_addresses[processor_id] = masked_address;
+        reservations[processor_id].address = masked_address;
         const T value = op();
-        std::memcpy(exclusive_values[processor_id].data(), &value, sizeof(T));
+        std::memcpy(reservations[processor_id].value.data(), &value, sizeof(T));
         Unlock();
         return value;
     }
@@ -58,7 +58,7 @@ public:
         }
 
         T saved_value;
-        std::memcpy(&saved_value, exclusive_values[processor_id].data(), sizeof(T));
+        std::memcpy(&saved_value, reservations[processor_id].value.data(), sizeof(T));
         const bool result = op(saved_value);
 
         Unlock();
@@ -76,14 +76,14 @@ public:
     };
 
     // All guest CPUs and HLE exclusive operations must be parked by the caller.
-    // No JIT code, locks, pointers or layout-dependent static_vector are saved.
+    // No JIT code, locks, pointers or layout-dependent storage are saved.
     Checkpoint CaptureCheckpoint() {
         Checkpoint state{};
         Lock();
-        state.processor_count = exclusive_addresses.size();
+        state.processor_count = processor_count;
         for (size_t i = 0; i < state.processor_count; ++i) {
-            if (exclusive_addresses[i] != INVALID_EXCLUSIVE_ADDRESS) {
-                state.reservations[i] = {exclusive_addresses[i], exclusive_values[i], true};
+            if (reservations[i].address != INVALID_EXCLUSIVE_ADDRESS) {
+                state.reservations[i] = {reservations[i].address, reservations[i].value, true};
             }
         }
         Unlock();
@@ -91,7 +91,7 @@ public:
     }
 
     void RestoreCheckpoint(const Checkpoint& state) {
-        if (state.processor_count != exclusive_addresses.size()) {
+        if (state.processor_count != processor_count) {
             throw std::invalid_argument("Pulse: exclusive monitor processor count");
         }
         for (size_t i = 0; i < state.reservations.size(); ++i) {
@@ -107,8 +107,8 @@ public:
         Lock();
         for (size_t i = 0; i < state.processor_count; ++i) {
             const auto& r = state.reservations[i];
-            exclusive_addresses[i] = r.active ? r.address : INVALID_EXCLUSIVE_ADDRESS;
-            exclusive_values[i] = r.value;
+            reservations[i].address = r.active ? r.address : INVALID_EXCLUSIVE_ADDRESS;
+            reservations[i].value = r.value;
         }
         Unlock();
     }
@@ -132,9 +132,15 @@ private:
     static constexpr VAddr RESERVATION_GRANULE_MASK = 0xFFFF'FFFF'FFFF'FFFFull;
     static constexpr VAddr INVALID_EXCLUSIVE_ADDRESS = 0xDEAD'DEAD'DEAD'DEADull;
     static constexpr size_t MAX_NUM_CPU_CORES = 4; // Sync with src/core/hardware_properties
-    boost::container::static_vector<VAddr, MAX_NUM_CPU_CORES> exclusive_addresses;
-    boost::container::static_vector<Vector, MAX_NUM_CPU_CORES> exclusive_values;
-    SpinLock lock;
+    /// One cache line per processor: inline exclusive loads write their processor's reservation
+    /// every time, and with all of them on one line each load evicted the other cores' copies.
+    struct alignas(64) Reservation {
+        VAddr address = INVALID_EXCLUSIVE_ADDRESS;
+        Vector value{};
+    };
+    std::array<Reservation, MAX_NUM_CPU_CORES> reservations{};
+    size_t processor_count;
+    alignas(64) SpinLock lock;
 };
 
 }  // namespace Dynarmic

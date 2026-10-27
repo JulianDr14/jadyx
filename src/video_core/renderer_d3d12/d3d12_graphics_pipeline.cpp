@@ -38,6 +38,7 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
+#include "video_core/renderer_d3d12/d3d12_stream_output.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_pipeline_diagnostics.h"
 #include "video_core/shader_notify.h"
@@ -220,7 +221,7 @@ void GraphicsPipelineCacheKey::RefreshStatic(const Maxwell& regs) noexcept {
                                         ? D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF
                                         : D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF);
     }
-    padding = 0;
+    emulate_reduction = 0;
 }
 
 GraphicsPipeline::GraphicsPipeline(const Device& device_,
@@ -254,6 +255,11 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
     depth_bounds = device.SupportsDepthBounds() && key.state.depth_enabled != 0 &&
                    key.state.dynamic_state.depth_bounds_enable != 0;
     blend_constant_alpha = ReadsOnlyConstantAlpha(key.state, bound_color_targets);
+    if (key.state.xfb_enabled != 0) {
+        for (size_t index = 0; index < stream_output_strides.size(); ++index) {
+            stream_output_strides[index] = key.state.xfb_state.layouts[index].stride;
+        }
+    }
     if (shader_notify) {
         shader_notify->MarkShaderBuilding();
     }
@@ -439,6 +445,8 @@ D3D12_GPU_VIRTUAL_ADDRESS IntegerSamplerTable::Upload(BufferCache& buffer_cache)
     const size_t size = Common::AlignUp(num_bindings * sizeof(eden_integer_sampler_state),
                                         D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
     const StagingBufferRef ref = buffer_cache.runtime.UploadStagingBuffer(size);
+    // Bindings without a row (storage images, gaps) must read reduction NONE.
+    std::memset(ref.mapped_span.data(), 0, size);
     for (const auto& [binding, state] : rows) {
         std::memcpy(ref.mapped_span.data() + binding * sizeof(state), &state, sizeof(state));
     }
@@ -569,7 +577,8 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     queue.Acquire(layout.NumResourceDescriptors(), cbv_slots);
     ImageTransitionList image_transitions;
     bool uses_render_area = false;
-    const bool has_integer_samplers = layout.IntegerSamplerIndex() != PipelineLayout::NO_TABLE;
+    const bool has_sampler_table = layout.IntegerSamplerIndex() != PipelineLayout::NO_TABLE;
+    const bool emulates_reduction = key.emulate_reduction != 0;
     IntegerSamplerTable integer_samplers;
     u32 stage_binding = 0;
     const SamplerId* samplers_it = samplers.data();
@@ -603,9 +612,13 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                     queue.AddCopy(image_view.Handle(desc.type));
                 }
                 const SamplerId sampler_id = *(samplers_it++);
-                if (has_integer_samplers && desc.is_integer) {
-                    integer_samplers.Add(texture_binding, texture_cache.GetSampler(sampler_id),
-                                         image_view);
+                const Sampler& sampler = texture_cache.GetSampler(sampler_id);
+                if (has_sampler_table && (desc.is_integer || emulates_reduction)) {
+                    integer_samplers.Add(texture_binding, sampler, image_view);
+                }
+                if (!emulates_reduction && sampler.EmulatedReduction() != 0 &&
+                    ReducibleTexture(desc)) {
+                    out.unemulated_reduction_stages |= static_cast<u8>(1u << stage);
                 }
                 image_transitions.emplace_back(view_id, false);
                 if (out.trace_all_views) out.trace_all_views->push_back(
@@ -614,7 +627,6 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                     out.trace_views->push_back(view_id);
                 }
                 if (out.trace_filters) {
-                    const Sampler& sampler = texture_cache.GetSampler(sampler_id);
                     out.trace_filters->push_back(fmt::format(
                         "stage={} binding={} cbuf={}+{:x} element={} depth={} integer={} "
                         "srv=[{}] sampler=[{}]",
@@ -643,7 +655,8 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     // Depth-based effects sample the bound depth buffer: both uses then share a read-only state
     // (DEPTH_SAMPLED_STATE) and the draw binds the read-only DSV.
     BarrierBatch barriers{context.scheduler};
-    for (const auto& [view_id, is_storage] : image_transitions) {
+    ForEachImageTransition(image_transitions, texture_cache, [&](VideoCommon::ImageViewId view_id,
+                                                                 bool is_storage) {
         if (out.trace_all_views && is_storage) out.trace_all_views->push_back({view_id, true});
         if (GpuDiagnosticsEnabled()) {
             const auto& view = texture_cache.GetImageView(view_id);
@@ -658,13 +671,13 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                 out.depth_sampled = true;
                 image_view.TransitionImage(DEPTH_SAMPLED_STATE, &barriers);
             }
-            continue;
+            return;
         }
         image_view.TransitionImage(is_storage ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                                               : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                                                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                                    &barriers);
-    }
+    });
     barriers.Flush();
     target_lap.Lap(VideoCore::Perf::Counter::DrawImageTransitionsNs);
     if (out.depth_sampled && writable_depth) {
@@ -691,7 +704,7 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
     using VideoCore::Surface::PixelFormatFromDepthFormat;
     using VideoCore::Surface::PixelFormatFromRenderTargetFormat;
 
-    const auto& stages = *dxil;
+    const auto& stages = dxil->stages;
     const FixedPipelineState& state = key.state;
     const FixedPipelineState::DynamicState& dynamic = state.dynamic_state;
 
@@ -702,6 +715,18 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
     desc.DS = Bytecode(stages[2]);
     desc.GS = Bytecode(stages[3]);
     desc.PS = Bytecode(stages[4]);
+
+    // Native transform feedback: the last pre-rasterization stage streams out the captured
+    // outputs where its Xfb decorations place them. Rasterizer discard keeps the capture and
+    // drops every primitive after it, so nothing reaches the pixel shader.
+    const auto& stream_output = dxil->stream_output;
+    if (!stream_output.empty()) {
+        const bool rasterize = dynamic.rasterize_enable != 0;
+        desc.StreamOutput = DescribeStreamOutput(stream_output, stream_output_strides, rasterize);
+        if (!rasterize) {
+            desc.PS = {};
+        }
+    }
 
     // Vertex input: nir_to_dxil names generic attribute N "TEXCOORD" N. Strides are dynamic (they
     // go in the vertex buffer views), so the layout only needs slots and offsets.
@@ -1017,7 +1042,7 @@ bool FirstFailure(u64 key_hash) {
 } // Anonymous namespace
 
 void GraphicsPipeline::Build(bool flatten_on_fault) try {
-    const auto& stages = *dxil;
+    const auto& stages = dxil->stages;
     std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
     auto desc = Describe(elements);
     const size_t num_attachments = desc.NumRenderTargets;
@@ -1039,28 +1064,31 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
                       "{:016x}; its draws are skipped",
                       static_cast<u32>(code), key.unique_hashes[1], key.unique_hashes[5]);
     };
-    const auto create_pso = [&](ComPtr<ID3D12PipelineState>& handle) {
-        DWORD fault = 0;
+    const auto try_create = [&](ComPtr<ID3D12PipelineState>& handle, DWORD& fault) {
         if (bounds_test) {
             const HRESULT stream_hr = CallDriverGuarded(
                 [&] { return CreateWithDepthBounds(device.Get2(), desc, handle); }, fault);
-            if (SUCCEEDED(stream_hr)) {
-                return stream_hr;
-            }
-            if (stream_hr == DRIVER_FAULT_HRESULT) {
-                log_driver_fault(fault, handle);
+            if (SUCCEEDED(stream_hr) || stream_hr == DRIVER_FAULT_HRESULT) {
                 return stream_hr;
             }
             // The option bit is not a promise the driver takes the stream: draw without the test.
             WarnOnce(warned_depth_bounds, "the depth bounds test (pipeline stream rejected)");
         }
         ID3D12Device* const raw = device.Get();
-        const HRESULT plain_hr = CallDriverGuarded(
+        return CallDriverGuarded(
             [&] { return raw->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&handle)); }, fault);
-        if (plain_hr == DRIVER_FAULT_HRESULT) {
+    };
+    const auto create_pso = [&](ComPtr<ID3D12PipelineState>& handle) {
+        DWORD fault = 0;
+        HRESULT result;
+        {
+            std::shared_lock build_lock{PipelineBuildMutex()};
+            result = try_create(handle, fault);
+        }
+        if (result == DRIVER_FAULT_HRESULT) {
             log_driver_fault(fault, handle);
         }
-        return plain_hr;
+        return result;
     };
     const auto create = [&] {
         const u64 create_start = SteadyMicros();
@@ -1147,7 +1175,9 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
         if (hr == E_OUTOFMEMORY) {
             VideoCommon::GPUThread::ReportException("D3D12 graphics PSO allocation exhausted memory");
         } else if (FirstFailure(key.Hash())) {
-            // Every pipeline object with these shaders fails again; diagnose the first.
+            // Every pipeline object with these shaders fails again; diagnose the first, alone in
+            // the driver so that other builds do not decide its variants.
+            std::unique_lock build_lock{PipelineBuildMutex()};
             if (hr == DRIVER_FAULT_HRESULT) {
                 DumpFaultedPipeline(key.unique_hashes[1], key.unique_hashes[5], stages);
             }

@@ -52,8 +52,10 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
                                     Nvidia::Devices::nvdisp_disp0& nvdisp) {
 #if BOOST_VERSION >= 108100 || __GNUC__ > 12
     boost::container::small_vector<HwcLayer, 2> composition_stack;
+    boost::container::small_vector<ConsumerId, 2> composed_consumers;
 #else //TODO: debian stable
     std::vector<HwcLayer> composition_stack;
+    std::vector<ConsumerId> composed_consumers;
 #endif
 
     const VideoCore::FrameTrace::ScopedSpan trace_compose{
@@ -121,6 +123,7 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
                 .acquire_fence = item.fence,
                 .layer_stack_mask = layer->layer_stack_mask,
             });
+            composed_consumers.push_back(consumer_id);
         }
 
         // Overlay layers run at their own framerate independently of the game.
@@ -149,8 +152,11 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
         std::stable_sort(composition_stack.begin(), composition_stack.end(),
                          [&](const HwcLayer& l, const HwcLayer& r) { return l.z_index < r.z_index; });
 
-        // Composite.
-        nvdisp.Composite(composition_stack);
+        // Composite. The buffers it reads go back to the guest with its fence.
+        const android::Fence release_fence = nvdisp.Composite(composition_stack);
+        for (const ConsumerId consumer_id : composed_consumers) {
+            m_framebuffers[consumer_id].release_fence = release_fence;
+        }
     }
 
     // Advance by 1 frame (60 FPS compositing)
@@ -182,7 +188,7 @@ void HardwareComposer::ReleaseFramebuffersLocked(Display& display) {
             framebuffer.item.frame_number,
             (static_cast<u64>(static_cast<u32>(layer_id)) << 32) |
             static_cast<u32>(m_frame_number - framebuffer.last_acquire_frame));
-        layer->buffer_item_consumer->ReleaseBuffer(framebuffer.item, android::Fence::NoFence());
+        layer->buffer_item_consumer->ReleaseBuffer(framebuffer.item, framebuffer.release_fence);
         framebuffer.is_acquired = false;
     }
 }
@@ -197,7 +203,7 @@ void HardwareComposer::RemoveLayerLocked(Display& display, ConsumerId consumer_i
     // Try to release the buffer item.
     const auto layer = display.stack.FindLayer(consumer_id);
     if (layer && it->second.is_acquired) {
-        layer->buffer_item_consumer->ReleaseBuffer(it->second.item, android::Fence::NoFence());
+        layer->buffer_item_consumer->ReleaseBuffer(it->second.item, it->second.release_fence);
     }
 
     // Erase the slot.
@@ -216,6 +222,7 @@ bool HardwareComposer::TryAcquireFramebufferLocked(Layer& layer, Framebuffer& fr
     framebuffer.release_frame_number = m_frame_number + swap_interval;
     framebuffer.last_acquire_frame = m_frame_number;
     framebuffer.is_acquired = true;
+    framebuffer.release_fence = android::Fence::NoFence();
     VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::FrameLeaseAcquire,
         framebuffer.item.frame_number,
         (static_cast<u64>(static_cast<u32>(layer.consumer_id)) << 32) |

@@ -6,6 +6,7 @@
 
 #include "common/logging.h"
 #include "video_core/memory_manager.h"
+#include "video_core/query_cache.h"
 #include "video_core/renderer_d3d12/d3d12_conditional_rendering.h"
 #include "video_core/renderer_d3d12/d3d12_query_cache.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
@@ -93,6 +94,10 @@ bool ConditionalRendering::Accelerate(const Tegra::Engines::Maxwell3D::Regs& reg
     if (guest_mode != RenderEnable::Mode::Conditional &&
         guest_mode != RenderEnable::Mode::IfEqual && guest_mode != RenderEnable::Mode::IfNotEqual) {
         return false;
+    }
+    // Diagnostic ("occlusion_force_visible=1"): every conditional draw renders.
+    if (VideoCommon::force_occlusion_visible.load(std::memory_order_relaxed)) {
+        return true;
     }
     const GPUVAddr address = regs.render_enable.Address();
     // Conditional renders when the 64-bit report is not zero (as Ryujinx); the others compare

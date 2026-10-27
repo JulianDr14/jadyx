@@ -9,6 +9,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 #include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/os/event.h"
@@ -29,6 +30,8 @@ public:
     void Unpop(Kernel::KernelCore& kernel, std::shared_ptr<IStorage> storage);
     Result Pop(Kernel::KernelCore& kernel, std::shared_ptr<IStorage>* out_storage);
     Kernel::KReadableEvent* GetEvent();
+    // Pulse: the queued storages, front first.
+    std::vector<std::shared_ptr<IStorage>> PulseData();
 
 private:
     std::mutex m_lock{};

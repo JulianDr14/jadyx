@@ -113,6 +113,9 @@ enum class PipelineStage : std::size_t {
     Frontend,    ///< GPU thread: Maxwell -> IR -> SPIR-V of a new pipeline.
     QueueWait,   ///< Queued -> started, on a worker or claimed by the GPU thread.
     Dxil,        ///< SPIR-V -> linked, signed DXIL (Mesa + validator).
+    Translate,   ///< Mesa's linked translation of one pipeline, inside Dxil.
+    SignLock,    ///< Waiting for the shared validator, inside Dxil (one per stage).
+    Sign,        ///< The validator signing one stage, inside Dxil.
     PsoCreate,   ///< The driver's CreateGraphicsPipelineState, misses of the PSO index only.
     WaitNew,     ///< GPU thread blocked on a pipeline first seen this session.
     WaitDormant, ///< GPU thread blocked on a disk-cache pipeline whose PSO was never built.

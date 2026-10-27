@@ -22,10 +22,12 @@
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
+#include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
 #include "video_core/renderer_d3d12/d3d12_draw_metrics.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_tracking.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
+#include "video_core/renderer_d3d12/diagnostics/d3d12_compute_inputs.h"
 
 namespace D3D12 {
 
@@ -89,13 +91,14 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
       buffer_runtime{buffer_runtime_}, texture_runtime{texture_runtime}, descriptor_ring{descriptor_ring_},
       sampler_heap{sampler_heap_}, blit_helper{blit_helper_},
       indirect_args{device, scheduler_, staging},
+      stream_output{device, scheduler_, compiler},
       descriptor_queue{device.Get(), descriptor_ring_},
       buffer_cache{device_memory_, buffer_runtime_}, texture_cache{texture_runtime, device_memory_},
       pipeline_cache{device_memory_, device, compiler, texture_runtime, gpu_.ShaderNotify()},
       local_memory_pool{device, scheduler_},
       query_cache{*this, device_memory_, device, scheduler_},
       conditional_rendering{device, scheduler_, query_cache},
-      accelerate_dma{buffer_cache, texture_cache},
+      accelerate_dma{buffer_cache, texture_cache, draw_hunt},
       fence_manager{*this, gpu_, texture_cache, buffer_cache, query_cache, scheduler_},
       draw_hunt{device, scheduler_} {
     buffer_runtime.SetDescriptorQueue(&descriptor_queue);
@@ -128,6 +131,9 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     }
     ++draw_counter;
     ++zpass_diag.attempted;
+    if (maxwell3d->regs.transform_feedback_enabled == 0) {
+        stream_output.Disable();
+    }
     const u64 full_operation = full_capture_operation;
     bool full_draw_recorded = false;
     SCOPE_EXIT {
@@ -143,6 +149,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     }
     DrawMetrics::ScopedDrawTimer draw_timer;
     SCOPE_EXIT {
+        scheduler.EndWork();
         FlushIfUploadHeavy();
         gpu.TickWork();
     };
@@ -158,6 +165,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
         return;
     }
 
+    scheduler.BeginWork();
     hunt.PipelineStart();
     GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
     hunt.PipelineEnd();
@@ -208,6 +216,9 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
                          sampler_heap, scheduler},
                         bindings);
     buffer_runtime.SetTraceBuffers(nullptr);
+    if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
+        pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+    }
     if (!pipeline->Handle()) {
         BUG_TRACK_KEY(DrawSkipped, reinterpret_cast<std::uintptr_t>(pipeline),
                       "draw skipped: the pipeline was rejected (VS {:016x} PS {:016x})",
@@ -286,6 +297,14 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     }
     RecordDraw(*pipeline, bindings, *framebuffer, params, draw_state.topology);
     full_draw_recorded = true;
+    if (material_trace.Active() && pipeline->Layout().StreamOutput() &&
+        maxwell3d->regs.transform_feedback_enabled != 0) {
+        try {
+            CaptureMaterialStreamOutput(*pipeline, params);
+        } catch (const std::exception& e) {
+            LOG_WARNING(Render, "D3D12 material stream output skipped: {}", e.what());
+        }
+    }
     if (full) {
         CaptureFullBuffers(traced_buffers, true);
         CaptureFullImages(full_views, framebuffer, true);
@@ -371,6 +390,7 @@ void RasterizerD3D12::DispatchCompute() {
     HuntScope hunt{draw_hunt, Hunt::Kind::Dispatch};
     VideoCore::Perf::ScopedNsTimer dispatch_timer{VideoCore::Perf::Counter::DispatchNs};
     SCOPE_EXIT {
+        scheduler.EndWork();
         FlushIfUploadHeavy();
         // As after a draw: a guest core waiting on a flush is not held up by a compute batch.
         gpu.TickWork();
@@ -378,6 +398,7 @@ void RasterizerD3D12::DispatchCompute() {
     gpu_memory->FlushCaching();
     ApplyPendingStateInvalidation();
 
+    scheduler.BeginWork();
     hunt.PipelineStart();
     ComputePipeline* const pipeline = pipeline_cache.CurrentComputePipeline();
     hunt.PipelineEnd();
@@ -386,15 +407,17 @@ void RasterizerD3D12::DispatchCompute() {
         return;
     }
     hunt.Shaders(0, pipeline->UniqueHash());
+    // Diagnostic: how often each compute shader is dispatched (logged at 1, 2, 4, 8... and
+    // every 1024th dispatch, so the last line per hash approximates its total).
+    static std::unordered_map<u64, u64> dispatch_counts;
+    const u64 dispatch_count = ++dispatch_counts[pipeline->UniqueHash()];
     {
-        // Diagnostic: how often each compute shader is dispatched (logged at 1, 2, 4, 8... and
-        // every 1024th dispatch, so the last line per hash approximates its total).
-        static std::unordered_map<u64, u64> dispatch_counts;
         const u64 hash = pipeline->UniqueHash();
-        const u64 count = ++dispatch_counts[hash];
+        const u64 count = dispatch_count;
         if ((count & (count - 1)) == 0 || (count & 1023) == 0) {
             LOG_WARNING(Render, "D3D12: compute shader {:016x} dispatched {} times", hash, count);
         }
+        NoteComputeDispatch(hash, count);
     }
     std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
     PipelineBindings bindings;
@@ -404,21 +427,32 @@ void RasterizerD3D12::DispatchCompute() {
     if (full) {
         bindings.trace_all_views = &full_views;
         bindings.trace_filters = &full_samplers;
+    }
+    const bool dump_inputs = ComputeInputsWanted(pipeline->UniqueHash(), dispatch_count);
+    if (full || dump_inputs) {
         buffer_runtime.SetTraceBuffers(&full_buffers);
     }
     SCOPE_EXIT { buffer_runtime.SetTraceBuffers(nullptr); };
     pipeline->Configure({*kepler_compute, *gpu_memory, buffer_cache, texture_cache,
                          descriptor_queue, sampler_heap, scheduler},
                         bindings);
+    if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
+        pipeline_cache.EmulateReduction(pipeline->UniqueHash());
+    }
     if (!pipeline->Handle()) {
         hunt.Outcome(Hunt::Outcome::PsoRejected);
         return; // D3D12 rejected the PSO (logged when it was built)
     }
+    hunt.Setup(Hunt::Kind::DispatchSetup);
     hunt.Target(nullptr);
 
     const auto& qmd = kepler_compute->launch_description;
     const PipelineLayout& layout = pipeline->Layout();
     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
+    if (dump_inputs) {
+        DumpComputeInputs(scheduler, staging, full_buffers, pipeline->UniqueHash(),
+                          dispatch_count, dim, false);
+    }
     if (full) {
         const auto meta = fmt::format("{{\"op\":{},\"shader\":{}}}", full_capture_operation, pipeline->UniqueHash());
         VideoCommon::FullCapture::Data("compute_dxil", meta, pipeline->DiagnosticDxil());
@@ -451,6 +485,10 @@ void RasterizerD3D12::DispatchCompute() {
     }
     bool dispatched = false;
     SCOPE_EXIT {
+        if (dump_inputs && dispatched) {
+            DumpComputeInputs(scheduler, staging, full_buffers, pipeline->UniqueHash(),
+                              dispatch_count, dim, true);
+        }
         if (full) {
             if (dispatched) {
                 CaptureFullBuffers(full_buffers, true);
@@ -556,7 +594,9 @@ void RasterizerD3D12::DispatchCompute() {
         }
         return;
     }
-    cmd->Dispatch(dim[0], dim[1], dim[2]);
+    // A split shader runs each guest group as WorkgroupSplit() real ones; the runtime data above
+    // keeps the guest's count.
+    cmd->Dispatch(dim[0] * pipeline->WorkgroupSplit(), dim[1], dim[2]);
     dispatched = true;
     hunt.Geometry(dim[0] * dim[1] * dim[2], 1, 0);
     hunt.Recorded();
@@ -597,7 +637,8 @@ void RasterizerD3D12::ResetCounter(VideoCommon::QueryType type) {
 }
 
 void RasterizerD3D12::Query(GPUVAddr address, VideoCommon::QueryType type,
-                            VideoCommon::QueryPropertiesFlags flags, u32 payload, u32) {
+                            VideoCommon::QueryPropertiesFlags flags, u32 payload,
+                            u32 subreport) {
     const auto host_type = MaxwellToVideoCoreQuery(type);
     {
         // Diagnostic: every guest query by raw type, logged at 1, 2, 4, 8... requests.
@@ -626,10 +667,51 @@ void RasterizerD3D12::Query(GPUVAddr address, VideoCommon::QueryType type,
                         d.vs[1], d.ps[1], d.depth_test[1], d.vs[2], d.ps[2], d.depth_test[2]);
         }
     }
+    if (type == VideoCommon::QueryType::StreamingByteCount && HasDrawTransformFeedback()) {
+        return QueryByteCount(address, flags, subreport);
+    }
     if (!host_type) return QueryFallback(address, type, flags, payload);
     const bool timeout = True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout);
     query_cache.Query(address, *host_type,
                       timeout ? std::optional<u64>{gpu.GetTicks()} : std::nullopt);
+}
+
+bool RasterizerD3D12::HasDrawTransformFeedback() {
+    return pipeline_cache.NativeStreamOutput();
+}
+
+void RasterizerD3D12::QueryByteCount(GPUVAddr address, VideoCommon::QueryPropertiesFlags flags,
+                                     u32 stream) {
+    // Written on the GPU, ordered after the captures, into the guest memory the buffer cache
+    // holds (as the Vulkan backend's SyncValues): DrawAuto reads it there without a stall.
+    const bool timeout = True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout);
+    std::scoped_lock lock{buffer_cache.mutex};
+    const auto [buffer, offset] = buffer_cache.ObtainBuffer(
+        address, timeout ? 16 : 4, VideoCommon::ObtainBufferSynchronize::FullSynchronize,
+        VideoCommon::ObtainBufferOperation::MarkAsWritten);
+    if (!buffer || !buffer->Handle()) {
+        return QueryFallback(address, VideoCommon::QueryType::Payload, flags, 0);
+    }
+    CommandStream* const cmd = scheduler.CommandList();
+    buffer->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
+    const D3D12_GPU_VIRTUAL_ADDRESS base = buffer->Address() + offset;
+    std::array<D3D12_WRITEBUFFERIMMEDIATE_PARAMETER, 4> words{};
+    UINT num_words = 0;
+    // No capture with the current registers wrote the stream: nothing was written.
+    if (const std::optional<u32> slot = stream_output.ByteCountSlot(maxwell3d->regs, stream)) {
+        stream_output.CopyByteCount(cmd, *slot, buffer->Handle(), offset);
+    } else {
+        words[num_words++] = {.Dest = base, .Value = 0};
+    }
+    if (timeout) {
+        const u64 ticks = gpu.GetTicks();
+        words[num_words++] = {.Dest = base + 4, .Value = 0};
+        words[num_words++] = {.Dest = base + 8, .Value = static_cast<u32>(ticks)};
+        words[num_words++] = {.Dest = base + 12, .Value = static_cast<u32>(ticks >> 32)};
+    }
+    if (num_words != 0) {
+        cmd->WriteBufferImmediate(num_words, words.data());
+    }
 }
 
 void RasterizerD3D12::QueryFallback(GPUVAddr address, VideoCommon::QueryType type,
@@ -914,9 +996,12 @@ void RasterizerD3D12::TickFrame() {
 bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
                                             const Tegra::Engines::Fermi2D::Surface& dst,
                                             const Tegra::Engines::Fermi2D::Config& config) {
+    HuntScope hunt{draw_hunt, Hunt::Kind::Blit};
     std::scoped_lock lock{texture_cache.mutex};
+    hunt.Target(nullptr);
     const bool blitted = texture_cache.BlitImage(dst, src, config);
     if (blitted) {
+        hunt.Recorded();
         InvalidateGraphicsState();
     }
     if (trace_draws) {

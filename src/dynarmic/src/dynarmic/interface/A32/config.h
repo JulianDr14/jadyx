@@ -215,6 +215,10 @@ struct UserConfig {
     /// writes. On x64, dynarmic currently relies on x64 cmpxchg semantics which may not
     /// provide fully accurate emulation.
     bool fastmem_exclusive_access = false;
+    /// Determines if exclusive reads and writes are emitted inline using the page_table when
+    /// fastmem is unavailable. Pages the page_table does not map directly use the memory
+    /// callbacks, as ordinary accesses do. Same x64 cmpxchg semantics as fastmem_exclusive_access.
+    bool page_table_exclusive_access = false;
     /// Determines if exclusive access instructions that pagefault should cause
     /// recompilation of that block with fastmem disabled. Recompiled code will use memory
     /// callbacks.

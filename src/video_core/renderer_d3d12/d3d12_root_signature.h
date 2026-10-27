@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -43,6 +44,8 @@ constexpr u32 INDIRECT_DISPATCH_WORDS = INDIRECT_DISPATCH_CONSTANT_WORDS + 3;
 ///    spirv_to_dxil turns those samples into texel loads and emulates the sampler with this data
 ///  - root UAV, local memory pool (Shader::LocalMemoryScratch): u0 space 28, pixel stage only,
 ///    when the fragment shader keeps its local memory there
+///  - root constants and root UAVs, transform feedback (Shader::TransformFeedbackStorage): b4 and
+///    u<N> space 27, vertex stage only, when the vertex shader writes transform feedback buffers
 ///  - graphics only: root CBVs for the first constant buffers that are not arrays, up to
 ///    MAX_ROOT_CBVS and what the 64-dword root budget leaves. Setting a root address per draw
 ///    replaces creating a CBV in the table; the shaders still read b<B> space 0
@@ -80,6 +83,18 @@ public:
     }
     u32 LocalMemoryScratchIndex() const noexcept {
         return local_memory_scratch_index;
+    }
+    /// Root parameter index of the transform feedback constants, or NO_TABLE.
+    u32 TransformFeedbackConstantsIndex() const noexcept {
+        return xfb_constants_index;
+    }
+    /// Root parameter index of each transform feedback buffer's UAV, or NO_TABLE.
+    const std::array<u32, 4>& TransformFeedbackBufferIndices() const noexcept {
+        return xfb_buffer_indices;
+    }
+    /// The pipelines of this layout capture transform feedback through stream output.
+    bool StreamOutput() const noexcept {
+        return stream_output;
     }
     u32 NumResourceDescriptors() const noexcept {
         return num_resources;
@@ -126,9 +141,12 @@ private:
     u32 sampler_table_index{NO_TABLE};
     u32 integer_sampler_index{NO_TABLE};
     u32 local_memory_scratch_index{NO_TABLE};
+    u32 xfb_constants_index{NO_TABLE};
+    std::array<u32, 4> xfb_buffer_indices{NO_TABLE, NO_TABLE, NO_TABLE, NO_TABLE};
     u32 num_resources{};
     u32 num_samplers{};
     u32 root_cbv_index{NO_TABLE};
+    bool stream_output{};
     std::vector<u32> root_cbv_registers;
     std::vector<u32> cbv_root_slots;
 };
@@ -157,8 +175,12 @@ public:
     ~RootSignatureCache();
 
     /// Layout for the stages of one pipeline, in the order their SPIR-V was emitted. Null entries
-    /// (absent stages) are skipped. Throws std::runtime_error if D3D12 rejects the signature.
-    const PipelineLayout& Get(std::span<const Shader::Info* const> infos, bool is_compute);
+    /// (absent stages) are skipped. stream_output: the pipeline declares stream output (native
+    /// transform feedback). emulate_reduction: its float samples read the sampler table too
+    /// (EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION). Throws std::runtime_error if D3D12 rejects the
+    /// signature.
+    const PipelineLayout& Get(std::span<const Shader::Info* const> infos, bool is_compute,
+                              bool stream_output = false, bool emulate_reduction = false);
 
 private:
     void CreateCommandSignatures(PipelineLayout& layout, bool is_compute);

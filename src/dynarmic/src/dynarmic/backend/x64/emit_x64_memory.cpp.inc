@@ -322,8 +322,8 @@ void AxxEmitX64::EmitExclusiveWriteMemory(AxxEmitContext& ctx, IR::Inst* inst) {
 
 template<std::size_t bitsize, auto callback>
 void AxxEmitX64::EmitExclusiveReadMemoryInline(AxxEmitContext& ctx, IR::Inst* inst) {
-    ASSERT(conf.global_monitor && conf.fastmem_pointer);
-    if (!exception_handler.SupportsFastmem()) {
+    ASSERT(conf.global_monitor);
+    if (!conf.page_table && !(conf.fastmem_pointer && exception_handler.SupportsFastmem())) {
         EmitExclusiveReadMemory<bitsize, callback>(ctx, inst);
         return;
     }
@@ -379,6 +379,18 @@ void AxxEmitX64::EmitExclusiveReadMemoryInline(AxxEmitContext& ctx, IR::Inst* in
                 code.jmp(*end, code.T_NEAR);
             });
         }
+    } else if (conf.page_table) {
+        // Pages the page table does not map directly take the callback, as ordinary reads do.
+        SharedLabel abort = ctx.GenSharedLabel(), end = ctx.GenSharedLabel();
+        const auto src_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr);
+        EmitReadMemoryMov<bitsize>(code, value_idx, src_ptr, ordered);
+        code.L(*end);
+
+        ctx.deferred_emits.emplace_back([=, this] {
+            code.L(*abort);
+            code.call(wrapped_fn);
+            code.jmp(*end, code.T_NEAR);
+        });
     } else {
         code.call(wrapped_fn);
     }
@@ -399,8 +411,8 @@ void AxxEmitX64::EmitExclusiveReadMemoryInline(AxxEmitContext& ctx, IR::Inst* in
 
 template<std::size_t bitsize, auto callback>
 void AxxEmitX64::EmitExclusiveWriteMemoryInline(AxxEmitContext& ctx, IR::Inst* inst) {
-    ASSERT(conf.global_monitor && conf.fastmem_pointer);
-    if (!exception_handler.SupportsFastmem()) {
+    ASSERT(conf.global_monitor);
+    if (!conf.page_table && !(conf.fastmem_pointer && exception_handler.SupportsFastmem())) {
         EmitExclusiveWriteMemory<bitsize, callback>(ctx, inst);
         return;
     }
@@ -460,15 +472,7 @@ void AxxEmitX64::EmitExclusiveWriteMemoryInline(AxxEmitContext& ctx, IR::Inst* i
         EmitReadMemoryMov<bitsize>(code, rax.getIdx(), tmp, false);
     }
 
-    const auto fastmem_marker = ShouldFastmem(ctx, inst);
-    if (fastmem_marker) {
-        SharedLabel abort = ctx.GenSharedLabel();
-        bool require_abort_handling = false;
-
-        const auto dest_ptr = EmitFastmemVAddr(code, ctx, *abort, vaddr, require_abort_handling, tmp);
-
-        const auto location = code.getCurr();
-
+    const auto emit_cmpxchg = [&](const Xbyak::RegExp& dest_ptr) {
         switch (bitsize) {
         case 8:
             code.lock();
@@ -493,6 +497,18 @@ void AxxEmitX64::EmitExclusiveWriteMemoryInline(AxxEmitContext& ctx, IR::Inst* i
         default:
             UNREACHABLE();
         }
+    };
+
+    const auto fastmem_marker = ShouldFastmem(ctx, inst);
+    if (fastmem_marker) {
+        SharedLabel abort = ctx.GenSharedLabel();
+        bool require_abort_handling = false;
+
+        const auto dest_ptr = EmitFastmemVAddr(code, ctx, *abort, vaddr, require_abort_handling, tmp);
+
+        const auto location = code.getCurr();
+
+        emit_cmpxchg(dest_ptr);
 
         code.setnz(status.cvt8());
         ctx.deferred_emits.emplace_back([=, this] {
@@ -508,6 +524,21 @@ void AxxEmitX64::EmitExclusiveWriteMemoryInline(AxxEmitContext& ctx, IR::Inst* i
                     conf.recompile_on_exclusive_fastmem_failure,
                 });
 
+            code.xor_(status.cvt32(), status.cvt32()); //dep-break
+            code.test(code.al, code.al);
+            code.setz(status.cvt8());
+            code.jmp(*end, code.T_NEAR);
+        });
+    } else if (conf.page_table) {
+        // Pages the page table does not map directly take the callback, as ordinary writes do.
+        SharedLabel abort = ctx.GenSharedLabel();
+        const auto dest_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr);
+        emit_cmpxchg(dest_ptr);
+        code.setnz(status.cvt8());
+
+        ctx.deferred_emits.emplace_back([=, this] {
+            code.L(*abort);
+            code.call(wrapped_fn);
             code.xor_(status.cvt32(), status.cvt32()); //dep-break
             code.test(code.al, code.al);
             code.setz(status.cvt8());

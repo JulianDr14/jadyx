@@ -173,11 +173,36 @@ struct GenericElementInfo {
     u32 num_components{};
 };
 
+/// An output holding a copy of captured components, for stream output (xfb_copy_outputs).
+struct TransformFeedbackCopy {
+    Id id{};
+    std::array<u32, 4> attributes{}; ///< the attribute each component copies
+    u32 num_components{};
+};
+
+/// Whether a transform feedback copy can carry attribute: the outputs whose values a stage has.
+[[nodiscard]] bool IsCopyableCapture(IR::Attribute attribute);
+
 class EmitContext final : public Sirit::Module {
 public:
     explicit EmitContext(const Profile& profile, const RuntimeInfo& runtime_info,
                          IR::Program& program, Bindings& binding);
     ~EmitContext();
+
+    /// Whether this stage captures varying. Only a geometry shader emits to streams other than 0,
+    /// so other stages capture nothing there.
+    [[nodiscard]] bool Captures(const TransformFeedbackVarying& varying) const {
+        return varying.components != 0 && (stage == Stage::Geometry || varying.stream == 0);
+    }
+
+    /// The transform feedback varying this stage captures for attribute, if any.
+    [[nodiscard]] const TransformFeedbackVarying* CapturedVarying(size_t attribute) const {
+        if (attribute >= runtime_info.xfb_count) {
+            return nullptr;
+        }
+        const TransformFeedbackVarying& varying{runtime_info.xfb_varyings[attribute]};
+        return Captures(varying) ? &varying : nullptr;
+    }
 
     bool uses_geometry_passthrough{};
     bool geometry_passthrough_lowered{};
@@ -343,6 +368,13 @@ public:
     Id local_memory_stride_var{};
     Id local_memory_stride{};
     Id local_memory_acquire_func{};
+
+    /// Storage transform feedback (transform_feedback_storage.h): one storage buffer per captured
+    /// buffer, and the constants block.
+    std::array<Id, 4> xfb_storage_buffers{};
+    Id xfb_storage_element{};
+    Id xfb_storage_constants{};
+    Id xfb_storage_constant_element{};
     Id local_memory_release_func{};
 
     bool uses_explicit_workgroup_layout{};
@@ -385,6 +417,15 @@ public:
     Id output_point_size{};
     Id output_position{};
     std::array<std::array<GenericElementInfo, 4>, 32> output_generics{};
+    /// RuntimeInfo::xfb_copy_outputs: every capture, alone in a generic location the shader leaves
+    /// free (DefineTransformFeedbackCopies). Each vertex stores them before any position transform.
+    std::vector<TransformFeedbackCopy> xfb_copies;
+    /// Captures decorated in place: the captured generics the shader never stores, whose defaults
+    /// each vertex writes.
+    u32 xfb_unstored_generics{};
+    /// RuntimeInfo::xfb_copy_outputs: whole generics captured whole that carry their capture
+    /// themselves, when the copies do not fit in the free locations (PlanInPlaceCaptures).
+    u32 xfb_in_place_generics{};
 
     Id output_tess_level_outer{};
     Id output_tess_level_inner{};
@@ -417,6 +458,7 @@ private:
     void DefineInterfaces(const IR::Program& program);
     void DefineLocalMemory(IR::Program& program);
     void DefineLocalMemoryScratch(u32 words, bool tracks_lanes);
+    void DefineTransformFeedbackStorage(IR::Program& program);
     void DefineSharedMemory(const IR::Program& program);
     void DefineSharedMemoryFunctions(const IR::Program& program);
     void DefineConstantBuffers(const Info& info, u32& binding);

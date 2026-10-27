@@ -8,6 +8,9 @@
 #include <array>
 #include <bit>
 #include <climits>
+#include <span>
+#include <tuple>
+#include <vector>
 
 #include <boost/container/static_vector.hpp>
 
@@ -18,6 +21,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "shader_recompiler/local_memory_scratch.h"
+#include "shader_recompiler/transform_feedback_storage.h"
 
 namespace Shader::Backend::SPIRV {
 namespace {
@@ -161,6 +165,28 @@ Id DefineOutput(EmitContext& ctx, Id type, std::optional<u32> invocations,
     return variable;
 }
 
+/// Whether a copy output captures the point size (DefineTransformFeedbackOutputs).
+bool CopiesPointSizeCapture(const EmitContext& ctx) {
+    const RuntimeInfo& runtime_info{ctx.runtime_info};
+    if (!runtime_info.xfb_copy_outputs || runtime_info.xfb_storage) {
+        return false;
+    }
+    static constexpr u32 attribute{static_cast<u32>(IR::Attribute::PointSize)};
+    return ctx.CapturedVarying(attribute) ||
+           std::ranges::any_of(runtime_info.xfb_repeats, [&](const TransformFeedbackRepeat& repeat) {
+               return repeat.attribute == attribute && ctx.Captures(repeat.varying);
+           });
+}
+
+void DecorateCapture(EmitContext& ctx, Id id, const TransformFeedbackVarying& varying) {
+    ctx.Decorate(id, spv::Decoration::XfbBuffer, varying.buffer);
+    ctx.Decorate(id, spv::Decoration::XfbStride, varying.stride);
+    ctx.Decorate(id, spv::Decoration::Offset, varying.offset);
+    if (ctx.stage == Stage::Geometry && varying.stream != 0) {
+        ctx.Decorate(id, spv::Decoration::Stream, varying.stream);
+    }
+}
+
 void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invocations,
                          const VaryingState& passthrough) {
     static constexpr std::string_view swizzle{"xyzw"};
@@ -170,11 +196,27 @@ void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invo
         const u32 remainder{4 - element};
         const TransformFeedbackVarying* xfb_varying{};
         const size_t xfb_varying_index{base_attr_index + element};
-        if (xfb_varying_index < ctx.runtime_info.xfb_count) {
-            xfb_varying = &ctx.runtime_info.xfb_varyings[xfb_varying_index];
-            xfb_varying = xfb_varying->components > 0 ? xfb_varying : nullptr;
+        // Only captures decorated in place split outputs: storage transform feedback reads whole
+        // outputs at the epilogue, and copy outputs capture copies of them, but for the whole
+        // generics PlanInPlaceCaptures leaves in place.
+        const bool in_place{!ctx.runtime_info.xfb_storage &&
+                            (!ctx.runtime_info.xfb_copy_outputs ||
+                             ((ctx.xfb_in_place_generics >> index) & 1) != 0)};
+        if (in_place) {
+            xfb_varying = ctx.CapturedVarying(xfb_varying_index);
         }
-        const u32 num_components{xfb_varying ? xfb_varying->components : remainder};
+        u32 num_components{remainder};
+        if (xfb_varying) {
+            num_components = xfb_varying->components;
+        } else if (in_place) {
+            // Stop before the next captured component, so that it gets an output of its own.
+            for (u32 next = element + 1; next < 4; ++next) {
+                if (ctx.CapturedVarying(base_attr_index + next)) {
+                    num_components = next - element;
+                    break;
+                }
+            }
+        }
 
         bool preserve_passthrough{};
         for (u32 component = element; component < element + num_components; ++component) {
@@ -187,12 +229,7 @@ void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invo
             ctx.Decorate(id, spv::Decoration::Component, element);
         }
         if (xfb_varying) {
-            ctx.Decorate(id, spv::Decoration::XfbBuffer, xfb_varying->buffer);
-            ctx.Decorate(id, spv::Decoration::XfbStride, xfb_varying->stride);
-            ctx.Decorate(id, spv::Decoration::Offset, xfb_varying->offset);
-            if (ctx.stage == Stage::Geometry && xfb_varying->stream != 0) {
-                ctx.Decorate(id, spv::Decoration::Stream, xfb_varying->stream);
-            }
+            DecorateCapture(ctx, id, *xfb_varying);
         }
         if (num_components < 4 || element > 0) {
             const std::string_view subswizzle{swizzle.substr(element, num_components)};
@@ -207,6 +244,203 @@ void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invo
         };
         std::fill_n(ctx.output_generics[index].begin() + element, num_components, info);
         element += num_components;
+    }
+}
+
+bool CapturesTransformFeedback(const EmitContext& ctx) {
+    const RuntimeInfo& runtime_info{ctx.runtime_info};
+    return runtime_info.xfb_count != 0 && !runtime_info.xfb_storage &&
+           (ctx.stage == Stage::VertexB || ctx.stage == Stage::TessellationEval ||
+            ctx.stage == Stage::Geometry);
+}
+
+/// Generic locations the outputs can take: D3D12 has 32 output registers, and the position, the
+/// clip distances, the layer and the viewport index take theirs.
+u32 GenericLocationBudget(const EmitContext& ctx) {
+    static constexpr u32 OUTPUT_REGISTERS{32};
+    u32 builtins{1};
+    if (Sirit::ValidId(ctx.clip_distances)) {
+        builtins += Common::DivCeil((std::min)(ctx.profile.max_user_clip_distances, 8u), 4u);
+    }
+    builtins += Sirit::ValidId(ctx.layer) ? 1 : 0;
+    builtins += Sirit::ValidId(ctx.viewport_index) ? 1 : 0;
+    return OUTPUT_REGISTERS - builtins;
+}
+
+/// A captured component: where it goes, and the attribute holding its value.
+struct CapturedWord {
+    TransformFeedbackVarying varying; ///< one component, at its offset
+    u32 attribute{};
+    bool repeat{}; ///< from RuntimeInfo::xfb_repeats
+};
+
+/// The components of the captures a copy can carry, by buffer and offset.
+std::vector<CapturedWord> CopyableCapturedWords(const EmitContext& ctx) {
+    std::vector<CapturedWord> words;
+    const auto add = [&](u32 attribute, const TransformFeedbackVarying& varying, bool repeat) {
+        if (!IsCopyableCapture(static_cast<IR::Attribute>(attribute))) {
+            return; // not an output: a gap in the layout
+        }
+        for (u32 component = 0; component < varying.components; ++component) {
+            TransformFeedbackVarying word{varying};
+            word.offset += component * 4;
+            word.components = 1;
+            words.push_back({word, attribute + component, repeat});
+        }
+    };
+    for (u32 attribute = 0; attribute < ctx.runtime_info.xfb_count; ++attribute) {
+        if (const TransformFeedbackVarying* const varying{ctx.CapturedVarying(attribute)}) {
+            add(attribute, *varying, false);
+        }
+    }
+    for (const TransformFeedbackRepeat& repeat : ctx.runtime_info.xfb_repeats) {
+        if (ctx.Captures(repeat.varying)) {
+            add(repeat.attribute, repeat.varying, true);
+        }
+    }
+    std::ranges::sort(words, [](const CapturedWord& lhs, const CapturedWord& rhs) {
+        return std::tie(lhs.varying.buffer, lhs.varying.offset) <
+               std::tie(rhs.varying.buffer, rhs.varying.offset);
+    });
+    return words;
+}
+
+/// Calls func with each copy: a run of up to four consecutive words of one buffer, but for the
+/// words the generics in in_place carry themselves.
+template <typename Func>
+void ForEachCopy(std::span<const CapturedWord> all_words, u32 in_place, Func&& func) {
+    std::vector<CapturedWord> words;
+    for (const CapturedWord& word : all_words) {
+        const auto attr{static_cast<IR::Attribute>(word.attribute)};
+        if (word.repeat || !IR::IsGeneric(attr) ||
+            ((in_place >> IR::GenericAttributeIndex(attr)) & 1) == 0) {
+            words.push_back(word);
+        }
+    }
+    for (size_t first = 0; first < words.size();) {
+        size_t end{first + 1};
+        while (end < words.size() && end - first < 4 &&
+               words[end].varying.buffer == words[first].varying.buffer &&
+               words[end].varying.offset == words[end - 1].varying.offset + 4) {
+            ++end;
+        }
+        func(std::span<const CapturedWord>(words.data() + first, end - first));
+        first = end;
+    }
+}
+
+u32 StoredGenerics(const Info& info) {
+    u32 stored{};
+    for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
+        stored += info.stores.Generic(index) ? 1 : 0;
+    }
+    return stored;
+}
+
+/// The stored generics that carry their capture themselves (EmitContext::xfb_in_place_generics):
+/// none, unless the copies do not fit in the locations left. Then whole generics captured whole,
+/// one varying from x to w, each one location fewer: an output alone in its register like a copy.
+u32 PlanInPlaceCaptures(const EmitContext& ctx, const Info& info) {
+    if (!CapturesTransformFeedback(ctx) || !ctx.runtime_info.xfb_copy_outputs) {
+        return 0;
+    }
+    const std::vector<CapturedWord> words{CopyableCapturedWords(ctx)};
+    const u32 budget{GenericLocationBudget(ctx)};
+    const u32 stored{StoredGenerics(info)};
+    u32 in_place{};
+    for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
+        u32 copies{};
+        ForEachCopy(words, in_place, [&](std::span<const CapturedWord>) { ++copies; });
+        if (stored + copies <= budget) {
+            break;
+        }
+        const TransformFeedbackVarying* const varying{
+            ctx.CapturedVarying(static_cast<u32>(IR::Attribute::Generic0X) + index * 4)};
+        if (info.stores.Generic(index) && varying && varying->components == 4) {
+            in_place |= 1U << index;
+        }
+    }
+    return in_place;
+}
+
+/// Captures decorated in place (Vulkan): the captured generics the shader never stores are
+/// declared, and each vertex writes their defaults.
+void DefineUnstoredCapturedGenerics(EmitContext& ctx, const Info& info,
+                                    std::optional<u32> invocations) {
+    for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
+        const u32 base{static_cast<u32>(IR::Attribute::Generic0X) + index * 4};
+        bool captured{};
+        for (u32 element = 0; element < 4; ++element) {
+            captured |= ctx.CapturedVarying(base + element) != nullptr;
+        }
+        if (captured && !info.stores.Generic(index)) {
+            DefineGenericOutput(ctx, index, invocations, info.passthrough);
+            ctx.xfb_unstored_generics |= 1U << index;
+        }
+    }
+}
+
+/// D3D12 stream output reads declared outputs, and the Series driver faults compiling it when it
+/// reads an output packed into a register with another output. So an output the shader writes
+/// carries no capture, but for the whole generics PlanInPlaceCaptures leaves in place: the
+/// captures go out through copies, each a run of up to four consecutive words of one buffer alone
+/// in a free location, from component 0. The copies are stored before any position transform
+/// (depth mode, Y flip), so the buffers get the values the guest wrote, like on Maxwell, the
+/// built-ins' and the repeated captures' too.
+void DefineTransformFeedbackCopies(EmitContext& ctx, const Info& info,
+                                   std::optional<u32> invocations) {
+    const std::vector<CapturedWord> words{CopyableCapturedWords(ctx)};
+    // The next stage never reads a location this one does not store: the others are free.
+    std::array<bool, IR::NUM_GENERICS> used{};
+    for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
+        used[index] = info.stores.Generic(index);
+    }
+    u32 used_count{StoredGenerics(info)};
+    const u32 budget{GenericLocationBudget(ctx)};
+    u32 skipped{};
+    ForEachCopy(words, ctx.xfb_in_place_generics, [&](std::span<const CapturedWord> run) {
+        const u32 num_components{static_cast<u32>(run.size())};
+        u32 location{IR::NUM_GENERICS};
+        if (used_count < budget) {
+            while (location-- > 0 && used[location]) {
+            }
+        }
+        if (location >= IR::NUM_GENERICS) {
+            skipped += num_components;
+            return;
+        }
+        used[location] = true;
+        ++used_count;
+        TransformFeedbackVarying varying{run.front().varying};
+        varying.components = num_components;
+        const Id id{DefineOutput(ctx, ctx.F32[num_components], invocations, {}, {}, false)};
+        ctx.Decorate(id, spv::Decoration::Location, location);
+        DecorateCapture(ctx, id, varying);
+        ctx.Name(id, fmt::format("xfb_{}_{}_{}", varying.buffer, varying.offset, num_components));
+        TransformFeedbackCopy copy{
+            .id = id,
+            .num_components = num_components,
+        };
+        for (u32 component = 0; component < num_components; ++component) {
+            copy.attributes[component] = run[component].attribute;
+        }
+        ctx.xfb_copies.push_back(copy);
+    });
+    if (skipped != 0) {
+        LOG_WARNING(Shader_SPIRV, "No free location for {} captured words: they are skipped",
+                    skipped);
+    }
+}
+
+void DefineTransformFeedbackOutputs(EmitContext& ctx, const Info& info,
+                                    std::optional<u32> invocations) {
+    if (!CapturesTransformFeedback(ctx)) {
+        return;
+    }
+    if (ctx.runtime_info.xfb_copy_outputs) {
+        DefineTransformFeedbackCopies(ctx, info, invocations);
+    } else {
+        DefineUnstoredCapturedGenerics(ctx, info, invocations);
     }
 }
 
@@ -471,6 +705,20 @@ Id DescType(EmitContext& ctx, Id sampled_type, Id pointer_type, u32 count) {
 }
 } // Anonymous namespace
 
+bool IsCopyableCapture(IR::Attribute attribute) {
+    switch (attribute) {
+    case IR::Attribute::Layer:
+    case IR::Attribute::ViewportIndex:
+    case IR::Attribute::PointSize:
+        return true;
+    default:
+        return IR::IsGeneric(attribute) ||
+               (attribute >= IR::Attribute::PositionX && attribute <= IR::Attribute::PositionW) ||
+               (attribute >= IR::Attribute::ClipDistance0 &&
+                attribute <= IR::Attribute::ClipDistance7);
+    }
+}
+
 void VectorTypes::Define(Sirit::Module& sirit_ctx, Id base_type, std::string_view name) {
     defs[0] = sirit_ctx.Name(base_type, name);
 
@@ -518,6 +766,7 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineCommonTypes(program.info);
     DefineCommonConstants();
     DefineInterfaces(program);
+    DefineTransformFeedbackStorage(program);
     DefineLocalMemory(program);
     DefineSharedMemory(program);
     DefineSharedMemoryFunctions(program);
@@ -673,6 +922,81 @@ void EmitContext::DefineLocalMemory(IR::Program& program) {
     local_memory = AddGlobalVariable(pointer, spv::StorageClass::Private);
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(local_memory);
+    }
+}
+
+void EmitContext::DefineTransformFeedbackStorage(IR::Program& program) {
+    namespace Xfb = TransformFeedbackStorage;
+    if (stage != Stage::VertexB || !runtime_info.xfb_storage || runtime_info.xfb_count == 0) {
+        return;
+    }
+    u32 buffers{};
+    for (u32 index = 0; index < runtime_info.xfb_count; ++index) {
+        const TransformFeedbackVarying* const varying{CapturedVarying(index)};
+        if (varying && varying->buffer < Xfb::NUM_BUFFERS) {
+            buffers |= 1U << varying->buffer;
+        }
+    }
+    for (const TransformFeedbackRepeat& repeat : runtime_info.xfb_repeats) {
+        if (Captures(repeat.varying) && repeat.varying.buffer < Xfb::NUM_BUFFERS) {
+            buffers |= 1U << repeat.varying.buffer;
+        }
+    }
+    if (buffers == 0) {
+        return;
+    }
+    program.info.xfb_storage_buffers = buffers;
+
+    const Id array_type{TypeRuntimeArray(U32[1])};
+    Decorate(array_type, spv::Decoration::ArrayStride, 4U);
+    const Id struct_type{TypeStruct(array_type)};
+    Decorate(struct_type, spv::Decoration::Block);
+    MemberDecorate(struct_type, 0, spv::Decoration::Offset, 0U);
+    xfb_storage_element = TypePointer(spv::StorageClass::StorageBuffer, U32[1]);
+    const Id buffer_pointer{TypePointer(spv::StorageClass::StorageBuffer, struct_type)};
+    for (u32 index = 0; index < Xfb::NUM_BUFFERS; ++index) {
+        if ((buffers & (1U << index)) == 0) {
+            continue;
+        }
+        const Id variable{AddGlobalVariable(buffer_pointer, spv::StorageClass::StorageBuffer)};
+        Decorate(variable, spv::Decoration::Binding, index);
+        Decorate(variable, spv::Decoration::DescriptorSet, Xfb::DESCRIPTOR_SET);
+        Name(variable, fmt::format("xfb_buffer{}", index));
+        if (profile.supported_spirv >= 0x00010400) {
+            interfaces.push_back(variable);
+        }
+        xfb_storage_buffers[index] = variable;
+    }
+
+    // Scalar members: an array of u32 would take 16 bytes per element in a uniform block.
+    const std::vector<Id> members(Xfb::CONSTANT_WORDS, U32[1]);
+    const Id constants_type{TypeStruct(members)};
+    Decorate(constants_type, spv::Decoration::Block);
+    for (u32 word = 0; word < Xfb::CONSTANT_WORDS; ++word) {
+        MemberDecorate(constants_type, word, spv::Decoration::Offset, word * 4);
+    }
+    xfb_storage_constant_element = TypePointer(spv::StorageClass::Uniform, U32[1]);
+    xfb_storage_constants = AddGlobalVariable(
+        TypePointer(spv::StorageClass::Uniform, constants_type), spv::StorageClass::Uniform);
+    Decorate(xfb_storage_constants, spv::Decoration::Binding, Xfb::CONSTANTS_BINDING);
+    Decorate(xfb_storage_constants, spv::Decoration::DescriptorSet, Xfb::DESCRIPTOR_SET);
+    Name(xfb_storage_constants, "xfb_constants");
+    if (profile.supported_spirv >= 0x00010400) {
+        interfaces.push_back(xfb_storage_constants);
+    }
+
+    // The slot of the vertex: its index and instance relative to the draw's first ones.
+    if (!Sirit::ValidId(vertex_index)) {
+        vertex_index = DefineInput(*this, U32[1], true, spv::BuiltIn::VertexIndex);
+    }
+    if (!Sirit::ValidId(base_vertex)) {
+        base_vertex = DefineInput(*this, U32[1], true, spv::BuiltIn::BaseVertex);
+    }
+    if (!Sirit::ValidId(instance_index)) {
+        instance_index = DefineInput(*this, U32[1], true, spv::BuiltIn::InstanceIndex);
+    }
+    if (!Sirit::ValidId(base_instance)) {
+        base_instance = DefineInput(*this, U32[1], true, spv::BuiltIn::BaseInstance);
     }
 }
 
@@ -1823,7 +2147,18 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
         if (stage == Stage::Fragment) {
             throw NotImplementedException("Storing PointSize in fragment stage");
         }
-        output_point_size = DefineOutput(*this, F32[1], invocations, spv::BuiltIn::PointSize);
+        if (CopiesPointSizeCapture(*this)) {
+            // The host drops the built-in (D3D12 has no point size) and reads it back as 1, so
+            // the value the copy captures lives in a private variable.
+            output_point_size = AddGlobalVariable(TypePointer(spv::StorageClass::Private, F32[1]),
+                                                  spv::StorageClass::Private);
+            Name(output_point_size, "point_size");
+            if (profile.supported_spirv >= 0x00010400) {
+                interfaces.push_back(output_point_size);
+            }
+        } else {
+            output_point_size = DefineOutput(*this, F32[1], invocations, spv::BuiltIn::PointSize);
+        }
     }
     if (info.stores.ClipDistances()) {
         if (stage == Stage::Fragment) {
@@ -1858,11 +2193,13 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
         viewport_mask = DefineOutput(*this, TypeArray(U32[1], Const(1u)), std::nullopt,
                                      spv::BuiltIn::ViewportMaskNV);
     }
+    xfb_in_place_generics = PlanInPlaceCaptures(*this, info);
     for (size_t index = 0; index < IR::NUM_GENERICS; ++index) {
         if (info.stores.Generic(index)) {
             DefineGenericOutput(*this, index, invocations, info.passthrough);
         }
     }
+    DefineTransformFeedbackOutputs(*this, info, invocations);
     switch (stage) {
     case Stage::TessellationControl:
         if (info.stores_tess_level_outer) {

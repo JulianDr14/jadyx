@@ -615,13 +615,12 @@ Id EmitIsHelperInvocation(EmitContext& ctx) {
     return ctx.OpLoad(ctx.U1, ctx.is_helper_invocation);
 }
 
+// Viewport W scaling is never enabled on the host: report the disabled scale factors.
 Id EmitSR_WScaleFactorXY(EmitContext& ctx) {
-    LOG_WARNING(Shader, "(STUBBED) called");
     return ctx.Const(0x00ff0000u);
 }
 
 Id EmitSR_WScaleFactorZ(EmitContext& ctx) {
-    LOG_WARNING(Shader, "(STUBBED) called");
     return ctx.Const(0x00ff0000u);
 }
 

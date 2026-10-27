@@ -24,6 +24,10 @@
 namespace D3D12 {
 namespace {
 std::atomic_bool uniform_upload_copy_enabled{};
+// Buffer::Transition logs the first upload into a buffer between a work's bindings, and Copy the
+// first one it returns to UAV. The GPU thread alone records bindings.
+bool logged_upload_into_uav{};
+bool logged_upload_left_uav{};
 }
 void SetUniformUploadCopy(bool enabled) {
     uniform_upload_copy_enabled.store(enabled, std::memory_order_relaxed);
@@ -162,6 +166,8 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
         tracker = std::move(other.tracker);
         state = other.state;
         state_tick = other.state_tick;
+        uav_work = other.uav_work;
+        read_work = other.read_work;
         charge = std::move(other.charge);
     }
     return *this;
@@ -171,11 +177,50 @@ void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
     if (!scheduler || !buffer) {
         return;
     }
-    if (mark_written && (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS || next == D3D12_RESOURCE_STATE_COPY_DEST)) {
+    if (mark_written && (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
+                         next == D3D12_RESOURCE_STATE_COPY_DEST ||
+                         next == D3D12_RESOURCE_STATE_STREAM_OUT)) {
         ++generation;
     }
     const u64 tick = scheduler->CurrentTick();
     const D3D12_RESOURCE_STATES current = state_tick == tick ? state : D3D12_RESOURCE_STATE_COMMON;
+    const u64 work = scheduler->Work();
+    if (work != 0 && uav_work == work && next == D3D12_RESOURCE_STATE_GENERIC_READ) {
+        // Another binding of this draw or dispatch writes it: it stays a UAV (Scheduler::BeginWork),
+        // and its UAV barrier is in. AMD hardware, the Series included, reads buffers in any state.
+        if (current == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+            return;
+        }
+        // A later binding's upload (SynchronizeBuffer) took it out of UAV to COPY_DEST. Left in a
+        // read state, the work's writes were lost from its state, and the next reader got no
+        // barrier: it read the buffer while the dispatch still wrote it (geometry flickering as
+        // the camera turned). Keep this when optimizing transitions: skipping it, or letting the
+        // last binding's read state win, brings that flicker back. It costs one transition only
+        // in this case.
+        if (!logged_upload_into_uav) {
+            LOG_INFO(Render, "D3D12: a buffer a work writes took an upload between its bindings");
+            logged_upload_into_uav = true;
+        }
+        next = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    } else if (work != 0 && uav_work == work &&
+               current == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
+               next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+        return;
+    }
+    // A read binding of this draw or dispatch took it out of a previous one's UAV and a later
+    // binding writes it: those writes then reach this work only through a transition to a read
+    // state and back, which nets out to UAV to UAV (see ForEachImageTransition). The cache binds
+    // uniform and storage buffers in a fixed order, so the back transition gets a UAV barrier.
+    const bool back_to_uav = work != 0 && read_work == work &&
+                             next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
+                             current != D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    if (work != 0 && current == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
+        next != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+        read_work = work;
+    }
+    if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && work != 0) {
+        uav_work = work;
+    }
     CommandStream* const cmd = scheduler->CommandList();
     if (current == next) {
         if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
@@ -196,6 +241,10 @@ void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
         }
     } else {
         TransitionResource(cmd, buffer.Get(), current, next);
+        if (back_to_uav) {
+            const D3D12_RESOURCE_BARRIER barrier = UavBarrier(buffer.Get());
+            cmd->ResourceBarrier(1, &barrier);
+        }
     }
     state = next;
     state_tick = tick;
@@ -295,6 +344,12 @@ void BufferCacheRuntime::Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src,
     // Cache buffers are tracked (Buffer::Transition). Raw resources are staging memory, whose
     // state never changes, or the scratch buffer above, promoted from COMMON.
     const bool restore_read = dst && dst->State() == D3D12_RESOURCE_STATE_GENERIC_READ;
+    // An upload between the bindings of a work that writes the buffer. Left in COPY_DEST, the
+    // work's writes raced the copy, and the next reader's transition out of COPY_DEST waited for
+    // the copy alone, not for the work (the buffer side of Image::Transition's left_uav_in_work).
+    // Buffer::Transition's own case only covers a later read binding of the same work.
+    const bool restore_uav = dst && dst->State() == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
+                             dst->WrittenByWork(scheduler.Work());
     if (dst) dst->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
     if (src) src->Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
     for (const auto& copy : copies) {
@@ -309,6 +364,15 @@ void BufferCacheRuntime::Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src,
     // An upload can touch a vertex/index buffer whose IA binding is still cached. Restore its
     // readable state: the generic cache may skip rebinding an unchanged guest vertex stream.
     if (restore_read) dst->Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
+    // Back to UAV with a UAV barrier (Buffer::Transition's back_to_uav): the work runs after the
+    // copy. Keep this when optimizing transitions; it costs one transition only in this case.
+    if (restore_uav) {
+        if (!logged_upload_left_uav) {
+            LOG_INFO(Render, "D3D12: a buffer a work writes went back to UAV after an upload");
+            logged_upload_left_uav = true;
+        }
+        dst->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, false);
+    }
 }
 void BufferCacheRuntime::CopyBuffer(Buffer& dst, Buffer& src, std::span<const VideoCommon::BufferCopy> copies, bool, bool) { Copy(&dst, dst.Handle(), &src, src.Handle(), copies); }
 void BufferCacheRuntime::CopyBuffer(Buffer& dst, ID3D12Resource* src, std::span<const VideoCommon::BufferCopy> copies, bool, bool) { Copy(&dst, dst.Handle(), nullptr, src, copies); }
@@ -498,6 +562,10 @@ void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bi
     }
 }
 
+void BufferCacheRuntime::KeepVertexBufferReadable(Buffer& buffer) {
+    buffer.Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
+}
+
 void BufferCacheRuntime::ApplyGeometry(CommandStream* cmd) {
     if (pending_index && (!applied_index || std::memcmp(&*applied_index, &*pending_index,
                                                         sizeof(D3D12_INDEX_BUFFER_VIEW)) != 0)) {
@@ -596,6 +664,25 @@ void BufferCacheRuntime::BindStorageBuffer(Buffer& buffer, u32 offset, u32 size,
         .offset = offset, .size = clamped, .device_addr = buffer.CpuAddr() + offset,
         .written = is_written});
     descriptor_queue->AddStorageBuffer(clamped != 0 ? buffer.Handle() : nullptr, offset, clamped);
+}
+
+void BufferCacheRuntime::BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>& bindings) {
+    for (size_t index = 0; index < transform_feedback.size(); ++index) {
+        TransformFeedbackBinding& binding = transform_feedback[index];
+        binding = {};
+        if (index >= bindings.buffers.size() || bindings.sizes[index] == 0) {
+            continue;
+        }
+        Buffer& buffer = *bindings.buffers[index];
+        const u64 offset = bindings.offsets[index];
+        // A root UAV reads whole words from a 4-byte aligned address.
+        if (!buffer.Handle() || offset % 4 != 0 || offset >= buffer.SizeBytes()) {
+            continue;
+        }
+        const u64 size = std::min<u64>(bindings.sizes[index], buffer.SizeBytes() - offset);
+        binding = {.buffer = &buffer, .address = buffer.Address() + offset,
+                   .size = static_cast<u32>(size)};
+    }
 }
 
 void BufferCacheRuntime::BindTextureBuffer(Buffer& buffer, u32 offset, u32 size,

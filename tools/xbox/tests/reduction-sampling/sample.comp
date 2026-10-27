@@ -1,0 +1,62 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// One explicit-LOD sample per invocation. Built per DIM (1 = 1D, 2 = 2D, 3 = 2D array, 4 = 3D) and
+// OP (0 = textureLod, 1 = textureGrad, 2 = textureLodOffset, 3 = textureGradOffset); INTEGER
+// samples an unsigned 2D texture with textureLod.
+#version 450
+layout(local_size_x = 64) in;
+
+struct Sample {
+    vec4 coord; // coordinates, then the LOD in w
+    vec4 dx;
+    vec4 dy;
+    vec4 result;
+};
+layout(set = 0, binding = 0, std430) buffer Data {
+    Sample samples[];
+};
+
+#if defined(INTEGER)
+layout(set = 0, binding = 1) uniform usampler2D tex;
+#elif DIM == 1
+layout(set = 0, binding = 1) uniform sampler1D tex;
+#define P(v) (v).x
+#define D(v) (v).x
+#define OFFSET 1
+#define GRAD_OFFSET (-3)
+#elif DIM == 2
+layout(set = 0, binding = 1) uniform sampler2D tex;
+#define P(v) (v).xy
+#define D(v) (v).xy
+#define OFFSET ivec2(1, -2)
+#define GRAD_OFFSET ivec2(-3, 2)
+#elif DIM == 3
+layout(set = 0, binding = 1) uniform sampler2DArray tex;
+#define P(v) (v).xyz
+#define D(v) (v).xy
+#define OFFSET ivec2(1, -2)
+#define GRAD_OFFSET ivec2(-3, 2)
+#else
+layout(set = 0, binding = 1) uniform sampler3D tex;
+#define P(v) (v).xyz
+#define D(v) (v).xyz
+#define OFFSET ivec3(1, -2, 1)
+#define GRAD_OFFSET ivec3(-3, 2, -1)
+#endif
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    const vec4 c = samples[i].coord;
+#if defined(INTEGER)
+    samples[i].result = vec4(textureLod(tex, c.xy, c.w));
+#elif OP == 0
+    samples[i].result = textureLod(tex, P(c), c.w);
+#elif OP == 1
+    samples[i].result = textureGrad(tex, P(c), D(samples[i].dx), D(samples[i].dy));
+#elif OP == 2
+    samples[i].result = textureLodOffset(tex, P(c), c.w, OFFSET);
+#else
+    samples[i].result = textureGradOffset(tex, P(c), D(samples[i].dx), D(samples[i].dy), GRAD_OFFSET);
+#endif
+}

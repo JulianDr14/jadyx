@@ -15,9 +15,13 @@ class PrewarmBudget {
 public:
     static constexpr std::uint64_t MiB = 1024 * 1024;
     /// Per core, from the default down. The plan warms gameplay and shared blocks first, so the
-    /// lower steps keep the blocks that matter most. 64 MiB is the most for now: 115 cost a full
-    /// profile (Game C) 1 GiB of a 5 GiB limit, and 64 is what Game C was measured with.
-    static constexpr std::array<std::uint32_t, 3> STEPS_MIB{64, 32, 16};
+    /// lower steps keep the blocks that matter most. A large game needs 150-190 MiB a core to
+    /// reach its world: at 64 the rest, compiled during the load, made it stall for seconds, and
+    /// at 160 its main core still compiled 70k blocks there. 192 is three quarters of the cache,
+    /// the most the warm takes (Owner::Warm). Warmed blocks are ones a session compiled, so most
+    /// of that commit comes either way, and a step down to 64 made it compile 1.2M blocks in its
+    /// load: the steps go down gently.
+    static constexpr std::array<std::uint32_t, 4> STEPS_MIB{192, 128, 64, 32};
     /// A session whose headroom fell below this lowers the next one's budget, at once.
     static constexpr std::uint64_t LOW_HEADROOM = 256 * MiB;
     /// A clean session whose headroom never fell below this raises it back a step...

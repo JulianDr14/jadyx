@@ -58,6 +58,11 @@ u32 SyncpointManager::AllocateSyncpoint(bool client_managed) {
     return ReserveSyncpoint(FindFreeSyncpoint(), client_managed);
 }
 
+u32 SyncpointManager::AllocateSyncpointAt(u32 id, bool client_managed) {
+    std::lock_guard lock(reservation_lock);
+    return ReserveSyncpoint(id, client_managed);
+}
+
 void SyncpointManager::FreeSyncpoint(u32 id) {
     std::lock_guard lock(reservation_lock);
     auto& syncpoint = syncpoints.at(id);

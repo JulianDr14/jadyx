@@ -18,6 +18,12 @@ class Scheduler;
 /// tools/xbox/hunt-report.py.
 void HuntNextFrames(u32 frames = 8);
 
+/// Diagnostic ("hunt_cs="): the capture starts once, at the 64th dispatch of this compute shader
+/// (warm, in the scene that runs it). 0 turns it off.
+void HuntOnCompute(u64 hash);
+/// Counts a dispatch of `hash` toward HuntOnCompute; `count` is its dispatches so far.
+void NoteComputeDispatch(u64 hash, u64 count);
+
 /// The D3D12 side of the bottleneck hunt (hunt_capture.h): a timestamp after every recorded
 /// call while a capture runs, resolved once at its end and written when the GPU is done with
 /// them. Idle, it costs each call one branch. GPU thread only.
@@ -42,6 +48,10 @@ private:
 
     void Begin();
     void Finish();
+    /// Scheduler callbacks: each list gets a timestamp when it opens, so its first call is timed,
+    /// and one before it is submitted, for the work recorded after its last call.
+    void ListStart();
+    void ListEnd();
     void Write();
     [[nodiscard]] u32 PassOf(const Framebuffer& framebuffer);
     /// A timestamp to measure the next call from, when the list being recorded has none yet.
@@ -106,6 +116,9 @@ public:
     }
     /// The target the call draws to (none for a dispatch); call before recording it.
     void Target(const Framebuffer* framebuffer);
+    /// The call's bindings are in the list: timestamps them as a record of their own, so the
+    /// uploads, copies and barriers they recorded do not count for the call.
+    void Setup(Hunt::Kind kind);
     /// The call is in the list: timestamps it.
     void Recorded();
 

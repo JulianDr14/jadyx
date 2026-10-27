@@ -6,18 +6,48 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <vector>
 
 #include "common/alignment.h"
 #include "common/assert.h"
 #include <ranges>
+#include "shader_recompiler/frontend/ir/attribute.h"
 #include "shader_recompiler/shader_info.h"
 #include "video_core/transform_feedback.h"
 
 namespace VideoCommon {
 
-std::pair<std::array<Shader::TransformFeedbackVarying, 256>, u32> MakeTransformFeedbackVaryings(
-    const TransformFeedbackState& state) {
+void TransformFeedbackState::Refresh(const Tegra::Engines::Maxwell3D::Regs& regs) {
+    for (size_t index = 0; index < layouts.size(); ++index) {
+        if (regs.transform_feedback.buffers[index].enable == 0) {
+            layouts[index] = {};
+            varyings[index] = {};
+            continue;
+        }
+        const auto& control{regs.transform_feedback.controls[index]};
+        layouts[index] = {
+            .stream = control.stream,
+            .varying_count = control.varying_count,
+            .stride = control.stride,
+        };
+        varyings[index] = regs.stream_out_layout[index];
+    }
+}
+
+bool TransformFeedbackVaryings::CapturesGeneric(u32 index) const {
+    const auto first{varyings.begin() + static_cast<size_t>(Shader::IR::Attribute::Generic0X) +
+                     index * 4};
+    return std::any_of(first, first + 4, [](const auto& varying) { return varying.components; });
+}
+
+void TransformFeedbackVaryings::Apply(Shader::RuntimeInfo& info) const {
+    info.xfb_varyings = varyings;
+    info.xfb_count = count;
+    info.xfb_repeats = repeats;
+}
+
+TransformFeedbackVaryings MakeTransformFeedbackVaryings(const TransformFeedbackState& state) {
     static constexpr std::array VECTORS{
         28U,  // gl_Position
         32U,  // Generic 0
@@ -65,8 +95,9 @@ std::pair<std::array<Shader::TransformFeedbackVarying, 256>, u32> MakeTransformF
         216U, // gl_TexCoord[6]
         220U, // gl_TexCoord[7]
     };
-    std::array<Shader::TransformFeedbackVarying, 256> xfb{};
-    u32 count{0};
+    TransformFeedbackVaryings xfb{};
+    // The attributes some entry of xfb.varyings captures: one entry per attribute holds one capture.
+    std::bitset<256> covered;
     for (size_t buffer = 0; buffer < state.layouts.size(); ++buffer) {
         const auto& locations = state.varyings[buffer];
         const auto& layout = state.layouts[buffer];
@@ -90,29 +121,43 @@ std::pair<std::array<Shader::TransformFeedbackVarying, 256>, u32> MakeTransformF
 
             Shader::TransformFeedbackVarying varying{
                 .buffer = static_cast<u32>(buffer),
+                .stream = layout.stream,
                 .stride = layout.stride,
                 .offset = offset * 4,
                 .components = 1,
             };
-                varying.stream = layout.stream;
             const u32 base_offset = offset;
             const auto attribute{get_attribute(offset)};
             if (std::ranges::find(VECTORS, Common::AlignDown(attribute, 4)) != VECTORS.end()) {
-                UNIMPLEMENTED_IF_MSG(attribute % 4 != 0, "Unaligned TFB {}", attribute);
+                // Generics and the position may start past x; the legacy vectors may not.
+                UNIMPLEMENTED_IF_MSG(attribute % 4 != 0 && attribute >= 160, "Unaligned TFB {}",
+                                     attribute);
 
-                const auto base_index = attribute / 4;
-                while (offset + 1 < varying_count && base_index == get_attribute(offset + 1) / 4) {
+                // Only the next components of the same vector form one varying.
+                while (offset + 1 < varying_count && (attribute + varying.components) % 4 != 0 &&
+                       get_attribute(offset + 1) == attribute + varying.components) {
                     ++offset;
                     ++varying.components;
                 }
             }
-            xfb[attribute] = varying;
-            count = (std::max)(count, attribute);
+            bool repeated{};
+            for (u32 component = 0; component < varying.components; ++component) {
+                repeated |= covered[attribute + component];
+            }
+            if (repeated) {
+                xfb.repeats.push_back({.attribute = attribute, .varying = varying});
+            } else {
+                for (u32 component = 0; component < varying.components; ++component) {
+                    covered[attribute + component] = true;
+                }
+                xfb.varyings[attribute] = varying;
+                xfb.count = (std::max)(xfb.count, attribute + 1);
+            }
             highest = (std::max)(highest, (base_offset + varying.components) * 4);
         }
         UNIMPLEMENTED_IF(highest != layout.stride);
     }
-    return {xfb, count + 1};
+    return xfb;
 }
 
 } // namespace VideoCommon

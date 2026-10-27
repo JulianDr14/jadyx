@@ -93,11 +93,15 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
             if (loader->ReadIcon(record.icon) != Loader::ResultStatus::Success ||
                 record.icon.size() > LibraryCache::MaxIcon)
                 record.icon.clear();
+            bool cacheable = true;
             if (loader->ReadProgramId(record.program_id) == Loader::ResultStatus::Success &&
                 entry.relative_path.extension() != L".nro")
             {
                 FileSys::ManualContentProvider selected;
-                const auto resolved = Content::ResolveLaunchContent(*system->GetFilesystem(), entry.launch_path, selected, false, stop, Content::ReportedSystemVersion(*system));
+                const auto resolved = Content::ResolveLaunchContent(*system->GetFilesystem(), entry.launch_path, selected, false, stop);
+                // A refusal (a USB unplugged, a cancelled fill, requirements) can clear without the
+                // game's content stamp changing, so it is shown but read again next time.
+                cacheable = resolved.error == Content::Error::None;
                 if (resolved.error == Content::Error::None) {
                     record.build_id = resolved.build_id;
                     if (resolved.application) record.display_version = winrt::to_hstring(resolved.display_version).c_str();
@@ -107,7 +111,7 @@ void ReadLibraryMetadata(const std::filesystem::path& root, std::vector<LibraryE
                 record.program_id = 0;
             record.content = ContentStamp(catalog, record.program_id);
             LOG_INFO(Frontend, "Library metadata: title '{}', icon {} bytes", title, record.icon.size());
-            cache.Store(entry.launch_path, stamp, language, record);
+            if (cacheable) cache.Store(entry.launch_path, stamp, language, record);
             Apply(entry, std::move(record), options.icons);
         } catch (const std::exception&) {
             // Missing keys/control data or an unreadable dump keeps filename

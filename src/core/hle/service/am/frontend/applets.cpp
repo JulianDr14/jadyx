@@ -251,7 +251,9 @@ std::shared_ptr<FrontendApplet> FrontendAppletHolder::GetApplet(std::shared_ptr<
     case AppletId::NetConnect:
         return std::make_shared<NetConnect>(system, applet, mode, *frontend.net_connect);
     case AppletId::None:
-        return nullptr;
+        // The nifm stub's GetAppletInfo names no applet, and the guest launches it anyway. With no
+        // frontend it would never finish: the guest would wait forever and Pulse could not save.
+        return std::make_shared<StubApplet>(system, applet, id, mode);
     default:
         UNIMPLEMENTED_MSG("No frontend implementation exists for applet_id={:02X} program_id={:016X}! Using stub applet.", static_cast<u8>(id), applet->program_id);
         return std::make_shared<StubApplet>(system, applet, id, mode);

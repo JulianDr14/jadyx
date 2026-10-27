@@ -54,6 +54,13 @@ public:
     u32 AllocateSyncpoint(bool client_managed);
 
     /**
+     * @brief Reserves the given free syncpoint, for a host device that needs the same id on every
+     * boot (a Pulse restore finds it where the checkpoint had it)
+     * @return The id
+     */
+    u32 AllocateSyncpointAt(u32 id, bool client_managed);
+
+    /**
      * @url
      * https://github.com/Jetson-TX1-AndroidTV/android_kernel_jetson_tx1_hdmi_primary/blob/8f74a72394efb871cb3f886a3de2998cd7ff2990/drivers/gpu/host1x/syncpt.c#L259
      */

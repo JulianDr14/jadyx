@@ -19,6 +19,7 @@
 
 #include "video_core/renderer_d3d12/d3d12_command_stream.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
+#include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 
 namespace D3D12 {
 
@@ -26,6 +27,11 @@ namespace D3D12 {
 /// (boot.cfg "async_record=1"), so the GPU thread only records them. Off: the GPU thread makes
 /// every call itself, as the renderer did before the recorder.
 void SetAsyncRecording(bool enabled);
+
+/// Diagnostic (boot.cfg "uav_sync=1"), for schedulers created from now on: a global UAV barrier
+/// after every draw and dispatch, so no later work can read what one still writes. A/B for
+/// flicker from a missing barrier; costs GPU overlap between works.
+void SetDiagUavSync(bool enabled);
 
 /// Owns the direct command list and tracks GPU progress with monotonically increasing ticks, the
 /// same model as the Vulkan backend's scheduler: CurrentTick() is the value the list being recorded
@@ -155,6 +161,28 @@ public:
     /// every submission and wait costs CPU time on the recording thread.
     [[nodiscard]] std::string TakeSyncSites(size_t max_sites);
 
+    /// A draw or dispatch binds its resources between BeginWork and EndWork. A resource one of
+    /// its bindings writes stays a UAV through the others that read it (Buffer::Transition,
+    /// Image::Transition): its state then still holds the write, and the next reader's
+    /// transition waits for it. Each binding setting the state instead lost the write whenever a
+    /// read binding came last (one cache buffer behind a written and a read storage buffer, an
+    /// image stored by one stage and sampled by another), and later readers of that state got
+    /// no barrier at all.
+    void BeginWork() noexcept {
+        work = ++work_serial;
+    }
+    void EndWork() {
+        if (diag_uav_sync && work != 0) {
+            const D3D12_RESOURCE_BARRIER barrier = UavBarrier(nullptr);
+            CommandList()->ResourceBarrier(1, &barrier);
+        }
+        work = 0;
+    }
+    /// The draw or dispatch binding resources now; 0 between them.
+    [[nodiscard]] u64 Work() const noexcept {
+        return work;
+    }
+
 private:
     /// Counts the caller's stack in the sync histogram (recording thread only).
     void RecordSyncSite(char kind);
@@ -164,6 +192,10 @@ private:
     };
 
     ComPtr<ID3D12CommandAllocator> AcquireAllocator();
+
+    u64 work_serial{};
+    u64 work{};
+    bool diag_uav_sync{}; ///< SetDiagUavSync when this scheduler was made
 
     /// Closes the list, submits it to signal tick and resets it for the next one. Recorded by
     /// Flush, so it runs where the list is recorded (the worker or the recording thread).

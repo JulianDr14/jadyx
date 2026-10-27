@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <string_view>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Storage.AccessCache.h>
 #include <winrt/Windows.Storage.Search.h>
@@ -168,6 +169,11 @@ std::string ImportSystemFiles(const StorageFolder& source, FileImport kind,
             if(progress.decision.load()!=1||stop.stop_requested())throw std::runtime_error("interrupted");
         }
         prepared->Commit(stop);stage_path.clear();return {};
+    }catch(const std::exception& error){
+        progress.confirmation=false;RemoveSystemStage(stage_path,kind);
+        if(!zip_path.empty()){std::error_code ec;std::filesystem::remove(zip_path,ec);}
+        return I18n::ToUtf8(I18n::Tr(std::string_view{error.what()}=="firmware_keys_newer"?
+            I18n::Text::FirmwareKeysNewer:I18n::Text::ImportFailedKept));
     }catch(...){
         progress.confirmation=false;RemoveSystemStage(stage_path,kind);
         if(!zip_path.empty()){std::error_code ec;std::filesystem::remove(zip_path,ec);}

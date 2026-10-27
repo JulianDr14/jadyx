@@ -45,9 +45,29 @@ Sampler::Sampler(TextureCacheRuntime& runtime_, const Tegra::Texture::TSCEntry& 
                 LOG_INFO(Render, "D3D12: point MIN/MAX sampler uses its exact single-texel "
                                  "equivalent (no reduction hardware required)");
             }
+        } else if (!runtime->supports_min_max_filter &&
+                   skip_min_max_filter.load(std::memory_order_relaxed)) {
+            if (!logged_min_max_filter) {
+                logged_min_max_filter = true;
+                LOG_WARNING(Render, "D3D12: filtered MIN/MAX sampler reduction skipped by "
+                                    "boot.cfg; those samplers filter normally");
+            }
+            reduction = D3D12_FILTER_REDUCTION_TYPE_STANDARD;
         } else if (!runtime->supports_min_max_filter) {
-            WarnOnce(logged_min_max_filter, "filtered min/max sampler reduction is not supported "
-                                            "by this device; filtering normally instead");
+            // Creating it removes the device. The sampler filters normally and the pipelines
+            // that use it reduce in the shader (EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION).
+            if (!logged_min_max_filter) {
+                logged_min_max_filter = true;
+                LOG_INFO(Render, "D3D12: filtered MIN/MAX sampler reduction is not supported by "
+                                 "this device; emulating it in the shader");
+            }
+            emulated_reduction = reduction == D3D12_FILTER_REDUCTION_TYPE_MINIMUM ?
+                EDEN_SAMPLER_REDUCTION_MIN : EDEN_SAMPLER_REDUCTION_MAX;
+            // Anisotropic filtering weighs at least the bilinear footprint of each tap.
+            const bool aniso = anisotropy > 1.0f;
+            emulated_filter = (linear_min || aniso ? EDEN_SAMPLER_FILTER_MIN_LINEAR : 0u) |
+                              (linear_mag || aniso ? EDEN_SAMPLER_FILTER_MAG_LINEAR : 0u) |
+                              (linear_mip ? EDEN_SAMPLER_FILTER_MIP_LINEAR : 0u);
             reduction = D3D12_FILTER_REDUCTION_TYPE_STANDARD;
         }
     }
@@ -90,6 +110,8 @@ eden_integer_sampler_state Sampler::IntegerState(u32 last_level) const {
     state.wrap[0] = static_cast<u32>(desc.AddressU);
     state.wrap[1] = static_cast<u32>(desc.AddressV);
     state.wrap[2] = static_cast<u32>(desc.AddressW);
+    state.reduction = emulated_reduction;
+    state.filter = emulated_filter;
     return state;
 }
 
@@ -105,10 +127,11 @@ std::string Sampler::Describe() const {
                        guest_raw[0], guest_raw[1], guest_raw[2], guest_raw[3]);
 }
 Sampler::~Sampler() { if (runtime && handle.ptr) runtime->sampler_descriptors.Free(handle); }
-Sampler::Sampler(Sampler&& other) noexcept : runtime{std::exchange(other.runtime, nullptr)}, handle{other.handle}, key{other.key}, filter{other.filter}, desc{other.desc}, guest_raw{other.guest_raw} {}
+Sampler::Sampler(Sampler&& other) noexcept : runtime{std::exchange(other.runtime, nullptr)}, handle{other.handle}, key{other.key}, filter{other.filter}, desc{other.desc}, guest_raw{other.guest_raw}, emulated_reduction{other.emulated_reduction}, emulated_filter{other.emulated_filter} {}
 Sampler& Sampler::operator=(Sampler&& other) noexcept {
     if (this != &other) { if (runtime && handle.ptr) runtime->sampler_descriptors.Free(handle);
-        runtime = std::exchange(other.runtime, nullptr); handle = other.handle; key = other.key; filter = other.filter; desc = other.desc; guest_raw = other.guest_raw; } return *this;
+        runtime = std::exchange(other.runtime, nullptr); handle = other.handle; key = other.key; filter = other.filter; desc = other.desc; guest_raw = other.guest_raw;
+        emulated_reduction = other.emulated_reduction; emulated_filter = other.emulated_filter; } return *this;
 }
 
 } // namespace D3D12

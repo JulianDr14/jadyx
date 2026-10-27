@@ -4,6 +4,7 @@
 #include "video_core/renderer_d3d12/d3d12_texture_cache_internal.h"
 
 #include <algorithm>
+#include <cstring>
 #include <utility>
 
 #include "common/alignment.h"
@@ -11,6 +12,7 @@
 #include "video_core/renderer_d3d12/d3d12_blit_image.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
+#include "video_core/diagnostics/full_capture.h"
 #include "video_core/surface.h"
 
 // Depth-stencil images split into and merged from their planes (D3D12 copies one plane at a
@@ -57,6 +59,100 @@ void Image::CopyPlanes(s32 level, s32 layer, ID3D12Resource* buffer,
             commands->CopyTextureRegion(&texture, 0, 0, 0, &placed, nullptr);
         }
     }
+    BlitImageHelper* const helper = runtime->blit_helper;
+    // S8_UINT has no depth to convert.
+    if (!to_buffer || !runtime->depth24_readback_float || !helper ||
+        resource->GetDesc().Format != DXGI_FORMAT_R24G8_TYPELESS ||
+        info.format == VideoCore::Surface::PixelFormat::S8_UINT) {
+        return;
+    }
+    // The depth plane came out as float bits: make it the UNORM a copy back in reads. The buffer
+    // stays in COPY_DEST, as the callers expect.
+    const auto& depth = footprints.planes[0];
+    TransitionBuffer(commands, buffer, D3D12_RESOURCE_STATE_COPY_DEST,
+                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    helper->DepthFloatToUnorm24({
+        .source = 0,
+        .destination = buffer->GetGPUVirtualAddress() + depth.Offset,
+        .depth_pitch = depth.Footprint.RowPitch / 4,
+        .width = depth.Footprint.Width,
+        .height = depth.Footprint.Height,
+    });
+    TransitionBuffer(commands, buffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                     D3D12_RESOURCE_STATE_COPY_DEST);
+}
+
+void TextureCacheRuntime::ProbeDepth24Readback() {
+    ID3D12Device* const dev = device.Get();
+    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+    const D3D12_RESOURCE_DESC desc{
+        .Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        .Width = 1,
+        .Height = 1,
+        .DepthOrArraySize = 1,
+        .MipLevels = 1,
+        .Format = DXGI_FORMAT_R24G8_TYPELESS,
+        .SampleDesc = {.Count = 1},
+        .Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+    };
+    const D3D12_CLEAR_VALUE clear{.Format = DXGI_FORMAT_D24_UNORM_S8_UINT,
+                                  .DepthStencil = {.Depth = 0.5f, .Stencil = 0}};
+    ComPtr<ID3D12Resource> texture;
+    if (FAILED(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                            D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
+                                            IID_PPV_ARGS(&texture)))) {
+        LOG_WARNING(Render, "D3D12: D24 readback probe skipped (no image)");
+        return;
+    }
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    u64 bytes = 0;
+    dev->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr, &bytes);
+    ComPtr<ID3D12Resource> readback;
+    try {
+        readback = CreateCommittedBuffer(dev, std::max<u64>(bytes, 256), D3D12_HEAP_TYPE_READBACK,
+                                         D3D12_RESOURCE_STATE_COPY_DEST,
+                                         D3D12_RESOURCE_FLAG_NONE, "D24 readback probe");
+    } catch (const std::exception& exception) {
+        LOG_WARNING(Render, "D3D12: D24 readback probe skipped: {}", exception.what());
+        return;
+    }
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_descriptors.Allocate();
+    const D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc{
+        .Format = DXGI_FORMAT_D24_UNORM_S8_UINT,
+        .ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D,
+        .Texture2D = {.MipSlice = 0},
+    };
+    dev->CreateDepthStencilView(texture.Get(), &dsv_desc, dsv);
+    auto* const commands = scheduler.CommandList();
+    commands->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 0.5f, 0, 0, nullptr);
+    TransitionResource(commands, texture.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                       D3D12_RESOURCE_STATE_COPY_SOURCE);
+    const D3D12_TEXTURE_COPY_LOCATION source{.pResource = texture.Get(),
+                                             .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                                             .SubresourceIndex = 0};
+    const D3D12_TEXTURE_COPY_LOCATION target{.pResource = readback.Get(),
+                                             .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                                             .PlacedFootprint = footprint};
+    commands->CopyTextureRegion(&target, 0, 0, 0, &source, nullptr);
+    scheduler.Finish();
+    dsv_descriptors.Free(dsv);
+    u32 word = 0;
+    void* mapped = nullptr;
+    const D3D12_RANGE read{0, sizeof(word)};
+    if (FAILED(readback->Map(0, &read, &mapped))) {
+        LOG_WARNING(Render, "D3D12: D24 readback probe skipped (map failed)");
+        return;
+    }
+    std::memcpy(&word, mapped, sizeof(word));
+    const D3D12_RANGE written{0, 0};
+    readback->Unmap(0, &written);
+    // 0.5 is about 0x3F000000 as float bits (the Series returns 0x3F000001) and 0x7FFFFF or
+    // 0x800000 as 24-bit UNORM, which never sets the top byte.
+    depth24_readback_float = word > 0x00FFFFFF;
+    LOG_INFO(Render, "D3D12: D24 depth reads back as {} (0.5 -> {:#010x})",
+             depth24_readback_float ? "float bits, converted to UNORM after each copy"
+                                    : "24-bit UNORM",
+             word);
 }
 
 void Image::UploadDepthStencil(ID3D12Resource* buffer, size_t base_offset,
@@ -168,7 +264,9 @@ void Image::DownloadDepthStencil(std::span<ID3D12Resource*> buffers, std::span<s
         for (u32 layer = 0; layer < layers; ++layer) {
             const s32 image_layer = copy.image_subresource.base_layer + static_cast<s32>(layer);
             auto* const commands = runtime->scheduler.CommandList();
-            ComPtr<ID3D12Resource> planes = runtime->transfer_buffers.Acquire(footprints.size);
+            // With UAV access: a D24 depth plane may be converted in place (CopyPlanes).
+            ComPtr<ID3D12Resource> planes =
+                runtime->transfer_buffers.Acquire(footprints.size, true);
             CopyPlanes(level, image_layer, planes.Get(), footprints, true);
             TransitionBuffer(commands, planes.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -239,6 +337,16 @@ void Image::CopyDepthStencilFrom(Image& src, std::span<const ImageCopy> copies) 
         const bool whole = src_x == 0 && src_y == 0 && dst_x == 0 && dst_y == 0 &&
                            width == src_size.Width && height == src_size.Height &&
                            width == dst_size.Width && height == dst_size.Height;
+        if (VideoCommon::FullCapture::Active()) {
+            VideoCommon::FullCapture::Event("ds_copy",
+                fmt::format("{{\"src\":{},\"dst\":{},\"src_level\":{},\"dst_level\":{},"
+                            "\"src_x\":{},\"src_y\":{},\"dst_x\":{},\"dst_y\":{},\"width\":{},"
+                            "\"height\":{},\"src_size\":[{},{}],\"dst_size\":[{},{}],\"whole\":{}}}",
+                            src.gpu_addr, gpu_addr, copy.src_subresource.base_level,
+                            copy.dst_subresource.base_level, src_x, src_y, dst_x, dst_y, width,
+                            height, src_size.Width, src_size.Height, dst_size.Width,
+                            dst_size.Height, whole));
+        }
         for (s32 layer = 0; layer < copy.src_subresource.num_layers; ++layer) {
             const s32 src_layer = copy.src_subresource.base_layer + layer;
             const s32 dst_layer = copy.dst_subresource.base_layer + layer;
@@ -264,9 +372,9 @@ void Image::CopyDepthStencilFrom(Image& src, std::span<const ImageCopy> copies) 
             // Part of a subresource: both go through footprints, the region is copied row by
             // row between them, and the destination returns whole.
             ComPtr<ID3D12Resource> src_planes =
-                runtime->transfer_buffers.Acquire(src_footprints.size);
+                runtime->transfer_buffers.Acquire(src_footprints.size, true);
             ComPtr<ID3D12Resource> dst_planes =
-                runtime->transfer_buffers.Acquire(dst_footprints.size);
+                runtime->transfer_buffers.Acquire(dst_footprints.size, true);
             src.CopyPlanes(copy.src_subresource.base_level, src_layer, src_planes.Get(),
                            src_footprints, true);
             CopyPlanes(copy.dst_subresource.base_level, dst_layer, dst_planes.Get(),

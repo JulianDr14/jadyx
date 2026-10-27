@@ -14,6 +14,7 @@
 #include "common/bug_tracker.h"
 #include "common/logging.h"
 #include "common/settings.h"
+#include "shader_recompiler/transform_feedback_storage.h"
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_d3d12/d3d12_log.h"
 #include "video_core/renderer_d3d12/d3d12_draw_targets.h"
@@ -223,6 +224,10 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
         command_state.topology = d3d_topology;
     }
     buffer_runtime.ApplyGeometry(cmd);
+    // Last: nothing after it may submit the list before the draw.
+    if (layout.StreamOutput() && regs.transform_feedback_enabled != 0) {
+        stream_output.Bind(cmd, regs, buffer_runtime.TransformFeedbackBindings());
+    }
     command_state.valid = true;
 }
 
@@ -290,7 +295,41 @@ void RasterizerD3D12::SetGraphicsRootArguments(CommandStream* cmd,
             cached.local_memory_scratch = pool;
         }
     }
+    if (layout.TransformFeedbackConstantsIndex() != PipelineLayout::NO_TABLE) [[unlikely]] {
+        SetTransformFeedbackArguments(cmd, layout, params);
+    }
     cached.valid = true;
+}
+
+void RasterizerD3D12::SetTransformFeedbackArguments(CommandStream* cmd,
+                                                    const PipelineLayout& layout,
+                                                    const DrawParams& params) {
+    namespace Xfb = Shader::TransformFeedbackStorage;
+    // Vertex N of the draw goes to slot N, which is where Maxwell writes it only for lists drawn
+    // without indices.
+    if (params.is_indexed && !logged_indexed_transform_feedback) {
+        logged_indexed_transform_feedback = true;
+        LOG_WARNING(Render, "D3D12: transform feedback of an indexed or emulated-topology draw is "
+                            "written in vertex order");
+    }
+    const auto& buffers = buffer_runtime.TransformFeedbackBindings();
+    std::array<u32, Xfb::CONSTANT_WORDS> constants{};
+    constants[Xfb::VERTEX_COUNT_WORD] = params.num_vertices;
+    constants[Xfb::DISCARD_WORD] = maxwell3d->regs.rasterize_enable == 0 ? 1 : 0;
+    for (u32 index = 0; index < Xfb::NUM_BUFFERS; ++index) {
+        constants[Xfb::SIZE_WORD + index] = buffers[index].size / 4;
+    }
+    cmd->SetGraphicsRoot32BitConstants(layout.TransformFeedbackConstantsIndex(),
+                                       Xfb::CONSTANT_WORDS, constants.data(), 0);
+    const auto& indices = layout.TransformFeedbackBufferIndices();
+    for (u32 index = 0; index < Xfb::NUM_BUFFERS; ++index) {
+        if (indices[index] != PipelineLayout::NO_TABLE) {
+            if (buffers[index].buffer) {
+                buffers[index].buffer->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            }
+            cmd->SetGraphicsRootUnorderedAccessView(indices[index], buffers[index].address);
+        }
+    }
 }
 
 void RasterizerD3D12::InvalidateGraphicsState() {

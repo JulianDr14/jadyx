@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <shared_mutex>
 #include <type_traits>
 
 #include <windows.h>
@@ -11,6 +12,10 @@ namespace D3D12 {
 
 /// What a driver call that faulted returns instead of its own result.
 inline constexpr HRESULT DRIVER_FAULT_HRESULT = static_cast<HRESULT>(0x887A0020L); // DXGI_ERROR_DRIVER_INTERNAL_ERROR
+
+/// Pipeline builds hold it shared. A build retried after a driver fault, and the diagnosis of
+/// one, hold it exclusive: no other pipeline compiles in the driver meanwhile.
+std::shared_mutex& PipelineBuildMutex();
 
 HRESULT CallDriverGuardedImpl(HRESULT (*call)(void*), void* context, DWORD& fault_code);
 

@@ -234,3 +234,22 @@ solo espera en la CPU el retraso que ese timer suele tener (decenas de microsegu
 `timer_sleep=0` en BootCfg vuelve a dormir por ticks del timer del sistema y a esperar en la CPU
 el último tick entero, como antes: más preciso, pero ocupa casi un núcleo. El log dice qué modo
 se usa: `Host clock: ..., sleeps: high-resolution timer` u `OS timer ticks`.
+
+En la Series ese timer llega hasta ~0,7 ms tarde, así que el margen aprendido se queda cerca de
+1 ms y, como casi todas las esperas duran menos, `HostTiming` no duerme nunca: ocupa un núcleo
+entero en MWAITX. `timer_spin=<us>` limita la espera en la CPU a esos microsegundos; si el timer
+llega más tarde, el evento se atrasa. Sin la opción no cambia nada. El arranque escribe en
+jadyx_diag.txt `step: CPU ...` con los procesadores lógicos, los CPU sets y cuáles tiene la app.
+
+En la Series la app ve 8 procesadores lógicos en 4 núcleos con SMT y tiene 6: los dos hilos de
+los núcleos 2, 4 y 6. El núcleo 0 queda para el sistema. Con `timer_spin=100` (0.3.8.70, mismo
+sitio que 0.3.8.68 con `cs_split=16`):
+
+| | 0.3.8.68 | 0.3.8.70 `timer_spin=100` |
+|---|---|---|
+| CPU de `HostTiming` | 102% de un núcleo | ~0% |
+| FPS tras la carga | 22,0 · 21,7 · 25,0 · 24,6 | 25,5 · 26,9 · 26,7 · 26,0 |
+| p99 tras la carga | 134 · 70 · 97 · 60 ms | 84 · 64 · 68 · 48 ms |
+
+El precio: las esperas terminan en promedio unos 0,2–0,4 ms después de lo pedido, con picos de
+3,8 ms. La primera ventana, la de la carga, va lenta en todas las versiones.

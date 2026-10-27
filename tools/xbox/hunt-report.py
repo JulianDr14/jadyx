@@ -14,7 +14,11 @@ next to the capture (or --profile), profile-report.py's stacks are appended.
 
 GPU times are timestamp deltas: each call's time runs from the previous call of the same command
 list, so barriers, copies and uploads recorded in between count for the call after them. The first
-call of a command list after a flush has no time ("unknown").
+call of a command list has a time since the list opened (newer captures). "list tail" is what a
+list records after its last call: the composite, query resolves and copies before the submit.
+"dispatch setup" is what a dispatch's bindings record before it (newer captures): uploads, copies
+and barriers, kept apart from the shader's own time.
+Timestamps are bottom-of-pipe, so overlapping draws share time loosely; a pass's total is sound.
 """
 import argparse
 import collections
@@ -22,7 +26,9 @@ import os
 import subprocess
 import sys
 
-KINDS = ["draw", "draw indexed", "draw indirect", "draw texture", "clear", "dispatch"]
+KINDS = ["draw", "draw indexed", "draw indirect", "draw texture", "clear", "dispatch", "2D blit",
+         "DMA copy", "list tail", "dispatch setup"]
+LIST_END, DISPATCH_SETUP = 8, 9
 OUTCOMES = ["recorded", "skipped", "conditional", "culled", "no pipeline", "PSO rejected",
             "skipped shader", "empty", "no target", "expanded on CPU"]
 RECORDED, EXPANDED = 0, 9
@@ -158,7 +164,9 @@ def verdict(c, frames, avg):
         cause = f"**Locked to {60 / vsyncs:.0f} FPS**: steady frames on {vsyncs} refreshes. If the " \
                 "game targets that rate this is its cap, not a bottleneck; otherwise the shares " \
                 "above say which side is slow."
-    elif shares["gpu"] >= 0.85:
+    # Present and submit gaps keep a GPU-bound frame a little short of 100% busy; a GPU busy for
+    # far longer than the GPU thread records calls is the limit even below that.
+    elif shares["gpu"] >= 0.75 or shares["gpu"] * avg >= 2 * calls_ms:
         cause = "**GPU-bound**: the GPU is busy almost all the time. Cut GPU work (passes and " \
                 "pipelines with most GPU ms below), not draw count alone."
     elif shares["idle"] >= 0.30:
@@ -181,14 +189,20 @@ def report(c, top, out):
     if not c.records:
         out.append("No records in this capture.")
         return
-    lines, _ = verdict(c, frames, avg)
+    lines, shares = verdict(c, frames, avg)
     out.append("## Verdict\n")
     out += lines
     known = [r for r in c.records if r.outcome == RECORDED]
     timed = [r for r in known if r.gpu_ns is not None]
     gpu_total = sum(r.gpu_ns for r in timed)
+    busy_ms = shares.get("gpu", 0.0) * avg
+    coverage = f", {100 * ms(gpu_total) / frames / busy_ms:.0f}% of GPU busy" if busy_ms > 0 else ""
     out.append(f"- GPU time attributed to calls: {ms(gpu_total) / frames:.2f} ms per frame "
-               f"({len(timed)} of {len(known)} recorded calls timed).")
+               f"({len(timed)} of {len(known)} recorded calls timed{coverage}).")
+    tail = [r for r in timed if r.kind == LIST_END]
+    if tail:
+        out.append(f"- Command list tails (composite, resolves, copies after the last call): "
+                   f"{ms(sum(r.gpu_ns for r in tail)) / frames:.2f} ms per frame.")
     if c.dropped:
         out.append(f"- **{c.dropped} records dropped** (capacity): the tail of the capture is "
                    "missing.")
@@ -266,10 +280,11 @@ def report(c, top, out):
 
     # Passes.
     group(out, "Render targets (passes)", known, frames, top,
-          key=lambda r: r.pass_, label=lambda k: c.passes.get(k, "dispatch / no target"),
+          key=lambda r: r.pass_, label=lambda k: c.passes.get(k, "no target (dispatches, blits, DMA, list tails)"),
           extra=pass_entries(c.records))
-    group(out, "Pipelines", known, frames, top, key=lambda r: (r.vs, r.ps),
-          label=lambda k: shader(*k))
+    group(out, "Pipelines", known, frames, top,
+          key=lambda r: (r.vs, r.ps, r.kind == DISPATCH_SETUP),
+          label=lambda k: shader(k[0], k[1]) + (" setup" if k[2] else ""))
     macro_records = [r for r in c.records if r.outcome != EXPANDED]
     group(out, "Guest macros that issue the calls", macro_records, frames, top,
           key=lambda r: r.macro, label=lambda k: f"macro 0x{k:x}" if k else "no macro (direct)")

@@ -24,6 +24,10 @@ namespace Engines {
 class Maxwell3D;
 }
 
+/// Diagnostic ("indirect_macro_cpu=1"): indirect draw macros whose arguments the GPU wrote read
+/// them back on the CPU and draw directly instead of drawing from the GPU-side arguments.
+void SetIndirectMacroCpuRead(bool enabled);
+
 namespace Macro {
 constexpr std::size_t NUM_MACRO_REGISTERS = 8;
 enum class Operation : u32 {

@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -113,6 +114,52 @@ struct GPU::Impl {
     /// Flush all current written commands into the host GPU for execution.
     void FlushCommands() {
         renderer->ReadRasterizer()->FlushCommands();
+    }
+
+    /// Queues a flush on the GPU thread and returns. Requests made before the GPU thread reaches
+    /// the queued one are folded into it.
+    void RequestFlushCommands() {
+        if (flush_requested.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
+        static_cast<void>(RequestSyncOperation([this] {
+            flush_requested.store(false, std::memory_order_release);
+            FlushCommands();
+        }));
+        gpu_thread.TickGPU(is_async);
+    }
+
+    /// Counts a composite's release fence as done. A guest fence on a value takes the values
+    /// below it as done too, so the syncpoint only moves up to the oldest composite still pending.
+    void SignalRelease(Service::Nvidia::NvFence release) {
+        auto& host1x_syncpoints = system.Host1x().GetSyncpointManager();
+        const u32 id = static_cast<u32>(release.id);
+        u32 count{};
+        {
+            std::scoped_lock lk{release_mutex};
+            // A Pulse restore raises the syncpoint past values this session never composed.
+            const u32 reached = host1x_syncpoints.GetGuestSyncpointValue(id);
+            if (static_cast<s32>(reached - release_reached) > 0) {
+                release_reached = reached;
+            }
+            release_pending.push_back(release.value);
+            std::erase_if(release_pending, [this](u32 value) {
+                return static_cast<s32>(value - release_reached) <= 0;
+            });
+            for (auto next = std::ranges::find(release_pending, release_reached + 1);
+                 next != release_pending.end();
+                 next = std::ranges::find(release_pending, release_reached + 1)) {
+                release_pending.erase(next);
+                ++release_reached;
+                ++count;
+            }
+        }
+        // Outside the lock: the increments run the actions waiting on them, and one of those may
+        // be another composite signalling its own release.
+        for (u32 i = 0; i < count; ++i) {
+            host1x_syncpoints.IncrementGuest(id);
+            host1x_syncpoints.IncrementHost(id);
+        }
     }
 
     /// Synchronizes CPU writes with Host GPU memory.
@@ -312,7 +359,9 @@ struct GPU::Impl {
         gpu_thread.FlushAndInvalidateRegion(addr, size, is_async);
     }
 
-    void RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers, std::vector<Service::Nvidia::NvFence>&& fences) {
+    void RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers,
+                          std::vector<Service::Nvidia::NvFence>&& fences,
+                          std::optional<Service::Nvidia::NvFence> release) {
         const size_t num_fences{fences.size()};
         size_t current_request_counter{};
         if (num_fences != 0) {
@@ -337,17 +386,19 @@ struct GPU::Impl {
             }
             VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::Composite, latency_us);
         };
+        earlier_composite_fence = pending_composite_fence;
         pending_composite_fence = RequestSyncOperation(
             [this, current_request_counter, num_fences, composite_layers = std::move(layers),
-             composite_fences = std::move(fences), record_latency] {
+             composite_fences = std::move(fences), record_latency, release] {
                 if (num_fences == 0) {
                     record_latency();
                     renderer->Composite(composite_layers);
+                    if (release) SignalRelease(*release);
                     return;
                 }
                 auto& syncpoint_manager = system.Host1x().GetSyncpointManager();
                 const auto executer = [this, current_request_counter, composite_layers,
-                                       record_latency]() {
+                                       record_latency, release]() {
                     {
                         std::unique_lock<std::mutex> lk(request_swap_mutex);
                         if (--request_swap_counters[current_request_counter] != 0) {
@@ -357,6 +408,7 @@ struct GPU::Impl {
                     }
                     record_latency();
                     renderer->Composite(composite_layers);
+                    if (release) SignalRelease(*release);
                 };
                 for (size_t i = 0; i < num_fences; i++) {
                     syncpoint_manager.RegisterGuestAction(composite_fences[i].id,
@@ -372,6 +424,18 @@ struct GPU::Impl {
             return;
         }
         pending_composite_fence = 0;
+        earlier_composite_fence = 0;
+        if (shutting_down.load(std::memory_order_relaxed)) {
+            return;
+        }
+        WaitForSyncOperation(fence);
+    }
+
+    void WaitForEarlierComposite() {
+        const u64 fence = std::exchange(earlier_composite_fence, 0);
+        if (fence == 0) {
+            return;
+        }
         if (shutting_down.load(std::memory_order_relaxed)) {
             return;
         }
@@ -433,6 +497,13 @@ struct GPU::Impl {
     std::deque<size_t> request_swap_counters;
     std::mutex request_swap_mutex;
     u64 pending_composite_fence{};
+    u64 earlier_composite_fence{}; // the request before pending_composite_fence, if not waited
+
+    std::atomic_bool flush_requested{};
+
+    std::mutex release_mutex;
+    u32 release_reached{};             // the release value signalled last, under release_mutex
+    std::vector<u32> release_pending{}; // composited values above it, under release_mutex
 };
 
 GPU::GPU(Core::System& system, bool is_async, bool use_nvdec)
@@ -467,6 +538,10 @@ void GPU::BindRenderer(std::unique_ptr<VideoCore::RendererBase> renderer) {
 
 void GPU::FlushCommands() {
     impl->FlushCommands();
+}
+
+void GPU::RequestFlushCommands() {
+    impl->RequestFlushCommands();
 }
 
 void GPU::InvalidateGPUCache() {
@@ -546,12 +621,17 @@ const VideoCore::ShaderNotify& GPU::ShaderNotify() const {
 }
 
 void GPU::RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers,
-                           std::vector<Service::Nvidia::NvFence>&& fences) {
-    impl->RequestComposite(std::move(layers), std::move(fences));
+                           std::vector<Service::Nvidia::NvFence>&& fences,
+                           std::optional<Service::Nvidia::NvFence> release) {
+    impl->RequestComposite(std::move(layers), std::move(fences), release);
 }
 
 void GPU::WaitForComposite() {
     impl->WaitForComposite();
+}
+
+void GPU::WaitForEarlierComposite() {
+    impl->WaitForEarlierComposite();
 }
 
 std::vector<u8> GPU::GetAppletCaptureBuffer() {

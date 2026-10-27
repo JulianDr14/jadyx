@@ -28,6 +28,17 @@ I18n::Text ErrorText(Error error) {
     }
 }
 namespace {
+std::wstring SystemVersionText(std::uint32_t v) {
+    return std::to_wstring(v >> 26) + L"." + std::to_wstring((v >> 20) & 0x3F) + L"." + std::to_wstring((v >> 16) & 0xF);
+}
+} // namespace
+std::wstring LaunchErrorText(const LaunchResolution& resolution) {
+    if (resolution.error == Error::Requirements && resolution.required_system)
+        return I18n::Format(T::ContentRequiresFirmware, {SystemVersionText(resolution.required_system),
+                                                          SystemVersionText(SupportedSystemVersion())});
+    return std::wstring{Tr(ErrorText(resolution.error))};
+}
+namespace {
 std::wstring Label(const Revision& r) {
     std::wostringstream title;
     if (!r.name.empty()) title << Utf8ToUtf16(r.name);

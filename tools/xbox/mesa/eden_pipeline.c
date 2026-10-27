@@ -13,11 +13,15 @@
 #include "dxil_spirv_nir.h"
 #include "eden_spirv_to_dxil.h"
 #include "eden_integer_sampling.h"
+#include "eden_reduction_sampling.h"
 #include "nir_builder.h"
 #include "nir_to_dxil.h"
+#include "nir_xfb_info.h"
 #include "spirv/nir_spirv.h"
 #include "spirv/spirv_info.h"
 #include "util/blob.h"
+#include "util/os_time.h"
+#include "util/u_atomic.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,12 +94,168 @@ flatten_branches(nir_shader *s)
    } while (progress);
 }
 
+static nir_variable *
+find_stream_output_var(nir_shader *s, unsigned location, unsigned component, unsigned count)
+{
+   nir_foreach_variable_with_modes(var, s, nir_var_shader_out) {
+      if (var->data.location != location)
+         continue;
+      const unsigned components =
+         var->data.compact ? glsl_get_length(var->type) : glsl_get_components(var->type);
+      if (var->data.location_frac <= component &&
+          var->data.location_frac + components >= component + count)
+         return var;
+   }
+   return NULL;
+}
+
+static void
+add_stream_output_entry(struct eden_spirv_to_dxil_stream_output *so, unsigned stream,
+                        unsigned semantic, unsigned semantic_index, unsigned start_component,
+                        unsigned component_count, unsigned slot)
+{
+   if (so->entry_count >= EDEN_SPIRV_TO_DXIL_SO_MAX_ENTRIES) {
+      so->dropped_entries++;
+      return;
+   }
+   so->entries[so->entry_count++] = (struct eden_spirv_to_dxil_so_entry){
+      .stream = stream,
+      .semantic = semantic,
+      .semantic_index = semantic_index,
+      .start_component = start_component,
+      .component_count = component_count,
+      .output_slot = slot,
+   };
+}
+
+static int
+compare_xfb_outputs(const void *a_, const void *b_)
+{
+   const nir_xfb_output_info *a = a_, *b = b_;
+   if (a->buffer != b->buffer)
+      return a->buffer - b->buffer;
+   return a->offset - b->offset;
+}
+
+/* D3D12 stream output declaration of the last pre-rasterization stage. Read after nir_to_dxil,
+ * so the semantics are the ones its output signature got (get_semantic_name in dxil_signature.c).
+ * Follows fill_so_declaration in the d3d12 gallium driver: skipped words become gap entries. */
+static void
+fill_stream_output(nir_shader *s, struct eden_spirv_to_dxil_stream_output *so)
+{
+   memset(so, 0, sizeof(*so));
+   const nir_xfb_info *xfb = s->xfb_info;
+   if (!xfb || xfb->output_count == 0)
+      return;
+   nir_xfb_output_info *outputs = malloc(xfb->output_count * sizeof(outputs[0]));
+   if (!outputs) {
+      so->dropped_entries = xfb->output_count;
+      return;
+   }
+   memcpy(outputs, xfb->outputs, xfb->output_count * sizeof(outputs[0]));
+   /* nir_gather_xfb_info sorts by offset only; D3D12 writes each slot in declaration order. */
+   qsort(outputs, xfb->output_count, sizeof(outputs[0]), compare_xfb_outputs);
+
+   unsigned next_offset[NIR_MAX_XFB_BUFFERS] = {0};
+   for (unsigned i = 0; i < xfb->output_count; ++i) {
+      const nir_xfb_output_info *output = &outputs[i];
+      const unsigned buffer = output->buffer;
+      const unsigned stream = xfb->buffer_to_stream[buffer];
+      const unsigned components = util_bitcount(output->component_mask);
+      if (output->offset < next_offset[buffer]) {
+         /* Overlaps an earlier output: a declaration cannot write a word twice. */
+         so->missing_outputs++;
+         continue;
+      }
+      unsigned gap = (output->offset - next_offset[buffer]) / 4;
+      while (gap > 0) {
+         const unsigned words = MIN2(gap, 4);
+         add_stream_output_entry(so, stream, EDEN_SO_SEMANTIC_GAP, 0, 0, words, buffer);
+         gap -= words;
+      }
+      next_offset[buffer] = output->offset + components * 4;
+
+      nir_variable *var =
+         find_stream_output_var(s, output->location, output->component_offset, components);
+      unsigned semantic = EDEN_SO_SEMANTIC_GAP;
+      unsigned index = 0;
+      unsigned location = var ? var->data.location : 0;
+      if (var && (location == VARYING_SLOT_CLIP_DIST0 || location == VARYING_SLOT_CLIP_DIST1)) {
+         const unsigned component =
+            (location - VARYING_SLOT_CLIP_DIST0) * 4 + var->data.location_frac;
+         if (component >= s->info.clip_distance_array_size)
+            location = VARYING_SLOT_CULL_DIST0 +
+                       (component - s->info.clip_distance_array_size) / 4;
+      }
+      if (var) {
+         switch (location) {
+         case VARYING_SLOT_POS:
+            semantic = EDEN_SO_SEMANTIC_POSITION;
+            break;
+         case VARYING_SLOT_CLIP_DIST0:
+         case VARYING_SLOT_CLIP_DIST1:
+            semantic = EDEN_SO_SEMANTIC_CLIP_DISTANCE;
+            index = location - VARYING_SLOT_CLIP_DIST0;
+            break;
+         case VARYING_SLOT_CULL_DIST0:
+         case VARYING_SLOT_CULL_DIST1:
+            semantic = EDEN_SO_SEMANTIC_CULL_DISTANCE;
+            index = location - VARYING_SLOT_CULL_DIST0;
+            break;
+         case VARYING_SLOT_PRIMITIVE_ID:
+            semantic = EDEN_SO_SEMANTIC_PRIMITIVE_ID;
+            break;
+         case VARYING_SLOT_VIEWPORT:
+            semantic = EDEN_SO_SEMANTIC_VIEWPORT_ARRAY_INDEX;
+            break;
+         case VARYING_SLOT_LAYER:
+            semantic = EDEN_SO_SEMANTIC_RENDER_TARGET_ARRAY_INDEX;
+            break;
+         case VARYING_SLOT_PSIZ:
+            /* DXIL has no point size output. */
+            break;
+         default:
+            semantic = EDEN_SO_SEMANTIC_TEXCOORD;
+            index = var->data.driver_location;
+            break;
+         }
+      }
+      if (semantic == EDEN_SO_SEMANTIC_GAP) {
+         /* Not in the signature: its words are left as they were. */
+         so->missing_outputs++;
+         add_stream_output_entry(so, stream, semantic, 0, 0, components, buffer);
+      } else {
+         add_stream_output_entry(so, stream, semantic, index,
+                                 output->component_offset - var->data.location_frac, components,
+                                 buffer);
+      }
+   }
+   free(outputs);
+}
+
+/* The NIR-to-DXIL parts are added by the nir_to_dxil.c patch of build-spirv-to-dxil.ps1. */
+uint64_t eden_phase_ns[EDEN_PHASE_COUNT];
+
+static void
+add_phase(enum eden_spirv_to_dxil_phase phase, int64_t start)
+{
+   p_atomic_add(&eden_phase_ns[phase], (uint64_t)(os_time_get_nano() - start));
+}
+
+void
+eden_spirv_to_dxil_phase_times(uint64_t *ns, unsigned count)
+{
+   for (unsigned i = 0; i < count && i < EDEN_PHASE_COUNT; ++i)
+      ns[i] = p_atomic_read(&eden_phase_ns[i]);
+}
+
 static bool
 translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count,
                    enum dxil_validator_version validator_version_max,
                    const struct dxil_spirv_debug_options *debug_options,
                    const struct dxil_spirv_logger *logger, struct dxil_spirv_object *out,
-                   bool lower_integer_sampling, uint32_t flags)
+                   bool lower_integer_sampling, uint32_t flags,
+                   struct eden_spirv_to_dxil_stream_output *stream_output)
 {
    if (count == 0 || count > EDEN_SPIRV_TO_DXIL_MAX_STAGES)
       return false;
@@ -109,6 +269,8 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
          return false;
    }
    memset(out, 0, sizeof(*out) * count);
+   p_atomic_inc(&eden_phase_ns[EDEN_PHASE_PIPELINES]);
+   p_atomic_add(&eden_phase_ns[EDEN_PHASE_STAGES], count);
 
    glsl_type_singleton_init_or_ref();
 
@@ -135,13 +297,16 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
       nir_options[i].lower_base_vertex =
          conf->first_vertex_and_base_instance_mode != DXIL_SPIRV_SYSVAL_TYPE_ZERO;
 
+      int64_t start = os_time_get_nano();
       nir[i] = spirv_to_nir(stages[i].words, stages[i].word_count, NULL,
                             (mesa_shader_stage)stages[i].stage, stages[i].entry_point,
                             spirv_opts, &nir_options[i]);
+      add_phase(EDEN_PHASE_SPIRV_TO_NIR, start);
       if (!nir[i]) {
          success = false;
          break;
       }
+      start = os_time_get_nano();
       nir_validate_shader(nir[i], "Validate before feeding NIR to the DXIL compiler");
       dxil_spirv_nir_prep(nir[i]);
       dxil_spirv_nir_passes(nir[i], conf, &out[i].metadata);
@@ -149,9 +314,13 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
        * nir_to_dxil's own optimization loop scalarizes and lowers what this emits. */
       if (lower_integer_sampling)
          eden_lower_integer_sampling(nir[i]);
+      if (flags & EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION)
+         eden_lower_reduction_sampling(nir[i]);
+      add_phase(EDEN_PHASE_NIR_PASSES, start);
    }
 
    if (success) {
+      const int64_t start = os_time_get_nano();
       /* Reverse order, so outputs the next stage never reads are gone before the previous stage
        * is linked against its own predecessor. */
       for (unsigned i = count; i-- > 0;) {
@@ -170,6 +339,7 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
          out[i].metadata.requires_runtime_data |= link_metadata.requires_runtime_data;
          out[i].metadata.needs_draw_sysvals |= link_metadata.needs_draw_sysvals;
       }
+      add_phase(EDEN_PHASE_LINK, start);
    }
 
    struct dxil_logger logger_inner = {.priv = logger->priv, .log = logger->log};
@@ -193,13 +363,29 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
          .validator_version_max = validator_version_max,
       };
       struct blob dxil_blob;
-      if (!nir_to_dxil(nir[i], &opts, &logger_inner, &dxil_blob)) {
+      const int64_t start = os_time_get_nano();
+      const bool translated = nir_to_dxil(nir[i], &opts, &logger_inner, &dxil_blob);
+      add_phase(EDEN_PHASE_NIR_TO_DXIL, start);
+      if (!translated) {
          if (dxil_blob.allocated)
             blob_finish(&dxil_blob);
          success = false;
          break;
       }
       blob_finish_get_buffer(&dxil_blob, &out[i].binary.buffer, &out[i].binary.size);
+   }
+
+   if (success && stream_output) {
+      memset(stream_output, 0, sizeof(*stream_output));
+      /* The last stage before the fragment one feeds stream output. */
+      nir_shader *last = NULL;
+      for (unsigned i = 0; i < count; ++i) {
+         if (nir[i]->info.stage != MESA_SHADER_FRAGMENT)
+            last = nir[i];
+      }
+      if (last && last->info.stage != MESA_SHADER_COMPUTE &&
+          last->info.stage != MESA_SHADER_TESS_CTRL)
+         fill_stream_output(last, stream_output);
    }
 
    for (unsigned i = 0; i < count; ++i)
@@ -211,6 +397,12 @@ translate_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count
    return success;
 }
 
+uint32_t
+eden_spirv_to_dxil_supported_flags(void)
+{
+   return EDEN_SPIRV_TO_DXIL_FLATTEN_VERTEX | EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION;
+}
+
 bool
 eden_spirv_to_dxil_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsigned count,
                             enum dxil_validator_version validator_version_max,
@@ -219,7 +411,7 @@ eden_spirv_to_dxil_pipeline(const struct eden_spirv_to_dxil_stage *stages, unsig
                             struct dxil_spirv_object *out)
 {
    return translate_pipeline(stages, count, validator_version_max, debug_options, logger, out,
-                             false, 0);
+                             false, 0, NULL);
 }
 
 /* Integer textures sampled through the b0 space 29 table (eden_integer_sampler_state). */
@@ -231,7 +423,7 @@ eden_spirv_to_dxil_pipeline_v2(const struct eden_spirv_to_dxil_stage *stages, un
                                struct dxil_spirv_object *out)
 {
    return translate_pipeline(stages, count, validator_version_max, debug_options, logger, out,
-                             true, 0);
+                             true, 0, NULL);
 }
 
 bool
@@ -242,5 +434,17 @@ eden_spirv_to_dxil_pipeline_v3(const struct eden_spirv_to_dxil_stage *stages, un
                                struct dxil_spirv_object *out)
 {
    return translate_pipeline(stages, count, validator_version_max, debug_options, logger, out,
-                             true, flags);
+                             true, flags, NULL);
+}
+
+bool
+eden_spirv_to_dxil_pipeline_v4(const struct eden_spirv_to_dxil_stage *stages, unsigned count,
+                               enum dxil_validator_version validator_version_max,
+                               const struct dxil_spirv_debug_options *debug_options,
+                               const struct dxil_spirv_logger *logger, uint32_t flags,
+                               struct dxil_spirv_object *out,
+                               struct eden_spirv_to_dxil_stream_output *stream_output)
+{
+   return translate_pipeline(stages, count, validator_version_max, debug_options, logger, out,
+                             true, flags, stream_output);
 }

@@ -85,6 +85,13 @@ struct TransformFeedbackVarying {
     u32 components{};
 };
 
+/// A capture of components that another TransformFeedbackVarying already captures: the same
+/// attribute in a second buffer, or twice in one.
+struct TransformFeedbackRepeat {
+    u32 attribute{};
+    TransformFeedbackVarying varying;
+};
+
 struct RuntimeInfo {
     std::array<AttributeType, 32> generic_input_types{};
     /// D3D12: vertex inputs fetched in aligned parts because their bytes sit where the whole
@@ -124,6 +131,15 @@ struct RuntimeInfo {
     /// Transform feedback state for each varying
     std::array<TransformFeedbackVarying, 256> xfb_varyings{};
     u32 xfb_count{0};
+    /// Captures that overlap one in xfb_varyings, which holds one per attribute.
+    std::vector<TransformFeedbackRepeat> xfb_repeats;
+    /// The vertex shader writes the varyings above to storage buffers instead of declaring them
+    /// for stream output (transform_feedback_storage.h).
+    bool xfb_storage{};
+    /// Captures the shader cannot decorate in place (the position, the other built-ins and the
+    /// repeats) go out through copies at free generic locations, stored before any position
+    /// transform, so stream output reads the values the guest wrote (D3D12).
+    bool xfb_copy_outputs{};
 
     /// Output types for each color attachment
     std::array<AttributeType, 8> color_output_types{};

@@ -27,11 +27,19 @@
 #include "video_core/texture_cache/texture_cache.h"
 
 namespace D3D12 {
+namespace {
+// Image::Transition logs the first case of each; the GPU thread alone records bindings.
+bool logged_copy_into_uav{};
+bool logged_copy_after_uav_work{};
+bool logged_copy_left_after_uav_work{};
+} // Anonymous namespace
 std::optional<D3D12_RESOURCE_STATES> Image::DiagnosticState(ID3D12Resource* tracked_resource) const {
     if (!tracked_resource) return std::nullopt;
     if (tracked_resource == Handle()) return state;
     if (tracked_resource == reinterpreted.Get()) return reinterpreted_state;
     if (tracked_resource == slice_array.Get()) return slice_array_state;
+    if (tracked_resource == volume.Get()) return volume_state;
+    if (tracked_resource == cube.Get()) return cube_state;
     if (depth_feedback && tracked_resource == depth_feedback->Handle()) return depth_feedback->State();
     return std::nullopt;
 }
@@ -39,7 +47,9 @@ std::optional<D3D12_RESOURCE_STATES> Image::DiagnosticState(ID3D12Resource* trac
 void Image::DiagnosticTransition(ID3D12Resource* tracked_resource, D3D12_RESOURCE_STATES next) {
     if (!tracked_resource) throw std::runtime_error("null diagnostic resource");
     auto* tracked = tracked_resource == Handle() ? &state : tracked_resource == reinterpreted.Get()
-        ? &reinterpreted_state : tracked_resource == slice_array.Get() ? &slice_array_state : nullptr;
+        ? &reinterpreted_state : tracked_resource == slice_array.Get() ? &slice_array_state
+        : tracked_resource == volume.Get() ? &volume_state
+        : tracked_resource == cube.Get() ? &cube_state : nullptr;
     if (tracked) {
         if (*tracked != next) TextureDetail::TransitionBuffer(runtime->scheduler.CommandList(), tracked_resource, *tracked, next);
         *tracked = next;
@@ -117,8 +127,24 @@ void SetAstcGpuSync(bool enabled) {
     gpu_astc_sync.store(enabled, std::memory_order_relaxed);
 }
 
+void SetForceMinMaxFilter(bool enabled) {
+    force_min_max_filter.store(enabled, std::memory_order_relaxed);
+}
+
+void SetSkipMinMaxFilter(bool enabled) {
+    skip_min_max_filter.store(enabled, std::memory_order_relaxed);
+}
+
+void SetEmulateMinMaxFilter(bool enabled) {
+    emulate_min_max_filter.store(enabled, std::memory_order_relaxed);
+}
+
 void SetAstcGpuVerify(bool enabled) {
     gpu_astc_verify.store(enabled ? 64 : 0, std::memory_order_relaxed);
+}
+
+void SetStencilBlitVerify(bool enabled) {
+    stencil_blit_verify.store(enabled ? 8 : 0, std::memory_order_relaxed);
 }
 
 TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& scheduler_,
@@ -148,8 +174,13 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
         SUCCEEDED(device.Get()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options,
                                                     sizeof(options))) &&
         options.TiledResourcesTier >= D3D12_TILED_RESOURCES_TIER_2;
-    LOG_INFO(Render, "D3D12: texture cache runtime ready (min/max sampler reduction {})",
-             supports_min_max_filter ? "yes" : "no");
+    const bool reported_min_max = supports_min_max_filter;
+    supports_min_max_filter |= force_min_max_filter.load(std::memory_order_relaxed);
+    supports_min_max_filter &= !emulate_min_max_filter.load(std::memory_order_relaxed);
+    LOG_INFO(Render, "D3D12: texture cache runtime ready (min/max sampler reduction {}{})",
+             supports_min_max_filter ? "yes" : "no",
+             supports_min_max_filter != reported_min_max ? ", forced by boot.cfg" : "");
+    ProbeDepth24Readback();
 }
 
 TextureCacheRuntime::~TextureCacheRuntime() {
@@ -512,7 +543,16 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
                             (resource_flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
                                                D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) != 0;
         if (!resource) {
-            throw std::runtime_error("D3D12: texture allocator returned no resource");
+            // Name the image: an invalid desc (size UINT64_MAX) fails without any other log line.
+            const D3D12_RESOURCE_ALLOCATION_INFO allocation_info =
+                runtime->device.Get()->GetResourceAllocationInfo(0, 1, &desc);
+            throw std::runtime_error(fmt::format(
+                "D3D12: texture allocator returned no resource for image {} (format {} dim {} "
+                "{}x{}x{} levels {} samples {} flags 0x{:x}; allocation size 0x{:x} align 0x{:x})",
+                info_.format, static_cast<u32>(desc.Format), static_cast<u32>(desc.Dimension),
+                desc.Width, desc.Height, desc.DepthOrArraySize, desc.MipLevels,
+                desc.SampleDesc.Count, static_cast<u32>(desc.Flags), allocation_info.SizeInBytes,
+                allocation_info.Alignment));
         }
     }
     CheckRemovedAfter(runtime->device.Get(), [&] {
@@ -544,6 +584,12 @@ Image::~Image() {
     if (runtime && slice_array) {
         runtime->scheduler.DeferRelease(std::move(slice_array));
     }
+    if (runtime && volume) {
+        runtime->scheduler.DeferRelease(std::move(volume));
+    }
+    if (runtime && cube) {
+        runtime->scheduler.DeferRelease(std::move(cube));
+    }
     if (runtime && reinterpreted) {
         runtime->scheduler.DeferRelease(std::move(reinterpreted));
     }
@@ -560,6 +606,12 @@ Image& Image::operator=(Image&& other) noexcept {
         if (runtime && slice_array) {
             runtime->scheduler.DeferRelease(std::move(slice_array));
         }
+        if (runtime && volume) {
+            runtime->scheduler.DeferRelease(std::move(volume));
+        }
+        if (runtime && cube) {
+            runtime->scheduler.DeferRelease(std::move(cube));
+        }
         if (runtime && reinterpreted) {
             runtime->scheduler.DeferRelease(std::move(reinterpreted));
         }
@@ -575,15 +627,24 @@ Image& Image::operator=(Image&& other) noexcept {
         state = other.state;
         needs_placed_init = other.needs_placed_init;
         write_version = other.write_version;
+        uav_work = other.uav_work;
+        left_uav_in_work = other.left_uav_in_work;
         guest_blocks = std::move(other.guest_blocks);
         guest_blocks_coverage = std::move(other.guest_blocks_coverage);
         guest_blocks_version = other.guest_blocks_version;
         guest_blocks_upload_pending = other.guest_blocks_upload_pending;
         depth_feedback = std::move(other.depth_feedback);
         depth_feedback_failed = other.depth_feedback_failed;
+        depth_feedback_stale = other.depth_feedback_stale;
         slice_array = std::move(other.slice_array);
         slice_array_state = other.slice_array_state;
         slice_array_version = other.slice_array_version;
+        volume = std::move(other.volume);
+        volume_state = other.volume_state;
+        volume_version = other.volume_version;
+        cube = std::move(other.cube);
+        cube_state = other.cube_state;
+        cube_version = other.cube_version;
         reinterpreted = std::move(other.reinterpreted);
         reinterpreted_state = other.reinterpreted_state;
         reinterpreted_version = other.reinterpreted_version;
@@ -606,16 +667,57 @@ Image* Image::PrepareDepthFeedback() {
         LOG_INFO(Render, "D3D12: depth feedback snapshot allocated ({} {}x{}, {} samples)",
                  info.format, info.size.width, info.size.height, info.num_samples);
     }
-    // CopyResource preserves every mip, layer and both depth/stencil planes, including MSAA.
     // The direct queue orders earlier draws, this copy and the next draw; no CPU fence is needed.
+    const s32 levels = info.resources.levels;
+    const u64 all_levels = levels >= 64 ? ~u64{} : (u64{1} << levels) - 1;
+    const u64 stale = depth_feedback_stale & all_levels;
+    if (stale == 0) {
+        return depth_feedback.get();
+    }
     Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
     depth_feedback->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
-    runtime->scheduler.CommandList()->CopyResource(depth_feedback->Handle(), Handle());
+    auto* const commands = runtime->scheduler.CommandList();
+    if (stale == all_levels || info.num_samples > 1) {
+        // CopyResource preserves every mip, layer and both depth/stencil planes, including MSAA.
+        commands->CopyResource(depth_feedback->Handle(), Handle());
+    } else {
+        // A depth pyramid rendered level by level: only the levels drawn since the last
+        // snapshot, each copied whole as depth-stencil subresources must be.
+        const s32 layers = info.type == ImageType::e3D ? 1 : info.resources.layers;
+        const u32 planes = IsDepthStencilPlanar() ? 2 : 1;
+        for (s32 level = 0; level < levels; ++level) {
+            if (((stale >> level) & 1) == 0) {
+                continue;
+            }
+            for (s32 layer = 0; layer < layers; ++layer) {
+                for (u32 plane = 0; plane < planes; ++plane) {
+                    const u32 subresource = Subresource(level, layer, plane);
+                    const D3D12_TEXTURE_COPY_LOCATION source{
+                        .pResource = Handle(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                        .SubresourceIndex = subresource};
+                    const D3D12_TEXTURE_COPY_LOCATION target{
+                        .pResource = depth_feedback->Handle(),
+                        .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                        .SubresourceIndex = subresource};
+                    commands->CopyTextureRegion(&target, 0, 0, 0, &source, nullptr);
+                }
+            }
+        }
+    }
     depth_feedback->Transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     Transition(D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    depth_feedback_stale = 0;
     ++runtime->depth_feedback_copies;
     return depth_feedback.get();
+}
+
+void Image::TransitionDepthTarget(s32 level, D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
+    const u64 stale = depth_feedback_stale;
+    Transition(next, batch);
+    if ((next & D3D12_RESOURCE_STATE_DEPTH_WRITE) != 0 && level >= 0 && level < 64) {
+        depth_feedback_stale = stale | (u64{1} << level);
+    }
 }
 
 u32 Image::Subresource(s32 level, s32 layer, u32 plane) const noexcept {
@@ -626,6 +728,14 @@ u32 Image::Subresource(s32 level, s32 layer, u32 plane) const noexcept {
 
 void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
     if (!resource) return;
+    constexpr D3D12_RESOURCE_STATES WRITE_STATES =
+        D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+        D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_COPY_DEST |
+        D3D12_RESOURCE_STATE_RESOLVE_DEST;
+    if ((next & WRITE_STATES) != 0 || reinterpreted_ahead || needs_placed_init) {
+        // Any write but a depth target's (TransitionDepthTarget) outdates the whole snapshot.
+        depth_feedback_stale = ~u64{};
+    }
     if (reinterpreted_ahead || needs_placed_init) {
         // Both record commands on the image: its pending barriers must come first.
         if (batch) {
@@ -638,13 +748,58 @@ void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
             InitializePlacedResource();
         }
     }
+    const u64 work = runtime->scheduler.Work();
+    if (work != 0 && uav_work == work && state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
+        (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
+         ((next & WRITE_STATES) == 0 && next != D3D12_RESOURCE_STATE_COPY_SOURCE))) {
+        // Another binding of this draw or dispatch writes it: it stays a UAV (Scheduler::BeginWork),
+        // and its UAV barrier is in. AMD hardware, the Series included, samples it there too.
+        return;
+    }
+    if (work != 0 && uav_work == work &&
+        (state == D3D12_RESOURCE_STATE_COPY_SOURCE || state == D3D12_RESOURCE_STATE_COPY_DEST) &&
+        (next & WRITE_STATES) == 0 && next != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+        // The images' side of Buffer::Transition's upload between bindings: a copy or upload
+        // between this work's bindings took the image it writes out of UAV, and a later read
+        // binding would leave it in a read state. The next reader in that state then got no
+        // barrier and sampled it while the work still wrote it. Keep it a UAV; do not drop this
+        // when optimizing transitions. It costs one transition only in this case.
+        if (!logged_copy_into_uav) {
+            const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+            LOG_INFO(Render, "D3D12: an image a work writes took a copy between its bindings "
+                             "({} {}x{}x{})",
+                     info.format, desc.Width, desc.Height, desc.DepthOrArraySize);
+            logged_copy_into_uav = true;
+        }
+        next = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
+    if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && work != 0) {
+        uav_work = work;
+    }
     BarrierBatch local{runtime->scheduler};
     BarrierBatch& barriers = batch ? *batch : local;
+    // A work wrote it as a UAV but left it in a copy state (its last binding was a copy). The
+    // copy's transition ran before the work, so the next use in that same state needs its own
+    // wait for the work's writes.
+    const bool unordered_write = left_uav_in_work != 0 && left_uav_in_work != work;
+    if (unordered_write) {
+        left_uav_in_work = 0;
+    }
     if (state == next) {
         // Writes in one state are unordered without a barrier (see Buffer::Transition).
         if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
             ++write_version;
             barriers.Uav(resource.Get());
+        } else if (unordered_write) {
+            if (!logged_copy_after_uav_work) {
+                LOG_INFO(Render, "D3D12: an image a work wrote was used again in its copy state");
+                logged_copy_after_uav_work = true;
+            }
+            if (next == D3D12_RESOURCE_STATE_COPY_DEST) {
+                ++write_version;
+            }
+            barriers.Transition(resource.Get(), next, D3D12_RESOURCE_STATE_COMMON);
+            barriers.Transition(resource.Get(), D3D12_RESOURCE_STATE_COMMON, next);
         } else if (next == D3D12_RESOURCE_STATE_COPY_DEST) {
             ++write_version;
             barriers.Transition(resource.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
@@ -653,15 +808,23 @@ void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
                                 D3D12_RESOURCE_STATE_COPY_DEST);
         }
     } else {
-        constexpr D3D12_RESOURCE_STATES WRITE_STATES =
-            D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
-            D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_COPY_DEST |
-            D3D12_RESOURCE_STATE_RESOLVE_DEST;
         if ((next & WRITE_STATES) != 0) {
             ++write_version;
         }
+        if (unordered_write) {
+            // The transition out of the copy state waits for the copy, not for the work's UAV
+            // writes after it: a texture read in the next draw sampled the image half written.
+            if (!logged_copy_left_after_uav_work) {
+                LOG_INFO(Render, "D3D12: an image a work wrote left its copy state for another");
+                logged_copy_left_after_uav_work = true;
+            }
+            barriers.Uav(resource.Get());
+        }
         barriers.Transition(resource.Get(), state, next);
         state = next;
+    }
+    if (work != 0 && uav_work == work && next != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+        left_uav_in_work = work;
     }
     if (!batch) {
         local.Flush();
@@ -711,6 +874,105 @@ ID3D12Resource* Image::SliceArray() {
     LOG_INFO(Render, "D3D12: 3D image {} {}x{}x{} @{:x} read as a 2D array through a slice copy",
              info.format, desc.Width, desc.Height, desc.DepthOrArraySize, gpu_addr);
     return slice_array.Get();
+}
+
+ID3D12Resource* Image::Volume() {
+    if (volume || !resource || info.type != ImageType::e2D) {
+        return volume.Get();
+    }
+    D3D12_RESOURCE_DESC desc = resource->GetDesc();
+    if (desc.DepthOrArraySize != 1 || desc.SampleDesc.Count > 1 ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) {
+        return nullptr;
+    }
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+    desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+    ThrowIfFailed(runtime->device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                  D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&volume)),
+                  "Create 2D image volume");
+    CheckRemovedAfter(runtime->device.Get(), [&] {
+        return fmt::format("creating the volume of 2D image {} (format {} {}x{} levels {})",
+                           info.format, static_cast<u32>(desc.Format), desc.Width, desc.Height,
+                           desc.MipLevels);
+    });
+    volume_state = D3D12_RESOURCE_STATE_COMMON;
+    volume_version = 0;
+    LOG_INFO(Render, "D3D12: 2D image {} {}x{} @{:x} read as 3D through a one-slice copy",
+             info.format, desc.Width, desc.Height, gpu_addr);
+    return volume.Get();
+}
+
+void Image::RefreshVolume() {
+    if (!Volume() || volume_version == write_version || !CanTransfer()) {
+        return;
+    }
+    // A 2D level and the matching one-slice 3D level share the buffer footprint.
+    Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
+    auto* const commands = runtime->scheduler.CommandList();
+    if (volume_state != D3D12_RESOURCE_STATE_COPY_DEST) {
+        TransitionBuffer(commands, volume.Get(), volume_state, D3D12_RESOURCE_STATE_COPY_DEST);
+    }
+    CopyThroughBuffer(resource.Get(), volume.Get());
+    volume_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    TransitionBuffer(commands, volume.Get(), D3D12_RESOURCE_STATE_COPY_DEST, volume_state);
+    volume_version = write_version;
+}
+
+ID3D12Resource* Image::Cube() {
+    if (cube || !resource || info.type != ImageType::e2D) {
+        return cube.Get();
+    }
+    D3D12_RESOURCE_DESC desc = resource->GetDesc();
+    if (desc.DepthOrArraySize != 1 || desc.Width != desc.Height || desc.SampleDesc.Count > 1 ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) {
+        return nullptr;
+    }
+    desc.DepthOrArraySize = 6;
+    desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+    ThrowIfFailed(runtime->device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                  D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&cube)),
+                  "Create 2D image cube");
+    CheckRemovedAfter(runtime->device.Get(), [&] {
+        return fmt::format("creating the cube of 2D image {} (format {} {}x{} levels {})",
+                           info.format, static_cast<u32>(desc.Format), desc.Width, desc.Height,
+                           desc.MipLevels);
+    });
+    cube_state = D3D12_RESOURCE_STATE_COMMON;
+    cube_version = 0;
+    LOG_INFO(Render, "D3D12: 2D image {} {}x{} @{:x} read as a cube through a six-face copy",
+             info.format, desc.Width, desc.Height, gpu_addr);
+    return cube.Get();
+}
+
+void Image::RefreshCube() {
+    if (!Cube() || cube_version == write_version || !CanTransfer()) {
+        return;
+    }
+    // Same dimension and format: each level copies straight into every face.
+    Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
+    auto* const commands = runtime->scheduler.CommandList();
+    if (cube_state != D3D12_RESOURCE_STATE_COPY_DEST) {
+        TransitionBuffer(commands, cube.Get(), cube_state, D3D12_RESOURCE_STATE_COPY_DEST);
+    }
+    const u32 levels = resource->GetDesc().MipLevels;
+    for (u32 face = 0; face < 6; ++face) {
+        for (u32 level = 0; level < levels; ++level) {
+            const D3D12_TEXTURE_COPY_LOCATION from{
+                .pResource = resource.Get(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                .SubresourceIndex = level};
+            const D3D12_TEXTURE_COPY_LOCATION to{
+                .pResource = cube.Get(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                .SubresourceIndex = face * levels + level};
+            commands->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+        }
+    }
+    cube_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    TransitionBuffer(commands, cube.Get(), D3D12_RESOURCE_STATE_COPY_DEST, cube_state);
+    cube_version = write_version;
 }
 
 ID3D12Resource* Image::Reinterpreted(DXGI_FORMAT family) {

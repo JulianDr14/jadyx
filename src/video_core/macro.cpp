@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <cstring>
 #include <exception>
 #include <utility>
@@ -65,11 +66,37 @@ bool IsTopologySafe(Maxwell3D::Regs::PrimitiveTopology topology) {
     }
 }
 
+std::atomic<bool> indirect_macro_cpu_read{};
+
+/// Whether an indirect draw macro reads its arguments on the CPU (its Fallback).
+bool UsesCpuArguments(Maxwell3D& maxwell3d, Maxwell3D::Regs::PrimitiveTopology topology) {
+    if (maxwell3d.AnyParametersDirty() && IsTopologySafe(topology) &&
+        !indirect_macro_cpu_read.load(std::memory_order_relaxed)) {
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::IndirectMacroGpu, 1);
+        return false;
+    }
+    VideoCore::Perf::Add(VideoCore::Perf::Counter::IndirectMacroCpu, 1);
+    if (maxwell3d.AnyParametersDirty()) {
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::IndirectMacroCpuWritten, 1);
+    }
+    return true;
+}
+
+void CountCpuInstances(u32 instance_count) {
+    if (instance_count == 0) {
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::IndirectMacroCpuZero, 1);
+    }
+}
+
 } // Anonymous namespace
+
+void SetIndirectMacroCpuRead(bool enabled) {
+    indirect_macro_cpu_read.store(enabled, std::memory_order_relaxed);
+}
 
 void HLE_DrawArraysIndirect::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> parameters, [[maybe_unused]] u32 method) {
     auto topology = static_cast<Maxwell3D::Regs::PrimitiveTopology>(parameters[0]);
-    if (!maxwell3d.AnyParametersDirty() || !IsTopologySafe(topology)) {
+    if (UsesCpuArguments(maxwell3d, topology)) {
         Fallback(system, maxwell3d, parameters);
         return;
     }
@@ -105,6 +132,7 @@ void HLE_DrawArraysIndirect::Fallback(Core::System& system, Engines::Maxwell3D& 
     };
     maxwell3d.RefreshParameters();
     const u32 instance_count = (maxwell3d.GetRegisterValue(0xD1B) & parameters[2]);
+    CountCpuInstances(instance_count);
     auto topology = Maxwell3D::Regs::PrimitiveTopology(parameters[0]);
     const u32 vertex_first = parameters[3];
     const u32 vertex_count = parameters[1];
@@ -128,7 +156,7 @@ void HLE_DrawArraysIndirect::Fallback(Core::System& system, Engines::Maxwell3D& 
 
 void HLE_DrawIndexedIndirect::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> parameters, [[maybe_unused]] u32 method) {
     auto topology = static_cast<Maxwell3D::Regs::PrimitiveTopology>(parameters[0]);
-    if (!maxwell3d.AnyParametersDirty() || !IsTopologySafe(topology)) {
+    if (UsesCpuArguments(maxwell3d, topology)) {
         Fallback(system, maxwell3d, parameters);
         return;
     }
@@ -167,6 +195,7 @@ void HLE_DrawIndexedIndirect::Execute(Core::System& system, Engines::Maxwell3D& 
 void HLE_DrawIndexedIndirect::Fallback(Core::System& system, Engines::Maxwell3D& maxwell3d, std::span<const u32> parameters) {
     maxwell3d.RefreshParameters();
     const u32 instance_count = (maxwell3d.GetRegisterValue(0xD1B) & parameters[2]);
+    CountCpuInstances(instance_count);
     const u32 element_base = parameters[4];
     const u32 base_instance = parameters[5];
     maxwell3d.regs.vertex_id_base = element_base;

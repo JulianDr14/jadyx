@@ -27,6 +27,7 @@
 #include "shader_recompiler/frontend/ir/program.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/ir_opt/demote_return_pass.h"
+#include "shader_recompiler/ir_opt/workgroup_split_pass.h"
 #include "shader_recompiler/program_header.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -37,11 +38,14 @@
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
+#include "video_core/renderer_d3d12/d3d12_dxil_disk_cache.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
+#include "video_core/renderer_d3d12/d3d12_stream_output.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
 #include "video_core/shader_environment.h"
+#include "video_core/transform_feedback.h"
 #include "video_core/shader_notify.h"
 
 namespace D3D12 {
@@ -76,6 +80,31 @@ bool HasShaderHash(const std::array<std::atomic<u64>, 4>& slots, u64 unique_hash
 }
 std::atomic_bool pipeline_eviction{true};
 std::atomic_bool pipeline_prewarm{true};
+// EXPERIMENTAL default: 16 is only measured in one game so far, where it took a persistent compute
+// dispatch from ~82 ms to ~4.5 ms per frame on Series. If another game shows broken compute
+// results (particles, physics, culling) or hangs, try boot.cfg "cs_split=1" first.
+std::atomic<u32> compute_workgroup_split{16};
+
+/// Launches with more groups than this fill the GPU without splitting them further.
+constexpr u64 MAX_SPLIT_GROUPS = 256;
+
+/// The WorkgroupSplitPass factor for the current launch, or 1 to run it as written. Indirect
+/// launches keep their group count on the GPU, where it is not multiplied.
+u32 WorkgroupSplitFor(const Tegra::Engines::KeplerCompute& kepler_compute) {
+    const u32 factor = compute_workgroup_split.load(std::memory_order_relaxed);
+    if (factor <= 1 || kepler_compute.GetIndirectComputeAddress()) {
+        return 1;
+    }
+    const auto& qmd = kepler_compute.launch_description;
+    const u64 groups_x = qmd.grid_dim_x;
+    const u64 groups = groups_x * qmd.grid_dim_y * qmd.grid_dim_z;
+    if (groups == 0 || groups > MAX_SPLIT_GROUPS ||
+        groups_x * factor > D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION) {
+        return 1;
+    }
+    return factor;
+}
+std::atomic_bool transform_feedback_storage{false};
 
 /// Writes a translated stage's IR and SPIR-V next to the log (SetDumpedShader).
 void DumpShader(u64 unique_hash, size_t stage, const Shader::IR::Program& program,
@@ -126,8 +155,9 @@ auto MakeSpan(Container& container) {
 }
 
 // MaxwellToOutputTopology, MaxwellToCompareFunction, CastAttributeType and MakeRuntimeInfo follow
-// vk_pipeline_cache.cpp. D3D12 has no transform feedback yet (phase 5) and no native OpenGL NDC,
-// so the depth conversion always happens in the shader.
+// vk_pipeline_cache.cpp. D3D12 has no native OpenGL NDC, so the depth conversion always happens in
+// the shader. Transform feedback goes out through stream output, declared by spirv_to_dxil from the
+// Xfb decorations of the last pre-rasterization stage (CreateGraphicsPipeline sets it up).
 
 Shader::OutputTopology MaxwellToOutputTopology(Maxwell::PrimitiveTopology topology) {
     switch (topology) {
@@ -381,8 +411,21 @@ void SetPipelineEviction(bool enabled) {
     pipeline_eviction.store(enabled, std::memory_order_relaxed);
 }
 
+void SetTransformFeedbackStorage(bool enabled) {
+    transform_feedback_storage.store(enabled, std::memory_order_relaxed);
+}
+
+bool PipelineCache::NativeStreamOutput() const {
+    return compiler.SupportsStreamOutput() &&
+           !transform_feedback_storage.load(std::memory_order_relaxed);
+}
+
 void SetPipelinePrewarm(bool enabled) {
     pipeline_prewarm.store(enabled, std::memory_order_relaxed);
+}
+
+void SetComputeWorkgroupSplit(u32 factor) {
+    compute_workgroup_split.store(factor, std::memory_order_relaxed);
 }
 
 PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
@@ -579,6 +622,9 @@ void PipelineCache::LogPipelineStats(std::string_view when) const {
             {PipelineStage::Frontend, "frontend"},
             {PipelineStage::QueueWait, "queue"},
             {PipelineStage::Dxil, "dxil"},
+            {PipelineStage::Translate, "mesa"},
+            {PipelineStage::SignLock, "sign-lock"},
+            {PipelineStage::Sign, "sign"},
             {PipelineStage::PsoCreate, "pso"},
             {PipelineStage::WaitNew, "wait-new"},
             {PipelineStage::WaitDormant, "wait-dormant"},
@@ -599,6 +645,8 @@ void PipelineCache::LogPipelineStats(std::string_view when) const {
              when, stats.inline_builds.load(std::memory_order_relaxed),
              stats.prewarm_queued.load(std::memory_order_relaxed),
              stats.prewarm_hits.load(std::memory_order_relaxed), line);
+    LogDxilDigestChecks();
+    LogTranslatorPhases(when);
 }
 
 void PipelineCache::SaveHotPipelines() {
@@ -675,6 +723,7 @@ GraphicsPipeline* PipelineCache::LookupGraphicsPipeline() {
     // only rereads blocks whose Maxwell registers changed.
     graphics_key.state.Refresh(*maxwell3d, dynamic_features);
     graphics_key.RefreshStatic(maxwell3d->regs);
+    graphics_key.emulate_reduction = UsesReductionShader(graphics_key.unique_hashes) ? 1 : 0;
 
     if (current_pipeline) {
         GraphicsPipeline* const next{current_pipeline->Next(graphics_key)};
@@ -686,6 +735,47 @@ GraphicsPipeline* PipelineCache::LookupGraphicsPipeline() {
     }
     VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::PipelineFastMisses, 1);
     return CurrentGraphicsPipelineSlowPath();
+}
+
+bool PipelineCache::UsesReductionShader(const std::array<u64, 6>& unique_hashes) const {
+    if (reduction_shaders.empty()) [[likely]] {
+        return false;
+    }
+    // VertexA (index 0) is translated together with VertexB.
+    for (size_t index = 1; index < unique_hashes.size(); ++index) {
+        if (unique_hashes[index] != 0 && reduction_shaders.contains(unique_hashes[index])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void PipelineCache::EmulateReduction(const GraphicsPipelineCacheKey& key, u8 stages) {
+    if (!compiler.EmulatesReduction()) {
+        return; // older spirv_to_dxil.dll: the samples keep filtering normally
+    }
+    bool added = false;
+    for (size_t stage = 0; stage < Maxwell::MaxShaderStage; ++stage) {
+        const u64 hash = key.unique_hashes[stage + 1];
+        if (((stages >> stage) & 1) != 0 && hash != 0 && reduction_shaders.insert(hash).second) {
+            added = true;
+            LOG_INFO(Render, "D3D12: shader {:016x} (stage {}) samples with a filtered MIN/MAX "
+                             "reduction; using its emulating pipelines",
+                     hash, stage);
+        }
+    }
+    if (added) {
+        // The previous draw's pipeline must not be reused without the new key bit.
+        key_reuse.Forget();
+    }
+}
+
+void PipelineCache::EmulateReduction(u64 compute_hash) {
+    if (compiler.EmulatesReduction() && reduction_shaders.insert(compute_hash).second) {
+        LOG_INFO(Render, "D3D12: compute shader {:016x} samples with a filtered MIN/MAX "
+                         "reduction; using its emulating pipeline",
+                 compute_hash);
+    }
 }
 
 void PipelineCache::ReportKeyReuseMismatch(const GraphicsPipeline* reused) {
@@ -721,12 +811,21 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
         .shared_memory_size = qmd.shared_alloc,
         .workgroup_size{qmd.block_dim_x, qmd.block_dim_y, qmd.block_dim_z},
     };
-    const auto [pair, is_new]{compute_cache.try_emplace(key)};
+    const bool emulate_reduction =
+        !reduction_shaders.empty() && reduction_shaders.contains(key.unique_hash);
+    // The two variants are independent: the emulation rewrites samples, the split ids and loops.
+    const u32 workgroup_split = WorkgroupSplitFor(*kepler_compute);
+    auto& cache = emulate_reduction
+                      ? (workgroup_split > 1 ? compute_reduction_split_cache
+                                             : compute_reduction_cache)
+                  : workgroup_split > 1 ? compute_split_cache
+                                        : compute_cache;
+    const auto [pair, is_new]{cache.try_emplace(key)};
     auto& pipeline{pair->second};
     if (is_new) {
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PipelineStallUs};
         VideoCore::Perf::ScopedTimer frontend{VideoCore::Perf::Counter::PipelineFrontendUs};
-        pipeline = CreateComputePipeline(key, shader);
+        pipeline = CreateComputePipeline(key, shader, emulate_reduction, workgroup_split);
     }
     if (!pipeline) {
         BUG_TRACK_KEY(DrawSkipped, key.unique_hash,
@@ -762,6 +861,11 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     }
     pipeline_cache_filename = base_dir / "d3d12.bin";
     hot_pipelines_filename = base_dir / "d3d12_hot.bin";
+    if (IsDxilDiskCacheEnabled() && compiler.TranslatorGeneration() != 0) {
+        GetDxilDiskCache().Open(base_dir / "d3d12_dxil.bin", compiler.TranslatorGeneration());
+    } else {
+        GetDxilDiskCache().Close();
+    }
     {
         std::ifstream file(hot_pipelines_filename, std::ios::binary);
         const std::vector<u8> bytes{std::istreambuf_iterator<char>(file),
@@ -881,6 +985,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     prewarm_cursor = 0;
     prewarm_last = nullptr;
     LogPipelineStats("boot");
+    GetDxilDiskCache().LogStats("boot");
 }
 
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
@@ -1016,6 +1121,27 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     std::array<std::vector<u32>, Maxwell::MaxShaderStage> spirv;
     boost::container::static_vector<size_t, Maxwell::MaxShaderStage> stage_indices;
 
+    // Transform feedback is captured where Maxwell captures it, after the last pre-rasterization
+    // stage: through stream output, in primitive order, with the counters carrying the buffer
+    // offsets across draws. Storage buffer writes from the vertex shader are the fallback, for an
+    // older spirv_to_dxil.dll or boot.cfg "xfb=storage"; they cover the vertex shader alone.
+    const bool has_geometry_stage{(key.unique_hashes[4] != 0 || layer_source_program != nullptr) &&
+                                  !drops_geometry};
+    const size_t xfb_program = has_geometry_stage          ? 4
+                               : key.unique_hashes[3] != 0 ? 3
+                                                           : 1;
+    const bool captures_xfb{key.state.xfb_enabled != 0};
+    const bool native_xfb{captures_xfb && compiler.SupportsStreamOutput() &&
+                          !transform_feedback_storage.load(std::memory_order_relaxed)};
+    VideoCommon::TransformFeedbackVaryings xfb_varyings;
+    if (captures_xfb) {
+        xfb_varyings = VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);
+        if (!native_xfb && xfb_program != 1) {
+            LOG_WARNING(Render, "D3D12: transform feedback after tessellation or geometry "
+                                "shaders needs stream output; it is not written");
+        }
+    }
+
     // Series corrupts native NoPerspective coordinates when clipping volumes
     // cross W=0. Preserve screen-linear semantics via smooth(a*clipW)/clipW.
     // Only direct VS -> FS is covered here: intermediate stages/indexed loads
@@ -1027,8 +1153,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         const auto& vertex_info = programs[1].info;
         const auto& fragment_info = programs[5].info;
         for (u32 index = 0; index < Shader::IR::NUM_GENERICS; ++index) {
+            // Stream output reads the varying itself: a captured one keeps native NoPerspective.
             if (fragment_info.interpolation[index] == Shader::Interpolation::NoPerspective &&
-                fragment_info.loads.Generic(index) && vertex_info.stores.Generic(index)) {
+                fragment_info.loads.Generic(index) && vertex_info.stores.Generic(index) &&
+                !(native_xfb && xfb_varyings.CapturesGeneric(index))) {
                 lower_noperspective_mask |= 1U << index;
             }
         }
@@ -1066,6 +1194,11 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
         auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage)};
         runtime_info.lower_noperspective_mask = lower_noperspective_mask;
+        if (captures_xfb && index == xfb_program && (native_xfb || index == 1)) {
+            xfb_varyings.Apply(runtime_info);
+            runtime_info.xfb_storage = !native_xfb;
+            runtime_info.xfb_copy_outputs = native_xfb;
+        }
         ConvertLegacyToGeneric(program, runtime_info);
         Shader::Optimization::DemoteReturnVerdict demote_return{};
         const auto merged_demote_returns =
@@ -1095,7 +1228,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         stage_indices.push_back(stage_index);
         previous_stage = &program;
     }
-    const PipelineLayout& layout = root_signatures.Get(infos, false);
+    // Disk-cache keys may carry the bit from a session whose DLL emulated reduction.
+    const bool emulate_reduction = key.emulate_reduction != 0 && compiler.EmulatesReduction();
+    const PipelineLayout& layout =
+        root_signatures.Get(infos, false, native_xfb, emulate_reduction);
 
     // SPIR-V to DXIL goes with the PSO build, on a worker: done here it stalled the GPU thread for
     // 150-490 ms per 300 frames when entering new areas (0.2.59 profile). Translating the guest
@@ -1103,7 +1239,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     auto compile_dxil = [this, spirv = std::move(spirv), stage_indices, dumps_dxil,
                          vertex_shader = key.unique_hashes[1],
                          fragment_shader = key.unique_hashes[5],
-                         pipeline_key = key.Hash()](u64 trace_pipeline, bool flatten_vertex) {
+                         pipeline_key = key.Hash(), native_xfb,
+                         emulate_reduction](u64 trace_pipeline, bool flatten_vertex) {
         boost::container::static_vector<ShaderCompiler::PipelineStage, Maxwell::MaxShaderStage>
             stages;
         for (const size_t stage_index : stage_indices) {
@@ -1117,42 +1254,61 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             .yz_flip = DXIL_SPIRV_YZ_FLIP_CONDITIONAL,
             .first_vertex_and_base_instance = DXIL_SPIRV_SYSVAL_TYPE_RUNTIME_DATA,
             .flatten_vertex = flatten_vertex,
+            .emulate_reduction = emulate_reduction,
         };
         boost::container::static_vector<LinkedShaderStage, Maxwell::MaxShaderStage> key_stages;
         for (const auto& stage : stages) {
             key_stages.push_back({stage.spirv, static_cast<u32>(stage.stage)});
         }
-        const std::array<u32, 5> key_options{
+        const std::array<u32, 7> key_options{
             static_cast<u32>(options.yz_flip), options.y_flip_mask, options.z_flip_mask,
             static_cast<u32>(options.first_vertex_and_base_instance),
-            static_cast<u32>(options.flatten_vertex)};
+            static_cast<u32>(options.flatten_vertex), static_cast<u32>(native_xfb),
+            static_cast<u32>(options.emulate_reduction)};
         auto key = MakeLinkedShaderKey(std::span(key_stages.data(), key_stages.size()), key_options);
         const auto cached = linked_shaders.Get(std::move(key), [&] {
-            auto compiled = compiler.CompilePipeline(std::span(stages.data(), stages.size()), options,
-                                                      trace_pipeline);
+            std::unique_ptr<eden_spirv_to_dxil_stream_output> stream_output;
+            ShaderCompiler::PipelineOptions linked_options = options;
+            if (native_xfb) {
+                stream_output = std::make_unique<eden_spirv_to_dxil_stream_output>();
+                linked_options.stream_output = stream_output.get();
+            }
+            auto compiled = compiler.CompilePipeline(std::span(stages.data(), stages.size()),
+                                                     linked_options, trace_pipeline);
             ChargedDxilStages dxil;
             u64 bytes = 0;
             for (size_t i = 0; i < compiled.size(); ++i) {
                 bytes += compiled[i].dxil.capacity();
-                dxil.stages[stage_indices[i]] = std::move(compiled[i].dxil);
+                dxil.linked.stages[stage_indices[i]] = std::move(compiled[i].dxil);
+            }
+            if (stream_output) {
+                dxil.linked.stream_output = MakeStreamOutputDeclaration(*stream_output);
+                bytes += dxil.linked.stream_output.capacity() * sizeof(D3D12_SO_DECLARATION_ENTRY);
+                if (stream_output->missing_outputs != 0 || stream_output->dropped_entries != 0) {
+                    BUG_TRACK_KEY(UnsupportedState, pipeline_key,
+                                  "VS {:016x} stream output leaves {} captured outputs unwritten "
+                                  "and drops {} entries",
+                                  vertex_shader, stream_output->missing_outputs,
+                                  stream_output->dropped_entries);
+                }
             }
             dxil.charge = Common::MemoryCharge(Common::MemoryAccount::ShaderBytecode, bytes);
             return dxil;
         }, [](const ChargedDxilStages& dxil) {
             size_t bytes = sizeof(dxil);
-            for (const auto& stage : dxil.stages) {
+            for (const auto& stage : dxil.linked.stages) {
                 bytes += stage.capacity();
             }
-            return bytes;
+            return bytes + dxil.linked.stream_output.capacity() * sizeof(D3D12_SO_DECLARATION_ENTRY);
         });
         // Export the actual linked bytes even when another pipeline populated this cache entry.
         if (dumps_dxil) [[unlikely]] {
-            DumpDxil(vertex_shader, fragment_shader, pipeline_key, cached.value->stages);
+            DumpDxil(vertex_shader, fragment_shader, pipeline_key, cached.value->linked.stages);
         }
         VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::PipelineCacheResult,
                                    static_cast<u64>(cached.outcome), trace_pipeline);
         // The pipeline keeps the whole entry, charge included, alive through its stages.
-        return GraphicsPipeline::SharedDxilStages(cached.value, &cached.value->stages);
+        return GraphicsPipeline::SharedDxilStages(cached.value, &cached.value->linked);
     };
 
     Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
@@ -1207,15 +1363,20 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
 }
 
 std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
-    const ComputePipelineCacheKey& key, const VideoCommon::ShaderInfo* shader) {
+    const ComputePipelineCacheKey& key, const VideoCommon::ShaderInfo* shader,
+    bool emulate_reduction, u32 workgroup_split) {
     const GPUVAddr program_base{kepler_compute->regs.code_loc.Address()};
     const auto& qmd{kepler_compute->launch_description};
     ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
     env.SetCachedSize(shader->size_bytes);
 
     main_pools.ReleaseContents();
-    auto pipeline{CreateComputePipeline(main_pools, key, env, true)};
-    if (!pipeline || pipeline_cache_filename.empty()) {
+    auto pipeline{
+        CreateComputePipeline(main_pools, key, env, true, emulate_reduction, workgroup_split)};
+    // Variants are not stored: the disk cache rebuilds the plain pipeline, and the first dispatch
+    // that needs a variant builds it again.
+    if (!pipeline || pipeline_cache_filename.empty() || emulate_reduction ||
+        workgroup_split > 1) {
         return pipeline;
     }
     serialization_thread.QueueWork([this, key, env_ = std::move(env)] {
@@ -1227,7 +1388,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
 
 std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     ShaderPools& pools, const ComputePipelineCacheKey& key, Shader::Environment& env,
-    bool build_in_parallel) try {
+    bool build_in_parallel, bool emulate_reduction, u32 workgroup_split) try {
     Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
     if (Settings::values.dump_guest_shaders) {
         env.Dump(key.Hash(), key.unique_hash);
@@ -1240,19 +1401,41 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
                     key.unique_hash, program.info.global_memory_fallbacks,
                     program.info.global_memory_unresolved, program.info.stores_global_memory);
     }
+    u32 split{1};
+    if (workgroup_split > 1) {
+        using Shader::Optimization::WorkgroupSplitVerdict;
+        const WorkgroupSplitVerdict verdict{
+            Shader::Optimization::WorkgroupSplitPass(program, workgroup_split)};
+        if (verdict == WorkgroupSplitVerdict::Split) {
+            split = workgroup_split;
+            LOG_INFO(Render, "D3D12: compute shader {:016x} split: each group of {} runs as {}",
+                     key.unique_hash, key.workgroup_size[0], split);
+        } else {
+            LOG_INFO(Render, "D3D12: compute shader {:016x} not split ({})", key.unique_hash,
+                     Shader::Optimization::Name(verdict));
+        }
+    }
     const std::vector<u32> code{EmitSPIRV(profile, program)};
+    const bool dumped{IsDumpedShader(key.unique_hash)};
+    if (dumped) [[unlikely]] {
+        DumpShader(key.unique_hash, 0, program, code);
+    }
 
     const std::array<ShaderCompiler::PipelineStage, 1> stages{{
         {.spirv = code, .stage = DXIL_SPIRV_SHADER_COMPUTE},
     }};
-    auto compiled = compiler.CompilePipeline(stages, {});
+    auto compiled = compiler.CompilePipeline(stages, {.emulate_reduction = emulate_reduction});
+    if (dumped) [[unlikely]] {
+        // The emulating build overwrites the plain one: the DXIL that runs is the last dumped.
+        DumpDxil(0, key.unique_hash, key.Hash(), std::span{&compiled[0].dxil, 1});
+    }
     const std::array<const Shader::Info*, 1> infos{&program.info};
-    const PipelineLayout& layout = root_signatures.Get(infos, true);
+    const PipelineLayout& layout = root_signatures.Get(infos, true, false, emulate_reduction);
 
     Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
     return std::make_unique<ComputePipeline>(device, &shader_notify, thread_worker,
                                              key.unique_hash, std::move(compiled[0].dxil),
-                                             program.info, layout);
+                                             program.info, layout, emulate_reduction, split);
 
 } catch (const Shader::Exception& exception) {
     BUG_TRACK_KEY(ShaderCompile, key.unique_hash, "recompiling compute {:016x} failed: {}",

@@ -26,9 +26,11 @@ public:
     std::string_view PulseKind() const override {
         return "ILibraryAppletAccessor";
     }
-    void PulseCapture(Pulse::HandlerCapture&) const override {
-        throw Pulse::ServiceRejected(true, "am: a library applet is open");
-    }
+    // Pulse: only a library applet not started yet, with its queued data; restored by the
+    // appletOE root, which recreates the applet (IApplicationProxyService::PulseRestore).
+    void PulseCapture(Pulse::HandlerCapture& capture) const override;
+    Kernel::KEvent* PulseEvent(u32 slot) override;
+    void PulseLoad(Pulse::StateReader& in);
 
     std::shared_ptr<Applet> GetApplet() const {
         return m_applet;

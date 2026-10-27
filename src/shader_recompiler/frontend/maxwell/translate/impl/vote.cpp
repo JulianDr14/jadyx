@@ -47,7 +47,8 @@ void TranslatorVisitor::VOTE(u64 insn) {
 }
 
 void TranslatorVisitor::VOTE_vtg(u64) {
-    LOG_WARNING(Shader, "(STUBBED) called");
+    // Votes across the vertices of a primitive for the viewport multicast prologue. It writes no
+    // register, and with multicast never active on the host it has nothing to do.
 }
 
 } // namespace Shader::Maxwell

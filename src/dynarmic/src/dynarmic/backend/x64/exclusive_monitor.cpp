@@ -14,11 +14,13 @@
 
 namespace Dynarmic {
 
-ExclusiveMonitor::ExclusiveMonitor(std::size_t processor_count)
-        : exclusive_addresses(processor_count, INVALID_EXCLUSIVE_ADDRESS), exclusive_values(processor_count) {}
+ExclusiveMonitor::ExclusiveMonitor(std::size_t processor_count_)
+        : processor_count{processor_count_} {
+    ASSERT(processor_count <= MAX_NUM_CPU_CORES);
+}
 
 size_t ExclusiveMonitor::GetProcessorCount() const {
-    return exclusive_addresses.size();
+    return processor_count;
 }
 
 void ExclusiveMonitor::Lock() {
@@ -32,25 +34,27 @@ void ExclusiveMonitor::Unlock() {
 bool ExclusiveMonitor::CheckAndClear(std::size_t processor_id, VAddr address) {
     const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
     Lock();
-    if (exclusive_addresses[processor_id] != masked_address) {
+    if (reservations[processor_id].address != masked_address) {
         Unlock();
         return false;
     }
-    for (VAddr& other_address : exclusive_addresses)
-        if (other_address == masked_address)
-            other_address = INVALID_EXCLUSIVE_ADDRESS;
+    for (size_t i = 0; i < processor_count; ++i)
+        if (reservations[i].address == masked_address)
+            reservations[i].address = INVALID_EXCLUSIVE_ADDRESS;
     return true;
 }
 
 void ExclusiveMonitor::Clear() {
     Lock();
-    std::fill(exclusive_addresses.begin(), exclusive_addresses.end(), INVALID_EXCLUSIVE_ADDRESS);
+    for (size_t i = 0; i < processor_count; ++i) {
+        reservations[i].address = INVALID_EXCLUSIVE_ADDRESS;
+    }
     Unlock();
 }
 
 void ExclusiveMonitor::ClearProcessor(size_t processor_id) {
     Lock();
-    exclusive_addresses[processor_id] = INVALID_EXCLUSIVE_ADDRESS;
+    reservations[processor_id].address = INVALID_EXCLUSIVE_ADDRESS;
     Unlock();
 }
 

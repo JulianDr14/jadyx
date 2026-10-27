@@ -78,6 +78,15 @@ No equivale a un replay de todos los motores ni a una ventana larga de gameplay.
 Las rutas de presentación acelerada y por CPU comparten ahora el mismo ciclo de
 captura. Una petición adicional no cancela el contador de finalización vigente.
 
+`gpu_capture_targets=after` (opcional) omite la copia de render targets y depth
+*antes* de cada operación y deja solo la de *después*; cada omisión queda como
+evento `targets_before_skipped`. En una escena con G-buffer de 5 RT a 1080p esas
+copias eran ~143 de 156 s de captura. El estado previo de una operación se toma
+de la copia posterior de la anterior; una escritura fuera de draws/clears entre
+ambas (blit, copia del texture cache) no queda atribuida por separado. Los
+chunks se identifican con `fnv64w` (FNV-1a sobre palabras de 64 bits); el
+analizador sigue aceptando `fnv64` de capturas anteriores.
+
 Cada toma crea `log/trace/full_<microsegundos>_<id>/`, sin borrar tomas anteriores:
 
 - `events.jsonl`: secuencia y tiempo relativos, versión/configuración, adaptador y

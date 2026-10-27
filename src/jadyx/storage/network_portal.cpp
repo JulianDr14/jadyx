@@ -1147,9 +1147,9 @@ void NetworkPortal::SetUploadsAvailable(bool enabled) {
     if(impl->content)impl->content->SetAvailable(enabled&&idle);
 }
 bool NetworkPortal::BlockForLocalOperation() {
-    std::lock_guard lock{impl->admission};if(impl->RemovalActive()||(impl->system&&impl->system->Snapshot().busy))return false;
-    if(!impl->BlockUploads())return false;
-    if(impl->system)impl->system->SetAvailable(false);return true;
+    std::lock_guard lock{impl->admission};if(impl->RemovalActive()||(impl->system&&!impl->system->BlockForLocalOperation()))return false;
+    if(!impl->BlockUploads()){if(impl->system)impl->system->SetAvailable(impl->imports_available);return false;}
+    return true;
 }
 std::string NetworkPortal::FinalizeGame(const NspValidator& validate) {
     if (!impl->upload) return "unavailable";

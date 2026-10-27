@@ -8,6 +8,7 @@ import hashlib
 from functools import lru_cache
 import json
 from pathlib import Path
+import struct
 
 
 def load_capture(root):
@@ -45,12 +46,17 @@ def load_capture(root):
                             raise ValueError('missing or truncated blob')
                         key = offset, size
                         chunk = read_chunk(offset, size)
-                        if key not in digests:
+                        # fnv64w hashes 64-bit little-endian words (current writer); fnv64 hashes bytes.
+                        words = 'fnv64w' in segment
+                        if (key, words) not in digests:
                             fnv = 0xcbf29ce484222325
-                            for byte in chunk:
+                            whole = len(chunk) // 8 * 8 if words else 0
+                            for (word,) in struct.iter_unpack('<Q', chunk[:whole]):
+                                fnv = ((fnv ^ word) * 0x100000001b3) & 0xffffffffffffffff
+                            for byte in chunk[whole:]:
                                 fnv = ((fnv ^ byte) * 0x100000001b3) & 0xffffffffffffffff
-                            digests[key] = str(fnv)
-                        if segment['fnv64'] != digests[key]:
+                            digests[key, words] = str(fnv)
+                        if segment['fnv64w' if words else 'fnv64'] != digests[key, words]:
                             raise ValueError('blob checksum mismatch')
                         digest.update(chunk)
                         logical_size += size

@@ -24,14 +24,18 @@
 /* Adapted from Mesa dxil_nir_lower_int_samplers.c: sampler state is a draw-time
  * UBO rather than compile-time Gallium state. Integer texel bits are never converted to float.
  */
+#ifndef EDEN_INTEGER_SAMPLING_H
+#define EDEN_INTEGER_SAMPLING_H
+
 #include "dxil_nir_lower_int_samplers.h"
 #include "dxil_nir_lower_int_cubemaps.h"
 #include "eden_spirv_to_dxil.h"
 #include "nir_builder.h"
 #include "nir_builtin_builder.h"
 
+/* channel 0: CalculateLOD clamped to the sampler and resource; channel 1: unclamped. */
 static nir_def *
-dx_get_texture_lod(nir_builder *b, nir_tex_instr *tex)
+dx_get_texture_lod(nir_builder *b, nir_tex_instr *tex, unsigned channel)
 {
    nir_tex_instr *tql;
 
@@ -89,8 +93,7 @@ dx_get_texture_lod(nir_builder *b, nir_tex_instr *tex)
    nir_def_init(&tql->instr, &tql->def, 2, 32);
    nir_builder_instr_insert(b, &tql->instr);
 
-   /* DirectX LOD only has a value in x channel */
-   return nir_channel(b, &tql->def, 0);
+   return nir_channel(b, &tql->def, channel);
 }
 
 typedef struct {
@@ -113,14 +116,23 @@ wrap_clamp_to_edge(nir_builder *b, wrap_result_t *wrap_params, nir_def *size)
                                   nir_fmax(b, wrap_params->coords, nir_imm_float(b, 0.0f)));
 }
 
+/* Floored mod of integral float texel coordinates, in integers: fmod lowers to
+ * c - size * floor(c * rcp(size)) in DXIL, and rcp rounding returns size itself for multiples of
+ * non-power-of-two sizes (12 mod 12 = 12), a texel past the edge. irem plus the size instead of
+ * imod: nir_to_dxil emits imod as an unsigned remainder, wrong for negative coordinates. */
+static nir_def *
+texel_mod(nir_builder *b, nir_def *coord, nir_def *size)
+{
+   nir_def *isize = nir_f2i32(b, size);
+   nir_def *rem = nir_irem(b, nir_f2i32(b, coord), isize);
+   return nir_i2f32(b, nir_bcsel(b, nir_ilt_imm(b, rem, 0), nir_iadd(b, rem, isize), rem));
+}
+
 static void
 wrap_repeat(nir_builder *b, wrap_result_t *wrap_params, nir_def *size)
 {
-   /* mod(coord, size)
-    * This instruction must be exact, otherwise certain sizes result in
-    * incorrect sampling */
-   wrap_params->coords = nir_fmod(b, wrap_params->coords, size);
-   nir_def_as_alu(wrap_params->coords)->fp_math_ctrl |= nir_fp_exact;
+   /* mod(coord, size) */
+   wrap_params->coords = texel_mod(b, wrap_params->coords, size);
 }
 
 static nir_def *
@@ -135,8 +147,7 @@ static void
 wrap_mirror_repeat(nir_builder *b, wrap_result_t *wrap_params, nir_def *size)
 {
    /* (size − 1) − mirror(mod(coord, 2 * size) − size) */
-   nir_def *coord_mod2size = nir_fmod(b, wrap_params->coords, nir_fmul_imm(b, size, 2.0f));
-   nir_def_as_alu(coord_mod2size)->fp_math_ctrl |= nir_fp_exact;
+   nir_def *coord_mod2size = texel_mod(b, wrap_params->coords, nir_fmul_imm(b, size, 2.0f));
    nir_def *a = nir_fsub(b, coord_mod2size, size);
    wrap_params->coords = nir_fsub(b, nir_fadd_imm(b, size, -1.0f), mirror(b, a));
 }
@@ -322,6 +333,49 @@ wrap_dynamic(nir_builder *b, nir_def *coord, nir_def *mode, nir_def *size)
    return result;
 }
 
+/* The LOD of a tex/txb/txl/txd, sampler bias and clamps applied (state is row 1). lod_channel picks
+ * the implicit derivative LOD of dx_get_texture_lod. */
+static nir_def *
+sample_lod(nir_builder *b, nir_tex_instr *tex, nir_def *state, nir_def *size0, unsigned lod_channel)
+{
+   const unsigned ncoord = tex->coord_components - tex->is_array;
+   nir_def *lod = NULL;
+   if (tex->op == nir_texop_txl) {
+      lod = tex->src[nir_tex_instr_src_index(tex, nir_tex_src_lod)].src.ssa;
+   } else if (tex->op == nir_texop_txd) {
+      nir_def *dx = tex->src[nir_tex_instr_src_index(tex, nir_tex_src_ddx)].src.ssa;
+      nir_def *dy = tex->src[nir_tex_instr_src_index(tex, nir_tex_src_ddy)].src.ssa;
+      nir_def *rho2 = nir_imm_float(b, 0);
+      nir_def *sigma2 = nir_imm_float(b, 0);
+      for (unsigned i = 0; i < ncoord; ++i) {
+         nir_def *size = nir_i2f32(b, nir_channel(b, size0, i));
+         nir_def *x = nir_fmul(b, nir_channel(b, dx, i), size);
+         nir_def *y = nir_fmul(b, nir_channel(b, dy, i), size);
+         rho2 = nir_fadd(b, rho2, nir_fmul(b, x, x));
+         sigma2 = nir_fadd(b, sigma2, nir_fmul(b, y, y));
+      }
+      lod = nir_fmul_imm(b, nir_flog2(b, nir_fmax(b, rho2, sigma2)), 0.5f);
+   }
+   /* The sampler bias applies to every LOD, explicit ones included (D3D SampleLevel and Vulkan
+    * textureLod alike), except CalculateLOD's, which already carries it. */
+   nir_def *bias = nir_imm_float(b, 0);
+   const bool derivative = tex->op == nir_texop_tex || tex->op == nir_texop_txb;
+   if (derivative && b->shader->info.stage == MESA_SHADER_FRAGMENT) {
+      lod = dx_get_texture_lod(b, tex, lod_channel);
+   } else {
+      if (derivative) lod = nir_imm_float(b, 0);
+      bias = nir_channel(b, state, 0);
+   }
+   if (tex->op == nir_texop_txb)
+      bias = nir_fadd(b, bias, tex->src[nir_tex_instr_src_index(tex, nir_tex_src_bias)].src.ssa);
+   lod = nir_fadd(b, lod, nir_fclamp(b, bias, nir_imm_float(b, -16), nir_imm_float(b, 15.99f)));
+   lod = nir_fclamp(b, lod, nir_fmax(b, nir_channel(b, state, 1), nir_imm_float(b, 0)),
+                   nir_channel(b, state, 2));
+   int clamp_index = nir_tex_instr_src_index(tex, nir_tex_src_min_lod);
+   if (clamp_index >= 0) lod = nir_fmax(b, lod, tex->src[clamp_index].src.ssa);
+   return lod;
+}
+
 static bool
 integer_sample_filter(const nir_instr *instr, const void *unused)
 {
@@ -345,38 +399,7 @@ integer_sample(nir_builder *b, nir_instr *instr, void *unused)
    nir_def *wrap = load_state(b, binding, 2);
    nir_def *size0 = nir_get_texture_size(b, tex);
    const unsigned ncoord = tex->coord_components - tex->is_array;
-   nir_def *lod;
-   if (tex->op == nir_texop_txl) {
-      lod = tex->src[nir_tex_instr_src_index(tex, nir_tex_src_lod)].src.ssa;
-   } else if (tex->op == nir_texop_txd) {
-      nir_def *dx = tex->src[nir_tex_instr_src_index(tex, nir_tex_src_ddx)].src.ssa;
-      nir_def *dy = tex->src[nir_tex_instr_src_index(tex, nir_tex_src_ddy)].src.ssa;
-      nir_def *rho2 = nir_imm_float(b, 0);
-      nir_def *sigma2 = nir_imm_float(b, 0);
-      for (unsigned i = 0; i < ncoord; ++i) {
-         nir_def *size = nir_i2f32(b, nir_channel(b, size0, i));
-         nir_def *x = nir_fmul(b, nir_channel(b, dx, i), size);
-         nir_def *y = nir_fmul(b, nir_channel(b, dy, i), size);
-         rho2 = nir_fadd(b, rho2, nir_fmul(b, x, x));
-         sigma2 = nir_fadd(b, sigma2, nir_fmul(b, y, y));
-      }
-      lod = nir_fmul_imm(b, nir_flog2(b, nir_fmax(b, rho2, sigma2)), 0.5f);
-   } else {
-      /* DXIL CalculateLOD returns the derivative LOD; apply the sampler bias below. */
-      lod = b->shader->info.stage == MESA_SHADER_FRAGMENT ?
-         dx_get_texture_lod(b, tex) : nir_imm_float(b, 0);
-   }
-   if (tex->op != nir_texop_txl) {
-      nir_def *bias = nir_channel(b, state, 0);
-      if (tex->op == nir_texop_txb)
-         bias = nir_fadd(b, bias,
-            tex->src[nir_tex_instr_src_index(tex, nir_tex_src_bias)].src.ssa);
-      lod = nir_fadd(b, lod, nir_fclamp(b, bias, nir_imm_float(b, -16), nir_imm_float(b, 15.99f)));
-   }
-   lod = nir_fclamp(b, lod, nir_fmax(b, nir_channel(b, state, 1), nir_imm_float(b, 0)),
-                   nir_channel(b, state, 2));
-   int clamp_index = nir_tex_instr_src_index(tex, nir_tex_src_min_lod);
-   if (clamp_index >= 0) lod = nir_fmax(b, lod, tex->src[clamp_index].src.ssa);
+   nir_def *lod = sample_lod(b, tex, state, size0, 0);
    /* Nearest mip selection: ceil(lod + 0.5) - 1, clamped to the view's levels. */
    nir_def *ilevel = nir_f2i32(b, nir_fadd_imm(b, nir_fceil(b, nir_fadd_imm(b, lod, 0.5f)), -1));
    ilevel = nir_iclamp(b, ilevel, nir_imm_int(b, 0), nir_channel(b, state, 3));
@@ -406,6 +429,24 @@ integer_sample(nir_builder *b, nir_instr *instr, void *unused)
    return nir_if_phi(b, border_value, value);
 }
 
+/* b0 space 29, shared by every pass that reads eden_integer_sampler_state rows. */
+static void
+declare_sampler_table(nir_shader *nir)
+{
+   nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo) {
+      if (var->data.descriptor_set == EDEN_INTEGER_SAMPLER_SPACE && var->data.binding == 0)
+         return;
+   }
+   const struct glsl_type *array = glsl_array_type(glsl_uint_type(),
+      EDEN_INTEGER_SAMPLER_MAX_BINDINGS * sizeof(struct eden_integer_sampler_state) / 4, 4);
+   const struct glsl_struct_field field = {array, "words"};
+   nir_variable *var = nir_variable_create(nir, nir_var_mem_ubo,
+      glsl_struct_type(&field, 1, "integer_sampler_data", false), "integer_sampler_data");
+   var->data.descriptor_set = EDEN_INTEGER_SAMPLER_SPACE;
+   var->data.binding = 0;
+   var->data.how_declared = nir_var_hidden;
+}
+
 static bool
 eden_lower_integer_sampling(nir_shader *nir)
 {
@@ -418,13 +459,8 @@ eden_lower_integer_sampling(nir_shader *nir)
       }
    }
    if (!has_integer_samples) return false;
-   const struct glsl_type *array = glsl_array_type(glsl_uint_type(),
-      EDEN_INTEGER_SAMPLER_MAX_BINDINGS * sizeof(struct eden_integer_sampler_state) / 4, 4);
-   const struct glsl_struct_field field = {array, "words"};
-   nir_variable *var = nir_variable_create(nir, nir_var_mem_ubo,
-      glsl_struct_type(&field, 1, "integer_sampler_data", false), "integer_sampler_data");
-   var->data.descriptor_set = EDEN_INTEGER_SAMPLER_SPACE;
-   var->data.binding = 0;
-   var->data.how_declared = nir_var_hidden;
+   declare_sampler_table(nir);
    return nir_shader_lower_instructions(nir, integer_sample_filter, integer_sample, NULL);
 }
+
+#endif
