@@ -197,8 +197,9 @@ Framebuffer::Framebuffer(TextureCacheRuntime& runtime, std::span<ImageView*, NUM
         depth_layers = static_cast<u32>(depth_buffer->range.extent.layers);
         depth_format = runtime.Format(depth_buffer->format).dsv;
         images = depth_buffer->slot_images ? depth_buffer->slot_images : images;
-        has_stencil = VideoCore::Surface::GetFormatType(depth_buffer->format) ==
-                      SurfaceType::DepthStencil;
+        // S8_UINT (SurfaceType::Stencil) keeps its stencil in a D24S8 resource.
+        const SurfaceType depth_type = VideoCore::Surface::GetFormatType(depth_buffer->format);
+        has_stencil = depth_type == SurfaceType::DepthStencil || depth_type == SurfaceType::Stencil;
         if (const Image* const image = depth_buffer->SourceImage()) {
             samples = std::max(1U, image->info.num_samples);
         }
