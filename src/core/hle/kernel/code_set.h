@@ -98,6 +98,10 @@ struct CodeSet final {
 
     /// The overall data that backs this code set.
     std::vector<u8> memory;
+
+    /// Zero bytes the image spans past `memory` (the bss), cleared in place at load.
+    std::size_t bss_tail = 0;
+
     /// The segments that comprise this code set.
     std::array<Segment, 3> segments;
 

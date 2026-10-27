@@ -156,15 +156,28 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
 
     codeset.DataSegment().size += nso_header.segments[2].bss_size;
     u32 image_size = PageAlignSize(u32(codeset.memory.size()) + nso_header.segments[2].bss_size);
-    codeset.memory.resize(image_size);
 
     for (std::size_t i = 0; i < nso_header.segments.size(); ++i) {
         codeset.segments[i].size = PageAlignSize(codeset.segments[i].size);
     }
 
-    // Apply patches if necessary
     const auto name = nso_file.GetName();
-    if (pm && (pm->HasNSOPatch(nso_header.build_id, name) || Settings::values.dump_nso)) {
+    const bool patch_image =
+        pm && (pm->HasNSOPatch(nso_header.build_id, name) || Settings::values.dump_nso);
+    // The bss stays out of the host image unless something edits it: a bss of gigabytes was
+    // committed twice at boot, as host zeros and again as their copy into DRAM.
+    bool full_image = patch_image;
+#ifdef HAS_NCE
+    full_image = full_image || patches != nullptr;
+#endif
+    if (full_image) {
+        codeset.memory.resize(image_size);
+    } else {
+        codeset.bss_tail = image_size - codeset.memory.size();
+    }
+
+    // Apply patches if necessary
+    if (patch_image) {
         std::span<u8> patchable_section(codeset.memory.data() + module_start, codeset.memory.size() - module_start);
         std::vector<u8> pi_header(sizeof(NSOHeader) + patchable_section.size());
         std::memcpy(pi_header.data(), &nso_header, sizeof(NSOHeader));
