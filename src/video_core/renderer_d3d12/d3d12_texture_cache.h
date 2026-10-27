@@ -222,6 +222,10 @@ private:
                          const Region2D& src_region, Tegra::Engines::Fermi2D::Filter filter);
     void EnsureSelfBlitScratch(DXGI_FORMAT format, u32 width, u32 height);
     void TransitionSelfBlitScratch(D3D12_RESOURCE_STATES next);
+    /// Buffer index (0 or 1) of Image::CopyDepthStencilFrom, at least size bytes, in COMMON. Copies
+    /// on the queue run in order, so each region copy reuses it after a barrier back to COMMON
+    /// instead of taking new buffers while the GPU still reads the last frame's.
+    [[nodiscard]] ID3D12Resource* DepthCopyScratch(u32 index, u64 size);
 
     const Device& device;
     Scheduler& scheduler;
@@ -256,6 +260,8 @@ private:
     DXGI_FORMAT self_blit_format{DXGI_FORMAT_UNKNOWN};
     u32 self_blit_width{};
     u32 self_blit_height{};
+    std::array<ComPtr<ID3D12Resource>, 2> depth_copy_scratch;
+    std::array<u64, 2> depth_copy_scratch_size{};
     /// MIN/MAX sampler reductions need tiled resources tier 2; the Xbox Series reports tier 1 and
     /// creating such a sampler there removes the device (DXGI_ERROR_INVALID_CALL).
     bool supports_min_max_filter{};

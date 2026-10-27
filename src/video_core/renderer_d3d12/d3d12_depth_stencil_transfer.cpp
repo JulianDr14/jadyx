@@ -13,6 +13,7 @@
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/diagnostics/full_capture.h"
+#include "video_core/perf_counters.h"
 #include "video_core/surface.h"
 
 // Depth-stencil images split into and merged from their planes (D3D12 copies one plane at a
@@ -317,6 +318,22 @@ void Image::DownloadDepthStencil(std::span<ID3D12Resource*> buffers, std::span<s
     }
 }
 
+ID3D12Resource* TextureCacheRuntime::DepthCopyScratch(u32 index, u64 size) {
+    ComPtr<ID3D12Resource>& scratch = depth_copy_scratch[index];
+    if (scratch && depth_copy_scratch_size[index] >= size) {
+        return scratch.Get();
+    }
+    if (scratch) {
+        scheduler.DeferRelease(std::move(scratch));
+    }
+    // Rounded up so a depth buffer that grows by a few rows does not replace it again.
+    depth_copy_scratch_size[index] = Common::AlignUp(size, u64{1} << 20);
+    scratch = CreateTransferBuffer(device.Get(), depth_copy_scratch_size[index], true);
+    LOG_INFO(Render, "D3D12: depth copy scratch {} is {} MiB", index,
+             depth_copy_scratch_size[index] >> 20);
+    return scratch.Get();
+}
+
 void Image::CopyDepthStencilFrom(Image& src, std::span<const ImageCopy> copies) {
     ID3D12Device* const device = runtime->device.Get();
     for (const auto& copy : copies) {
@@ -372,37 +389,85 @@ void Image::CopyDepthStencilFrom(Image& src, std::span<const ImageCopy> copies) 
             }
             // Part of a subresource: both go through footprints, the region is copied row by
             // row between them, and the destination returns whole.
-            ComPtr<ID3D12Resource> src_planes =
-                runtime->transfer_buffers.Acquire(src_footprints.size, true);
-            ComPtr<ID3D12Resource> dst_planes =
-                runtime->transfer_buffers.Acquire(dst_footprints.size, true);
-            src.CopyPlanes(copy.src_subresource.base_level, src_layer, src_planes.Get(),
+            // A region that covers the whole destination (a larger source) overwrites all of it:
+            // its old contents need not come out first.
+            const bool covers_dst = dst_x == 0 && dst_y == 0 && width == dst_size.Width &&
+                                    height == dst_size.Height;
+            if (static u32 logged = 0; VideoCore::Perf::DetailedGpuProfileEnabled() && logged < 16) {
+                ++logged;
+                LOG_INFO(Render,
+                         "D3D12 depth region copy: {}x{} from ({},{}) of {}x{} (pitch {}) to "
+                         "({},{}) of {}x{} (pitch {}), level {} -> {}",
+                         width, height, src_x, src_y, src_size.Width, src_size.Height,
+                         src_size.RowPitch, dst_x, dst_y, dst_size.Width, dst_size.Height,
+                         dst_size.RowPitch, copy.src_subresource.base_level,
+                         copy.dst_subresource.base_level);
+            }
+            ID3D12Resource* const src_planes = runtime->DepthCopyScratch(0, src_footprints.size);
+            src.CopyPlanes(copy.src_subresource.base_level, src_layer, src_planes,
                            src_footprints, true);
-            CopyPlanes(copy.dst_subresource.base_level, dst_layer, dst_planes.Get(),
-                       dst_footprints, true);
-            TransitionBuffer(commands, src_planes.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+            TransitionBuffer(commands, src_planes, D3D12_RESOURCE_STATE_COPY_DEST,
                              D3D12_RESOURCE_STATE_COPY_SOURCE);
+            // The destination whole inside the source's footprint (a render target shrunk by
+            // dynamic resolution): it is read straight from there at the source's pitch.
+            PlaneFootprints within_src = dst_footprints;
+            bool direct = covers_dst;
+            for (u32 plane = 0; plane < 2 && direct; ++plane) {
+                const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& from = src_footprints.planes[plane];
+                within_src.planes[plane].Offset =
+                    from.Offset + static_cast<u64>(src_y) * from.Footprint.RowPitch +
+                    static_cast<u64>(src_x) * PlaneTexelBytes(plane);
+                within_src.planes[plane].Footprint.RowPitch = from.Footprint.RowPitch;
+                direct = from.Footprint.Format == dst_footprints.planes[plane].Footprint.Format &&
+                         within_src.planes[plane].Offset %
+                                 D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT == 0;
+            }
+            if (direct) {
+                CopyPlanes(copy.dst_subresource.base_level, dst_layer, src_planes, within_src,
+                           false);
+                TransitionBuffer(commands, src_planes, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                                 D3D12_RESOURCE_STATE_COMMON);
+                continue;
+            }
+            ID3D12Resource* const dst_planes = runtime->DepthCopyScratch(1, dst_footprints.size);
+            if (!covers_dst) {
+                CopyPlanes(copy.dst_subresource.base_level, dst_layer, dst_planes,
+                           dst_footprints, true);
+            }
             for (u32 plane = 0; plane < 2; ++plane) {
                 const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& from = src_footprints.planes[plane];
                 const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& to = dst_footprints.planes[plane];
                 const u32 bytes = PlaneTexelBytes(plane);
+                // Rows as wide as the destination's, at the same pitch on both sides, are one
+                // contiguous span (the bytes past each row are pitch padding in the destination).
+                if (src_x == 0 && dst_x == 0 && width == dst_size.Width &&
+                    from.Footprint.RowPitch == to.Footprint.RowPitch) {
+                    const u64 pitch = to.Footprint.RowPitch;
+                    commands->CopyBufferRegion(
+                        dst_planes, to.Offset + static_cast<u64>(dst_y) * pitch, src_planes,
+                        from.Offset + static_cast<u64>(src_y) * pitch,
+                        static_cast<u64>(height - 1) * pitch + static_cast<u64>(width) * bytes);
+                    continue;
+                }
                 for (u32 row = 0; row < height; ++row) {
                     commands->CopyBufferRegion(
-                        dst_planes.Get(),
+                        dst_planes,
                         to.Offset + static_cast<u64>(dst_y + row) * to.Footprint.RowPitch +
                             static_cast<u64>(dst_x) * bytes,
-                        src_planes.Get(),
+                        src_planes,
                         from.Offset + static_cast<u64>(src_y + row) * from.Footprint.RowPitch +
                             static_cast<u64>(src_x) * bytes,
                         static_cast<u64>(width) * bytes);
                 }
             }
-            TransitionBuffer(commands, dst_planes.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+            TransitionBuffer(commands, dst_planes, D3D12_RESOURCE_STATE_COPY_DEST,
                              D3D12_RESOURCE_STATE_COPY_SOURCE);
-            CopyPlanes(copy.dst_subresource.base_level, dst_layer, dst_planes.Get(),
-                       dst_footprints, false);
-            runtime->transfer_buffers.Release(std::move(src_planes));
-            runtime->transfer_buffers.Release(std::move(dst_planes));
+            CopyPlanes(copy.dst_subresource.base_level, dst_layer, dst_planes, dst_footprints,
+                       false);
+            TransitionBuffer(commands, src_planes, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                             D3D12_RESOURCE_STATE_COMMON);
+            TransitionBuffer(commands, dst_planes, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                             D3D12_RESOURCE_STATE_COMMON);
         }
     }
 }
