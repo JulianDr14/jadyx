@@ -97,7 +97,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
       pipeline_cache{device_memory_, device, compiler, texture_runtime, gpu_.ShaderNotify()},
       local_memory_pool{device, scheduler_},
       query_cache{*this, device_memory_, device, scheduler_},
-      conditional_rendering{device, scheduler_, query_cache},
+      conditional_rendering{device, scheduler_, compiler, query_cache, buffer_cache},
       accelerate_dma{buffer_cache, texture_cache, draw_hunt},
       fence_manager{*this, gpu_, texture_cache, buffer_cache, query_cache, scheduler_},
       draw_hunt{device, scheduler_} {

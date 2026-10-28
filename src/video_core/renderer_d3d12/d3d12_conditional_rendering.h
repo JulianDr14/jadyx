@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_d3d12/d3d12_command_stream.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
@@ -11,12 +13,20 @@ namespace Tegra {
 class MemoryManager;
 }
 
+namespace VideoCommon {
+template <class P>
+class BufferCache;
+}
+
 namespace D3D12 {
 
 class HostCounter;
 class QueryCache;
 class Scheduler;
+class ShaderCompiler;
+struct BufferCacheParams;
 struct PendingReport;
+using BufferCache = VideoCommon::BufferCache<BufferCacheParams>;
 
 /// Guest conditional rendering (render enable) evaluated by the GPU with SetPredication.
 ///
@@ -25,14 +35,17 @@ struct PendingReport;
 /// condition is reduced to whether one host query slice counted zero, or to a result already known
 /// on the CPU; the slice is resolved into a predicate buffer where the guest sets the condition,
 /// and the guest's draws and clears are predicated on it. Conditions that need more than one
-/// slice are left to the CPU.
+/// slice are left to the CPU. Reports the GPU wrote to guest memory (not host queries) are
+/// compared where the buffer cache holds them by a compute shader writing the predicate: reading
+/// them on the CPU downloaded them, waiting for the GPU twice a frame in a game (~6.5 ms).
 ///
 /// D3D12 also predicates copies, clears and dispatches, so predication is only set around guest
 /// draws and clears (Scope), never across the texture and buffer caches' own work.
 class ConditionalRendering {
 public:
     explicit ConditionalRendering(const Device& device, Scheduler& scheduler,
-                                  QueryCache& query_cache);
+                                  const ShaderCompiler& compiler, QueryCache& query_cache,
+                                  BufferCache& buffer_cache);
 
     /// Evaluates the guest's render enable (RasterizerInterface::AccelerateConditionalRendering).
     /// False when the CPU has to evaluate it.
@@ -68,21 +81,33 @@ private:
     enum class Mode { Render, Skip, Predicated };
 
     /// Guest reports at the condition's address: cached queries or values in guest memory.
-    PendingReport Report(GPUVAddr address, Tegra::MemoryManager& gpu_memory);
+    /// None when the value is in memory the GPU wrote and the buffer cache has not downloaded.
+    std::optional<PendingReport> Report(GPUVAddr address, Tegra::MemoryManager& gpu_memory);
     /// Draws render only when slice counted zero (or only when it did not).
     void Predicate(const HostCounter& slice, bool render_if_zero);
+    /// Draws render only when the report at address is not zero, or with compare_second, only
+    /// when it differs from the one 16 bytes later (or only when it does not, with render_if_equal).
+    /// False when the buffer cache cannot provide the reports.
+    bool PredicateOnGpuReports(GPUVAddr address, bool compare_second, bool render_if_equal);
+    void CreateComparePipeline();
     void Bind(CommandStream* cmd);
 
+    const Device& device;
     Scheduler& scheduler;
+    const ShaderCompiler& compiler;
     QueryCache& query_cache;
-    /// The slice's resolved data. In PREDICATION while predicate_tick is the list being
-    /// recorded, else COMMON (buffers decay to it after each submission).
+    BufferCache& buffer_cache;
+    /// The slice's resolved data or the comparison's result. In PREDICATION while predicate_tick
+    /// is the list being recorded, else COMMON (buffers decay to it after each submission).
     ComPtr<ID3D12Resource> predicate;
     u64 predicate_tick{};
     u64 value_offset{};
     D3D12_PREDICATION_OP op{};
     Mode mode{Mode::Render};
+    ComPtr<ID3D12RootSignature> compare_root_signature;
+    ComPtr<ID3D12PipelineState> compare_pipeline;
     bool logged_gpu{};
+    bool logged_gpu_reports{};
     bool logged_cpu{};
 };
 
