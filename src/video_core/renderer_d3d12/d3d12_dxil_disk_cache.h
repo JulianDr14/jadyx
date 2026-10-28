@@ -38,6 +38,8 @@ public:
     }
 
     std::optional<std::vector<u8>> Find(const Key& key);
+    /// Whether a record for key was read or written this session, so Find can return it.
+    bool Contains(const Key& key);
     void Store(const Key& key, std::span<const u8> payload);
 
     void LogStats(std::string_view when) const;

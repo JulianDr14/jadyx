@@ -4,6 +4,7 @@
 #pragma once
 
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -113,9 +114,16 @@ public:
     };
 
     /// Translates, links and signs the stages of one pipeline, given in pipeline order. Returns
-    /// one entry per input stage. Throws std::runtime_error on failure.
-    std::vector<CompiledStage> CompilePipeline(std::span<const PipelineStage> stages,
-                                               const PipelineOptions& options, u64 trace_pipeline = 0) const;
+    /// one entry per input stage. Throws std::runtime_error on failure. disk_record, when given,
+    /// gets the key of the disk cache record holding the result, if there is one.
+    std::vector<CompiledStage> CompilePipeline(
+        std::span<const PipelineStage> stages, const PipelineOptions& options,
+        u64 trace_pipeline = 0, std::optional<DxilDiskCache::Key>* disk_record = nullptr) const;
+
+    /// Reads back the num_stages stages of a pipeline compiled without stream output, from the
+    /// disk cache record CompilePipeline() reported.
+    static std::optional<std::vector<CompiledStage>> LoadPipeline(const DxilDiskCache::Key& key,
+                                                                  size_t num_stages);
 
 private:
     void Sign(std::vector<u8>& dxil, u64 trace_pipeline = 0) const;

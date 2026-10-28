@@ -127,6 +127,11 @@ void DxilDiskCache::Close() {
     index.clear();
 }
 
+bool DxilDiskCache::Contains(const Key& key) {
+    std::scoped_lock lock{mutex};
+    return file.is_open() && index.contains(key);
+}
+
 std::optional<std::vector<u8>> DxilDiskCache::Find(const Key& key) {
     std::scoped_lock lock{mutex};
     const auto it = index.find(key);

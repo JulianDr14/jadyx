@@ -407,7 +407,8 @@ std::vector<u8> ShaderCompiler::Compile(std::span<const u32> spirv, dxil_spirv_s
 }
 
 std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
-    std::span<const PipelineStage> stages, const PipelineOptions& options, u64 trace_pipeline) const {
+    std::span<const PipelineStage> stages, const PipelineOptions& options, u64 trace_pipeline,
+    std::optional<DxilDiskCache::Key>* disk_record) const {
     if (!available) {
         throw std::runtime_error("D3D12: the shader path is unavailable");
     }
@@ -448,6 +449,9 @@ std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
         disk_key = DiskCacheKey(stages, options, flags);
         if (const auto payload = disk_cache.Find(disk_key)) {
             if (auto cached = DecodeStages(*payload, stages.size(), options.stream_output)) {
+                if (disk_record) {
+                    *disk_record = disk_key;
+                }
                 return std::move(*cached);
             }
         }
@@ -514,8 +518,20 @@ std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
     }
     if (use_disk_cache) {
         disk_cache.Store(disk_key, EncodeStages(result, options.stream_output));
+        if (disk_record && disk_cache.Contains(disk_key)) {
+            *disk_record = disk_key;
+        }
     }
     return result;
+}
+
+std::optional<std::vector<ShaderCompiler::CompiledStage>> ShaderCompiler::LoadPipeline(
+    const DxilDiskCache::Key& key, size_t num_stages) {
+    const auto payload = GetDxilDiskCache().Find(key);
+    if (!payload) {
+        return std::nullopt;
+    }
+    return DecodeStages(*payload, num_stages, nullptr);
 }
 
 u64 ShaderCompiler::TranslatorGeneration() const {
