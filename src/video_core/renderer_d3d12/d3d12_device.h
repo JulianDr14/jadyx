@@ -162,6 +162,10 @@ public:
     [[nodiscard]] bool SupportsDepthBounds() const {
         return depth_bounds;
     }
+    /// Block-compressed textures whose top level is not whole blocks (OPTIONS8).
+    [[nodiscard]] bool SupportsUnalignedBlockTextures() const {
+        return unaligned_block_textures;
+    }
 
     /// Local (device) memory budget and usage; zeroes if the adapter cannot report them.
     [[nodiscard]] DXGI_QUERY_VIDEO_MEMORY_INFO QueryVideoMemory() const;
@@ -207,6 +211,7 @@ private:
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12Device2> device2;
     bool depth_bounds{};
+    bool unaligned_block_textures{};
     ComPtr<ID3D12InfoQueue> info_queue; ///< debug layer only
     u32 debug_messages_logged{};
     u64 null_rtv_format_reports{};

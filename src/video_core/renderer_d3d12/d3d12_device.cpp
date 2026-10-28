@@ -316,6 +316,11 @@ Device::Device() {
         depth_bounds = Query(device.Get(), D3D12_FEATURE_D3D12_OPTIONS2, options2) &&
                        options2.DepthBoundsTestSupported;
     }
+    D3D12_FEATURE_DATA_D3D12_OPTIONS8 options8{};
+    unaligned_block_textures = Query(device.Get(), D3D12_FEATURE_D3D12_OPTIONS8, options8) &&
+                               options8.UnalignedBlockTexturesSupported;
+    LOG_INFO(Render, "D3D12: unaligned block-compressed textures {}",
+             YesNo(unaligned_block_textures));
     initial_budget = QueryVideoMemory().Budget;
     // On a unified architecture (the Xbox) texture and buffer heaps are app commit too.
     D3D12_FEATURE_DATA_ARCHITECTURE1 arch{};

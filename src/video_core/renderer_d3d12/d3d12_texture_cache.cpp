@@ -503,7 +503,11 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
     // block padding to wrap/linear sampling and changes LOD dimensions (358 != 360).
     // Keep this distinction covered by tools/xbox/tests/bc-npot.cpp, including the
     // aligned native path: only physical block-copy proxies may retain padded extents.
-    const bool unaligned_bc_extent = (info_.size.width % 4 != 0 || info_.size.height % 4 != 0);
+    // A device with unaligned block-compressed textures (OPTIONS8) takes these as they are: the
+    // RGBA8 decode costs 8 times BC1's memory, over a gigabyte in some area loads.
+    const bool unaligned_native = runtime_.device.SupportsUnalignedBlockTextures();
+    const bool unaligned_bc_extent =
+        !unaligned_native && (info_.size.width % 4 != 0 || info_.size.height % 4 != 0);
     if (!native_blocks && info_.type == ImageType::e2D && info_.num_samples == 1 &&
         (unaligned_bc_extent || (decode_bc_arrays.load(std::memory_order_relaxed) &&
                                  info_.resources.layers > 1))) {
@@ -572,10 +576,12 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
     const auto [samples_x, samples_y] = VideoCommon::SamplesLog2(info_.num_samples);
     u64 width = std::max<u64>(1, info_.size.width >> samples_x);
     u32 height = std::max(1U, info_.size.height >> samples_y);
-    // D3D12 requires block-compressed top levels to be whole blocks; the guest's may not be.
+    // D3D12 requires block-compressed top levels to be whole blocks unless the device supports
+    // unaligned ones; the guest's may not be. Converted formats keep the padding their encoders
+    // write.
     const u32 block_w = VideoCore::Surface::DefaultBlockWidth(format.copy_format);
     const u32 block_h = VideoCore::Surface::DefaultBlockHeight(format.copy_format);
-    if (block_w > 1 || block_h > 1) {
+    if ((block_w > 1 || block_h > 1) && (native_blocks || format.converted || !unaligned_native)) {
         width = Common::AlignUp(width, block_w);
         height = Common::AlignUp(height, block_h);
     }
