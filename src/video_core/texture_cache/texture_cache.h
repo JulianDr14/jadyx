@@ -2804,6 +2804,7 @@ void TextureCache<P>::RegisterImage(ImageId image_id) {
     }
     total_used_memory += Common::AlignUp(tentative_size, 1024);
     image.lru_index = lru_cache.Insert(image_id, frame_tick);
+    image.channel = channel_state->gpu_page_table_index;
 
     ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [this, image_id](u64 page) {
         (*channel_state->gpu_page_table)[page].push_back(image_id);
@@ -2854,8 +2855,12 @@ void TextureCache<P>::UnregisterImage(ImageId image_id) {
             }
             image_ids.erase(vector_it);
         };
-    ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [this, &clear_page_table](u64 page) {
-        clear_page_table(page, (*channel_state->gpu_page_table));
+    // The page tables it was registered in: the GC may delete it while a channel of another
+    // address space is bound.
+    auto& gpu_page_table = gpu_page_table_storage[image.channel];
+    auto& sparse_page_table = gpu_page_table_storage[image.channel + 1];
+    ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [&](u64 page) {
+        clear_page_table(page, gpu_page_table);
     });
     if (False(image.flags & ImageFlagBits::Sparse)) {
         const auto map_id = image.map_view_id;
@@ -2877,8 +2882,8 @@ void TextureCache<P>::UnregisterImage(ImageId image_id) {
         slot_map_views.erase(map_id);
         return;
     }
-    ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [this, &clear_page_table](u64 page) {
-        clear_page_table(page, (*channel_state->sparse_page_table));
+    ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [&](u64 page) {
+        clear_page_table(page, sparse_page_table);
     });
     auto it = sparse_views.find(image_id);
     ASSERT(it != sparse_views.end());
@@ -3545,6 +3550,7 @@ void TextureCache<P>::CreateChannel(struct Tegra::Control::ChannelState& channel
     const auto& this_as_ref = address_spaces[channel.memory_manager->GetID()];
     this_state->gpu_page_table = &gpu_page_table_storage[this_as_ref.storage_id * 2];
     this_state->sparse_page_table = &gpu_page_table_storage[this_as_ref.storage_id * 2 + 1];
+    this_state->gpu_page_table_index = this_as_ref.storage_id * 2;
 }
 
 /// Bind a channel for execution.

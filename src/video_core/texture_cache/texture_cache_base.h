@@ -106,6 +106,8 @@ public:
 
     TextureCacheGPUMap* gpu_page_table = nullptr;
     TextureCacheGPUMap* sparse_page_table = nullptr;
+    /// Where gpu_page_table sits in the cache's page table storage; sparse_page_table follows it.
+    size_t gpu_page_table_index = 0;
 };
 
 template <class P>
