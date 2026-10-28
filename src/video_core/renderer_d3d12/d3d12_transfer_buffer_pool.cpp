@@ -149,8 +149,35 @@ void TransferBufferPool::Trim(bool under_pressure) {
     TrimOlderThan(under_pressure ? 0 : IDLE_TICKS);
 }
 
-void TransferBufferPool::TrimStale() {
-    TrimOlderThan(STALE_TICKS);
+void TransferBufferPool::TrimStale(bool emergency) {
+    const u64 current = scheduler.CurrentTick();
+    // Frame ticks rather than a tick count: a heavy scene submits a dozen times per frame.
+    const u64 oldest = stale_frame_ticks[stale_cursor];
+    stale_frame_ticks[stale_cursor] = current;
+    stale_cursor = (stale_cursor + 1) % STALE_FRAMES;
+    const u64 last = stale_frame_ticks[(stale_cursor + STALE_FRAMES - 2) % STALE_FRAMES];
+    if (emergency) {
+        TrimUnusedSince(last, EMERGENCY_POOLED_BYTES);
+    } else {
+        TrimUnusedSince(oldest, MAX_POOLED_BYTES);
+    }
+}
+
+void TransferBufferPool::TrimUnusedSince(u64 tick, u64 budget) {
+    std::scoped_lock lock{mutex};
+    // Most recently used first, so a budget keeps the buffers the next frame will want.
+    std::ranges::sort(entries, std::ranges::greater{}, &Entry::tick);
+    u64 kept = 0;
+    std::erase_if(entries, [&](Entry& entry) {
+        if (entry.tick >= tick && kept + entry.size <= budget) {
+            kept += entry.size;
+            return false;
+        }
+        pooled_bytes -= entry.size;
+        // Not necessarily done on the GPU yet: release it after the work recorded so far.
+        scheduler.DeferRelease(std::move(entry.buffer));
+        return true;
+    });
 }
 
 void TransferBufferPool::TrimOlderThan(u64 idle_ticks) {

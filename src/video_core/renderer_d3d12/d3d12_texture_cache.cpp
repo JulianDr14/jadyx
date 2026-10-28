@@ -409,10 +409,8 @@ void TextureCacheRuntime::TickFrame() {
         pressure_level >= CachePressure::Emergency ? TextureResourceAllocator::TrimMode::All
         : release_idle                             ? TextureResourceAllocator::TrimMode::Settled
                                                    : TextureResourceAllocator::TrimMode::KeepWarm);
-    if (pressure_level >= CachePressure::Emergency) {
-        transfer_buffers.Trim(true);
-    } else if (pressure_level >= CachePressure::Critical) {
-        transfer_buffers.TrimStale();
+    if (pressure_level >= CachePressure::Critical) {
+        transfer_buffers.TrimStale(pressure_level >= CachePressure::Emergency);
     } else {
         transfer_buffers.Trim(false);
     }
