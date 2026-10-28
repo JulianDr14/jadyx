@@ -190,6 +190,7 @@ namespace VideoCommon {
 void SetAstcArrayRecompression(bool enabled) noexcept; // texture_cache/util.h
 void SetOpaqueAstcToBc1(bool enabled) noexcept;        // texture_cache/util.h
 void SetMipRenderTargets(bool enabled) noexcept;       // texture_cache/texture_cache_base.h
+void SetRenderTargetInheritance(bool enabled) noexcept; // texture_cache/texture_cache_base.h
 } // namespace VideoCommon
 
 namespace {
@@ -331,6 +332,9 @@ struct BootConfig {
     /// Depth targets at a mip level of a mipmapped image become separate aliased images again
     /// ("mip_rt=0"): reproduces the alias path depth pyramids took before.
     bool mip_render_targets{true};
+    /// A render target redrawn at another size uploads guest memory again instead of taking the
+    /// previous size's contents on the GPU ("rt_inherit=0").
+    bool render_target_inheritance{true};
     /// Filtered MIN/MAX sampler reductions go to the hardware although the device reports no
     /// support ("min_max_filter=force").
     bool force_min_max_filter{};
@@ -634,6 +638,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                                                std::memory_order_relaxed);
     D3D12::SetDiagUavSync(config.uav_sync);
     VideoCommon::SetMipRenderTargets(config.mip_render_targets);
+    VideoCommon::SetRenderTargetInheritance(config.render_target_inheritance);
     D3D12::SetForceMinMaxFilter(config.force_min_max_filter);
     D3D12::SetSkipMinMaxFilter(config.skip_min_max_filter);
     D3D12::SetEmulateMinMaxFilter(config.emulate_min_max_filter);
@@ -2913,6 +2918,12 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "mip_rt=0") {
                             config.mip_render_targets = false;
                             WriteDiag("boot.cfg: depth targets at a mip level use aliased images");
+                        } else if (line == "rt_inherit=0" || line == "rt_inherit=1") {
+                            config.render_target_inheritance = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: render targets at a new size ") +
+                                      (config.render_target_inheritance
+                                           ? "inherit the previous size on the GPU"
+                                           : "upload guest memory"));
                         } else if (line == "min_max_filter=force") {
                             config.force_min_max_filter = true;
                             WriteDiag("boot.cfg: filtered min/max sampler reduction forced on");
