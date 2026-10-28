@@ -60,8 +60,10 @@ public:
         const void* code_ptr = nullptr;
     };
     static_assert(sizeof(FastDispatchEntry) == 0x10);
-    static constexpr u64 fast_dispatch_table_mask = 0xFFFFF0;
-    static constexpr size_t fast_dispatch_table_size = 0x100000;
+    // 256K entries, 4 MiB a core. A million (16 MiB, all of it committed by the fill on every
+    // clear) cost the four cores 64 MiB of a commit-limited console for an indirect-branch cache.
+    static constexpr u64 fast_dispatch_table_mask = 0x3FFFF0;
+    static constexpr size_t fast_dispatch_table_size = 0x40000;
 
     void ClearFastDispatchTable();
     void GenMemory128Accessors();
