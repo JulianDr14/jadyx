@@ -62,34 +62,87 @@ struct PipelineResidencyPolicy {
         return IDLE_FRAMES;
     }
 
-    /// Fewer PSOs built at boot than this leave their cost unmeasured.
-    static constexpr std::uint64_t MIN_MEASURED_PSOS = 256;
-    /// A PSO that costs less commit than this is not worth a driver compile to release.
-    static constexpr std::uint64_t MIN_RELEASE_BYTES = 16 * 1024;
-
-    /// Whether releasing idle PSOs under pressure gives memory back, from what building them at
-    /// boot cost: the commit the boot's PSO builds added beyond the owners the ledger tracks
-    /// (DXIL, bookkeeping), per PSO. Other untracked allocations of the boot only raise that
-    /// figure, so it bounds a PSO's cost from above and a wrong guess keeps eviction. On the
-    /// Series 1354 PSOs added nothing: the driver keeps them outside the app's commit, and the
-    /// 2737 released at a time of pressure there freed nothing and were compiled again mid-game.
-    [[nodiscard]] static constexpr bool ReleasePays(std::uint64_t commit_growth,
-                                                    std::uint64_t ledger_growth,
-                                                    std::uint64_t psos_built) noexcept {
-        if (psos_built < MIN_MEASURED_PSOS) {
-            return true;
-        }
-        const std::uint64_t untracked =
-            commit_growth > ledger_growth ? commit_growth - ledger_growth : 0;
-        return untracked / psos_built >= MIN_RELEASE_BYTES;
-    }
-
     /// Whether a dormant PSO may be built ahead of its first draw: only with plenty free, and
     /// never with an unknown limit.
     [[nodiscard]] static constexpr bool MayPrewarm(std::uint64_t used,
                                                    std::uint64_t limit) noexcept {
         return limit != 0 && used < limit && limit - used > PLENTY_FREE;
     }
+};
+
+/// Whether releasing idle PSOs under memory pressure gives commit back, measured on the first
+/// releases: a few hundred are released, eviction pauses until their fences retire, and the drop
+/// in the commit the ledger does not track (DXIL and bookkeeping are tracked) is split among them.
+/// Below MIN_RELEASE_BYTES a PSO, pressure eviction stops for the session and idle PSOs are
+/// released only in an emergency. On the Series the driver keeps PSOs outside the app's commit:
+/// 2737 released at a time of pressure freed nothing and were compiled again mid-game, 24-34 s of
+/// stalls a run. A measure at boot is no substitute: the compiles there leave transient heap
+/// growth behind (+29 MiB one boot, +263 MiB the next for a similar number of PSOs).
+class PipelineReleaseProbe {
+public:
+    static constexpr std::uint64_t PROBE_PSOS = 256;
+    /// Frames for the released PSOs' fences to retire before the commit is read again.
+    static constexpr std::uint64_t SETTLE_FRAMES = 120;
+    /// A probe that has not released PROBE_PSOS by then starts over from a fresh baseline.
+    static constexpr std::uint64_t MAX_FRAMES = 60 * 60;
+    static constexpr std::uint64_t MIN_RELEASE_BYTES = 16 * 1024;
+
+    enum class Verdict : std::uint8_t { Unknown, Pays, DoesNotPay };
+
+    /// Called once a frame before the eviction sweep: the PSOs released so far and the commit
+    /// the ledger does not track (untracked_known false when the commit is unknown).
+    void Tick(std::uint64_t frame, std::uint64_t released, std::uint64_t untracked,
+              bool untracked_known) noexcept {
+        if (verdict != Verdict::Unknown || !untracked_known) {
+            return;
+        }
+        if (settle_frame != 0) {
+            if (frame - settle_frame < SETTLE_FRAMES) {
+                return;
+            }
+            freed = baseline_untracked > untracked ? baseline_untracked - untracked : 0;
+            probed = released - baseline_released;
+            verdict = freed / probed >= MIN_RELEASE_BYTES ? Verdict::Pays : Verdict::DoesNotPay;
+            return;
+        }
+        if (!has_baseline || released == baseline_released ||
+            frame - baseline_frame > MAX_FRAMES) {
+            // Nothing released since the baseline (or a stale probe): it moves up to this frame.
+            has_baseline = true;
+            baseline_untracked = untracked;
+            baseline_released = released;
+            baseline_frame = frame;
+            return;
+        }
+        if (released - baseline_released >= PROBE_PSOS) {
+            settle_frame = frame;
+        }
+    }
+
+    /// Whether pressure eviction may release PSOs this frame; an emergency releases regardless.
+    [[nodiscard]] bool MayRelease() const noexcept {
+        return verdict == Verdict::Pays || (verdict == Verdict::Unknown && settle_frame == 0);
+    }
+
+    [[nodiscard]] Verdict GetVerdict() const noexcept {
+        return verdict;
+    }
+    [[nodiscard]] std::uint64_t Freed() const noexcept {
+        return freed;
+    }
+    [[nodiscard]] std::uint64_t Probed() const noexcept {
+        return probed;
+    }
+
+private:
+    Verdict verdict{Verdict::Unknown};
+    bool has_baseline{};
+    std::uint64_t baseline_untracked{};
+    std::uint64_t baseline_released{};
+    std::uint64_t baseline_frame{};
+    std::uint64_t settle_frame{}; ///< 0 while releasing; frame numbers start at 1.
+    std::uint64_t freed{};
+    std::uint64_t probed{};
 };
 
 /// The pipelines drawn in a game's recent sessions, by key hash, persisted next to its disk

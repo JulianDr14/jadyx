@@ -552,8 +552,22 @@ void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler
     using Policy = PipelineResidencyPolicy;
     ++residency_frame;
     const u64 idle_frames = Policy::IdleFrames(snapshot.app_used, snapshot.app_limit);
-    const bool evict = (pipeline_eviction.load(std::memory_order_relaxed) && release_pays) ||
-                       idle_frames == Policy::EMERGENCY_IDLE_FRAMES;
+    const u64 ledger = Common::MemoryLedgerCommittedBytes();
+    const auto verdict_before = release_probe.GetVerdict();
+    release_probe.Tick(residency_frame, pipelines_evicted,
+                       snapshot.app_used > ledger ? snapshot.app_used - ledger : 0,
+                       snapshot.app_limit != 0);
+    if (release_probe.GetVerdict() != verdict_before) {
+        const bool pays = release_probe.GetVerdict() == PipelineReleaseProbe::Verdict::Pays;
+        LOG_INFO(Render,
+                 "D3D12: releasing {} idle PSOs freed {} KiB of untracked commit; idle PSOs {}",
+                 release_probe.Probed(), release_probe.Freed() / 1024,
+                 pays ? "released under pressure"
+                      : "kept under pressure (they cost no commit), released only in an emergency");
+    }
+    const bool evict =
+        (pipeline_eviction.load(std::memory_order_relaxed) && release_probe.MayRelease()) ||
+        idle_frames == Policy::EMERGENCY_IDLE_FRAMES;
     const size_t checks = evict ? (std::min)(Policy::SWEEP_PER_FRAME, residency_sweep.size()) : 0;
     for (size_t i = 0; i < checks; ++i) {
         if (residency_cursor >= residency_sweep.size()) {
@@ -937,12 +951,6 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         });
         ++state.total;
     }};
-    // What the boot's PSOs cost the app's commit, for ReleasePays: the guest does not run yet, so
-    // the growth is the pipelines' own.
-    const CacheMemorySnapshot memory_before = device.QueryCacheMemoryPressure();
-    const u64 ledger_before = Common::MemoryLedgerCommittedBytes();
-    const u64 creates_before =
-        VideoCore::Perf::Get(VideoCore::Perf::Read(), VideoCore::Perf::Counter::PsoCreates);
     VideoCommon::LoadPipelines(stop_loading, pipeline_cache_filename, CACHE_VERSION, load_compute,
                                load_graphics);
 
@@ -972,26 +980,6 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
              VideoCore::Perf::Get(preparation, VideoCore::Perf::Counter::PsoCreates),
              VideoCore::Perf::Get(preparation, VideoCore::Perf::Counter::PsoCreateUs) / 1000.0,
              Common::ReadMemoryAccount(Common::MemoryAccount::PipelineStates).objects);
-    const CacheMemorySnapshot memory_after = device.QueryCacheMemoryPressure();
-    if (memory_before.app_limit != 0 && memory_after.app_limit != 0) {
-        const u64 commit_growth = memory_after.app_used > memory_before.app_used
-                                      ? memory_after.app_used - memory_before.app_used
-                                      : 0;
-        const u64 ledger_after = Common::MemoryLedgerCommittedBytes();
-        const u64 ledger_growth = ledger_after > ledger_before ? ledger_after - ledger_before : 0;
-        const u64 creates =
-            VideoCore::Perf::Get(preparation, VideoCore::Perf::Counter::PsoCreates) -
-            creates_before;
-        release_pays = PipelineResidencyPolicy::ReleasePays(commit_growth, ledger_growth, creates);
-        constexpr u64 MiB = MemoryGuardPolicy::MiB;
-        LOG_INFO(Render,
-                 "D3D12: {} PSOs built at boot; commit +{} MiB, tracked owners +{} MiB; idle PSOs "
-                 "{}",
-                 creates, commit_growth / MiB, ledger_growth / MiB,
-                 release_pays ? "released under pressure"
-                              : "kept under pressure (they cost no commit), released only in an "
-                                "emergency");
-    }
     residency_sweep.reserve(graphics_cache.size());
     for (const auto& [key, pipeline] : graphics_cache) {
         if (pipeline) {
