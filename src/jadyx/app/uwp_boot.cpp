@@ -287,6 +287,8 @@ struct BootConfig {
     /// > 0: the game's bottleneck capture starts this many seconds into the session ("hunt_at="),
     /// so PC runs time a scene with no one at the pad.
     u32 hunt_at{};
+    /// > 0: a frame chain timeline (the T key) starts this many seconds in ("frame_trace_at=").
+    u32 frame_trace_at{};
     /// The bottleneck capture starts at the 64th dispatch of this compute shader ("hunt_cs=").
     u64 hunt_cs{};
     /// The storage buffers of this compute shader are dumped around four dispatches ("cs_inputs=").
@@ -1320,6 +1322,10 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
             if (config.hunt_at > 0 && tick == config.hunt_at * TICKS_PER_SECOND) {
                 D3D12::HuntNextFrames();
                 WriteDiag("hunt_at: bottleneck capture requested for next guest frames");
+            }
+            if (config.frame_trace_at > 0 && tick == config.frame_trace_at * TICKS_PER_SECOND) {
+                VideoCore::FrameTrace::Start(480);
+                WriteDiag("frame_trace_at: frame chain timeline requested");
             }
             if (config.quit_at > 0 && tick == config.quit_at * TICKS_PER_SECOND) {
                 WriteDiag("quit_at: shutting down | " + MemoryReport());
@@ -2928,6 +2934,11 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.cs_inputs = std::strtoull(line.c_str() + 10, nullptr, 16);
                             WriteDiag("boot.cfg: storage buffers of compute shader " +
                                       line.substr(10) + " dumped");
+                        } else if (line.starts_with("frame_trace_at=")) {
+                            config.frame_trace_at =
+                                static_cast<u32>(std::strtoul(line.c_str() + 15, nullptr, 10));
+                            WriteDiag("boot.cfg: frame chain timeline at " +
+                                      std::to_string(config.frame_trace_at) + " s");
                         } else if (line.starts_with("quit_at=")) {
                             config.quit_at =
                                 static_cast<u32>(std::strtoul(line.c_str() + 8, nullptr, 10));
