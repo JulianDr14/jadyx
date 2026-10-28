@@ -130,6 +130,14 @@ private:
     std::span<u8> readback_data;
     u64 read_back_conditions{};
     u64 predicated_conditions{};
+    /// Why predicated conditions were not read back.
+    struct SnapshotMisses {
+        u64 none;    ///< no snapshot of the address
+        u64 moved;   ///< the reports are in another buffer or at another offset
+        u64 written; ///< something wrote the buffer since the copy
+        u64 pending; ///< the GPU has not run the copy yet
+    };
+    SnapshotMisses snapshot_misses{};
     bool logged_gpu{};
     bool logged_gpu_reports{};
     bool logged_cpu{};

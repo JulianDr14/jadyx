@@ -39,12 +39,15 @@ constexpr u32 REPORTS_SIZE = 24;
 constexpr u64 SNAPSHOT_STRIDE = 32;
 
 /// Logs how conditions on GPU-written reports were decided, every 4096 of them.
-void CountGpuReportCondition(u64 read_back, u64 predicated) {
+template <typename Misses>
+void CountGpuReportCondition(u64 read_back, u64 predicated, const Misses& misses) {
     if ((read_back + predicated) % 4096 == 0) {
         LOG_INFO(Render,
                  "D3D12: render conditions on GPU-written reports: {} read back without waiting, "
-                 "{} predicated on the GPU",
-                 read_back, predicated);
+                 "{} predicated on the GPU ({} without a snapshot, {} moved, {} written since the "
+                 "copy, {} before the GPU ran the copy)",
+                 read_back, predicated, misses.none, misses.moved, misses.written,
+                 misses.pending);
     }
 }
 
@@ -243,8 +246,17 @@ bool ConditionalRendering::PredicateOnGpuReports(GPUVAddr address, bool compare_
         const bool differ = reports[0] != (compare_second ? reports[4] : 0) ||
                             reports[1] != (compare_second ? reports[5] : 0);
         mode = differ != render_if_equal ? Mode::Render : Mode::Skip;
-        CountGpuReportCondition(++read_back_conditions, predicated_conditions);
+        CountGpuReportCondition(++read_back_conditions, predicated_conditions, snapshot_misses);
         return true;
+    }
+    if (snapshot == snapshots.end()) {
+        ++snapshot_misses.none;
+    } else if (snapshot->buffer_id != buffer_id || snapshot->offset != offset) {
+        ++snapshot_misses.moved;
+    } else if (snapshot->generation != generation) {
+        ++snapshot_misses.written;
+    } else {
+        ++snapshot_misses.pending;
     }
     if (!compare_pipeline) {
         CreateComparePipeline();
@@ -276,7 +288,7 @@ bool ConditionalRendering::PredicateOnGpuReports(GPUVAddr address, bool compare_
                        D3D12_RESOURCE_STATE_PREDICATION);
     buffer->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, false);
     RecordSnapshot(cmd, address, buffer_id, generation, buffer->Handle(), offset);
-    CountGpuReportCondition(read_back_conditions, ++predicated_conditions);
+    CountGpuReportCondition(read_back_conditions, ++predicated_conditions, snapshot_misses);
     predicate_tick = tick;
     value_offset = 0;
     // The predicate is not zero when the reports differ (or the first is not zero); the op names
