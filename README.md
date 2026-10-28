@@ -16,6 +16,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 <p align="center">
   <a href="https://github.com/JulianDr14/jadyx/releases/latest"><b>Download the latest release</b></a> ·
+  <a href="docs/xbox/xbox_compatibility.md"><b>Compatibility</b></a> ·
   <a href="https://discord.gg/3BhyyXGxpd"><b>Discord</b></a> ·
   <a href="https://github.com/JulianDr14/jadyx/issues/new/choose"><b>Report a bug</b></a>
 </p>
