@@ -33,7 +33,7 @@ void BlockRangeInformation<P>::AddRange(boost::icl::discrete_interval<P> range, 
 
 template<typename P>
 void BlockRangeInformation<P>::ClearCache() {
-    pages.clear();
+    pages = decltype(pages){};
 }
 
 template<typename P>

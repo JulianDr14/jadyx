@@ -202,7 +202,7 @@ void A32EmitX64::ClearCache() {
     EmitX64::ClearCache();
     block_ranges.ClearCache();
     ClearFastDispatchTable();
-    fastmem_patch_info.clear();
+    fastmem_patch_info = decltype(fastmem_patch_info){};
 }
 
 void A32EmitX64::InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges) {
