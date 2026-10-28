@@ -121,6 +121,10 @@ void SetAstcGpuDecode(bool enabled) {
     gpu_astc_decode.store(enabled, std::memory_order_relaxed);
 }
 
+void SetAstcDropTopLevel(bool enabled) {
+    astc_drop_top_level.store(enabled, std::memory_order_relaxed);
+}
+
 
 void SetAstcGpuFresh(bool enabled) {
     gpu_astc_fresh.store(enabled, std::memory_order_relaxed);
@@ -580,9 +584,29 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
                                               D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE))) {
         resource_flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     }
+    // SetAstcDropTopLevel: big sampled ASTC textures with their own smaller levels, whose
+    // level 1 is still whole blocks.
+    static constexpr u32 DROP_TOP_LEVEL_MIN_SIZE = 1024;
+    if (VideoCore::Surface::IsPixelFormatASTC(info_.format) &&
+        astc_drop_top_level.load(std::memory_order_relaxed) && info_.type == ImageType::e2D &&
+        info_.num_samples == 1 && info_.resources.levels >= 2 &&
+        std::max(info_.size.width, info_.size.height) >= DROP_TOP_LEVEL_MIN_SIZE &&
+        (info_.size.width >> 1) % 4 == 0 && (info_.size.height >> 1) % 4 == 0) {
+        level_bias = 1;
+        static std::atomic<u32> dropped_images{};
+        static std::atomic<u64> dropped_bytes{};
+        const u64 top_bytes = converted_size_bytes -
+                              converted_size_bytes / 4; // ~3/4 of a mip chain is its top
+        const u32 count = dropped_images.fetch_add(1, std::memory_order_relaxed) + 1;
+        const u64 bytes = dropped_bytes.fetch_add(top_bytes, std::memory_order_relaxed) + top_bytes;
+        if (count <= 4 || count % 64 == 0) {
+            LOG_INFO(Render, "D3D12: {} ASTC images without their top level ({} MiB saved)",
+                     count, bytes >> 20);
+        }
+    }
     const auto [samples_x, samples_y] = VideoCommon::SamplesLog2(info_.num_samples);
-    u64 width = std::max<u64>(1, info_.size.width >> samples_x);
-    u32 height = std::max(1U, info_.size.height >> samples_y);
+    u64 width = std::max<u64>(1, (info_.size.width >> level_bias) >> samples_x);
+    u32 height = std::max(1U, (info_.size.height >> level_bias) >> samples_y);
     // D3D12 requires block-compressed top levels to be whole blocks unless the device supports
     // unaligned ones; the guest's may not be. Converted formats keep the padding their encoders
     // write.
@@ -596,7 +620,8 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
         .Dimension = Dimension(info_.type), .Alignment = 0, .Width = width, .Height = height,
         .DepthOrArraySize = static_cast<u16>(info_.type == ImageType::e3D ? info_.size.depth
                                                                           : info_.resources.layers),
-        .MipLevels = static_cast<u16>(info_.resources.levels), .Format = format.resource,
+        .MipLevels = static_cast<u16>(info_.resources.levels - static_cast<s32>(level_bias)),
+        .Format = format.resource,
         .SampleDesc = {.Count = info_.num_samples, .Quality = 0},
         .Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN, .Flags = resource_flags,
     };
@@ -680,6 +705,7 @@ Image& Image::operator=(Image&& other) noexcept {
         resource_allocation = std::move(other.resource_allocation);
         format = other.format;
         gpu_decoded = other.gpu_decoded;
+        level_bias = other.level_bias;
         footprint_format = other.footprint_format;
         state = other.state;
         needs_placed_init = other.needs_placed_init;
@@ -778,9 +804,12 @@ void Image::TransitionDepthTarget(s32 level, D3D12_RESOURCE_STATES next, Barrier
 }
 
 u32 Image::Subresource(s32 level, s32 layer, u32 plane) const noexcept {
-    const u32 levels = static_cast<u32>(info.resources.levels);
+    // Callers skip the levels a level bias leaves out; clamp in case one does not.
+    const u32 levels = static_cast<u32>(info.resources.levels) - level_bias;
     const u32 layers = info.type == ImageType::e3D ? 1U : static_cast<u32>(info.resources.layers);
-    return static_cast<u32>(level) + static_cast<u32>(layer) * levels + plane * levels * layers;
+    const u32 resource_level =
+        static_cast<u32>(std::max<s32>(0, level - static_cast<s32>(level_bias)));
+    return resource_level + static_cast<u32>(layer) * levels + plane * levels * layers;
 }
 
 void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {

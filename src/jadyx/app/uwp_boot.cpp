@@ -154,6 +154,7 @@ void ShowCpuLoadProgress(VideoCore::RendererBase& renderer, size_t done, size_t 
 void RemoveDeviceForProbe(VideoCore::RendererBase& renderer);
 void SetBcArrayDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuDecode(bool enabled); // d3d12_texture_cache.h
+void SetAstcDropTopLevel(bool enabled); // d3d12_texture_cache.h
 void SetTextureMemoryCap(u64 bytes); // d3d12_texture_cache.h
 void SetAstcGpuVerify(bool enabled); // d3d12_texture_cache.h
 void SetStencilBlitVerify(bool enabled); // d3d12_texture_cache.h
@@ -479,6 +480,9 @@ struct BootConfig {
     /// ASTC without alpha as BC1, half of BC3 ("astc_opaque=bc1", the default), or as BC3 like
     /// the rest ("astc_opaque=bc3").
     bool astc_opaque_bc3{};
+    /// Big mipmapped ASTC textures without their top level, a quarter of their memory
+    /// ("astc_mip0=drop"), or whole ("astc_mip0=keep", the default).
+    bool astc_drop_mip0{};
     bool astc_verify{};
     bool stencil_blit_verify{};
     /// DXIL signing: 0 the validator, 1 own digest ("dxil_sign=hash"), 2 both ("dxil_sign=verify").
@@ -648,6 +652,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                                                      : Settings::AstcRecompression::Bc3);
     VideoCommon::SetAstcArrayRecompression(!config.astc_arrays_rgba);
     VideoCommon::SetOpaqueAstcToBc1(!config.astc_opaque_bc3);
+    D3D12::SetAstcDropTopLevel(config.astc_drop_mip0);
     // The compute decoder was opt-in until its dispatches set spirv_to_dxil's compute runtime data
     // (0.2.58): 4 minutes of Game C on the Series decoded no ASTC on the CPU, without
     // corruption or hangs. "astc=bc3" brings back the CPU path.
@@ -3350,6 +3355,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "astc_opaque=bc1" || line == "astc_opaque=bc3") {
                             config.astc_opaque_bc3 = line == "astc_opaque=bc3";
                             WriteDiag("boot.cfg: opaque ASTC " + line.substr(12));
+                        } else if (line == "astc_mip0=drop" || line == "astc_mip0=keep") {
+                            config.astc_drop_mip0 = line == "astc_mip0=drop";
+                            WriteDiag("boot.cfg: ASTC top level " + line.substr(10));
                         } else if (line == "astc_fresh=1") {
                             config.astc_fresh = true;
                             WriteDiag("boot.cfg: new ASTC scratch resources for every GPU upload");

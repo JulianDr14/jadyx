@@ -343,6 +343,9 @@ public:
     [[nodiscard]] DXGI_FORMAT FootprintFormat() const noexcept { return footprint_format; }
     /// How the guest data is laid out for transfers (converted formats: what the CPU decodes to).
     [[nodiscard]] const FormatInfo& TransferFormat() const noexcept { return format; }
+    /// Guest levels the resource leaves out at its top (SetAstcDropTopLevel): guest level l is
+    /// resource level l - LevelBias(), and the levels above it are neither uploaded nor copied.
+    [[nodiscard]] u32 LevelBias() const noexcept { return level_bias; }
     /// A block-compressed image decoded on upload (arrays or unaligned base extent): its resource
     /// holds plain texels, so it does not copy to or from block-compressed images.
     [[nodiscard]] bool IsBcDecoded() const noexcept {
@@ -490,6 +493,7 @@ private:
     std::shared_ptr<TextureResourceAllocator::Allocation> resource_allocation;
     FormatInfo format{};
     bool gpu_decoded{};
+    u32 level_bias{};
     DXGI_FORMAT footprint_format{}; ///< format GetCopyableFootprints uses for plane 0
     D3D12_RESOURCE_STATES state{D3D12_RESOURCE_STATE_COMMON};
     /// A placed render target or depth stencil whose heap memory another resource may have used:
@@ -648,6 +652,11 @@ void SetBcArrayDecode(bool enabled);
 /// Whether ASTC images kept as RGBA8 are decoded by the compute shader (the default) rather than
 /// the CPU. Applies to images created from now on.
 void SetAstcGpuDecode(bool enabled);
+/// Large mipmapped ASTC textures leave out their top level, a quarter of the memory each: the
+/// guest's level 1 becomes the resource's top ("astc_mip0=drop"; off by default). Shaders that
+/// sample them see half the detail and textureSize reports half. Applies to images created from
+/// now on.
+void SetAstcDropTopLevel(bool enabled);
 /// Texture memory above which clean textures are evicted before the app runs short (0: none).
 void SetTextureMemoryCap(u64 bytes);
 /// One-shot diagnostic: compare the first GPU BC3 result with the existing CPU pipeline.

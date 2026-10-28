@@ -158,6 +158,9 @@ void Image::UploadMemoryImpl(ID3D12Resource* buffer, size_t base_offset, u8* map
     Transition(D3D12_RESOURCE_STATE_COPY_DEST);
     bool promoted_source = false;
     for (const auto& copy : copies) {
+        if (copy.image_subresource.base_level < static_cast<s32>(level_bias)) {
+            continue; // left out of the resource (SetAstcDropTopLevel)
+        }
         const CopyLayout layout = Layout(copy);
         const u32 layers = static_cast<u32>(std::max(1, copy.image_subresource.num_layers));
         if (format.converted && mapped_at_base) {
@@ -336,7 +339,9 @@ void Image::DownloadMemory(ID3D12Resource* buffer, size_t offset,
 
 void Image::DownloadMemory(std::span<ID3D12Resource*> buffers, std::span<size_t> offsets,
                            std::span<const BufferImageCopy> copies) {
-    if (!CanTransfer() || copies.empty()) {
+    // Images without their top level (SetAstcDropTopLevel) hold re-encoded ASTC: nothing the
+    // guest could read back.
+    if (!CanTransfer() || copies.empty() || level_bias != 0) {
         return;
     }
     VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureDownloads, 1);

@@ -115,6 +115,9 @@ void TextureCacheRuntime::AccelerateImageUpload(
     }
     const u32 layers = static_cast<u32>(image.info.resources.layers);
     for (const VideoCommon::SwizzleParameters& swizzle : swizzles) {
+        if (swizzle.level < static_cast<s32>(image.LevelBias())) {
+            continue; // left out of the resource (SetAstcDropTopLevel)
+        }
         const auto params = VideoCommon::Accelerated::MakeBlockLinearSwizzle2DParams(swizzle,
                                                                                      image.info);
         const u64 source_offset = base + swizzle.buffer_offset;
@@ -147,7 +150,8 @@ void TextureCacheRuntime::AccelerateImageUpload(
             const D3D12_UNORDERED_ACCESS_VIEW_DESC desc{
                 .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
                 .ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY,
-                .Texture2DArray = {.MipSlice = static_cast<UINT>(swizzle.level),
+                .Texture2DArray = {.MipSlice =
+                                       static_cast<UINT>(swizzle.level) - image.LevelBias(),
                                    .FirstArraySlice = 0,
                                    .ArraySize = layers,
                                    .PlaneSlice = 0},

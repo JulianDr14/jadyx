@@ -4,6 +4,7 @@
 #include "video_core/renderer_d3d12/d3d12_texture_cache_internal.h"
 
 #include <algorithm>
+#include <iterator>
 #include <utility>
 #include <boost/container/small_vector.hpp>
 
@@ -54,6 +55,21 @@ void CaptureCopySkip(const Image& dst, const Image& src, std::string_view reason
 } // namespace
 
 void TextureCacheRuntime::CopyImage(Image& dst, Image& src, std::span<const ImageCopy> copies) {
+    if (src.LevelBias() != 0 || dst.LevelBias() != 0) {
+        // Levels left out of a resource (SetAstcDropTopLevel) have nothing to copy.
+        const auto kept_level = [&](const ImageCopy& copy) {
+            return copy.src_subresource.base_level >= static_cast<s32>(src.LevelBias()) &&
+                   copy.dst_subresource.base_level >= static_cast<s32>(dst.LevelBias());
+        };
+        if (!std::ranges::all_of(copies, kept_level)) {
+            boost::container::small_vector<ImageCopy, 16> kept;
+            std::ranges::copy_if(copies, std::back_inserter(kept), kept_level);
+            if (!kept.empty()) {
+                CopyImage(dst, src, kept);
+            }
+            return;
+        }
+    }
     if (std::ranges::any_of(copies, [](const ImageCopy& copy) { return copy.extent_in_blocks; })) {
         // Normalize only alias copies. Guessing units from alignment would corrupt ordinary
         // partial texel copies and silently under-copy aligned alias extents.

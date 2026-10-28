@@ -100,15 +100,22 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
                                    : resource_desc.DepthOrArraySize;
     // A view past the end of its resource is undefined in D3D12: the PC's driver tolerates it,
     // AMD's may build a descriptor that addresses the wrong memory. Clamp it (and say so).
-    const u32 base_level = std::min(static_cast<u32>(info.range.base.level), resource_levels - 1);
+    // Images without their top level (SetAstcDropTopLevel) start at guest level LevelBias():
+    // views of the levels left out read the resource's top instead.
+    const u32 level_bias = source.LevelBias();
+    const u32 guest_base = static_cast<u32>(info.range.base.level);
+    const u32 skipped_levels = guest_base < level_bias ? level_bias - guest_base : 0;
+    const u32 wanted_base = guest_base + skipped_levels - level_bias;
+    const u32 wanted_levels =
+        std::max(1U, static_cast<u32>(info.range.extent.levels) - std::min(
+                         skipped_levels, static_cast<u32>(info.range.extent.levels)));
+    const u32 base_level = std::min(wanted_base, resource_levels - 1);
     const u32 base_layer = std::min(static_cast<u32>(info.range.base.layer), resource_array - 1);
-    const u32 levels = std::clamp(static_cast<u32>(info.range.extent.levels), 1U,
-                                  resource_levels - base_level);
+    const u32 levels = std::clamp(wanted_levels, 1U, resource_levels - base_level);
     const u32 layers = std::clamp(static_cast<u32>(info.range.extent.layers), 1U,
                                   resource_array - base_layer);
-    if (base_level != static_cast<u32>(info.range.base.level) ||
+    if (base_level != wanted_base || levels != wanted_levels ||
         base_layer != static_cast<u32>(info.range.base.layer) ||
-        levels != static_cast<u32>(info.range.extent.levels) ||
         layers != static_cast<u32>(info.range.extent.layers)) {
         static std::atomic<u32> logged_clamps{};
         if (logged_clamps.fetch_add(1, std::memory_order_relaxed) < 16) {

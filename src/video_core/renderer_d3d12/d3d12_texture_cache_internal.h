@@ -131,6 +131,7 @@ inline bool logged_view_family = false;
 inline std::atomic<u64> next_sampler_key{1};
 inline std::atomic<bool> decode_bc_arrays{true};
 inline std::atomic<bool> gpu_astc_decode{true};
+inline std::atomic<bool> astc_drop_top_level{false};
 inline std::atomic<int> gpu_astc_verify{0}; ///< GPU ASTC uploads left to check against the CPU
 inline std::atomic<bool> gpu_astc_sync{false};
 inline std::atomic<int> stencil_blit_verify{0}; ///< depth-stencil blits left to read back
