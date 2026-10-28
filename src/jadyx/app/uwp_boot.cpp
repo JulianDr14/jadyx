@@ -313,7 +313,9 @@ struct BootConfig {
     bool jit_dual_map{true};
     /// Texture memory past which clean textures unused for a while are evicted even with headroom
     /// left ("texture_cap_mib=", 0 turns it off). They decode again from guest memory when used.
-    u32 texture_cap_mib{1024};
+    /// At 1024 a heavy world entry kept 830 MiB of textures through its load and ran out of memory;
+    /// at 768 the cap evicts during the load and the same entry held.
+    u32 texture_cap_mib{768};
     /// D3D12 debug layer (renderer_debug); PC only, the console has no SDK layers.
     bool debug_layer{};
     /// With the debug layer, GPU-based validation too ("debug_layer=gbv").
