@@ -1188,6 +1188,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         u32 low_snapshot_tick = 0;
         // Short of memory, each JIT code cache keeps what it has committed, or this much.
         constexpr size_t JIT_CAP_FLOOR = 64ULL << 20;
+        // ...and the cap is lifted once this much is free again.
+        constexpr u64 JIT_UNCAP_HEADROOM = 768ULL << 20;
         constexpr u64 POOL_TRIM_PER_SECOND = 64ULL << 20;
         constexpr u64 POOL_TRIM_ALL_HEADROOM = 512ULL << 20;
         constexpr u64 TRIM_SLICE = 32ULL << 20;
@@ -1267,6 +1269,11 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                 if (headroom < PrewarmBudget::LOW_HEADROOM && Dynarmic::CodeCacheCap() == 0) {
                     Dynarmic::SetCodeCacheCap(JIT_CAP_FLOOR);
                     WriteDiag("JIT code caches stop growing | " + MemoryReport());
+                } else if (headroom >= JIT_UNCAP_HEADROOM && Dynarmic::CodeCacheCap() != 0) {
+                    // A load burst is over and the caches it froze would otherwise stay frozen
+                    // for the whole session, clearing and recompiling the game's hot code.
+                    Dynarmic::SetCodeCacheCap(0);
+                    WriteDiag("JIT code caches grow again | " + MemoryReport());
                 }
             }
             if (config.host_trim) {
