@@ -1987,8 +1987,59 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         DeleteImage(overlap_id);
     }
 
-    // TODO: Only upload what we need
-    RefreshContents(new_image, new_image_id);
+    const ImageId predecessor = inserting_render_target && RenderTargetInheritance()
+                                    ? FindRenderTargetPredecessor(new_info, new_image.gpu_addr)
+                                    : ImageId{};
+    if (predecessor) {
+        // The same render target at another size (dynamic resolution): its contents live only on
+        // the GPU, so the guest memory is stale. Copy them from the previous size instead of
+        // uploading it, and delete that size and the older ones so each target keeps one image.
+        const auto superseded = [this](ImageId id) {
+            return std::find(join_superseded_ids.begin(), join_superseded_ids.end(), id) !=
+                   join_superseded_ids.end();
+        };
+        const auto drop = [&superseded](auto& ids) {
+            ids.erase(std::remove_if(ids.begin(), ids.end(), superseded), ids.end());
+        };
+        drop(join_bad_overlap_ids);
+        drop(join_left_aliased_ids);
+        drop(join_right_aliased_ids);
+        join_copies_to_do.erase(std::remove_if(join_copies_to_do.begin(), join_copies_to_do.end(),
+                                               [&superseded](const JoinCopy& copy) {
+                                                   return superseded(copy.id);
+                                               }),
+                                join_copies_to_do.end());
+        Image& previous = slot_images[predecessor];
+        new_image.flags &= ~ImageFlagBits::CpuModified;
+        TrackImage(new_image, new_image_id);
+        const SubresourceLayers layers{.num_layers = new_info.resources.layers};
+        const ImageCopy copy{
+            .src_subresource = layers,
+            .dst_subresource = layers,
+            .src_offset = {},
+            .dst_offset = {},
+            .extent = {(std::min)(previous.info.size.width, new_info.size.width),
+                       (std::min)(previous.info.size.height, new_info.size.height), 1},
+        };
+        runtime.CopyImage(new_image, previous, std::span<const ImageCopy>{&copy, 1});
+        new_image.flags |= ImageFlagBits::GpuModified;
+        new_image.modification_tick = previous.modification_tick;
+        for (const ImageId stale_id : join_superseded_ids) {
+            Image& stale = slot_images[stale_id];
+            if (True(stale.flags & ImageFlagBits::Tracked)) {
+                UntrackImage(stale, stale_id);
+            }
+            NoteImageDeleted(stale, ImageDeleteReason::Superseded);
+            UnregisterImage(stale_id);
+            DeleteImage(stale_id);
+        }
+        if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
+            ++churn_inherited;
+        }
+    } else {
+        // TODO: Only upload what we need
+        RefreshContents(new_image, new_image_id);
+    }
 
     if (can_rescale) {
         ScaleUp(new_image);
@@ -2098,6 +2149,77 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         RegisterImage(new_image_id);
     }
     return new_image_id;
+}
+
+template <class P>
+ImageId TextureCache<P>::FindRenderTargetPredecessor(const ImageInfo& info, GPUVAddr gpu_addr) {
+    const auto fallback = [this](InheritFallback reason) {
+        if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
+            ++churn_inherit_fallbacks[static_cast<size_t>(reason)];
+        }
+        return ImageId{};
+    };
+    if (join_bad_overlap_ids.empty() && join_left_aliased_ids.empty() &&
+        join_right_aliased_ids.empty()) {
+        return fallback(InheritFallback::NewAddress);
+    }
+    if (info.type != ImageType::e2D || info.resources.levels != 1 || info.num_samples != 1 ||
+        !join_overlap_ids.empty()) {
+        return fallback(InheritFallback::Layout);
+    }
+    // The newest GPU contents in the range decide. When they belong to a previous size of this
+    // target, the guest memory is stale and that size is copied instead. Overlaps without GPU
+    // contents only mirror guest memory (or older data) and hold nothing to keep.
+    const auto same_target = [&](const Image& overlap) {
+        const ImageInfo& existing = overlap.info;
+        return overlap.gpu_addr == gpu_addr && existing.format == info.format &&
+               existing.type == info.type && existing.num_samples == info.num_samples &&
+               existing.resources.levels == 1 &&
+               existing.resources.layers == info.resources.layers;
+    };
+    join_superseded_ids.clear();
+    ImageId predecessor{};
+    const auto visit = [&](std::span<const ImageId> ids) {
+        for (const ImageId id : ids) {
+            const Image& overlap = slot_images[id];
+            if (same_target(overlap)) {
+                join_superseded_ids.push_back(id);
+            }
+            if (False(overlap.flags & ImageFlagBits::GpuModified)) {
+                continue;
+            }
+            if (!predecessor ||
+                overlap.modification_tick > slot_images[predecessor].modification_tick) {
+                predecessor = id;
+            }
+        }
+    };
+    visit(join_bad_overlap_ids);
+    visit(join_left_aliased_ids);
+    visit(join_right_aliased_ids);
+    if (!predecessor) {
+        return fallback(InheritFallback::NoPredecessor);
+    }
+    const Image& previous = slot_images[predecessor];
+    if (!same_target(previous)) {
+        return fallback(InheritFallback::NewerOverlap);
+    }
+    if (True(previous.flags & ImageFlagBits::CpuModified)) {
+        return fallback(InheritFallback::CpuData);
+    }
+    // Used this frame: two sizes alternating at one address. Deleting either would recreate it
+    // on every bind, so both stay as before.
+    if (lru_cache.Tick(previous.lru_index) >= frame_tick) {
+        return fallback(InheritFallback::InUse);
+    }
+    // Older sizes still bound this frame stay; the rest are superseded with the predecessor.
+    join_superseded_ids.erase(
+        std::remove_if(join_superseded_ids.begin(), join_superseded_ids.end(),
+                       [this](ImageId id) {
+                           return lru_cache.Tick(slot_images[id].lru_index) >= frame_tick;
+                       }),
+        join_superseded_ids.end());
+    return predecessor;
 }
 
 template <class P>
@@ -2392,11 +2514,13 @@ template <class P>
 ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAddr gpu_addr) {
     ImageId image_id{};
     bool delete_state = has_deleted_images;
+    inserting_render_target = true;
     do {
         has_deleted_images = false;
         image_id = FindOrInsertImage(info, gpu_addr);
         delete_state |= has_deleted_images;
     } while (has_deleted_images);
+    inserting_render_target = false;
     has_deleted_images = delete_state;
     if (!image_id) {
         return NULL_IMAGE_VIEW_ID;
@@ -2836,7 +2960,9 @@ void TextureCache<P>::ReportImageChurn() {
         return;
     }
     static constexpr std::array<const char*, NUM_DELETE_REASONS> REASON_NAMES{
-        "evicted", "evicted+download", "unmapped", "join dropped", "join merged"};
+        "evicted", "evicted+download", "unmapped", "join dropped", "join merged", "superseded"};
+    static constexpr std::array<const char*, NUM_INHERIT_FALLBACKS> FALLBACK_NAMES{
+        "new address", "layout", "no predecessor", "newer overlap", "CPU data", "in use"};
     std::string reasons;
     for (size_t i = 0; i < NUM_DELETE_REASONS; ++i) {
         reasons += fmt::format("{}{} {} ({} within 2 frames, {} MiB)", i ? "; " : "",
@@ -2856,6 +2982,15 @@ void TextureCache<P>::ReportImageChurn() {
              "Texture churn over {} frames: {} addresses, {} recreated at least twice | "
              "deletes: {}",
              frame_tick - churn_window_start, churn_addresses.size(), hot.size(), reasons);
+    std::string fallbacks;
+    for (size_t i = 0; i < NUM_INHERIT_FALLBACKS; ++i) {
+        fallbacks += fmt::format("{}{} {}", i ? ", " : "", FALLBACK_NAMES[i],
+                                 churn_inherit_fallbacks[i]);
+    }
+    LOG_INFO(HW_GPU,
+             "Render target inheritance: {} took the previous size's contents on the GPU | "
+             "uploaded instead: {}{}",
+             churn_inherited, fallbacks, RenderTargetInheritance() ? "" : " (rt_inherit=0)");
     for (size_t i = 0; i < (std::min)(hot.size(), size_t{12}); ++i) {
         const ChurnAddress& entry = *hot[i].second;
         const ImageInfo& info = entry.info;
@@ -2875,6 +3010,8 @@ void TextureCache<P>::ReportImageChurn() {
     churn_deletes = {};
     churn_young_deletes = {};
     churn_deleted_bytes = {};
+    churn_inherited = 0;
+    churn_inherit_fallbacks = {};
     churn_window_start = frame_tick;
 }
 

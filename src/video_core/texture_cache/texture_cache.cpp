@@ -13,6 +13,7 @@ namespace VideoCommon {
 
 namespace {
 std::atomic<bool> mip_render_targets{true};
+std::atomic<bool> render_target_inheritance{true};
 } // namespace
 
 void SetMipRenderTargets(bool enabled) noexcept {
@@ -21,6 +22,14 @@ void SetMipRenderTargets(bool enabled) noexcept {
 
 bool MipRenderTargets() noexcept {
     return mip_render_targets.load(std::memory_order_relaxed);
+}
+
+void SetRenderTargetInheritance(bool enabled) noexcept {
+    render_target_inheritance.store(enabled, std::memory_order_relaxed);
+}
+
+bool RenderTargetInheritance() noexcept {
+    return render_target_inheritance.load(std::memory_order_relaxed);
 }
 
 TextureCacheChannelInfo::TextureCacheChannelInfo(Tegra::Control::ChannelState& state) noexcept

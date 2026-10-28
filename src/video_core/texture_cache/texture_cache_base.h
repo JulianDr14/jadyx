@@ -62,6 +62,12 @@ using namespace Common::Literals;
 void SetMipRenderTargets(bool enabled) noexcept;
 [[nodiscard]] bool MipRenderTargets() noexcept;
 
+/// A render target redrawn at another size (dynamic resolution) takes its contents from the
+/// previous size on the GPU, which is then deleted, instead of uploading stale guest memory.
+/// Boot.cfg "rt_inherit=0" turns it off to reproduce the upload.
+void SetRenderTargetInheritance(bool enabled) noexcept;
+[[nodiscard]] bool RenderTargetInheritance() noexcept;
+
 struct ImageViewInOut {
     u32 index{};
     bool blacklist{};
@@ -432,8 +438,24 @@ private:
         Unmapped,            ///< the guest unmapped its memory
         JoinDropped,         ///< a new overlapping image replaced it without copying
         JoinMerged,          ///< a new overlapping image absorbed it
+        Superseded,          ///< the same render target at another size took its contents
         Count,
     };
+
+    /// Why a new render target was uploaded from guest memory instead of inheriting its contents.
+    enum class InheritFallback : u8 {
+        NewAddress,    ///< nothing overlaps it
+        Layout,        ///< mipmapped, multisampled, not 2D, or absorbing other images
+        NoPredecessor, ///< nothing in its range holds GPU-only contents
+        NewerOverlap,  ///< the newest GPU contents belong to another kind of image
+        CpuData,       ///< the guest wrote over the previous size after the GPU did
+        InUse,         ///< the previous size was used this frame
+        Count,
+    };
+
+    /// The previous size of a new render target, when it holds the newest GPU contents at its
+    /// address. JoinImages helper; empty when the contents have to be uploaded.
+    [[nodiscard]] ImageId FindRenderTargetPredecessor(const ImageInfo& info, GPUVAddr gpu_addr);
 
     /// gpu_profile only: counts image creations and deletions per guest address and logs, every
     /// few hundred frames, which addresses keep being recreated and why they were deleted.
@@ -587,8 +609,14 @@ private:
     std::array<u32, NUM_DELETE_REASONS> churn_deletes{};
     std::array<u32, NUM_DELETE_REASONS> churn_young_deletes{};
     std::array<u64, NUM_DELETE_REASONS> churn_deleted_bytes{};
+    static constexpr size_t NUM_INHERIT_FALLBACKS = static_cast<size_t>(InheritFallback::Count);
+    u32 churn_inherited = 0;
+    std::array<u32, NUM_INHERIT_FALLBACKS> churn_inherit_fallbacks{};
     u64 churn_window_start = 0;
     u64 live_report_bytes = 0;
+
+    /// FindRenderTargetView is inserting: JoinImages may inherit from a previous size.
+    bool inserting_render_target = false;
 
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},
                                                Common::ThreadPlacement::Efficiency};
@@ -604,6 +632,7 @@ private:
     boost::container::small_vector<ImageId, 4> join_right_aliased_ids;
     ::Common::unordered_set<ImageId> join_ignore_textures;
     boost::container::small_vector<ImageId, 4> join_bad_overlap_ids;
+    boost::container::small_vector<ImageId, 4> join_superseded_ids;
     struct JoinCopy {
         bool is_alias;
         ImageId id;
