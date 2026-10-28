@@ -303,6 +303,9 @@ struct BootConfig {
     /// Short of memory, the caches stop growing instead (JIT_CAP_FLOOR): at 128 for a game that
     /// had come close, it compiled 1.2M blocks loading.
     u32 jit_cache_mib{256};
+    /// JIT code memory mapped twice, executable and writable, so no page changes protection per
+    /// compiled block ("jit_dual_map=0" keeps paged W^X). Used only where the runtime passes a probe.
+    bool jit_dual_map{true};
     /// Texture memory past which clean textures unused for a while are evicted even with headroom
     /// left ("texture_cap_mib=", 0 turns it off). They decode again from guest memory when used.
     u32 texture_cap_mib{1024};
@@ -616,6 +619,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     g_test_memory_limit = u64{config.memory_limit_mib} << 20;
     Core::SetJitCodeCacheSize(config.jit_cache_mib << 20);
     Dynarmic::SetCodeCacheCap(0);
+    Dynarmic::SetDualMappedCode(config.jit_dual_map);
     Core::SetPageTableExclusives(config.inline_exclusives);
     D3D12::SetAppMemoryQuery(QueryAppMemory);
     D3D12::SetBcArrayDecode(!config.bc_arrays_native);
@@ -1931,7 +1935,9 @@ std::string MemoryOwners() {
     const u64 jit = Dynarmic::CommittedCodeBytes();
     const u64 known = dram.value_or(0) + jit + Common::MemoryLedgerCommittedBytes();
     return "emulated DRAM " + (dram ? std::to_string(*dram >> 20) + " MiB" : std::string("n/a")) +
-           ", JIT code " + std::to_string(jit >> 20) + " MiB, " + Common::DescribeMemoryLedger() +
+           ", JIT code " + std::to_string(jit >> 20) + " MiB (" +
+           std::to_string(Dynarmic::DualMappedCodeCaches()) + " caches dual-mapped), " +
+           Common::DescribeMemoryLedger() +
            "; rest " + std::to_string((commit > known ? commit - known : 0) >> 20) +
            " MiB of " + std::to_string(commit >> 20) +
            " MiB commit (driver objects, small GPU resources, heaps, executable)";
@@ -2927,6 +2933,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "close_probe=1") {
                             config.close_probe = true;
                             WriteDiag("boot.cfg: every command also closed alone on a scratch list");
+                        } else if (line == "jit_dual_map=0") {
+                            config.jit_dual_map = false;
+                            WriteDiag("boot.cfg: JIT code memory keeps paged W^X");
                         } else if (line == "pso_eviction=0") {
                             config.pso_eviction = false;
                             WriteDiag("boot.cfg: idle pipelines keep their PSOs");
