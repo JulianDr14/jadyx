@@ -280,6 +280,7 @@ void TextureCache<P>::TickFrame() {
     runtime.TickFrame();
     ++frame_tick;
     ReportImageChurn();
+    ReportLiveImages();
 
     if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
         for (auto& buffer : async_buffers_death_ring) {
@@ -2878,6 +2879,99 @@ void TextureCache<P>::ReportImageChurn() {
 }
 
 template <class P>
+void TextureCache<P>::ReportLiveImages() {
+    static constexpr u64 STEP_BYTES = 256_MiB;
+    static constexpr u64 CHECK_FRAMES = 30;
+    if (!VideoCore::Perf::DetailedGpuProfileEnabled() || frame_tick % CHECK_FRAMES != 0) {
+        return;
+    }
+    struct Group {
+        PixelFormat format;
+        u32 width, height;
+        s32 levels, layers;
+        bool gpu_modified;
+        u32 count = 0;
+        u64 bytes = 0;
+        u64 newest_use = 0;
+    };
+    static constexpr std::array<u64, 4> AGE_LIMITS{2, 60, 600, UINT64_MAX};
+    std::array<u64, AGE_LIMITS.size()> age_bytes{};
+    std::vector<Group> groups;
+    u64 total_bytes = 0;
+    u64 gpu_bytes = 0;
+    u64 bad_overlap_bytes = 0;
+    size_t total_count = 0;
+    lru_cache.ForEachItemBelow(frame_tick, [&](ImageId id) {
+        const Image& image = slot_images[id];
+        const u64 bytes = HostSizeBytes(image);
+        const u64 last_use = lru_cache.Tick(image.lru_index);
+        const u64 age = frame_tick - (std::min)(last_use, frame_tick);
+        const bool gpu_modified = True(image.flags & ImageFlagBits::GpuModified);
+        ++total_count;
+        total_bytes += bytes;
+        gpu_bytes += gpu_modified ? bytes : 0;
+        bad_overlap_bytes += True(image.flags & ImageFlagBits::BadOverlap) ? bytes : 0;
+        for (size_t i = 0; i < AGE_LIMITS.size(); ++i) {
+            if (age < AGE_LIMITS[i]) {
+                age_bytes[i] += bytes;
+                break;
+            }
+        }
+        const ImageInfo& info = image.info;
+        const auto it = std::ranges::find_if(groups, [&](const Group& group) {
+            return group.format == info.format && group.width == info.size.width &&
+                   group.height == info.size.height && group.levels == info.resources.levels &&
+                   group.layers == info.resources.layers && group.gpu_modified == gpu_modified;
+        });
+        Group& group = it != groups.end()
+                           ? *it
+                           : groups.emplace_back(Group{info.format, info.size.width,
+                                                       info.size.height, info.resources.levels,
+                                                       info.resources.layers, gpu_modified});
+        ++group.count;
+        group.bytes += bytes;
+        group.newest_use = (std::max)(group.newest_use, last_use);
+    });
+    if (total_bytes < live_report_bytes + STEP_BYTES) {
+        // Falling far below the last report re-arms it, so a later climb is logged again.
+        if (total_bytes + STEP_BYTES * 2 < live_report_bytes) {
+            live_report_bytes = total_bytes;
+        }
+        return;
+    }
+    live_report_bytes = total_bytes;
+    LOG_INFO(HW_GPU,
+             "Live images: {} MiB in {} images | GPU-written {} MiB, bad overlaps {} MiB | last "
+             "used within 2 frames {} MiB, 60 frames {} MiB, 600 frames {} MiB, older {} MiB",
+             total_bytes >> 20, total_count, gpu_bytes >> 20, bad_overlap_bytes >> 20,
+             age_bytes[0] >> 20, age_bytes[1] >> 20, age_bytes[2] >> 20, age_bytes[3] >> 20);
+    std::ranges::sort(groups, [](const Group& lhs, const Group& rhs) {
+        return lhs.bytes > rhs.bytes;
+    });
+    for (size_t i = 0; i < (std::min)(groups.size(), size_t{16}); ++i) {
+        const Group& group = groups[i];
+        LOG_INFO(HW_GPU,
+                 "Live images: {} MiB in {}x {} {}x{} levels {} layers {}{} | last used {} "
+                 "frames ago",
+                 group.bytes >> 20, group.count, group.format, group.width, group.height,
+                 group.levels, group.layers, group.gpu_modified ? ", GPU-written" : "",
+                 frame_tick - (std::min)(group.newest_use, frame_tick));
+    }
+}
+
+template <class P>
+u64 TextureCache<P>::HostSizeBytes(const ImageBase& image) const noexcept {
+    u64 bytes = (std::max)(image.guest_size_bytes, image.unswizzled_size_bytes);
+    if ((IsPixelFormatASTC(image.info.format) &&
+         True(image.flags & ImageFlagBits::AcceleratedUpload)) ||
+        True(image.flags & ImageFlagBits::Converted)) {
+        // What the host image holds: per image, since ASTC arrays may skip recompression.
+        bytes = image.converted_size_bytes;
+    }
+    return Common::AlignUp(bytes, 1024);
+}
+
+template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     ImageBase& image = slot_images[image_id];
     if (AliasCapture::Wants(image)) {
@@ -2888,14 +2982,7 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     if (image.HasScaled()) {
         total_used_memory -= GetScaledImageSizeBytes(image);
     }
-    u64 tentative_size = (std::max)(image.guest_size_bytes, image.unswizzled_size_bytes);
-    if ((IsPixelFormatASTC(image.info.format) &&
-         True(image.flags & ImageFlagBits::AcceleratedUpload)) ||
-        True(image.flags & ImageFlagBits::Converted)) {
-        // What the host image holds: per image, since ASTC arrays may skip recompression.
-        tentative_size = image.converted_size_bytes;
-    }
-    total_used_memory -= Common::AlignUp(tentative_size, 1024);
+    total_used_memory -= HostSizeBytes(image);
     const GPUVAddr gpu_addr = image.gpu_addr;
     const auto alloc_it = image_allocs_table.find(gpu_addr);
     if (alloc_it == image_allocs_table.end()) {

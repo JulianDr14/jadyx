@@ -441,6 +441,13 @@ private:
     void NoteImageDeleted(const Image& image, ImageDeleteReason reason);
     void ReportImageChurn();
 
+    /// gpu_profile only: each time the live images grow by another step, logs what holds the
+    /// memory, grouped by format and size, with how long ago each group was last used.
+    void ReportLiveImages();
+
+    /// Host memory an image takes, as the cache accounts it.
+    [[nodiscard]] u64 HostSizeBytes(const ImageBase& image) const noexcept;
+
     /// Remove image views references from the cache
     void RemoveImageViewReferences(std::span<const ImageViewId> removed_views);
 
@@ -581,6 +588,7 @@ private:
     std::array<u32, NUM_DELETE_REASONS> churn_young_deletes{};
     std::array<u64, NUM_DELETE_REASONS> churn_deleted_bytes{};
     u64 churn_window_start = 0;
+    u64 live_report_bytes = 0;
 
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},
                                                Common::ThreadPlacement::Efficiency};
