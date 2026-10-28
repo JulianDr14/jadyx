@@ -61,6 +61,7 @@ A64EmitX64::A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64::Jit* jit_in
         : EmitX64(code), conf(conf), jit_interface{jit_interface} {
     GenMemory128Accessors();
     GenFastmemFallbacks();
+    GenPageTableThunks();
     GenTerminalHandlers();
     // Before PreludeComplete: the callback lives in the unwind data in code space, which the
     // paged W^X of the UWP build makes read-execute from then on.

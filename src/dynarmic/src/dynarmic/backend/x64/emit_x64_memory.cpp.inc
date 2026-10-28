@@ -115,6 +115,9 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
             EmitCheckMemoryAbort(ctx, inst, end);
             code.jmp(*end, code.T_NEAR);
         });
+    } else if (const void* thunk = PageTableThunk(ordered, false, bitsize, vaddr.getIdx(), value_idx)) {
+        // Shared lookup: a 5 byte call instead of ~85 bytes of lookup and fallback in each block.
+        code.call(thunk);
     } else {
         // Use page table
         ASSERT(conf.page_table);
@@ -202,6 +205,8 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
             EmitCheckMemoryAbort(ctx, inst, end);
             code.jmp(*end, code.T_NEAR);
         });
+    } else if (const void* thunk = PageTableThunk(ordered, true, bitsize, vaddr.getIdx(), value_idx)) {
+        code.call(thunk);
     } else {
         // Use page table
         ASSERT(conf.page_table);

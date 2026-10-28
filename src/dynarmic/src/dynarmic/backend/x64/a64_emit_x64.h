@@ -68,7 +68,10 @@ public:
     void ClearFastDispatchTable();
     void GenMemory128Accessors();
     void GenFastmemFallbacks();
+    void GenPageTableThunks();
     void GenTerminalHandlers();
+    /// Shared page table access for an unordered load or store, nullptr to emit it inline.
+    const void* PageTableThunk(bool ordered, bool write, size_t bitsize, int vaddr_idx, int value_idx) const;
 
     // Microinstruction emitters
     void EmitPushRSB(EmitContext& ctx, IR::Inst* inst);
@@ -129,6 +132,8 @@ public:
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> read_fallbacks;
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> write_fallbacks;
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> exclusive_write_fallbacks;
+    // [write][log2(bitsize / 8)][vaddr register][value register]
+    std::array<const void*, 2 * 5 * 16 * 16> page_table_thunks{};
     ::Common::unordered_set<DoNotFastmemMarker> do_not_fastmem;
     boost::container::stable_vector<Xbyak::Label> shared_labels;
     const void* terminal_handler_pop_rsb_hint = nullptr;

@@ -72,6 +72,8 @@ public:
     void ClearFastDispatchTable();
     void GenFastmemFallbacks();
     void GenTerminalHandlers();
+    /// A32 always emits its page table accesses inline.
+    const void* PageTableThunk(bool, bool, size_t, int, int) const { return nullptr; }
 
     // Microinstruction emitters
 #define OPCODE(...)
