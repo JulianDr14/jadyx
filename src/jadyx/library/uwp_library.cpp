@@ -962,7 +962,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         case StorageJob::PortalRemoval:
                             return network_portal.RunRemoval([&](const PortalRemoval& r) { return portal_library.Remove(r); });
                         case StorageJob::PortalContent: return network_portal.FinalizeContent(install);
-                        default: return network_portal.FinalizeGame(ValidateUploadedNsp);
+                        default: return network_portal.FinalizeGame();
                         }
                     }};
                 // Keys and firmware stay as they are: the rescan keeps every other game's titles.

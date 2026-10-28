@@ -15,10 +15,12 @@ PluralForm ZeroOrOneIsOne(std::uint64_t count) {
 }
 
 // English first: it is the fallback for any language and any missing text.
-const std::array<UiLanguage, 3> languages{{
+const std::array<UiLanguage, 4> languages{{
     {L"en", L"English", &EnglishCatalog, &OneOrOther},
     {L"es", L"Español", &SpanishCatalog, &OneOrOther},
     {L"pt-BR", L"Português (Brasil)", &PortugueseBrazilCatalog, &ZeroOrOneIsOne},
+    {L"zh-CN", L"简体中文", &SimplifiedChineseCatalog,
+     [](std::uint64_t) { return PluralForm::Other; }},
 }};
 } // namespace
 

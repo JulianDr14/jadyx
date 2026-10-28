@@ -26,7 +26,7 @@ inline constexpr std::size_t MaxUserNameLength = 10;
 inline constexpr std::wstring_view DefaultUserName = L"Jadyx";
 
 struct SystemSettings {
-    std::wstring ui_language;                         ///< BCP 47 tag; empty follows the system.
+    std::wstring ui_language{L"zh-CN"};               ///< BCP 47 tag; empty follows the system.
     std::optional<Settings::Language> game_language;  ///< nullopt follows the system.
     std::optional<Settings::Region> region;           ///< nullopt follows the system.
     std::wstring user_name;                           ///< Empty keeps the default name.

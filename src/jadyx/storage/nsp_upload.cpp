@@ -63,15 +63,17 @@ fs::path Filename(const std::string& name) {
     return fs::path{std::u8string{name.begin(), name.end()}};
 }
 
-bool ValidName(const std::string& name, bool system_files = false) {
-    if (name.size() < 5 || name.size() > 200 || name.back() == ' ' || name.back() == '.') return false;
+bool ValidName(const std::string& name, bool system_files = false, bool allow_any_game_format = false) {
+    if ((allow_any_game_format && !system_files ? name.empty() : name.size() < 5) || name.size() > 200 ||
+        name.back() == ' ' || name.back() == '.') return false;
     for (const unsigned char c : name)
         if (c < 32 || std::string_view{"/\\:<>\"|?*"}.find(static_cast<char>(c)) != std::string_view::npos) return false;
     if (name.find("..") != std::string::npos) return false;
     auto lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (system_files ? !(lower.ends_with(".zip") || lower.ends_with(".nca") || lower=="prod.keys" || lower=="title.keys") :
-                       !lower.ends_with(".nsp")) return false;
+    if (system_files && !(lower.ends_with(".zip") || lower.ends_with(".nca") || lower=="prod.keys" || lower=="title.keys"))
+        return false;
+    if (!system_files && !allow_any_game_format && !lower.ends_with(".nsp")) return false;
     const auto stem = lower.substr(0, lower.find('.'));
     if (stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" ||
         (stem.size() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) && stem[3] >= '0' && stem[3] <= '9')) return false;
@@ -110,12 +112,14 @@ struct NspUpload::Impl {
     std::uint64_t generation{}, file_id{};
     DWORD volume{};
     std::stop_source cancellation;
-    bool system_files{}, consume{}, developer{};
+    bool system_files{}, consume{}, developer{}, allow_any_game_format{};
 
-    explicit Impl(fs::path games_, bool system_files_, fs::path temporary, bool consume_, bool developer_) :
+    explicit Impl(fs::path games_, bool system_files_, fs::path temporary, bool consume_, bool developer_,
+                  bool allow_any_game_format_) :
         games{std::move(games_)},
         folder{temporary.empty() ? games.parent_path() / "jadyx/transfers/nsp" : std::move(temporary)},
-        payload{folder / "payload.part"}, system_files{system_files_}, consume{consume_}, developer{developer_} {
+        payload{folder / "payload.part"}, system_files{system_files_}, consume{consume_}, developer{developer_},
+        allow_any_game_format{allow_any_game_format_} {
         fs::create_directories(games);
         fs::create_directories(folder);
         Recover();
@@ -160,7 +164,8 @@ struct NspUpload::Impl {
                 if ((destination != "internal" && !on_developer) || (on_developer && !developer)) continue;
                 const auto target_games = GamesFor(on_developer);
                 const auto data_path = PayloadFor(on_developer);
-                if (json.at("version") != 1 || next <= generation || !ValidName(filename,system_files) || !ValidTag(tag) ||
+                if (json.at("version") != 1 || next <= generation ||
+                    !ValidName(filename, system_files, allow_any_game_format) || !ValidTag(tag) ||
                     !Hex(id, 32) || !Hex(fingerprint, 64) || !length || length > MaxLength || offset > length) continue;
                 const auto identity = json.at("file_id").get<std::uint64_t>();
                 const auto serial = json.at("volume").get<DWORD>();
@@ -209,8 +214,10 @@ struct NspUpload::Impl {
     }
 };
 
-NspUpload::NspUpload(fs::path games, bool system_files, fs::path temporary, bool consume, bool developer) :
-    impl{std::make_unique<Impl>(std::move(games),system_files,std::move(temporary),consume,developer)} {}
+NspUpload::NspUpload(fs::path games, bool system_files, fs::path temporary, bool consume, bool developer,
+                     bool allow_any_game_format) :
+    impl{std::make_unique<Impl>(std::move(games), system_files, std::move(temporary), consume, developer,
+                                allow_any_game_format)} {}
 NspUpload::~NspUpload() { Cancel(); }
 
 UploadSnapshot NspUpload::Snapshot() const {
@@ -254,7 +261,8 @@ void NspUpload::Resume() {
 
 UploadResult NspUpload::Create(std::string name, std::string fingerprint, std::uint64_t length, std::string tag,
                               bool developer) {
-    if (!ValidName(name,impl->system_files) || !Hex(fingerprint, 64) || !ValidTag(tag) || !length || length > MaxLength) return {400, "file"};
+    if (!ValidName(name, impl->system_files, impl->allow_any_game_format) || !Hex(fingerprint, 64) ||
+        !ValidTag(tag) || !length || length > MaxLength) return {400, "file"};
     if (developer && !impl->developer) return {400, "destination"};
     std::unique_lock operation{impl->operation, std::try_to_lock};
     if (!operation.owns_lock()) return {409, "busy"};
@@ -391,7 +399,7 @@ UploadResult NspUpload::Ready(const std::string& id) {
     return {};
 }
 UploadResult NspUpload::Rename(const std::string& id, std::string name) {
-    if (!ValidName(name,impl->system_files)) return {400, "file"};
+    if (!ValidName(name, impl->system_files, impl->allow_any_game_format)) return {400, "file"};
     std::unique_lock operation{impl->operation, std::try_to_lock};
     if (!operation.owns_lock()) return {409, "busy"};
     std::lock_guard lock{impl->mutex};
@@ -416,7 +424,7 @@ std::string NspUpload::Finalize(const NspValidator& validate) {
     }
     std::string error;
     try {
-        error=validate(impl->Payload(), impl->cancellation.get_token());
+        if (validate) error=validate(impl->Payload(), impl->cancellation.get_token());
         if (impl->cancellation.stop_requested()) error="interrupted";
         if (error.empty() && impl->consume) {
             std::lock_guard lock{impl->mutex};

@@ -461,6 +461,20 @@ Fuentes primarias: [Zstandard streaming y parametros](https://facebook.github.io
 Libarchive configurado en este proyecto solo para lectura; por eso el escritor
 PAX usa el contenedor estandar y se valida con un lector independiente.
 
+## Transferencia de archivos de juego sin filtro de formato
+
+La pestaña de juegos del portal acepta cualquier extensión y publica el archivo recibido
+sin interpretar su contenido. `stage=game-files` describe esta transferencia. Se mantienen
+las comprobaciones de nombre/ruta, colisión, tamaño, espacio, bloques, checkpoints y publicación
+sin sobrescritura; no se relaja la validación de claves/firmware ni la importación de updates/DLC.
+Aceptar un archivo solo confirma su transferencia: no implica que el formato sea ejecutable ni que
+aparezca en la biblioteca, cuyo escáner y loader conservan sus formatos admitidos.
+
+El selector web no restringe extensiones. Sus textos es/en/pt-BR/zh-CN aclaran que cualquier
+archivo se puede transferir y que solo los formatos compatibles se pueden iniciar. La carga
+genérica se limita a la ruta de juegos del portal; los uploads de contenido continúan pasando por
+su validador/importador correspondiente.
+
 ## Compresion multihilo y descarga en streaming de logs — 0.3.6.17+ (20 octubre 2026)
 
 El portal solo exporta con la consola quieta en modo red, asi que la compresion usa

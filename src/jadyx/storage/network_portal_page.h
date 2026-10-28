@@ -176,14 +176,14 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <p class="keep" id="update-keep"></p><div class="update-foot"><button class="back" id="update-skip">Go to content</button></div></section>
 <div class="view" id="view-content"><nav class="cats"><p class="kicker" id="content-kicker">Install</p>
 <button class="cat" id="cat-games" aria-selected="true"><svg class="ico" viewBox="0 0 24 24"><path d="M6.5 8h11a4 4 0 0 1 3.9 4.9l-1 4.4a2.4 2.4 0 0 1-4.2 1L14.5 16h-5l-1.7 2.3a2.4 2.4 0 0 1-4.2-1l-1-4.4A4 4 0 0 1 6.5 8z"/><path d="M8 11v3M6.5 12.5h3M15.5 12h.01M17.5 14h.01"/></svg>
-<span><b id="cat-games-title">Games</b><small id="cat-games-sub">NSP · base game</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
+<span><b id="cat-games-title">Games</b><small id="cat-games-sub">Game files · any format</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
 <button class="cat" id="cat-library" aria-selected="false" hidden><svg class="ico" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
 <span><b id="cat-library-title">Library</b><small id="cat-library-sub">Updates · DLC · delete</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
 <div class="store"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13 7.5 5h9L19 13M7 16.5h.01"/></svg><span id="space"></span></div></nav>
-<section id="upload" class="card" hidden><div class="head"><h2 id="uploadtitle">Import NSP games</h2><p id="uploadintro">Base games only. Choose where your console keeps them.</p></div>
+<section id="upload" class="card" hidden><div class="head"><h2 id="uploadtitle">Transfer game files</h2><p id="uploadintro">Any file format is accepted. Supported game formats can be launched.</p></div>
 <nav class="seg" id="where" role="tablist" hidden><button id="where-internal" role="tab" aria-selected="true">Internal storage</button><button id="where-developer" role="tab" aria-selected="false">Dev storage (D:)</button></nav>
-<label class="drop" id="files-zone"><input id="files" type="file" accept=".nsp" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
-<strong id="fileslabel">Choose NSP files</strong><span id="files-drop">or drop them here</span><span class="picked" id="files-picked"></span></label>
+<label class="drop" id="files-zone"><input id="files" type="file" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+<strong id="fileslabel">Choose game files</strong><span id="files-drop">or drop them here</span><span class="picked" id="files-picked"></span></label>
 <div class="field"><label id="namelabel" for="name">Destination name (one file)</label><input id="name" maxlength="100" autocomplete="off"></div>
 <div class="actions"><button id="send" class="primary">Upload / resume</button><button id="pause">Pause</button><button id="rename">Rename pending file</button>
 <button class="danger" id="discard">Discard partial file</button></div>
@@ -232,55 +232,68 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <footer><svg class="ico" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/></svg><span id="privacy">Local network · HTTP connection without encryption.</span></footer>
 <script>
 'use strict';
-const $=id=>document.getElementById(id),lang=navigator.language.toLowerCase(),es=lang.startsWith('es'),pt=lang.startsWith('pt');
-const words=pt?{
+const $=id=>document.getElementById(id),lang=navigator.language.toLowerCase(),es=lang.startsWith('es'),pt=lang.startsWith('pt'),zh=lang.startsWith('zh');
+const words=zh?{
+ title:'连接到主机',intro:'输入 Jadyx 显示的临时连接码。请让应用保持在游戏库页面。',label:'连接码',connect:'连接',
+ uploadtitle:'传输游戏文件',uploadintro:'支持任意文件格式。只有模拟器支持的游戏格式才能启动。','where-internal':'内部存储','where-developer':'开发者存储（D:）',fileslabel:'选择游戏文件',
+ namelabel:'保存文件名（单个文件）',send:'上传 / 继续',rename:'重命名待处理文件',pause:'暂停',discard:'删除未完成文件',
+ kicker:'局域网传送门','status-off':'未连接','status-on':'已连接','code-hint':'4 位数字 · 每次打开传送门都会更换','files-drop':'或将文件拖到此处',files:'个文件',
+ privacy:'局域网 · HTTP 连接未加密。',ok:'连接成功。',bad:'连接码错误或已过期。请在 Jadyx 中生成新码。',
+ lost:'连接已关闭。请从 Jadyx 重新连接；已确认的进度会保留。',free:'可用空间',confirmed:'已确认',
+ speed:'速度',eta:'剩余时间',queue:'队列',choose:'请选择一个或多个文件。',same:'有其他文件正在等待。请选择同一文件以继续，或删除未完成的传输。',
+ receiving:'正在接收',paused:'已暂停。选择同一文件即可继续。',ready:'正在准备文件',validating:'正在保存游戏文件',publishing:'正在保存到游戏存储',complete:'文件已保存',
+ busy:'请等待 Jadyx 中的操作完成。',exists:'目标文件已存在。请更改文件名后重试。',space:'可用空间不足。',
+ file:'文件名无效。请检查文件名。',disk:'无法写入或保存文件。',
+ interrupted:'传输中断。可以从已确认的进度继续。',partial:'有未完成的上传。请继续或删除。',recovery:'无法恢复未完成的文件。请先删除后再开始。',
+ unavailable:'当前无法导入。',destination:'开发者存储（D:）不可用，请选择内部存储。',
+ attempts:'尝试次数过多，请等待一分钟。',version:'上传版本不兼容，请重新加载页面。',idle:'可以传输文件。'
+}:pt?{
  title:'Conecte-se ao seu console',intro:'Digite o código temporário que o Jadyx mostra. Mantenha o app aberto na biblioteca.',label:'Código de conexão',connect:'Conectar',
- uploadtitle:'Importar jogos NSP',uploadintro:'Somente jogos base. Escolha onde o console os guarda.','where-internal':'Armazenamento interno','where-developer':'Armazenamento dev (D:)',fileslabel:'Selecionar arquivos NSP',
+ uploadtitle:'Transferir arquivos de jogos',uploadintro:'Qualquer formato de arquivo é aceito. Só é possível iniciar formatos compatíveis.','where-internal':'Armazenamento interno','where-developer':'Armazenamento dev (D:)',fileslabel:'Selecionar arquivos de jogos',
  namelabel:'Nome de destino (um único arquivo)',send:'Enviar / retomar',rename:'Renomear arquivo pendente',pause:'Pausar',discard:'Apagar arquivo parcial',
  kicker:'Portal da rede local','status-off':'Desconectado','status-on':'Conectado','code-hint':'4 dígitos · muda cada vez que você abre o portal','files-drop':'ou arraste-os para cá',files:'arquivos',
  privacy:'Rede local · Conexão HTTP sem criptografia.',ok:'Conexão estabelecida.',bad:'Código incorreto ou expirado. Gere outro no Jadyx.',
  lost:'A conexão foi encerrada. Conecte-se de novo pelo Jadyx; o progresso confirmado é mantido.',free:'Espaço livre',confirmed:'Confirmado',
- speed:'Velocidade',eta:'Tempo restante',queue:'Na fila',choose:'Selecione um ou mais arquivos NSP.',same:'Há outro arquivo pendente. Selecione o mesmo arquivo para retomá-lo ou apague a transferência parcial.',
- receiving:'Recebendo',paused:'Pausado. Selecione o mesmo arquivo para continuar.',ready:'Aguardando validação',validating:'Validando NSP',publishing:'Adicionando à biblioteca',complete:'Instalado na biblioteca',
+ speed:'Velocidade',eta:'Tempo restante',queue:'Na fila',choose:'Selecione um ou mais arquivos.',same:'Há outro arquivo pendente. Selecione o mesmo arquivo para retomá-lo ou apague a transferência parcial.',
+ receiving:'Recebendo',paused:'Pausado. Selecione o mesmo arquivo para continuar.', ready:'Preparando arquivo',validating:'Salvando arquivo de jogo',publishing:'Salvando no armazenamento de jogos',complete:'Arquivo salvo',
  busy:'Aguarde o fim da operação no Jadyx.',exists:'Esse nome já existe. Altere o nome de destino e tente de novo.',space:'Não há espaço suficiente.',
- file:'Nome ou arquivo inválido. Selecione um NSP.',base:'Somente jogos base são aceitos; não atualizações, DLC nem pacotes mistos.',
- nsp:'A estrutura do NSP é inválida.',incomplete:'O NSP está incompleto.',keys:'Não foi possível ler os metadados. Verifique as chaves do seu console e o arquivo NSP.',
+ file:'Nome de arquivo inválido.',
  disk:'Não foi possível gravar ou publicar o arquivo.',interrupted:'Transferência interrompida. Você pode retomar a partir do progresso confirmado.',
  partial:'Há uma transferência pendente. Retome ou apague.',recovery:'Não foi possível recuperar o arquivo parcial. Apague-o antes de iniciar outro.',unavailable:'A importação não está disponível no momento.',destination:'O armazenamento dev (D:) não está disponível. Escolha o armazenamento interno.',
  attempts:'Tentativas demais. Aguarde um minuto.',version:'Versão de transferência incompatível. Recarregue a página.',idle:'Pronto para importar.'
 }:es?{
  title:'Conecta con tu consola',intro:'Introduce el código temporal que muestra Jadyx. Mantén la app abierta en la biblioteca.',label:'Código de conexión',connect:'Conectar',
- uploadtitle:'Importar juegos NSP',uploadintro:'Solo juegos base. Elige dónde los guarda la consola.','where-internal':'Almacenamiento interno','where-developer':'Almacenamiento dev (D:)',fileslabel:'Seleccionar archivos NSP',
+ uploadtitle:'Transferir archivos de juegos',uploadintro:'Se acepta cualquier formato. Solo se pueden iniciar los formatos compatibles.','where-internal':'Almacenamiento interno','where-developer':'Almacenamiento dev (D:)',fileslabel:'Seleccionar archivos de juegos',
  namelabel:'Nombre de destino (un solo archivo)',send:'Subir / reanudar',rename:'Renombrar archivo pendiente',pause:'Pausar',discard:'Eliminar archivo parcial',
  kicker:'Portal de red local','status-off':'Sin conectar','status-on':'Conectado','code-hint':'4 dígitos · cambia cada vez que abres el portal','files-drop':'o arrástralos aquí',files:'archivos',
  privacy:'Red local · Conexión HTTP sin cifrado.',ok:'Conexión establecida.',bad:'Código incorrecto o caducado. Genera otro en Jadyx.',
  lost:'La conexión se ha cerrado. Vuelve a conectarte desde Jadyx; el progreso confirmado se conserva.',free:'Espacio libre',confirmed:'Confirmado',
- speed:'Velocidad',eta:'Tiempo restante',queue:'En cola',choose:'Selecciona uno o varios archivos NSP.',same:'Hay un archivo pendiente distinto. Selecciona el mismo archivo para reanudarlo o elimina la transferencia parcial.',
- receiving:'Recibiendo',paused:'En pausa. Selecciona el mismo archivo para continuar.',ready:'Esperando a validar',validating:'Validando NSP',publishing:'Añadiendo a la biblioteca',complete:'Instalado en la biblioteca',
+ speed:'Velocidad',eta:'Tiempo restante',queue:'En cola',choose:'Selecciona uno o varios archivos.',same:'Hay un archivo pendiente distinto. Selecciona el mismo archivo para reanudarlo o elimina la transferencia parcial.',
+ receiving:'Recibiendo',paused:'En pausa. Selecciona el mismo archivo para continuar.',ready:'Preparando archivo',validating:'Guardando archivo de juego',publishing:'Guardando en el almacenamiento de juegos',complete:'Archivo guardado',
  busy:'Espera a que termine la operación en Jadyx.',exists:'Ese nombre ya existe. Cambia el nombre de destino y vuelve a intentarlo.',space:'No hay espacio suficiente.',
- file:'Nombre o archivo no válido. Selecciona un NSP.',base:'Solo se admiten juegos base; no actualizaciones, DLC ni paquetes mezclados.',
- nsp:'La estructura del NSP no es válida.',incomplete:'El NSP está incompleto.',keys:'No se pueden leer sus metadatos. Revisa las claves de tu consola y el archivo NSP.',
+ file:'Nombre de archivo no válido.',
  disk:'No se pudo escribir o publicar el archivo.',interrupted:'Transferencia interrumpida. Puedes reanudar desde el progreso confirmado.',
  partial:'Hay una transferencia pendiente. Reanúdala o elimínala.',recovery:'No se pudo recuperar el parcial. Elimínalo antes de iniciar otro.',unavailable:'La importación no está disponible en este momento.',destination:'El almacenamiento dev (D:) no está disponible. Elige el almacenamiento interno.',
  attempts:'Demasiados intentos. Espera un minuto.',version:'Versión de transferencia incompatible. Recarga la página.',idle:'Listo para importar.'
 }:{ok:'Connected.',bad:'Incorrect or expired code. Generate another in Jadyx.',lost:'Connection closed. Reconnect in Jadyx; confirmed progress is retained.',
- free:'Free space','where-internal':'Internal storage','where-developer':'Dev storage (D:)',confirmed:'Confirmed',speed:'Speed',eta:'Time left',queue:'Queued',choose:'Choose one or more NSP files.',files:'files',
+ free:'Free space','where-internal':'Internal storage','where-developer':'Dev storage (D:)',confirmed:'Confirmed',speed:'Speed',eta:'Time left',queue:'Queued',choose:'Choose one or more files.',files:'files',
  same:'A different file is pending. Select the same file to resume, or discard the partial upload.',receiving:'Receiving',paused:'Paused. Select the same file to continue.',
- ready:'Waiting for validation',validating:'Validating NSP',publishing:'Adding to library',complete:'Installed in your library',busy:'Wait for the operation in Jadyx to finish.',
- exists:'This destination already exists. Change its name and try again.',space:'Not enough free space.',file:'Invalid filename or file. Choose an NSP.',
- base:'Base games only; updates, DLC and mixed packages are not supported.',nsp:'Invalid NSP structure.',incomplete:'The NSP is incomplete.',
- keys:'Cannot read its metadata. Check your console keys and NSP file.',disk:'Could not write or publish this file.',
+ ready:'Preparing file',validating:'Saving game file',publishing:'Saving to game storage',complete:'File saved',busy:'Wait for the operation in Jadyx to finish.',
+ exists:'This destination already exists. Change its name and try again.',space:'Not enough free space.',file:'Invalid filename.',
+ disk:'Could not write or publish this file.',
  interrupted:'Transfer interrupted. You can resume from confirmed progress.',partial:'An upload is pending. Resume or discard it.',
  recovery:'Cannot recover the partial file. Discard it before starting another.',unavailable:'Import is currently unavailable.',destination:'Dev storage (D:) is not available. Choose internal storage.',
  attempts:'Too many attempts. Wait one minute.',version:'Incompatible upload version. Reload this page.',idle:'Ready to import.'};
-if(es||pt){document.documentElement.lang=pt?'pt-BR':'es';for(const id of ['title','intro','label','connect','uploadtitle','uploadintro','fileslabel','namelabel','send','rename','pause','discard','privacy',
+if(es||pt||zh){document.documentElement.lang=zh?'zh-CN':pt?'pt-BR':'es';for(const id of ['title','intro','label','connect','uploadtitle','uploadintro','fileslabel','namelabel','send','rename','pause','discard','privacy',
  'kicker','status-off','status-on','code-hint','files-drop','where-internal','where-developer'])$(id).textContent=words[id];}
-const labels=pt?{'tab-content':'Conteúdo','tab-system':'Sistema','content-kicker':'Instalar','cat-games-title':'Jogos','cat-games-sub':'NSP · jogo base',
+const labels=zh?{'tab-content':'内容','tab-system':'系统','content-kicker':'安装','cat-games-title':'游戏文件','cat-games-sub':'任意格式 · 仅支持格式可启动',
+ 'cat-library-title':'游戏库','cat-library-sub':'更新 · DLC · 删除','system-kicker':'系统文件','cat-keys-title':'密钥'}
+:pt?{'tab-content':'Conteúdo','tab-system':'Sistema','content-kicker':'Instalar','cat-games-title':'Jogos','cat-games-sub':'Qualquer formato',
  'cat-library-title':'Biblioteca','cat-library-sub':'Atualizações · DLC · apagar','system-kicker':'Arquivos do sistema','cat-keys-title':'Chaves'}
-:es?{'tab-content':'Contenido','tab-system':'Sistema','content-kicker':'Instalar','cat-games-title':'Juegos','cat-games-sub':'NSP · juego base',
+:es?{'tab-content':'Contenido','tab-system':'Sistema','content-kicker':'Instalar','cat-games-title':'Archivos de juego','cat-games-sub':'Cualquier formato',
  'cat-library-title':'Biblioteca','cat-library-sub':'Actualizaciones · DLC · eliminar','system-kicker':'Archivos del sistema','cat-keys-title':'Claves'}:{};
 for(const [id,text]of Object.entries(labels))$(id).textContent=text;
-if(es||pt)document.title='Portal Jadyx';
+if(es||pt||zh)document.title=zh?'Jadyx 传送门':'Portal Jadyx';
 // The header's tabs and each page's categories, as in the console: one of each group is shown.
 const tabs=[['tab-content','view-content'],['tab-system','view-system']],categories=[['cat-keys','keys-pane'],['cat-firmware','firmware-pane']];
 function choose(group,chosen){for(const [button,view]of group){$(button).ariaSelected=String(button===chosen);$(view).hidden=button!==chosen;}}

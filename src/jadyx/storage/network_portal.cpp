@@ -587,7 +587,7 @@ struct NetworkPortal::Impl {
             Reply(response, 200, {{"session", session}});
         });
         server->Get("/api/v1/status", [this](const auto&, auto& response) {
-            Reply(response, 200, {{"running", true}, {"stage", upload ? "nsp" : "connection-test"},
+            Reply(response, 200, {{"running", true}, {"stage", upload ? "game-files" : "connection-test"},
                 {"uploads", bool(upload)}, {"transfer", upload ? UploadJson(upload->Snapshot()) : Json::object()},
                 {"library", bool(library.games)}, {"content", content ? UploadJson(content->Snapshot()) : Json::object()},
                 {"install", InstallJson()},
@@ -1016,7 +1016,7 @@ NetworkPortal::NetworkPortal(std::filesystem::path games,SystemImportBackend bac
             impl->system=std::make_unique<SystemUpload>(games.parent_path(),std::move(backend));
             const auto transfers=games.parent_path()/"jadyx/transfers/content";
             impl->content=std::make_unique<NspUpload>(games,false,transfers,true);
-            impl->upload=std::make_unique<NspUpload>(std::move(games),false,std::filesystem::path{},false,true);
+            impl->upload=std::make_unique<NspUpload>(std::move(games),false,std::filesystem::path{},false,true,true);
         }
         catch (...) { impl->storage_failed=true; }
     }

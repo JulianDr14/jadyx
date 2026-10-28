@@ -4,6 +4,8 @@ const fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto'),
 const header=fs.readFileSync('src/jadyx/storage/network_portal_page.h','utf8');
 const script=header.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(script,{filename:'network-portal-page.js'});
+assert.doesNotMatch(header,/<input id="files"[^>]*\baccept=/,'game file picker must not restrict formats');
+assert.match(header,/支持任意文件格式/);
 // /logo.png serves the app's controller logo; its embedded bytes must match the packaged asset.
 const logo=fs.readFileSync('src/jadyx/storage/network_portal_logo.h','utf8').match(/Logo\[\]=\{([\s\S]*?)\};/)[1].match(/0x[0-9a-f]{2}/g).map(Number);
 assert.ok(Buffer.from(logo).equals(fs.readFileSync('dist/uwp/Assets/Square150x150Logo.scale-200.png')),'network_portal_logo.h is stale');
@@ -33,6 +35,7 @@ for(const size of [0,3,55,56,63,64,65,128,131072]){
  await browserScenario({collision:true});
  await browserScenario({pause:true});
  await browserScenario({queue:true});
+ await browserScenario({anyFormat:true,language:'zh-CN'});
  console.log('PASS: browser client mocked 5GiB queue/chunks4-16-64/64-bit resume/lost ACK/different file/collision/pause; no whole-file arrayBuffer');
  for(const language of ['es','en','pt-BR'])for(const kind of ['keys','firmware'])for(const zip of [false,true])await systemScenario(kind,zip,language);
  console.log('PASS: browser keys/firmware, ZIP/loose, review warning checkbox and explicit confirmation (mock HTTP)');
@@ -44,10 +47,12 @@ async function browserScenario(options){
  const elements=new Map(),callbacks=new Map();
  const element=id=>{
   if(!elements.has(id))elements.set(id,{value:'',textContent:'',files:[],hidden:false,disabled:false,
+   classList:{toggle(){},add(){},remove(){}},
+   setAttribute(key,value){this[key]=value;},
    addEventListener:(event,callback)=>callbacks.set(id+':'+event,callback)});
   return elements.get(id);
  };
- const length=5*1024**3,id='a'.repeat(32),name='base.nsp';
+ const length=5*1024**3,id='a'.repeat(32),name=options.anyFormat?'payload.bin':'base.nsp';
  const selected={name,size:length,lastModified:123,slice:(start,end=length)=>({size:end-start,arrayBuffer:async()=>{
   assert.ok(end-start<=65536,'large file must never be loaded as ArrayBuffer');return new Uint8Array(end-start).buffer;
  }})};
@@ -90,24 +95,29 @@ async function browserScenario(options){
    });
   }
  }
- context=vm.createContext({document:{getElementById:element,documentElement:{}},navigator:{language:'es'},
+ const document={getElementById:element,documentElement:{},body:{classList:{toggle(){}}}};
+ context=vm.createContext({document,navigator:{language:options.language||'es'},
   location:{search:'?chunk='+(options.chunk||16)},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
   performance,XMLHttpRequest:XHR,fetch,btoa:value=>Buffer.from(value,'binary').toString('base64'),
   setTimeout:callback=>{queueMicrotask(callback);return 1;},setInterval:()=>1,clearInterval:()=>{},selected});
  vm.runInContext(script,context);
+ if(options.language==='zh-CN'){
+  assert.equal(document.documentElement.lang,'zh-CN');
+  assert.equal(element('uploadintro').textContent,'支持任意文件格式。只有模拟器支持的游戏格式才能启动。');
+ }
  if(options.resume||options.different){
   const signature=await vm.runInContext('fingerprint(selected)',context);
   const offset=4*1024**3+1048576;
   job={...job,id,name,fingerprint:options.different?'b'.repeat(64):signature,length,offset,received:offset,phase:'paused'};
  }
  element('code').value='1234';await callbacks.get('pair:submit')({preventDefault(){}});
- element('files').files=options.queue?[selected,{...selected,name:'second.nsp'}]:[selected];callbacks.get('files:change')();
+ element('files').files=options.queue?[selected,{...selected,name:options.anyFormat?'second.bin':'second.nsp'}]:[selected];callbacks.get('files:change')();
  await callbacks.get('send:click')();
  if(controlPromise)await controlPromise;
  if(options.different){assert.equal(writes,0);assert.match(element('message').textContent,/distinto/);}
  else if(options.collision){
   assert.equal(writes,0);assert.match(element('message').textContent,/existe/);
-  element('name').value='renamed.nsp';await callbacks.get('send:click')();assert.equal(job.name,'renamed.nsp');assert.equal(job.phase,'complete');
+  element('name').value=options.anyFormat?'renamed.bin':'renamed.nsp';await callbacks.get('send:click')();assert.equal(job.name,element('name').value);assert.equal(job.phase,'complete');
  }else if(options.pause){assert.equal(job.offset,16*1048576);assert.equal(job.phase,'paused');}
  else{assert.equal(job.offset,length);assert.equal(job.phase,'complete');}
  if(options.queue)assert.deepEqual(completed,[name,'second.nsp']);
@@ -116,6 +126,7 @@ async function browserScenario(options){
 async function systemScenario(kind,zip,language){
  const elements=new Map(),callbacks=new Map();
  const element=id=>{if(!elements.has(id))elements.set(id,{value:'',checked:false,textContent:'',files:[],hidden:false,disabled:false,
+  setAttribute(key,value){this[key]=value;},
   addEventListener:(event,callback)=>callbacks.set(id+':'+event,callback)});return elements.get(id);};
  const id='b'.repeat(32),fileid='c'.repeat(32),length=1024*1024+1;
  const selected={name:zip?'source.zip':kind==='keys'?'prod.keys':'0'.repeat(32)+'.nca',size:length,lastModified:123,
@@ -149,7 +160,7 @@ async function systemScenario(kind,zip,language){
   getResponseHeader(k){return k==='Upload-Offset'?String(system.file.offset):null;}
   send(blob){assert.equal(Number(this.headers['Upload-Offset']),system.file.offset);system.file.offset+=blob.size;system.file.received=system.file.offset;writes++;queueMicrotask(()=>{this.status=204;this.onload();});}
  }
- const context=vm.createContext({document:{getElementById:element,documentElement:{}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
+ const context=vm.createContext({document:{getElementById:element,documentElement:{},body:{classList:{toggle(){}}}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
   performance,XMLHttpRequest:XHR,fetch,btoa:v=>Buffer.from(v,'binary').toString('base64'),setTimeout:cb=>{queueMicrotask(cb);return 1;},setInterval:()=>1,clearInterval:()=>{}});
  vm.runInContext(script,context);
  assert.equal(element('keys-title').textContent,language==='es'?'Importar claves':language==='pt-BR'?'Importar chaves':'Import keys','initial keys card is a title, never an error');
@@ -166,6 +177,7 @@ async function libraryScenario(language){
  const elements=new Map(),requests=[];
  const make=tag=>{const n={tag,value:'',textContent:'',files:[],hidden:false,disabled:false,style:{},dataset:{},children:[],listeners:{},
   classList:{add(){},remove(){}},addEventListener:(event,callback)=>{n.listeners[event]=callback;},
+  setAttribute(key,value){this[key]=value;},
   append:(...c)=>n.children.push(...c),replaceChildren:(...c)=>{n.children=c;}};return n;};
  const element=id=>{if(!elements.has(id))elements.set(id,make('#'+id));return elements.get(id);};
  const click=n=>n.listeners.click();
@@ -206,7 +218,7 @@ async function libraryScenario(language){
   send(blob){assert.equal(Number(this.headers['Upload-Offset']),content.offset);content.offset+=blob.size;content.received=content.offset;queueMicrotask(()=>{this.status=204;this.onload();});}
  }
  const file={name:'patch.nsp',size:length,lastModified:1,slice:(start,end=length)=>({size:end-start,arrayBuffer:async()=>new Uint8Array(end-start).buffer})};
- const context=vm.createContext({document:{getElementById:element,createElement:make,documentElement:{}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
+ const context=vm.createContext({document:{getElementById:element,createElement:make,documentElement:{},body:{classList:{toggle(){}}}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
   performance,XMLHttpRequest:XHR,fetch,URL:{createObjectURL:()=>'blob:x',revokeObjectURL(){}},btoa:v=>Buffer.from(v,'binary').toString('base64'),
   setTimeout:(cb,ms)=>{if(!(ms>=6000))queueMicrotask(cb);return 1;},clearTimeout:()=>{},setInterval:()=>1,clearInterval:()=>{}});
  vm.runInContext(script,context);

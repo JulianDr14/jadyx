@@ -40,7 +40,8 @@ public:
     static constexpr std::uint64_t MaxLength = 1ULL << 40;
     static constexpr std::uint64_t MaxChunk = 64ULL << 20;
     explicit NspUpload(std::filesystem::path games, bool system_files = false,
-                       std::filesystem::path temporary = {}, bool consume = false, bool developer = false);
+                       std::filesystem::path temporary = {}, bool consume = false, bool developer = false,
+                       bool allow_any_game_format = false);
     ~NspUpload();
     UploadSnapshot Snapshot() const;
     bool SetAvailable(bool enabled); ///< false refuses new input; never cancels an active file.
@@ -56,7 +57,7 @@ public:
     UploadResult Ready(const std::string& id);
     UploadResult Rename(const std::string& id, std::string name);
     /// Only the library coordinator calls this, after its metadata worker has joined.
-    std::string Finalize(const NspValidator& validate);
+    std::string Finalize(const NspValidator& validate = {});
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;

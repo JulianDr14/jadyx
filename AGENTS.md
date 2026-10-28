@@ -1306,3 +1306,10 @@ Magnesis.23SeriesNEGATIVO:shaderdirectoactivoSHAcorrecto,IDydepth0;replayexactoP
 Magnesis.24entregado:84micropruebasautomaticasPS/CS/DXC-Mesa/arrays-loops-SSA,JSONLalabrirjuego. PC84/84debuglimpio y2negativosdetectados;APPXfirmado/verificado/simbolos.24. .23overridefallidofuera. Seriespendiente;exportarlogsportal,sincapturagraficaobligatoria. Detalle xbox_magnesis.md; sincommit/push.
 
 Series.24matriz:66/84,18fallosPSreplicadosDXCO3/Od/Mesa,compute42/42. Mezclaindicesconstante-variablearraylocalfalla;const/constydynamic/dynamic/SSAseleccionsinarraypasan. Reproducerajenoaljuego;focoalias/loweringPSSeries. Detalle xbox_magnesis.md;sinpaquetenuevo/commit/push.
+
+Cambio local posterior: catálogo parcial simplificado `zh-CN` registrado como idioma
+inicial para instalaciones nuevas; Automático sigue disponible y preferencias guardadas
+se respetan. El portal de juegos transfiere cualquier extensión sin inspección NSP;
+mantiene límites y controles de rutas/publicación. Updates/DLC y claves/firmware conservan
+sus validadores. Tests de catálogo C++ y navegador Node pasan; build UWP no ejecutable en
+este entorno Linux sin MSVC/PowerShell.

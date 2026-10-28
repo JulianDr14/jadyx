@@ -115,7 +115,7 @@ public:
     // Configure the library view before Start; without it the library routes answer 503.
     void SetLibrary(PortalLibrary library);
     bool BlockForLocalOperation();
-    std::string FinalizeGame(const NspValidator& validate);
+    std::string FinalizeGame(const NspValidator& validate = {});
     /// Only the library coordinator calls this, after its metadata worker has joined.
     std::string FinalizeContent(const ContentValidator& validate);
     /// Runs the pending removal, if any. Only the library coordinator calls this, from its

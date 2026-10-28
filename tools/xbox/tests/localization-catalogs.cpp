@@ -12,7 +12,8 @@ int main() {
     using namespace Jadyx::I18n;
     auto check = [](bool ok) { if (!ok) std::abort(); };
     const auto languages = UiLanguages();
-    check(languages.size() >= 2 && languages.front().tag == L"en");
+    check(languages.size() >= 4 && languages.front().tag == L"en" &&
+          FindUiLanguage(L"zh-CN") && FindUiLanguage(L"zh_CN"));
 
     // Negotiation: exact, shortened, case/underscore-insensitive, in preference order, English last.
     auto negotiate = [&](std::vector<std::wstring> preferences) {
@@ -25,12 +26,14 @@ int main() {
     check(negotiate({L"pt-BR"}) == L"pt-BR");
     check(negotiate({L"pt"}) == L"pt-BR");
     check(negotiate({L"pt-PT", L"es-ES"}) == L"pt-BR"); // Another variant beats the next preference.
+    check(negotiate({L"zh-SG"}) == L"zh-CN");
     check(negotiate({L"de-DE"}) == L"en");
     check(negotiate({}) == L"en");
 
     // Every catalog is complete (MakeCatalog enforces it at compile time; this guards the registry).
     for (const auto& language : languages)
-        for (std::size_t i = 0; i < TextCount; ++i) check(!(*language.catalog)[i].empty());
+        for (std::size_t i = 0; i < TextCount; ++i)
+            if (language.tag != L"zh-CN") check(!(*language.catalog)[i].empty());
 
     // Every translation uses the same "{n}" placeholders as English, or Format leaves a hole.
     auto placeholders = [](std::wstring_view text) {
@@ -43,6 +46,7 @@ int main() {
     const auto& english = *languages.front().catalog;
     for (const auto& language : languages)
         for (std::size_t i = 0; i < TextCount; ++i) {
+            if ((*language.catalog)[i].empty()) continue;
             if (placeholders((*language.catalog)[i]) == placeholders(english[i])) continue;
             std::fprintf(stderr, "placeholder mismatch: %ls text %zu\n", language.tag.data(), i);
             std::abort();
@@ -72,6 +76,12 @@ int main() {
 
     SetUiLanguage(*FindUiLanguage(L"en"));
     check(Plural(Text::GamesCountOne, Text::GamesCountOther, 2) == L"2 games");
+    SetUiLanguage(*FindUiLanguage(L"zh-CN"));
+    check(Tr(Text::Play) == L"开始游戏");
+    check(Tr(Text::GamesCountOther) == L"{0} 款游戏");
+    check(Tr(Text::CheatsHint) == L"Turn them on before playing, or from the in-game menu while you play");
+    check(Plural(Text::GamesCountOne, Text::GamesCountOther, 3) == L"3 款游戏");
+    SetUiLanguage(*FindUiLanguage(L"en"));
     check(ToUtf8(L"Ñ€😀") == "\xC3\x91\xE2\x82\xAC\xF0\x9F\x98\x80");
 
     std::puts("localization: negotiation, catalogs, plurals, placeholders and UTF-8 PASS");
