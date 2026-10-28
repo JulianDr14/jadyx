@@ -62,8 +62,9 @@ using namespace Common::Literals;
 void SetMipRenderTargets(bool enabled) noexcept;
 [[nodiscard]] bool MipRenderTargets() noexcept;
 
-/// A render target redrawn at another size (dynamic resolution) takes its contents from the
-/// previous size on the GPU, which is then deleted, instead of uploading stale guest memory.
+/// A render target drawn to or sampled at another size (dynamic resolution) takes its contents
+/// from the previous size on the GPU, which is then deleted, instead of uploading stale guest
+/// memory.
 /// Older sizes at the same address without GPU contents are deleted as well.
 /// Boot.cfg "rt_inherit=0" turns both off to reproduce the upload.
 void SetRenderTargetInheritance(bool enabled) noexcept;
@@ -445,7 +446,7 @@ private:
         Count,
     };
 
-    /// Why a new render target was uploaded from guest memory instead of inheriting its contents.
+    /// Why a new image was uploaded from guest memory instead of inheriting its contents.
     enum class InheritFallback : u8 {
         NewAddress,    ///< nothing overlaps it
         Layout,        ///< mipmapped, multisampled, not 2D, or absorbing other images
@@ -455,9 +456,9 @@ private:
         Count,
     };
 
-    /// The previous size of a new render target, when it holds the newest GPU contents at its
-    /// address. JoinImages helper; empty when the contents have to be uploaded.
-    [[nodiscard]] ImageId FindRenderTargetPredecessor(const ImageInfo& info, GPUVAddr gpu_addr);
+    /// The previous size of a new image, when it holds the newest GPU contents at its address.
+    /// JoinImages helper; empty when the contents have to be uploaded.
+    [[nodiscard]] ImageId FindPreviousSize(const ImageInfo& info, GPUVAddr gpu_addr);
 
     /// Deletes the older sizes at a new image's address that hold no GPU contents and were not
     /// used this frame or the previous one. JoinImages helper.
@@ -624,9 +625,6 @@ private:
     std::array<u32, NUM_INHERIT_FALLBACKS> churn_inherit_fallbacks{};
     u64 churn_window_start = 0;
     u64 live_report_bytes = 0;
-
-    /// FindRenderTargetView is inserting: JoinImages may inherit from a previous size.
-    bool inserting_render_target = false;
 
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},
                                                Common::ThreadPlacement::Efficiency};

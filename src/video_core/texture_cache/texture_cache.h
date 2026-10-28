@@ -1987,13 +1987,14 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         DeleteImage(overlap_id);
     }
 
-    const ImageId predecessor = inserting_render_target && RenderTargetInheritance()
-                                    ? FindRenderTargetPredecessor(new_info, new_image.gpu_addr)
+    const ImageId predecessor = RenderTargetInheritance()
+                                    ? FindPreviousSize(new_info, new_image.gpu_addr)
                                     : ImageId{};
     if (predecessor) {
-        // The same render target at another size (dynamic resolution): its contents live only on
-        // the GPU, so the guest memory is stale. Copy them from the previous size instead of
-        // uploading it, and delete that size and the older ones so each target keeps one image.
+        // The same render target at another size (dynamic resolution), drawn to or sampled: its
+        // contents live only on the GPU, so the guest memory is stale. Copy them from the previous
+        // size instead of uploading it, and delete that size and the older ones so each target
+        // keeps one image.
         const auto superseded = [this](ImageId id) {
             return std::find(join_superseded_ids.begin(), join_superseded_ids.end(), id) !=
                    join_superseded_ids.end();
@@ -2189,7 +2190,7 @@ void TextureCache<P>::RetireStaleSizes(const Image& new_image) {
 }
 
 template <class P>
-ImageId TextureCache<P>::FindRenderTargetPredecessor(const ImageInfo& info, GPUVAddr gpu_addr) {
+ImageId TextureCache<P>::FindPreviousSize(const ImageInfo& info, GPUVAddr gpu_addr) {
     const auto fallback = [this](InheritFallback reason) {
         if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
             ++churn_inherit_fallbacks[static_cast<size_t>(reason)];
@@ -2546,13 +2547,11 @@ template <class P>
 ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAddr gpu_addr) {
     ImageId image_id{};
     bool delete_state = has_deleted_images;
-    inserting_render_target = true;
     do {
         has_deleted_images = false;
         image_id = FindOrInsertImage(info, gpu_addr);
         delete_state |= has_deleted_images;
     } while (has_deleted_images);
-    inserting_render_target = false;
     has_deleted_images = delete_state;
     if (!image_id) {
         return NULL_IMAGE_VIEW_ID;
@@ -3025,7 +3024,7 @@ void TextureCache<P>::ReportImageChurn() {
                                  churn_inherit_fallbacks[i]);
     }
     LOG_INFO(HW_GPU,
-             "Render target inheritance: {} took the previous size's contents on the GPU | "
+             "Size inheritance: {} took the previous size's contents on the GPU | "
              "uploaded instead: {}{}",
              churn_inherited, fallbacks, RenderTargetInheritance() ? "" : " (rt_inherit=0)");
     for (size_t i = 0; i < (std::min)(hot.size(), size_t{12}); ++i) {
