@@ -199,6 +199,9 @@ void SetReclaimSupersededImages(bool enabled) noexcept; // texture_cache/texture
 namespace {
 std::atomic<u64> g_test_memory_limit{};
 std::atomic<bool> g_gpu_command_failed{};
+/// Guest DRAM bytes the HostTrim worker read and gave back since the last heartbeat.
+std::atomic<u64> g_host_trim_visited{};
+std::atomic<u64> g_host_trim_released{};
 /// The PC window's mode. ApplicationView belongs to the UI thread: it publishes the state here and
 /// applies the changes the in-game menu asks for (1 full screen, 0 windowed, -1 none).
 std::atomic<bool> g_can_fullscreen{};
@@ -1225,6 +1228,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                     const auto trim = dram.Trim(cursor, TRIM_SLICE);
                     const auto slice_time = std::chrono::steady_clock::now() - slice_start;
                     pass_released += trim.released;
+                    g_host_trim_visited.fetch_add(trim.visited, std::memory_order_relaxed);
+                    g_host_trim_released.fetch_add(trim.released, std::memory_order_relaxed);
                     if (cursor <= before) {
                         last_pass_released = pass_released;
                         pass_released = 0;
@@ -1235,9 +1240,13 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                             slice_time / 2));
                         continue;
                     }
+                    // Short of memory the passes run back to back while they give memory back. A
+                    // pass that found little slows down: reading the whole emulated DRAM every
+                    // ~1.5 s took a tenth of a core and the cache the guest cores share with it.
                     const bool low = trim_low.load(std::memory_order_relaxed);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(
-                        low ? 20 : last_pass_released >= TRIM_ACTIVE_PASS ? 100 : 500));
+                    const bool active = last_pass_released >= TRIM_ACTIVE_PASS;
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(low ? (active ? 20 : 100) : active ? 100 : 500));
                 }
             });
         }
@@ -3505,6 +3514,11 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 }
                 if (GetTickCount64() >= next_heartbeat) {
                     WriteDiag("heartbeat: boot worker still running | " + MemoryReport());
+                    if (const u64 visited = g_host_trim_visited.exchange(0); visited != 0) {
+                        WriteDiag("host trim: released " +
+                                  std::to_string(g_host_trim_released.exchange(0) >> 20) +
+                                  " MiB of " + std::to_string(visited >> 20) + " MiB visited");
+                    }
                     WriteDiag("memory by owner: " + MemoryOwners());
                     for (const auto& capture : Jadyx::AllocWatch::TakeNew()) {
                         WriteDiag(FormatFrames(
