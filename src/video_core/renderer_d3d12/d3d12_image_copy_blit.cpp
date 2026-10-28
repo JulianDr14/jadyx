@@ -681,6 +681,17 @@ bool TextureCacheRuntime::CopyBlocksIntoDecoded(Image& dst, Image& src,
 void TextureCacheRuntime::CopyImageMSAA(Image&, Image&, std::span<const ImageCopy>) {
     LOG_WARNING(Render, "D3D12: MSAA texture copies are deferred to phase 5");
 }
+bool TextureCacheRuntime::ShouldReinterpret(Image& dst, Image& src) const noexcept {
+    using VideoCore::Surface::PixelFormat;
+    const auto same_texels = [](PixelFormat a, PixelFormat b) {
+        return (a == PixelFormat::R16_UNORM && b == PixelFormat::D16_UNORM) ||
+               (a == PixelFormat::R32_FLOAT && b == PixelFormat::D32_FLOAT);
+    };
+    // CopyThroughBuffer moves no multisampled texels.
+    return src.info.num_samples == 1 && dst.info.num_samples == 1 &&
+           (same_texels(src.info.format, dst.info.format) ||
+            same_texels(dst.info.format, src.info.format));
+}
 void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src, std::span<const ImageCopy> copies) {
     if (VideoCore::Surface::BytesPerBlock(dst.info.format) == VideoCore::Surface::BytesPerBlock(src.info.format))
         CopyImage(dst, src, copies);

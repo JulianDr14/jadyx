@@ -140,7 +140,10 @@ public:
     /// Exact BC blocks -> integer texels, using the preserved guest representation.
     bool CopyDecodedBlocks(Image& dst, Image& src,
                            std::span<const VideoCommon::ImageCopy> copies);
-    bool ShouldReinterpret(Image&, Image&) const noexcept { return false; }
+    /// Color <-> depth copies whose texels mean the same on both sides (R16_UNORM <-> D16_UNORM,
+    /// R32_FLOAT <-> D32_FLOAT): the bits are copied (ReinterpretImage) instead of converted by
+    /// a shader (ConvertImage).
+    bool ShouldReinterpret(Image& dst, Image& src) const noexcept;
     void ReinterpretImage(Image& dst, Image& src,
                           std::span<const VideoCommon::ImageCopy> copies);
     void ConvertImage(Framebuffer*, ImageView&, ImageView&);
