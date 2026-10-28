@@ -25,8 +25,18 @@
 #include "video_core/rasterizer_interface.h"
 
 #include "video_core/frame_trace.h"
+#include "video_core/perf_counters.h"
 
 namespace VideoCommon {
+
+/// With the default fence behavior, signal the host side of a syncpoint as soon as the GPU thread
+/// reaches it while nothing queued before it waits on the host GPU (no download, no operation).
+/// Off, a GPU accuracy of High signals every syncpoint once the host GPU ran the work before it.
+inline std::atomic<bool> early_syncpoints{true};
+
+inline void SetEarlySyncpoints(bool enabled) {
+    early_syncpoints.store(enabled, std::memory_order_relaxed);
+}
 
 class FenceBase {
 public:
@@ -74,41 +84,13 @@ public:
     }
 
     void SignalFence(std::function<void()>&& func) {
-        const bool delay_fence = Settings::IsGPUFenceBehaviorDefault() ? Settings::IsGPULevelHigh() : Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
-        const bool should_flush = ShouldFlush();
-        if constexpr (!can_async_check) {
-            TryReleasePendingFences<false>();
-        }
-        CommitAsyncFlushes();
-        TFence new_fence = CreateFence(!should_flush);
-        if constexpr (can_async_check) {
-            guard.lock();
-        }
-        if (delay_fence) {
-            uncommitted_operations.emplace_back(std::move(func));
-        }
-        pending_operations.emplace_back(std::move(uncommitted_operations));
-        VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::FenceQueued,
-            reinterpret_cast<uintptr_t>(new_fence.get()), pending_operations.back().size());
-        QueueFence(new_fence);
-        if (!delay_fence) {
-            func();
-        }
-        fences.push(std::move(new_fence));
-        if (should_flush) {
-            rasterizer.FlushCommands();
-        }
-        if constexpr (can_async_check) {
-            guard.unlock();
-            cv.notify_all();
-        }
-        rasterizer.InvalidateGPUCache();
+        SignalFence(std::move(func), false);
     }
 
     void SignalSyncPoint(u32 value) {
         syncpoint_manager.IncrementGuest(value);
         std::function<void()> func([this, value] { syncpoint_manager.IncrementHost(value); });
-        SignalFence(std::move(func));
+        SignalFence(std::move(func), true);
     }
 
     void WaitPendingFences([[maybe_unused]] bool force) {
@@ -171,6 +153,65 @@ protected:
     TQueryCache& query_cache;
 
 private:
+    void SignalFence(std::function<void()>&& func, bool is_syncpoint) {
+        bool delay_fence = Settings::IsGPUFenceBehaviorDefault() ? Settings::IsGPULevelHigh() : Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
+        const FlushSources flush_sources = PendingFlushSources();
+        const bool should_flush = flush_sources.Any();
+        if constexpr (!can_async_check) {
+            TryReleasePendingFences<false>();
+        }
+        CommitAsyncFlushes();
+        TFence new_fence = CreateFence(!should_flush);
+        if constexpr (can_async_check) {
+            guard.lock();
+        }
+        // The guest learns from a syncpoint that the work before it is visible: what the GPU wrote
+        // is downloaded and the operations queued with fences have run. When no fence still has
+        // either to do, waiting for the host GPU to run the work shows the guest nothing more.
+        if (delay_fence && is_syncpoint && Settings::IsGPUFenceBehaviorDefault() &&
+            early_syncpoints.load(std::memory_order_relaxed)) {
+            using VideoCore::Perf::Counter;
+            const Counter reason =
+                flush_sources.buffer                  ? Counter::SyncpointsAfterBufferDownloads
+                : flush_sources.texture               ? Counter::SyncpointsAfterTextureDownloads
+                : flush_sources.query                 ? Counter::SyncpointsAfterQueryFlushes
+                : !uncommitted_operations.empty()     ? Counter::SyncpointsAfterOperations
+                : guest_visible_fences.load(std::memory_order_acquire) != 0
+                    ? Counter::SyncpointsAfterQueuedFences
+                    : Counter::SyncpointsEarly;
+            delay_fence = reason != Counter::SyncpointsEarly;
+            VideoCore::Perf::Add(reason, 1);
+        }
+        if (delay_fence) {
+            uncommitted_operations.emplace_back(std::move(func));
+        }
+        if (IsGuestVisible(new_fence, uncommitted_operations)) {
+            guest_visible_fences.fetch_add(1, std::memory_order_relaxed);
+        }
+        pending_operations.emplace_back(std::move(uncommitted_operations));
+        VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::FenceQueued,
+            reinterpret_cast<uintptr_t>(new_fence.get()), pending_operations.back().size());
+        QueueFence(new_fence);
+        if (!delay_fence) {
+            func();
+        }
+        fences.push(std::move(new_fence));
+        if (should_flush) {
+            rasterizer.FlushCommands();
+        }
+        if constexpr (can_async_check) {
+            guard.unlock();
+            cv.notify_all();
+        }
+        rasterizer.InvalidateGPUCache();
+    }
+
+    /// Whether the guest can see what the fence waits for: downloads or operations.
+    static bool IsGuestVisible(const TFence& fence,
+                               const std::deque<std::function<void()>>& operations) {
+        return !fence->IsStubbed() || !operations.empty();
+    }
+
     template <bool force_wait>
     void TryReleasePendingFences() {
         while (!fences.empty()) {
@@ -187,6 +228,9 @@ private:
             pending_operations.pop_front();
             for (auto& operation : operations) {
                 operation();
+            }
+            if (IsGuestVisible(current_fence, operations)) {
+                guest_visible_fences.fetch_sub(1, std::memory_order_release);
             }
             {
                 std::unique_lock lock(ring_guard);
@@ -239,6 +283,9 @@ private:
                     operation();
                 }
             }
+            if (IsGuestVisible(current_fence, current_operations)) {
+                guest_visible_fences.fetch_sub(1, std::memory_order_release);
+            }
             VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::FenceDone, trace_fence);
             {
                 std::unique_lock lock(ring_guard);
@@ -253,10 +300,21 @@ private:
                query_cache.ShouldWaitAsyncFlushes();
     }
 
-    bool ShouldFlush() const {
+    /// The caches with downloads not committed to a fence yet.
+    struct FlushSources {
+        bool texture;
+        bool buffer;
+        bool query;
+
+        bool Any() const {
+            return texture || buffer || query;
+        }
+    };
+
+    FlushSources PendingFlushSources() const {
         std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-        return texture_cache.HasUncommittedFlushes() || buffer_cache.HasUncommittedFlushes() ||
-               query_cache.HasUncommittedFlushes();
+        return {texture_cache.HasUncommittedFlushes(), buffer_cache.HasUncommittedFlushes(),
+                query_cache.HasUncommittedFlushes()};
     }
 
     void PopAsyncFlushes(u64 trace_fence = 0) {
@@ -293,6 +351,8 @@ private:
     std::queue<TFence> fences;
     std::deque<std::function<void()>> uncommitted_operations;
     std::deque<std::deque<std::function<void()>>> pending_operations;
+    /// Queued fences with downloads or operations the guest sees, not released yet.
+    std::atomic<size_t> guest_visible_fences{};
 
     std::mutex guard;
     std::mutex ring_guard;
