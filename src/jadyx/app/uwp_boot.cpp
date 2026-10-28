@@ -83,6 +83,7 @@
 #include "hid_core/hid_core.h"
 #include "video_core/frame_trace.h"
 #include "video_core/diagnostics/full_capture.h"
+#include "video_core/fence_manager.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/macro.h"
@@ -397,6 +398,13 @@ struct BootConfig {
     /// Release the displayed buffers with a fence on the composite ("nv_release_fence=0" releases
     /// them with none and waits for every composite, as before).
     bool nv_release_fence{true};
+    /// When the host side of a GPU syncpoint is signalled. By default ("gpu_fence=immediate") as
+    /// soon as the GPU thread reaches it: downloads land after the guest goes on. "=safe" does so
+    /// unless a download or operation queued before it waits on the GPU (a GPU-written buffer is
+    /// downloaded every frame in a game, so it waits as often as "=wait"); "=wait" always once the
+    /// D3D12 GPU ran the work before it; "=balanced"/"=accurate" are the settings' fence behaviors.
+    std::optional<Settings::GpuFenceBehavior> gpu_fence{Settings::GpuFenceBehavior::Immediate};
+    bool early_syncpoints{true};
     /// Keep the previous draw's pipeline while no register its key reads changed
     /// ("pipeline_key_reuse=1"; "=check" refreshes the key and logs every reuse that would have
     /// drawn with another pipeline). Off by default until a gain is measured on the console.
@@ -666,6 +674,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetAsyncRecording(config.async_record);
     Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);
     Service::Nvidia::Devices::nvdisp_disp0::SetReleaseFence(config.nv_release_fence);
+    if (config.gpu_fence) Settings::values.gpu_fence_behavior.SetValue(*config.gpu_fence);
+    VideoCommon::SetEarlySyncpoints(config.early_syncpoints);
     D3D12::PipelineKeyTracking::SetMode(config.pipeline_key_reuse);
     D3D12::SetUniformUploadCopy(config.upload_copy);
     D3D12::SetDrawSamplerReuse(config.draw_sampler_reuse);
@@ -3088,6 +3098,25 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.nv_release_fence = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: display release fence ") +
                                       (config.nv_release_fence ? "on" : "off"));
+                        } else if (line == "gpu_fence=safe" || line == "gpu_fence=wait") {
+                            config.gpu_fence.reset();
+                            config.early_syncpoints = line == "gpu_fence=safe";
+                            WriteDiag(config.early_syncpoints
+                                          ? "boot.cfg: GPU syncpoints signalled at once unless "
+                                            "a download waits on the GPU"
+                                          : "boot.cfg: GPU syncpoints signalled after the GPU ran "
+                                            "the work (wait)");
+                        } else if (line == "gpu_fence=immediate" || line == "gpu_fence=balanced" ||
+                                   line == "gpu_fence=accurate") {
+                            using Settings::GpuFenceBehavior;
+                            const std::string value = line.substr(10);
+                            config.gpu_fence = value == "immediate"  ? GpuFenceBehavior::Immediate
+                                               : value == "balanced" ? GpuFenceBehavior::Balanced
+                                                                     : GpuFenceBehavior::Accurate;
+                            WriteDiag("boot.cfg: GPU syncpoints signalled " +
+                                      std::string(value == "immediate"
+                                                      ? "when the GPU thread reaches them"
+                                                      : "after the GPU ran the work (" + value + ")"));
                         } else if (line == "async_record=0" || line == "async_record=1") {
                             config.async_record = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: command list recording thread ") +
