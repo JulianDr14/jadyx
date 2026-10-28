@@ -24,13 +24,15 @@ namespace D3D12 {
 using namespace Common::Literals;
 
 namespace {
-enum class HeapClass : u8 { Texture, RenderTarget, SmallRenderTarget };
-constexpr size_t heap_classes = 3;
+enum class HeapClass : u8 { Texture, RenderTarget, SmallRenderTarget, TransientRenderTarget };
+constexpr size_t heap_classes = 4;
 
-HeapClass ClassOf(const D3D12_RESOURCE_DESC& desc, u64 size) {
-    constexpr D3D12_RESOURCE_FLAGS RT_DS = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
-                                           D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+constexpr D3D12_RESOURCE_FLAGS RT_DS = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
+                                       D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+HeapClass ClassOf(const D3D12_RESOURCE_DESC& desc, u64 size, bool transient) {
     if ((desc.Flags & RT_DS) == 0) return HeapClass::Texture;
+    if (transient) return HeapClass::TransientRenderTarget;
     return size <= HeapGrowth::small_render_target ? HeapClass::SmallRenderTarget
                                                    : HeapClass::RenderTarget;
 }
@@ -48,6 +50,8 @@ const char* NameOf(HeapClass heap_class) {
         return "RT/DS";
     case HeapClass::SmallRenderTarget:
         return "small RT/DS";
+    case HeapClass::TransientRenderTarget:
+        return "transient RT/DS";
     }
     return "?";
 }
@@ -63,6 +67,8 @@ u64 PoolOf(HeapClass heap_class) {
         return 32_MiB;
     case HeapClass::SmallRenderTarget:
         return 8_MiB;
+    case HeapClass::TransientRenderTarget:
+        return 16_MiB;
     }
     return 64_MiB;
 }
@@ -70,7 +76,8 @@ u64 PoolOf(HeapClass heap_class) {
 // Padding of a heap grown under pressure. A large render target gets an exact heap: at world
 // entry 16 MiB padded RT heaps each kept one survivor, leaving ~300 MiB free inside them that
 // no trim could release. Small render targets arrive in bursts of hundreds and keep their full
-// pool: 2 MiB padding still made hundreds of heaps.
+// pool: 2 MiB padding still made hundreds of heaps. Transient ones are dropped within frames,
+// so a padded heap of them empties instead of holding survivors.
 u64 PressurePadOf(HeapClass heap_class) {
     switch (heap_class) {
     case HeapClass::Texture:
@@ -78,6 +85,7 @@ u64 PressurePadOf(HeapClass heap_class) {
     case HeapClass::RenderTarget:
         return 0;
     case HeapClass::SmallRenderTarget:
+    case HeapClass::TransientRenderTarget:
         return 8_MiB;
     }
     return 16_MiB;
@@ -101,6 +109,7 @@ struct TextureResourceAllocator::State {
     u64 live_bytes{};
     u64 peak_bytes{};
     u64 placed_resources{};
+    u64 transient_placed{};
     u64 committed_fallbacks{};
     u64 trimmed_heaps{};
     u64 trimmed_bytes{};
@@ -178,7 +187,17 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
     if (info.SizeInBytes == UINT64_MAX || info.Alignment == 0) {
         return {};
     }
-    const HeapClass heap_class = ClassOf(desc, info.SizeInBytes);
+    const State::CensusKey shape{static_cast<u32>(desc.Format), desc.Width, desc.Height,
+                                 desc.DepthOrArraySize, desc.MipLevels,
+                                 static_cast<u32>(desc.Flags)};
+    bool transient = false;
+    if (desc.Flags & RT_DS) {
+        std::scoped_lock lock{state->mutex};
+        const auto known = state->census.find(shape);
+        transient = known != state->census.end() &&
+                    HeapGrowth::TransientShape(known->second.created, known->second.live);
+    }
+    const HeapClass heap_class = ClassOf(desc, info.SizeInBytes, transient);
     const u64 heap_alignment =
         std::max<u64>(info.Alignment, D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT);
     size_t selected = SIZE_MAX;
@@ -373,9 +392,8 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
             result.placed = true;
             std::scoped_lock lock{state->mutex};
             ++state->placed_resources;
-            auto& entry = state->census[{static_cast<u32>(desc.Format), desc.Width, desc.Height,
-                                         desc.DepthOrArraySize, desc.MipLevels,
-                                         static_cast<u32>(desc.Flags)}];
+            state->transient_placed += heap_class == HeapClass::TransientRenderTarget;
+            auto& entry = state->census[shape];
             ++entry.created;
             ++entry.live;
             entry.live_bytes += info.SizeInBytes;
@@ -478,15 +496,18 @@ std::string TextureResourceAllocator::Report() const {
         }
     }
     LOG_INFO(Render, "D3D12: heap frag tex n {} free {} empty {} max {} | rt n {} free {} empty {} "
-             "max {} | small rt n {} free {} empty {} max {} MiB, pending {} MiB",
+             "max {} | small rt n {} free {} empty {} max {} | transient rt n {} free {} empty {} "
+             "max {} MiB, pending {} MiB",
              count[0], free[0] / 1_MiB, empty[0] / 1_MiB, largest[0] / 1_MiB, count[1],
              free[1] / 1_MiB, empty[1] / 1_MiB, largest[1] / 1_MiB, count[2], free[2] / 1_MiB,
-             empty[2] / 1_MiB, largest[2] / 1_MiB, state->pending_bytes / 1_MiB);
-    return fmt::format("texture heaps {} MiB, live {} MiB, peak {} MiB, placed {}, fallback {}, trimmed {} ({} MiB), "
+             empty[2] / 1_MiB, largest[2] / 1_MiB, count[3], free[3] / 1_MiB, empty[3] / 1_MiB,
+             largest[3] / 1_MiB, state->pending_bytes / 1_MiB);
+    return fmt::format("texture heaps {} MiB, live {} MiB, peak {} MiB, placed {} (transient {}), "
+                       "fallback {}, trimmed {} ({} MiB), "
                        "growth recoveries {}, pressure waits {}, pressure heaps {}, "
                        "avoided capacity {} MiB",
                        state->heap_bytes / 1_MiB, state->live_bytes / 1_MiB,
-                       state->peak_bytes / 1_MiB, state->placed_resources,
+                       state->peak_bytes / 1_MiB, state->placed_resources, state->transient_placed,
                        state->committed_fallbacks, state->trimmed_heaps, state->trimmed_bytes / 1_MiB,
                        state->growth_recoveries, state->pressure_waits, state->compact_heaps,
                        state->avoided_capacity / 1_MiB);

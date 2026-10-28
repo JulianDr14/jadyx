@@ -49,4 +49,14 @@ inline constexpr std::uint64_t exhausted_reserve = 256ULL << 20;
 // Hundreds of tiny render targets live for the whole session. Sharing heaps with the large
 // ones, recreated at every resolution change, they kept every RT heap from emptying.
 inline constexpr std::uint64_t small_render_target = 1ULL << 20;
+
+// Some render-target shapes are made and dropped every few frames (a 260x260 one: 541 created,
+// 50 alive) while others live for the whole session. Sharing heaps, the long-lived ones kept
+// heaps of dropped ones from emptying: ~340 MiB free inside RT heaps no trim could release.
+// A shape created this often, and four times as often as copies of it are alive, is transient.
+inline constexpr std::uint64_t transient_min_creates = 16;
+
+[[nodiscard]] inline bool TransientShape(std::uint64_t created, std::uint64_t live) {
+    return created >= transient_min_creates && created / 4 >= live;
+}
 } // namespace D3D12::HeapGrowth

@@ -44,6 +44,13 @@ void Policy() {
     assert(PressureCapacity(128*1024, 65536, pressured, 2*M) == 2*M);
     assert(PressureCapacity(128*1024, 65536, exhausted) == 128*1024);
     assert(small_render_target < 16*M);
+    assert(!TransientShape(transient_min_creates - 1, 0));
+    assert(TransientShape(transient_min_creates, 0));
+    assert(TransientShape(541, 50));
+    assert(!TransientShape(2, 2));
+    assert(!TransientShape(100, 26));
+    assert(TransientShape(100, 25));
+    assert(!TransientShape(UINT64_MAX, UINT64_MAX));
     std::uint64_t cases{};
     for (std::uint64_t size = 1; size < 96*M; size += 7919) {
         for (auto alignment : {4096ULL, 65536ULL, 4*M}) {
