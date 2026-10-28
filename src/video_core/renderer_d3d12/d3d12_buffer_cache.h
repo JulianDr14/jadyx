@@ -10,7 +10,6 @@
 #include "common/memory_ledger.h"
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/buffer_cache/memory_tracker_base.h"
-#include "video_core/buffer_cache/usage_tracker.h"
 #include "video_core/renderer_d3d12/d3d12_index_rewrite_cache.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
 #include "video_core/renderer_d3d12/d3d12_staging_buffer_pool.h"
@@ -46,9 +45,10 @@ public:
     /// address of every index buffer and persistent uniform buffer they bind.
     [[nodiscard]] D3D12_GPU_VIRTUAL_ADDRESS Address() const noexcept { return address; }
     operator ID3D12Resource*() const noexcept { return Handle(); }
-    bool IsRegionUsed(u64 offset, u64 size) const noexcept { return tracker.IsUsed(offset, size); }
-    void MarkUsage(u64 offset, u64 size) noexcept { tracker.Track(offset, size); }
-    void ResetUsageTracking() noexcept { tracker.Reset(); }
+    /// The generic cache marks what each copy and binding touches, for backends that reorder
+    /// uploads ahead of the draws using a buffer. Uploads are never reordered here (see
+    /// CanReorderUpload): tracking it took ~3% of the GPU thread in a heavy scene.
+    void MarkUsage(u64, u64) noexcept {}
 
     /// Records a barrier to next unless the buffer is already there (a UAV barrier for UAV ->
     /// UAV). Buffers decay to COMMON at the end of every ExecuteCommandLists, so the tracked state
@@ -72,7 +72,6 @@ private:
     u64 generation{};
     ComPtr<ID3D12Resource> buffer;
     D3D12_GPU_VIRTUAL_ADDRESS address{};
-    VideoCommon::UsageTracker tracker;
     D3D12_RESOURCE_STATES state{D3D12_RESOURCE_STATE_COMMON};
     u64 state_tick{}; ///< scheduler tick of the list that set state
     u64 uav_work{};   ///< Scheduler::Work() that last made it a UAV

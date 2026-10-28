@@ -134,7 +134,7 @@ u32 IndexSize(IndexFormat format) {
 Buffer::Buffer(BufferCacheRuntime& runtime, VideoCommon::NullBufferParams params)
     : VideoCommon::BufferBase(params), scheduler{&runtime.scheduler},
       id{runtime.next_buffer_id++}, buffer{runtime.CreateDefaultBuffer(4)}, address{buffer ? buffer->GetGPUVirtualAddress() : 0},
-      tracker{4096}, charge{Common::MemoryAccount::BufferCache, 4} {}
+      charge{Common::MemoryAccount::BufferCache, 4} {}
 
 Buffer::Buffer(BufferCacheRuntime& runtime, VAddr cpu_addr, u64 size_bytes, bool)
     : VideoCommon::BufferBase(cpu_addr, size_bytes), scheduler{&runtime.scheduler},
@@ -142,7 +142,7 @@ Buffer::Buffer(BufferCacheRuntime& runtime, VAddr cpu_addr, u64 size_bytes, bool
       // Whole 256-byte blocks: a guest cbuf ending with the buffer still fits a CBV.
       buffer{runtime.CreateDefaultBuffer(
           Common::AlignUp(size_bytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT))},
-      address{buffer ? buffer->GetGPUVirtualAddress() : 0}, tracker{size_bytes},
+      address{buffer ? buffer->GetGPUVirtualAddress() : 0},
       charge{Common::MemoryAccount::BufferCache,
              Common::AlignUp(size_bytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT)} {}
 
@@ -163,7 +163,6 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
         generation = other.generation;
         buffer = std::move(other.buffer);
         address = std::exchange(other.address, 0);
-        tracker = std::move(other.tracker);
         state = other.state;
         state_tick = other.state_tick;
         uav_work = other.uav_work;
@@ -284,11 +283,7 @@ ComPtr<ID3D12Resource> BufferCacheRuntime::CreateDefaultBuffer(u64 size) {
     return buffer;
 }
 
-void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& buffers) noexcept {
-    for (auto it = buffers.begin(); it != buffers.end(); ++it) {
-        it->ResetUsageTracking();
-    }
-}
+void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>&) noexcept {}
 void BufferCacheRuntime::Finish() { scheduler.Finish(); }
 u64 BufferCacheRuntime::CurrentTick() { return scheduler.CurrentTick(); }
 bool BufferCacheRuntime::IsFree(u64 tick) { return scheduler.IsFree(tick); }
@@ -358,8 +353,6 @@ void BufferCacheRuntime::Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src,
                 src ? src->CpuAddr() : 0, dst ? dst->CpuAddr() : 0,
                 copy.src_offset, copy.dst_offset, copy.size));
         cmd->CopyBufferRegion(dst_raw, copy.dst_offset, src_raw, copy.src_offset, copy.size);
-        if (dst) dst->MarkUsage(copy.dst_offset, copy.size);
-        if (src) src->MarkUsage(copy.src_offset, copy.size);
     }
     // An upload can touch a vertex/index buffer whose IA binding is still cached. Restore its
     // readable state: the generic cache may skip rebinding an unchanged guest vertex stream.
