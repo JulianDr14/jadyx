@@ -206,7 +206,10 @@ struct ExceptionHandler::Impl final {
         exception_handler_with_cb_offset = ULONG(exception_handler_with_cb - code.getCode<u8*>());
 
         code.align(16);
-        UNWIND_INFO* unwind_info = static_cast<UNWIND_INFO*>(code.AllocateFromCodeSpace(sizeof(UNWIND_INFO)));
+        // Code memory may be read-only where it runs (dual-mapped): every field is written through
+        // WriteAlias, and only offsets are taken from the addresses in the code.
+        u8* const unwind_info_code = static_cast<u8*>(code.AllocateFromCodeSpace(sizeof(UNWIND_INFO)));
+        UNWIND_INFO* unwind_info = code.WriteAlias(reinterpret_cast<UNWIND_INFO*>(unwind_info_code));
         unwind_info->Version = 1;
         unwind_info->Flags = UNW_FLAG_EHANDLER;
         unwind_info->SizeOfProlog = prolog_info.prolog_size;
@@ -215,17 +218,17 @@ struct ExceptionHandler::Impl final {
         unwind_info->FrameOffset = 0;    // Unused because FrameRegister == 0
         // UNWIND_INFO::UnwindCode field:
         const size_t size_of_unwind_code = sizeof(UNWIND_CODE) * prolog_info.unwind_code.size();
-        UNWIND_CODE* unwind_code = static_cast<UNWIND_CODE*>(code.AllocateFromCodeSpace(size_of_unwind_code));
+        UNWIND_CODE* unwind_code = code.WriteAlias(static_cast<UNWIND_CODE*>(code.AllocateFromCodeSpace(size_of_unwind_code)));
         memcpy(unwind_code, prolog_info.unwind_code.data(), size_of_unwind_code);
         // UNWIND_INFO::ExceptionInfo field:
-        except_info = static_cast<UNW_EXCEPTION_INFO*>(code.AllocateFromCodeSpace(sizeof(UNW_EXCEPTION_INFO)));
+        except_info = code.WriteAlias(static_cast<UNW_EXCEPTION_INFO*>(code.AllocateFromCodeSpace(sizeof(UNW_EXCEPTION_INFO))));
         except_info->ExceptionHandler = exception_handler_without_cb_offset;
 
         code.align(16);
-        rfuncs = static_cast<RUNTIME_FUNCTION*>(code.AllocateFromCodeSpace(sizeof(RUNTIME_FUNCTION)));
+        rfuncs = code.WriteAlias(static_cast<RUNTIME_FUNCTION*>(code.AllocateFromCodeSpace(sizeof(RUNTIME_FUNCTION))));
         rfuncs->BeginAddress = static_cast<DWORD>(0);
         rfuncs->EndAddress = static_cast<DWORD>(code.GetTotalCodeSize());
-        rfuncs->UnwindData = static_cast<DWORD>(reinterpret_cast<u8*>(unwind_info) - code.getCode());
+        rfuncs->UnwindData = static_cast<DWORD>(unwind_info_code - code.getCode());
 
         RtlAddFunctionTable(rfuncs, 1, reinterpret_cast<DWORD64>(code.getCode()));
     }

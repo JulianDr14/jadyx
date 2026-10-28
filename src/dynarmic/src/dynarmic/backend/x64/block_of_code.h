@@ -145,6 +145,12 @@ public:
     /// This is useful for objects that need to be placed close to or within code.
     /// The lifetime of this memory is the same as the code around it.
     void* AllocateFromCodeSpace(size_t size);
+    /// Where to write `p`, a pointer into this block of code: itself, or its alias in the writable
+    /// view when the code memory is dual-mapped (its executable view is read-only).
+    template<typename T>
+    T* WriteAlias(T* p) const noexcept {
+        return reinterpret_cast<T*>(reinterpret_cast<u8*>(p) + writeOffset_);
+    }
 
     void SetCodePtr(CodePtr code_ptr);
     void EnsurePatchLocationSize(CodePtr begin, size_t size);
@@ -195,6 +201,10 @@ private:
     const u8* wx_write_begin = nullptr;
     std::vector<const u8*> wx_extra_pages;
     bool wx_writing = false;
+    // Dual-mapped code memory (see the allocator): writes go through writeOffset_ and no page
+    // ever changes protection. Set before constant_pool, which writes code memory first.
+    bool AdoptWriteView();
+    const bool dual_mapped = AdoptWriteView();
 #endif
     bool prelude_complete = false;
     // SetCodeCacheCap as this cache applies it: the cap it last saw, and where its code ends.

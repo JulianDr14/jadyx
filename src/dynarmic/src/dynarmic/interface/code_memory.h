@@ -18,4 +18,11 @@ std::size_t CommittedCodeBytes() noexcept;
 void SetCodeCacheCap(std::size_t bytes) noexcept;
 [[nodiscard]] std::size_t CodeCacheCap() noexcept;
 
+/// Whether code caches created from now on may map their memory twice, executable where code runs
+/// and writable where it is emitted, so W^X costs no page protection change per compiled block.
+/// Only used where the runtime passes a one-time probe; otherwise caches use paged W^X. Default on.
+void SetDualMappedCode(bool allowed) noexcept;
+/// Code caches alive that are dual-mapped; 0 when the probe failed or SetDualMappedCode(false).
+[[nodiscard]] std::size_t DualMappedCodeCaches() noexcept;
+
 } // namespace Dynarmic

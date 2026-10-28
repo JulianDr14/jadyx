@@ -51,6 +51,8 @@ static void RaiseJitMemoryFailure(DWORD code, const void* base, size_t size, DWO
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
+#include <vector>
 
 #include "common/assert.h"
 #include "dynarmic/mcl/bit.hpp"
@@ -74,6 +76,9 @@ std::atomic<size_t> s_code_cache_cap_epoch{0};
 /// What a capped cache may still emit past the pages it had committed: one block's worth
 /// (MINIMUM_REMAINING_CODESIZE) and its commit ahead, so it is not cleared on the spot.
 constexpr size_t CAP_SLACK = 2 * 1024 * 1024;
+/// SetDualMappedCode, and how many code caches live dual-mapped (DualMappedCodeCaches).
+std::atomic_bool s_dual_map_allowed{true};
+std::atomic<size_t> s_dual_mapped_caches{0};
 } // anonymous namespace
 
 size_t CommittedCodeBytes() noexcept {
@@ -88,6 +93,14 @@ void SetCodeCacheCap(size_t bytes) noexcept {
 size_t CodeCacheCap() noexcept {
     const size_t cap = s_code_cache_cap.load(std::memory_order_relaxed);
     return cap != SIZE_MAX ? cap : 0;
+}
+
+void SetDualMappedCode(bool allowed) noexcept {
+    s_dual_map_allowed.store(allowed, std::memory_order_relaxed);
+}
+
+size_t DualMappedCodeCaches() noexcept {
+    return s_dual_mapped_caches.load(std::memory_order_relaxed);
 }
 } // namespace Dynarmic
 
@@ -118,6 +131,139 @@ namespace {
 constexpr size_t CONSTANT_POOL_SIZE = 2 * 1024 * 1024;
 constexpr size_t PRELUDE_COMMIT_SIZE = 16 * 1024 * 1024;
 
+#if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
+// Dual-mapped code memory: one pagefile-backed section mapped twice, read-execute where code runs
+// and read-write where it is written (Xbyak's writeOffset_). W^X then needs no page protection
+// change per block. Making a page executable again is not cheap on the console: each RW→RX flip
+// cost ~21 µs, a third of a block's compile time, and shoots down the TLB of every core running
+// guest code. Where the section or the executable view is refused, the paged W^X below is used.
+#    if defined(DYNARMIC_UWP_APPCONTAINER)
+#        define DYNARMIC_CREATE_CODE_SECTION(size) \
+            CreateFileMappingFromApp(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE | SEC_RESERVE, (size), nullptr)
+#        define DYNARMIC_MAP_CODE_VIEW(section, access, size) MapViewOfFileFromApp((section), (access), 0, (size))
+#    else
+#        define DYNARMIC_CREATE_CODE_SECTION(size)                                                         \
+            CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE | SEC_RESERVE,          \
+                               static_cast<DWORD>(u64(size) >> 32), static_cast<DWORD>(size), nullptr)
+#        define DYNARMIC_MAP_CODE_VIEW(section, access, size) MapViewOfFile((section), (access), 0, 0, (size))
+#    endif
+
+struct DualCodeView {
+    u8* exec;
+    u8* write;
+    HANDLE section;
+};
+std::mutex s_dual_views_mutex;
+std::vector<DualCodeView> s_dual_views;
+
+// Commits [offset, offset + size) of a section through its write view. The pages are the
+// section's, so the executable view sees them committed too; a runtime that commits per view
+// gets them committed there read-only first, then made executable once per commit.
+bool CommitDualMapped(u8* exec, u8* write, size_t size) {
+    if (DYNARMIC_VIRTUAL_ALLOC(write, size, MEM_COMMIT, PAGE_READWRITE) == nullptr) {
+        return false;
+    }
+    MEMORY_BASIC_INFORMATION info{};
+    if (VirtualQuery(exec, &info, sizeof(info)) == sizeof(info) && info.State == MEM_COMMIT &&
+        info.Protect == PAGE_EXECUTE_READ && info.RegionSize >= size) {
+        return true;
+    }
+    DWORD old_protection = 0;
+    return DYNARMIC_VIRTUAL_ALLOC(exec, size, MEM_COMMIT, PAGE_READONLY) != nullptr &&
+           DYNARMIC_VIRTUAL_PROTECT(exec, size, PAGE_EXECUTE_READ, &old_protection);
+}
+
+bool MapDualView(size_t size, DualCodeView& view) {
+    view.section = DYNARMIC_CREATE_CODE_SECTION(size);
+    if (view.section == nullptr) {
+        return false;
+    }
+    view.exec = static_cast<u8*>(DYNARMIC_MAP_CODE_VIEW(view.section, FILE_MAP_READ | FILE_MAP_EXECUTE, size));
+    view.write = static_cast<u8*>(DYNARMIC_MAP_CODE_VIEW(view.section, FILE_MAP_WRITE, size));
+    if (view.exec != nullptr && view.write != nullptr) {
+        return true;
+    }
+    if (view.exec != nullptr) {
+        UnmapViewOfFile(view.exec);
+    }
+    if (view.write != nullptr) {
+        UnmapViewOfFile(view.write);
+    }
+    CloseHandle(view.section);
+    return false;
+}
+
+void UnmapDualView(const DualCodeView& view) {
+    UnmapViewOfFile(view.exec);
+    UnmapViewOfFile(view.write);
+    CloseHandle(view.section);
+}
+
+int CallCodeProbe(const void* code) {
+    __try {
+        return reinterpret_cast<int (*)()>(const_cast<void*>(code))();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+// Once per process: maps a small section twice, writes `mov eax, 42; ret` through one view and
+// runs it through the other, so a runtime that maps but will not execute such views falls back
+// at boot instead of faulting in the first block.
+bool DualMappingWorks() {
+    static const bool works = [] {
+        constexpr size_t probe_size = 64 * 1024;
+        DualCodeView view{};
+        if (!MapDualView(probe_size, view)) {
+            return false;
+        }
+        bool ok = false;
+        if (CommitDualMapped(view.exec, view.write, 4096)) {
+            constexpr std::array<u8, 6> probe{0xB8, 0x2A, 0x00, 0x00, 0x00, 0xC3};
+            std::memcpy(view.write, probe.data(), probe.size());
+            ok = CallCodeProbe(view.exec) == 42;
+        }
+        UnmapDualView(view);
+        return ok;
+    }();
+    return works;
+}
+
+u8* AllocDualMapped(size_t size) {
+    if (!s_dual_map_allowed.load(std::memory_order_relaxed) || !DualMappingWorks()) {
+        return nullptr;
+    }
+    DualCodeView view{};
+    if (!MapDualView(size, view)) {
+        return nullptr;
+    }
+    std::scoped_lock lock{s_dual_views_mutex};
+    s_dual_views.push_back(view);
+    s_dual_mapped_caches.fetch_add(1, std::memory_order_relaxed);
+    return view.exec;
+}
+
+bool FreeDualMapped(u8* exec) {
+    std::scoped_lock lock{s_dual_views_mutex};
+    const auto it = std::find_if(s_dual_views.begin(), s_dual_views.end(),
+                                 [exec](const DualCodeView& view) { return view.exec == exec; });
+    if (it == s_dual_views.end()) {
+        return false;
+    }
+    UnmapDualView(*it);
+    s_dual_views.erase(it);
+    s_dual_mapped_caches.fetch_sub(1, std::memory_order_relaxed);
+    return true;
+}
+
+u8* DualWriteView(const u8* exec) {
+    std::scoped_lock lock{s_dual_views_mutex};
+    const auto it = std::find_if(s_dual_views.begin(), s_dual_views.end(),
+                                 [exec](const DualCodeView& view) { return view.exec == exec; });
+    return it != s_dual_views.end() ? it->write : nullptr;
+}
+#endif
+
 #ifdef _WIN32
 // Reserve-only allocator for the code region: EnsureMemoryCommitted() commits pages on demand, so
 // the process is only charged for code actually emitted. Eden upstream switched to Xbyak's default
@@ -126,6 +272,11 @@ constexpr size_t PRELUDE_COMMIT_SIZE = 16 * 1024 * 1024;
 class CustomXbyakAllocator : public Xbyak::Allocator {
 public:
     uint8_t* alloc(size_t size) override {
+#    ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
+        if (u8* const exec = AllocDualMapped(size)) {
+            return exec;
+        }
+#    endif
         void* p = DYNARMIC_VIRTUAL_ALLOC(nullptr, size, MEM_RESERVE, PAGE_READWRITE);
         if (p == nullptr) {
             using Xbyak::Error;
@@ -135,6 +286,11 @@ public:
     }
 
     void free(uint8_t* p) override {
+#    ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
+        if (FreeDualMapped(p)) {
+            return;
+        }
+#    endif
         VirtualFree(static_cast<void*>(p), 0, MEM_RELEASE);
     }
 
@@ -314,6 +470,17 @@ BlockOfCode::~BlockOfCode() {
 #endif
 }
 
+#if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
+bool BlockOfCode::AdoptWriteView() {
+    u8* const write = DualWriteView(top_);
+    if (write == nullptr) {
+        return false;
+    }
+    writeOffset_ = write - top_;
+    return true;
+}
+#endif
+
 bool BlockOfCode::HasHostFeature(HostFeature feature) const noexcept {
     return (GetHostFeatures() & feature) == feature;
 }
@@ -324,7 +491,9 @@ void BlockOfCode::PreludeComplete() {
     ClearCache();
 #if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
     wx_exec_end = WxPageUp(static_cast<const u8*>(code_begin));
-    ProtectMemory(wx_exec_begin, wx_exec_end - wx_exec_begin, true);
+    if (!dual_mapped) {
+        ProtectMemory(wx_exec_begin, wx_exec_end - wx_exec_begin, true);
+    }
 #else
     DisableWriting();
 #endif
@@ -340,7 +509,7 @@ void BlockOfCode::PreludeComplete() {
 void BlockOfCode::EnableWriting() {
 #ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
 #    ifdef _WIN32
-    if (!prelude_complete || wx_writing) {
+    if (!prelude_complete || wx_writing || dual_mapped) {
         return; // before PreludeComplete everything committed is still RW
     }
     wx_writing = true;
@@ -357,7 +526,7 @@ void BlockOfCode::EnableWriting() {
 void BlockOfCode::DisableWriting() {
 #ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
 #    ifdef _WIN32
-    if (!prelude_complete || !wx_writing) {
+    if (!prelude_complete || !wx_writing || dual_mapped) {
         return;
     }
     wx_writing = false;
@@ -389,7 +558,7 @@ void BlockOfCode::DisableWriting() {
 
 void BlockOfCode::MakeWritable([[maybe_unused]] CodePtr where, [[maybe_unused]] size_t size) {
 #if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
-    if (!prelude_complete || !wx_writing) {
+    if (!prelude_complete || !wx_writing || dual_mapped) {
         return;
     }
     const u8* const begin = static_cast<const u8*>(where);
@@ -411,7 +580,7 @@ void BlockOfCode::ClearCache() {
 #if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
     // Code is emitted from code_begin again: hand the old blocks' pages back to the RW tail.
     const u8* const tail = WxPageUp(static_cast<const u8*>(code_begin));
-    if (wx_exec_end != nullptr && tail < wx_exec_end) {
+    if (wx_exec_end != nullptr && tail < wx_exec_end && !dual_mapped) {
         ProtectMemory(tail, wx_exec_end - tail, false);
         wx_exec_end = tail;
     }
@@ -452,6 +621,18 @@ void BlockOfCode::EnsureMemoryCommitted([[maybe_unused]] size_t codesize) {
         // them RW.
         const u8* const commit_begin = WxPageUp(top_ + old_committed_size);
         const u8* const commit_end = WxPageUp(top_ + committed_size);
+        if (dual_mapped) {
+            // Both views at once; nothing emitted is touched, so the code pages stay as they are.
+            if (commit_begin < commit_end &&
+                !CommitDualMapped(const_cast<u8*>(commit_begin), WriteAlias(const_cast<u8*>(commit_begin)),
+                                  commit_end - commit_begin)) {
+#        if defined(DYNARMIC_UWP_APPCONTAINER)
+                RaiseJitMemoryFailure(DYNARMIC_UWP_COMMIT_FAILED, commit_begin, commit_end - commit_begin,
+                                      PAGE_READWRITE);
+#        endif
+            }
+            return;
+        }
         void* const committed = commit_begin >= commit_end
             ? top_
             : DYNARMIC_VIRTUAL_ALLOC(const_cast<u8*>(commit_begin), commit_end - commit_begin,
@@ -711,7 +892,7 @@ void* BlockOfCode::AllocateFromCodeSpace(size_t alloc_size) {
 
     void* ret = getCurr<void*>();
     size_ += alloc_size;
-    memset(ret, 0, alloc_size);
+    memset(WriteAlias(ret), 0, alloc_size);
     return ret;
 }
 

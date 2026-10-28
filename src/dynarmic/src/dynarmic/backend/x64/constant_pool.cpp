@@ -30,7 +30,7 @@ Xbyak::Address ConstantPool::GetConstant(BlockOfCode& code, const Xbyak::Address
     if (it == constant_info.end()) {
         ASSERT(insertion_point < pool.size());
         ConstantT& target_constant = pool[insertion_point];
-        target_constant = constant;
+        *code.WriteAlias(&target_constant) = constant;
         it = constant_info.insert({constant, &target_constant}).first;
         ++insertion_point;
     }
