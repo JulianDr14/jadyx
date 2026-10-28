@@ -642,6 +642,28 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
                  measurement(Phase::Emit).ns / 1.0e6,
                  measurement(Phase::Protect).calls, measurement(Phase::Protect).ns / 1.0e6,
                  measurement(Phase::Invalidate).calls, measurement(Phase::Invalidate).ns / 1.0e6);
+        {
+            using Dynarmic::JitProfile::code_part_names;
+            const auto bytes = Dynarmic::JitProfile::TakeCodeBytes();
+            const u64 blocks = std::max<u64>(1, measurement(Phase::Compile).calls);
+            std::string parts;
+            u64 total = 0;
+            for (size_t i = 0; i < code_part_names.size(); ++i) {
+                total += bytes[i];
+                parts += fmt::format("{}{} {:.0f}", parts.empty() ? "" : ", ", code_part_names[i],
+                                     double(bytes[i]) / double(blocks));
+            }
+            const u64 accesses = bytes[code_part_names.size()];
+            LOG_INFO(Render, "D3D12 guest JIT code size: {:.0f} bytes per block ({}), {:.1f} guest "
+                             "instructions and {:.2f} memory accesses per block, {:.0f} bytes per "
+                             "memory access ({:.1f} MiB in all)",
+                     double(total) / double(blocks), parts,
+                     double(bytes[code_part_names.size() + 1]) / double(blocks),
+                     double(accesses) / double(blocks),
+                     double(bytes[size_t(Dynarmic::JitProfile::CodePart::Memory)]) /
+                         double(std::max<u64>(1, accesses)),
+                     double(total) / double(1 << 20));
+        }
         for (size_t i = static_cast<size_t>(Phase::WriteOpen); i < jit.size(); ++i) {
             LOG_INFO(Render, "D3D12 JIT emission {}: {} calls, {:.3f} ms (nested elapsed)",
                      Dynarmic::JitProfile::names[i], jit[i].calls, jit[i].ns / 1.0e6);
