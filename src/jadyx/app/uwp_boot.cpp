@@ -503,6 +503,10 @@ struct BootConfig {
     enum class Fastmem { Off, Auto, Hybrid, Full } fastmem{Fastmem::Off};
     u32 fastmem_hot_mib{384};
     Settings::CpuAccuracy cpu_accuracy{Settings::CpuAccuracy::Auto};
+    /// GPU and DMA accuracy ("gpu_accuracy=low|high", "dma_accuracy=default|unsafe|safe"), for
+    /// A/B runs of what the high level costs the GPU thread.
+    Settings::GpuAccuracy gpu_accuracy{Settings::GpuAccuracy::High};
+    Settings::DmaAccuracy dma_accuracy{Settings::DmaAccuracy::Default};
     /// Legacy setting for backends with draw-skipping async shaders. D3D12 always preserves
     /// dependent draws, while preparing DXIL/PSOs on workers regardless of this setting.
     bool async_shaders{true};
@@ -580,6 +584,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     Settings::values.cpu_accuracy = config.cpu_accuracy;
     WriteDiag(config.cpu_accuracy == Settings::CpuAccuracy::Accurate
                   ? "step: CPU accuracy Accurate" : "step: CPU accuracy Auto");
+    Settings::values.gpu_accuracy = config.gpu_accuracy;
+    Settings::values.dma_accuracy = config.dma_accuracy;
+    Settings::UpdateGPUAccuracy();
     AudioCore::Sink::SetXAudio2ProfileEnabled(config.audio_profile);
     Core::CpuProfile::SetEnabled(config.cpu_profile);
     // Read when Core::System builds the kernel's cores.
@@ -3385,6 +3392,17 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "cpu_accuracy=accurate" || line == "cpu_accuracy=auto") {
                             config.cpu_accuracy = line == "cpu_accuracy=accurate"
                                 ? Settings::CpuAccuracy::Accurate : Settings::CpuAccuracy::Auto;
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "gpu_accuracy=low" || line == "gpu_accuracy=high") {
+                            config.gpu_accuracy = line == "gpu_accuracy=low"
+                                ? Settings::GpuAccuracy::Low : Settings::GpuAccuracy::High;
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "dma_accuracy=default" || line == "dma_accuracy=unsafe" ||
+                                   line == "dma_accuracy=safe") {
+                            config.dma_accuracy = line == "dma_accuracy=unsafe"
+                                ? Settings::DmaAccuracy::Unsafe
+                                : line == "dma_accuracy=safe" ? Settings::DmaAccuracy::Safe
+                                                              : Settings::DmaAccuracy::Default;
                             WriteDiag("boot.cfg: " + line);
                         } else if (line.starts_with("fastmem_hot_mib=")) {
                             const auto requested = static_cast<u32>(
