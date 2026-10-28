@@ -83,4 +83,15 @@ void CompressBC3(std::span<const uint8_t> data, uint32_t width, uint32_t height,
                            });
 }
 
+void CompressBC4Alpha(std::span<const uint8_t> data, uint32_t width, uint32_t height,
+                      uint32_t depth, std::span<uint8_t> output) {
+    CompressBCN<8, false>(data, width, height, depth, output,
+                          [](u8* block_output, const u8* block_input, bool any_alpha) {
+                              // A BC3 block starts with its alpha, laid out as a BC4 block.
+                              u8 bc3[16];
+                              stb_compress_bc3_block(bc3, block_input, STB_DXT_NORMAL);
+                              memcpy(block_output, bc3, 8);
+                          });
+}
+
 } // namespace Tegra::Texture::BCN

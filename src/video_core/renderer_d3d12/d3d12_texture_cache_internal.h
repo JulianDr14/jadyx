@@ -6,6 +6,7 @@
 // Shared by the files implementing the texture cache runtime (d3d12_texture_cache.cpp,
 // d3d12_texture_formats.cpp, d3d12_image_*.cpp, ...). Not meant for other users.
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <optional>
@@ -21,6 +22,7 @@
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/surface.h"
+#include "video_core/texture_cache/image_info.h"
 #include "video_core/textures/texture.h"
 
 namespace D3D12::TextureDetail {
@@ -40,6 +42,12 @@ constexpr u32 AlignPitch(u32 value) {
 // Format tables and Maxwell -> D3D12 enums (d3d12_texture_formats.cpp).
 FormatInfo BaseFormat(PixelFormat format);
 FormatInfo AstcFormat(PixelFormat format, Settings::AstcRecompression recompression);
+/// The format an ASTC image is held in: AstcFormat of its recompression, or BC4 for the alpha
+/// masks of VideoCommon::AstcAlphaMaskFor.
+FormatInfo AstcFormatFor(const VideoCommon::ImageInfo& info);
+/// Reads an alpha mask held in BC4 as the guest's RGBA: RGB white or black, alpha from red.
+void AstcMaskSwizzle(VideoCommon::AstcMask mask,
+                     std::array<Tegra::Texture::SwizzleSource, 4>& swizzle);
 FormatInfo NativeFormat(PixelFormat format);
 std::optional<FormatInfo> DecodedBcFormat(PixelFormat format);
 D3D12_RESOURCE_DIMENSION Dimension(ImageType type);

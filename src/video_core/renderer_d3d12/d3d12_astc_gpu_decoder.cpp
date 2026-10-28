@@ -95,7 +95,8 @@ void TextureCacheRuntime::AccelerateImageUpload(
     }
     const PixelFormat copy_format = image.TransferFormat().copy_format;
     const bool encode_bc1 = copy_format == PixelFormat::BC1_RGBA_UNORM;
-    const bool encode_bc = encode_bc1 || copy_format == PixelFormat::BC3_UNORM;
+    const bool encode_bc4 = copy_format == PixelFormat::BC4_UNORM;
+    const bool encode_bc = encode_bc1 || encode_bc4 || copy_format == PixelFormat::BC3_UNORM;
     if (!encode_bc) {
         image.Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
@@ -176,7 +177,7 @@ void TextureCacheRuntime::AccelerateImageUpload(
         const u32 mip_width = std::max(1U, image.info.size.width >> swizzle.level);
         const u32 mip_height = std::max(1U, image.info.size.height >> swizzle.level);
         const u32 bc_row_pitch =
-            AlignPitch(Common::DivCeil(mip_width, 4U) * (encode_bc1 ? 8U : 16U));
+            AlignPitch(Common::DivCeil(mip_width, 4U) * (encode_bc1 || encode_bc4 ? 8U : 16U));
         const u32 band_alignment = std::lcm(block_height, 4U);
         const u32 rgba_rows = static_cast<u32>(std::max<u64>(
             band_alignment, ASTC_RGBA_SCRATCH_BUDGET / (static_cast<u64>(mip_width) * 4)));
@@ -282,14 +283,15 @@ void TextureCacheRuntime::AccelerateImageUpload(
                 device.Get()->CreateShaderResourceView(astc_rgba_scratch.Get(), &rgba_srv_desc,
                                                        rgba_srv);
                 blit_helper->EncodeBc({rgba_srv, astc_bc_scratch->GetGPUVirtualAddress(),
-                                       mip_width, rows, rows, bc_row_pitch / 4, encode_bc1});
+                                       mip_width, rows, rows, bc_row_pitch / 4, encode_bc1,
+                                       encode_bc4});
                 view_descriptors.Free(rgba_srv);
 
                 TransitionBuffer(commands, astc_bc_scratch.Get(), astc_bc_state,
                                  D3D12_RESOURCE_STATE_COPY_SOURCE);
                 astc_bc_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
                 // The check compares with the CPU's BC3.
-                if (!encode_bc1 && first_y == 0 && layer == 0 &&
+                if (!encode_bc1 && !encode_bc4 && first_y == 0 && layer == 0 &&
                     gpu_astc_verify.fetch_sub(1, std::memory_order_relaxed) > 0) {
                     VerifyGpuAstcBand({.image = image, .map = map, .swizzle = swizzle,
                                        .params = params, .mip_width = mip_width, .rows = rows,

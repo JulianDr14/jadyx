@@ -72,8 +72,8 @@ struct AstcDecode {
     u32 first_block_row;
 };
 
-/// One horizontal RGBA8 band encoded as BC3, or BC1 without its alpha, into a raw buffer
-/// footprint.
+/// One horizontal RGBA8 band encoded as BC3, BC1 without its alpha or BC4 of its alpha alone,
+/// into a raw buffer footprint.
 struct BcEncode {
     D3D12_CPU_DESCRIPTOR_HANDLE source;      ///< R8G8B8A8_UNORM Texture2D SRV
     D3D12_GPU_VIRTUAL_ADDRESS destination;   ///< raw buffer UAV
@@ -82,6 +82,7 @@ struct BcEncode {
     u32 band_height;
     u32 output_row_words;
     bool bc1;
+    bool bc4_alpha = false;
 };
 
 /// Draws Eden's host blit and clear shaders into guest images: the D3D12 counterpart of Vulkan's

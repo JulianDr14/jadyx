@@ -36,9 +36,21 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
         format_info = DecodedBcFormat(info.format).value_or(source.TransferFormat());
     } else if (VideoCore::Surface::IsPixelFormatASTC(info.format)) {
         // ASTC arrays may be RGBA8 where the rest is recompressed: as the image decided.
-        format_info = AstcFormat(info.format, VideoCommon::AstcRecompressionFor(source.info));
+        format_info = AstcFormatFor(source.info);
     }
     auto swizzle = info.Swizzle();
+    // Alpha masks (BC4) read as RGBA through the swizzle, render-target views included.
+    const VideoCommon::AstcMask astc_mask =
+        VideoCore::Surface::IsPixelFormatASTC(info.format) && !source.IsBcDecoded()
+            ? VideoCommon::AstcAlphaMaskFor(source.info)
+            : VideoCommon::AstcMask::None;
+    if (astc_mask != VideoCommon::AstcMask::None) {
+        if (info.IsRenderTarget()) {
+            using enum Tegra::Texture::SwizzleSource;
+            swizzle = {R, G, B, A};
+        }
+        AstcMaskSwizzle(astc_mask, swizzle);
+    }
     // As the Vulkan backend (ImageViewAspectMask): a sampled view of a depth-stencil image reads
     // its stencil when the swizzle selects the stencil component (R of S8_UINT_D24_UNORM, any
     // but R of the others). Reading depth there instead hands the shader float bits where it
@@ -153,7 +165,7 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
         .format = format_info.srv,
         // Render-target views (blits, the display) carry no swizzle: sample them as stored, as
         // the Vulkan backend does.
-        .mapping = info.IsRenderTarget()
+        .mapping = info.IsRenderTarget() && astc_mask == VideoCommon::AstcMask::None
                        ? D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING
                        : D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(
                              Component(swizzle[0]), Component(swizzle[1]),

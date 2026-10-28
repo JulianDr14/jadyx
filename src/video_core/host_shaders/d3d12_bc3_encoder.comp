@@ -8,7 +8,8 @@
 // RGB565 quantization; alpha uses the full eight-entry BC4 palette. The output is the exact
 // little-endian 16-byte BC3 block stream expected by CopyTextureRegion. With block_words = 2 it
 // writes only the color half, an opaque 8-byte BC1 block: its endpoints are already ordered for
-// BC1's four-color mode.
+// BC1's four-color mode. With alpha_only it writes only the alpha half, an 8-byte BC4 block of
+// the alpha channel (block_words = 2).
 
 #ifdef VULKAN
 #define BEGIN_PUSH_CONSTANTS layout(push_constant) uniform PushConstants {
@@ -27,7 +28,8 @@ UNIFORM(0) uint image_width;
 UNIFORM(1) uint image_height;
 UNIFORM(2) uint band_height;
 UNIFORM(3) uint output_row_words;
-UNIFORM(4) uint block_words; // 4 for BC3, 2 for BC1
+UNIFORM(4) uint block_words; // 4 for BC3, 2 for BC1 and BC4
+UNIFORM(5) uint alpha_only;  // nonzero for BC4 of the alpha channel
 END_PUSH_CONSTANTS
 
 layout(binding = 0) uniform sampler2D source_image;
@@ -153,6 +155,37 @@ void PutAlphaIndex(inout uint lo, inout uint hi, uint lane, uint index) {
     }
 }
 
+uvec2 EncodeAlpha(uvec4 texels[16], uint alpha_min, uint alpha_max) {
+    uint alpha_lo = alpha_max | (alpha_min << 8u);
+    uint alpha_hi = 0u;
+    // stb_dxt's optimal DXT5 index finder. The palette-nearest version looks equivalent but its
+    // rounding boundaries differ enough to turn soft masks into black or transparent texels.
+    const int distance = int(alpha_max) - int(alpha_min);
+    const int distance4 = distance * 4;
+    const int distance2 = distance * 2;
+    const int bias = (distance < 8 ? distance - 1 : distance / 2 + 2) - int(alpha_min) * 7;
+    for (uint i = 0u; i < 16u; ++i) {
+        int value = int(texels[i].a) * 7 + bias;
+        int index = 0;
+        if (value >= distance4) {
+            index = 4;
+            value -= distance4;
+        }
+        if (value >= distance2) {
+            index += 2;
+            value -= distance2;
+        }
+        if (value >= distance) {
+            ++index;
+        }
+        index = (-index) & 7;
+        index ^= index < 2 ? 1 : 0;
+        PutAlphaIndex(alpha_lo, alpha_hi, i, uint(index));
+    }
+
+    return uvec2(alpha_lo, alpha_hi);
+}
+
 void main() {
     const uvec2 block = gl_GlobalInvocationID.xy;
     const uvec2 origin = block * 4u;
@@ -178,6 +211,13 @@ void main() {
         alpha_min = min(alpha_min, texels[i].a);
         alpha_max = max(alpha_max, texels[i].a);
         sum += texels[i].rgb;
+    }
+    if (alpha_only != 0u) {
+        const uvec2 alpha = EncodeAlpha(texels, alpha_min, alpha_max);
+        const uint alpha_word = block.y * output_row_words + block.x * 2u;
+        output_words[alpha_word] = alpha.x;
+        output_words[alpha_word + 1u] = alpha.y;
+        return;
     }
     const ivec3 mean = ivec3((sum + 8u) >> 4u);
 
@@ -263,35 +303,9 @@ void main() {
         return;
     }
 
-    uint alpha_lo = alpha_max | (alpha_min << 8u);
-    uint alpha_hi = 0u;
-    // stb_dxt's optimal DXT5 index finder. The palette-nearest version looks equivalent but its
-    // rounding boundaries differ enough to turn soft masks into black or transparent texels.
-    const int distance = int(alpha_max) - int(alpha_min);
-    const int distance4 = distance * 4;
-    const int distance2 = distance * 2;
-    const int bias = (distance < 8 ? distance - 1 : distance / 2 + 2) - int(alpha_min) * 7;
-    for (uint i = 0u; i < 16u; ++i) {
-        int value = int(texels[i].a) * 7 + bias;
-        int index = 0;
-        if (value >= distance4) {
-            index = 4;
-            value -= distance4;
-        }
-        if (value >= distance2) {
-            index += 2;
-            value -= distance2;
-        }
-        if (value >= distance) {
-            ++index;
-        }
-        index = (-index) & 7;
-        index ^= index < 2 ? 1 : 0;
-        PutAlphaIndex(alpha_lo, alpha_hi, i, uint(index));
-    }
-
-    output_words[output_word] = alpha_lo;
-    output_words[output_word + 1u] = alpha_hi;
+    const uvec2 alpha = EncodeAlpha(texels, alpha_min, alpha_max);
+    output_words[output_word] = alpha.x;
+    output_words[output_word + 1u] = alpha.y;
     output_words[output_word + 2u] = color0 | (color1 << 16u);
     output_words[output_word + 3u] = color_indices;
 }

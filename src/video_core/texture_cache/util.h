@@ -67,6 +67,10 @@ void SetOpaqueAstcToBc1(bool enabled) noexcept;
 /// (Tegra::Texture::ASTC::ScanAlpha).
 void DetectOpaqueAstc(ImageInfo& info, std::span<const u8> guest_blocks) noexcept;
 
+/// The alpha mask an ASTC image is re-encoded as (BC4 holding the alpha, RGB forced to white or
+/// black when sampled): info.astc_mask when the image would otherwise be BC3, else None.
+[[nodiscard]] AstcMask AstcAlphaMaskFor(const ImageInfo& info) noexcept;
+
 /// The ASTC re-encoding this image gets: astc_recompression, unless it is an array kept
 /// uncompressed (SetAstcArrayRecompression), and BC1 for BC3 when the image has no alpha
 /// (SetOpaqueAstcToBc1).

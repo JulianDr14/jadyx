@@ -687,6 +687,14 @@ void DetectOpaqueAstc(ImageInfo& info, std::span<const u8> guest_blocks) noexcep
                                        : AstcMask::None;
 }
 
+AstcMask AstcAlphaMaskFor(const ImageInfo& info) noexcept {
+    if (info.astc_mask == AstcMask::None ||
+        AstcRecompressionFor(info) != Settings::AstcRecompression::Bc3) {
+        return AstcMask::None;
+    }
+    return info.astc_mask;
+}
+
 Settings::AstcRecompression AstcRecompressionFor(const ImageInfo& info) noexcept {
     const bool is_array = info.resources.layers > 1 || info.size.depth > 1;
     if (is_array && !recompress_astc_arrays.load(std::memory_order_relaxed)) {
@@ -707,7 +715,10 @@ u32 CalculateConvertedSizeBytes(const ImageInfo& info) noexcept {
     const Settings::AstcRecompression recompression = AstcRecompressionFor(info);
     if (IsPixelFormatASTC(info.format) &&
         recompression != Settings::AstcRecompression::Uncompressed) {
-        const u32 bpp_div = recompression == Settings::AstcRecompression::Bc1 ? 2 : 1;
+        // BC1 and BC4 (alpha masks) are 8 bytes a block, BC3 16.
+        const bool half = recompression == Settings::AstcRecompression::Bc1 ||
+                          AstcAlphaMaskFor(info) != AstcMask::None;
+        const u32 bpp_div = half ? 2 : 1;
         // NumBlocksPerLayer doesn't account for this correctly, so we have to do it manually.
         u32 output_size = 0;
         for (s32 i = 0; i < info.resources.levels; i++) {
@@ -1066,12 +1077,15 @@ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8
                              copy.image_subresource.num_layers *
                              BytesPerBlock(PixelFormat::A8B8G8R8_UNORM);
         } else if (astc) {
-            // BC1 uses 0.5 bytes per texel
+            // BC1 and BC4 use 0.5 bytes per texel
             // BC3 uses 1 byte per texel
-            const auto compress = recompression_setting == Settings::AstcRecompression::Bc1
+            const bool mask = AstcAlphaMaskFor(info) != AstcMask::None;
+            const auto compress = mask ? Tegra::Texture::BCN::CompressBC4Alpha
+                                  : recompression_setting == Settings::AstcRecompression::Bc1
                                       ? Tegra::Texture::BCN::CompressBC1
                                       : Tegra::Texture::BCN::CompressBC3;
-            const auto bpp_div = recompression_setting == Settings::AstcRecompression::Bc1 ? 2 : 1;
+            const auto bpp_div =
+                mask || recompression_setting == Settings::AstcRecompression::Bc1 ? 2 : 1;
 
             const u32 plane_dim = copy.image_extent.width * copy.image_extent.height;
             const u32 level_size = plane_dim * copy.image_extent.depth *
