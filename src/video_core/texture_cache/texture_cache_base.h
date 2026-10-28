@@ -624,6 +624,9 @@ private:
     u64 reclaimed_overlaps = 0;
     std::array<u64, 6> diag_join{};
     std::array<u64, 4> diag_gc{};
+    /// Readbacks per frame the sparse heap pass may start for render targets it evicts.
+    static constexpr size_t SPARSE_GC_DOWNLOADS = 2;
+    u64 diag_sparse_evicted = 0;
     /// An image the GC evicted that the guest asks for again soon after is a reload: its
     /// upload is paid twice. Counts and bytes measure what a smarter eviction order could save.
     static constexpr u64 GC_RELOAD_WINDOW = 600;

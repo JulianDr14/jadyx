@@ -166,6 +166,7 @@ void TextureCache<P>::RunGarbageCollector() {
     size_t downloads_left = SIZE_MAX;
     u64 time_budget_us = 0;
     bool backend_policy = false;
+    bool sparse_only = false;
     auto gc_start = std::chrono::steady_clock::time_point{};
     const auto Configure = [&](bool allow_aggressive) {
         high_priority_mode = total_used_memory >= expected_memory;
@@ -187,10 +188,16 @@ void TextureCache<P>::RunGarbageCollector() {
         }
     };
     const auto Cleanup = [this, &num_iterations, &high_priority_mode, &aggressive_mode,
-                          &downloads_left, &time_budget_us, &backend_policy, &gc_start](ImageId image_id) {
+                          &downloads_left, &time_budget_us, &backend_policy, &gc_start,
+                          &sparse_only](ImageId image_id) {
         if (num_iterations == 0 || (time_budget_us != 0 &&
             std::chrono::steady_clock::now() - gc_start >= std::chrono::microseconds{time_budget_us})) {
             return true;
+        }
+        if constexpr (requires(const Image& image) { runtime.InSparseHeap(image); }) {
+            if (sparse_only && !runtime.InSparseHeap(slot_images[image_id])) {
+                return false;
+            }
         }
         // Under pressure with a time budget, the images kept do not use up the iterations: the
         // oldest entries are often render targets that stay, and counting them held the walk on
@@ -202,7 +209,8 @@ void TextureCache<P>::RunGarbageCollector() {
             return false;
         }
         const bool must_download = IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap);
-        if ((!aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad)) || (!high_priority_mode && must_download)) {
+        if ((!aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad)) ||
+            (!high_priority_mode && !sparse_only && must_download)) {
             ++diag_gc[must_download ? 2 : 3];
             return false;
         }
@@ -212,6 +220,7 @@ void TextureCache<P>::RunGarbageCollector() {
         }
         if (!count_kept) --num_iterations;
         ++diag_gc[0];
+        diag_sparse_evicted += sparse_only;
         diag_gc[1] += must_download;
         if (must_download) --downloads_left;
         if (must_download) {
@@ -265,6 +274,20 @@ void TextureCache<P>::RunGarbageCollector() {
         return false;
     };
     Configure(false);
+    if constexpr (requires { runtime.HasSparseHeaps(); }) {
+        // Over the cap, the idle images in mostly free heaps go first, render targets too: the
+        // oldest-first walk spread its evictions over every heap and emptied none of them.
+        if (runtime.HasSparseHeaps() && frame_tick >= ticks_to_destroy) {
+            const size_t iterations = num_iterations;
+            const size_t downloads = downloads_left;
+            sparse_only = true;
+            downloads_left = SPARSE_GC_DOWNLOADS;
+            lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
+            sparse_only = false;
+            num_iterations = iterations;
+            downloads_left = downloads;
+        }
+    }
     if (frame_tick >= ticks_to_destroy)
         lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
     if (backend_policy || total_used_memory >= critical_memory) {
@@ -296,11 +319,11 @@ void TextureCache<P>::TickFrame() {
         });
         LOG_INFO(HW_GPU, "Texture cache diag: {} resized replaced, {} overlaps reclaimed; joins none {} resolved {} "
                  "left {} right {} bad {} ignored {}; gc evicted {} (downloaded {}), skipped "
-                 "download {} costly {}; reloaded within {} frames {} ({} MiB); used {} MiB "
+                 "download {} costly {}, from sparse heaps {}; reloaded within {} frames {} ({} MiB); used {} MiB "
                  "expected {} critical {} images {}",
                  replaced_resized_images, reclaimed_overlaps, diag_join[0], diag_join[1], diag_join[2],
                  diag_join[3], diag_join[4], diag_join[5], diag_gc[0], diag_gc[1], diag_gc[2],
-                 diag_gc[3], GC_RELOAD_WINDOW, diag_reload[0], diag_reload[1] >> 20,
+                 diag_gc[3], diag_sparse_evicted, GC_RELOAD_WINDOW, diag_reload[0], diag_reload[1] >> 20,
                  total_used_memory >> 20, expected_memory >> 20, critical_memory >> 20,
                  slot_images.size());
     }

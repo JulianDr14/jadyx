@@ -441,6 +441,13 @@ std::optional<VideoCommon::TextureGcPolicy> TextureCacheRuntime::GetTextureGcPol
                                     pressure_snapshot.app_limit ? pressure_snapshot.AppFree() : UINT64_MAX,
                                     static_cast<u64>(pressure_level));
     }
+    if (!second_pass) {
+        // At half used or less: 0.3.9.62 stayed over a 512 MiB cap with 750-910 MiB of heaps for
+        // 480-520 MiB live, its free space spread over heaps that each kept a few survivors.
+        sparse_heaps = over_texture_cap ? texture_allocator.SparseHeaps(50) : std::vector<bool>{};
+        has_sparse_heaps = std::find(sparse_heaps.begin(), sparse_heaps.end(), true) !=
+                           sparse_heaps.end();
+    }
     if (!pressure_snapshot.Known()) return std::nullopt;
     // Over the texture cap the clean textures nobody sampled for a while go before the app runs
     // short: they decode again from guest memory when used, and render targets are kept.
@@ -450,6 +457,11 @@ std::optional<VideoCommon::TextureGcPolicy> TextureCacheRuntime::GetTextureGcPol
     }
     return CachePressureController::Policy(level, second_pass,
         CachePressureController::RequiresImmediateRecovery(pressure_snapshot));
+}
+bool TextureCacheRuntime::InSparseHeap(const Image& image) const {
+    if (!image.resource_allocation) return false;
+    const size_t heap = TextureResourceAllocator::HeapOf(*image.resource_allocation);
+    return heap < sparse_heaps.size() && sparse_heaps[heap];
 }
 u64 TextureCacheRuntime::GetDeviceLocalMemory() const { return device.CacheMemoryBudget(); }
 u64 TextureCacheRuntime::GetDeviceMemoryUsage() const {

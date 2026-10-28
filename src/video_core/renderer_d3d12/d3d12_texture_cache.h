@@ -125,6 +125,9 @@ public:
     u64 GetDeviceLocalMemory() const;
     u64 GetDeviceMemoryUsage() const;
     std::optional<VideoCommon::TextureGcPolicy> GetTextureGcPolicy(bool second_pass);
+    /// Over the texture cap: the image lives in a heap mostly free, so evicting it helps empty one.
+    [[nodiscard]] bool InSparseHeap(const Image& image) const;
+    [[nodiscard]] bool HasSparseHeaps() const noexcept { return has_sparse_heaps; }
     [[nodiscard]] u64 DepthFeedbackCopies() const noexcept { return depth_feedback_copies; }
     bool CanReportMemoryUsage() const { return true; }
     std::optional<size_t> GetSamplerHeapBudget() const { return SamplerHeap::CAPACITY; }
@@ -250,6 +253,8 @@ private:
     CacheMemorySnapshot pressure_snapshot{};
     bool pressure_sampled{};
     bool over_texture_cap{}; ///< texture heaps above texture_memory_cap, sampled each frame
+    std::vector<bool> sparse_heaps; ///< by heap index, refreshed each GC frame over the cap
+    bool has_sparse_heaps{};
     u64 gc_pending_bytes{};
     u64 gc_peak_pending_bytes{};
     u64 gc_queued{}, gc_ready{}, gc_stale{}, gc_sync{};
