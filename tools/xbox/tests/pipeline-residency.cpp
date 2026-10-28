@@ -49,6 +49,21 @@ void TestPrewarmGate() {
     assert(!P::MayPrewarm(0, 0));
 }
 
+void TestReleasePays() {
+    using P = PipelineResidencyPolicy;
+    // Too few PSOs built to tell: eviction stays.
+    assert(P::ReleasePays(0, 0, 0));
+    assert(P::ReleasePays(0, 0, P::MIN_MEASURED_PSOS - 1));
+    // The Series: 1354 PSOs, commit +29 MiB while the ledger grew 50 MiB.
+    assert(!P::ReleasePays(29 * M, 50 * M, 1354));
+    assert(!P::ReleasePays(0, 0, 1354));
+    // Some 100 KiB each beyond the ledger: releasing them pays.
+    assert(P::ReleasePays(50 * M + 1354 * 100 * 1024, 50 * M, 1354));
+    // The boundary: 16 KiB a PSO pays, a byte less does not.
+    assert(P::ReleasePays(1000 * P::MIN_RELEASE_BYTES, 0, 1000));
+    assert(!P::ReleasePays(1000 * P::MIN_RELEASE_BYTES - 1, 0, 1000));
+}
+
 void TestLatencyHistogram() {
     using H = LatencyHistogram;
     // Buckets: exact below 8 us, quarter octaves above; every value inside its bucket's bounds.
@@ -163,6 +178,7 @@ void TestHotSet() {
 int main() {
     TestIdleFrames();
     TestPrewarmGate();
+    TestReleasePays();
     TestHotSet();
     TestLatencyHistogram();
     std::cout << "PASS: idle limits and prewarm gate by headroom, hot pipeline sessions, decay, "

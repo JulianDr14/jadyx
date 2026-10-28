@@ -62,6 +62,28 @@ struct PipelineResidencyPolicy {
         return IDLE_FRAMES;
     }
 
+    /// Fewer PSOs built at boot than this leave their cost unmeasured.
+    static constexpr std::uint64_t MIN_MEASURED_PSOS = 256;
+    /// A PSO that costs less commit than this is not worth a driver compile to release.
+    static constexpr std::uint64_t MIN_RELEASE_BYTES = 16 * 1024;
+
+    /// Whether releasing idle PSOs under pressure gives memory back, from what building them at
+    /// boot cost: the commit the boot's PSO builds added beyond the owners the ledger tracks
+    /// (DXIL, bookkeeping), per PSO. Other untracked allocations of the boot only raise that
+    /// figure, so it bounds a PSO's cost from above and a wrong guess keeps eviction. On the
+    /// Series 1354 PSOs added nothing: the driver keeps them outside the app's commit, and the
+    /// 2737 released at a time of pressure there freed nothing and were compiled again mid-game.
+    [[nodiscard]] static constexpr bool ReleasePays(std::uint64_t commit_growth,
+                                                    std::uint64_t ledger_growth,
+                                                    std::uint64_t psos_built) noexcept {
+        if (psos_built < MIN_MEASURED_PSOS) {
+            return true;
+        }
+        const std::uint64_t untracked =
+            commit_growth > ledger_growth ? commit_growth - ledger_growth : 0;
+        return untracked / psos_built >= MIN_RELEASE_BYTES;
+    }
+
     /// Whether a dormant PSO may be built ahead of its first draw: only with plenty free, and
     /// never with an unknown limit.
     [[nodiscard]] static constexpr bool MayPrewarm(std::uint64_t used,
