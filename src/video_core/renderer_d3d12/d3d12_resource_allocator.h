@@ -47,6 +47,8 @@ public:
         u64 heap_bytes{}, reserved_bytes{}, pending_bytes{}, free_bytes{}, largest_free_range{};
     };
     [[nodiscard]] Stats GetStats() const;
+    /// GetStats().heap_bytes without walking every free range.
+    [[nodiscard]] u64 HeapBytes() const;
 
 private:
     struct State;

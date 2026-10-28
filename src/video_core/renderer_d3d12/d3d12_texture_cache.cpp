@@ -388,11 +388,12 @@ void TextureCacheRuntime::TickFrame() {
     // Over the texture cap the heaps the GC drained are released too, after they settle, so the
     // cap bounds the heaps and not only the textures living in them.
     if (const u64 cap = texture_memory_cap.load(std::memory_order_relaxed); cap != 0) {
-        const auto stats = texture_allocator.GetStats();
+        // Every frame: the free ranges of hundreds of heaps are only walked for the log line.
+        const u64 heap_bytes = texture_allocator.HeapBytes();
         // 64 MiB below the cap before leaving it, so one heap more or less does not flip it.
-        const bool over = over_texture_cap ? stats.heap_bytes + 64_MiB > cap
-                                           : stats.heap_bytes > cap;
+        const bool over = over_texture_cap ? heap_bytes + 64_MiB > cap : heap_bytes > cap;
         if (over != over_texture_cap) {
+            const auto stats = texture_allocator.GetStats();
             over_texture_cap = over;
             LOG_INFO(Render, "D3D12: texture cap {}: heaps {} MiB, live {} MiB, free {} MiB "
                      "(largest {} MiB), pending {} MiB, cap {} MiB, pressure {}",

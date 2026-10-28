@@ -481,4 +481,9 @@ TextureResourceAllocator::Stats TextureResourceAllocator::GetStats() const {
     return result;
 }
 
+u64 TextureResourceAllocator::HeapBytes() const {
+    std::scoped_lock lock{state->mutex};
+    return state->heap_bytes;
+}
+
 } // namespace D3D12
