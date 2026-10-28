@@ -167,7 +167,9 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         "mismatched) | CBV {} ({:.1f} ms: "
         "{} streamed, {} persistent, {} null; {} root, {} root clamped), view copies {} "
         "({:.1f} ms), tables {} reused of {} | guest waited for "
-        "the GPU {} times ({:.1f} ms in all) | commands: {} submit lists {:.1f} ms ({:.1f} ms "
+        "the GPU {} times ({:.1f} ms in all), syncpoints signalled {} at once and after the GPU "
+        "{} (buffer downloads {}, image downloads {}, query flushes {}, operations {}, earlier "
+        "fences {}) | commands: {} submit lists {:.1f} ms ({:.1f} ms "
         "outside draw/clear/dispatch), {} ticks {:.1f} ms, {} invalidations {:.1f} ms | uploads: "
         "{} maps {:.1f} ms, {} repacks {:.1f} ms, {} copies {:.1f} ms | texture cache: "
         "{} finds {:.1f} ms, {} inserts {:.1f} ms (overlap {:.1f}, image {:.1f}, refresh "
@@ -194,7 +196,14 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         get(Counter::CbvRootClamped), get(Counter::ViewCopies),
         ns_ms(Counter::ViewCopyNs), get(Counter::DescriptorTableReuses),
         get(Counter::DescriptorTables),
-        get(Counter::GuestGpuWaits), Ms(d, Counter::GuestGpuWaitUs), get(Counter::SubmitLists),
+        get(Counter::GuestGpuWaits), Ms(d, Counter::GuestGpuWaitUs),
+        get(Counter::SyncpointsEarly),
+        get(Counter::SyncpointsAfterBufferDownloads) + get(Counter::SyncpointsAfterTextureDownloads) +
+            get(Counter::SyncpointsAfterQueryFlushes) + get(Counter::SyncpointsAfterOperations) +
+            get(Counter::SyncpointsAfterQueuedFences),
+        get(Counter::SyncpointsAfterBufferDownloads), get(Counter::SyncpointsAfterTextureDownloads),
+        get(Counter::SyncpointsAfterQueryFlushes), get(Counter::SyncpointsAfterOperations),
+        get(Counter::SyncpointsAfterQueuedFences), get(Counter::SubmitLists),
         submit_ms, submit_overhead, get(Counter::GpuTicks), ns_ms(Counter::GpuTickNs),
         get(Counter::CacheInvalidations), ns_ms(Counter::CacheInvalidationNs),
         get(Counter::TextureUploadMaps), ns_ms(Counter::TextureUploadMapNs),

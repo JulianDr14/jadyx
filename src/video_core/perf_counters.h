@@ -147,6 +147,13 @@ enum class Counter : size_t {
     BlitDiscardsRestored,  ///< skipped uploads put back because the backend drew nothing
     GuestGpuWaits,         ///< guest fence waits (nvhost_ctrl events) that the GPU signalled later
     GuestGpuWaitUs,        ///< time from each of those waits to its signal; waits can overlap
+    SyncpointsEarly,       ///< syncpoints signalled when the GPU thread reached them
+    // Syncpoints signalled once the host GPU ran the work before them, by the first reason found:
+    SyncpointsAfterBufferDownloads,  ///< GPU-written buffers to download with this fence
+    SyncpointsAfterTextureDownloads, ///< GPU-written images to download with this fence
+    SyncpointsAfterQueryFlushes,     ///< query results to flush with this fence
+    SyncpointsAfterOperations,       ///< operations queued with this fence (query reports)
+    SyncpointsAfterQueuedFences,     ///< an earlier fence still has downloads or operations
     // The frame chain: game -> GPU thread -> composite -> vsync.
     Vsyncs,                ///< vsyncs processed by the VSyncThread (60 per second when on time)
     VsyncsLost,            ///< vsyncs skipped because the previous one ran late
