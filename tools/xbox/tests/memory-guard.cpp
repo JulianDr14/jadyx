@@ -87,17 +87,23 @@ void TestRingController() {
     auto plan = ring.BeginFrame(UsedFor(1000 * M), limit, 256 * M);
     assert(plan.target == 256 * M && !plan.finish && !ring.Retiring());
 
-    // Shrinking retires the live ring without draining the GPU; no replacement until it is gone
-    // and its size plus 64 MiB is free.
+    // Shrinking retires the live ring without draining the GPU; no replacement until it is gone,
+    // then the smaller one at once, from the memory the old one gave back.
     plan = ring.BeginFrame(UsedFor(100 * M), limit, 256 * M);
     assert(plan.previous_target == 256 * M && plan.target == 128 * M);
     assert(ring.Retiring() && !plan.finish && plan.trim);
     assert(ring.WantedRing(256 * M, UsedFor(4000 * M), limit) == 0);
-    ring.OnRetired();
+    ring.OnRetired(256 * M);
     assert(!ring.Retiring());
-    assert(ring.WantedRing(0, UsedFor(191 * M), limit) == 0);
-    assert(ring.WantedRing(0, UsedFor(192 * M), limit) == 128 * M);
+    assert(ring.WantedRing(0, UsedFor(10 * M), limit) == 128 * M);
     assert(ring.WantedRing(0, 0, 0) == 0);
+    // Without a ring just retired, the replacement needs its size plus 64 MiB free.
+    {
+        StagingRingController grown;
+        grown.BeginFrame(UsedFor(100 * M), limit, 0);
+        assert(grown.WantedRing(0, UsedFor(191 * M), limit) == 0);
+        assert(grown.WantedRing(0, UsedFor(192 * M), limit) == 128 * M);
+    }
     plan = ring.BeginFrame(UsedFor(150 * M), limit, 128 * M);
     assert(!ring.Retiring() && plan.target == 128 * M);
 
@@ -108,7 +114,7 @@ void TestRingController() {
     assert(plan.emergency && plan.finish && plan.target == floor && ring.Retiring());
     plan = ring.BeginFrame(UsedFor(20 * M), limit, 128 * M);
     assert(plan.emergency && !plan.finish);
-    ring.OnRetired();
+    ring.OnRetired(128 * M);
     assert(ring.WantedRing(0, UsedFor(0), limit) == floor);
     assert(ring.WantedRing(0, UsedFor(20 * M), limit) == floor);
     // A floor ring in place is kept, without draining or retiring it.

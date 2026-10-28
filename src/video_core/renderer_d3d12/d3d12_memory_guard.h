@@ -154,8 +154,11 @@ private:
 ///   2. While Retiring(), the pool hands out no ring memory and releases the ring once the GPU has
 ///      passed every tick that used it (immediately after a drain), then calls OnRetired().
 ///   3. WantedRing: bytes of the replacement ring, or 0. Old and new rings never coexist, and the
-///      replacement needs its size plus RING_MARGIN free, except a floor ring: uploads without one
-///      commit more than it does. A refused allocation backs off.
+///      replacement needs its size plus RING_MARGIN free, except a floor ring (uploads without one
+///      commit more than it does) and a ring smaller than the one just retired, created in the
+///      same frame from the memory it gave back. Waiting for the margin instead, a game near the
+///      limit went 7 s without a ring: every upload took a dedicated buffer, and those ate the
+///      memory the margin waited for. A refused allocation backs off.
 class StagingRingController {
 public:
     static constexpr std::uint64_t RING_MARGIN = 64 * MemoryGuard::MiB;
@@ -188,6 +191,9 @@ public:
         };
         target = decision.stream_bytes;
         retiring = ring_bytes != 0 && ring_bytes != target;
+        if (ring_bytes != 0) {
+            retired_bytes = 0;
+        }
         if (plan.finish) {
             emergency_finished = true;
         }
@@ -201,8 +207,10 @@ public:
         return retiring;
     }
 
-    void OnRetired() noexcept {
+    /// released: the size of the ring just released.
+    void OnRetired(std::uint64_t released) noexcept {
         retiring = false;
+        retired_bytes = released;
     }
 
     [[nodiscard]] std::uint64_t WantedRing(std::uint64_t ring_bytes, std::uint64_t used,
@@ -210,7 +218,7 @@ public:
         if (ring_bytes != 0 || target == 0 || retry_frames != 0 || limit == 0) {
             return 0;
         }
-        if (target <= policy.FloorRing()) {
+        if (target <= policy.FloorRing() || target <= retired_bytes) {
             return target;
         }
         const std::uint64_t free = used >= limit ? 0 : limit - used;
@@ -219,6 +227,7 @@ public:
 
     void OnAllocationFailed() noexcept {
         retry_frames = RETRY_FRAMES;
+        retired_bytes = 0;
     }
 
     [[nodiscard]] std::uint64_t Target() const noexcept {
@@ -233,6 +242,8 @@ private:
     MemoryGuardPolicy policy;
     std::uint64_t target;
     unsigned retry_frames{};
+    /// Size of the ring released since the last frame that had one.
+    std::uint64_t retired_bytes{};
     bool retiring{};
     bool emergency_finished{};
 };

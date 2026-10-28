@@ -139,12 +139,13 @@ bool StagingBufferPool::GuardMemory(const CacheMemorySnapshot& snapshot) {
         stream_pointer = {};
         stream_buffer_size = region_size = iterator = 0;
         sync_ticks.fill(0);
-        ring_guard.OnRetired();
+        ring_guard.OnRetired(released);
         released_ring = true;
         LOG_INFO(Render, "D3D12: memory guard retired staging ring ({} MiB released)",
                  released / 1_MiB);
     }
-    // A ring released this frame is not in the snapshot yet, so its replacement waits a frame.
+    // A ring released this frame is not in the snapshot yet: a larger replacement waits a frame,
+    // a smaller one is created now from the memory it gave back.
     if (const u64 wanted = ring_guard.WantedRing(stream_buffer ? stream_buffer_size : 0,
                                                  snapshot.app_used, snapshot.app_limit)) {
         try {
