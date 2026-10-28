@@ -205,9 +205,12 @@ private:
     // ever changes protection. Set before constant_pool, which writes code memory first.
     bool AdoptWriteView();
     const bool dual_mapped = AdoptWriteView();
+    void ReleaseMemoryPastCap();
+    bool release_failed = false;
 #endif
     bool prelude_complete = false;
     // SetCodeCacheCap as this cache applies it: the cap it last saw, and where its code ends.
+    size_t CapEnd(size_t cap) const;
     mutable size_t cap_epoch = 0;
     mutable size_t cap_end = SIZE_MAX;
 

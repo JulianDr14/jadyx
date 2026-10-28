@@ -1188,8 +1188,13 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         u32 low_snapshot_tick = 0;
         // Short of memory, each JIT code cache keeps what it has committed, or this much.
         constexpr size_t JIT_CAP_FLOOR = 64ULL << 20;
+        constexpr u64 JIT_STOP_HEADROOM = 768ULL << 20;
+        // Shorter still, a cache holding more than this is cleared and gives the rest back: a large
+        // game held ~160 MiB in each of three caches when a new area's textures ran it out.
+        constexpr size_t JIT_RELEASE_CAP = 96ULL << 20;
+        constexpr u64 JIT_RELEASE_HEADROOM = 384ULL << 20;
         // ...and the cap is lifted once this much is free again.
-        constexpr u64 JIT_UNCAP_HEADROOM = 768ULL << 20;
+        constexpr u64 JIT_UNCAP_HEADROOM = 1024ULL << 20;
         constexpr u64 POOL_TRIM_PER_SECOND = 64ULL << 20;
         constexpr u64 POOL_TRIM_ALL_HEADROOM = 512ULL << 20;
         constexpr u64 TRIM_SLICE = 32ULL << 20;
@@ -1265,8 +1270,13 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                               " MiB per core for this game's next session | " + MemoryReport());
                 }
                 // Short of memory, the JIT stops committing: each cache keeps the pages it has
-                // and is cleared when it fills them. Recompiling costs less than running out.
-                if (headroom < PrewarmBudget::LOW_HEADROOM && Dynarmic::CodeCacheCap() == 0) {
+                // and is cleared when it fills them. Shorter, the larger caches are cleared and
+                // give memory back. Recompiling costs less than running out.
+                if (headroom < JIT_RELEASE_HEADROOM && !Dynarmic::CodeCacheCapReleases()) {
+                    Dynarmic::SetCodeCacheCap(JIT_RELEASE_CAP, true);
+                    WriteDiag("JIT code caches give memory back past " +
+                              std::to_string(JIT_RELEASE_CAP >> 20) + " MiB | " + MemoryReport());
+                } else if (headroom < JIT_STOP_HEADROOM && Dynarmic::CodeCacheCap() == 0) {
                     Dynarmic::SetCodeCacheCap(JIT_CAP_FLOOR);
                     WriteDiag("JIT code caches stop growing | " + MemoryReport());
                 } else if (headroom >= JIT_UNCAP_HEADROOM && Dynarmic::CodeCacheCap() != 0) {
