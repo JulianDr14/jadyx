@@ -51,15 +51,19 @@ bool ReclaimRetiredStaging(Entries& entries, std::size_t& cursor, IsRetired&& re
     return changed;
 }
 
-/// Bytes a dedicated staging buffer is created with. Up to 1 MiB, a power of two (D3D12 commits
-/// whole 64 KiB pages anyway). Above it, sixteenths of the next power of two: less than 12.5 % over
-/// the request instead of up to 100 % (a 17 MiB upload used to commit 32 MiB, now 18). Buckets
-/// stay indexed by Log2Ceil(request), so a bucket holds at most sixteen distinct sizes.
+/// Bytes a dedicated staging buffer is created with. Up to 1 MiB, a power of two and at least the
+/// 64 KiB a committed buffer takes anyway: callers use the whole buffer, so the uniform stream fits
+/// sixteen 4 KiB blocks in one when the ring is busy or retired. While a game's ring was retired
+/// it created ~9200 of them in ten seconds, each a 4 KiB buffer. Above 1 MiB, sixteenths of the
+/// next power of two: less than 12.5 % over the request instead of up to 100 % (a 17 MiB upload
+/// used to commit 32 MiB, now 18). Buckets stay indexed by Log2Ceil(request), so a bucket holds at
+/// most sixteen distinct sizes.
 [[nodiscard]] constexpr std::uint64_t DedicatedStagingSize(std::uint64_t size) {
+    constexpr std::uint64_t COMMIT_GRANULE = 64 * 1024;
     size = (std::max<std::uint64_t>)(size, 1);
     const std::uint64_t pow2 = std::bit_ceil(size);
     if (pow2 <= MemoryGuard::MiB) {
-        return pow2;
+        return (std::max)(pow2, COMMIT_GRANULE);
     }
     const std::uint64_t step = pow2 / 16;
     return (size + step - 1) / step * step;

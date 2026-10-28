@@ -169,8 +169,9 @@ void TestHeadroom() {
 }
 
 void TestDedicatedSize() {
-    assert(DedicatedStagingSize(0) == 1);
-    assert(DedicatedStagingSize(3) == 4);
+    assert(DedicatedStagingSize(0) == 64 * 1024);
+    assert(DedicatedStagingSize(4096) == 64 * 1024);
+    assert(DedicatedStagingSize(64 * 1024 + 1) == 128 * 1024);
     assert(DedicatedStagingSize(M) == M);
     assert(DedicatedStagingSize(M + 1) == M + 128 * 1024);
     assert(DedicatedStagingSize(17 * M) == 18 * M);
@@ -178,7 +179,7 @@ void TestDedicatedSize() {
     assert(DedicatedStagingSize(33 * M) == 36 * M);
     for (std::uint64_t size = 1; size < 300 * M; size += size / 7 + 4093) {
         const std::uint64_t bytes = DedicatedStagingSize(size);
-        assert(bytes >= size && bytes <= std::bit_ceil(size)); // stays in its log2 bucket
+        assert(bytes >= size && bytes <= (std::max<std::uint64_t>)(std::bit_ceil(size), 64 * 1024));
         if (size > M) {
             assert(bytes - size < size / 8); // under 12.5 % over the request
         }
