@@ -679,7 +679,12 @@ bool WantsOpaqueAstcScan(const ImageInfo& info) noexcept {
 }
 
 void DetectOpaqueAstc(ImageInfo& info, std::span<const u8> guest_blocks) noexcept {
-    info.astc_opaque = !Tegra::Texture::ASTC::MayHaveAlpha(guest_blocks);
+    const Tegra::Texture::ASTC::AlphaScan scan = Tegra::Texture::ASTC::ScanAlpha(
+        guest_blocks, DefaultBlockWidth(info.format), DefaultBlockHeight(info.format));
+    info.astc_opaque = !scan.alpha;
+    info.astc_mask = scan.white_mask   ? AstcMask::White
+                     : scan.black_mask ? AstcMask::Black
+                                       : AstcMask::None;
 }
 
 Settings::AstcRecompression AstcRecompressionFor(const ImageInfo& info) noexcept {

@@ -14,6 +14,9 @@ namespace VideoCommon {
 using Tegra::Texture::TICEntry;
 using VideoCore::Surface::PixelFormat;
 
+/// ASTC images that are only an alpha channel over constant RGB.
+enum class AstcMask : u8 { None, White, Black };
+
 struct ImageInfo {
     ImageInfo() = default;
     explicit ImageInfo(const TICEntry& config) noexcept;
@@ -44,6 +47,9 @@ struct ImageInfo {
     bool is_sparse = false;
     /// ASTC blocks without alpha, found when the image was made (see SetOpaqueAstcToBc1).
     bool astc_opaque = false;
+    /// ASTC with alpha whose RGB is all white or all black, found with astc_opaque
+    /// (see AstcAlphaMaskFor): only the alpha channel needs keeping.
+    AstcMask astc_mask = AstcMask::None;
 };
 
 } // namespace VideoCommon

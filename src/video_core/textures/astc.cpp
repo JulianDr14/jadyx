@@ -8,6 +8,7 @@
 // <http://gamma.cs.unc.edu/FasTC/>
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cassert>
 #include <cstring>
@@ -1734,45 +1735,32 @@ static void FillError(std::span<u32> outBuf, u32 blockWidth, u32 blockHeight) {
     }
 }
 
-static void DecompressBlock(std::span<const u8, 16> inBuf, const u32 blockWidth,
-                            const u32 blockHeight, std::span<u32, 12 * 12> outBuf) {
-    InputBitStream strm(inBuf);
-    TexelWeightParams weightParams = DecodeBlockInfo(strm);
+/// What a block holds before its weights: shared by the decoder and the alpha scan.
+struct BlockEndpoints {
+    u32 partitions{};
+    u32 partition_index{};
+    u32 plane_index{UINT32_MAX};
+    u32 modes[4]{};
+    Pixel endpoints[4][2];
+};
 
-    // Was there an error?
-    if (weightParams.m_bError) {
-        assert(false && "Invalid block mode");
-        FillError(outBuf, blockWidth, blockHeight);
-        return;
-    }
-
-    if (weightParams.m_bVoidExtentLDR) {
-        FillVoidExtentLDR(strm, outBuf, blockWidth, blockHeight);
-        return;
-    }
-
-    if (weightParams.m_bVoidExtentHDR) {
-        assert(false && "HDR void extent blocks are unsupported!");
-        FillError(outBuf, blockWidth, blockHeight);
-        return;
-    }
-
+/// Reads the partitions, endpoint modes and endpoints that follow the block mode. False for a
+/// block the decoder fills with the error color (transparent black).
+static bool DecodeEndpoints(InputBitStream& strm, const TexelWeightParams& weightParams,
+                            const u32 blockWidth, const u32 blockHeight, BlockEndpoints& out) {
     if (weightParams.m_Width > blockWidth) {
         assert(false && "Texel weight grid width should be smaller than block width");
-        FillError(outBuf, blockWidth, blockHeight);
-        return;
+        return false;
     }
 
     if (weightParams.m_Height > blockHeight) {
         assert(false && "Texel weight grid height should be smaller than block height");
-        FillError(outBuf, blockWidth, blockHeight);
-        return;
+        return false;
     }
 
     if (weightParams.GetNumWeightValues() > 64) {
         assert(false && "Too many weights in the weight grid");
-        FillError(outBuf, blockWidth, blockHeight);
-        return;
+        return false;
     }
 
     // Read num partitions
@@ -1781,8 +1769,7 @@ static void DecompressBlock(std::span<const u8, 16> inBuf, const u32 blockWidth,
 
     if (nPartitions == 4 && weightParams.m_bDualPlane) {
         assert(false && "Dual plane mode is incompatible with four partition blocks");
-        FillError(outBuf, blockWidth, blockHeight);
-        return;
+        return false;
     }
 
     // Based on the number of partitions, read the color endpoint mode for
@@ -1813,8 +1800,7 @@ static void DecompressBlock(std::span<const u8, 16> inBuf, const u32 blockWidth,
     u32 nWeightBits = weightParams.GetPackedBitSize();
     if (nWeightBits < 24 || nWeightBits > 96) {
         assert(false && "Invalid weight bit count");
-        FillError(outBuf, blockWidth, blockHeight);
-        return;
+        return false;
     }
     s32 remainingBits = 128 - nWeightBits - static_cast<int>(strm.GetBitsRead());
 
@@ -1901,11 +1887,51 @@ static void DecompressBlock(std::span<const u8, 16> inBuf, const u32 blockWidth,
     DecodeColorValues(colorValues, colorEndpointData, colorEndpointMode, nPartitions,
                       colorDataBits);
 
-    Pixel endpoints[4][2];
     const u32* colorValuesPtr = colorValues;
     for (u32 i = 0; i < nPartitions; i++) {
-        ComputeEndpoints(endpoints[i][0], endpoints[i][1], colorValuesPtr, colorEndpointMode[i]);
+        ComputeEndpoints(out.endpoints[i][0], out.endpoints[i][1], colorValuesPtr,
+                         colorEndpointMode[i]);
+        out.modes[i] = colorEndpointMode[i];
     }
+    out.partitions = nPartitions;
+    out.partition_index = partitionIndex;
+    out.plane_index = planeIdx;
+    return true;
+}
+
+static void DecompressBlock(std::span<const u8, 16> inBuf, const u32 blockWidth,
+                            const u32 blockHeight, std::span<u32, 12 * 12> outBuf) {
+    InputBitStream strm(inBuf);
+    TexelWeightParams weightParams = DecodeBlockInfo(strm);
+
+    // Was there an error?
+    if (weightParams.m_bError) {
+        assert(false && "Invalid block mode");
+        FillError(outBuf, blockWidth, blockHeight);
+        return;
+    }
+
+    if (weightParams.m_bVoidExtentLDR) {
+        FillVoidExtentLDR(strm, outBuf, blockWidth, blockHeight);
+        return;
+    }
+
+    if (weightParams.m_bVoidExtentHDR) {
+        assert(false && "HDR void extent blocks are unsupported!");
+        FillError(outBuf, blockWidth, blockHeight);
+        return;
+    }
+
+    BlockEndpoints block;
+    if (!DecodeEndpoints(strm, weightParams, blockWidth, blockHeight, block)) {
+        FillError(outBuf, blockWidth, blockHeight);
+        return;
+    }
+    const u32 nPartitions = block.partitions;
+    const u32 partitionIndex = block.partition_index;
+    const u32 planeIdx = block.plane_index;
+    const u32* const colorEndpointMode = block.modes;
+    const auto& endpoints = block.endpoints;
 
     // Read the texel weight data..
     std::array<u8, 16> texelWeightData;
@@ -2058,13 +2084,103 @@ static bool BlockMayHaveAlpha(std::span<const u8, 16> block) {
     return false;
 }
 
-bool MayHaveAlpha(std::span<const u8> blocks) {
-    for (size_t offset = 0; offset + 16 <= blocks.size(); offset += 16) {
-        if (BlockMayHaveAlpha(blocks.subspan(offset).first<16>())) {
-            return true;
+enum : u32 {
+    BLOCK_ALPHA = 1,     ///< Some texel decodes to an alpha below 1.
+    BLOCK_NOT_WHITE = 2, ///< Some texel's RGB is not 1, 1, 1.
+    BLOCK_NOT_BLACK = 4, ///< Some texel's RGB is not 0, 0, 0.
+    BLOCK_ANYTHING = BLOCK_ALPHA | BLOCK_NOT_WHITE | BLOCK_NOT_BLACK,
+};
+
+/// Exact from the endpoints: a texel interpolates its partition's two endpoints per channel, so a
+/// channel whose endpoints are both 255 (or both 0) decodes to 255 (or 0) whatever its weights.
+static u32 ClassifyBlock(std::span<const u8, 16> block, u32 block_width, u32 block_height) {
+    u64 low;
+    u64 high;
+    std::memcpy(&low, block.data(), sizeof(low));
+    std::memcpy(&high, block.data() + sizeof(low), sizeof(high));
+    const u32 mode = static_cast<u32>(low & 0x7FF);
+    if ((mode & 0x1FF) == 0x1FC) {
+        if ((mode & 0x200) != 0) {
+            return BLOCK_ANYTHING;
+        }
+        // UNORM16 R, G, B, A in the high half; the decoder keeps their top bytes.
+        u32 flags = (high >> 56) != 0xFF ? BLOCK_ALPHA : 0;
+        for (u32 c = 0; c < 3; ++c) {
+            const u64 top = (high >> (c * 16 + 8)) & 0xFF;
+            flags |= (top != 0xFF ? BLOCK_NOT_WHITE : 0) | (top != 0 ? BLOCK_NOT_BLACK : 0);
+        }
+        return flags;
+    }
+    if ((mode & 0xF) == 0) {
+        // Reserved: the zeroed padding of a block-linear image, never sampled.
+        return 0;
+    }
+    InputBitStream stream(block);
+    const TexelWeightParams params = DecodeBlockInfo(stream);
+    BlockEndpoints decoded;
+    if (params.m_bError || params.m_bVoidExtentLDR || params.m_bVoidExtentHDR ||
+        !DecodeEndpoints(stream, params, block_width, block_height, decoded)) {
+        return BLOCK_ANYTHING;
+    }
+    u32 flags = 0;
+    for (u32 p = 0; p < decoded.partitions; ++p) {
+        const u32 cem = decoded.modes[p];
+        for (const Pixel& endpoint : decoded.endpoints[p]) {
+            // Mode 15's alpha is HDR; the other modes without alpha decode it as 1.
+            if (cem == 15 || (HasAlphaEndpoints(cem) && endpoint.A() != 255)) {
+                flags |= BLOCK_ALPHA;
+            }
+            if (IsHDRColorEndpointMode(cem)) {
+                flags |= BLOCK_NOT_WHITE | BLOCK_NOT_BLACK;
+                continue;
+            }
+            for (u32 c = 1; c < 4; ++c) {
+                flags |= (endpoint.Component(c) != 255 ? BLOCK_NOT_WHITE : 0) |
+                         (endpoint.Component(c) != 0 ? BLOCK_NOT_BLACK : 0);
+            }
         }
     }
-    return false;
+    return flags;
+}
+
+AlphaScan ScanAlpha(std::span<const u8> blocks, u32 block_width, u32 block_height) {
+    const size_t count = blocks.size() / 16;
+    // Most blocks have no alpha endpoint mode and need no decode; the rest are decoded on the
+    // workers until one has real alpha (large arrays hold millions of blocks).
+    constexpr size_t CHUNK = 16384;
+    std::atomic<bool> alpha{false};
+    Common::ThreadWorker& workers{GetThreadWorkers()};
+    for (size_t first = 0; first < count; first += CHUNK) {
+        const size_t last = (std::min)(count, first + CHUNK);
+        workers.QueueWork([blocks, block_width, block_height, first, last, &alpha] {
+            for (size_t i = first; i < last; ++i) {
+                if (alpha.load(std::memory_order_relaxed)) {
+                    return;
+                }
+                const std::span<const u8, 16> block = blocks.subspan(i * 16).first<16>();
+                if (BlockMayHaveAlpha(block) &&
+                    (ClassifyBlock(block, block_width, block_height) & BLOCK_ALPHA) != 0) {
+                    alpha.store(true, std::memory_order_relaxed);
+                    return;
+                }
+            }
+        });
+    }
+    workers.WaitForRequests();
+    if (!alpha.load(std::memory_order_relaxed)) {
+        return {};
+    }
+    // Masks (constant white or black color under a varying alpha) are rare: other images stop
+    // within their first blocks.
+    u32 flags = 0;
+    for (size_t i = 0; i < count && (flags & (BLOCK_NOT_WHITE | BLOCK_NOT_BLACK)) !=
+                                        (BLOCK_NOT_WHITE | BLOCK_NOT_BLACK);
+         ++i) {
+        flags |= ClassifyBlock(blocks.subspan(i * 16).first<16>(), block_width, block_height);
+    }
+    return {.alpha = true,
+            .white_mask = (flags & BLOCK_NOT_WHITE) == 0,
+            .black_mask = (flags & BLOCK_NOT_BLACK) == 0};
 }
 
 void Decompress(std::span<const uint8_t> data, uint32_t width, uint32_t height, uint32_t depth,

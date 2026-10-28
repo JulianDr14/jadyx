@@ -63,7 +63,8 @@ void SetOpaqueAstcToBc1(bool enabled) noexcept;
 /// True when a new ASTC image should be scanned for alpha (DetectOpaqueAstc) before it is made.
 [[nodiscard]] bool WantsOpaqueAstcScan(const ImageInfo& info) noexcept;
 
-/// Sets info.astc_opaque from the image's guest ASTC blocks (Tegra::Texture::ASTC::MayHaveAlpha).
+/// Sets info.astc_opaque and info.astc_mask from the image's guest ASTC blocks
+/// (Tegra::Texture::ASTC::ScanAlpha).
 void DetectOpaqueAstc(ImageInfo& info, std::span<const u8> guest_blocks) noexcept;
 
 /// The ASTC re-encoding this image gets: astc_recompression, unless it is an array kept
