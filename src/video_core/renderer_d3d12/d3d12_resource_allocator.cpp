@@ -98,6 +98,7 @@ struct TextureResourceAllocator::State {
         HeapClass heap_class{};
         u64 size{};
         u64 alignment{};
+        u64 used{};
         std::map<u64, u64> free_ranges; // offset -> bytes
         Common::MemoryCharge charge;
         u64 empty_tick{}; // first trim pass that saw it empty; 0 while in use
@@ -138,6 +139,7 @@ struct TextureResourceAllocator::State {
             return;
         }
         const u64 released_size = size;
+        blocks[block_index].used -= released_size;
         auto& ranges = blocks[block_index].free_ranges;
         auto next = ranges.lower_bound(offset);
         if (next != ranges.begin()) {
@@ -219,6 +221,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
             ranges.emplace(end, range_offset + range_size - end);
         }
         state->blocks[selected].empty_tick = 0;
+        state->blocks[selected].used += info.SizeInBytes;
         state->live_bytes += info.SizeInBytes;
         state->peak_bytes = std::max(state->peak_bytes, state->live_bytes);
     };
@@ -479,6 +482,21 @@ void TextureResourceAllocator::TrimEmptyHeaps(TrimMode mode) {
         block.size = 0;
         block.empty_tick = 0;
     }
+}
+
+std::vector<bool> TextureResourceAllocator::SparseHeaps(u32 max_used_percent) const {
+    std::scoped_lock lock{state->mutex};
+    std::vector<bool> sparse(state->blocks.size());
+    for (size_t index = 0; index < state->blocks.size(); ++index) {
+        const auto& block = state->blocks[index];
+        sparse[index] = block.heap && block.used != 0 &&
+                        block.used * 100 <= block.size * max_used_percent;
+    }
+    return sparse;
+}
+
+size_t TextureResourceAllocator::HeapOf(const Allocation& allocation) {
+    return allocation.block_index;
 }
 
 std::string TextureResourceAllocator::Report() const {

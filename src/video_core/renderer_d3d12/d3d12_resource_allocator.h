@@ -4,6 +4,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 #include "video_core/renderer_d3d12/d3d12_device.h"
 
@@ -49,6 +50,10 @@ public:
     [[nodiscard]] Stats GetStats() const;
     /// GetStats().heap_bytes without walking every free range.
     [[nodiscard]] u64 HeapBytes() const;
+    /// By heap index: heaps in use with at most this share of their bytes live. Evicting what
+    /// they hold empties them, so trim can release them.
+    [[nodiscard]] std::vector<bool> SparseHeaps(u32 max_used_percent) const;
+    [[nodiscard]] static size_t HeapOf(const Allocation& allocation);
 
 private:
     struct State;
