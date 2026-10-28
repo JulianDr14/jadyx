@@ -167,9 +167,11 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
 
     const auto find_space = [&] {
         std::scoped_lock lock{state->mutex};
-        // Among equal fits, the fullest heap: resolution-scaled render targets are recreated every
-        // few frames, and spreading them over every heap left half of 1.5 GiB of heaps free but
-        // none empty enough to release. Packing the dense ones lets the sparse ones drain.
+        // The fullest heap that fits, then the tightest range in it: resolution-scaled render
+        // targets are recreated every few frames, and choosing the tightest range across all heaps
+        // kept a few live resources in every heap (912 MiB of heaps for 487 MiB live), so none
+        // emptied and the texture cap could not release any. Packing the dense heaps first lets
+        // the sparse ones drain.
         for (size_t index = 0; index < state->blocks.size(); ++index) {
             auto& block = state->blocks[index];
             if (!block.heap || block.heap_class != heap_class || block.alignment < heap_alignment) {
@@ -181,8 +183,8 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
             }
             for (const auto& [offset, bytes] : block.free_ranges) {
                 const auto fit = HeapPacking::Fit(offset, bytes, info.SizeInBytes, info.Alignment);
-                if (fit && (fit->waste < best_waste ||
-                            (fit->waste == best_waste && block_free < best_block_free))) {
+                if (fit && (block_free < best_block_free ||
+                            (block_free == best_block_free && fit->waste < best_waste))) {
                     selected = index;
                     selected_offset = fit->offset;
                     best_waste = fit->waste;
