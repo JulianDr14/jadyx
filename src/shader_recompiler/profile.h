@@ -111,6 +111,9 @@ struct Profile {
     /// Loops whose exit also tests the loop safety counter hang the GPU (the Xbox Series D3D12
     /// driver), so they are emitted without it
     bool has_broken_loop_safety_counter{};
+    /// Quad operations may skip helper lanes (D3D12 before SM 6.7 leaves it to the driver), so
+    /// fragment quad shuffles travel through fine derivatives, which always include them
+    bool has_helperless_quad_shuffles{};
 
     u32 gl_max_compute_smem_size{};
 

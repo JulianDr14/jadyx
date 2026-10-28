@@ -2000,8 +2000,11 @@ void EmitContext::DefineInputs(const IR::Program& program) {
         layer = DefineInput(*this, U32[1], false, spv::BuiltIn::Layer);
         Decorate(layer, spv::Decoration::Flat);
     }
+    // Quad shuffles through derivatives find their quad lane from the window position.
     if (loads.AnyComponent(IR::Attribute::PositionX) ||
-        (stage == Stage::Fragment && runtime_info.lower_noperspective_mask != 0)) {
+        (stage == Stage::Fragment && runtime_info.lower_noperspective_mask != 0) ||
+        (stage == Stage::Fragment && info.uses_quad_shuffles &&
+         profile.has_helperless_quad_shuffles)) {
         const bool is_fragment{stage == Stage::Fragment};
         if (!is_fragment && profile.has_broken_spirv_position_input) {
             need_input_position_indirect = true;

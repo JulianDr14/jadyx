@@ -462,8 +462,8 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .force_fp32_denorm_flush = true,
         .support_explicit_workgroup_layout = false,
         .support_shader_quad_control = false,
-        // Quad ops (QuadReadAcross*, QuadReadLaneAt) include helper lanes; wave shuffles do not
-        // before SM 6.7, so manual derivatives (SHFL + FSWZADD) read garbage at triangle edges.
+        // Wave shuffles skip helper lanes before SM 6.7, so manual derivatives (SHFL + FSWZADD)
+        // read garbage at triangle edges; quad shuffles avoid them (has_helperless_quad_shuffles).
         .support_quad_shuffles = caps.wave_ops,
         .support_vote = caps.wave_ops,
         .supported_subgroup_stages = caps.wave_ops ? 0x7Fu : 0u,
@@ -501,6 +501,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         // A vertex shader whose loop exit ANDs the counter with the guest condition hung the
         // Series GPU on its first draw, with valid DXIL; the same shader without it draws fine.
         .has_broken_loop_safety_counter = true,
+        // SM 6.4 on the Series: quad ops in a shader without derivatives read helper lanes that
+        // never ran, so a quad leader outside the triangle gives garbage along its edges.
+        .has_helperless_quad_shuffles = true,
         .has_broken_robust = false,
         // D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT: raw views start on 16 bytes.
         .min_ssbo_alignment = 16,
