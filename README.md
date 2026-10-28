@@ -44,44 +44,27 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 ### Games
 
-Tested only with dumps of games the tester owns, on retail Xbox Series X|S consoles in Developer
-Mode with the app in Game mode. Figures are measured once the game's shaders are compiled: the
-first visit to a new area still stutters while its shaders build. Rows marked *community* come from
-the `#compatibility` forum on [Discord](https://discord.gg/3BhyyXGxpd), where anyone can add a
-report.
+Game compatibility on Xbox Series X|S in Developer Mode. Community figures describe the tester’s
+session; they are not guarantees that a game can be completed without bugs. First-time shader
+compilation can still cause stutters.
 
-| Game | Console | Performance | Notes |
+| Game | Console | Performance | Evidence |
 | --- | --- | --- | --- |
-| Mario Kart 8 (32-bit) | Series X | **60 FPS** in races, stable | No graphical errors. Frames of 16.7 ms, slowest 17.1 ms mid-race; rain, reflections and particles included |
-| Mario Kart 8 *(community)* | Series X | **50–60 FPS** in game | Jadyx 0.3.0.0; separate community report |
-| Mario Strikers | Series X | **60 FPS** in matches, stable | No graphical errors, special-move cutscenes included. GPU at 14 % |
-| Pokémon Let's Go | Series X | **60 FPS**, stable | No graphical errors |
-| Mario Wonder | Series X | **55–60 FPS**, stable | No crashes or graphical errors |
-| Mario Wonder *(community)* | Series S | **60 FPS** | Latest community report |
-| Under Night In-Birth II Sys:Celes *(community)* | Series S | **60 FPS** | In-game; community report |
-| Naruto x Boruto: Connections *(community)* | Series S | **30 FPS**, reported stable | No FPS drops reported by the tester |
-| Mario 3D World | Series X | **60 FPS**, stable | In-game |
-| Hades II *(community)* | Series S | **60 FPS**, reported smooth with no drops | Jadyx 0.3.8.0; community report |
-| Bayonetta *(community)* | Series S | **60 FPS**, dropping to **42 FPS** during combos | Jadyx 0.3.8.0; community report |
-| Bayonetta 2 *(community)* | Series S | **60 FPS**, dropping to **30–40 FPS** during heavy action and combat | Jadyx 0.3.8.0; community report |
-| Super Mario Odyssey | Series X | **45–50 FPS** in very open areas; **60 FPS** in more enclosed areas and in certain levels | In-game |
-| 13 Sentinels *(community)* | Series X | **60 FPS** in battles and exploration | Playable |
-| NEO TWEWY *(community)* | Series X | **20–30 FPS** in game, 50 in menus | In-game; drops to 10–17 FPS while new shaders compile |
-| Pokémon Sword *(community)* | Series S | **20–30 FPS** | Reported stable apart from roughly one-second stutters, possibly shader compilation. Open areas still to be tested; build not specified |
-| Yo-kai Watch 4++ *(community)* | Series S | **30 FPS** in the intro and menus; **20 FPS** reported in the open world | In 0.3.0 it froze on a white screen when starting the game; 0.3.5 gets past it. The tester now confirms gameplay and reports stable operation despite open-world FPS drops. Work in progress |
-| Hyrule Warriors AoC *(community)* | Series X | **30 FPS** in cutscenes | In 0.3.0 it crashed at the same point after the first cutscene; 0.3.5 gets in-game. Work in progress |
-| The Legend of Zelda: Breath of the Wild | Series X | **27–29 FPS** observed in the open world with shaders compiled | Previously about 23 FPS in the tested open area. Holds 30 FPS in lighter areas; work in progress |
-| Zelda TotK | Series X | Renders **without graphical errors**, then **hits the memory wall** | The heaviest loads need more than the app's 5120 MiB, see [The memory wall](#the-memory-wall). On PC it reaches the open world at **30 FPS** |
+| Mario Kart 8 (32-bit) | Series X | **60 FPS** in races, stable | Internal test; no graphical errors in the measured races |
+| Mario Strikers | Series X | **60 FPS** in matches, stable | Internal test, including special-move cutscenes |
+| Mario Wonder | Series X | **55–60 FPS** | Internal test; community also reports 60 FPS on Series S |
+| Pokémon Legends: Arceus | Series S | **30 FPS**, reported stable | Community, Jadyx 0.3.9.0; rare drops, no graphical issues reported |
+| Yoshi’s Crafted World | Series S | **60 FPS**, reported stable | Community, Jadyx 0.3.9.0, game update 1.0.1 |
+| Persona 4 Golden | Series S | **60 FPS**, reported stable | Community, Jadyx 0.3.9.0 |
+| New Super Mario Bros. U Deluxe | Series X | **60 FPS** in gameplay, map and menus | Community, Jadyx 0.3.9.0 |
+| Cuphead | Series X | **60 FPS** in boss fights, map and menus | Community, Jadyx 0.3.9.0; drops on loading screens |
 
-For Hades II and both Bayonetta reports, Series S is inferred from the same tester's explicit
-console identification and other compatibility reports; those three posts do not repeat the model.
-
-Where the open world loses its frames: the renderer's GPU thread spends about 32 ms of host CPU
-time recording some 4 000 draws per frame (about 8 µs per draw), while the GPU itself needs only
-about 8 ms. Cutting the per-draw cost of the D3D12 backend is the next target for optimisation.
-
-Audio works in every game tested. None has been played from start to finish, so none is called
-"fully playable" yet.
+**[More games, report links and known limitations →](docs/xbox/xbox_compatibility.md)**
+The expanded table includes Melty Blood, Bomb Rush Cyberfunk, OMORI, JoJo’s All-Star Battle R,
+Diablo III, Captain Toad, Zelda and the earlier console tests. A community tester has also
+[reported completing Cuphead’s DLC](docs/xbox/xbox_compatibility.md#completion-and-remaining-problems).
+The live [Discord compatibility forum](https://discord.com/channels/1561574819672100994/1561576709772419083)
+contains additional reports and retests.
 
 ### Subsystems
 

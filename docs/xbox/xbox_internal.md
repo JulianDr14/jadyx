@@ -4277,3 +4277,15 @@ de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificaci�
 global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
 excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
+
+
+## Documentación de compatibilidad — 28 oct 2026
+
+La tabla extensa pasa de README.md a docs/xbox/xbox_compatibility.md; README conserva
+una selección y enlace. Se añaden 14 filas comunitarias con enlaces a sus hilos y
+versiones solo cuando se declaran. Yo-kai Watch 4++ recoge 27–30 FPS exteriores
+del retest, sin inventar build exacta, e Hyrule Warriors AoC explicita ~20 FPS
+en gameplay en 0.3.8.0. Cuphead DLC tiene reporte de finalización, no certificación
+general de ausencia de fallos. Odyssey conserva clasificación y resultado previo;
+el informe separado del crash se enlaza como limitación. No se cambian etiquetas
+de Discord, código ni paquetes. Validación documental: enlaces locales y diff.

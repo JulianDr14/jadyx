@@ -30,6 +30,8 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 
 ## Rendimiento y evidencia
 
+- [Compatibilidad de juegos](xbox_compatibility.md): selección de pruebas en consola, reportes de la comunidad y limitaciones; revisada el 28 de octubre de 2026.
+
 - [Operaciones Fermi2D](xbox_fermi2d.md): diagnóstico 0.3.4.9 para identificar operación, ROP, superficies y ruta antes de corregir efectos.
 
 - [Rendimiento](xbox_performance.md): perfiles, optimizaciones y prioridades pendientes.
