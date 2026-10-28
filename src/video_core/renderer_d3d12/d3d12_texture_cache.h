@@ -10,6 +10,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <eden_spirv_to_dxil.h>
@@ -279,6 +280,8 @@ private:
     std::array<D3D12_CPU_DESCRIPTOR_HANDLE, NUM_RT> mrt_targets{};
     u32 mrt_active{};
     u64 mrt_normalizations{};
+    /// Format pairs ConvertImage skipped, each logged once (a game asks ~20 times a frame).
+    std::unordered_set<u32> unconverted_pairs;
     /// FORMAT_SUPPORT answers by format, each logged once (see SupportsView).
     mutable std::mutex format_support_mutex;
     mutable std::unordered_map<DXGI_FORMAT, D3D12_FEATURE_DATA_FORMAT_SUPPORT> format_support;

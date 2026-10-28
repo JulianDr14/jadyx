@@ -686,8 +686,12 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src, std::span<con
         CopyImage(dst, src, copies);
     else LOG_WARNING(Render, "D3D12: incompatible texture reinterpretation skipped ({} -> {})", src.info.format, dst.info.format);
 }
-void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView&, ImageView&) {
-    LOG_WARNING(Render, "D3D12: shader texture conversion is deferred to phase 5");
+void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView& dst, ImageView& src) {
+    const u32 pair = static_cast<u32>(src.format) << 16 | static_cast<u32>(dst.format);
+    if (unconverted_pairs.insert(pair).second) {
+        LOG_WARNING(Render, "D3D12: shader texture conversion {} -> {} is deferred to phase 5",
+                    src.format, dst.format);
+    }
 }
 namespace {
 /// Where a copy through a view lands in its image.
