@@ -72,27 +72,19 @@ base C++ toolset alone links the app fine but does not ship this package.
 ## Deploy
 
 1. Open `https://<xbox-ip>:11443` and accept the self-signed certificate warning.
-2. **Add** → upload `jadyx.appx`, with `jadyx.cer` as the certificate and
-   `Microsoft.VCLibs.x64.14.00.appx` as a **dependency package**. The console must trust the signer
-   and must have the framework package, or installation or activation fails with a generic error.
-   Once a compatible VCLibs is installed, later installs can leave the dependency out.
+2. **Add** → upload `jadyx.appx` and add `Microsoft.VCLibs.x64.14.00.appx` as a
+   **dependency package** if a compatible version is not already installed.
+   For published Jadyx releases from 0.3.9.0 onward, no separate `.cer` upload is required.
 3. Set the app to **Game mode**, not App mode. App mode caps a UWP app at roughly a gigabyte of
    memory; Game mode is what makes the emulated DRAM reservation viable — especially on Series S.
 4. Launch it.
 
-### Installing without the certificate (pending)
+### Certificate upload
 
-One Series X installed a release appx without `Jadyx.cer`. Until more consoles confirm it, the
-public guide and release notes keep the certificate step. To drop it, check on a console that never
-had Jadyx installed, on both Series X and Series S:
-
-- [ ] A fresh install of the release appx with no `.cer` succeeds and launches.
-- [ ] A fresh console without VCLibs reports the missing dependency clearly, and the install
-      succeeds once it is added.
-- [ ] Game mode can be set and the app reaches the library.
-- [ ] Installing the new version over an existing one keeps keys, firmware, saves and games.
-
-Only then update the README, `release.yml` notes and step 2 above together.
+The user confirms that published releases from 0.3.9.0 do not require uploading a separate
+`.cer` in Device Portal. The package remains signed: do not remove signing from the build or
+change its identity. The browser warning for Device Portal’s HTTPS certificate is unrelated.
+This installation-guide update does not claim new fresh-console test results.
 
 ## Audio gate
 
