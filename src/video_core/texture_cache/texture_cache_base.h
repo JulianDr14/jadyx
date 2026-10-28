@@ -452,7 +452,6 @@ private:
         NoPredecessor, ///< nothing in its range holds GPU-only contents
         NewerOverlap,  ///< the newest GPU contents belong to another kind of image
         CpuData,       ///< the guest wrote over the previous size after the GPU did
-        InUse,         ///< the previous size was used this frame
         Count,
     };
 
@@ -461,8 +460,12 @@ private:
     [[nodiscard]] ImageId FindRenderTargetPredecessor(const ImageInfo& info, GPUVAddr gpu_addr);
 
     /// Deletes the older sizes at a new image's address that hold no GPU contents and were not
-    /// used this frame. JoinImages helper.
+    /// used this frame or the previous one. JoinImages helper.
     void RetireStaleSizes(const Image& new_image);
+
+    [[nodiscard]] bool UsedSinceLastFrame(const ImageBase& image) const noexcept {
+        return lru_cache.Tick(image.lru_index) + 1 >= frame_tick;
+    }
 
     /// gpu_profile only: counts image creations and deletions per guest address and logs, every
     /// few hundred frames, which addresses keep being recreated and why they were deleted.

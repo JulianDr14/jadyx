@@ -2163,8 +2163,7 @@ void TextureCache<P>::RetireStaleSizes(const Image& new_image) {
     for (const ImageId id : join_bad_overlap_ids) {
         const Image& overlap = slot_images[id];
         if (overlap.gpu_addr == new_image.gpu_addr && overlap.info.format == new_image.info.format &&
-            False(overlap.flags & ImageFlagBits::GpuModified) &&
-            lru_cache.Tick(overlap.lru_index) < frame_tick) {
+            False(overlap.flags & ImageFlagBits::GpuModified) && !UsedSinceLastFrame(overlap)) {
             join_superseded_ids.push_back(id);
         }
     }
@@ -2245,17 +2244,12 @@ ImageId TextureCache<P>::FindRenderTargetPredecessor(const ImageInfo& info, GPUV
     if (True(previous.flags & ImageFlagBits::CpuModified)) {
         return fallback(InheritFallback::CpuData);
     }
-    // Used this frame: two sizes alternating at one address. Deleting either would recreate it
-    // on every bind, so both stay as before.
-    if (lru_cache.Tick(previous.lru_index) >= frame_tick) {
-        return fallback(InheritFallback::InUse);
-    }
-    // Older sizes still bound this frame stay; the rest are superseded with the predecessor.
+    // Games reuse one address for a dynamic size and a fixed one within a frame. Sizes used this
+    // frame or the previous one stay, or the fixed size would be recreated on every frame; the
+    // predecessor is still copied, since the guest memory holds nothing newer.
     join_superseded_ids.erase(
         std::remove_if(join_superseded_ids.begin(), join_superseded_ids.end(),
-                       [this](ImageId id) {
-                           return lru_cache.Tick(slot_images[id].lru_index) >= frame_tick;
-                       }),
+                       [this](ImageId id) { return UsedSinceLastFrame(slot_images[id]); }),
         join_superseded_ids.end());
     return predecessor;
 }
@@ -3005,7 +2999,7 @@ void TextureCache<P>::ReportImageChurn() {
     static constexpr std::array<const char*, NUM_DELETE_REASONS> REASON_NAMES{
         "evicted", "evicted+download", "unmapped", "join dropped", "join merged", "superseded"};
     static constexpr std::array<const char*, NUM_INHERIT_FALLBACKS> FALLBACK_NAMES{
-        "new address", "layout", "no predecessor", "newer overlap", "CPU data", "in use"};
+        "new address", "layout", "no predecessor", "newer overlap", "CPU data"};
     std::string reasons;
     for (size_t i = 0; i < NUM_DELETE_REASONS; ++i) {
         reasons += fmt::format("{}{} {} ({} within 2 frames, {} MiB)", i ? "; " : "",
