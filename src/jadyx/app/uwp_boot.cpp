@@ -2790,6 +2790,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
             bool show_library = false;
             std::string library_pick;
             bool output_4k = false;
+            bool output_1080p = false;
             try {
                 const auto install = std::filesystem::path{
                     Windows::ApplicationModel::Package::Current().InstalledLocation().Path().c_str()};
@@ -2798,6 +2799,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     if (line == "library=1") show_library = true;
                     else if (line.starts_with("library_pick=")) library_pick = line.substr(13);
                     else if (line == "output=4k") output_4k = true;
+                    else if (line == "output=1080p") output_1080p = true;
                 }
                 if (show_library) {
                     if (session > 1) {
@@ -2856,6 +2858,13 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     WriteDiag("boot.cfg: output=4k ignored, no display mode: " +
                               winrt::to_string(e.message()));
                 }
+            }
+
+            // Experimental: a fixed 1920x1080 swapchain on high-DPI PC screens; the present stretches it.
+            if (output_1080p) {
+                game_surface.width = 1920;
+                game_surface.height = 1080;
+                WriteDiag("boot.cfg: output 1920x1080 (fixed)");
             }
 
             std::atomic<bool> done{false};
