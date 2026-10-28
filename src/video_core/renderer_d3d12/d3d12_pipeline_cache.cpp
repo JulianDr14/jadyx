@@ -592,11 +592,14 @@ void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler
     if (residency_frame - last_stats_frame >= STATS_FRAMES) {
         last_stats_frame = residency_frame;
         const auto resident = Common::ReadMemoryAccount(Common::MemoryAccount::PipelineStates);
+        const auto dxil_release = GraphicsPipeline::GetDxilReleaseStats();
         LOG_INFO(Render,
                  "D3D12: {} graphics pipelines, {} PSOs resident; {} released and {} rebuilt so "
-                 "far; {} drawn in recent sessions",
+                 "far; {} drawn in recent sessions; dormant DXIL left on disk {} ({} KiB), read "
+                 "back {}, failed {}",
                  residency_sweep.size(), resident.objects, pipelines_evicted, pipelines_woken,
-                 hot_pipelines.Size());
+                 hot_pipelines.Size(), dxil_release.released, dxil_release.released_bytes / 1024,
+                 dxil_release.reloaded, dxil_release.failed);
         LogPipelineStats("session");
     }
 }
@@ -1290,9 +1293,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                 stream_output = std::make_unique<eden_spirv_to_dxil_stream_output>();
                 linked_options.stream_output = stream_output.get();
             }
-            auto compiled = compiler.CompilePipeline(std::span(stages.data(), stages.size()),
-                                                     linked_options, trace_pipeline);
             ChargedDxilStages dxil;
+            auto compiled = compiler.CompilePipeline(std::span(stages.data(), stages.size()),
+                                                     linked_options, trace_pipeline,
+                                                     native_xfb ? nullptr : &dxil.linked.disk_key);
             u64 bytes = 0;
             for (size_t i = 0; i < compiled.size(); ++i) {
                 bytes += compiled[i].dxil.capacity();

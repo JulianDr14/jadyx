@@ -38,6 +38,7 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
+#include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
 #include "video_core/renderer_d3d12/d3d12_stream_output.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_pipeline_diagnostics.h"
@@ -51,6 +52,17 @@ namespace D3D12 {
 
 namespace {
 std::atomic_bool draw_sampler_reuse{};
+
+std::atomic<u64> dxil_released{};
+std::atomic<u64> dxil_released_bytes{};
+std::atomic<u64> dxil_reloaded{};
+std::atomic<u64> dxil_reload_failed{};
+
+/// DXIL read back from disk, charged like the linked shader cache's entries.
+struct ReloadedDxil {
+    GraphicsPipeline::LinkedDxil linked;
+    Common::MemoryCharge charge;
+};
 }
 void SetDrawSamplerReuse(bool enabled) {
     draw_sampler_reuse.store(enabled, std::memory_order_relaxed);
@@ -352,6 +364,10 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
         }
         FT::Mark(FT::Event::PipelineBuildDone, trace_pipeline, pipeline_state.Get() != nullptr);
         // Without a PSO yet, a pipeline whose DXIL failed is still ready: its draws are skipped.
+        // Most pipelines loaded at boot stay dormant, so their DXIL waits on disk instead.
+        if (compiled && !build_pso) {
+            ReleaseDxil();
+        }
         Publish(compiled && !build_pso ? State::Dormant : State::Ready);
         if (shader_notify) {
             shader_notify->MarkShaderComplete();
@@ -410,7 +426,10 @@ bool GraphicsPipeline::Wake(Common::ThreadWorker& worker) {
         return false;
     }
     QueueBuild(&worker, [this] {
-        Build();
+        // Without its DXIL the pipeline stays ready with no PSO: its draws are skipped.
+        if (dxil || ReloadDxil()) {
+            Build();
+        }
         Publish(State::Ready);
     });
     return true;
@@ -422,6 +441,7 @@ bool GraphicsPipeline::Evict(Scheduler& scheduler) {
         !dxil) {
         return false;
     }
+    ReleaseDxil();
     build_state.store(State::Dormant, std::memory_order::release);
     evicted = true;
     // Keep the shared entry discoverable and charged until its last submitted use retires.
@@ -429,6 +449,63 @@ bool GraphicsPipeline::Evict(Scheduler& scheduler) {
     scheduler.DeferRelease(std::move(pipeline_state),
                            [retired = std::move(shared_pso)] {});
     return true;
+}
+
+void GraphicsPipeline::ReleaseDxil() {
+    // Pipelines sharing the linked entry, the linked shader cache and live PSO cache entries may
+    // still hold the bytes; they are freed with the last one.
+    if (!dxil || !dxil->disk_key || !dxil->stream_output.empty()) {
+        return;
+    }
+    u64 bytes = 0;
+    u8 mask = 0;
+    for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+        if (!dxil->stages[stage].empty()) {
+            mask |= static_cast<u8>(1U << stage);
+            bytes += dxil->stages[stage].size();
+        }
+    }
+    released_dxil = dxil->disk_key;
+    released_stage_mask = mask;
+    dxil.reset();
+    dxil_released.fetch_add(1, std::memory_order_relaxed);
+    dxil_released_bytes.fetch_add(bytes, std::memory_order_relaxed);
+}
+
+bool GraphicsPipeline::ReloadDxil() {
+    if (!released_dxil) {
+        return false;
+    }
+    auto stages = ShaderCompiler::LoadPipeline(*released_dxil,
+                                               static_cast<size_t>(std::popcount(released_stage_mask)));
+    if (!stages) {
+        dxil_reload_failed.fetch_add(1, std::memory_order_relaxed);
+        BUG_TRACK_KEY(ShaderCompile, key.Hash(),
+                      "reading back the DXIL of VS {:016x} PS {:016x} from the disk cache failed",
+                      key.unique_hashes[1], key.unique_hashes[5]);
+        return false;
+    }
+    auto reloaded = std::make_shared<ReloadedDxil>();
+    u64 bytes = 0;
+    size_t next = 0;
+    for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+        if ((released_stage_mask >> stage) & 1) {
+            bytes += (*stages)[next].dxil.capacity();
+            reloaded->linked.stages[stage] = std::move((*stages)[next++].dxil);
+        }
+    }
+    reloaded->linked.disk_key = released_dxil;
+    reloaded->charge = Common::MemoryCharge(Common::MemoryAccount::ShaderBytecode, bytes);
+    dxil = SharedDxilStages(reloaded, &reloaded->linked);
+    dxil_reloaded.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+GraphicsPipeline::DxilReleaseStats GraphicsPipeline::GetDxilReleaseStats() noexcept {
+    return {.released = dxil_released.load(std::memory_order_relaxed),
+            .released_bytes = dxil_released_bytes.load(std::memory_order_relaxed),
+            .reloaded = dxil_reloaded.load(std::memory_order_relaxed),
+            .failed = dxil_reload_failed.load(std::memory_order_relaxed)};
 }
 
 void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {

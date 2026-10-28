@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -25,6 +26,7 @@
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
+#include "video_core/renderer_d3d12/d3d12_dxil_disk_cache.h"
 #include "video_core/renderer_d3d12/d3d12_pso_cache.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_transition_order.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
@@ -174,7 +176,7 @@ public:
     enum class State : u8 {
         Building, ///< DXIL or PSO being built on a worker.
         Ready,    ///< PSO built, or the pipeline failed (Handle() null): drawable or skipped.
-        Dormant,  ///< DXIL kept, no PSO: Wake builds it.
+        Dormant,  ///< No PSO, DXIL kept or on disk: Wake builds it.
     };
 
     static constexpr size_t NUM_STAGES = Maxwell::MaxShaderStage;
@@ -184,6 +186,8 @@ public:
     struct LinkedDxil {
         DxilStages stages;
         std::vector<D3D12_SO_DECLARATION_ENTRY> stream_output;
+        /// The disk cache record the stages can be read back from, if any.
+        std::optional<DxilDiskCache::Key> disk_key;
     };
     using SharedDxilStages = std::shared_ptr<const LinkedDxil>;
     /// (trace id, flatten the vertex stage's branches) -> linked DXIL.
@@ -249,9 +253,19 @@ public:
         return prewarmed;
     }
 
-    /// GPU thread: releases the PSO of a ready pipeline once the GPU is done with it, keeping the
-    /// DXIL to build it again. Pipelines that failed have nothing to release. True if released.
+    /// GPU thread: releases the PSO of a ready pipeline once the GPU is done with it, and its DXIL
+    /// when Wake can read it back from disk. Pipelines that failed have nothing to release. True
+    /// if released.
     bool Evict(Scheduler& scheduler);
+
+    /// Dormant pipelines' DXIL dropped and read back from disk so far, and read-backs that failed.
+    struct DxilReleaseStats {
+        u64 released;
+        u64 released_bytes;
+        u64 reloaded;
+        u64 failed;
+    };
+    [[nodiscard]] static DxilReleaseStats GetDxilReleaseStats() noexcept;
 
     /// GPU thread: the frame this pipeline was last drawn in.
     void Touch(u64 frame) noexcept {
@@ -360,6 +374,10 @@ private:
     /// flatten_on_fault: on a driver fault, leave the failure to the caller (flatten_retry) instead
     /// of reporting it, since it can retranslate the shaders.
     void Build(bool flatten_on_fault = false);
+    /// Drops dxil when its disk cache record can stand in for it (no stream output).
+    void ReleaseDxil();
+    /// Reads back the DXIL ReleaseDxil dropped. False if it could not.
+    bool ReloadDxil();
     D3D12_GRAPHICS_PIPELINE_STATE_DESC Describe(std::vector<D3D12_INPUT_ELEMENT_DESC>& elements) const;
 
     void Publish(State next);
@@ -417,6 +435,9 @@ private:
     u64 last_used_frame{}; ///< GPU thread only.
     bool drawn{};          ///< GPU thread only.
     bool evicted{};        ///< GPU thread only.
+    /// Where the DXIL dropped by ReleaseDxil is read back from, and which stages it holds.
+    std::optional<DxilDiskCache::Key> released_dxil;
+    u8 released_stage_mask{};
     bool prewarmed{};      ///< GPU thread only.
     /// The object itself. Its DXIL and stage bindings are shared with other pipelines.
     Common::MemoryCharge charge{Common::MemoryAccount::Pipelines, sizeof(GraphicsPipeline)};
