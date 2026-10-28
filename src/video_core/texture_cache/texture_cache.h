@@ -2040,6 +2040,9 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         // TODO: Only upload what we need
         RefreshContents(new_image, new_image_id);
     }
+    if (RenderTargetInheritance()) {
+        RetireStaleSizes(new_image);
+    }
 
     if (can_rescale) {
         ScaleUp(new_image);
@@ -2149,6 +2152,41 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         RegisterImage(new_image_id);
     }
     return new_image_id;
+}
+
+template <class P>
+void TextureCache<P>::RetireStaleSizes(const Image& new_image) {
+    // An older size at this address without GPU contents only mirrors guest memory. Dynamic
+    // resolution leaves one behind each time a sampled render target changes size, faster than
+    // the GC evicts them, so they are deleted here instead of being linked as bad overlaps.
+    join_superseded_ids.clear();
+    for (const ImageId id : join_bad_overlap_ids) {
+        const Image& overlap = slot_images[id];
+        if (overlap.gpu_addr == new_image.gpu_addr && overlap.info.format == new_image.info.format &&
+            False(overlap.flags & ImageFlagBits::GpuModified) &&
+            lru_cache.Tick(overlap.lru_index) < frame_tick) {
+            join_superseded_ids.push_back(id);
+        }
+    }
+    if (join_superseded_ids.empty()) {
+        return;
+    }
+    join_bad_overlap_ids.erase(
+        std::remove_if(join_bad_overlap_ids.begin(), join_bad_overlap_ids.end(),
+                       [this](ImageId id) {
+                           return std::find(join_superseded_ids.begin(), join_superseded_ids.end(),
+                                            id) != join_superseded_ids.end();
+                       }),
+        join_bad_overlap_ids.end());
+    for (const ImageId stale_id : join_superseded_ids) {
+        Image& stale = slot_images[stale_id];
+        if (True(stale.flags & ImageFlagBits::Tracked)) {
+            UntrackImage(stale, stale_id);
+        }
+        NoteImageDeleted(stale, ImageDeleteReason::Superseded);
+        UnregisterImage(stale_id);
+        DeleteImage(stale_id);
+    }
 }
 
 template <class P>

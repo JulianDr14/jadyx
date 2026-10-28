@@ -64,7 +64,8 @@ void SetMipRenderTargets(bool enabled) noexcept;
 
 /// A render target redrawn at another size (dynamic resolution) takes its contents from the
 /// previous size on the GPU, which is then deleted, instead of uploading stale guest memory.
-/// Boot.cfg "rt_inherit=0" turns it off to reproduce the upload.
+/// Older sizes at the same address without GPU contents are deleted as well.
+/// Boot.cfg "rt_inherit=0" turns both off to reproduce the upload.
 void SetRenderTargetInheritance(bool enabled) noexcept;
 [[nodiscard]] bool RenderTargetInheritance() noexcept;
 
@@ -456,6 +457,10 @@ private:
     /// The previous size of a new render target, when it holds the newest GPU contents at its
     /// address. JoinImages helper; empty when the contents have to be uploaded.
     [[nodiscard]] ImageId FindRenderTargetPredecessor(const ImageInfo& info, GPUVAddr gpu_addr);
+
+    /// Deletes the older sizes at a new image's address that hold no GPU contents and were not
+    /// used this frame. JoinImages helper.
+    void RetireStaleSizes(const Image& new_image);
 
     /// gpu_profile only: counts image creations and deletions per guest address and logs, every
     /// few hundred frames, which addresses keep being recreated and why they were deleted.
