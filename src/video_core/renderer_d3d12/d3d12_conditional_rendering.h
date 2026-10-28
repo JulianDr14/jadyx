@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <array>
 #include <optional>
+#include <span>
 
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_d3d12/d3d12_command_stream.h"
@@ -37,7 +39,9 @@ using BufferCache = VideoCommon::BufferCache<BufferCacheParams>;
 /// and the guest's draws and clears are predicated on it. Conditions that need more than one
 /// slice are left to the CPU. Reports the GPU wrote to guest memory (not host queries) are
 /// compared where the buffer cache holds them by a compute shader writing the predicate: reading
-/// them on the CPU downloaded them, waiting for the GPU twice a frame in a game (~6.5 ms).
+/// them on the CPU downloaded them, waiting for the GPU twice a frame in a game (~6.5 ms). A copy
+/// of what the shader read lets the CPU decide the same condition again without waiting once the
+/// GPU has run it, so draws it skips are dropped unrecorded instead of predicated.
 ///
 /// D3D12 also predicates copies, clears and dispatches, so predication is only set around guest
 /// draws and clears (Scope), never across the texture and buffer caches' own work.
@@ -89,6 +93,9 @@ private:
     /// when it differs from the one 16 bytes later (or only when it does not, with render_if_equal).
     /// False when the buffer cache cannot provide the reports.
     bool PredicateOnGpuReports(GPUVAddr address, bool compare_second, bool render_if_equal);
+    /// Copies the reports a comparison read into the snapshot of address.
+    void RecordSnapshot(CommandStream* cmd, GPUVAddr address, u64 buffer_id, u64 generation,
+                        ID3D12Resource* source, u64 offset);
     void CreateComparePipeline();
     void Bind(CommandStream* cmd);
 
@@ -106,6 +113,23 @@ private:
     Mode mode{Mode::Render};
     ComPtr<ID3D12RootSignature> compare_root_signature;
     ComPtr<ID3D12PipelineState> compare_pipeline;
+    /// The reports a comparison read, copied where the CPU reads them once the GPU ran the copy.
+    /// A game sets the same condition again before rewriting its reports; while the buffer's
+    /// generation is unchanged the CPU decides from the copy and drops skipped draws unrecorded.
+    struct Snapshot {
+        GPUVAddr address{};
+        u64 buffer_id{}; ///< Buffer::Id, never 0 for a valid snapshot
+        u64 generation{};
+        u64 offset{};
+        u64 tick{};
+    };
+    static constexpr size_t NUM_SNAPSHOTS = 16;
+    std::array<Snapshot, NUM_SNAPSHOTS> snapshots{};
+    size_t next_snapshot{};
+    ComPtr<ID3D12Resource> readback;
+    std::span<u8> readback_data;
+    u64 read_back_conditions{};
+    u64 predicated_conditions{};
     bool logged_gpu{};
     bool logged_gpu_reports{};
     bool logged_cpu{};

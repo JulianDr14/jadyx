@@ -21,6 +21,7 @@
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
+#include "video_core/renderer_d3d12/d3d12_staging_buffer_pool.h"
 
 namespace D3D12 {
 namespace {
@@ -33,6 +34,19 @@ constexpr u64 PREDICATE_SIZE = 256;
 
 /// The reports a condition compares: the one at its address and, 16 bytes later, the second.
 constexpr u32 REPORTS_SIZE = 24;
+
+/// Where each snapshot's copy of the reports lands in the readback buffer.
+constexpr u64 SNAPSHOT_STRIDE = 32;
+
+/// Logs how conditions on GPU-written reports were decided, every 4096 of them.
+void CountGpuReportCondition(u64 read_back, u64 predicated) {
+    if ((read_back + predicated) % 4096 == 0) {
+        LOG_INFO(Render,
+                 "D3D12: render conditions on GPU-written reports: {} read back without waiting, "
+                 "{} predicated on the GPU",
+                 read_back, predicated);
+    }
+}
 
 /// Root parameters of d3d12_render_condition.comp: its push constant (compare_second), the
 /// reports (the readonly SSBO at binding 0, t0), the predicate (binding 1, u1) and
@@ -216,6 +230,22 @@ bool ConditionalRendering::PredicateOnGpuReports(GPUVAddr address, bool compare_
     if (!buffer || !buffer->Handle()) {
         return false;
     }
+    const u64 buffer_id = buffer->Id();
+    const u64 generation = buffer->Generation();
+    const auto snapshot = std::ranges::find(snapshots, address, &Snapshot::address);
+    if (snapshot != snapshots.end() && snapshot->buffer_id == buffer_id &&
+        snapshot->generation == generation && snapshot->offset == offset &&
+        scheduler.IsFree(snapshot->tick)) {
+        // Nothing wrote the buffer since the copy, and the GPU has run it: decide as the shader.
+        std::array<u32, REPORTS_SIZE / sizeof(u32)> reports;
+        const size_t index = static_cast<size_t>(snapshot - snapshots.begin());
+        std::memcpy(reports.data(), readback_data.data() + index * SNAPSHOT_STRIDE, REPORTS_SIZE);
+        const bool differ = reports[0] != (compare_second ? reports[4] : 0) ||
+                            reports[1] != (compare_second ? reports[5] : 0);
+        mode = differ != render_if_equal ? Mode::Render : Mode::Skip;
+        CountGpuReportCondition(++read_back_conditions, predicated_conditions);
+        return true;
+    }
     if (!compare_pipeline) {
         CreateComparePipeline();
     }
@@ -244,6 +274,9 @@ bool ConditionalRendering::PredicateOnGpuReports(GPUVAddr address, bool compare_
     cmd->Dispatch(1, 1, 1);
     TransitionResource(cmd, predicate.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                        D3D12_RESOURCE_STATE_PREDICATION);
+    buffer->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, false);
+    RecordSnapshot(cmd, address, buffer_id, generation, buffer->Handle(), offset);
+    CountGpuReportCondition(read_back_conditions, ++predicated_conditions);
     predicate_tick = tick;
     value_offset = 0;
     // The predicate is not zero when the reports differ (or the first is not zero); the op names
@@ -256,6 +289,33 @@ bool ConditionalRendering::PredicateOnGpuReports(GPUVAddr address, bool compare_
         logged_gpu_reports = true;
     }
     return true;
+}
+
+void ConditionalRendering::RecordSnapshot(CommandStream* cmd, GPUVAddr address, u64 buffer_id,
+                                          u64 generation, ID3D12Resource* source, u64 offset) {
+    if (!readback) {
+        try {
+            readback = CreateMappedBuffer(device.Get(), NUM_SNAPSHOTS * SNAPSHOT_STRIDE,
+                                          D3D12_HEAP_TYPE_READBACK, readback_data);
+        } catch (const StagingOutOfMemory&) {
+            return; // the next comparison tries again
+        }
+    }
+    auto snapshot = std::ranges::find(snapshots, address, &Snapshot::address);
+    if (snapshot == snapshots.end()) {
+        snapshot = snapshots.begin() + next_snapshot;
+        next_snapshot = (next_snapshot + 1) % NUM_SNAPSHOTS;
+    }
+    const u64 index = static_cast<u64>(snapshot - snapshots.begin());
+    // The readback heap stays in COPY_DEST; copies on the one queue land in order.
+    cmd->CopyBufferRegion(readback.Get(), index * SNAPSHOT_STRIDE, source, offset, REPORTS_SIZE);
+    *snapshot = {
+        .address = address,
+        .buffer_id = buffer_id,
+        .generation = generation,
+        .offset = offset,
+        .tick = scheduler.CurrentTick(),
+    };
 }
 
 void ConditionalRendering::CreateComparePipeline() {
