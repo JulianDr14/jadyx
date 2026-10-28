@@ -250,6 +250,7 @@ void TextureCache<P>::RunGarbageCollector() {
         if (True(image.flags & ImageFlagBits::Tracked)) {
             UntrackImage(image, image_id);
         }
+        gc_evicted_at[image.gpu_addr] = frame_tick;
         NoteImageDeleted(image, must_download ? ImageDeleteReason::EvictedWithDownload
                                               : ImageDeleteReason::Evicted);
         UnregisterImage(image_id);
@@ -290,13 +291,18 @@ void TextureCache<P>::TickFrame() {
     static auto last_diag = std::chrono::steady_clock::now();
     if (const auto now = std::chrono::steady_clock::now(); now - last_diag >= std::chrono::seconds(2)) {
         last_diag = now;
+        std::erase_if(gc_evicted_at, [this](const auto& entry) {
+            return frame_tick > entry.second + GC_RELOAD_WINDOW;
+        });
         LOG_INFO(HW_GPU, "Texture cache diag: {} resized replaced, {} overlaps reclaimed; joins none {} resolved {} "
                  "left {} right {} bad {} ignored {}; gc evicted {} (downloaded {}), skipped "
-                 "download {} costly {}; used {} MiB expected {} critical {} images {}",
+                 "download {} costly {}; reloaded within {} frames {} ({} MiB); used {} MiB "
+                 "expected {} critical {} images {}",
                  replaced_resized_images, reclaimed_overlaps, diag_join[0], diag_join[1], diag_join[2],
                  diag_join[3], diag_join[4], diag_join[5], diag_gc[0], diag_gc[1], diag_gc[2],
-                 diag_gc[3], total_used_memory >> 20, expected_memory >> 20,
-                 critical_memory >> 20, slot_images.size());
+                 diag_gc[3], GC_RELOAD_WINDOW, diag_reload[0], diag_reload[1] >> 20,
+                 total_used_memory >> 20, expected_memory >> 20, critical_memory >> 20,
+                 slot_images.size());
     }
 
     runtime.TickFrame();
@@ -2023,6 +2029,13 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
 
     new_image.allocation_tick = frame_tick;
     NoteImageCreated(new_image);
+    if (const auto evicted = gc_evicted_at.find(new_image.gpu_addr); evicted != gc_evicted_at.end()) {
+        if (frame_tick <= evicted->second + GC_RELOAD_WINDOW) {
+            ++diag_reload[0];
+            diag_reload[1] += new_image.guest_size_bytes;
+        }
+        gc_evicted_at.erase(evicted);
+    }
 
     if (!gpu_memory->IsContinuousRange(new_image.gpu_addr, new_image.guest_size_bytes) &&
         new_info.is_sparse) {
