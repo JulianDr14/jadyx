@@ -78,6 +78,10 @@ public:
     /// Upload bytes requested for the command list being recorded (stream and dedicated).
     [[nodiscard]] u64 PendingUploadBytes() const noexcept;
 
+    /// Upload bytes after which the list being recorded should be submitted between draws, so the
+    /// stream never laps regions of that same list (which sends uploads to dedicated buffers).
+    [[nodiscard]] u64 UploadSubmitBytes() const noexcept;
+
 private:
     struct StagingBuffer {
         ComPtr<ID3D12Resource> buffer;

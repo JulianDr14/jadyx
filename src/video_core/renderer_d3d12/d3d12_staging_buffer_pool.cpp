@@ -388,6 +388,17 @@ u64 StagingBufferPool::PendingUploadBytes() const noexcept {
     return pending_tick == scheduler.CurrentTick() ? pending_upload_bytes : 0;
 }
 
+u64 StagingBufferPool::UploadSubmitBytes() const noexcept {
+    // The memory guard shrinks the ring to 32 MiB under pressure, the size of the largest stream
+    // request. A list allowed to upload a whole ring before it is submitted then laps itself, and
+    // its next large texture became an 11 MiB dedicated buffer that the commit limit refused.
+    // Half the ring leaves the other half free for the draw that crosses the threshold.
+    if (!stream_buffer) {
+        return MAX_STREAM_REQUEST;
+    }
+    return std::min<u64>(MAX_STREAM_REQUEST, stream_buffer_size / 2);
+}
+
 StagingBufferPool::StagingBuffersCache& StagingBufferPool::GetCache(MemoryUsage usage) {
     return usage == MemoryUsage::Download ? download_cache : upload_cache;
 }

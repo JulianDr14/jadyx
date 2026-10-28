@@ -962,15 +962,17 @@ void RasterizerD3D12::FlushIfUploadHeavy() {
     // list (151 MiB in Game C; the stream is 256 MiB, and the memory guard shrinks it down to
     // nothing under pressure), and the stream only reuses submitted regions. The
     // reset callback invalidates cached state, so submitting between draws is safe.
-    constexpr u64 UPLOAD_SUBMIT_BYTES = 32ULL << 20;
+    // The threshold follows the ring size (StagingBufferPool::UploadSubmitBytes, at most 32 MiB).
+    const u64 upload_submit_bytes = staging.UploadSubmitBytes();
     // A game drawing ~3900 times in one guest command list had the host GPU start only once the
     // whole list was recorded (~50 ms), and the guest waited for both in turn every frame.
     // Submitting every few hundred draws lets the GPU execute while the rest is recorded.
     constexpr u32 SUBMIT_DRAWS = 512;
     // Copy scratch past the transfer pool's budget is freed only with the list that used it: a
     // loading screen's conversions held ~600 MiB of 8 MiB buffers in one list and ran out.
-    if (staging.PendingUploadBytes() < UPLOAD_SUBMIT_BYTES && draw_counter < SUBMIT_DRAWS &&
-        texture_runtime.PendingTransferBytes() < UPLOAD_SUBMIT_BYTES) {
+    constexpr u64 TRANSFER_SUBMIT_BYTES = 32ULL << 20;
+    if (staging.PendingUploadBytes() < upload_submit_bytes && draw_counter < SUBMIT_DRAWS &&
+        texture_runtime.PendingTransferBytes() < TRANSFER_SUBMIT_BYTES) {
         return;
     }
     draw_counter = 0;
