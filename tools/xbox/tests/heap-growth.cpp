@@ -38,6 +38,12 @@ void Policy() {
     assert(Capacity(1, 4096, true) == 65536);
     assert(Capacity(65*M, 4*M, true) == 68*M);
     assert(!Capacity(UINT64_MAX, 65536, true));
+    const Budget pressured{4000*M, 5120*M}, exhausted{4900*M, 5120*M};
+    assert(PressureCapacity(128*1024, 65536, pressured) == 16*M);
+    assert(PressureCapacity(7*M, 65536, pressured, 0) == 7*M);
+    assert(PressureCapacity(128*1024, 65536, pressured, 2*M) == 2*M);
+    assert(PressureCapacity(128*1024, 65536, exhausted) == 128*1024);
+    assert(small_render_target < 16*M);
     std::uint64_t cases{};
     for (std::uint64_t size = 1; size < 96*M; size += 7919) {
         for (auto alignment : {4096ULL, 65536ULL, 4*M}) {

@@ -24,24 +24,63 @@ namespace D3D12 {
 using namespace Common::Literals;
 
 namespace {
-enum class HeapClass : u8 { Texture, RenderTarget };
+enum class HeapClass : u8 { Texture, RenderTarget, SmallRenderTarget };
+constexpr size_t heap_classes = 3;
 
-HeapClass ClassOf(const D3D12_RESOURCE_DESC& desc) {
+HeapClass ClassOf(const D3D12_RESOURCE_DESC& desc, u64 size) {
     constexpr D3D12_RESOURCE_FLAGS RT_DS = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
                                            D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-    return (desc.Flags & RT_DS) != 0 ? HeapClass::RenderTarget : HeapClass::Texture;
+    if ((desc.Flags & RT_DS) == 0) return HeapClass::Texture;
+    return size <= HeapGrowth::small_render_target ? HeapClass::SmallRenderTarget
+                                                   : HeapClass::RenderTarget;
 }
 
 D3D12_HEAP_FLAGS FlagsOf(HeapClass heap_class) {
-    return heap_class == HeapClass::RenderTarget ? D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES
-                                                 : D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
+    return heap_class == HeapClass::Texture ? D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES
+                                            : D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
+}
+
+const char* NameOf(HeapClass heap_class) {
+    switch (heap_class) {
+    case HeapClass::Texture:
+        return "texture";
+    case HeapClass::RenderTarget:
+        return "RT/DS";
+    case HeapClass::SmallRenderTarget:
+        return "small RT/DS";
+    }
+    return "?";
 }
 
 // Render targets are recreated at new sizes every few frames and pin whole heaps: one survivor
 // kept a 64 MiB heap from emptying, leaving 600 MiB free across RT heaps that could not be
 // released. Smaller RT heaps drain sooner and are trimmed.
 u64 PoolOf(HeapClass heap_class) {
-    return heap_class == HeapClass::RenderTarget ? 32_MiB : 64_MiB;
+    switch (heap_class) {
+    case HeapClass::Texture:
+        return 64_MiB;
+    case HeapClass::RenderTarget:
+        return 32_MiB;
+    case HeapClass::SmallRenderTarget:
+        return 8_MiB;
+    }
+    return 64_MiB;
+}
+
+// Padding of a heap grown under pressure. A large render target gets an exact heap: at world
+// entry 16 MiB padded RT heaps each kept one survivor, leaving ~300 MiB free inside them that
+// no trim could release. Small render targets arrive in bursts of hundreds and keep their full
+// pool: 2 MiB padding still made hundreds of heaps.
+u64 PressurePadOf(HeapClass heap_class) {
+    switch (heap_class) {
+    case HeapClass::Texture:
+        return 16_MiB;
+    case HeapClass::RenderTarget:
+        return 0;
+    case HeapClass::SmallRenderTarget:
+        return 8_MiB;
+    }
+    return 16_MiB;
 }
 } // Anonymous namespace
 
@@ -139,7 +178,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
     if (info.SizeInBytes == UINT64_MAX || info.Alignment == 0) {
         return {};
     }
-    const HeapClass heap_class = ClassOf(desc);
+    const HeapClass heap_class = ClassOf(desc, info.SizeInBytes);
     const u64 heap_alignment =
         std::max<u64>(info.Alignment, D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT);
     size_t selected = SIZE_MAX;
@@ -172,25 +211,35 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
         // kept a few live resources in every heap (912 MiB of heaps for 487 MiB live), so none
         // emptied and the texture cap could not release any. Packing the dense heaps first lets
         // the sparse ones drain.
-        for (size_t index = 0; index < state->blocks.size(); ++index) {
-            auto& block = state->blocks[index];
-            if (!block.heap || block.heap_class != heap_class || block.alignment < heap_alignment) {
-                continue;
-            }
-            u64 block_free = 0;
-            for (const auto& range : block.free_ranges) {
-                block_free += range.second;
-            }
-            for (const auto& [offset, bytes] : block.free_ranges) {
-                const auto fit = HeapPacking::Fit(offset, bytes, info.SizeInBytes, info.Alignment);
-                if (fit && (block_free < best_block_free ||
-                            (block_free == best_block_free && fit->waste < best_waste))) {
-                    selected = index;
-                    selected_offset = fit->offset;
-                    best_waste = fit->waste;
-                    best_block_free = block_free;
+        // A small render target with no room in its own heaps takes free space in the large RT
+        // heaps before growing: under pressure, splitting them off made 489 tiny heaps while
+        // ~250 MiB sat free in RT heaps.
+        const auto search = [&](HeapClass wanted_class) {
+            for (size_t index = 0; index < state->blocks.size(); ++index) {
+                auto& block = state->blocks[index];
+                if (!block.heap || block.heap_class != wanted_class ||
+                    block.alignment < heap_alignment) {
+                    continue;
+                }
+                u64 block_free = 0;
+                for (const auto& range : block.free_ranges) {
+                    block_free += range.second;
+                }
+                for (const auto& [offset, bytes] : block.free_ranges) {
+                    const auto fit = HeapPacking::Fit(offset, bytes, info.SizeInBytes, info.Alignment);
+                    if (fit && (block_free < best_block_free ||
+                                (block_free == best_block_free && fit->waste < best_waste))) {
+                        selected = index;
+                        selected_offset = fit->offset;
+                        best_waste = fit->waste;
+                        best_block_free = block_free;
+                    }
                 }
             }
+        };
+        search(heap_class);
+        if (selected == SIZE_MAX && heap_class == HeapClass::SmallRenderTarget) {
+            search(HeapClass::RenderTarget);
         }
         // Reserve while still holding the pool lock so a concurrent trim cannot remove it.
         if (selected != SIZE_MAX) reserve_space();
@@ -242,7 +291,8 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
             compact = !after.Known() || pressured(after);
             if (compact && after.Known()) {
                 wanted = HeapGrowth::PressureCapacity(info.SizeInBytes, info.Alignment,
-                                                      {after.app_used, after.app_limit});
+                                                      {after.app_used, after.app_limit},
+                                                      PressurePadOf(heap_class));
             }
             const auto stats = GetStats();
             {
@@ -300,9 +350,8 @@ TextureResourceAllocator::Resource TextureResourceAllocator::Create(
                 reserve_space();
                 LOG_INFO(Render, "D3D12: texture heap pool added {} MiB {} block ({} MiB total), "
                          "required {} bytes, pressure-sized {}",
-                         wanted / 1_MiB,
-                         heap_class == HeapClass::RenderTarget ? "RT/DS" : "texture",
-                         state->heap_bytes / 1_MiB, info.SizeInBytes, compact);
+                         wanted / 1_MiB, NameOf(heap_class), state->heap_bytes / 1_MiB,
+                         info.SizeInBytes, compact);
             } else {
                 LOG_WARNING(Render, "D3D12: CreateHeap for texture pool failed 0x{:08x}; using committed resources",
                             static_cast<u32>(heap_hr));
@@ -389,7 +438,7 @@ void TextureResourceAllocator::TrimEmptyHeaps(TrimMode mode) {
     constexpr u64 settle_ticks = 64;
     const u64 tick = mode == TrimMode::Settled ? scheduler.CurrentTick() : 0;
     std::scoped_lock lock{state->mutex};
-    std::array<bool, 2> warm{};
+    std::array<bool, heap_classes> warm{};
     for (auto& block : state->blocks) {
         if (!block.heap || block.free_ranges.size() != 1) continue;
         const auto& [offset, size] = *block.free_ranges.begin();
@@ -417,7 +466,7 @@ void TextureResourceAllocator::TrimEmptyHeaps(TrimMode mode) {
 std::string TextureResourceAllocator::Report() const {
     std::scoped_lock lock{state->mutex};
     // Diagnostic: per class heaps, empty heaps, free bytes and largest free range.
-    std::array<u64, 2> count{}, empty{}, free{}, largest{};
+    std::array<u64, heap_classes> count{}, empty{}, free{}, largest{};
     for (const auto& block : state->blocks) {
         if (!block.heap) continue;
         const size_t type = static_cast<size_t>(block.heap_class);
@@ -429,9 +478,10 @@ std::string TextureResourceAllocator::Report() const {
         }
     }
     LOG_INFO(Render, "D3D12: heap frag tex n {} free {} empty {} max {} | rt n {} free {} empty {} "
-             "max {} MiB, pending {} MiB",
+             "max {} | small rt n {} free {} empty {} max {} MiB, pending {} MiB",
              count[0], free[0] / 1_MiB, empty[0] / 1_MiB, largest[0] / 1_MiB, count[1],
-             free[1] / 1_MiB, empty[1] / 1_MiB, largest[1] / 1_MiB, state->pending_bytes / 1_MiB);
+             free[1] / 1_MiB, empty[1] / 1_MiB, largest[1] / 1_MiB, count[2], free[2] / 1_MiB,
+             empty[2] / 1_MiB, largest[2] / 1_MiB, state->pending_bytes / 1_MiB);
     return fmt::format("texture heaps {} MiB, live {} MiB, peak {} MiB, placed {}, fallback {}, trimmed {} ({} MiB), "
                        "growth recoveries {}, pressure waits {}, pressure heaps {}, "
                        "avoided capacity {} MiB",
