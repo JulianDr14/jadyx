@@ -3216,6 +3216,11 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
         slot_image_views.erase(image_view_id);
     }
     if (!immediate_delete) {
+        // Sentenced images live on for a few frames; the backend can return their memory as soon
+        // as the GPU is done with them (dynamic resolution supersedes ~60 MiB of them a frame).
+        if constexpr (requires(Image& sentenced) { sentenced.ReleaseResources(); }) {
+            slot_images[image_id].ReleaseResources();
+        }
         sentenced_images.Push(std::move(slot_images[image_id]));
     }
     slot_images.erase(image_id);

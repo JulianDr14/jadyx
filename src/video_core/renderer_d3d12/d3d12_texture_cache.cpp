@@ -577,6 +577,10 @@ Image::GcReadback::~GcReadback() {
 Image::Image(Image&&) noexcept = default;
 
 Image::~Image() {
+    ReleaseResources();
+}
+
+void Image::ReleaseResources() {
     if (runtime && resource) {
         runtime->texture_allocator.DeferRelease(
             {std::move(resource), std::move(resource_allocation), resource_allocation != nullptr});
@@ -593,28 +597,14 @@ Image::~Image() {
     if (runtime && reinterpreted) {
         runtime->scheduler.DeferRelease(std::move(reinterpreted));
     }
+    guest_blocks.reset();
+    depth_feedback.reset();
 }
 
 Image& Image::operator=(Image&& other) noexcept {
     if (this != &other) {
         gc_readback.reset();
-        if (runtime && resource) {
-            runtime->texture_allocator.DeferRelease(
-                {std::move(resource), std::move(resource_allocation),
-                 resource_allocation != nullptr});
-        }
-        if (runtime && slice_array) {
-            runtime->scheduler.DeferRelease(std::move(slice_array));
-        }
-        if (runtime && volume) {
-            runtime->scheduler.DeferRelease(std::move(volume));
-        }
-        if (runtime && cube) {
-            runtime->scheduler.DeferRelease(std::move(cube));
-        }
-        if (runtime && reinterpreted) {
-            runtime->scheduler.DeferRelease(std::move(reinterpreted));
-        }
+        ReleaseResources();
         static_cast<VideoCommon::ImageBase&>(*this) = std::move(other);
         allocation_tick = other.allocation_tick;
         runtime = other.runtime;

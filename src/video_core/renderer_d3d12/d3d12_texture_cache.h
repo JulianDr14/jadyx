@@ -298,6 +298,10 @@ public:
     Image(Image&&) noexcept;
     Image& operator=(Image&& other) noexcept;
 
+    /// Hands its GPU memory back once the work recorded so far is done. The texture cache keeps
+    /// deleted images for a few frames before destroying them; their memory does not wait.
+    void ReleaseResources();
+
     /// Preserve the lossless guest representation before the generic cache decodes BC arrays.
     /// Native blocks are used only for transfers, never sampled (Xbox BC array workaround).
     void PreserveGuestBlocks(std::span<const u8> data,
