@@ -162,6 +162,10 @@ public:
     [[nodiscard]] bool SupportsDepthBounds() const {
         return depth_bounds;
     }
+    /// Block-compressed textures whose top level is not whole blocks (OPTIONS8).
+    [[nodiscard]] bool SupportsUnalignedBlockTextures() const {
+        return unaligned_block_textures;
+    }
 
     /// Local (device) memory budget and usage; zeroes if the adapter cannot report them.
     [[nodiscard]] DXGI_QUERY_VIDEO_MEMORY_INFO QueryVideoMemory() const;
@@ -197,6 +201,9 @@ public:
 
 private:
     void LogCapabilities() const;
+    /// The GPU budget and usage the caches collect against. A discrete card's local budget is
+    /// widened into system memory (see the definition); a unified one's is DXGI's as is.
+    [[nodiscard]] DXGI_QUERY_VIDEO_MEMORY_INFO QueryCacheVideoMemory() const;
 
     ComPtr<IDXGIFactory4> factory;
     ComPtr<IDXGIAdapter1> adapter;
@@ -204,6 +211,7 @@ private:
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12Device2> device2;
     bool depth_bounds{};
+    bool unaligned_block_textures{};
     ComPtr<ID3D12InfoQueue> info_queue; ///< debug layer only
     u32 debug_messages_logged{};
     u64 null_rtv_format_reports{};
@@ -215,6 +223,7 @@ private:
     u64 next_fence_value{1};
     std::string adapter_name;
     u64 initial_budget{}; ///< local video memory budget when the device was created
+    bool discrete_memory{}; ///< not UMA: textures past the local budget can live in system memory
 };
 
 } // namespace D3D12

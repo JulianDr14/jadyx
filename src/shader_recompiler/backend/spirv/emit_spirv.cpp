@@ -469,7 +469,8 @@ void SetupCapabilities(const Profile& profile, const Info& info, EmitContext& ct
     if (info.uses_sample_id) {
         ctx.AddCapability(spv::Capability::SampleRateShading);
     }
-    if (info.uses_derivatives) {
+    if (info.uses_derivatives || (info.uses_quad_shuffles && profile.has_helperless_quad_shuffles &&
+                                  ctx.stage == Stage::Fragment)) {
         ctx.AddCapability(spv::Capability::DerivativeControl);
     }
     // TODO: Track this usage

@@ -255,6 +255,8 @@ private:
     u64 last_stats_frame{};
     u64 pipelines_evicted{};
     u64 pipelines_woken{};
+    /// Whether releasing PSOs under pressure frees commit, measured on the first releases.
+    PipelineReleaseProbe release_probe;
     /// Disk-cache pipelines left dormant at boot, most likely to be drawn first.
     std::vector<GraphicsPipeline*> prewarm_order;
     size_t prewarm_cursor{};

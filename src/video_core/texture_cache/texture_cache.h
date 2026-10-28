@@ -27,6 +27,7 @@
 #include "video_core/frame_trace.h"
 #include "video_core/readback_trace.h"
 #include "video_core/texture_cache/blit_coverage.h"
+#include "video_core/texture_cache/formatter.h"
 #include "video_core/texture_cache/gc_policy.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/samples_helper.h"
@@ -191,16 +192,27 @@ void TextureCache<P>::RunGarbageCollector() {
             std::chrono::steady_clock::now() - gc_start >= std::chrono::microseconds{time_budget_us})) {
             return true;
         }
-        --num_iterations;
+        // Under pressure with a time budget, the images kept do not use up the iterations: the
+        // oldest entries are often render targets that stay, and counting them held the walk on
+        // the same few each frame, never reaching the clean textures behind them.
+        const bool count_kept = time_budget_us == 0 || !high_priority_mode;
+        if (count_kept) --num_iterations;
         auto& image = slot_images[image_id];
         if (True(image.flags & ImageFlagBits::IsDecoding)) {
             return false;
         }
         const bool must_download = IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap);
         if ((!aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad)) || (!high_priority_mode && must_download)) {
+            ++diag_gc[must_download ? 2 : 3];
             return false;
         }
-        if (must_download && downloads_left == 0) return false;
+        if (must_download && downloads_left == 0) {
+            ++diag_gc[2];
+            return false;
+        }
+        if (!count_kept) --num_iterations;
+        ++diag_gc[0];
+        diag_gc[1] += must_download;
         if (must_download) --downloads_left;
         if (must_download) {
             VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::TextureGcImageInfo,
@@ -238,6 +250,8 @@ void TextureCache<P>::RunGarbageCollector() {
         if (True(image.flags & ImageFlagBits::Tracked)) {
             UntrackImage(image, image_id);
         }
+        NoteImageDeleted(image, must_download ? ImageDeleteReason::EvictedWithDownload
+                                              : ImageDeleteReason::Evicted);
         UnregisterImage(image_id);
         DeleteImage(image_id, image.scale_tick > frame_tick + 5);
         if (!backend_policy && aggressive_mode && total_used_memory < critical_memory) {
@@ -273,9 +287,22 @@ void TextureCache<P>::TickFrame() {
     sentenced_image_view.Tick();
     TickAsyncDecode();
     TickAsyncUnswizzle();
+    static auto last_diag = std::chrono::steady_clock::now();
+    if (const auto now = std::chrono::steady_clock::now(); now - last_diag >= std::chrono::seconds(2)) {
+        last_diag = now;
+        LOG_INFO(HW_GPU, "Texture cache diag: {} resized replaced, {} overlaps reclaimed; joins none {} resolved {} "
+                 "left {} right {} bad {} ignored {}; gc evicted {} (downloaded {}), skipped "
+                 "download {} costly {}; used {} MiB expected {} critical {} images {}",
+                 replaced_resized_images, reclaimed_overlaps, diag_join[0], diag_join[1], diag_join[2],
+                 diag_join[3], diag_join[4], diag_join[5], diag_gc[0], diag_gc[1], diag_gc[2],
+                 diag_gc[3], total_used_memory >> 20, expected_memory >> 20,
+                 critical_memory >> 20, slot_images.size());
+    }
 
     runtime.TickFrame();
     ++frame_tick;
+    ReportImageChurn();
+    ReportLiveImages();
 
     if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
         for (auto& buffer : async_buffers_death_ring) {
@@ -886,6 +913,7 @@ void TextureCache<P>::UnmapMemory(DAddr cpu_addr, size_t size) {
         if (True(image.flags & ImageFlagBits::Tracked)) {
             UntrackImage(image, id);
         }
+        NoteImageDeleted(image, ImageDeleteReason::Unmapped);
         UnregisterImage(id);
         DeleteImage(id);
     }
@@ -1402,7 +1430,13 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     auto staging = [&] {
         const VideoCore::FrameTrace::ScopedSpan span{
             VideoCore::FrameTrace::Event::TextureUploadStaging, image.gpu_addr};
-        return runtime.UploadStagingBuffer(MapSizeBytes(image));
+        size_t size = MapSizeBytes(image);
+        if constexpr (requires { runtime.UploadRowLayout(); }) {
+            if (False(image.flags & (ImageFlagBits::AcceleratedUpload | ImageFlagBits::Converted))) {
+                size = CalculateHostUnswizzledSizeBytes(image.info, runtime.UploadRowLayout());
+            }
+        }
+        return runtime.UploadStagingBuffer(size);
     }();
     timer.Lap(VideoCore::Perf::Counter::TextureCacheStagingNs);
     UploadImageContents(image, staging);
@@ -1460,7 +1494,13 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
     } else {
         VideoCore::FrameTrace::ScopedSpan trace_unswizzle{
             VideoCore::FrameTrace::Event::TextureUploadUnswizzle, gpu_addr};
-        const auto copies = FixSmallVectorADL(UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, mapped_span));
+        // Straight into the backend's copy footprint when it has one (staging sized to match in
+        // UploadImage), so the backend copies the rows as they are.
+        HostRowLayout host_layout{};
+        if constexpr (requires { runtime.UploadRowLayout(); }) {
+            host_layout = runtime.UploadRowLayout();
+        }
+        const auto copies = FixSmallVectorADL(UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, mapped_span, host_layout));
         trace_unswizzle.Finish();
         timer.Lap(VideoCore::Perf::Counter::TextureCacheUnswizzleNs);
         const VideoCore::FrameTrace::ScopedSpan trace_backend{
@@ -1838,6 +1878,33 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
 }
 
 template <class P>
+bool TextureCache<P>::IsResizedImage(const ImageBase& new_image, const ImageBase& old) const {
+    // Not when the old size was used this frame: a pass alternating two sizes would then copy
+    // and re-create on every draw.
+    if (!ReclaimSupersededImages() || old.gpu_addr != new_image.gpu_addr ||
+        lru_cache.Tick(old.lru_index) >= frame_tick) {
+        return false;
+    }
+    const ImageInfo& a = old.info;
+    const ImageInfo& b = new_image.info;
+    return a.type == ImageType::e2D && b.type == ImageType::e2D && a.format == b.format &&
+           a.num_samples == b.num_samples && a.resources.levels == 1 &&
+           b.resources.levels == 1 && a.resources.layers == 1 && b.resources.layers == 1 &&
+           a.size != b.size && old.aliased_images.size() == 1 && old.overlapping_images.empty() &&
+           False(old.flags & (ImageFlagBits::Sparse | ImageFlagBits::Remapped));
+}
+
+template <class P>
+bool TextureCache<P>::IsSupersededOverlap(const ImageBase& old) const {
+    // The GC evicts these BadOverlap images without a download. Two frames unused keeps the ones
+    // a frame still samples or renders to.
+    return ReclaimSupersededImages() && old.info.resources.levels == 1 &&
+           old.info.block.depth == 0 && lru_cache.Tick(old.lru_index) + 2 <= frame_tick &&
+           False(old.flags & (ImageFlagBits::Sparse | ImageFlagBits::Remapped |
+                              ImageFlagBits::IsDecoding | ImageFlagBits::CostlyLoad));
+}
+
+template <class P>
 ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr) {
     VideoCore::Perf::LapTimer phase_timer;
     ImageInfo new_info = info;
@@ -1910,6 +1977,12 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
     ForEachSparseImageInRegion(channel_state->gpu_memory.GetID(), gpu_addr, size_bytes,
                                region_check_gpu);
     phase_timer.Lap(VideoCore::Perf::Counter::TextureCacheOverlapNs);
+    diag_join[0] += join_overlaps_found.empty() && join_ignore_textures.empty();
+    diag_join[1] += join_overlap_ids.size();
+    diag_join[2] += join_left_aliased_ids.size();
+    diag_join[3] += join_right_aliased_ids.size();
+    diag_join[4] += join_bad_overlap_ids.size();
+    diag_join[5] += join_ignore_textures.size();
 
     bool can_rescale = info.rescaleable;
     bool any_rescaled = false;
@@ -1949,6 +2022,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
                                 new_image.gpu_addr, new_image.guest_size_bytes);
 
     new_image.allocation_tick = frame_tick;
+    NoteImageCreated(new_image);
 
     if (!gpu_memory->IsContinuousRange(new_image.gpu_addr, new_image.guest_size_bytes) &&
         new_info.is_sparse) {
@@ -1963,12 +2037,68 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         if (True(overlap.flags & ImageFlagBits::Tracked)) {
             UntrackImage(overlap, overlap_id);
         }
+        NoteImageDeleted(overlap, ImageDeleteReason::JoinDropped);
         UnregisterImage(overlap_id);
         DeleteImage(overlap_id);
     }
 
-    // TODO: Only upload what we need
-    RefreshContents(new_image, new_image_id);
+    const ImageId predecessor = RenderTargetInheritance()
+                                    ? FindPreviousSize(new_info, new_image.gpu_addr)
+                                    : ImageId{};
+    if (predecessor) {
+        // The same render target at another size (dynamic resolution), drawn to or sampled: its
+        // contents live only on the GPU, so the guest memory is stale. Copy them from the previous
+        // size instead of uploading it, and delete that size and the older ones so each target
+        // keeps one image.
+        const auto superseded = [this](ImageId id) {
+            return std::find(join_superseded_ids.begin(), join_superseded_ids.end(), id) !=
+                   join_superseded_ids.end();
+        };
+        const auto drop = [&superseded](auto& ids) {
+            ids.erase(std::remove_if(ids.begin(), ids.end(), superseded), ids.end());
+        };
+        drop(join_bad_overlap_ids);
+        drop(join_left_aliased_ids);
+        drop(join_right_aliased_ids);
+        join_copies_to_do.erase(std::remove_if(join_copies_to_do.begin(), join_copies_to_do.end(),
+                                               [&superseded](const JoinCopy& copy) {
+                                                   return superseded(copy.id);
+                                               }),
+                                join_copies_to_do.end());
+        Image& previous = slot_images[predecessor];
+        new_image.flags &= ~ImageFlagBits::CpuModified;
+        TrackImage(new_image, new_image_id);
+        const SubresourceLayers layers{.num_layers = new_info.resources.layers};
+        const ImageCopy copy{
+            .src_subresource = layers,
+            .dst_subresource = layers,
+            .src_offset = {},
+            .dst_offset = {},
+            .extent = {(std::min)(previous.info.size.width, new_info.size.width),
+                       (std::min)(previous.info.size.height, new_info.size.height), 1},
+        };
+        runtime.CopyImage(new_image, previous, std::span<const ImageCopy>{&copy, 1});
+        new_image.flags |= ImageFlagBits::GpuModified;
+        new_image.modification_tick = previous.modification_tick;
+        for (const ImageId stale_id : join_superseded_ids) {
+            Image& stale = slot_images[stale_id];
+            if (True(stale.flags & ImageFlagBits::Tracked)) {
+                UntrackImage(stale, stale_id);
+            }
+            NoteImageDeleted(stale, ImageDeleteReason::Superseded);
+            UnregisterImage(stale_id);
+            DeleteImage(stale_id);
+        }
+        if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
+            ++churn_inherited;
+        }
+    } else {
+        // TODO: Only upload what we need
+        RefreshContents(new_image, new_image_id);
+    }
+    if (RenderTargetInheritance()) {
+        RetireStaleSizes(new_image);
+    }
 
     if (can_rescale) {
         ScaleUp(new_image);
@@ -2014,6 +2144,22 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             new_image.flags |= ImageFlagBits::BadOverlap;
         }
     }
+    join_bad_overlap_ids.erase(
+        std::remove_if(join_bad_overlap_ids.begin(), join_bad_overlap_ids.end(),
+                       [&](ImageId overlap_id) {
+                           Image& overlap = slot_images[overlap_id];
+                           if (!IsSupersededOverlap(overlap)) {
+                               return false;
+                           }
+                           if (True(overlap.flags & ImageFlagBits::Tracked)) {
+                               UntrackImage(overlap, overlap_id);
+                           }
+                           UnregisterImage(overlap_id);
+                           DeleteImage(overlap_id);
+                           ++reclaimed_overlaps;
+                           return true;
+                       }),
+        join_bad_overlap_ids.end());
 
     for (const auto& copy_object : join_copies_to_do) {
         Image& overlap = slot_images[copy_object.id];
@@ -2031,6 +2177,14 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             const AliasedImage& aliased = new_image.aliased_images[alias_pointer->second];
             CopyImage(new_image_id, aliased.id, aliased.copies);
             new_image.modification_tick = overlap.modification_tick;
+            if (IsResizedImage(new_image, overlap)) {
+                if (True(overlap.flags & ImageFlagBits::Tracked)) {
+                    UntrackImage(overlap, copy_object.id);
+                }
+                UnregisterImage(copy_object.id);
+                DeleteImage(copy_object.id);
+                ++replaced_resized_images;
+            }
             continue;
         }
         if (True(overlap.flags & ImageFlagBits::GpuModified)) {
@@ -2050,6 +2204,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         if (True(overlap.flags & ImageFlagBits::Tracked)) {
             UntrackImage(overlap, copy_object.id);
         }
+        NoteImageDeleted(overlap, ImageDeleteReason::JoinMerged);
         UnregisterImage(copy_object.id);
         DeleteImage(copy_object.id);
     }
@@ -2077,6 +2232,106 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         RegisterImage(new_image_id);
     }
     return new_image_id;
+}
+
+template <class P>
+void TextureCache<P>::RetireStaleSizes(const Image& new_image) {
+    // An older size at this address without GPU contents only mirrors guest memory. Dynamic
+    // resolution leaves one behind each time a sampled render target changes size, faster than
+    // the GC evicts them, so they are deleted here instead of being linked as bad overlaps.
+    join_superseded_ids.clear();
+    for (const ImageId id : join_bad_overlap_ids) {
+        const Image& overlap = slot_images[id];
+        if (overlap.gpu_addr == new_image.gpu_addr && overlap.info.format == new_image.info.format &&
+            False(overlap.flags & ImageFlagBits::GpuModified) && !UsedSinceLastFrame(overlap)) {
+            join_superseded_ids.push_back(id);
+        }
+    }
+    if (join_superseded_ids.empty()) {
+        return;
+    }
+    join_bad_overlap_ids.erase(
+        std::remove_if(join_bad_overlap_ids.begin(), join_bad_overlap_ids.end(),
+                       [this](ImageId id) {
+                           return std::find(join_superseded_ids.begin(), join_superseded_ids.end(),
+                                            id) != join_superseded_ids.end();
+                       }),
+        join_bad_overlap_ids.end());
+    for (const ImageId stale_id : join_superseded_ids) {
+        Image& stale = slot_images[stale_id];
+        if (True(stale.flags & ImageFlagBits::Tracked)) {
+            UntrackImage(stale, stale_id);
+        }
+        NoteImageDeleted(stale, ImageDeleteReason::Superseded);
+        UnregisterImage(stale_id);
+        DeleteImage(stale_id);
+    }
+}
+
+template <class P>
+ImageId TextureCache<P>::FindPreviousSize(const ImageInfo& info, GPUVAddr gpu_addr) {
+    const auto fallback = [this](InheritFallback reason) {
+        if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
+            ++churn_inherit_fallbacks[static_cast<size_t>(reason)];
+        }
+        return ImageId{};
+    };
+    if (join_bad_overlap_ids.empty() && join_left_aliased_ids.empty() &&
+        join_right_aliased_ids.empty()) {
+        return fallback(InheritFallback::NewAddress);
+    }
+    if (info.type != ImageType::e2D || info.resources.levels != 1 || info.num_samples != 1 ||
+        !join_overlap_ids.empty()) {
+        return fallback(InheritFallback::Layout);
+    }
+    // The newest GPU contents in the range decide. When they belong to a previous size of this
+    // target, the guest memory is stale and that size is copied instead. Overlaps without GPU
+    // contents only mirror guest memory (or older data) and hold nothing to keep.
+    const auto same_target = [&](const Image& overlap) {
+        const ImageInfo& existing = overlap.info;
+        return overlap.gpu_addr == gpu_addr && existing.format == info.format &&
+               existing.type == info.type && existing.num_samples == info.num_samples &&
+               existing.resources.levels == 1 &&
+               existing.resources.layers == info.resources.layers;
+    };
+    join_superseded_ids.clear();
+    ImageId predecessor{};
+    const auto visit = [&](std::span<const ImageId> ids) {
+        for (const ImageId id : ids) {
+            const Image& overlap = slot_images[id];
+            if (same_target(overlap)) {
+                join_superseded_ids.push_back(id);
+            }
+            if (False(overlap.flags & ImageFlagBits::GpuModified)) {
+                continue;
+            }
+            if (!predecessor ||
+                overlap.modification_tick > slot_images[predecessor].modification_tick) {
+                predecessor = id;
+            }
+        }
+    };
+    visit(join_bad_overlap_ids);
+    visit(join_left_aliased_ids);
+    visit(join_right_aliased_ids);
+    if (!predecessor) {
+        return fallback(InheritFallback::NoPredecessor);
+    }
+    const Image& previous = slot_images[predecessor];
+    if (!same_target(previous)) {
+        return fallback(InheritFallback::NewerOverlap);
+    }
+    if (True(previous.flags & ImageFlagBits::CpuModified)) {
+        return fallback(InheritFallback::CpuData);
+    }
+    // Games reuse one address for a dynamic size and a fixed one within a frame. Sizes used this
+    // frame or the previous one stay, or the fixed size would be recreated on every frame; the
+    // predecessor is still copied, since the guest memory holds nothing newer.
+    join_superseded_ids.erase(
+        std::remove_if(join_superseded_ids.begin(), join_superseded_ids.end(),
+                       [this](ImageId id) { return UsedSinceLastFrame(slot_images[id]); }),
+        join_superseded_ids.end());
+    return predecessor;
 }
 
 template <class P>
@@ -2621,6 +2876,7 @@ void TextureCache<P>::RegisterImage(ImageId image_id) {
     }
     total_used_memory += Common::AlignUp(tentative_size, 1024);
     image.lru_index = lru_cache.Insert(image_id, frame_tick);
+    image.channel = channel_state->gpu_page_table_index;
 
     ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [this, image_id](u64 page) {
         (*channel_state->gpu_page_table)[page].push_back(image_id);
@@ -2671,8 +2927,12 @@ void TextureCache<P>::UnregisterImage(ImageId image_id) {
             }
             image_ids.erase(vector_it);
         };
-    ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [this, &clear_page_table](u64 page) {
-        clear_page_table(page, (*channel_state->gpu_page_table));
+    // The page tables it was registered in: the GC may delete it while a channel of another
+    // address space is bound.
+    auto& gpu_page_table = gpu_page_table_storage[image.channel];
+    auto& sparse_page_table = gpu_page_table_storage[image.channel + 1];
+    ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [&](u64 page) {
+        clear_page_table(page, gpu_page_table);
     });
     if (False(image.flags & ImageFlagBits::Sparse)) {
         const auto map_id = image.map_view_id;
@@ -2694,8 +2954,8 @@ void TextureCache<P>::UnregisterImage(ImageId image_id) {
         slot_map_views.erase(map_id);
         return;
     }
-    ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [this, &clear_page_table](u64 page) {
-        clear_page_table(page, (*channel_state->sparse_page_table));
+    ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [&](u64 page) {
+        clear_page_table(page, sparse_page_table);
     });
     auto it = sparse_views.find(image_id);
     ASSERT(it != sparse_views.end());
@@ -2780,6 +3040,190 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
 }
 
 template <class P>
+void TextureCache<P>::NoteImageCreated(const Image& image) {
+    if (!VideoCore::Perf::DetailedGpuProfileEnabled()) {
+        return;
+    }
+    ChurnAddress& entry = churn_addresses[image.gpu_addr];
+    ++entry.creates;
+    entry.info = image.info;
+}
+
+template <class P>
+void TextureCache<P>::NoteImageDeleted(const Image& image, ImageDeleteReason reason) {
+    if (!VideoCore::Perf::DetailedGpuProfileEnabled()) {
+        return;
+    }
+    const size_t index = static_cast<size_t>(reason);
+    const bool young = frame_tick <= image.allocation_tick + 2;
+    ++churn_deletes[index];
+    churn_young_deletes[index] += young ? 1 : 0;
+    churn_deleted_bytes[index] += image.guest_size_bytes;
+    ChurnAddress& entry = churn_addresses[image.gpu_addr];
+    ++entry.deletes;
+    entry.young_deletes += young ? 1 : 0;
+    entry.info = image.info;
+    entry.last_reason = reason;
+    entry.gpu_modified = True(image.flags & ImageFlagBits::GpuModified);
+}
+
+template <class P>
+void TextureCache<P>::ReportImageChurn() {
+    static constexpr u64 WINDOW_FRAMES = 300;
+    if (!VideoCore::Perf::DetailedGpuProfileEnabled() ||
+        frame_tick < churn_window_start + WINDOW_FRAMES) {
+        return;
+    }
+    static constexpr std::array<const char*, NUM_DELETE_REASONS> REASON_NAMES{
+        "evicted", "evicted+download", "unmapped", "join dropped", "join merged", "superseded"};
+    static constexpr std::array<const char*, NUM_INHERIT_FALLBACKS> FALLBACK_NAMES{
+        "new address", "layout", "no predecessor", "newer overlap", "CPU data"};
+    std::string reasons;
+    for (size_t i = 0; i < NUM_DELETE_REASONS; ++i) {
+        reasons += fmt::format("{}{} {} ({} within 2 frames, {} MiB)", i ? "; " : "",
+                               REASON_NAMES[i], churn_deletes[i], churn_young_deletes[i],
+                               churn_deleted_bytes[i] >> 20);
+    }
+    std::vector<std::pair<GPUVAddr, const ChurnAddress*>> hot;
+    for (const auto& [addr, entry] : churn_addresses) {
+        if (entry.creates >= 2) {
+            hot.emplace_back(addr, &entry);
+        }
+    }
+    std::ranges::sort(hot, [](const auto& lhs, const auto& rhs) {
+        return lhs.second->creates > rhs.second->creates;
+    });
+    LOG_INFO(HW_GPU,
+             "Texture churn over {} frames: {} addresses, {} recreated at least twice | "
+             "deletes: {}",
+             frame_tick - churn_window_start, churn_addresses.size(), hot.size(), reasons);
+    std::string fallbacks;
+    for (size_t i = 0; i < NUM_INHERIT_FALLBACKS; ++i) {
+        fallbacks += fmt::format("{}{} {}", i ? ", " : "", FALLBACK_NAMES[i],
+                                 churn_inherit_fallbacks[i]);
+    }
+    LOG_INFO(HW_GPU,
+             "Size inheritance: {} took the previous size's contents on the GPU | "
+             "uploaded instead: {}{}",
+             churn_inherited, fallbacks, RenderTargetInheritance() ? "" : " (rt_inherit=0)");
+    for (size_t i = 0; i < (std::min)(hot.size(), size_t{12}); ++i) {
+        const ChurnAddress& entry = *hot[i].second;
+        const ImageInfo& info = entry.info;
+        LOG_INFO(HW_GPU,
+                 "Texture churn: {:#x} created {}x, deleted {}x ({} within 2 frames, last: {}{}) | "
+                 "{} {} {}x{}x{} levels {} layers {} samples {} block {}x{}x{} pitch {}",
+                 hot[i].first, entry.creates, entry.deletes, entry.young_deletes,
+                 entry.last_reason == ImageDeleteReason::Count
+                     ? "none"
+                     : REASON_NAMES[static_cast<size_t>(entry.last_reason)],
+                 entry.gpu_modified ? ", GPU-modified" : "", info.type, info.format,
+                 info.size.width, info.size.height, info.size.depth, info.resources.levels,
+                 info.resources.layers, info.num_samples, info.block.width, info.block.height,
+                 info.block.depth, info.pitch);
+    }
+    churn_addresses.clear();
+    churn_deletes = {};
+    churn_young_deletes = {};
+    churn_deleted_bytes = {};
+    churn_inherited = 0;
+    churn_inherit_fallbacks = {};
+    churn_window_start = frame_tick;
+}
+
+template <class P>
+void TextureCache<P>::ReportLiveImages() {
+    static constexpr u64 STEP_BYTES = 256_MiB;
+    static constexpr u64 CHECK_FRAMES = 30;
+    if (!VideoCore::Perf::DetailedGpuProfileEnabled() || frame_tick % CHECK_FRAMES != 0) {
+        return;
+    }
+    struct Group {
+        PixelFormat format;
+        u32 width, height;
+        s32 levels, layers;
+        bool gpu_modified;
+        u32 count = 0;
+        u64 bytes = 0;
+        u64 newest_use = 0;
+    };
+    static constexpr std::array<u64, 4> AGE_LIMITS{2, 60, 600, UINT64_MAX};
+    std::array<u64, AGE_LIMITS.size()> age_bytes{};
+    std::vector<Group> groups;
+    u64 total_bytes = 0;
+    u64 gpu_bytes = 0;
+    u64 bad_overlap_bytes = 0;
+    size_t total_count = 0;
+    lru_cache.ForEachItemBelow(frame_tick, [&](ImageId id) {
+        const Image& image = slot_images[id];
+        const u64 bytes = HostSizeBytes(image);
+        const u64 last_use = lru_cache.Tick(image.lru_index);
+        const u64 age = frame_tick - (std::min)(last_use, frame_tick);
+        const bool gpu_modified = True(image.flags & ImageFlagBits::GpuModified);
+        ++total_count;
+        total_bytes += bytes;
+        gpu_bytes += gpu_modified ? bytes : 0;
+        bad_overlap_bytes += True(image.flags & ImageFlagBits::BadOverlap) ? bytes : 0;
+        for (size_t i = 0; i < AGE_LIMITS.size(); ++i) {
+            if (age < AGE_LIMITS[i]) {
+                age_bytes[i] += bytes;
+                break;
+            }
+        }
+        const ImageInfo& info = image.info;
+        const auto it = std::ranges::find_if(groups, [&](const Group& group) {
+            return group.format == info.format && group.width == info.size.width &&
+                   group.height == info.size.height && group.levels == info.resources.levels &&
+                   group.layers == info.resources.layers && group.gpu_modified == gpu_modified;
+        });
+        Group& group = it != groups.end()
+                           ? *it
+                           : groups.emplace_back(Group{info.format, info.size.width,
+                                                       info.size.height, info.resources.levels,
+                                                       info.resources.layers, gpu_modified});
+        ++group.count;
+        group.bytes += bytes;
+        group.newest_use = (std::max)(group.newest_use, last_use);
+    });
+    if (total_bytes < live_report_bytes + STEP_BYTES) {
+        // Falling far below the last report re-arms it, so a later climb is logged again.
+        if (total_bytes + STEP_BYTES * 2 < live_report_bytes) {
+            live_report_bytes = total_bytes;
+        }
+        return;
+    }
+    live_report_bytes = total_bytes;
+    LOG_INFO(HW_GPU,
+             "Live images: {} MiB in {} images | GPU-written {} MiB, bad overlaps {} MiB | last "
+             "used within 2 frames {} MiB, 60 frames {} MiB, 600 frames {} MiB, older {} MiB",
+             total_bytes >> 20, total_count, gpu_bytes >> 20, bad_overlap_bytes >> 20,
+             age_bytes[0] >> 20, age_bytes[1] >> 20, age_bytes[2] >> 20, age_bytes[3] >> 20);
+    std::ranges::sort(groups, [](const Group& lhs, const Group& rhs) {
+        return lhs.bytes > rhs.bytes;
+    });
+    for (size_t i = 0; i < (std::min)(groups.size(), size_t{16}); ++i) {
+        const Group& group = groups[i];
+        LOG_INFO(HW_GPU,
+                 "Live images: {} MiB in {}x {} {}x{} levels {} layers {}{} | last used {} "
+                 "frames ago",
+                 group.bytes >> 20, group.count, group.format, group.width, group.height,
+                 group.levels, group.layers, group.gpu_modified ? ", GPU-written" : "",
+                 frame_tick - (std::min)(group.newest_use, frame_tick));
+    }
+}
+
+template <class P>
+u64 TextureCache<P>::HostSizeBytes(const ImageBase& image) const noexcept {
+    u64 bytes = (std::max)(image.guest_size_bytes, image.unswizzled_size_bytes);
+    if ((IsPixelFormatASTC(image.info.format) &&
+         True(image.flags & ImageFlagBits::AcceleratedUpload)) ||
+        True(image.flags & ImageFlagBits::Converted)) {
+        // What the host image holds: per image, since ASTC arrays may skip recompression.
+        bytes = image.converted_size_bytes;
+    }
+    return Common::AlignUp(bytes, 1024);
+}
+
+template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     ImageBase& image = slot_images[image_id];
     if (AliasCapture::Wants(image)) {
@@ -2790,14 +3234,7 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     if (image.HasScaled()) {
         total_used_memory -= GetScaledImageSizeBytes(image);
     }
-    u64 tentative_size = (std::max)(image.guest_size_bytes, image.unswizzled_size_bytes);
-    if ((IsPixelFormatASTC(image.info.format) &&
-         True(image.flags & ImageFlagBits::AcceleratedUpload)) ||
-        True(image.flags & ImageFlagBits::Converted)) {
-        // What the host image holds: per image, since ASTC arrays may skip recompression.
-        tentative_size = image.converted_size_bytes;
-    }
-    total_used_memory -= Common::AlignUp(tentative_size, 1024);
+    total_used_memory -= HostSizeBytes(image);
     const GPUVAddr gpu_addr = image.gpu_addr;
     const auto alloc_it = image_allocs_table.find(gpu_addr);
     if (alloc_it == image_allocs_table.end()) {
@@ -2858,6 +3295,11 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
         slot_image_views.erase(image_view_id);
     }
     if (!immediate_delete) {
+        // Sentenced images live on for a few frames; the backend can return their memory as soon
+        // as the GPU is done with them (dynamic resolution supersedes ~60 MiB of them a frame).
+        if constexpr (requires(Image& sentenced) { sentenced.ReleaseResources(); }) {
+            slot_images[image_id].ReleaseResources();
+        }
         sentenced_images.Push(std::move(slot_images[image_id]));
     }
     slot_images.erase(image_id);
@@ -3185,6 +3627,7 @@ void TextureCache<P>::CreateChannel(struct Tegra::Control::ChannelState& channel
     const auto& this_as_ref = address_spaces[channel.memory_manager->GetID()];
     this_state->gpu_page_table = &gpu_page_table_storage[this_as_ref.storage_id * 2];
     this_state->sparse_page_table = &gpu_page_table_storage[this_as_ref.storage_id * 2 + 1];
+    this_state->gpu_page_table_index = this_as_ref.storage_id * 2;
 }
 
 /// Bind a channel for execution.

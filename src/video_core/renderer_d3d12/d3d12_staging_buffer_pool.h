@@ -71,8 +71,16 @@ public:
     /// once, at sizes the game never asks for again; kept, they outlive the save.
     void ReleaseRetiredDownloads();
 
+    /// Frees every upload buffer the GPU is done with. Recording thread only (as uploads are):
+    /// the reclaim after another allocation was refused for lack of memory.
+    void ReleaseRetiredUploads();
+
     /// Upload bytes requested for the command list being recorded (stream and dedicated).
     [[nodiscard]] u64 PendingUploadBytes() const noexcept;
+
+    /// Upload bytes after which the list being recorded should be submitted between draws, so the
+    /// stream never laps regions of that same list (which sends uploads to dedicated buffers).
+    [[nodiscard]] u64 UploadSubmitBytes() const noexcept;
 
 private:
     struct StagingBuffer {

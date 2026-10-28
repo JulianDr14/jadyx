@@ -10,6 +10,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <eden_spirv_to_dxil.h>
@@ -26,6 +27,7 @@
 #include "video_core/texture_cache/accelerated_swizzle.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/texture_cache_base.h"
+#include "video_core/texture_cache/util.h"
 
 namespace D3D12 {
 
@@ -89,6 +91,10 @@ public:
     /// Where shader blits go (set by the renderer once the helper exists; null means skip).
     void SetBlitHelper(BlitImageHelper* helper) noexcept { blit_helper = helper; }
     StagingBufferRef UploadStagingBuffer(size_t size, bool deferred = false);
+    /// Copy footprint layout uploads are unswizzled into, so they need no repack.
+    VideoCommon::HostRowLayout UploadRowLayout() const noexcept {
+        return {D3D12_TEXTURE_DATA_PITCH_ALIGNMENT, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT};
+    }
     StagingBufferRef DownloadStagingBuffer(size_t size, bool deferred = false);
     void ReleaseCheckpointStaging() {
         TrimCheckpointTransfers(0);
@@ -134,7 +140,10 @@ public:
     /// Exact BC blocks -> integer texels, using the preserved guest representation.
     bool CopyDecodedBlocks(Image& dst, Image& src,
                            std::span<const VideoCommon::ImageCopy> copies);
-    bool ShouldReinterpret(Image&, Image&) const noexcept { return false; }
+    /// Color <-> depth copies whose texels mean the same on both sides (R16_UNORM <-> D16_UNORM,
+    /// R32_FLOAT <-> D32_FLOAT): the bits are copied (ReinterpretImage) instead of converted by
+    /// a shader (ConvertImage).
+    bool ShouldReinterpret(Image& dst, Image& src) const noexcept;
     void ReinterpretImage(Image& dst, Image& src,
                           std::span<const VideoCommon::ImageCopy> copies);
     void ConvertImage(Framebuffer*, ImageView&, ImageView&);
@@ -165,6 +174,11 @@ public:
     bool HasNativeBgr() const noexcept { return true; }
     bool HasNativeASTC() const noexcept { return false; }
     void BarrierFeedbackLoop() {}
+
+    /// Copy scratch the submission being recorded still holds (TransferBufferPool).
+    [[nodiscard]] u64 PendingTransferBytes() const {
+        return transfer_buffers.PendingReleaseBytes();
+    }
 
     [[nodiscard]] FormatInfo Format(VideoCore::Surface::PixelFormat format) const;
     /// Whether a typed view format supports all the given capabilities on this device.
@@ -217,6 +231,10 @@ private:
                          const Region2D& src_region, Tegra::Engines::Fermi2D::Filter filter);
     void EnsureSelfBlitScratch(DXGI_FORMAT format, u32 width, u32 height);
     void TransitionSelfBlitScratch(D3D12_RESOURCE_STATES next);
+    /// Buffer index (0 or 1) of Image::CopyDepthStencilFrom, at least size bytes, in COMMON. Copies
+    /// on the queue run in order, so each region copy reuses it after a barrier back to COMMON
+    /// instead of taking new buffers while the GPU still reads the last frame's.
+    [[nodiscard]] ID3D12Resource* DepthCopyScratch(u32 index, u64 size);
 
     const Device& device;
     Scheduler& scheduler;
@@ -231,6 +249,7 @@ private:
     CachePressure pressure_level{};
     CacheMemorySnapshot pressure_snapshot{};
     bool pressure_sampled{};
+    bool over_texture_cap{}; ///< texture heaps above texture_memory_cap, sampled each frame
     u64 gc_pending_bytes{};
     u64 gc_peak_pending_bytes{};
     u64 gc_queued{}, gc_ready{}, gc_stale{}, gc_sync{};
@@ -251,6 +270,8 @@ private:
     DXGI_FORMAT self_blit_format{DXGI_FORMAT_UNKNOWN};
     u32 self_blit_width{};
     u32 self_blit_height{};
+    std::array<ComPtr<ID3D12Resource>, 2> depth_copy_scratch;
+    std::array<u64, 2> depth_copy_scratch_size{};
     /// MIN/MAX sampler reductions need tiled resources tier 2; the Xbox Series reports tier 1 and
     /// creating such a sampler there removes the device (DXGI_ERROR_INVALID_CALL).
     bool supports_min_max_filter{};
@@ -268,6 +289,8 @@ private:
     std::array<D3D12_CPU_DESCRIPTOR_HANDLE, NUM_RT> mrt_targets{};
     u32 mrt_active{};
     u64 mrt_normalizations{};
+    /// Format pairs ConvertImage skipped, each logged once (a game asks ~20 times a frame).
+    std::unordered_set<u32> unconverted_pairs;
     /// FORMAT_SUPPORT answers by format, each logged once (see SupportsView).
     mutable std::mutex format_support_mutex;
     mutable std::unordered_map<DXGI_FORMAT, D3D12_FEATURE_DATA_FORMAT_SUPPORT> format_support;
@@ -286,6 +309,10 @@ public:
     Image& operator=(const Image&) = delete;
     Image(Image&&) noexcept;
     Image& operator=(Image&& other) noexcept;
+
+    /// Hands its GPU memory back once the work recorded so far is done. The texture cache keeps
+    /// deleted images for a few frames before destroying them; their memory does not wait.
+    void ReleaseResources();
 
     /// Preserve the lossless guest representation before the generic cache decodes BC arrays.
     /// Native blocks are used only for transfers, never sampled (Xbox BC array workaround).
@@ -621,6 +648,8 @@ void SetBcArrayDecode(bool enabled);
 /// Whether ASTC images kept as RGBA8 are decoded by the compute shader (the default) rather than
 /// the CPU. Applies to images created from now on.
 void SetAstcGpuDecode(bool enabled);
+/// Texture memory above which clean textures are evicted before the app runs short (0: none).
+void SetTextureMemoryCap(u64 bytes);
 /// One-shot diagnostic: compare the first GPU BC3 result with the existing CPU pipeline.
 void SetAstcGpuVerify(bool enabled);
 /// Diagnostic ("stencil_blit_verify=1"): the first scaled depth-stencil blits read both stencil

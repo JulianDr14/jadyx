@@ -3,6 +3,8 @@
 
 #include <algorithm>
 
+#include <fmt/format.h>
+
 #include "common/alignment.h"
 #include "common/logging.h"
 #include "video_core/perf_counters.h"
@@ -24,10 +26,16 @@ TransferBufferPool::TransferBufferPool(const Device& device_, Scheduler& schedul
 
 TransferBufferPool::~TransferBufferPool() = default;
 
-ComPtr<ID3D12Resource> TransferBufferPool::Acquire(u64 size, bool unordered_access) {
+ComPtr<ID3D12Resource> TransferBufferPool::Acquire(u64 size, bool unordered_access,
+                                                   const char* user) {
     size = Common::AlignUp(std::max<u64>(size, 1), SIZE_GRANULARITY);
     {
         std::scoped_lock lock{mutex};
+        UserStats* const stats =
+            VideoCore::Perf::DetailedGpuProfileEnabled() ? &user_stats[user] : nullptr;
+        if (stats) {
+            ++stats->acquires;
+        }
         // Best fit among the idle buffers, and at most twice the size so a large buffer is not
         // tied up by small copies.
         auto best = entries.end();
@@ -57,6 +65,10 @@ ComPtr<ID3D12Resource> TransferBufferPool::Acquire(u64 size, bool unordered_acce
                                       : VideoCore::Perf::Counter::TransferPoolMissNoFit,
                              1);
         VideoCore::Perf::Add(VideoCore::Perf::Counter::TransferPoolMissBytes, size);
+        if (stats) {
+            ++stats->misses;
+            stats->miss_bytes += size;
+        }
     }
     HRESULT hr = S_OK;
     const auto create = [&] {
@@ -121,6 +133,15 @@ void TransferBufferPool::Release(ComPtr<ID3D12Resource>&& buffer) {
     }
     VideoCore::Perf::Add(VideoCore::Perf::Counter::TransferPoolOverflows, 1);
     VideoCore::Perf::Add(VideoCore::Perf::Counter::TransferPoolOverflowBytes, desc.Width);
+    {
+        std::scoped_lock lock{mutex};
+        const u64 tick = scheduler.CurrentTick();
+        if (pending_release_tick != tick) {
+            pending_release_tick = tick;
+            pending_release_bytes = 0;
+        }
+        pending_release_bytes += desc.Width;
+    }
     scheduler.DeferRelease(std::move(buffer));
 }
 
@@ -128,8 +149,35 @@ void TransferBufferPool::Trim(bool under_pressure) {
     TrimOlderThan(under_pressure ? 0 : IDLE_TICKS);
 }
 
-void TransferBufferPool::TrimStale() {
-    TrimOlderThan(STALE_TICKS);
+void TransferBufferPool::TrimStale(bool emergency) {
+    const u64 current = scheduler.CurrentTick();
+    // Frame ticks rather than a tick count: a heavy scene submits a dozen times per frame.
+    const u64 oldest = stale_frame_ticks[stale_cursor];
+    stale_frame_ticks[stale_cursor] = current;
+    stale_cursor = (stale_cursor + 1) % STALE_FRAMES;
+    const u64 last = stale_frame_ticks[(stale_cursor + STALE_FRAMES - 2) % STALE_FRAMES];
+    if (emergency) {
+        TrimUnusedSince(last, EMERGENCY_POOLED_BYTES);
+    } else {
+        TrimUnusedSince(oldest, MAX_POOLED_BYTES);
+    }
+}
+
+void TransferBufferPool::TrimUnusedSince(u64 tick, u64 budget) {
+    std::scoped_lock lock{mutex};
+    // Most recently used first, so a budget keeps the buffers the next frame will want.
+    std::ranges::sort(entries, std::ranges::greater{}, &Entry::tick);
+    u64 kept = 0;
+    std::erase_if(entries, [&](Entry& entry) {
+        if (entry.tick >= tick && kept + entry.size <= budget) {
+            kept += entry.size;
+            return false;
+        }
+        pooled_bytes -= entry.size;
+        // Not necessarily done on the GPU yet: release it after the work recorded so far.
+        scheduler.DeferRelease(std::move(entry.buffer));
+        return true;
+    });
 }
 
 void TransferBufferPool::TrimOlderThan(u64 idle_ticks) {
@@ -146,9 +194,26 @@ void TransferBufferPool::TrimOlderThan(u64 idle_ticks) {
     });
 }
 
+std::string TransferBufferPool::TakeUserReport() {
+    std::scoped_lock lock{mutex};
+    std::string report;
+    for (const auto& [user, stats] : user_stats) {
+        report += fmt::format("{}{} {} ({} created, {:.1f} MiB)", report.empty() ? "" : "; ",
+                              user, stats.acquires, stats.misses,
+                              static_cast<double>(stats.miss_bytes) / (1 << 20));
+    }
+    user_stats.clear();
+    return report;
+}
+
 u64 TransferBufferPool::PooledBytes() const {
     std::scoped_lock lock{mutex};
     return pooled_bytes;
+}
+
+u64 TransferBufferPool::PendingReleaseBytes() const {
+    std::scoped_lock lock{mutex};
+    return pending_release_tick == scheduler.CurrentTick() ? pending_release_bytes : 0;
 }
 
 } // namespace D3D12

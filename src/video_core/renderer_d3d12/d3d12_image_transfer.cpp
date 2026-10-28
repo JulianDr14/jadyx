@@ -202,7 +202,8 @@ void Image::UploadMemoryImpl(ID3D12Resource* buffer, size_t base_offset, u8* map
                 src.PlacedFootprint.Offset = packed.offset;
             } else {
                 // GPU-only source (DMA from the buffer cache): repack row by row on the GPU.
-                transfer = runtime->transfer_buffers.Acquire(layout.padded_slice * layout.depth);
+                transfer = runtime->transfer_buffers.Acquire(layout.padded_slice * layout.depth,
+                                                             false, "upload GPU repack");
                 for (u32 z = 0; z < layout.depth; ++z) {
                     for (u32 row = 0; row < layout.rows; ++row) {
                         commands->CopyBufferRegion(
@@ -379,7 +380,8 @@ void Image::DownloadMemory(std::span<ID3D12Resource*> buffers, std::span<size_t>
                 }
                 // The destination wants tight rows: go through a padded buffer, then row copies.
                 ComPtr<ID3D12Resource> transfer =
-                    runtime->transfer_buffers.Acquire(layout.padded_slice * layout.depth);
+                    runtime->transfer_buffers.Acquire(layout.padded_slice * layout.depth, false,
+                                                      "tight rows");
                 dst.pResource = transfer.Get();
                 dst.PlacedFootprint.Offset = 0;
                 commands->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);

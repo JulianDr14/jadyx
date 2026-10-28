@@ -407,8 +407,10 @@ void EmitX64::Unpatch(const IR::LocationDescriptor& target_desc) {
 }
 
 void EmitX64::ClearCache() {
-    block_descriptors.clear();
-    patch_information.clear();
+    // Replaced rather than cleared: clear() keeps every bucket, tens of MiB a cache that has
+    // compiled a large game, which a clear to give memory back would not return.
+    block_descriptors = decltype(block_descriptors){};
+    patch_information = decltype(patch_information){};
 
     PerfMapClear();
 }

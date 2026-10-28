@@ -43,6 +43,7 @@ set(SHADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_depth_stencil_split.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_depth_unorm24.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_draw_auto.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_render_condition.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_bc3_encoder.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_scratch_probe.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/full_screen_triangle.vert

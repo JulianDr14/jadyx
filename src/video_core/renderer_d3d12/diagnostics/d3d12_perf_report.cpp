@@ -167,7 +167,9 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         "mismatched) | CBV {} ({:.1f} ms: "
         "{} streamed, {} persistent, {} null; {} root, {} root clamped), view copies {} "
         "({:.1f} ms), tables {} reused of {} | guest waited for "
-        "the GPU {} times ({:.1f} ms in all) | commands: {} submit lists {:.1f} ms ({:.1f} ms "
+        "the GPU {} times ({:.1f} ms in all), syncpoints signalled {} at once and after the GPU "
+        "{} (buffer downloads {}, image downloads {}, query flushes {}, operations {}, earlier "
+        "fences {}) | commands: {} submit lists {:.1f} ms ({:.1f} ms "
         "outside draw/clear/dispatch), {} ticks {:.1f} ms, {} invalidations {:.1f} ms | uploads: "
         "{} maps {:.1f} ms, {} repacks {:.1f} ms, {} copies {:.1f} ms | texture cache: "
         "{} finds {:.1f} ms, {} inserts {:.1f} ms (overlap {:.1f}, image {:.1f}, refresh "
@@ -194,7 +196,14 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         get(Counter::CbvRootClamped), get(Counter::ViewCopies),
         ns_ms(Counter::ViewCopyNs), get(Counter::DescriptorTableReuses),
         get(Counter::DescriptorTables),
-        get(Counter::GuestGpuWaits), Ms(d, Counter::GuestGpuWaitUs), get(Counter::SubmitLists),
+        get(Counter::GuestGpuWaits), Ms(d, Counter::GuestGpuWaitUs),
+        get(Counter::SyncpointsEarly),
+        get(Counter::SyncpointsAfterBufferDownloads) + get(Counter::SyncpointsAfterTextureDownloads) +
+            get(Counter::SyncpointsAfterQueryFlushes) + get(Counter::SyncpointsAfterOperations) +
+            get(Counter::SyncpointsAfterQueuedFences),
+        get(Counter::SyncpointsAfterBufferDownloads), get(Counter::SyncpointsAfterTextureDownloads),
+        get(Counter::SyncpointsAfterQueryFlushes), get(Counter::SyncpointsAfterOperations),
+        get(Counter::SyncpointsAfterQueuedFences), get(Counter::SubmitLists),
         submit_ms, submit_overhead, get(Counter::GpuTicks), ns_ms(Counter::GpuTickNs),
         get(Counter::CacheInvalidations), ns_ms(Counter::CacheInvalidationNs),
         get(Counter::TextureUploadMaps), ns_ms(Counter::TextureUploadMapNs),
@@ -529,6 +538,9 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
                  get(Counter::TransferPoolMissBusy), get(Counter::TransferPoolMissNoFit),
                  mib(get(Counter::TransferPoolMissBytes)), get(Counter::TransferPoolOverflows),
                  mib(get(Counter::TransferPoolOverflowBytes)), mib(transfer_buffers.PooledBytes()));
+        if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
+            LOG_INFO(Render, "D3D12 transfer buffer users: {}", transfer_buffers.TakeUserReport());
+        }
     }
     if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
         std::array<u64, 64> bins{};
@@ -630,6 +642,28 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
                  measurement(Phase::Emit).ns / 1.0e6,
                  measurement(Phase::Protect).calls, measurement(Phase::Protect).ns / 1.0e6,
                  measurement(Phase::Invalidate).calls, measurement(Phase::Invalidate).ns / 1.0e6);
+        {
+            using Dynarmic::JitProfile::code_part_names;
+            const auto bytes = Dynarmic::JitProfile::TakeCodeBytes();
+            const u64 blocks = std::max<u64>(1, measurement(Phase::Compile).calls);
+            std::string parts;
+            u64 total = 0;
+            for (size_t i = 0; i < code_part_names.size(); ++i) {
+                total += bytes[i];
+                parts += fmt::format("{}{} {:.0f}", parts.empty() ? "" : ", ", code_part_names[i],
+                                     double(bytes[i]) / double(blocks));
+            }
+            const u64 accesses = bytes[code_part_names.size()];
+            LOG_INFO(Render, "D3D12 guest JIT code size: {:.0f} bytes per block ({}), {:.1f} guest "
+                             "instructions and {:.2f} memory accesses per block, {:.0f} bytes per "
+                             "memory access ({:.1f} MiB in all)",
+                     double(total) / double(blocks), parts,
+                     double(bytes[code_part_names.size() + 1]) / double(blocks),
+                     double(accesses) / double(blocks),
+                     double(bytes[size_t(Dynarmic::JitProfile::CodePart::Memory)]) /
+                         double(std::max<u64>(1, accesses)),
+                     double(total) / double(1 << 20));
+        }
         for (size_t i = static_cast<size_t>(Phase::WriteOpen); i < jit.size(); ++i) {
             LOG_INFO(Render, "D3D12 JIT emission {}: {} calls, {:.3f} ms (nested elapsed)",
                      Dynarmic::JitProfile::names[i], jit[i].calls, jit[i].ns / 1.0e6);
@@ -662,10 +696,14 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
     }
     const DXGI_QUERY_VIDEO_MEMORY_INFO video = device.QueryVideoMemory();
     const CacheMemorySnapshot snapshot = device.QueryCacheMemoryPressure();
+    // Highest GPU usage seen at these reports, so a session's peak survives in the log.
+    static u64 peak_gpu = 0;
+    peak_gpu = std::max<u64>(peak_gpu, video.CurrentUsage);
     LOG_INFO(Render,
-             "D3D12 memory: GPU {} MiB, DXGI budget {} MiB, cache budget {} MiB, caches see {} MiB "
-             "used, app {} of {} MiB ({} MiB free)",
-             video.CurrentUsage >> 20, video.Budget >> 20, device.CacheMemoryBudget() >> 20,
+             "D3D12 memory: GPU {} MiB (peak {} MiB), DXGI budget {} MiB, cache budget {} MiB, "
+             "caches see {} MiB used, app {} of {} MiB ({} MiB free)",
+             video.CurrentUsage >> 20, peak_gpu >> 20, video.Budget >> 20,
+             device.CacheMemoryBudget() >> 20,
              device.CacheMemoryUsage(snapshot) >> 20, snapshot.app_used >> 20,
              snapshot.app_limit >> 20, snapshot.AppFree() >> 20);
 }

@@ -390,7 +390,7 @@ void TextureCacheRuntime::CopyThroughBuffer(Image& dst, Image& src,
                 staged_bytes = static_cast<u64>(staged.PlacedFootprint.Footprint.RowPitch) * rows;
             }
             const u32 staged_pitch = staged.PlacedFootprint.Footprint.RowPitch;
-            ComPtr<ID3D12Resource> transfer = transfer_buffers.Acquire(staged_bytes);
+            ComPtr<ID3D12Resource> transfer = transfer_buffers.Acquire(staged_bytes, false, "copy staged");
             staged.pResource = transfer.Get();
             const D3D12_TEXTURE_COPY_LOCATION source{
                 .pResource = src.Handle(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
@@ -455,7 +455,7 @@ void TextureCacheRuntime::CopyThroughBuffer(Image& dst, Image& src,
                 dst_bytes = static_cast<u64>(placed.PlacedFootprint.Footprint.RowPitch) * rows;
             }
             const u32 placed_pitch = placed.PlacedFootprint.Footprint.RowPitch;
-            ComPtr<ID3D12Resource> repacked = transfer_buffers.Acquire(dst_bytes);
+            ComPtr<ID3D12Resource> repacked = transfer_buffers.Acquire(dst_bytes, false, "copy repacked");
             placed.pResource = repacked.Get();
             if (!covers_dst) {
                 dst.Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -592,7 +592,7 @@ bool TextureCacheRuntime::CopyBlocksIntoDecoded(Image& dst, Image& src,
                               &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
                               nullptr, IID_PPV_ARGS(&decoded)),
                           "Create block decode texture");
-            ComPtr<ID3D12Resource> transfer = transfer_buffers.Acquire(size);
+            ComPtr<ID3D12Resource> transfer = transfer_buffers.Acquire(size, false, "block decode");
             D3D12_TEXTURE_COPY_LOCATION footprint{.pResource = transfer.Get(),
                                                   .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
             footprint.PlacedFootprint.Footprint = {.Format = src.FootprintFormat(),
@@ -681,13 +681,28 @@ bool TextureCacheRuntime::CopyBlocksIntoDecoded(Image& dst, Image& src,
 void TextureCacheRuntime::CopyImageMSAA(Image&, Image&, std::span<const ImageCopy>) {
     LOG_WARNING(Render, "D3D12: MSAA texture copies are deferred to phase 5");
 }
+bool TextureCacheRuntime::ShouldReinterpret(Image& dst, Image& src) const noexcept {
+    using VideoCore::Surface::PixelFormat;
+    const auto same_texels = [](PixelFormat a, PixelFormat b) {
+        return (a == PixelFormat::R16_UNORM && b == PixelFormat::D16_UNORM) ||
+               (a == PixelFormat::R32_FLOAT && b == PixelFormat::D32_FLOAT);
+    };
+    // CopyThroughBuffer moves no multisampled texels.
+    return src.info.num_samples == 1 && dst.info.num_samples == 1 &&
+           (same_texels(src.info.format, dst.info.format) ||
+            same_texels(dst.info.format, src.info.format));
+}
 void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src, std::span<const ImageCopy> copies) {
     if (VideoCore::Surface::BytesPerBlock(dst.info.format) == VideoCore::Surface::BytesPerBlock(src.info.format))
         CopyImage(dst, src, copies);
     else LOG_WARNING(Render, "D3D12: incompatible texture reinterpretation skipped ({} -> {})", src.info.format, dst.info.format);
 }
-void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView&, ImageView&) {
-    LOG_WARNING(Render, "D3D12: shader texture conversion is deferred to phase 5");
+void TextureCacheRuntime::ConvertImage(Framebuffer*, ImageView& dst, ImageView& src) {
+    const u32 pair = static_cast<u32>(src.format) << 16 | static_cast<u32>(dst.format);
+    if (unconverted_pairs.insert(pair).second) {
+        LOG_WARNING(Render, "D3D12: shader texture conversion {} -> {} is deferred to phase 5",
+                    src.format, dst.format);
+    }
 }
 namespace {
 /// Where a copy through a view lands in its image.

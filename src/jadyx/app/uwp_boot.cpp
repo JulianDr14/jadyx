@@ -83,6 +83,7 @@
 #include "hid_core/hid_core.h"
 #include "video_core/frame_trace.h"
 #include "video_core/diagnostics/full_capture.h"
+#include "video_core/fence_manager.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/macro.h"
@@ -153,6 +154,7 @@ void ShowCpuLoadProgress(VideoCore::RendererBase& renderer, size_t done, size_t 
 void RemoveDeviceForProbe(VideoCore::RendererBase& renderer);
 void SetBcArrayDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuDecode(bool enabled); // d3d12_texture_cache.h
+void SetTextureMemoryCap(u64 bytes); // d3d12_texture_cache.h
 void SetAstcGpuVerify(bool enabled); // d3d12_texture_cache.h
 void SetStencilBlitVerify(bool enabled); // d3d12_texture_cache.h
 enum class DxilSignMode; // d3d12_shader_compiler.h
@@ -190,11 +192,16 @@ namespace VideoCommon {
 void SetAstcArrayRecompression(bool enabled) noexcept; // texture_cache/util.h
 void SetOpaqueAstcToBc1(bool enabled) noexcept;        // texture_cache/util.h
 void SetMipRenderTargets(bool enabled) noexcept;       // texture_cache/texture_cache_base.h
+void SetRenderTargetInheritance(bool enabled) noexcept; // texture_cache/texture_cache_base.h
+void SetReclaimSupersededImages(bool enabled) noexcept; // texture_cache/texture_cache_base.h
 } // namespace VideoCommon
 
 namespace {
 std::atomic<u64> g_test_memory_limit{};
 std::atomic<bool> g_gpu_command_failed{};
+/// Guest DRAM bytes the HostTrim worker read and gave back since the last heartbeat.
+std::atomic<u64> g_host_trim_visited{};
+std::atomic<u64> g_host_trim_released{};
 /// The PC window's mode. ApplicationView belongs to the UI thread: it publishes the state here and
 /// applies the changes the in-game menu asks for (1 full screen, 0 windowed, -1 none).
 std::atomic<bool> g_can_fullscreen{};
@@ -283,6 +290,8 @@ struct BootConfig {
     /// > 0: the game's bottleneck capture starts this many seconds into the session ("hunt_at="),
     /// so PC runs time a scene with no one at the pad.
     u32 hunt_at{};
+    /// > 0: a frame chain timeline (the T key) starts this many seconds in ("frame_trace_at=").
+    u32 frame_trace_at{};
     /// The bottleneck capture starts at the 64th dispatch of this compute shader ("hunt_cs=").
     u64 hunt_cs{};
     /// The storage buffers of this compute shader are dumped around four dispatches ("cs_inputs=").
@@ -299,6 +308,14 @@ struct BootConfig {
     /// Short of memory, the caches stop growing instead (JIT_CAP_FLOOR): at 128 for a game that
     /// had come close, it compiled 1.2M blocks loading.
     u32 jit_cache_mib{256};
+    /// JIT code memory mapped twice, executable and writable, so no page changes protection per
+    /// compiled block ("jit_dual_map=0" keeps paged W^X). Used only where the runtime passes a probe.
+    bool jit_dual_map{true};
+    /// Texture memory past which clean textures unused for a while are evicted even with headroom
+    /// left ("texture_cap_mib=", 0 turns it off). They decode again from guest memory when used.
+    /// At 1024 a heavy world entry kept 830 MiB of textures through its load and ran out of memory;
+    /// at 768 the cap evicts during the load and the same entry held.
+    u32 texture_cap_mib{768};
     /// D3D12 debug layer (renderer_debug); PC only, the console has no SDK layers.
     bool debug_layer{};
     /// With the debug layer, GPU-based validation too ("debug_layer=gbv").
@@ -331,6 +348,10 @@ struct BootConfig {
     /// Depth targets at a mip level of a mipmapped image become separate aliased images again
     /// ("mip_rt=0"): reproduces the alias path depth pyramids took before.
     bool mip_render_targets{true};
+    /// A render target redrawn at another size uploads guest memory again instead of taking the
+    /// previous size's contents on the GPU ("rt_inherit=0").
+    bool render_target_inheritance{true};
+    bool reclaim_superseded_images{true};
     /// Filtered MIN/MAX sampler reductions go to the hardware although the device reports no
     /// support ("min_max_filter=force").
     bool force_min_max_filter{};
@@ -393,6 +414,13 @@ struct BootConfig {
     /// Release the displayed buffers with a fence on the composite ("nv_release_fence=0" releases
     /// them with none and waits for every composite, as before).
     bool nv_release_fence{true};
+    /// When the host side of a GPU syncpoint is signalled. By default ("gpu_fence=immediate") as
+    /// soon as the GPU thread reaches it: downloads land after the guest goes on. "=safe" does so
+    /// unless a download or operation queued before it waits on the GPU (a GPU-written buffer is
+    /// downloaded every frame in a game, so it waits as often as "=wait"); "=wait" always once the
+    /// D3D12 GPU ran the work before it; "=balanced"/"=accurate" are the settings' fence behaviors.
+    std::optional<Settings::GpuFenceBehavior> gpu_fence{Settings::GpuFenceBehavior::Immediate};
+    bool early_syncpoints{true};
     /// Keep the previous draw's pipeline while no register its key reads changed
     /// ("pipeline_key_reuse=1"; "=check" refreshes the key and logs every reuse that would have
     /// drawn with another pipeline). Off by default until a gain is measured on the console.
@@ -477,6 +505,10 @@ struct BootConfig {
     enum class Fastmem { Off, Auto, Hybrid, Full } fastmem{Fastmem::Off};
     u32 fastmem_hot_mib{384};
     Settings::CpuAccuracy cpu_accuracy{Settings::CpuAccuracy::Auto};
+    /// GPU and DMA accuracy ("gpu_accuracy=low|high", "dma_accuracy=default|unsafe|safe"), for
+    /// A/B runs of what the high level costs the GPU thread.
+    Settings::GpuAccuracy gpu_accuracy{Settings::GpuAccuracy::High};
+    Settings::DmaAccuracy dma_accuracy{Settings::DmaAccuracy::Default};
     /// Legacy setting for backends with draw-skipping async shaders. D3D12 always preserves
     /// dependent draws, while preparing DXIL/PSOs on workers regardless of this setting.
     bool async_shaders{true};
@@ -554,6 +586,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     Settings::values.cpu_accuracy = config.cpu_accuracy;
     WriteDiag(config.cpu_accuracy == Settings::CpuAccuracy::Accurate
                   ? "step: CPU accuracy Accurate" : "step: CPU accuracy Auto");
+    Settings::values.gpu_accuracy = config.gpu_accuracy;
+    Settings::values.dma_accuracy = config.dma_accuracy;
+    Settings::UpdateGPUAccuracy();
     AudioCore::Sink::SetXAudio2ProfileEnabled(config.audio_profile);
     Core::CpuProfile::SetEnabled(config.cpu_profile);
     // Read when Core::System builds the kernel's cores.
@@ -598,9 +633,11 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     g_test_memory_limit = u64{config.memory_limit_mib} << 20;
     Core::SetJitCodeCacheSize(config.jit_cache_mib << 20);
     Dynarmic::SetCodeCacheCap(0);
+    Dynarmic::SetDualMappedCode(config.jit_dual_map);
     Core::SetPageTableExclusives(config.inline_exclusives);
     D3D12::SetAppMemoryQuery(QueryAppMemory);
     D3D12::SetBcArrayDecode(!config.bc_arrays_native);
+    D3D12::SetTextureMemoryCap(u64{config.texture_cap_mib} << 20);
     // RGBA8 ASTC made loading frames upload 150-260 MiB at once and the console run out of memory
     // (0.2.50): textures become BC3 (a quarter of the memory), 2D arrays too unless
     // astc_arrays=rgba (BootConfig::astc_arrays_rgba), all decoded and encoded on the GPU.
@@ -634,6 +671,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                                                std::memory_order_relaxed);
     D3D12::SetDiagUavSync(config.uav_sync);
     VideoCommon::SetMipRenderTargets(config.mip_render_targets);
+    VideoCommon::SetRenderTargetInheritance(config.render_target_inheritance);
+    VideoCommon::SetReclaimSupersededImages(config.reclaim_superseded_images);
     D3D12::SetForceMinMaxFilter(config.force_min_max_filter);
     D3D12::SetSkipMinMaxFilter(config.skip_min_max_filter);
     D3D12::SetEmulateMinMaxFilter(config.emulate_min_max_filter);
@@ -661,6 +700,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetAsyncRecording(config.async_record);
     Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);
     Service::Nvidia::Devices::nvdisp_disp0::SetReleaseFence(config.nv_release_fence);
+    if (config.gpu_fence) Settings::values.gpu_fence_behavior.SetValue(*config.gpu_fence);
+    VideoCommon::SetEarlySyncpoints(config.early_syncpoints);
     D3D12::PipelineKeyTracking::SetMode(config.pipeline_key_reuse);
     D3D12::SetUniformUploadCopy(config.upload_copy);
     D3D12::SetDrawSamplerReuse(config.draw_sampler_reuse);
@@ -1161,6 +1202,13 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         u32 low_snapshot_tick = 0;
         // Short of memory, each JIT code cache keeps what it has committed, or this much.
         constexpr size_t JIT_CAP_FLOOR = 64ULL << 20;
+        constexpr u64 JIT_STOP_HEADROOM = 768ULL << 20;
+        // Shorter still, a cache holding more than this is cleared and gives the rest back: a large
+        // game held ~160 MiB in each of three caches when a new area's textures ran it out.
+        constexpr size_t JIT_RELEASE_CAP = 96ULL << 20;
+        constexpr u64 JIT_RELEASE_HEADROOM = 384ULL << 20;
+        // ...and the cap is lifted once this much is free again.
+        constexpr u64 JIT_UNCAP_HEADROOM = 1024ULL << 20;
         constexpr u64 POOL_TRIM_PER_SECOND = 64ULL << 20;
         constexpr u64 POOL_TRIM_ALL_HEADROOM = 512ULL << 20;
         constexpr u64 TRIM_SLICE = 32ULL << 20;
@@ -1189,6 +1237,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                     const auto trim = dram.Trim(cursor, TRIM_SLICE);
                     const auto slice_time = std::chrono::steady_clock::now() - slice_start;
                     pass_released += trim.released;
+                    g_host_trim_visited.fetch_add(trim.visited, std::memory_order_relaxed);
+                    g_host_trim_released.fetch_add(trim.released, std::memory_order_relaxed);
                     if (cursor <= before) {
                         last_pass_released = pass_released;
                         pass_released = 0;
@@ -1199,9 +1249,13 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                             slice_time / 2));
                         continue;
                     }
+                    // Short of memory the passes run back to back while they give memory back. A
+                    // pass that found little slows down: reading the whole emulated DRAM every
+                    // ~1.5 s took a tenth of a core and the cache the guest cores share with it.
                     const bool low = trim_low.load(std::memory_order_relaxed);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(
-                        low ? 20 : last_pass_released >= TRIM_ACTIVE_PASS ? 100 : 500));
+                    const bool active = last_pass_released >= TRIM_ACTIVE_PASS;
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(low ? (active ? 20 : 100) : active ? 100 : 500));
                 }
             });
         }
@@ -1236,10 +1290,20 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                               " MiB per core for this game's next session | " + MemoryReport());
                 }
                 // Short of memory, the JIT stops committing: each cache keeps the pages it has
-                // and is cleared when it fills them. Recompiling costs less than running out.
-                if (headroom < PrewarmBudget::LOW_HEADROOM && Dynarmic::CodeCacheCap() == 0) {
+                // and is cleared when it fills them. Shorter, the larger caches are cleared and
+                // give memory back. Recompiling costs less than running out.
+                if (headroom < JIT_RELEASE_HEADROOM && !Dynarmic::CodeCacheCapReleases()) {
+                    Dynarmic::SetCodeCacheCap(JIT_RELEASE_CAP, true);
+                    WriteDiag("JIT code caches give memory back past " +
+                              std::to_string(JIT_RELEASE_CAP >> 20) + " MiB | " + MemoryReport());
+                } else if (headroom < JIT_STOP_HEADROOM && Dynarmic::CodeCacheCap() == 0) {
                     Dynarmic::SetCodeCacheCap(JIT_CAP_FLOOR);
                     WriteDiag("JIT code caches stop growing | " + MemoryReport());
+                } else if (headroom >= JIT_UNCAP_HEADROOM && Dynarmic::CodeCacheCap() != 0) {
+                    // A load burst is over and the caches it froze would otherwise stay frozen
+                    // for the whole session, clearing and recompiling the game's hot code.
+                    Dynarmic::SetCodeCacheCap(0);
+                    WriteDiag("JIT code caches grow again | " + MemoryReport());
                 }
             }
             if (config.host_trim) {
@@ -1276,6 +1340,10 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
             if (config.hunt_at > 0 && tick == config.hunt_at * TICKS_PER_SECOND) {
                 D3D12::HuntNextFrames();
                 WriteDiag("hunt_at: bottleneck capture requested for next guest frames");
+            }
+            if (config.frame_trace_at > 0 && tick == config.frame_trace_at * TICKS_PER_SECOND) {
+                VideoCore::FrameTrace::Start(480);
+                WriteDiag("frame_trace_at: frame chain timeline requested");
             }
             if (config.quit_at > 0 && tick == config.quit_at * TICKS_PER_SECOND) {
                 WriteDiag("quit_at: shutting down | " + MemoryReport());
@@ -1687,6 +1755,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Graphics.Display.h>
+#include <winrt/Windows.Graphics.Display.Core.h>
 #include <winrt/Windows.Storage.h>
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.System.Profile.h>
@@ -1860,7 +1929,8 @@ std::string MemoryReport() {
         return "app memory " + std::to_string(MemoryManager::AppMemoryUsage() >> 20) + " MiB of " +
                std::to_string(MemoryManager::AppMemoryUsageLimit() >> 20) + " MiB limit, commit " +
                std::to_string(report.TotalCommitUsage() >> 20) + " of " +
-               std::to_string(report.TotalCommitLimit() >> 20) + " MiB" +
+               std::to_string(report.TotalCommitLimit() >> 20) + " MiB, peak private commit " +
+               std::to_string(report.PeakPrivateCommitUsage() >> 20) + " MiB" +
                (g_test_memory_limit.load() == 0 ? "" : ", PC test budget " +
                     std::to_string(g_test_memory_limit.load() >> 20) + " MiB, headroom " +
                     std::to_string((g_test_memory_limit.load() > report.TotalCommitUsage()
@@ -1906,7 +1976,9 @@ std::string MemoryOwners() {
     const u64 jit = Dynarmic::CommittedCodeBytes();
     const u64 known = dram.value_or(0) + jit + Common::MemoryLedgerCommittedBytes();
     return "emulated DRAM " + (dram ? std::to_string(*dram >> 20) + " MiB" : std::string("n/a")) +
-           ", JIT code " + std::to_string(jit >> 20) + " MiB, " + Common::DescribeMemoryLedger() +
+           ", JIT code " + std::to_string(jit >> 20) + " MiB (" +
+           std::to_string(Dynarmic::DualMappedCodeCaches()) + " caches dual-mapped), " +
+           Common::DescribeMemoryLedger() +
            "; rest " + std::to_string((commit > known ? commit - known : 0) >> 20) +
            " MiB of " + std::to_string(commit >> 20) +
            " MiB commit (driver objects, small GPU resources, heaps, executable)";
@@ -2772,6 +2844,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
             std::optional<std::string> library_game;
             bool show_library = false;
             std::string library_pick;
+            bool output_4k = false;
+            bool output_1080p = false;
             try {
                 const auto install = std::filesystem::path{
                     Windows::ApplicationModel::Package::Current().InstalledLocation().Path().c_str()};
@@ -2779,6 +2853,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 for (std::string line; std::getline(cfg, line);) {
                     if (line == "library=1") show_library = true;
                     else if (line.starts_with("library_pick=")) library_pick = line.substr(13);
+                    else if (line == "output=4k") output_4k = true;
+                    else if (line == "output=1080p") output_1080p = true;
                 }
                 if (show_library) {
                     if (session > 1) {
@@ -2815,9 +2891,40 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 return;
             }
 
+            // Experimental: the game presents on a swapchain the size of the TV's current mode
+            // (3840x2160 on a 4K TV) while it still renders at its own resolution, and the present
+            // upscales (FSR 1 when the in-game menu selects it). The library stays at window size.
+            Jadyx::BootSurface game_surface = surface;
+            if (output_4k && surface.core_window != nullptr) {
+                try {
+                    const auto hdmi = Windows::Graphics::Display::Core::HdmiDisplayInformation::
+                        GetForCurrentView();
+                    const auto mode = hdmi ? hdmi.GetCurrentDisplayMode() : nullptr;
+                    if (mode && mode.ResolutionWidthInRawPixels() > surface.width) {
+                        game_surface.width = mode.ResolutionWidthInRawPixels();
+                        game_surface.height = mode.ResolutionHeightInRawPixels();
+                        WriteDiag("boot.cfg: output " + std::to_string(game_surface.width) + "x" +
+                                  std::to_string(game_surface.height) + " (display mode)");
+                    } else {
+                        WriteDiag("boot.cfg: output=4k ignored, the display mode is not larger than " +
+                                  std::to_string(surface.width) + "x" + std::to_string(surface.height));
+                    }
+                } catch (const winrt::hresult_error& e) {
+                    WriteDiag("boot.cfg: output=4k ignored, no display mode: " +
+                              winrt::to_string(e.message()));
+                }
+            }
+
+            // Experimental: a fixed 1920x1080 swapchain on high-DPI PC screens; the present stretches it.
+            if (output_1080p) {
+                game_surface.width = 1920;
+                game_surface.height = 1080;
+                WriteDiag("boot.cfg: output 1920x1080 (fixed)");
+            }
+
             std::atomic<bool> done{false};
             std::atomic<int> boot_status{0};
-            std::thread worker([&done, &boot_status, surface, library_game]() {
+            std::thread worker([&done, &boot_status, surface = game_surface, library_game]() {
                 winrt::init_apartment(winrt::apartment_type::multi_threaded);
                 std::set_terminate(OnTerminate); // per-thread in the MSVC runtime
                 std::string nro_path;
@@ -2845,6 +2952,11 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.cs_inputs = std::strtoull(line.c_str() + 10, nullptr, 16);
                             WriteDiag("boot.cfg: storage buffers of compute shader " +
                                       line.substr(10) + " dumped");
+                        } else if (line.starts_with("frame_trace_at=")) {
+                            config.frame_trace_at =
+                                static_cast<u32>(std::strtoul(line.c_str() + 15, nullptr, 10));
+                            WriteDiag("boot.cfg: frame chain timeline at " +
+                                      std::to_string(config.frame_trace_at) + " s");
                         } else if (line.starts_with("quit_at=")) {
                             config.quit_at =
                                 static_cast<u32>(std::strtoul(line.c_str() + 8, nullptr, 10));
@@ -2867,6 +2979,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "close_probe=1") {
                             config.close_probe = true;
                             WriteDiag("boot.cfg: every command also closed alone on a scratch list");
+                        } else if (line == "jit_dual_map=0") {
+                            config.jit_dual_map = false;
+                            WriteDiag("boot.cfg: JIT code memory keeps paged W^X");
                         } else if (line == "pso_eviction=0") {
                             config.pso_eviction = false;
                             WriteDiag("boot.cfg: idle pipelines keep their PSOs");
@@ -2882,9 +2997,18 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "uav_sync=1") {
                             config.uav_sync = true;
                             WriteDiag("boot.cfg: UAV barrier after every draw and dispatch");
+                        } else if (line == "rt_reclaim=0") {
+                            config.reclaim_superseded_images = false;
+                            WriteDiag("boot.cfg: superseded render targets wait for the GC");
                         } else if (line == "mip_rt=0") {
                             config.mip_render_targets = false;
                             WriteDiag("boot.cfg: depth targets at a mip level use aliased images");
+                        } else if (line == "rt_inherit=0" || line == "rt_inherit=1") {
+                            config.render_target_inheritance = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: render targets at a new size ") +
+                                      (config.render_target_inheritance
+                                           ? "inherit the previous size on the GPU"
+                                           : "upload guest memory"));
                         } else if (line == "min_max_filter=force") {
                             config.force_min_max_filter = true;
                             WriteDiag("boot.cfg: filtered min/max sampler reduction forced on");
@@ -2972,6 +3096,16 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             } else {
                                 WriteDiag("boot.cfg: invalid idle_spin, ignored");
                             }
+                        } else if (line.starts_with("texture_cap_mib=")) {
+                            const auto value = line.substr(16);
+                            unsigned long parsed{};
+                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() && parsed <= 1048576) {
+                                config.texture_cap_mib = static_cast<u32>(parsed);
+                                WriteDiag("boot.cfg: texture cap " + std::to_string(parsed) + " MiB");
+                            } else {
+                                WriteDiag("boot.cfg: invalid texture_cap_mib, ignored");
+                            }
                         } else if (line.starts_with("memory_limit_mib=")) {
                             const auto value = line.substr(17);
                             unsigned long parsed{};
@@ -3049,6 +3183,25 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.nv_release_fence = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: display release fence ") +
                                       (config.nv_release_fence ? "on" : "off"));
+                        } else if (line == "gpu_fence=safe" || line == "gpu_fence=wait") {
+                            config.gpu_fence.reset();
+                            config.early_syncpoints = line == "gpu_fence=safe";
+                            WriteDiag(config.early_syncpoints
+                                          ? "boot.cfg: GPU syncpoints signalled at once unless "
+                                            "a download waits on the GPU"
+                                          : "boot.cfg: GPU syncpoints signalled after the GPU ran "
+                                            "the work (wait)");
+                        } else if (line == "gpu_fence=immediate" || line == "gpu_fence=balanced" ||
+                                   line == "gpu_fence=accurate") {
+                            using Settings::GpuFenceBehavior;
+                            const std::string value = line.substr(10);
+                            config.gpu_fence = value == "immediate"  ? GpuFenceBehavior::Immediate
+                                               : value == "balanced" ? GpuFenceBehavior::Balanced
+                                                                     : GpuFenceBehavior::Accurate;
+                            WriteDiag("boot.cfg: GPU syncpoints signalled " +
+                                      std::string(value == "immediate"
+                                                      ? "when the GPU thread reaches them"
+                                                      : "after the GPU ran the work (" + value + ")"));
                         } else if (line == "async_record=0" || line == "async_record=1") {
                             config.async_record = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: command list recording thread ") +
@@ -3242,6 +3395,17 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.cpu_accuracy = line == "cpu_accuracy=accurate"
                                 ? Settings::CpuAccuracy::Accurate : Settings::CpuAccuracy::Auto;
                             WriteDiag("boot.cfg: " + line);
+                        } else if (line == "gpu_accuracy=low" || line == "gpu_accuracy=high") {
+                            config.gpu_accuracy = line == "gpu_accuracy=low"
+                                ? Settings::GpuAccuracy::Low : Settings::GpuAccuracy::High;
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "dma_accuracy=default" || line == "dma_accuracy=unsafe" ||
+                                   line == "dma_accuracy=safe") {
+                            config.dma_accuracy = line == "dma_accuracy=unsafe"
+                                ? Settings::DmaAccuracy::Unsafe
+                                : line == "dma_accuracy=safe" ? Settings::DmaAccuracy::Safe
+                                                              : Settings::DmaAccuracy::Default;
+                            WriteDiag("boot.cfg: " + line);
                         } else if (line.starts_with("fastmem_hot_mib=")) {
                             const auto requested = static_cast<u32>(
                                 std::strtoul(line.c_str() + 16, nullptr, 10));
@@ -3370,6 +3534,11 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 }
                 if (GetTickCount64() >= next_heartbeat) {
                     WriteDiag("heartbeat: boot worker still running | " + MemoryReport());
+                    if (const u64 visited = g_host_trim_visited.exchange(0); visited != 0) {
+                        WriteDiag("host trim: released " +
+                                  std::to_string(g_host_trim_released.exchange(0) >> 20) +
+                                  " MiB of " + std::to_string(visited >> 20) + " MiB visited");
+                    }
                     WriteDiag("memory by owner: " + MemoryOwners());
                     for (const auto& capture : Jadyx::AllocWatch::TakeNew()) {
                         WriteDiag(FormatFrames(

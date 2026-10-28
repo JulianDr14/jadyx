@@ -97,7 +97,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
       pipeline_cache{device_memory_, device, compiler, texture_runtime, gpu_.ShaderNotify()},
       local_memory_pool{device, scheduler_},
       query_cache{*this, device_memory_, device, scheduler_},
-      conditional_rendering{device, scheduler_, query_cache},
+      conditional_rendering{device, scheduler_, compiler, query_cache, buffer_cache},
       accelerate_dma{buffer_cache, texture_cache, draw_hunt},
       fence_manager{*this, gpu_, texture_cache, buffer_cache, query_cache, scheduler_},
       draw_hunt{device, scheduler_} {
@@ -949,7 +949,8 @@ void RasterizerD3D12::FlushCommands() {
     // left unsubmitted, the staging stream cannot be reused and every upload became a new
     // committed buffer until the console ran out of memory (0.2.49, 125 s into Game C).
     constexpr u64 UPLOAD_FLUSH_BYTES = 8ULL << 20;
-    if (draw_counter == 0 && staging.PendingUploadBytes() < UPLOAD_FLUSH_BYTES) {
+    if (draw_counter == 0 && staging.PendingUploadBytes() < UPLOAD_FLUSH_BYTES &&
+        texture_runtime.PendingTransferBytes() < UPLOAD_FLUSH_BYTES) {
         return;
     }
     draw_counter = 0;
@@ -961,12 +962,17 @@ void RasterizerD3D12::FlushIfUploadHeavy() {
     // list (151 MiB in Game C; the stream is 256 MiB, and the memory guard shrinks it down to
     // nothing under pressure), and the stream only reuses submitted regions. The
     // reset callback invalidates cached state, so submitting between draws is safe.
-    constexpr u64 UPLOAD_SUBMIT_BYTES = 32ULL << 20;
+    // The threshold follows the ring size (StagingBufferPool::UploadSubmitBytes, at most 32 MiB).
+    const u64 upload_submit_bytes = staging.UploadSubmitBytes();
     // A game drawing ~3900 times in one guest command list had the host GPU start only once the
     // whole list was recorded (~50 ms), and the guest waited for both in turn every frame.
     // Submitting every few hundred draws lets the GPU execute while the rest is recorded.
     constexpr u32 SUBMIT_DRAWS = 512;
-    if (staging.PendingUploadBytes() < UPLOAD_SUBMIT_BYTES && draw_counter < SUBMIT_DRAWS) {
+    // Copy scratch past the transfer pool's budget is freed only with the list that used it: a
+    // loading screen's conversions held ~600 MiB of 8 MiB buffers in one list and ran out.
+    constexpr u64 TRANSFER_SUBMIT_BYTES = 32ULL << 20;
+    if (staging.PendingUploadBytes() < upload_submit_bytes && draw_counter < SUBMIT_DRAWS &&
+        texture_runtime.PendingTransferBytes() < TRANSFER_SUBMIT_BYTES) {
         return;
     }
     draw_counter = 0;

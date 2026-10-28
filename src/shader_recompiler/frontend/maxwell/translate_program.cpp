@@ -302,6 +302,7 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     Optimization::SsaRewritePass(program);
 
     Optimization::ConstantPropagationPass(env, program);
+    Optimization::QuadShufflePass(env, program);
 
     Optimization::PositionPass(env, program);
 

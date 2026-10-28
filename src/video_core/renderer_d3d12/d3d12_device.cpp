@@ -316,12 +316,23 @@ Device::Device() {
         depth_bounds = Query(device.Get(), D3D12_FEATURE_D3D12_OPTIONS2, options2) &&
                        options2.DepthBoundsTestSupported;
     }
+    D3D12_FEATURE_DATA_D3D12_OPTIONS8 options8{};
+    unaligned_block_textures = Query(device.Get(), D3D12_FEATURE_D3D12_OPTIONS8, options8) &&
+                               options8.UnalignedBlockTexturesSupported;
+    LOG_INFO(Render, "D3D12: unaligned block-compressed textures {}",
+             YesNo(unaligned_block_textures));
     initial_budget = QueryVideoMemory().Budget;
     // On a unified architecture (the Xbox) texture and buffer heaps are app commit too.
     D3D12_FEATURE_DATA_ARCHITECTURE1 arch{};
-    Common::SetGpuMemoryUnified(
-        SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE1, &arch, sizeof(arch))) &&
-        arch.UMA);
+    const bool arch_known =
+        SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE1, &arch, sizeof(arch)));
+    Common::SetGpuMemoryUnified(arch_known && arch.UMA);
+    discrete_memory = arch_known && !arch.UMA;
+    if (discrete_memory) {
+        const DXGI_QUERY_VIDEO_MEMORY_INFO cache = QueryCacheVideoMemory();
+        LOG_INFO(Render, "D3D12: discrete GPU memory: caches collect against {} MiB ({} MiB local)",
+                 cache.Budget >> 20, initial_budget >> 20);
+    }
 }
 
 void Device::LogDebugMessages() {
@@ -1046,7 +1057,7 @@ void Device::LogCapabilities() const {
 }
 
 CacheMemorySnapshot Device::QueryCacheMemoryPressure() const {
-    const auto local = QueryVideoMemory();
+    const auto local = QueryCacheVideoMemory();
     CacheMemorySnapshot result{.gpu_used = local.CurrentUsage, .gpu_budget = local.Budget};
     if (const auto query = app_memory_query.load(std::memory_order_acquire)) {
         if (!query(result.app_used, result.app_limit)) {
@@ -1071,7 +1082,7 @@ u64 Device::CacheMemoryUsage(const CacheMemorySnapshot& snapshot) const {
 
 u64 Device::CacheMemoryBudget() const {
     constexpr u64 AppHeadroom = 1536ULL * 1024 * 1024;
-    const u64 dxgi_budget = QueryVideoMemory().Budget;
+    const u64 dxgi_budget = QueryCacheVideoMemory().Budget;
     const AppMemoryQuery query = app_memory_query.load(std::memory_order_acquire);
     u64 used{};
     u64 limit{};
@@ -1089,6 +1100,24 @@ DXGI_QUERY_VIDEO_MEMORY_INFO Device::QueryVideoMemory() const {
         return {};
     }
     return info;
+}
+
+DXGI_QUERY_VIDEO_MEMORY_INFO Device::QueryCacheVideoMemory() const {
+    DXGI_QUERY_VIDEO_MEMORY_INFO local = QueryVideoMemory();
+    DXGI_QUERY_VIDEO_MEMORY_INFO system{};
+    if (!discrete_memory || local.Budget == 0 ||
+        FAILED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &system))) {
+        return local;
+    }
+    // A 4 GiB laptop card (3.1 GiB budget) held a game's area within 5% of its budget, and the
+    // caches evicted and uploaded again 4-8 GiB of textures every 300 frames. Past the local
+    // budget the OS demotes allocations to system memory, read over PCIe: slower to sample, but
+    // cheaper than uploading them anew. Up to half the local budget more may live there, so
+    // usage counts both segments (system memory also holds the upload and readback heaps).
+    const u64 extra = (std::min)(local.Budget / 2, system.Budget / 4);
+    local.Budget += extra;
+    local.CurrentUsage += system.CurrentUsage;
+    return local;
 }
 
 } // namespace D3D12

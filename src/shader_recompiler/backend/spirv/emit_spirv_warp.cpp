@@ -24,6 +24,45 @@ Id GetThreadId(EmitContext& ctx) {
     return ctx.OpLoad(ctx.U32[1], ctx.subgroup_local_invocation_id);
 }
 
+bool QuadShufflesThroughDerivatives(EmitContext& ctx) {
+    return ctx.profile.has_helperless_quad_shuffles && ctx.stage == Stage::Fragment;
+}
+
+// Quad lane bit of this pixel along one axis: quads start on even window coordinates.
+Id QuadAxisBit(EmitContext& ctx, u32 component) {
+    const Id pointer{ctx.OpAccessChain(ctx.input_f32, ctx.input_position, ctx.Const(component))};
+    const Id coord{ctx.OpConvertFToU(ctx.U32[1], ctx.OpLoad(ctx.F32[1], pointer))};
+    return ctx.OpBitwiseAnd(ctx.U32[1], coord, ctx.Const(1U));
+}
+
+// Value of the quad neighbour along one axis when cross is true, else the lane's own. A fine
+// derivative is the second lane's value minus the first's, exact for 16-bit integers.
+Id QuadAcross(EmitContext& ctx, Id half, Id axis_bit, Id cross, bool vertical) {
+    const Id delta{vertical ? ctx.OpDPdyFine(ctx.F32[1], half) : ctx.OpDPdxFine(ctx.F32[1], half)};
+    const Id is_second{ctx.OpINotEqual(ctx.U1, axis_bit, ctx.u32_zero_value)};
+    const Id across{ctx.OpSelect(ctx.F32[1], is_second, ctx.OpFSub(ctx.F32[1], half, delta),
+                                 ctx.OpFAdd(ctx.F32[1], half, delta))};
+    return ctx.OpSelect(ctx.F32[1], cross, across, half);
+}
+
+// Reads the quad lane across the axes flagged by cross_x and cross_y through fine derivatives,
+// which run on helper lanes on every host. The value moves as two 16-bit halves held in floats.
+Id QuadExchange(EmitContext& ctx, Id value, Id cross_x, Id cross_y) {
+    const Id x_bit{QuadAxisBit(ctx, 0)};
+    const Id y_bit{QuadAxisBit(ctx, 1)};
+    Id result{ctx.u32_zero_value};
+    for (const u32 shift : {0U, 16U}) {
+        const Id bits{ctx.OpBitFieldUExtract(ctx.U32[1], value, ctx.Const(shift), ctx.Const(16U))};
+        Id half{ctx.OpConvertUToF(ctx.F32[1], bits)};
+        half = QuadAcross(ctx, half, x_bit, cross_x, false);
+        half = QuadAcross(ctx, half, y_bit, cross_y, true);
+        const Id moved{ctx.OpShiftLeftLogical(ctx.U32[1], ctx.OpConvertFToU(ctx.U32[1], half),
+                                              ctx.Const(shift))};
+        result = ctx.OpBitwiseOr(ctx.U32[1], result, moved);
+    }
+    return result;
+}
+
 Id WarpExtract(EmitContext& ctx, Id value) {
     const Id thread_id{GetThreadId(ctx)};
     const Id local_index{ctx.OpShiftRightArithmetic(ctx.U32[1], thread_id, ctx.Const(5U))};
@@ -261,6 +300,12 @@ Id EmitShuffleButterfly(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id
 }
 
 Id EmitQuadBroadcast(EmitContext& ctx, Id value, Id lane) {
+    if (QuadShufflesThroughDerivatives(ctx)) {
+        const Id lane_x{ctx.OpBitwiseAnd(ctx.U32[1], lane, ctx.Const(1U))};
+        const Id lane_y{ctx.OpBitFieldUExtract(ctx.U32[1], lane, ctx.Const(1U), ctx.Const(1U))};
+        return QuadExchange(ctx, value, ctx.OpINotEqual(ctx.U1, QuadAxisBit(ctx, 0), lane_x),
+                            ctx.OpINotEqual(ctx.U1, QuadAxisBit(ctx, 1), lane_y));
+    }
     if (ctx.profile.support_quad_shuffles) {
         return ctx.OpGroupNonUniformQuadBroadcast(ctx.U32[1], SubgroupScope(ctx), value, lane);
     }
@@ -272,6 +317,13 @@ Id EmitQuadBroadcast(EmitContext& ctx, Id value, Id lane) {
 
 Id EmitQuadSwap(EmitContext& ctx, Id value, Id direction) {
     const Id xor_mask{ctx.OpIAdd(ctx.U32[1], direction, ctx.Const(1u))};
+    if (QuadShufflesThroughDerivatives(ctx)) {
+        const auto crosses{[&](u32 bit) {
+            return ctx.OpINotEqual(ctx.U1, ctx.OpBitwiseAnd(ctx.U32[1], xor_mask, ctx.Const(bit)),
+                                   ctx.u32_zero_value);
+        }};
+        return QuadExchange(ctx, value, crosses(1U), crosses(2U));
+    }
     if (ctx.profile.support_quad_shuffles) {
         // Quad broadcasts include helper lanes; a shuffle may not (D3D12 before SM 6.7), and
         // manual derivatives then read garbage at triangle edges. Sirit has no OpGroupNonUniform-

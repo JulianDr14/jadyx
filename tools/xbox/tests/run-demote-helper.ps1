@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 param(
-    [ValidateSet('demote-helper', 'demote-return', 'local-memory-scratch', 'local-memory-pool', 'workgroup-split')]
+    [ValidateSet('demote-helper', 'demote-return', 'quad-shuffle', 'local-memory-scratch', 'local-memory-pool', 'workgroup-split')]
     [string]$Fixture = 'demote-helper',
     [string]$SpirvToolsInclude = 'build-uwp/geometry-passthrough-gate',
     [string]$SpirvToolsLibrary = 'C:/glslang/lib/SPIRV-Tools.lib'

@@ -133,12 +133,12 @@ struct GameMenuSurface::Impl : UiPainter {
     }
 
     /// A panel of `width` x `height` layout units the renderer copies over the running game. The
-    /// scale follows the screen's height (720 units) up to 1.5, so it never outgrows a 1080p panel.
+    /// scale follows the screen's height (720 units), so the panel keeps its size on a 4K swapchain.
     template <typename Draw>
     D3D12::MenuImage Render(float width, float height, std::pair<u32, u32> screen, Draw&& draw) {
         const auto [screen_width, screen_height] = screen;
         if (screen_width == 0 || screen_height == 0) return {};
-        const float scale = std::min({static_cast<float>(screen_height) / 720.0f, 1.5f,
+        const float scale = std::min({static_cast<float>(screen_height) / 720.0f,
                                       static_cast<float>(screen_width) * 0.95f / width,
                                       static_cast<float>(screen_height) * 0.95f / height});
         Prepare(static_cast<UINT>(std::ceil(width * scale)), static_cast<UINT>(std::ceil(height * scale)));

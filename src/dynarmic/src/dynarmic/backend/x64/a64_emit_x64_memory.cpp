@@ -7,6 +7,7 @@
  */
 
 #include <array>
+#include <bit>
 #include <initializer_list>
 #include <tuple>
 #include <utility>
@@ -279,6 +280,108 @@ void A64EmitX64::GenFastmemFallbacks() {
             }
         }
     }
+}
+
+// Page table loads and stores were emitted inline: about 50 bytes of misalignment, range and page
+// checks around the access plus about 35 bytes of slow path per access, so the memory accesses
+// filled much of the code caches and their hot set no longer fitted once memory ran short. The
+// thunks hold that sequence once per access size and register pair, and a block calls them.
+// A load uses its value register as the scratch register; a store or a 128-bit load saves one.
+// The slow path restores the registers and tail-calls the fallback, which returns to the block.
+void A64EmitX64::GenPageTableThunks() {
+    const size_t address_bits = conf.page_table_address_space_bits;
+    if (!conf.page_table || conf.check_halt_on_memory_access || !conf.absolute_offset_page_table ||
+        conf.page_table_pointer_mask != 0 || conf.page_table_marked_bit ||
+        conf.page_table_sign_extension || conf.silently_mirror_page_table ||
+        conf.page_table_log2_stride != 3 || address_bits <= page_table_const_bits ||
+        (address_bits < 64 && address_bits - page_table_const_bits >= 32)) {
+        return;
+    }
+    const auto unusable = [](int idx) { return idx == 4 || idx == 14 || idx == 15; };
+    for (const bool write : {false, true}) {
+        for (size_t size_log2 = 0; size_log2 < 5; ++size_log2) {
+            const size_t bitsize = 8u << size_log2;
+            const size_t bytes = bitsize / 8;
+            for (int vaddr_idx = 0; vaddr_idx < 16; ++vaddr_idx) {
+                if (unusable(vaddr_idx)) continue;
+                for (int value_idx = 0; value_idx < 16; ++value_idx) {
+                    if (bitsize != 128 && (unusable(value_idx) || value_idx == vaddr_idx)) continue;
+                    const auto fallback = (write ? write_fallbacks : read_fallbacks)
+                        .at(std::make_tuple(false, bitsize, vaddr_idx, value_idx));
+                    const Xbyak::Reg64 vaddr{vaddr_idx};
+                    const bool saves_scratch = write || bitsize == 128;
+                    int scratch_idx = value_idx;
+                    if (saves_scratch) {
+                        scratch_idx = 0;
+                        while (scratch_idx == vaddr_idx || (bitsize != 128 && scratch_idx == value_idx)) {
+                            ++scratch_idx;
+                        }
+                    }
+                    const Xbyak::Reg64 scratch{scratch_idx};
+                    Xbyak::Label slow;
+
+                    code.align();
+                    page_table_thunks[((write * 5 + size_log2) * 16 + vaddr_idx) * 16 + value_idx] = code.getCurr();
+                    if (saves_scratch) code.push(scratch);
+                    if (bitsize != 8 && (conf.detect_misaligned_access_via_page_table & bitsize) != 0) {
+                        if (conf.only_detect_misalignment_via_page_table_on_page_boundary) {
+                            // Only an access crossing into the next page is misaligned for the table.
+                            code.mov(scratch.cvt32(), vaddr.cvt32());
+                            code.and_(scratch.cvt32(), u32(page_table_const_mask));
+                            code.cmp(scratch.cvt32(), u32(page_table_const_size - bytes));
+                            code.ja(slow, code.T_NEAR);
+                        } else {
+                            code.test(vaddr, u32(bytes - 1));
+                            code.jnz(slow, code.T_NEAR);
+                        }
+                    }
+                    code.mov(scratch, vaddr);
+                    code.shr(scratch, int(page_table_const_bits));
+                    if (address_bits < 64) {
+                        code.test(scratch, u32(~((u64{1} << (address_bits - page_table_const_bits)) - 1)));
+                        code.jnz(slow, code.T_NEAR);
+                    }
+                    code.mov(scratch, qword[r14 + scratch * 8]);
+                    code.test(scratch, scratch);
+                    code.jz(slow, code.T_NEAR);
+                    const auto addr = scratch + vaddr;
+                    switch (bitsize) {
+                    case 8:
+                        write ? (void)EmitWriteMemoryMov<8>(code, addr, value_idx, false)
+                              : (void)EmitReadMemoryMov<8>(code, value_idx, addr, false);
+                        break;
+                    case 16:
+                        write ? (void)EmitWriteMemoryMov<16>(code, addr, value_idx, false)
+                              : (void)EmitReadMemoryMov<16>(code, value_idx, addr, false);
+                        break;
+                    case 32:
+                        write ? (void)EmitWriteMemoryMov<32>(code, addr, value_idx, false)
+                              : (void)EmitReadMemoryMov<32>(code, value_idx, addr, false);
+                        break;
+                    case 64:
+                        write ? (void)EmitWriteMemoryMov<64>(code, addr, value_idx, false)
+                              : (void)EmitReadMemoryMov<64>(code, value_idx, addr, false);
+                        break;
+                    default:
+                        write ? (void)EmitWriteMemoryMov<128>(code, addr, value_idx, false)
+                              : (void)EmitReadMemoryMov<128>(code, value_idx, addr, false);
+                        break;
+                    }
+                    if (saves_scratch) code.pop(scratch);
+                    code.ret();
+                    code.L(slow);
+                    if (saves_scratch) code.pop(scratch);
+                    code.jmp(reinterpret_cast<const void*>(fallback));
+                }
+            }
+        }
+    }
+}
+
+const void* A64EmitX64::PageTableThunk(bool ordered, bool write, size_t bitsize, int vaddr_idx, int value_idx) const {
+    if (ordered) return nullptr;
+    const size_t size_log2 = std::countr_zero(bitsize / 8);
+    return page_table_thunks[((size_t(write) * 5 + size_log2) * 16 + size_t(vaddr_idx)) * 16 + size_t(value_idx)];
 }
 
 #define Axx A64

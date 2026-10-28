@@ -60,13 +60,18 @@ public:
         const void* code_ptr = nullptr;
     };
     static_assert(sizeof(FastDispatchEntry) == 0x10);
-    static constexpr u64 fast_dispatch_table_mask = 0xFFFFF0;
-    static constexpr size_t fast_dispatch_table_size = 0x100000;
+    // 256K entries, 4 MiB a core. A million (16 MiB, all of it committed by the fill on every
+    // clear) cost the four cores 64 MiB of a commit-limited console for an indirect-branch cache.
+    static constexpr u64 fast_dispatch_table_mask = 0x3FFFF0;
+    static constexpr size_t fast_dispatch_table_size = 0x40000;
 
     void ClearFastDispatchTable();
     void GenMemory128Accessors();
     void GenFastmemFallbacks();
+    void GenPageTableThunks();
     void GenTerminalHandlers();
+    /// Shared page table access for an unordered load or store, nullptr to emit it inline.
+    const void* PageTableThunk(bool ordered, bool write, size_t bitsize, int vaddr_idx, int value_idx) const;
 
     // Microinstruction emitters
     void EmitPushRSB(EmitContext& ctx, IR::Inst* inst);
@@ -127,6 +132,8 @@ public:
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> read_fallbacks;
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> write_fallbacks;
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> exclusive_write_fallbacks;
+    // [write][log2(bitsize / 8)][vaddr register][value register]
+    std::array<const void*, 2 * 5 * 16 * 16> page_table_thunks{};
     ::Common::unordered_set<DoNotFastmemMarker> do_not_fastmem;
     boost::container::stable_vector<Xbyak::Label> shared_labels;
     const void* terminal_handler_pop_rsb_hint = nullptr;

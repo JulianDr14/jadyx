@@ -49,6 +49,70 @@ void TestPrewarmGate() {
     assert(!P::MayPrewarm(0, 0));
 }
 
+void TestReleaseProbe() {
+    using Probe = PipelineReleaseProbe;
+    using V = Probe::Verdict;
+    constexpr std::uint64_t K = 1024;
+
+    // The Series: 256 PSOs released, the untracked commit unchanged a few frames later.
+    Probe series;
+    std::uint64_t frame = 1;
+    series.Tick(frame++, 0, 900 * M, true); // baseline, nothing released yet
+    assert(series.MayRelease());
+    for (std::uint64_t released = 32; released < Probe::PROBE_PSOS; released += 32) {
+        series.Tick(frame++, released, 900 * M, true);
+        assert(series.MayRelease() && series.GetVerdict() == V::Unknown);
+    }
+    series.Tick(frame++, Probe::PROBE_PSOS, 900 * M, true);
+    // Paused while the released PSOs' fences retire.
+    assert(!series.MayRelease() && series.GetVerdict() == V::Unknown);
+    const std::uint64_t settle = frame - 1;
+    for (; frame - settle < Probe::SETTLE_FRAMES; ++frame) {
+        series.Tick(frame, Probe::PROBE_PSOS, 901 * M, true);
+        assert(!series.MayRelease());
+    }
+    series.Tick(frame, Probe::PROBE_PSOS, 901 * M, true);
+    assert(series.GetVerdict() == V::DoesNotPay && !series.MayRelease());
+    assert(series.Freed() == 0 && series.Probed() == Probe::PROBE_PSOS);
+    // Decided once: later frames change nothing.
+    series.Tick(frame + 1000, 5000, 100 * M, true);
+    assert(series.GetVerdict() == V::DoesNotPay);
+
+    // 16 KiB a PSO pays, a byte less does not.
+    const auto run = [](std::uint64_t freed) {
+        Probe probe;
+        probe.Tick(1, 10, 900 * M, true);
+        probe.Tick(2, 10 + Probe::PROBE_PSOS, 900 * M, true);
+        probe.Tick(2 + Probe::SETTLE_FRAMES, 10 + Probe::PROBE_PSOS, 900 * M - freed, true);
+        return probe.GetVerdict();
+    };
+    assert(run(Probe::PROBE_PSOS * Probe::MIN_RELEASE_BYTES) == V::Pays);
+    assert(run(Probe::PROBE_PSOS * Probe::MIN_RELEASE_BYTES - 1) == V::DoesNotPay);
+    assert(run(Probe::PROBE_PSOS * 100 * K) == V::Pays);
+    Probe pays;
+    pays.Tick(1, 0, 900 * M, true);
+    pays.Tick(2, Probe::PROBE_PSOS, 900 * M, true);
+    pays.Tick(2 + Probe::SETTLE_FRAMES, Probe::PROBE_PSOS, 800 * M, true);
+    assert(pays.GetVerdict() == V::Pays && pays.MayRelease());
+
+    // An unknown commit neither moves the baseline nor decides.
+    Probe unknown;
+    unknown.Tick(1, 0, 0, false);
+    unknown.Tick(2, Probe::PROBE_PSOS, 0, false);
+    assert(unknown.MayRelease() && unknown.GetVerdict() == V::Unknown);
+
+    // A trickle that never reaches PROBE_PSOS starts over from a fresh baseline, so commit that
+    // grew meanwhile is not taken for PSOs that freed nothing, nor a drop for ones that did.
+    Probe trickle;
+    trickle.Tick(1, 0, 900 * M, true);
+    trickle.Tick(2, 10, 900 * M, true);
+    trickle.Tick(3 + Probe::MAX_FRAMES, 20, 700 * M, true); // stale: the baseline moves here
+    trickle.Tick(4 + Probe::MAX_FRAMES, 20 + Probe::PROBE_PSOS, 700 * M, true);
+    trickle.Tick(4 + Probe::MAX_FRAMES + Probe::SETTLE_FRAMES, 20 + Probe::PROBE_PSOS, 700 * M,
+                 true);
+    assert(trickle.GetVerdict() == V::DoesNotPay && trickle.Probed() == Probe::PROBE_PSOS);
+}
+
 void TestLatencyHistogram() {
     using H = LatencyHistogram;
     // Buckets: exact below 8 us, quarter octaves above; every value inside its bucket's bounds.
@@ -163,9 +227,11 @@ void TestHotSet() {
 int main() {
     TestIdleFrames();
     TestPrewarmGate();
+    TestReleaseProbe();
     TestHotSet();
     TestLatencyHistogram();
-    std::cout << "PASS: idle limits and prewarm gate by headroom, hot pipeline sessions, decay, "
-                 "prewarm cap, file round trip and stage latency percentiles\n";
+    std::cout << "PASS: idle limits and prewarm gate by headroom, the PSO release probe, hot "
+                 "pipeline sessions, decay, prewarm cap, file round trip and stage latency "
+                 "percentiles\n";
     return 0;
 }

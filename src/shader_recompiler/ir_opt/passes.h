@@ -21,6 +21,7 @@ void IdentityRemovalPass(IR::Program& program);
 void LowerFp64ToFp32(IR::Program& program);
 void LowerFp16ToFp32(IR::Program& program);
 void LowerInt64ToInt32(IR::Program& program);
+void QuadShufflePass(Environment& env, IR::Program& program);
 void RescalingPass(IR::Program& program);
 void SsaRewritePass(IR::Program& program);
 void PositionPass(Environment& env, IR::Program& program);

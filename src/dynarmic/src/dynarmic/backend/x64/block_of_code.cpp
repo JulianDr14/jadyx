@@ -51,8 +51,11 @@ static void RaiseJitMemoryFailure(DWORD code, const void* base, size_t size, DWO
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
+#include <vector>
 
 #include "common/assert.h"
+#include "common/dynamic_library.h"
 #include "dynarmic/mcl/bit.hpp"
 #include "dynarmic/backend/x64/xbyak.h"
 
@@ -71,23 +74,41 @@ std::atomic<size_t> s_committed_code_bytes{0};
 /// SetCodeCacheCap; SIZE_MAX when uncapped. Each call bumps the epoch for the caches to see.
 std::atomic<size_t> s_code_cache_cap{SIZE_MAX};
 std::atomic<size_t> s_code_cache_cap_epoch{0};
+/// SetCodeCacheCap's release: caches past the cap are cleared and give the memory past it back.
+std::atomic_bool s_code_cache_release{false};
 /// What a capped cache may still emit past the pages it had committed: one block's worth
 /// (MINIMUM_REMAINING_CODESIZE) and its commit ahead, so it is not cleared on the spot.
 constexpr size_t CAP_SLACK = 2 * 1024 * 1024;
+/// SetDualMappedCode, and how many code caches live dual-mapped (DualMappedCodeCaches).
+std::atomic_bool s_dual_map_allowed{true};
+std::atomic<size_t> s_dual_mapped_caches{0};
 } // anonymous namespace
 
 size_t CommittedCodeBytes() noexcept {
     return s_committed_code_bytes.load(std::memory_order_relaxed);
 }
 
-void SetCodeCacheCap(size_t bytes) noexcept {
+void SetCodeCacheCap(size_t bytes, bool release) noexcept {
     s_code_cache_cap.store(bytes != 0 ? bytes : SIZE_MAX, std::memory_order_relaxed);
+    s_code_cache_release.store(bytes != 0 && release, std::memory_order_relaxed);
     s_code_cache_cap_epoch.fetch_add(1, std::memory_order_release);
 }
 
 size_t CodeCacheCap() noexcept {
     const size_t cap = s_code_cache_cap.load(std::memory_order_relaxed);
     return cap != SIZE_MAX ? cap : 0;
+}
+
+bool CodeCacheCapReleases() noexcept {
+    return s_code_cache_release.load(std::memory_order_relaxed);
+}
+
+void SetDualMappedCode(bool allowed) noexcept {
+    s_dual_map_allowed.store(allowed, std::memory_order_relaxed);
+}
+
+size_t DualMappedCodeCaches() noexcept {
+    return s_dual_mapped_caches.load(std::memory_order_relaxed);
 }
 } // namespace Dynarmic
 
@@ -118,6 +139,346 @@ namespace {
 constexpr size_t CONSTANT_POOL_SIZE = 2 * 1024 * 1024;
 constexpr size_t PRELUDE_COMMIT_SIZE = 16 * 1024 * 1024;
 
+#if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
+// Dual-mapped code memory: pagefile-backed sections mapped twice, read-execute where code runs
+// and read-write where it is written (Xbyak's writeOffset_). W^X then needs no page protection
+// change per block. Making a page executable again is not cheap on the console: each RW→RX flip
+// cost ~21 µs, a third of a block's compile time, and shoots down the TLB of every core running
+// guest code. Where the section or the executable view is refused, the paged W^X below is used.
+#    if defined(DYNARMIC_UWP_APPCONTAINER)
+#        define DYNARMIC_CREATE_CODE_SECTION(size, commit) \
+            CreateFileMappingFromApp(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE | (commit), (size), nullptr)
+#        define DYNARMIC_MAP_CODE_VIEW(section, access, size) MapViewOfFileFromApp((section), (access), 0, (size))
+#        define DYNARMIC_VIRTUAL_ALLOC2    "VirtualAlloc2FromApp"
+#        define DYNARMIC_MAP_VIEW_OF_FILE3 "MapViewOfFile3FromApp"
+#    else
+#        define DYNARMIC_CREATE_CODE_SECTION(size, commit)                                                 \
+            CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE | (commit),             \
+                               static_cast<DWORD>(u64(size) >> 32), static_cast<DWORD>(size), nullptr)
+#        define DYNARMIC_MAP_CODE_VIEW(section, access, size) MapViewOfFile((section), (access), 0, 0, (size))
+#        define DYNARMIC_VIRTUAL_ALLOC2    "VirtualAlloc2"
+#        define DYNARMIC_MAP_VIEW_OF_FILE3 "MapViewOfFile3"
+#    endif
+#    ifndef MEM_RESERVE_PLACEHOLDER
+#        define MEM_RESERVE_PLACEHOLDER 0x00040000
+#    endif
+#    ifndef MEM_REPLACE_PLACEHOLDER
+#        define MEM_REPLACE_PLACEHOLDER 0x00004000
+#    endif
+#    ifndef MEM_PRESERVE_PLACEHOLDER
+#        define MEM_PRESERVE_PLACEHOLDER 0x00000002
+#    endif
+
+// A cache is mapped a chunk at a time where the runtime allows it, each chunk a section of its
+// own in placeholders of the two reservations: the chunks past a cap can then be unmapped and
+// their commit returned, which a single section's pages never can be (VirtualFree refuses them).
+constexpr size_t CODE_CHUNK_SIZE = 4 * 1024 * 1024;
+
+struct DualCodeView {
+    u8* exec;
+    u8* write;
+    HANDLE section;           ///< The whole cache's section; nullptr when it is mapped in chunks.
+    size_t size;
+    std::vector<bool> chunks; ///< Chunked: which CODE_CHUNK_SIZE chunks are mapped.
+};
+std::mutex s_dual_views_mutex;
+std::vector<DualCodeView> s_dual_views;
+
+// The placeholder APIs, resolved by name like host_memory's, so the target's link set needs none.
+struct PlaceholderApi {
+    using VirtualAlloc2Fn = PVOID(WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG);
+    using MapViewOfFile3Fn = PVOID(WINAPI*)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG,
+                                            MEM_EXTENDED_PARAMETER*, ULONG);
+    using UnmapViewOfFile2Fn = BOOL(WINAPI*)(HANDLE, PVOID, ULONG);
+
+    VirtualAlloc2Fn virtual_alloc2{};
+    MapViewOfFile3Fn map_view_of_file3{};
+    UnmapViewOfFile2Fn unmap_view_of_file2{};
+
+    explicit operator bool() const {
+        return virtual_alloc2 != nullptr && map_view_of_file3 != nullptr && unmap_view_of_file2 != nullptr;
+    }
+};
+
+const PlaceholderApi& Placeholders() {
+    static const PlaceholderApi api = [] {
+        static ::Common::DynamicLibrary kernelbase("Kernelbase");
+        PlaceholderApi result;
+        if (kernelbase.IsOpen()) {
+            (void)kernelbase.GetSymbol(DYNARMIC_VIRTUAL_ALLOC2, &result.virtual_alloc2);
+            (void)kernelbase.GetSymbol(DYNARMIC_MAP_VIEW_OF_FILE3, &result.map_view_of_file3);
+            (void)kernelbase.GetSymbol("UnmapViewOfFile2", &result.unmap_view_of_file2);
+        }
+        return result;
+    }();
+    return api;
+}
+
+// Commits [exec, exec + size) of a single section through its write view. The pages are the
+// section's, so the executable view sees them committed too; a runtime that commits per view
+// gets them committed there read-only first, then made executable once per commit.
+bool CommitSectionPages(u8* exec, u8* write, size_t size) {
+    if (DYNARMIC_VIRTUAL_ALLOC(write, size, MEM_COMMIT, PAGE_READWRITE) == nullptr) {
+        return false;
+    }
+    MEMORY_BASIC_INFORMATION info{};
+    if (VirtualQuery(exec, &info, sizeof(info)) == sizeof(info) && info.State == MEM_COMMIT &&
+        info.Protect == PAGE_EXECUTE_READ && info.RegionSize >= size) {
+        return true;
+    }
+    DWORD old_protection = 0;
+    return DYNARMIC_VIRTUAL_ALLOC(exec, size, MEM_COMMIT, PAGE_READONLY) != nullptr &&
+           DYNARMIC_VIRTUAL_PROTECT(exec, size, PAGE_EXECUTE_READ, &old_protection);
+}
+
+bool MapDualView(size_t size, DualCodeView& view) {
+    view.section = DYNARMIC_CREATE_CODE_SECTION(size, SEC_RESERVE);
+    if (view.section == nullptr) {
+        return false;
+    }
+    view.size = size;
+    view.exec = static_cast<u8*>(DYNARMIC_MAP_CODE_VIEW(view.section, FILE_MAP_READ | FILE_MAP_EXECUTE, size));
+    view.write = static_cast<u8*>(DYNARMIC_MAP_CODE_VIEW(view.section, FILE_MAP_WRITE, size));
+    if (view.exec != nullptr && view.write != nullptr) {
+        return true;
+    }
+    if (view.exec != nullptr) {
+        UnmapViewOfFile(view.exec);
+    }
+    if (view.write != nullptr) {
+        UnmapViewOfFile(view.write);
+    }
+    CloseHandle(view.section);
+    return false;
+}
+
+// Releases the placeholders of a reservation split into chunks up to split_end, and the one
+// placeholder past it.
+void ReleaseChunkPlaceholders(u8* base, size_t size, size_t split_end) {
+    size_t offset = 0;
+    for (; offset < split_end; offset += CODE_CHUNK_SIZE) {
+        VirtualFree(base + offset, 0, MEM_RELEASE);
+    }
+    if (offset < size) {
+        VirtualFree(base + offset, 0, MEM_RELEASE);
+    }
+}
+
+// Reserves both views as one placeholder per chunk, nothing mapped yet.
+bool ReserveCodeChunks(size_t size, DualCodeView& view) {
+    const PlaceholderApi& api = Placeholders();
+    if (!api) {
+        return false;
+    }
+    size = (size + CODE_CHUNK_SIZE - 1) & ~(CODE_CHUNK_SIZE - 1);
+    const auto reserve = [&]() -> u8* {
+        u8* const base = static_cast<u8*>(api.virtual_alloc2(GetCurrentProcess(), nullptr, size,
+                                                             MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+                                                             PAGE_NOACCESS, nullptr, 0));
+        if (base == nullptr) {
+            return nullptr;
+        }
+        for (size_t offset = 0; offset + CODE_CHUNK_SIZE < size; offset += CODE_CHUNK_SIZE) {
+            if (!VirtualFree(base + offset, CODE_CHUNK_SIZE, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) {
+                ReleaseChunkPlaceholders(base, size, offset);
+                return nullptr;
+            }
+        }
+        return base;
+    };
+    view.exec = reserve();
+    view.write = view.exec != nullptr ? reserve() : nullptr;
+    if (view.write == nullptr) {
+        if (view.exec != nullptr) {
+            ReleaseChunkPlaceholders(view.exec, size, size);
+        }
+        return false;
+    }
+    view.section = nullptr;
+    view.size = size;
+    view.chunks.assign(size / CODE_CHUNK_SIZE, false);
+    return true;
+}
+
+// Maps chunk `index` in both views: a committed section of its own, executable and writable.
+bool MapCodeChunk(DualCodeView& view, size_t index) {
+    const PlaceholderApi& api = Placeholders();
+    const HANDLE process = GetCurrentProcess();
+    const size_t offset = index * CODE_CHUNK_SIZE;
+    const HANDLE section = DYNARMIC_CREATE_CODE_SECTION(CODE_CHUNK_SIZE, SEC_COMMIT);
+    if (section == nullptr) {
+        return false;
+    }
+    void* const exec = api.map_view_of_file3(section, process, view.exec + offset, 0, CODE_CHUNK_SIZE,
+                                             MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READ, nullptr, 0);
+    void* const write = exec == nullptr ? nullptr
+                                        : api.map_view_of_file3(section, process, view.write + offset, 0,
+                                                                CODE_CHUNK_SIZE, MEM_REPLACE_PLACEHOLDER,
+                                                                PAGE_READWRITE, nullptr, 0);
+    if (exec != nullptr && write == nullptr) {
+        api.unmap_view_of_file2(process, exec, MEM_PRESERVE_PLACEHOLDER);
+    }
+    // The views hold the section; it goes with the last of them.
+    CloseHandle(section);
+    if (write == nullptr) {
+        return false;
+    }
+    view.chunks[index] = true;
+    return true;
+}
+
+void UnmapCodeChunk(DualCodeView& view, size_t index) {
+    const PlaceholderApi& api = Placeholders();
+    const size_t offset = index * CODE_CHUNK_SIZE;
+    api.unmap_view_of_file2(GetCurrentProcess(), view.exec + offset, MEM_PRESERVE_PLACEHOLDER);
+    api.unmap_view_of_file2(GetCurrentProcess(), view.write + offset, MEM_PRESERVE_PLACEHOLDER);
+    view.chunks[index] = false;
+}
+
+void UnmapDualView(DualCodeView& view) {
+    if (view.section != nullptr) {
+        UnmapViewOfFile(view.exec);
+        UnmapViewOfFile(view.write);
+        CloseHandle(view.section);
+        return;
+    }
+    for (size_t index = 0; index < view.chunks.size(); ++index) {
+        if (view.chunks[index]) {
+            UnmapCodeChunk(view, index);
+        }
+    }
+    ReleaseChunkPlaceholders(view.exec, view.size, view.size);
+    ReleaseChunkPlaceholders(view.write, view.size, view.size);
+}
+
+int CallCodeProbe(const void* code) {
+    __try {
+        return reinterpret_cast<int (*)()>(const_cast<void*>(code))();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+constexpr std::array<u8, 6> CODE_PROBE{0xB8, 0x2A, 0x00, 0x00, 0x00, 0xC3}; // mov eax, 42; ret
+
+// Once per process: maps a small section twice, writes CODE_PROBE through one view and runs it
+// through the other, so a runtime that maps but will not execute such views falls back at boot
+// instead of faulting in the first block.
+bool DualMappingWorks() {
+    static const bool works = [] {
+        constexpr size_t probe_size = 64 * 1024;
+        DualCodeView view{};
+        if (!MapDualView(probe_size, view)) {
+            return false;
+        }
+        bool ok = false;
+        if (CommitSectionPages(view.exec, view.write, 4096)) {
+            std::memcpy(view.write, CODE_PROBE.data(), CODE_PROBE.size());
+            ok = CallCodeProbe(view.exec) == 42;
+        }
+        UnmapDualView(view);
+        return ok;
+    }();
+    return works;
+}
+
+// The same for chunks, on the second of two and twice: a split placeholder has to take a view
+// again once one was unmapped from it, or no chunk could ever be released.
+bool CodeChunksWork() {
+    static const bool works = [] {
+        DualCodeView view{};
+        if (!ReserveCodeChunks(2 * CODE_CHUNK_SIZE, view)) {
+            return false;
+        }
+        bool ok = true;
+        for (int pass = 0; pass < 2 && ok; ++pass) {
+            ok = MapCodeChunk(view, 1);
+            if (ok) {
+                std::memcpy(view.write + CODE_CHUNK_SIZE, CODE_PROBE.data(), CODE_PROBE.size());
+                ok = CallCodeProbe(view.exec + CODE_CHUNK_SIZE) == 42;
+                UnmapCodeChunk(view, 1);
+            }
+        }
+        UnmapDualView(view);
+        return ok;
+    }();
+    return works;
+}
+
+u8* AllocDualMapped(size_t size) {
+    if (!s_dual_map_allowed.load(std::memory_order_relaxed)) {
+        return nullptr;
+    }
+    DualCodeView view{};
+    if (!(CodeChunksWork() && ReserveCodeChunks(size, view)) &&
+        !(DualMappingWorks() && MapDualView(size, view))) {
+        return nullptr;
+    }
+    std::scoped_lock lock{s_dual_views_mutex};
+    s_dual_views.push_back(std::move(view));
+    s_dual_mapped_caches.fetch_add(1, std::memory_order_relaxed);
+    return s_dual_views.back().exec;
+}
+
+DualCodeView* FindDualView(const u8* exec) {
+    const auto it = std::find_if(s_dual_views.begin(), s_dual_views.end(),
+                                 [exec](const DualCodeView& view) { return view.exec == exec; });
+    return it != s_dual_views.end() ? &*it : nullptr;
+}
+
+bool FreeDualMapped(u8* exec) {
+    std::scoped_lock lock{s_dual_views_mutex};
+    DualCodeView* const view = FindDualView(exec);
+    if (view == nullptr) {
+        return false;
+    }
+    UnmapDualView(*view);
+    s_dual_views.erase(s_dual_views.begin() + (view - s_dual_views.data()));
+    s_dual_mapped_caches.fetch_sub(1, std::memory_order_relaxed);
+    return true;
+}
+
+u8* DualWriteView(const u8* exec) {
+    std::scoped_lock lock{s_dual_views_mutex};
+    const DualCodeView* const view = FindDualView(exec);
+    return view != nullptr ? view->write : nullptr;
+}
+
+// Commits [offset, offset + size) of the cache at exec in both views. Nothing emitted is touched,
+// so the code pages stay as they are.
+bool CommitDualMapped(const u8* exec, size_t offset, size_t size) {
+    std::scoped_lock lock{s_dual_views_mutex};
+    DualCodeView* const view = FindDualView(exec);
+    if (view == nullptr) {
+        return false;
+    }
+    if (view->section != nullptr) {
+        return CommitSectionPages(view->exec + offset, view->write + offset, size);
+    }
+    for (size_t index = offset / CODE_CHUNK_SIZE; index * CODE_CHUNK_SIZE < offset + size; ++index) {
+        if (!view->chunks[index] && !MapCodeChunk(*view, index)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Unmaps the chunks from `offset` (chunk-aligned) on. False for a cache that is one section.
+bool ReleaseDualMapped(const u8* exec, size_t offset) {
+    std::scoped_lock lock{s_dual_views_mutex};
+    DualCodeView* const view = FindDualView(exec);
+    if (view == nullptr || view->section != nullptr) {
+        return false;
+    }
+    for (size_t index = offset / CODE_CHUNK_SIZE; index < view->chunks.size(); ++index) {
+        if (view->chunks[index]) {
+            UnmapCodeChunk(*view, index);
+        }
+    }
+    return true;
+}
+#endif
+
 #ifdef _WIN32
 // Reserve-only allocator for the code region: EnsureMemoryCommitted() commits pages on demand, so
 // the process is only charged for code actually emitted. Eden upstream switched to Xbyak's default
@@ -126,6 +487,11 @@ constexpr size_t PRELUDE_COMMIT_SIZE = 16 * 1024 * 1024;
 class CustomXbyakAllocator : public Xbyak::Allocator {
 public:
     uint8_t* alloc(size_t size) override {
+#    ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
+        if (u8* const exec = AllocDualMapped(size)) {
+            return exec;
+        }
+#    endif
         void* p = DYNARMIC_VIRTUAL_ALLOC(nullptr, size, MEM_RESERVE, PAGE_READWRITE);
         if (p == nullptr) {
             using Xbyak::Error;
@@ -135,6 +501,11 @@ public:
     }
 
     void free(uint8_t* p) override {
+#    ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
+        if (FreeDualMapped(p)) {
+            return;
+        }
+#    endif
         VirtualFree(static_cast<void*>(p), 0, MEM_RELEASE);
     }
 
@@ -314,6 +685,17 @@ BlockOfCode::~BlockOfCode() {
 #endif
 }
 
+#if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
+bool BlockOfCode::AdoptWriteView() {
+    u8* const write = DualWriteView(top_);
+    if (write == nullptr) {
+        return false;
+    }
+    writeOffset_ = write - top_;
+    return true;
+}
+#endif
+
 bool BlockOfCode::HasHostFeature(HostFeature feature) const noexcept {
     return (GetHostFeatures() & feature) == feature;
 }
@@ -324,7 +706,9 @@ void BlockOfCode::PreludeComplete() {
     ClearCache();
 #if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
     wx_exec_end = WxPageUp(static_cast<const u8*>(code_begin));
-    ProtectMemory(wx_exec_begin, wx_exec_end - wx_exec_begin, true);
+    if (!dual_mapped) {
+        ProtectMemory(wx_exec_begin, wx_exec_end - wx_exec_begin, true);
+    }
 #else
     DisableWriting();
 #endif
@@ -340,7 +724,7 @@ void BlockOfCode::PreludeComplete() {
 void BlockOfCode::EnableWriting() {
 #ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
 #    ifdef _WIN32
-    if (!prelude_complete || wx_writing) {
+    if (!prelude_complete || wx_writing || dual_mapped) {
         return; // before PreludeComplete everything committed is still RW
     }
     wx_writing = true;
@@ -357,7 +741,7 @@ void BlockOfCode::EnableWriting() {
 void BlockOfCode::DisableWriting() {
 #ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
 #    ifdef _WIN32
-    if (!prelude_complete || !wx_writing) {
+    if (!prelude_complete || !wx_writing || dual_mapped) {
         return;
     }
     wx_writing = false;
@@ -389,7 +773,7 @@ void BlockOfCode::DisableWriting() {
 
 void BlockOfCode::MakeWritable([[maybe_unused]] CodePtr where, [[maybe_unused]] size_t size) {
 #if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
-    if (!prelude_complete || !wx_writing) {
+    if (!prelude_complete || !wx_writing || dual_mapped) {
         return;
     }
     const u8* const begin = static_cast<const u8*>(where);
@@ -411,11 +795,53 @@ void BlockOfCode::ClearCache() {
 #if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
     // Code is emitted from code_begin again: hand the old blocks' pages back to the RW tail.
     const u8* const tail = WxPageUp(static_cast<const u8*>(code_begin));
-    if (wx_exec_end != nullptr && tail < wx_exec_end) {
+    if (wx_exec_end != nullptr && tail < wx_exec_end && !dual_mapped) {
         ProtectMemory(tail, wx_exec_end - tail, false);
         wx_exec_end = tail;
     }
+    ReleaseMemoryPastCap();
 #endif
+}
+
+#if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
+// Under a releasing cap, a cleared cache gives back the memory past the cap (rounded up to a
+// chunk), keeping the prelude. Nothing there holds code any more: ClearCache restarted emission at
+// code_begin and returned the paged W^X pages past it to RW.
+void BlockOfCode::ReleaseMemoryPastCap() {
+    if (!s_code_cache_release.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const size_t cap = s_code_cache_cap.load(std::memory_order_relaxed);
+    const size_t prelude = static_cast<const u8*>(code_begin) - top_;
+    const size_t keep = (std::max(cap, prelude) + CODE_CHUNK_SIZE - 1) & ~(CODE_CHUNK_SIZE - 1);
+    if (cap == SIZE_MAX || committed_size <= keep) {
+        return;
+    }
+    // A cache that cannot release (one section, whose pages cannot be decommitted, or pages still
+    // being written) stops trying, or SpaceRemaining would clear it again on every block.
+    const bool released = dual_mapped ? ReleaseDualMapped(top_, keep)
+                                      : !wx_writing && VirtualFree(top_ + keep, WxPageUp(top_ + committed_size) - (top_ + keep),
+                                                                   MEM_DECOMMIT);
+    if (!released) {
+        release_failed = true;
+        return;
+    }
+    s_committed_code_bytes.fetch_sub(committed_size - keep, std::memory_order_relaxed);
+    committed_size = keep;
+    cap_end = CapEnd(cap);
+}
+#endif
+
+size_t BlockOfCode::CapEnd(size_t cap) const {
+#ifdef _WIN32
+    const size_t committed = committed_size;
+#else
+    const size_t committed = maxSize_;
+#endif
+    if (cap == SIZE_MAX) {
+        return SIZE_MAX;
+    }
+    return s_code_cache_release.load(std::memory_order_relaxed) ? cap : std::max(cap, committed + CAP_SLACK);
 }
 
 size_t BlockOfCode::SpaceRemaining() const {
@@ -425,14 +851,15 @@ size_t BlockOfCode::SpaceRemaining() const {
     // in 30 s. It is cleared only when it fills those, and commits no more.
     if (const size_t epoch = s_code_cache_cap_epoch.load(std::memory_order_acquire); epoch != cap_epoch) {
         cap_epoch = epoch;
-        const size_t cap = s_code_cache_cap.load(std::memory_order_relaxed);
-#ifdef _WIN32
-        const size_t committed = committed_size;
-#else
-        const size_t committed = maxSize_;
-#endif
-        cap_end = cap == SIZE_MAX ? SIZE_MAX : std::max(cap, committed + CAP_SLACK);
+        cap_end = CapEnd(s_code_cache_cap.load(std::memory_order_relaxed));
     }
+#if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
+    // A releasing cap clears a cache holding more than it allows even where its code would fit.
+    if (cap_end != SIZE_MAX && committed_size > cap_end + CODE_CHUNK_SIZE && !release_failed &&
+        s_code_cache_release.load(std::memory_order_relaxed)) {
+        return 0;
+    }
+#endif
     const u8* const end = &top_[std::min(maxSize_, cap_end)];
     if (current_ptr >= end)
         return 0;
@@ -452,6 +879,16 @@ void BlockOfCode::EnsureMemoryCommitted([[maybe_unused]] size_t codesize) {
         // them RW.
         const u8* const commit_begin = WxPageUp(top_ + old_committed_size);
         const u8* const commit_end = WxPageUp(top_ + committed_size);
+        if (dual_mapped) {
+            if (commit_begin < commit_end &&
+                !CommitDualMapped(top_, commit_begin - top_, commit_end - commit_begin)) {
+#        if defined(DYNARMIC_UWP_APPCONTAINER)
+                RaiseJitMemoryFailure(DYNARMIC_UWP_COMMIT_FAILED, commit_begin, commit_end - commit_begin,
+                                      PAGE_READWRITE);
+#        endif
+            }
+            return;
+        }
         void* const committed = commit_begin >= commit_end
             ? top_
             : DYNARMIC_VIRTUAL_ALLOC(const_cast<u8*>(commit_begin), commit_end - commit_begin,
@@ -711,7 +1148,7 @@ void* BlockOfCode::AllocateFromCodeSpace(size_t alloc_size) {
 
     void* ret = getCurr<void*>();
     size_ += alloc_size;
-    memset(ret, 0, alloc_size);
+    memset(WriteAlias(ret), 0, alloc_size);
     return ret;
 }
 

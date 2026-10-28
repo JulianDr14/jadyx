@@ -2128,10 +2128,19 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
 
     Unregister(buffer_id);
 
+    // A backend whose buffers give their memory back only once the GPU is done with them needs
+    // no frame delay. Large ones skip it: at a loading screen's few frames per second, buffers
+    // joined into bigger ones stacked up hundreds of MiB in the ring.
+    bool delay_destruction = true;
+    if constexpr (requires { P::BUFFER_RELEASE_WAITS_FOR_GPU; }) {
+        delay_destruction = slot_buffers[buffer_id].SizeBytes() < P::IMMEDIATE_RELEASE_SIZE;
+    }
 #ifdef YUZU_LEGACY
     if (!do_not_mark || !immediately_free)
 #endif
-        delayed_destruction_ring.Push(std::move(slot_buffers[buffer_id]));
+        if (delay_destruction) {
+            delayed_destruction_ring.Push(std::move(slot_buffers[buffer_id]));
+        }
 
     slot_buffers.erase(buffer_id);
 

@@ -462,8 +462,8 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .force_fp32_denorm_flush = true,
         .support_explicit_workgroup_layout = false,
         .support_shader_quad_control = false,
-        // Quad ops (QuadReadAcross*, QuadReadLaneAt) include helper lanes; wave shuffles do not
-        // before SM 6.7, so manual derivatives (SHFL + FSWZADD) read garbage at triangle edges.
+        // Wave shuffles skip helper lanes before SM 6.7, so manual derivatives (SHFL + FSWZADD)
+        // read garbage at triangle edges; quad shuffles avoid them (has_helperless_quad_shuffles).
         .support_quad_shuffles = caps.wave_ops,
         .support_vote = caps.wave_ops,
         .supported_subgroup_stages = caps.wave_ops ? 0x7Fu : 0u,
@@ -501,6 +501,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         // A vertex shader whose loop exit ANDs the counter with the guest condition hung the
         // Series GPU on its first draw, with valid DXIL; the same shader without it draws fine.
         .has_broken_loop_safety_counter = true,
+        // SM 6.4 on the Series: quad ops in a shader without derivatives read helper lanes that
+        // never ran, so a quad leader outside the triangle gives garbage along its edges.
+        .has_helperless_quad_shuffles = true,
         .has_broken_robust = false,
         // D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT: raw views start on 16 bytes.
         .min_ssbo_alignment = 16,
@@ -549,8 +552,22 @@ void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler
     using Policy = PipelineResidencyPolicy;
     ++residency_frame;
     const u64 idle_frames = Policy::IdleFrames(snapshot.app_used, snapshot.app_limit);
-    const bool evict = pipeline_eviction.load(std::memory_order_relaxed) ||
-                       idle_frames == Policy::EMERGENCY_IDLE_FRAMES;
+    const u64 ledger = Common::MemoryLedgerCommittedBytes();
+    const auto verdict_before = release_probe.GetVerdict();
+    release_probe.Tick(residency_frame, pipelines_evicted,
+                       snapshot.app_used > ledger ? snapshot.app_used - ledger : 0,
+                       snapshot.app_limit != 0);
+    if (release_probe.GetVerdict() != verdict_before) {
+        const bool pays = release_probe.GetVerdict() == PipelineReleaseProbe::Verdict::Pays;
+        LOG_INFO(Render,
+                 "D3D12: releasing {} idle PSOs freed {} KiB of untracked commit; idle PSOs {}",
+                 release_probe.Probed(), release_probe.Freed() / 1024,
+                 pays ? "released under pressure"
+                      : "kept under pressure (they cost no commit), released only in an emergency");
+    }
+    const bool evict =
+        (pipeline_eviction.load(std::memory_order_relaxed) && release_probe.MayRelease()) ||
+        idle_frames == Policy::EMERGENCY_IDLE_FRAMES;
     const size_t checks = evict ? (std::min)(Policy::SWEEP_PER_FRAME, residency_sweep.size()) : 0;
     for (size_t i = 0; i < checks; ++i) {
         if (residency_cursor >= residency_sweep.size()) {

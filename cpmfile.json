@@ -336,6 +336,9 @@
     "xbyak": {
         "hash": "e0aa0a603dd3ac1a39d82213df1e73c042831aec2d6b2fe382c899651eaae4ed7e8aeb6be9c41ea0097087c9d091961ab18f313cd6a9e10d621715ffd49bfe36",
         "package": "xbyak",
+        "patches": [
+            "0001-code-write-alias.patch"
+        ],
         "repo": "herumi/xbyak",
         "version": "v7.40.1"
     },

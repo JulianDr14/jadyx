@@ -61,6 +61,7 @@ A64EmitX64::A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64::Jit* jit_in
         : EmitX64(code), conf(conf), jit_interface{jit_interface} {
     GenMemory128Accessors();
     GenFastmemFallbacks();
+    GenPageTableThunks();
     GenTerminalHandlers();
     // Before PreludeComplete: the callback lives in the unwind data in code space, which the
     // paged W^X of the UWP build makes read-execute from then on.
@@ -96,10 +97,20 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
     A64EmitContext ctx{conf, reg_alloc, block, shared_labels};
 
     // Start emitting.
+    const bool count_bytes = JitProfile::enabled.load(std::memory_order_relaxed);
+    std::array<std::uint64_t, static_cast<std::size_t>(JitProfile::CodePart::Count)> part_bytes{};
+    std::uint64_t memory_accesses = 0;
+    const auto* part_start = code.getCurr();
+    const auto end_part = [&](JitProfile::CodePart part) {
+        part_bytes[static_cast<std::size_t>(part)] += std::uint64_t(code.getCurr() - part_start);
+        part_start = code.getCurr();
+    };
     code.align();
+    end_part(JitProfile::CodePart::Align);
     const auto* const entrypoint = code.getCurr();
     code.mov(code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)], rbp);
     code.lea(rbp, code.ptr[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) - 8]);
+    end_part(JitProfile::CodePart::Prologue);
 
     DEBUG_ASSERT(block.GetCondition() == IR::Cond::AL);
     typedef void (EmitX64::*EmitHandlerFn)(EmitContext& context, IR::Inst* inst);
@@ -151,6 +162,12 @@ finish_this_inst:
         if (conf.very_verbose_debugging_output)
             EmitVerboseDebuggingOutput(reg_alloc);
 #endif
+        if (count_bytes) {
+            const bool memory = opcode >= IR::Opcode::A64ReadMemory8 &&
+                                opcode <= IR::Opcode::A64ExclusiveWriteMemory128;
+            memory_accesses += memory;
+            end_part(memory ? JitProfile::CodePart::Memory : JitProfile::CodePart::Other);
+        }
     }
 
     instructions.Stop();
@@ -161,11 +178,22 @@ finish_this_inst:
     code.mov(rbp, code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)]);
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
     code.int3();
+    end_part(JitProfile::CodePart::Terminal);
     terminal.Stop();
     JitProfile::Timer deferred{JitProfile::Phase::Deferred};
     for (auto& deferred_emit : ctx.deferred_emits)
         deferred_emit();
     code.int3();
+    end_part(JitProfile::CodePart::Deferred);
+    if (count_bytes) {
+        for (std::size_t i = 0; i < part_bytes.size(); ++i) {
+            JitProfile::code_bytes[i].fetch_add(part_bytes[i], std::memory_order_relaxed);
+        }
+        JitProfile::code_memory_accesses.fetch_add(memory_accesses, std::memory_order_relaxed);
+        JitProfile::code_guest_instructions.fetch_add(
+            (A64::LocationDescriptor{block.EndLocation()}.PC() - A64::LocationDescriptor{block.Location()}.PC()) / 4,
+            std::memory_order_relaxed);
+    }
 
     const size_t size = size_t(code.getCurr() - entrypoint);
     deferred.Stop();
@@ -195,7 +223,7 @@ void A64EmitX64::ClearCache() {
     EmitX64::ClearCache();
     block_ranges.ClearCache();
     ClearFastDispatchTable();
-    fastmem_patch_info.clear();
+    fastmem_patch_info = decltype(fastmem_patch_info){};
 }
 
 void A64EmitX64::InvalidateCacheRanges(const boost::icl::interval_set<u64>& ranges) {

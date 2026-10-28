@@ -1,0 +1,29 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// A guest render condition whose reports the GPU wrote, evaluated where they are for the D3D12
+// renderer: writes a 64-bit predicate that is not zero when the report at offset 0 differs from
+// the one 16 bytes later (or from zero), the way SetPredication tests it.
+
+#version 460 core
+
+layout(local_size_x = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Reports {
+    uint reports[6];
+};
+
+layout(std430, set = 0, binding = 1) buffer Predicate {
+    uint predicate[2];
+};
+
+layout(push_constant) uniform Params {
+    uint compare_second;
+};
+
+void main() {
+    const uvec2 lhs = uvec2(reports[0], reports[1]);
+    const uvec2 rhs = compare_second != 0 ? uvec2(reports[4], reports[5]) : uvec2(0);
+    predicate[0] = any(notEqual(lhs, rhs)) ? 1 : 0;
+    predicate[1] = 0;
+}

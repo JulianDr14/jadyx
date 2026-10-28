@@ -34,6 +34,11 @@ constexpr u64 MAX_STREAM_REQUEST = 32_MiB;
 /// Uploads at least this large wait for the GPU to release submitted regions instead of
 /// allocating a dedicated buffer; smaller ones never stall the CPU.
 constexpr u64 WAIT_FOR_STREAM_SIZE = 1_MiB;
+/// Below this much free memory, retired dedicated buffers over 4 MiB (LARGE_RELEASE_LEVEL and up)
+/// are released every frame instead of in the round-robin sweep. Matches the texture cache's
+/// pressure level.
+constexpr u64 LARGE_RELEASE_FREE = 768_MiB;
+constexpr size_t LARGE_RELEASE_LEVEL = 23;
 
 } // Anonymous namespace
 
@@ -134,12 +139,13 @@ bool StagingBufferPool::GuardMemory(const CacheMemorySnapshot& snapshot) {
         stream_pointer = {};
         stream_buffer_size = region_size = iterator = 0;
         sync_ticks.fill(0);
-        ring_guard.OnRetired();
+        ring_guard.OnRetired(released);
         released_ring = true;
         LOG_INFO(Render, "D3D12: memory guard retired staging ring ({} MiB released)",
                  released / 1_MiB);
     }
-    // A ring released this frame is not in the snapshot yet, so its replacement waits a frame.
+    // A ring released this frame is not in the snapshot yet: a larger replacement waits a frame,
+    // a smaller one is created now from the memory it gave back.
     if (const u64 wanted = ring_guard.WantedRing(stream_buffer ? stream_buffer_size : 0,
                                                  snapshot.app_used, snapshot.app_limit)) {
         try {
@@ -155,6 +161,16 @@ bool StagingBufferPool::GuardMemory(const CacheMemorySnapshot& snapshot) {
             // Dedicated uploads remain available; back off instead of retrying every frame.
             ring_guard.OnAllocationFailed();
             LOG_WARNING(Render, "D3D12: memory guard ring allocation deferred: {}", e.what());
+        }
+    }
+    // Large dedicated buffers (a whole buffer or a batch of textures, up to 100+ MiB) otherwise wait
+    // for their level's turn in the per-frame sweep, up to NUM_LEVELS frames: four of them created
+    // within a second of an area load stacked 280 MiB of retired staging into an out-of-memory.
+    // Under pressure they go back as soon as the GPU is done with them.
+    if (snapshot.app_limit != 0 && snapshot.AppFree() <= LARGE_RELEASE_FREE) {
+        for (size_t level = LARGE_RELEASE_LEVEL; level < NUM_LEVELS; ++level) {
+            ReleaseLevel(upload_cache, level);
+            ReleaseLevel(download_cache, level);
         }
     }
     if (plan.trim) {
@@ -280,7 +296,16 @@ StagingBufferRef StagingBufferPool::CreateStagingBuffer(size_t size, MemoryUsage
     if (headroom.NeedsMeasure(bytes)) {
         MeasureHeadroom();
     }
-    if (!headroom.Fits(bytes)) {
+    // A request too large for the stream reclaims before it gets close to the reserve: it is the
+    // one that crosses it, and the buffers it would reuse or free are retired ones of its size.
+    // The estimate only counts staging; textures and transfer buffers created in the same loading
+    // frame are not in it, so a large request (rare) always measures.
+    const bool large = bytes >= MAX_STREAM_REQUEST;
+    if (large) {
+        MeasureHeadroom();
+    }
+    if (!headroom.Fits(bytes) ||
+        (large && headroom.Projected(bytes) < HeadroomTracker::RESERVE + HeadroomTracker::SLACK)) {
         if (const auto ref = RelieveMemoryPressure(size, usage, deferred, false)) {
             return *ref;
         }
@@ -364,6 +389,17 @@ u64 StagingBufferPool::PendingUploadBytes() const noexcept {
     return pending_tick == scheduler.CurrentTick() ? pending_upload_bytes : 0;
 }
 
+u64 StagingBufferPool::UploadSubmitBytes() const noexcept {
+    // The memory guard shrinks the ring to 32 MiB under pressure, the size of the largest stream
+    // request. A list allowed to upload a whole ring before it is submitted then laps itself, and
+    // its next large texture became an 11 MiB dedicated buffer that the commit limit refused.
+    // Half the ring leaves the other half free for the draw that crosses the threshold.
+    if (!stream_buffer) {
+        return MAX_STREAM_REQUEST;
+    }
+    return std::min<u64>(MAX_STREAM_REQUEST, stream_buffer_size / 2);
+}
+
 StagingBufferPool::StagingBuffersCache& StagingBufferPool::GetCache(MemoryUsage usage) {
     return usage == MemoryUsage::Download ? download_cache : upload_cache;
 }
@@ -386,6 +422,10 @@ void StagingBufferPool::ReleaseLevel(StagingBuffersCache& cache, size_t log2,
 
 void StagingBufferPool::ReleaseRetiredDownloads() {
     ReleaseAllRetired(download_cache);
+}
+
+void StagingBufferPool::ReleaseRetiredUploads() {
+    ReleaseAllRetired(upload_cache);
 }
 
 void StagingBufferPool::ReleaseAllRetired(StagingBuffersCache& cache) {

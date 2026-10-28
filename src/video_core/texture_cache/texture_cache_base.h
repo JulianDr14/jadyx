@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <deque>
 #include <functional>
@@ -61,6 +62,22 @@ using namespace Common::Literals;
 /// path.
 void SetMipRenderTargets(bool enabled) noexcept;
 [[nodiscard]] bool MipRenderTargets() noexcept;
+/// Images a new one supersedes are released when it is created instead of when the GC ages them
+/// out: a single-level 2D image re-created at the same address and format with another size gives
+/// the new one its contents, and a single-level image overlapping it in an incompatible layout
+/// (what the GC already evicts without a download) goes when unused for two frames. Dynamic
+/// resolution re-creates every render target in the same memory with each size; the old ones
+/// held gigabytes until the GC reached them. Boot.cfg "rt_reclaim=0" leaves them to the GC.
+void SetReclaimSupersededImages(bool enabled) noexcept;
+[[nodiscard]] bool ReclaimSupersededImages() noexcept;
+
+/// A render target drawn to or sampled at another size (dynamic resolution) takes its contents
+/// from the previous size on the GPU, which is then deleted, instead of uploading stale guest
+/// memory.
+/// Older sizes at the same address without GPU contents are deleted as well.
+/// Boot.cfg "rt_inherit=0" turns both off to reproduce the upload.
+void SetRenderTargetInheritance(bool enabled) noexcept;
+[[nodiscard]] bool RenderTargetInheritance() noexcept;
 
 struct ImageViewInOut {
     u32 index{};
@@ -99,6 +116,8 @@ public:
 
     TextureCacheGPUMap* gpu_page_table = nullptr;
     TextureCacheGPUMap* sparse_page_table = nullptr;
+    /// Where gpu_page_table sits in the cache's page table storage; sparse_page_table follows it.
+    size_t gpu_page_table_index = 0;
 };
 
 template <class P>
@@ -361,6 +380,11 @@ private:
     /// Remove joined images from the cache
     [[nodiscard]] ImageId JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr);
 
+    /// Whether the new image replaces an aliased one (SetReclaimSupersededImages).
+    [[nodiscard]] bool IsResizedImage(const ImageBase& new_image, const ImageBase& old) const;
+    /// Whether a bad overlap of a new image can go now (SetReclaimSupersededImages).
+    [[nodiscard]] bool IsSupersededOverlap(const ImageBase& old) const;
+
     [[nodiscard]] ImageId FindDMAImage(const ImageInfo& info, GPUVAddr gpu_addr);
 
     /// Return a blit image pair from the given guest blit parameters
@@ -424,6 +448,52 @@ private:
 
     /// Delete image from the cache
     void DeleteImage(ImageId image, bool immediate_delete = false);
+
+    /// Why an image left the cache, for the gpu_profile churn report.
+    enum class ImageDeleteReason : u8 {
+        Evicted,             ///< garbage collector, contents dropped
+        EvictedWithDownload, ///< garbage collector, GPU contents written back first
+        Unmapped,            ///< the guest unmapped its memory
+        JoinDropped,         ///< a new overlapping image replaced it without copying
+        JoinMerged,          ///< a new overlapping image absorbed it
+        Superseded,          ///< the same render target at another size took its contents
+        Count,
+    };
+
+    /// Why a new image was uploaded from guest memory instead of inheriting its contents.
+    enum class InheritFallback : u8 {
+        NewAddress,    ///< nothing overlaps it
+        Layout,        ///< mipmapped, multisampled, not 2D, or absorbing other images
+        NoPredecessor, ///< nothing in its range holds GPU-only contents
+        NewerOverlap,  ///< the newest GPU contents belong to another kind of image
+        CpuData,       ///< the guest wrote over the previous size after the GPU did
+        Count,
+    };
+
+    /// The previous size of a new image, when it holds the newest GPU contents at its address.
+    /// JoinImages helper; empty when the contents have to be uploaded.
+    [[nodiscard]] ImageId FindPreviousSize(const ImageInfo& info, GPUVAddr gpu_addr);
+
+    /// Deletes the older sizes at a new image's address that hold no GPU contents and were not
+    /// used this frame or the previous one. JoinImages helper.
+    void RetireStaleSizes(const Image& new_image);
+
+    [[nodiscard]] bool UsedSinceLastFrame(const ImageBase& image) const noexcept {
+        return lru_cache.Tick(image.lru_index) + 1 >= frame_tick;
+    }
+
+    /// gpu_profile only: counts image creations and deletions per guest address and logs, every
+    /// few hundred frames, which addresses keep being recreated and why they were deleted.
+    void NoteImageCreated(const Image& image);
+    void NoteImageDeleted(const Image& image, ImageDeleteReason reason);
+    void ReportImageChurn();
+
+    /// gpu_profile only: each time the live images grow by another step, logs what holds the
+    /// memory, grouped by format and size, with how long ago each group was last used.
+    void ReportLiveImages();
+
+    /// Host memory an image takes, as the cache accounts it.
+    [[nodiscard]] u64 HostSizeBytes(const ImageBase& image) const noexcept;
 
     /// Remove image views references from the cache
     void RemoveImageViewReferences(std::span<const ImageViewId> removed_views);
@@ -550,6 +620,29 @@ private:
 
     u64 modification_tick = 0;
     u64 frame_tick = 0;
+    u64 replaced_resized_images = 0;
+    u64 reclaimed_overlaps = 0;
+    std::array<u64, 6> diag_join{};
+    std::array<u64, 4> diag_gc{};
+
+    struct ChurnAddress {
+        u32 creates = 0;
+        u32 deletes = 0;
+        u32 young_deletes = 0; ///< deleted within two frames of being created
+        ImageInfo info{};
+        ImageDeleteReason last_reason = ImageDeleteReason::Count;
+        bool gpu_modified = false;
+    };
+    static constexpr size_t NUM_DELETE_REASONS = static_cast<size_t>(ImageDeleteReason::Count);
+    std::unordered_map<GPUVAddr, ChurnAddress> churn_addresses;
+    std::array<u32, NUM_DELETE_REASONS> churn_deletes{};
+    std::array<u32, NUM_DELETE_REASONS> churn_young_deletes{};
+    std::array<u64, NUM_DELETE_REASONS> churn_deleted_bytes{};
+    static constexpr size_t NUM_INHERIT_FALLBACKS = static_cast<size_t>(InheritFallback::Count);
+    u32 churn_inherited = 0;
+    std::array<u32, NUM_INHERIT_FALLBACKS> churn_inherit_fallbacks{};
+    u64 churn_window_start = 0;
+    u64 live_report_bytes = 0;
 
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},
                                                Common::ThreadPlacement::Efficiency};
@@ -565,6 +658,7 @@ private:
     boost::container::small_vector<ImageId, 4> join_right_aliased_ids;
     ::Common::unordered_set<ImageId> join_ignore_textures;
     boost::container::small_vector<ImageId, 4> join_bad_overlap_ids;
+    boost::container::small_vector<ImageId, 4> join_superseded_ids;
     struct JoinCopy {
         bool is_alias;
         ImageId id;

@@ -4,6 +4,7 @@
 #include "video_core/renderer_d3d12/d3d12_texture_cache_internal.h"
 
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cstring>
 #include <optional>
@@ -13,6 +14,7 @@
 #include <fmt/format.h>
 
 #include "common/alignment.h"
+#include "common/literals.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
 #include "video_core/frame_trace.h"
@@ -62,6 +64,7 @@ void Image::DiagnosticTransition(ID3D12Resource* tracked_resource, D3D12_RESOURC
 
 
 using namespace TextureDetail;
+using namespace Common::Literals;
 
 bool TextureCacheRuntime::CanCheckpointImage(
     const Image& image, std::span<const VideoCommon::BufferImageCopy> copies) const {
@@ -123,6 +126,10 @@ void SetAstcGpuFresh(bool enabled) {
     gpu_astc_fresh.store(enabled, std::memory_order_relaxed);
 }
 
+void SetTextureMemoryCap(u64 bytes) {
+    texture_memory_cap.store(bytes, std::memory_order_relaxed);
+}
+
 void SetAstcGpuSync(bool enabled) {
     gpu_astc_sync.store(enabled, std::memory_order_relaxed);
 }
@@ -157,8 +164,11 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
     : device{device_}, scheduler{scheduler_}, staging{staging_}, view_descriptors{views},
       sampler_descriptors{samplers}, rtv_descriptors{rtvs}, dsv_descriptors{dsvs},
       texture_allocator{device_, scheduler_}, transfer_buffers{transfer_buffers_} {
-    transfer_buffers.SetReclaimer(
-        [this] { texture_allocator.TrimEmptyHeaps(TextureResourceAllocator::TrimMode::All); });
+    // Retired dedicated uploads too: a loading frame can leave 100+ MiB of them behind.
+    transfer_buffers.SetReclaimer([this] {
+        staging.ReleaseRetiredUploads();
+        texture_allocator.TrimEmptyHeaps(TextureResourceAllocator::TrimMode::All);
+    });
     null_rtv = rtv_descriptors.Allocate();
     D3D12_RENDER_TARGET_VIEW_DESC null_desc{
         .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -349,6 +359,21 @@ void TextureCacheRuntime::CompleteGcDownload(Image& image) {
 }
 void TextureCacheRuntime::TickFrame() {
     staging.TickFrame();
+    {
+        static auto last_census = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_census >= std::chrono::seconds(10)) {
+            last_census = now;
+            LOG_INFO(Render, "D3D12: {}", texture_allocator.Report());
+            LOG_INFO(Render, "D3D12: texture memory: pressure {}, over cap {}, cap {} MiB, "
+                     "app {}/{} MiB, gpu {}/{} MiB",
+                     static_cast<int>(pressure_level), over_texture_cap,
+                     texture_memory_cap.load(std::memory_order_relaxed) / 1_MiB,
+                     pressure_snapshot.app_used / 1_MiB, pressure_snapshot.app_limit / 1_MiB,
+                     pressure_snapshot.gpu_used / 1_MiB, pressure_snapshot.gpu_budget / 1_MiB);
+            LOG_INFO(Render, "D3D12: {}", texture_allocator.Census(6));
+        }
+    }
     if (!pressure_sampled) {
         pressure_snapshot = device.QueryCacheMemoryPressure();
         pressure_level = cache_pressure.Update(pressure_snapshot);
@@ -358,13 +383,35 @@ void TextureCacheRuntime::TickFrame() {
     // at most a few tens of MiB. Only Critical and worse release the heaps; transfer buffers go
     // only in an Emergency, Critical keeps the ones recent copies used. An allocation the system
     // refuses still reclaims everything (TransferBufferPool::ReclaimAfterOutOfMemory).
-    const bool release_idle = pressure_level >= CachePressure::Critical;
-    texture_allocator.TrimEmptyHeaps(release_idle ? TextureResourceAllocator::TrimMode::Settled
-                                                  : TextureResourceAllocator::TrimMode::KeepWarm);
-    if (pressure_level >= CachePressure::Emergency) {
-        transfer_buffers.Trim(true);
-    } else if (release_idle) {
-        transfer_buffers.TrimStale();
+    // In an Emergency every empty heap goes at once: waiting for them to settle kept 144 MiB of
+    // them while a loading screen ran out of memory.
+    // Over the texture cap the heaps the GC drained are released too, after they settle, so the
+    // cap bounds the heaps and not only the textures living in them.
+    if (const u64 cap = texture_memory_cap.load(std::memory_order_relaxed); cap != 0) {
+        // Every frame: the free ranges of hundreds of heaps are only walked for the log line.
+        const u64 heap_bytes = texture_allocator.HeapBytes();
+        // 64 MiB below the cap before leaving it, so one heap more or less does not flip it.
+        const bool over = over_texture_cap ? heap_bytes + 64_MiB > cap : heap_bytes > cap;
+        if (over != over_texture_cap) {
+            const auto stats = texture_allocator.GetStats();
+            over_texture_cap = over;
+            LOG_INFO(Render, "D3D12: texture cap {}: heaps {} MiB, live {} MiB, free {} MiB "
+                     "(largest {} MiB), pending {} MiB, cap {} MiB, pressure {}",
+                     over ? "exceeded" : "cleared", stats.heap_bytes / 1_MiB,
+                     stats.reserved_bytes / 1_MiB, stats.free_bytes / 1_MiB,
+                     stats.largest_free_range / 1_MiB, stats.pending_bytes / 1_MiB, cap / 1_MiB,
+                     static_cast<int>(pressure_level));
+        }
+    } else {
+        over_texture_cap = false;
+    }
+    const bool release_idle = pressure_level >= CachePressure::Critical || over_texture_cap;
+    texture_allocator.TrimEmptyHeaps(
+        pressure_level >= CachePressure::Emergency ? TextureResourceAllocator::TrimMode::All
+        : release_idle                             ? TextureResourceAllocator::TrimMode::Settled
+                                                   : TextureResourceAllocator::TrimMode::KeepWarm);
+    if (pressure_level >= CachePressure::Critical) {
+        transfer_buffers.TrimStale(pressure_level >= CachePressure::Emergency);
     } else {
         transfer_buffers.Trim(false);
     }
@@ -391,7 +438,13 @@ std::optional<VideoCommon::TextureGcPolicy> TextureCacheRuntime::GetTextureGcPol
                                     static_cast<u64>(pressure_level));
     }
     if (!pressure_snapshot.Known()) return std::nullopt;
-    return CachePressureController::Policy(pressure_level, second_pass,
+    // Over the texture cap the clean textures nobody sampled for a while go before the app runs
+    // short: they decode again from guest memory when used, and render targets are kept.
+    CachePressure level = pressure_level;
+    if (level == CachePressure::Normal && over_texture_cap) {
+        level = CachePressure::Pressure;
+    }
+    return CachePressureController::Policy(level, second_pass,
         CachePressureController::RequiresImmediateRecovery(pressure_snapshot));
 }
 u64 TextureCacheRuntime::GetDeviceLocalMemory() const { return device.CacheMemoryBudget(); }
@@ -449,7 +502,11 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
     // block padding to wrap/linear sampling and changes LOD dimensions (358 != 360).
     // Keep this distinction covered by tools/xbox/tests/bc-npot.cpp, including the
     // aligned native path: only physical block-copy proxies may retain padded extents.
-    const bool unaligned_bc_extent = (info_.size.width % 4 != 0 || info_.size.height % 4 != 0);
+    // A device with unaligned block-compressed textures (OPTIONS8) takes these as they are: the
+    // RGBA8 decode costs 8 times BC1's memory, over a gigabyte in some area loads.
+    const bool unaligned_native = runtime_.device.SupportsUnalignedBlockTextures();
+    const bool unaligned_bc_extent =
+        !unaligned_native && (info_.size.width % 4 != 0 || info_.size.height % 4 != 0);
     if (!native_blocks && info_.type == ImageType::e2D && info_.num_samples == 1 &&
         (unaligned_bc_extent || (decode_bc_arrays.load(std::memory_order_relaxed) &&
                                  info_.resources.layers > 1))) {
@@ -518,10 +575,12 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
     const auto [samples_x, samples_y] = VideoCommon::SamplesLog2(info_.num_samples);
     u64 width = std::max<u64>(1, info_.size.width >> samples_x);
     u32 height = std::max(1U, info_.size.height >> samples_y);
-    // D3D12 requires block-compressed top levels to be whole blocks; the guest's may not be.
+    // D3D12 requires block-compressed top levels to be whole blocks unless the device supports
+    // unaligned ones; the guest's may not be. Converted formats keep the padding their encoders
+    // write.
     const u32 block_w = VideoCore::Surface::DefaultBlockWidth(format.copy_format);
     const u32 block_h = VideoCore::Surface::DefaultBlockHeight(format.copy_format);
-    if (block_w > 1 || block_h > 1) {
+    if ((block_w > 1 || block_h > 1) && (native_blocks || format.converted || !unaligned_native)) {
         width = Common::AlignUp(width, block_w);
         height = Common::AlignUp(height, block_h);
     }
@@ -577,6 +636,10 @@ Image::GcReadback::~GcReadback() {
 Image::Image(Image&&) noexcept = default;
 
 Image::~Image() {
+    ReleaseResources();
+}
+
+void Image::ReleaseResources() {
     if (runtime && resource) {
         runtime->texture_allocator.DeferRelease(
             {std::move(resource), std::move(resource_allocation), resource_allocation != nullptr});
@@ -593,28 +656,14 @@ Image::~Image() {
     if (runtime && reinterpreted) {
         runtime->scheduler.DeferRelease(std::move(reinterpreted));
     }
+    guest_blocks.reset();
+    depth_feedback.reset();
 }
 
 Image& Image::operator=(Image&& other) noexcept {
     if (this != &other) {
         gc_readback.reset();
-        if (runtime && resource) {
-            runtime->texture_allocator.DeferRelease(
-                {std::move(resource), std::move(resource_allocation),
-                 resource_allocation != nullptr});
-        }
-        if (runtime && slice_array) {
-            runtime->scheduler.DeferRelease(std::move(slice_array));
-        }
-        if (runtime && volume) {
-            runtime->scheduler.DeferRelease(std::move(volume));
-        }
-        if (runtime && cube) {
-            runtime->scheduler.DeferRelease(std::move(cube));
-        }
-        if (runtime && reinterpreted) {
-            runtime->scheduler.DeferRelease(std::move(reinterpreted));
-        }
+        ReleaseResources();
         static_cast<VideoCommon::ImageBase&>(*this) = std::move(other);
         allocation_tick = other.allocation_tick;
         runtime = other.runtime;
@@ -1064,7 +1113,8 @@ void Image::CopyThroughBuffer(ID3D12Resource* src, ID3D12Resource* dst) {
     u64 total_bytes = 0;
     runtime->device.Get()->GetCopyableFootprints(&src_desc, 0, count, 0, footprints.data(),
                                                  nullptr, nullptr, &total_bytes);
-    ComPtr<ID3D12Resource> transfer = runtime->transfer_buffers.Acquire(total_bytes);
+    ComPtr<ID3D12Resource> transfer =
+        runtime->transfer_buffers.Acquire(total_bytes, false, "reinterpret");
     auto* const commands = runtime->scheduler.CommandList();
     for (u32 subresource = 0; subresource < count; ++subresource) {
         const D3D12_TEXTURE_COPY_LOCATION from{
@@ -1105,7 +1155,8 @@ void Image::RefreshSliceArray() {
     u64 total_bytes = 0;
     runtime->device.Get()->GetCopyableFootprints(&desc, 0, count, 0, footprints.data(), nullptr,
                                                  nullptr, &total_bytes);
-    ComPtr<ID3D12Resource> transfer = runtime->transfer_buffers.Acquire(total_bytes);
+    ComPtr<ID3D12Resource> transfer =
+        runtime->transfer_buffers.Acquire(total_bytes, false, "slice array");
     auto* const commands = runtime->scheduler.CommandList();
     Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
     const auto slices = [&](u32 level) { return std::min(layers, std::max(1U, layers >> level)); };

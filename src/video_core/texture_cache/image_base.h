@@ -96,6 +96,7 @@ struct ImageBase {
     u64 scale_tick = 0;
     bool has_scaled = false;
 
+    /// Texture cache page tables it is registered in (the GPU one; the sparse one follows).
     size_t channel = 0;
 
     ImageFlagBits flags = ImageFlagBits::CpuModified;
