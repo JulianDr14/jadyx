@@ -612,11 +612,10 @@ Requirements: an Xbox Series X|S in Developer Mode, the package from the
 [latest release](https://github.com/JulianDr14/jadyx/releases/latest) (or one you built, see
 [Building](#building)), and the keys, firmware and games dumped from your own Switch.
 
-1. Download **`Jadyx_<version>_x64.appx`**, **`Jadyx.cer`** and
-   **`Microsoft.VCLibs.x64.14.00.appx`** from the release. Open Device Portal at
-   `https://<console-ip>:11443` (Dev Home shows the address), choose **Add**, select the appx, add
-   `Jadyx.cer` as the certificate and `Microsoft.VCLibs.x64.14.00.appx` as a dependency. Once
-   VCLibs is on the console, later installs can skip it.
+1. Download **`Jadyx_<version>_x64.appx`** and **`Microsoft.VCLibs.x64.14.00.appx`**
+   from the release. Open Device Portal at `https://<console-ip>:11443` (Dev Home shows the
+   address), choose **Add**, select the appx and add VCLibs as a dependency if a compatible
+   version is not already installed. Since Jadyx 0.3.9.0, no separate `.cer` upload is required.
 2. In Dev Home, select Jadyx → **View details** and set **App type** to **Game**. App mode has
    much less memory than the 5120 MiB the emulator expects.
 3. Start Jadyx and import your own keys and firmware in **Settings > File manager**, from a

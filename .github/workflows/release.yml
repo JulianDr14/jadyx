@@ -135,12 +135,12 @@ jobs:
           You need an Xbox Series X|S in Dev Mode. No keys, firmware or games are included: use your
           own dumps.
 
-          1. Download \`Jadyx_${PACKAGE_VERSION}_x64.appx\`, \`Microsoft.VCLibs.x64.14.00.appx\` and
-             \`Jadyx.cer\` from the assets below.
+          1. Download \`Jadyx_${PACKAGE_VERSION}_x64.appx\` and \`Microsoft.VCLibs.x64.14.00.appx\`
+             from the assets below. Since Jadyx 0.3.9.0, no separate .cer upload is required.
           2. On a PC on the same network, open Device Portal at \`https://<xbox-ip>:11443\` (Dev Home
              shows the address) and accept the browser's certificate warning.
-          3. Choose **Add**, pick the Jadyx appx, add the VCLibs appx as a dependency and \`Jadyx.cer\`
-             as the certificate, and install.
+          3. Choose **Add**, pick the Jadyx appx, add the VCLibs appx as a dependency if a compatible
+             version is not already installed, and install.
           4. In Dev Home, select Jadyx → **View details** and set **App type** to **Game**. In App mode
              it runs out of memory.
           5. Start Jadyx and send your keys, firmware and games from a PC or phone with the
