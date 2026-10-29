@@ -607,9 +607,9 @@ struct BootConfig {
     /// until guest_swap_high_mib is free again, guest_swap_batch_mib at a time (0: all at once);
     /// guest_swap_reserve_mib of commit is held for a demand commit that would fail.
     bool guest_swap{true};
-    u32 guest_swap_watch_mib{1024};
-    u32 guest_swap_low_mib{512};
-    u32 guest_swap_high_mib{640};
+    u32 guest_swap_watch_mib{1536};
+    u32 guest_swap_low_mib{1024};
+    u32 guest_swap_high_mib{1280};
     u32 guest_swap_idle_ms{8000};
     u32 guest_swap_probation_ms{1500};
     u32 guest_swap_reserve_mib{32};
