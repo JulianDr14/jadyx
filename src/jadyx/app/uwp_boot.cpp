@@ -158,6 +158,7 @@ void RemoveDeviceForProbe(VideoCore::RendererBase& renderer);
 void SetBcArrayDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuDecode(bool enabled); // d3d12_texture_cache.h
 void SetBcGpuDecode(bool enabled); // d3d12_texture_cache.h
+void SetNotZeroedHeaps(bool enabled); // d3d12_resource_utils.h
 void SetAstcDropTopLevel(bool enabled); // d3d12_texture_cache.h
 void SetGpuUnswizzle(bool enabled); // d3d12_texture_cache.h
 void SetTextureMemoryCap(u64 bytes); // d3d12_texture_cache.h
@@ -490,6 +491,9 @@ struct BootConfig {
     /// BC textures kept as plain texels (arrays, unaligned extents, the guest palette) decoded by
     /// a compute shader instead of the CPU ("bc_gpu_decode=0" turns it off).
     bool bc_gpu_decode{true};
+    /// Texture heaps and staging created without the OS zeroing their pages
+    /// ("not_zeroed_heaps=0" turns it off).
+    bool not_zeroed_heaps{true};
     /// Single-sample depth bias added in the fragment shader ("depth_bias_shader=0" turns it off).
     bool depth_bias_shader{true};
     /// Whether the GPU reads process memory in place, probed and logged at device creation
@@ -840,6 +844,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetShaderAlphaToCoverage(config.a2c_shader);
     D3D12::SetSmallBcGuestPalette(config.small_bc_palette);
     D3D12::SetBcGpuDecode(config.bc_gpu_decode);
+    D3D12::SetNotZeroedHeaps(config.not_zeroed_heaps);
     D3D12::SetShaderDepthBias(config.depth_bias_shader);
     D3D12::SetMemoryImportProbe(config.memory_import_probe);
     Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);
@@ -3312,6 +3317,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                        "small BC1-3 with the guest palette") ||
                             set_switch("bc_gpu_decode", config.bc_gpu_decode,
                                        "decoded BC textures on the GPU") ||
+                            set_switch("not_zeroed_heaps", config.not_zeroed_heaps,
+                                       "heaps created without zeroing") ||
                             set_switch("depth_bias_shader", config.depth_bias_shader,
                                        "depth bias in the shader") ||
                             set_switch("memory_import_probe", config.memory_import_probe,
@@ -3338,6 +3345,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             line.starts_with("a2c_shader=") ||
                             line.starts_with("small_bc_palette=") ||
                             line.starts_with("bc_gpu_decode=") ||
+                            line.starts_with("not_zeroed_heaps=") ||
                             line.starts_with("depth_bias_shader=") ||
                             line.starts_with("memory_import_probe=")) {
                             parse_render_key(line);
