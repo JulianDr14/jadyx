@@ -80,6 +80,34 @@ bool ValidName(const std::string& name, bool system_files = false, bool allow_an
     try { return Filename(name).native().size() <= 100; } catch (...) { return false; }
 }
 
+bool ValidFolderName(const std::string& name) {
+    if (name.empty() || name.size() > 200 || name == "." || name == ".." ||
+        name.back() == ' ' || name.back() == '.') return false;
+    for (const unsigned char c : name)
+        if (c < 32 || std::string_view{"/\\:<>\"|?*"}.find(static_cast<char>(c)) != std::string_view::npos)
+            return false;
+    if (name.find("..") != std::string::npos) return false;
+    auto lower = name;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const auto stem = lower.substr(0, lower.find('.'));
+    if (stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" ||
+        (stem.size() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) &&
+         stem[3] >= '0' && stem[3] <= '9')) return false;
+    try { return Filename(name).native().size() <= 100; } catch (...) { return false; }
+}
+
+bool IsOrdinaryDirectory(const fs::path& path) {
+    const auto attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) &&
+        !(attributes & FILE_ATTRIBUTE_REPARSE_POINT);
+}
+
+std::string Utf8(const fs::path& path) {
+    const auto encoded = path.u8string();
+    return {reinterpret_cast<const char*>(encoded.data()), encoded.size()};
+}
+
 bool ValidTag(const std::string& tag) {
     return tag.size() <= 64 && tag.find_first_not_of("0123456789abcdefghijklmnopqrstuvwxyz:") == std::string::npos;
 }
@@ -129,13 +157,16 @@ struct NspUpload::Impl {
         return on_developer ? DeveloperTransfers() / "payload.part" : payload;
     }
     bool OnDeveloper() const { return info.destination == "developer"; }
-    fs::path Games() const { return GamesFor(OnDeveloper()); }
+    fs::path Games() const {
+        const auto root = GamesFor(OnDeveloper());
+        return info.folder.empty() ? root : root / Filename(info.folder);
+    }
     fs::path Payload() const { return PayloadFor(OnDeveloper()); }
     void Checkpoint() {
         const Json json{{"version", 1}, {"generation", generation + 1}, {"id", info.id},
             {"name", info.name}, {"fingerprint", info.fingerprint}, {"tag", info.tag}, {"length", info.length},
             {"offset", info.offset}, {"phase", info.phase}, {"file_id", file_id}, {"volume", volume},
-            {"destination", info.destination}};
+            {"destination", info.destination}, {"folder", info.folder}};
         const auto bytes = json.dump();
         const auto temporary = folder / "checkpoint.tmp";
         { File out{temporary, GENERIC_WRITE, CREATE_ALWAYS}; out.Write(bytes.data(), bytes.size()); out.Flush(); }
@@ -160,12 +191,16 @@ struct NspUpload::Impl {
                 const auto fingerprint = json.at("fingerprint").get<std::string>();
                 const auto tag = json.value("tag", std::string{});
                 const auto destination = json.value("destination", std::string{"internal"});
+                const auto folder_name = json.value("folder", std::string{});
                 const bool on_developer = destination == "developer";
                 if ((destination != "internal" && !on_developer) || (on_developer && !developer)) continue;
                 const auto target_games = GamesFor(on_developer);
                 const auto data_path = PayloadFor(on_developer);
                 if (json.at("version") != 1 || next <= generation ||
                     !ValidName(filename, system_files, allow_any_game_format) || !ValidTag(tag) ||
+                    (!folder_name.empty() && (!allow_any_game_format || system_files ||
+                        !ValidFolderName(folder_name) ||
+                        !IsOrdinaryDirectory(target_games / Filename(folder_name)))) ||
                     !Hex(id, 32) || !Hex(fingerprint, 64) || !length || length > MaxLength || offset > length) continue;
                 const auto identity = json.at("file_id").get<std::uint64_t>();
                 const auto serial = json.at("volume").get<DWORD>();
@@ -173,10 +208,12 @@ struct NspUpload::Impl {
                 bool published = consume && json.at("phase") == "complete";
                 // A game deleted since its upload is not published any more, and opening it would throw.
                 std::error_code missing;
+                const auto publish_directory = folder_name.empty() ? target_games :
+                    target_games / Filename(folder_name);
                 if (!consume && (json.at("phase") == "publishing" || json.at("phase") == "complete") &&
-                    fs::exists(target_games / Filename(filename), missing)) {
+                    fs::exists(publish_directory / Filename(filename), missing)) {
                     try {
-                        File target{target_games / Filename(filename), GENERIC_READ, OPEN_EXISTING};
+                        File target{publish_directory / Filename(filename), GENERIC_READ, OPEN_EXISTING};
                         const auto target_id = target.Identity();
                         published = FileId(target_id) == identity && target_id.dwVolumeSerialNumber == serial &&
                             ((std::uint64_t{target_id.nFileSizeHigh} << 32) | target_id.nFileSizeLow) == length;
@@ -189,7 +226,8 @@ struct NspUpload::Impl {
                     if (FileId(data_id) != identity || data_id.dwVolumeSerialNumber != serial) continue;
                 }
                 info = {.id=id, .name=filename, .fingerprint=fingerprint,
-                    .phase=published ? "complete" : "paused", .tag=tag, .destination=destination, .length=length, .offset=offset,
+                    .phase=published ? "complete" : "paused", .tag=tag, .destination=destination,
+                    .folder=folder_name, .length=length, .offset=offset,
                     .received=offset};
                 generation = next; file_id = identity; volume = serial;
             } catch (...) {} // Try the independent older checkpoint; never trust a partial JSON write.
@@ -260,9 +298,11 @@ void NspUpload::Resume() {
 }
 
 UploadResult NspUpload::Create(std::string name, std::string fingerprint, std::uint64_t length, std::string tag,
-                              bool developer) {
+                              bool developer, std::string folder) {
     if (!ValidName(name, impl->system_files, impl->allow_any_game_format) || !Hex(fingerprint, 64) ||
-        !ValidTag(tag) || !length || length > MaxLength) return {400, "file"};
+        !ValidTag(tag) || !length || length > MaxLength ||
+        (!folder.empty() && (!impl->allow_any_game_format || impl->system_files || !ValidFolderName(folder))))
+        return {400, "file"};
     if (developer && !impl->developer) return {400, "destination"};
     std::unique_lock operation{impl->operation, std::try_to_lock};
     if (!operation.owns_lock()) return {409, "busy"};
@@ -272,6 +312,8 @@ UploadResult NspUpload::Create(std::string name, std::string fingerprint, std::u
     try {
         const auto games = impl->GamesFor(developer);
         const auto payload = impl->PayloadFor(developer);
+        const auto target_games = folder.empty() ? games : games / Filename(folder);
+        if (!folder.empty() && !IsOrdinaryDirectory(target_games)) return {400, "folder"};
         if (developer) {
             std::error_code ec;
             if (!DeveloperStorageAvailable()) return {409, "destination"};
@@ -279,9 +321,10 @@ UploadResult NspUpload::Create(std::string name, std::string fingerprint, std::u
             if (!ec) fs::create_directories(payload.parent_path(), ec);
             if (ec) return {409, "destination"};
         }
-        if (!impl->consume && fs::exists(games / Filename(name))) return {409, "exists"};
+        if (!impl->consume && fs::exists(target_games / Filename(name))) return {409, "exists"};
         // A consumed package is copied once more while it is installed.
-        if (Free(games) < (impl->consume ? 2 * length : length) + StorageReserveFor(games)) return {507, "space"};
+        if (Free(target_games) < (impl->consume ? 2 * length : length) + StorageReserveFor(target_games))
+            return {507, "space"};
         // Previous complete state is cleared only after its destination has been published.
         for (const auto* checkpoint : {"checkpoint0.json", "checkpoint1.json", "checkpoint.tmp"})
             fs::remove(impl->folder / checkpoint);
@@ -291,10 +334,61 @@ UploadResult NspUpload::Create(std::string name, std::string fingerprint, std::u
         impl->file_id = FileId(identity); impl->volume = identity.dwVolumeSerialNumber;
         impl->info = {.id=Id(), .name=std::move(name), .fingerprint=std::move(fingerprint),
             .phase="receiving", .tag=std::move(tag), .destination=developer ? "developer" : "internal",
-            .length=length, .busy=true, .available=true};
+            .folder=std::move(folder), .length=length, .busy=true, .available=true};
         file.Flush(); impl->Checkpoint();
         return {201, {}};
     } catch (...) { impl->info.busy=false; impl->info.error="disk"; return {507, "disk"}; }
+}
+
+std::vector<std::string> NspUpload::Folders(bool developer) const {
+    if (!impl->allow_any_game_format || impl->system_files || (developer && !impl->developer))
+        throw std::runtime_error("destination");
+    const auto root = impl->GamesFor(developer);
+    if (developer && !DeveloperStorageAvailable()) throw std::runtime_error("destination");
+    std::error_code status_error;
+    if (!fs::exists(root, status_error) && !status_error) return {};
+    if (status_error) throw std::runtime_error("disk");
+    if (!IsOrdinaryDirectory(root)) throw std::runtime_error("disk");
+    std::vector<std::string> folders;
+    std::error_code error;
+    for (fs::directory_iterator it{root, error}, end; !error && it != end; it.increment(error)) {
+        const auto path = it->path();
+        if (IsOrdinaryDirectory(path)) {
+            auto name = Utf8(path.filename());
+            if (ValidFolderName(name)) folders.push_back(std::move(name));
+        }
+    }
+    if (error) throw std::runtime_error("disk");
+    std::sort(folders.begin(), folders.end());
+    return folders;
+}
+
+UploadResult NspUpload::CreateFolder(std::string name, bool developer) {
+    if (!impl->allow_any_game_format || impl->system_files || !ValidFolderName(name))
+        return {400, "folder"};
+    if (developer && !impl->developer) return {400, "destination"};
+    std::unique_lock operation{impl->operation, std::try_to_lock};
+    if (!operation.owns_lock()) return {409, "busy"};
+    std::lock_guard lock{impl->mutex};
+    if (!impl->info.available || impl->cancellation.stop_requested()) return {409, "busy"};
+    const auto root = impl->GamesFor(developer);
+    if (developer && !DeveloperStorageAvailable()) return {409, "destination"};
+    std::error_code error;
+    fs::create_directories(root, error);
+    if (error || !IsOrdinaryDirectory(root)) return {507, "disk"};
+    const auto path = root / Filename(name);
+    if (fs::exists(path, error)) return {409, "exists"};
+    if (error) return {507, "disk"};
+    if (!fs::create_directory(path, error)) {
+        if (error == std::errc::file_exists) return {409, "exists"};
+        if (!error) {
+            std::error_code exists_error;
+            if (fs::exists(path, exists_error) && !exists_error) return {409, "exists"};
+        }
+        return {507, "disk"};
+    }
+    if (error || !IsOrdinaryDirectory(path)) return {507, "disk"};
+    return {};
 }
 
 UploadResult NspUpload::Append(const std::string& id, std::uint64_t offset, std::uint64_t length, const UploadReader& reader) {

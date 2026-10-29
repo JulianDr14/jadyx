@@ -7,6 +7,7 @@
 #include <memory>
 #include <stop_token>
 #include <string>
+#include <vector>
 
 namespace Jadyx {
 struct UploadPerformance {
@@ -17,6 +18,7 @@ struct UploadSnapshot {
     std::string id, name, fingerprint, phase{"idle"}, error;
     std::string tag; ///< Caller-defined destination (content uploads: "update:<application>").
     std::string destination{"internal"}; ///< Where the game is published: "internal" or "developer" (D:).
+    std::string folder; ///< One child directory below the selected games root.
     std::uint64_t length{}, offset{}, received{}, free_bytes{}, developer_free_bytes{};
     bool busy{}, available{}, developer_available{};
     UploadPerformance performance;
@@ -50,7 +52,9 @@ public:
     void Suspend();                 ///< After joining sockets: retain the last confirmed offset.
     void Resume();                  ///< After previous operations joined.
     UploadResult Create(std::string name, std::string fingerprint, std::uint64_t length, std::string tag = {},
-                        bool developer = false);
+                        bool developer = false, std::string folder = {});
+    std::vector<std::string> Folders(bool developer) const;
+    UploadResult CreateFolder(std::string name, bool developer);
     UploadResult Append(const std::string& id, std::uint64_t offset, std::uint64_t length, const UploadReader& reader);
     UploadResult Discard(const std::string& id);
     UploadResult Pause(const std::string& id);

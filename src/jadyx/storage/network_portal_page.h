@@ -14,7 +14,7 @@ inline constexpr std::string_view Page=R"HTML(<!doctype html>
 :root{color-scheme:dark;--canvas:#08090b;--surface:#111315;--row:#16181b;--graphite:#1c1f23;--active:#26282b;--text:#f5f5f7;--muted:#92959a;--hint:#b4b7bb;
  --warn:#f0c27a;--cyan:#2eb5e5;--crimson:#e02b41;--line:rgba(255,255,255,.08);--field:#2a2d31;
  font-family:Inter,"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Roboto,sans-serif;font-size:15px;line-height:22px;-webkit-font-smoothing:antialiased}
-*{box-sizing:border-box}button,input{font-family:inherit}[hidden]{display:none!important}
+*{box-sizing:border-box}button,input,select{font-family:inherit}[hidden]{display:none!important}
 body{margin:0;min-height:100vh;display:flex;flex-direction:column;color:var(--text);background:var(--canvas);
  background-image:radial-gradient(1100px 520px at 50% -18%,rgba(255,255,255,.07),transparent 70%);background-repeat:no-repeat}
 h1,h2,h3,p{margin:0}h1{font-size:34px;line-height:42px;font-weight:600;letter-spacing:-.02em}
@@ -73,13 +73,15 @@ button.cat:disabled{opacity:1;color:var(--muted)}.cat:disabled .ico{opacity:.6}
 .field{margin-top:20px}.field label{display:block;font-size:14px;font-weight:500;color:var(--hint);margin-bottom:8px}
 input#name{width:100%;height:48px;padding:0 16px;font:inherit;background:var(--canvas);color:var(--text);border:1px solid var(--field);border-radius:12px}
 input#name:focus{outline:none;border-color:var(--text)}input#name:disabled{opacity:.5}
+.folder-row{display:flex;gap:10px}.folder-row select,.folder-row input{min-width:0;height:44px;padding:0 12px;font:inherit;background:var(--canvas);color:var(--text);border:1px solid var(--field);border-radius:12px}
+.folder-row select{flex:1}.folder-row input{flex:1}.folder-row select:disabled,.folder-row input:disabled{opacity:.5}
 button{font-size:14px;font-weight:600;line-height:1;height:44px;padding:0 22px;border-radius:999px;border:1px solid var(--line);cursor:pointer;color:var(--text);background:var(--graphite);
  transition:background .15s,color .15s,transform .15s,box-shadow .15s,opacity .15s}
 button:hover:not(:disabled){background:var(--active)}
 button.primary{background:var(--text);color:var(--canvas);border-color:transparent}
 button.primary:hover:not(:disabled){background:#fff;transform:translateY(-1px);box-shadow:0 10px 26px -10px rgba(255,255,255,.35)}
 button.danger{color:#f59aa5}button:disabled{opacity:.4;cursor:default}
-button:focus-visible,input:focus-visible{outline:2px solid var(--text);outline-offset:3px}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--text);outline-offset:3px}
 .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:24px}
 .panel{margin-top:24px;padding:20px;border-radius:16px;background:var(--row);border:1px solid var(--line)}
 .panel-top{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-bottom:12px}
@@ -184,6 +186,9 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <nav class="seg" id="where" role="tablist" hidden><button id="where-internal" role="tab" aria-selected="true">Internal storage</button><button id="where-developer" role="tab" aria-selected="false">Dev storage (D:)</button></nav>
 <label class="drop" id="files-zone"><input id="files" type="file" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
 <strong id="fileslabel">Choose game files</strong><span id="files-drop">or drop them here</span><span class="picked" id="files-picked"></span></label>
+<div class="field"><label id="folderlabel" for="folder">Save in folder</label><div class="folder-row">
+<select id="folder"><option value="">Games root</option></select><input id="folder-new" maxlength="100" autocomplete="off" placeholder="New folder name">
+<button id="folder-create">Create</button></div></div>
 <div class="field"><label id="namelabel" for="name">Destination name (one file)</label><input id="name" maxlength="100" autocomplete="off"></div>
 <div class="actions"><button id="send" class="primary">Upload / resume</button><button id="pause">Pause</button><button id="rename">Rename pending file</button>
 <button class="danger" id="discard">Discard partial file</button></div>
@@ -239,6 +244,7 @@ const $=id=>document.getElementById(id),lang=navigator.language.toLowerCase(),es
 const words=zh?{
  title:'连接到主机',intro:'输入 Jadyx 显示的临时连接码。请让应用保持在游戏库页面。',label:'连接码',connect:'连接',
  uploadtitle:'传输游戏文件',uploadintro:'支持任意文件格式。只有模拟器支持的游戏格式才能启动。','where-internal':'内部存储','where-developer':'开发者存储（D:）',fileslabel:'选择游戏文件',
+ folderlabel:'保存到文件夹',folderroot:'游戏目录（根目录）',foldernew:'新文件夹名称',foldercreate:'新建文件夹',folderempty:'请输入文件夹名称。',folder:'文件夹名称无效。',
  namelabel:'保存文件名（单个文件）',send:'上传 / 继续',rename:'重命名待处理文件',pause:'暂停',discard:'删除未完成文件',
  kicker:'局域网传送门','status-off':'未连接','status-on':'已连接','code-hint':'4 位数字 · 每次打开传送门都会更换','files-drop':'或将文件拖到此处',files:'个文件',
  privacy:'局域网 · HTTP 连接未加密。',ok:'连接成功。',bad:'连接码错误或已过期。请在 Jadyx 中生成新码。',
@@ -253,6 +259,7 @@ const words=zh?{
 }:pt?{
  title:'Conecte-se ao seu console',intro:'Digite o código temporário que o Jadyx mostra. Mantenha o app aberto na biblioteca.',label:'Código de conexão',connect:'Conectar',
  uploadtitle:'Transferir arquivos de jogos',uploadintro:'Qualquer formato de arquivo é aceito. Só é possível iniciar formatos compatíveis.','where-internal':'Armazenamento interno','where-developer':'Armazenamento dev (D:)',fileslabel:'Selecionar arquivos de jogos',
+ folderlabel:'Salvar na pasta',folderroot:'Pasta de jogos (raiz)',foldernew:'Nome da nova pasta',foldercreate:'Criar pasta',folderempty:'Digite o nome da pasta.',folder:'Nome de pasta inválido.',
  namelabel:'Nome de destino (um único arquivo)',send:'Enviar / retomar',rename:'Renomear arquivo pendente',pause:'Pausar',discard:'Apagar arquivo parcial',
  kicker:'Portal da rede local','status-off':'Desconectado','status-on':'Conectado','code-hint':'4 dígitos · muda cada vez que você abre o portal','files-drop':'ou arraste-os para cá',files:'arquivos',
  privacy:'Rede local · Conexão HTTP sem criptografia.',ok:'Conexão estabelecida.',bad:'Código incorreto ou expirado. Gere outro no Jadyx.',
@@ -267,6 +274,7 @@ const words=zh?{
 }:es?{
  title:'Conecta con tu consola',intro:'Introduce el código temporal que muestra Jadyx. Mantén la app abierta en la biblioteca.',label:'Código de conexión',connect:'Conectar',
  uploadtitle:'Transferir archivos de juegos',uploadintro:'Se acepta cualquier formato. Solo se pueden iniciar los formatos compatibles.','where-internal':'Almacenamiento interno','where-developer':'Almacenamiento dev (D:)',fileslabel:'Seleccionar archivos de juegos',
+ folderlabel:'Guardar en carpeta',folderroot:'Carpeta de juegos (raíz)',foldernew:'Nombre de la nueva carpeta',foldercreate:'Crear carpeta',folderempty:'Escribe el nombre de la carpeta.',folder:'El nombre de la carpeta no es válido.',
  namelabel:'Nombre de destino (un solo archivo)',send:'Subir / reanudar',rename:'Renombrar archivo pendiente',pause:'Pausar',discard:'Eliminar archivo parcial',
  kicker:'Portal de red local','status-off':'Sin conectar','status-on':'Conectado','code-hint':'4 dígitos · cambia cada vez que abres el portal','files-drop':'o arrástralos aquí',files:'archivos',
  privacy:'Red local · Conexión HTTP sin cifrado.',ok:'Conexión establecida.',bad:'Código incorrecto o caducado. Genera otro en Jadyx.',
@@ -281,6 +289,7 @@ const words=zh?{
 }:{ok:'Connected.',bad:'Incorrect or expired code. Generate another in Jadyx.',lost:'Connection closed. Reconnect in Jadyx; confirmed progress is retained.',
  free:'Free space','where-internal':'Internal storage','where-developer':'Dev storage (D:)',confirmed:'Confirmed',speed:'Speed',eta:'Time left',queue:'Queued',choose:'Choose one or more files.',files:'files',
  same:'A different file is pending. Select the same file to resume, or discard the partial upload.',receiving:'Receiving',paused:'Paused. Select the same file to continue.',
+ folderlabel:'Save in folder',folderroot:'Games folder (root)',foldernew:'New folder name',foldercreate:'Create folder',folderempty:'Enter a folder name.',folder:'Invalid folder name.',
  ready:'Preparing file',validating:'Saving game file',publishing:'Saving to game storage',complete:'File saved',busy:'Wait for the operation in Jadyx to finish.',
  exists:'This destination already exists. Change its name and try again.',space:'Not enough free space.',file:'Invalid filename.',
  disk:'Could not write or publish this file.',
@@ -288,7 +297,8 @@ const words=zh?{
  recovery:'Cannot recover the partial file. Discard it before starting another.',unavailable:'Import is currently unavailable.',destination:'Dev storage (D:) is not available. Choose internal storage.',
  attempts:'Too many attempts. Wait one minute.',version:'Incompatible upload version. Reload this page.',idle:'Ready to import.'};
 if(es||pt||zh){document.documentElement.lang=zh?'zh-CN':pt?'pt-BR':'es';for(const id of ['title','intro','label','connect','uploadtitle','uploadintro','fileslabel','namelabel','send','rename','pause','discard','privacy',
- 'kicker','status-off','status-on','code-hint','files-drop','where-internal','where-developer'])$(id).textContent=words[id];}
+ 'kicker','status-off','status-on','code-hint','files-drop','where-internal','where-developer','folderlabel','folder-create'])$(id).textContent=words[id];
+ if($('folder').options?.[0])$('folder').options[0].text=words.folderroot;$('folder-new').placeholder=words.foldernew;}
 const labels=zh?{'tab-content':'内容','tab-system':'系统','content-kicker':'安装','cat-games-title':'游戏文件','cat-games-sub':'任意格式 · 仅支持格式可启动',
  'cat-library-title':'游戏库','cat-library-sub':'更新 · DLC · 删除','system-kicker':'系统文件','cat-keys-title':'密钥'}
 :pt?{'tab-content':'Conteúdo','tab-system':'Sistema','content-kicker':'Instalar','cat-games-title':'Jogos','cat-games-sub':'Qualquer formato',
@@ -303,7 +313,7 @@ function choose(group,chosen){for(const [button,view]of group){$(button).ariaSel
 for(const group of [tabs,categories])for(const [button]of group)$(button).addEventListener('click',()=>choose(group,button));
 const selectedChunk=Number(new URLSearchParams(location.search).get('chunk'));
 const chunk=(selectedChunk===4||selectedChunk===16||selectedChunk===64?selectedChunk:16)*1048576;
-let session='',timer,state={},running=false,stopped=false,currentXHR=null,currentId='',rates=[],pane='games',contentRunning=false,where='internal';
+let session='',timer,state={},running=false,stopped=false,currentXHR=null,currentId='',rates=[],pane='games',contentRunning=false,where='internal',folderDestination='';
 let systemRunning=false,systemReviewId='';
 const delay=ms=>new Promise(r=>setTimeout(r,ms)),mib=n=>(n/1048576).toFixed(1),reason=e=>words[e.message]||words.interrupted;
 const size=n=>n>=1073741824?(n/1073741824).toFixed(2)+' GiB':mib(n)+' MiB',percent=(done,total)=>total?Math.floor(100*Math.min(1,done/total))+' %':'';
@@ -341,6 +351,8 @@ function render(){
  $('percent').textContent=percent(s.received||0,s.length);
  $('confirmed').textContent=words.confirmed+': '+mib(s.offset||0)+' / '+mib(s.length||0)+' MiB';
  $('files').disabled=running;$('name').disabled=running||s.phase==='validating'||s.phase==='publishing';
+ $('folder').disabled=running||pending;$('folder-new').disabled=running||pending;
+ $('folder-create').disabled=running||pending||!s.available||state.system?.busy;
  $('send').disabled=running||contentRunning||systemRunning||state.system?.busy||!session||!state.uploads||s.phase==='ready'||s.phase==='validating'||s.phase==='publishing';
  $('pause').disabled=systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
  $('discard').disabled=systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
@@ -349,7 +361,16 @@ function render(){
  renderSystem();
  renderLibrary();
 }
-async function refresh(){const response=await api('/api/v1/status');state=await response.json();render();followLibrary();return state;}
+async function refresh(){const response=await api('/api/v1/status');state=await response.json();render();followLibrary();
+ if(state.uploads&&state.transfer?.available&&folderDestination!==where)await refreshFolders();return state;}
+async function refreshFolders(){
+ const selected=state.transfer?.id&&state.transfer.phase!=='complete'?(state.transfer.folder||$('folder').value):$('folder').value;
+ const response=await api('/api/v1/game-folders?destination='+encodeURIComponent(where)),data=await response.json();
+ const select=$('folder'),root=new Option(words.folderroot,'');select.replaceChildren(root);
+ for(const name of data.folders||[])select.add(new Option(name,name));
+ select.value=Array.from(select.options).some(option=>option.value===selected)?selected:'';
+ folderDestination=where;
+}
 $('pair').addEventListener('submit',async event=>{
  event.preventDefault();$('connect').disabled=true;$('message').textContent='';
  try{
@@ -403,8 +424,19 @@ function patch(url,offset,blob){return new Promise((resolve,reject)=>{
 });}
 // Games, updates/DLC and save archives share this resumable client. A target names the status
 // record, route, extra metadata and where transfer speed is shown.
-const gameTarget={key:'transfer',base:'/api/v1/uploads',tag:'',get metadata(){return {destination:where};},rate:'rate',eta:'eta'};
-for(const id of ['internal','developer'])$('where-'+id).addEventListener('click',()=>{if(!running){where=id;render();}});
+const gameTarget={key:'transfer',base:'/api/v1/uploads',tag:'',get metadata(){return {destination:where,folder:$('folder').value};},rate:'rate',eta:'eta'};
+for(const id of ['internal','developer'])$('where-'+id).addEventListener('click',()=>{if(!running){where=id;render();refreshFolders().catch(error=>{$('message').textContent=reason(error);});}});
+$('folder-create').addEventListener('click',async()=>{
+ if(running||$('folder-create').disabled)return;
+ const name=$('folder-new').value.trim();if(!name){$('message').textContent=words.folderempty;return;}
+ $('folder-create').disabled=true;
+ try{
+  await api('/api/v1/game-folders',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({name,destination:where})});
+  $('message').textContent='';folderDestination='';await refreshFolders();$('folder').value=name;$('folder-new').value='';
+ }catch(error){$('message').textContent=reason(error);}
+ finally{render();}
+});
 async function sendFile(file,name,target=gameTarget){
  const signature=await fingerprint(file);if(stopped)throw Error('paused');
  await refresh();let s=state[target.key];

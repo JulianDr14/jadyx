@@ -475,6 +475,12 @@ archivo se puede transferir y que solo los formatos compatibles se pueden inicia
 genérica se limita a la ruta de juegos del portal; los uploads de contenido continúan pasando por
 su validador/importador correspondiente.
 
+La pestaña también permite crear y elegir carpetas directamente bajo la raíz de juegos interna o
+de Dev Mode (D:). El servidor solo recibe un nombre de carpeta validado, nunca una ruta del
+dispositivo; excluye enlaces/reparse points y persiste la carpeta elegida en el checkpoint para
+reanudar la transferencia en el mismo destino. No permite rutas arbitrarias ni crear subcarpetas
+anidadas desde el portal.
+
 ## Compresion multihilo y descarga en streaming de logs — 0.3.6.17+ (20 octubre 2026)
 
 El portal solo exporta con la consola quieta en modo red, asi que la compresion usa

@@ -47,6 +47,8 @@ async function browserScenario(options){
  const elements=new Map(),callbacks=new Map();
  const element=id=>{
   if(!elements.has(id))elements.set(id,{value:'',textContent:'',files:[],hidden:false,disabled:false,
+   options:id==='folder'?[{value:'',text:'Games root'}]:[],
+   add(option){this.options.push(option);},replaceChildren(...items){this.options=items;},
    classList:{toggle(){},add(){},remove(){}},
    setAttribute(key,value){this[key]=value;},
    addEventListener:(event,callback)=>callbacks.set(id+':'+event,callback)});
@@ -56,7 +58,7 @@ async function browserScenario(options){
  const selected={name,size:length,lastModified:123,slice:(start,end=length)=>({size:end-start,arrayBuffer:async()=>{
   assert.ok(end-start<=65536,'large file must never be loaded as ArrayBuffer');return new Uint8Array(end-start).buffer;
  }})};
- let job={id:'',phase:'idle',offset:0,received:0,length:0,free_bytes:80*1024**3,available:true,busy:false,error:''};
+ let job={id:'',phase:'idle',offset:0,received:0,length:0,free_bytes:80*1024**3,available:true,busy:false,error:''},folders=[];
  let writes=0,lost=false,controlPromise,context;const completed=[];
  const response=(status,json={},headers={})=>({status,ok:status>=200&&status<300,json:async()=>JSON.parse(JSON.stringify(json)),
   headers:{get:key=>Object.entries(headers).find(([name])=>name.toLowerCase()===key.toLowerCase())?.[1]??null}});
@@ -64,11 +66,17 @@ async function browserScenario(options){
   if(url==='/api/v1/pair')return response(200,{session:'test-session'});
   assert.equal(request.headers.Authorization,'Bearer test-session');
   if(url==='/api/v1/status')return response(200,{uploads:true,transfer:job});
+  if(url.startsWith('/api/v1/game-folders?'))return response(200,{folders});
+  if(url==='/api/v1/game-folders'&&request.method==='POST'){
+   const body=JSON.parse(request.body);assert.equal(body.destination,'internal');folders.push(body.name);return response(204);
+  }
   if(url==='/api/v1/uploads'){
    if(options.collision&&writes===0&&element('name').value===name)return response(409,{error:'exists'});
    assert.equal(request.headers['Tus-Resumable'],'1.0.0');
    const metadata=Object.fromEntries(request.headers['Upload-Metadata'].split(',').map(s=>{const [key,b64]=s.split(' ');return[key,Buffer.from(b64,'base64').toString('utf8')];}));
-   job={...job,id,name:metadata.filename,fingerprint:metadata.fingerprint,length:Number(request.headers['Upload-Length']),offset:0,received:0,phase:'receiving',busy:true};
+   assert.equal(metadata.destination,'internal');
+   assert.equal(metadata.folder,options.anyFormat?'My games':'');
+   job={...job,id,name:metadata.filename,fingerprint:metadata.fingerprint,folder:metadata.folder,length:Number(request.headers['Upload-Length']),offset:0,received:0,phase:'receiving',busy:true};
    return response(201,{}, {Location:'/api/v1/uploads/'+id});
   }
   assert.ok(url.startsWith('/api/v1/uploads/'+id));
@@ -98,7 +106,7 @@ async function browserScenario(options){
  const document={getElementById:element,documentElement:{},body:{classList:{toggle(){}}}};
  context=vm.createContext({document,navigator:{language:options.language||'es'},
   location:{search:'?chunk='+(options.chunk||16)},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
-  performance,XMLHttpRequest:XHR,fetch,btoa:value=>Buffer.from(value,'binary').toString('base64'),
+  performance,XMLHttpRequest:XHR,fetch,Option:class{constructor(text,value){this.text=text;this.value=value;}},btoa:value=>Buffer.from(value,'binary').toString('base64'),
   setTimeout:callback=>{queueMicrotask(callback);return 1;},setInterval:()=>1,clearInterval:()=>{},selected});
  vm.runInContext(script,context);
  if(options.language==='zh-CN'){
@@ -111,6 +119,10 @@ async function browserScenario(options){
   job={...job,id,name,fingerprint:options.different?'b'.repeat(64):signature,length,offset,received:offset,phase:'paused'};
  }
  element('code').value='1234';await callbacks.get('pair:submit')({preventDefault(){}});
+ if(options.anyFormat){
+  element('folder-new').value='My games';await callbacks.get('folder-create:click')();
+  assert.equal(element('folder').value,'My games');assert.deepEqual(folders,['My games']);
+ }
  element('files').files=options.queue?[selected,{...selected,name:options.anyFormat?'second.bin':'second.nsp'}]:[selected];callbacks.get('files:change')();
  await callbacks.get('send:click')();
  if(controlPromise)await controlPromise;
@@ -120,6 +132,7 @@ async function browserScenario(options){
   element('name').value=options.anyFormat?'renamed.bin':'renamed.nsp';await callbacks.get('send:click')();assert.equal(job.name,element('name').value);assert.equal(job.phase,'complete');
  }else if(options.pause){assert.equal(job.offset,16*1048576);assert.equal(job.phase,'paused');}
  else{assert.equal(job.offset,length);assert.equal(job.phase,'complete');}
+ if(options.anyFormat)assert.equal(job.folder,'My games');
  if(options.queue)assert.deepEqual(completed,[name,'second.nsp']);
 }
 

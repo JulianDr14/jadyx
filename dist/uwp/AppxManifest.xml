@@ -48,8 +48,7 @@
   </Resources>
 
   <Applications>
-    <!-- EntryPoint for a plain C++/WinRT CoreApplication app (wWinMain + IFrameworkView, see
-         uwp_boot.cpp) is the conventional "<exe>.App" moniker; there is no activatable class. -->
+    <!-- C++/WinRT XAML Application runtime class activated by Application::Start in uwp_boot.cpp. -->
     <Application Id="App" Executable="jadyx.exe" EntryPoint="Jadyx.App">
       <uap:VisualElements
           DisplayName="Jadyx"

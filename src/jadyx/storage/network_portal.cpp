@@ -240,7 +240,7 @@ Json UploadJson(const UploadSnapshot& info) {
     return {{"id",info.id}, {"name",info.name}, {"fingerprint",info.fingerprint}, {"tag",info.tag},
         {"phase",info.phase}, {"error",info.error}, {"length",info.length}, {"offset",info.offset},
         {"received",info.received}, {"free_bytes",info.free_bytes}, {"busy",info.busy}, {"available",info.available},
-        {"destination",info.destination}, {"developer_available",info.developer_available},
+        {"destination",info.destination}, {"folder",info.folder}, {"developer_available",info.developer_available},
         {"developer_free_bytes",info.developer_free_bytes},
         {"performance",{{"confirmed_offset",p.confirmed_offset},{"bytes",p.bytes},{"total_us",p.total_us},
             {"write_us",p.write_us},{"flush_us",p.flush_us},{"checkpoint_us",p.checkpoint_us},{"reader_calls",p.reader_calls}}}};
@@ -621,6 +621,40 @@ struct NetworkPortal::Impl {
                 {"save_export", SaveExportJson()},
                 {"system_supported",system_supported},{"system",system ? SystemJson(system->Snapshot()) : Json::object()},
                 {"logs", LogsJson()}, {"update", {{"offered", update_offered.load()}}}});
+        });
+        server->Get("/api/v1/game-folders", [this](const auto& request, auto& response) {
+            if (!upload || request.get_param_value_count("destination") != 1) {
+                Reply(response, 400, {{"error", "metadata"}}); return;
+            }
+            const auto destination = request.get_param_value("destination");
+            if (destination != "internal" && destination != "developer") {
+                Reply(response, 400, {{"error", "metadata"}}); return;
+            }
+            try {
+                Reply(response, 200, {{"folders", upload->Folders(destination == "developer")}});
+            } catch (const std::exception&) {
+                Reply(response, 507, {{"error", "disk"}});
+            }
+        });
+        server->Post("/api/v1/game-folders", [this](const auto& request, auto& response) {
+            std::lock_guard admission_lock{admission};
+            if (!upload || (system && system->Snapshot().busy)) {
+                Reply(response, 409, {{"error", "busy"}}); return;
+            }
+            const auto body = Json::parse(request.body, nullptr, false);
+            if (body.is_discarded() || !body.is_object() || !body.contains("name") ||
+                !body["name"].is_string() || !body.contains("destination") ||
+                !body["destination"].is_string()) {
+                Reply(response, 400, {{"error", "metadata"}}); return;
+            }
+            const auto destination = body["destination"].get<std::string>();
+            if (destination != "internal" && destination != "developer") {
+                Reply(response, 400, {{"error", "metadata"}}); return;
+            }
+            const auto created = upload->CreateFolder(body["name"].get<std::string>(),
+                destination == "developer");
+            response.status = created.status;
+            if (!created.error.empty()) Reply(response, created.status, {{"error", created.error}});
         });
         server->Post("/api/v1/update/download", [this](const auto&, auto& response) {
             std::lock_guard admission_lock{admission};
@@ -1024,8 +1058,8 @@ struct NetworkPortal::Impl {
     void UploadRoutes(const std::string& base, NspUpload* target, NspUpload* other) {
         const bool tagged = target && target == content.get();
         const bool games = target && target == upload.get();
-        // Auth/Host/Origin are checked before these routes. No server-supplied destination path
-        // is ever accepted from the browser; ids are matched against the one current record.
+        // Auth/Host/Origin are checked before these routes. Only a validated folder name below
+        // the selected games root is accepted; ids match the one current upload record.
         const auto version=[](const auto& request, auto& response) {
             response.set_header("Tus-Resumable", "1.0.0");
             response.set_header("Tus-Version", "1.0.0");
@@ -1052,9 +1086,9 @@ struct NetworkPortal::Impl {
                 (request.has_header("Content-Length") && request.get_header_value("Content-Length") != "0")) { Reply(response,400,{{"error","length"}}); return; }
             if (length > NspUpload::MaxLength) { Reply(response,413,{{"error","length"}}); return; }
             const auto metadata=request.get_header_value("Upload-Metadata");
-            std::string name,fingerprint,kind,application,destination;
+            std::string name,fingerprint,kind,application,destination,folder;
             std::size_t begin{};
-            bool valid=true;
+            bool valid=true,folder_seen=false;
             while (begin < metadata.size()) {
                 const auto end=metadata.find(',',begin);
                 auto item=metadata.substr(begin,end == std::string::npos ? end : end-begin);
@@ -1070,6 +1104,10 @@ struct NetworkPortal::Impl {
                 else if (tagged && key == "application" && application.empty()) application=std::move(decoded);
                 // A game may go to Dev Mode's storage on D: instead of the internal one.
                 else if (games && key == "destination" && destination.empty()) destination=std::move(decoded);
+                else if (games && key == "folder" && !folder_seen) {
+                    folder=std::move(decoded);
+                    folder_seen=true;
+                }
                 else { valid=false; break; }
                 if (end == std::string::npos) break;
                 begin=end+1;
@@ -1090,7 +1128,7 @@ struct NetworkPortal::Impl {
             if (valid && !destination.empty() && destination != "internal" && destination != "developer") valid=false;
             if (!valid) { Reply(response,400,{{"error","metadata"}}); return; }
             const auto created=target->Create(std::move(name),std::move(fingerprint),length,std::move(tag),
-                destination == "developer");
+                destination == "developer",std::move(folder));
             result(response,created);
             if (created.status == 201) {
                 response.set_header("Location",base+"/"+target->Snapshot().id);

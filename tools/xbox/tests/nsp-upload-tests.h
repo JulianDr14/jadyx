@@ -122,7 +122,13 @@ void UploadTests(int port, bool large) {
     const auto generic_staging=fixture/"generic-staging";
     auto generic=std::make_unique<NspUpload>(generic_games,false,generic_staging,false,false,true);
     generic->SetAvailable(true);
-    Check(generic->Create("payload.bin",fingerprint,pattern.size()).status==201,"portal mode accepts arbitrary extensions");
+    Check(generic->CreateFolder("Travel",false).status==204,"create folder below game root");
+    Check(generic->Folders(false)==std::vector<std::string>{"Travel"},"list only game-root folders");
+    Check(generic->CreateFolder("../escape",false).status==400,"folder traversal refused");
+    Check(generic->Create("payload.bin",fingerprint,pattern.size(),{},false,"../escape").status==400,
+        "upload folder traversal refused");
+    Check(generic->Create("payload.bin",fingerprint,pattern.size(),{},false,"Travel").status==201,
+        "portal mode accepts arbitrary extensions in selected folder");
     const auto generic_id=generic->Snapshot().id;
     const auto half=pattern.size()/2;
     Check(generic->Append(generic_id,0,half,[&](const auto& sink){return sink(pattern.data(),half);}).status==204,
@@ -130,16 +136,17 @@ void UploadTests(int port, bool large) {
     generic.reset();
     generic=std::make_unique<NspUpload>(generic_games,false,generic_staging,false,false,true);
     generic->SetAvailable(true);
-    Check(generic->Snapshot().offset==half,"generic extension survives restart recovery");
+    Check(generic->Snapshot().offset==half && generic->Snapshot().folder=="Travel",
+        "generic extension and destination folder survive restart recovery");
     Check(generic->Append(generic_id,half,pattern.size()-half,[&](const auto& sink){
         return sink(pattern.data()+half,pattern.size()-half);
     }).status==204,"generic game file resumes at confirmed offset");
     Check(generic->Rename(generic_id,"published.bundle").status==204,"generic extension survives rename");
     Check(generic->Ready(generic_id).status==204,"generic file enters publish phase without format validation");
-    Check(generic->Finalize().empty() && fs::file_size(generic_games/"published.bundle")==pattern.size(),
+    Check(generic->Finalize().empty() && fs::file_size(generic_games/"Travel"/"published.bundle")==pattern.size(),
         "generic file publishes without NSP content validator");
     {
-        std::ifstream input{generic_games/"published.bundle",std::ios::binary};
+        std::ifstream input{generic_games/"Travel"/"published.bundle",std::ios::binary};
         std::vector<char> actual(pattern.size());
         input.read(actual.data(),static_cast<std::streamsize>(actual.size()));
         Check(input.gcount()==static_cast<std::streamsize>(actual.size()) && actual==pattern,
@@ -181,10 +188,23 @@ void UploadTests(int port, bool large) {
     Check(Status(pairing)==200,"upload test pairing");
     const auto token=Json::parse(pairing->body).at("session").get<std::string>();
     httplib::Headers headers{{"Authorization","Bearer "+token},{"Tus-Resumable","1.0.0"},{"Origin",origin}};
+    const auto unsafe_folder=client.Post("/api/v1/game-folders",headers,
+        Json{{"destination","internal"},{"name","../escape"}}.dump(),"application/json");
+    Check(Status(unsafe_folder)==400,"HTTP folder traversal refused");
+    const auto make_folder=client.Post("/api/v1/game-folders",headers,
+        Json{{"destination","internal"},{"name","portal-test"}}.dump(),"application/json");
+    Check(Status(make_folder)==204,"HTTP create game folder");
+    const auto list_folders=client.Get("/api/v1/game-folders?destination=internal",headers);
+    Check(Status(list_folders)==200 &&
+          Json::parse(list_folders->body).at("folders").get<std::vector<std::string>>()==
+              std::vector<std::string>{"portal-test"},"HTTP list game folders");
     const auto total=large ? (5ULL << 30) : (32ULL << 20);
     auto creation=headers;
     creation.emplace("Upload-Length",std::to_string(total));
-    creation.emplace("Upload-Metadata","filename "+httplib::detail::base64_encode("transport.nsp")+",fingerprint "+httplib::detail::base64_encode(fingerprint));
+    creation.emplace("Upload-Metadata","filename "+httplib::detail::base64_encode("transport.nsp")+
+        ",fingerprint "+httplib::detail::base64_encode(fingerprint)+
+        ",destination "+httplib::detail::base64_encode("internal")+
+        ",folder "+httplib::detail::base64_encode("portal-test"));
     const auto created=client.Post("/api/v1/uploads",creation);
     Check(Status(created)==201,"tus HTTP creation");
     const auto url=created->get_header_value("Location");
@@ -231,7 +251,7 @@ void UploadTests(int port, bool large) {
     std::printf("TCP loopback %llu MiB, %.2f s, %.2f MiB/s (desktop synthetic, not Xbox/LAN certification)\n",
         static_cast<unsigned long long>(total >> 20),seconds,(total/1048576.0)/seconds);
     portal.Stop();
-    Check(fs::file_size(fixture/"remote/games/transport.nsp")==total,"64-bit final size");
+    Check(fs::file_size(fixture/"remote/games/portal-test/transport.nsp")==total,"64-bit final size in selected folder");
     // Recursive cleanup is confined to the newly created fixture under the known test directory.
     Check(fixture.parent_path()==parent && fixture.filename().string().starts_with("fixture-"),"cleanup confined to fixture");
     fs::remove_all(fixture);
