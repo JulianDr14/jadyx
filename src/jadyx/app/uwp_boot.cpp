@@ -456,6 +456,9 @@ struct BootConfig {
     /// Per-game JIT profile, compiled before the guest runs ("jit_prewarm=1", the default),
     /// only learned ("jit_prewarm=record") or disabled ("jit_prewarm=0").
     enum class JitPrewarm { Off, Record, Warm } jit_prewarm{JitPrewarm::Warm};
+    /// Fixed prewarm budget per core for A/B tests ("jit_prewarm_mib="), 0 for the learned one
+    /// (PrewarmBudget). The learned step is still observed and stored as usual.
+    u32 jit_prewarm_mib{};
     /// XAudio2 performance samples and queue counters ("audio_profile=1").
     bool audio_profile{};
     /// Timed silent output for comparison and audio-device diagnosis ("audio=null").
@@ -1179,9 +1182,12 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         // whole game compiled in its first minute (bursts of 25k blocks in one frame). The
         // blocks are checked against the restored code, so a session's own loads are safe.
         if (auto* process = system.ApplicationProcess()) {
+            const u64 prewarm_mib =
+                config.jit_prewarm_mib != 0 ? config.jit_prewarm_mib : prewarm_budget.MiBPerCore();
             WriteDiag(std::string{"step: CPU JIT profile/prewarm starting ("} +
                       (process->Is64Bit() ? "A64" : "A32") + "), " +
-                      std::to_string(prewarm_budget.MiBPerCore()) + " MiB per core | " +
+                      std::to_string(prewarm_mib) + " MiB per core" +
+                      (config.jit_prewarm_mib != 0 ? " (boot.cfg)" : "") + " | " +
                       MemoryReport());
             if (pulse_screen) pulse_screen->CpuStarting();
             Core::ConfigureApplicationPrewarm(system,
@@ -1193,7 +1199,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                     else if (boot_screen) SetLaunchStep(LaunchStep::Cpu, done, total);
                     else D3D12::ShowCpuLoadProgress(system.Renderer(), done, total);
                 },
-                prewarm_budget.BytesPerCore());
+                prewarm_mib * PrewarmBudget::MiB);
             WriteDiag("step: CPU JIT profile/prewarm ready | " + MemoryReport());
         }
     }
@@ -3356,6 +3362,21 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     };
                     std::ifstream cfg{install_path + "\\boot.cfg"};
                     for (std::string line; std::getline(cfg, line);) {
+                        // Outside the chain below, which is at the compiler's nesting limit.
+                        if (line.starts_with("jit_prewarm_mib=")) {
+                            const std::string_view value = std::string_view{line}.substr(16);
+                            u32 parsed{};
+                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() &&
+                                parsed >= 8 && parsed <= 192) {
+                                config.jit_prewarm_mib = parsed;
+                                WriteDiag("boot.cfg: JIT prewarm fixed at " + std::to_string(parsed) +
+                                          " MiB per core");
+                            } else {
+                                WriteDiag("boot.cfg: invalid jit_prewarm_mib (8-192), ignored");
+                            }
+                            continue;
+                        }
                         if (line.starts_with("present_queue=") ||
                             line.starts_with("border_color=") ||
                             line.starts_with("depth_bias_round=") ||
