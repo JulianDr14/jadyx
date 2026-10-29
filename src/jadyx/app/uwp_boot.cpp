@@ -42,6 +42,7 @@
 
 #include "common/bug_tracker.h"
 #include "common/commit_census.h"
+#include "common/memory_ceiling.h"
 #include "common/fs/path_util.h"
 #include "common/log_rotation.h"
 #include "common/host_memory.h"
@@ -184,6 +185,7 @@ void SetAsyncRecording(bool enabled);          // d3d12_scheduler.h
 void SetDiagUavSync(bool enabled);             // d3d12_scheduler.h
 using AppMemoryQuery = bool (*)(u64& used, u64& limit); // d3d12_device.h
 void SetAppMemoryQuery(AppMemoryQuery query);            // d3d12_device.h
+bool LastGpuMemory(u64& used, u64& budget);              // d3d12_device.h
 } // namespace D3D12
 
 namespace AudioCore::Sink {
@@ -223,6 +225,7 @@ void ApplyProcessMemoryLimit(u32 limit_mib); // likewise
 std::string LargestAllocations();       // likewise
 std::string HeapReport();               // likewise
 bool QueryAppMemory(u64& used, u64& limit);  // likewise
+Common::MemoryCeilings QueryMemoryCeilings(); // likewise
 /// A game's learned JIT prewarm step (Jadyx::PrewarmBudget), 0 when none is stored.
 std::int32_t LoadPrewarmStep(u64 program_id);  // likewise
 void SavePrewarmStep(u64 program_id, std::int32_t step);  // likewise
@@ -1320,9 +1323,26 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         // Pulse: after a resume the presented frames are logged each second for 30 s, so a guest
         // that freezes shows when it stopped.
         u64 resume_frames = 0;
+        Common::MemoryCeilingTrends ceiling_trends;
         for (u32 tick = 1;; ++tick) {
             std::this_thread::sleep_for(TICK);
             if (play_session) play_session->Tick(!menu);
+            // The free memory under each limit every 10 s; the nearest one is logged each minute,
+            // and every 10 s while it has less than 768 MiB free.
+            if (tick % (10 * TICKS_PER_SECOND) == 0) {
+                const Common::MemoryCeilings ceilings = QueryMemoryCeilings();
+                ceiling_trends.Add(
+                    static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         std::chrono::steady_clock::now().time_since_epoch())
+                                         .count()),
+                    ceilings);
+                const auto nearest = Common::NearestCeiling(ceilings);
+                if (tick % TICKS_PER_MINUTE == 0 ||
+                    (nearest && ceilings[*nearest].Free() < (768ULL << 20))) {
+                    WriteDiag("memory ceiling: " +
+                              Common::DescribeMemoryCeilings(ceilings, ceiling_trends));
+                }
+            }
             if (u64 used{}, limit{}; config.memory_audit && tick % 10 == 0 &&
                                      QueryAppMemory(used, limit)) {
                 const u64 headroom = limit > used ? limit - used : 0;
@@ -2307,6 +2327,24 @@ bool QueryAppMemory(u64& used, u64& limit) {
     } catch (...) {
         return false;
     }
+}
+
+// The app's limit, the system's commit and the GPU budget the renderer last read.
+Common::MemoryCeilings QueryMemoryCeilings() {
+    using Common::MemoryCeiling;
+    Common::MemoryCeilings ceilings;
+    if (auto& app = ceilings[MemoryCeiling::App]; !QueryAppMemory(app.used, app.limit)) {
+        app = {};
+    }
+    MEMORYSTATUSEX status{.dwLength = sizeof(MEMORYSTATUSEX)};
+    if (GlobalMemoryStatusEx(&status)) {
+        ceilings[MemoryCeiling::System] = {status.ullTotalPageFile - status.ullAvailPageFile,
+                                           status.ullTotalPageFile};
+    }
+    if (auto& gpu = ceilings[MemoryCeiling::Gpu]; !D3D12::LastGpuMemory(gpu.used, gpu.limit)) {
+        gpu = {};
+    }
+    return ceilings;
 }
 
 // Last-chance writer for the crash handlers: no WinRT, no lock (the faulting thread may hold it),

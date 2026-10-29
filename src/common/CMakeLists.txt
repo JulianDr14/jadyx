@@ -40,6 +40,8 @@ add_library(
     common_types.h
     commit_census.cpp
     commit_census.h
+    memory_ceiling.cpp
+    memory_ceiling.h
     pulse_archive.cpp
     pulse_archive.h
     pulse_store.cpp

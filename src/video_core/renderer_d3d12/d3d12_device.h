@@ -127,6 +127,9 @@ using AppMemoryQuery = bool (*)(u64& used, u64& limit);
 /// Set by the frontend before the renderer is created; makes the caches' memory usage count the
 /// whole app (see Device::CacheMemoryUsage).
 void SetAppMemoryQuery(AppMemoryQuery query);
+/// The GPU's local memory in use and its budget at the caches' last pressure query (DXGI);
+/// false before the first one.
+bool LastGpuMemory(u64& used, u64& budget);
 
 class Device {
 public:

@@ -93,6 +93,8 @@ u64 detail_sequence{};
 u64 diagnostic_sequence{};
 std::atomic_flag diagnostic_dumped{};
 std::atomic<AppMemoryQuery> app_memory_query{nullptr};
+std::atomic<u64> last_gpu_used{};
+std::atomic<u64> last_gpu_budget{};
 bool breadcrumbs_enabled = false;
 // Two tokens: [0] the last command the GPU started, [1] the last it finished. A readback heap
 // stays mapped, and its memory is still readable after the device is removed.
@@ -179,6 +181,12 @@ void MarkGpuCommands(CommandStream* cmd, const char* kind, u64 first, u64 second
 
 void SetAppMemoryQuery(AppMemoryQuery query) {
     app_memory_query.store(query, std::memory_order_release);
+}
+
+bool LastGpuMemory(u64& used, u64& budget) {
+    budget = last_gpu_budget.load(std::memory_order_relaxed);
+    used = last_gpu_used.load(std::memory_order_relaxed);
+    return budget != 0;
 }
 
 namespace {
@@ -1059,6 +1067,8 @@ void Device::LogCapabilities() const {
 CacheMemorySnapshot Device::QueryCacheMemoryPressure() const {
     const auto local = QueryCacheVideoMemory();
     CacheMemorySnapshot result{.gpu_used = local.CurrentUsage, .gpu_budget = local.Budget};
+    last_gpu_used.store(local.CurrentUsage, std::memory_order_relaxed);
+    last_gpu_budget.store(local.Budget, std::memory_order_relaxed);
     if (const auto query = app_memory_query.load(std::memory_order_acquire)) {
         if (!query(result.app_used, result.app_limit)) {
             result.app_used = result.app_limit = 0;
