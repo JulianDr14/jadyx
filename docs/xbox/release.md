@@ -15,7 +15,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 | Workflow | Cuándo | Qué hace |
 |---|---|---|
 | `ci.yml` | Cada PR y cada push a `main` (salvo cambios que solo tocan docs) | Compila `jadyx` para UWP y Mesa `spirv_to_dxil.dll`; prueba `tools/xbox/release.py` |
-| `ci.yml` a mano | Actions → CI → Run workflow, en cualquier rama | Lo mismo y además un appx firmado de prueba (artifact `jadyx-package`, 14 días), con la versión del manifest |
+| `ci.yml` a mano | Actions → CI → Run workflow, en cualquier rama | Lo mismo y además un appx firmado de prueba (artifact `jadyx-package-temporary-signing`, 14 días), usando por defecto un certificado efímero |
 | `release.yml` | Actions → Release → Run workflow, en `main`, con la versión (`0.3.0`) | Valida la versión, compila, firma, sube la versión del manifest en un commit, crea el tag y publica la GitHub Release |
 | `build.yml` | Lo llaman los dos anteriores | La build y el empaquetado |
 
@@ -79,3 +79,10 @@ agrega un salto de línea, y el secret ya no coincide con el certificado o la co
 
 El certificado actual vence el 16/10/2027. Los paquetes firmados antes de esa fecha siguen siendo
 válidos, porque la firma lleva timestamp.
+
+La ejecución manual de CI usa por defecto un certificado autofirmado temporal de 30 días y adjunta
+su `.cer` al artefacto `jadyx-package-temporary-signing`. Es solo para pruebas: no comparte la clave
+pública fijada por el actualizador ni permite actualizar una instalación firmada con el certificado
+del proyecto. Para generar un paquete compatible con instalaciones existentes, desactiva
+`temporary_signing` y configura los dos secrets del certificado del proyecto. Las releases nunca
+usan el certificado temporal.

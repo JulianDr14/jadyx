@@ -3,8 +3,8 @@
 #
 # Every pull request must build. A merge to main does not build again: the PR already built the
 # merged result (pull_request checks out the merge commit), and Release builds main itself. Run it
-# by hand (Actions -> CI -> Run workflow, on any branch) to also get a signed test appx as a 14-day
-# artifact.
+# by hand (Actions -> CI -> Run workflow, on any branch) to also get a temporary-certificate test
+# appx as a 14-day artifact. It is not signed with the project's distribution certificate.
 
 name: CI
 
@@ -14,7 +14,11 @@ on:
   workflow_dispatch:
     inputs:
       package:
-        description: Also make a signed test appx
+        description: Also make a test appx package
+        type: boolean
+        default: true
+      temporary_signing:
+        description: Sign with a temporary certificate (cannot update project-signed installs)
         type: boolean
         default: true
 
@@ -37,4 +41,5 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       package: ${{ github.event_name == 'workflow_dispatch' && inputs.package }}
+      temporary_signing: ${{ github.event_name == 'workflow_dispatch' && inputs.temporary_signing }}
     secrets: inherit

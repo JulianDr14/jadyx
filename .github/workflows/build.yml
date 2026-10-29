@@ -10,7 +10,11 @@ on:
   workflow_call:
     inputs:
       package:
-        description: Also make the signed appx (needs the signing secrets)
+        description: Also make the appx package
+        type: boolean
+        default: false
+      temporary_signing:
+        description: Sign a manual test package with an ephemeral self-signed certificate
         type: boolean
         default: false
       package_version:
@@ -251,44 +255,69 @@ jobs:
           JADYX_PFX_BASE64: ${{ secrets.JADYX_PFX_BASE64 }}
           JADYX_PFX_PASSWORD: ${{ secrets.JADYX_PFX_PASSWORD }}
           PACKAGE_VERSION: ${{ inputs.package_version }}
+          TEMPORARY_SIGNING: ${{ inputs.temporary_signing }}
         run: |
           $ErrorActionPreference = "Stop"
-          # Every package carries the project's certificate, so the console updates in place.
-          if (-not $env:JADYX_PFX_BASE64 -or -not $env:JADYX_PFX_PASSWORD) {
-              throw "The JADYX_PFX_BASE64 / JADYX_PFX_PASSWORD secrets are not set"
-          }
           $pfx = Join-Path $env:RUNNER_TEMP "jadyx.pfx"
-          # A secret piped in from PowerShell can carry a BOM or line breaks; keep only base64.
-          $base64 = $env:JADYX_PFX_BASE64 -replace '[^A-Za-z0-9+/=]', ''
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($base64))
-          $params = @{
-              Release     = $true
-              PfxPath     = $pfx
-              SpirvToDxil = Join-Path $env:RUNNER_TEMP "mesa\spirv_to_dxil.dll"
-          }
-          if ($env:PACKAGE_VERSION) { $params.Version = $env:PACKAGE_VERSION }
-          try { & tools\xbox\package-appx.ps1 @params } finally { Remove-Item $pfx -Force }
+          $certThumbprint = $null
+          try {
+              if ($env:TEMPORARY_SIGNING -eq "true") {
+                  $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=JadyxDev" `
+                      -FriendlyName "Jadyx temporary CI signer" -CertStoreLocation Cert:\CurrentUser\My `
+                      -KeyExportPolicy Exportable -NotAfter (Get-Date).AddDays(30)
+                  $certThumbprint = $cert.Thumbprint
+                  $password = [Guid]::NewGuid().ToString("N") + [Guid]::NewGuid().ToString("N")
+                  $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+                  $exportParams = @{ Cert = $cert; FilePath = $pfx; Password = $securePassword }
+                  Export-PfxCertificate @exportParams | Out-Null
+                  $env:JADYX_PFX_PASSWORD = $password
+                  Write-Host "::notice::Using a temporary self-signed certificate. This package cannot update installs signed by the project certificate."
+              } else {
+                  if (-not $env:JADYX_PFX_BASE64 -or -not $env:JADYX_PFX_PASSWORD) {
+                      throw "The JADYX_PFX_BASE64 / JADYX_PFX_PASSWORD secrets are not set; enable temporary_signing only for a test package."
+                  }
+                  # A secret piped in from PowerShell can carry a BOM or line breaks; keep only base64.
+                  $base64 = $env:JADYX_PFX_BASE64 -replace '[^A-Za-z0-9+/=]', ''
+                  [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($base64))
+              }
 
-          [xml]$mf = Get-Content build-uwp\package\layout\AppxManifest.xml -Raw
-          $version = $mf.Package.Identity.Version
-          $out = New-Item -ItemType Directory -Force out
-          Copy-Item build-uwp\package\jadyx.appx "out\Jadyx_${version}_x64.appx"
-          Copy-Item build-uwp\package\jadyx.cer out\Jadyx.cer
-          Copy-Item build-uwp\package\Microsoft.VCLibs.x64.14.00.appx out\
-          Compress-Archive build-uwp\bin\jadyx.pdb "out\Jadyx_${version}_symbols.zip"
-          [ordered]@{
-              version = $version
-              commit  = $env:GITHUB_SHA
-              run     = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
-          } | ConvertTo-Json | Set-Content -Encoding ascii out\build-info.json
-          Get-ChildItem out -File | Sort-Object Name | ForEach-Object {
-              "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
-          } | Set-Content -Encoding ascii out\SHA256SUMS.txt
-          Get-ChildItem out | Format-Table Name, Length
+              $params = @{
+                  Release     = $true
+                  PfxPath     = $pfx
+                  SpirvToDxil = Join-Path $env:RUNNER_TEMP "mesa\spirv_to_dxil.dll"
+              }
+              if ($env:PACKAGE_VERSION) { $params.Version = $env:PACKAGE_VERSION }
+              & tools\xbox\package-appx.ps1 @params
+
+              [xml]$mf = Get-Content build-uwp\package\layout\AppxManifest.xml -Raw
+              $version = $mf.Package.Identity.Version
+              $out = New-Item -ItemType Directory -Force out
+              Copy-Item build-uwp\package\jadyx.appx "out\Jadyx_${version}_x64.appx"
+              Copy-Item build-uwp\package\jadyx.cer out\Jadyx.cer
+              Copy-Item build-uwp\package\Microsoft.VCLibs.x64.14.00.appx out\
+              Compress-Archive build-uwp\bin\jadyx.pdb "out\Jadyx_${version}_symbols.zip"
+              $signing = if ($certThumbprint) { "temporary-self-signed" } else { "project" }
+              [ordered]@{
+                  version        = $version
+                  commit         = $env:GITHUB_SHA
+                  run            = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+                  signing        = $signing
+                  signerThumbprint  = if ($certThumbprint) { $certThumbprint } else { $null }
+              } | ConvertTo-Json | Set-Content -Encoding ascii out\build-info.json
+              Get-ChildItem out -File | Sort-Object Name | ForEach-Object {
+                  "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+              } | Set-Content -Encoding ascii out\SHA256SUMS.txt
+              Get-ChildItem out | Format-Table Name, Length
+          } finally {
+              if (Test-Path -LiteralPath $pfx) { Remove-Item -LiteralPath $pfx -Force }
+              if ($certThumbprint) {
+                  Remove-Item "Cert:\CurrentUser\My\$certThumbprint" -Force -ErrorAction SilentlyContinue
+              }
+          }
 
       - uses: actions/upload-artifact@v7
         with:
-          name: jadyx-package
+          name: ${{ inputs.temporary_signing && 'jadyx-package-temporary-signing' || 'jadyx-package' }}
           path: out/*
           if-no-files-found: error
           retention-days: 14
