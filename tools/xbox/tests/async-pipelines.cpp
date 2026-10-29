@@ -3,6 +3,7 @@
 // Async pipelines gate: which draws with a pipeline still building wait for it, per mode and
 // small-draw threshold, and the counts the stats line reports.
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
+#include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -27,6 +28,9 @@ int main() try {
     constexpr PendingDraw quads{.vertices = 4, .instances = 50, .indexed = false, .new_target = false};
     constexpr PendingDraw indexed_quad{.vertices = 6, .instances = 1, .indexed = true, .new_target = false};
     constexpr PendingDraw sprite{.vertices = 6, .instances = 1, .indexed = false, .new_target = false};
+    // Indirect draws: their counts live in a GPU buffer.
+    constexpr PendingDraw indirect{.vertices = UINT32_MAX, .instances = UINT32_MAX, .indexed = false, .new_target = false};
+    constexpr PendingDraw indirect_new{.vertices = UINT32_MAX, .instances = UINT32_MAX, .indexed = true, .new_target = true};
 
     // Off never reaches the decision in the renderer, but skips like Full without a threshold.
     Expect(AsyncPipelines::Balanced, 0, mesh, Skip, "balanced mesh");
@@ -44,6 +48,9 @@ int main() try {
     Expect(AsyncPipelines::Balanced, 6, triangle, WaitSmall, "threshold before full-screen");
     Expect(AsyncPipelines::Balanced, 2999, mesh_new, WaitNewTarget, "over threshold, new target");
     Expect(AsyncPipelines::Balanced, 3000, mesh, WaitSmall, "threshold inclusive");
+    Expect(AsyncPipelines::Full, 3000, indirect, Skip, "full indirect over any threshold");
+    Expect(AsyncPipelines::Balanced, 4, indirect, Skip, "balanced indirect is not full-screen");
+    Expect(AsyncPipelines::Balanced, 0, indirect_new, WaitNewTarget, "balanced indirect, new target");
 
     // Settings round trip.
     if (GetAsyncPipelines() != AsyncPipelines::Off || GetWaitSmallDraws() != 0)
@@ -52,6 +59,9 @@ int main() try {
     SetWaitSmallDraws(12);
     if (GetAsyncPipelines() != AsyncPipelines::Balanced || GetWaitSmallDraws() != 12)
         throw std::runtime_error("settings not kept");
+    if (GetPipelineWorkers() != 0) throw std::runtime_error("pipeline workers not default");
+    SetPipelineWorkers(6);
+    if (GetPipelineWorkers() != 6) throw std::runtime_error("pipeline workers not kept");
 
     // Stats.
     for (int i = 0; i < 5; ++i) CountPendingDraw(Skip);
@@ -63,7 +73,7 @@ int main() try {
     if (stats.skipped != 5 || stats.waited_small != 1 || stats.waited_full_screen != 2 ||
         stats.waited_new_target != 1)
         throw std::runtime_error("stats miscounted");
-    std::cout << "PASS async pipelines: 15 decisions (balanced, full, small-draw threshold), "
+    std::cout << "PASS async pipelines: 18 decisions (balanced, full, small-draw threshold), "
                  "settings and stats\n";
     return 0;
 } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
