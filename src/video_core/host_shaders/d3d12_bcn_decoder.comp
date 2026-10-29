@@ -1,0 +1,419 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 450
+
+// Decodes the guest's block-linear BC1-5 and BC7 blocks straight into the plain texels the D3D12
+// backend keeps for BC arrays (DecodedBcFormat): R8 for BC4, R8G8 for BC5, RGBA8 for the rest.
+// One invocation decodes one 4x4 block, gl_GlobalInvocationID.z is the layer. The results are
+// the CPU decoder's bytes (externals/bc_decoder and VideoCommon::GuestBc1Palette), integer
+// rounding included, so both paths can be switched without the textures changing.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    uint mode;              // BCN_* in bits 0-3, BCN_SIGNED and BCN_GUEST_PALETTE
+    uint layer_stride;
+    uint block_size;
+    uint x_shift;
+    uint block_height;
+    uint block_height_mask;
+    uint input_words;
+    uint blocks_x;
+    uint blocks_y;
+};
+
+layout(binding = 0, std430) readonly restrict buffer InputBuffer {
+    uint input_data[];
+};
+
+layout(binding = 1) uniform writeonly restrict image2DArray dest_image;
+
+const uint BCN_BC1 = 1u;
+const uint BCN_BC2 = 2u;
+const uint BCN_BC3 = 3u;
+const uint BCN_BC4 = 4u;
+const uint BCN_BC5 = 5u;
+const uint BCN_BC7 = 7u;
+const uint BCN_SIGNED = 16u;        // BC4 and BC5 SNORM
+const uint BCN_GUEST_PALETTE = 32u; // BC1-3 colors from VideoCommon::GuestBc1Palette
+
+const uint GOB_SIZE_X_SHIFT = 6;
+const uint GOB_SIZE_Y_SHIFT = 3;
+const uint GOB_SIZE_SHIFT = GOB_SIZE_X_SHIFT + GOB_SIZE_Y_SHIFT;
+
+uint SwizzleOffset(uvec2 pos) {
+    return ((pos.x & 32u) << 3u) |
+           ((pos.y & 6u)  << 5u) |
+           ((pos.x & 16u) << 1u) |
+           ((pos.y & 1u)  << 4u) |
+           (pos.x & 15u);
+}
+
+uvec3 Expand565(uint color) {
+    const uint r = (color >> 11u) & 31u;
+    const uint g = (color >> 5u) & 63u;
+    const uint b = color & 31u;
+    return uvec3((r << 3u) | (r >> 2u), (g << 2u) | (g >> 4u), (b << 3u) | (b >> 2u));
+}
+
+// GuestBc1Palette's rounding: 5-bit channels from their raw values, 6-bit ones from the expanded.
+int GuestThird5(int a, int b) { return ((2 * a + b) * 22) / 8; }
+int GuestThird6(int a, int b) { return (256 * a + (b - a) / 4 + 128 + (b - a) * 80) / 256; }
+int GuestHalf5(int a, int b) { return ((a + b) * 33) / 8; }
+int GuestHalf6(int a, int b) { return (256 * a + (b - a) / 4 + 128 + (b - a) * 128) / 256; }
+
+/// The four RGBA8 colors of a BC1 color block (two words). separate_alpha: BC2 and BC3's color
+/// half, which always has four colors and no transparent one.
+void ColorPalette(uint word0, bool separate_alpha, bool guest, out uvec4 colors[4]) {
+    const uint c0 = word0 & 0xFFFFu;
+    const uint c1 = word0 >> 16u;
+    const uvec3 e0 = Expand565(c0);
+    const uvec3 e1 = Expand565(c1);
+    colors[0] = uvec4(e0, 255u);
+    colors[1] = uvec4(e1, 255u);
+    const bool four_colors = separate_alpha || c0 > c1;
+    if (guest) {
+        const ivec3 r0 = ivec3(c0 >> 11u, (c0 >> 5u) & 63u, c0 & 31u);
+        const ivec3 r1 = ivec3(c1 >> 11u, (c1 >> 5u) & 63u, c1 & 31u);
+        const int g0 = int(e0.g);
+        const int g1 = int(e1.g);
+        if (four_colors) {
+            colors[2] = uvec4(GuestThird5(r0.x, r1.x), GuestThird6(g0, g1), GuestThird5(r0.z, r1.z),
+                              255);
+            colors[3] = uvec4(GuestThird5(r1.x, r0.x), GuestThird6(g1, g0), GuestThird5(r1.z, r0.z),
+                              255);
+        } else {
+            colors[2] = uvec4(GuestHalf5(r0.x, r1.x), GuestHalf6(g0, g1), GuestHalf5(r0.z, r1.z),
+                              255);
+            colors[3] = uvec4(0u);
+        }
+        return;
+    }
+    if (four_colors) {
+        colors[2] = uvec4((e0 * 2u + e1) / 3u, 255u);
+        colors[3] = uvec4((e1 * 2u + e0) / 3u, 255u);
+    } else {
+        colors[2] = uvec4((e0 + e1) >> 1u, 255u);
+        // Only BC1 has the transparent black; separate_alpha always took four colors.
+        colors[3] = uvec4(0u);
+    }
+}
+
+/// Palette entry index of one BC4 channel block (two words): 3 bits per texel from bit 16.
+uint ChannelIndex(uint word0, uint word1, uint texel) {
+    const uint bit = 16u + 3u * texel;
+    if (bit + 3u <= 32u) {
+        return (word0 >> bit) & 7u;
+    }
+    if (bit >= 32u) {
+        return (word1 >> (bit - 32u)) & 7u;
+    }
+    return ((word0 >> bit) | (word1 << (32u - bit))) & 7u;
+}
+
+/// One texel of a BC4 channel block, as the byte the CPU decoder writes (signed ones as int).
+int ChannelValue(uint word0, uint word1, uint texel, bool is_signed) {
+    int e0 = int(word0 & 0xFFu);
+    int e1 = int((word0 >> 8u) & 0xFFu);
+    if (is_signed) {
+        e0 = bitfieldExtract(int(word0), 0, 8);
+        e1 = bitfieldExtract(int(word0), 8, 8);
+    }
+    const int i = int(ChannelIndex(word0, word1, texel));
+    if (i == 0) {
+        return e0;
+    }
+    if (i == 1) {
+        return e1;
+    }
+    if (e0 > e1) {
+        return ((8 - i) * e0 + (i - 1) * e1) / 7;
+    }
+    if (i < 6) {
+        return ((6 - i) * e0 + (i - 1) * e1) / 5;
+    }
+    if (i == 6) {
+        return is_signed ? -128 : 0;
+    }
+    return is_signed ? 127 : 255;
+}
+
+float ChannelFloat(int value, bool is_signed) {
+    return is_signed ? max(float(value) / 127.0, -1.0) : float(value) / 255.0;
+}
+
+// BC7 (ARB_texture_compression_bptc), laid out as externals/bc_decoder's BC7::Block.
+
+const uint PARTITIONTABLE2[64] = uint[](
+    0x50505050u, 0x40404040u, 0x54545454u, 0x54505040u, 0x50404000u, 0x55545450u, 0x55545040u, 0x54504000u,
+    0x50400000u, 0x55555450u, 0x55544000u, 0x54400000u, 0x55555440u, 0x55550000u, 0x55555500u, 0x55000000u,
+    0x55150100u, 0x00004054u, 0x15010000u, 0x00405054u, 0x00004050u, 0x15050100u, 0x05010000u, 0x40505054u,
+    0x00404050u, 0x05010100u, 0x14141414u, 0x05141450u, 0x01155440u, 0x00555500u, 0x15014054u, 0x05414150u,
+    0x44444444u, 0x55005500u, 0x11441144u, 0x05055050u, 0x05500550u, 0x11114444u, 0x41144114u, 0x44111144u,
+    0x15055054u, 0x01055040u, 0x05041050u, 0x05455150u, 0x14414114u, 0x50050550u, 0x41411414u, 0x00141400u,
+    0x00041504u, 0x00105410u, 0x10541000u, 0x04150400u, 0x50410514u, 0x41051450u, 0x05415014u, 0x14054150u,
+    0x41050514u, 0x41505014u, 0x40011554u, 0x54150140u, 0x50505500u, 0x00555050u, 0x15151010u, 0x54540404u);
+
+const uint PARTITIONTABLE3[64] = uint[](
+    0xAA685050u, 0x6A5A5040u, 0x5A5A4200u, 0x5450A0A8u, 0xA5A50000u, 0xA0A05050u, 0x5555A0A0u, 0x5A5A5050u,
+    0xAA550000u, 0xAA555500u, 0xAAAA5500u, 0x90909090u, 0x94949494u, 0xA4A4A4A4u, 0xA9A59450u, 0x2A0A4250u,
+    0xA5945040u, 0x0A425054u, 0xA5A5A500u, 0x55A0A0A0u, 0xA8A85454u, 0x6A6A4040u, 0xA4A45000u, 0x1A1A0500u,
+    0x0050A4A4u, 0xAAA59090u, 0x14696914u, 0x69691400u, 0xA08585A0u, 0xAA821414u, 0x50A4A450u, 0x6A5A0200u,
+    0xA9A58000u, 0x5090A0A8u, 0xA8A09050u, 0x24242424u, 0x00AA5500u, 0x24924924u, 0x24499224u, 0x50A50A50u,
+    0x500AA550u, 0xAAAA4444u, 0x66660000u, 0xA5A0A5A0u, 0x50A050A0u, 0x69286928u, 0x44AAAA44u, 0x66666600u,
+    0xAA444444u, 0x54A854A8u, 0x95809580u, 0x96969600u, 0xA85454A8u, 0x80959580u, 0xAA141414u, 0x96960000u,
+    0xAAAA1414u, 0xA05050A0u, 0xA0A5A5A0u, 0x96000000u, 0x40804080u, 0xA9A8A9A8u, 0xAAAAAA44u, 0x2A4A5254u);
+
+const uint ANCHORTABLE2[64] = uint[](
+    15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u,
+    15u, 2u, 8u, 2u, 2u, 8u, 8u, 15u, 2u, 8u, 2u, 2u, 8u, 8u, 2u, 2u,
+    15u, 15u, 6u, 8u, 2u, 8u, 15u, 15u, 2u, 8u, 2u, 2u, 2u, 15u, 15u, 6u,
+    6u, 2u, 6u, 8u, 15u, 15u, 2u, 2u, 15u, 15u, 15u, 15u, 15u, 2u, 2u, 15u);
+
+const uint ANCHORTABLE3A[64] = uint[](
+    3u, 3u, 15u, 15u, 8u, 3u, 15u, 15u, 8u, 8u, 6u, 6u, 6u, 5u, 3u, 3u,
+    3u, 3u, 8u, 15u, 3u, 3u, 6u, 10u, 5u, 8u, 8u, 6u, 8u, 5u, 15u, 15u,
+    8u, 15u, 3u, 5u, 6u, 10u, 8u, 15u, 15u, 3u, 15u, 5u, 15u, 15u, 15u, 15u,
+    3u, 15u, 5u, 5u, 5u, 8u, 5u, 10u, 5u, 10u, 8u, 13u, 15u, 12u, 3u, 3u);
+
+const uint ANCHORTABLE3B[64] = uint[](
+    15u, 8u, 8u, 3u, 15u, 15u, 3u, 8u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 8u,
+    15u, 8u, 15u, 3u, 15u, 8u, 15u, 8u, 3u, 15u, 6u, 10u, 15u, 15u, 10u, 8u,
+    15u, 3u, 15u, 10u, 10u, 8u, 9u, 10u, 6u, 15u, 8u, 15u, 3u, 6u, 6u, 8u,
+    15u, 3u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 15u, 3u, 15u, 15u, 8u);
+
+// Per mode: subsets, partition bits, rotation bits, index selection bits, color bits, alpha bits,
+// endpoint p-bits, shared p-bits, primary and secondary index bits.
+const uint BC7_NS[8] = uint[](3u, 2u, 3u, 2u, 1u, 1u, 1u, 2u);
+const uint BC7_PB[8] = uint[](4u, 6u, 6u, 6u, 0u, 0u, 0u, 6u);
+const uint BC7_RB[8] = uint[](0u, 0u, 0u, 0u, 2u, 2u, 0u, 0u);
+const uint BC7_ISB[8] = uint[](0u, 0u, 0u, 0u, 1u, 0u, 0u, 0u);
+const uint BC7_CB[8] = uint[](4u, 6u, 5u, 7u, 5u, 7u, 7u, 5u);
+const uint BC7_AB[8] = uint[](0u, 0u, 0u, 0u, 6u, 8u, 7u, 5u);
+const uint BC7_EPB[8] = uint[](1u, 0u, 0u, 1u, 0u, 0u, 1u, 1u);
+const uint BC7_SPB[8] = uint[](0u, 1u, 0u, 0u, 0u, 0u, 0u, 0u);
+const uint BC7_IB[8] = uint[](3u, 3u, 2u, 2u, 2u, 2u, 4u, 2u);
+const uint BC7_IB2[8] = uint[](0u, 0u, 0u, 0u, 3u, 2u, 0u, 0u);
+
+const uint BC7_WEIGHTS2[4] = uint[](0u, 21u, 43u, 64u);
+const uint BC7_WEIGHTS3[8] = uint[](0u, 9u, 18u, 27u, 37u, 46u, 55u, 64u);
+const uint BC7_WEIGHTS4[16] = uint[](0u, 4u, 9u, 13u, 17u, 21u, 26u, 30u,
+                                     34u, 38u, 43u, 47u, 51u, 55u, 60u, 64u);
+
+/// count (< 32) bits of the 128-bit block from bit offset.
+uint Bits(uvec4 block, uint offset, uint count) {
+    if (count == 0u) {
+        return 0u;
+    }
+    const uint word = offset >> 5u;
+    const uint shift = offset & 31u;
+    uint value = block[word] >> shift;
+    if (shift + count > 32u && word < 3u) {
+        value |= block[word + 1u] << (32u - shift);
+    }
+    return value & ((1u << count) - 1u);
+}
+
+uint Bc7Weight(uint index, uint bits) {
+    if (bits == 2u) {
+        return BC7_WEIGHTS2[index];
+    }
+    if (bits == 3u) {
+        return BC7_WEIGHTS3[index];
+    }
+    return BC7_WEIGHTS4[index];
+}
+
+uint Bc7Interpolate(uint e0, uint e1, uint index, uint bits) {
+    const uint weight = Bc7Weight(index, bits);
+    return ((64u - weight) * e0 + weight * e1 + 32u) >> 6u;
+}
+
+void DecodeBc7(uvec4 block, ivec3 coord, ivec2 size) {
+    const uint low = block.x & 0xFFu;
+    if (low == 0u) {
+        // Invalid mode: transparent black.
+        for (int j = 0; j < 4; ++j) {
+            for (int i = 0; i < 4; ++i) {
+                if (coord.x + i < size.x && coord.y + j < size.y) {
+                    imageStore(dest_image, coord + ivec3(i, j, 0), vec4(0.0));
+                }
+            }
+        }
+        return;
+    }
+    const uint m = uint(findLSB(low));
+    const uint ns = BC7_NS[m];
+    const uint cb = BC7_CB[m];
+    const uint ab = BC7_AB[m];
+    const uint epb = BC7_EPB[m];
+    const uint spb = BC7_SPB[m];
+    const uint num_colors = ns * 2u;
+
+    const uint partition_offset = m + 1u;
+    const uint partition_id = Bits(block, partition_offset, BC7_PB[m]);
+    const uint rotation_offset = partition_offset + BC7_PB[m];
+    const uint rotation = Bits(block, rotation_offset, BC7_RB[m]);
+    const uint selection_offset = rotation_offset + BC7_RB[m];
+    const uint selection = Bits(block, selection_offset, BC7_ISB[m]);
+    const uint red_offset = selection_offset + BC7_ISB[m];
+    const uint green_offset = red_offset + cb * num_colors;
+    const uint blue_offset = green_offset + cb * num_colors;
+    const uint alpha_offset = blue_offset + cb * num_colors;
+    const uint pbit_offset = alpha_offset + ab * num_colors;
+    const uint shared_offset = pbit_offset + epb * num_colors;
+    const uint primary_offset = shared_offset + spb * 2u;
+    const uint secondary_offset = primary_offset + 16u * BC7_IB[m] - ns;
+
+    uvec4 endpoints[6];
+    for (uint i = 0u; i < num_colors; ++i) {
+        uvec4 color = uvec4(Bits(block, red_offset + cb * i, cb),
+                            Bits(block, green_offset + cb * i, cb),
+                            Bits(block, blue_offset + cb * i, cb),
+                            ab > 0u ? Bits(block, alpha_offset + ab * i, ab) : 255u);
+        if (spb > 0u) {
+            // Shared per subset: endpoints 0-1 take the first bit, 2-3 the second.
+            color.rgb = (color.rgb << 1u) | Bits(block, shared_offset + i / 2u, 1u);
+        }
+        if (epb > 0u) {
+            const uint pbit = Bits(block, pbit_offset + i, 1u);
+            color.rgb = (color.rgb << 1u) | pbit;
+            if (ab > 0u) {
+                color.a = (color.a << 1u) | pbit;
+            }
+        }
+        const uint color_bits = cb + spb + epb;
+        color.rgb = (color.rgb << (8u - color_bits)) & 0xFFu;
+        color.rgb = color.rgb | (color.rgb >> color_bits);
+        if (ab > 0u) {
+            const uint alpha_bits = ab + spb + epb;
+            color.a = (color.a << (8u - alpha_bits)) & 0xFFu;
+            color.a = color.a | (color.a >> alpha_bits);
+        }
+        endpoints[i] = color;
+    }
+
+    // Anchors store one bit less, so each texel's index position depends on the ones before it.
+    const bool color_secondary = selection == 1u;
+    const bool alpha_secondary = BC7_IB2[m] != 0u && selection == 0u;
+    const uint color_bits = color_secondary ? BC7_IB2[m] : BC7_IB[m];
+    const uint alpha_bits = alpha_secondary ? BC7_IB2[m] : BC7_IB[m];
+    const uint color_base = color_secondary ? secondary_offset : primary_offset;
+    const uint alpha_base = alpha_secondary ? secondary_offset : primary_offset;
+    uint color_cursor = 0u;
+    uint alpha_cursor = 0u;
+    for (uint texel = 0u; texel < 16u; ++texel) {
+        uint subset = 0u;
+        if (ns == 2u) {
+            subset = (PARTITIONTABLE2[partition_id] >> (2u * texel)) & 3u;
+        } else if (ns == 3u) {
+            subset = (PARTITIONTABLE3[partition_id] >> (2u * texel)) & 3u;
+        }
+        uint anchor = 0u;
+        if (subset == 1u) {
+            anchor = ns == 2u ? ANCHORTABLE2[partition_id] : ANCHORTABLE3A[partition_id];
+        } else if (subset == 2u) {
+            anchor = ANCHORTABLE3B[partition_id];
+        }
+        const uint anchor_bit = anchor == texel ? 1u : 0u;
+        const uint color_read = color_bits - anchor_bit;
+        const uint alpha_read = alpha_bits - anchor_bit;
+        const uint color_index = Bits(block, color_base + color_cursor, color_read);
+        const uint alpha_index = Bits(block, alpha_base + alpha_cursor, alpha_read);
+        color_cursor += color_read;
+        alpha_cursor += alpha_read;
+
+        const uvec4 e0 = endpoints[subset * 2u];
+        const uvec4 e1 = endpoints[subset * 2u + 1u];
+        uvec4 texel_color = uvec4(Bc7Interpolate(e0.r, e1.r, color_index, color_bits),
+                                  Bc7Interpolate(e0.g, e1.g, color_index, color_bits),
+                                  Bc7Interpolate(e0.b, e1.b, color_index, color_bits),
+                                  Bc7Interpolate(e0.a, e1.a, alpha_index, alpha_bits));
+        if (rotation == 1u) {
+            texel_color = texel_color.agbr;
+        } else if (rotation == 2u) {
+            texel_color = texel_color.rabg;
+        } else if (rotation == 3u) {
+            texel_color = texel_color.rgab;
+        }
+        const ivec2 local = ivec2(texel & 3u, texel >> 2u);
+        if (coord.x + local.x < size.x && coord.y + local.y < size.y) {
+            imageStore(dest_image, coord + ivec3(local, 0), vec4(texel_color) / 255.0);
+        }
+    }
+}
+
+void main() {
+    const uvec3 block_pos = gl_GlobalInvocationID;
+    if (block_pos.x >= blocks_x || block_pos.y >= blocks_y) {
+        return;
+    }
+    const ivec3 coord = ivec3(block_pos.xy * 4u, block_pos.z);
+    const ivec2 size = imageSize(dest_image).xy;
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+    const uint format = mode & 15u;
+    const bool is_signed = (mode & BCN_SIGNED) != 0u;
+    const bool guest = (mode & BCN_GUEST_PALETTE) != 0u;
+    const uint bytes_log2 = format == BCN_BC1 || format == BCN_BC4 ? 3u : 4u;
+
+    const uvec2 pos = uvec2(block_pos.x << bytes_log2, block_pos.y);
+    const uint block_y = pos.y >> GOB_SIZE_Y_SHIFT;
+    uint offset = block_pos.z * layer_stride;
+    offset += (block_y >> block_height) * block_size;
+    offset += (block_y & block_height_mask) << GOB_SIZE_SHIFT;
+    offset += (pos.x >> GOB_SIZE_X_SHIFT) << x_shift;
+    offset += SwizzleOffset(pos);
+
+    // The raw view is bounded already; a malformed layout still reads zeros, not past it.
+    const uint word = offset / 4u;
+    const uint words = 1u << (bytes_log2 - 2u);
+    uvec4 block = uvec4(0u);
+    if (word + words <= input_words) {
+        block.x = input_data[word];
+        block.y = input_data[word + 1u];
+        if (words == 4u) {
+            block.z = input_data[word + 2u];
+            block.w = input_data[word + 3u];
+        }
+    }
+
+    if (format == BCN_BC7) {
+        DecodeBc7(block, coord, size);
+        return;
+    }
+    uvec4 colors[4];
+    if (format == BCN_BC1) {
+        ColorPalette(block.x, false, guest, colors);
+    } else if (format == BCN_BC2 || format == BCN_BC3) {
+        ColorPalette(block.z, true, guest, colors);
+    }
+    for (uint texel = 0u; texel < 16u; ++texel) {
+        const ivec2 local = ivec2(texel & 3u, texel >> 2u);
+        if (coord.x + local.x >= size.x || coord.y + local.y >= size.y) {
+            continue;
+        }
+        vec4 value;
+        if (format == BCN_BC4) {
+            value = vec4(ChannelFloat(ChannelValue(block.x, block.y, texel, is_signed), is_signed),
+                         0.0, 0.0, 1.0);
+        } else if (format == BCN_BC5) {
+            value = vec4(ChannelFloat(ChannelValue(block.x, block.y, texel, is_signed), is_signed),
+                         ChannelFloat(ChannelValue(block.z, block.w, texel, is_signed), is_signed),
+                         0.0, 1.0);
+        } else {
+            const uint indices = format == BCN_BC1 ? block.y : block.w;
+            uvec4 color = colors[(indices >> (2u * texel)) & 3u];
+            if (format == BCN_BC2) {
+                const uint nibble = ((texel < 8u ? block.x : block.y) >> (4u * (texel & 7u))) & 15u;
+                color.a = nibble | (nibble << 4u);
+            } else if (format == BCN_BC3) {
+                color.a = uint(ChannelValue(block.x, block.y, texel, false));
+            }
+            value = vec4(color) / 255.0;
+        }
+        imageStore(dest_image, coord + ivec3(local, 0), value);
+    }
+}

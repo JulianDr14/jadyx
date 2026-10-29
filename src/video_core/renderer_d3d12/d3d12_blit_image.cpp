@@ -117,6 +117,14 @@ BlitImageHelper::BlitImageHelper(const Device& device_, Scheduler& scheduler_,
                   exception.what());
     }
     try {
+        CreateBcnPipeline(compiler);
+        bcn_available = true;
+        LOG_INFO(Render, "D3D12: BCn decoder shader ready");
+    } catch (const std::exception& exception) {
+        LOG_ERROR(Render, "D3D12: BCn decoder shader unavailable, BC arrays are decoded on the "
+                  "CPU: {}", exception.what());
+    }
+    try {
         CreateBc3Pipeline(compiler);
         bc3_available = true;
         LOG_INFO(Render, "D3D12: BC3 GPU encoder shader ready");

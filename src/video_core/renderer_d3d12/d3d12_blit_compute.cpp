@@ -5,11 +5,13 @@
 #include <array>
 #include <cstring>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include "common/div_ceil.h"
 #include "video_core/host_shaders/d3d12_astc_decoder_comp_spv.h"
 #include "video_core/host_shaders/d3d12_bc3_encoder_comp_spv.h"
+#include "video_core/host_shaders/d3d12_bcn_decoder_comp_spv.h"
 #include "video_core/host_shaders/d3d12_block_linear_unswizzle_comp_spv.h"
 #include "video_core/host_shaders/d3d12_depth_stencil_merge_comp_spv.h"
 #include "video_core/host_shaders/d3d12_depth_stencil_split_comp_spv.h"
@@ -20,8 +22,8 @@
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
 
-// The compute helpers of BlitImageHelper: depth-stencil plane packing, the GPU ASTC decoder and
-// BC3 encoder, and the block-linear unswizzle of texture uploads.
+// The compute helpers of BlitImageHelper: depth-stencil plane packing, the GPU ASTC and BCn
+// decoders and BC3 encoder, and the block-linear unswizzle of texture uploads.
 
 namespace D3D12 {
 
@@ -228,6 +230,57 @@ void BlitImageHelper::DecodeAstc(const AstcDecode& decode) {
     cmd->SetComputeRootDescriptorTable(ASTC_SOURCE_PARAM, table);
     cmd->SetComputeRootDescriptorTable(ASTC_DESTINATION_PARAM, destination);
     // One invocation per ASTC block.
+    const std::array<u32, 3> groups{Common::DivCeil(decode.blocks_x, ASTC_GROUP_SIZE),
+                                    Common::DivCeil(decode.blocks_y, ASTC_GROUP_SIZE),
+                                    decode.layers};
+    SetComputeRuntimeData(cmd, 3, groups);
+    cmd->Dispatch(groups[0], groups[1], groups[2]);
+}
+
+void BlitImageHelper::CreateBcnPipeline(const ShaderCompiler& compiler) {
+    // Same bindings and constant count as the ASTC decoder.
+    if (!astc_root_signature) {
+        throw std::runtime_error("no ASTC decoder root signature");
+    }
+    const std::array<ShaderCompiler::PipelineStage, 1> stages{{
+        {D3D12_BCN_DECODER_COMP_SPV, DXIL_SPIRV_SHADER_COMPUTE},
+    }};
+    auto compiled = compiler.CompilePipeline(stages, {});
+    const std::vector<u8>& dxil = compiled[0].dxil;
+    const D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline_desc{
+        .pRootSignature = astc_root_signature.Get(),
+        .CS = {dxil.data(), dxil.size()},
+    };
+    ThrowIfFailed(device.Get()->CreateComputePipelineState(&pipeline_desc,
+                                                           IID_PPV_ARGS(&bcn_pipeline)),
+                  "CreateComputePipelineState (BCn decoder)");
+}
+
+void BlitImageHelper::DecodeBcn(const BcnDecode& decode) {
+    if (!bcn_available || decode.blocks_x == 0 || decode.blocks_y == 0 || decode.layers == 0) {
+        return;
+    }
+    // Descriptors first: a full ring flushes the command list.
+    const std::array descriptors{decode.source, decode.destination};
+    const D3D12_GPU_DESCRIPTOR_HANDLE table = descriptor_ring.Upload(descriptors);
+    const D3D12_GPU_DESCRIPTOR_HANDLE destination{
+        table.ptr + descriptor_ring.Stride(),
+    };
+    CommandStream* const cmd = scheduler.CommandList();
+    ID3D12DescriptorHeap* const heaps[] = {descriptor_ring.Heap(), sampler_heap.Heap()};
+    cmd->SetDescriptorHeaps(2, heaps);
+    cmd->SetComputeRootSignature(astc_root_signature.Get());
+    scheduler.SetPipelineState(bcn_pipeline.Get());
+    const std::array<u32, ASTC_CONSTANT_WORDS> constants{
+        decode.mode,     decode.layer_stride,     decode.block_size,
+        decode.x_shift,  decode.gob_block_height, decode.gob_block_height_mask,
+        decode.input_words, decode.blocks_x,      decode.blocks_y,
+    };
+    cmd->SetComputeRoot32BitConstants(ASTC_CONSTANTS_PARAM, ASTC_CONSTANT_WORDS, constants.data(),
+                                      0);
+    cmd->SetComputeRootDescriptorTable(ASTC_SOURCE_PARAM, table);
+    cmd->SetComputeRootDescriptorTable(ASTC_DESTINATION_PARAM, destination);
+    // One invocation per 4x4 block.
     const std::array<u32, 3> groups{Common::DivCeil(decode.blocks_x, ASTC_GROUP_SIZE),
                                     Common::DivCeil(decode.blocks_y, ASTC_GROUP_SIZE),
                                     decode.layers};

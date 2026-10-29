@@ -72,6 +72,26 @@ struct AstcDecode {
     u32 first_block_row;
 };
 
+/// One guest BC1-5 or BC7 mip decoded on the GPU (d3d12_bcn_decoder.comp) into its
+/// DecodedBcFormat texels. Both descriptors are bounded, as in AstcDecode.
+struct BcnDecode {
+    /// Raw R32_TYPELESS SRV containing the level's swizzled BC blocks.
+    D3D12_CPU_DESCRIPTOR_HANDLE source;
+    /// Offline UAV (the decoded format's UNORM or SNORM view, Texture2DArray) of the level.
+    D3D12_CPU_DESCRIPTOR_HANDLE destination;
+    u32 mode; ///< the shader's BCN_* format, BCN_SIGNED and BCN_GUEST_PALETTE bits
+    /// The block-linear layout (VideoCommon::Accelerated::BlockLinearSwizzle2DParams).
+    u32 layer_stride;
+    u32 block_size;
+    u32 x_shift;
+    u32 gob_block_height;
+    u32 gob_block_height_mask;
+    u32 blocks_x; ///< 4x4 blocks per row and column of the level
+    u32 blocks_y;
+    u32 layers;
+    u32 input_words;
+};
+
 /// One horizontal RGBA8 band encoded as BC3, BC1 without its alpha or BC4 of its alpha alone,
 /// into a raw buffer footprint.
 struct BcEncode {
@@ -197,8 +217,15 @@ public:
     [[nodiscard]] bool CanEncodeBc() const noexcept {
         return bc3_available;
     }
+    /// False when the BCn decoder failed to translate or build (logged): BC arrays are then
+    /// decoded on the CPU.
+    [[nodiscard]] bool CanDecodeBcn() const noexcept {
+        return bcn_available;
+    }
     /// Records the decode of one level; the caller puts the image in UNORDERED_ACCESS.
     void DecodeAstc(const AstcDecode& decode);
+    /// Records the decode of one level; the caller puts the image in UNORDERED_ACCESS.
+    void DecodeBcn(const BcnDecode& decode);
     void EncodeBc(const BcEncode& encode);
 
     /// False when the unswizzle shader failed to translate or build (logged): uploads are then
@@ -247,6 +274,8 @@ private:
     /// Builds the ASTC decoder's root signature and pipeline; throws on failure.
     void CreateAstcPipeline(const ShaderCompiler& compiler);
     void CreateBc3Pipeline(const ShaderCompiler& compiler);
+    /// Builds the BCn decoder's pipeline on the ASTC root signature; throws on failure.
+    void CreateBcnPipeline(const ShaderCompiler& compiler);
     /// Builds the block-linear unswizzle pipeline on the pack root signature; throws on failure.
     void CreateUnswizzlePipeline(const ShaderCompiler& compiler);
 
@@ -275,6 +304,9 @@ private:
     ComPtr<ID3D12RootSignature> bc3_root_signature;
     ComPtr<ID3D12PipelineState> bc3_pipeline;
     bool bc3_available{};
+
+    ComPtr<ID3D12PipelineState> bcn_pipeline;
+    bool bcn_available{};
 
     ComPtr<ID3D12PipelineState> unswizzle_pipeline;
     bool unswizzle_available{};
