@@ -49,10 +49,11 @@ void LibraryTests(int port) {
     Check(Json::parse(client.Get("/api/v1/status",headers)->body).at("install")==Json{{"done",3},{"total",9}},"install progress in status");
 
     // A content upload names its kind and game; both are checked before anything is created.
-    const auto create=[&](const std::string& kind,const std::string& target) {
+    const auto create=[&](const std::string& kind,const std::string& target,
+                          const std::string& filename="patch.nsp",const std::string& length="4") {
         auto request=headers;
-        request.emplace("Upload-Length","4");
-        request.emplace("Upload-Metadata","filename "+httplib::detail::base64_encode("patch.nsp")+",fingerprint "+
+        request.emplace("Upload-Length",length);
+        request.emplace("Upload-Metadata","filename "+httplib::detail::base64_encode(filename)+",fingerprint "+
             httplib::detail::base64_encode(std::string(64,'a'))+",kind "+httplib::detail::base64_encode(kind)+
             ",application "+httplib::detail::base64_encode(target));
         return client.Post("/api/v1/content/uploads",request);
@@ -72,6 +73,16 @@ void LibraryTests(int port) {
         seen=tag; return fs::file_size(path)==4 ? std::string{} : std::string{"disk"};
     }).empty() && seen=="update:"+game,"the installer receives the validated tag");
     Check(portal.Status().content.phase=="complete","content consumed");
+    Check(Status(create("save",game,"save.zip"))==201,"save ZIP upload created");
+    const auto save_url=portal.Status().content.id;
+    Check(Status(client.Patch("/api/v1/content/uploads/"+save_url,patch,"data","application/offset+octet-stream"))==204,
+          "save ZIP bytes");
+    Check(Status(client.Post("/api/v1/content/uploads/"+save_url+"/finish",headers))==204,"save ZIP ready");
+    Check(portal.FinalizeContent([&](const fs::path& path,const std::string& tag,std::stop_token) {
+        seen=tag; return fs::file_size(path)==4 ? std::string{} : std::string{"disk"};
+    }).empty() && seen=="save:"+game,"the save importer receives the selected game tag");
+    Check(Status(create("save",game,"save.nsp"))==400,"save upload requires ZIP");
+    Check(Status(create("save",game,"save.zip","4294967297"))==400,"save ZIP size is bounded");
 
     // Deletions queue one job; uploads stay closed from the request until the job has run.
     Check(Status(client.Delete("/api/v1/library/0100000000020000",headers))==404,"unknown game cannot be deleted");
@@ -98,5 +109,5 @@ void LibraryTests(int port) {
     portal.Stop();
     }
     std::error_code ignored;fs::remove_all(fixture,ignored);
-    std::puts("PASS: library listing/cover/content views, update upload kind+game admission, queued deletions and upload exclusion (synthetic view)");
+    std::puts("PASS: library listing/cover/content views, update/save upload admission and tags, queued deletions and upload exclusion (synthetic view)");
 }

@@ -895,8 +895,14 @@ struct NetworkPortal::Impl {
             std::string tag;
             if (valid && tagged) {
                 std::uint64_t id{};
-                if ((kind != "update" && kind != "dlc") || !ParseHex16(application,id)) valid=false;
+                if ((kind != "update" && kind != "dlc" && kind != "save") || !ParseHex16(application,id)) valid=false;
                 else if (!KnownGame(id)) { Reply(response,404,{{"error","game"}}); return; }
+                auto lower_name = name;
+                std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(),
+                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (kind == "save") {
+                    if (!lower_name.ends_with(".zip") || length > (4ULL << 30)) valid=false;
+                } else if (!lower_name.ends_with(".nsp")) valid=false;
                 tag=kind+":"+application;
             }
             if (valid && !destination.empty() && destination != "internal" && destination != "developer") valid=false;
@@ -1015,7 +1021,7 @@ NetworkPortal::NetworkPortal(std::filesystem::path games,SystemImportBackend bac
             impl->system_supported=bool(backend.inspect);
             impl->system=std::make_unique<SystemUpload>(games.parent_path(),std::move(backend));
             const auto transfers=games.parent_path()/"jadyx/transfers/content";
-            impl->content=std::make_unique<NspUpload>(games,false,transfers,true);
+            impl->content=std::make_unique<NspUpload>(games,false,transfers,true,false,true);
             impl->upload=std::make_unique<NspUpload>(std::move(games),false,std::filesystem::path{},false,true,true);
         }
         catch (...) { impl->storage_failed=true; }

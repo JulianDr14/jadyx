@@ -1313,3 +1313,12 @@ se respetan. El portal de juegos transfiere cualquier extensión sin inspección
 mantiene límites y controles de rutas/publicación. Updates/DLC y claves/firmware conservan
 sus validadores. Tests de catálogo C++ y navegador Node pasan; build UWP no ejecutable en
 este entorno Linux sin MSVC/PowerShell.
+
+Portal biblioteca 20oct: permite elegir un juego y subir un ZIP de guardado para el usuario
+Jadyx actual; se combina en staging con su directorio account-save y se publica mediante rename,
+con rollback en error/cancelación. Updates/DLC siguen aceptando NSP. ZIP: límite 4 GiB
+comprimido, 8 GiB extraído, 8192 entradas; validación de rutas, enlaces, cifrado, espacio y
+colisiones case-insensitive. zh-CN revisado para biblioteca y claves/firmware; tests Node de
+portal pasan, harness nativo actualizado. Preparación 0.3.9.1; build UWP/harness y firma
+temporal pendientes porque este entorno Linux no tiene MSVC/PowerShell. Detalle en
+docs/xbox/xbox_network_portal.md.

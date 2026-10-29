@@ -518,6 +518,15 @@ consola publica su vista (PortalLibrarySource, solo lectura, generación por esc
   el worker de almacenamiento llama a FinalizeContent con tag "<kind>:<id>" y la importación
   es la del gestor de contenido (ImportUploadedContent: copia interna, base presente, sin
   downgrade, paquete rechazado entero si trae contenido de otro juego).
+- Continuación local: kind=save acepta solo ZIP de hasta 4 GiB y lo vincula al mismo
+  application seleccionado. El worker importa la estructura del ZIP al guardado Account
+  del usuario Jadyx actual (no elige perfil ni interpreta formatos de exportadores externos).
+  Se rechazan rutas absolutas/traversal/ADS, nombres inválidos o colisiones sin distinción
+  de mayúsculas, enlaces, entradas cifradas, ZIP no válido, >8192 entradas o >8 GiB extraídos.
+  Se copia el guardado existente a staging, se superponen los archivos del ZIP y solo entonces
+  se publica el directorio por rename; errores/cancelación intentan restaurar el original.
+  Límite de copia existente: 8 GiB; se conserva un margen libre de 64 MiB y se vuelve a revisar
+  el espacio durante escrituras grandes. Cerrar el juego antes de importar.
 - DELETE /api/v1/library/{id} y DELETE /api/v1/library/{id}/content/{64 hex}: 202 {removal};
   404 game; 409 busy (subida abierta, importación de sistema u otra eliminación).
   status.removal {serial,game,content,phase,error}: pending -> running -> complete|failed.
@@ -537,3 +546,12 @@ admisión kind/juego, tag al instalador, cola de eliminación, exclusión de sub
 visible); test de página network-portal-page.cjs (es/en/pt-BR, mock HTTP, ejecutado con
 Electron de VS Code en modo node); UWP compila/enlaza. Pendiente: gate en Series con
 update/DLC reales y eliminación desde ambos lados.
+
+Continuación local de la biblioteca: el portal añade un tipo de selección ZIP de guardado;
+updates y DLC mantienen el validador NSP del gestor de contenido. zh-CN cubre el catálogo
+de biblioteca, las acciones de guardado y las páginas de claves/firmware. El test de navegador
+valida selección de ZIP, kind/application y textos zh-CN. El importador nativo todavía requiere
+compilación UWP y pruebas con ZIP válido, rutas maliciosas, falta de espacio, cancelación,
+restauración y guardados reales en Series; no se ha generado un paquete ni se certifica el gate.
+La siguiente entrega de consola se prepara como 0.3.9.1 (parche sobre 0.3.9.0); la firma temporal
+no se ha aplicado. Este workspace Linux no tiene PowerShell, MSVC ni un árbol build-uwp.
