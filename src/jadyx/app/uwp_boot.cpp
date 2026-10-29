@@ -3130,8 +3130,173 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         Windows::ApplicationModel::Package::Current().InstalledLocation().Path());
                     nro_path = install_path + "\\boot.nro";
                     WriteDiag("resolved NRO path: " + nro_path);
+                    // Memory keys: their own chain, ahead of the one below, which is as deep as
+                    // MSVC lets an else-if chain nest.
+                    const auto parse_memory_key = [&config](const std::string& line) {
+                        if (line == "small_textures=1" || line == "small_textures=0") {
+                            config.small_textures = line == "small_textures=1";
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "spare_heaps=1" || line == "spare_heaps=0") {
+                            config.spare_heaps = line == "spare_heaps=1";
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "cpu_texture_writes=1" ||
+                                   line == "cpu_texture_writes=0") {
+                            config.cpu_texture_writes = line == "cpu_texture_writes=1";
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "cached_staging=1" || line == "cached_staging=0") {
+                            config.cached_staging = line == "cached_staging=1";
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line.starts_with("heap_compaction_mib=")) {
+                            const auto value = line.substr(20);
+                            unsigned long parsed{};
+                            const auto result = std::from_chars(
+                                value.data(), value.data() + value.size(), parsed);
+                            if (result.ec == std::errc{} &&
+                                result.ptr == value.data() + value.size() && parsed <= 1024) {
+                                config.heap_compaction_mib = static_cast<u32>(parsed);
+                                WriteDiag("boot.cfg: heap compaction " + std::to_string(parsed) +
+                                          " MiB a frame");
+                            } else {
+                                WriteDiag("boot.cfg: invalid heap_compaction_mib, ignored");
+                            }
+                        } else if (line == "gpu_unswizzle=1" || line == "gpu_unswizzle=0") {
+                            config.gpu_unswizzle = line == "gpu_unswizzle=1";
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "guest_swap=1" || line == "guest_swap=0") {
+                            config.guest_swap = line == "guest_swap=1";
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line.starts_with("guest_swap_low_mib=")) {
+                            config.guest_swap_low_mib = std::clamp(
+                                static_cast<u32>(std::strtoul(line.c_str() + 19, nullptr, 10)),
+                                64U, 2048U);
+                            WriteDiag("boot.cfg: guest swap low " +
+                                      std::to_string(config.guest_swap_low_mib) + " MiB");
+                        } else if (line.starts_with("guest_swap_high_mib=")) {
+                            config.guest_swap_high_mib = std::clamp(
+                                static_cast<u32>(std::strtoul(line.c_str() + 20, nullptr, 10)),
+                                64U, 3072U);
+                            WriteDiag("boot.cfg: guest swap high " +
+                                      std::to_string(config.guest_swap_high_mib) + " MiB");
+                        } else if (line.starts_with("guest_swap_probation_ms=")) {
+                            config.guest_swap_probation_ms = std::clamp(
+                                static_cast<u32>(std::strtoul(line.c_str() + 24, nullptr, 10)),
+                                50U, 60000U);
+                            WriteDiag("boot.cfg: guest swap probation " +
+                                      std::to_string(config.guest_swap_probation_ms) + " ms");
+                        } else if (line.starts_with("guest_swap_reserve_mib=")) {
+                            config.guest_swap_reserve_mib = std::clamp(
+                                static_cast<u32>(std::strtoul(line.c_str() + 23, nullptr, 10)),
+                                0U, 256U);
+                            WriteDiag("boot.cfg: guest swap reserve " +
+                                      std::to_string(config.guest_swap_reserve_mib) + " MiB");
+                        } else if (line.starts_with("oom_reserve_mib=")) {
+                            config.oom_reserve_mib = std::clamp(
+                                static_cast<u32>(std::strtoul(line.c_str() + 16, nullptr, 10)),
+                                0U, 256U);
+                            WriteDiag("boot.cfg: driver memory reserve " +
+                                      std::to_string(config.oom_reserve_mib) + " MiB");
+                        } else {
+                            WriteDiag("boot.cfg: IGNORED unknown memory key " + line);
+                        }
+                    };
+                    const auto parse_pipeline_key = [&config](const std::string& line) {
+                        if (line == "async_pipelines=off") {
+                            config.async_pipelines = D3D12::AsyncPipelines::Off;
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "async_pipelines=balanced") {
+                            config.async_pipelines = D3D12::AsyncPipelines::Balanced;
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "async_pipelines=full") {
+                            config.async_pipelines = D3D12::AsyncPipelines::Full;
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "pso_blobs=1" || line == "pso_blobs=0") {
+                            config.pso_blobs = line == "pso_blobs=1";
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line.starts_with("wait_small_draws=")) {
+                            config.wait_small_draws = std::min(
+                                static_cast<u32>(std::strtoul(line.c_str() + 17, nullptr, 10)),
+                                1024U);
+                            WriteDiag("boot.cfg: draws of " +
+                                      std::to_string(config.wait_small_draws) +
+                                      " vertices or fewer wait for their pipeline");
+                        } else {
+                            WriteDiag("boot.cfg: IGNORED unknown pipeline key " + line);
+                        }
+                    };
+                    // GPU queue and rendering switches (a lambda of their own: the main chain
+                    // is at the compiler's nesting limit).
+                    const auto parse_render_key = [&config](const std::string& line) {
+                        // "name=0" or "name=1".
+                        const auto set_switch = [&line](std::string_view name, bool& value,
+                                                        std::string_view what) {
+                            if (line.size() != name.size() + 2 || !line.starts_with(name) ||
+                                line[name.size()] != '=' ||
+                                (line.back() != '0' && line.back() != '1')) {
+                                return false;
+                            }
+                            value = line.back() == '1';
+                            WriteDiag("boot.cfg: " + std::string(what) + (value ? " on" : " off"));
+                            return true;
+                        };
+                        if (set_switch("present_queue", config.present_queue,
+                                       "present queue of its own") ||
+                            set_switch("depth_bias_round", config.depth_bias_round,
+                                       "depth bias rounding") ||
+                            set_switch("unorm_round", config.unorm_round,
+                                       "UNORM8 outputs rounded ties down") ||
+                            set_switch("cube_sanitize", config.cube_sanitize,
+                                       "cube directions sanitized") ||
+                            set_switch("half_ftz", config.half_ftz, "fp16 denormal flush") ||
+                            set_switch("a2c_shader", config.a2c_shader,
+                                       "alpha to coverage in the shader") ||
+                            set_switch("small_bc_palette", config.small_bc_palette,
+                                       "small BC1-3 with the guest palette") ||
+                            set_switch("depth_bias_shader", config.depth_bias_shader,
+                                       "depth bias in the shader") ||
+                            set_switch("memory_import_probe", config.memory_import_probe,
+                                       "memory import probe")) {
+                            return;
+                        }
+                        if (line == "border_color=exact" || line == "border_color=8bit" ||
+                                   line == "border_color=bw") {
+                            config.border_color = line == "border_color=8bit" ? 1
+                                                  : line == "border_color=bw" ? 2
+                                                                              : 0;
+                            WriteDiag("boot.cfg: sampler border colors " + line.substr(13));
+                        } else {
+                            WriteDiag("boot.cfg: IGNORED unknown render key " + line);
+                        }
+                    };
                     std::ifstream cfg{install_path + "\\boot.cfg"};
                     for (std::string line; std::getline(cfg, line);) {
+                        if (line.starts_with("present_queue=") ||
+                            line.starts_with("border_color=") ||
+                            line.starts_with("depth_bias_round=") ||
+                            line.starts_with("unorm_round=") ||
+                            line.starts_with("cube_sanitize=") || line.starts_with("half_ftz=") ||
+                            line.starts_with("a2c_shader=") ||
+                            line.starts_with("small_bc_palette=") ||
+                            line.starts_with("depth_bias_shader=") ||
+                            line.starts_with("memory_import_probe=")) {
+                            parse_render_key(line);
+                            continue;
+                        }
+                        if (line.starts_with("async_pipelines=") ||
+                            line.starts_with("wait_small_draws=") ||
+                            line.starts_with("pso_blobs=")) {
+                            parse_pipeline_key(line);
+                            continue;
+                        }
+                        if (line.starts_with("guest_swap") || line.starts_with("small_textures=") ||
+                            line.starts_with("oom_reserve_mib=") ||
+                            line.starts_with("spare_heaps=") ||
+                            line.starts_with("gpu_unswizzle=") ||
+                            line.starts_with("cached_staging=") ||
+                            line.starts_with("cpu_texture_writes=") ||
+                            line.starts_with("heap_compaction_mib=")) {
+                            parse_memory_key(line);
+                            continue;
+                        }
                         constexpr std::string_view key = "run_seconds=";
                         constexpr std::string_view hunt_at_key = "hunt_at=";
                         if (line.starts_with(hunt_at_key)) {
