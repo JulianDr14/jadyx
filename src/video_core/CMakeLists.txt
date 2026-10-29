@@ -594,6 +594,7 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_texture_cache.cpp
         renderer_d3d12/d3d12_texture_cache.h
         renderer_d3d12/d3d12_astc_gpu_decoder.cpp
+        renderer_d3d12/d3d12_bcn_gpu_decoder.cpp
         renderer_d3d12/d3d12_gpu_unswizzle.cpp
         renderer_d3d12/d3d12_depth_stencil_transfer.cpp
         renderer_d3d12/d3d12_framebuffer.cpp

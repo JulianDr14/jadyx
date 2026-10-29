@@ -237,6 +237,9 @@ private:
     /// unswizzled into a scratch footprint and copied into the image.
     void UnswizzleImageUpload(Image& image, const StagingBufferRef& map,
                               std::span<const VideoCommon::SwizzleParameters> swizzles);
+    /// AccelerateImageUpload of an Image::IsGpuBcDecoded image (d3d12_bcn_gpu_decoder.cpp).
+    void BcnImageUpload(Image& image, const StagingBufferRef& map,
+                        std::span<const VideoCommon::SwizzleParameters> swizzles);
     /// A blit whose source and destination are the same image (a mip chain built level by level,
     /// a copy between layers or regions): the source region goes through a scratch texture.
     void BlitWithinImage(ImageView& dst, ImageView& src, const Region2D& dst_region,
@@ -378,6 +381,11 @@ public:
     /// An ASTC image the compute shader decodes into RGBA8 (see AccelerateImageUpload).
     [[nodiscard]] bool IsGpuDecoded() const noexcept {
         return gpu_decoded;
+    }
+    /// A BC image kept as plain texels (IsBcDecoded) that a compute shader decodes on upload
+    /// (SetBcGpuDecode).
+    [[nodiscard]] bool IsGpuBcDecoded() const noexcept {
+        return gpu_bc_decoded;
     }
     /// A big block-linear color image a compute shader unswizzles on upload (SetGpuUnswizzle).
     [[nodiscard]] bool IsGpuUnswizzled() const noexcept {
@@ -533,6 +541,7 @@ private:
     std::shared_ptr<TextureResourceAllocator::Allocation> resource_allocation;
     FormatInfo format{};
     bool gpu_decoded{};
+    bool gpu_bc_decoded{};
     bool gpu_unswizzled{};
     mutable bool target_drawn{};
     u32 level_bias{};
@@ -698,6 +707,10 @@ void SetBcArrayDecode(bool enabled);
 /// Whether ASTC images kept as RGBA8 are decoded by the compute shader (the default) rather than
 /// the CPU. Applies to images created from now on.
 void SetAstcGpuDecode(bool enabled);
+/// Whether BC images kept as plain texels (SetBcArrayDecode, unaligned extents, the small guest
+/// palette) are decoded by the compute shader (the default) rather than the CPU; BC6H always
+/// takes the CPU. Applies to images created from now on.
+void SetBcGpuDecode(bool enabled);
 /// Large mipmapped ASTC textures leave out their top level, a quarter of the memory each: the
 /// guest's level 1 becomes the resource's top ("astc_mip0=drop"; off by default). Shaders that
 /// sample them see half the detail and textureSize reports half. Applies to images created from

@@ -123,6 +123,10 @@ void SetAstcGpuDecode(bool enabled) {
     gpu_astc_decode.store(enabled, std::memory_order_relaxed);
 }
 
+void SetBcGpuDecode(bool enabled) {
+    gpu_bc_decode.store(enabled, std::memory_order_relaxed);
+}
+
 void SetAstcDropTopLevel(bool enabled) {
     astc_drop_top_level.store(enabled, std::memory_order_relaxed);
 }
@@ -240,6 +244,9 @@ void TextureCacheRuntime::TrimCheckpointTransfers(u64 keep) {
 bool TextureCacheRuntime::CanAccelerateImageUpload(Image& image) const noexcept {
     if (image.IsGpuUnswizzled()) {
         return blit_helper && blit_helper->CanUnswizzle();
+    }
+    if (image.IsGpuBcDecoded()) {
+        return blit_helper && blit_helper->CanDecodeBcn();
     }
     return image.IsGpuDecoded() && blit_helper && blit_helper->CanDecodeAstc() &&
            (image.TransferFormat().copy_format == PixelFormat::A8B8G8R8_UNORM ||
@@ -555,6 +562,22 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
          (decode_bc_arrays.load(std::memory_order_relaxed) && info_.resources.layers > 1))) {
         if (const std::optional<FormatInfo> decoded = DecodedBcFormat(info_.format)) {
             format = *decoded;
+            // The compute shader writes the texels from the guest blocks on upload; the CPU
+            // decode (ConvertImage on the GPU thread) took up to hundreds of ms on area loads.
+            const BlitImageHelper* const helper = runtime->blit_helper;
+            gpu_bc_decoded = gpu_bc_decode.load(std::memory_order_relaxed) && helper &&
+                             helper->CanDecodeBcn() && CanDecodeBcnOnGpu(info_.format);
+            static std::atomic<u32> gpu_images{};
+            static std::atomic<u32> cpu_images{};
+            const u32 count = (gpu_bc_decoded ? gpu_images : cpu_images)
+                                  .fetch_add(1, std::memory_order_relaxed) + 1;
+            if (count <= 4 || count % 64 == 0) {
+                LOG_INFO(Render, "D3D12: decoded BC {} {}x{} ({} layers) on the {}: {} on the GPU, "
+                         "{} on the CPU", info_.format, info_.size.width, info_.size.height,
+                         info_.resources.layers, gpu_bc_decoded ? "GPU" : "CPU",
+                         gpu_images.load(std::memory_order_relaxed),
+                         cpu_images.load(std::memory_order_relaxed));
+            }
         }
     }
     if (VideoCore::Surface::IsPixelFormatASTC(info_.format)) {
@@ -614,7 +637,7 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
             VideoCore::Surface::DefaultBlockWidth(info_.format) &&
         VideoCore::Surface::DefaultBlockHeight(format.copy_format) ==
             VideoCore::Surface::DefaultBlockHeight(info_.format);
-    if (gpu_decoded || gpu_unswizzled) {
+    if (gpu_decoded || gpu_bc_decoded || gpu_unswizzled) {
         flags |= VideoCommon::ImageFlagBits::AcceleratedUpload;
     }
     const auto type = VideoCore::Surface::GetFormatType(info_.format);
@@ -630,9 +653,9 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
         resource_flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
     }
     // Multisampled resources cannot have UAVs.
-    // The ASTC decoder writes through an R8G8B8A8_UNORM UAV, sRGB images included.
+    // The ASTC and BCn decoders write through UNORM or SNORM UAVs, sRGB images included.
     const bool decoder_writes_image =
-        gpu_decoded && format.copy_format == PixelFormat::A8B8G8R8_UNORM;
+        (gpu_decoded && format.copy_format == PixelFormat::A8B8G8R8_UNORM) || gpu_bc_decoded;
     if (is_color && !is_msaa &&
         (decoder_writes_image || runtime->SupportsView(format.view, D3D12_FORMAT_SUPPORT1_NONE,
                                               D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE))) {
@@ -683,7 +706,8 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::ResourceCreateUs,
                                            VideoCore::Perf::Counter::ResourcesCreated};
         // Plain sampled textures may sit where the CPU writes them (SetCpuTextureWrites).
-        const bool plain = resource_flags == D3D12_RESOURCE_FLAG_NONE && !is_msaa && !gpu_decoded;
+        const bool plain = resource_flags == D3D12_RESOURCE_FLAG_NONE && !is_msaa &&
+                           !gpu_decoded && !gpu_bc_decoded;
         auto allocated = runtime->texture_allocator.Create(
             desc, D3D12_RESOURCE_STATE_COMMON, nullptr,
             {.bytes = VideoCore::Surface::BytesPerBlock(format.copy_format),
@@ -767,6 +791,7 @@ Image& Image::operator=(Image&& other) noexcept {
         resource_allocation = std::move(other.resource_allocation);
         format = other.format;
         gpu_decoded = other.gpu_decoded;
+        gpu_bc_decoded = other.gpu_bc_decoded;
         gpu_unswizzled = other.gpu_unswizzled;
         cpu_writable = other.cpu_writable;
         untouched = other.untouched;

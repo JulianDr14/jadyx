@@ -50,6 +50,8 @@ void AstcMaskSwizzle(VideoCommon::AstcMask mask,
                      std::array<Tegra::Texture::SwizzleSource, 4>& swizzle);
 FormatInfo NativeFormat(PixelFormat format);
 std::optional<FormatInfo> DecodedBcFormat(PixelFormat format);
+/// Whether d3d12_bcn_decoder.comp decodes this guest format (BC1-5, BC7).
+bool CanDecodeBcnOnGpu(PixelFormat format);
 D3D12_RESOURCE_DIMENSION Dimension(ImageType type);
 D3D12_TEXTURE_ADDRESS_MODE AddressMode(Tegra::Texture::WrapMode mode);
 D3D12_COMPARISON_FUNC Compare(Tegra::Texture::DepthCompareFunc func);
@@ -110,6 +112,7 @@ inline bool logged_depth_stencil_download = false;
 inline bool logged_self_copy = false;
 inline bool logged_decoded_copy = false;
 inline bool logged_gpu_astc = false;
+inline bool logged_gpu_bcn = false;
 inline bool logged_gpu_unswizzle = false;
 inline bool logged_reinterpret_copy = false;
 inline bool logged_depth_size = false;
@@ -132,6 +135,7 @@ inline bool logged_view_family = false;
 inline std::atomic<u64> next_sampler_key{1};
 inline std::atomic<bool> decode_bc_arrays{true};
 inline std::atomic<bool> gpu_astc_decode{true};
+inline std::atomic<bool> gpu_bc_decode{true};
 inline std::atomic<bool> gpu_unswizzle{true};
 inline std::atomic<u64> heap_compaction_budget{0};
 inline std::atomic<u64> heap_compaction_moved{0};

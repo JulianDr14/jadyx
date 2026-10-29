@@ -88,6 +88,10 @@ void TextureCacheRuntime::AccelerateImageUpload(
         UnswizzleImageUpload(image, map, swizzles);
         return;
     }
+    if (image.IsGpuBcDecoded()) {
+        BcnImageUpload(image, map, swizzles);
+        return;
+    }
     VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureUploads, 1);
     VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureUploadBytes, image.guest_size_bytes);
     VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureGpuDecodes, 1);
