@@ -11,6 +11,7 @@
 #include <string>
 #include "common/common_funcs.h"
 #include "common/common_types.h"
+#include "common/guest_zero_census.h"
 
 namespace Common {
 
@@ -152,6 +153,10 @@ struct DramRegion {
     bool untouched{};
 };
 std::optional<DramRegion> QueryDramRegion(const void* host);
+
+/// Diagnostic, Xbox private DRAM backing: the committed bytes that hold only zeros, by guest swap
+/// granule. Reads every committed page, so it costs a pass over the DRAM. Empty elsewhere.
+std::optional<GuestZeroCensus> CensusGuestZeroMemory();
 
 /// Diagnostic: the commit state of the DRAM page at `host`, and the last kernel clear that
 /// decommitted it.

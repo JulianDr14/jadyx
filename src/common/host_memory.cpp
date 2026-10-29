@@ -15,6 +15,7 @@
 #include <winioctl.h>
 #include <psapi.h>
 #include "common/dynamic_library.h"
+#include "common/guest_zero_census_scan.h"
 
 #else // ^^^ Windows ^^^ vvv POSIX vvv
 
@@ -2326,6 +2327,32 @@ std::optional<DramRegion> QueryDramRegion(const void* host) {
         }
     }
     return result;
+#else
+    return std::nullopt;
+#endif
+}
+
+std::optional<GuestZeroCensus> CensusGuestZeroMemory() {
+#ifdef HOST_MEMORY_USE_FROM_APP
+    if (g_backing_is_file.load(std::memory_order_acquire) ||
+        g_backing_is_section.load(std::memory_order_acquire)) {
+        return std::nullopt;
+    }
+    const u8* const base = g_backing_base.load(std::memory_order_acquire);
+    const size_t size = g_backing_size.load(std::memory_order_acquire);
+    if (base == nullptr) {
+        return std::nullopt;
+    }
+    // One granule at a time under the decommit mutex: no clear decommits a page and no swap step
+    // moves the granule while it is read. A granule the swap holds is left out.
+    return CensusZeroPages(base, size, GuestSwap::GRANULE_SIZE, [](const u8* granule, auto&& count) {
+        std::scoped_lock hold{g_backing_decommit_mutex};
+        if (!GuestSwap::IsResident(granule)) {
+            return false;
+        }
+        count();
+        return true;
+    });
 #else
     return std::nullopt;
 #endif

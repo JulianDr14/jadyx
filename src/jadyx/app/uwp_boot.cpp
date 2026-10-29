@@ -1724,6 +1724,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
             }
             if (config.memory_audit && tick % TICKS_PER_MINUTE == 0) {
                 WriteDiag("heaps: " + HeapReport());
+                if (const auto census = Common::CensusGuestZeroMemory()) {
+                    WriteDiag("guest memory census: " + Common::DescribeGuestZeroCensus(*census));
+                }
                 WriteDiag("memory map: " + LargestAllocations());
                 WriteDiag("memory by owner: " + MemoryOwners());
                 if (const std::string pso_cost = D3D12::DescribePsoCost(); !pso_cost.empty()) {
