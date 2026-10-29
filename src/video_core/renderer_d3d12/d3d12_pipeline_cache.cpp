@@ -40,6 +40,7 @@
 #include "video_core/renderer_d3d12/d3d12_memory_reserve.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
+#include "video_core/renderer_d3d12/d3d12_pso_blob_cache.h"
 #include "video_core/renderer_d3d12/d3d12_dxil_disk_cache.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
@@ -640,6 +641,13 @@ void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler
                  hot_pipelines.Size(), dxil_release.released, dxil_release.released_bytes / 1024,
                  dxil_release.reloaded, dxil_release.failed);
         LogPipelineStats("session");
+        if (PsoBlobCache::Enabled()) {
+            const PsoBlobCache::Stats blobs = GetPsoBlobCache().GetStats();
+            LOG_INFO(Render,
+                     "D3D12: driver PSO blobs: {} created from disk, {} without, {} stored "
+                     "({} KiB), {} refused by the driver",
+                     blobs.hits, blobs.misses, blobs.stored, blobs.bytes / 1024, blobs.rejected);
+        }
         if (GetAsyncPipelines() != AsyncPipelines::Off) {
             const PendingDrawStats pending = GetPendingDrawStats();
             LOG_INFO(Render,
@@ -939,6 +947,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     } else {
         GetDxilDiskCache().Close();
     }
+    GetPsoBlobCache().Open(PsoBlobCache::Enabled() ? base_dir / "d3d12_pso_blobs"
+                                                   : std::filesystem::path{});
     {
         std::ifstream file(hot_pipelines_filename, std::ios::binary);
         const std::vector<u8> bytes{std::istreambuf_iterator<char>(file),

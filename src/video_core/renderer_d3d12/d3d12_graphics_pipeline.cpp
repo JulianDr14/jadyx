@@ -38,6 +38,7 @@
 #include "video_core/renderer_d3d12/d3d12_memory_reserve.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_helper.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
+#include "video_core/renderer_d3d12/d3d12_pso_blob_cache.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
@@ -1161,6 +1162,9 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
     const bool bounds_test = depth_bounds && desc.DSVFormat != DXGI_FORMAT_UNKNOWN;
     auto host_key = MakeGraphicsPsoKey(desc, dxil);
     host_key.state.push_back(bounds_test ? 1U : 0U);
+    // The driver's blob of this PSO from an earlier session (pso_blobs); not through the stream.
+    const bool use_blob = !bounds_test && PsoBlobCache::Enabled();
+    const u64 blob_hash = use_blob ? PsoBlobCache::StableHash(host_key) : 0;
     const u64 index_bytes = sizeof(GraphicsPsoCache::Entry) + 128 +
                             host_key.state.capacity() * sizeof(u32);
     HRESULT hr = S_OK;
@@ -1192,9 +1196,26 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
     const auto create_pso = [&](ComPtr<ID3D12PipelineState>& handle) {
         DWORD fault = 0;
         HRESULT result;
+        const std::vector<u8> blob =
+            use_blob ? GetPsoBlobCache().Load(blob_hash) : std::vector<u8>{};
+        desc.CachedPSO = {blob.data(), blob.size()};
         {
             std::shared_lock build_lock{PipelineBuildMutex()};
             result = try_create(handle, fault);
+        }
+        desc.CachedPSO = {};
+        if (!blob.empty() && FAILED(result) && result != E_OUTOFMEMORY &&
+            result != DRIVER_FAULT_HRESULT) {
+            // A blob of another driver version or adapter: dropped, and the PSO made from scratch.
+            handle.Reset();
+            GetPsoBlobCache().Reject(blob_hash);
+            std::shared_lock build_lock{PipelineBuildMutex()};
+            result = try_create(handle, fault);
+            if (SUCCEEDED(result)) {
+                GetPsoBlobCache().Store(blob_hash, handle.Get());
+            }
+        } else if (use_blob && blob.empty() && SUCCEEDED(result)) {
+            GetPsoBlobCache().Store(blob_hash, handle.Get());
         }
         if (result == DRIVER_FAULT_HRESULT) {
             log_driver_fault(fault, handle);

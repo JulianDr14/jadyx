@@ -163,6 +163,7 @@ void SetTextureMemoryCap(u64 bytes); // d3d12_texture_cache.h
 void SetHeapCompaction(u64 bytes_per_frame); // d3d12_texture_cache.h
 void SetSmallTextureAlignment(bool enabled); // d3d12_resource_allocator.h
 void SetSpareHeaps(bool enabled); // d3d12_resource_allocator.h
+void SetPsoBlobs(bool enabled); // d3d12_pso_blob_cache.h
 void SetCachedStaging(bool enabled); // d3d12_staging_buffer_pool.h
 void SetCpuTextureWrites(bool enabled); // d3d12_resource_allocator.h
 void SetAstcGpuVerify(bool enabled); // d3d12_texture_cache.h
@@ -360,6 +361,9 @@ struct BootConfig {
     /// Draws of this many vertices or fewer always wait for their pipeline ("wait_small_draws=",
     /// 0 turns it off).
     u32 wait_small_draws{};
+    /// The driver's compiled PSOs kept on disk and handed back to it ("pso_blobs=1"); off by
+    /// default, as the console's driver may not take them.
+    bool pso_blobs{};
     /// Upload staging in CPU-cached memory instead of write-combined ("cached_staging=1").
     bool cached_staging{};
     /// Plain textures in CPU-writable heaps, their first upload written in place
@@ -740,6 +744,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::MemoryReserve::Configure(u64{config.oom_reserve_mib} << 20);
     D3D12::SetAsyncPipelines(config.async_pipelines);
     D3D12::SetWaitSmallDraws(config.wait_small_draws);
+    D3D12::SetPsoBlobs(config.pso_blobs);
     D3D12::SetCachedStaging(config.cached_staging);
     D3D12::SetCpuTextureWrites(config.cpu_texture_writes);
     // RGBA8 ASTC made loading frames upload 150-260 MiB at once and the console run out of memory
