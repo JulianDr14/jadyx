@@ -38,6 +38,8 @@ add_library(
     cityhash.h
     common_funcs.h
     common_types.h
+    commit_census.cpp
+    commit_census.h
     pulse_archive.cpp
     pulse_archive.h
     pulse_store.cpp

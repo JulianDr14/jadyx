@@ -41,6 +41,7 @@
 #include <winrt/Windows.ApplicationModel.h>
 
 #include "common/bug_tracker.h"
+#include "common/commit_census.h"
 #include "common/fs/path_util.h"
 #include "common/log_rotation.h"
 #include "common/host_memory.h"
@@ -2038,7 +2039,8 @@ std::string MemoryOwners() {
            Common::DescribeMemoryLedger() +
            "; rest " + std::to_string((commit > known ? commit - known : 0) >> 20) +
            " MiB of " + std::to_string(commit >> 20) +
-           " MiB commit (driver objects, small GPU resources, heaps, executable)";
+           " MiB commit (driver objects, small GPU resources, heaps, executable); " +
+           Common::DescribeCommitCensus(Common::WalkAddressSpaceCommit(), commit);
 }
 
 // What the guest kernel has handed out against what the emulated DRAM commits. Pages the game
