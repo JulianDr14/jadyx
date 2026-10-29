@@ -34,6 +34,7 @@
 #include "video_core/frame_trace.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
+#include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 #include "video_core/renderer_d3d12/d3d12_local_memory_scratch.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
@@ -601,6 +602,14 @@ void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler
                  hot_pipelines.Size(), dxil_release.released, dxil_release.released_bytes / 1024,
                  dxil_release.reloaded, dxil_release.failed);
         LogPipelineStats("session");
+        if (GetAsyncPipelines() != AsyncPipelines::Off) {
+            const PendingDrawStats pending = GetPendingDrawStats();
+            LOG_INFO(Render,
+                     "D3D12: draws while their pipeline was built (since the run began): {} "
+                     "skipped; waited {} small, {} full-screen, {} first to a target",
+                     pending.skipped, pending.waited_small, pending.waited_full_screen,
+                     pending.waited_new_target);
+        }
     }
 }
 
@@ -1052,10 +1061,25 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
         return pipeline;
     }
     // Its PSO was never built (not drawn in recent sessions) or was released while idle. Queued
-    // like any build, but WaitBuilt below claims it unless a worker already started it.
+    // like any build, but WaitBuilt claims it unless a worker already started it.
     if (pipeline->Wake(workers)) {
         ++pipelines_woken;
     }
+    if (GetAsyncPipelines() != AsyncPipelines::Off) {
+        return pipeline; // the draw skips it or waits (WaitPending)
+    }
+    return WaitPending(pipeline);
+}
+
+GraphicsPipeline* PipelineCache::ReadyGraphicsPipeline() {
+    GraphicsPipeline* const pipeline = CurrentGraphicsPipeline();
+    if (pipeline && !pipeline->IsBuilt()) {
+        return WaitPending(pipeline);
+    }
+    return pipeline;
+}
+
+GraphicsPipeline* PipelineCache::WaitPending(GraphicsPipeline* pipeline) {
     const PipelineStage cause = pipeline->WasEvicted() ? PipelineStage::WaitEvicted
                                 : pipeline->FromDisk() ? PipelineStage::WaitDormant
                                                        : PipelineStage::WaitNew;

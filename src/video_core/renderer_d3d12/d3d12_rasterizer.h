@@ -342,7 +342,7 @@ private:
     /// Diagnostic: what the draws between a ZPass counter reset and its report did.
     struct ZPassDiag {
         u32 attempted{}, recorded{}, conditional{}, culled{}, no_pipeline{}, rejected{},
-            skipped_shader{}, empty{};
+            skipped_shader{}, empty{}, pending{};
         std::array<u64, 4> vs{}, ps{};
         std::array<u32, 4> depth_test{};
     } zpass_diag;

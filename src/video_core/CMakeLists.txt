@@ -518,6 +518,8 @@ if (ENABLE_D3D12)
         renderer_d3d12/diagnostics/d3d12_pipeline_diagnostics.h
         renderer_d3d12/diagnostics/d3d12_perf_report.cpp
         renderer_d3d12/diagnostics/hunt_capture.h
+        renderer_d3d12/d3d12_async_pipelines.cpp
+        renderer_d3d12/d3d12_async_pipelines.h
         renderer_d3d12/d3d12_fence_manager.cpp
         renderer_d3d12/d3d12_fence_manager.h
         renderer_d3d12/d3d12_graphics_pipeline.cpp

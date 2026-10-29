@@ -383,6 +383,14 @@ public:
     [[nodiscard]] bool IsGpuUnswizzled() const noexcept {
         return gpu_unswizzled;
     }
+    /// async_pipelines: whether a draw was recorded to it as a target. Until then, a draw to it
+    /// gives it its first content and waits for its pipeline.
+    [[nodiscard]] bool TargetDrawn() const noexcept {
+        return target_drawn;
+    }
+    void MarkTargetDrawn() const noexcept {
+        target_drawn = true;
+    }
     /// Whether a texture copy between the two resources moves meaningful data: not when one
     /// holds data the host converted (decoded BCn arrays, ASTC) and the other a different block
     /// layout.
@@ -526,6 +534,7 @@ private:
     FormatInfo format{};
     bool gpu_decoded{};
     bool gpu_unswizzled{};
+    mutable bool target_drawn{};
     u32 level_bias{};
     DXGI_FORMAT footprint_format{}; ///< format GetCopyableFootprints uses for plane 0
     D3D12_RESOURCE_STATES state{D3D12_RESOURCE_STATE_COMMON};

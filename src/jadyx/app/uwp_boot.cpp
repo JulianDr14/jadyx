@@ -90,6 +90,7 @@
 #include "video_core/gpu_thread.h"
 #include "video_core/macro.h"
 #include "video_core/perf_counters.h"
+#include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 #include "video_core/query_cache.h"
 #include "video_core/readback_trace.h"
 #include "video_core/rasterizer_interface.h"
@@ -338,6 +339,12 @@ struct BootConfig {
     /// Block-linear color textures of 64 KiB and more unswizzled on the GPU on upload
     /// ("gpu_unswizzle=0" brings back the CPU).
     bool gpu_unswizzle{true};
+    /// What a draw does while its pipeline builds: waits ("async_pipelines=off"), is skipped
+    /// unless it is a full-screen pass or a target's first ("balanced"), or is skipped ("full").
+    D3D12::AsyncPipelines async_pipelines{D3D12::AsyncPipelines::Off};
+    /// Draws of this many vertices or fewer always wait for their pipeline ("wait_small_draws=",
+    /// 0 turns it off).
+    u32 wait_small_draws{};
     /// Upload staging in CPU-cached memory instead of write-combined ("cached_staging=1").
     bool cached_staging{};
     /// Plain textures in CPU-writable heaps, their first upload written in place
@@ -696,6 +703,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetSmallTextureAlignment(config.small_textures);
     D3D12::SetSpareHeaps(config.spare_heaps);
     D3D12::SetGpuUnswizzle(config.gpu_unswizzle);
+    D3D12::SetAsyncPipelines(config.async_pipelines);
+    D3D12::SetWaitSmallDraws(config.wait_small_draws);
     D3D12::SetCachedStaging(config.cached_staging);
     D3D12::SetCpuTextureWrites(config.cpu_texture_writes);
     // RGBA8 ASTC made loading frames upload 150-260 MiB at once and the console run out of memory

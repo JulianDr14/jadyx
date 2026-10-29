@@ -73,7 +73,7 @@ void RasterizerD3D12::DrawIndirect() {
 
     scheduler.BeginWork();
     hunt.PipelineStart();
-    GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
+    GraphicsPipeline* const pipeline = pipeline_cache.ReadyGraphicsPipeline();
     hunt.PipelineEnd();
     if (!pipeline) {
         hunt.Outcome(Hunt::Outcome::NoPipeline);
@@ -293,7 +293,7 @@ void RasterizerD3D12::DrawByteCount(const IndirectParams& params) {
     gpu_memory->FlushCaching();
     ApplyPendingStateInvalidation();
     scheduler.BeginWork();
-    GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
+    GraphicsPipeline* const pipeline = pipeline_cache.ReadyGraphicsPipeline();
     if (!pipeline) {
         return;
     }

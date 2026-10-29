@@ -139,8 +139,17 @@ public:
     /// app's headroom allows, a bounded slice of them a frame, and saves the hot set now and then.
     void TickResidency(const CacheMemorySnapshot& snapshot, Scheduler& scheduler);
 
-    /// The ready pipeline of the current Maxwell state, or null if shader preparation failed.
+    /// The pipeline of the current Maxwell state, or null if shader preparation failed. Ready,
+    /// unless async_pipelines is on: then it may still be building (IsBuilt false), and the draw
+    /// either skips it or calls WaitPending.
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipeline();
+
+    /// CurrentGraphicsPipeline, waited for when still building: for draws that cannot be skipped.
+    [[nodiscard]] GraphicsPipeline* ReadyGraphicsPipeline();
+
+    /// Waits for a pipeline still being built; null if its PSO ran out of memory (its draws are
+    /// skipped until it is tried again).
+    [[nodiscard]] GraphicsPipeline* WaitPending(GraphicsPipeline* pipeline);
 
     [[nodiscard]] ComputePipeline* CurrentComputePipeline();
 
@@ -169,7 +178,7 @@ private:
     void ReportKeyReuseMismatch(const GraphicsPipeline* reused);
 
     /// Records the draw (residency, hot set), wakes a dormant pipeline, and returns it once its PSO
-    /// is built. Valid guest draws always wait for their exact pipeline.
+    /// is built, or right away while it builds when async_pipelines is on.
     [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline);
 
     void SaveHotPipelines();

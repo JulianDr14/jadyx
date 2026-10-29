@@ -22,6 +22,7 @@
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
+#include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 #include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
 #include "video_core/renderer_d3d12/d3d12_draw_metrics.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_tracking.h"
@@ -46,6 +47,29 @@ std::optional<VideoCore::QueryType> MaxwellToVideoCoreQuery(VideoCommon::QueryTy
         return VideoCore::QueryType::TfbPrimitivesWritten;
     default:
         return std::nullopt;
+    }
+}
+
+/// Some color or depth target of the framebuffer has had no draw recorded to it yet.
+bool HasNewTarget(const Framebuffer& framebuffer) {
+    for (size_t index = 0; index < VideoCommon::NUM_RT; ++index) {
+        const Image* const image = framebuffer.ColorImage(index);
+        if (image && !image->TargetDrawn()) {
+            return true;
+        }
+    }
+    const Image* const depth = framebuffer.DepthImage();
+    return depth && !depth->TargetDrawn();
+}
+
+void MarkTargetsDrawn(const Framebuffer& framebuffer) {
+    for (size_t index = 0; index < VideoCommon::NUM_RT; ++index) {
+        if (const Image* const image = framebuffer.ColorImage(index)) {
+            image->MarkTargetDrawn();
+        }
+    }
+    if (const Image* const depth = framebuffer.DepthImage()) {
+        depth->MarkTargetDrawn();
     }
 }
 
@@ -219,6 +243,29 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
         pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
     }
+    if (!pipeline->IsBuilt()) [[unlikely]] {
+        // Still building on a worker (async_pipelines): skipped, unless the draw matters enough to
+        // wait for it.
+        const auto& draw = maxwell3d->draw_manager.draw_state;
+        const PendingDrawAction action = DecidePendingDraw(
+            GetAsyncPipelines(), GetWaitSmallDraws(),
+            {
+                .vertices = is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count,
+                .instances = instance_count,
+                .indexed = is_indexed,
+                .new_target = HasNewTarget(*texture_cache.GetFramebuffer()),
+            });
+        CountPendingDraw(action);
+        if (action == PendingDrawAction::Skip || !pipeline_cache.WaitPending(pipeline)) {
+            ++zpass_diag.pending;
+            hunt.Outcome(Hunt::Outcome::NoPipeline);
+            if (trace_this_draw) {
+                TraceDraw("draw skipped (pipeline building)", pipeline, nullptr, traced_views, 0,
+                          0);
+            }
+            return;
+        }
+    }
     if (!pipeline->Handle()) {
         BUG_TRACK_KEY(DrawSkipped, reinterpret_cast<std::uintptr_t>(pipeline),
                       "draw skipped: the pipeline was rejected (VS {:016x} PS {:016x})",
@@ -297,6 +344,9 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     }
     RecordDraw(*pipeline, bindings, *framebuffer, params, draw_state.topology);
     full_draw_recorded = true;
+    if (GetAsyncPipelines() == AsyncPipelines::Balanced) {
+        MarkTargetsDrawn(*framebuffer);
+    }
     if (material_trace.Active() && pipeline->Layout().StreamOutput() &&
         maxwell3d->regs.transform_feedback_enabled != 0) {
         try {
@@ -659,11 +709,11 @@ void RasterizerD3D12::Query(GPUVAddr address, VideoCommon::QueryType type,
             const ZPassDiag& d = zpass_diag;
             LOG_WARNING(Render,
                         "D3D12: ZPass report since reset: {} draws ({} recorded, {} conditional, "
-                        "{} culled, {} no pipeline, {} rejected, {} skipped shader, {} empty); "
-                        "first recorded VS/PS/depth: {:016x}/{:016x}/{} {:016x}/{:016x}/{} "
-                        "{:016x}/{:016x}/{}",
+                        "{} culled, {} no pipeline, {} pipeline building, {} rejected, {} skipped "
+                        "shader, {} empty); first recorded VS/PS/depth: {:016x}/{:016x}/{} "
+                        "{:016x}/{:016x}/{} {:016x}/{:016x}/{}",
                         d.attempted, d.recorded, d.conditional, d.culled, d.no_pipeline,
-                        d.rejected, d.skipped_shader, d.empty, d.vs[0], d.ps[0], d.depth_test[0],
+                        d.pending, d.rejected, d.skipped_shader, d.empty, d.vs[0], d.ps[0], d.depth_test[0],
                         d.vs[1], d.ps[1], d.depth_test[1], d.vs[2], d.ps[2], d.depth_test[2]);
         }
     }
