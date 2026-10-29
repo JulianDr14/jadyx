@@ -555,3 +555,28 @@ compilación UWP y pruebas con ZIP válido, rutas maliciosas, falta de espacio, 
 restauración y guardados reales en Series; no se ha generado un paquete ni se certifica el gate.
 La siguiente entrega de consola se prepara como 0.3.9.1 (parche sobre 0.3.9.0); la firma temporal
 no se ha aplicado. Este workspace Linux no tiene PowerShell, MSVC ni un árbol build-uwp.
+
+## Exportación de guardados desde el portal
+
+Implementación local pendiente de build UWP y del harness TCP nativo:
+- La pestaña Guardados ofrece exportar e importar. `POST /api/v1/library/{id}/save/export`
+  encola un trabajo del coordinador; el navegador sigue `status.save_export` y muestra
+  progreso. Se archiva únicamente el guardado Account del usuario Jadyx actual para el
+  juego seleccionado, sin aceptar rutas ni un perfil elegido por el navegador. El juego debe
+  permanecer cerrado; la admisión local y las subidas quedan bloqueadas durante la lectura.
+- El worker valida el árbol y rechaza enlaces/reparse points, tipos de archivo inesperados,
+  nombres incompatibles y rutas no importables. ZIP UTF-8 sin compresión, máximo8192 entradas
+  y4GiB de archivo; reserva64MiB libres. No exporta saves ausentes o sin archivos. Los archivos
+  de longitud cero se conservan y el importador ahora los acepta.
+- `POST /api/v1/library/save/download` crea un ticket aleatorio de 30min. El GET de archivo
+  solo acepta ese ticket, transmite en bloques y admite Range para reanudar; la ruta física
+  nunca se entrega al navegador.
+- El ZIP es compatible con el importador del portal. Si el guardado supera los límites, tiene
+  nombres no representables o no hay espacio, se muestra un error explícito y no se modifica
+  el guardado original.
+
+Validación disponible en este entorno: `network-portal-page.cjs` pasa con escenarios de
+interfaz/exportación simulados y `git diff --check` limpio. El harness TCP ampliado cubre
+cola/admisión, progreso, ticket, streaming y Range, pero no puede ejecutarse aquí. Build/link
+UWP, ZIP real producido por el worker, visual en navegador y prueba de exportación en Series
+siguen pendientes; no se ha creado un paquete.

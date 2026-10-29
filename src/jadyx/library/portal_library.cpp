@@ -4,12 +4,10 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
-#include <cctype>
 #include <cstdint>
 #include <fstream>
 #include <set>
 #include <stdexcept>
-#include <string_view>
 #include <vector>
 #include <archive.h>
 #include <archive_entry.h>
@@ -23,6 +21,7 @@
 #include "core/hle/service/acc/profile_manager.h"
 #include "jadyx/content/content_actions.h"
 #include "jadyx/content/content_service.h"
+#include "jadyx/library/save_archive.h"
 #include "jadyx/storage/storage_path.h"
 #include "jadyx/storage/utf8.h"
 #include <fmt/format.h>
@@ -113,34 +112,10 @@ DWORD InspectSaveDirectory(const fs::path& root, const fs::path& relative) {
     return attributes;
 }
 
-bool IsReservedSaveName(std::string_view name) {
-    const auto dot = name.find('.');
-    auto stem = std::string{name.substr(0, dot)};
-    while (!stem.empty() && (stem.back() == '.' || stem.back() == ' ')) stem.pop_back();
-    std::transform(stem.begin(), stem.end(), stem.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-    if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL") return true;
-    return stem.size() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) &&
-           stem[3] >= '1' && stem[3] <= '9';
-}
-
 std::string SafeSavePath(std::string path) {
-    std::replace(path.begin(), path.end(), '\\', '/');
-    if (path.empty() || path.front() == '/' || path.size() > 240 ||
-        path.find(':') != std::string::npos || path.find('\0') != std::string::npos)
-        throw SaveImportError{"archive_unsafe"};
-    std::size_t start{};
-    for (;;) {
-        const auto end = path.find('/', start);
-        const auto part = std::string_view{path}.substr(start, end == std::string::npos ? end : end - start);
-        if (part.empty() || part == "." || part == ".." || part.back() == '.' || part.back() == ' ' ||
-            IsReservedSaveName(part) || part.find_first_of("<>\"|?*") != std::string_view::npos ||
-            std::any_of(part.begin(), part.end(), [](unsigned char c) { return c < 32; }))
-            throw SaveImportError{"archive_unsafe"};
-        if (end == std::string::npos) break;
-        start = end + 1;
-    }
-    return path;
+    auto safe = NormalizeSaveArchivePath(std::move(path));
+    if (!safe) throw SaveImportError{"archive_unsafe"};
+    return std::move(*safe);
 }
 
 void CopySaveTree(const fs::path& source, const fs::path& destination, std::uint64_t& copied,
@@ -181,6 +156,7 @@ void CopySaveTree(const fs::path& source, const fs::path& destination, std::uint
 }
 
 void ExtractSaveZip(const fs::path& zip, const fs::path& stage, std::uint64_t& extracted,
+                    unsigned& file_count,
                     std::uint64_t& since_space_check, std::stop_token stop) {
     if (fs::file_size(zip) > SaveArchiveLimit) throw SaveImportError{"save_limit"};
     auto* reader = archive_read_new();
@@ -231,8 +207,9 @@ void ExtractSaveZip(const fs::path& zip, const fs::path& stage, std::uint64_t& e
             }
             if (archive_entry_filetype(entry) != AE_IFREG) throw SaveImportError{"archive_unsafe"};
             const auto declared = archive_entry_size(entry);
-            if (declared <= 0 || static_cast<std::uint64_t>(declared) > SaveExpandedLimit - extracted)
+            if (declared < 0 || static_cast<std::uint64_t>(declared) > SaveExpandedLimit - extracted)
                 throw SaveImportError{"save_limit"};
+            ++file_count;
             fs::create_directories(target.parent_path());
             std::ofstream output{target, std::ios::binary | std::ios::trunc};
             if (!output) throw SaveImportError{"disk"};
@@ -256,7 +233,7 @@ void ExtractSaveZip(const fs::path& zip, const fs::path& stage, std::uint64_t& e
             output.close();
             if (!output) throw SaveImportError{"disk"};
         }
-        if (paths.empty() || archive_read_has_encrypted_entries(reader) > 0)
+        if (paths.empty() || !file_count || archive_read_has_encrypted_entries(reader) > 0)
             throw SaveImportError{"archive"};
     } catch (...) {
         free_reader();
@@ -352,8 +329,9 @@ std::string ImportSaveArchive(const fs::path& zip, std::uint64_t application, st
         std::uint64_t copied{}, since_space_check{};
         if (target_exists) CopySaveTree(target, stage, copied, since_space_check, stop);
         std::uint64_t extracted{};
-        ExtractSaveZip(zip, stage, extracted, since_space_check, stop);
-        if (extracted == 0) throw SaveImportError{"archive"};
+        unsigned files{};
+        ExtractSaveZip(zip, stage, extracted, files, since_space_check, stop);
+        if (!files) throw SaveImportError{"archive"};
         CheckSaveStop(stop);
 
         if (target_exists) {
@@ -462,6 +440,10 @@ PortalLibrary PortalLibrarySource::View() {
             return list;
         },
         .progress = [this] { return std::pair{installed.load() >> 20, install_total.load() >> 20}; },
+        .save_export = [this](std::uint64_t application, const fs::path& output, std::stop_token stop,
+                              const std::function<void(std::uint64_t, std::uint64_t)>& progress) {
+            return ExportSave(application, output, stop, progress);
+        },
     };
 }
 
@@ -493,6 +475,29 @@ std::string PortalLibrarySource::Remove(const PortalRemoval& removal) {
     if (!game) return "game";
     return removal.content.empty() ? RemoveGame(root, game->files) :
                                      Content::RemoveContent(removal.application, removal.content);
+}
+
+std::string PortalLibrarySource::ExportSave(
+    std::uint64_t application, const fs::path& output, std::stop_token stop,
+    const std::function<void(std::uint64_t, std::uint64_t)>& progress) {
+    try {
+        if (!Find(application)) return "game";
+        CheckSaveStop(stop);
+        const auto target = GameSavePath(application);
+        const auto save_root = Common::FS::GetEdenPath(Common::FS::EdenPath::SaveDir).lexically_normal();
+        const auto relative = target.lexically_normal().lexically_relative(save_root);
+        if (relative.empty() || relative.is_absolute() || *relative.begin() == "..")
+            throw SaveImportError{"save_path"};
+        if (InspectSaveDirectory(save_root, relative) == INVALID_FILE_ATTRIBUTES)
+            throw SaveImportError{"no_save"};
+        return ExportSaveArchive(target, output, stop, progress);
+    } catch (const SaveImportError& error) {
+        return error.what();
+    } catch (const std::filesystem::filesystem_error&) {
+        return "disk";
+    } catch (const std::exception&) {
+        return "disk";
+    }
 }
 
 std::optional<std::string> PortalLibrarySource::Cover(std::uint64_t application) {

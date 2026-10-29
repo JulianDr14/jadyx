@@ -31,6 +31,7 @@ namespace Jadyx {
 namespace {
 using Clock = std::chrono::steady_clock;
 using Json = nlohmann::json;
+constexpr std::uint64_t MaxSaveExportSize = 4ULL << 30;
 
 // Keep short OS polling intervals for cancellation, but tolerate 30s idle LAN retransmits.
 // Windows WSAPoll may not wake on local shutdown, so a 30s kernel timeout is not suitable.
@@ -248,6 +249,12 @@ Json RemovalJson(const PortalRemoval& info) {
     return {{"serial", info.serial}, {"game", info.application ? Hex16(info.application) : ""},
         {"content", info.content}, {"phase", info.phase}, {"error", info.error}};
 }
+Json SaveExportToJson(const PortalSaveExport& info) {
+    return {{"serial", info.serial}, {"game", info.application ? Hex16(info.application) : ""},
+        {"phase", info.phase}, {"error", info.error}, {"filename", info.filename},
+        {"processed", info.processed}, {"total", info.total}, {"size", info.size},
+        {"busy", info.phase == "pending" || info.phase == "running"}};
+}
 
 Json SystemJson(const SystemUploadStatus& info){
     const auto& r=info.review;
@@ -431,6 +438,11 @@ struct NetworkPortal::Impl {
     std::string logs_ticket;
     std::uint64_t logs_ticket_run{};
     Clock::time_point logs_ticket_until{};
+    std::filesystem::path save_export_path;
+    std::string save_ticket;
+    std::uint64_t save_ticket_serial{};
+    Clock::time_point save_ticket_until{};
+    std::stop_source save_export_stop;
     std::mutex admission;
     std::function<std::optional<Updates::UpdatePackage>()> update_package;
     std::atomic<bool> update_offered{};
@@ -464,12 +476,17 @@ struct NetworkPortal::Impl {
         return true;
     }
     void RestoreUploads() {
-        if (upload) upload->SetAvailable(imports_available);
-        if (content) content->SetAvailable(imports_available);
+        const bool available = imports_available && !RemovalActive() && !SaveExportActive();
+        if (upload) upload->SetAvailable(available);
+        if (content) content->SetAvailable(available);
     }
     bool RemovalActive() const {
         std::lock_guard lock{mutex};
         return status.removal.phase == "pending" || status.removal.phase == "running";
+    }
+    bool SaveExportActive() const {
+        std::lock_guard lock{mutex};
+        return status.save_export.phase == "pending" || status.save_export.phase == "running";
     }
 
     void Shutdown() {
@@ -480,8 +497,10 @@ struct NetworkPortal::Impl {
         {
             std::lock_guard lock{mutex};
             status.running = status.paired = false;
+            save_export_stop.request_stop();
             update_ticket.clear(); ticket_package.reset();
             logs_ticket.clear();
+            save_ticket.clear();
             status.code.clear(); status.url.clear(); session.clear();
         }
         if (server) { server->stop(); server->CancelClients(); server->decommission(); }
@@ -548,6 +567,12 @@ struct NetworkPortal::Impl {
                 Clock::now() < logs_ticket_until &&
                 EqualSecret(request.get_param_value("ticket"), logs_ticket))
                 return httplib::Server::HandlerResponse::Unhandled;
+            if ((request.method == "GET" || request.method == "HEAD") &&
+                request.path == "/api/v1/library/save/archive" &&
+                request.get_param_value_count("ticket") == 1 && !save_ticket.empty() &&
+                Clock::now() < save_ticket_until &&
+                EqualSecret(request.get_param_value("ticket"), save_ticket))
+                return httplib::Server::HandlerResponse::Unhandled;
             if (request.get_header_value_count("Authorization") != 1 ||
                 !EqualSecret(request.get_header_value("Authorization"), "Bearer " + session) || session.empty()) {
                 Reply(response, 401, {{"error", "session"}});
@@ -581,6 +606,7 @@ struct NetworkPortal::Impl {
             // A code pairs one browser once. Existing sessions are invalidated on re-pairing.
             session = std::move(next);
             logs_ticket.clear();
+            save_ticket.clear();
             update_ticket.clear(); ticket_package.reset();
             status.paired = true;
             expires = now;
@@ -592,6 +618,7 @@ struct NetworkPortal::Impl {
                 {"library", bool(library.games)}, {"content", content ? UploadJson(content->Snapshot()) : Json::object()},
                 {"install", InstallJson()},
                 {"removal", [this] { std::lock_guard lock{mutex}; return RemovalJson(status.removal); }()},
+                {"save_export", SaveExportJson()},
                 {"system_supported",system_supported},{"system",system ? SystemJson(system->Snapshot()) : Json::object()},
                 {"logs", LogsJson()}, {"update", {{"offered", update_offered.load()}}}});
         });
@@ -667,6 +694,11 @@ struct NetworkPortal::Impl {
             {"error", value.error}, {"total", value.total}, {"processed", value.processed},
             {"compressed", value.compressed}, {"files", value.files},
             {"completed_files", value.completed_files}, {"filename", value.filename}};
+    }
+
+    Json SaveExportJson() const {
+        std::lock_guard lock{mutex};
+        return SaveExportToJson(status.save_export);
     }
 
     void LogRoutes() {
@@ -806,6 +838,86 @@ struct NetworkPortal::Impl {
                 Reply(response, 200, {{"contents", std::move(list)}});
             } catch (...) { Reply(response, 500, {{"error", "library"}}); }
         });
+        server->Post("/api/v1/library/([0-9a-f]{16})/save/export", [this](const auto& request, auto& response) {
+            std::uint64_t application{};
+            if (!ParseHex16(request.matches[1].str(), application)) {
+                Reply(response, 404, {{"error", "game"}}); return;
+            }
+            RequestSaveExport(application, response);
+        });
+        server->Post("/api/v1/library/save/download", [this](const auto&, auto& response) {
+            std::lock_guard admission_lock{admission};
+            PortalSaveExport value;
+            {
+                std::lock_guard lock{mutex};
+                value = status.save_export;
+            }
+            if (value.phase != "complete" || !value.size) {
+                Reply(response, 409, {{"error", "not_ready"}}); return;
+            }
+            std::lock_guard lock{mutex};
+            save_ticket = RandomSession();
+            if (save_ticket.empty()) { Reply(response, 503, {{"error", "random"}}); return; }
+            save_ticket_serial = value.serial;
+            save_ticket_until = Clock::now() + std::chrono::minutes{30};
+            Reply(response, 200, {{"download", "/api/v1/library/save/archive?ticket=" + save_ticket},
+                {"filename", value.filename}, {"size", value.size}});
+        });
+        server->Get("/api/v1/library/save/archive", [this](const auto& request, auto& response) {
+            PortalSaveExport value;
+            {
+                std::lock_guard lock{mutex};
+                if (request.get_param_value_count("ticket") != 1 || save_ticket.empty() ||
+                    Clock::now() >= save_ticket_until ||
+                    !EqualSecret(request.get_param_value("ticket"), save_ticket) ||
+                    save_ticket_serial != status.save_export.serial ||
+                    status.save_export.phase != "complete") {
+                    Reply(response, 401, {{"error", "ticket"}}); return;
+                }
+                value = status.save_export;
+            }
+            struct SaveArchiveReader {
+                HANDLE handle{INVALID_HANDLE_VALUE};
+                std::mutex io;
+                std::array<char, 1U << 20> buffer{};
+                ~SaveArchiveReader() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+                bool Send(std::uint64_t offset, std::uint64_t length, httplib::DataSink& sink) {
+                    std::lock_guard lock{io};
+                    while (length) {
+                        const auto take = static_cast<DWORD>(std::min<std::uint64_t>(length, buffer.size()));
+                        LARGE_INTEGER position{};
+                        position.QuadPart = static_cast<LONGLONG>(offset);
+                        DWORD received{};
+                        if (!SetFilePointerEx(handle, position, nullptr, FILE_BEGIN) ||
+                            !ReadFile(handle, buffer.data(), take, &received, nullptr) || received != take ||
+                            !sink.write(buffer.data(), take))
+                            return false;
+                        offset += take;
+                        length -= take;
+                    }
+                    return true;
+                }
+            };
+            const auto reader = std::make_shared<SaveArchiveReader>();
+            reader->handle = CreateFile2FromAppW(save_export_path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                                  OPEN_EXISTING, nullptr);
+            if (reader->handle == INVALID_HANDLE_VALUE) {
+                Reply(response, 409, {{"error", "busy"}}); return;
+            }
+            if (current_portal_stream) {
+                const int buffer = 4 << 20;
+                ::setsockopt(current_portal_stream->socket(), SOL_SOCKET, SO_SNDBUF,
+                             reinterpret_cast<const char*>(&buffer), sizeof(buffer));
+            }
+            response.set_header("Content-Disposition", "attachment; filename=\"" + value.filename + "\"");
+            response.set_header("Accept-Ranges", "bytes");
+            response.set_header("ETag", "\"" + std::to_string(value.serial) + "-" +
+                std::to_string(value.size) + "\"");
+            response.set_content_provider(static_cast<std::size_t>(value.size), "application/zip",
+                [reader](std::size_t offset, std::size_t length, httplib::DataSink& sink) {
+                    return reader->Send(offset, length, sink);
+                });
+        });
         server->Delete("/api/v1/library/([0-9a-f]{16})", [this](const auto& request, auto& response) {
             RequestRemoval(request.matches[1].str(), {}, response);
         });
@@ -819,7 +931,8 @@ struct NetworkPortal::Impl {
         std::uint64_t application{};
         if (!ParseHex16(game, application) || !KnownGame(application)) { Reply(response, 404, {{"error", "game"}}); return; }
         std::lock_guard admission_lock{admission};
-        if (!imports_available || RemovalActive() || (system && system->Snapshot().busy) || !BlockUploads()) {
+        if (!imports_available || RemovalActive() || SaveExportActive() ||
+            (system && system->Snapshot().busy) || !BlockUploads()) {
             Reply(response, 409, {{"error", "busy"}}); return;
         }
         if (system) system->SetAvailable(false);
@@ -835,6 +948,75 @@ struct NetworkPortal::Impl {
             const auto games = library.games().second;
             return std::any_of(games.begin(), games.end(), [id](const auto& game) { return game.program_id == id; });
         } catch (...) { return false; }
+    }
+
+    void RequestSaveExport(std::uint64_t application, httplib::Response& response) {
+        if (!KnownGame(application)) { Reply(response, 404, {{"error", "game"}}); return; }
+        std::lock_guard admission_lock{admission};
+        if (!imports_available || RemovalActive() || SaveExportActive() ||
+            (system && system->Snapshot().busy) || !library.save_export || !BlockUploads()) {
+            Reply(response, 409, {{"error", "busy"}}); return;
+        }
+        if (system) system->SetAvailable(false);
+        std::lock_guard lock{mutex};
+        save_export_stop = std::stop_source{};
+        save_ticket.clear();
+        status.save_export = {.serial = status.save_export.serial + 1, .application = application,
+            .phase = "pending", .filename = "jadyx-save-" + Hex16(application) + ".zip"};
+        Reply(response, 202, {{"save_export", SaveExportToJson(status.save_export)}});
+    }
+
+    std::string RunSaveExport(std::stop_token stop) {
+        PortalSaveExport job;
+        std::stop_source export_source;
+        std::stop_token export_stop;
+        {
+            std::lock_guard lock{mutex};
+            if (status.save_export.phase != "pending" || !library.save_export) return "unavailable";
+            status.save_export.phase = "running";
+            job = status.save_export;
+            export_source = save_export_stop;
+            export_stop = export_source.get_token();
+        }
+        std::stop_callback cancel{stop, [export_source] { export_source.request_stop(); }};
+        std::string error;
+        try {
+            error = library.save_export(job.application, save_export_path, export_stop,
+                [this, serial = job.serial](std::uint64_t processed, std::uint64_t total) {
+                    std::lock_guard lock{mutex};
+                    if (status.save_export.serial == serial && status.save_export.phase == "running") {
+                        status.save_export.processed = processed;
+                        status.save_export.total = total;
+                    }
+                });
+        } catch (const std::exception&) {
+            error = "disk";
+        } catch (...) {
+            error = "disk";
+        }
+        if (error.empty() && export_stop.stop_requested()) error = "interrupted";
+        std::uint64_t size{};
+        if (error.empty()) {
+            std::error_code ec;
+            size = std::filesystem::file_size(save_export_path, ec);
+            if (ec || !size) error = "disk";
+            else if (size > MaxSaveExportSize) error = "save_limit";
+        }
+        {
+            std::lock_guard lock{mutex};
+            if (status.save_export.serial == job.serial) {
+                status.save_export.phase = error.empty() ? "complete" : "failed";
+                status.save_export.error = error;
+                status.save_export.size = size;
+                if (error.empty()) status.save_export.processed = status.save_export.total;
+            }
+        }
+        {
+            std::lock_guard admission_lock{admission};
+            if (system) system->SetAvailable(imports_available && !RemovalActive() && !SaveExportActive());
+            RestoreUploads();
+        }
+        return error;
     }
 
     /// tus routes for one upload record. `other` is the sibling upload: one file at a time.
@@ -1018,6 +1200,7 @@ struct NetworkPortal::Impl {
 NetworkPortal::NetworkPortal(std::filesystem::path games,SystemImportBackend backend) : impl{std::make_unique<Impl>()} {
     if (!games.empty()) {
         try {
+            impl->save_export_path=games.parent_path()/"jadyx/transfers/save-export/save.zip";
             impl->system_supported=bool(backend.inspect);
             impl->system=std::make_unique<SystemUpload>(games.parent_path(),std::move(backend));
             const auto transfers=games.parent_path()/"jadyx/transfers/content";
@@ -1147,13 +1330,15 @@ void NetworkPortal::SetLibrary(PortalLibrary library) {
 void NetworkPortal::SetUploadsAvailable(bool enabled) {
     std::lock_guard lock{impl->admission};impl->imports_available=enabled;
     const bool removing=impl->RemovalActive();
-    if(impl->system)impl->system->SetAvailable(enabled&&!removing);
-    const bool idle=(!impl->system||!impl->system->Snapshot().busy)&&!removing;
+    const bool exporting=impl->SaveExportActive();
+    if(impl->system)impl->system->SetAvailable(enabled&&!removing&&!exporting);
+    const bool idle=(!impl->system||!impl->system->Snapshot().busy)&&!removing&&!exporting;
     if(impl->upload)impl->upload->SetAvailable(enabled&&idle);
     if(impl->content)impl->content->SetAvailable(enabled&&idle);
 }
 bool NetworkPortal::BlockForLocalOperation() {
-    std::lock_guard lock{impl->admission};if(impl->RemovalActive()||(impl->system&&!impl->system->BlockForLocalOperation()))return false;
+    std::lock_guard lock{impl->admission};if(impl->RemovalActive()||impl->SaveExportActive()||
+        (impl->system&&!impl->system->BlockForLocalOperation()))return false;
     if(!impl->BlockUploads()){if(impl->system)impl->system->SetAvailable(impl->imports_available);return false;}
     return true;
 }
@@ -1192,7 +1377,14 @@ std::string NetworkPortal::RunRemoval(const RemovalRunner& run) {
     if (impl->system) impl->system->SetAvailable(impl->imports_available);
     return error;
 }
-void NetworkPortal::CancelTransfer() { if (impl->upload) impl->upload->Cancel();if(impl->content)impl->content->Cancel();if(impl->system)impl->system->Cancel(); }
+std::string NetworkPortal::RunSaveExport(std::stop_token stop) { return impl->RunSaveExport(stop); }
+void NetworkPortal::CancelTransfer() {
+    if (impl->upload) impl->upload->Cancel();
+    if (impl->content) impl->content->Cancel();
+    if (impl->system) impl->system->Cancel();
+    std::lock_guard lock{impl->mutex};
+    impl->save_export_stop.request_stop();
+}
 std::string NetworkPortal::RunSystemImport(std::stop_token stop){return impl->system?impl->system->RunPending(stop):"unavailable";}
 
 } // namespace Jadyx

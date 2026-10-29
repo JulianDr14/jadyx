@@ -26,7 +26,7 @@ en documentación histórica ya no son carpetas de entrega vigentes.
 - [Biblioteca e interfaz](xbox_frontend.md): carátulas, navegación, mandos y teclado.
 - [Contratos compartidos del frontend](xbox_frontend_refactor.md): catálogo de mandos, acciones, captura modal y listas; migración y gates.
 - [Carpetas y almacenamiento USB](xbox_rom_storage.md): acceso UWP persistente y apertura de juegos sin copiarlos.
-- [Portal local de importación](xbox_network_portal.md): exportación de logs reanudable, importación de sistema y contenido validada, y transferencia de archivos de juego sin filtro de extensión; gates de Series pendientes donde se indican.
+- [Portal local](xbox_network_portal.md): exportación reanudable de logs y guardados, importación de sistema y contenido validada, y transferencia de archivos de juego; gates de Series pendientes donde se indican.
 
 ## Rendimiento y evidencia
 

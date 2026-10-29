@@ -188,7 +188,8 @@ async function libraryScenario(language){
  const click=n=>n.listeners.click();
  const app='0100000000010000',item='d'.repeat(64),upload='e'.repeat(32),length=3*1048576+5;
  let games=[{id:app,name:'Game',developer:'Dev',version:'1.0.0',removable:true}],contents=[{id:item,kind:'update',name:'Update',version:'1.0.1',bytes:1048576,internal:true}];
- let removal={serial:0,game:'',content:'',phase:'',error:''},content={},revision=1;
+ let removal={serial:0,game:'',content:'',phase:'',error:''},content={},
+  saveExport={serial:0,game:'',phase:'',error:'',processed:0,total:0,size:0,busy:false},revision=1;
  const response=(status,data={},headers={})=>({status,ok:status>=200&&status<300,json:async()=>JSON.parse(JSON.stringify(data)),headers:{get:k=>headers[k]??null}});
  const fetch=async(url,request={})=>{
   if(url==='/api/v1/pair')return response(200,{session:'test-session'});
@@ -197,11 +198,17 @@ async function libraryScenario(language){
   if(url==='/api/v1/status'){
    if(removal.phase==='pending'){removal={...removal,phase:'complete'};
     if(removal.content)contents=contents.filter(c=>c.id!==removal.content);else{games=[];revision++;}}
-   return response(200,{uploads:true,transfer:{},library:true,content,install:{done:0,total:0},removal});
+   return response(200,{uploads:true,transfer:{},library:true,content,install:{done:0,total:0},removal,save_export:saveExport});
   }
   if(url==='/api/v1/library')return response(200,{revision,games});
   if(url.endsWith('/cover'))return response(404,{error:'cover'});
   if(url==='/api/v1/library/'+app+'/content')return response(200,{contents});
+  if(request.method==='POST'&&url==='/api/v1/library/'+app+'/save/export'){
+   saveExport={serial:saveExport.serial+1,game:app,phase:'complete',error:'',processed:12,total:12,size:128,busy:false};
+   return response(202,{save_export:saveExport});
+  }
+  if(request.method==='POST'&&url==='/api/v1/library/save/download')
+   return response(200,{download:'/api/v1/library/save/archive?ticket='+'a'.repeat(64),filename:'jadyx-save-'+app+'.zip',size:128});
   if(request.method==='DELETE'&&url.startsWith('/api/v1/library/'+app)){
    const id=url.split('/content/')[1]||'';removal={serial:removal.serial+1,game:app,content:id,phase:'pending',error:''};return response(202,{removal});
   }
@@ -254,6 +261,11 @@ async function libraryScenario(language){
  element('content-files').files=[selectedFile];element('content-files').listeners.change();
  await click(element('content-send'));await delay();
  assert.equal(content.phase,'complete');assert.equal(content.tag,'save:'+app);
+ await click(element('save-export'));await delay();
+ assert.ok(requests.includes('POST /api/v1/library/'+app+'/save/export'),'export requests only the selected game');
+ assert.ok(requests.includes('POST /api/v1/library/save/download'),'ready export receives an authenticated download ticket');
+ assert.equal(element('save-download').hidden,false);assert.equal(element('save-download').download,'jadyx-save-'+app+'.zip');
+ assert.equal(element('save-download').href,'/api/v1/library/save/archive?ticket='+'a'.repeat(64));
  const requestsBeforeInvalidSave=requests.length;
  selectedFile={...selectedFile,name:'not-a-save.nsp'};element('content-files').files=[selectedFile];
  await click(element('content-send'));

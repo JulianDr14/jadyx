@@ -5,12 +5,13 @@
 // What Jadyx Portal shows of the library: the scanned games, their covers from the library
 // cache and the updates/DLC registered for each, plus the storage jobs the browser asks for
 // (installing an update/DLC, deleting content or a game). The coordinator publishes the scan
-// from the UI thread and runs the jobs on its storage worker; portal workers only read copies,
-// so no browser request touches the library state.
+// from the UI thread and runs installs, removals and save exports on its storage worker; portal
+// workers only read copies, so no browser request touches the library state.
 
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <stop_token>
@@ -26,7 +27,6 @@ namespace Jadyx {
 
 /// The application of a content upload's "<kind>:<application hex>" tag; 0 when malformed.
 std::uint64_t ContentTagApplication(const std::string& tag);
-
 class PortalLibrarySource {
 public:
     PortalLibrarySource(std::filesystem::path root, std::filesystem::path cache_directory);
@@ -46,6 +46,10 @@ public:
                         const Content::Progress& progress = {});
     /// Carries out a deletion asked from the portal. Returns a portal error word.
     std::string Remove(const PortalRemoval& removal);
+    /// Writes a bounded ZIP of the current user's account save for a listed game.
+    std::string ExportSave(std::uint64_t application, const std::filesystem::path& output,
+                           std::stop_token stop,
+                           const std::function<void(std::uint64_t, std::uint64_t)>& progress);
 
 private:
     struct Game {
