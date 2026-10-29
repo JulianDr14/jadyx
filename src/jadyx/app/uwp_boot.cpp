@@ -356,23 +356,27 @@ struct BootConfig {
     /// Commit held back for the driver: a pipeline object that runs out of memory releases it and
     /// is created again ("oom_reserve_mib=0" turns it off).
     u32 oom_reserve_mib{32};
-    /// What a draw does while its pipeline builds: waits ("async_pipelines=off"), is skipped
-    /// unless it is a full-screen pass or a target's first ("balanced"), or is skipped ("full").
-    D3D12::AsyncPipelines async_pipelines{D3D12::AsyncPipelines::Off};
+    /// What a draw does while its pipeline builds: is skipped, so the game never stops for a new
+    /// pipeline ("full"), is skipped unless it is a full-screen pass or a target's first
+    /// ("balanced"), or waits ("async_pipelines=off").
+    D3D12::AsyncPipelines async_pipelines{D3D12::AsyncPipelines::Full};
     /// Draws of this many vertices or fewer always wait for their pipeline ("wait_small_draws=",
     /// 0 turns it off).
     u32 wait_small_draws{};
+    /// Pipeline build workers, 1-8 ("pso_workers="); 0 keeps the default of 4.
+    u32 pso_workers{};
     /// The driver's compiled PSOs kept on disk and handed back to it ("pso_blobs=1"); off by
     /// default, as the console's driver may not take them.
     bool pso_blobs{};
-    /// Upload staging in CPU-cached memory instead of write-combined ("cached_staging=1").
-    bool cached_staging{};
+    /// Upload staging in CPU-cached memory instead of write-combined ("cached_staging=0" turns it
+    /// off).
+    bool cached_staging{true};
     /// Plain textures in CPU-writable heaps, their first upload written in place
-    /// ("cpu_texture_writes=1"); cache-coherent UMA devices only.
-    bool cpu_texture_writes{};
+    /// ("cpu_texture_writes=0" turns it off); cache-coherent UMA devices only.
+    bool cpu_texture_writes{true};
     /// Over the texture cap, MiB of live textures a frame moves out of mostly free heaps
     /// ("heap_compaction_mib=", 0 keeps them in place).
-    u32 heap_compaction_mib{};
+    u32 heap_compaction_mib{32};
     /// D3D12 debug layer (renderer_debug); PC only, the console has no SDK layers.
     bool debug_layer{};
     /// With the debug layer, GPU-based validation too ("debug_layer=gbv").
@@ -460,27 +464,30 @@ struct BootConfig {
     /// display ("async_present=0" presents on the GPU thread, as Present used to).
     bool async_present{true};
     /// Present on a GPU queue of its own, so a frame's copy to the screen does not wait behind
-    /// the emulation's next work ("present_queue=1").
-    bool present_queue{};
+    /// the emulation's next work ("present_queue=0" turns it off).
+    bool present_queue{true};
     /// Sampler border colors as the guest GPU keeps them ("border_color=exact|8bit|bw",
     /// D3D12::BorderColorMode).
     u8 border_color{};
     /// Pipelines keyed by the depth bias D3D12 applies, slope and clamp in 1/16 steps
-    /// ("depth_bias_round=1").
-    bool depth_bias_round{};
-    /// Shader outputs to 8-bit UNORM targets round ties down like the guest ("unorm_round=1").
-    bool unorm_round{};
-    /// Cube samples with NaN or zero directions read a defined face ("cube_sanitize=1").
-    bool cube_sanitize{};
-    /// Lowered fp16 math flushes half denormals as the guest's FTZ ("half_ftz=1").
-    bool half_ftz{};
-    /// Single-sample alpha-to-coverage with the guest's dither, in the shader ("a2c_shader=1").
-    bool a2c_shader{};
+    /// ("depth_bias_round=0" turns it off).
+    bool depth_bias_round{true};
+    /// Shader outputs to 8-bit UNORM targets round ties down like the guest ("unorm_round=0"
+    /// turns it off).
+    bool unorm_round{true};
+    /// Cube samples with NaN or zero directions read a defined face ("cube_sanitize=0" turns it
+    /// off).
+    bool cube_sanitize{true};
+    /// Lowered fp16 math flushes half denormals as the guest's FTZ ("half_ftz=0" turns it off).
+    bool half_ftz{true};
+    /// Single-sample alpha-to-coverage with the guest's dither, in the shader ("a2c_shader=0"
+    /// turns it off).
+    bool a2c_shader{true};
     /// BC1-3 textures up to 32 KiB decoded on the CPU with the guest's palette
-    /// ("small_bc_palette=1").
-    bool small_bc_palette{};
-    /// Single-sample depth bias added in the fragment shader ("depth_bias_shader=1").
-    bool depth_bias_shader{};
+    /// ("small_bc_palette=0" turns it off).
+    bool small_bc_palette{true};
+    /// Single-sample depth bias added in the fragment shader ("depth_bias_shader=0" turns it off).
+    bool depth_bias_shader{true};
     /// Whether the GPU reads process memory in place, probed and logged at device creation
     /// ("memory_import_probe=1").
     bool memory_import_probe{};
@@ -580,18 +587,18 @@ struct BootConfig {
     bool astc_fresh{};
     /// Played by hand ("play=1"): runs until the app is closed, without frame dumps or draw trace.
     bool play{};
-    /// Every minute of play, the process heaps and the memory map ("memory_audit=1"): what the
-    /// commit no owner accounts for is made of. Walking the heaps locks them for a moment.
-    bool memory_audit{};
+    /// Every minute of play, the process heaps and the memory map ("memory_audit=0" turns it off):
+    /// what the commit no owner accounts for is made of. Walking the heaps locks them for a moment.
+    bool memory_audit{true};
     bool pool_trim{true};
     bool host_trim{true};
     /// Permafrost: cold guest memory written to LocalState/jadyx/permafrost.bin when the app runs short
-    /// ("guest_swap=1", private DRAM backing only). Below guest_swap_watch_mib of headroom the
+    /// ("guest_swap=0" turns it off, private DRAM backing only). Below guest_swap_watch_mib of headroom the
     /// guest's use of its memory is sampled. Below guest_swap_low_mib granules idle for
     /// guest_swap_idle_ms and then untouched on probation for guest_swap_probation_ms go to disk
     /// until guest_swap_high_mib is free again, guest_swap_batch_mib at a time (0: all at once);
     /// guest_swap_reserve_mib of commit is held for a demand commit that would fail.
-    bool guest_swap{};
+    bool guest_swap{true};
     u32 guest_swap_watch_mib{1024};
     u32 guest_swap_low_mib{512};
     u32 guest_swap_high_mib{640};
@@ -755,6 +762,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::MemoryReserve::Configure(u64{config.oom_reserve_mib} << 20);
     D3D12::SetAsyncPipelines(config.async_pipelines);
     D3D12::SetWaitSmallDraws(config.wait_small_draws);
+    D3D12::SetPipelineWorkers(config.pso_workers);
     D3D12::SetPsoBlobs(config.pso_blobs);
     D3D12::SetCachedStaging(config.cached_staging);
     D3D12::SetCpuTextureWrites(config.cpu_texture_writes);
@@ -3259,6 +3267,12 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             WriteDiag("boot.cfg: draws of " +
                                       std::to_string(config.wait_small_draws) +
                                       " vertices or fewer wait for their pipeline");
+                        } else if (line.starts_with("pso_workers=")) {
+                            config.pso_workers = std::clamp(
+                                static_cast<u32>(std::strtoul(line.c_str() + 12, nullptr, 10)),
+                                1U, 8U);
+                            WriteDiag("boot.cfg: " + std::to_string(config.pso_workers) +
+                                      " pipeline build workers");
                         } else {
                             WriteDiag("boot.cfg: IGNORED unknown pipeline key " + line);
                         }
@@ -3323,6 +3337,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         }
                         if (line.starts_with("async_pipelines=") ||
                             line.starts_with("wait_small_draws=") ||
+                            line.starts_with("pso_workers=") ||
                             line.starts_with("pso_blobs=")) {
                             parse_pipeline_key(line);
                             continue;
@@ -3846,9 +3861,9 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "pool_trim=0") {
                             config.pool_trim = false;
                             WriteDiag("boot.cfg: pool_trim off");
-                        } else if (line == "memory_audit=1") {
-                            config.memory_audit = true;
-                            WriteDiag("boot.cfg: memory audit every minute of play");
+                        } else if (line == "memory_audit=1" || line == "memory_audit=0") {
+                            config.memory_audit = line == "memory_audit=1";
+                            WriteDiag("boot.cfg: " + line);
                         } else if (line == "pulse_diag=1") {
                             Common::Pulse::SetDiagnostics(true);
                             WriteDiag("boot.cfg: Pulse diagnostics on (GPU VA, shader code, page watch)");
