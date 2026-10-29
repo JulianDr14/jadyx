@@ -25,6 +25,24 @@ void ConfigureHostMemoryFastmem(size_t hot_mib, bool force_full);
 [[nodiscard]] size_t HostMemoryFastmemHotSize();
 [[nodiscard]] bool HostMemoryFastmemForceFull();
 
+/// Xbox private DRAM backing: cold guest memory written to a swap file (common/guest_swap.h).
+/// Configured by the UWP frontend before Core::System creates DeviceMemory; off unless enabled.
+struct GuestSwapSettings {
+    bool enabled{};
+    std::wstring path;
+    u64 reserve_bytes{};
+    u32 probation_ms{1000};
+};
+void ConfigureGuestSwap(const GuestSwapSettings& settings);
+/// Whether the backing in use writes cold memory out.
+[[nodiscard]] bool GuestSwapActive();
+/// One pass of the swapper, under the backing's decommit mutex: tries to give back `want` bytes.
+/// Returns the bytes given back.
+u64 StepGuestSwap(u64 want, bool urgent);
+/// Commits again the reserve given up to a failed demand commit. True when it is held.
+bool RefillGuestSwapReserve();
+[[nodiscard]] std::string DescribeGuestSwap();
+
 enum class MemoryPermission : u32 {
     Read = 1 << 0,
     Write = 1 << 1,

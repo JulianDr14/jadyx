@@ -70,6 +70,8 @@ add_library(
     fs/fs_util.h
     fs/path_util.cpp
     fs/path_util.h
+    guest_swap.cpp
+    guest_swap.h
     hash.h
     heap_tracker.cpp
     heap_tracker.h

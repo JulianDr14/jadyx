@@ -203,6 +203,8 @@ std::atomic<bool> g_gpu_command_failed{};
 /// Guest DRAM bytes the HostTrim worker read and gave back since the last heartbeat.
 std::atomic<u64> g_host_trim_visited{};
 std::atomic<u64> g_host_trim_released{};
+/// Guest DRAM bytes the GuestSwap worker gave back since the last heartbeat.
+std::atomic<u64> g_guest_swap_released{};
 /// The PC window's mode. ApplicationView belongs to the UI thread: it publishes the state here and
 /// applies the changes the in-game menu asks for (1 full screen, 0 windowed, -1 none).
 std::atomic<bool> g_can_fullscreen{};
@@ -504,6 +506,15 @@ struct BootConfig {
     bool memory_audit{};
     bool pool_trim{true};
     bool host_trim{true};
+    /// Cold guest memory written to LocalState/jadyx/guest_swap.bin when the app runs short
+    /// ("guest_swap=1", private DRAM backing only). Below guest_swap_low_mib of headroom granules
+    /// untouched for guest_swap_probation_ms go to disk until guest_swap_high_mib is free again;
+    /// guest_swap_reserve_mib of commit is held for a demand commit that would fail.
+    bool guest_swap{};
+    u32 guest_swap_low_mib{384};
+    u32 guest_swap_high_mib{512};
+    u32 guest_swap_probation_ms{1000};
+    u32 guest_swap_reserve_mib{32};
     /// Guest memory through the host-mapped arena. Xbox uses a bounded hybrid section; "full" is
     /// diagnostic and falls back to hybrid if the complete mapping cannot be created.
     enum class Fastmem { Off, Auto, Hybrid, Full } fastmem{Fastmem::Off};
@@ -614,6 +625,15 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     Settings::values.cpuopt_fastmem_exclusives = fastmem_enabled;
     Common::ConfigureHostMemoryFastmem(config.fastmem_hot_mib,
                                        config.fastmem == BootConfig::Fastmem::Full);
+    Common::ConfigureGuestSwap({
+        .enabled = config.guest_swap,
+        .path = (std::filesystem::path{std::wstring{
+                     winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()}} /
+                 L"jadyx" / L"guest_swap.bin")
+                    .wstring(),
+        .reserve_bytes = u64{config.guest_swap_reserve_mib} << 20,
+        .probation_ms = config.guest_swap_probation_ms,
+    });
     // Keep the shared setting for other backends. D3D12 prepares on workers and always waits
     // for the exact PSO when a dependent draw reaches the command stream.
     Settings::values.use_asynchronous_shaders.SetValue(config.async_shaders);
@@ -767,7 +787,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     // The splash over the guest's first frames (launch_splash.h); it draws as the Pulse screen.
     std::optional<LaunchScreen> launch_screen;
     std::optional<std::jthread> trim_worker;
+    std::optional<std::jthread> swap_worker;
     const auto shutdown = [&] {
+        swap_worker.reset();
         trim_worker.reset();
         pulse_screen.reset();
         launch_screen.reset();
@@ -1224,7 +1246,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         struct StopTrim {
             std::optional<std::jthread>& worker;
             ~StopTrim() { worker.reset(); }
-        } stop_trim{trim_worker};
+        } stop_trim{trim_worker}, stop_swap{swap_worker};
         if (config.host_trim) {
             trim_worker.emplace([&](std::stop_token stop) {
                 Common::SetCurrentThreadName("HostTrim");
@@ -1261,6 +1283,36 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                     const bool active = last_pass_released >= TRIM_ACTIVE_PASS;
                     std::this_thread::sleep_for(
                         std::chrono::milliseconds(low ? (active ? 20 : 100) : active ? 100 : 500));
+                }
+            });
+        }
+        // Guest swap: short of memory, cold granules go on probation and then to disk until the
+        // high mark is free again. Far below the low mark the probation is cut short.
+        if (Common::GuestSwapActive()) {
+            const u64 swap_low = u64{config.guest_swap_low_mib} << 20;
+            const u64 swap_high = (std::max)(u64{config.guest_swap_high_mib} << 20, swap_low);
+            WriteDiag("guest swap on: below " + std::to_string(swap_low >> 20) + " MiB free, up to " +
+                      std::to_string(swap_high >> 20) + " MiB");
+            swap_worker.emplace([&, swap_low, swap_high](std::stop_token stop) {
+                Common::SetCurrentThreadName("GuestSwap");
+                while (!stop.stop_requested()) {
+                    u64 used{}, limit{};
+                    if (!QueryAppMemory(used, limit)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                        continue;
+                    }
+                    const u64 headroom = limit > used ? limit - used : 0;
+                    if (headroom < swap_low) {
+                        g_guest_swap_released.fetch_add(
+                            Common::StepGuestSwap(swap_high - headroom, headroom < swap_low / 2),
+                            std::memory_order_relaxed);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                        continue;
+                    }
+                    if (headroom >= swap_high) {
+                        Common::RefillGuestSwapReserve();
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 }
             });
         }
@@ -3546,6 +3598,11 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         WriteDiag("host trim: released " +
                                   std::to_string(g_host_trim_released.exchange(0) >> 20) +
                                   " MiB of " + std::to_string(visited >> 20) + " MiB visited");
+                    }
+                    if (Common::GuestSwapActive()) {
+                        WriteDiag("guest swap: released " +
+                                  std::to_string(g_guest_swap_released.exchange(0) >> 20) +
+                                  " MiB since the last heartbeat | " + Common::DescribeGuestSwap());
                     }
                     WriteDiag("memory by owner: " + MemoryOwners());
                     for (const auto& capture : Jadyx::AllocWatch::TakeNew()) {
