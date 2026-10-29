@@ -125,6 +125,15 @@ void SetAstcDropTopLevel(bool enabled) {
     astc_drop_top_level.store(enabled, std::memory_order_relaxed);
 }
 
+void SetHeapCompaction(u64 bytes_per_frame) {
+    heap_compaction_budget.store(bytes_per_frame, std::memory_order_relaxed);
+}
+
+HeapCompactionStats GetHeapCompactionStats() noexcept {
+    return {heap_compaction_moved.load(std::memory_order_relaxed),
+            heap_compaction_bytes.load(std::memory_order_relaxed)};
+}
+
 
 void SetAstcGpuFresh(bool enabled) {
     gpu_astc_fresh.store(enabled, std::memory_order_relaxed);
@@ -462,6 +471,12 @@ bool TextureCacheRuntime::InSparseHeap(const Image& image) const {
     if (!image.resource_allocation) return false;
     const size_t heap = TextureResourceAllocator::HeapOf(*image.resource_allocation);
     return heap < sparse_heaps.size() && sparse_heaps[heap];
+}
+u64 TextureCacheRuntime::HeapCompactionBudget() const noexcept {
+    return has_sparse_heaps ? heap_compaction_budget.load(std::memory_order_relaxed) : 0;
+}
+bool TextureCacheRuntime::RelocateImage(Image& image) {
+    return InSparseHeap(image) && image.Relocate(sparse_heaps);
 }
 u64 TextureCacheRuntime::GetDeviceLocalMemory() const { return device.CacheMemoryBudget(); }
 u64 TextureCacheRuntime::GetDeviceMemoryUsage() const {
@@ -949,6 +964,48 @@ void Image::InitializePlacedResource() {
     commands->DiscardResource(resource.Get());
     state = target;
     ++write_version;
+}
+
+size_t Image::HeapIndex() const noexcept {
+    return resource_allocation ? TextureResourceAllocator::HeapOf(*resource_allocation) : SIZE_MAX;
+}
+
+bool Image::Relocate(const std::vector<bool>& avoid) {
+    // A pending GC readback copies out of the current resource.
+    if (!resource || !resource_allocation || gc_readback) return false;
+    const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+    auto moved = runtime->texture_allocator.CreateInUsedHeaps(
+        desc, D3D12_RESOURCE_STATE_COPY_DEST, cpu_writable, avoid);
+    if (!moved.resource) return false;
+    // Also writes back a reinterpreted copy drawn to and initializes a target never drawn.
+    Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
+    auto* const commands = runtime->scheduler.CommandList();
+    // The range may have held another resource; copying the whole resource initializes a placed
+    // render target or depth stencil, every mip, layer, plane and sample.
+    const D3D12_RESOURCE_BARRIER alias{
+        .Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING,
+        .Aliasing = {.pResourceBefore = nullptr, .pResourceAfter = moved.resource.Get()}};
+    commands->ResourceBarrier(1, &alias);
+    commands->CopyResource(moved.resource.Get(), resource.Get());
+    const u64 bytes = runtime->device.Get()->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+    runtime->texture_allocator.DeferRelease(
+        {std::move(resource), std::move(resource_allocation), true});
+    resource = std::move(moved.resource);
+    resource_allocation = std::move(moved.allocation);
+    cpu_writable = moved.cpu_writable;
+    untouched = false;
+    needs_placed_init = false;
+    state = D3D12_RESOURCE_STATE_COPY_DEST;
+    uav_work = 0;
+    left_uav_in_work = 0;
+    ++write_version;
+    const u64 count = heap_compaction_moved.fetch_add(1, std::memory_order_relaxed) + 1;
+    const u64 total = heap_compaction_bytes.fetch_add(bytes, std::memory_order_relaxed) + bytes;
+    if (count == 1 || count % 256 == 0) {
+        LOG_INFO(Render, "D3D12: {} textures moved out of sparse heaps ({} MiB)", count,
+                 total / 1_MiB);
+    }
+    return true;
 }
 
 ID3D12Resource* Image::SliceArray() {

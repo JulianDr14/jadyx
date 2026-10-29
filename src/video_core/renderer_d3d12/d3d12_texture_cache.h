@@ -128,6 +128,11 @@ public:
     /// Over the texture cap: the image lives in a heap mostly free, so evicting it helps empty one.
     [[nodiscard]] bool InSparseHeap(const Image& image) const;
     [[nodiscard]] bool HasSparseHeaps() const noexcept { return has_sparse_heaps; }
+    /// Bytes of live images one frame may move out of sparse heaps (SetHeapCompaction).
+    [[nodiscard]] u64 HeapCompactionBudget() const noexcept;
+    /// Moves the image out of its sparse heap into free space of a fuller one. The caller drops
+    /// the image's views: their descriptors name the old resource.
+    bool RelocateImage(Image& image);
     [[nodiscard]] u64 DepthFeedbackCopies() const noexcept { return depth_feedback_copies; }
     bool CanReportMemoryUsage() const { return true; }
     std::optional<size_t> GetSamplerHeapBudget() const { return SamplerHeap::CAPACITY; }
@@ -662,6 +667,16 @@ void SetAstcGpuDecode(bool enabled);
 /// sample them see half the detail and textureSize reports half. Applies to images created from
 /// now on.
 void SetAstcDropTopLevel(bool enabled);
+/// Over the texture cap, each frame moves up to this many bytes of live images out of mostly
+/// free heaps into free space of fuller ones, so the free heaps empty and trim releases them
+/// ("heap_compaction_mib="; 0, the default, keeps them in place).
+void SetHeapCompaction(u64 bytes_per_frame);
+/// Images moved out of sparse heaps and their bytes.
+struct HeapCompactionStats {
+    u64 images;
+    u64 bytes;
+};
+[[nodiscard]] HeapCompactionStats GetHeapCompactionStats() noexcept;
 /// Texture memory above which clean textures are evicted before the app runs short (0: none).
 void SetTextureMemoryCap(u64 bytes);
 /// One-shot diagnostic: compare the first GPU BC3 result with the existing CPU pipeline.

@@ -158,6 +158,9 @@ void SetBcArrayDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcDropTopLevel(bool enabled); // d3d12_texture_cache.h
 void SetTextureMemoryCap(u64 bytes); // d3d12_texture_cache.h
+void SetHeapCompaction(u64 bytes_per_frame); // d3d12_texture_cache.h
+void SetSmallTextureAlignment(bool enabled); // d3d12_resource_allocator.h
+void SetSpareHeaps(bool enabled); // d3d12_resource_allocator.h
 void SetAstcGpuVerify(bool enabled); // d3d12_texture_cache.h
 void SetStencilBlitVerify(bool enabled); // d3d12_texture_cache.h
 enum class DxilSignMode; // d3d12_shader_compiler.h
@@ -323,6 +326,14 @@ struct BootConfig {
     /// At 1024 a heavy world entry kept 830 MiB of textures through its load and ran out of memory;
     /// at 768 the cap evicts during the load and the same entry held.
     u32 texture_cap_mib{768};
+    /// Small sampled textures placed at 4 KiB instead of 64 KiB ("small_textures=0" turns it off).
+    bool small_textures{true};
+    /// A texture heap class that grew gets one spare heap made on another thread while memory
+    /// is plentiful ("spare_heaps=0" turns it off).
+    bool spare_heaps{true};
+    /// Over the texture cap, MiB of live textures a frame moves out of mostly free heaps
+    /// ("heap_compaction_mib=", 0 keeps them in place).
+    u32 heap_compaction_mib{};
     /// D3D12 debug layer (renderer_debug); PC only, the console has no SDK layers.
     bool debug_layer{};
     /// With the debug layer, GPU-based validation too ("debug_layer=gbv").
@@ -666,6 +677,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetAppMemoryQuery(QueryAppMemory);
     D3D12::SetBcArrayDecode(!config.bc_arrays_native);
     D3D12::SetTextureMemoryCap(u64{config.texture_cap_mib} << 20);
+    D3D12::SetHeapCompaction(u64{config.heap_compaction_mib} << 20);
+    D3D12::SetSmallTextureAlignment(config.small_textures);
+    D3D12::SetSpareHeaps(config.spare_heaps);
     // RGBA8 ASTC made loading frames upload 150-260 MiB at once and the console run out of memory
     // (0.2.50): textures become BC3 (a quarter of the memory), 2D arrays too unless
     // astc_arrays=rgba (BootConfig::astc_arrays_rgba), all decoded and encoded on the GPU.

@@ -46,6 +46,15 @@ inline constexpr std::uint64_t exhausted_reserve = 256ULL << 20;
     return Exhausted(padded, app) ? Capacity(size, alignment, true) : padded;
 }
 
+// A class that just grew is likely to grow again within frames, and CreateHeap stalls the
+// recording thread while the system zeroes the pages. A spare heap made on another thread takes
+// that stall off the frame. Only one per class, only while nothing of the class sits empty, and
+// only with the full pressure margin left after it.
+[[nodiscard]] inline bool WantSpare(bool class_has_empty_heap, std::uint64_t pool, Budget app,
+                                    Budget gpu) {
+    return !class_has_empty_heap && pool != 0 && !UnderPressure(pool, app, gpu);
+}
+
 // Hundreds of tiny render targets live for the whole session. Sharing heaps with the large
 // ones, recreated at every resolution change, they kept every RT heap from emptying.
 inline constexpr std::uint64_t small_render_target = 1ULL << 20;

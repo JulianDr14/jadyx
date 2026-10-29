@@ -288,12 +288,36 @@ void TextureCache<P>::RunGarbageCollector() {
             downloads_left = downloads;
         }
     }
+    if constexpr (requires(Image& image) { runtime.RelocateImage(image); }) {
+        CompactSparseHeaps();
+    }
     if (frame_tick >= ticks_to_destroy)
         lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
     if (backend_policy || total_used_memory >= critical_memory) {
         Configure(true);
         if (aggressive_mode && frame_tick >= ticks_to_destroy)
             lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
+    }
+}
+
+template <class P>
+void TextureCache<P>::CompactSparseHeaps() {
+    if constexpr (requires(Image& image) { runtime.RelocateImage(image); }) {
+        // What the sparse pass kept there (in use, or costly to load) moves instead, so the
+        // heap empties without evicting it.
+        u64 budget = runtime.HeapCompactionBudget();
+        if (budget == 0) return;
+        lru_cache.ForEachItemBelow(frame_tick, [&](ImageId image_id) {
+            Image& image = slot_images[image_id];
+            if (True(image.flags & (ImageFlagBits::IsDecoding | ImageFlagBits::Rescaled))) {
+                return false;
+            }
+            if (!runtime.RelocateImage(image)) return false;
+            ReleaseImageViews(image);
+            const u64 bytes = HostSizeBytes(image);
+            budget = bytes >= budget ? 0 : budget - bytes;
+            return budget == 0;
+        });
     }
 }
 
@@ -1659,6 +1683,11 @@ void TextureCache<P>::InvalidateScale(Image& image) {
     if (image.scale_tick <= frame_tick) {
         image.scale_tick = frame_tick + 1;
     }
+    ReleaseImageViews(image);
+}
+
+template <class P>
+void TextureCache<P>::ReleaseImageViews(Image& image) {
     const std::span<const ImageViewId> image_view_ids = image.image_view_ids;
     auto& dirty = maxwell3d->dirty.flags;
     dirty[Dirty::RenderTargets] = true;

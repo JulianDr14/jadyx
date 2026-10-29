@@ -528,6 +528,11 @@ private:
 
     bool ImageCanRescale(ImageBase& image);
     void InvalidateScale(Image& image);
+    /// Drops every view of the image and the framebuffers using them; they are made again on
+    /// next use, from the image's current resource.
+    void ReleaseImageViews(Image& image);
+    /// Moves images the GC kept in sparse heaps into fuller ones, within the runtime's budget.
+    void CompactSparseHeaps();
     bool ScaleUp(Image& image);
     bool ScaleDown(Image& image);
     u64 GetScaledImageSizeBytes(const ImageBase& image);

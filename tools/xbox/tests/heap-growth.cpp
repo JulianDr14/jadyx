@@ -9,12 +9,14 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 #include <windows.h>
 #include <d3d12.h>
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
 #include "video_core/renderer_d3d12/d3d12_heap_growth_policy.h"
+#include "video_core/renderer_d3d12/d3d12_heap_packing.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace D3D12::HeapGrowth;
@@ -51,6 +53,12 @@ void Policy() {
     assert(!TransientShape(100, 26));
     assert(TransientShape(100, 25));
     assert(!TransientShape(UINT64_MAX, UINT64_MAX));
+    assert(WantSpare(false, 64*M, healthy, {}));
+    assert(!WantSpare(true, 64*M, healthy, {}));
+    assert(!WantSpare(false, 64*M, low, {}));
+    assert(!WantSpare(false, 64*M, healthy, {3400*M, 4096*M}));
+    assert(!WantSpare(false, 0, healthy, {}));
+    assert(WantSpare(false, 8*M, {4288*M, 5120*M}, {}));
     std::uint64_t cases{};
     for (std::uint64_t size = 1; size < 96*M; size += 7919) {
         for (auto alignment : {4096ULL, 65536ULL, 4*M}) {
@@ -91,6 +99,69 @@ int main() try {
                                               nullptr, IID_PPV_ARGS(&result)));
         return result;
     };
+    const auto roundtrip = [&](ID3D12Resource* texture, const D3D12_RESOURCE_DESC& desc, int seed) {
+        const UINT count = desc.MipLevels *
+            (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc.DepthOrArraySize);
+        std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> layouts(count);
+        std::vector<UINT> rows(count);
+        std::vector<UINT64> row_bytes(count);
+        UINT64 bytes{};
+        device->GetCopyableFootprints(&desc, 0, count, 0, layouts.data(), rows.data(),
+                                      row_bytes.data(), &bytes);
+        auto upload = buffer(bytes, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+        auto readback = buffer(bytes, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
+        std::vector<unsigned char> expected(bytes);
+        for (UINT64 i = 0; i < bytes; ++i) expected[i] = static_cast<unsigned char>((i*37+seed)%251);
+        void* mapped{};
+        const D3D12_RANGE none{0, 0};
+        Check(upload->Map(0, &none, &mapped));
+        std::memcpy(mapped, expected.data(), bytes);
+        upload->Unmap(0, nullptr);
+        ComPtr<ID3D12CommandAllocator> allocator;
+        Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)));
+        ComPtr<ID3D12GraphicsCommandList> list;
+        Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(),
+                                        nullptr, IID_PPV_ARGS(&list)));
+        for (UINT i = 0; i < count; ++i) {
+            D3D12_TEXTURE_COPY_LOCATION src{upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+            src.PlacedFootprint = layouts[i];
+            D3D12_TEXTURE_COPY_LOCATION dst{texture, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+            dst.SubresourceIndex = i;
+            list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        }
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition = {texture, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE};
+        list->ResourceBarrier(1, &barrier);
+        for (UINT i = 0; i < count; ++i) {
+            D3D12_TEXTURE_COPY_LOCATION src{texture, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+            src.SubresourceIndex = i;
+            D3D12_TEXTURE_COPY_LOCATION dst{readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+            dst.PlacedFootprint = layouts[i];
+            list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        }
+        Check(list->Close());
+        ID3D12CommandList* lists[]{list.Get()};
+        queue->ExecuteCommandLists(1, lists);
+        Check(queue->Signal(fence.Get(), ++signal));
+        Check(fence->SetEventOnCompletion(signal, event));
+        if (WaitForSingleObject(event, 10000) != WAIT_OBJECT_0)
+            throw std::runtime_error("GPU fence timeout");
+        const D3D12_RANGE read{0, static_cast<SIZE_T>(bytes)};
+        Check(readback->Map(0, &read, &mapped));
+        for (UINT i = 0; i < count; ++i) {
+            const auto& f = layouts[i];
+            for (UINT z = 0; z < f.Footprint.Depth; ++z)
+                for (UINT row = 0; row < rows[i]; ++row) {
+                    const auto offset = f.Offset + (z*rows[i]+row)*UINT64(f.Footprint.RowPitch);
+                    assert(!std::memcmp(static_cast<unsigned char*>(mapped)+offset,
+                                        expected.data()+offset, row_bytes[i]));
+                    compared += row_bytes[i];
+                }
+        }
+        readback->Unmap(0, &none);
+    };
     for (int variant = 0; variant < 6; ++variant) {
         D3D12_RESOURCE_DESC desc{D3D12_RESOURCE_DIMENSION_TEXTURE2D, 0, 37, 19, 2, 3,
             DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D12_TEXTURE_LAYOUT_UNKNOWN};
@@ -126,68 +197,173 @@ int main() try {
         normal_bytes += Capacity(info.SizeInBytes, info.Alignment, false);
         compact_bytes += capacity;
         if (variant >= 4) continue; // Depth/MSAA validate legal allocation; no data conversion.
-        const UINT count = desc.MipLevels *
-            (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc.DepthOrArraySize);
-        std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> layouts(count);
-        std::vector<UINT> rows(count);
-        std::vector<UINT64> row_bytes(count);
-        UINT64 bytes{};
-        device->GetCopyableFootprints(&desc, 0, count, 0, layouts.data(), rows.data(),
-                                      row_bytes.data(), &bytes);
-        auto upload = buffer(bytes, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
-        auto readback = buffer(bytes, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
-        std::vector<unsigned char> expected(bytes);
-        for (UINT64 i = 0; i < bytes; ++i) expected[i] = static_cast<unsigned char>((i*37+variant)%251);
-        void* mapped{};
-        const D3D12_RANGE none{0, 0};
-        Check(upload->Map(0, &none, &mapped));
-        std::memcpy(mapped, expected.data(), bytes);
-        upload->Unmap(0, nullptr);
-        ComPtr<ID3D12CommandAllocator> allocator;
-        Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)));
-        ComPtr<ID3D12GraphicsCommandList> list;
-        Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(),
-                                        nullptr, IID_PPV_ARGS(&list)));
-        for (UINT i = 0; i < count; ++i) {
-            D3D12_TEXTURE_COPY_LOCATION src{upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
-            src.PlacedFootprint = layouts[i];
-            D3D12_TEXTURE_COPY_LOCATION dst{texture.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
-            dst.SubresourceIndex = i;
-            list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-        }
-        D3D12_RESOURCE_BARRIER barrier{};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition = {texture.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE};
-        list->ResourceBarrier(1, &barrier);
-        for (UINT i = 0; i < count; ++i) {
-            D3D12_TEXTURE_COPY_LOCATION src{texture.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
-            src.SubresourceIndex = i;
-            D3D12_TEXTURE_COPY_LOCATION dst{readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
-            dst.PlacedFootprint = layouts[i];
-            list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-        }
-        Check(list->Close());
-        ID3D12CommandList* lists[]{list.Get()};
-        queue->ExecuteCommandLists(1, lists);
-        Check(queue->Signal(fence.Get(), ++signal));
-        Check(fence->SetEventOnCompletion(signal, event));
-        if (WaitForSingleObject(event, 10000) != WAIT_OBJECT_0)
-            throw std::runtime_error("GPU fence timeout");
-        const D3D12_RANGE read{0, static_cast<SIZE_T>(bytes)};
-        Check(readback->Map(0, &read, &mapped));
-        for (UINT i = 0; i < count; ++i) {
-            const auto& f = layouts[i];
-            for (UINT z = 0; z < f.Footprint.Depth; ++z)
-                for (UINT row = 0; row < rows[i]; ++row) {
-                    const auto offset = f.Offset + (z*rows[i]+row)*UINT64(f.Footprint.RowPitch);
-                    assert(!std::memcmp(static_cast<unsigned char*>(mapped)+offset,
-                                        expected.data()+offset, row_bytes[i]));
-                    compared += row_bytes[i];
-                }
-        }
-        readback->Unmap(0, &none);
+        roundtrip(texture.Get(), desc, variant);
     }
+    // Small sampled textures at 4 KiB, packed into one 128 KiB heap the way the allocator does it;
+    // a refused one goes back to the default alignment.
+    using D3D12::HeapPacking::TexelBlock;
+    struct Small {
+        D3D12_RESOURCE_DESC desc;
+        TexelBlock block;
+        bool expect_small;
+    };
+    const auto tex = [](D3D12_RESOURCE_DIMENSION dim, UINT64 w, UINT h, UINT16 d, UINT16 mips,
+                        DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE) {
+        return D3D12_RESOURCE_DESC{dim, 0, w, h, d, mips, format, {1, 0},
+                                   D3D12_TEXTURE_LAYOUT_UNKNOWN, flags};
+    };
+    constexpr auto T2D = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    const Small smalls[]{
+        {tex(T2D, 32, 32, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM), {4}, true},
+        {tex(T2D, 128, 128, 1, 1, DXGI_FORMAT_BC1_UNORM), {8, 4, 4}, true},
+        {tex(T2D, 64, 64, 1, 3, DXGI_FORMAT_R8_UNORM), {1}, true},
+        {tex(T2D, 16, 16, 6, 1, DXGI_FORMAT_R8G8B8A8_UNORM), {4}, true},
+        {tex(T2D, 64, 64, 1, 1, DXGI_FORMAT_R32G32B32A32_FLOAT), {16}, true},
+        {tex(T2D, 128, 128, 1, 1, DXGI_FORMAT_R32G32B32A32_FLOAT), {16}, false},
+        {tex(T2D, 512, 512, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM), {4}, false},
+        {tex(D3D12_RESOURCE_DIMENSION_TEXTURE3D, 8, 8, 4, 1, DXGI_FORMAT_R8G8B8A8_UNORM), {4},
+         false},
+        {tex(T2D, 32, 32, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET),
+         {4}, false},
+        {tex(T2D, 32, 32, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM), {}, false},
+    };
+    // The shape rule against the device itself: every format size, block and extent, with the
+    // debug layer's refusals of a 4 KiB request muted for the sweep only.
+    std::uint64_t swept{};
+    {
+        D3D12_MESSAGE_SEVERITY muted[]{D3D12_MESSAGE_SEVERITY_ERROR};
+        D3D12_INFO_QUEUE_FILTER filter{};
+        filter.DenyList.NumSeverities = 1;
+        filter.DenyList.pSeverityList = muted;
+        Check(messages->PushStorageFilter(&filter));
+        const struct {
+            DXGI_FORMAT format;
+            TexelBlock block;
+        } formats[]{
+            {DXGI_FORMAT_R8_UNORM, {1}},           {DXGI_FORMAT_R8G8_UNORM, {2}},
+            {DXGI_FORMAT_R8G8B8A8_UNORM, {4}},     {DXGI_FORMAT_R16G16B16A16_FLOAT, {8}},
+            {DXGI_FORMAT_R32G32B32A32_FLOAT, {16}}, {DXGI_FORMAT_BC1_UNORM, {8, 4, 4}},
+            {DXGI_FORMAT_BC3_UNORM, {16, 4, 4}},    {DXGI_FORMAT_BC7_UNORM, {16, 4, 4}},
+        };
+        const UINT extents[]{1, 4, 7, 16, 31, 64, 100, 128, 200, 256, 300, 512, 1024, 4096};
+        for (const auto& [format, block] : formats) {
+            for (const UINT w : extents) {
+                for (const UINT h : extents) {
+                    for (const UINT16 layers : {UINT16{1}, UINT16{6}}) {
+                        if (block.width > 1 && (w % block.width || h % block.height)) continue;
+                        D3D12_RESOURCE_DESC desc = tex(T2D, w, h, layers, 1, format);
+                        desc.Alignment = D3D12::HeapPacking::small_alignment;
+                        const auto info = device->GetResourceAllocationInfo(0, 1, &desc);
+                        const bool device_small = info.SizeInBytes != UINT64_MAX &&
+                            info.Alignment == D3D12::HeapPacking::small_alignment;
+                        const bool rule_small = D3D12::HeapPacking::SmallPlacementCandidate(
+                            true, false, 1, w, h, block);
+                        if (device_small != rule_small) {
+                            messages->PopStorageFilter();
+                            throw std::runtime_error(
+                                "4 KiB rule disagrees with the device for format " +
+                                std::to_string(format) + " " + std::to_string(w) + "x" +
+                                std::to_string(h) + "x" + std::to_string(layers) + ": device " +
+                                std::to_string(device_small));
+                        }
+                        ++swept;
+                    }
+                }
+            }
+        }
+        messages->PopStorageFilter();
+    }
+    ComPtr<ID3D12Heap> small_heap;
+    const D3D12_HEAP_DESC small_heap_desc{128 * 1024, {D3D12_HEAP_TYPE_DEFAULT},
+        D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT, D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES};
+    Check(device->CreateHeap(&small_heap_desc, IID_PPV_ARGS(&small_heap)));
+    std::uint64_t small_cursor{}, small_count{}, small_saved{};
+    std::vector<ComPtr<ID3D12Resource>> small_textures;
+    for (int index = 0; const auto& [requested, block, expect_small] : smalls) {
+        D3D12_RESOURCE_DESC desc = requested;
+        D3D12_RESOURCE_ALLOCATION_INFO info{UINT64_MAX, 0};
+        if (D3D12::HeapPacking::SmallPlacementCandidate(
+                desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0,
+                desc.SampleDesc.Count, desc.Width, desc.Height, block)) {
+            desc.Alignment = D3D12::HeapPacking::small_alignment;
+            info = device->GetResourceAllocationInfo(0, 1, &desc);
+            if (info.SizeInBytes == UINT64_MAX ||
+                info.Alignment != D3D12::HeapPacking::small_alignment) {
+                desc.Alignment = 0;
+            }
+        }
+        if (desc.Alignment == 0) info = device->GetResourceAllocationInfo(0, 1, &desc);
+        assert(info.SizeInBytes != UINT64_MAX);
+        const bool is_small = desc.Alignment == D3D12::HeapPacking::small_alignment;
+        if (is_small != expect_small) {
+            throw std::runtime_error("4 KiB placement for texture " + std::to_string(index) +
+                                     ": got " + std::to_string(is_small));
+        }
+        ++index;
+        if (!is_small) continue;
+        const auto fit = D3D12::HeapPacking::Fit(small_cursor, 128 * 1024 - small_cursor,
+                                                 info.SizeInBytes, info.Alignment);
+        if (!fit) throw std::runtime_error("small textures did not fit one 128 KiB heap");
+        assert(fit->offset % 4096 == 0 && fit->offset >= small_cursor);
+        ComPtr<ID3D12Resource> texture;
+        Check(device->CreatePlacedResource(small_heap.Get(), fit->offset, &desc,
+                                           D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                           IID_PPV_ARGS(&texture)));
+        small_cursor = fit->offset + info.SizeInBytes;
+        small_saved += ((info.SizeInBytes + 65535) & ~65535ULL) - info.SizeInBytes;
+        small_textures.push_back(texture);
+        ++small_count;
+    }
+    // Each one placed past the end of the previous, so none overlap: its data round-trips at 4 KiB.
+    for (std::size_t i = 0; i < small_textures.size(); ++i) {
+        D3D12_RESOURCE_DESC desc = smalls[i].desc;
+        desc.Alignment = D3D12::HeapPacking::small_alignment;
+        roundtrip(small_textures[i].Get(), desc, 100 + static_cast<int>(i));
+    }
+    // Spare heaps: made on another thread while this one keeps placing, then used here.
+    std::vector<ComPtr<ID3D12Heap>> spares(4);
+    std::thread spare_worker([&] {
+        const std::uint64_t pools[4]{64*M, 32*M, 8*M, 16*M};
+        for (std::size_t i = 0; i < spares.size(); ++i) {
+            const D3D12_HEAP_DESC hd{pools[i], {D3D12_HEAP_TYPE_DEFAULT},
+                D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
+                i == 0 ? D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES
+                       : D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES};
+            Check(device->CreateHeap(&hd, IID_PPV_ARGS(&spares[i])));
+        }
+    });
+    std::vector<ComPtr<ID3D12Resource>> beside_spares;
+    for (int i = 0; i < 8; ++i) {
+        const D3D12_RESOURCE_DESC desc{D3D12_RESOURCE_DIMENSION_TEXTURE2D, 0, 256, 256, 1, 1,
+            DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            D3D12_RESOURCE_FLAG_NONE};
+        const D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        ComPtr<ID3D12Resource> texture;
+        Check(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
+                                              D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                              IID_PPV_ARGS(&texture)));
+        beside_spares.push_back(texture);
+    }
+    spare_worker.join();
+    {
+        const D3D12_RESOURCE_DESC rt{D3D12_RESOURCE_DIMENSION_TEXTURE2D, 0, 1280, 720, 1, 1,
+            DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET};
+        ComPtr<ID3D12Resource> target;
+        Check(device->CreatePlacedResource(spares[1].Get(), 0, &rt,
+                                           D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+                                           IID_PPV_ARGS(&target)));
+        const D3D12_RESOURCE_DESC spare_tex{D3D12_RESOURCE_DIMENSION_TEXTURE2D, 0, 1024, 1024, 1, 1,
+            DXGI_FORMAT_BC1_UNORM, {1, 0}, D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_RESOURCE_FLAG_NONE};
+        ComPtr<ID3D12Resource> sampled;
+        Check(device->CreatePlacedResource(spares[0].Get(), 0, &spare_tex,
+                                           D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                           IID_PPV_ARGS(&sampled)));
+        roundtrip(sampled.Get(), spare_tex, 300);
+    }
+    std::cout << "PASS spare heaps: 4 class heaps made on a worker thread, RT and BC1 placed and "
+                 "round-tripped\n";
     CloseHandle(event);
     for (UINT64 i = 0; i < messages->GetNumStoredMessagesAllowedByRetrievalFilter(); ++i) {
         SIZE_T bytes{};
@@ -200,7 +376,9 @@ int main() try {
     }
     std::cout << "PASS GPU/debug: 6 compact allocations (RGBA/BC1/3D/RT/depth/MSAA), "
               << compared << " bytes exact; capacity " << normal_bytes << " -> " << compact_bytes
-              << " (synthetic, not app commit)\n";
+              << " (synthetic, not app commit); " << small_count << " textures at 4 KiB in one "
+              << "128 KiB heap, " << small_saved << " bytes saved; " << swept
+              << " shapes match the device\n";
 } catch (const std::exception& e) {
     std::cerr << e.what() << '\n';
     return 1;
