@@ -978,7 +978,7 @@ struct NetworkPortal::Impl {
             export_source = save_export_stop;
             export_stop = export_source.get_token();
         }
-        std::stop_callback cancel{stop, [export_source] { export_source.request_stop(); }};
+        std::stop_callback cancel{stop, [&export_source] { export_source.request_stop(); }};
         std::string error;
         try {
             error = library.save_export(job.application, save_export_path, export_stop,
