@@ -90,6 +90,18 @@ public:
 
     void WaitBuilt();
 
+    /// GPU thread, once built: whether its PSO failed for lack of memory, so its dispatches are
+    /// skipped until RetryOutOfMemory builds it.
+    [[nodiscard]] bool OutOfMemory() const noexcept {
+        return out_of_memory;
+    }
+
+    /// GPU thread: builds again a PSO that ran out of memory. True once it has one.
+    bool RetryOutOfMemory();
+
+    /// GPU thread: the frame before which RetryOutOfMemory is not tried again.
+    u64 retry_frame{};
+
     /// Null when D3D12 rejected the pipeline.
     [[nodiscard]] ID3D12PipelineState* Handle() const noexcept {
         return pipeline_state.Get();
@@ -134,6 +146,7 @@ private:
 
     ComPtr<ID3D12PipelineState> pipeline_state;
     Common::MemoryCharge pso_charge;
+    bool out_of_memory{}; ///< The last Build() failed with E_OUTOFMEMORY.
 
     std::mutex build_mutex;
     std::condition_variable build_condvar;

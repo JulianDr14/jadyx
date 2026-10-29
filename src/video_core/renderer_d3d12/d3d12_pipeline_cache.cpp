@@ -37,6 +37,7 @@
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 #include "video_core/renderer_d3d12/d3d12_local_memory_scratch.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
+#include "video_core/renderer_d3d12/d3d12_memory_reserve.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/renderer_d3d12/d3d12_dxil_disk_cache.h"
@@ -552,7 +553,7 @@ PipelineCache::~PipelineCache() {
 void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler& scheduler) {
     using Policy = PipelineResidencyPolicy;
     ++residency_frame;
-    const u64 idle_frames = Policy::IdleFrames(snapshot.app_used, snapshot.app_limit);
+    u64 idle_frames = Policy::IdleFrames(snapshot.app_used, snapshot.app_limit);
     const u64 ledger = Common::MemoryLedgerCommittedBytes();
     const auto verdict_before = release_probe.GetVerdict();
     release_probe.Tick(residency_frame, pipelines_evicted,
@@ -565,6 +566,23 @@ void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler
                  release_probe.Probed(), release_probe.Freed() / 1024,
                  pays ? "released under pressure"
                       : "kept under pressure (they cost no commit), released only in an emergency");
+    }
+    // A pipeline object that ran out of memory: idle ones are released as in an emergency for a
+    // while, and the memory reserve is committed again once the app is no longer short of it.
+    const u64 oom_events = MemoryReserve::OutOfMemoryEvents();
+    if (oom_events != seen_oom_events) {
+        seen_oom_events = oom_events;
+        oom_frame = residency_frame;
+        LOG_WARNING(Render, "D3D12: {} pipeline objects ran out of memory so far; releasing idle "
+                            "pipelines",
+                    oom_events);
+    }
+    const bool after_oom = oom_events != 0 && residency_frame - oom_frame < OOM_RETRY_FRAMES;
+    if (after_oom) {
+        idle_frames = Policy::EMERGENCY_IDLE_FRAMES;
+    } else if (oom_events != 0 && idle_frames >= Policy::IDLE_FRAMES &&
+               residency_frame % OOM_REARM_FRAMES == 0 && MemoryReserve::Held() == 0) {
+        MemoryReserve::Rearm();
     }
     const bool evict =
         (pipeline_eviction.load(std::memory_order_relaxed) && release_probe.MayRelease()) ||
@@ -870,6 +888,10 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
         VideoCore::Perf::ScopedTimer wait{VideoCore::Perf::Counter::PipelineWaitUs};
         pipeline->WaitBuilt();
     }
+    if (pipeline->OutOfMemory() && residency_frame >= pipeline->retry_frame &&
+        !pipeline->RetryOutOfMemory()) {
+        pipeline->retry_frame = residency_frame + OOM_RETRY_FRAMES;
+    }
     return pipeline.get();
 }
 
@@ -1060,6 +1082,14 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
     if (pipeline->IsBuilt()) {
         return pipeline;
     }
+    if (residency_frame < pipeline->RetryFrame()) {
+        return nullptr; // its PSO ran out of memory: draws skipped until the retry is due
+    }
+    if (pipeline->IsDormant() && pipeline->TakeOutOfMemory()) {
+        // A build nobody waited for (async_pipelines) ran out of memory.
+        pipeline->SetRetryFrame(residency_frame + OOM_RETRY_FRAMES);
+        return nullptr;
+    }
     // Its PSO was never built (not drawn in recent sessions) or was released while idle. Queued
     // like any build, but WaitBuilt claims it unless a worker already started it.
     if (pipeline->Wake(workers)) {
@@ -1091,6 +1121,13 @@ GraphicsPipeline* PipelineCache::WaitPending(GraphicsPipeline* pipeline) {
     VideoCore::Perf::ScopedTimer wait{VideoCore::Perf::Counter::PipelineWaitUs};
     pipeline->WaitBuilt();
     GetPipelineStats().Record(cause, SteadyMicros() - wait_start);
+    if (!pipeline->IsBuilt()) {
+        // Out of memory: idle pipelines are released meanwhile (TickResidency), and the draws
+        // skipped until this one is tried again.
+        (void)pipeline->TakeOutOfMemory();
+        pipeline->SetRetryFrame(residency_frame + OOM_RETRY_FRAMES);
+        return nullptr;
+    }
     return pipeline;
 }
 

@@ -260,6 +260,13 @@ private:
     std::vector<GraphicsPipeline*> residency_sweep; ///< Every graphics pipeline; never shrinks.
     size_t residency_cursor{};
     u64 residency_frame{};
+    /// Frames a pipeline whose PSO ran out of memory waits before it is built again, and for which
+    /// idle pipelines are released as in an emergency meanwhile.
+    static constexpr u64 OOM_RETRY_FRAMES = 60;
+    /// How often a released memory reserve is committed again, with no shortage of memory.
+    static constexpr u64 OOM_REARM_FRAMES = 10 * 60;
+    u64 seen_oom_events{};
+    u64 oom_frame{};
     u64 last_hot_save_frame{};
     u64 last_stats_frame{};
     u64 pipelines_evicted{};

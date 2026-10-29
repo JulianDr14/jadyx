@@ -226,9 +226,23 @@ public:
         return build_state.load(std::memory_order::acquire) == State::Dormant;
     }
 
+    /// GPU thread: the frame before which a pipeline whose PSO ran out of memory is not woken
+    /// again; its draws are skipped until then.
+    [[nodiscard]] u64 RetryFrame() const noexcept {
+        return retry_frame;
+    }
+    void SetRetryFrame(u64 frame) noexcept {
+        retry_frame = frame;
+    }
+    /// GPU thread, while dormant: whether the last build ran out of memory, cleared on read.
+    [[nodiscard]] bool TakeOutOfMemory() noexcept {
+        return std::exchange(out_of_memory, false);
+    }
+
     /// Blocks until the PSO is built. A build still in its worker's queue is claimed and run on
     /// the calling thread instead: the GPU thread runs at a higher priority than the workers and
-    /// would otherwise wait for the queue ahead of it too. A dormant pipeline must be woken first.
+    /// would otherwise wait for the queue ahead of it too. A dormant pipeline must be woken first;
+    /// one whose PSO ran out of memory is dormant again when this returns.
     void WaitBuilt();
 
     /// GPU thread: a dormant pipeline queues the build of its PSO from the kept DXIL. False if it
@@ -411,6 +425,7 @@ private:
     bool has_images{};
     u32 local_memory_scratch_words{};
     bool flatten_retry{};    ///< Build(true) hit a driver fault: retry with flattened branches.
+    bool out_of_memory{};    ///< The last Build() ran out of memory: published dormant.
     bool flattened_vertex{}; ///< dxil holds the flattened vertex stage.
     u8 bound_color_targets{}; ///< Computed once from the immutable PSO write masks.
     bool depth_bounds{};
@@ -435,6 +450,7 @@ private:
     u64 last_used_frame{}; ///< GPU thread only.
     bool drawn{};          ///< GPU thread only.
     bool evicted{};        ///< GPU thread only.
+    u64 retry_frame{};     ///< GPU thread only.
     /// Where the DXIL dropped by ReleaseDxil is read back from, and which stages it holds.
     std::optional<DxilDiskCache::Key> released_dxil;
     u8 released_stage_mask{};

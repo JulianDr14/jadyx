@@ -194,6 +194,9 @@ void SetDiagUavSync(bool enabled);             // d3d12_scheduler.h
 using AppMemoryQuery = bool (*)(u64& used, u64& limit); // d3d12_device.h
 void SetAppMemoryQuery(AppMemoryQuery query);            // d3d12_device.h
 bool LastGpuMemory(u64& used, u64& budget);              // d3d12_device.h
+namespace MemoryReserve {
+void Configure(std::uint64_t bytes); // d3d12_memory_reserve.h
+}
 } // namespace D3D12
 
 namespace AudioCore::Sink {
@@ -339,6 +342,9 @@ struct BootConfig {
     /// Block-linear color textures of 64 KiB and more unswizzled on the GPU on upload
     /// ("gpu_unswizzle=0" brings back the CPU).
     bool gpu_unswizzle{true};
+    /// Commit held back for the driver: a pipeline object that runs out of memory releases it and
+    /// is created again ("oom_reserve_mib=0" turns it off).
+    u32 oom_reserve_mib{32};
     /// What a draw does while its pipeline builds: waits ("async_pipelines=off"), is skipped
     /// unless it is a full-screen pass or a target's first ("balanced"), or is skipped ("full").
     D3D12::AsyncPipelines async_pipelines{D3D12::AsyncPipelines::Off};
@@ -703,6 +709,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetSmallTextureAlignment(config.small_textures);
     D3D12::SetSpareHeaps(config.spare_heaps);
     D3D12::SetGpuUnswizzle(config.gpu_unswizzle);
+    D3D12::MemoryReserve::Configure(u64{config.oom_reserve_mib} << 20);
     D3D12::SetAsyncPipelines(config.async_pipelines);
     D3D12::SetWaitSmallDraws(config.wait_small_draws);
     D3D12::SetCachedStaging(config.cached_staging);

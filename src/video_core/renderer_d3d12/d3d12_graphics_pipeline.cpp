@@ -34,6 +34,7 @@
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_log.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
+#include "video_core/renderer_d3d12/d3d12_memory_reserve.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_helper.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
@@ -368,7 +369,7 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
         if (compiled && !build_pso) {
             ReleaseDxil();
         }
-        Publish(compiled && !build_pso ? State::Dormant : State::Ready);
+        Publish((compiled && !build_pso) || out_of_memory ? State::Dormant : State::Ready);
         if (shader_notify) {
             shader_notify->MarkShaderComplete();
         }
@@ -426,11 +427,13 @@ bool GraphicsPipeline::Wake(Common::ThreadWorker& worker) {
         return false;
     }
     QueueBuild(&worker, [this] {
-        // Without its DXIL the pipeline stays ready with no PSO: its draws are skipped.
+        // Without its DXIL the pipeline stays ready with no PSO: its draws are skipped. Out of
+        // memory, it keeps the DXIL and stays dormant to be woken again.
+        out_of_memory = false;
         if (dxil || ReloadDxil()) {
             Build();
         }
-        Publish(State::Ready);
+        Publish(out_of_memory ? State::Dormant : State::Ready);
     });
     return true;
 }
@@ -538,7 +541,7 @@ void GraphicsPipeline::WaitBuilt() {
     std::shared_ptr<PendingBuild> build;
     {
         std::scoped_lock lock{build_mutex};
-        if (build_state.load(std::memory_order::relaxed) == State::Ready) {
+        if (build_state.load(std::memory_order::relaxed) != State::Building) {
             return;
         }
         build = pending;
@@ -550,8 +553,9 @@ void GraphicsPipeline::WaitBuilt() {
         RunClaimed(*build);
     }
     std::unique_lock lock{build_mutex};
+    // A build that ran out of memory ends dormant rather than ready.
     build_condvar.wait(lock, [this] {
-        return build_state.load(std::memory_order::relaxed) == State::Ready;
+        return build_state.load(std::memory_order::relaxed) != State::Building;
     });
 }
 
@@ -1165,6 +1169,13 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
         if (result == DRIVER_FAULT_HRESULT) {
             log_driver_fault(fault, handle);
         }
+        if (result == E_OUTOFMEMORY) {
+            MemoryReserve::NoteOutOfMemory();
+            if (MemoryReserve::Release()) {
+                std::shared_lock build_lock{PipelineBuildMutex()};
+                result = try_create(handle, fault);
+            }
+        }
         return result;
     };
     const auto create = [&] {
@@ -1250,7 +1261,8 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
                   static_cast<u32>(desc.DSVFormat), ShaderFeatureFlags(stages[0]),
                   ShaderFeatureFlags(stages[4]));
         if (hr == E_OUTOFMEMORY) {
-            VideoCommon::GPUThread::ReportException("D3D12 graphics PSO allocation exhausted memory");
+            // Built again once memory is back: the pipeline stays dormant with its DXIL.
+            out_of_memory = true;
         } else if (FirstFailure(key.Hash())) {
             // Every pipeline object with these shaders fails again; diagnose the first, alone in
             // the driver so that other builds do not decide its variants.

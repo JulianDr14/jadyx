@@ -19,6 +19,7 @@
 #include "video_core/renderer_d3d12/d3d12_compute_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_driver_guard.h"
+#include "video_core/renderer_d3d12/d3d12_memory_reserve.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_helper.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
@@ -68,6 +69,18 @@ ComputePipeline::ComputePipeline(const Device& device_, VideoCore::ShaderNotify*
 }
 
 ComputePipeline::~ComputePipeline() = default;
+
+bool ComputePipeline::RetryOutOfMemory() {
+    if (!out_of_memory || !IsBuilt()) {
+        return false;
+    }
+    Build();
+    if (!out_of_memory) {
+        LOG_INFO(Render, "D3D12: compute pipeline {:016x} built after running out of memory",
+                 unique_hash);
+    }
+    return !out_of_memory;
+}
 
 void ComputePipeline::WaitBuilt() {
     std::unique_lock lock{build_mutex};
@@ -196,12 +209,21 @@ void ComputePipeline::Build() {
     };
     ID3D12Device* const raw = device.Get();
     DWORD fault = 0;
-    const HRESULT hr = [&] {
+    const auto create = [&] {
         std::shared_lock build_lock{PipelineBuildMutex()};
         return CallDriverGuarded(
             [&] { return raw->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline_state)); },
             fault);
-    }();
+    };
+    HRESULT hr = create();
+    out_of_memory = hr == E_OUTOFMEMORY;
+    if (out_of_memory) {
+        MemoryReserve::NoteOutOfMemory();
+        if (MemoryReserve::Release()) {
+            hr = create();
+            out_of_memory = hr == E_OUTOFMEMORY;
+        }
+    }
     if (hr == DRIVER_FAULT_HRESULT) {
         pipeline_state.Detach(); // whatever the driver left there is not an object to release
         BUG_TRACK_KEY(PipelineRejected, unique_hash,
@@ -217,8 +239,6 @@ void ComputePipeline::Build() {
         BUG_TRACK_KEY(PipelineRejected, unique_hash,
                       "CreateComputePipelineState failed (HRESULT 0x{:08X}) for {:016x}",
                       static_cast<u32>(hr), unique_hash);
-        if (hr == E_OUTOFMEMORY)
-            VideoCommon::GPUThread::ReportException("D3D12 compute PSO allocation exhausted memory");
         const Common::BugTracker::TapMute bug_tracker_mute;
         LOG_ERROR(Render, "D3D12: CreateComputePipelineState failed (HRESULT 0x{:08X}) for {:016x}",
                   static_cast<u32>(hr), unique_hash);
