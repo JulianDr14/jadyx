@@ -390,6 +390,8 @@ void RendererD3D12::ReportPerf(double interval_ms) {
     const HostTotals host = ReadHostTotals();
     const HostTotals host_delta = HostDelta(host, hitch.host);
     hitch.host = host;
+    // Every frame, so a hitch names only its own submissions.
+    const double longest_submit_ms = static_cast<double>(scheduler.TakeLongestSubmitUs()) / 1000.0;
 
     // A second without a present is a pause (menus, loading screens), not a hitch.
     constexpr double PAUSE_MS = 1000.0;
@@ -489,6 +491,21 @@ void RendererD3D12::ReportPerf(double interval_ms) {
              get(Counter::GpuThreadFlushes), at(HitchCause::NewResources),
              get(Counter::ResourcesCreated), at(HitchCause::TextureDecode),
              get(Counter::GuestFramesQueued), Ms(delta, Counter::GpuBusyUs));
+    // What the GPU ran in the frame, to tell heavy work from a submission held up by paging
+    // (one long submission with ordinary counts, local memory at its budget).
+    const DXGI_QUERY_VIDEO_MEMORY_INFO memory = device.QueryVideoMemory();
+    constexpr double MIB = 1024.0 * 1024.0;
+    LOG_INFO(Render,
+             "Hitch GPU work: longest submission {:.1f} ms of {} | {} draws, {} dispatches | "
+             "uploads {} ({:.2f} MiB, {} GPU-decoded), downloads {} ({:.2f} MiB) | local memory "
+             "{:.0f}/{:.0f} MiB",
+             longest_submit_ms, get(Counter::Submits), get(Counter::Draws),
+             get(Counter::Dispatches), get(Counter::TextureUploads),
+             static_cast<double>(get(Counter::TextureUploadBytes)) / MIB,
+             get(Counter::TextureGpuDecodes), get(Counter::TextureDownloads),
+             static_cast<double>(get(Counter::TextureDownloadBytes)) / MIB,
+             static_cast<double>(memory.CurrentUsage) / MIB,
+             static_cast<double>(memory.Budget) / MIB);
     if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
         LOG_INFO(Render, "Hitch detail: {}", DescribeDrawCosts(delta, interval_ms));
     }

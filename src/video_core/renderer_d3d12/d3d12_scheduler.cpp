@@ -5,6 +5,7 @@
 #include <chrono>
 #include <exception>
 #include <stdexcept>
+#include <utility>
 
 #include <fmt/format.h>
 
@@ -153,11 +154,17 @@ void Scheduler::ReadTimestamps(u64 gpu_tick) {
         const u64 begin = timestamp_data[slot * 2];
         const u64 end = timestamp_data[slot * 2 + 1];
         if (end > begin) {
-            VideoCore::Perf::Add(VideoCore::Perf::Counter::GpuBusyUs,
-                                 static_cast<u64>(static_cast<double>(end - begin) *
-                                                  timestamp_us_per_tick));
+            const u64 us =
+                static_cast<u64>(static_cast<double>(end - begin) * timestamp_us_per_tick);
+            VideoCore::Perf::Add(VideoCore::Perf::Counter::GpuBusyUs, us);
+            longest_submit_us = (std::max)(longest_submit_us, us);
         }
     }
+}
+
+u64 Scheduler::TakeLongestSubmitUs() {
+    std::scoped_lock lock{timestamp_mutex};
+    return std::exchange(longest_submit_us, 0);
 }
 
 Scheduler::~Scheduler() {
