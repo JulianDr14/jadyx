@@ -22,6 +22,11 @@ void SetAsyncPipelines(AsyncPipelines mode);
 void SetWaitSmallDraws(u32 vertices);
 [[nodiscard]] u32 GetWaitSmallDraws() noexcept;
 
+/// Pipeline build workers ("pso_workers=", 1-8); 0 keeps the default. Read when the pipeline
+/// cache is made.
+void SetPipelineWorkers(u32 count);
+[[nodiscard]] u32 GetPipelineWorkers() noexcept;
+
 /// A draw whose pipeline is still being built.
 struct PendingDraw {
     u32 vertices;

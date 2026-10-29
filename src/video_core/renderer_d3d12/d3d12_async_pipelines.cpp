@@ -10,6 +10,7 @@ namespace D3D12 {
 namespace {
 std::atomic<AsyncPipelines> async_pipelines{AsyncPipelines::Off};
 std::atomic<u32> wait_small_draws{0};
+std::atomic<u32> pipeline_workers{0};
 // Read by the stats line on the same GPU thread that counts.
 PendingDrawStats pending_draw_stats{};
 
@@ -31,6 +32,14 @@ void SetWaitSmallDraws(u32 vertices) {
 
 u32 GetWaitSmallDraws() noexcept {
     return wait_small_draws.load(std::memory_order_relaxed);
+}
+
+void SetPipelineWorkers(u32 count) {
+    pipeline_workers.store(count, std::memory_order_relaxed);
+}
+
+u32 GetPipelineWorkers() noexcept {
+    return pipeline_workers.load(std::memory_order_relaxed);
 }
 
 PendingDrawAction DecidePendingDraw(AsyncPipelines mode, u32 small_draws,

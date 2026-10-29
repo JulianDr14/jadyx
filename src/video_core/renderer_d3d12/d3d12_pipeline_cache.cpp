@@ -360,8 +360,11 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
 }
 
 /// Pipeline workers. Capped: each one holds a recompiler and a translator's worth of memory, and
-/// the console's game partition has 5 GB in total.
+/// the console's game partition has 5 GB in total. "pso_workers=" sets them for A/B runs.
 size_t GetTotalPipelineWorkers() {
+    if (const u32 configured = GetPipelineWorkers(); configured != 0) {
+        return configured;
+    }
     const size_t threads = std::max<size_t>(std::thread::hardware_concurrency(), 2) - 1;
     return std::min<size_t>(threads, 4);
 }
