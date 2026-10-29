@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cstring>
 #include <span>
 #include <bc_decoder.h>
 
@@ -19,6 +21,25 @@ namespace {
 constexpr u32 BLOCK_SIZE = 4;
 
 using VideoCore::Surface::PixelFormat;
+
+std::atomic<bool> bc_guest_palette{false};
+
+/// bcn's decode with the colors replaced by GuestBc1Palette (the alpha stays bcn's).
+template <auto decode, bool separate_alpha>
+void DecodeGuestPalette(const u8* src, u8* dst, size_t x, size_t y, size_t width, size_t height) {
+    decode(src, dst, x, y, width, height);
+    const u8* const color = src + (separate_alpha ? 8 : 0);
+    const auto palette = GuestBc1Palette(color, separate_alpha);
+    u32 indices;
+    std::memcpy(&indices, color + 4, sizeof(indices));
+    const size_t pitch = width * 4;
+    for (size_t j = 0; j < BLOCK_SIZE && y + j < height; ++j) {
+        for (size_t i = 0; i < BLOCK_SIZE && x + i < width; ++i) {
+            const auto& texel = palette[(indices >> (2 * (j * BLOCK_SIZE + i))) & 3];
+            std::memcpy(dst + j * pitch + i * 4, texel.data(), separate_alpha ? 3 : 4);
+        }
+    }
+}
 
 constexpr bool IsSigned(PixelFormat pixel_format) {
     switch (pixel_format) {
@@ -127,8 +148,72 @@ void DecompressBlocks(std::span<const u8> input, std::span<u8> output, BufferIma
     }
 }
 
+void SetBcGuestPalette(bool enabled) noexcept {
+    bc_guest_palette.store(enabled, std::memory_order_relaxed);
+}
+
+bool GetBcGuestPalette() noexcept {
+    return bc_guest_palette.load(std::memory_order_relaxed);
+}
+
+std::array<std::array<u8, 4>, 4> GuestBc1Palette(const u8* block, bool four_colors) noexcept {
+    const int c0 = block[0] | (block[1] << 8);
+    const int c1 = block[2] | (block[3] << 8);
+    const int r0 = c0 >> 11, g0 = (c0 >> 5) & 63, b0 = c0 & 31;
+    const int r1 = c1 >> 11, g1 = (c1 >> 5) & 63, b1 = c1 & 31;
+    const auto expand5 = [](int v) { return (v << 3) | (v >> 2); };
+    const auto expand6 = [](int v) { return (v << 2) | (v >> 4); };
+    const int g0_8 = expand6(g0), g1_8 = expand6(g1);
+    const auto u8_of = [](int v) { return static_cast<u8>(v); };
+    std::array<std::array<u8, 4>, 4> palette{};
+    palette[0] = {u8_of(expand5(r0)), u8_of(g0_8), u8_of(expand5(b0)), 255};
+    palette[1] = {u8_of(expand5(r1)), u8_of(g1_8), u8_of(expand5(b1)), 255};
+    if (four_colors || c0 > c1) {
+        // Two thirds of a plus one third of b.
+        const auto third5 = [](int a, int b) { return ((2 * a + b) * 22) / 8; };
+        const auto third6 = [](int a, int b) {
+            const int diff = b - a;
+            return (256 * a + diff / 4 + 128 + diff * 80) / 256;
+        };
+        palette[2] = {u8_of(third5(r0, r1)), u8_of(third6(g0_8, g1_8)), u8_of(third5(b0, b1)),
+                      255};
+        palette[3] = {u8_of(third5(r1, r0)), u8_of(third6(g1_8, g0_8)), u8_of(third5(b1, b0)),
+                      255};
+    } else {
+        const auto half5 = [](int a, int b) { return ((a + b) * 33) / 8; };
+        const auto half6 = [](int a, int b) {
+            const int diff = b - a;
+            return (256 * a + diff / 4 + 128 + diff * 128) / 256;
+        };
+        palette[2] = {u8_of(half5(r0, r1)), u8_of(half6(g0_8, g1_8)), u8_of(half5(b0, b1)), 255};
+        palette[3] = {0, 0, 0, 0};
+    }
+    return palette;
+}
+
 void DecompressBCn(std::span<const u8> input, std::span<u8> output, BufferImageCopy& copy,
                    VideoCore::Surface::PixelFormat pixel_format) {
+    if (GetBcGuestPalette()) {
+        switch (pixel_format) {
+        case PixelFormat::BC1_RGBA_UNORM:
+        case PixelFormat::BC1_RGBA_SRGB:
+            DecompressBlocks<DecodeGuestPalette<bcn::DecodeBc1, false>,
+                             PixelFormat::BC1_RGBA_UNORM>(input, output, copy);
+            return;
+        case PixelFormat::BC2_UNORM:
+        case PixelFormat::BC2_SRGB:
+            DecompressBlocks<DecodeGuestPalette<bcn::DecodeBc2, true>, PixelFormat::BC2_UNORM>(
+                input, output, copy);
+            return;
+        case PixelFormat::BC3_UNORM:
+        case PixelFormat::BC3_SRGB:
+            DecompressBlocks<DecodeGuestPalette<bcn::DecodeBc3, true>, PixelFormat::BC3_UNORM>(
+                input, output, copy);
+            return;
+        default:
+            break;
+        }
+    }
     switch (pixel_format) {
     case PixelFormat::BC1_RGBA_UNORM:
     case PixelFormat::BC1_RGBA_SRGB:

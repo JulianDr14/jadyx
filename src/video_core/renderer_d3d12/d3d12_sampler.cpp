@@ -6,11 +6,13 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cstring>
 #include <utility>
 
 #include <fmt/format.h>
 
 #include "common/logging.h"
+#include "video_core/renderer_d3d12/d3d12_render_corrections.h"
 
 namespace D3D12 {
 
@@ -76,7 +78,7 @@ Sampler::Sampler(TextureCacheRuntime& runtime_, const Tegra::Texture::TSCEntry& 
         linear_mag ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
         linear_mip ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
         reduction);
-    const auto border = config.BorderColor();
+    const auto border = CorrectBorderColor(config.BorderColor(), GetBorderColorMode());
     // D3D12 leaves MinLOD > MaxLOD and biases outside [-16, 15.99] undefined; drivers differ.
     const bool no_mips = config.mipmap_filter == Tegra::Texture::TextureMipmapFilter::None;
     const f32 min_lod = no_mips ? 0.0f : config.MinLod();
@@ -99,10 +101,10 @@ Sampler::Sampler(TextureCacheRuntime& runtime_, const Tegra::Texture::TSCEntry& 
 }
 eden_integer_sampler_state Sampler::IntegerState(u32 last_level) const {
     // Integer textures read the border color's raw bits, as Vulkan's custom border color does.
+    // The guest's: desc.BorderColor may be corrected as floats (SetBorderColorMode).
     eden_integer_sampler_state state{};
-    for (size_t i = 0; i < 4; ++i) {
-        state.border_color[i] = std::bit_cast<u32>(desc.BorderColor[i]);
-    }
+    static_assert(sizeof(state.border_color) == 16);
+    std::memcpy(state.border_color, reinterpret_cast<const char*>(guest_raw.data()) + 16, 16);
     state.lod_bias = desc.MipLODBias;
     state.min_lod = desc.MinLOD;
     state.max_lod = desc.MaxLOD;

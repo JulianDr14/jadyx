@@ -93,6 +93,70 @@ void AlphaTest(EmitContext& ctx) {
     ctx.AddLabel(true_label);
 }
 
+/// Alpha-to-coverage as a discard (RuntimeInfo::alpha_to_coverage_footprint): a single sample
+/// is covered when output 0's alpha reaches the threshold of its pixel, 0.5 or a 2x2 ordered
+/// dither of the four quarter steps.
+void AlphaToCoverage(EmitContext& ctx) {
+    const u32 footprint{ctx.runtime_info.alpha_to_coverage_footprint};
+    if (footprint == 0 || !Sirit::ValidId(ctx.frag_color[0])) {
+        return;
+    }
+    const Id type{ctx.F32[1]};
+    const Id rt0_color{ctx.OpLoad(ctx.F32[4], ctx.frag_color[0])};
+    const Id alpha{ctx.OpCompositeExtract(type, rt0_color, 3u)};
+    Id threshold{ctx.Const(0.5f)};
+    if (footprint == 2 && Sirit::ValidId(ctx.input_position)) {
+        const Id position{ctx.OpLoad(ctx.F32[4], ctx.input_position)};
+        const Id one{ctx.Const(1u)};
+        const auto odd{[&](u32 axis) {
+            const Id coord{ctx.OpCompositeExtract(type, position, axis)};
+            const Id pixel{ctx.OpConvertFToU(ctx.U32[1], coord)};
+            return ctx.OpIEqual(ctx.U1, ctx.OpBitwiseAnd(ctx.U32[1], pixel, one), one);
+        }};
+        const Id odd_x{odd(0)};
+        const Id odd_y{odd(1)};
+        const Id even_row{ctx.OpSelect(type, odd_x, ctx.Const(0.625f), ctx.Const(0.125f))};
+        const Id odd_row{ctx.OpSelect(type, odd_x, ctx.Const(0.375f), ctx.Const(0.875f))};
+        threshold = ctx.OpSelect(type, odd_y, odd_row, even_row);
+    }
+    const Id covered_label{ctx.OpLabel()};
+    const Id discard_label{ctx.OpLabel()};
+    const Id uncovered{ctx.OpFOrdLessThan(ctx.U1, alpha, threshold)};
+    ctx.OpSelectionMerge(covered_label, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(uncovered, discard_label, covered_label);
+    ctx.AddLabel(discard_label);
+    ctx.OpKill();
+    ctx.AddLabel(covered_label);
+}
+
+/// Writes the rasterized depth plus RuntimeInfo's depth bias, as the host would have added it.
+void ShaderDepthBias(EmitContext& ctx) {
+    if (!ctx.shader_depth_bias || !Sirit::ValidId(ctx.input_position)) {
+        return;
+    }
+    const RuntimeInfo& info{ctx.runtime_info};
+    const Id type{ctx.F32[1]};
+    const Id position{ctx.OpLoad(ctx.F32[4], ctx.input_position)};
+    const Id depth{ctx.OpCompositeExtract(type, position, 2u)};
+    Id unit{ctx.Const(info.depth_bias_unit)};
+    if (info.depth_bias_unit == 0.0f) {
+        // 2^(exponent - 23): the exponent bits alone are 2^exponent.
+        const Id exponent{ctx.OpBitwiseAnd(ctx.U32[1], ctx.OpBitcast(ctx.U32[1], depth),
+                                           ctx.Const(0x7f800000u))};
+        unit = ctx.OpFMul(type, ctx.OpBitcast(type, exponent), ctx.Const(0x1p-23f));
+    }
+    const Id slope{ctx.OpFMax(type, ctx.OpFAbs(type, ctx.OpDPdx(type, depth)),
+                              ctx.OpFAbs(type, ctx.OpDPdy(type, depth)))};
+    Id bias{ctx.OpFma(type, slope, ctx.Const(info.depth_bias_slope),
+                      ctx.OpFMul(type, unit, ctx.Const(info.depth_bias_constant)))};
+    if (info.depth_bias_clamp > 0.0f) {
+        bias = ctx.OpFMin(type, bias, ctx.Const(info.depth_bias_clamp));
+    } else if (info.depth_bias_clamp < 0.0f) {
+        bias = ctx.OpFMax(type, bias, ctx.Const(info.depth_bias_clamp));
+    }
+    ctx.OpStore(ctx.frag_depth, ctx.OpFAdd(type, depth, bias));
+}
+
 /// Component of a captured output (an IsCopyableCapture attribute), with its bits as a float, or
 /// its default when the shader does not write it (the capture is undefined then, as on Maxwell).
 Id CapturedComponent(EmitContext& ctx, u32 attribute) {
@@ -334,6 +398,8 @@ void EmitEpilogue(EmitContext& ctx) {
     if (ctx.stage == Stage::Fragment) {
         EmitLocalMemoryRelease(ctx);
         AlphaTest(ctx);
+        AlphaToCoverage(ctx);
+        ShaderDepthBias(ctx);
     }
 }
 

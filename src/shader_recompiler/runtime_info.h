@@ -123,6 +123,21 @@ struct RuntimeInfo {
     std::optional<CompareFunction> alpha_test_func;
     float alpha_test_reference{};
 
+    /// Bit i: color output i goes to an 8-bit UNORM target without blending; its float is
+    /// rounded to the 8-bit step with ties down (0.5 -> 127), as the guest GPU converts.
+    u8 unorm8_output_mask{};
+    /// Alpha-to-coverage computed in the fragment shader from output 0's alpha (a discard on
+    /// single-sample targets): 0 off, 1 one-pixel footprint, 2 dithered 2x2, 3 virtual 1x1.
+    u8 alpha_to_coverage_footprint{};
+    /// The fragment shader adds the depth bias to its depth (the host pipeline has none):
+    /// constant * unit + slope * max(|dz/dx|, |dz/dy|), clamped by clamp when it is not 0.
+    /// unit 0 is a float depth format: 2^(exponent(z) - 23).
+    bool depth_bias_in_shader{};
+    float depth_bias_unit{};
+    float depth_bias_constant{};
+    float depth_bias_slope{};
+    float depth_bias_clamp{};
+
     /// Static Y negate value
     bool y_negate{};
     /// Use storage buffers instead of global pointers on GLASM

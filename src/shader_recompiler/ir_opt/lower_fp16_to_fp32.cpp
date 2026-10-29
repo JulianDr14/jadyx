@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "shader_recompiler/frontend/ir/modifiers.h"
 #include "shader_recompiler/frontend/ir/value.h"
 #include "shader_recompiler/ir_opt/passes.h"
 
@@ -126,11 +127,30 @@ IR::Opcode Replace(IR::Opcode op) {
         return op;
     }
 }
+
+/// fp32 has no fp16 denormal range: remember which lowered results the guest flushed.
+void MarkHalfFlush(IR::Inst& inst) {
+    switch (inst.GetOpcode()) {
+    case IR::Opcode::FPAdd16:
+    case IR::Opcode::FPFma16:
+    case IR::Opcode::FPMul16: {
+        auto control{inst.Flags<IR::FpControl>()};
+        if (control.fmz_mode == IR::FmzMode::FTZ || control.fmz_mode == IR::FmzMode::FMZ) {
+            control.half_ftz = true;
+            inst.SetFlags(control);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
 } // Anonymous namespace
 
 void LowerFp16ToFp32(IR::Program& program) {
     for (IR::Block* const block : program.blocks) {
         for (IR::Inst& inst : block->Instructions()) {
+            MarkHalfFlush(inst);
             inst.ReplaceOpcode(Replace(inst.GetOpcode()));
         }
     }

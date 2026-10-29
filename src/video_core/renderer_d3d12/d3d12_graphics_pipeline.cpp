@@ -28,6 +28,7 @@
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
+#include "video_core/renderer_d3d12/d3d12_render_corrections.h"
 #include "video_core/renderer_d3d12/d3d12_draw_targets.h"
 #include "video_core/renderer_d3d12/d3d12_draw_metrics.h"
 #include "video_core/renderer_d3d12/d3d12_driver_guard.h"
@@ -225,6 +226,20 @@ void GraphicsPipelineCacheKey::RefreshStatic(const Maxwell& regs) noexcept {
     depth_bias = bias ? std::bit_cast<u32>(regs.depth_bias) : 0;
     depth_bias_clamp = bias ? std::bit_cast<u32>(regs.depth_bias_clamp) : 0;
     slope_scaled_depth_bias = bias ? std::bit_cast<u32>(regs.slope_scale_depth_bias) : 0;
+    // A fragment shader that adds the bias keeps the fractional constant D3D12 truncates; it
+    // writes its depth, so the guest's early depth test cannot run with it.
+    const bool shader_bias = bias && GetShaderDepthBias() && state.depth_enabled != 0 &&
+                             state.early_z == 0 && unique_hashes[5] != 0 &&
+                             MaxwellToD3D12::SampleCount(state.msaa_mode) == 1 &&
+                             (regs.depth_bias != 0.0f || regs.slope_scale_depth_bias != 0.0f);
+    if (bias && GetDepthBiasRounding()) {
+        if (!shader_bias) {
+            depth_bias = std::bit_cast<u32>(EffectiveDepthBias(regs.depth_bias));
+        }
+        depth_bias_clamp = std::bit_cast<u32>(RoundDepthBiasStep(regs.depth_bias_clamp));
+        slope_scaled_depth_bias =
+            std::bit_cast<u32>(RoundDepthBiasStep(regs.slope_scale_depth_bias));
+    }
     const bool stencil = dynamic.stencil_enable != 0;
     stencil_read_mask = stencil ? static_cast<u8>(regs.stencil_front_func_mask) : 0;
     stencil_write_mask = stencil ? static_cast<u8>(regs.stencil_front_mask) : 0;
@@ -234,7 +249,16 @@ void GraphicsPipelineCacheKey::RefreshStatic(const Maxwell& regs) noexcept {
                                         ? D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF
                                         : D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF);
     }
-    emulate_reduction = 0;
+    shader_flags = 0;
+    // A single sample has no coverage to dither: the shader discards with the guest's footprint.
+    if (state.alpha_to_coverage_enabled != 0 && GetShaderAlphaToCoverage() &&
+        MaxwellToD3D12::SampleCount(state.msaa_mode) == 1) {
+        const u32 footprint = static_cast<u32>(regs.alpha_to_coverage_dither) + 1;
+        shader_flags |= static_cast<u8>(std::min(footprint, 3U) << SHADER_A2C_SHIFT);
+    }
+    if (shader_bias) {
+        shader_flags |= SHADER_DEPTH_BIAS;
+    }
 }
 
 GraphicsPipeline::GraphicsPipeline(const Device& device_,
@@ -659,7 +683,8 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     ImageTransitionList image_transitions;
     bool uses_render_area = false;
     const bool has_sampler_table = layout.IntegerSamplerIndex() != PipelineLayout::NO_TABLE;
-    const bool emulates_reduction = key.emulate_reduction != 0;
+    const bool emulates_reduction =
+        (key.shader_flags & GraphicsPipelineCacheKey::SHADER_REDUCTION) != 0;
     IntegerSamplerTable integer_samplers;
     u32 stage_binding = 0;
     const SamplerId* samplers_it = samplers.data();
@@ -796,6 +821,9 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
     desc.DS = Bytecode(stages[2]);
     desc.GS = Bytecode(stages[3]);
     desc.PS = Bytecode(stages[4]);
+    // The pixel shader adds the bias (SHADER_DEPTH_BIAS); without one the PSO keeps it.
+    const bool shader_bias =
+        (key.shader_flags & GraphicsPipelineCacheKey::SHADER_DEPTH_BIAS) != 0 && !stages[4].empty();
 
     // Native transform feedback: the last pre-rasterization stage streams out the captured
     // outputs where its Xfb decorations place them. Rasterizer discard keeps the capture and
@@ -876,9 +904,10 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
         .FillMode = MaxwellToD3D12::FillMode(polygon_mode),
         .CullMode = MaxwellToD3D12::CullMode(dynamic.cull_enable != 0, dynamic.CullFace()),
         .FrontCounterClockwise = dynamic.FrontFace() == Maxwell::FrontFace::CounterClockWise,
-        .DepthBias = static_cast<INT>(std::bit_cast<f32>(key.depth_bias) / 2.0f),
-        .DepthBiasClamp = std::bit_cast<f32>(key.depth_bias_clamp),
-        .SlopeScaledDepthBias = std::bit_cast<f32>(key.slope_scaled_depth_bias),
+        .DepthBias = shader_bias ? 0 : static_cast<INT>(std::bit_cast<f32>(key.depth_bias) / 2.0f),
+        .DepthBiasClamp = shader_bias ? 0.0f : std::bit_cast<f32>(key.depth_bias_clamp),
+        .SlopeScaledDepthBias =
+            shader_bias ? 0.0f : std::bit_cast<f32>(key.slope_scaled_depth_bias),
         .DepthClipEnable = dynamic.depth_clamp_disabled != 0,
         .MultisampleEnable = FALSE,
         .AntialiasedLineEnable = state.smooth_lines != 0,
@@ -890,7 +919,8 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
         WarnOnce(warned_logic_op, "logic op");
     }
     const size_t num_attachments = DrawColorTargetCount(NumAttachments(state), bound_color_targets);
-    desc.BlendState.AlphaToCoverageEnable = state.alpha_to_coverage_enabled != 0;
+    desc.BlendState.AlphaToCoverageEnable =
+        state.alpha_to_coverage_enabled != 0 && key.ShaderAlphaToCoverage() == 0;
     desc.BlendState.IndependentBlendEnable = TRUE;
     desc.NumRenderTargets = static_cast<UINT>(num_attachments);
     for (size_t index = 0; index < num_attachments; ++index) {

@@ -22,6 +22,7 @@
 #include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
 #include "video_core/renderer_d3d12/d3d12_checkpoint_readback.h"
 #include "video_core/renderer_d3d12/d3d12_blit_image.h"
+#include "video_core/renderer_d3d12/d3d12_render_corrections.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/render_targets.h"
@@ -546,9 +547,12 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
     const bool unaligned_native = runtime_.device.SupportsUnalignedBlockTextures();
     const bool unaligned_bc_extent =
         !unaligned_native && (info_.size.width % 4 != 0 || info_.size.height % 4 != 0);
+    // Small BC1-3 textures read the guest's palette (SetSmallBcGuestPalette).
+    const bool guest_palette =
+        GetSmallBcGuestPalette() && IsSmallGuestPaletteBc(info_.format, guest_size_bytes);
     if (!native_blocks && info_.type == ImageType::e2D && info_.num_samples == 1 &&
-        (unaligned_bc_extent || (decode_bc_arrays.load(std::memory_order_relaxed) &&
-                                 info_.resources.layers > 1))) {
+        (unaligned_bc_extent || guest_palette ||
+         (decode_bc_arrays.load(std::memory_order_relaxed) && info_.resources.layers > 1))) {
         if (const std::optional<FormatInfo> decoded = DecodedBcFormat(info_.format)) {
             format = *decoded;
         }

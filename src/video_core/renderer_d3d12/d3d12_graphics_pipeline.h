@@ -63,9 +63,20 @@ struct GraphicsPipelineCacheKey {
     u8 stencil_read_mask;        ///< D3D12 has one pair for both faces: the front one
     u8 stencil_write_mask;
     u8 strip_cut; ///< D3D12_INDEX_BUFFER_STRIP_CUT_VALUE, from the index format
-    /// 1: the float samples apply the sampler table's MIN/MAX reduction (PipelineCache sets it for
-    /// the shaders seen with a filtered MIN/MAX sampler the device cannot create).
-    u8 emulate_reduction;
+    /// Bit 0 (SHADER_REDUCTION): the float samples apply the sampler table's MIN/MAX reduction
+    /// (PipelineCache sets it for the shaders seen with a filtered MIN/MAX sampler the device
+    /// cannot create). Bits 1-2 (SHADER_A2C_SHIFT): the fragment shader computes
+    /// alpha-to-coverage with this footprint (Shader::RuntimeInfo::alpha_to_coverage_footprint)
+    /// and the PSO does not. Bit 3 (SHADER_DEPTH_BIAS): the fragment shader adds the depth bias
+    /// (Shader::RuntimeInfo::depth_bias_in_shader) and the PSO has none.
+    u8 shader_flags;
+    static constexpr u8 SHADER_REDUCTION = 1;
+    static constexpr u32 SHADER_A2C_SHIFT = 1;
+    static constexpr u8 SHADER_DEPTH_BIAS = 8;
+
+    [[nodiscard]] u8 ShaderAlphaToCoverage() const noexcept {
+        return static_cast<u8>((shader_flags >> SHADER_A2C_SHIFT) & 3);
+    }
 
     size_t Hash() const noexcept;
 

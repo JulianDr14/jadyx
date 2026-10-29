@@ -779,7 +779,7 @@ private:
     u64 key{};
     D3D12_FILTER filter{};
     D3D12_SAMPLER_DESC desc{};
-    std::array<u64, 4> guest_raw{}; ///< Original TSC words, diagnostic comparison only.
+    std::array<u64, 4> guest_raw{}; ///< Original TSC words: integer border bits, diagnostics.
     u32 emulated_reduction{}; ///< EDEN_SAMPLER_REDUCTION_*
     u32 emulated_filter{};    ///< EDEN_SAMPLER_FILTER_* bits, with emulated_reduction only
 };

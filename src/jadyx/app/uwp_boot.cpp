@@ -180,6 +180,15 @@ void SetDredEnabled(bool enabled);         // d3d12_device.h
 void SetGpuBreadcrumbsEnabled(bool enabled); // d3d12_device.h
 void SetCloseProbeEnabled(bool enabled);     // d3d12_device.h
 void SetPresentQueue(bool enabled);          // d3d12_device.h
+enum class BorderColorMode : u8; // d3d12_render_corrections.h: Exact, Steps8, BlackWhite
+void SetBorderColorMode(BorderColorMode mode);
+void SetDepthBiasRounding(bool enabled);     // d3d12_render_corrections.h
+void SetUnormHalfDownRounding(bool enabled); // d3d12_render_corrections.h
+void SetCubeDirectionSanitize(bool enabled); // d3d12_render_corrections.h
+void SetHalfFloatFlush(bool enabled);        // d3d12_render_corrections.h
+void SetShaderAlphaToCoverage(bool enabled); // d3d12_render_corrections.h
+void SetSmallBcGuestPalette(bool enabled);   // d3d12_render_corrections.h
+void SetShaderDepthBias(bool enabled);       // d3d12_render_corrections.h
 void SetPipelineEviction(bool enabled);      // d3d12_pipeline_cache.h
 void SetPipelinePrewarm(bool enabled);       // d3d12_pipeline_cache.h
 void SetComputeWorkgroupSplit(u32 factor);   // d3d12_pipeline_cache.h
@@ -448,6 +457,25 @@ struct BootConfig {
     /// Present on a GPU queue of its own, so a frame's copy to the screen does not wait behind
     /// the emulation's next work ("present_queue=1").
     bool present_queue{};
+    /// Sampler border colors as the guest GPU keeps them ("border_color=exact|8bit|bw",
+    /// D3D12::BorderColorMode).
+    u8 border_color{};
+    /// Pipelines keyed by the depth bias D3D12 applies, slope and clamp in 1/16 steps
+    /// ("depth_bias_round=1").
+    bool depth_bias_round{};
+    /// Shader outputs to 8-bit UNORM targets round ties down like the guest ("unorm_round=1").
+    bool unorm_round{};
+    /// Cube samples with NaN or zero directions read a defined face ("cube_sanitize=1").
+    bool cube_sanitize{};
+    /// Lowered fp16 math flushes half denormals as the guest's FTZ ("half_ftz=1").
+    bool half_ftz{};
+    /// Single-sample alpha-to-coverage with the guest's dither, in the shader ("a2c_shader=1").
+    bool a2c_shader{};
+    /// BC1-3 textures up to 32 KiB decoded on the CPU with the guest's palette
+    /// ("small_bc_palette=1").
+    bool small_bc_palette{};
+    /// Single-sample depth bias added in the fragment shader ("depth_bias_shader=1").
+    bool depth_bias_shader{};
     /// This boot's image upscaling instead of the saved one, for test runs ("upscaling=fsr";
     /// upscaling.h ParseUpscaling lists the values). Not saved.
     std::optional<Upscaling> upscaling;
@@ -776,6 +804,14 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     if (config.upscaling) ApplyUpscaling(*config.upscaling); // before the renderer exists
     D3D12::SetAsyncRecording(config.async_record);
     D3D12::SetPresentQueue(config.present_queue);
+    D3D12::SetBorderColorMode(static_cast<D3D12::BorderColorMode>(config.border_color));
+    D3D12::SetDepthBiasRounding(config.depth_bias_round);
+    D3D12::SetUnormHalfDownRounding(config.unorm_round);
+    D3D12::SetCubeDirectionSanitize(config.cube_sanitize);
+    D3D12::SetHalfFloatFlush(config.half_ftz);
+    D3D12::SetShaderAlphaToCoverage(config.a2c_shader);
+    D3D12::SetSmallBcGuestPalette(config.small_bc_palette);
+    D3D12::SetShaderDepthBias(config.depth_bias_shader);
     Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);
     Service::Nvidia::Devices::nvdisp_disp0::SetReleaseFence(config.nv_release_fence);
     if (config.gpu_fence) Settings::values.gpu_fence_behavior.SetValue(*config.gpu_fence);

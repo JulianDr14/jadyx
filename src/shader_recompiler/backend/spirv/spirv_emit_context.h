@@ -205,6 +205,8 @@ public:
     }
 
     bool uses_geometry_passthrough{};
+    /// RuntimeInfo::depth_bias_in_shader for a fragment shader that does not write its depth.
+    bool shader_depth_bias{};
     bool geometry_passthrough_lowered{};
     // Ordinary GS outputs become undefined after EmitVertex. Lowered passthrough
     // outputs are per-primitive, so retain them across all emitted vertices.

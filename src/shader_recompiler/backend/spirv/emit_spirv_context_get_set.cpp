@@ -519,6 +519,13 @@ void EmitSetFragColor(EmitContext& ctx, u32 index, u32 component, Id value) {
     const Id component_id{ctx.Const(component)};
     const AttributeType type{ctx.runtime_info.color_output_types[index]};
     if (type == AttributeType::Float) {
+        if ((ctx.runtime_info.unorm8_output_mask >> index) & 1) {
+            // ceil(x * 255 - 0.5): ties round down, the host's conversion then keeps the step.
+            const Id unorm{ctx.OpFClamp(ctx.F32[1], value, ctx.f32_zero_value, ctx.Const(1.0f))};
+            const Id scaled{ctx.OpFMul(ctx.F32[1], unorm, ctx.Const(255.0f))};
+            const Id steps{ctx.OpCeil(ctx.F32[1], ctx.OpFSub(ctx.F32[1], scaled, ctx.Const(0.5f)))};
+            value = ctx.OpFDiv(ctx.F32[1], steps, ctx.Const(255.0f));
+        }
         const Id pointer{ctx.OpAccessChain(ctx.output_f32, ctx.frag_color.at(index), component_id)};
         ctx.OpStore(pointer, value);
     } else if (type == AttributeType::UnsignedInt) {

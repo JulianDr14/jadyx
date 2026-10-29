@@ -44,6 +44,7 @@
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
 #include "video_core/renderer_d3d12/d3d12_stream_output.h"
+#include "video_core/renderer_d3d12/d3d12_render_corrections.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
 #include "video_core/shader_environment.h"
@@ -310,6 +311,23 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
             key.state.UnpackComparisonOp(key.state.alpha_test_func.Value()));
         info.alpha_test_reference = std::bit_cast<float>(key.state.alpha_test_ref);
         info.dual_source_blend = key.state.attachment0_dual_source_blend != 0;
+        if (GetUnormHalfDownRounding()) {
+            for (size_t index = 0; index < key.state.color_formats.size(); ++index) {
+                if (IsUnorm8RenderTarget(key.state.color_formats[index]) &&
+                    key.state.attachments[index].enable == 0) {
+                    info.unorm8_output_mask |= static_cast<u8>(1U << index);
+                }
+            }
+        }
+        info.alpha_to_coverage_footprint = key.ShaderAlphaToCoverage();
+        if ((key.shader_flags & GraphicsPipelineCacheKey::SHADER_DEPTH_BIAS) != 0) {
+            // Maxwell's constant bias counts twice D3D12's units.
+            info.depth_bias_in_shader = true;
+            info.depth_bias_unit = DepthBiasUnit(key.state.depth_format.Value());
+            info.depth_bias_constant = std::bit_cast<f32>(key.depth_bias) / 2.0f;
+            info.depth_bias_slope = std::bit_cast<f32>(key.slope_scaled_depth_bias);
+            info.depth_bias_clamp = std::bit_cast<f32>(key.depth_bias_clamp);
+        }
         break;
     default:
         break;
@@ -535,6 +553,8 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .support_conditional_barrier = false,
     };
     host_info.ApplyDescriptorLimitPolicy();
+    profile.sanitize_cube_directions = GetCubeDirectionSanitize();
+    profile.flush_lowered_fp16_denorms = GetHalfFloatFlush();
 
     LOG_INFO(Render,
              "D3D12: pipeline cache ready ({} workers, waves up to {} lanes, int64 {}, "
@@ -770,7 +790,9 @@ GraphicsPipeline* PipelineCache::LookupGraphicsPipeline() {
     // only rereads blocks whose Maxwell registers changed.
     graphics_key.state.Refresh(*maxwell3d, dynamic_features);
     graphics_key.RefreshStatic(maxwell3d->regs);
-    graphics_key.emulate_reduction = UsesReductionShader(graphics_key.unique_hashes) ? 1 : 0;
+    if (UsesReductionShader(graphics_key.unique_hashes)) {
+        graphics_key.shader_flags |= GraphicsPipelineCacheKey::SHADER_REDUCTION;
+    }
 
     if (current_pipeline) {
         GraphicsPipeline* const next{current_pipeline->Next(graphics_key)};
@@ -1310,7 +1332,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         previous_stage = &program;
     }
     // Disk-cache keys may carry the bit from a session whose DLL emulated reduction.
-    const bool emulate_reduction = key.emulate_reduction != 0 && compiler.EmulatesReduction();
+    const bool emulate_reduction =
+        (key.shader_flags & GraphicsPipelineCacheKey::SHADER_REDUCTION) != 0 &&
+        compiler.EmulatesReduction();
     const PipelineLayout& layout =
         root_signatures.Get(infos, false, native_xfb, emulate_reduction);
 

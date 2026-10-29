@@ -31,6 +31,8 @@ struct FpControl {
     bool no_contraction{false};
     FpRounding rounding{FpRounding::DontCare};
     FmzMode fmz_mode{FmzMode::DontCare};
+    /// fp16 math lowered to fp32 that flushed denormals as fp16 (LowerFp16ToFp32).
+    bool half_ftz{false};
 };
 static_assert(sizeof(FpControl) <= sizeof(u32));
 

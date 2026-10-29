@@ -2003,6 +2003,9 @@ void EmitContext::DefineInputs(const IR::Program& program) {
     // Quad shuffles through derivatives find their quad lane from the window position.
     if (loads.AnyComponent(IR::Attribute::PositionX) ||
         (stage == Stage::Fragment && runtime_info.lower_noperspective_mask != 0) ||
+        (stage == Stage::Fragment && runtime_info.alpha_to_coverage_footprint == 2) ||
+        (stage == Stage::Fragment && runtime_info.depth_bias_in_shader &&
+         !info.stores_frag_depth) ||
         (stage == Stage::Fragment && info.uses_quad_shuffles &&
          profile.has_helperless_quad_shuffles)) {
         const bool is_fragment{stage == Stage::Fragment};
@@ -2246,7 +2249,8 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
                 Name(frag_color[index], fmt::format("frag_color{}", index));
             }
         }
-        if (info.stores_frag_depth) {
+        shader_depth_bias = runtime_info.depth_bias_in_shader && !info.stores_frag_depth;
+        if (info.stores_frag_depth || shader_depth_bias) {
             frag_depth = DefineOutput(*this, F32[1], std::nullopt);
             Decorate(frag_depth, spv::Decoration::BuiltIn, spv::BuiltIn::FragDepth);
         }

@@ -17,6 +17,19 @@ Id Decorate(EmitContext& ctx, IR::Inst* inst, Id op) {
     return op;
 }
 
+/// A lowered fp16 result below half's normal range becomes a signed zero
+/// (Profile::flush_lowered_fp16_denorms).
+Id FlushLoweredHalf(EmitContext& ctx, IR::Inst* inst, Id value) {
+    if (!ctx.profile.flush_lowered_fp16_denorms || !inst->Flags<IR::FpControl>().half_ftz) {
+        return value;
+    }
+    const Id magnitude{ctx.OpFAbs(ctx.F32[1], value)};
+    const Id denormal{ctx.OpFOrdLessThan(ctx.U1, magnitude, ctx.Const(0x1p-14f))};
+    const Id sign{ctx.OpBitwiseAnd(ctx.U32[1], ctx.OpBitcast(ctx.U32[1], value),
+                                   ctx.Const(0x80000000u))};
+    return ctx.OpSelect(ctx.F32[1], denormal, ctx.OpBitcast(ctx.F32[1], sign), value);
+}
+
 Id Clamp(EmitContext& ctx, Id type, Id value, Id zero, Id one) {
     if (ctx.profile.has_broken_spirv_clamp) {
         return ctx.OpFMin(type, ctx.OpFMax(type, value, zero), one);
@@ -65,7 +78,7 @@ Id EmitFPAdd16(EmitContext& ctx, IR::Inst* inst, Id a, Id b) {
 }
 
 Id EmitFPAdd32(EmitContext& ctx, IR::Inst* inst, Id a, Id b) {
-    return Decorate(ctx, inst, ctx.OpFAdd(ctx.F32[1], a, b));
+    return FlushLoweredHalf(ctx, inst, Decorate(ctx, inst, ctx.OpFAdd(ctx.F32[1], a, b)));
 }
 
 Id EmitFPAdd64(EmitContext& ctx, IR::Inst* inst, Id a, Id b) {
@@ -77,7 +90,7 @@ Id EmitFPFma16(EmitContext& ctx, IR::Inst* inst, Id a, Id b, Id c) {
 }
 
 Id EmitFPFma32(EmitContext& ctx, IR::Inst* inst, Id a, Id b, Id c) {
-    return Decorate(ctx, inst, ctx.OpFma(ctx.F32[1], a, b, c));
+    return FlushLoweredHalf(ctx, inst, Decorate(ctx, inst, ctx.OpFma(ctx.F32[1], a, b, c)));
 }
 
 Id EmitFPFma64(EmitContext& ctx, IR::Inst* inst, Id a, Id b, Id c) {
@@ -105,7 +118,7 @@ Id EmitFPMul16(EmitContext& ctx, IR::Inst* inst, Id a, Id b) {
 }
 
 Id EmitFPMul32(EmitContext& ctx, IR::Inst* inst, Id a, Id b) {
-    return Decorate(ctx, inst, ctx.OpFMul(ctx.F32[1], a, b));
+    return FlushLoweredHalf(ctx, inst, Decorate(ctx, inst, ctx.OpFMul(ctx.F32[1], a, b)));
 }
 
 Id EmitFPMul64(EmitContext& ctx, IR::Inst* inst, Id a, Id b) {
