@@ -77,8 +77,10 @@ std::atomic<size_t> s_code_cache_cap_epoch{0};
 /// SetCodeCacheCap's release: caches past the cap are cleared and give the memory past it back.
 std::atomic_bool s_code_cache_release{false};
 /// What a capped cache may still emit past the pages it had committed: one block's worth
-/// (MINIMUM_REMAINING_CODESIZE) and its commit ahead, so it is not cleared on the spot.
-constexpr size_t CAP_SLACK = 2 * 1024 * 1024;
+/// (MINIMUM_REMAINING_CODESIZE) and its commit ahead, so it is not cleared on the spot, plus
+/// room for an area's new code. With 2 MiB a cache holding a large prewarm filled up within the
+/// next load and was cleared, recompiling everything it had warmed.
+constexpr size_t CAP_SLACK = 16 * 1024 * 1024;
 /// SetDualMappedCode, and how many code caches live dual-mapped (DualMappedCodeCaches).
 std::atomic_bool s_dual_map_allowed{true};
 std::atomic<size_t> s_dual_mapped_caches{0};

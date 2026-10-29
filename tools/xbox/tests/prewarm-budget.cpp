@@ -22,6 +22,14 @@ void TestLowersOncePerSession() {
     PrewarmBudget budget;
     assert(!budget.Observe(2048 * M));
     assert(!budget.Observe(257 * M));
+    for (std::uint32_t i = 1; i < PrewarmBudget::LOW_OBSERVATIONS; ++i) {
+        assert(!budget.Observe(255 * M)); // Permafrost may still recover it
+    }
+    assert(!budget.Observe(300 * M)); // it did: the run starts over
+    for (std::uint32_t i = 1; i < PrewarmBudget::LOW_OBSERVATIONS; ++i) {
+        assert(!budget.Observe(255 * M));
+    }
+    assert(budget.MiBPerCore() == 192);
     assert(budget.Observe(255 * M)); // Game C at the limit: 192 -> 128 for the next session
     assert(budget.MiBPerCore() == 128);
     assert(!budget.Observe(0)); // once per session, however low it goes
@@ -30,7 +38,15 @@ void TestLowersOncePerSession() {
     assert(budget.MinHeadroom() == 0);
 
     PrewarmBudget lowest{3};
-    assert(!lowest.Observe(0) && lowest.MiBPerCore() == 32);
+    for (std::uint32_t i = 0; i < PrewarmBudget::LOW_OBSERVATIONS; ++i) {
+        assert(!lowest.Observe(0));
+    }
+    assert(lowest.MiBPerCore() == 32);
+
+    PrewarmBudget dip; // a brief dip lowers nothing, but a session that saw it never raises
+    assert(!dip.Observe(100 * M) && dip.MiBPerCore() == 192);
+    PrewarmBudget dipped{1};
+    assert(!dipped.Observe(100 * M) && !dipped.Finish(3600) && dipped.MiBPerCore() == 128);
 }
 
 void TestRaisesAfterAComfortableSession() {
@@ -43,7 +59,7 @@ void TestRaisesAfterAComfortableSession() {
     assert(long_enough.MiBPerCore() == 128);
 
     PrewarmBudget tight{1};
-    assert(!tight.Observe(1023 * M)); // between the thresholds: keep
+    assert(!tight.Observe(511 * M)); // between the thresholds: keep
     assert(!tight.Finish(3600) && tight.MiBPerCore() == 128);
 
     PrewarmBudget top{};
@@ -59,6 +75,6 @@ int main() {
     TestDefaultsAndClamp();
     TestLowersOncePerSession();
     TestRaisesAfterAComfortableSession();
-    std::cout << "PASS: defaults, clamping, lowering once per session, raising after a "
+    std::cout << "PASS: defaults, clamping, lowering once per session after a sustained dip, raising after a "
                  "comfortable session\n";
 }

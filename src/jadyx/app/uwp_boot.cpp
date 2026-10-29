@@ -1353,13 +1353,26 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         u32 low_snapshot_tick = 0;
         // Short of memory, each JIT code cache keeps what it has committed, or this much.
         constexpr size_t JIT_CAP_FLOOR = 64ULL << 20;
-        constexpr u64 JIT_STOP_HEADROOM = 768ULL << 20;
         // Shorter still, a cache holding more than this is cleared and gives the rest back: a large
         // game held ~160 MiB in each of three caches when a new area's textures ran it out.
         constexpr size_t JIT_RELEASE_CAP = 96ULL << 20;
-        constexpr u64 JIT_RELEASE_HEADROOM = 384ULL << 20;
+        // With Permafrost the JIT gives way only once it falls behind: a cold guest page costs a
+        // read of ~0.6 ms when touched again, a cleared cache recompiles the game's hot code. At
+        // 768 MiB, inside Permafrost's band, a world entry froze the caches at 64 MiB with 460
+        // free and cleared them four times, compiling 60-80k blocks in a frame (up to 973 ms).
+        // So they stop growing where Permafrost turns urgent and give back only below its
+        // emergency mark, once it has had the first go: giving back clears a cache that may hold
+        // a 192 MiB prewarm. They grow again once Permafrost has brought the headroom back to
+        // its low mark.
+        const bool jit_after_swap = Common::GuestSwapActive();
+        const u64 jit_swap_low = u64{config.guest_swap_low_mib} << 20;
+        const u64 JIT_STOP_HEADROOM =
+            jit_after_swap ? (std::max)(jit_swap_low / 2, 384ULL << 20) : 768ULL << 20;
+        const u64 JIT_RELEASE_HEADROOM =
+            jit_after_swap ? (std::max)(jit_swap_low * 3 / 16, 160ULL << 20) : 384ULL << 20;
         // ...and the cap is lifted once this much is free again.
-        constexpr u64 JIT_UNCAP_HEADROOM = 1024ULL << 20;
+        const u64 JIT_UNCAP_HEADROOM = jit_after_swap ? (std::max)(jit_swap_low, 1024ULL << 20)
+                                                      : 1024ULL << 20;
         constexpr u64 POOL_TRIM_PER_SECOND = 64ULL << 20;
         constexpr u64 POOL_TRIM_ALL_HEADROOM = 512ULL << 20;
         constexpr u64 TRIM_SLICE = 32ULL << 20;
@@ -1419,7 +1432,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
             const u64 swap_watch = (std::max)(u64{config.guest_swap_watch_mib} << 20, swap_high);
             WriteDiag("permafrost on: sampling below " + std::to_string(swap_watch >> 20) +
                       " MiB free, writing below " + std::to_string(swap_low >> 20) + " MiB up to " +
-                      std::to_string(swap_high >> 20) + " MiB");
+                      std::to_string(swap_high >> 20) + " MiB; JIT caches stop growing below " +
+                      std::to_string(JIT_STOP_HEADROOM >> 20) + " MiB, give back below " +
+                      std::to_string(JIT_RELEASE_HEADROOM >> 20) + " MiB");
             swap_worker.emplace([&, swap_low, swap_high, swap_watch](std::stop_token stop) {
                 Common::SetCurrentThreadName("Permafrost");
                 while (!stop.stop_requested()) {
@@ -2068,7 +2083,9 @@ void WritePulseLog(const std::string& msg) {
 // (5 GB on the Xbox resource page), and exceeding it makes allocations fail rather than paging.
 std::wstring PrewarmStepKey(u64 program_id) {
     wchar_t key[40];
-    swprintf(key, std::size(key), L"jit_prewarm_step_%016llx",
+    // v2: the steps stored before Permafrost held the headroom near 1024 MiB were lowered on a
+    // single dip below 256 and never raised again, so every game restarts at 192 MiB per core.
+    swprintf(key, std::size(key), L"jit_prewarm_v2_%016llx",
              static_cast<unsigned long long>(program_id));
     return key;
 }

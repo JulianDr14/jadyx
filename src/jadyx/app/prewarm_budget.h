@@ -22,10 +22,17 @@ public:
     /// of that commit comes either way, and a step down to 64 made it compile 1.2M blocks in its
     /// load: the steps go down gently.
     static constexpr std::array<std::uint32_t, 4> STEPS_MIB{192, 128, 64, 32};
-    /// A session whose headroom fell below this lowers the next one's budget, at once.
+    /// A session whose headroom stayed below this lowers the next one's budget...
     static constexpr std::uint64_t LOW_HEADROOM = 256 * MiB;
-    /// A clean session whose headroom never fell below this raises it back a step...
-    static constexpr std::uint64_t HIGH_HEADROOM = 1024 * MiB;
+    /// ...for this many observations in a row (one a second). Permafrost answers a dip below its
+    /// emergency mark (256 MiB) within a second or two; a single sample there lowered a large
+    /// game to 32 MiB although Permafrost had already recovered the memory.
+    static constexpr std::uint32_t LOW_OBSERVATIONS = 5;
+    /// A clean session whose headroom never fell below this raises it back a step... Permafrost
+    /// holds the headroom near its low mark (1024 MiB) during play, so a large game never stayed
+    /// above that and its budget, once lowered to 32 MiB, never came back: it warmed a fifth of
+    /// its 500k-block profile and compiled the rest while entering its world.
+    static constexpr std::uint64_t HIGH_HEADROOM = 512 * MiB;
     /// ...if it lasted long enough to have seen the game's heavier parts.
     static constexpr std::uint32_t RAISE_SECONDS = 180;
 
@@ -48,7 +55,11 @@ public:
         if (headroom < min_headroom) {
             min_headroom = headroom;
         }
-        if (lowered || headroom >= LOW_HEADROOM) {
+        if (headroom >= LOW_HEADROOM) {
+            low_run = 0;
+            return false;
+        }
+        if (lowered || ++low_run < LOW_OBSERVATIONS) {
             return false;
         }
         lowered = true;
@@ -73,6 +84,7 @@ public:
 private:
     std::uint32_t step;
     std::uint64_t min_headroom{std::numeric_limits<std::uint64_t>::max()};
+    std::uint32_t low_run{};
     bool lowered{};
 };
 } // namespace Jadyx
