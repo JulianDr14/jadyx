@@ -3,7 +3,8 @@
 
 // Permafrost on a real demand-committed reservation: data survives probation, write-out, windowed
 // read back, prefetch, clears and concurrent writers; the commit really goes down; the scout's
-// probes see use; quick refaults shield a granule.
+// probes see use; quick refaults shield a granule; faults count their stall; a write-out goes a
+// batch at a time unless in an emergency.
 
 // The checks must run in any configuration: an NDEBUG build would otherwise pass vacuously.
 #undef NDEBUG
@@ -452,7 +453,44 @@ void TestConcurrent(std::vector<u32>& version) {
     assert(after.written_bytes > before.written_bytes);
     assert(after.probation_touches > before.probation_touches);
     assert(after.write_failures == 0);
+    assert(after.fault_stall_us > before.fault_stall_us);
     CheckAll(version);
+}
+
+// A second engine with small batches: one step puts a batch on probation and no more until the
+// next batch is due, far short twice that, and an emergency all the shortfall asks for.
+void TestBatches(const Config& base_config) {
+    constexpr size_t BATCH = 8 * MiB;
+    constexpr size_t USED = 96 * MiB;
+    VirtualFree(g_base, BACKING, MEM_DECOMMIT);
+    Config config = base_config;
+    config.batch_bytes = BATCH;
+    assert(Init(g_base, BACKING, PLATFORM, config));
+    std::vector<u32> version(PAGES, 0);
+    for (size_t page = 0; page < USED / PAGE_SIZE; page += 8) Fill(page, version[page] = 3);
+    Pause(60);
+    // Counted in granules: the zero pages of a granule are not its bytes on probation.
+    constexpr u64 PER_BATCH = BATCH / GRANULE_SIZE + 1;
+    const auto starts = [] { return GetStats().probation_starts; };
+    const u64 start = starts();
+    Step(BACKING, Urgency::Normal, g_decommit);
+    const u64 normal = starts() - start;
+    assert(normal > 0 && normal <= PER_BATCH);
+    Step(BACKING, Urgency::Normal, g_decommit);
+    assert(starts() - start == normal); // the batch is spent
+    Pause(520);
+    Step(BACKING, Urgency::Urgent, g_decommit);
+    const u64 urgent = starts() - start - normal;
+    assert(urgent > 0 && urgent <= 2 * PER_BATCH);
+    Step(BACKING, Urgency::Emergency, g_decommit);
+    assert(starts() - start - normal - urgent > 2 * PER_BATCH);
+    Drain(USED, Urgency::Emergency);
+    for (size_t page = 0; page < USED / PAGE_SIZE; page += 8) {
+        assert(Check(page, version[page]));
+    }
+    Settle();
+    std::printf("batches: ok (%s)\n", Describe(true).c_str());
+    Shutdown();
 }
 
 void TestReserve() {
@@ -482,6 +520,7 @@ int main() {
     config.scout_ms = 50;
     config.shield_ms = 200;
     config.shield_max_ms = 800;
+    config.batch_bytes = 0;
     assert(!Active());
     assert(Init(g_base, BACKING, PLATFORM, config));
     assert(Active());
@@ -505,6 +544,7 @@ int main() {
     Shutdown();
     assert(!Active());
     assert(GetFileAttributesW(config.path.c_str()) == INVALID_FILE_ATTRIBUTES); // deleted on close
+    TestBatches(config);
     RemoveVectoredExceptionHandler(handler);
     VirtualFree(g_base, 0, MEM_RELEASE);
     std::cout << "permafrost gates passed\n";
