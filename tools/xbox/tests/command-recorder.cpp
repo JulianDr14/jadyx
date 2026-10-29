@@ -3,7 +3,8 @@
 
 // CommandRecorder gate (the D3D12 command list recording thread): commands and their arrays
 // arrive once and in order across chunks, inline mode runs them at once, record points report
-// what the worker executed, a throwing command stops the worker and is rethrown once, captured
+// what the worker executed, a command that waits keeps the rest behind it without blocking the
+// recording thread, a throwing command stops the worker and is rethrown once, captured
 // objects are destroyed exactly once, shutdown drains and DiscardRecorded drops the rest. Prints the recording cost per command.
 // Run with build-uwp/diagnostics/command-recorder/run.bat.
 
@@ -119,6 +120,40 @@ void TestRecordPoint() {
     Check(log.thread != std::this_thread::get_id(), "ran on the worker");
     Check(recorder.RecordPoint() > point, "later records get a later point");
     std::cout << "  record points PASS\n";
+}
+
+void TestWaitingCommand() {
+    // A compute dispatch recorded before its PSO is built: the command waits on the worker for
+    // the build, the recording thread goes on, and what comes after still runs after it.
+    Log log;
+    Recorder recorder{&log, Threaded()};
+    std::atomic_bool built{false};
+    recorder.Record([](Log* l) { l->values.push_back(1); });
+    recorder.Record([&built](Log* l) {
+        built.wait(false);
+        l->values.push_back(2);
+    });
+    recorder.Dispatch();
+    const auto start = std::chrono::steady_clock::now();
+    for (u64 i = 3; i < 10'003; ++i) {
+        recorder.Record([i](Log* l) { l->values.push_back(i); });
+        if (i % 1000 == 0) {
+            recorder.Dispatch();
+        }
+    }
+    const auto recorded = std::chrono::steady_clock::now();
+    Check(recorded - start < 100ms, "recording goes on while a command waits");
+    const u64 point = recorder.RecordPoint();
+    std::this_thread::sleep_for(5ms);
+    Check(!recorder.IsExecuted(point), "nothing after the waiting command ran early");
+    built = true;
+    built.notify_all();
+    recorder.WaitIdle();
+    Check(log.values.size() == 10'002, "every command ran once");
+    for (u64 i = 0; i < log.values.size(); ++i) {
+        Check(log.values[i] == i + 1, "the waiting command kept its place in the order");
+    }
+    std::cout << "  waiting command PASS\n";
 }
 
 struct Tracked {
@@ -270,11 +305,12 @@ int main() {
     TestOrder();
     TestInline();
     TestRecordPoint();
+    TestWaitingCommand();
     TestError();
     TestShutdown();
     TestTooLarge();
     TestStatistics();
     Benchmark();
-    std::cout << "command recorder: order, inline, record points, error, shutdown PASS\n";
+    std::cout << "command recorder: order, inline, record points, waiting command, error, shutdown PASS\n";
     return 0;
 }
