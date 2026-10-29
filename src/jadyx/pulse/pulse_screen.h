@@ -39,6 +39,10 @@ public:
     void ShadersStarting();
     /// Resume: a LoadDiskResources callback. Any thread.
     void Shaders(std::size_t done, std::size_t total);
+    /// Resume: the shaders are built, the JIT prewarm starts.
+    void CpuStarting();
+    /// Resume: a JIT prewarm callback. Any thread.
+    void Cpu(std::size_t done, std::size_t total);
     /// Resume: the guest runs; the screen closes by itself once the game presents.
     void GameStarting();
     /// Save: the closing frame (saved, or not) for a moment, then drawing stops.

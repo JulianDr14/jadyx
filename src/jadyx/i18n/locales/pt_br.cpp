@@ -654,6 +654,7 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::PulseNotSavedTitle, L"Sessão não salva"},
     {Text::PulseRestoredTitle, L"De volta ao jogo"},
     {Text::PulseKeepOn, L"Não desligue o console"},
+    {Text::LoadingLongWait, L"Pode levar alguns minutos · {0}"},
     {Text::Upscaling, L"Escalonamento da imagem"},
     {Text::UpscalingBilinear, L"Bilinear"},
     {Text::UpscalingFsrSharp, L"FSR 1 · nítido"},

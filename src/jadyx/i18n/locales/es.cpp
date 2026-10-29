@@ -654,6 +654,7 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::PulseNotSavedTitle, L"Sesión no guardada"},
     {Text::PulseRestoredTitle, L"¡De vuelta al juego!"},
     {Text::PulseKeepOn, L"No apagues la consola"},
+    {Text::LoadingLongWait, L"Puede tardar unos minutos · {0}"},
     {Text::Upscaling, L"Escalado de imagen"},
     {Text::UpscalingBilinear, L"Bilineal"},
     {Text::UpscalingFsrSharp, L"FSR 1 · nítido"},

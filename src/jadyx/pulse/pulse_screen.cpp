@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <numbers>
+#include <optional>
 #include <thread>
 
 #include <d2d1.h>
@@ -45,10 +46,13 @@ constexpr float CloseSeconds = 0.8f;
 /// A resume's screen closes once the game has presented this many frames, or after the timeout.
 constexpr unsigned long long GameFramesToClose = 3;
 constexpr float StartingTimeoutSeconds = 20;
+/// A resume past this long says it can take a while, with the time so far: a large game's shaders
+/// and JIT warm for over a minute, and a ring creeping on for that long looks like a hang.
+constexpr float LongWaitSeconds = 20;
 constexpr unsigned Glint = 0xd8fff2;
 constexpr unsigned Comet = 0xa6f5da;
 
-enum class Stage { Preparing, Capture, Write, Verify, Sync, Replace, Restore, Shaders, Starting };
+enum class Stage { Preparing, Capture, Write, Verify, Sync, Replace, Restore, Shaders, Cpu, Starting };
 enum class Outcome { None, Done, Failed };
 
 /// The share of the bar a stage fills: it eases from `from` towards `to` (time constant `tau`
@@ -64,15 +68,23 @@ constexpr Range RangeOf(Stage stage) {
     case Stage::Verify: return {0.58f, 0.84f, 0.7f};
     case Stage::Sync: return {0.84f, 0.97f, 0.4f};
     case Stage::Replace: return {0.97f, 0.99f, 0.2f};
-    case Stage::Restore: return {0.03f, 0.45f, 2.2f};
-    case Stage::Shaders: return {0.45f, 0.88f, 3.0f};
-    case Stage::Starting: return {0.88f, 0.99f, 1.5f};
+    case Stage::Restore: return {0.03f, 0.30f, 2.2f};
+    case Stage::Shaders: return {0.30f, 0.78f, 3.0f};
+    case Stage::Cpu: return {0.78f, 0.92f, 2.0f};
+    case Stage::Starting: return {0.92f, 0.99f, 1.5f};
     }
     return {0, 1, 1};
 }
 
 float Seconds(Clock::duration duration) {
     return std::chrono::duration<float>(duration).count();
+}
+
+/// "1:05".
+std::wstring MinutesSeconds(float seconds) {
+    const auto whole = static_cast<unsigned>(std::max(seconds, 0.0f));
+    const unsigned rest = whole % 60;
+    return std::to_wstring(whole / 60) + (rest < 10 ? L":0" : L":") + std::to_wstring(rest);
 }
 
 /// Two beats a cycle, as a heart: 0 at rest, about 1 on the first beat.
@@ -96,7 +108,7 @@ struct View {
     float t;        ///< Seconds since the screen opened.
     float closing;  ///< Seconds since the outcome, when there is one.
     float progress; ///< 0 to 1.
-    std::size_t shaders_done, shaders_total;
+    std::size_t done, total; ///< The counted stage's (Shaders, Cpu) progress.
 };
 
 struct Painter : UiPainter {
@@ -302,11 +314,12 @@ private:
         case Stage::Replace: step = I18n::Tr(T::PulseStepSync); break;
         case Stage::Restore: step = I18n::Tr(T::PulseStepRestore); break;
         case Stage::Shaders:
-            step = view.shaders_total == 0
+        case Stage::Cpu:
+            step = view.total == 0
                        ? I18n::Tr(T::PulseStepRestore)
-                       : I18n::Format(T::PulseStepShaders,
-                                      {std::to_wstring(std::min(view.shaders_done, view.shaders_total)),
-                                       std::to_wstring(view.shaders_total)});
+                       : I18n::Format(view.stage == Stage::Shaders ? T::PulseStepShaders : T::LaunchStepCpu,
+                                      {std::to_wstring(std::min(view.done, view.total)),
+                                       std::to_wstring(view.total)});
             break;
         case Stage::Starting: step = I18n::Tr(T::PulseStepStarting); break;
         }
@@ -341,8 +354,10 @@ private:
             }
             surface->PopAxisAlignedClip();
         }
-        Text(I18n::Tr(T::PulseKeepOn), 0, L::HintY, 13, Palette::TextSecondary, L::Width, 24, false,
-             false, true);
+        const bool long_wait = kind == PulseScreen::Kind::Resume && view.t >= LongWaitSeconds;
+        Text(long_wait ? I18n::Format(T::LoadingLongWait, {MinutesSeconds(view.t)})
+                       : std::wstring{I18n::Tr(T::PulseKeepOn)},
+             0, L::HintY, 13, Palette::TextSecondary, L::Width, 24, false, false, true);
     }
 
     /// The bitmap as RGBA rows, the swapchain's order (D2D draws BGRA).
@@ -423,7 +438,11 @@ struct PulseScreen::Impl {
     }
 
     void Animate(std::stop_token stop) {
-        Painter painter;
+        // A frame that fails (WIC, Direct2D or DirectWrite; once 0x8007067D at a resume's first
+        // frame) is skipped and the painter made again: before, the error ended the thread, and the
+        // screen stood still for the minute and a half the resume went on.
+        std::optional<Painter> painter;
+        unsigned failed_frames = 0;
         const auto opened = Clock::now();
         auto previous = opened;
         float progress = 0;
@@ -445,17 +464,17 @@ struct PulseScreen::Impl {
                 view.stage = stage;
                 view.outcome = outcome;
                 view.closing = outcome == Outcome::None ? 0 : Seconds(now - outcome_at);
-                view.shaders_done = shaders_done.load(std::memory_order_relaxed);
-                view.shaders_total = shaders_total.load(std::memory_order_relaxed);
+                view.done = count_done.load(std::memory_order_relaxed);
+                view.total = count_total.load(std::memory_order_relaxed);
                 hold = stage == Stage::Capture && outcome == Outcome::None;
                 // The goal the bar eases to; it never goes back.
                 float goal = 1;
                 if (outcome == Outcome::None) {
                     const Range range = RangeOf(stage);
                     float share = 1 - std::exp(-Seconds(now - stage_start) / range.tau);
-                    if (stage == Stage::Shaders && view.shaders_total != 0) {
-                        share = static_cast<float>(std::min(view.shaders_done, view.shaders_total)) /
-                                static_cast<float>(view.shaders_total);
+                    if ((stage == Stage::Shaders || stage == Stage::Cpu) && view.total != 0) {
+                        share = static_cast<float>(std::min(view.done, view.total)) /
+                                static_cast<float>(view.total);
                     }
                     goal = range.from + (range.to - range.from) * share;
                 }
@@ -468,7 +487,17 @@ struct PulseScreen::Impl {
             view.t = Seconds(now - opened);
 
             if (!hold) {
-                auto image = painter.Draw(view, kind, game, D3D12::GameMenuScreenSize(system.Renderer()));
+                D3D12::MenuImage image;
+                try {
+                    if (!painter) painter.emplace();
+                    image = painter->Draw(view, kind, game, D3D12::GameMenuScreenSize(system.Renderer()));
+                } catch (const winrt::hresult_error& e) {
+                    painter.reset();
+                    if (++failed_frames <= 3) {
+                        LOG_WARNING(Frontend, "Pulse screen: frame not drawn ({:#010x}): {}",
+                                    static_cast<u32>(e.code()), winrt::to_string(e.message()));
+                    }
+                }
                 std::scoped_lock present{present_mutex};
                 // Rechecked under the lock SaveStep takes before the capture.
                 bool capturing;
@@ -514,7 +543,8 @@ struct PulseScreen::Impl {
     Outcome outcome{Outcome::None};
     Clock::time_point outcome_at;
     unsigned long long start_frames{};
-    std::atomic<std::size_t> shaders_done{}, shaders_total{};
+    /// The counted stage's progress, reset when it starts.
+    std::atomic<std::size_t> count_done{}, count_total{};
     bool first_shown{}, exited{};
 
     /// Held while a frame is presented; the capture waits for it.
@@ -550,8 +580,18 @@ void PulseScreen::ShadersStarting() {
 }
 
 void PulseScreen::Shaders(std::size_t done, std::size_t total) {
-    impl->shaders_done.store(done, std::memory_order_relaxed);
-    impl->shaders_total.store(total, std::memory_order_relaxed);
+    impl->count_done.store(done, std::memory_order_relaxed);
+    impl->count_total.store(total, std::memory_order_relaxed);
+}
+
+void PulseScreen::CpuStarting() {
+    impl->count_total.store(0, std::memory_order_relaxed);
+    impl->count_done.store(0, std::memory_order_relaxed);
+    impl->SetStage(Stage::Cpu);
+}
+
+void PulseScreen::Cpu(std::size_t done, std::size_t total) {
+    Shaders(done, total);
 }
 
 void PulseScreen::GameStarting() {

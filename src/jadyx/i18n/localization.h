@@ -604,6 +604,7 @@ enum class Text : std::uint16_t {
     PulseNotSavedTitle,
     PulseRestoredTitle,
     PulseKeepOn,
+    LoadingLongWait,
     Upscaling,
     UpscalingBilinear,
     UpscalingFsrSharp,

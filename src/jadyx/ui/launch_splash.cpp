@@ -54,6 +54,9 @@ constexpr float LogoHeight = 348.25f;
 constexpr float IndicatorHeight = 62.75f, IndicatorInset = 40.25f;
 /// The step's line right of the indicator: type size, gap to the indicator, the bar under it.
 constexpr float StepSize = 11, StepGap = 14, BarWidth = 130, BarHeight = 2;
+/// Past this long the step gets a line under it saying it can take a while, with the time so far:
+/// a large game's shaders and JIT warm for over a minute, and a bar creeping on looks like a hang.
+constexpr float LongWaitSeconds = 20;
 /// The corner that changes between frames (indicator, step, bar), from the bottom-right corner;
 /// the rest of the image is drawn once.
 constexpr float ChangingWidth = 330, ChangingHeight = 90;
@@ -273,9 +276,20 @@ private:
         brush->SetColor(D2D1::ColorF(0xbcbcbc));
         target->DrawText(text.c_str(), static_cast<UINT32>(text.size()), step_format.Get(),
                          D2D1::RectF(at.changing.left, middle - size, right, middle + size), brush.Get());
-        if (progress < 0) return;
         const float width = BarWidth * at.units, h = BarHeight * at.units, r = h / 2;
         const float x = right - width, y = middle + size * 0.9f;
+        if (const float open = SecondsOpen();
+            open >= LongWaitSeconds && step.load(std::memory_order_relaxed) != LaunchStep::Starting) {
+            const auto whole = static_cast<unsigned>(open);
+            const std::wstring wait = I18n::Format(
+                I18n::Text::LoadingLongWait,
+                {std::to_wstring(whole / 60) + (whole % 60 < 10 ? L":0" : L":") + std::to_wstring(whole % 60)});
+            const float top = y + h + size * 0.4f;
+            brush->SetColor(D2D1::ColorF(0x8a8a8a));
+            target->DrawText(wait.c_str(), static_cast<UINT32>(wait.size()), step_format.Get(),
+                             D2D1::RectF(at.changing.left, top, right, top + 2 * size), brush.Get());
+        }
+        if (progress < 0) return;
         brush->SetColor(D2D1::ColorF(0x3a3a39));
         target->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x, y, right, y + h), r, r), brush.Get());
         if (const float filled = width * std::min(progress, 1.0f); filled > 0.5f) {
@@ -614,8 +628,20 @@ D3D12::MenuImage DrawOnThisThread(std::pair<u32, u32> screen) {
     };
     thread_local Com com;
     thread_local std::optional<BitmapSplash> splash;
-    if (!splash) splash.emplace();
-    return splash->Draw(screen);
+    thread_local unsigned failed_frames = 0;
+    // A frame that fails is skipped and the painter made again, so one error does not leave the
+    // screen standing still for the rest of the load.
+    try {
+        if (!splash) splash.emplace();
+        return splash->Draw(screen);
+    } catch (const winrt::hresult_error& e) {
+        splash.reset();
+        if (++failed_frames <= 3) {
+            LOG_WARNING(Frontend, "Launch splash: frame not drawn ({:#010x}): {}",
+                        static_cast<u32>(e.code()), winrt::to_string(e.message()));
+        }
+        return {};
+    }
 }
 } // namespace
 

@@ -1183,12 +1183,14 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                       (process->Is64Bit() ? "A64" : "A32") + "), " +
                       std::to_string(prewarm_budget.MiBPerCore()) + " MiB per core | " +
                       MemoryReport());
+            if (pulse_screen) pulse_screen->CpuStarting();
             Core::ConfigureApplicationPrewarm(system,
                 config.jit_prewarm == BootConfig::JitPrewarm::Warm,
                 [&system, &pulse_screen, boot_screen](size_t done, size_t total) {
-                    // A resume's screen keeps its ring moving; two presenters would race.
-                    if (pulse_screen) return;
-                    if (boot_screen) SetLaunchStep(LaunchStep::Cpu, done, total);
+                    // A resume's screen and the splash show the count themselves; two presenters
+                    // would race.
+                    if (pulse_screen) pulse_screen->Cpu(done, total);
+                    else if (boot_screen) SetLaunchStep(LaunchStep::Cpu, done, total);
                     else D3D12::ShowCpuLoadProgress(system.Renderer(), done, total);
                 },
                 prewarm_budget.BytesPerCore());
