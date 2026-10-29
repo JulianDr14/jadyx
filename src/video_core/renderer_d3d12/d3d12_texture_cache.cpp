@@ -767,6 +767,7 @@ Image& Image::operator=(Image&& other) noexcept {
         resource_allocation = std::move(other.resource_allocation);
         format = other.format;
         gpu_decoded = other.gpu_decoded;
+        gpu_unswizzled = other.gpu_unswizzled;
         cpu_writable = other.cpu_writable;
         untouched = other.untouched;
         level_bias = other.level_bias;
