@@ -145,6 +145,22 @@ RasterizerD3D12::~RasterizerD3D12() {
     buffer_runtime.SetDescriptorQueue(nullptr);
 }
 
+bool RasterizerD3D12::WaitPendingPipeline(GraphicsPipeline* pipeline, u32 vertices,
+                                          u32 instances, bool indexed) {
+    // Still building on a worker (async_pipelines): skipped, unless the draw matters enough to
+    // wait for it.
+    const PendingDrawAction action = DecidePendingDraw(
+        GetAsyncPipelines(), GetWaitSmallDraws(),
+        {
+            .vertices = vertices,
+            .instances = instances,
+            .indexed = indexed,
+            .new_target = HasNewTarget(*texture_cache.GetFramebuffer()),
+        });
+    CountPendingDraw(action);
+    return action != PendingDrawAction::Skip && pipeline_cache.WaitPending(pipeline);
+}
+
 void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     const bool full = VideoCommon::FullCapture::Active();
     if (full) {
@@ -244,19 +260,10 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
         pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
     }
     if (!pipeline->IsBuilt()) [[unlikely]] {
-        // Still building on a worker (async_pipelines): skipped, unless the draw matters enough to
-        // wait for it.
         const auto& draw = maxwell3d->draw_manager.draw_state;
-        const PendingDrawAction action = DecidePendingDraw(
-            GetAsyncPipelines(), GetWaitSmallDraws(),
-            {
-                .vertices = is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count,
-                .instances = instance_count,
-                .indexed = is_indexed,
-                .new_target = HasNewTarget(*texture_cache.GetFramebuffer()),
-            });
-        CountPendingDraw(action);
-        if (action == PendingDrawAction::Skip || !pipeline_cache.WaitPending(pipeline)) {
+        if (!WaitPendingPipeline(pipeline,
+                                 is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count,
+                                 instance_count, is_indexed)) {
             ++zpass_diag.pending;
             hunt.Outcome(Hunt::Outcome::NoPipeline);
             if (trace_this_draw) {

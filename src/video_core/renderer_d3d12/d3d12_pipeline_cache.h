@@ -144,9 +144,6 @@ public:
     /// either skips it or calls WaitPending.
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipeline();
 
-    /// CurrentGraphicsPipeline, waited for when still building: for draws that cannot be skipped.
-    [[nodiscard]] GraphicsPipeline* ReadyGraphicsPipeline();
-
     /// Waits for a pipeline still being built; null if its PSO ran out of memory (its draws are
     /// skipped until it is tried again).
     [[nodiscard]] GraphicsPipeline* WaitPending(GraphicsPipeline* pipeline);

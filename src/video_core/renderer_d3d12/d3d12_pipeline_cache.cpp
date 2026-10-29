@@ -1133,14 +1133,6 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
     return WaitPending(pipeline);
 }
 
-GraphicsPipeline* PipelineCache::ReadyGraphicsPipeline() {
-    GraphicsPipeline* const pipeline = CurrentGraphicsPipeline();
-    if (pipeline && !pipeline->IsBuilt()) {
-        return WaitPending(pipeline);
-    }
-    return pipeline;
-}
-
 GraphicsPipeline* PipelineCache::WaitPending(GraphicsPipeline* pipeline) {
     const PipelineStage cause = pipeline->WasEvicted() ? PipelineStage::WaitEvicted
                                 : pipeline->FromDisk() ? PipelineStage::WaitDormant

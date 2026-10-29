@@ -226,6 +226,10 @@ private:
     void SetGraphicsRootArguments(CommandStream* cmd, const GraphicsPipeline& pipeline,
                                   const PipelineBindings& bindings, const DrawParams& params);
     void ApplyPendingStateInvalidation();
+    /// A configured draw whose pipeline is still building: whether it waited for it (true, the
+    /// pipeline is ready) or is skipped (async_pipelines). UINT32_MAX vertices when unknown.
+    [[nodiscard]] bool WaitPendingPipeline(GraphicsPipeline* pipeline, u32 vertices, u32 instances,
+                                           bool indexed);
     /// Indirect draws of topologies rewritten on the CPU: reads the arguments and draws directly.
     void DrawIndirectOnCpu(const IndirectParams& params);
     [[nodiscard]] ViewportState ComputeViewports(

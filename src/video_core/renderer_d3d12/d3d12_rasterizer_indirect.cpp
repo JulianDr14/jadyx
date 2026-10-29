@@ -73,7 +73,7 @@ void RasterizerD3D12::DrawIndirect() {
 
     scheduler.BeginWork();
     hunt.PipelineStart();
-    GraphicsPipeline* const pipeline = pipeline_cache.ReadyGraphicsPipeline();
+    GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
     hunt.PipelineEnd();
     if (!pipeline) {
         hunt.Outcome(Hunt::Outcome::NoPipeline);
@@ -104,6 +104,11 @@ void RasterizerD3D12::DrawIndirect() {
     buffer_cache.SetDrawIndirect(nullptr);
     if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
         pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+    }
+    if (!pipeline->IsBuilt() && !WaitPendingPipeline(pipeline, UINT32_MAX, UINT32_MAX,
+                                                     params.is_indexed)) [[unlikely]] {
+        hunt.Outcome(Hunt::Outcome::NoPipeline);
+        return;
     }
     if (!pipeline->Handle()) {
         hunt.Outcome(Hunt::Outcome::PsoRejected);
@@ -293,7 +298,7 @@ void RasterizerD3D12::DrawByteCount(const IndirectParams& params) {
     gpu_memory->FlushCaching();
     ApplyPendingStateInvalidation();
     scheduler.BeginWork();
-    GraphicsPipeline* const pipeline = pipeline_cache.ReadyGraphicsPipeline();
+    GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
     if (!pipeline) {
         return;
     }
@@ -308,6 +313,10 @@ void RasterizerD3D12::DrawByteCount(const IndirectParams& params) {
     buffer_cache.SetDrawIndirect(nullptr);
     if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
         pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+    }
+    if (!pipeline->IsBuilt() && !WaitPendingPipeline(pipeline, UINT32_MAX, UINT32_MAX, false))
+        [[unlikely]] {
+        return;
     }
     if (!pipeline->Handle() || UsesSkippedShader(pipeline->Key().unique_hashes)) {
         return;
