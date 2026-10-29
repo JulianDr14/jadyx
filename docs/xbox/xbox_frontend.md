@@ -654,13 +654,16 @@ pequeños.
 ## Idiomas de la interfaz
 
 `localization.h`: cada texto visible tiene un id en `I18n::Text`; cada idioma es un catálogo en
-`locales/<tag>.cpp` construido con `MakeCatalog`, que es `consteval`: un id que falta, repetido o
-vacío **no compila**. Marcadores posicionales `{0}`, `{1}` (la traducción puede reordenarlos);
-plurales con la regla CLDR del idioma (`Plural`). El menú en juego usa la misma traducción (con
-texto real desde la sección de cheats, más abajo).
+`locales/<tag>.cpp` construido con `MakeCatalog`, que es `consteval`: un id repetido o vacío
+no compila; los catálogos completos también rechazan ids ausentes. Un catálogo parcial usa
+`MakeCatalog(..., true)` y `Tr` recurre al inglés para los ids ausentes. Marcadores posicionales
+`{0}`, `{1}` (la traducción puede reordenarlos); plurales con la regla CLDR del idioma (`Plural`).
+El menú en juego usa la misma traducción (con texto real desde la sección de cheats, más abajo).
 
-Idiomas: inglés (`en`), español (`es`) y portugués de Brasil (`pt-BR`, trato "você"). En pt la
-regla CLDR pone 0 con el singular ("0 jogo", "1 jogo", "2 jogos").
+Idiomas: inglés (`en`), español (`es`), portugués de Brasil (`pt-BR`, trato "você") y chino
+simplificado (`zh-CN`). El chino es el idioma de interfaz predeterminado en una instalación nueva;
+el usuario aún puede seleccionar "Automático" para seguir el idioma de Windows. En pt la regla
+CLDR pone 0 con el singular ("0 jogo", "1 jogo", "2 jogos").
 
 Negociación BCP 47: preferencias de Windows en orden; para cada una, la etiqueta recortando
 subetiquetas (`es-CO` -> `es`) y si no, otra variante del mismo idioma (`pt-PT` -> `pt-BR`);
@@ -715,8 +718,8 @@ en la Series, los de la consola) y se muestra como "Automático · Español".
   antes de `System::Load`; vacío conserva "Jadyx".
 
 Persistencia en `LocalSettings` (`system_ui_language`, `system_game_language`, `system_region`,
-`system_user_name`; -1 = automático). Lógica pura en `system_settings.h` / `system_page.h`, WinRT
-en `uwp_system_settings.cpp`.
+`system_user_name`; etiqueta vacía = automático). Lógica pura en `system_settings.h` / `system_page.h`,
+WinRT en `uwp_system_settings.cpp`.
 
 Harness PASS: `localization-catalogs`, `system-settings`, `text-entry`, `library-cache` (con
 `/DJADYX_NO_WINRT`) y `game-menu` (ahora con los catálogos). Compilan con `/Zc:preprocessor`

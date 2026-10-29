@@ -1253,7 +1253,7 @@ private:
         const auto& system = network.system;
         if (system.busy) {
             const auto& file = system.file;
-            // Keys and firmware have their own phases; the NSP wording does not apply here.
+            // Keys and firmware have their own phases; the game upload is format-agnostic.
             progress = system.phase == "receiving" && file.busy ? I18n::Format(T::NetworkUploading,
                 {winrt::to_hstring(file.name).c_str(), std::to_wstring(file.received >> 20), std::to_wstring(file.length >> 20)}) :
                 std::wstring{Tr(system.phase == "receiving" ? T::SystemWaiting :

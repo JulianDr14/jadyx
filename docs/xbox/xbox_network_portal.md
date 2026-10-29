@@ -461,6 +461,20 @@ Fuentes primarias: [Zstandard streaming y parametros](https://facebook.github.io
 Libarchive configurado en este proyecto solo para lectura; por eso el escritor
 PAX usa el contenedor estandar y se valida con un lector independiente.
 
+## Transferencia de archivos de juego sin filtro de formato
+
+La pestaña de juegos del portal acepta cualquier extensión y publica el archivo recibido
+sin interpretar su contenido. `stage=game-files` describe esta transferencia. Se mantienen
+las comprobaciones de nombre/ruta, colisión, tamaño, espacio, bloques, checkpoints y publicación
+sin sobrescritura; no se relaja la validación de claves/firmware ni la importación de updates/DLC.
+Aceptar un archivo solo confirma su transferencia: no implica que el formato sea ejecutable ni que
+aparezca en la biblioteca, cuyo escáner y loader conservan sus formatos admitidos.
+
+El selector web no restringe extensiones. Sus textos es/en/pt-BR/zh-CN aclaran que cualquier
+archivo se puede transferir y que solo los formatos compatibles se pueden iniciar. La carga
+genérica se limita a la ruta de juegos del portal; los uploads de contenido continúan pasando por
+su validador/importador correspondiente.
+
 ## Compresion multihilo y descarga en streaming de logs — 0.3.6.17+ (20 octubre 2026)
 
 El portal solo exporta con la consola quieta en modo red, asi que la compresion usa
@@ -504,6 +518,15 @@ consola publica su vista (PortalLibrarySource, solo lectura, generación por esc
   el worker de almacenamiento llama a FinalizeContent con tag "<kind>:<id>" y la importación
   es la del gestor de contenido (ImportUploadedContent: copia interna, base presente, sin
   downgrade, paquete rechazado entero si trae contenido de otro juego).
+- Continuación local: kind=save acepta solo ZIP de hasta 4 GiB y lo vincula al mismo
+  application seleccionado. El worker importa la estructura del ZIP al guardado Account
+  del usuario Jadyx actual (no elige perfil ni interpreta formatos de exportadores externos).
+  Se rechazan rutas absolutas/traversal/ADS, nombres inválidos o colisiones sin distinción
+  de mayúsculas, enlaces, entradas cifradas, ZIP no válido, >8192 entradas o >8 GiB extraídos.
+  Se copia el guardado existente a staging, se superponen los archivos del ZIP y solo entonces
+  se publica el directorio por rename; errores/cancelación intentan restaurar el original.
+  Límite de copia existente: 8 GiB; se conserva un margen libre de 64 MiB y se vuelve a revisar
+  el espacio durante escrituras grandes. Cerrar el juego antes de importar.
 - DELETE /api/v1/library/{id} y DELETE /api/v1/library/{id}/content/{64 hex}: 202 {removal};
   404 game; 409 busy (subida abierta, importación de sistema u otra eliminación).
   status.removal {serial,game,content,phase,error}: pending -> running -> complete|failed.
@@ -523,3 +546,37 @@ admisión kind/juego, tag al instalador, cola de eliminación, exclusión de sub
 visible); test de página network-portal-page.cjs (es/en/pt-BR, mock HTTP, ejecutado con
 Electron de VS Code en modo node); UWP compila/enlaza. Pendiente: gate en Series con
 update/DLC reales y eliminación desde ambos lados.
+
+Continuación local de la biblioteca: el portal añade un tipo de selección ZIP de guardado;
+updates y DLC mantienen el validador NSP del gestor de contenido. zh-CN cubre el catálogo
+de biblioteca, las acciones de guardado y las páginas de claves/firmware. El test de navegador
+valida selección de ZIP, kind/application y textos zh-CN. El importador nativo todavía requiere
+compilación UWP y pruebas con ZIP válido, rutas maliciosas, falta de espacio, cancelación,
+restauración y guardados reales en Series; no se ha generado un paquete ni se certifica el gate.
+La siguiente entrega de consola se prepara como 0.3.9.1 (parche sobre 0.3.9.0); la firma temporal
+no se ha aplicado. Este workspace Linux no tiene PowerShell, MSVC ni un árbol build-uwp.
+
+## Exportación de guardados desde el portal
+
+Implementación local pendiente de build UWP y del harness TCP nativo:
+- La pestaña Guardados ofrece exportar e importar. `POST /api/v1/library/{id}/save/export`
+  encola un trabajo del coordinador; el navegador sigue `status.save_export` y muestra
+  progreso. Se archiva únicamente el guardado Account del usuario Jadyx actual para el
+  juego seleccionado, sin aceptar rutas ni un perfil elegido por el navegador. El juego debe
+  permanecer cerrado; la admisión local y las subidas quedan bloqueadas durante la lectura.
+- El worker valida el árbol y rechaza enlaces/reparse points, tipos de archivo inesperados,
+  nombres incompatibles y rutas no importables. ZIP UTF-8 sin compresión, máximo8192 entradas
+  y4GiB de archivo; reserva64MiB libres. No exporta saves ausentes o sin archivos. Los archivos
+  de longitud cero se conservan y el importador ahora los acepta.
+- `POST /api/v1/library/save/download` crea un ticket aleatorio de 30min. El GET de archivo
+  solo acepta ese ticket, transmite en bloques y admite Range para reanudar; la ruta física
+  nunca se entrega al navegador.
+- El ZIP es compatible con el importador del portal. Si el guardado supera los límites, tiene
+  nombres no representables o no hay espacio, se muestra un error explícito y no se modifica
+  el guardado original.
+
+Validación disponible en este entorno: `network-portal-page.cjs` pasa con escenarios de
+interfaz/exportación simulados y `git diff --check` limpio. El harness TCP ampliado cubre
+cola/admisión, progreso, ticket, streaming y Range, pero no puede ejecutarse aquí. Build/link
+UWP, ZIP real producido por el worker, visual en navegador y prueba de exportación en Series
+siguen pendientes; no se ha creado un paquete.

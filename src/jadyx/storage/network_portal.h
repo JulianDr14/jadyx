@@ -7,6 +7,7 @@
 #include <functional>
 #include <cstdint>
 #include <optional>
+#include <stop_token>
 #include <utility>
 #include "jadyx/updates/update_package.h"
 #include <string>
@@ -47,6 +48,13 @@ struct PortalRemoval {
     bool operator==(const PortalRemoval&) const = default;
 };
 
+/// One account-save archive requested from the browser and run by the library coordinator.
+struct PortalSaveExport {
+    std::uint64_t serial{}, application{}, processed{}, total{}, size{};
+    std::string phase, error, filename;
+    bool operator==(const PortalSaveExport&) const = default;
+};
+
 struct PortalStatus {
     bool running{};
     bool paired{};
@@ -60,6 +68,7 @@ struct PortalStatus {
     UploadSnapshot content; ///< Update/DLC package; its tag is "<kind>:<application hex>".
     SystemUploadStatus system;
     PortalRemoval removal;
+    PortalSaveExport save_export;
 };
 
 /// One installed game as the browser sees it. Never carries a console path.
@@ -84,6 +93,8 @@ struct PortalLibrary {
     std::function<std::optional<std::string>(std::uint64_t)> cover;          ///< JPEG bytes
     std::function<std::vector<PortalContent>(std::uint64_t)> contents;
     std::function<std::pair<std::uint64_t, std::uint64_t>()> progress;      ///< installed MiB, total MiB
+    std::function<std::string(std::uint64_t, const std::filesystem::path&, std::stop_token,
+                              const std::function<void(std::uint64_t, std::uint64_t)>&)> save_export;
 };
 
 /// Installs an update/DLC upload; `tag` is the validated "<kind>:<application hex>".
@@ -115,12 +126,14 @@ public:
     // Configure the library view before Start; without it the library routes answer 503.
     void SetLibrary(PortalLibrary library);
     bool BlockForLocalOperation();
-    std::string FinalizeGame(const NspValidator& validate);
+    std::string FinalizeGame(const NspValidator& validate = {});
     /// Only the library coordinator calls this, after its metadata worker has joined.
     std::string FinalizeContent(const ContentValidator& validate);
     /// Runs the pending removal, if any. Only the library coordinator calls this, from its
     /// storage worker; uploads stay closed from the request until it returns.
     std::string RunRemoval(const RemovalRunner& run);
+    /// Runs the queued save archive on the library storage worker.
+    std::string RunSaveExport(std::stop_token stop);
     void CancelTransfer();
     std::string RunSystemImport(std::stop_token stop);
 

@@ -13,7 +13,7 @@ foreach ($frontendTest in $Tests) {
         throw "Unknown frontend test: $frontendTest"
     }
     $frontendExtra = if ($frontendTest -eq 'cheats-page') { 'src\core\memory\cheat_text.cpp ' } elseif ($frontendTest -eq 'cheat-catalog') { 'src\core\memory\cheat_text.cpp src\jadyx\cheats\cheat_db.cpp ' } else { '' }
-    $frontendCommands += ('cl /nologo /O2 /MD /std:c++20 /EHsc /utf-8 /Zc:preprocessor /DJADYX_NO_WINRT /I src tools\xbox\tests\' + $frontendTest + '.cpp ' + $frontendExtra + 'src\jadyx\i18n\localization.cpp src\jadyx\i18n\locales\en.cpp src\jadyx\i18n\locales\es.cpp src\jadyx\i18n\locales\pt_br.cpp src\jadyx\i18n\locales\registry.cpp /Fo:build-uwp\test-results\frontend-refactor\ /Fe:build-uwp\test-results\frontend-refactor\' + $frontendTest + '.exe')
+    $frontendCommands += ('cl /nologo /O2 /MD /std:c++20 /EHsc /utf-8 /Zc:preprocessor /DJADYX_NO_WINRT /I src tools\xbox\tests\' + $frontendTest + '.cpp ' + $frontendExtra + 'src\jadyx\i18n\localization.cpp src\jadyx\i18n\locales\en.cpp src\jadyx\i18n\locales\es.cpp src\jadyx\i18n\locales\pt_br.cpp src\jadyx\i18n\locales\zh_cn.cpp src\jadyx\i18n\locales\registry.cpp /Fo:build-uwp\test-results\frontend-refactor\ /Fe:build-uwp\test-results\frontend-refactor\' + $frontendTest + '.exe')
     $frontendCommands += 'if errorlevel 1 exit /b 1'
     $frontendCommands += ('build-uwp\test-results\frontend-refactor\' + $frontendTest + '.exe')
     $frontendCommands += 'if errorlevel 1 exit /b 1'

@@ -20,6 +20,8 @@ add_executable(jadyx WIN32
     library/play_history.h
     library/portal_library.cpp
     library/portal_library.h
+    library/save_archive.cpp
+    library/save_archive.h
     pulse/pulse_screen.cpp
     pulse/pulse_screen.h
     pulse/pulse_store_gate.cpp
@@ -73,6 +75,7 @@ add_executable(jadyx WIN32
     i18n/locales/en.cpp
     i18n/locales/es.cpp
     i18n/locales/pt_br.cpp
+    i18n/locales/zh_cn.cpp
     ui/ui_text.h
     # Settings > System and the library's on-disk metadata cache.
     settings/system_settings.h

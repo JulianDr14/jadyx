@@ -143,7 +143,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     std::future<std::string> import_future;
     std::jthread import_worker;
     // What the storage worker runs: one at a time, never alongside a manager or the metadata reader.
-    enum class StorageJob { Files, PortalGame, PortalSystem, PortalContent, PortalRemoval, Removal };
+    enum class StorageJob { Files, PortalGame, PortalSystem, PortalContent, PortalRemoval, PortalSaveExport, Removal };
     StorageJob storage_job{};
     std::optional<GameFiles> removal_request; ///< Confirmed in the game's options.
     bool removed_copy{}; ///< That removal keeps another copy of the game.
@@ -925,7 +925,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 configuration.network.system.phase != state.system.phase ||
                 configuration.network.system.processed != state.system.processed ||
                 configuration.network.system.file.received != state.system.file.received ||
-                configuration.network.system.error != state.system.error) {
+                configuration.network.system.error != state.system.error ||
+                configuration.network.save_export != state.save_export) {
                 configuration.network = state;
                 dirty = true;
             }
@@ -933,7 +934,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             const std::optional<StorageJob> next_job = removal_request ? StorageJob::Removal :
                 system_pending ? StorageJob::PortalSystem : state.removal.phase == "pending" ? StorageJob::PortalRemoval :
                 state.transfer.phase == "ready" ? StorageJob::PortalGame :
-                state.content.phase == "ready" ? std::optional{StorageJob::PortalContent} : std::nullopt;
+                state.content.phase == "ready" ? std::optional{StorageJob::PortalContent} :
+                state.save_export.phase == "pending" ? std::optional{StorageJob::PortalSaveExport} : std::nullopt;
             if (next_job && !configuration.busy && !loading &&
                 !setup_future.valid() && !picker && !validation.valid() && !content_session && !game_options.open) {
                 configuration.busy=true;
@@ -962,7 +964,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                         case StorageJob::PortalRemoval:
                             return network_portal.RunRemoval([&](const PortalRemoval& r) { return portal_library.Remove(r); });
                         case StorageJob::PortalContent: return network_portal.FinalizeContent(install);
-                        default: return network_portal.FinalizeGame(ValidateUploadedNsp);
+                        case StorageJob::PortalSaveExport: return network_portal.RunSaveExport(stop);
+                        default: return network_portal.FinalizeGame();
                         }
                     }};
                 // Keys and firmware stay as they are: the rescan keeps every other game's titles.

@@ -4,6 +4,8 @@ const fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto'),
 const header=fs.readFileSync('src/jadyx/storage/network_portal_page.h','utf8');
 const script=header.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(script,{filename:'network-portal-page.js'});
+assert.doesNotMatch(header,/<input id="files"[^>]*\baccept=/,'game file picker must not restrict formats');
+assert.match(header,/支持任意文件格式/);
 // /logo.png serves the app's controller logo; its embedded bytes must match the packaged asset.
 const logo=fs.readFileSync('src/jadyx/storage/network_portal_logo.h','utf8').match(/Logo\[\]=\{([\s\S]*?)\};/)[1].match(/0x[0-9a-f]{2}/g).map(Number);
 assert.ok(Buffer.from(logo).equals(fs.readFileSync('dist/uwp/Assets/Square150x150Logo.scale-200.png')),'network_portal_logo.h is stale');
@@ -33,21 +35,24 @@ for(const size of [0,3,55,56,63,64,65,128,131072]){
  await browserScenario({collision:true});
  await browserScenario({pause:true});
  await browserScenario({queue:true});
+ await browserScenario({anyFormat:true,language:'zh-CN'});
  console.log('PASS: browser client mocked 5GiB queue/chunks4-16-64/64-bit resume/lost ACK/different file/collision/pause; no whole-file arrayBuffer');
- for(const language of ['es','en','pt-BR'])for(const kind of ['keys','firmware'])for(const zip of [false,true])await systemScenario(kind,zip,language);
+ for(const language of ['es','en','pt-BR','zh-CN'])for(const kind of ['keys','firmware'])for(const zip of [false,true])await systemScenario(kind,zip,language);
  console.log('PASS: browser keys/firmware, ZIP/loose, review warning checkbox and explicit confirmation (mock HTTP)');
- for(const language of ['es','en','pt-BR'])await libraryScenario(language);
- console.log('PASS: browser library, update upload with kind/game metadata, two-press content and game deletion (mock HTTP)');
+ for(const language of ['es','en','pt-BR','zh-CN'])await libraryScenario(language);
+ console.log('PASS: browser library, update/save uploads, Chinese labels and game deletion (mock HTTP)');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 
 async function browserScenario(options){
  const elements=new Map(),callbacks=new Map();
  const element=id=>{
   if(!elements.has(id))elements.set(id,{value:'',textContent:'',files:[],hidden:false,disabled:false,
+   classList:{toggle(){},add(){},remove(){}},
+   setAttribute(key,value){this[key]=value;},
    addEventListener:(event,callback)=>callbacks.set(id+':'+event,callback)});
   return elements.get(id);
  };
- const length=5*1024**3,id='a'.repeat(32),name='base.nsp';
+ const length=5*1024**3,id='a'.repeat(32),name=options.anyFormat?'payload.bin':'base.nsp';
  const selected={name,size:length,lastModified:123,slice:(start,end=length)=>({size:end-start,arrayBuffer:async()=>{
   assert.ok(end-start<=65536,'large file must never be loaded as ArrayBuffer');return new Uint8Array(end-start).buffer;
  }})};
@@ -90,24 +95,29 @@ async function browserScenario(options){
    });
   }
  }
- context=vm.createContext({document:{getElementById:element,documentElement:{}},navigator:{language:'es'},
+ const document={getElementById:element,documentElement:{},body:{classList:{toggle(){}}}};
+ context=vm.createContext({document,navigator:{language:options.language||'es'},
   location:{search:'?chunk='+(options.chunk||16)},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
   performance,XMLHttpRequest:XHR,fetch,btoa:value=>Buffer.from(value,'binary').toString('base64'),
   setTimeout:callback=>{queueMicrotask(callback);return 1;},setInterval:()=>1,clearInterval:()=>{},selected});
  vm.runInContext(script,context);
+ if(options.language==='zh-CN'){
+  assert.equal(document.documentElement.lang,'zh-CN');
+  assert.equal(element('uploadintro').textContent,'支持任意文件格式。只有模拟器支持的游戏格式才能启动。');
+ }
  if(options.resume||options.different){
   const signature=await vm.runInContext('fingerprint(selected)',context);
   const offset=4*1024**3+1048576;
   job={...job,id,name,fingerprint:options.different?'b'.repeat(64):signature,length,offset,received:offset,phase:'paused'};
  }
  element('code').value='1234';await callbacks.get('pair:submit')({preventDefault(){}});
- element('files').files=options.queue?[selected,{...selected,name:'second.nsp'}]:[selected];callbacks.get('files:change')();
+ element('files').files=options.queue?[selected,{...selected,name:options.anyFormat?'second.bin':'second.nsp'}]:[selected];callbacks.get('files:change')();
  await callbacks.get('send:click')();
  if(controlPromise)await controlPromise;
  if(options.different){assert.equal(writes,0);assert.match(element('message').textContent,/distinto/);}
  else if(options.collision){
   assert.equal(writes,0);assert.match(element('message').textContent,/existe/);
-  element('name').value='renamed.nsp';await callbacks.get('send:click')();assert.equal(job.name,'renamed.nsp');assert.equal(job.phase,'complete');
+  element('name').value=options.anyFormat?'renamed.bin':'renamed.nsp';await callbacks.get('send:click')();assert.equal(job.name,element('name').value);assert.equal(job.phase,'complete');
  }else if(options.pause){assert.equal(job.offset,16*1048576);assert.equal(job.phase,'paused');}
  else{assert.equal(job.offset,length);assert.equal(job.phase,'complete');}
  if(options.queue)assert.deepEqual(completed,[name,'second.nsp']);
@@ -116,6 +126,7 @@ async function browserScenario(options){
 async function systemScenario(kind,zip,language){
  const elements=new Map(),callbacks=new Map();
  const element=id=>{if(!elements.has(id))elements.set(id,{value:'',checked:false,textContent:'',files:[],hidden:false,disabled:false,
+  setAttribute(key,value){this[key]=value;},
   addEventListener:(event,callback)=>callbacks.set(id+':'+event,callback)});return elements.get(id);};
  const id='b'.repeat(32),fileid='c'.repeat(32),length=1024*1024+1;
  const selected={name:zip?'source.zip':kind==='keys'?'prod.keys':'0'.repeat(32)+'.nca',size:length,lastModified:123,
@@ -149,10 +160,15 @@ async function systemScenario(kind,zip,language){
   getResponseHeader(k){return k==='Upload-Offset'?String(system.file.offset):null;}
   send(blob){assert.equal(Number(this.headers['Upload-Offset']),system.file.offset);system.file.offset+=blob.size;system.file.received=system.file.offset;writes++;queueMicrotask(()=>{this.status=204;this.onload();});}
  }
- const context=vm.createContext({document:{getElementById:element,documentElement:{}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
+ const context=vm.createContext({document:{getElementById:element,documentElement:{},body:{classList:{toggle(){}}}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
   performance,XMLHttpRequest:XHR,fetch,btoa:v=>Buffer.from(v,'binary').toString('base64'),setTimeout:cb=>{queueMicrotask(cb);return 1;},setInterval:()=>1,clearInterval:()=>{}});
  vm.runInContext(script,context);
- assert.equal(element('keys-title').textContent,language==='es'?'Importar claves':language==='pt-BR'?'Importar chaves':'Import keys','initial keys card is a title, never an error');
+ assert.equal(element('keys-title').textContent,language==='es'?'Importar claves':language==='pt-BR'?'Importar chaves':language==='zh-CN'?'导入密钥':'Import keys','initial keys card is a title, never an error');
+ if(language==='zh-CN'){
+  assert.equal(element('system-title').textContent,'密钥与固件');
+  assert.equal(element('system-intro').textContent,'安装前会检查所有文件。确认前不会替换现有文件。');
+  assert.equal(element('firmware-title').textContent,'导入固件');
+ }
  element('code').value='1234';await callbacks.get('pair:submit')({preventDefault(){}});
  element(kind+'-files').files=[selected];await callbacks.get(kind+'-send:click')();
  assert.equal(writes,1);assert.equal(system.phase,'review');assert.equal(confirmations,0);
@@ -166,12 +182,14 @@ async function libraryScenario(language){
  const elements=new Map(),requests=[];
  const make=tag=>{const n={tag,value:'',textContent:'',files:[],hidden:false,disabled:false,style:{},dataset:{},children:[],listeners:{},
   classList:{add(){},remove(){}},addEventListener:(event,callback)=>{n.listeners[event]=callback;},
+  setAttribute(key,value){this[key]=value;},
   append:(...c)=>n.children.push(...c),replaceChildren:(...c)=>{n.children=c;}};return n;};
  const element=id=>{if(!elements.has(id))elements.set(id,make('#'+id));return elements.get(id);};
  const click=n=>n.listeners.click();
  const app='0100000000010000',item='d'.repeat(64),upload='e'.repeat(32),length=3*1048576+5;
  let games=[{id:app,name:'Game',developer:'Dev',version:'1.0.0',removable:true}],contents=[{id:item,kind:'update',name:'Update',version:'1.0.1',bytes:1048576,internal:true}];
- let removal={serial:0,game:'',content:'',phase:'',error:''},content={},revision=1;
+ let removal={serial:0,game:'',content:'',phase:'',error:''},content={},
+  saveExport={serial:0,game:'',phase:'',error:'',processed:0,total:0,size:0,busy:false},revision=1;
  const response=(status,data={},headers={})=>({status,ok:status>=200&&status<300,json:async()=>JSON.parse(JSON.stringify(data)),headers:{get:k=>headers[k]??null}});
  const fetch=async(url,request={})=>{
   if(url==='/api/v1/pair')return response(200,{session:'test-session'});
@@ -180,23 +198,30 @@ async function libraryScenario(language){
   if(url==='/api/v1/status'){
    if(removal.phase==='pending'){removal={...removal,phase:'complete'};
     if(removal.content)contents=contents.filter(c=>c.id!==removal.content);else{games=[];revision++;}}
-   return response(200,{uploads:true,transfer:{},library:true,content,install:{done:0,total:0},removal});
+   return response(200,{uploads:true,transfer:{},library:true,content,install:{done:0,total:0},removal,save_export:saveExport});
   }
   if(url==='/api/v1/library')return response(200,{revision,games});
   if(url.endsWith('/cover'))return response(404,{error:'cover'});
   if(url==='/api/v1/library/'+app+'/content')return response(200,{contents});
+  if(request.method==='POST'&&url==='/api/v1/library/'+app+'/save/export'){
+   saveExport={serial:saveExport.serial+1,game:app,phase:'complete',error:'',processed:12,total:12,size:128,busy:false};
+   return response(202,{save_export:saveExport});
+  }
+  if(request.method==='POST'&&url==='/api/v1/library/save/download')
+   return response(200,{download:'/api/v1/library/save/archive?ticket='+'a'.repeat(64),filename:'jadyx-save-'+app+'.zip',size:128});
   if(request.method==='DELETE'&&url.startsWith('/api/v1/library/'+app)){
    const id=url.split('/content/')[1]||'';removal={serial:removal.serial+1,game:app,content:id,phase:'pending',error:''};return response(202,{removal});
   }
   if(url==='/api/v1/content/uploads'){
    const metadata=Object.fromEntries(request.headers['Upload-Metadata'].split(',').map(s=>{const [key,b64]=s.split(' ');return[key,Buffer.from(b64,'base64').toString('utf8')];}));
-   assert.equal(metadata.kind,'update');assert.equal(metadata.application,app);assert.equal(metadata.filename,'patch.nsp');
-   content={id:upload,name:metadata.filename,fingerprint:metadata.fingerprint,tag:'update:'+app,length,offset:0,received:0,phase:'receiving',busy:true,available:true};
+   assert.equal(metadata.kind,uploadKind);assert.equal(metadata.application,app);assert.equal(metadata.filename,selectedFile.name);
+   content={id:upload,name:metadata.filename,fingerprint:metadata.fingerprint,tag:uploadKind+':'+app,length:selectedFile.size,offset:0,received:0,phase:'receiving',busy:true,available:true};
    return response(201,{}, {Location:'/api/v1/content/uploads/'+upload});
   }
   if(request.method==='HEAD')return response(200,{}, {'Upload-Offset':String(content.offset)});
-  if(url.endsWith('/finish')){assert.equal(content.offset,length);content={...content,phase:'complete',busy:false};
-   contents=[...contents,{id:'f'.repeat(64),kind:'update',name:'Update',version:'1.0.2',bytes:length,internal:true}];return response(204);}
+  if(url.endsWith('/finish')){assert.equal(content.offset,selectedFile.size);content={...content,phase:'complete',busy:false};
+   if(uploadKind==='update')contents=[...contents,{id:'f'.repeat(64),kind:'update',name:'Update',version:'1.0.2',bytes:length,internal:true}];
+   return response(204);}
   throw Error('unexpected library request '+url);
  };
  class XHR{
@@ -206,7 +231,8 @@ async function libraryScenario(language){
   send(blob){assert.equal(Number(this.headers['Upload-Offset']),content.offset);content.offset+=blob.size;content.received=content.offset;queueMicrotask(()=>{this.status=204;this.onload();});}
  }
  const file={name:'patch.nsp',size:length,lastModified:1,slice:(start,end=length)=>({size:end-start,arrayBuffer:async()=>new Uint8Array(end-start).buffer})};
- const context=vm.createContext({document:{getElementById:element,createElement:make,documentElement:{}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
+ let selectedFile=file,uploadKind='update';
+ const context=vm.createContext({document:{getElementById:element,createElement:make,documentElement:{},body:{classList:{toggle(){}}}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
   performance,XMLHttpRequest:XHR,fetch,URL:{createObjectURL:()=>'blob:x',revokeObjectURL(){}},btoa:v=>Buffer.from(v,'binary').toString('base64'),
   setTimeout:(cb,ms)=>{if(!(ms>=6000))queueMicrotask(cb);return 1;},clearTimeout:()=>{},setInterval:()=>1,clearInterval:()=>{}});
  vm.runInContext(script,context);
@@ -216,6 +242,11 @@ async function libraryScenario(language){
  assert.equal(element('upload').hidden,true);assert.equal(element('library').hidden,false);assert.equal(element('games').children.length,1);
  click(element('games').children[0]);await delay();
  assert.equal(element('game').hidden,false);assert.equal(element('game-name').textContent,'Game');assert.equal(element('items').children.length,1);
+ if(language==='zh-CN'){
+  assert.equal(element('library-title').textContent,'游戏库');
+  assert.equal(element('kind-save').textContent,'存档');
+  assert.match(element('save-note').textContent,/当前 Jadyx 用户/);
+ }
  // One press arms the deletion; only the second sends it.
  let remove=()=>element('items').children[0].children[1];
  await click(remove());assert.ok(!requests.some(r=>r.startsWith('DELETE')),'first press never deletes');
@@ -224,6 +255,25 @@ async function libraryScenario(language){
  assert.notEqual(element('library-note').textContent,'');
  element('content-files').files=[file];await click(element('content-send'));await delay();
  assert.equal(content.phase,'complete');assert.equal(element('items').children.length,1,'installed update is listed');
+ uploadKind='save';selectedFile={name:'game-save.zip',size:1024,lastModified:2,slice:(start,end=1024)=>({size:end-start,arrayBuffer:async()=>new Uint8Array(end-start).buffer})};
+ click(element('kind-save'));assert.equal(element('content-files').accept,'.zip');assert.equal(element('content-files').multiple,false);
+ assert.equal(element('items').hidden,true);assert.equal(element('save-note').hidden,false);
+ element('content-files').files=[selectedFile];element('content-files').listeners.change();
+ await click(element('content-send'));await delay();
+ assert.equal(content.phase,'complete');assert.equal(content.tag,'save:'+app);
+ await click(element('save-export'));await delay();
+ assert.ok(requests.includes('POST /api/v1/library/'+app+'/save/export'),'export requests only the selected game');
+ assert.ok(requests.includes('POST /api/v1/library/save/download'),'ready export receives an authenticated download ticket');
+ assert.equal(element('save-download').hidden,false);assert.equal(element('save-download').download,'jadyx-save-'+app+'.zip');
+ assert.equal(element('save-download').href,'/api/v1/library/save/archive?ticket='+'a'.repeat(64));
+ const requestsBeforeInvalidSave=requests.length;
+ selectedFile={...selectedFile,name:'not-a-save.nsp'};element('content-files').files=[selectedFile];
+ await click(element('content-send'));
+ assert.equal(requests.length,requestsBeforeInvalidSave,'invalid save extensions are rejected before upload');
+ if(language==='zh-CN')assert.equal(element('message').textContent,'存档只接受 ZIP 文件。');
+ selectedFile={...selectedFile,name:'oversized.zip',size:4*1024**3+1};element('content-files').files=[selectedFile];
+ await click(element('content-send'));
+ assert.equal(requests.length,requestsBeforeInvalidSave,'oversized save archives are rejected before upload');
  await click(element('game-remove'));assert.ok(!requests.includes('DELETE /api/v1/library/'+app));
  await click(element('game-remove'));assert.ok(requests.includes('DELETE /api/v1/library/'+app));
  await delay();assert.equal(element('game').hidden,true);assert.equal(element('library-list').hidden,false);assert.equal(element('games').children.length,0);

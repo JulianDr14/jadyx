@@ -4238,6 +4238,15 @@ Magnesis.24bateriamultihipotesis:84casosautomaticos(14escenariosxPS/CSxDXCO3/Od/
 
 GateSeries.24:66/84pasan,18fallosPS(6escenariosx3DXC/Mesa),compute42/42. Mezclastore/loadindicesconstante-variabledevuelve0;const/constydynamic/dynamicpasan(incluyeDXCOdconalloca). SeleccionsinarrayPS1/5IDspasa;tablaarrayfallacomoMagnesis. Focoalias/loweringPSSeries,noafirmartodoindexadodinamico roto. Reportearchivado matrix24-series*. .24vigente,fixpendiente;detalle xbox_magnesis.md. Sincommit/push.
 
+Idioma y portal genérico: se registra `zh-CN` como catálogo parcial con fallback inglés,
+y queda como idioma de interfaz inicial; seleccionar Automático sigue la configuración
+de Windows y una elección existente se conserva. El portal permite transferir cualquier
+extensión en la pestaña de juegos, pero no interpreta el contenido ni garantiza que el
+archivo aparezca o se pueda iniciar. Validación de nombre/ruta, límites, checkpoints y
+publicación sin sobrescritura permanecen; updates/DLC y claves/firmware no cambian de ruta.
+La página incluye textos zh-CN y avisa del límite de formatos ejecutables. Gates Node y
+catálogo C++ pasan; harness de storage y build UWP requieren la herramienta Windows.
+
 ### Pulse: auditoría Npad, 20 octubre 2026
 
 Rama nueva `feature/pulse-resume-audit` desde main6ad69f85b5, cambios previos

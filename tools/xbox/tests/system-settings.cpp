@@ -78,14 +78,14 @@ int main() {
     page.open = true;
     page.locale = locale(L"es-CO", L"CO");
     check(SystemRowValue(page, SystemPage::UserName) == L"Jadyx");
-    check(SystemRowValue(page, SystemPage::InterfaceLanguage) == L"Automático · Español");
+    check(SystemRowValue(page, SystemPage::InterfaceLanguage) == L"简体中文");
     check(SystemRowValue(page, SystemPage::GameLanguage) == L"Automático · Español (Latinoamérica)");
     check(SystemRowValue(page, SystemPage::Region) == L"Automático · América");
     page.selected = SystemPage::InterfaceLanguage;
     check(HandleSystemInput(page, SystemInput::Right) == SystemPageEffect::Changed);
-    check(page.settings.ui_language == L"en");
-    check(HandleSystemInput(page, SystemInput::Left) == SystemPageEffect::Changed);
     check(page.settings.ui_language.empty());
+    check(HandleSystemInput(page, SystemInput::Left) == SystemPageEffect::Changed);
+    check(page.settings.ui_language == L"zh-CN");
     page.selected = SystemPage::Region;
     check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::Changed && page.settings.region);
     check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
@@ -152,7 +152,10 @@ int main() {
 
     // Resolution: explicit choices win, the rest follow the system.
     SystemSettings settings;
+    check(settings.ui_language == L"zh-CN");
+    check(ResolveSystem(settings, locale(L"es-ES")).ui_language->tag == L"zh-CN");
     settings.region = R::Japan;
+    settings.ui_language.clear();
     const auto resolved = ResolveSystem(settings, locale(L"es-ES"));
     check(resolved.ui_language->tag == L"es" && resolved.game_language == L::Spanish &&
           resolved.region == R::Japan);

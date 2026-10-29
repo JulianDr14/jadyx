@@ -35,6 +35,7 @@ void UploadTests(int port, bool large) {
     auto store=std::make_unique<NspUpload>(games);
     store->SetAvailable(true);
     const std::string fingerprint(64,'a');
+    Check(store->Create("payload.bin",fingerprint,1).status==400,"default upload mode keeps NSP restriction");
     Check(store->Create("../outside.nsp",fingerprint,32ULL << 20).status==400,"path traversal refused");
     Check(store->Create("CON.nsp",fingerprint,32ULL << 20).status==400,"Windows device name refused");
     Check(store->Create("one.nsp",fingerprint,NspUpload::MaxLength+1).status==400,"length bounded");
@@ -117,6 +118,33 @@ void UploadTests(int port, bool large) {
     store=std::make_unique<NspUpload>(games);
     Check(store->Snapshot().offset==0 && fs::file_size(staging/"payload.part")==0,"broken latest checkpoint falls back safely");
     Check(store->Discard(id).status==204,"discard fallback fixture");
+    const auto generic_games=fixture/"generic-games";
+    const auto generic_staging=fixture/"generic-staging";
+    auto generic=std::make_unique<NspUpload>(generic_games,false,generic_staging,false,false,true);
+    generic->SetAvailable(true);
+    Check(generic->Create("payload.bin",fingerprint,pattern.size()).status==201,"portal mode accepts arbitrary extensions");
+    const auto generic_id=generic->Snapshot().id;
+    const auto half=pattern.size()/2;
+    Check(generic->Append(generic_id,0,half,[&](const auto& sink){return sink(pattern.data(),half);}).status==204,
+        "generic game file confirms first chunk");
+    generic.reset();
+    generic=std::make_unique<NspUpload>(generic_games,false,generic_staging,false,false,true);
+    generic->SetAvailable(true);
+    Check(generic->Snapshot().offset==half,"generic extension survives restart recovery");
+    Check(generic->Append(generic_id,half,pattern.size()-half,[&](const auto& sink){
+        return sink(pattern.data()+half,pattern.size()-half);
+    }).status==204,"generic game file resumes at confirmed offset");
+    Check(generic->Rename(generic_id,"published.bundle").status==204,"generic extension survives rename");
+    Check(generic->Ready(generic_id).status==204,"generic file enters publish phase without format validation");
+    Check(generic->Finalize().empty() && fs::file_size(generic_games/"published.bundle")==pattern.size(),
+        "generic file publishes without NSP content validator");
+    {
+        std::ifstream input{generic_games/"published.bundle",std::ios::binary};
+        std::vector<char> actual(pattern.size());
+        input.read(actual.data(),static_cast<std::streamsize>(actual.size()));
+        Check(input.gcount()==static_cast<std::streamsize>(actual.size()) && actual==pattern,
+            "generic upload preserves every byte");
+    }
     // A sparse prefix exercises real 64-bit file positioning without a heavy 5 GiB test by default.
     // --large below additionally transfers and compares all five GiB through TCP.
     constexpr std::uint64_t high_offset=(4ULL << 30)+(1ULL << 20);

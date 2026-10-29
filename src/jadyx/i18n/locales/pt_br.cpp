@@ -270,7 +270,7 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::NetworkCodeLabel, L"Código de conexão"},
     {Text::NetworkBusy, L"Há uma importação em andamento no Portal Jadyx. Pause no navegador ou pare o portal primeiro."},
     {Text::NetworkUploading, L"Recebendo {0} · {1} / {2} MiB"},
-    {Text::NetworkValidating, L"Validando e adicionando o NSP à sua biblioteca…"},
+    {Text::NetworkValidating, L"Salvando o arquivo do jogo…"},
     {Text::NetworkStart, L"Iniciar portal"},
     {Text::NetworkStop, L"Parar portal"},
     {Text::NetworkAdapter, L"Endereço da rede local"},
