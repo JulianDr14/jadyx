@@ -159,12 +159,18 @@ struct Engine {
     std::atomic<u32> min_idle_ms{};
     std::atomic<u32> shielded{};
     std::atomic<u64> fault_stall_us{};
+    // The batch being put on probation: since when and how much. Step only.
+    u64 batch_at{};
+    u64 batch_used{};
     // The last Describe, for the stall since it.
     std::atomic<u64> describe_at{};
     std::atomic<u64> describe_stall_us{};
 };
 
 std::atomic<Engine*> g_engine{};
+
+// How often a new batch may go on probation.
+constexpr u64 BATCH_MS = 500;
 
 u64 NowMs() {
     return GetTickCount64();
@@ -1075,10 +1081,20 @@ StepResult Step(u64 want, Urgency urgency, std::mutex& decommit_mutex) {
     const u32 probation = urgency == Urgency::Normal   ? e->config.probation_ms
                           : urgency == Urgency::Urgent ? e->config.probation_ms / 3
                                                        : e->config.probation_ms / 6;
+    // A batch at a time, so the writers and the faults of the granules going out do not all land
+    // in the same moment: the first write-out of a session can be hundreds of MiB.
+    const u64 batch = e->config.batch_bytes == 0 || urgency == Urgency::Emergency ? ~u64{0}
+                      : urgency == Urgency::Urgent ? e->config.batch_bytes * 2
+                                                   : e->config.batch_bytes;
+    if (now - e->batch_at >= BATCH_MS) {
+        e->batch_at = now;
+        e->batch_used = 0;
+    }
     // The probations that ran out go to the writers, as many as the shortfall needs: what is
     // being written counts as given back already.
+    const u64 write_limit = (std::min)(want, batch);
     for (size_t index = 0; index < e->granules; ++index) {
-        if (e->writing_bytes.load(std::memory_order_relaxed) >= want) {
+        if (e->writing_bytes.load(std::memory_order_relaxed) >= write_limit) {
             break;
         }
         Granule& g = e->table[index];
@@ -1121,7 +1137,7 @@ StepResult Step(u64 want, Urgency urgency, std::mutex& decommit_mutex) {
     }
     std::sort(e->candidates.begin(), e->candidates.end(), std::greater<>{});
     for (const auto& [idle, index] : e->candidates) {
-        if (pending >= target) {
+        if (pending >= target || e->batch_used >= batch) {
             break;
         }
         // Far short and with nothing on the way, the coldest go even when not idle long enough.
@@ -1133,6 +1149,7 @@ StepResult Step(u64 want, Urgency urgency, std::mutex& decommit_mutex) {
         if (const u64 bytes = StartProbation(*e, e->table[index],
                                              e->base + size_t{index} * GRANULE_SIZE, now)) {
             pending += bytes;
+            e->batch_used += bytes;
             ++result.probation;
         }
     }

@@ -65,6 +65,10 @@ struct Config {
     u32 shield_max_ms{240000};
     /// Threads writing granules out.
     u32 writers{2};
+    /// What goes out in one batch: at most this much is put on probation each half second and at
+    /// most this much is with the writers at once, twice that when far short. An emergency is not
+    /// held back. 0 sends everything the shortfall asks for at once.
+    u64 batch_bytes{64ULL << 20};
 };
 
 /// Takes over [base, base + size), which must be 2 MiB aligned in size. Fails without a swap file.

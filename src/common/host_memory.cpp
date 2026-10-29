@@ -644,10 +644,13 @@ public:
             .reserve_bytes = settings.reserve_bytes,
             .probation_ms = settings.probation_ms,
             .min_idle_ms = settings.min_idle_ms,
+            .batch_bytes = settings.batch_bytes,
         };
         if (Permafrost::Init(backing_base, backing_size, platform, config)) {
-            LOG_INFO(HW_Memory, "Permafrost on: {} MiB reserve, {} ms probation, {} ms idle",
-                     settings.reserve_bytes >> 20, settings.probation_ms, settings.min_idle_ms);
+            LOG_INFO(HW_Memory,
+                     "Permafrost on: {} MiB reserve, {} ms probation, {} ms idle, {} MiB batches",
+                     settings.reserve_bytes >> 20, settings.probation_ms, settings.min_idle_ms,
+                     settings.batch_bytes >> 20);
         } else {
             LOG_WARNING(HW_Memory, "Permafrost off: the swap file could not be opened (error {})",
                         GetLastError());

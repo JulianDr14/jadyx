@@ -589,8 +589,8 @@ struct BootConfig {
     /// ("guest_swap=1", private DRAM backing only). Below guest_swap_watch_mib of headroom the
     /// guest's use of its memory is sampled. Below guest_swap_low_mib granules idle for
     /// guest_swap_idle_ms and then untouched on probation for guest_swap_probation_ms go to disk
-    /// until guest_swap_high_mib is free again; guest_swap_reserve_mib of commit is held for a
-    /// demand commit that would fail.
+    /// until guest_swap_high_mib is free again, guest_swap_batch_mib at a time (0: all at once);
+    /// guest_swap_reserve_mib of commit is held for a demand commit that would fail.
     bool guest_swap{};
     u32 guest_swap_watch_mib{1024};
     u32 guest_swap_low_mib{512};
@@ -598,6 +598,7 @@ struct BootConfig {
     u32 guest_swap_idle_ms{8000};
     u32 guest_swap_probation_ms{1500};
     u32 guest_swap_reserve_mib{32};
+    u32 guest_swap_batch_mib{64};
     /// Guest memory through the host-mapped arena. Xbox uses a bounded hybrid section; "full" is
     /// diagnostic and falls back to hybrid if the complete mapping cannot be created.
     enum class Fastmem { Off, Auto, Hybrid, Full } fastmem{Fastmem::Off};
@@ -717,6 +718,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         .reserve_bytes = u64{config.guest_swap_reserve_mib} << 20,
         .probation_ms = config.guest_swap_probation_ms,
         .min_idle_ms = config.guest_swap_idle_ms,
+        .batch_bytes = u64{config.guest_swap_batch_mib} << 20,
     });
     // Keep the shared setting for other backends. D3D12 prepares on workers and always waits
     // for the exact PSO when a dependent draw reaches the command stream.
@@ -3215,6 +3217,12 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                 50U, 60000U);
                             WriteDiag("boot.cfg: guest swap probation " +
                                       std::to_string(config.guest_swap_probation_ms) + " ms");
+                        } else if (line.starts_with("guest_swap_batch_mib=")) {
+                            config.guest_swap_batch_mib = std::clamp(
+                                static_cast<u32>(std::strtoul(line.c_str() + 21, nullptr, 10)),
+                                0U, 2048U);
+                            WriteDiag("boot.cfg: guest swap batch " +
+                                      std::to_string(config.guest_swap_batch_mib) + " MiB");
                         } else if (line.starts_with("guest_swap_reserve_mib=")) {
                             config.guest_swap_reserve_mib = std::clamp(
                                 static_cast<u32>(std::strtoul(line.c_str() + 23, nullptr, 10)),
