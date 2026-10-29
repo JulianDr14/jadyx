@@ -84,6 +84,10 @@ void TextureCacheRuntime::AccelerateImageUpload(
     if (!CanAccelerateImageUpload(image) || !image.Handle()) {
         return;
     }
+    if (image.IsGpuUnswizzled()) {
+        UnswizzleImageUpload(image, map, swizzles);
+        return;
+    }
     VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureUploads, 1);
     VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureUploadBytes, image.guest_size_bytes);
     VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureGpuDecodes, 1);

@@ -169,8 +169,8 @@ public:
 
     bool CanAccelerateImageUpload(Image& image) const noexcept;
     bool CanUploadMSAA() const noexcept { return false; }
-    /// Decodes an ASTC image with the compute shader (images flagged AcceleratedUpload): map
-    /// holds the guest's swizzled blocks.
+    /// Images flagged AcceleratedUpload: map holds the guest's swizzled blocks, which a compute
+    /// shader decodes (ASTC) or unswizzles (Image::IsGpuUnswizzled).
     void AccelerateImageUpload(Image& image, const StagingBufferRef& map,
                                std::span<const VideoCommon::SwizzleParameters> swizzles, u32, u32);
     void InsertUploadMemoryBarrier() {}
@@ -233,6 +233,10 @@ private:
                            u32 src_subresource, const Region2D& dst_region,
                            const Region2D& src_region);
     void EnsureAstcBcScratch(u64 size);
+    /// AccelerateImageUpload of a block-linear color image: each band of each level and layer is
+    /// unswizzled into a scratch footprint and copied into the image.
+    void UnswizzleImageUpload(Image& image, const StagingBufferRef& map,
+                              std::span<const VideoCommon::SwizzleParameters> swizzles);
     /// A blit whose source and destination are the same image (a mip chain built level by level,
     /// a copy between layers or regions): the source region goes through a scratch texture.
     void BlitWithinImage(ImageView& dst, ImageView& src, const Region2D& dst_region,
@@ -374,6 +378,10 @@ public:
     /// An ASTC image the compute shader decodes into RGBA8 (see AccelerateImageUpload).
     [[nodiscard]] bool IsGpuDecoded() const noexcept {
         return gpu_decoded;
+    }
+    /// A big block-linear color image a compute shader unswizzles on upload (SetGpuUnswizzle).
+    [[nodiscard]] bool IsGpuUnswizzled() const noexcept {
+        return gpu_unswizzled;
     }
     /// Whether a texture copy between the two resources moves meaningful data: not when one
     /// holds data the host converted (decoded BCn arrays, ASTC) and the other a different block
@@ -517,6 +525,7 @@ private:
     std::shared_ptr<TextureResourceAllocator::Allocation> resource_allocation;
     FormatInfo format{};
     bool gpu_decoded{};
+    bool gpu_unswizzled{};
     u32 level_bias{};
     DXGI_FORMAT footprint_format{}; ///< format GetCopyableFootprints uses for plane 0
     D3D12_RESOURCE_STATES state{D3D12_RESOURCE_STATE_COMMON};
@@ -685,6 +694,9 @@ void SetAstcGpuDecode(bool enabled);
 /// sample them see half the detail and textureSize reports half. Applies to images created from
 /// now on.
 void SetAstcDropTopLevel(bool enabled);
+/// Block-linear color textures of 64 KiB and more unswizzled by a compute shader on upload (the
+/// default) rather than the CPU ("gpu_unswizzle=0"). Applies to images created from now on.
+void SetGpuUnswizzle(bool enabled);
 /// Textures whose first upload the CPU wrote in place (SetCpuTextureWrites), the bytes written,
 /// and the writes the driver refused (those went through staging).
 struct InPlaceTextureStats {

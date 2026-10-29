@@ -124,6 +124,16 @@ BlitImageHelper::BlitImageHelper(const Device& device_, Scheduler& scheduler_,
         LOG_ERROR(Render, "D3D12: BC3 GPU encoder unavailable, recompressed ASTC uses the CPU: {}",
                   exception.what());
     }
+    if (pack_available) {
+        try {
+            CreateUnswizzlePipeline(compiler);
+            unswizzle_available = true;
+            LOG_INFO(Render, "D3D12: block-linear unswizzle shader ready");
+        } catch (const std::exception& exception) {
+            LOG_ERROR(Render, "D3D12: block-linear unswizzle shader unavailable, uploads are "
+                      "unswizzled on the CPU: {}", exception.what());
+        }
+    }
 }
 
 BlitImageHelper::~BlitImageHelper() = default;

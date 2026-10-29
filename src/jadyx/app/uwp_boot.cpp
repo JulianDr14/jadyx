@@ -157,6 +157,7 @@ void RemoveDeviceForProbe(VideoCore::RendererBase& renderer);
 void SetBcArrayDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcDropTopLevel(bool enabled); // d3d12_texture_cache.h
+void SetGpuUnswizzle(bool enabled); // d3d12_texture_cache.h
 void SetTextureMemoryCap(u64 bytes); // d3d12_texture_cache.h
 void SetHeapCompaction(u64 bytes_per_frame); // d3d12_texture_cache.h
 void SetSmallTextureAlignment(bool enabled); // d3d12_resource_allocator.h
@@ -334,6 +335,9 @@ struct BootConfig {
     /// A texture heap class that grew gets one spare heap made on another thread while memory
     /// is plentiful ("spare_heaps=0" turns it off).
     bool spare_heaps{true};
+    /// Block-linear color textures of 64 KiB and more unswizzled on the GPU on upload
+    /// ("gpu_unswizzle=0" brings back the CPU).
+    bool gpu_unswizzle{true};
     /// Upload staging in CPU-cached memory instead of write-combined ("cached_staging=1").
     bool cached_staging{};
     /// Plain textures in CPU-writable heaps, their first upload written in place
@@ -691,6 +695,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetHeapCompaction(u64{config.heap_compaction_mib} << 20);
     D3D12::SetSmallTextureAlignment(config.small_textures);
     D3D12::SetSpareHeaps(config.spare_heaps);
+    D3D12::SetGpuUnswizzle(config.gpu_unswizzle);
     D3D12::SetCachedStaging(config.cached_staging);
     D3D12::SetCpuTextureWrites(config.cpu_texture_writes);
     // RGBA8 ASTC made loading frames upload 150-260 MiB at once and the console run out of memory

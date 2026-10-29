@@ -110,6 +110,7 @@ inline bool logged_depth_stencil_download = false;
 inline bool logged_self_copy = false;
 inline bool logged_decoded_copy = false;
 inline bool logged_gpu_astc = false;
+inline bool logged_gpu_unswizzle = false;
 inline bool logged_reinterpret_copy = false;
 inline bool logged_depth_size = false;
 inline bool logged_view_format = false;
@@ -131,6 +132,7 @@ inline bool logged_view_family = false;
 inline std::atomic<u64> next_sampler_key{1};
 inline std::atomic<bool> decode_bc_arrays{true};
 inline std::atomic<bool> gpu_astc_decode{true};
+inline std::atomic<bool> gpu_unswizzle{true};
 inline std::atomic<u64> heap_compaction_budget{0};
 inline std::atomic<u64> heap_compaction_moved{0};
 inline std::atomic<u64> heap_compaction_bytes{0};
@@ -147,6 +149,9 @@ inline std::atomic<u64> texture_memory_cap{0};
 
 constexpr u64 ASTC_RGBA_SCRATCH_BUDGET = 32ULL * 1024 * 1024;
 constexpr u64 ASTC_BC_SCRATCH_BUDGET = 8ULL * 1024 * 1024;
+/// Smaller uploads stay on the CPU: the dispatch and the extra copy cost more than they save.
+constexpr u64 GPU_UNSWIZZLE_MIN_BYTES = 64ULL * 1024;
+constexpr u64 GPU_UNSWIZZLE_SCRATCH_BUDGET = 8ULL * 1024 * 1024;
 
 } // namespace D3D12::TextureDetail
 

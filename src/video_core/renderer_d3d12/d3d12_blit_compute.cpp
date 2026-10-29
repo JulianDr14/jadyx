@@ -10,6 +10,7 @@
 #include "common/div_ceil.h"
 #include "video_core/host_shaders/d3d12_astc_decoder_comp_spv.h"
 #include "video_core/host_shaders/d3d12_bc3_encoder_comp_spv.h"
+#include "video_core/host_shaders/d3d12_block_linear_unswizzle_comp_spv.h"
 #include "video_core/host_shaders/d3d12_depth_stencil_merge_comp_spv.h"
 #include "video_core/host_shaders/d3d12_depth_stencil_split_comp_spv.h"
 #include "video_core/host_shaders/d3d12_depth_unorm24_comp_spv.h"
@@ -19,8 +20,8 @@
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
 
-// The compute helpers of BlitImageHelper: depth-stencil plane packing and the GPU ASTC decoder
-// and BC3 encoder.
+// The compute helpers of BlitImageHelper: depth-stencil plane packing, the GPU ASTC decoder and
+// BC3 encoder, and the block-linear unswizzle of texture uploads.
 
 namespace D3D12 {
 
@@ -107,6 +108,42 @@ void BlitImageHelper::CreatePackPipelines(const ShaderCompiler& compiler) {
     create(D3D12_DEPTH_STENCIL_SPLIT_COMP_SPV, split_pipeline);
     create(D3D12_DEPTH_STENCIL_MERGE_COMP_SPV, merge_pipeline);
     create(D3D12_DEPTH_UNORM24_COMP_SPV, unorm24_pipeline);
+}
+
+void BlitImageHelper::CreateUnswizzlePipeline(const ShaderCompiler& compiler) {
+    const std::vector<u8> dxil =
+        compiler.Compile(D3D12_BLOCK_LINEAR_UNSWIZZLE_COMP_SPV, DXIL_SPIRV_SHADER_COMPUTE);
+    const D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline_desc{
+        .pRootSignature = pack_root_signature.Get(),
+        .CS = {dxil.data(), dxil.size()},
+    };
+    ThrowIfFailed(device.Get()->CreateComputePipelineState(&pipeline_desc,
+                                                           IID_PPV_ARGS(&unswizzle_pipeline)),
+                  "CreateComputePipelineState (block-linear unswizzle)");
+}
+
+void BlitImageHelper::UnswizzleBlockLinear(const BlockLinearUnswizzle& unswizzle) {
+    if (!unswizzle_available || unswizzle.row_words == 0 || unswizzle.rows == 0) {
+        return;
+    }
+    CommandStream* const cmd = scheduler.CommandList();
+    cmd->SetComputeRootSignature(pack_root_signature.Get());
+    scheduler.SetPipelineState(unswizzle_pipeline.Get());
+    const std::array<u32, PACK_CONSTANT_WORDS> constants{
+        unswizzle.source_offset, unswizzle.source_bytes, unswizzle.block_size,
+        unswizzle.x_shift,       unswizzle.block_height, unswizzle.block_height_mask,
+        unswizzle.row_words,     unswizzle.rows,         unswizzle.first_row,
+        unswizzle.row_pitch_words, 0,                    0,
+    };
+    cmd->SetComputeRoot32BitConstants(PACK_CONSTANTS_PARAM, PACK_CONSTANT_WORDS, constants.data(),
+                                      0);
+    cmd->SetComputeRootShaderResourceView(PACK_SOURCE_PARAM, unswizzle.source);
+    cmd->SetComputeRootUnorderedAccessView(PACK_DESTINATION_PARAM, unswizzle.destination);
+    // One invocation per output word.
+    const std::array<u32, 3> groups{Common::DivCeil(unswizzle.row_words, PACK_GROUP_SIZE),
+                                    Common::DivCeil(unswizzle.rows, PACK_GROUP_SIZE), 1U};
+    SetComputeRuntimeData(cmd, 3, groups);
+    cmd->Dispatch(groups[0], groups[1], groups[2]);
 }
 
 void BlitImageHelper::CreateAstcPipeline(const ShaderCompiler& compiler) {

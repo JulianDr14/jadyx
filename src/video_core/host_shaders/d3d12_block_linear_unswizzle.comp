@@ -1,0 +1,62 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Unswizzles one band of a block-linear 2D level into a copy footprint (D3D12 renderer). Each
+// invocation moves one 4-byte word: a GOB keeps every aligned 16-byte run of a row together, so
+// a word never straddles two GOB positions, whatever the bytes per texel block.
+
+#version 460 core
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Source {
+    uint source_words[];
+};
+
+layout(std430, set = 0, binding = 1) buffer Destination {
+    uint destination_words[];
+};
+
+layout(push_constant) uniform Params {
+    uint source_offset; // bytes from the source address to the level (and layer), 4-aligned
+    uint source_bytes;  // readable bytes from the source address; words past it read as zero
+    uint block_size;
+    uint x_shift;
+    uint block_height;
+    uint block_height_mask;
+    uint row_words;     // words per row of texel blocks
+    uint rows;          // rows of texel blocks in this band
+    uint first_row;
+    uint row_pitch_words;
+    uint destination_offset_words;
+    uint unused;
+};
+
+uint SwizzleTable(uint pos) {
+    const uint t[8] = uint[](
+        0x12100200, 0x13110301, 0x16140604, 0x17150705,
+        0x1a180a08, 0x1b190b09, 0x1e1c0e0c, 0x1f1d0f0d
+    );
+    const uint i = pos >> 4;
+    const uint h = (t[i / 4] >> ((i % 4) * 8)) & 0xff;
+    return (h << 4) | (pos & 0xf);
+}
+
+void main() {
+    const uint x = gl_GlobalInvocationID.x;
+    const uint y = gl_GlobalInvocationID.y;
+    if (x >= row_words || y >= rows) {
+        return;
+    }
+    const uint row = first_row + y;
+    const uint x_bytes = x * 4;
+    const uint gob_y = row >> 3;
+    uint offset = source_offset;
+    offset += (gob_y >> block_height) * block_size;
+    offset += (gob_y & block_height_mask) << 9;
+    offset += (x_bytes >> 6) << x_shift;
+    offset += SwizzleTable((row & 7) * 64 + (x_bytes & 63));
+    const uint word = source_bytes >= 4 && offset <= source_bytes - 4 ? source_words[offset / 4]
+                                                                       : 0;
+    destination_words[destination_offset_words + y * row_pitch_words + x] = word;
+}

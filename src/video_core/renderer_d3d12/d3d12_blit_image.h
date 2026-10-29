@@ -85,6 +85,23 @@ struct BcEncode {
     bool bc4_alpha = false;
 };
 
+/// One band of a block-linear 2D level (one layer) unswizzled into a copy footprint. The shader
+/// bounds its reads with source_bytes: the root SRV has no bounds of its own.
+struct BlockLinearUnswizzle {
+    D3D12_GPU_VIRTUAL_ADDRESS source;      ///< raw buffer, 4-byte aligned
+    D3D12_GPU_VIRTUAL_ADDRESS destination; ///< raw buffer UAV, 4-byte aligned
+    u32 source_offset;                     ///< bytes from source to the level (and layer)
+    u32 source_bytes;                      ///< readable bytes from source
+    u32 block_size;
+    u32 x_shift;
+    u32 block_height;
+    u32 block_height_mask;
+    u32 row_words; ///< words per row of texel blocks
+    u32 rows;      ///< rows of texel blocks in the band
+    u32 first_row;
+    u32 row_pitch_words;
+};
+
 /// Draws Eden's host blit and clear shaders into guest images: the D3D12 counterpart of Vulkan's
 /// BlitImageHelper. Serves scaled texture blits (Fermi2D), DrawTexture and the clears D3D12 cannot
 /// express with ClearRenderTargetView/ClearDepthStencilView (partial color or stencil masks).
@@ -184,6 +201,14 @@ public:
     void DecodeAstc(const AstcDecode& decode);
     void EncodeBc(const BcEncode& encode);
 
+    /// False when the unswizzle shader failed to translate or build (logged): uploads are then
+    /// unswizzled on the CPU.
+    [[nodiscard]] bool CanUnswizzle() const noexcept {
+        return unswizzle_available;
+    }
+    /// The caller puts the destination in UNORDERED_ACCESS.
+    void UnswizzleBlockLinear(const BlockLinearUnswizzle& unswizzle);
+
 private:
     enum class Kind : u8 {
         BlitColor,
@@ -222,6 +247,8 @@ private:
     /// Builds the ASTC decoder's root signature and pipeline; throws on failure.
     void CreateAstcPipeline(const ShaderCompiler& compiler);
     void CreateBc3Pipeline(const ShaderCompiler& compiler);
+    /// Builds the block-linear unswizzle pipeline on the pack root signature; throws on failure.
+    void CreateUnswizzlePipeline(const ShaderCompiler& compiler);
 
     const Device& device;
     Scheduler& scheduler;
@@ -248,6 +275,9 @@ private:
     ComPtr<ID3D12RootSignature> bc3_root_signature;
     ComPtr<ID3D12PipelineState> bc3_pipeline;
     bool bc3_available{};
+
+    ComPtr<ID3D12PipelineState> unswizzle_pipeline;
+    bool unswizzle_available{};
 };
 
 } // namespace D3D12

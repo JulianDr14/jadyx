@@ -126,6 +126,10 @@ void SetAstcDropTopLevel(bool enabled) {
     astc_drop_top_level.store(enabled, std::memory_order_relaxed);
 }
 
+void SetGpuUnswizzle(bool enabled) {
+    gpu_unswizzle.store(enabled, std::memory_order_relaxed);
+}
+
 void SetHeapCompaction(u64 bytes_per_frame) {
     heap_compaction_budget.store(bytes_per_frame, std::memory_order_relaxed);
 }
@@ -233,6 +237,9 @@ void TextureCacheRuntime::TrimCheckpointTransfers(u64 keep) {
     scheduler.Finish(); // the trimmed buffers are released after the work recorded so far
 }
 bool TextureCacheRuntime::CanAccelerateImageUpload(Image& image) const noexcept {
+    if (image.IsGpuUnswizzled()) {
+        return blit_helper && blit_helper->CanUnswizzle();
+    }
     return image.IsGpuDecoded() && blit_helper && blit_helper->CanDecodeAstc() &&
            (image.TransferFormat().copy_format == PixelFormat::A8B8G8R8_UNORM ||
             blit_helper->CanEncodeBc());
@@ -588,7 +595,22 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
     if (format.converted) {
         flags |= VideoCommon::ImageFlagBits::Converted | VideoCommon::ImageFlagBits::CostlyLoad;
     }
-    if (gpu_decoded) {
+    // Big block-linear color uploads: the CPU copies the guest bytes as they are and a compute
+    // shader unswizzles them. Only where the host keeps the guest's texel blocks unchanged.
+    const BlitImageHelper* const unswizzler = runtime->blit_helper;
+    gpu_unswizzled =
+        !native_blocks && !format.converted && !gpu_decoded &&
+        gpu_unswizzle.load(std::memory_order_relaxed) && unswizzler &&
+        unswizzler->CanUnswizzle() && info_.type == ImageType::e2D && info_.num_samples == 1 &&
+        guest_size_bytes >= GPU_UNSWIZZLE_MIN_BYTES &&
+        VideoCore::Surface::GetFormatType(info_.format) == SurfaceType::ColorTexture &&
+        VideoCore::Surface::BytesPerBlock(format.copy_format) ==
+            VideoCore::Surface::BytesPerBlock(info_.format) &&
+        VideoCore::Surface::DefaultBlockWidth(format.copy_format) ==
+            VideoCore::Surface::DefaultBlockWidth(info_.format) &&
+        VideoCore::Surface::DefaultBlockHeight(format.copy_format) ==
+            VideoCore::Surface::DefaultBlockHeight(info_.format);
+    if (gpu_decoded || gpu_unswizzled) {
         flags |= VideoCommon::ImageFlagBits::AcceleratedUpload;
     }
     const auto type = VideoCore::Surface::GetFormatType(info_.format);
