@@ -585,14 +585,18 @@ struct BootConfig {
     bool memory_audit{};
     bool pool_trim{true};
     bool host_trim{true};
-    /// Cold guest memory written to LocalState/jadyx/guest_swap.bin when the app runs short
-    /// ("guest_swap=1", private DRAM backing only). Below guest_swap_low_mib of headroom granules
-    /// untouched for guest_swap_probation_ms go to disk until guest_swap_high_mib is free again;
-    /// guest_swap_reserve_mib of commit is held for a demand commit that would fail.
+    /// Permafrost: cold guest memory written to LocalState/jadyx/permafrost.bin when the app runs short
+    /// ("guest_swap=1", private DRAM backing only). Below guest_swap_watch_mib of headroom the
+    /// guest's use of its memory is sampled. Below guest_swap_low_mib granules idle for
+    /// guest_swap_idle_ms and then untouched on probation for guest_swap_probation_ms go to disk
+    /// until guest_swap_high_mib is free again; guest_swap_reserve_mib of commit is held for a
+    /// demand commit that would fail.
     bool guest_swap{};
-    u32 guest_swap_low_mib{384};
-    u32 guest_swap_high_mib{512};
-    u32 guest_swap_probation_ms{1000};
+    u32 guest_swap_watch_mib{1024};
+    u32 guest_swap_low_mib{512};
+    u32 guest_swap_high_mib{640};
+    u32 guest_swap_idle_ms{8000};
+    u32 guest_swap_probation_ms{1500};
     u32 guest_swap_reserve_mib{32};
     /// Guest memory through the host-mapped arena. Xbox uses a bounded hybrid section; "full" is
     /// diagnostic and falls back to hybrid if the complete mapping cannot be created.
@@ -708,10 +712,11 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         .enabled = config.guest_swap,
         .path = (std::filesystem::path{std::wstring{
                      winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()}} /
-                 L"jadyx" / L"guest_swap.bin")
+                 L"jadyx" / L"permafrost.bin")
                     .wstring(),
         .reserve_bytes = u64{config.guest_swap_reserve_mib} << 20,
         .probation_ms = config.guest_swap_probation_ms,
+        .min_idle_ms = config.guest_swap_idle_ms,
     });
     // Keep the shared setting for other backends. D3D12 prepares on workers and always waits
     // for the exact PSO when a dependent draw reaches the command stream.
@@ -1385,15 +1390,18 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                 }
             });
         }
-        // Guest swap: short of memory, cold granules go on probation and then to disk until the
-        // high mark is free again. Far below the low mark the probation is cut short.
+        // Permafrost: close to short of memory the guest's use of its granules is sampled; short
+        // of it, the idlest go on probation and then to disk until the high mark is free again.
+        // The further below the low mark, the shorter the probation and the idle time asked.
         if (Common::GuestSwapActive()) {
             const u64 swap_low = u64{config.guest_swap_low_mib} << 20;
             const u64 swap_high = (std::max)(u64{config.guest_swap_high_mib} << 20, swap_low);
-            WriteDiag("guest swap on: below " + std::to_string(swap_low >> 20) + " MiB free, up to " +
+            const u64 swap_watch = (std::max)(u64{config.guest_swap_watch_mib} << 20, swap_high);
+            WriteDiag("permafrost on: sampling below " + std::to_string(swap_watch >> 20) +
+                      " MiB free, writing below " + std::to_string(swap_low >> 20) + " MiB up to " +
                       std::to_string(swap_high >> 20) + " MiB");
-            swap_worker.emplace([&, swap_low, swap_high](std::stop_token stop) {
-                Common::SetCurrentThreadName("GuestSwap");
+            swap_worker.emplace([&, swap_low, swap_high, swap_watch](std::stop_token stop) {
+                Common::SetCurrentThreadName("Permafrost");
                 while (!stop.stop_requested()) {
                     u64 used{}, limit{};
                     if (!QueryAppMemory(used, limit)) {
@@ -1402,16 +1410,28 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                     }
                     const u64 headroom = limit > used ? limit - used : 0;
                     if (headroom < swap_low) {
+                        using Pressure = Common::GuestSwapPressure;
+                        const Pressure pressure =
+                            headroom < swap_low / 4 || Common::GuestSwapReserveReleased()
+                                ? Pressure::Emergency
+                            : headroom < swap_low / 2 ? Pressure::Urgent
+                                                      : Pressure::Low;
                         g_guest_swap_released.fetch_add(
-                            Common::StepGuestSwap(swap_high - headroom, headroom < swap_low / 2),
+                            Common::StepGuestSwap(swap_high - headroom, pressure),
                             std::memory_order_relaxed);
                         std::this_thread::sleep_for(std::chrono::milliseconds(20));
                         continue;
                     }
+                    if (headroom < swap_watch) {
+                        g_guest_swap_released.fetch_add(
+                            Common::StepGuestSwap(0, Common::GuestSwapPressure::Watch),
+                            std::memory_order_relaxed);
+                    }
                     if (headroom >= swap_high) {
                         Common::RefillGuestSwapReserve();
                     }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(headroom < swap_watch ? 100 : 250));
                 }
             });
         }
@@ -3177,6 +3197,18 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                 64U, 3072U);
                             WriteDiag("boot.cfg: guest swap high " +
                                       std::to_string(config.guest_swap_high_mib) + " MiB");
+                        } else if (line.starts_with("guest_swap_watch_mib=")) {
+                            config.guest_swap_watch_mib = std::clamp(
+                                static_cast<u32>(std::strtoul(line.c_str() + 21, nullptr, 10)),
+                                64U, 4096U);
+                            WriteDiag("boot.cfg: guest swap watch " +
+                                      std::to_string(config.guest_swap_watch_mib) + " MiB");
+                        } else if (line.starts_with("guest_swap_idle_ms=")) {
+                            config.guest_swap_idle_ms = std::clamp(
+                                static_cast<u32>(std::strtoul(line.c_str() + 19, nullptr, 10)),
+                                0U, 120000U);
+                            WriteDiag("boot.cfg: guest swap idle " +
+                                      std::to_string(config.guest_swap_idle_ms) + " ms");
                         } else if (line.starts_with("guest_swap_probation_ms=")) {
                             config.guest_swap_probation_ms = std::clamp(
                                 static_cast<u32>(std::strtoul(line.c_str() + 24, nullptr, 10)),
@@ -3903,7 +3935,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                   " MiB of " + std::to_string(visited >> 20) + " MiB visited");
                     }
                     if (Common::GuestSwapActive()) {
-                        WriteDiag("guest swap: released " +
+                        WriteDiag("permafrost: released " +
                                   std::to_string(g_guest_swap_released.exchange(0) >> 20) +
                                   " MiB since the last heartbeat | " + Common::DescribeGuestSwap());
                     }

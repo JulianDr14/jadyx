@@ -26,22 +26,32 @@ void ConfigureHostMemoryFastmem(size_t hot_mib, bool force_full);
 [[nodiscard]] size_t HostMemoryFastmemHotSize();
 [[nodiscard]] bool HostMemoryFastmemForceFull();
 
-/// Xbox private DRAM backing: cold guest memory written to a swap file (common/guest_swap.h).
+/// Xbox private DRAM backing: cold guest memory written to a swap file (Permafrost, common/permafrost.h).
 /// Configured by the UWP frontend before Core::System creates DeviceMemory; off unless enabled.
 struct GuestSwapSettings {
     bool enabled{};
     std::wstring path;
     u64 reserve_bytes{};
-    u32 probation_ms{1000};
+    u32 probation_ms{1500};
+    u32 min_idle_ms{8000};
 };
 void ConfigureGuestSwap(const GuestSwapSettings& settings);
 /// Whether the backing in use writes cold memory out.
 [[nodiscard]] bool GuestSwapActive();
-/// One pass of the swapper, under the backing's decommit mutex: tries to give back `want` bytes.
-/// Returns the bytes given back.
-u64 StepGuestSwap(u64 want, bool urgent);
+/// How short of memory the swapper's caller is.
+enum class GuestSwapPressure : u8 {
+    Watch,     // close: the access sampling runs, nothing goes out
+    Low,       // short: idle granules go out
+    Urgent,    // far short
+    Emergency, // commits about to fail
+};
+/// One pass of the swapper: tries to give back `want` bytes, written out by its own threads.
+/// Returns the bytes those threads gave back since the last pass.
+u64 StepGuestSwap(u64 want, GuestSwapPressure pressure);
 /// Commits again the reserve given up to a failed demand commit. True when it is held.
 bool RefillGuestSwapReserve();
+/// Whether a demand commit failed and took the reserve since it was last refilled.
+[[nodiscard]] bool GuestSwapReserveReleased();
 [[nodiscard]] std::string DescribeGuestSwap();
 
 enum class MemoryPermission : u32 {
