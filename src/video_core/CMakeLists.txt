@@ -537,6 +537,8 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_indirect_buffer.h
         renderer_d3d12/d3d12_maxwell_to_d3d12.cpp
         renderer_d3d12/d3d12_maxwell_to_d3d12.h
+        renderer_d3d12/d3d12_memory_import_probe.cpp
+        renderer_d3d12/d3d12_memory_import_probe.h
         renderer_d3d12/d3d12_memory_reserve.cpp
         renderer_d3d12/d3d12_memory_reserve.h
         renderer_d3d12/d3d12_render_corrections.cpp

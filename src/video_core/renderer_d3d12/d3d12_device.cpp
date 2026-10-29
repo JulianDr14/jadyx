@@ -22,6 +22,7 @@
 #include "video_core/renderer_d3d12/d3d12_command_stream.h"
 #include "video_core/renderer_d3d12/d3d12_debug_messages.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
+#include "video_core/renderer_d3d12/d3d12_memory_import_probe.h"
 
 namespace D3D12 {
 
@@ -347,6 +348,10 @@ Device::Device() {
 
     CreateBreadcrumbBuffer(device.Get());
     LogCapabilities();
+    if (GetMemoryImportProbe()) {
+        LOG_INFO(Render, "D3D12: memory import probe: {}",
+                 DescribeMemoryImportProbe(ProbeMemoryImport(device.Get())));
+    }
     if (SUCCEEDED(device.As(&device2))) {
         D3D12_FEATURE_DATA_D3D12_OPTIONS2 options2{};
         depth_bounds = Query(device.Get(), D3D12_FEATURE_D3D12_OPTIONS2, options2) &&

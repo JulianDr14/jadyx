@@ -190,6 +190,7 @@ void SetHalfFloatFlush(bool enabled);        // d3d12_render_corrections.h
 void SetShaderAlphaToCoverage(bool enabled); // d3d12_render_corrections.h
 void SetSmallBcGuestPalette(bool enabled);   // d3d12_render_corrections.h
 void SetShaderDepthBias(bool enabled);       // d3d12_render_corrections.h
+void SetMemoryImportProbe(bool enabled);     // d3d12_memory_import_probe.h
 void SetPipelineEviction(bool enabled);      // d3d12_pipeline_cache.h
 void SetPipelinePrewarm(bool enabled);       // d3d12_pipeline_cache.h
 void SetComputeWorkgroupSplit(u32 factor);   // d3d12_pipeline_cache.h
@@ -480,6 +481,9 @@ struct BootConfig {
     bool small_bc_palette{};
     /// Single-sample depth bias added in the fragment shader ("depth_bias_shader=1").
     bool depth_bias_shader{};
+    /// Whether the GPU reads process memory in place, probed and logged at device creation
+    /// ("memory_import_probe=1").
+    bool memory_import_probe{};
     /// This boot's image upscaling instead of the saved one, for test runs ("upscaling=fsr";
     /// upscaling.h ParseUpscaling lists the values). Not saved.
     std::optional<Upscaling> upscaling;
@@ -817,6 +821,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetShaderAlphaToCoverage(config.a2c_shader);
     D3D12::SetSmallBcGuestPalette(config.small_bc_palette);
     D3D12::SetShaderDepthBias(config.depth_bias_shader);
+    D3D12::SetMemoryImportProbe(config.memory_import_probe);
     Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);
     Service::Nvidia::Devices::nvdisp_disp0::SetReleaseFence(config.nv_release_fence);
     if (config.gpu_fence) Settings::values.gpu_fence_behavior.SetValue(*config.gpu_fence);
