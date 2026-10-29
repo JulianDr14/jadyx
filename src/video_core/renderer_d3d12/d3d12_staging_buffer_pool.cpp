@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <stdexcept>
 
@@ -40,12 +41,78 @@ constexpr u64 WAIT_FOR_STREAM_SIZE = 1_MiB;
 constexpr u64 LARGE_RELEASE_FREE = 768_MiB;
 constexpr size_t LARGE_RELEASE_LEVEL = 23;
 
+std::atomic<bool> cached_staging{false};
+std::atomic<u64> cached_buffers{0};
+std::atomic<u64> cached_bytes{0};
+std::atomic<bool> cached_refused{false};
+
+/// An upload buffer in write-back L0 memory, mapped; empty (and cached staging off) when the
+/// driver refuses the heap.
+ComPtr<ID3D12Resource> CreateCachedUpload(ID3D12Device* device, u64 size,
+                                          std::span<u8>& mapped) {
+    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_CUSTOM,
+                                     .CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_BACK,
+                                     .MemoryPoolPreference = D3D12_MEMORY_POOL_L0};
+    const D3D12_RESOURCE_DESC desc = BufferDesc(size);
+    ComPtr<ID3D12Resource> buffer;
+    HRESULT hr;
+    {
+        VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::ResourceCreateUs,
+                                           VideoCore::Perf::Counter::ResourcesCreated};
+        hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                             IID_PPV_ARGS(&buffer));
+    }
+    if (hr == E_OUTOFMEMORY) {
+        throw StagingOutOfMemory(
+            fmt::format("D3D12: out of memory creating a {} byte staging buffer", size));
+    }
+    void* pointer{};
+    if (SUCCEEDED(hr)) {
+        hr = buffer->Map(0, nullptr, &pointer);
+    }
+    if (FAILED(hr)) {
+        cached_staging.store(false, std::memory_order_relaxed);
+        if (!cached_refused.exchange(true, std::memory_order_relaxed)) {
+            LOG_WARNING(Render,
+                        "D3D12: a staging buffer in CPU-cached memory was refused ({:#010x}); "
+                        "staging goes through the upload heap from now on",
+                        static_cast<u32>(hr));
+        }
+        return {};
+    }
+    cached_buffers.fetch_add(1, std::memory_order_relaxed);
+    cached_bytes.fetch_add(size, std::memory_order_relaxed);
+    mapped = std::span(static_cast<u8*>(pointer), static_cast<size_t>(size));
+    return buffer;
+}
+
 } // Anonymous namespace
+
+void SetCachedStaging(bool enabled) {
+    cached_staging.store(enabled && !cached_refused.load(std::memory_order_relaxed),
+                         std::memory_order_relaxed);
+}
+
+bool CachedStaging() noexcept {
+    return cached_staging.load(std::memory_order_relaxed);
+}
+
+CachedStagingStats GetCachedStagingStats() noexcept {
+    return {cached_buffers.load(std::memory_order_relaxed),
+            cached_bytes.load(std::memory_order_relaxed),
+            cached_refused.load(std::memory_order_relaxed)};
+}
 
 ComPtr<ID3D12Resource> CreateMappedBuffer(ID3D12Device* device, u64 size,
                                           D3D12_HEAP_TYPE heap_type, std::span<u8>& mapped) {
     if (size == 0) {
         throw std::invalid_argument("D3D12: staging buffer size must not be zero");
+    }
+    if (heap_type == D3D12_HEAP_TYPE_UPLOAD && CachedStaging()) {
+        if (auto cached = CreateCachedUpload(device, size, mapped)) {
+            return cached;
+        }
     }
     // These are the only states the two heap types allow, for their whole lifetime.
     const D3D12_RESOURCE_STATES state = heap_type == D3D12_HEAP_TYPE_READBACK
@@ -75,8 +142,9 @@ StagingBufferPool::StagingBufferPool(const Device& device_, Scheduler& scheduler
                                        stream_pointer);
     stream_charge = Common::MemoryCharge(Common::MemoryAccount::StagingRing, stream_buffer_size);
     constexpr u64 bytes_per_mib = 1024 * 1024;
-    LOG_INFO(Render, "D3D12: staging stream ready ({} MiB, {} regions of {} MiB)",
-             stream_buffer_size / bytes_per_mib, NUM_SYNCS, region_size / bytes_per_mib);
+    LOG_INFO(Render, "D3D12: staging stream ready ({} MiB, {} regions of {} MiB, {})",
+             stream_buffer_size / bytes_per_mib, NUM_SYNCS, region_size / bytes_per_mib,
+             GetCachedStagingStats().buffers != 0 ? "CPU-cached memory" : "upload heap");
 }
 
 StagingBufferPool::~StagingBufferPool() = default;

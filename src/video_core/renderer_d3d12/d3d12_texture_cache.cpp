@@ -48,6 +48,7 @@ std::optional<D3D12_RESOURCE_STATES> Image::DiagnosticState(ID3D12Resource* trac
 
 void Image::DiagnosticTransition(ID3D12Resource* tracked_resource, D3D12_RESOURCE_STATES next) {
     if (!tracked_resource) throw std::runtime_error("null diagnostic resource");
+    untouched = false;
     auto* tracked = tracked_resource == Handle() ? &state : tracked_resource == reinterpreted.Get()
         ? &reinterpreted_state : tracked_resource == slice_array.Get() ? &slice_array_state
         : tracked_resource == volume.Get() ? &volume_state
@@ -655,7 +656,15 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
     {
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::ResourceCreateUs,
                                            VideoCore::Perf::Counter::ResourcesCreated};
-        auto allocated = runtime->texture_allocator.Create(desc, D3D12_RESOURCE_STATE_COMMON);
+        // Plain sampled textures may sit where the CPU writes them (SetCpuTextureWrites).
+        const bool plain = resource_flags == D3D12_RESOURCE_FLAG_NONE && !is_msaa && !gpu_decoded;
+        auto allocated = runtime->texture_allocator.Create(
+            desc, D3D12_RESOURCE_STATE_COMMON, nullptr,
+            {.bytes = VideoCore::Surface::BytesPerBlock(format.copy_format),
+             .width = block_w,
+             .height = block_h},
+            plain);
+        cpu_writable = allocated.cpu_writable;
         resource = std::move(allocated.resource);
         resource_allocation = std::move(allocated.allocation);
         needs_placed_init = allocated.placed &&
@@ -732,6 +741,8 @@ Image& Image::operator=(Image&& other) noexcept {
         resource_allocation = std::move(other.resource_allocation);
         format = other.format;
         gpu_decoded = other.gpu_decoded;
+        cpu_writable = other.cpu_writable;
+        untouched = other.untouched;
         level_bias = other.level_bias;
         footprint_format = other.footprint_format;
         state = other.state;
@@ -841,6 +852,7 @@ u32 Image::Subresource(s32 level, s32 layer, u32 plane) const noexcept {
 
 void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
     if (!resource) return;
+    untouched = false;
     constexpr D3D12_RESOURCE_STATES WRITE_STATES =
         D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
         D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_COPY_DEST |

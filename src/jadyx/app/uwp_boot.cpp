@@ -161,6 +161,8 @@ void SetTextureMemoryCap(u64 bytes); // d3d12_texture_cache.h
 void SetHeapCompaction(u64 bytes_per_frame); // d3d12_texture_cache.h
 void SetSmallTextureAlignment(bool enabled); // d3d12_resource_allocator.h
 void SetSpareHeaps(bool enabled); // d3d12_resource_allocator.h
+void SetCachedStaging(bool enabled); // d3d12_staging_buffer_pool.h
+void SetCpuTextureWrites(bool enabled); // d3d12_resource_allocator.h
 void SetAstcGpuVerify(bool enabled); // d3d12_texture_cache.h
 void SetStencilBlitVerify(bool enabled); // d3d12_texture_cache.h
 enum class DxilSignMode; // d3d12_shader_compiler.h
@@ -331,6 +333,11 @@ struct BootConfig {
     /// A texture heap class that grew gets one spare heap made on another thread while memory
     /// is plentiful ("spare_heaps=0" turns it off).
     bool spare_heaps{true};
+    /// Upload staging in CPU-cached memory instead of write-combined ("cached_staging=1").
+    bool cached_staging{};
+    /// Plain textures in CPU-writable heaps, their first upload written in place
+    /// ("cpu_texture_writes=1"); cache-coherent UMA devices only.
+    bool cpu_texture_writes{};
     /// Over the texture cap, MiB of live textures a frame moves out of mostly free heaps
     /// ("heap_compaction_mib=", 0 keeps them in place).
     u32 heap_compaction_mib{};
@@ -680,6 +687,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetHeapCompaction(u64{config.heap_compaction_mib} << 20);
     D3D12::SetSmallTextureAlignment(config.small_textures);
     D3D12::SetSpareHeaps(config.spare_heaps);
+    D3D12::SetCachedStaging(config.cached_staging);
+    D3D12::SetCpuTextureWrites(config.cpu_texture_writes);
     // RGBA8 ASTC made loading frames upload 150-260 MiB at once and the console run out of memory
     // (0.2.50): textures become BC3 (a quarter of the memory), 2D arrays too unless
     // astc_arrays=rgba (BootConfig::astc_arrays_rgba), all decoded and encoded on the GPU.

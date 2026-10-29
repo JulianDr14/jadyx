@@ -361,6 +361,16 @@ public:
     [[nodiscard]] bool IsBcDecoded() const noexcept {
         return format.converted && !VideoCore::Surface::IsPixelFormatASTC(info.format);
     }
+    /// In a CPU-writable heap: its first upload is written in place (SetCpuTextureWrites).
+    [[nodiscard]] bool CpuWritable() const noexcept {
+        return cpu_writable;
+    }
+    /// The texture heap the resource is placed in; SIZE_MAX for a committed resource.
+    [[nodiscard]] size_t HeapIndex() const noexcept;
+    /// Copies the resource on the GPU into free space of a heap in use that `avoid` does not
+    /// mark (by heap index) and keeps the copy; the old one goes once the GPU is done with it.
+    /// False when nothing fits. Views made before the move still name the old resource.
+    bool Relocate(const std::vector<bool>& avoid);
     /// An ASTC image the compute shader decodes into RGBA8 (see AccelerateImageUpload).
     [[nodiscard]] bool IsGpuDecoded() const noexcept {
         return gpu_decoded;
@@ -460,6 +470,10 @@ private:
     /// Staging layout of one BufferImageCopy (see d3d12_texture_cache.cpp).
     struct CopyLayout;
     [[nodiscard]] CopyLayout Layout(const VideoCommon::BufferImageCopy& copy) const;
+    /// Writes the copies straight into the CPU-writable resource; false (nothing to rely on) when
+    /// the driver refuses one, and the caller goes through staging.
+    [[nodiscard]] bool WriteInPlace(const u8* mapped_at_base,
+                                    std::span<const VideoCommon::BufferImageCopy> copies);
     /// Guest bytes the copies move (for the performance counters).
     [[nodiscard]] u64 TransferBytes(std::span<const VideoCommon::BufferImageCopy> copies) const;
     /// False (logged once) when this image's data cannot be transferred yet.
@@ -506,6 +520,10 @@ private:
     u32 level_bias{};
     DXGI_FORMAT footprint_format{}; ///< format GetCopyableFootprints uses for plane 0
     D3D12_RESOURCE_STATES state{D3D12_RESOURCE_STATE_COMMON};
+    /// In a CPU-writable heap (SetCpuTextureWrites): its first upload may be written in place.
+    bool cpu_writable{};
+    /// No GPU work has used it yet: every transition clears it, and so does the first upload.
+    bool untouched{true};
     /// A placed render target or depth stencil whose heap memory another resource may have used:
     /// D3D12 requires an aliasing barrier and a discard before its first use.
     bool needs_placed_init{};
@@ -667,6 +685,14 @@ void SetAstcGpuDecode(bool enabled);
 /// sample them see half the detail and textureSize reports half. Applies to images created from
 /// now on.
 void SetAstcDropTopLevel(bool enabled);
+/// Textures whose first upload the CPU wrote in place (SetCpuTextureWrites), the bytes written,
+/// and the writes the driver refused (those went through staging).
+struct InPlaceTextureStats {
+    u64 images;
+    u64 bytes;
+    u64 refused;
+};
+[[nodiscard]] InPlaceTextureStats GetInPlaceTextureStats() noexcept;
 /// Over the texture cap, each frame moves up to this many bytes of live images out of mostly
 /// free heaps into free space of fuller ones, so the free heaps empty and trim releases them
 /// ("heap_compaction_mib="; 0, the default, keeps them in place).

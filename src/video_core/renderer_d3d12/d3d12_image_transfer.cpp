@@ -48,6 +48,69 @@ Image::CopyLayout Image::Layout(const BufferImageCopy& copy) const {
     return layout;
 }
 
+namespace {
+std::atomic<u64> in_place_images{0};
+std::atomic<u64> in_place_bytes{0};
+std::atomic<u64> in_place_refused{0};
+} // namespace
+
+InPlaceTextureStats GetInPlaceTextureStats() noexcept {
+    return {in_place_images.load(std::memory_order_relaxed),
+            in_place_bytes.load(std::memory_order_relaxed),
+            in_place_refused.load(std::memory_order_relaxed)};
+}
+
+bool Image::WriteInPlace(const u8* mapped_at_base, std::span<const BufferImageCopy> copies) {
+    u64 bytes = 0;
+    for (const auto& copy : copies) {
+        if (copy.image_subresource.base_level < static_cast<s32>(level_bias)) {
+            continue; // left out of the resource (SetAstcDropTopLevel)
+        }
+        const CopyLayout layout = Layout(copy);
+        if (format.converted) {
+            LogConvertedUpload(mapped_at_base + copy.buffer_offset, layout, copy);
+        }
+        const u32 layers = static_cast<u32>(std::max(1, copy.image_subresource.num_layers));
+        for (u32 layer = 0; layer < layers; ++layer) {
+            const u32 subresource = Subresource(copy.image_subresource.base_level,
+                                                copy.image_subresource.base_layer +
+                                                    static_cast<s32>(layer));
+            const u32 x = static_cast<u32>(copy.image_offset.x);
+            const u32 y = static_cast<u32>(copy.image_offset.y);
+            const u32 z = static_cast<u32>(copy.image_offset.z);
+            const D3D12_BOX box{x, y, z, x + layout.width, y + layout.height, z + layout.depth};
+            const u8* const source = mapped_at_base + copy.buffer_offset +
+                                     static_cast<u64>(layer) * layout.depth * layout.tight_slice;
+            // Map with no pointer keeps a texture of unknown layout mapped for the write.
+            HRESULT hr = resource->Map(subresource, nullptr, nullptr);
+            if (SUCCEEDED(hr)) {
+                hr = resource->WriteToSubresource(subresource, &box, source, layout.row_bytes,
+                                                  static_cast<UINT>(layout.tight_slice));
+                resource->Unmap(subresource, nullptr);
+            }
+            if (FAILED(hr)) {
+                if (in_place_refused.fetch_add(1, std::memory_order_relaxed) < 8) {
+                    LOG_WARNING(Render,
+                                "D3D12: a texture write in place was refused ({:#010x}): format "
+                                "{}, level {}, {}x{} at {},{}; it goes through staging",
+                                static_cast<u32>(hr), static_cast<u32>(format.resource),
+                                copy.image_subresource.base_level, layout.width, layout.height,
+                                x, y);
+                }
+                return false;
+            }
+            bytes += layout.tight_slice * layout.depth;
+        }
+    }
+    const u64 count = in_place_images.fetch_add(1, std::memory_order_relaxed) + 1;
+    const u64 total = in_place_bytes.fetch_add(bytes, std::memory_order_relaxed) + bytes;
+    if (count == 1 || count % 1024 == 0) {
+        LOG_INFO(Render, "D3D12: {} textures written in place by the CPU ({} MiB)", count,
+                 total >> 20);
+    }
+    return true;
+}
+
 u64 Image::TransferBytes(std::span<const BufferImageCopy> copies) const {
     u64 bytes = 0;
     for (const auto& copy : copies) {
@@ -143,9 +206,18 @@ void Image::UploadMemoryImpl(ID3D12Resource* buffer, size_t base_offset, u8* map
         UploadDepthStencil(buffer, base_offset, copies);
         return;
     }
+    // A fresh image in a CPU-writable heap: no GPU work has used it, and what uses it is recorded
+    // after this, so the CPU writes the texels straight in. Later uploads may race the GPU.
+    if (std::exchange(untouched, false) && cpu_writable && mapped_at_base &&
+        WriteInPlace(mapped_at_base, copies)) {
+        return;
+    }
     auto* const commands = runtime->scheduler.CommandList();
     bool unmap_source = false;
-    if (!mapped_at_base && HeapType(buffer) == D3D12_HEAP_TYPE_UPLOAD) {
+    // CUSTOM: a staging buffer in CPU-cached memory (SetCachedStaging).
+    const D3D12_HEAP_TYPE source_heap = mapped_at_base ? D3D12_HEAP_TYPE_UPLOAD : HeapType(buffer);
+    if (!mapped_at_base &&
+        (source_heap == D3D12_HEAP_TYPE_UPLOAD || source_heap == D3D12_HEAP_TYPE_CUSTOM)) {
         VideoCore::Perf::ScopedNsTimer timer{VideoCore::Perf::Counter::TextureUploadMapNs};
         void* mapped{};
         const D3D12_RANGE no_read{0, 0};

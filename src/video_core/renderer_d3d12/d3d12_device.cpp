@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <cwchar>
 #include <iterator>
@@ -267,8 +268,14 @@ Device::Device() {
             LOG_INFO(Render, "D3D12: DRED not available");
         }
     }
+    // Gates only: JADYX_D3D12_WARP picks WARP, a cache-coherent UMA device like the console.
+    ComPtr<IDXGIAdapter> warp;
+    if (std::getenv("JADYX_D3D12_WARP") != nullptr &&
+        FAILED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp)))) {
+        warp.Reset();
+    }
     // Feature level 11.0 is all Xbox Series UWP offers; desktop GPUs accept it too.
-    ThrowIfFailed(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)),
+    ThrowIfFailed(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)),
                   "D3D12CreateDevice");
     if (debug_layer && SUCCEEDED(device.As(&info_queue))) {
         // Guest images are created before the guest says what it clears them to, so every

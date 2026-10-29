@@ -168,7 +168,23 @@ struct StagingOutOfMemory : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
-/// Creates a buffer in heap_type (UPLOAD or READBACK) and maps it for its whole lifetime.
+/// Any thread: upload buffers created from now on live in CPU-cached (write-back) memory instead
+/// of the UPLOAD heap's write-combined memory ("cached_staging=1"). The CPU reads staging back when
+/// it repacks a texture or logs a converted one, which is slow from write-combined memory; on a
+/// cache-coherent UMA the GPU reads write-back memory as fast. Turned off for good when the driver
+/// refuses such a buffer.
+void SetCachedStaging(bool enabled);
+[[nodiscard]] bool CachedStaging() noexcept;
+
+struct CachedStagingStats {
+    u64 buffers; ///< upload buffers created in write-back memory
+    u64 bytes;
+    bool refused; ///< the driver refused one; the UPLOAD heap is used from then on
+};
+[[nodiscard]] CachedStagingStats GetCachedStagingStats() noexcept;
+
+/// Creates a buffer in heap_type (UPLOAD or READBACK) and maps it for its whole lifetime; an
+/// UPLOAD buffer goes to write-back memory instead while CachedStaging() is on.
 /// Throws StagingOutOfMemory when the app's commit limit refuses it.
 ComPtr<ID3D12Resource> CreateMappedBuffer(ID3D12Device* device, u64 size,
                                           D3D12_HEAP_TYPE heap_type, std::span<u8>& mapped);
