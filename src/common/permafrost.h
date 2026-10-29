@@ -143,10 +143,14 @@ struct Stats {
     u64 write_failures{};
     u64 reserve_releases{};
     u64 file_slots{};         // slots the file has grown to
+    u64 fault_stall_us{};     // total time guest threads waited in faults: reads back, restores
+                              // from probation and granules held by another thread
     u32 min_idle_ms{};        // the idle time asked of a victim now
     u32 shielded{};           // granules left alone now
 };
 [[nodiscard]] Stats GetStats();
-[[nodiscard]] std::string Describe();
+/// The stats in one line. `since_last` adds the stall per second since the last such call: one
+/// caller only, at a steady interval.
+[[nodiscard]] std::string Describe(bool since_last = false);
 
 } // namespace Common::Permafrost

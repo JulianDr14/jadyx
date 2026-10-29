@@ -158,6 +158,10 @@ struct Engine {
     std::atomic<u64> file_slots{};
     std::atomic<u32> min_idle_ms{};
     std::atomic<u32> shielded{};
+    std::atomic<u64> fault_stall_us{};
+    // The last Describe, for the stall since it.
+    std::atomic<u64> describe_at{};
+    std::atomic<u64> describe_stall_us{};
 };
 
 std::atomic<Engine*> g_engine{};
@@ -891,6 +895,7 @@ bool Init(u8* base, size_t size, const Platform& platform, const Config& config)
         e->slots[word].store(used == 64 ? 0 : ~u64{} << used);
     }
     e->thrash_at = NowMs();
+    e->describe_at.store(e->thrash_at);
     e->min_idle_ms.store(config.min_idle_ms);
     for (size_t i = 0; i < e->writer_count; ++i) {
         e->writers[i] = std::thread{WriterLoop, e, i};
@@ -910,6 +915,13 @@ void Shutdown() {
 
 bool Active() {
     return g_engine.load(std::memory_order_acquire) != nullptr;
+}
+
+void AddStall(Engine& e, std::chrono::steady_clock::time_point start) {
+    e.fault_stall_us.fetch_add(static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                    std::chrono::steady_clock::now() - start)
+                                                    .count()),
+                               std::memory_order_relaxed);
 }
 
 bool OnFault(u8* address, bool (*commit)(u8* address)) {
@@ -945,14 +957,18 @@ bool OnFault(u8* address, bool (*commit)(u8* address)) {
         }
         if (state == Busy) {
             g.in_flight.fetch_sub(1);
+            const auto start = std::chrono::steady_clock::now();
             Wait(g.state);
+            AddStall(*e, start);
             return true;
         }
         if (g.state.compare_exchange_strong(state, Busy)) {
+            const auto start = std::chrono::steady_clock::now();
             const u64 now = NowMs();
             const bool ok = state == Probation ? Restore(*e, g, begin, now)
                                                : SwapIn(*e, g, index, begin, page, now);
             g.in_flight.fetch_sub(1);
+            AddStall(*e, start);
             return ok;
         }
         g.in_flight.fetch_sub(1);
@@ -1203,32 +1219,52 @@ Stats GetStats() {
     stats.file_slots = e->file_slots.load(std::memory_order_relaxed);
     stats.min_idle_ms = e->min_idle_ms.load(std::memory_order_relaxed);
     stats.shielded = e->shielded.load(std::memory_order_relaxed);
+    stats.fault_stall_us = e->fault_stall_us.load(std::memory_order_relaxed);
     return stats;
 }
 
-std::string Describe() {
+std::string Describe(bool since_last) {
     if (!Active()) {
         return "permafrost off";
     }
     const Stats s = GetStats();
     const auto n = [](u64 value) { return static_cast<unsigned long long>(value); };
+    // The stall since the last such call, per second of it: what the guest paid lately.
+    u64 stall = 0;
+    u64 span_ms = 0;
+    if (since_last) {
+        Engine* const e = g_engine.load(std::memory_order_acquire);
+        const u64 now = NowMs();
+        const u64 since = e->describe_at.exchange(now, std::memory_order_relaxed);
+        stall = s.fault_stall_us -
+                e->describe_stall_us.exchange(s.fault_stall_us, std::memory_order_relaxed);
+        span_ms = now > since ? now - since : 0;
+    }
     // The first part keeps its old shape for the log tools.
-    char text[768];
+    char text[896];
     std::snprintf(
         text, sizeof(text),
         "permafrost: %llu MiB on disk (file %llu MiB), %llu MiB on probation, written %llu MiB, "
         "zero %llu MiB, read back %llu MiB in %llu reads (avg %llu us, max %llu us), touched on probation "
         "%llu of %llu, %llu write failures, reserve %s (%llu releases); %llu MiB writing, "
         "%llu evictions, refaults %llu quick of %llu, %u shielded, idle %u ms, windows %llu, "
-        "prefetch %llu, zero faults %llu, probes %llu hit of %llu",
+        "prefetch %llu, zero faults %llu, probes %llu hit of %llu, stall %llu ms in all",
         n(s.swapped_bytes >> 20), n((s.file_slots * GRANULE_SIZE) >> 20), n(s.probation_bytes >> 20),
         n(s.written_bytes >> 20), n(s.zero_bytes >> 20), n(s.read_bytes >> 20), n(s.swap_ins),
         n(s.swap_ins > s.prefetch_reads ? s.swap_in_us / (s.swap_ins - s.prefetch_reads) : 0),
         n(s.swap_in_max_us), n(s.probation_touches), n(s.probation_starts), n(s.write_failures),
         ReserveReleased() ? "given up" : "held", n(s.reserve_releases), n(s.writing_bytes >> 20),
         n(s.evictions), n(s.quick_refaults), n(s.refaults), s.shielded, s.min_idle_ms,
-        n(s.window_reads), n(s.prefetch_reads), n(s.zero_faults), n(s.probe_hits), n(s.probe_arms));
-    return text;
+        n(s.window_reads), n(s.prefetch_reads), n(s.zero_faults), n(s.probe_hits), n(s.probe_arms),
+        n(s.fault_stall_us / 1000));
+    if (!since_last || span_ms == 0) {
+        return text;
+    }
+    char rate[96];
+    std::snprintf(rate, sizeof(rate), " (%llu.%llu ms/s over the last %llu.%llu s)",
+                  n(stall / span_ms), n(stall * 10 / span_ms % 10), n(span_ms / 1000),
+                  n(span_ms / 100 % 10));
+    return text + std::string{rate};
 }
 
 } // namespace Common::Permafrost
@@ -1269,7 +1305,7 @@ bool ReserveReleased() {
 Stats GetStats() {
     return {};
 }
-std::string Describe() {
+std::string Describe(bool) {
     return "permafrost off";
 }
 } // namespace Common::Permafrost

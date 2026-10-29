@@ -2467,7 +2467,7 @@ bool GuestSwapReserveReleased() {
 }
 
 std::string DescribeGuestSwap() {
-    return Permafrost::Describe();
+    return Permafrost::Describe(true);
 }
 
 void FormatBackingFault(char* out, size_t out_size, uintptr_t address) {
