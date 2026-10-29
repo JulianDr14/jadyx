@@ -11,7 +11,7 @@ namespace Jadyx {
 struct PulseGateOptions {
     u32 cycles{};      ///< boot.cfg "pulse_cycles=": capture/destroy/restore cycles to run
     u32 seed{1};       ///< "pulse_seed=": the random delays between captures
-    void* core_window{};
+    void* render_surface{};
     u32 width{1280};
     u32 height{720};
     std::function<void(const std::string&)> diag;

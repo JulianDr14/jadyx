@@ -11,7 +11,7 @@
 
 namespace D3D12 {
 
-/// Flip-model swapchain on a UWP CoreWindow (the only presentation surface a UWP app on Xbox has).
+/// Flip-model composition swapchain attached to the frontend's XAML SwapChainPanel.
 ///
 /// Created with a frame latency waitable object when DXGI allows it ("Reduce latency with DXGI 1.3
 /// swap chains"): WaitForFrame() then blocks until the swapchain accepts another frame, so the
@@ -24,8 +24,8 @@ public:
     /// one waits for its vblank.
     static constexpr u32 MAX_FRAME_LATENCY = 2;
 
-    /// core_window is the CoreWindow's IUnknown, as winrt::get_unknown hands it out.
-    Swapchain(const Device& device, IUnknown* core_window, u32 width, u32 height);
+    /// composition_panel is the ISwapChainPanelNative interop interface.
+    Swapchain(const Device& device, IUnknown* composition_panel, u32 width, u32 height);
     ~Swapchain();
 
     Swapchain(const Swapchain&) = delete;
@@ -53,6 +53,7 @@ public:
     void Present();
 
 private:
+    IUnknown* composition_panel{};
     ComPtr<IDXGISwapChain3> swapchain;
     std::array<ComPtr<ID3D12Resource>, IMAGE_COUNT> images;
     HANDLE frame_latency_waitable{};

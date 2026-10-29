@@ -26,7 +26,7 @@ enum class WindowSystemType {
     Cocoa,
     Android,
     Xcb,
-    CoreWindow, ///< UWP: render_surface is the CoreWindow's IUnknown*
+    CoreWindow, ///< UWP: render_surface is the CoreWindow or a XAML SwapChainPanel interop surface.
 };
 
 /**

@@ -3,6 +3,7 @@
 // Build with src/jadyx/i18n/localization.cpp and src/jadyx/i18n/locales/*.cpp.
 #include <cstdio>
 #include <cstdlib>
+#include <climits>
 #include <set>
 #include "jadyx/settings/system_page.h"
 
@@ -69,7 +70,11 @@ int main() {
     check(SanitizeUserName(L"  Ana  ") == L"Ana");
     check(SanitizeUserName(L"\tJulián\n") == L"Julián");
     check(SanitizeUserName(L"ABCDEFGHIJKLMN") == L"ABCDEFGHIJ");
+#if WCHAR_MAX <= 0xFFFF
     check(SanitizeUserName(L"ABCDEFGHI😀") == L"ABCDEFGHI");
+#else
+    check(SanitizeUserName(L"ABCDEFGHI😀") == L"ABCDEFGHI😀");
+#endif
     check(SanitizeUserName(L"   ").empty());
 
     // The page: values, changes and the name editor.
@@ -130,6 +135,12 @@ int main() {
     check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
           page.selected == SystemPage::MiiEditor);
     check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::OpenMiiEditor);
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
+          page.selected == SystemPage::WebBrowser);
+    check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::OpenWebBrowser);
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
+          page.selected == SystemPage::VideoPlayer);
+    check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::OpenVideoPlayer);
     check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
           page.selected == SystemPage::ClearCache);
     check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::ClearCache);

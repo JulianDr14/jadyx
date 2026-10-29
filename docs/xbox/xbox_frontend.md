@@ -1101,3 +1101,45 @@ ni prueba física de mando; se deja abierto para revisión manual, sin gameplay.
   La biblioteca de esta versión arranca en PC. Captura visual no disponible:
   Computer Use devolvió FrameArrived timed out y window capture timed out tras
   recuperar la ventana y reintentar. No se certifica visualmente con esa herramienta.
+
+# Navegador y reproductor multimedia XAML
+
+Configuración > Sistema incluye navegador HTTP/HTTPS y reproductor de vídeo. El
+host XAML conserva el renderer D3D12 existente dentro de un `SwapChainPanel`;
+las superficies D3D12, biblioteca y splash usan swapchains de composición y se
+conectan/desconectan mediante `ISwapChainPanelNative`. El enlace se difiere hasta
+que la superficie tenga listos sus recursos; el splash se desapega también en
+salidas por excepción para no dejar el panel ligado a un swapchain parcial.
+El navegador permite
+buscar o escribir una URL, volver, descargar la URL actual o enlaces de descarga
+reconocidos, cancelar una descarga y elegir una carpeta persistente con
+`FutureAccessList`. Sin carpeta elegida, guarda en `LocalState/Downloads`.
+El botón de desarrollador puede omitir errores de certificado para el cliente
+HTTP de descargas; está desactivado por defecto, persiste en la app y conserva
+rechazos de certificados revocados, firmas inválidas y extensiones críticas
+desconocidas. Al activarlo muestra una advertencia. No altera la validación TLS
+de navegación del control `WebView`.
+HTTP y enlaces de descarga entre sitios ya están admitidos. UWP `WebView` no
+expone en este host un interruptor compatible para ignorar certificados de
+navegación ni para permitir contenido mixto, por lo que la opción no intenta
+desactivar globalmente esas protecciones.
+El stick derecho mueve un cursor virtual sobre la página y A activa el elemento;
+la cruceta navega la barra y el foco de página. Los diálogos de selección usan
+el picker UWP.
+
+El reproductor guarda el acceso a una carpeta autorizada, busca recursivamente
+hasta 10.000 archivos de extensiones de vídeo conocidas y usa
+`MediaPlayerElement`. A/Y reproducen o pausan la selección; B vuelve a Sistema.
+La reproducción depende de los contenedores y códecs que ofrece Windows/Xbox:
+que un archivo aparezca en la lista no garantiza que el sistema pueda decodificarlo.
+Las descargas están limitadas a HTTP/HTTPS y se escriben en bloques de 64 KiB;
+un fallo o cancelación intenta borrar el archivo parcial.
+
+Fuentes: [DirectX y XAML](https://learn.microsoft.com/en-us/windows/uwp/gaming/directx-and-xaml-interop),
+[WebView UWP](https://learn.microsoft.com/en-us/uwp/api/windows.ui.xaml.controls.webview),
+[errores de certificado ignorables del filtro HTTP](https://learn.microsoft.com/en-us/uwp/api/windows.web.http.filters.httpbaseprotocolfilter.ignorableservercertificateerrors),
+[pickers y FutureAccessList](https://learn.microsoft.com/en-us/windows/uwp/files/quickstart-using-file-and-folder-pickers),
+[MediaPlayerElement](https://learn.microsoft.com/en-us/uwp/api/windows.ui.xaml.controls.mediaplayerelement).
+La implementación está pendiente de build/enlace UWP y validación visual y
+funcional en PC/Series; no se certifica el arranque ni el comportamiento de
+certificados en el dispositivo.

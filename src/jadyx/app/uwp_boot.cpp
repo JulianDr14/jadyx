@@ -8,8 +8,8 @@
 // JIT-liveness marker. Input is the Xbox gamepad and/or a boot.cfg script
 // (uwp_input.h).
 //
-// The Core::System bring-up is modeled on the proven desktop boot in src/yuzu_cmd/yuzu.cpp; the
-// WinRT IFrameworkView wrapper is the UWP entry point that drives it.
+// The Core::System bring-up is modeled on the proven desktop boot in src/yuzu_cmd/yuzu.cpp; a
+// C++/WinRT XAML Application hosts the frontend and its D3D12 SwapChainPanel.
 //
 // JIT-LIVENESS CONTRACT (agreed with AGENT QA for the GATE-2 checklist): GATE 2 means "Eden executed
 // guest code via the JIT", not "the process didn't crash". The homebrew NRO (NO keys/firmware/ROM â€”
@@ -39,6 +39,8 @@
 
 #include <winrt/base.h>
 #include <winrt/Windows.ApplicationModel.h>
+#include <winrt/Windows.ApplicationModel.Activation.h>
+#include <winrt/Windows.UI.Xaml.h>
 
 #include "common/bug_tracker.h"
 #include "common/fs/path_util.h"
@@ -106,6 +108,7 @@
 #include "jadyx/pulse/pulse_gate.h"
 #include "jadyx/pulse/pulse_screen.h"
 #include "jadyx/ui/launch_splash.h"
+#include "jadyx/ui/xaml_host.h"
 #include "jadyx/library/game_library.h"
 #include "jadyx/library/play_history.h"
 #include "jadyx/pulse/pulse_sessions.h"
@@ -232,17 +235,16 @@ constexpr int MII_EDITOR_MISSING = 19;
 /// The game's program has no ExeFS of its own (a sparse base) and no update brings one.
 constexpr int UPDATE_REQUIRED = 20;
 
-/// Where the renderer presents: the CoreWindow (as IUnknown*) and its size in physical pixels.
-/// A null window selects the Null renderer.
+/// The UI CoreWindow and XAML composition panel used by the renderer.
 struct BootSurface {
-    void* core_window{};
+    void* render_surface{};
     u32 width{1920};
     u32 height{1080};
 };
 
 // Force the device-light configuration the boot needs.
 static void ApplyHeadlessBootSettings(const BootSurface& surface) {
-    Settings::values.renderer_backend = surface.core_window != nullptr
+    Settings::values.renderer_backend = surface.render_surface != nullptr
                                             ? Settings::RendererBackend::Direct3D12
                                             : Settings::RendererBackend::Null;
     Settings::values.sink_id = Settings::AudioEngine::XAudio2;
@@ -671,9 +673,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         WriteDiag("step: D3D12 debug layer requested");
     }
     WriteDiag(std::string("step: audio ") + (config.null_audio ? "timed Null" : "XAudio2"));
-    WriteDiag(surface.core_window != nullptr && !config.null_renderer
+    WriteDiag(surface.render_surface != nullptr && !config.null_renderer
                   ? "step: logging up, renderer Direct3D12 on a " + std::to_string(surface.width) +
-                        "x" + std::to_string(surface.height) + " CoreWindow"
+                        "x" + std::to_string(surface.height) + " XAML SwapChainPanel"
                   : std::string("step: logging up, renderer Null"));
 
     if (config.pulse_store) {
@@ -685,8 +687,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     if (config.pulse_cycles) {
         return RunPulseGate(nro_path, {.cycles = config.pulse_cycles,
                                        .seed = config.pulse_seed,
-                                       .core_window = config.null_renderer ? nullptr
-                                                                           : surface.core_window,
+                                       .render_surface = config.null_renderer ? nullptr
+                                                                              : surface.render_surface,
                                        .width = surface.width,
                                        .height = surface.height,
                                        .diag = [](const std::string& line) { WriteDiag(line); }});
@@ -707,7 +709,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     system.ApplySettings();
     WriteDiag("step: system.ApplySettings() done");
 
-    HeadlessEmuWindow emu_window{surface.core_window, surface.width, surface.height};
+    HeadlessEmuWindow emu_window{surface.render_surface, surface.width, surface.height};
 
     // Before Load, so HID starts with player 1 connected and bound to the gamepad engine.
     GamepadInput input{config.input_script};
@@ -845,7 +847,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     // Played by hand: the launch splash stays up from the library's exit to the game's first
     // frame. The renderer takes the window from the frontend's splash, then draws it itself until
     // the guest is about to run.
-    const bool boot_screen = config.play && surface.core_window != nullptr && !config.null_renderer;
+    const bool boot_screen = config.play && surface.render_surface != nullptr && !config.null_renderer;
     if (boot_screen) {
         D3D12::SetWindowHandoff(ReleaseLaunchSplash);
         D3D12::SetBootScreen(DrawLaunchSplash);
@@ -1635,7 +1637,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
 
     // With a real renderer the payload goes on to draw frames; keep the guest running so they reach
     // the screen, until it reports the loop finished (or the backstop expires).
-    if (alive && surface.core_window != nullptr) {
+    if (alive && surface.render_surface != nullptr) {
         constexpr auto kGfxTimeout = std::chrono::seconds(30);
         {
             std::unique_lock lock(live_mutex);
@@ -1662,8 +1664,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
 } // namespace Jadyx
 
 // ============================================================================================
-// UWP entry point: a CoreApplication IFrameworkView whose Run() drives RunHeadlessBoot() against the
-// homebrew NRO bundled in the package install location (Package.InstalledLocation\boot.nro). Reading
+// UWP entry point: the XAML Application drives RunHeadlessBoot() against the homebrew NRO bundled in
+// the package install location (Package.InstalledLocation\boot.nro). Reading
 // the fixed GATE-2 payload from the read-only install dir keeps the MSIX self-contained â€” no
 // Device-Portal file-push or LocalState chicken-and-egg. (Eden's log still writes to the writable
 // LocalFolder; see common/fs/path_util.cpp under YUZU_UWP_APPCONTAINER.)
@@ -2637,22 +2639,22 @@ void SeedUserData(const std::filesystem::path& install, const std::filesystem::p
     SeedDirectory(userdata / "games", local / "games", "games");
 }
 
-struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
-    IFrameworkView CreateView() {
-        return *this;
-    }
-    void Initialize(CoreApplicationView const&) {}
-    void SetWindow(CoreWindow const& window) {
-        m_window = window;
-    }
-    void Load(hstring const&) {}
-    void Uninitialize() {}
-
+struct BootView {
     void Run() {
         WriteDiag("BootView::Run entered"); // also resolves + caches the diag path
         WriteDiag(MemoryReport());
         WriteDiag(StorageReport());
         InstallCrashHandlers();
+        try {
+            Jadyx::XamlHost::Initialize();
+        } catch (const winrt::hresult_error& error) {
+            WriteDiag("XAML host initialization failed: " +
+                      std::to_string(static_cast<unsigned>(error.code().value)));
+            throw;
+        } catch (const std::exception& error) {
+            WriteDiag(std::string("XAML host initialization failed: ") + error.what());
+            throw;
+        }
 
         // A UWP app MUST activate its CoreWindow and pump the dispatcher, or the OS terminates it a
         // couple seconds after launch (no crash, no dump - exactly the "flashes then closes" symptom).
@@ -2735,10 +2737,12 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
             Jadyx::RequestGameMenuOpen();
         });
         window.KeyDown([on_key](auto&&, KeyEventArgs const& args) {
+            if (Jadyx::XamlHost::IsMediaPageOpen()) return;
             if (!args.KeyStatus().WasKeyDown) on_key(args.VirtualKey(), true);
             args.Handled(true);
         });
         window.KeyUp([on_key](auto&&, KeyEventArgs const& args) {
+            if (Jadyx::XamlHost::IsMediaPageOpen()) return;
             on_key(args.VirtualKey(), false);
             args.Handled(true);
         });
@@ -2751,10 +2755,10 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
 
         // The swapchain is sized in physical pixels: CoreWindow bounds are in view pixels (DIPs).
         Jadyx::BootSurface surface{};
-        if (m_window) {
-            surface.core_window = winrt::get_abi(m_window); // an IInspectable, so a valid IUnknown*
+        if (window) {
+            surface.render_surface = Jadyx::XamlHost::RenderSurface();
             try {
-                const auto bounds = m_window.Bounds();
+                const auto bounds = window.Bounds();
                 const double scale = Windows::Graphics::Display::DisplayInformation::
                                          GetForCurrentView()
                                              .RawPixelsPerViewPixel();
@@ -2790,7 +2794,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     const auto local = std::filesystem::path{
                         Windows::Storage::ApplicationData::Current().LocalFolder().Path().c_str()};
                     WriteDiag("library: scanning LocalState/games; waiting for user selection");
-                    library_game = Jadyx::ShowGameLibrary(surface.core_window, surface.width,
+                    library_game = Jadyx::ShowGameLibrary(surface.render_surface, surface.width,
                         surface.height, local / L"games", [install, local] { SeedUserData(install, local); },
                         session <= 2 && library_error.empty() ? std::string_view{library_pick} : std::string_view{},
                         library_error);
@@ -2802,7 +2806,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     WriteDiag("library: selected " + *library_game);
                     library_error.clear();
                     // The window is never left blank while the game loads.
-                    Jadyx::ShowLaunchSplash(surface.core_window, surface.width, surface.height);
+                    Jadyx::ShowLaunchSplash(surface.render_surface, surface.width, surface.height);
                 }
             } catch (const std::exception& e) {
                 WriteDiag(std::string("library: failed: ") + e.what());
@@ -3447,13 +3451,22 @@ private:
         }
     }
 
-    CoreWindow m_window{nullptr};
+};
+
+struct JadyxApplication : winrt::Windows::UI::Xaml::ApplicationT<JadyxApplication> {
+    static constexpr auto name = L"Jadyx.App";
+
+    void OnLaunched(winrt::Windows::ApplicationModel::Activation::LaunchActivatedEventArgs const&) {
+        BootView{}.Run();
+    }
 };
 
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
-    winrt::init_apartment();
-    CoreApplication::Run(winrt::make<BootView>());
+    winrt::init_apartment(winrt::apartment_type::single_threaded);
+    winrt::Windows::UI::Xaml::Application::Start([](auto&&) {
+        winrt::make<JadyxApplication>();
+    });
     return 0;
 }

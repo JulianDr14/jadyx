@@ -23,7 +23,7 @@ class System;
 
 namespace Jadyx {
 
-/// Starts the splash on `core_window` (the library has released it) and restarts its clock.
+/// Starts the splash on the XAML composition panel (the library has released it) and restarts its clock.
 /// UI thread.
 void ShowLaunchSplash(void* core_window, unsigned width, unsigned height);
 

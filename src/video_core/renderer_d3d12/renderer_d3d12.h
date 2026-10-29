@@ -56,7 +56,8 @@ void SetFrameDiagnostics(bool enabled);
 void ShowLoadProgress(VideoCore::RendererBase& renderer, size_t done, size_t total);
 
 
-/// Direct3D 12 renderer: a device and swapchain on the UWP CoreWindow, presenting the guest's
+/// Direct3D 12 renderer: a device and composition swapchain on the UWP XAML SwapChainPanel,
+/// presenting the guest's
 /// display framebuffer. The framebuffer is deswizzled on the CPU and drawn to the window with
 /// Eden's own blit shaders, translated SPIR-V -> DXIL at runtime (phase 2). If that shader path is
 /// unavailable, the phase-1 CPU scale + copy is used instead. Guest GPU work is routed through the

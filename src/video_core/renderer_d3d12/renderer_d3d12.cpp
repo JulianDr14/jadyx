@@ -43,11 +43,11 @@ std::atomic<u32> material_capture_frame{};
 std::atomic<u64> material_trace_shader{};
 std::atomic<s32> material_probe_x{-1}, material_probe_y{-1};
 
-IUnknown* CoreWindowOf(const Core::Frontend::EmuWindow& emu_window) {
+IUnknown* CompositionPanelOf(const Core::Frontend::EmuWindow& emu_window) {
     const auto& info = emu_window.GetWindowInfo();
     if (info.type != Core::Frontend::WindowSystemType::CoreWindow ||
         info.render_surface == nullptr) {
-        throw std::runtime_error("D3D12: the frontend did not provide a CoreWindow");
+        throw std::runtime_error("D3D12: the frontend did not provide a XAML SwapChainPanel");
     }
     return static_cast<IUnknown*>(info.render_surface);
 }
@@ -100,7 +100,7 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& emu_window,
                              Tegra::MaxwellDeviceMemoryManager& device_memory_, Tegra::GPU& gpu_,
                              std::unique_ptr<Core::Frontend::GraphicsContext> context_)
     : RendererBase(emu_window, std::move(context_)), device_memory{device_memory_}, gpu{gpu_},
-      device{}, swapchain{device, CoreWindowOf(emu_window),
+      device{},       swapchain{device, CompositionPanelOf(emu_window),
                           emu_window.GetFramebufferLayout().width,
                           emu_window.GetFramebufferLayout().height},
       shader_compiler{}, scheduler{device}, staging_pool{device, scheduler},

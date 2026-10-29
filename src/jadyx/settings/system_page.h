@@ -18,7 +18,7 @@
 namespace Jadyx {
 
 struct SystemPage {
-    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, AdultMods, PerformanceStats, PulseSessions, PlayTime, MultipleControllers, OfflineMode, MiiEditor, ClearCache, Updates, RowCount };
+    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, AdultMods, PerformanceStats, PulseSessions, PlayTime, MultipleControllers, OfflineMode, MiiEditor, WebBrowser, VideoPlayer, ClearCache, Updates, RowCount };
 
     bool updates_open{};
     std::size_t update_row{}, update_detail{}, update_scroll{};
@@ -39,6 +39,8 @@ enum class SystemPageEffect : std::uint8_t {
     EditName,   ///< The name editor opened.
     NameDone,   ///< The editor closed with a new name in settings: save and apply.
     OpenUpdates,
+    OpenWebBrowser,
+    OpenVideoPlayer,
     ClearCache, ///< Clear the library cache.
     OpenMiiEditor, ///< Leave the library to run the firmware's Mii editor.
 };
@@ -112,6 +114,10 @@ inline SystemPageEffect HandleSystemInput(SystemPage& page, SystemInput input) {
         return SystemPageEffect::Changed;
     case Row::Updates:
         return input == SystemInput::Confirm ? SystemPageEffect::OpenUpdates : SystemPageEffect::None;
+    case Row::WebBrowser:
+        return input == SystemInput::Confirm ? SystemPageEffect::OpenWebBrowser : SystemPageEffect::None;
+    case Row::VideoPlayer:
+        return input == SystemInput::Confirm ? SystemPageEffect::OpenVideoPlayer : SystemPageEffect::None;
     case Row::ClearCache:
         return input == SystemInput::Confirm ? SystemPageEffect::ClearCache : SystemPageEffect::None;
     case Row::MiiEditor:
@@ -155,6 +161,8 @@ inline I18n::Text SystemRowTitle(SystemPage::Row row) {
     case SystemPage::MultipleControllers: return Text::MultipleControllers;
     case SystemPage::OfflineMode:       return Text::OfflineMode;
     case SystemPage::MiiEditor:         return Text::MiiEditor;
+    case SystemPage::WebBrowser:        return Text::WebBrowser;
+    case SystemPage::VideoPlayer:       return Text::VideoPlayer;
     default:                            return Text::ClearLibraryCache;
     }
 }
@@ -174,6 +182,8 @@ inline I18n::Text SystemRowHint(SystemPage::Row row) {
     case SystemPage::MultipleControllers: return Text::MultipleControllersHint;
     case SystemPage::OfflineMode:       return Text::OfflineModeHint;
     case SystemPage::MiiEditor:         return Text::MiiEditorHint;
+    case SystemPage::WebBrowser:        return Text::WebBrowserHint;
+    case SystemPage::VideoPlayer:       return Text::VideoPlayerHint;
     default:                            return Text::ClearLibraryCacheHint;
     }
 }

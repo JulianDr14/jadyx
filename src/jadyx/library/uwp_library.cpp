@@ -4,6 +4,7 @@
 #include "jadyx/input/stick_navigation.h"
 #include "jadyx/input/controller_catalog.h"
 #include "jadyx/ui/text_entry_input.h"
+#include "jadyx/ui/xaml_host.h"
 #include "jadyx/library/favorites.h"
 #include "jadyx/library/game_removal.h"
 #include "jadyx/library/library_layout.h"
@@ -306,6 +307,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         e.Handled(true);
     });
     auto pointer = window.PointerPressed(winrt::auto_revoke, [&](auto&&, PointerEventArgs const& e) {
+        if (XamlHost::IsMediaPageOpen()) return;
         const auto p = e.CurrentPoint().Position();
         const auto dpi = winrt::Windows::Graphics::Display::DisplayInformation::GetForCurrentView().RawPixelsPerViewPixel();
         const auto scale = std::max(0.01f, std::min(width / 1280.0f, height / 720.0f));
@@ -758,6 +760,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         }
         case SystemPageEffect::OpenUpdates:
             system_page.updates_open = true; system_page.update_row = 0; break;
+        case SystemPageEffect::OpenWebBrowser:
+            XamlHost::OpenBrowser(); break;
+        case SystemPageEffect::OpenVideoPlayer:
+            XamlHost::OpenVideoPlayer(); break;
         case SystemPageEffect::ClearCache: {
             reload_metadata();
             canvas->InvalidateCovers();
@@ -1071,7 +1077,14 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     if (hit(GamepadButtons::DPadLeft)) directions |= Left;
                     if (hit(GamepadButtons::DPadRight)) directions |= Right;
                 }
-                if (system_page.name_editor) {
+                if (XamlHost::HandleMediaController(
+                        reading.RightThumbstickX, reading.RightThumbstickY,
+                        hit(GamepadButtons::A), hit(GamepadButtons::B), hit(GamepadButtons::X),
+                        hit(GamepadButtons::Y),
+                        (directions & Left) != 0, (directions & Right) != 0,
+                        (directions & Up) != 0, (directions & Down) != 0)) {
+                    actions = 0;
+                } else if (system_page.name_editor) {
                     // Like the console's keyboard: A types, X deletes, Y adds a space, Menu (or RB)
                     // is done, View (or LB) is Shift and B leaves without saving. The bumpers are
                     // what a game's keyboard uses, where + and - belong to the game menu.

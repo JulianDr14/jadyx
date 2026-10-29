@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/uwp_library_canvas.h"
+#include "jadyx/ui/xaml_host.h"
 #include "jadyx/updates/update_ui.h"
 #include <ctime>
 #include "jadyx/input/pro_controller_geometry.h"
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <exception>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -57,7 +59,7 @@ std::wstring FirmwareValue(const FileSetupStatus& status) {
 // Release every reference (including the swapchain) before D3D12 starts.
 struct LibraryCanvas::Impl : UiPainter {
 public:
-    Impl(void* window, unsigned width, unsigned height) {
+    Impl(void*, unsigned width, unsigned height) {
         ComPtr<ID3D11Device> device;
         winrt::check_hresult(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
             D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
@@ -76,8 +78,7 @@ public:
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         desc.BufferCount = 2;
         desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
-        winrt::check_hresult(factory->CreateSwapChainForCoreWindow(device.Get(),
-            static_cast<IUnknown*>(window), &desc, nullptr, &swapchain));
+        winrt::check_hresult(factory->CreateSwapChainForComposition(device.Get(), &desc, nullptr, &swapchain));
         ComPtr<ID2D1Factory1> d2d;
         winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
                                               IID_PPV_ARGS(&d2d)));
@@ -113,10 +114,19 @@ public:
         const float scale = std::min(width / 1280.0f, height / 720.0f);
         target->SetTransform(D2D1::Matrix3x2F::Scale(std::max(scale, 0.01f), std::max(scale, 0.01f)) *
             D2D1::Matrix3x2F::Translation((width - 1280 * scale) / 2, (height - 720 * scale) / 2));
+        XamlHost::AttachSwapChain(swapchain.Get());
     }
     ~Impl() {
         target->SetTarget(nullptr);
         target.Reset();
+        try {
+            XamlHost::AttachSwapChain(nullptr);
+        } catch (const winrt::hresult_error& error) {
+            LOG_WARNING(Frontend, "Library canvas could not detach its swapchain: 0x{:08X}",
+                        static_cast<u32>(error.code().value));
+        } catch (const std::exception& error) {
+            LOG_WARNING(Frontend, "Library canvas could not detach its swapchain: {}", error.what());
+        }
         swapchain.Reset();
         context->ClearState();
         context->Flush();
@@ -1137,6 +1147,8 @@ private:
                 case SystemPage::Updates: item.kind = Kind::Open; break;
                 case SystemPage::ClearCache: item.kind = Kind::Open; break;
                 case SystemPage::MiiEditor: item.kind = Kind::Open; break;
+                case SystemPage::WebBrowser: item.kind = Kind::Open; break;
+                case SystemPage::VideoPlayer: item.kind = Kind::Open; break;
                 case SystemPage::AdultMods: item.kind = Kind::Toggle; item.on = settings.show_adult_mods; break;
                 case SystemPage::PerformanceStats: item.kind = Kind::Toggle; item.on = settings.show_performance_stats; break;
                 case SystemPage::PulseSessions: item.kind = Kind::Toggle; item.on = settings.pulse_sessions; break;

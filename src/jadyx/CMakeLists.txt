@@ -1,9 +1,8 @@
 # SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# jadyx: the headless GATE-2 boot frontend for the Xbox/UWP AppContainer.
-# A CoreApplication IFrameworkView that brings up Core::System with the Null renderer and runs a
-# homebrew NRO through the JIT. Only built for the WindowsStore (UWP) target.
+# jadyx: the Xbox/UWP AppContainer frontend and boot host.
+# XAML owns the app window and media/browser controls; SwapChainPanel keeps the D3D12 renderer.
 
 add_executable(jadyx WIN32
     app/headless_emu_window.h
@@ -101,6 +100,8 @@ add_executable(jadyx WIN32
     ui/ui_fonts.h
     ui/launch_splash.cpp
     ui/launch_splash.h
+    ui/xaml_host.cpp
+    ui/xaml_host.h
     ui/ui_painter.cpp
     ui/ui_painter.h
     ui/tween.h
@@ -189,7 +190,7 @@ target_link_libraries(jadyx PRIVATE common core video_core audio_core frontend_c
                                         input_common SDL3::SDL3 dynarmic::dynarmic LibArchive::Read
                                         OpenSSL::Crypto zstd::zstd)
 
-# WinRT (CoreApplication, IFrameworkView, ApplicationData) comes from the Store umbrella import lib.
+# WinRT (XAML Application, CoreWindow, ApplicationData) comes from the Store umbrella import lib.
 target_link_libraries(jadyx PRIVATE WindowsApp.lib)
 target_link_libraries(jadyx PRIVATE d3d11 d3d12 d2d1 dwrite dxgi dxguid windowscodecs)
 

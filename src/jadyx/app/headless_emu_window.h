@@ -18,15 +18,14 @@
 
 namespace Jadyx {
 
-/// Headless EmuWindow for null-renderer boot. No surface, never minimized, hands back a no-op context.
+/// Minimal UWP EmuWindow. `render_surface` is the XAML SwapChainPanel native interop surface, or
+/// null for a headless/null-renderer boot.
 class HeadlessEmuWindow final : public Core::Frontend::EmuWindow {
 public:
-    /// core_window: the CoreWindow's IUnknown* for the D3D12 renderer, or nullptr for headless.
-    explicit HeadlessEmuWindow(void* core_window = nullptr, u32 width = 1280, u32 height = 720) {
-        // Without a surface the video backend runs headless (render_surface == nullptr).
-        window_info.type = core_window != nullptr ? Core::Frontend::WindowSystemType::CoreWindow
-                                                  : Core::Frontend::WindowSystemType::Headless;
-        window_info.render_surface = core_window;
+    explicit HeadlessEmuWindow(void* render_surface = nullptr, u32 width = 1280, u32 height = 720) {
+        window_info.type = render_surface != nullptr ? Core::Frontend::WindowSystemType::CoreWindow
+                                                     : Core::Frontend::WindowSystemType::Headless;
+        window_info.render_surface = render_surface;
         window_info.render_surface_scale = 1.0f;
         // Seed a framebuffer layout so anything querying it (even the null renderer's present path)
         // gets a self-consistent size.

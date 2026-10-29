@@ -4,6 +4,7 @@
 #include <chrono>
 #include <functional>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 
@@ -26,6 +27,19 @@ constexpr int HANDOFF_RETRIES = 40, HANDOFF_RETRY_MS = 50;
 
 std::mutex handoff_mutex;
 std::function<void()> window_handoff;
+std::function<void(void*)> swapchain_attach;
+
+void AttachSwapChain(void* swap_chain) {
+    std::function<void(void*)> attach;
+    {
+        std::scoped_lock lock{handoff_mutex};
+        attach = swapchain_attach;
+    }
+    if (!attach) {
+        throw std::runtime_error("D3D12: no composition swapchain callback is installed");
+    }
+    attach(swap_chain);
+}
 
 } // Anonymous namespace
 
@@ -34,8 +48,13 @@ void SetWindowHandoff(std::function<void()> release) {
     window_handoff = std::move(release);
 }
 
-Swapchain::Swapchain(const Device& device, IUnknown* core_window, u32 width_, u32 height_)
-    : width{width_}, height{height_} {
+void SetSwapChainAttach(std::function<void(void*)> attach) {
+    std::scoped_lock lock{handoff_mutex};
+    swapchain_attach = std::move(attach);
+}
+
+Swapchain::Swapchain(const Device& device, IUnknown* panel, u32 width_, u32 height_)
+    : composition_panel{panel}, width{width_}, height{height_} {
     DXGI_SWAP_CHAIN_DESC1 desc{
         .Width = width,
         .Height = height,
@@ -45,7 +64,7 @@ Swapchain::Swapchain(const Device& device, IUnknown* core_window, u32 width_, u3
         .BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
         .BufferCount = IMAGE_COUNT,
         .Scaling = DXGI_SCALING_STRETCH,
-        .SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
+        .SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
         .AlphaMode = DXGI_ALPHA_MODE_IGNORE,
         .Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
     };
@@ -56,14 +75,12 @@ Swapchain::Swapchain(const Device& device, IUnknown* core_window, u32 width_, u3
     }
     if (handoff) handoff();
     ComPtr<IDXGISwapChain1> swapchain1;
-    HRESULT hr = device.Factory()->CreateSwapChainForCoreWindow(device.Queue(), core_window, &desc,
-                                                                nullptr, &swapchain1);
-    // DXGI may unbind the frontend's swapchain from the window a moment after its last
-    // reference goes: until then the window refuses a new one with E_INVALIDARG.
+    HRESULT hr = device.Factory()->CreateSwapChainForComposition(device.Queue(), &desc,
+                                                                  nullptr, &swapchain1);
     for (int attempt = 0; handoff && hr == E_INVALIDARG && attempt < HANDOFF_RETRIES; ++attempt) {
         std::this_thread::sleep_for(std::chrono::milliseconds{HANDOFF_RETRY_MS});
-        hr = device.Factory()->CreateSwapChainForCoreWindow(device.Queue(), core_window, &desc,
-                                                            nullptr, &swapchain1);
+        hr = device.Factory()->CreateSwapChainForComposition(device.Queue(), &desc, nullptr,
+                                                              &swapchain1);
         if (SUCCEEDED(hr)) {
             LOG_INFO(Render, "D3D12: window free after the handoff in {} ms",
                      (attempt + 1) * HANDOFF_RETRY_MS);
@@ -73,10 +90,10 @@ Swapchain::Swapchain(const Device& device, IUnknown* core_window, u32 width_, u3
         LOG_WARNING(Render, "D3D12: waitable swapchain rejected (0x{:08X}); Present will block",
                     static_cast<u32>(hr));
         desc.Flags = 0;
-        hr = device.Factory()->CreateSwapChainForCoreWindow(device.Queue(), core_window, &desc,
-                                                            nullptr, &swapchain1);
+        hr = device.Factory()->CreateSwapChainForComposition(device.Queue(), &desc, nullptr,
+                                                              &swapchain1);
     }
-    ThrowIfFailed(hr, "CreateSwapChainForCoreWindow");
+    ThrowIfFailed(hr, "CreateSwapChainForComposition");
     ThrowIfFailed(swapchain1.As(&swapchain), "IDXGISwapChain3 query");
     if (desc.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) {
         // A waitable swapchain keeps its own latency, not the device's (IDXGIDevice1).
@@ -89,6 +106,7 @@ Swapchain::Swapchain(const Device& device, IUnknown* core_window, u32 width_, u3
         ThrowIfFailed(swapchain->GetBuffer(i, IID_PPV_ARGS(&images[i])),
                       "IDXGISwapChain::GetBuffer");
     }
+    AttachSwapChain(swapchain.Get());
     LOG_INFO(Render, "D3D12: swapchain {}x{}, {} images, frame latency {}", width, height,
              IMAGE_COUNT,
              frame_latency_waitable ? fmt::format("{} (waitable)", MAX_FRAME_LATENCY)
@@ -96,6 +114,13 @@ Swapchain::Swapchain(const Device& device, IUnknown* core_window, u32 width_, u3
 }
 
 Swapchain::~Swapchain() {
+    if (composition_panel) {
+        try {
+            AttachSwapChain(nullptr);
+        } catch (const std::exception& error) {
+            LOG_WARNING(Render, "D3D12: could not detach the composition swapchain: {}", error.what());
+        }
+    }
     if (frame_latency_waitable != nullptr) {
         CloseHandle(frame_latency_waitable);
     }

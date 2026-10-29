@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/ui/launch_splash.h"
+#include "jadyx/ui/xaml_host.h"
 
 #include <algorithm>
 #include <array>
@@ -420,12 +421,41 @@ private:
     SplashPainter painter;
 };
 
+class CompositionBinding {
+public:
+    void Attach(IDXGISwapChain* swapchain) {
+        XamlHost::AttachSwapChain(swapchain);
+        attached = true;
+    }
+
+    void Detach() {
+        if (!attached) return;
+        XamlHost::AttachSwapChain(nullptr);
+        attached = false;
+    }
+
+    ~CompositionBinding() {
+        if (!attached) return;
+        try {
+            XamlHost::AttachSwapChain(nullptr);
+        } catch (const winrt::hresult_error& error) {
+            LOG_WARNING(Frontend, "Launch splash could not detach its swapchain: 0x{:08X}",
+                        static_cast<u32>(error.code().value));
+        } catch (const std::exception& error) {
+            LOG_WARNING(Frontend, "Launch splash could not detach its swapchain: {}", error.what());
+        }
+    }
+
+private:
+    bool attached{};
+};
+
 /// The frontend's splash before the renderer exists: a small D3D12 swapchain on the window that
 /// the CPU-drawn image is copied into, on a thread of its own.
 class WindowSplash {
 public:
-    WindowSplash(void* window, unsigned width, unsigned height)
-        : thread{[this, window, width, height](std::stop_token stop) { Run(stop, window, width, height); }} {}
+    WindowSplash(unsigned width, unsigned height)
+        : thread{[this, width, height](std::stop_token stop) { Run(stop, width, height); }} {}
 
     ~WindowSplash() {
         thread.request_stop();
@@ -433,13 +463,13 @@ public:
     }
 
 private:
-    void Run(std::stop_token stop, void* window, unsigned width, unsigned height) {
+    void Run(std::stop_token stop, unsigned width, unsigned height) {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         struct Uninitialize {
             ~Uninitialize() { winrt::uninit_apartment(); }
         } uninitialize;
         try {
-            Present(stop, window, std::max(1U, width), std::max(1U, height));
+            Present(stop, std::max(1U, width), std::max(1U, height));
         } catch (const winrt::hresult_error& e) {
             LOG_WARNING(Frontend, "Launch splash stopped: {}", winrt::to_string(e.message()));
         } catch (const std::exception& e) {
@@ -455,7 +485,7 @@ private:
         return barrier;
     }
 
-    void Present(std::stop_token stop, void* window, unsigned width, unsigned height) {
+    void Present(std::stop_token stop, unsigned width, unsigned height) {
         ComPtr<IDXGIFactory4> factory;
         winrt::check_hresult(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)));
         ComPtr<ID3D12Device> device;
@@ -471,13 +501,12 @@ private:
         desc.SampleDesc.Count = 1;
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         desc.BufferCount = 2;
-        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
         ComPtr<IDXGISwapChain1> swapchain1;
-        winrt::check_hresult(factory->CreateSwapChainForCoreWindow(queue.Get(), static_cast<IUnknown*>(window),
-                                                                   &desc, nullptr, &swapchain1));
+        winrt::check_hresult(factory->CreateSwapChainForComposition(queue.Get(), &desc, nullptr,
+                                                                     &swapchain1));
         ComPtr<IDXGISwapChain3> swapchain;
         winrt::check_hresult(swapchain1.As(&swapchain));
-
         D3D12_DESCRIPTOR_HEAP_DESC heap_desc{};
         heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         heap_desc.NumDescriptors = desc.BufferCount;
@@ -539,6 +568,8 @@ private:
         BitmapSplash splash;
         std::mutex mutex;
         std::condition_variable_any wake;
+        CompositionBinding binding;
+        binding.Attach(swapchain.Get());
         auto next = Clock::now();
         while (!stop.stop_requested()) {
             const D3D12::MenuImage image = splash.Draw({width, height});
@@ -593,6 +624,7 @@ private:
         wait_idle();
         upload->Unmap(0, nullptr);
         buffers = {};
+        binding.Detach();
         swapchain.Reset();
         swapchain1.Reset();
         wait_idle();
@@ -619,7 +651,7 @@ D3D12::MenuImage DrawOnThisThread(std::pair<u32, u32> screen) {
 }
 } // namespace
 
-void ShowLaunchSplash(void* core_window, unsigned width, unsigned height) {
+void ShowLaunchSplash(void* composition_panel, unsigned width, unsigned height) {
     ReleaseLaunchSplash();
     if (logo_path.empty()) {
         try {
@@ -630,9 +662,9 @@ void ShowLaunchSplash(void* core_window, unsigned width, unsigned height) {
     }
     opened.store(Clock::now().time_since_epoch().count(), std::memory_order_relaxed);
     SetLaunchStep(LaunchStep::Loading);
-    if (core_window == nullptr) return;
+    if (composition_panel == nullptr) return;
     std::scoped_lock lock{window_mutex};
-    window_splash = std::make_unique<WindowSplash>(core_window, width, height);
+    window_splash = std::make_unique<WindowSplash>(width, height);
 }
 
 void ReleaseLaunchSplash() {

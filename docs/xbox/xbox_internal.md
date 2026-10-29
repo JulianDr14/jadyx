@@ -4286,3 +4286,22 @@ de.33 traspruebaPulse enSeries. Evidencia manual, sin nuevoslogs ni certificaci�
 global deotrosjuegos. Solicita commitspequeños yPRamain enJulianDr14/jadyx,
 excluyendo expresamente los cambios deinterfaz. Esos seisarchivos quedanlocales;
 el APPX.33probado losincluía, porloque suhash no describe un rebuildsoloPR.
+
+### Host XAML, navegador y reproductor, 20 octubre 2026
+
+La app migra su ventana raíz a C++/WinRT XAML para ofrecer WebView, pickers y
+MediaPlayerElement; el renderer D3D12 y las superficies de biblioteca/splash
+conservan el panel visible usando swapchains de composición. La activación del
+manifest queda ligada a `Jadyx.App`; la UI arranca en STA y el worker de juego
+mantiene su apartment MTA. Browser y vídeo se abren desde Sistema, con descargas
+HTTP/HTTPS en bloques, selección persistente de carpeta, escaneo recursivo
+acotado y controles A/Y/B. El stick derecho controla el cursor de página.
+
+Se corrigió el patrón JavaScript de enlaces descargables y se añadió una acción
+explícita para descargar la URL actual. `system-settings` y
+`localization-catalogs` pasan con GCC; el test de portal Node también pasa.
+El test de ajustes tuvo que expresar el caso de emoji según el ancho de `wchar_t`
+para poder ejecutarse en Linux y conservar la expectativa UTF-16 de Windows.
+No se dispone aquí de Windows/MSVC/PowerShell: build/enlace UWP, instalación,
+visual, pickers, reproducción, descargas y mando Series siguen pendientes.
+No APPX ni commit.

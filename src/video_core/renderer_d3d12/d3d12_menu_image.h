@@ -50,6 +50,9 @@ void HideGameMenu(VideoCore::RendererBase& renderer);
 /// it lets the window go (a window takes one swapchain at a time). Any thread.
 void SetWindowHandoff(std::function<void()> release);
 
+/// Installs the frontend callback that binds/unbinds a composition swapchain to its UI surface.
+void SetSwapChainAttach(std::function<void(void*)> attach);
+
 /// Draws the screen the next renderer shows from its creation until EndBootScreen, in place of
 /// its first plain frame, so the window never goes blank while the game loads. Called with the
 /// screen size about 30 times a second from a thread of the renderer's own. Any thread.

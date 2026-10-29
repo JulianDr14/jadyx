@@ -160,7 +160,7 @@ int RunPulseGate(const std::string& nro_path, const PulseGateOptions& options) {
         ~DetachObserver() { Kernel::Svc::SetDebugStringObserver(nullptr); }
     } detach_observer;
 
-    HeadlessEmuWindow window{options.core_window, options.width, options.height};
+    HeadlessEmuWindow window{options.render_surface, options.width, options.height};
     std::mt19937 rng{options.seed};
     std::optional<Session> session;
     std::vector<CycleReport> reports;
