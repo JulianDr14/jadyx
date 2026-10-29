@@ -100,6 +100,10 @@ void DumpRecentGpuDetails(u64 count);
 /// is narrowed to the commands that cause it, logged with their arguments, including the calls
 /// DRED does not trace. Slow: diagnostic only.
 void SetCloseProbeEnabled(bool enabled);
+/// boot.cfg "present_queue=1": devices created from now on present on a direct queue of their
+/// own, so a frame's copy to the back buffer runs as soon as its rendering is done instead of
+/// after whatever the emulation submitted behind it.
+void SetPresentQueue(bool enabled);
 bool CloseProbeEnabled();
 /// Runs run(ctx, scratch) on the scratch lists, on the recording worker after the real call.
 void ProbeAppend(ID3D12GraphicsCommandList* list,
@@ -150,6 +154,19 @@ public:
     /// (Present and ExecuteCommandLists called from two threads at once can deadlock).
     std::mutex& QueueMutex() const {
         return queue_mutex;
+    }
+    /// The queue the swapchain presents on: a queue of its own with SetPresentQueue, else Queue().
+    ID3D12CommandQueue* PresentQueue() const {
+        return present_queue ? present_queue.Get() : queue.Get();
+    }
+    /// QueueMutex for PresentQueue().
+    std::mutex& PresentQueueMutex() const {
+        return present_queue ? present_queue_mutex : queue_mutex;
+    }
+    /// PresentQueue() is not Queue(): work on it is not ordered after the emulation's by
+    /// submission and has to wait for its fence.
+    [[nodiscard]] bool HasPresentQueue() const noexcept {
+        return present_queue != nullptr;
     }
     IDXGIFactory4* Factory() const {
         return factory.Get();
@@ -221,6 +238,8 @@ private:
     std::atomic_flag removal_reported;
     ComPtr<ID3D12CommandQueue> queue;
     mutable std::mutex queue_mutex;
+    ComPtr<ID3D12CommandQueue> present_queue; ///< null unless SetPresentQueue
+    mutable std::mutex present_queue_mutex;
     ComPtr<ID3D12Fence> fence;
     HANDLE fence_event{};
     u64 next_fence_value{1};

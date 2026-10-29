@@ -177,6 +177,7 @@ void SetGpuBasedValidation(bool enabled); // d3d12_device.h
 void SetDredEnabled(bool enabled);         // d3d12_device.h
 void SetGpuBreadcrumbsEnabled(bool enabled); // d3d12_device.h
 void SetCloseProbeEnabled(bool enabled);     // d3d12_device.h
+void SetPresentQueue(bool enabled);          // d3d12_device.h
 void SetPipelineEviction(bool enabled);      // d3d12_pipeline_cache.h
 void SetPipelinePrewarm(bool enabled);       // d3d12_pipeline_cache.h
 void SetComputeWorkgroupSplit(u32 factor);   // d3d12_pipeline_cache.h
@@ -427,6 +428,9 @@ struct BootConfig {
     /// Copy and present frames on a thread of their own, so the GPU thread never waits for the
     /// display ("async_present=0" presents on the GPU thread, as Present used to).
     bool async_present{true};
+    /// Present on a GPU queue of its own, so a frame's copy to the screen does not wait behind
+    /// the emulation's next work ("present_queue=1").
+    bool present_queue{};
     /// This boot's image upscaling instead of the saved one, for test runs ("upscaling=fsr";
     /// upscaling.h ParseUpscaling lists the values). Not saved.
     std::optional<Upscaling> upscaling;
@@ -750,6 +754,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     if (config.airplane_mode) Settings::values.airplane_mode.SetValue(true); // else Settings > System
     if (config.upscaling) ApplyUpscaling(*config.upscaling); // before the renderer exists
     D3D12::SetAsyncRecording(config.async_record);
+    D3D12::SetPresentQueue(config.present_queue);
     Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);
     Service::Nvidia::Devices::nvdisp_disp0::SetReleaseFence(config.nv_release_fence);
     if (config.gpu_fence) Settings::values.gpu_fence_behavior.SetValue(*config.gpu_fence);

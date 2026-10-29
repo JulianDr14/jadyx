@@ -113,6 +113,10 @@ public:
     }
     /// Blocks until tick's list reached the queue; at once without a recording worker.
     void WaitSubmitted(u64 tick);
+    /// Reaches each tick once its list is done on the GPU; another queue waits for it there.
+    [[nodiscard]] ID3D12Fence* Fence() const noexcept {
+        return fence.Get();
+    }
 
     /// Everything recorded up to now has reached the list once IsRecorded(RecordPoint()) holds:
     /// what the list reads on the CPU when it is called (the RTV/DSV behind a handle) may be

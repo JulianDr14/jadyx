@@ -56,14 +56,14 @@ Swapchain::Swapchain(const Device& device, IUnknown* core_window, u32 width_, u3
     }
     if (handoff) handoff();
     ComPtr<IDXGISwapChain1> swapchain1;
-    HRESULT hr = device.Factory()->CreateSwapChainForCoreWindow(device.Queue(), core_window, &desc,
-                                                                nullptr, &swapchain1);
+    HRESULT hr = device.Factory()->CreateSwapChainForCoreWindow(device.PresentQueue(), core_window,
+                                                                &desc, nullptr, &swapchain1);
     // DXGI may unbind the frontend's swapchain from the window a moment after its last
     // reference goes: until then the window refuses a new one with E_INVALIDARG.
     for (int attempt = 0; handoff && hr == E_INVALIDARG && attempt < HANDOFF_RETRIES; ++attempt) {
         std::this_thread::sleep_for(std::chrono::milliseconds{HANDOFF_RETRY_MS});
-        hr = device.Factory()->CreateSwapChainForCoreWindow(device.Queue(), core_window, &desc,
-                                                            nullptr, &swapchain1);
+        hr = device.Factory()->CreateSwapChainForCoreWindow(device.PresentQueue(), core_window,
+                                                            &desc, nullptr, &swapchain1);
         if (SUCCEEDED(hr)) {
             LOG_INFO(Render, "D3D12: window free after the handoff in {} ms",
                      (attempt + 1) * HANDOFF_RETRY_MS);
@@ -73,8 +73,8 @@ Swapchain::Swapchain(const Device& device, IUnknown* core_window, u32 width_, u3
         LOG_WARNING(Render, "D3D12: waitable swapchain rejected (0x{:08X}); Present will block",
                     static_cast<u32>(hr));
         desc.Flags = 0;
-        hr = device.Factory()->CreateSwapChainForCoreWindow(device.Queue(), core_window, &desc,
-                                                            nullptr, &swapchain1);
+        hr = device.Factory()->CreateSwapChainForCoreWindow(device.PresentQueue(), core_window,
+                                                            &desc, nullptr, &swapchain1);
     }
     ThrowIfFailed(hr, "CreateSwapChainForCoreWindow");
     ThrowIfFailed(swapchain1.As(&swapchain), "IDXGISwapChain3 query");

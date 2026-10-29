@@ -26,6 +26,7 @@
 namespace D3D12 {
 
 namespace {
+std::atomic<bool> present_queue_enabled{false}; ///< SetPresentQueue
 
 std::string Narrow(const wchar_t* wide) {
     std::string out;
@@ -317,6 +318,26 @@ Device::Device() {
     };
     ThrowIfFailed(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)),
                   "CreateCommandQueue");
+    if (present_queue_enabled.load(std::memory_order_relaxed)) {
+        // High priority: a late present is a visible stutter, the copy is tiny.
+        const D3D12_COMMAND_QUEUE_DESC present_desc{
+            .Type = D3D12_COMMAND_LIST_TYPE_DIRECT,
+            .Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH,
+            .Flags = D3D12_COMMAND_QUEUE_FLAG_NONE,
+            .NodeMask = 0,
+        };
+        const HRESULT hr =
+            device->CreateCommandQueue(&present_desc, IID_PPV_ARGS(&present_queue));
+        if (SUCCEEDED(hr)) {
+            present_queue->SetName(L"Present queue");
+            LOG_INFO(Render, "D3D12: presentation on a queue of its own");
+        } else {
+            present_queue.Reset();
+            LOG_WARNING(Render, "D3D12: present queue rejected (0x{:08X}); presenting on the "
+                                "emulation queue",
+                        static_cast<u32>(hr));
+        }
+    }
     ThrowIfFailed(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)),
                   "CreateFence");
     fence_event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
@@ -704,6 +725,10 @@ void ProbeTrackPipeline(ID3D12PipelineState* pipeline) {
 void ProbeResetState() {
     std::scoped_lock lock{probe_mutex};
     probe_state = {};
+}
+
+void SetPresentQueue(bool enabled) {
+    present_queue_enabled.store(enabled, std::memory_order_relaxed);
 }
 
 void SetCloseProbeEnabled(bool enabled) {

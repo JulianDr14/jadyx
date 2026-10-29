@@ -30,6 +30,8 @@ struct PresentFrame {
     D3D12_RESOURCE_STATES state{D3D12_RESOURCE_STATE_COPY_SOURCE};
     /// Scheduler tick that submitted the frame's rendering.
     u64 render_tick{};
+    /// Copy fence value of the frame's last copy to the back buffer.
+    u64 copy_value{};
     u32 index{};
 
     /// Records a transition to next on cmd unless image is already there.
@@ -73,6 +75,8 @@ private:
 /// - GPU order: both threads submit to the one direct queue, and a frame is queued only after the
 ///   scheduler submitted its rendering, so its copy executes after it. A frame is lent again only
 ///   after its copy was submitted, so the next rendering into it executes after the copy too.
+///   With a present queue of its own (Device::HasPresentQueue) the copy waits on the GPU for the
+///   scheduler's fence instead, and a frame is lent again only once its copy is done.
 /// - DXGI submits to the queue inside Present, and Present racing ExecuteCommandLists on another
 ///   thread can deadlock: both go through Device::QueueMutex. The present thread waits for the
 ///   swapchain before taking it, so Present does not block while holding it.

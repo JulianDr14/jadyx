@@ -140,6 +140,14 @@ FrameLease PresentManager::AcquireFrame() {
     // The queue already orders new commands after the frame's previous rendering and copy; this
     // only keeps the CPU from running more than FRAME_COUNT frames ahead of the GPU.
     scheduler.Wait(frame->render_tick);
+    // The copy then runs outside the emulation queue's order: rendering into the frame again
+    // must wait until the copy has read it. A frame comes back FRAME_COUNT frames later, so this
+    // practically never blocks.
+    if (device.HasPresentQueue() && copy_fence->GetCompletedValue() < frame->copy_value) {
+        // No event: the present thread owns copy_event.
+        ThrowIfFailed(copy_fence->SetEventOnCompletion(frame->copy_value, nullptr),
+                      "ID3D12Fence::SetEventOnCompletion (frame reuse)");
+    }
     return FrameLease{*this, *frame};
 }
 
@@ -244,12 +252,19 @@ void PresentManager::CopyToSwapchain(PresentFrame& frame) {
     // The queue runs lists in submission order, and the frame's rendering may still be on its way
     // to the queue from the recording worker: the copy must not overtake it.
     scheduler.WaitSubmitted(frame.render_tick);
-    std::scoped_lock lock{device.QueueMutex()};
+    std::scoped_lock lock{device.PresentQueueMutex()};
+    ID3D12CommandQueue* const queue = device.PresentQueue();
+    if (device.HasPresentQueue()) {
+        // Another queue: submission order says nothing, the scheduler's fence does.
+        ThrowIfFailed(queue->Wait(scheduler.Fence(), frame.render_tick),
+                      "ID3D12CommandQueue::Wait (present)");
+    }
     ID3D12CommandList* const lists[] = {copy_list.Get()};
-    device.Queue()->ExecuteCommandLists(1, lists);
-    ThrowIfFailed(device.Queue()->Signal(copy_fence.Get(), ++copy_fence_value),
+    queue->ExecuteCommandLists(1, lists);
+    ThrowIfFailed(queue->Signal(copy_fence.Get(), ++copy_fence_value),
                   "ID3D12CommandQueue::Signal (present)");
     context.fence_value = copy_fence_value;
+    frame.copy_value = copy_fence_value;
     swapchain.Present();
 }
 
