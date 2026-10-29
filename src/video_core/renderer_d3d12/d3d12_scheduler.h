@@ -72,6 +72,11 @@ public:
         }
     }
 
+    /// The PSO was set on the list outside SetPipelineState: the next SetPipelineState records.
+    void ForgetPipelineState() noexcept {
+        current_pipeline = nullptr;
+    }
+
     /// Submits the recorded work; returns the tick it signals.
     u64 Flush();
 

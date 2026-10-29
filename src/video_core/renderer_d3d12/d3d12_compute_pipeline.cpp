@@ -21,6 +21,7 @@
 #include "video_core/renderer_d3d12/d3d12_driver_guard.h"
 #include "video_core/renderer_d3d12/d3d12_memory_reserve.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_helper.h"
+#include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/shader_notify.h"
@@ -40,38 +41,75 @@ bool ComputePipelineCacheKey::operator==(const ComputePipelineCacheKey& rhs) con
 
 ComputePipeline::ComputePipeline(const Device& device_, VideoCore::ShaderNotify* shader_notify,
                                  Common::ThreadWorker* worker_thread, u64 unique_hash_,
-                                 std::vector<u8> dxil_, const Shader::Info& info_,
+                                 CompileDxil compile_dxil, const Shader::Info& info_,
                                  const PipelineLayout& layout_, bool emulate_reduction_,
                                  u32 workgroup_split_)
     : device{device_}, unique_hash{unique_hash_}, emulate_reduction{emulate_reduction_},
-      workgroup_split{workgroup_split_}, layout{layout_}, dxil{std::move(dxil_)},
-      dxil_charge{Common::MemoryAccount::ShaderBytecode, dxil.capacity()}, info{info_} {
+      workgroup_split{workgroup_split_}, layout{layout_}, info{info_} {
     std::ranges::copy(info.constant_buffer_used_sizes, uniform_buffer_sizes.begin());
     if (shader_notify) {
         shader_notify->MarkShaderBuilding();
     }
-    auto func{[this, shader_notify] {
-        Build();
+    auto func{[this, shader_notify, compile_dxil = std::move(compile_dxil)] {
+        bool compiled = false;
+        try {
+            dxil = compile_dxil();
+            dxil_charge = Common::MemoryCharge(Common::MemoryAccount::ShaderBytecode,
+                                               dxil.capacity());
+            compiled = true;
+        } catch (const std::exception& exception) {
+            // Handle() stays null: dispatches with this pipeline are skipped.
+            BUG_TRACK_KEY(ShaderCompile, unique_hash, "DXIL for compute {:016x} failed: {}",
+                          unique_hash, exception.what());
+            const Common::BugTracker::TapMute bug_tracker_mute;
+            LOG_ERROR(Render, "D3D12: building compute pipeline {:016x} failed: {}", unique_hash,
+                      exception.what());
+        }
+        if (compiled) {
+            Build();
+        }
         {
             std::scoped_lock lock{build_mutex};
-            is_built = true;
+            is_built.store(true, std::memory_order::release);
         }
         build_condvar.notify_all();
         if (shader_notify) {
             shader_notify->MarkShaderComplete();
         }
     }};
-    if (worker_thread) {
-        worker_thread->QueueWork(std::move(func));
-    } else {
+    if (!worker_thread) {
         func();
+        return;
     }
+    auto build = std::make_shared<PendingBuild>();
+    build->queued_us = SteadyMicros();
+    build->run = std::move(func);
+    pending = build;
+    // Pipelines outlive the workers (joined first), so this is still valid if the worker runs.
+    worker_thread->QueueWork([this, build] {
+        if (!build->claimed.exchange(true, std::memory_order::acq_rel)) {
+            RunClaimed(*build);
+        }
+    });
 }
 
 ComputePipeline::~ComputePipeline() = default;
 
+void ComputePipeline::RunClaimed(PendingBuild& build) {
+    GetPipelineStats().Record(PipelineStage::QueueWait, SteadyMicros() - build.queued_us);
+    {
+        std::scoped_lock lock{build_mutex};
+        if (pending.get() == &build) {
+            pending.reset();
+        }
+    }
+    // Moved out, so the job's captures are gone once it ran, whoever still holds the entry.
+    const Common::UniqueFunction<void> job = std::move(build.run);
+    job();
+}
+
 bool ComputePipeline::RetryOutOfMemory() {
-    if (!out_of_memory || !IsBuilt()) {
+    if (!OutOfMemory()) {
         return false;
     }
     Build();
@@ -83,8 +121,33 @@ bool ComputePipeline::RetryOutOfMemory() {
 }
 
 void ComputePipeline::WaitBuilt() {
+    std::shared_ptr<PendingBuild> build;
+    {
+        std::scoped_lock lock{build_mutex};
+        if (is_built.load(std::memory_order::relaxed)) {
+            return;
+        }
+        build = pending;
+    }
+    // Still queued: run here rather than wait for the queue. A build already running on its
+    // worker is waited for, since the driver call cannot be taken over halfway.
+    if (build && !build->claimed.exchange(true, std::memory_order::acq_rel)) {
+        GetPipelineStats().inline_builds.fetch_add(1, std::memory_order_relaxed);
+        RunClaimed(*build);
+    }
     std::unique_lock lock{build_mutex};
     build_condvar.wait(lock, [this] { return is_built.load(std::memory_order::relaxed); });
+}
+
+ID3D12PipelineState* ComputePipeline::WaitHandle() {
+    if (!IsBuilt()) {
+        const u64 wait_start = SteadyMicros();
+        WaitBuilt();
+        GetPipelineStats().Record(PipelineStage::WaitCompute, SteadyMicros() - wait_start);
+    }
+    // RetryOutOfMemory may set it on the GPU thread meanwhile.
+    std::scoped_lock lock{build_mutex};
+    return pipeline_state.Get();
 }
 
 void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindings& out) {
@@ -209,11 +272,13 @@ void ComputePipeline::Build() {
     };
     ID3D12Device* const raw = device.Get();
     DWORD fault = 0;
+    // Built aside and set under build_mutex: a dispatch recorded earlier may be reading it
+    // (WaitHandle) while the GPU thread retries a build that ran out of memory.
+    ComPtr<ID3D12PipelineState> built;
     const auto create = [&] {
         std::shared_lock build_lock{PipelineBuildMutex()};
         return CallDriverGuarded(
-            [&] { return raw->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline_state)); },
-            fault);
+            [&] { return raw->CreateComputePipelineState(&desc, IID_PPV_ARGS(&built)); }, fault);
     };
     HRESULT hr = create();
     out_of_memory = hr == E_OUTOFMEMORY;
@@ -225,7 +290,7 @@ void ComputePipeline::Build() {
         }
     }
     if (hr == DRIVER_FAULT_HRESULT) {
-        pipeline_state.Detach(); // whatever the driver left there is not an object to release
+        built.Detach(); // whatever the driver left there is not an object to release
         BUG_TRACK_KEY(PipelineRejected, unique_hash,
                       "the driver faulted (0x{:08X}) building compute pipeline {:016x}; its "
                       "dispatches are skipped",
@@ -242,8 +307,11 @@ void ComputePipeline::Build() {
         const Common::BugTracker::TapMute bug_tracker_mute;
         LOG_ERROR(Render, "D3D12: CreateComputePipelineState failed (HRESULT 0x{:08X}) for {:016x}",
                   static_cast<u32>(hr), unique_hash);
-        pipeline_state.Reset();
         return;
+    }
+    {
+        std::scoped_lock lock{build_mutex};
+        pipeline_state = std::move(built);
     }
     pso_charge = Common::MemoryCharge(Common::MemoryAccount::PipelineStates, 0);
     LOG_INFO(Render, "D3D12: compute pipeline built for {:016x} ({} + {} descriptors)",

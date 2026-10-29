@@ -6,6 +6,8 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <type_traits>
 #include <vector>
@@ -75,8 +77,13 @@ struct ComputeBindContext {
 /// one is given. Mirrors Vulkan::ComputePipeline.
 class ComputePipeline {
 public:
+    /// SPIR-V to signed DXIL; throws when it fails (the dispatches are then skipped).
+    using CompileDxil = std::function<std::vector<u8>()>;
+
+    /// compile_dxil runs with the PSO build, on worker_thread when one is given: the GPU thread
+    /// only translates the guest shader.
     ComputePipeline(const Device& device, VideoCore::ShaderNotify* shader_notify,
-                    Common::ThreadWorker* worker_thread, u64 unique_hash, std::vector<u8> dxil,
+                    Common::ThreadWorker* worker_thread, u64 unique_hash, CompileDxil compile_dxil,
                     const Shader::Info& info, const PipelineLayout& layout,
                     bool emulate_reduction = false, u32 workgroup_split = 1);
     ~ComputePipeline();
@@ -85,15 +92,21 @@ public:
     ComputePipeline& operator=(const ComputePipeline&) = delete;
 
     [[nodiscard]] bool IsBuilt() const noexcept {
-        return is_built.load(std::memory_order::relaxed);
+        return is_built.load(std::memory_order::acquire);
     }
 
+    /// Any thread: waits for the build, running it here if it is still queued (the claim), since
+    /// waiting for it would also wait for the queue ahead of it.
     void WaitBuilt();
+
+    /// The command recorder, for a dispatch recorded before its pipeline was built: WaitBuilt,
+    /// then the PSO, null when rejected or out of memory.
+    [[nodiscard]] ID3D12PipelineState* WaitHandle();
 
     /// GPU thread, once built: whether its PSO failed for lack of memory, so its dispatches are
     /// skipped until RetryOutOfMemory builds it.
     [[nodiscard]] bool OutOfMemory() const noexcept {
-        return out_of_memory;
+        return IsBuilt() && out_of_memory;
     }
 
     /// GPU thread: builds again a PSO that ran out of memory. True once it has one.
@@ -102,9 +115,9 @@ public:
     /// GPU thread: the frame before which RetryOutOfMemory is not tried again.
     u64 retry_frame{};
 
-    /// Null when D3D12 rejected the pipeline.
+    /// Null when D3D12 rejected the pipeline or it is still building (IsBuilt).
     [[nodiscard]] ID3D12PipelineState* Handle() const noexcept {
-        return pipeline_state.Get();
+        return IsBuilt() ? pipeline_state.Get() : nullptr;
     }
 
     [[nodiscard]] const PipelineLayout& Layout() const noexcept {
@@ -123,6 +136,7 @@ public:
     [[nodiscard]] u64 UniqueHash() const noexcept {
         return unique_hash;
     }
+    /// Once built.
     [[nodiscard]] std::span<const u8> DiagnosticDxil() const noexcept { return dxil; }
     /// Built with EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION (PipelineCache::EmulateReduction).
     [[nodiscard]] bool EmulatesReduction() const noexcept { return emulate_reduction; }
@@ -131,6 +145,13 @@ public:
     [[nodiscard]] u32 WorkgroupSplit() const noexcept { return workgroup_split; }
 
 private:
+    struct PendingBuild {
+        std::atomic_bool claimed{};
+        u64 queued_us{};
+        Common::UniqueFunction<void> run;
+    };
+    /// Runs a claimed build, recording how long it sat in the queue.
+    void RunClaimed(PendingBuild& build);
     void Build();
 
     const Device& device;
@@ -151,6 +172,7 @@ private:
     std::mutex build_mutex;
     std::condition_variable build_condvar;
     std::atomic_bool is_built{false};
+    std::shared_ptr<PendingBuild> pending; ///< build_mutex: the build in a queue, if any.
 };
 
 } // namespace D3D12

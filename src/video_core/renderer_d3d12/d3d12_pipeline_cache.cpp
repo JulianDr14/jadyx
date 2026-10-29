@@ -704,6 +704,7 @@ void PipelineCache::LogPipelineStats(std::string_view when) const {
             {PipelineStage::WaitNew, "wait-new"},
             {PipelineStage::WaitDormant, "wait-dormant"},
             {PipelineStage::WaitEvicted, "wait-evicted"},
+            {PipelineStage::WaitCompute, "wait-compute"},
         }};
     std::string line;
     for (const auto& [stage, name] : names) {
@@ -910,14 +911,9 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
                       key.unique_hash);
         return nullptr;
     }
-    if (!pipeline->IsBuilt()) {
-        // Compute always waits, even with asynchronous shaders: a skipped dispatch leaves the
-        // buffers or images it writes stale for the rest of the frame and beyond.
-        VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PipelineStallUs,
-                                           VideoCore::Perf::Counter::PipelineStalls};
-        VideoCore::Perf::ScopedTimer wait{VideoCore::Perf::Counter::PipelineWaitUs};
-        pipeline->WaitBuilt();
-    }
+    // Still building, it is not waited for here: a skipped dispatch would leave the buffers or
+    // images it writes stale, so the dispatch is recorded anyway and the command recorder waits
+    // for the PSO (RasterizerD3D12::DispatchCompute).
     if (pipeline->OutOfMemory() && residency_frame >= pipeline->retry_frame &&
         !pipeline->RetryOutOfMemory()) {
         pipeline->retry_frame = residency_frame + OOM_RETRY_FRAMES;
@@ -1523,26 +1519,32 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
                      Shader::Optimization::Name(verdict));
         }
     }
-    const std::vector<u32> code{EmitSPIRV(profile, program)};
+    std::vector<u32> code{EmitSPIRV(profile, program)};
     const bool dumped{IsDumpedShader(key.unique_hash)};
     if (dumped) [[unlikely]] {
         DumpShader(key.unique_hash, 0, program, code);
     }
 
-    const std::array<ShaderCompiler::PipelineStage, 1> stages{{
-        {.spirv = code, .stage = DXIL_SPIRV_SHADER_COMPUTE},
-    }};
-    auto compiled = compiler.CompilePipeline(stages, {.emulate_reduction = emulate_reduction});
-    if (dumped) [[unlikely]] {
-        // The emulating build overwrites the plain one: the DXIL that runs is the last dumped.
-        DumpDxil(0, key.unique_hash, key.Hash(), std::span{&compiled[0].dxil, 1});
-    }
+    // SPIR-V to DXIL goes with the PSO build, on a worker, as for graphics pipelines: the GPU
+    // thread only translates the guest shader, since that reads guest memory.
+    auto compile_dxil = [this, code = std::move(code), dumped, emulate_reduction,
+                         unique_hash = key.unique_hash, key_hash = key.Hash()] {
+        const std::array<ShaderCompiler::PipelineStage, 1> stages{{
+            {.spirv = code, .stage = DXIL_SPIRV_SHADER_COMPUTE},
+        }};
+        auto compiled = compiler.CompilePipeline(stages, {.emulate_reduction = emulate_reduction});
+        if (dumped) [[unlikely]] {
+            // The emulating build overwrites the plain one: the DXIL that runs is the last dumped.
+            DumpDxil(0, unique_hash, key_hash, std::span{&compiled[0].dxil, 1});
+        }
+        return std::move(compiled[0].dxil);
+    };
     const std::array<const Shader::Info*, 1> infos{&program.info};
     const PipelineLayout& layout = root_signatures.Get(infos, true, false, emulate_reduction);
 
     Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
     return std::make_unique<ComputePipeline>(device, &shader_notify, thread_worker,
-                                             key.unique_hash, std::move(compiled[0].dxil),
+                                             key.unique_hash, std::move(compile_dxil),
                                              program.info, layout, emulate_reduction, split);
 
 } catch (const Shader::Exception& exception) {

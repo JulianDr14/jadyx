@@ -488,7 +488,11 @@ void RasterizerD3D12::DispatchCompute() {
     const bool dump_inputs = ComputeInputsWanted(pipeline->UniqueHash(), dispatch_count);
     if (full || dump_inputs) {
         buffer_runtime.SetTraceBuffers(&full_buffers);
+        pipeline->WaitBuilt(); // the captures read its DXIL
     }
+    // Still building on a worker: the dispatch is recorded all the same, and the recorder waits
+    // for the PSO before it binds it (pipeline_cache.CurrentComputePipeline).
+    const bool pending = !pipeline->IsBuilt();
     SCOPE_EXIT { buffer_runtime.SetTraceBuffers(nullptr); };
     pipeline->Configure({*kepler_compute, *gpu_memory, buffer_cache, texture_cache,
                          descriptor_queue, sampler_heap, scheduler},
@@ -496,7 +500,7 @@ void RasterizerD3D12::DispatchCompute() {
     if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
         pipeline_cache.EmulateReduction(pipeline->UniqueHash());
     }
-    if (!pipeline->Handle()) {
+    if (!pending && !pipeline->Handle()) {
         hunt.Outcome(Hunt::Outcome::PsoRejected);
         return; // D3D12 rejected the PSO (logged when it was built)
     }
@@ -605,7 +609,9 @@ void RasterizerD3D12::DispatchCompute() {
         command_state.heaps_bound = true;
     }
     cmd->SetComputeRootSignature(layout.Handle());
-    scheduler.SetPipelineState(pipeline->Handle());
+    if (!pending) {
+        scheduler.SetPipelineState(pipeline->Handle());
+    }
     MarkGpuCommands(cmd, "dispatch CS", pipeline->UniqueHash(), 0);
     if (GpuDiagnosticsEnabled()) {
         TraceGpuDetail(fmt::format("dispatch tick={} PSO={} CS={:016x} groups={}x{}x{} table={:x}",
@@ -638,6 +644,35 @@ void RasterizerD3D12::DispatchCompute() {
                                               bindings.integer_samplers);
     }
     VideoCore::Perf::Add(VideoCore::Perf::Counter::Dispatches, 1);
+    const u32 groups_x = dim[0] * pipeline->WorkgroupSplit();
+    if (pending) {
+        // One call: without a PSO (rejected, out of memory) the dispatch is left out with it.
+        ID3D12CommandSignature* const signature = layout.DispatchSignature();
+        ID3D12Resource* const arguments = indirect_range ? indirect_range->buffer : nullptr;
+        const UINT64 arguments_offset = indirect_range ? indirect_range->offset : 0;
+        if (indirect_range &&
+            !ValidExecuteIndirect(signature, arguments, arguments_offset, nullptr, 0)) {
+            return;
+        }
+        scheduler.ForgetPipelineState();
+        cmd->Record([pipeline, signature, arguments, arguments_offset, groups_x, dim,
+                     indirect = indirect_range.has_value()](ID3D12GraphicsCommandList* list) {
+            ID3D12PipelineState* const pso = pipeline->WaitHandle();
+            if (!pso) {
+                return;
+            }
+            list->SetPipelineState(pso);
+            if (indirect) {
+                list->ExecuteIndirect(signature, 1, arguments, arguments_offset, nullptr, 0);
+            } else {
+                list->Dispatch(groups_x, dim[1], dim[2]);
+            }
+        });
+        dispatched = true;
+        hunt.Geometry(indirect_range ? 0 : dim[0] * dim[1] * dim[2], 1, 0);
+        hunt.Recorded();
+        return;
+    }
     if (indirect_range) {
         cmd->ExecuteIndirect(layout.DispatchSignature(), 1, indirect_range->buffer,
                              indirect_range->offset, nullptr, 0);
@@ -653,7 +688,7 @@ void RasterizerD3D12::DispatchCompute() {
     }
     // A split shader runs each guest group as WorkgroupSplit() real ones; the runtime data above
     // keeps the guest's count.
-    cmd->Dispatch(dim[0] * pipeline->WorkgroupSplit(), dim[1], dim[2]);
+    cmd->Dispatch(groups_x, dim[1], dim[2]);
     dispatched = true;
     hunt.Geometry(dim[0] * dim[1] * dim[2], 1, 0);
     hunt.Recorded();

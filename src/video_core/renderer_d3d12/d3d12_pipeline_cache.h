@@ -148,6 +148,8 @@ public:
     /// skipped until it is tried again).
     [[nodiscard]] GraphicsPipeline* WaitPending(GraphicsPipeline* pipeline);
 
+    /// The compute pipeline of the current launch, or null if shader preparation failed. It may
+    /// still be building (IsBuilt false): its dispatch is not skipped but waits on the recorder.
     [[nodiscard]] ComputePipeline* CurrentComputePipeline();
 
     /// A draw sampled with a filtered MIN/MAX sampler the device cannot create through a pipeline

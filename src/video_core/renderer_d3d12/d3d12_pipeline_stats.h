@@ -120,6 +120,7 @@ enum class PipelineStage : std::size_t {
     WaitNew,     ///< GPU thread blocked on a pipeline first seen this session.
     WaitDormant, ///< GPU thread blocked on a disk-cache pipeline whose PSO was never built.
     WaitEvicted, ///< GPU thread blocked on a PSO released while idle and drawn again.
+    WaitCompute, ///< Command recorder blocked on a compute PSO its dispatch was recorded before.
     Count,
 };
 
