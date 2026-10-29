@@ -1,29 +1,73 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <atomic>
 #include <stdexcept>
 #include <string>
 
 #include <fmt/format.h>
 
+#include "common/logging.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 
 namespace D3D12 {
 
+namespace {
+std::atomic<bool> not_zeroed_heaps{true};
+std::atomic<bool> not_zeroed_refused{false};
+} // Anonymous namespace
+
+void SetNotZeroedHeaps(bool enabled) {
+    not_zeroed_heaps.store(enabled && !not_zeroed_refused.load(std::memory_order_relaxed),
+                           std::memory_order_relaxed);
+}
+
+D3D12_HEAP_FLAGS NotZeroedFlag(ID3D12Device* device) {
+    // The OS zeroed new memory on the creating thread: at area loads 20-50 ms per heap, and most
+    // of the page faults of the frame.
+    static const bool supported = [device] {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS7 options{};
+        const bool result = SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7,
+                                                                  &options, sizeof(options)));
+        LOG_INFO(Render, "D3D12: memory created without zeroing: {}",
+                 result ? "supported" : "not supported");
+        return result;
+    }();
+    return supported && not_zeroed_heaps.load(std::memory_order_relaxed)
+               ? D3D12_HEAP_FLAG_CREATE_NOT_ZEROED
+               : D3D12_HEAP_FLAG_NONE;
+}
+
+bool RefuseNotZeroed(D3D12_HEAP_FLAGS used, HRESULT hr) {
+    if ((used & D3D12_HEAP_FLAG_CREATE_NOT_ZEROED) == 0 || SUCCEEDED(hr) || hr == E_OUTOFMEMORY) {
+        return false;
+    }
+    not_zeroed_heaps.store(false, std::memory_order_relaxed);
+    if (!not_zeroed_refused.exchange(true, std::memory_order_relaxed)) {
+        LOG_WARNING(Render, "D3D12: memory created without zeroing was refused ({:#010x}); "
+                    "the OS zeroes it from now on", static_cast<u32>(hr));
+    }
+    return true;
+}
+
 ComPtr<ID3D12Resource> CreateCommittedBuffer(ID3D12Device* device, u64 size,
                                              D3D12_HEAP_TYPE heap_type,
                                              D3D12_RESOURCE_STATES initial_state,
                                              D3D12_RESOURCE_FLAGS flags, const char* what,
-                                             HRESULT* hr) {
+                                             HRESULT* hr, D3D12_HEAP_FLAGS heap_flags) {
     const D3D12_HEAP_PROPERTIES heap{.Type = heap_type};
     const D3D12_RESOURCE_DESC desc = BufferDesc(size, flags);
     ComPtr<ID3D12Resource> buffer;
     VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::ResourceCreateUs,
                                        VideoCore::Perf::Counter::ResourcesCreated};
-    const HRESULT result = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                                                           initial_state, nullptr,
-                                                           IID_PPV_ARGS(&buffer));
+    HRESULT result = device->CreateCommittedResource(&heap, heap_flags, &desc, initial_state,
+                                                     nullptr, IID_PPV_ARGS(&buffer));
+    if (RefuseNotZeroed(heap_flags, result)) {
+        result = device->CreateCommittedResource(
+            &heap, heap_flags & ~D3D12_HEAP_FLAG_CREATE_NOT_ZEROED, &desc, initial_state,
+            nullptr, IID_PPV_ARGS(&buffer));
+    }
     if (hr) {
         *hr = result;
         if (result == E_OUTOFMEMORY) {

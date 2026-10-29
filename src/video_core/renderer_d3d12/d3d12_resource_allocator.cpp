@@ -9,6 +9,7 @@
 #include "video_core/renderer_d3d12/d3d12_resource_allocator.h"
 #include "video_core/renderer_d3d12/d3d12_heap_growth_policy.h"
 #include "video_core/renderer_d3d12/d3d12_heap_packing.h"
+#include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 
 #include <algorithm>
@@ -67,6 +68,18 @@ D3D12_HEAP_PROPERTIES PropertiesOf(HeapClass heap_class) {
                 .MemoryPoolPreference = D3D12_MEMORY_POOL_L0};
     }
     return {.Type = D3D12_HEAP_TYPE_DEFAULT};
+}
+
+/// CreateHeap with the pages left as the process freed them (NotZeroedFlag): every placed RT/DS
+/// is discarded on first use and every other texture is uploaded or copied before it is sampled.
+HRESULT CreatePoolHeap(ID3D12Device* device, D3D12_HEAP_DESC heap_desc, ComPtr<ID3D12Heap>& heap) {
+    heap_desc.Flags |= NotZeroedFlag(device);
+    HRESULT hr = device->CreateHeap(&heap_desc, IID_PPV_ARGS(&heap));
+    if (RefuseNotZeroed(heap_desc.Flags, hr)) {
+        heap_desc.Flags &= ~D3D12_HEAP_FLAG_CREATE_NOT_ZEROED;
+        hr = device->CreateHeap(&heap_desc, IID_PPV_ARGS(&heap));
+    }
+    return hr;
 }
 
 /// The driver refused a CPU-writable heap or a texture in one: plain textures go back to
@@ -269,7 +282,7 @@ struct TextureResourceAllocator::SpareWorker {
             .Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
             .Flags = FlagsOf(heap_class),
         };
-        if (FAILED(device.Get()->CreateHeap(&heap_desc, IID_PPV_ARGS(&block.heap)))) return;
+        if (FAILED(CreatePoolHeap(device.Get(), heap_desc, block.heap))) return;
         block.free_ranges.emplace(0, pool);
         block.charge = Common::MemoryCharge(Common::MemoryAccount::TextureHeaps, pool);
         std::scoped_lock lock{state.mutex};
@@ -556,7 +569,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::CreateImpl(
             };
             State::Block block{.heap_class = heap_class, .size = wanted,
                                .alignment = heap_alignment};
-            const HRESULT heap_hr = device.Get()->CreateHeap(&heap_desc, IID_PPV_ARGS(&block.heap));
+            const HRESULT heap_hr = CreatePoolHeap(device.Get(), heap_desc, block.heap);
             if (SUCCEEDED(heap_hr)) {
                 block.free_ranges.emplace(0, wanted);
                 block.charge = Common::MemoryCharge(Common::MemoryAccount::TextureHeaps, wanted);

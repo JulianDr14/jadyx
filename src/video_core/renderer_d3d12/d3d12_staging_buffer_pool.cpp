@@ -59,9 +59,16 @@ ComPtr<ID3D12Resource> CreateCachedUpload(ID3D12Device* device, u64 size,
     {
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::ResourceCreateUs,
                                            VideoCore::Perf::Counter::ResourcesCreated};
-        hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+        // The CPU writes every staged byte before the GPU reads it.
+        const D3D12_HEAP_FLAGS heap_flags = NotZeroedFlag(device);
+        hr = device->CreateCommittedResource(&heap, heap_flags, &desc,
                                              D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
                                              IID_PPV_ARGS(&buffer));
+        if (RefuseNotZeroed(heap_flags, hr)) {
+            hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                                 D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                 IID_PPV_ARGS(&buffer));
+        }
     }
     if (hr == E_OUTOFMEMORY) {
         throw StagingOutOfMemory(
@@ -121,7 +128,7 @@ ComPtr<ID3D12Resource> CreateMappedBuffer(ID3D12Device* device, u64 size,
     HRESULT hr{};
     ComPtr<ID3D12Resource> buffer =
         CreateCommittedBuffer(device, size, heap_type, state, D3D12_RESOURCE_FLAG_NONE,
-                              "CreateCommittedResource (staging)", &hr);
+                              "CreateCommittedResource (staging)", &hr, NotZeroedFlag(device));
     if (hr == E_OUTOFMEMORY) {
         throw StagingOutOfMemory(
             fmt::format("D3D12: out of memory creating a {} byte staging buffer", size));

@@ -39,12 +39,25 @@ void TransitionResource(Commands* commands, ID3D12Resource* resource,
     commands->ResourceBarrier(1, &barrier);
 }
 
+/// Heaps and staging buffers created without the OS zeroing their pages ("not_zeroed_heaps=0"
+/// turns it off). Applies to memory created from now on.
+void SetNotZeroedHeaps(bool enabled);
+
+/// D3D12_HEAP_FLAG_CREATE_NOT_ZEROED while SetNotZeroedHeaps is on and the runtime supports it
+/// (D3D12_OPTIONS7), else none. Only for memory whose every byte is written before it is read:
+/// texture heaps (placed RT/DS are discarded, the rest uploaded or copied) and staging.
+[[nodiscard]] D3D12_HEAP_FLAGS NotZeroedFlag(ID3D12Device* device);
+
+/// A creation with NotZeroedFlag failed for another reason than memory: the flag is dropped for
+/// good. Returns whether it was set, so the caller retries without it.
+bool RefuseNotZeroed(D3D12_HEAP_FLAGS used, HRESULT hr);
+
 /// A committed buffer, counted in the resource creation perf counters. Throws (naming what) on
 /// failure; E_OUTOFMEMORY is returned through hr instead when hr is given.
 [[nodiscard]] ComPtr<ID3D12Resource> CreateCommittedBuffer(
     ID3D12Device* device, u64 size, D3D12_HEAP_TYPE heap_type,
     D3D12_RESOURCE_STATES initial_state, D3D12_RESOURCE_FLAGS flags, const char* what,
-    HRESULT* hr = nullptr);
+    HRESULT* hr = nullptr, D3D12_HEAP_FLAGS heap_flags = D3D12_HEAP_FLAG_NONE);
 
 /// Serializes desc (root signature 1.0) and creates it; throws with the serializer's message.
 [[nodiscard]] ComPtr<ID3D12RootSignature> CreateRootSignature(
