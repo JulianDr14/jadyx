@@ -67,9 +67,13 @@ public:
         Outcome outcome;
     };
 
-    static constexpr size_t DEFAULT_BUDGET = 4 * 1024 * 1024;
+    /// A linked pair is some 20-40 KiB of DXIL, so 4 MiB and 128 entries held a single area's
+    /// shaders and every zone change linked them again. The guard empties the cache well before
+    /// memory runs out (OptionalCacheGate), so it can hold several areas' worth.
+    static constexpr size_t DEFAULT_BUDGET = 24 * 1024 * 1024;
+    static constexpr size_t DEFAULT_ENTRIES = 768;
 
-    explicit LinkedShaderCache(size_t budget = DEFAULT_BUDGET, size_t entry_limit = 128)
+    explicit LinkedShaderCache(size_t budget = DEFAULT_BUDGET, size_t entry_limit = DEFAULT_ENTRIES)
         : budget_bytes{budget}, max_entries{entry_limit} {}
 
     template <class Build, class Measure>
