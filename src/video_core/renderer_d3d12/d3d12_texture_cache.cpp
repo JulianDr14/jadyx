@@ -153,6 +153,10 @@ void SetTextureMemoryCap(u64 bytes) {
     texture_memory_cap.store(bytes, std::memory_order_relaxed);
 }
 
+void SetTextureMemoryLine(u64 bytes) {
+    texture_memory_line.store(bytes, std::memory_order_relaxed);
+}
+
 void SetAstcGpuSync(bool enabled) {
     gpu_astc_sync.store(enabled, std::memory_order_relaxed);
 }
@@ -397,7 +401,7 @@ void TextureCacheRuntime::TickFrame() {
             LOG_INFO(Render, "D3D12: texture memory: pressure {}, over cap {}, cap {} MiB, "
                      "app {}/{} MiB, gpu {}/{} MiB",
                      static_cast<int>(pressure_level), over_texture_cap,
-                     texture_memory_cap.load(std::memory_order_relaxed) / 1_MiB,
+                     texture_cap / 1_MiB,
                      pressure_snapshot.app_used / 1_MiB, pressure_snapshot.app_limit / 1_MiB,
                      pressure_snapshot.gpu_used / 1_MiB, pressure_snapshot.gpu_budget / 1_MiB);
             LOG_INFO(Render, "D3D12: {}", texture_allocator.Census(6));
@@ -416,9 +420,16 @@ void TextureCacheRuntime::TickFrame() {
     // them while a loading screen ran out of memory.
     // Over the texture cap the heaps the GC drained are released too, after they settle, so the
     // cap bounds the heaps and not only the textures living in them.
-    if (const u64 cap = texture_memory_cap.load(std::memory_order_relaxed); cap != 0) {
+    // The cap was sized when the guest left little memory free. Now it is only a floor: in a game
+    // that leaves headroom the textures keep whatever sits above the line, and evict back down
+    // to the floor as the headroom shrinks, before guest swap and the pressure levels act.
+    if (const u64 floor = texture_memory_cap.load(std::memory_order_relaxed); floor != 0) {
         // Every frame: the free ranges of hundreds of heaps are only walked for the log line.
         const u64 heap_bytes = texture_allocator.HeapBytes();
+        const u64 cap = TextureCapForHeadroom(
+            floor, texture_memory_line.load(std::memory_order_relaxed), heap_bytes,
+            pressure_snapshot);
+        texture_cap = cap;
         // 64 MiB below the cap before leaving it, so one heap more or less does not flip it.
         const bool over = over_texture_cap ? heap_bytes + 64_MiB > cap : heap_bytes > cap;
         if (over != over_texture_cap) {
@@ -433,6 +444,7 @@ void TextureCacheRuntime::TickFrame() {
         }
     } else {
         over_texture_cap = false;
+        texture_cap = 0;
     }
     const bool release_idle = pressure_level >= CachePressure::Critical || over_texture_cap;
     texture_allocator.TrimEmptyHeaps(

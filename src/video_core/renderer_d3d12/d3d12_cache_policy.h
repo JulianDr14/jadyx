@@ -62,4 +62,23 @@ public:
 private:
     CachePressure app{}, gpu{};
 };
+/// Texture heap bytes over which clean idle textures are evicted this frame. The heaps may grow
+/// into whatever headroom the app has above `line` (and the GPU above a quarter of its budget, the
+/// Normal exit), never below `floor`. Heaps plus headroom barely move while textures come and go,
+/// so the cap holds still: textures only take memory nothing else is using, and give it back as
+/// soon as another consumer pushes the headroom under the line. 0 line or an unknown limit: floor.
+[[nodiscard]] constexpr u64 TextureCapForHeadroom(u64 floor, u64 line, u64 heap_bytes,
+                                                  const CacheMemorySnapshot& s) {
+    if (floor == 0 || line == 0 || s.app_limit == 0) return floor;
+    // Headroom left once the heaps are given back, minus the line: what they may hold.
+    const u64 app_room = heap_bytes + s.AppFree();
+    u64 cap = app_room > line ? app_room - line : 0;
+    if (s.gpu_budget != 0) {
+        const u64 gpu_free = s.gpu_budget > s.gpu_used ? s.gpu_budget - s.gpu_used : 0;
+        const u64 gpu_room = heap_bytes + gpu_free;
+        const u64 gpu_line = s.gpu_budget / 4;
+        cap = std::min(cap, gpu_room > gpu_line ? gpu_room - gpu_line : 0);
+    }
+    return std::max(floor, cap);
+}
 }

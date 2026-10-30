@@ -163,6 +163,7 @@ void SetNotZeroedHeaps(bool enabled); // d3d12_resource_utils.h
 void SetAstcDropTopLevel(bool enabled); // d3d12_texture_cache.h
 void SetGpuUnswizzle(bool enabled); // d3d12_texture_cache.h
 void SetTextureMemoryCap(u64 bytes); // d3d12_texture_cache.h
+void SetTextureMemoryLine(u64 bytes); // d3d12_texture_cache.h
 void SetHeapCompaction(u64 bytes_per_frame); // d3d12_texture_cache.h
 void SetSmallTextureAlignment(bool enabled); // d3d12_resource_allocator.h
 void SetSpareHeaps(bool enabled); // d3d12_resource_allocator.h
@@ -356,6 +357,12 @@ struct BootConfig {
     /// At 1024 a heavy world entry kept 830 MiB of textures through its load and ran out of memory;
     /// at 768 the cap evicts during the load and the same entry held.
     u32 texture_cap_mib{768};
+    /// Free app memory the textures leave alone ("texture_cap_line_mib=", 0 keeps the cap fixed).
+    /// Above it the cap grows into the rest, so a game that leaves gigabytes free keeps its
+    /// textures; texture_cap_mib stays the floor. Unset: guest_swap_watch_mib + 256, so the
+    /// textures give memory back before guest swap starts watching, 768 MiB above its low mark:
+    /// room for a load spike (500 MiB in ten seconds was seen) while they evict.
+    std::optional<u32> texture_cap_line_mib;
     /// Small sampled textures placed at 4 KiB instead of 64 KiB ("small_textures=0" turns it off).
     bool small_textures{true};
     /// A texture heap class that grew gets one spare heap made on another thread while memory
@@ -796,6 +803,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetAppMemoryQuery(QueryAppMemory);
     D3D12::SetBcArrayDecode(!config.bc_arrays_native);
     D3D12::SetTextureMemoryCap(u64{config.texture_cap_mib} << 20);
+    D3D12::SetTextureMemoryLine(
+        u64{config.texture_cap_line_mib.value_or(config.guest_swap_watch_mib + 256)} << 20);
     D3D12::SetHeapCompaction(u64{config.heap_compaction_mib} << 20);
     D3D12::SetSmallTextureAlignment(config.small_textures);
     D3D12::SetSpareHeaps(config.spare_heaps);
@@ -3678,15 +3687,24 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             } else {
                                 WriteDiag("boot.cfg: invalid idle_spin, ignored");
                             }
-                        } else if (line.starts_with("texture_cap_mib=")) {
-                            const auto value = line.substr(16);
+                        } else if (line.starts_with("texture_cap_mib=") ||
+                                   line.starts_with("texture_cap_line_mib=")) {
+                            // One branch for both: another else-if passes the compiler's nesting limit.
+                            const bool cap_line = line.starts_with("texture_cap_line_mib=");
+                            const auto value = line.substr(cap_line ? 21 : 16);
                             unsigned long parsed{};
                             const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
                             if (result.ec == std::errc{} && result.ptr == value.data() + value.size() && parsed <= 1048576) {
-                                config.texture_cap_mib = static_cast<u32>(parsed);
-                                WriteDiag("boot.cfg: texture cap " + std::to_string(parsed) + " MiB");
+                                if (cap_line) {
+                                    config.texture_cap_line_mib = static_cast<u32>(parsed);
+                                } else {
+                                    config.texture_cap_mib = static_cast<u32>(parsed);
+                                }
+                                WriteDiag(std::string("boot.cfg: texture cap ") + (cap_line ? "line " : "") +
+                                          std::to_string(parsed) + " MiB");
                             } else {
-                                WriteDiag("boot.cfg: invalid texture_cap_mib, ignored");
+                                WriteDiag(std::string("boot.cfg: invalid ") +
+                                          (cap_line ? "texture_cap_line_mib" : "texture_cap_mib") + ", ignored");
                             }
                         } else if (line.starts_with("memory_limit_mib=")) {
                             const auto value = line.substr(17);

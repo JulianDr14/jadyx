@@ -264,7 +264,8 @@ private:
     CachePressure pressure_level{};
     CacheMemorySnapshot pressure_snapshot{};
     bool pressure_sampled{};
-    bool over_texture_cap{}; ///< texture heaps above texture_memory_cap, sampled each frame
+    bool over_texture_cap{}; ///< texture heaps above texture_cap, sampled each frame
+    u64 texture_cap{}; ///< this frame's cap: texture_memory_cap grown into the headroom
     std::vector<bool> sparse_heaps; ///< by heap index, refreshed each GC frame over the cap
     bool has_sparse_heaps{};
     u64 gc_pending_bytes{};
@@ -739,6 +740,8 @@ struct HeapCompactionStats {
 [[nodiscard]] HeapCompactionStats GetHeapCompactionStats() noexcept;
 /// Texture memory above which clean textures are evicted before the app runs short (0: none).
 void SetTextureMemoryCap(u64 bytes);
+/// Free app memory the textures leave alone; the cap grows into the headroom above it (0: off).
+void SetTextureMemoryLine(u64 bytes);
 /// One-shot diagnostic: compare the first GPU BC3 result with the existing CPU pipeline.
 void SetAstcGpuVerify(bool enabled);
 /// Diagnostic ("stencil_blit_verify=1"): the first scaled depth-stencil blits read both stencil
