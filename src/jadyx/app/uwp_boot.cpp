@@ -88,6 +88,7 @@
 #include "video_core/fence_manager.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
+#include "video_core/gpu_written_pages.h"
 #include "video_core/macro.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
@@ -536,6 +537,9 @@ struct BootConfig {
     bool uniform_reuse{}; ///< Rebind unchanged streamed uniforms within a submission; default off.
     bool rt_early_out{true}; ///< Skip re-preparing unchanged attachments per draw ("rt_early_out=0").
     bool stage_view_cache{}; ///< Reuse each stage's resolved views and samplers; default off.
+    /// Pushbuffer reads skip FlushRegion over memory no cache holds GPU writes for
+    /// ("dma_flush_filter=1"); off by default: no gain was measured on the console.
+    bool dma_flush_filter{};
     bool draw_sampler_reuse{}; ///< Experimental gather-local TSC resolution; default off.
     /// Where pixel shaders keep large local memory: 0 auto (boot probe), 1 pool, 2 private arrays
     /// ("ps_scratch=auto|uav|native", D3D12::PixelShaderScratchMode).
@@ -869,6 +873,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetUniformReuse(config.uniform_reuse);
     VideoCommon::SetRenderTargetEarlyOut(config.rt_early_out);
     D3D12::SetStageViewCache(config.stage_view_cache);
+    VideoCommon::GpuWrittenPages::SetEnabled(config.dma_flush_filter);
     D3D12::SetDrawSamplerReuse(config.draw_sampler_reuse);
     D3D12::SetPixelShaderScratchMode(static_cast<D3D12::PixelShaderScratchMode>(config.ps_scratch));
     if (config.debug_layer) {
@@ -3402,6 +3407,11 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         if (line == "rt_early_out=0") {
                             config.rt_early_out = false;
                             WriteDiag("boot.cfg: attachments prepared again on every draw");
+                            continue;
+                        }
+                        if (line == "dma_flush_filter=1") {
+                            config.dma_flush_filter = true;
+                            WriteDiag("boot.cfg: pushbuffer reads skip flushes of memory the GPU never wrote");
                             continue;
                         }
                         if (line == "stage_view_cache=1") {

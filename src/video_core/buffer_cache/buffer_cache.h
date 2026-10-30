@@ -14,6 +14,7 @@
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/guest_memory.h"
+#include "video_core/gpu_written_pages.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/perf_counters.h"
 #include "video_core/readback_trace.h"
@@ -314,6 +315,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     runtime.CopyBuffer(dest_buffer, src_buffer, copies, true);
     if (has_new_downloads) {
         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
+        VideoCommon::GpuWrittenPages::Mark(*cpu_dest_address, amount);
         const bool should_sync = Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
         if (should_sync) {
             runtime.Finish();
@@ -1667,6 +1669,7 @@ void BufferCache<P>::MarkWrittenBuffer(ReadbackTrace::WriteOrigin origin, Buffer
         });
     }
     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
+    VideoCommon::GpuWrittenPages::Mark(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
     uncommitted_gpu_modified_ranges.Add(device_addr, size);
 }

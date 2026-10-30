@@ -16,6 +16,7 @@
 #include "common/alignment.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
+#include "video_core/gpu_written_pages.h"
 #include <fmt/format.h>
 #include "video_core/control/channel_state.h"
 #include "video_core/diagnostics/full_capture.h"
@@ -2189,6 +2190,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         };
         runtime.CopyImage(new_image, previous, std::span<const ImageCopy>{&copy, 1});
         new_image.flags |= ImageFlagBits::GpuModified;
+        VideoCommon::GpuWrittenPages::Mark(new_image.cpu_addr, new_image.cpu_addr_end - new_image.cpu_addr);
         new_image.modification_tick = previous.modification_tick;
         for (const ImageId stale_id : join_superseded_ids) {
             Image& stale = slot_images[stale_id];
@@ -2299,6 +2301,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         }
         if (True(overlap.flags & ImageFlagBits::GpuModified)) {
             new_image.flags |= ImageFlagBits::GpuModified;
+            VideoCommon::GpuWrittenPages::Mark(new_image.cpu_addr, new_image.cpu_addr_end - new_image.cpu_addr);
             const auto& resolution = Settings::values.resolution_info;
             const SubresourceBase base = new_image.TryFindBase(overlap.gpu_addr).value();
             const u32 up_scale = can_rescale ? resolution.up_scale : 1;
@@ -2492,6 +2495,9 @@ void TextureCache<P>::RestoreBlitDestination(ImageId image_id, ImageFlagBits fla
     }
     constexpr ImageFlagBits contents = ImageFlagBits::CpuModified | ImageFlagBits::GpuModified;
     image.flags = (image.flags & ~contents) | (flags & contents);
+    if (True(flags & ImageFlagBits::GpuModified)) {
+        VideoCommon::GpuWrittenPages::Mark(image.cpu_addr, image.cpu_addr_end - image.cpu_addr);
+    }
     image.modification_tick = tick;
     ++binding_epoch;
     VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::BlitDiscardsRestored, 1);
@@ -3471,6 +3477,9 @@ void TextureCache<P>::RemoveFramebuffers(std::span<const ImageViewId> removed_vi
 
 template <class P>
 void TextureCache<P>::MarkModification(ImageBase& image) noexcept {
+    if (False(image.flags & ImageFlagBits::GpuModified)) {
+        VideoCommon::GpuWrittenPages::Mark(image.cpu_addr, image.cpu_addr_end - image.cpu_addr);
+    }
     image.flags |= ImageFlagBits::GpuModified;
     image.modification_tick = ++modification_tick;
     if (!image.aliased_images.empty()) {
@@ -3509,6 +3518,7 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
     image.modification_tick = most_recent_tick;
     if (any_modified) {
         image.flags |= ImageFlagBits::GpuModified;
+        VideoCommon::GpuWrittenPages::Mark(image.cpu_addr, image.cpu_addr_end - image.cpu_addr);
     }
     std::ranges::sort(aliased_images, [this](const AliasedImage* lhs, const AliasedImage* rhs) {
         const ImageBase& lhs_image = slot_images[lhs->id];

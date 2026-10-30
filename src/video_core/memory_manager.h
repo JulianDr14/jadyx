@@ -139,6 +139,10 @@ public:
     bool IsMemoryDirty(GPUVAddr gpu_addr, size_t size,
                        VideoCommon::CacheType which = VideoCommon::CacheType::All) const;
 
+    /// False when no device page under the range was ever written by the GPU through a cache
+    /// (VideoCommon::GpuWrittenPages); unmapped and reserved pages hold nothing to flush.
+    bool MayHoldGpuWrites(GPUVAddr gpu_addr, size_t size) const;
+
     size_t MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const;
 
     bool IsWithinGPUAddressRange(GPUVAddr gpu_addr) const {

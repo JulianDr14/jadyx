@@ -4,12 +4,15 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <optional>
+
 #include "common/settings.h"
 #include "core/core.h"
 #include "video_core/dma_pusher.h"
 #include "video_core/engines/const_buffer_run.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_written_pages.h"
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
@@ -76,16 +79,33 @@ bool DmaPusher::Step() {
     }
 
     if (header.size > 0) {
+        // dma_flush_filter=1: memory no cache ever held GPU writes for has nothing to flush, so
+        // the safe read and the dirty check can skip the cache locks for it.
+        const bool filter = VideoCommon::GpuWrittenPages::Enabled();
+        std::optional<bool> gpu_written_result;
+        const auto gpu_written = [&] {
+            if (!gpu_written_result) {
+                gpu_written_result = !filter || memory_manager.MayHoldGpuWrites(
+                                                    dma_state.dma_get, header.size * sizeof(u32));
+            }
+            return *gpu_written_result;
+        };
         if (subchannels[dma_state.subchannel] && dma_state.method_count) {
             const auto engine = subchannel_type[dma_state.subchannel];
             const bool kepler_payload = engine == Engines::EngineTypes::KeplerCompute && dma_state.method == ComputeInline && dma_state.non_incrementing;
             const bool macro_payload = engine == Engines::EngineTypes::Maxwell3D && dma_state.method >= MacroRegistersStart;
             if (kepler_payload || macro_payload) {
                 const size_t words = std::min<size_t>(dma_state.method_count, header.size);
-                subchannels[dma_state.subchannel]->current_dirty = memory_manager.IsMemoryDirty(dma_state.dma_get, words * sizeof(u32));
+                subchannels[dma_state.subchannel]->current_dirty = gpu_written() && memory_manager.IsMemoryDirty(dma_state.dma_get, words * sizeof(u32));
             }
         }
-        const bool use_safe = Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe();
+        bool use_safe = Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe();
+        if (use_safe && filter) {
+            use_safe = gpu_written();
+            VideoCore::Perf::AddDetailed(use_safe ? VideoCore::Perf::Counter::DmaHeaderFlushes
+                                                     : VideoCore::Perf::Counter::DmaHeaderFlushesSkipped,
+                                         1);
+        }
         if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             ProcessCommands(headers);

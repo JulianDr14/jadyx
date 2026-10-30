@@ -136,6 +136,8 @@ enum class Counter : size_t {
     DmaCopyCalls,
     DmaOtherNs,
     DmaOtherCalls,
+    DmaHeaderFlushes,        ///< pushbuffer reads that flushed GPU-written memory first
+    DmaHeaderFlushesSkipped, ///< safe pushbuffer reads with no GPU-written granule (no flush)
     MaxwellDirtyChanged,
     MaxwellDirtyUnchanged,
     ClearNs,

@@ -14,6 +14,7 @@
 #include "core/hle/kernel/k_process.h"
 #include "memory_manager.h"
 #include "video_core/guest_memory.h"
+#include "video_core/gpu_written_pages.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/invalidation_accumulator.h"
 #include "video_core/memory_manager.h"
@@ -491,6 +492,33 @@ bool MemoryManager::IsMemoryDirty(GPUVAddr gpu_addr, size_t size,
         const DAddr dev_addr_base =
             (static_cast<DAddr>(big_page_table_dev[page_index]) << cpu_page_bits) + offset;
         result |= rasterizer->MustFlushRegion(dev_addr_base, copy_amount, which);
+        return result;
+    };
+    auto check_short_pages = [&](std::size_t page_index, std::size_t offset,
+                                 std::size_t copy_amount) {
+        GPUVAddr base = (page_index << big_page_bits) + offset;
+        MemoryOperation(base, copy_amount, false, mapped_normal, do_nothing, do_nothing);
+        return result;
+    };
+    MemoryOperation(gpu_addr, size, true, mapped_big, do_nothing, check_short_pages);
+    return result;
+}
+
+bool MemoryManager::MayHoldGpuWrites(GPUVAddr gpu_addr, size_t size) const {
+    bool result = false;
+    auto do_nothing = [&]([[maybe_unused]] std::size_t page_index,
+                          [[maybe_unused]] std::size_t offset,
+                          [[maybe_unused]] std::size_t copy_amount) { return false; };
+    auto mapped_normal = [&](std::size_t page_index, std::size_t offset, std::size_t copy_amount) {
+        const DAddr dev_addr_base =
+            (static_cast<DAddr>(page_table[page_index]) << cpu_page_bits) + offset;
+        result |= VideoCommon::GpuWrittenPages::AnyMarked(dev_addr_base, copy_amount);
+        return result;
+    };
+    auto mapped_big = [&](std::size_t page_index, std::size_t offset, std::size_t copy_amount) {
+        const DAddr dev_addr_base =
+            (static_cast<DAddr>(big_page_table_dev[page_index]) << cpu_page_bits) + offset;
+        result |= VideoCommon::GpuWrittenPages::AnyMarked(dev_addr_base, copy_amount);
         return result;
     };
     auto check_short_pages = [&](std::size_t page_index, std::size_t offset,

@@ -26,6 +26,7 @@
 #include "common/settings.h"
 #include "common/slot_vector.h"
 #include "video_core/control/channel_state_cache.h"
+#include "video_core/gpu_written_pages.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/memory_manager.h"
@@ -314,6 +315,7 @@ private:
     /// Registers the passed parameters as cached and returns a pointer to the stored cached query.
     CachedQuery* Register(VideoCore::QueryType type, VAddr cpu_addr, u8* host_ptr, bool timestamp) {
         const u64 page = static_cast<u64>(cpu_addr) >> YUZU_PAGEBITS;
+        VideoCommon::GpuWrittenPages::Mark(cpu_addr, CachedQuery::SizeInBytes(timestamp));
         return &cached_queries[page].emplace_back(static_cast<QueryCache&>(*this), type, cpu_addr,
                                                   host_ptr);
     }
