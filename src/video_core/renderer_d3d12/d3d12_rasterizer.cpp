@@ -34,6 +34,8 @@ namespace D3D12 {
 
 namespace {
 
+std::atomic<u32> submit_draws{512};
+
 /// Guest query types the D3D12 query cache counts on the host (see d3d12_query_cache.cpp); the
 /// rest are written by QueryFallback. Same mapping as the OpenGL backend.
 std::optional<VideoCore::QueryType> MaxwellToVideoCoreQuery(VideoCommon::QueryType type) {
@@ -74,6 +76,10 @@ void MarkTargetsDrawn(const Framebuffer& framebuffer) {
 }
 
 } // Anonymous namespace
+
+void SetSubmitDraws(u32 draws) {
+    submit_draws.store(draws, std::memory_order_relaxed);
+}
 
 bool RasterizerD3D12::CullsEveryPrimitive() const {
     // D3D12 has no cull mode for both faces (MaxwellToD3D12::CullMode): those draws are skipped.
@@ -1059,11 +1065,11 @@ void RasterizerD3D12::FlushIfUploadHeavy() {
     // A game drawing ~3900 times in one guest command list had the host GPU start only once the
     // whole list was recorded (~50 ms), and the guest waited for both in turn every frame.
     // Submitting every few hundred draws lets the GPU execute while the rest is recorded.
-    constexpr u32 SUBMIT_DRAWS = 512;
+    const u32 submit_after = submit_draws.load(std::memory_order_relaxed);
     // Copy scratch past the transfer pool's budget is freed only with the list that used it: a
     // loading screen's conversions held ~600 MiB of 8 MiB buffers in one list and ran out.
     constexpr u64 TRANSFER_SUBMIT_BYTES = 32ULL << 20;
-    if (staging.PendingUploadBytes() < upload_submit_bytes && draw_counter < SUBMIT_DRAWS &&
+    if (staging.PendingUploadBytes() < upload_submit_bytes && draw_counter < submit_after &&
         texture_runtime.PendingTransferBytes() < TRANSFER_SUBMIT_BYTES) {
         return;
     }

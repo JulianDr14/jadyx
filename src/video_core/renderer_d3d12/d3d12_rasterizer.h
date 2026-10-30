@@ -37,6 +37,8 @@ struct FramebufferConfig;
 namespace D3D12 {
 
 void SetMaterialGpuProbeEnabled(bool enabled);
+/// Draws recorded before the command list is submitted (512 by default), for A/B tests.
+void SetSubmitDraws(u32 draws);
 
 class AccelerateDMA final : public Tegra::Engines::AccelerateDMAInterface {
 public:

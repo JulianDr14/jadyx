@@ -200,6 +200,7 @@ void SetTransformFeedbackStorage(bool enabled); // d3d12_pipeline_cache.h
 void SetDescriptorRemovalChecks(bool enabled); // d3d12_device.h
 void SetUniformUploadCopy(bool enabled);
 void SetUniformReuse(bool enabled);
+void SetSubmitDraws(u32 draws); // d3d12_rasterizer.h
 void SetDrawSamplerReuse(bool enabled);
 enum class PixelShaderScratchMode : u8; // d3d12_local_memory_scratch.h: Auto, Uav, Native
 void SetPixelShaderScratchMode(PixelShaderScratchMode mode);
@@ -3390,6 +3391,20 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         if (line == "uniform_reuse=1") {
                             config.uniform_reuse = true;
                             WriteDiag("boot.cfg: unchanged streamed uniform reuse enabled");
+                            continue;
+                        }
+                        if (line.starts_with("submit_draws=")) {
+                            const std::string_view value = std::string_view{line}.substr(13);
+                            u32 parsed{};
+                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() &&
+                                parsed >= 128 && parsed <= 4096) {
+                                D3D12::SetSubmitDraws(parsed);
+                                WriteDiag("boot.cfg: command list submitted every " +
+                                          std::to_string(parsed) + " draws");
+                            } else {
+                                WriteDiag("boot.cfg: invalid submit_draws (128-4096), ignored");
+                            }
                             continue;
                         }
                         if (line.starts_with("present_queue=") ||
