@@ -555,6 +555,10 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_dxil_disk_cache.h
         renderer_d3d12/d3d12_pipeline_residency.h
         renderer_d3d12/d3d12_pipeline_helper.h
+        renderer_d3d12/d3d12_frame_gen.cpp
+        renderer_d3d12/d3d12_frame_gen.h
+        renderer_d3d12/d3d12_frame_gen_pacer.cpp
+        renderer_d3d12/d3d12_frame_gen_pacer.h
         renderer_d3d12/d3d12_present_manager.cpp
         renderer_d3d12/d3d12_present_manager.h
         renderer_d3d12/d3d12_present_blit.cpp

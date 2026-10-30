@@ -1,0 +1,48 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Frame generation: the luma pyramid motion is estimated on. Level 0 is the presented frame's
+// luma at half resolution (one bilinear tap averages each 2x2 quad), or at a quarter for 4K
+// outputs (four taps average each 4x4 block); every next level halves the one before. One invocation writes one texel of the destination level.
+
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    uvec2 dest_size;
+    uint from_color;  // 1: the source is the RGBA8 frame, 0: the previous luma level
+    uint stats_index; // the frame's motion statistics word, cleared by the level 0 pass
+    uint quarter;     // 1: the source is four times the destination's size (4x4 blocks)
+};
+
+layout(binding = 0) uniform sampler2D source;
+layout(binding = 5, r8) uniform writeonly restrict image2D dest;
+
+layout(std430, binding = 6) buffer Stats {
+    uint stats[];
+};
+
+void main() {
+    const uvec2 pos = gl_GlobalInvocationID.xy;
+    if (from_color != 0 && pos == uvec2(0)) {
+        stats[stats_index] = 0;
+    }
+    if (any(greaterThanEqual(pos, dest_size))) {
+        return;
+    }
+    const vec2 uv = (vec2(pos) + 0.5) / vec2(dest_size);
+    vec4 texel;
+    if (quarter != 0) {
+        // Each tap sits on a 2x2 corner of the 4x4 block: bilinear averages it.
+        const vec2 offset = 0.25 / vec2(dest_size);
+        texel = 0.25 * (textureLod(source, uv + vec2(-offset.x, -offset.y), 0.0) +
+                        textureLod(source, uv + vec2(offset.x, -offset.y), 0.0) +
+                        textureLod(source, uv + vec2(-offset.x, offset.y), 0.0) +
+                        textureLod(source, uv + vec2(offset.x, offset.y), 0.0));
+    } else {
+        texel = textureLod(source, uv, 0.0);
+    }
+    const float luma = from_color != 0 ? dot(texel.rgb, vec3(0.299, 0.587, 0.114)) : texel.r;
+    imageStore(dest, ivec2(pos), vec4(luma));
+}

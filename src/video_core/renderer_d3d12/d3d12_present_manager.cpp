@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <chrono>
 #include <exception>
 #include <stdexcept>
 #include <string>
@@ -16,6 +17,16 @@
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 
 namespace D3D12 {
+
+namespace {
+
+/// Host time in seconds, the clock frame generation paces on.
+double HostSeconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+} // namespace
 
 void PresentFrame::Transition(CommandStream* cmd, D3D12_RESOURCE_STATES next) {
     if (state != next) {
@@ -46,6 +57,8 @@ FrameLease& FrameLease::operator=(FrameLease&& other) noexcept {
 
 PresentManager::PresentManager(const Device& device_, Scheduler& scheduler_,
                                Swapchain& swapchain_, CpuDescriptorAllocator& rtv_descriptors_,
+                               const ShaderCompiler& shader_compiler,
+                               DescriptorRing& descriptor_ring, SamplerHeap& sampler_heap,
                                bool async_presentation)
     : device{device_}, scheduler{scheduler_}, swapchain{swapchain_},
       rtv_descriptors{rtv_descriptors_} {
@@ -94,6 +107,10 @@ PresentManager::PresentManager(const Device& device_, Scheduler& scheduler_,
     // Present blocks without a waitable swapchain, and it would block holding the queue lock.
     const bool use_thread = async_presentation && swapchain.HasFrameLatencyWaitable();
     if (use_thread) {
+        // Generated frames are shown by the present thread, between the game's.
+        frame_gen = std::make_unique<FrameGen>(device, scheduler, shader_compiler, descriptor_ring,
+                                               sampler_heap, copy_fence.Get(), swapchain.Width(),
+                                               swapchain.Height());
         present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
     }
     LOG_INFO(Render, "D3D12: presentation {} ({} frames of {}x{})",
@@ -151,16 +168,45 @@ FrameLease PresentManager::AcquireFrame() {
     return FrameLease{*this, *frame};
 }
 
-void PresentManager::Present(FrameLease&& lease) {
+void PresentManager::Present(FrameLease&& lease, const PresentInfo& info) {
     PresentFrame& frame = *lease.frame;
     lease.manager = nullptr; // the frame comes back through Release once presented
     lease.frame = nullptr;
+    u32 rate = 0;
     try {
         frame.Transition(scheduler.CommandList(), D3D12_RESOURCE_STATE_COPY_SOURCE);
-        frame.render_tick = scheduler.Flush();
+        if (frame_gen) {
+            rate = frame_gen->OnFrame(info.vsync_index, info.frame_gen, HostSeconds());
+        }
+        if (rate != 0) {
+            // Into the history on the scheduler's list; the present thread shows it in time.
+            const std::optional<u32> slot = frame_gen->RecordIngest(frame.image.Get());
+            frame.render_tick = scheduler.Flush();
+            if (slot) {
+                frame_gen->Commit(*slot, frame.render_tick, info.vsync_index);
+            }
+        } else {
+            if (fg_running) {
+                frame_gen->Break();
+                fg_running = false;
+            }
+            frame.render_tick = scheduler.Flush();
+        }
     } catch (...) {
         Release(frame);
         throw;
+    }
+    if (rate != 0) {
+        fg_running = true;
+        // The history holds a copy: the frame can be rendered into again.
+        Release(frame);
+        {
+            std::scoped_lock lock{queue_mutex};
+            fg_active = true;
+            ++fg_epoch;
+        }
+        queue_cv.notify_one();
+        return;
     }
     if (!IsAsync()) {
         // Release even if the copy throws: the frame holds nothing the next one depends on.
@@ -201,23 +247,38 @@ void PresentManager::PresentThread(std::stop_token token) {
     Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
     while (true) {
         PresentFrame* frame{};
+        u64 epoch{};
         {
             std::unique_lock lock{queue_mutex};
-            if (!queue_cv.wait(lock, token, [this] { return !queued_frames.empty(); })) {
+            if (!queue_cv.wait(lock, token,
+                               [this] { return !queued_frames.empty() || fg_active; })) {
                 return; // stop requested
             }
-            frame = queued_frames.front();
-            queued_frames.pop_front();
+            epoch = fg_epoch;
+            if (!queued_frames.empty()) {
+                frame = queued_frames.front();
+                queued_frames.pop_front();
+            }
+        }
+        if (frame == nullptr) {
+            // Frame generation: the swapchain paces this loop.
+            if (failed) {
+                StopGenerating(epoch);
+                continue;
+            }
+            try {
+                PresentGenerated(epoch);
+            } catch (const std::exception& e) {
+                ReportError(e);
+                StopGenerating(epoch);
+            }
+            continue;
         }
         if (!failed) {
             try {
                 CopyToSwapchain(*frame);
             } catch (const std::exception& e) {
-                // Logged here; the renderer stops presenting on its next frame (TakeError).
-                LOG_CRITICAL(Render, "D3D12: present thread: {}", e.what());
-                failed = true;
-                std::scoped_lock lock{error_mutex};
-                error = e.what();
+                ReportError(e);
             }
         }
         Release(*frame);
@@ -226,6 +287,68 @@ void PresentManager::PresentThread(std::stop_token token) {
             --frames_in_flight;
         }
         idle_cv.notify_all();
+    }
+}
+
+void PresentManager::ReportError(const std::exception& e) {
+    // Logged here; the renderer stops presenting on its next frame (TakeError).
+    LOG_CRITICAL(Render, "D3D12: present thread: {}", e.what());
+    failed = true;
+    std::scoped_lock lock{error_mutex};
+    error = e.what();
+}
+
+void PresentManager::StopGenerating(u64 epoch) {
+    std::scoped_lock lock{queue_mutex};
+    if (fg_epoch == epoch) {
+        fg_active = false; // the next ingested frame wakes the thread again
+    }
+}
+
+void PresentManager::PresentGenerated(u64 epoch) {
+    if (!frame_gen->HasFrames()) {
+        StopGenerating(epoch);
+        return;
+    }
+    if (!swapchain.WaitForFrame()) {
+        return;
+    }
+    // From here on the swapchain expects a Present: every path below presents.
+    const FrameGen::Output output = frame_gen->Next(HostSeconds());
+    CopyContext& context = copy_contexts[fg_context];
+    fg_context = (fg_context + 1) % FRAME_COUNT;
+    WaitForCopy(context.fence_value);
+    ThrowIfFailed(context.allocator->Reset(), "ID3D12CommandAllocator::Reset (frame gen)");
+    ThrowIfFailed(copy_list->Reset(context.allocator.Get(), nullptr),
+                  "ID3D12GraphicsCommandList::Reset (frame gen)");
+    ID3D12Resource* const back_buffer = swapchain.Image(swapchain.CurrentIndex());
+    TransitionResource(copy_list.Get(), back_buffer, D3D12_RESOURCE_STATE_PRESENT,
+                       D3D12_RESOURCE_STATE_COPY_DEST);
+    frame_gen->RecordOutput(copy_list.Get(), output, back_buffer);
+    TransitionResource(copy_list.Get(), back_buffer, D3D12_RESOURCE_STATE_COPY_DEST,
+                       D3D12_RESOURCE_STATE_PRESENT);
+    ThrowIfFailed(copy_list->Close(), "ID3D12GraphicsCommandList::Close (frame gen)");
+
+    // The ingest of the slots may still be on its way to the queue, as rendering may.
+    scheduler.WaitSubmitted(output.tick);
+    {
+        std::scoped_lock lock{device.PresentQueueMutex()};
+        ID3D12CommandQueue* const queue = device.PresentQueue();
+        if (device.HasPresentQueue()) {
+            ThrowIfFailed(queue->Wait(scheduler.Fence(), output.tick),
+                          "ID3D12CommandQueue::Wait (frame gen)");
+        }
+        ID3D12CommandList* const lists[] = {copy_list.Get()};
+        queue->ExecuteCommandLists(1, lists);
+        ThrowIfFailed(queue->Signal(copy_fence.Get(), ++copy_fence_value),
+                      "ID3D12CommandQueue::Signal (frame gen)");
+        context.fence_value = copy_fence_value;
+        frame_gen->Unpin(output, copy_fence_value);
+        swapchain.Present(output.sync_interval);
+    }
+    if (output.idle) {
+        // The game stopped presenting: the screen keeps this frame until it comes back.
+        StopGenerating(epoch);
     }
 }
 

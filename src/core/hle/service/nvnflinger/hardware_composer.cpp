@@ -135,6 +135,7 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
                 .crop_rect = item.crop,
                 .acquire_fence = item.fence,
                 .layer_stack_mask = layer->layer_stack_mask,
+                .vsync_index = m_frame_number,
             });
             composed_consumers.push_back(consumer_id);
         }

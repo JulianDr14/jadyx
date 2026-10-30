@@ -105,6 +105,7 @@ android::Fence nvdisp_disp0::Composite(std::span<const Nvnflinger::HwcLayer> sor
             .crop_rect = layer.crop_rect,
             .blending = ConvertBlending(layer.blending),
             .layer_stack_mask = layer.layer_stack_mask,
+            .vsync_index = layer.vsync_index,
         });
 
         for (size_t i = 0; i < layer.acquire_fence.num_fences; i++) {

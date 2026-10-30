@@ -162,20 +162,20 @@ int main() {
     GameMenu pc{{ConsoleControllerStyle::Auto, false, 0.12f, true, false}};
     while (pc.SelectedItem() != GameMenu::DisplayPage) pc.Apply(MenuAction::Down);
     check(pc.Apply(MenuAction::Right) == GameMenuResult::None && pc.CurrentPage() == GameMenu::Page::Display);
-    check(pc.Rows().size() == 3 && pc.Rows()[2].label == L"Pantalla completa" && pc.Rows()[2].value == L"No");
+    check(pc.Rows().size() == 2 && pc.Rows()[1].label == L"Pantalla completa" && pc.Rows()[1].value == L"No");
     pc.Apply(MenuAction::Up);
-    check(pc.SelectedItem() == GameMenu::FullScreen && pc.Selected() == 2);
+    check(pc.SelectedItem() == GameMenu::FullScreen && pc.Selected() == 1);
     check(pc.Apply(MenuAction::Confirm) == GameMenuResult::FullScreen && pc.Settings().fullscreen);
     check(pc.Apply(MenuAction::Right) == GameMenuResult::FullScreen && !pc.Settings().fullscreen);
     GameMenu series{{}};
     series.Apply(MenuAction::Down);
     series.Apply(MenuAction::Down);
     series.Apply(MenuAction::Confirm);
-    check(series.CurrentPage() == GameMenu::Page::Display && series.Rows().size() == 2);
+    check(series.CurrentPage() == GameMenu::Page::Display && series.Rows().size() == 1);
     for (const auto& row : series.Rows()) check(row.label != L"Pantalla completa");
     // The same menu follows the interface language.
     I18n::SetUiLanguage(*I18n::FindUiLanguage(L"en"));
-    check(pc.PageTitle() == L"Display" && pc.Rows()[2].label == L"Full screen" && pc.Rows()[2].value == L"No");
+    check(pc.PageTitle() == L"Display" && pc.Rows()[1].label == L"Full screen" && pc.Rows()[1].value == L"No");
     check(pc.Apply(MenuAction::Back) == GameMenuResult::None && pc.Rows()[0].label == L"Resume");
     // Both entry points start off and toggle the same persisted setting model.
     SystemPage system_page;
@@ -192,7 +192,6 @@ int main() {
     GameMenu stats_menu{{}};
     check(!stats_menu.Settings().show_performance_stats);
     open_display(stats_menu);
-    stats_menu.Apply(MenuAction::Down);
     check(stats_menu.SelectedItem() == GameMenu::PerformanceStats);
     check(stats_menu.Apply(MenuAction::Confirm) == GameMenuResult::PerformanceStatsChanged);
     check(stats_menu.Settings().show_performance_stats);
@@ -202,26 +201,6 @@ int main() {
     check(stats_menu.Apply(MenuAction::Right) == GameMenuResult::PerformanceStatsChanged);
     check(!stats_menu.Settings().show_performance_stats);
 
-    // Image upscaling: first on the display page, a choice that steps both ways and wraps around.
-    I18n::SetUiLanguage(*I18n::FindUiLanguage(L"es"));
-    GameMenu scaling_menu{{}};
-    open_display(scaling_menu);
-    check(scaling_menu.SelectedItem() == GameMenu::ImageUpscaling);
-    const auto scaling_row = [&] { return scaling_menu.Rows()[scaling_menu.Selected()]; };
-    check(scaling_row().label == L"Escalado de imagen" && scaling_row().value == L"Bilineal");
-    check(scaling_row().kind == GameMenuRow::Kind::Choice);
-    check(scaling_menu.Apply(MenuAction::Right) == GameMenuResult::UpscalingChanged);
-    check(scaling_menu.Settings().upscaling == Upscaling::FsrSharp && scaling_row().value == L"FSR 1 · nítido");
-    check(scaling_menu.Apply(MenuAction::Confirm) == GameMenuResult::UpscalingChanged);
-    check(scaling_row().value == L"FSR 1 · equilibrado");
-    check(scaling_menu.Apply(MenuAction::Left) == GameMenuResult::UpscalingChanged);
-    check(scaling_menu.Apply(MenuAction::Left) == GameMenuResult::UpscalingChanged);
-    check(scaling_menu.Settings().upscaling == Upscaling::Bilinear);
-    check(scaling_menu.Apply(MenuAction::Left) == GameMenuResult::UpscalingChanged);
-    check(scaling_menu.Settings().upscaling == Upscaling::FsrSoft && scaling_row().value == L"FSR 1 · suave");
-    GameMenu scaling_reopened{scaling_menu.Settings()};
-    check(scaling_reopened.Settings().upscaling == Upscaling::FsrSoft);
-    I18n::SetUiLanguage(*I18n::FindUiLanguage(L"en"));
     GameMenuSettings diagnostic_settings{};
     diagnostic_settings.material_capture = true;
     GameMenu diagnostic{diagnostic_settings};
@@ -247,6 +226,6 @@ int main() {
     I18n::SetUiLanguage(*I18n::FindUiLanguage(L"en"));
     check(hunt.Rows()[hunt.Selected()].label == L"Capture performance and resume");
     for (const auto& row : normal_rows) check(row.label != L"Capture performance and resume");
-    std::puts("game menu: controller combo, pages, navigation, settings, upscaling, cheats, screenshot, "
+    std::puts("game menu: controller combo, pages, navigation, settings, cheats, screenshot, "
               "opt-in capture PASS");
 }

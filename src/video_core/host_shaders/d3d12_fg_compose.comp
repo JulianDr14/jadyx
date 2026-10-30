@@ -1,0 +1,134 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Frame generation: the frame between A and B at phase t (0 = A, 1 = B).
+//
+// One invocation handles one texel of the luma: a 2x2 quad of output pixels (a 4x4 block on 4K
+// outputs, where the luma is at a quarter resolution).
+// It picks its vector among the nine block vectors around it and zero, by how well A at -t*v
+// matches B at +(1-t)*v on a small cross of luma texels, plus a penalty for vectors whose
+// block the trajectory does not cross; ties go to the block it does cross. Matching pixels blend
+// A and B; a pixel that matches in neither (an area one frame covers and the other reveals) leans
+// on the nearer frame. A scene cut (the whole frame's motion error is high) shows the nearer
+// frame as it is.
+
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    uvec2 out_size;
+    uvec2 luma_size;
+    float phase;
+    uint stats_index;
+    float cut_threshold; // mean motion error (0-255) above which the frames are unrelated
+    uint field_blocks;   // blocks of the level 0 field, for the mean
+};
+
+const int BLOCK = 8;
+
+layout(binding = 0) uniform sampler2D color_a;
+layout(binding = 1) uniform sampler2D color_b;
+layout(binding = 2) uniform sampler2D luma_a;
+layout(binding = 3) uniform sampler2D luma_b;
+layout(binding = 4) uniform sampler2D motion;
+layout(binding = 5, rgba8) uniform writeonly restrict image2D dest;
+
+layout(std430, binding = 6) buffer Stats {
+    uint stats[];
+};
+
+vec2 luma_inv;
+
+float MatchCost(vec2 p, vec2 v) {
+    const vec2 a = p - phase * v;
+    const vec2 b = p + (1.0 - phase) * v;
+    float sum = 0.0;
+    const vec2 offsets[5] = vec2[5](vec2(0.0), vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0),
+                                    vec2(0.0, -1.0));
+    for (int i = 0; i < 5; ++i) {
+        sum += abs(textureLod(luma_a, (a + offsets[i]) * luma_inv, 0.0).r -
+                   textureLod(luma_b, (b + offsets[i]) * luma_inv, 0.0).r);
+    }
+    return sum * (255.0 / 5.0);
+}
+
+void main() {
+    const uvec2 texel = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(texel, luma_size))) {
+        return;
+    }
+    // Output pixels per luma texel: 2 or 4.
+    const uint scale = out_size.x >= luma_size.x * 3u ? 4u : 2u;
+    luma_inv = 1.0 / vec2(luma_size);
+    const vec2 out_inv = 1.0 / vec2(out_size);
+    const bool nearer_a = phase < 0.5;
+
+    const float mean_error =
+        float(stats[stats_index]) / (16.0 * float(max(field_blocks, 1u)));
+    if (mean_error > cut_threshold) {
+        for (uint y = 0; y < scale; ++y) {
+            for (uint x = 0; x < scale; ++x) {
+                const uvec2 pixel = texel * scale + uvec2(x, y);
+                if (all(lessThan(pixel, out_size))) {
+                    const vec2 uv = (vec2(pixel) + 0.5) * out_inv;
+                    const vec4 color = nearer_a ? textureLod(color_a, uv, 0.0)
+                                                : textureLod(color_b, uv, 0.0);
+                    imageStore(dest, ivec2(pixel), vec4(color.rgb, 1.0));
+                }
+            }
+        }
+        return;
+    }
+
+    const vec2 p = vec2(texel) + 0.5;
+    const ivec2 field_size = textureSize(motion, 0);
+    const ivec2 home = ivec2(texel) / BLOCK;
+
+    // Zero first: a HUD over a moving scene matches only with it, by far. It gets no bonus: in a
+    // flat area (inside a moving object) zero matches as well as the motion does and would show
+    // the object's details where they were, not where they are.
+    vec2 best_v = vec2(0.0);
+    float best_cost = MatchCost(p, vec2(0.0));
+    float best_block_error = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            const ivec2 block = clamp(home + ivec2(x, y), ivec2(0), field_size - 1);
+            const vec4 sample_v = texelFetch(motion, block, 0);
+            const vec2 v = sample_v.xy;
+            // The field lives on the halfway frame: the trajectory through p crosses it at mid.
+            const vec2 mid = p + (0.5 - phase) * v;
+            const vec2 block_center = (vec2(block) + 0.5) * float(BLOCK);
+            const vec2 distance = max(abs(mid - block_center) - 0.5 * float(BLOCK), vec2(0.0));
+            // Ties go to the field: the block the trajectory crosses (still areas have a zero
+            // field, so they keep zero).
+            const float coherence = distance.x + distance.y == 0.0 ? -1.5 : 0.0;
+            const float cost = MatchCost(p, v) + 0.5 * (distance.x + distance.y) + coherence;
+            if (cost < best_cost) {
+                best_cost = cost;
+                best_v = v;
+                best_block_error = sample_v.z;
+            }
+        }
+    }
+
+    // Unmatched: covered in one frame and revealed in the other. Lean on the nearer frame.
+    const float error = max(best_cost, 0.0);
+    const float occlusion = smoothstep(12.0, 40.0, max(error, 0.5 * best_block_error));
+    const float weight_b = mix(phase, nearer_a ? 0.0 : 1.0, occlusion);
+
+    // Output pixels: luma texels are scale pixels wide.
+    const vec2 v_out = float(scale) * best_v;
+    for (uint y = 0; y < scale; ++y) {
+        for (uint x = 0; x < scale; ++x) {
+            const uvec2 pixel = texel * scale + uvec2(x, y);
+            if (any(greaterThanEqual(pixel, out_size))) {
+                continue;
+            }
+            const vec2 q = vec2(pixel) + 0.5;
+            const vec3 a = textureLod(color_a, (q - phase * v_out) * out_inv, 0.0).rgb;
+            const vec3 b = textureLod(color_b, (q + (1.0 - phase) * v_out) * out_inv, 0.0).rgb;
+            imageStore(dest, ivec2(pixel), vec4(mix(a, b, weight_b), 1.0));
+        }
+    }
+}

@@ -97,6 +97,7 @@
 #include "video_core/readback_trace.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
+#include "video_core/renderer_d3d12/d3d12_frame_gen_pacer.h"
 #include "video_core/renderer_d3d12/d3d12_menu_image.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_mode.h"
 
@@ -395,8 +396,8 @@ struct BootConfig {
     u32 oom_reserve_mib{32};
     /// What a draw does while its pipeline builds: is skipped, so the game never stops for a new
     /// pipeline ("full"), is skipped unless it is a full-screen pass or a target's first
-    /// ("balanced"), or waits ("async_pipelines=off").
-    D3D12::AsyncPipelines async_pipelines{D3D12::AsyncPipelines::Full};
+    /// ("balanced"), or waits ("async_pipelines=off"). Unset follows the game's graphics settings.
+    std::optional<D3D12::AsyncPipelines> async_pipelines;
     /// Draws of this many vertices or fewer always wait for their pipeline ("wait_small_draws=",
     /// 0 turns it off).
     u32 wait_small_draws{};
@@ -535,6 +536,10 @@ struct BootConfig {
     /// Texture heaps and staging created without the OS zeroing their pages
     /// ("not_zeroed_heaps=0" turns it off).
     bool not_zeroed_heaps{true};
+    /// Frames generated between the game's ("frame_gen=off|auto|30|60"): auto takes games under
+    /// 28 fps (on average) to 30 and under 56 to 60. Unset follows the game's graphics settings
+    /// (on is auto).
+    std::optional<D3D12::FrameGenMode> frame_gen;
     /// Single-sample depth bias added in the fragment shader ("depth_bias_shader=0" turns it off).
     bool depth_bias_shader{true};
     /// Whether the GPU reads process memory in place, probed and logged at device creation
@@ -706,6 +711,37 @@ struct BootConfig {
     bool airplane_mode{};
 };
 
+static D3D12::AsyncPipelines ToAsyncPipelines(ShaderBuild shaders) {
+    switch (shaders) {
+    case ShaderBuild::Balanced: return D3D12::AsyncPipelines::Balanced;
+    case ShaderBuild::Wait: return D3D12::AsyncPipelines::Off;
+    case ShaderBuild::Skip: break;
+    }
+    return D3D12::AsyncPipelines::Full;
+}
+
+/// The game's graphics (its own over Settings > Graphics) where boot.cfg sets none. Upscaling is
+/// written on the GPU thread, the one that reads it once the game runs.
+static void ApplyGameGraphics(Core::System& system, const BootConfig& config, u64 program_id) {
+    const GraphicsSettings graphics = ResolveGraphics(LoadGraphicsSettings(), LoadGameGraphics(program_id));
+    if (!config.upscaling) {
+        const Upscaling upscaling = graphics.upscaling;
+        system.GPU().RunOnGpuThread([upscaling] { ApplyUpscaling(upscaling); });
+    }
+    if (!config.frame_gen)
+        D3D12::SetFrameGenMode(graphics.frame_gen ? D3D12::FrameGenMode::Auto : D3D12::FrameGenMode::Off);
+    if (!config.async_pipelines) D3D12::SetAsyncPipelines(ToAsyncPipelines(graphics.shaders));
+    WriteDiag("graphics: upscaling " +
+              (config.upscaling ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(UpscalingText(graphics.upscaling)))) +
+              ", frame generation " +
+              (config.frame_gen ? std::string{"from boot.cfg"} : std::string{graphics.frame_gen ? "auto" : "off"}) +
+              ", shaders " +
+              (config.async_pipelines ? std::string{"from boot.cfg"}
+                                      : std::string{graphics.shaders == ShaderBuild::Skip       ? "skip"
+                                                    : graphics.shaders == ShaderBuild::Balanced ? "balanced"
+                                                                                                : "wait"}));
+}
+
 /// Games never emit the sentinels; without an explicit time they run this long.
 constexpr u32 DEFAULT_GAME_RUN_SECONDS = 120;
 
@@ -835,7 +871,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetSpareHeaps(config.spare_heaps);
     D3D12::SetGpuUnswizzle(config.gpu_unswizzle);
     D3D12::MemoryReserve::Configure(u64{config.oom_reserve_mib} << 20);
-    D3D12::SetAsyncPipelines(config.async_pipelines);
+    // Settings > Graphics until the game's own are known (ApplyGameGraphics).
+    const GraphicsSettings global_graphics = LoadGraphicsSettings();
+    D3D12::SetAsyncPipelines(config.async_pipelines.value_or(ToAsyncPipelines(global_graphics.shaders)));
     D3D12::SetWaitSmallDraws(config.wait_small_draws);
     D3D12::SetPipelineWorkers(config.pso_workers);
     D3D12::SetPipelineBootWorkers(config.pso_boot_workers);
@@ -915,6 +953,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetBcGpuDecode(config.bc_gpu_decode);
     D3D12::SetNotZeroedHeaps(config.not_zeroed_heaps);
     D3D12::SetShaderDepthBias(config.depth_bias_shader);
+    D3D12::SetFrameGenMode(config.frame_gen.value_or(global_graphics.frame_gen ? D3D12::FrameGenMode::Auto
+                                                                                : D3D12::FrameGenMode::Off));
     D3D12::SetMemoryImportProbe(config.memory_import_probe);
     Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);
     Service::Nvidia::Devices::nvdisp_disp0::SetReleaseFence(config.nv_release_fence);
@@ -1238,6 +1278,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     }
 
     const u64 program_id = system.GetApplicationProcessProgramID();
+    ApplyGameGraphics(system, config, program_id);
     // The game's own offline mode over Settings > System's, before any guest code runs; boot.cfg's
     // airplane=1 wins over both.
     if (const auto offline = LoadGameOfflineMode(program_id); offline && !config.airplane_mode)
@@ -1798,15 +1839,11 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                         WriteDiag("menu: no surface: " + winrt::to_string(e.message()));
                     }
                     capture_frame();
-                    // Upscaling as this boot applied it (a boot.cfg override included); only the
-                    // GPU thread writes it while the game runs, and it is paused now.
                     const SystemSettings system_settings = LoadSystemSettings();
                     menu.emplace(GameMenuSettings{options.style, options.swap_face_buttons,
                                                   options.deadzone, g_can_fullscreen.load(),
                                                   g_fullscreen.load(), system_settings.show_performance_stats,
                                                   pulse_identity.has_value(),
-                                                  FromSettings(Settings::values.scaling_filter.GetValue(),
-                                                               Settings::values.fsr_sharpening_slider.GetValue()),
                                                   config.material_capture_menu, config.hunt_menu,
                                                   !game_frame.pixels.empty(), LoadGameOfflineMode(program_id),
                                                   system_settings.offline_mode},
@@ -2000,19 +2037,6 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                     settings.show_performance_stats = menu->Settings().show_performance_stats;
                     if (!SaveSystemSettings(settings)) WriteDiag("menu: statistics preference could not be saved");
                     VideoCore::performance_overlay_enabled.store(settings.show_performance_stats, std::memory_order_relaxed);
-                }
-                if (result == GameMenuResult::UpscalingChanged) {
-                    const Upscaling upscaling = menu->Settings().upscaling;
-                    auto settings = LoadSystemSettings();
-                    settings.upscaling = upscaling;
-                    if (!SaveSystemSettings(settings)) WriteDiag("menu: upscaling preference could not be saved");
-                    // Written where the present reads it; draw_menu below presents the paused
-                    // frame again with it.
-                    system.GPU().RunOnGpuThread([upscaling] { ApplyUpscaling(upscaling); });
-                    // The display page shows the game sharp behind it: read it again with the
-                    // new filter, so the change is seen at once.
-                    capture_frame();
-                    WriteDiag("menu: upscaling " + I18n::ToUtf8(I18n::Tr(UpscalingText(upscaling))));
                 }
                 if (result == GameMenuResult::FullScreen) {
                     g_fullscreen_request.store(menu->Settings().fullscreen ? 1 : 0);
@@ -3540,7 +3564,22 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                        "memory import probe")) {
                             return;
                         }
-                        if (line == "border_color=exact" || line == "border_color=8bit" ||
+                        if (line.starts_with("frame_gen=")) {
+                            const std::string value = line.substr(10);
+                            if (value == "off" || value == "0") {
+                                config.frame_gen = D3D12::FrameGenMode::Off;
+                            } else if (value == "auto" || value == "1") {
+                                config.frame_gen = D3D12::FrameGenMode::Auto;
+                            } else if (value == "30") {
+                                config.frame_gen = D3D12::FrameGenMode::Target30;
+                            } else if (value == "60") {
+                                config.frame_gen = D3D12::FrameGenMode::Target60;
+                            } else {
+                                WriteDiag("boot.cfg: invalid frame_gen (off, auto, 30, 60), ignored");
+                                return;
+                            }
+                            WriteDiag("boot.cfg: frame generation " + value);
+                        } else if (line == "border_color=exact" || line == "border_color=8bit" ||
                                    line == "border_color=bw") {
                             config.border_color = line == "border_color=8bit" ? 1
                                                   : line == "border_color=bw" ? 2
@@ -3616,6 +3655,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             line.starts_with("bc_gpu_decode=") ||
                             line.starts_with("not_zeroed_heaps=") ||
                             line.starts_with("depth_bias_shader=") ||
+                            line.starts_with("frame_gen=") ||
                             line.starts_with("memory_import_probe=")) {
                             parse_render_key(line);
                             continue;

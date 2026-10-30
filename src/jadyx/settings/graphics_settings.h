@@ -1,0 +1,130 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+// Settings > Graphics: how the image reaches the screen and what a draw does while its shader
+// builds. FSR and frame generation exclude each other: turning one on turns the other off. Each
+// game may override any of the three (nullopt follows Settings > Graphics). Pure logic only:
+// persistence and applying them are in uwp_system_settings.h.
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <string>
+
+#include "jadyx/i18n/localization.h"
+#include "jadyx/settings/system_settings.h"
+#include "jadyx/settings/upscaling.h"
+
+namespace Jadyx {
+
+/// What a draw does while its shader (its pipeline) builds on a worker: is skipped, so the game
+/// never stops ("async_pipelines=full"); is skipped unless it is a full-screen pass or a target's
+/// first draw ("balanced"); or waits, so nothing is missing but the game stutters ("off").
+enum class ShaderBuild : std::uint8_t { Skip, Balanced, Wait };
+
+inline std::span<const ShaderBuild> SelectableShaderBuilds() {
+    static constexpr std::array values{ShaderBuild::Skip, ShaderBuild::Balanced, ShaderBuild::Wait};
+    return values;
+}
+
+inline ShaderBuild StepShaderBuild(ShaderBuild current, bool back) {
+    const auto values = SelectableShaderBuilds();
+    const std::size_t count = values.size();
+    std::size_t index = 0;
+    while (index < count && values[index] != current) ++index;
+    if (index == count) return values.front();
+    return values[(index + (back ? count - 1 : 1)) % count];
+}
+
+inline std::optional<ShaderBuild> ShaderBuildFromValue(std::int32_t value) {
+    for (const ShaderBuild build : SelectableShaderBuilds())
+        if (static_cast<std::int32_t>(build) == value) return build;
+    return std::nullopt;
+}
+
+inline I18n::Text ShaderBuildText(ShaderBuild build) {
+    using I18n::Text;
+    switch (build) {
+    case ShaderBuild::Balanced: return Text::ShaderBuildBalanced;
+    case ShaderBuild::Wait: return Text::ShaderBuildWait;
+    case ShaderBuild::Skip: break;
+    }
+    return Text::ShaderBuildSkip;
+}
+
+struct GraphicsSettings {
+    Upscaling upscaling{Upscaling::FsrBalanced}; ///< FSR up to the screen (4K) by default.
+    bool frame_gen{};                            ///< Off by default; on is the automatic mode.
+    ShaderBuild shaders{ShaderBuild::Skip};
+
+    bool operator==(const GraphicsSettings&) const = default;
+};
+
+/// One game's overrides; nullopt follows Settings > Graphics.
+struct GameGraphics {
+    std::optional<Upscaling> upscaling;
+    std::optional<bool> frame_gen;
+    std::optional<ShaderBuild> shaders;
+
+    bool operator==(const GameGraphics&) const = default;
+};
+
+inline bool IsFsr(Upscaling upscaling) {
+    return upscaling != Upscaling::Bilinear;
+}
+
+/// FSR on turns frame generation off.
+inline void SetUpscaling(GraphicsSettings& settings, Upscaling upscaling) {
+    settings.upscaling = upscaling;
+    if (IsFsr(upscaling)) settings.frame_gen = false;
+}
+
+/// Frame generation on turns FSR off (the bilinear blit).
+inline void SetFrameGen(GraphicsSettings& settings, bool on) {
+    settings.frame_gen = on;
+    if (on && IsFsr(settings.upscaling)) settings.upscaling = Upscaling::Bilinear;
+}
+
+/// What a game runs with. When the game asks for one of FSR and frame generation and Settings >
+/// Graphics for the other, the game's own choice wins.
+inline GraphicsSettings ResolveGraphics(const GraphicsSettings& global, const GameGraphics& game) {
+    GraphicsSettings resolved{
+        .upscaling = game.upscaling.value_or(global.upscaling),
+        .frame_gen = game.frame_gen.value_or(global.frame_gen),
+        .shaders = game.shaders.value_or(global.shaders),
+    };
+    if (resolved.frame_gen && IsFsr(resolved.upscaling)) {
+        if (game.frame_gen && !game.upscaling) resolved.upscaling = Upscaling::Bilinear;
+        else resolved.frame_gen = false;
+    }
+    return resolved;
+}
+
+/// Steps a game's upscaling through "as Settings > Graphics" and every choice. FSR chosen for
+/// the game turns its frame generation off.
+inline void StepGameUpscaling(GameGraphics& game, bool back) {
+    game.upscaling = StepChoice(game.upscaling, SelectableUpscalings(), back);
+    if (game.upscaling && IsFsr(*game.upscaling) && game.frame_gen == true) game.frame_gen = false;
+}
+
+/// Steps a game's frame generation through "as Settings > Graphics", on and off. On for the game
+/// turns the game's own FSR off.
+inline void StepGameFrameGen(GameGraphics& game, bool back) {
+    static constexpr std::array values{true, false};
+    game.frame_gen = StepChoice<bool>(game.frame_gen, values, back);
+    if (game.frame_gen == true && game.upscaling && IsFsr(*game.upscaling))
+        game.upscaling = Upscaling::Bilinear;
+}
+
+inline void StepGameShaders(GameGraphics& game, bool back) {
+    game.shaders = StepChoice(game.shaders, SelectableShaderBuilds(), back);
+}
+
+inline std::wstring OnOffText(bool on) {
+    return std::wstring{I18n::Tr(on ? I18n::Text::Yes : I18n::Text::No)};
+}
+
+} // namespace Jadyx

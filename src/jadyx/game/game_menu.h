@@ -12,7 +12,6 @@
 #include "jadyx/ui/ui_icon.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/ui/ui_text.h"
-#include "jadyx/settings/upscaling.h"
 
 namespace Jadyx {
 // In-game menu: View + Menu held for a second (Escape on a keyboard) pauses the game and opens it.
@@ -98,8 +97,6 @@ struct GameMenuSettings {
     /// Pulse sessions are on: leaving for home keeps the game where it is, unless the player
     /// turns that off on the row (pulse_sessions.h).
     bool pulse_sessions{};
-    /// Shown live: the paused frame is presented again with each change.
-    Upscaling upscaling{Upscaling::Bilinear};
     /// Opt-in diagnostic package: capture from a controller without a keyboard.
     bool material_capture{};
     /// Opt-in diagnostic package ("hunt=1"): bottleneck capture of the next frames.
@@ -114,7 +111,7 @@ struct GameMenuSettings {
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
 /// player chose to leave without one.
 enum class GameMenuResult : std::uint8_t {
-    None, Resume, Library, SettingsChanged, FullScreen, Cheats, PerformanceStatsChanged, UpscalingChanged,
+    None, Resume, Library, SettingsChanged, FullScreen, Cheats, PerformanceStatsChanged,
     LibraryWithoutSession,
     CaptureGraphics,
     CapturePerformance,
@@ -139,7 +136,7 @@ struct GameMenuRow {
 class GameMenu {
 public:
     enum Item : std::size_t {
-        Continue, Cheats, Mods, Style, FaceButtons, Deadzone, FullScreen, ImageUpscaling, PerformanceStats, Library,
+        Continue, Cheats, Mods, Style, FaceButtons, Deadzone, FullScreen, PerformanceStats, Library,
         CaptureGraphics, CapturePerformance, Screenshot, ControllerPage, DisplayPage, OfflineMode,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display };
@@ -155,7 +152,7 @@ public:
         if (settings.performance_capture) quick.push_back(CapturePerformance);
         quick.push_back(Library);
         controller = {Style, FaceButtons, Deadzone};
-        display = {ImageUpscaling, PerformanceStats};
+        display = {PerformanceStats};
         if (settings.can_fullscreen) display.push_back(FullScreen);
     }
 
@@ -263,8 +260,8 @@ private:
                         Tr(settings.swap_face_buttons ? Text::ByPosition : Text::ByLetter) + L" · " + DeadzoneText(),
                     UiIcon::Controller};
         case DisplayPage: {
-            std::wstring detail = Tr(UpscalingText(settings.upscaling));
-            if (settings.show_performance_stats) detail += L" · " + Tr(Text::MenuStatsShort);
+            std::wstring detail;
+            if (settings.show_performance_stats) detail = Tr(Text::MenuStatsShort);
             return {Tr(Text::MenuDisplay), {}, Page, detail, UiIcon::Display};
         }
         case Style:
@@ -274,8 +271,6 @@ private:
                     Choice};
         case Deadzone:
             return {Tr(Text::DeadZone), DeadzoneText(), Choice};
-        case ImageUpscaling:
-            return {Tr(Text::Upscaling), Tr(UpscalingText(settings.upscaling)), Choice};
         case PerformanceStats:
             return {Tr(Text::PerformanceStats), Tr(settings.show_performance_stats ? Text::Yes : Text::No), Choice};
         case FullScreen:
@@ -343,9 +338,6 @@ private:
             settings.deadzone = steps[i];
             return GameMenuResult::SettingsChanged;
         }
-        case ImageUpscaling:
-            settings.upscaling = StepUpscaling(settings.upscaling, back);
-            return GameMenuResult::UpscalingChanged;
         case PerformanceStats:
             settings.show_performance_stats = !settings.show_performance_stats;
             return GameMenuResult::PerformanceStatsChanged;

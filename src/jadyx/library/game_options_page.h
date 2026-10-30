@@ -18,19 +18,21 @@
 namespace Jadyx {
 
 /// Pulse's pane shows the kept session and Remove's what deleting the game takes with it. Both
-/// act in place and only on a second confirmation.
-enum class GameOption : std::uint8_t { Cheats, Mods, Updates, Dlc, Pulse, Remove };
+/// act in place and only on a second confirmation. Graphics' pane holds the game's own graphics
+/// settings (graphics_page.h), changed in place like Settings > Graphics.
+enum class GameOption : std::uint8_t { Cheats, Mods, Updates, Dlc, Pulse, Remove, Graphics };
 
 /// The options shown, in order.
 inline std::span<const GameOption> GameOptions() {
     static constexpr std::array options{GameOption::Mods, GameOption::Cheats, GameOption::Updates,
-                                        GameOption::Dlc, GameOption::Pulse, GameOption::Remove};
+                                        GameOption::Dlc, GameOption::Graphics, GameOption::Pulse,
+                                        GameOption::Remove};
     return options;
 }
 
 /// False for the panes that act in place (with a second press) instead of opening a manager.
 inline bool GameOptionHasManager(GameOption option) {
-    return option != GameOption::Pulse && option != GameOption::Remove;
+    return option != GameOption::Pulse && option != GameOption::Remove && option != GameOption::Graphics;
 }
 
 inline I18n::Text GameOptionTitle(GameOption option) {
@@ -41,6 +43,7 @@ inline I18n::Text GameOptionTitle(GameOption option) {
     case GameOption::Mods: return I18n::Text::ModsTitle;
     case GameOption::Pulse: return I18n::Text::PulseSession;
     case GameOption::Remove: return I18n::Text::GameRemove;
+    case GameOption::Graphics: return I18n::Text::Graphics;
     }
     return I18n::Text::CheatsTitle;
 }
@@ -53,6 +56,7 @@ inline I18n::Text GameOptionHint(GameOption option) {
     case GameOption::Mods: return I18n::Text::ModsHint;
     case GameOption::Pulse: return I18n::Text::PulseNone;
     case GameOption::Remove: return I18n::Text::GameRemoveHint;
+    case GameOption::Graphics: return I18n::Text::GameGraphicsHint;
     }
     return I18n::Text::CheatsHint;
 }
@@ -65,6 +69,7 @@ inline UiIcon GameOptionIcon(GameOption option) {
     case GameOption::Mods: return UiIcon::Mods;
     case GameOption::Pulse: return UiIcon::Archive;
     case GameOption::Remove: return UiIcon::Remove;
+    case GameOption::Graphics: return UiIcon::Display;
     }
     return UiIcon::Settings;
 }
@@ -121,6 +126,7 @@ inline void HandleGameOptionsInput(GameOptionsPage& options, GameOptionsInput in
         SelectGameOption(options, (options.selected + 1) % count);
         break;
     case GameOptionsInput::Confirm:
+        if (GameOptions()[options.selected] == GameOption::Graphics) break; // The pane's own rows.
         if (!GameOptionHasManager(GameOptions()[options.selected])) {
             options.confirm_discard = !confirming;
             options.discard = confirming;

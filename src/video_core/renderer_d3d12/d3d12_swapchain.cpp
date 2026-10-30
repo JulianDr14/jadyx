@@ -121,10 +121,10 @@ bool Swapchain::WaitForFrame() {
     return true;
 }
 
-void Swapchain::Present() {
+void Swapchain::Present(u32 sync_interval) {
     const VideoCore::FrameTrace::ScopedSpan trace_present{
         VideoCore::FrameTrace::Event::HostPresentLong, 0};
-    ThrowIfFailed(swapchain->Present(1, 0), "IDXGISwapChain::Present");
+    ThrowIfFailed(swapchain->Present(sync_interval, 0), "IDXGISwapChain::Present");
 }
 
 } // namespace D3D12

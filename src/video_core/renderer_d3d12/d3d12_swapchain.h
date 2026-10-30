@@ -50,7 +50,8 @@ public:
     /// False when it accepted none for a second (a lost device, a stalled display): Present()
     /// would block then, so the caller drops the frame instead. True without a waitable object.
     [[nodiscard]] bool WaitForFrame();
-    void Present();
+    /// sync_interval: vertical blanks the frame stays on screen (frame generation at 30 uses 2).
+    void Present(u32 sync_interval = 1);
 
 private:
     ComPtr<IDXGISwapChain3> swapchain;
