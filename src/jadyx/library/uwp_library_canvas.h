@@ -12,6 +12,7 @@
 #include "jadyx/library/library_layout.h"
 #include "jadyx/mods/mod_session.h"
 #include "jadyx/mods/mods_page.h"
+#include "jadyx/settings/graphics_page.h"
 #include "jadyx/settings/system_page.h"
 #include "jadyx/input/uwp_input.h"
 #include "jadyx/input/uwp_controllers.h"
@@ -28,6 +29,9 @@ struct GameOptionsView {
     const Mods::ModSession* mods{};      ///< The open mods page's.
     const Mods::ModsPage* mods_page{};
     bool other_copies{};                 ///< Another dump of the game stays if this one is deleted.
+    const GameGraphics* graphics{};      ///< The game's own graphics, once read for it.
+    std::size_t graphics_row{};          ///< The focused row of its Graphics pane.
+    const GraphicsSettings* global_graphics{}; ///< Settings > Graphics, which the game follows.
 };
 /// The active controller's battery, as Windows.Gaming.Input reports it; unknown when it does not.
 struct ControllerBattery {
@@ -48,6 +52,7 @@ struct LibraryView {
     const ControllerPanel& panel;
     const ConfigurationPanel& configuration;
     const SystemPage& system;
+    const GraphicsPage& graphics;
     const GameOptionsView& game_options;
     bool missing_content{};
     bool rail{}; ///< The focus is in the played games' row (library_layout.h).

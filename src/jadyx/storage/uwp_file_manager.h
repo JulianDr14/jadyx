@@ -37,7 +37,7 @@ struct ConfigurationPanel {
     std::wstring review_text;
 };
 /// Rows of the settings home, in order.
-enum ConfigurationHomeRow : size_t { HomeSystem, HomeControllers, HomeFiles, HomeRowCount };
+enum ConfigurationHomeRow : size_t { HomeSystem, HomeGraphics, HomeControllers, HomeFiles, HomeRowCount };
 enum FileManagerNetworkRow : size_t { FilesNetwork = 5, FilesNetworkAddress, FilesNetworkCode, FilesSources };
 inline size_t ConfigurationRowCount(const ConfigurationPanel& panel) {
     return panel.files ? FilesSources + panel.status.sources.size() : HomeRowCount;

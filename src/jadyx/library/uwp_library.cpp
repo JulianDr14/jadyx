@@ -46,6 +46,7 @@
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/library/library_cache.h"
 #include "jadyx/i18n/localization.h"
+#include "jadyx/settings/graphics_page.h"
 #include "jadyx/settings/system_page.h"
 #include "jadyx/updates/update_ui.h"
 #include "jadyx/input/uwp_input.h"
@@ -139,6 +140,12 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     Mods::ModsPage mods_page;
     std::wstring options_notice;
     system_page.settings = LoadSystemSettings();
+    GraphicsPage graphics_page;
+    graphics_page.settings = LoadGraphicsSettings();
+    // The selected game's own graphics, for its Graphics pane; loaded for `game_graphics_id`.
+    GameGraphics game_graphics;
+    std::size_t game_graphics_row{};
+    std::uint64_t game_graphics_id{};
     system_page.locale = DetectSystemLocale();
     // Titles are read in the game language, so the library shows what the games will.
     Settings::Language title_language = ApplySystemSettings().game_language;
@@ -420,9 +427,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         }
         if (configuration.open && !content_session && !panel.keyboard.open && !panel.expanded) {
             const auto target = canvas->HitAt(x, y);
-            const bool in_page = system_page.open || configuration.files || settings;
-            const size_t shown = system_page.open ? HomeSystem : configuration.files ? HomeFiles :
-                                 settings ? HomeControllers : configuration.selected;
+            const bool in_page = system_page.open || graphics_page.open || configuration.files || settings;
+            const size_t shown = system_page.open ? HomeSystem : graphics_page.open ? HomeGraphics :
+                                 configuration.files ? HomeFiles : settings ? HomeControllers : configuration.selected;
             auto category = target.hit == LibraryHit::Category ? std::optional<size_t>{target.index} :
                             target.hit == LibraryHit::Controller ? std::optional<size_t>{HomeControllers} :
                             std::nullopt;
@@ -431,13 +438,14 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (configuration.busy || picker != nullptr) {
             } else if (category && !(in_page && *category == shown)) {
                 // Another category: leave the open page and enter it.
-                system_page.open = configuration.files = settings = return_to_configuration = false;
+                system_page.open = graphics_page.open = configuration.files = settings = return_to_configuration = false;
                 panel.notice.clear();
                 configuration.selected = *category;
                 actions |= Play;
                 dirty = true;
             } else if (target.hit == LibraryHit::SettingRow) {
                 if (system_page.open) system_page.selected = target.index;
+                else if (graphics_page.open) graphics_page.selected = target.index;
                 else if (configuration.files) configuration.selected = target.index;
                 else setting_row = static_cast<unsigned>(target.index);
                 actions |= Play;
@@ -1025,7 +1033,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         if (catalog_changed || !pad || !next || pad->id != next->id)
             pad = next ? std::optional<ControllerDevice>{*next} : std::nullopt;
         const unsigned context = configuration.confirm_import ? 1001 : configuration.network_screen ? 1000 : game_options.open ? (7 + static_cast<unsigned>(game_options.selected) * 3 + static_cast<unsigned>(game_options.focus)) :
-            system_page.name_editor ? 6 : system_page.open ? 5 :
+            graphics_page.open ? 1002 : system_page.name_editor ? 6 : system_page.open ? 5 :
             panel.keyboard.open ? 3 : panel.expanded ? 2 : settings ? 1 : configuration.open ? 4 : 0;
         if (context != navigation_context) {
             stick_navigation.Reset(); manager_dpad.Reset(); trigger_tabs.Reset(); navigation_context = context;
@@ -1302,7 +1310,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         const auto switch_tab = [&](LibraryTab to) {
             if (to == tab) return;
             if (tab == LibraryTab::Settings) {
-                system_page.open = false;
+                system_page.open = graphics_page.open = false;
                 configuration.open = configuration.files = false;
                 settings = return_to_configuration = false;
                 panel.expanded = panel.keyboard.open = panel.keyboard.capturing = false;
@@ -1390,7 +1398,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         // Leaving the update page to use another feature pauses network work before dispatching it.
         if (!system_page.updates_open && actions &&
             (updater.CurrentPhase() == Updates::Phase::Downloading || updater.CurrentPhase() == Updates::Phase::Verifying)) updater.Pause();
-        const bool top_level = !settings && !system_page.open && !configuration.files && !configuration.busy &&
+        const bool top_level = !settings && !system_page.open && !graphics_page.open && !configuration.files && !configuration.busy &&
                                !picker && !validation.valid() && !game_options.open && !missing_content;
         if (pressed_tab) {
             // A primary tab pops idle management pages. Never interrupt an import/install.
@@ -1410,7 +1418,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             }
             pressed_tab.reset();
         }
-        const bool settings_page = tab == LibraryTab::Settings && (settings || system_page.open || configuration.files) &&
+        const bool settings_page = tab == LibraryTab::Settings && (settings || system_page.open || graphics_page.open || configuration.files) &&
                                    !panel.keyboard.open && !panel.expanded && !system_page.name_editor &&
                                    !configuration.busy && !picker && !validation.valid() && !game_options.open &&
                                    !missing_content;
@@ -1443,6 +1451,24 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 network_portal.Stop();
                 return std::string{MiiEditorLaunch};
             }
+        }
+        if (graphics_page.open && configuration.open && !settings) {
+            // Saved for the next game; a game's own Graphics pane can override each row.
+            const auto send = [&](unsigned bit, GraphicsInput input) {
+                if (!(actions & bit) || !HandleGraphicsInput(graphics_page, input)) return;
+                const bool saved = SaveGraphicsSettings(graphics_page.settings);
+                system_page.notice = Tr(saved ? T::SettingsSaved : T::SystemSaveFailed);
+                system_notice_until = saved ? now + std::chrono::seconds{3} : std::chrono::steady_clock::time_point::max();
+            };
+            send(Up, GraphicsInput::Up);
+            send(Down, GraphicsInput::Down);
+            send(Left, GraphicsInput::Left);
+            send(Right, GraphicsInput::Right);
+            send(Play, GraphicsInput::Confirm);
+            send(Quit, GraphicsInput::Back);
+            if (!graphics_page.open) configuration.selected = HomeGraphics;
+            if (actions) dirty = true;
+            actions = 0;
         }
         const bool on_game = tab == LibraryTab::Home ||
                              (tab == LibraryTab::Library && !filter_focus && shelf_focus < shelf.size());
@@ -1551,6 +1577,13 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 game_options.activate = false;
                 game_options.page = GameOptionHasManager(GameOptions()[game_options.selected]) ?
                     std::optional{GameOptions()[game_options.selected]} : std::nullopt;
+                if (GameOptions()[game_options.selected] == GameOption::Graphics) {
+                    const auto& game = scan.entries[game_options.game];
+                    game_graphics_id = game.program_id;
+                    game_graphics = game.program_id ? LoadGameGraphics(game.program_id) : GameGraphics{};
+                    game_graphics_row = 0;
+                    if (!game.program_id) notify(T::CheatsUnavailable);
+                }
                 if (game_options.page == GameOption::Updates || game_options.page == GameOption::Dlc) {
                     const auto& game = scan.entries[game_options.game];
                     if (!game.title_loaded || !game.program_id) {
@@ -1802,6 +1835,26 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 send(Refresh, MenuAction::Refresh);
                 if (cheat_session) send(Quit, MenuAction::Back);
                 dirty = true;
+            } else if (actions && GameOptions()[game_options.selected] == GameOption::Graphics) {
+                // The game's rows: Up on the first goes back to the sections, B closes the options.
+                const auto& game = scan.entries[game_options.game];
+                const bool loaded = game.program_id != 0 && game_graphics_id == game.program_id;
+                if (actions & Up && game_graphics_row == 0) {
+                    game_options.focus = GameOptionsFocus::Sections;
+                    actions &= ~Up;
+                }
+                const auto send = [&](unsigned bit, GraphicsInput input) {
+                    if (!loaded || !(actions & bit) || !HandleGameGraphicsInput(game_graphics, game_graphics_row, input))
+                        return;
+                    notify(SaveGameGraphics(game.program_id, game_graphics) ? T::SettingsSaved : T::SystemSaveFailed);
+                };
+                send(Up, GraphicsInput::Up);
+                send(Down, GraphicsInput::Down);
+                send(Left, GraphicsInput::Left);
+                send(Right, GraphicsInput::Right);
+                send(Play, GraphicsInput::Confirm);
+                if (actions & Quit) HandleGameOptionsInput(game_options, GameOptionsInput::Back);
+                dirty = true;
             } else if (actions) {
                 const auto send = [&](unsigned bit, GameOptionsInput input) {
                     if (actions & bit) HandleGameOptionsInput(game_options, input);
@@ -1888,6 +1941,11 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                     switch (configuration.selected) {
                     case HomeFiles: configuration.files = true; configuration.selected = 0; break;
                     case HomeControllers: settings = true; return_to_configuration = true; setting_row = 0; break;
+                    case HomeGraphics:
+                        graphics_page.open = true;
+                        graphics_page.selected = 0;
+                        system_page.notice.clear();
+                        break;
                     default:
                         system_page.open = true;
                         system_page.selected = SystemPage::UserName;
@@ -2273,7 +2331,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                 cheat_session ? &*cheat_session : nullptr, cheats_page, options_notice, content_session.get(),
                 mod_session.get(), &mods_page,
                 game_options.open && game_options.game < scan.entries.size() &&
-                    FindDumpFiles(scan.entries, scan.entries[game_options.game].launch_path).kept};
+                    FindDumpFiles(scan.entries, scan.entries[game_options.game].launch_path).kept,
+                game_options.open && game_options.game < scan.entries.size() && game_graphics_id != 0 &&
+                        game_graphics_id == scan.entries[game_options.game].program_id ? &game_graphics : nullptr,
+                game_graphics_row, &graphics_page.settings};
             // Titles, Pulse sessions and plays arrive after the shelf was made: keep it current,
             // the focus on the same game.
             if (tab == LibraryTab::Library && !loading) {
@@ -2295,6 +2356,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                           .panel = panel,
                           .configuration = configuration,
                           .system = system_page,
+                          .graphics = graphics_page,
                           .game_options = options_view,
                           .missing_content = missing_content,
                           .rail = rail,

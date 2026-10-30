@@ -865,7 +865,7 @@ private:
         // the header) go without saying.
         if (view.tab == LibraryTab::Settings) {
             const auto& configuration = view.configuration;
-            const bool change = view.system.open || view.controller_panel;
+            const bool change = view.system.open || view.graphics.open || view.controller_panel;
             x += ControlPrompt(Navigation::Play, Tr(change ? T::Change : T::Open), x, y);
             ControlPrompt(Navigation::Back, Tr(configuration.busy ? T::Cancel : T::Back), x, y);
             // The version is on the page's kicker; its notices take the corner.
@@ -874,7 +874,7 @@ private:
             if (configuration.busy) {
                 notice = I18n::Format(T::Importing, {std::to_wstring(configuration.completed),
                                                      std::to_wstring(configuration.total)});
-            } else if (view.system.open && !view.system.notice.empty()) {
+            } else if ((view.system.open || view.graphics.open) && !view.system.notice.empty()) {
                 notice = view.system.notice;
             } else if (view.controller_panel && !view.panel.notice.empty()) {
                 notice = view.panel.notice;
@@ -1119,6 +1119,7 @@ private:
     /// The category the Settings tab shows: the open one, or the focused one in the list.
     static std::size_t SettingsCategory(const LibraryView& view) {
         if (view.system.open) return HomeSystem;
+        if (view.graphics.open) return HomeGraphics;
         if (view.configuration.files) return HomeFiles;
         if (view.controller_panel) return HomeControllers;
         return std::min<std::size_t>(view.configuration.selected, HomeRowCount - 1);
@@ -1145,6 +1146,15 @@ private:
                 case SystemPage::OfflineMode: item.kind = Kind::Toggle; item.on = settings.offline_mode; break;
                 default: break;
                 }
+                rows.push_back(std::move(item));
+            }
+        } else if (category == HomeGraphics) {
+            for (std::size_t i = 0; i < GraphicsRowCount; ++i) {
+                const auto row = static_cast<GraphicsRow>(i);
+                const auto& settings = view.graphics.settings;
+                SettingsRow item{Kind::Choice, std::wstring{Tr(GraphicsRowTitle(row))},
+                                 std::wstring{Tr(GraphicsRowHint(row))}, GraphicsRowValue(settings, row)};
+                if (row == GraphicsRow::FrameGen) { item.kind = Kind::Toggle; item.on = settings.frame_gen; }
                 rows.push_back(std::move(item));
             }
         } else if (category == HomeControllers) {
@@ -1389,7 +1399,7 @@ private:
         const auto& configuration = view.configuration;
         const auto& status = configuration.status;
         const std::size_t category = SettingsCategory(view);
-        const bool in_pane = view.system.open || configuration.files || view.controller_panel;
+        const bool in_pane = view.system.open || view.graphics.open || configuration.files || view.controller_panel;
         // The page's kicker: what it is and which build is installed.
         const auto kicker = Upper(Tr(T::SettingsTitle));
         const float kicker_width = MeasureType(kicker, TypeRole::Caps);
@@ -1398,8 +1408,10 @@ private:
         Type(L"Jadyx " + version_text, TypeRole::Label, Margin + kicker_width + 28, 92, 300, Palette::TextHint);
         // The categories.
         static constexpr std::array<ConfigurationIcon, HomeRowCount> icons{
-            ConfigurationIcon::Settings, ConfigurationIcon::Controller, ConfigurationIcon::Folder};
-        static constexpr std::array<T, HomeRowCount> titles{T::System, T::ControllersAndKeyboard, T::FileManager};
+            ConfigurationIcon::Settings, ConfigurationIcon::Display, ConfigurationIcon::Controller,
+            ConfigurationIcon::Folder};
+        static constexpr std::array<T, HomeRowCount> titles{T::System, T::Graphics, T::ControllersAndKeyboard,
+                                                            T::FileManager};
         for (std::size_t i = 0; i < HomeRowCount; ++i) {
             const float x = SettingsListX, y = SettingsListTop + i * SettingsListStride;
             const float w = SettingsListWidth, h = SettingsListHeight;
@@ -1414,6 +1426,11 @@ private:
             if (i == HomeSystem) {
                 summary = SystemRowValue(view.system, SystemPage::UserName) + L" · " +
                           SystemRowValue(view.system, SystemPage::InterfaceLanguage);
+            } else if (i == HomeGraphics) {
+                const auto& settings = view.graphics.settings;
+                summary = (settings.frame_gen ? std::wstring{Tr(T::FrameGen)}
+                                              : GraphicsRowValue(settings, GraphicsRow::Upscaling)) +
+                          L" · " + GraphicsRowValue(settings, GraphicsRow::Shaders);
             } else if (i == HomeControllers) {
                 const auto label = ControllerLabel(view.panel.devices, view.options.controller_id);
                 summary = view.options.controller_id.empty() ? I18n::Format(T::AutomaticValue, {label}) : label;
@@ -1460,8 +1477,10 @@ private:
                  view.loading ? std::wstring{L"…"} : std::to_wstring(view.scan.entries.size()));
         }
         // The category's page.
-        static constexpr std::array<T, HomeRowCount> pages{T::SystemTitle, T::ControllersAndKeyboard, T::FileManager};
-        static constexpr std::array<T, HomeRowCount> about{T::SystemSubtitle, T::ControllerSubtitle, T::FilesSubtitle};
+        static constexpr std::array<T, HomeRowCount> pages{T::SystemTitle, T::Graphics, T::ControllersAndKeyboard,
+                                                           T::FileManager};
+        static constexpr std::array<T, HomeRowCount> about{T::SystemSubtitle, T::GraphicsSubtitle, T::ControllerSubtitle,
+                                                           T::FilesSubtitle};
         const float px = SettingsPaneX, pw = SettingsPaneWidth;
         Type(Tr(pages[category]), TypeRole::HeadlineLarge, px, 122, pw, Palette::Text);
         Type(Tr(about[category]), TypeRole::Body, px, 176, pw, Palette::TextSecondary);
@@ -1469,6 +1488,7 @@ private:
         if (rows.empty()) return;
         const std::size_t selected = !in_pane ? SIZE_MAX :
             category == HomeSystem ? view.system.selected :
+            category == HomeGraphics ? view.graphics.selected :
             category == HomeFiles ? configuration.selected : view.controller_row;
         const std::size_t visible = std::min(rows.size(), SettingsVisibleRows);
         const std::size_t first = selected != SIZE_MAX && selected >= visible ? selected - visible + 1 : 0;
@@ -1789,6 +1809,18 @@ private:
                     I18n::Format(game.pulse_current ? T::PulseSavedOn : T::PulseSavedOther, {game.pulse_saved});
                 const auto discard = I18n::Format(T::PulseDiscardConfirm, {PromptKey(Navigation::Play).letters});
                 in_place(option, pulse, game.pulse_saved.empty() ? std::wstring_view{} : std::wstring_view{discard});
+            } else if (option == GameOption::Graphics && view.graphics && view.global_graphics) {
+                // The same rows as Settings > Graphics, each one the game's own or what it follows.
+                Type(Tr(T::GameGraphicsHint), TypeRole::Body, 56, 222, 1168, Palette::TextSecondary);
+                const bool focused = view.page.focus == GameOptionsFocus::Content;
+                for (std::size_t i = 0; i < GraphicsRowCount; ++i) {
+                    const auto row = static_cast<GraphicsRow>(i);
+                    const SettingsRow item{SettingsRow::Kind::Choice, std::wstring{Tr(GraphicsRowTitle(row))},
+                                           std::wstring{Tr(GraphicsRowHint(row))},
+                                           GameGraphicsRowValue(*view.global_graphics, *view.graphics, row)};
+                    const float y = 262 + static_cast<float>(i) * SettingsRowStride;
+                    DrawSettingsRow(item, 56, y, 1168, SettingsRowHeight, focused && i == view.graphics_row, 1.0f);
+                }
             } else if (option == GameOption::Remove) {
                 const bool external = IsStoragePath(game.launch_path);
                 in_place(option, Tr(external ? T::GameRemoveExternal :
