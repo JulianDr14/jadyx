@@ -5,7 +5,12 @@ objetivo principal es que un juego atascado entre 15 y 20 fps (por ejemplo, uno 
 sincronización de la consola deja en 20 porque solo permite 20 o 30) se vea a **30 fps con un
 ritmo estable**. El secundario es que un juego que ya va a 30 se vea a 60.
 
-Se activa en `boot.cfg`:
+Se activa en la biblioteca: **Ajustes › Gráficos › Generación de cuadros** (modo `auto`) para
+todos los juegos, o en las opciones de un juego, pestaña **Gráficos**, solo para él. Encenderla
+apaga FSR y encender FSR la apaga: las dos no corren juntas. Si un juego pide una y los ajustes
+generales la otra, gana la del juego. No se cambia desde el menú en partida.
+
+`boot.cfg` tiene prioridad sobre esos ajustes (para pruebas):
 
 ```
 frame_gen=auto    # media <28 fps -> 30, <56 fps -> 60 (banda de 1 fps); por debajo de 11, apagado
@@ -145,7 +150,8 @@ GPU thread (Composite)                       Present thread (D3D12Present)
 - `src/video_core/renderer_d3d12/d3d12_present_manager.{h,cpp}`: el hilo de presentación con
   slots generados.
 - `src/video_core/host_shaders/d3d12_fg_{luma,motion,compose}.comp`.
-- `src/jadyx/app/uwp_boot.cpp`: la clave `frame_gen=`.
+- `src/jadyx/app/uwp_boot.cpp`: la clave `frame_gen=` y los ajustes gráficos de cada juego.
+- `src/jadyx/settings/graphics_settings.h`, `graphics_page.h`: Ajustes › Gráficos y la pestaña del juego.
 
 ## Límites conocidos
 
