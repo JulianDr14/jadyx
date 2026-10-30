@@ -11,6 +11,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <bitset>
@@ -168,6 +169,22 @@ struct Engine {
 };
 
 std::atomic<Engine*> g_engine{};
+
+// Diagnostic: the latest reads back, for a crash report. Written without a lock; a torn entry
+// only misreports one line.
+struct ReadRecord {
+    u32 granule{};
+    u16 first{}; // pages [first, last) of the read
+    u16 last{};
+    u32 thread{};
+    bool prefetch{};
+    bool ok{};
+    std::chrono::steady_clock::time_point start{};
+    std::chrono::steady_clock::time_point end{};
+};
+constexpr size_t READ_RECORDS = 2048;
+std::array<ReadRecord, READ_RECORDS> g_reads{};
+std::atomic<u64> g_read_serial{};
 
 // How often a new batch may go on probation.
 constexpr u64 BATCH_MS = 500;
@@ -370,6 +387,7 @@ bool ReadBack(Engine& e, Granule& g, u8* begin, size_t first_chunk, size_t last_
     }
     const auto start = std::chrono::steady_clock::now();
     const auto [first, last] = Span(want);
+    const u64 record = g_read_serial.fetch_add(1, std::memory_order_relaxed);
     const size_t buffer_index = AcquireReadBuffer(e);
     u8* const buffer = e.read_buffers[buffer_index];
     bool ok = Transfer(e.file, e.read_events[buffer_index], false, buffer + first * PAGE_SIZE,
@@ -387,6 +405,16 @@ bool ReadBack(Engine& e, Granule& g, u8* begin, size_t first_chunk, size_t last_
         }
     });
     ReleaseReadBuffer(e, buffer_index);
+    g_reads[record % READ_RECORDS] = ReadRecord{
+        .granule = static_cast<u32>((begin - e.base) / GRANULE_SIZE),
+        .first = static_cast<u16>(first),
+        .last = static_cast<u16>(last),
+        .thread = GetCurrentThreadId(),
+        .prefetch = prefetch,
+        .ok = ok,
+        .start = start,
+        .end = std::chrono::steady_clock::now(),
+    };
     if (!ok) {
         // The slot still holds everything: what was filled goes again.
         ForEachRun(filled, [&](size_t run, size_t count) {
@@ -1284,6 +1312,67 @@ std::string Describe(bool since_last) {
     return text + std::string{rate};
 }
 
+std::string DescribePage(const u8* address) {
+    size_t index{};
+    Engine* const e = Find(address, index);
+    if (e == nullptr) {
+        return {};
+    }
+    const Granule& g = e->table[index];
+    const size_t page = static_cast<size_t>(address - e->base) % GRANULE_SIZE / PAGE_SIZE;
+    const auto now = std::chrono::steady_clock::now();
+    const auto ms_ago = [&](std::chrono::steady_clock::time_point at) {
+        return std::chrono::duration<double, std::milli>(now - at).count();
+    };
+    static constexpr const char* STATES[] = {"resident", "probation", "busy", "swapped"};
+    const u8 state = g.state.load(std::memory_order_acquire);
+    std::string out = "granule " + std::to_string(index) + " page " + std::to_string(page) + " " +
+                      (state < std::size(STATES) ? STATES[state] : "?") + ", " +
+                      std::to_string(g.data.count()) + " pages on disk, touched " +
+                      std::to_string(NowMs() - g.last_access.load(std::memory_order_relaxed)) +
+                      " ms ago";
+    const u64 serial = g_read_serial.load(std::memory_order_relaxed);
+    u32 shown = 0;
+    for (u64 i = 0; i < (std::min<u64>)(serial, READ_RECORDS) && shown < 4; ++i) {
+        const ReadRecord r = g_reads[(serial - 1 - i) % READ_RECORDS];
+        if (r.granule != index || r.end.time_since_epoch().count() == 0) {
+            continue;
+        }
+        ++shown;
+        char line[192];
+        std::snprintf(line, sizeof(line),
+                      "; read back [%u, %u)%s by %s on thread %u %.3f ms ago in %.0f us%s",
+                      unsigned{r.first}, unsigned{r.last},
+                      page >= r.first && page < r.last ? " (this page's span)" : "",
+                      r.prefetch ? "prefetch" : "fault", r.thread, ms_ago(r.end),
+                      std::chrono::duration<double, std::micro>(r.end - r.start).count(),
+                      r.ok ? "" : " FAILED");
+        out += line;
+    }
+    if (shown == 0) {
+        out += "; no read back in the last " + std::to_string((std::min<u64>)(serial, READ_RECORDS));
+    }
+    return out;
+}
+
+std::string DescribeRecentReads(size_t count) {
+    const auto now = std::chrono::steady_clock::now();
+    const u64 serial = g_read_serial.load(std::memory_order_relaxed);
+    std::string out = std::to_string(serial) + " reads back so far";
+    for (u64 i = 0; i < (std::min<u64>)({serial, READ_RECORDS, count}); ++i) {
+        const ReadRecord r = g_reads[(serial - 1 - i) % READ_RECORDS];
+        char line[160];
+        std::snprintf(line, sizeof(line), "; granule %u [%u, %u) by %s on thread %u %.3f ms ago in %.0f us%s",
+                      r.granule, unsigned{r.first}, unsigned{r.last},
+                      r.prefetch ? "prefetch" : "fault", r.thread,
+                      std::chrono::duration<double, std::milli>(now - r.end).count(),
+                      std::chrono::duration<double, std::micro>(r.end - r.start).count(),
+                      r.ok ? "" : " FAILED");
+        out += line;
+    }
+    return out;
+}
+
 } // namespace Common::Permafrost
 
 #else
@@ -1324,6 +1413,12 @@ Stats GetStats() {
 }
 std::string Describe(bool) {
     return "permafrost off";
+}
+std::string DescribePage(const u8*) {
+    return {};
+}
+std::string DescribeRecentReads(size_t) {
+    return {};
 }
 } // namespace Common::Permafrost
 

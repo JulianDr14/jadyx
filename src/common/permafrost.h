@@ -156,5 +156,10 @@ struct Stats {
 /// The stats in one line. `since_last` adds the stall per second since the last such call: one
 /// caller only, at a steady interval.
 [[nodiscard]] std::string Describe(bool since_last = false);
+/// Diagnostic, for a crash: the granule of `address` and its latest reads back. Empty outside the
+/// swapped range.
+[[nodiscard]] std::string DescribePage(const u8* address);
+/// Diagnostic, for a crash: the latest `count` reads back of any granule, newest first.
+[[nodiscard]] std::string DescribeRecentReads(size_t count);
 
 } // namespace Common::Permafrost

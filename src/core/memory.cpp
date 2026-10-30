@@ -6,6 +6,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <mutex>
 #include <span>
@@ -19,6 +20,7 @@
 #include "common/heap_tracker.h"
 #include "common/logging.h"
 #include "common/page_table.h"
+#include "common/permafrost.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/swap.h"
@@ -585,6 +587,18 @@ struct Memory::Impl {
         }
     }
 
+    // Diagnostic, once per run: a read near null usually follows a pointer the guest read as
+    // zero. What the swap read back just before is what to compare it with.
+    static void ReportNullRead(u64 addr) {
+        static std::atomic<bool> reported{};
+        if (reported.exchange(true)) {
+            return;
+        }
+        LOG_CRITICAL(HW_Memory, "Null read @ {:#x}: {}; {}", addr,
+                     Common::Permafrost::DescribeRecentReads(12),
+                     Common::Permafrost::Describe());
+    }
+
     template<typename F, typename G>
     [[nodiscard]] u8* GetPointerImpl(u64 vaddr, F&& on_unmapped, G&& on_rasterizer) const {
         // AARCH64 masks the upper 16 bit of all memory accesses
@@ -644,6 +658,9 @@ struct Memory::Impl {
         const u64 addr = GetInteger(vaddr);
         if (auto const ptr = GetPointerImpl(addr, [addr]() {
             LOG_ERROR(HW_Memory, "Unmapped Read{} @ {:#016x}", sizeof(T) * 8, addr);
+            if (addr < 0x10000) {
+                ReportNullRead(addr);
+            }
         }, [&](u8* host_ptr) {
             HandleRasterizerDownload(addr, sizeof(T), host_ptr);
         }); ptr) [[likely]] {
