@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/fiber.h"
+#include "common/permafrost.h"
 #include "common/scope_exit.h"
 #include "common/thread.h"
 #include "common/settings.h"
@@ -178,12 +179,14 @@ void CpuManager::RunThread(std::stop_token token, std::size_t core) {
     Common::SetCurrentThreadName(name.c_str());
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
+    Common::Permafrost::RegisterGuestThread();
     auto& data = core_data[core];
     data.host_context = Common::Fiber::ThreadToFiber();
 
     // Cleanup
     SCOPE_EXIT {
         data.host_context->Exit();
+        Common::Permafrost::UnregisterGuestThread();
     };
 
     // Running

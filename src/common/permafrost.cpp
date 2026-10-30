@@ -22,6 +22,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -50,8 +51,6 @@ constexpr size_t SMALL_REST_PAGES = 2 * CHUNK_PAGES;
 // Quick refaults that make a granule hot: the rest of it is prefetched after a fault.
 constexpr u8 HOT_HEAT = 2;
 constexpr u8 MAX_HEAT = 8;
-// A read back commits and fills its pages this many at a time.
-constexpr size_t FILL_PAGES = 4;
 // Buffers a read back lands in before any page of the granule is committed.
 constexpr size_t READ_BUFFERS = 4;
 constexpr size_t MAX_WRITERS = 4;
@@ -185,6 +184,42 @@ struct ReadRecord {
 constexpr size_t READ_RECORDS = 2048;
 std::array<ReadRecord, READ_RECORDS> g_reads{};
 std::atomic<u64> g_read_serial{};
+
+// The threads that run guest code. A read back pauses the others while it fills: a committed
+// private page reads zero to every thread until it is filled, and the guest takes that zero for
+// a pointer. The pause mutex keeps two fillers from suspending each other; a thread is only
+// unregistered under it, so a paused handle is never closed meanwhile.
+struct GuestThread {
+    std::atomic<DWORD> id{};
+    HANDLE handle{};
+};
+constexpr size_t MAX_GUEST_THREADS = 16;
+std::array<GuestThread, MAX_GUEST_THREADS> g_guest_threads{};
+std::mutex g_pause_mutex;
+
+// Suspends every other guest thread and waits for each suspension to take effect. Nothing may
+// allocate, lock or log until they are resumed: a paused thread may hold the heap lock.
+size_t PauseGuests(std::array<HANDLE, MAX_GUEST_THREADS>& paused) {
+    const DWORD self = GetCurrentThreadId();
+    size_t count = 0;
+    for (GuestThread& thread : g_guest_threads) {
+        const DWORD id = thread.id.load(std::memory_order_acquire);
+        if (id == 0 || id == self || SuspendThread(thread.handle) == static_cast<DWORD>(-1)) {
+            continue;
+        }
+        CONTEXT context{};
+        context.ContextFlags = CONTEXT_CONTROL;
+        GetThreadContext(thread.handle, &context);
+        paused[count++] = thread.handle;
+    }
+    return count;
+}
+
+void ResumeGuests(const std::array<HANDLE, MAX_GUEST_THREADS>& paused, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        ResumeThread(paused[i]);
+    }
+}
 
 // How often a new batch may go on probation.
 constexpr u64 BATCH_MS = 500;
@@ -372,10 +407,11 @@ bool CommitPages(Engine& e, u8* address, size_t size) {
 // Reads back the data pages of chunks [first_chunk, last_chunk). Granule owned.
 //
 // Pages become visible to every thread the moment they are committed, before anything is copied
-// into them: a private page cannot be filled out of sight. So the data is read first and the pages
-// are committed and filled a few at a time, which leaves another thread touching the same granule
-// a window of microseconds per batch, not the length of the read, to see them still zero. Only
-// data pages are committed: a reserved page next to them may be on disk too.
+// into them: a private page cannot be filled out of sight. So the data is read first, and the
+// guest threads are paused while the pages are committed and filled. Without the pause they go a
+// few at a time, which still leaves another thread touching the same granule a window to see them
+// zero, longer when the filler is preempted. Only data pages are committed: a reserved page next
+// to them may be on disk too.
 bool ReadBack(Engine& e, Granule& g, u8* begin, size_t first_chunk, size_t last_chunk,
               bool prefetch) {
     Mask want;
@@ -393,9 +429,18 @@ bool ReadBack(Engine& e, Granule& g, u8* begin, size_t first_chunk, size_t last_
     bool ok = Transfer(e.file, e.read_events[buffer_index], false, buffer + first * PAGE_SIZE,
                        u64{g.slot} * GRANULE_SIZE + first * PAGE_SIZE, (last - first) * PAGE_SIZE);
     Mask filled;
+    std::unique_lock<std::mutex> pause_lock;
+    std::array<HANDLE, MAX_GUEST_THREADS> paused{};
+    size_t paused_count = 0;
+    if (ok && e.config.pause_fill) {
+        pause_lock = std::unique_lock{g_pause_mutex};
+        paused_count = PauseGuests(paused);
+    }
     ForEachRun(want, [&](size_t run, size_t count) {
-        for (size_t page = run; ok && page < run + count; page += FILL_PAGES) {
-            const size_t size = (std::min)(FILL_PAGES, run + count - page) * PAGE_SIZE;
+        const size_t fill_pages =
+            e.config.pause_fill ? count : (std::max)(size_t{1}, size_t{e.config.fill_pages});
+        for (size_t page = run; ok && page < run + count; page += fill_pages) {
+            const size_t size = (std::min)(fill_pages, run + count - page) * PAGE_SIZE;
             u8* const target = begin + page * PAGE_SIZE;
             ok = CommitPages(e, target, size);
             if (ok) {
@@ -404,6 +449,10 @@ bool ReadBack(Engine& e, Granule& g, u8* begin, size_t first_chunk, size_t last_
             }
         }
     });
+    ResumeGuests(paused, paused_count);
+    if (pause_lock.owns_lock()) {
+        pause_lock.unlock();
+    }
     ReleaseReadBuffer(e, buffer_index);
     g_reads[record % READ_RECORDS] = ReadRecord{
         .granule = static_cast<u32>((begin - e.base) / GRANULE_SIZE),
@@ -512,7 +561,7 @@ bool SwapIn(Engine& e, Granule& g, size_t index, u8* begin, size_t page, u64 now
     g.next_chunk = static_cast<u8>(last_chunk);
     const bool ok = ReadBack(e, g, begin, first_chunk, last_chunk, false);
     SettleOut(g);
-    if (ok && prefetch && g.has_data.load(std::memory_order_relaxed)) {
+    if (ok && prefetch && e.config.prefetch && g.has_data.load(std::memory_order_relaxed)) {
         QueuePrefetch(e, index);
     }
     return ok;
@@ -1355,6 +1404,36 @@ std::string DescribePage(const u8* address) {
     return out;
 }
 
+void RegisterGuestThread() {
+    HANDLE handle{};
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &handle,
+                         THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, 0)) {
+        return;
+    }
+    std::scoped_lock lock{g_pause_mutex};
+    for (GuestThread& thread : g_guest_threads) {
+        if (thread.id.load(std::memory_order_relaxed) == 0) {
+            thread.handle = handle;
+            thread.id.store(GetCurrentThreadId(), std::memory_order_release);
+            return;
+        }
+    }
+    CloseHandle(handle);
+}
+
+void UnregisterGuestThread() {
+    const DWORD self = GetCurrentThreadId();
+    std::scoped_lock lock{g_pause_mutex};
+    for (GuestThread& thread : g_guest_threads) {
+        if (thread.id.load(std::memory_order_relaxed) == self) {
+            thread.id.store(0, std::memory_order_release);
+            CloseHandle(thread.handle);
+            thread.handle = nullptr;
+            return;
+        }
+    }
+}
+
 std::string DescribeRecentReads(size_t count) {
     const auto now = std::chrono::steady_clock::now();
     const u64 serial = g_read_serial.load(std::memory_order_relaxed);
@@ -1420,6 +1499,8 @@ std::string DescribePage(const u8*) {
 std::string DescribeRecentReads(size_t) {
     return {};
 }
+void RegisterGuestThread() {}
+void UnregisterGuestThread() {}
 } // namespace Common::Permafrost
 
 #endif

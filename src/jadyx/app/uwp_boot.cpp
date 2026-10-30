@@ -626,7 +626,10 @@ struct BootConfig {
     /// guest's use of its memory is sampled. Below guest_swap_low_mib granules idle for
     /// guest_swap_idle_ms and then untouched on probation for guest_swap_probation_ms go to disk
     /// until guest_swap_high_mib is free again, guest_swap_batch_mib at a time (0: all at once);
-    /// guest_swap_reserve_mib of commit is held for a demand commit that would fail.
+    /// guest_swap_reserve_mib of commit is held for a demand commit that would fail. A read back
+    /// pauses the guest threads while it commits and fills its pages (guest_swap_pause_fill=0:
+    /// guest_swap_fill_pages pages at a time, unpaused); guest_swap_prefetch=0 leaves hot granules
+    /// to the faults.
     bool guest_swap{true};
     u32 guest_swap_watch_mib{1936};
     u32 guest_swap_low_mib{1424};
@@ -635,6 +638,9 @@ struct BootConfig {
     u32 guest_swap_probation_ms{1500};
     u32 guest_swap_reserve_mib{32};
     u32 guest_swap_batch_mib{64};
+    u32 guest_swap_fill_pages{4};
+    bool guest_swap_prefetch{true};
+    bool guest_swap_pause_fill{true};
     /// Guest memory through the host-mapped arena. Xbox uses a bounded hybrid section; "full" is
     /// diagnostic and falls back to hybrid if the complete mapping cannot be created.
     enum class Fastmem { Off, Auto, Hybrid, Full } fastmem{Fastmem::Off};
@@ -755,6 +761,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         .probation_ms = config.guest_swap_probation_ms,
         .min_idle_ms = config.guest_swap_idle_ms,
         .batch_bytes = u64{config.guest_swap_batch_mib} << 20,
+        .fill_pages = config.guest_swap_fill_pages,
+        .prefetch = config.guest_swap_prefetch,
+        .pause_fill = config.guest_swap_pause_fill,
     });
     // Keep the shared setting for other backends. D3D12 prepares on workers and always waits
     // for the exact PSO when a dependent draw reaches the command stream.
@@ -3303,6 +3312,19 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                 0U, 256U);
                             WriteDiag("boot.cfg: guest swap reserve " +
                                       std::to_string(config.guest_swap_reserve_mib) + " MiB");
+                        } else if (line.starts_with("guest_swap_fill_pages=")) {
+                            config.guest_swap_fill_pages = std::clamp(
+                                static_cast<u32>(std::strtoul(line.c_str() + 22, nullptr, 10)),
+                                1U, 16U);
+                            WriteDiag("boot.cfg: guest swap fill " +
+                                      std::to_string(config.guest_swap_fill_pages) + " pages");
+                        } else if (line == "guest_swap_prefetch=1" || line == "guest_swap_prefetch=0") {
+                            config.guest_swap_prefetch = line == "guest_swap_prefetch=1";
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line == "guest_swap_pause_fill=1" ||
+                                   line == "guest_swap_pause_fill=0") {
+                            config.guest_swap_pause_fill = line == "guest_swap_pause_fill=1";
+                            WriteDiag("boot.cfg: " + line);
                         } else if (line.starts_with("oom_reserve_mib=")) {
                             config.oom_reserve_mib = std::clamp(
                                 static_cast<u32>(std::strtoul(line.c_str() + 16, nullptr, 10)),

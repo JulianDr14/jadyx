@@ -69,7 +69,20 @@ struct Config {
     /// most this much is with the writers at once, twice that when far short. An emergency is not
     /// held back. 0 sends everything the shortfall asks for at once.
     u64 batch_bytes{64ULL << 20};
+    /// Pages a read back commits and fills at a time. A committed page is visible zero to every
+    /// thread until it is filled, so fewer is a shorter window.
+    u32 fill_pages{4};
+    /// Whether hot granules are read back whole ahead of the faults.
+    bool prefetch{true};
+    /// Whether the guest threads are paused while a read back commits and fills its pages, so
+    /// none of them sees one still zero. fill_pages does not apply then: each run goes at once.
+    bool pause_fill{true};
 };
+
+/// The calling thread runs guest code: it is paused while a read back fills pages. Unregistered
+/// before it exits.
+void RegisterGuestThread();
+void UnregisterGuestThread();
 
 /// Takes over [base, base + size), which must be 2 MiB aligned in size. Fails without a swap file.
 bool Init(u8* base, size_t size, const Platform& platform, const Config& config);

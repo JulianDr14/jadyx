@@ -35,6 +35,9 @@ struct GuestSwapSettings {
     u32 probation_ms{1500};
     u32 min_idle_ms{8000};
     u64 batch_bytes{64ULL << 20};
+    u32 fill_pages{4};
+    bool prefetch{true};
+    bool pause_fill{true};
 };
 void ConfigureGuestSwap(const GuestSwapSettings& settings);
 /// Whether the backing in use writes cold memory out.
