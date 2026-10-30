@@ -742,6 +742,10 @@ struct HeapCompactionStats {
 void SetTextureMemoryCap(u64 bytes);
 /// Free app memory the textures leave alone; the cap grows into the headroom above it (0: off).
 void SetTextureMemoryLine(u64 bytes);
+/// The memory coordinator: the textures give way (idle ones evicted sooner, drained heaps freed).
+void SetTextureYield(bool yield);
+/// The texture heaps and this frame's cap, as of the last frame.
+void GetTextureMemoryUse(u64& heap_bytes, u64& cap);
 /// One-shot diagnostic: compare the first GPU BC3 result with the existing CPU pipeline.
 void SetAstcGpuVerify(bool enabled);
 /// Diagnostic ("stencil_blit_verify=1"): the first scaled depth-stencil blits read both stencil

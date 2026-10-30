@@ -157,6 +157,15 @@ void SetTextureMemoryLine(u64 bytes) {
     texture_memory_line.store(bytes, std::memory_order_relaxed);
 }
 
+void SetTextureYield(bool yield) {
+    texture_yield.store(yield, std::memory_order_relaxed);
+}
+
+void GetTextureMemoryUse(u64& heap_bytes, u64& cap) {
+    heap_bytes = texture_heap_published.load(std::memory_order_relaxed);
+    cap = texture_cap_published.load(std::memory_order_relaxed);
+}
+
 void SetAstcGpuSync(bool enabled) {
     gpu_astc_sync.store(enabled, std::memory_order_relaxed);
 }
@@ -430,6 +439,8 @@ void TextureCacheRuntime::TickFrame() {
             floor, texture_memory_line.load(std::memory_order_relaxed), heap_bytes,
             pressure_snapshot);
         texture_cap = cap;
+        texture_heap_published.store(heap_bytes, std::memory_order_relaxed);
+        texture_cap_published.store(cap, std::memory_order_relaxed);
         // 64 MiB below the cap before leaving it, so one heap more or less does not flip it.
         const bool over = over_texture_cap ? heap_bytes + 64_MiB > cap : heap_bytes > cap;
         if (over != over_texture_cap) {
@@ -446,7 +457,8 @@ void TextureCacheRuntime::TickFrame() {
         over_texture_cap = false;
         texture_cap = 0;
     }
-    const bool release_idle = pressure_level >= CachePressure::Critical || over_texture_cap;
+    const bool release_idle = pressure_level >= CachePressure::Critical || over_texture_cap ||
+                              texture_yield.load(std::memory_order_relaxed);
     texture_allocator.TrimEmptyHeaps(
         pressure_level >= CachePressure::Emergency ? TextureResourceAllocator::TrimMode::All
         : release_idle                             ? TextureResourceAllocator::TrimMode::Settled
@@ -489,6 +501,10 @@ std::optional<VideoCommon::TextureGcPolicy> TextureCacheRuntime::GetTextureGcPol
     // Over the texture cap the clean textures nobody sampled for a while go before the app runs
     // short: they decode again from guest memory when used, and render targets are kept.
     CachePressure level = pressure_level;
+    // Yielding to the guest: below Critical the yield's shorter age applies, over the cap or not.
+    if (level < CachePressure::Critical && texture_yield.load(std::memory_order_relaxed)) {
+        return CachePressureController::YieldPolicy();
+    }
     if (level == CachePressure::Normal && over_texture_cap) {
         level = CachePressure::Pressure;
     }

@@ -59,6 +59,12 @@ public:
             return {true, false, 120, 8, 1000, 0};
         return {false, false, 120, 4, 1000, 0};
     }
+    /// The memory coordinator asked the textures to give way: guest memory is going to disk and
+    /// coming straight back. Clean textures unused for a second go, more of them per frame; render
+    /// targets stay, a download would write into the guest memory that is short.
+    [[nodiscard]] static VideoCommon::TextureGcPolicy YieldPolicy() {
+        return {true, false, 60, 16, 1000, 0};
+    }
 private:
     CachePressure app{}, gpu{};
 };

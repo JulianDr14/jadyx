@@ -50,6 +50,11 @@ int main() {
     assert(!c.RequiresImmediateRecovery({}));
     assert(!c.Policy(CachePressure::Critical,false).aggressive);
     assert(c.Policy(CachePressure::Normal,false).min_age >= critical.min_age);
+    // A coordinator yield evicts clean idle textures sooner, never downloads a render target.
+    const auto yield = CachePressureController::YieldPolicy();
+    assert(yield.high_priority && !yield.aggressive && yield.max_downloads == 0);
+    assert(yield.min_age < c.Policy(CachePressure::Pressure,false).min_age);
+    assert(yield.iterations > c.Policy(CachePressure::Pressure,false).iterations);
     // Texture cap: the heaps may hold the app headroom above the line, never less than the floor.
     constexpr u64 floor = 768*MiB, line = 2192*MiB;
     const auto room = [](u64 used) { return CacheMemorySnapshot{used*MiB,5120*MiB,0,0}; };
