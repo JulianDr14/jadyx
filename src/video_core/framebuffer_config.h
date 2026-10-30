@@ -38,6 +38,8 @@ struct FramebufferConfig {
     Common::Rectangle<int> crop_rect{};
     BlendMode blending{};
     u32 layer_stack_mask{Service::Nvnflinger::DefaultLayerStackMask};
+    /// Display vsync the frame was composed on (60 per second of emulated time).
+    u64 vsync_index{};
 };
 
 Common::Rectangle<f32> NormalizeCrop(const FramebufferConfig& framebuffer, u32 texture_width,

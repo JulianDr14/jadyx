@@ -58,6 +58,8 @@ struct HwcLayer {
     Common::Rectangle<int> crop_rect;
     android::Fence acquire_fence;
     u32 layer_stack_mask;
+    /// Display vsync the layer was composed on (the content clock of frame generation).
+    u64 vsync_index{};
 };
 
 } // namespace Service::Nvnflinger
