@@ -119,6 +119,9 @@ public:
         return !IsWritable();
     }
 
+    // Returns true if this file serves NCA body data that is already decrypted (e.g. NCZ).
+    virtual bool HasDecryptedSections() const { return false; }
+
     // The primary method of reading from the file. Reads length bytes into data starting at offset
     // into file. Returns number of bytes successfully read.
     virtual std::size_t Read(u8* data, std::size_t length, std::size_t offset = 0) const = 0;
