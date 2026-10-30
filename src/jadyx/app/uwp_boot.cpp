@@ -46,6 +46,7 @@
 #include "common/fs/path_util.h"
 #include "common/log_rotation.h"
 #include "common/host_memory.h"
+#include "common/permafrost.h"
 #include "common/logging.h"
 #include "common/pulse_diagnostics.h"
 #include "common/memory_ledger.h"
@@ -107,6 +108,7 @@
 #include "jadyx/game/game_menu_surface.h"
 #include "jadyx/game/game_screenshot.h"
 #include "jadyx/app/headless_emu_window.h"
+#include "jadyx/app/memory_coordinator.h"
 #include "jadyx/app/prewarm_budget.h"
 #include "jadyx/pulse/pulse_gate.h"
 #include "jadyx/pulse/pulse_screen.h"
@@ -164,6 +166,8 @@ void SetAstcDropTopLevel(bool enabled); // d3d12_texture_cache.h
 void SetGpuUnswizzle(bool enabled); // d3d12_texture_cache.h
 void SetTextureMemoryCap(u64 bytes); // d3d12_texture_cache.h
 void SetTextureMemoryLine(u64 bytes); // d3d12_texture_cache.h
+void SetTextureYield(bool yield); // d3d12_texture_cache.h
+void GetTextureMemoryUse(u64& heap_bytes, u64& cap); // d3d12_texture_cache.h
 void SetHeapCompaction(u64 bytes_per_frame); // d3d12_texture_cache.h
 void SetSmallTextureAlignment(bool enabled); // d3d12_resource_allocator.h
 void SetSpareHeaps(bool enabled); // d3d12_resource_allocator.h
@@ -239,6 +243,21 @@ std::atomic<u64> g_host_trim_visited{};
 std::atomic<u64> g_host_trim_released{};
 /// Guest DRAM bytes the GuestSwap worker gave back since the last heartbeat.
 std::atomic<u64> g_guest_swap_released{};
+/// The memory coordinator's plan as the Permafrost worker last published it, for the heartbeat.
+struct MemoryCoordinatorState {
+    std::atomic<bool> yield{};
+    std::atomic<u64> relief{}, stall_us_per_s{}, texture_line{}, texture_loan{};
+    std::string Describe() const {
+        return std::string{yield.load(std::memory_order_relaxed) ? "yield" : "calm"} +
+               ", guest stall " +
+               std::to_string(stall_us_per_s.load(std::memory_order_relaxed) / 1000) +
+               " ms/s, relief " + std::to_string(relief.load(std::memory_order_relaxed) >> 20) +
+               " MiB, texture line " +
+               std::to_string(texture_line.load(std::memory_order_relaxed) >> 20) +
+               " MiB, texture loan " +
+               std::to_string(texture_loan.load(std::memory_order_relaxed) >> 20) + " MiB";
+    }
+} g_memory_coordinator_state;
 /// The PC window's mode. ApplicationView belongs to the UI thread: it publishes the state here and
 /// applies the changes the in-game menu asks for (1 full screen, 0 windowed, -1 none).
 std::atomic<bool> g_can_fullscreen{};
@@ -651,6 +670,12 @@ struct BootConfig {
     u32 guest_swap_fill_pages{4};
     bool guest_swap_prefetch{true};
     bool guest_swap_pause_fill{true};
+    /// One owner for the free memory (jadyx/app/memory_coordinator.h, "memory_coordinator=0" turns
+    /// it off): when Permafrost evicts what the guest reads straight back, the textures and the
+    /// trims give way first and only then Permafrost's marks come down, never below
+    /// memory_coordinator_floor_mib for its low mark.
+    bool memory_coordinator{true};
+    u32 memory_coordinator_floor_mib{512};
     /// Guest memory through the host-mapped arena. Xbox uses a bounded hybrid section; "full" is
     /// diagnostic and falls back to hybrid if the complete mapping cannot be created.
     enum class Fastmem { Off, Auto, Hybrid, Full } fastmem{Fastmem::Off};
@@ -1417,15 +1442,42 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         // emergency mark, once it has had the first go: giving back clears a cache that may hold
         // a 192 MiB prewarm. They grow again once Permafrost has brought the headroom back to
         // its low mark.
+        // With Permafrost these marks come from the memory coordinator, which brings them down
+        // with Permafrost's when the guest stalls on reads back.
         const bool jit_after_swap = Common::GuestSwapActive();
-        const u64 jit_swap_low = u64{config.guest_swap_low_mib} << 20;
-        const u64 JIT_STOP_HEADROOM =
-            jit_after_swap ? (std::max)(jit_swap_low / 2, 384ULL << 20) : 768ULL << 20;
-        const u64 JIT_RELEASE_HEADROOM =
-            jit_after_swap ? (std::max)(jit_swap_low * 3 / 16, 160ULL << 20) : 384ULL << 20;
-        // ...and the cap is lifted once this much is free again.
-        const u64 JIT_UNCAP_HEADROOM = jit_after_swap ? (std::max)(jit_swap_low, 1024ULL << 20)
-                                                      : 1024ULL << 20;
+        const u64 swap_low = u64{config.guest_swap_low_mib} << 20;
+        const u64 swap_high = (std::max)(u64{config.guest_swap_high_mib} << 20, swap_low);
+        const u64 swap_watch = (std::max)(u64{config.guest_swap_watch_mib} << 20, swap_high);
+        Jadyx::MemoryCoordinator::Config coordinator_config;
+        coordinator_config.watch = swap_watch;
+        coordinator_config.low = swap_low;
+        coordinator_config.high = swap_high;
+        coordinator_config.low_floor =
+            (std::min)(u64{config.memory_coordinator_floor_mib} << 20, swap_low);
+        if (config.texture_cap_line_mib) {
+            coordinator_config.texture_line = u64{*config.texture_cap_line_mib} << 20;
+        }
+        // The Permafrost worker publishes the plan; the JIT and the trims below read it.
+        struct {
+            std::mutex mutex;
+            Jadyx::MemoryCoordinator::Plan plan;
+        } memory_plan;
+        memory_plan.plan = Jadyx::MemoryCoordinator{coordinator_config}.Initial();
+        const auto read_plan = [&memory_plan] {
+            std::scoped_lock lock{memory_plan.mutex};
+            return memory_plan.plan;
+        };
+        struct JitMarks {
+            u64 stop, release, uncap;
+        };
+        const auto jit_marks = [&]() -> JitMarks {
+            if (!jit_after_swap) {
+                // ...and the cap is lifted once 1 GiB is free again.
+                return {768ULL << 20, 384ULL << 20, 1024ULL << 20};
+            }
+            const auto plan = read_plan();
+            return {plan.jit_stop, plan.jit_release, plan.jit_uncap};
+        };
         constexpr u64 POOL_TRIM_PER_SECOND = 64ULL << 20;
         constexpr u64 POOL_TRIM_ALL_HEADROOM = 512ULL << 20;
         constexpr u64 TRIM_SLICE = 32ULL << 20;
@@ -1480,16 +1532,24 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         // of it, the idlest go on probation and then to disk until the high mark is free again.
         // The further below the low mark, the shorter the probation and the idle time asked.
         if (Common::GuestSwapActive()) {
-            const u64 swap_low = u64{config.guest_swap_low_mib} << 20;
-            const u64 swap_high = (std::max)(u64{config.guest_swap_high_mib} << 20, swap_low);
-            const u64 swap_watch = (std::max)(u64{config.guest_swap_watch_mib} << 20, swap_high);
-            WriteDiag("permafrost on: sampling below " + std::to_string(swap_watch >> 20) +
-                      " MiB free, writing below " + std::to_string(swap_low >> 20) + " MiB up to " +
-                      std::to_string(swap_high >> 20) + " MiB; JIT caches stop growing below " +
-                      std::to_string(JIT_STOP_HEADROOM >> 20) + " MiB, give back below " +
-                      std::to_string(JIT_RELEASE_HEADROOM >> 20) + " MiB");
-            swap_worker.emplace([&, swap_low, swap_high, swap_watch](std::stop_token stop) {
+            const auto initial = read_plan();
+            WriteDiag("permafrost on: sampling below " + std::to_string(initial.watch >> 20) +
+                      " MiB free, writing below " + std::to_string(initial.low >> 20) +
+                      " MiB up to " + std::to_string(initial.high >> 20) +
+                      " MiB; JIT caches stop growing below " +
+                      std::to_string(initial.jit_stop >> 20) + " MiB, give back below " +
+                      std::to_string(initial.jit_release >> 20) + " MiB; memory coordinator " +
+                      (config.memory_coordinator
+                           ? "on, low mark down to " +
+                                 std::to_string(coordinator_config.low_floor >> 20) + " MiB"
+                           : std::string{"off"}));
+            swap_worker.emplace([&](std::stop_token stop) {
                 Common::SetCurrentThreadName("Permafrost");
+                Jadyx::MemoryCoordinator coordinator{coordinator_config};
+                const u64 texture_floor = u64{config.texture_cap_mib} << 20;
+                const auto start = std::chrono::steady_clock::now();
+                Jadyx::MemoryCoordinator::Plan plan = read_plan();
+                u64 logged_relief = 0;
                 while (!stop.stop_requested()) {
                     u64 used{}, limit{};
                     if (!QueryAppMemory(used, limit)) {
@@ -1497,29 +1557,73 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                         continue;
                     }
                     const u64 headroom = limit > used ? limit - used : 0;
-                    if (headroom < swap_low) {
+                    if (config.memory_coordinator) {
+                        u64 texture_heap{}, texture_cap{};
+                        D3D12::GetTextureMemoryUse(texture_heap, texture_cap);
+                        const bool was_yielding = plan.yield;
+                        plan = coordinator.Update(
+                            {static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                  std::chrono::steady_clock::now() - start)
+                                                  .count()),
+                             headroom, Common::Permafrost::GetStats().fault_stall_us,
+                             texture_heap, texture_floor, texture_cap});
+                        D3D12::SetTextureMemoryLine(plan.texture_line);
+                        D3D12::SetTextureYield(plan.yield);
+                        {
+                            std::scoped_lock lock{memory_plan.mutex};
+                            memory_plan.plan = plan;
+                        }
+                        auto& state = g_memory_coordinator_state;
+                        state.yield.store(plan.yield, std::memory_order_relaxed);
+                        state.relief.store(plan.relief, std::memory_order_relaxed);
+                        state.stall_us_per_s.store(plan.stall_us_per_s, std::memory_order_relaxed);
+                        state.texture_line.store(plan.texture_line, std::memory_order_relaxed);
+                        state.texture_loan.store(plan.texture_loan, std::memory_order_relaxed);
+                        constexpr u64 LOG_RELIEF_STEP = 128ULL << 20;
+                        if (plan.yield != was_yielding ||
+                            plan.relief + LOG_RELIEF_STEP <= logged_relief ||
+                            plan.relief >= logged_relief + LOG_RELIEF_STEP ||
+                            (plan.relief == 0 && logged_relief != 0)) {
+                            logged_relief = plan.relief;
+                            WriteDiag(std::string{"memory coordinator: "} +
+                                      (plan.yield ? "yield" : "calm") + ", guest stall " +
+                                      std::to_string(plan.stall_us_per_s / 1000) +
+                                      " ms/s, relief " + std::to_string(plan.relief >> 20) +
+                                      " MiB (permafrost low " + std::to_string(plan.low >> 20) +
+                                      ", high " + std::to_string(plan.high >> 20) +
+                                      "), texture line " +
+                                      std::to_string(plan.texture_line >> 20) + " MiB, " +
+                                      std::to_string(headroom >> 20) + " MiB free");
+                        }
+                    }
+                    // The textures' loan is headroom they give back on their own: Permafrost does
+                    // not write the guest to disk for it. Urgent and below count only what is free.
+                    const u64 counted = headroom + plan.texture_loan;
+                    if (headroom < plan.urgent || counted < plan.low) {
                         using Pressure = Common::GuestSwapPressure;
                         const Pressure pressure =
-                            headroom < swap_low / 4 || Common::GuestSwapReserveReleased()
+                            headroom < plan.emergency || Common::GuestSwapReserveReleased()
                                 ? Pressure::Emergency
-                            : headroom < swap_low / 2 ? Pressure::Urgent
-                                                      : Pressure::Low;
+                            : headroom < plan.urgent ? Pressure::Urgent
+                                                     : Pressure::Low;
+                        const u64 base = pressure == Pressure::Low ? counted : headroom;
                         g_guest_swap_released.fetch_add(
-                            Common::StepGuestSwap(swap_high - headroom, pressure),
+                            Common::StepGuestSwap(plan.high > base ? plan.high - base : 0,
+                                                  pressure),
                             std::memory_order_relaxed);
                         std::this_thread::sleep_for(std::chrono::milliseconds(20));
                         continue;
                     }
-                    if (headroom < swap_watch) {
+                    if (counted < plan.watch) {
                         g_guest_swap_released.fetch_add(
                             Common::StepGuestSwap(0, Common::GuestSwapPressure::Watch),
                             std::memory_order_relaxed);
                     }
-                    if (headroom >= swap_high) {
+                    if (headroom >= plan.high) {
                         Common::RefillGuestSwapReserve();
                     }
                     std::this_thread::sleep_for(
-                        std::chrono::milliseconds(headroom < swap_watch ? 100 : 250));
+                        std::chrono::milliseconds(counted < plan.watch ? 100 : 250));
                 }
             });
         }
@@ -1573,14 +1677,15 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                 // Short of memory, the JIT stops committing: each cache keeps the pages it has
                 // and is cleared when it fills them. Shorter, the larger caches are cleared and
                 // give memory back. Recompiling costs less than running out.
-                if (headroom < JIT_RELEASE_HEADROOM && !Dynarmic::CodeCacheCapReleases()) {
+                const JitMarks jit = jit_marks();
+                if (headroom < jit.release && !Dynarmic::CodeCacheCapReleases()) {
                     Dynarmic::SetCodeCacheCap(JIT_RELEASE_CAP, true);
                     WriteDiag("JIT code caches give memory back past " +
                               std::to_string(JIT_RELEASE_CAP >> 20) + " MiB | " + MemoryReport());
-                } else if (headroom < JIT_STOP_HEADROOM && Dynarmic::CodeCacheCap() == 0) {
+                } else if (headroom < jit.stop && Dynarmic::CodeCacheCap() == 0) {
                     Dynarmic::SetCodeCacheCap(JIT_CAP_FLOOR);
                     WriteDiag("JIT code caches stop growing | " + MemoryReport());
-                } else if (headroom >= JIT_UNCAP_HEADROOM && Dynarmic::CodeCacheCap() != 0) {
+                } else if (headroom >= jit.uncap && Dynarmic::CodeCacheCap() != 0) {
                     // A load burst is over and the caches it froze would otherwise stay frozen
                     // for the whole session, clearing and recompiling the game's hot code.
                     Dynarmic::SetCodeCacheCap(0);
@@ -1591,14 +1696,17 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                 trim_paused.store(menu.has_value(), std::memory_order_relaxed);
                 if (u64 used{}, limit{}; tick % TICKS_PER_SECOND == 0 &&
                                          QueryAppMemory(used, limit)) {
-                    trim_low.store((limit > used ? limit - used : 0) < TRIM_LOW_HEADROOM,
+                    // A yield runs the passes back to back too: the guest stalls on reads back.
+                    trim_low.store((limit > used ? limit - used : 0) < TRIM_LOW_HEADROOM ||
+                                       read_plan().yield,
                                    std::memory_order_relaxed);
                 }
             }
             if (config.pool_trim && tick % TICKS_PER_SECOND == 0) {
                 u64 used{}, limit{};
-                const bool low = QueryAppMemory(used, limit) &&
-                                 (limit > used ? limit - used : 0) < POOL_TRIM_ALL_HEADROOM;
+                const bool low = (QueryAppMemory(used, limit) &&
+                                  (limit > used ? limit - used : 0) < POOL_TRIM_ALL_HEADROOM) ||
+                                 read_plan().yield;
                 TrimFreeGuestMemory(system, low ? ~u64{} : POOL_TRIM_PER_SECOND);
             }
             if (ConsumeStorageReadFailure()) {
@@ -3283,6 +3391,16 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "guest_swap=1" || line == "guest_swap=0") {
                             config.guest_swap = line == "guest_swap=1";
                             WriteDiag("boot.cfg: " + line);
+                        } else if (line == "memory_coordinator=1" ||
+                                   line == "memory_coordinator=0") {
+                            config.memory_coordinator = line == "memory_coordinator=1";
+                            WriteDiag("boot.cfg: " + line);
+                        } else if (line.starts_with("memory_coordinator_floor_mib=")) {
+                            config.memory_coordinator_floor_mib = std::clamp(
+                                static_cast<u32>(std::strtoul(line.c_str() + 29, nullptr, 10)),
+                                256U, 2048U);
+                            WriteDiag("boot.cfg: memory coordinator floor " +
+                                      std::to_string(config.memory_coordinator_floor_mib) + " MiB");
                         } else if (line.starts_with("guest_swap_low_mib=")) {
                             config.guest_swap_low_mib = std::clamp(
                                 static_cast<u32>(std::strtoul(line.c_str() + 19, nullptr, 10)),
@@ -3511,6 +3629,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             continue;
                         }
                         if (line.starts_with("guest_swap") || line.starts_with("small_textures=") ||
+                            line.starts_with("memory_coordinator") ||
                             line.starts_with("oom_reserve_mib=") ||
                             line.starts_with("spare_heaps=") ||
                             line.starts_with("gpu_unswizzle=") ||
@@ -4145,7 +4264,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     if (Common::GuestSwapActive()) {
                         WriteDiag("permafrost: released " +
                                   std::to_string(g_guest_swap_released.exchange(0) >> 20) +
-                                  " MiB since the last heartbeat | " + Common::DescribeGuestSwap());
+                                  " MiB since the last heartbeat | " + Common::DescribeGuestSwap() +
+                                  " | coordinator: " + g_memory_coordinator_state.Describe());
                     }
                     WriteDiag("memory by owner: " + MemoryOwners());
                     for (const auto& capture : Jadyx::AllocWatch::TakeNew()) {
