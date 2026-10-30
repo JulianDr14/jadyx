@@ -3133,6 +3133,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
             std::string library_pick;
             bool output_4k = false;
             bool output_1080p = false;
+            Jadyx::BootSurface game_surface = surface;
             try {
                 const auto install = std::filesystem::path{
                     Windows::ApplicationModel::Package::Current().InstalledLocation().Path().c_str()};
@@ -3143,6 +3144,40 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     else if (line == "output=4k") output_4k = true;
                     else if (line == "output=1080p") output_1080p = true;
                 }
+
+                // Experimental: the library and the game present on a swapchain the size of the
+                // TV's current mode (3840x2160 on a 4K TV). The library draws at that size; the
+                // game still renders at its own resolution and the present upscales it (FSR 1
+                // when the in-game menu selects it). The launch splash stays at window size.
+                if (output_4k && surface.core_window != nullptr) {
+                    try {
+                        const auto hdmi = Windows::Graphics::Display::Core::HdmiDisplayInformation::
+                            GetForCurrentView();
+                        const auto mode = hdmi ? hdmi.GetCurrentDisplayMode() : nullptr;
+                        if (mode && mode.ResolutionWidthInRawPixels() > surface.width) {
+                            game_surface.width = mode.ResolutionWidthInRawPixels();
+                            game_surface.height = mode.ResolutionHeightInRawPixels();
+                            if (session == 1) {
+                                WriteDiag("boot.cfg: output " + std::to_string(game_surface.width) +
+                                          "x" + std::to_string(game_surface.height) + " (display mode)");
+                            }
+                        } else if (session == 1) {
+                            WriteDiag("boot.cfg: output=4k ignored, the display mode is not larger than " +
+                                      std::to_string(surface.width) + "x" + std::to_string(surface.height));
+                        }
+                    } catch (const winrt::hresult_error& e) {
+                        WriteDiag("boot.cfg: output=4k ignored, no display mode: " +
+                                  winrt::to_string(e.message()));
+                    }
+                }
+
+                // Experimental: a fixed 1920x1080 swapchain on high-DPI PC screens; the present stretches it.
+                if (output_1080p) {
+                    game_surface.width = 1920;
+                    game_surface.height = 1080;
+                    if (session == 1) WriteDiag("boot.cfg: output 1920x1080 (fixed)");
+                }
+
                 if (show_library) {
                     if (session > 1) {
                         WriteDiag("library: back from the game | " + MemoryReport());
@@ -3153,8 +3188,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     const auto local = std::filesystem::path{
                         Windows::Storage::ApplicationData::Current().LocalFolder().Path().c_str()};
                     WriteDiag("library: scanning LocalState/games; waiting for user selection");
-                    library_game = Jadyx::ShowGameLibrary(surface.core_window, surface.width,
-                        surface.height, local / L"games", [install, local] { SeedUserData(install, local); },
+                    library_game = Jadyx::ShowGameLibrary(surface.core_window, game_surface.width,
+                        game_surface.height, local / L"games", [install, local] { SeedUserData(install, local); },
                         session <= 2 && library_error.empty() ? std::string_view{library_pick} : std::string_view{},
                         library_error);
                     library_active = false;
@@ -3176,37 +3211,6 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 std::snprintf(code, sizeof(code), "%08X", static_cast<unsigned>(e.code().value));
                 WriteDiag(std::string("library: failed: ") + code + " " + winrt::to_string(e.message()));
                 return;
-            }
-
-            // Experimental: the game presents on a swapchain the size of the TV's current mode
-            // (3840x2160 on a 4K TV) while it still renders at its own resolution, and the present
-            // upscales (FSR 1 when the in-game menu selects it). The library stays at window size.
-            Jadyx::BootSurface game_surface = surface;
-            if (output_4k && surface.core_window != nullptr) {
-                try {
-                    const auto hdmi = Windows::Graphics::Display::Core::HdmiDisplayInformation::
-                        GetForCurrentView();
-                    const auto mode = hdmi ? hdmi.GetCurrentDisplayMode() : nullptr;
-                    if (mode && mode.ResolutionWidthInRawPixels() > surface.width) {
-                        game_surface.width = mode.ResolutionWidthInRawPixels();
-                        game_surface.height = mode.ResolutionHeightInRawPixels();
-                        WriteDiag("boot.cfg: output " + std::to_string(game_surface.width) + "x" +
-                                  std::to_string(game_surface.height) + " (display mode)");
-                    } else {
-                        WriteDiag("boot.cfg: output=4k ignored, the display mode is not larger than " +
-                                  std::to_string(surface.width) + "x" + std::to_string(surface.height));
-                    }
-                } catch (const winrt::hresult_error& e) {
-                    WriteDiag("boot.cfg: output=4k ignored, no display mode: " +
-                              winrt::to_string(e.message()));
-                }
-            }
-
-            // Experimental: a fixed 1920x1080 swapchain on high-DPI PC screens; the present stretches it.
-            if (output_1080p) {
-                game_surface.width = 1920;
-                game_surface.height = 1080;
-                WriteDiag("boot.cfg: output 1920x1080 (fixed)");
             }
 
             std::atomic<bool> done{false};

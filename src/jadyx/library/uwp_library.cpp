@@ -83,6 +83,14 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     using namespace winrt::Windows::UI::Core;
     auto window = CoreWindow::GetForCurrentThread();
     auto canvas = std::make_unique<LibraryCanvas>(core_window, width, height);
+    // With output=4k the swapchain is larger than the window (3840x2160 for a 1920x1080 window);
+    // resizes and pointer positions keep that ratio.
+    const double oversize = [&] {
+        const auto bounds = window.Bounds();
+        const auto dpi = winrt::Windows::Graphics::Display::DisplayInformation::GetForCurrentView().RawPixelsPerViewPixel();
+        const double window_width = bounds.Width * dpi;
+        return window_width >= 1.0 ? std::max(1.0, width / window_width) : 1.0;
+    }();
     LibraryScan scan;
     size_t selected = 0;
     bool rail = false; // The focus is in the played games' rail (library_layout.h).
@@ -208,8 +216,8 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     bool resize = false, window_closed = false;
     auto size_changed = window.SizeChanged(winrt::auto_revoke, [&](auto&&, WindowSizeChangedEventArgs const& e) {
         const auto scale = winrt::Windows::Graphics::Display::DisplayInformation::GetForCurrentView().RawPixelsPerViewPixel();
-        width = std::max(1U, static_cast<unsigned>(e.Size().Width * scale));
-        height = std::max(1U, static_cast<unsigned>(e.Size().Height * scale));
+        width = std::max(1U, static_cast<unsigned>(e.Size().Width * scale * oversize + 0.5));
+        height = std::max(1U, static_cast<unsigned>(e.Size().Height * scale * oversize + 0.5));
         resize = true;
     });
     auto closed = window.Closed(winrt::auto_revoke, [&](auto&&, CoreWindowEventArgs const&) { window_closed = true; });
@@ -307,7 +315,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
     });
     auto pointer = window.PointerPressed(winrt::auto_revoke, [&](auto&&, PointerEventArgs const& e) {
         const auto p = e.CurrentPoint().Position();
-        const auto dpi = winrt::Windows::Graphics::Display::DisplayInformation::GetForCurrentView().RawPixelsPerViewPixel();
+        const auto dpi = winrt::Windows::Graphics::Display::DisplayInformation::GetForCurrentView().RawPixelsPerViewPixel() * oversize;
         const auto scale = std::max(0.01f, std::min(width / 1280.0f, height / 720.0f));
         const float x = static_cast<float>((p.X * dpi - (width - 1280 * scale) / 2) / scale);
         const float y = static_cast<float>((p.Y * dpi - (height - 720 * scale) / 2) / scale);
