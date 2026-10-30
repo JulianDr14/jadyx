@@ -201,6 +201,7 @@ void RendererD3D12::RecordComposite(PresentFrame& frame, std::span<const Composi
     if (fsr && !present_fsr.PrepareTarget(*fsr)) {
         fsr.reset();
     }
+    last_composite_fsr = fsr.has_value();
     constexpr u64 LINEAR_SAMPLER_KEY = 0;
     const D3D12_GPU_DESCRIPTOR_HANDLE sampler_table =
         sampler_heap.GetTable({&LINEAR_SAMPLER_KEY, 1}, {&linear_sampler, 1});

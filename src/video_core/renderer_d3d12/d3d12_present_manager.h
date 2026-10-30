@@ -6,20 +6,26 @@
 #include <array>
 #include <condition_variable>
 #include <deque>
+#include <exception>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 
 #include "common/polyfill_thread.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
+#include "video_core/renderer_d3d12/d3d12_frame_gen.h"
 #include "video_core/renderer_d3d12/d3d12_swapchain.h"
 
 namespace D3D12 {
 
 class CpuDescriptorAllocator;
+class DescriptorRing;
 class PresentManager;
 class CommandStream;
+class SamplerHeap;
 class Scheduler;
+class ShaderCompiler;
 
 /// An image the renderer composites one frame into, sized and formatted like the back buffers.
 struct PresentFrame {
@@ -64,6 +70,14 @@ private:
     PresentFrame* frame{};
 };
 
+/// What the renderer knows about a frame it presents.
+struct PresentInfo {
+    /// Guest vsync the game's frame was composed on: frame generation's content clock.
+    u64 vsync_index{};
+    /// Frame generation may show it (a game frame, not a menu or a boot screen).
+    bool frame_gen{};
+};
+
 /// Presents composited frames, on a thread of its own when it can (Vulkan's PresentManager).
 ///
 /// The renderer composites each frame into a PresentFrame and hands it over with Present(). The
@@ -86,12 +100,19 @@ private:
 ///
 /// Without a waitable swapchain (Present would block holding the queue lock) or with
 /// async_presentation off, the copy and Present run on the caller's thread instead.
+///
+/// Frame generation (FrameGen, present thread only): while it runs, a presented frame is ingested
+/// into its history on the scheduler's list and goes back to the pool at once; the present thread
+/// then wakes on the swapchain alone and shows a real or an in-between frame at every display
+/// slot. Queued frames still go first, so a switch back to plain presentation is seamless.
 class PresentManager {
 public:
     static constexpr u32 FRAME_COUNT = Swapchain::IMAGE_COUNT;
 
     PresentManager(const Device& device, Scheduler& scheduler, Swapchain& swapchain,
-                   CpuDescriptorAllocator& rtv_descriptors, bool async_presentation);
+                   CpuDescriptorAllocator& rtv_descriptors, const ShaderCompiler& shader_compiler,
+                   DescriptorRing& descriptor_ring, SamplerHeap& sampler_heap,
+                   bool async_presentation);
     ~PresentManager();
 
     PresentManager(const PresentManager&) = delete;
@@ -101,7 +122,7 @@ public:
     [[nodiscard]] FrameLease AcquireFrame();
 
     /// Submits the commands recorded so far (they must have rendered the frame) and presents it.
-    void Present(FrameLease&& lease);
+    void Present(FrameLease&& lease, const PresentInfo& info = {});
 
     /// Blocks until every queued frame has been presented.
     void WaitIdle();
@@ -124,6 +145,11 @@ private:
     void PresentThread(std::stop_token token);
     /// Copies frame into the back buffer and presents it (present thread, or the caller).
     void CopyToSwapchain(PresentFrame& frame);
+    /// Present thread: shows frame generation's next output, when it has one.
+    void PresentGenerated(u64 epoch);
+    /// Present thread: frame generation stops waking it, unless a frame came after epoch.
+    void StopGenerating(u64 epoch);
+    void ReportError(const std::exception& e);
     void WaitForCopy(u64 value);
     /// Returns frame to the pool.
     void Release(PresentFrame& frame);
@@ -149,6 +175,13 @@ private:
     std::condition_variable_any idle_cv;
     std::deque<PresentFrame*> queued_frames;
     u32 frames_in_flight{}; ///< queued or being presented
+    bool fg_active{};       ///< the present thread generates frames between queued ones
+    u64 fg_epoch{};         ///< frames ingested by frame generation
+
+    /// Async presentation only; built lazily on its first use.
+    std::unique_ptr<FrameGen> frame_gen;
+    bool fg_running{};      ///< GPU thread: the last frame went to frame generation
+    u32 fg_context{};       ///< present thread: next copy context for a generated frame
 
     std::mutex error_mutex;
     std::optional<std::string> error;

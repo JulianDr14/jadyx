@@ -122,7 +122,8 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& emu_window,
       rasterizer{gpu_, device_memory_, device, scheduler, shader_compiler, buffer_cache_runtime,
                  texture_cache_runtime, descriptor_ring, sampler_heap, blit_helper,
                  staging_pool},
-      present_manager{device, scheduler, swapchain, rtv_descriptors,
+      present_manager{device, scheduler, swapchain, rtv_descriptors, shader_compiler,
+                      descriptor_ring, sampler_heap,
                       Settings::values.async_presentation.GetValue()} {
     ID3D12Device* const dev = device.Get();
     texture_cache_runtime.SetBlitHelper(&blit_helper);
@@ -229,7 +230,11 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
                     readback = RecordFrameReadback(*frame);
                 }
                 CaptureGuestPresent(frame);
-                Present(std::move(frame));
+                // Frame generation runs on the game's own frames, never under the menu, and only
+                // while FSR is not upscaling them: FSR keeps the image, FG the rate, never both.
+                Present(std::move(frame),
+                        PresentInfo{.vsync_index = framebuffer.vsync_index,
+                                    .frame_gen = !game_menu.has_value() && !last_composite_fsr});
                 if (readback) {
                     WriteFrameDump(*readback, (accelerated_frames - DUMP_FRAME) / DUMP_INTERVAL);
                 }
@@ -351,8 +356,8 @@ void RendererD3D12::CaptureGuestPresent(FrameLease& frame) {
              started ? "begin (2 present intervals)" : "busy: capture not started");
 }
 
-void RendererD3D12::Present(FrameLease&& frame) {
-    present_manager.Present(std::move(frame));
+void RendererD3D12::Present(FrameLease&& frame, const PresentInfo& info) {
+    present_manager.Present(std::move(frame), info);
     staging_pool.TickFrame();
 }
 

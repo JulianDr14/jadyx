@@ -171,7 +171,7 @@ private:
     /// Records the CPU-path copy of the upload image into frame.
     void RecordCopy(const StagingBufferRef& upload, PresentFrame& frame);
     /// Submits the recorded frame and hands it to the present manager.
-    void Present(FrameLease&& frame);
+    void Present(FrameLease&& frame, const PresentInfo& info = {});
     void CaptureGuestPresent(FrameLease& frame);
     /// Records a copy of frame into readback memory (before Present).
     StagingBufferRef RecordFrameReadback(PresentFrame& frame);
@@ -229,6 +229,8 @@ private:
     std::optional<MenuImage> game_menu;
     /// While CaptureFrame composites: the guest's image only, nothing drawn over it.
     bool bare_composite{};
+    /// The last composite went through FSR: frame generation stays off while FSR upscales.
+    bool last_composite_fsr{};
     std::vector<Tegra::FramebufferConfig> last_framebuffers;
     /// How many layers the last composited frame had, to log a change only once.
     size_t logged_layer_count{};
