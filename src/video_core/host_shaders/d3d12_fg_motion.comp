@@ -1,0 +1,148 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Frame generation: one level of the hierarchical motion search between frames A (older) and B.
+//
+// Bilateral block matching: a block of the in-between frame moving by v (A to B) is matched
+// as A at -v/2 against B at +v/2, so the field is defined on the interpolated frame's grid and
+// warping it leaves no holes. One invocation finds the vector of one 8x8 block of this level.
+//
+// The coarsest level searches every vector in +-SEARCH texels; the finer levels test the coarse
+// vectors around them, the vector the previous pair had there (motion keeps going) and zero
+// (HUDs, still scenes), then refine the best one by a texel (half a texel on level 0). A
+// smoothness term prefers the coarse vector so flat areas do not pick noise.
+//
+// Output texel: xy the vector in texels of this level, z the block's mean absolute difference
+// (0-255 scale). Level 0 adds its cost to the frame's statistics word (scene cut detection).
+
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    uvec2 level_size;
+    uvec2 blocks;
+    uint flags;
+    uint stats_index;
+    float temporal_scale; // the previous pair's level 0 vectors to this level's texels
+    float lambda;         // smoothness weight, per texel of difference
+};
+
+const uint HAS_COARSE = 1u;
+const uint HAS_TEMPORAL = 2u;
+const uint FULL_SEARCH = 4u;
+const uint FINEST = 8u;
+
+const int BLOCK = 8;
+const int SEARCH = 4;
+
+layout(binding = 0) uniform sampler2D luma_a;
+layout(binding = 1) uniform sampler2D luma_b;
+layout(binding = 2) uniform sampler2D coarse_field;
+layout(binding = 3) uniform sampler2D temporal_field;
+layout(binding = 5, rgba16f) uniform writeonly restrict image2D field;
+
+layout(std430, binding = 6) buffer Stats {
+    uint stats[];
+};
+
+vec2 inv_size;
+vec2 block_origin;
+
+// Mean absolute difference of the block, 0-255.
+float BlockCost(vec2 v) {
+    const vec2 half_v = 0.5 * v;
+    float sum = 0.0;
+    for (int y = 0; y < BLOCK; ++y) {
+        for (int x = 0; x < BLOCK; ++x) {
+            const vec2 p = block_origin + vec2(x, y) + 0.5;
+            const float a = textureLod(luma_a, (p - half_v) * inv_size, 0.0).r;
+            const float b = textureLod(luma_b, (p + half_v) * inv_size, 0.0).r;
+            sum += abs(a - b);
+        }
+    }
+    return sum * (255.0 / float(BLOCK * BLOCK));
+}
+
+vec2 best_v;
+float best_cost;
+vec2 predicted;
+
+void Try(vec2 v, float bonus) {
+    const float cost = BlockCost(v) + lambda * dot(abs(v - predicted), vec2(1.0)) - bonus;
+    if (cost < best_cost) {
+        best_cost = cost;
+        best_v = v;
+    }
+}
+
+vec2 CoarseVector(ivec2 block) {
+    const ivec2 size = textureSize(coarse_field, 0);
+    return 2.0 * texelFetch(coarse_field, clamp(block, ivec2(0), size - 1), 0).xy;
+}
+
+void main() {
+    const uvec2 block = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(block, blocks))) {
+        return;
+    }
+    inv_size = 1.0 / vec2(level_size);
+    block_origin = vec2(block * uint(BLOCK));
+    best_cost = 1e30;
+    best_v = vec2(0.0);
+
+    const ivec2 coarse_block = ivec2(block) / 2;
+    predicted = (flags & HAS_COARSE) != 0 ? CoarseVector(coarse_block) : vec2(0.0);
+    vec2 temporal = vec2(0.0);
+    if ((flags & HAS_TEMPORAL) != 0) {
+        const ivec2 size = textureSize(temporal_field, 0);
+        const vec2 center = (block_origin + 0.5 * float(BLOCK)) / temporal_scale;
+        const ivec2 t_block = clamp(ivec2(center) / BLOCK, ivec2(0), size - 1);
+        temporal = temporal_scale * texelFetch(temporal_field, t_block, 0).xy;
+        if ((flags & HAS_COARSE) == 0) {
+            predicted = temporal;
+        }
+    }
+
+    // Zero first, with a small bonus: still pixels and HUDs stay still.
+    Try(vec2(0.0), 1.0);
+    if ((flags & FULL_SEARCH) != 0) {
+        for (int y = -SEARCH; y <= SEARCH; ++y) {
+            for (int x = -SEARCH; x <= SEARCH; ++x) {
+                Try(vec2(x, y), 0.0);
+            }
+        }
+    }
+    if ((flags & HAS_TEMPORAL) != 0) {
+        Try(round(temporal), 0.0);
+    }
+    if ((flags & HAS_COARSE) != 0) {
+        Try(predicted, 0.0);
+        Try(CoarseVector(coarse_block + ivec2(-1, 0)), 0.0);
+        Try(CoarseVector(coarse_block + ivec2(1, 0)), 0.0);
+        Try(CoarseVector(coarse_block + ivec2(0, -1)), 0.0);
+        Try(CoarseVector(coarse_block + ivec2(0, 1)), 0.0);
+    }
+    // Refine around the winner.
+    const vec2 center = best_v;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            if (x != 0 || y != 0) {
+                Try(center + vec2(x, y), 0.0);
+            }
+        }
+    }
+    if ((flags & FINEST) != 0) {
+        const vec2 integer = best_v;
+        Try(integer + vec2(0.5, 0.0), 0.0);
+        Try(integer + vec2(-0.5, 0.0), 0.0);
+        Try(integer + vec2(0.0, 0.5), 0.0);
+        Try(integer + vec2(0.0, -0.5), 0.0);
+    }
+
+    const float cost = BlockCost(best_v);
+    imageStore(field, ivec2(block), vec4(best_v, cost, 0.0));
+    if ((flags & FINEST) != 0) {
+        atomicAdd(stats[stats_index], uint(cost * 16.0));
+    }
+}
