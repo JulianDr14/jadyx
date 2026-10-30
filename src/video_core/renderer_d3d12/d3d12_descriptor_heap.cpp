@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <stdexcept>
 
@@ -19,6 +20,8 @@
 namespace D3D12 {
 
 namespace {
+
+std::atomic<bool> descriptor_deferral{};
 
 ComPtr<ID3D12DescriptorHeap> CreateHeap(ID3D12Device* device, D3D12_DESCRIPTOR_HEAP_TYPE type,
                                         u32 count, bool shader_visible) {
@@ -52,6 +55,14 @@ ComPtr<ID3D12DescriptorHeap> CreateHeap(ID3D12Device* device, D3D12_DESCRIPTOR_H
 }
 
 } // Anonymous namespace
+
+void SetDescriptorDeferral(bool enabled) {
+    descriptor_deferral.store(enabled, std::memory_order_relaxed);
+}
+
+bool DescriptorDeferralEnabled() noexcept {
+    return descriptor_deferral.load(std::memory_order_relaxed);
+}
 
 // --- CpuDescriptorAllocator -------------------------------------------------------------------
 
@@ -247,20 +258,22 @@ namespace {
 /// The largest CBV D3D12 allows (4096 16-byte constants).
 constexpr u32 MAX_CONSTANT_BUFFER_BYTES = D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16;
 
+/// Table mismatches found on the recorder's worker, reported once.
+std::atomic<bool> logged_deferred_mismatch{};
+
 } // Anonymous namespace
 
 GuestDescriptorQueue::GuestDescriptorQueue(ID3D12Device* device_, DescriptorRing& ring_)
     : device{device_}, ring{ring_}, stride{ring_.Stride()},
+      defer{DescriptorDeferralEnabled()},
       zero_buffer{CreateCommittedBuffer(device_, MAX_CONSTANT_BUFFER_BYTES,
                                         D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON,
                                         D3D12_RESOURCE_FLAG_NONE, "Create zero constant buffer")} {}
 
 void GuestDescriptorQueue::Acquire(u32 count_, std::span<const ConstantBufferSlot> cbv_slots_) {
     count = count_;
-    written = 0;
     finished = false;
     writes.clear();
-    pending_copies.clear();
     cbv_slots = cbv_slots_;
     cbv_index = 0;
     num_root_cbvs = 0;
@@ -290,7 +303,7 @@ D3D12_GPU_DESCRIPTOR_HANDLE GuestDescriptorQueue::Table() {
         range = {.cpu = {}, .gpu = recent->gpu};
         return range.gpu;
     }
-    WriteRecorded();
+    const u32 written = WriteRecorded();
     if (written != count && !logged_mismatch) {
         LOG_ERROR(Render, "D3D12: descriptor table filled with {} of {} descriptors", written,
                   count);
@@ -328,7 +341,54 @@ const GuestDescriptorQueue::RecentTable* GuestDescriptorQueue::FindRecent() cons
     return nullptr;
 }
 
-void GuestDescriptorQueue::WriteRecorded() {
+u32 GuestDescriptorQueue::WriteRecorded() {
+    CommandStream* const stream =
+        defer && !GpuDiagnosticsEnabled() ? ring.GetScheduler().CommandList() : nullptr;
+    if (!stream || !stream->IsThreaded()) {
+        TableWriter writer{.device = device, .cpu = range.cpu, .gpu = range.gpu.ptr,
+                           .count = count, .stride = stride};
+        writer.WriteAll(writes);
+        return writer.written;
+    }
+    // The worker creates the views and copies; the ring range is already reserved, the list
+    // reads the table only once it executes on the GPU, and freed offline descriptors are reused
+    // only once what was recorded before reached the list (renderer_d3d12.cpp). Only the slot
+    // count is checked here.
+    u32 slots = 0;
+    for (const Write& write : writes) {
+        switch (write.kind) {
+        case Write::Kind::StorageBuffer:
+            slots += 2;
+            break;
+        case Write::Kind::TexelBuffer:
+            slots += 1 + write.with_uav;
+            break;
+        default:
+            slots += 1;
+            break;
+        }
+    }
+    if (!logged_deferred) {
+        LOG_INFO(Render, "D3D12: descriptor tables written on the recording thread");
+        logged_deferred = true;
+    }
+    stream->Record(std::span<const Write>{writes},
+                   [device = device, cpu = range.cpu, gpu = range.gpu.ptr, count = count,
+                    stride = stride, num = writes.size(),
+                    slots](ID3D12GraphicsCommandList*, const Write* data) {
+                       TableWriter writer{.device = device, .cpu = cpu, .gpu = gpu,
+                                          .count = count, .stride = stride};
+                       writer.WriteAll({data, num});
+                       if (writer.written != slots &&
+                           !logged_deferred_mismatch.exchange(true, std::memory_order_relaxed)) {
+                           LOG_ERROR(Render, "D3D12: deferred descriptor table wrote {} of {} slots",
+                                     writer.written, slots);
+                       }
+                   });
+    return slots;
+}
+
+void GuestDescriptorQueue::TableWriter::WriteAll(std::span<const Write> writes) {
     for (const Write& write : writes) {
         switch (write.kind) {
         case Write::Kind::ConstantBuffer:
@@ -351,13 +411,13 @@ void GuestDescriptorQueue::WriteRecorded() {
     FlushCopies();
 }
 
-D3D12_CPU_DESCRIPTOR_HANDLE GuestDescriptorQueue::Next() {
+D3D12_CPU_DESCRIPTOR_HANDLE GuestDescriptorQueue::TableWriter::Next() {
     if (written >= count) {
         // More bindings than the root signature declares: the spare slot. Reported by Table().
         ++written;
-        return {range.cpu.ptr + static_cast<SIZE_T>(count) * stride};
+        return {cpu.ptr + static_cast<SIZE_T>(count) * stride};
     }
-    return {range.cpu.ptr + static_cast<SIZE_T>(written++) * stride};
+    return {cpu.ptr + static_cast<SIZE_T>(written++) * stride};
 }
 
 u32 GuestDescriptorQueue::ConstantBufferReach(u32 size) const {
@@ -445,7 +505,7 @@ void GuestDescriptorQueue::AddCopy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor) {
     writes.push_back({.kind = Write::Kind::Copy, .handle = static_cast<u64>(descriptor.ptr)});
 }
 
-void GuestDescriptorQueue::CreateConstantBuffer(const Write& write) {
+void GuestDescriptorQueue::TableWriter::CreateConstantBuffer(const Write& write) {
     VideoCore::Perf::ScopedNsTimer timer{VideoCore::Perf::Counter::CbvCreateNs};
     VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::CbvCreates, 1);
     const D3D12_CONSTANT_BUFFER_VIEW_DESC desc{
@@ -455,18 +515,18 @@ void GuestDescriptorQueue::CreateConstantBuffer(const Write& write) {
     device->CreateConstantBufferView(&desc, Next());
     if (GpuDiagnosticsEnabled()) {
         TraceGpuDetail(fmt::format("CBV table={:x} slot={} address={:x} size={}",
-            range.gpu.ptr, written - 1, write.handle, desc.SizeInBytes));
+            gpu, written - 1, write.handle, desc.SizeInBytes));
     }
     CheckRemovedAfterDescriptor(device, [&] {
         return fmt::format("CBV at 0x{:x} of {} bytes", desc.BufferLocation, desc.SizeInBytes);
     });
 }
 
-void GuestDescriptorQueue::CreateStorageBuffer(const Write& write) {
+void GuestDescriptorQueue::TableWriter::CreateStorageBuffer(const Write& write) {
     ID3D12Resource* const resource = reinterpret_cast<ID3D12Resource*>(write.handle);
     if (GpuDiagnosticsEnabled()) {
         TraceGpuDetail(fmt::format("storage buffer table={:x} slot={} resource={} offset={} size={}",
-            range.gpu.ptr, written, static_cast<void*>(resource), write.offset, write.size));
+            gpu, written, static_cast<void*>(resource), write.offset, write.size));
     }
     const u32 words = (write.size + 3) / 4;
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav{
@@ -495,12 +555,12 @@ void GuestDescriptorQueue::CreateStorageBuffer(const Write& write) {
     });
 }
 
-void GuestDescriptorQueue::CreateTexelBuffer(const Write& write) {
+void GuestDescriptorQueue::TableWriter::CreateTexelBuffer(const Write& write) {
     ID3D12Resource* const resource = reinterpret_cast<ID3D12Resource*>(write.handle);
     const DXGI_FORMAT format = static_cast<DXGI_FORMAT>(write.format);
     if (GpuDiagnosticsEnabled()) {
         TraceGpuDetail(fmt::format("texel buffer table={:x} slot={} resource={} first={} elements={} format={} uav={}",
-            range.gpu.ptr, written, static_cast<void*>(resource), write.offset, write.size,
+            gpu, written, static_cast<void*>(resource), write.offset, write.size,
             write.format, write.with_uav));
     }
     if (write.with_uav != 0) {
@@ -525,10 +585,10 @@ void GuestDescriptorQueue::CreateTexelBuffer(const Write& write) {
     });
 }
 
-void GuestDescriptorQueue::Copy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor) {
+void GuestDescriptorQueue::TableWriter::Copy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor) {
     if (GpuDiagnosticsEnabled()) {
         TraceGpuDetail(fmt::format("descriptor copy table={:x} slot={} source={:x}",
-            range.gpu.ptr, written, descriptor.ptr));
+            gpu, written, descriptor.ptr));
     }
     VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::ViewCopies, 1);
     if (written >= count) {
@@ -545,7 +605,7 @@ void GuestDescriptorQueue::Copy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor) {
     pending_copies.push_back(descriptor);
 }
 
-void GuestDescriptorQueue::FlushCopies() {
+void GuestDescriptorQueue::TableWriter::FlushCopies() {
     if (pending_copies.empty()) {
         return;
     }

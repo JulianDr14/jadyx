@@ -19,6 +19,12 @@ namespace D3D12 {
 
 class Scheduler;
 
+/// Writes the CBV/SRV/UAV tables of draws and dispatches on the recorder's worker instead of the
+/// GPU thread, for renderers created from now on (boot.cfg "descriptor_defer=1"). Only with async
+/// recording and without GPU diagnostics: the GPU thread still reserves the ring range.
+void SetDescriptorDeferral(bool enabled);
+[[nodiscard]] bool DescriptorDeferralEnabled() noexcept;
+
 /// Persistent descriptors in non-shader-visible ("offline") heaps: the SRVs/UAVs of image views,
 /// RTVs/DSVs of attachments and samplers. Grows in pages; freed slots are reused.
 ///
@@ -88,6 +94,10 @@ public:
     void Rewind(const DescriptorRange& range, u32 count);
 
     [[nodiscard]] u64 CurrentTick() const;
+
+    [[nodiscard]] Scheduler& GetScheduler() const {
+        return scheduler;
+    }
 
     /// Allocates count slots and copies the given offline descriptors into them.
     [[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE Upload(
@@ -186,6 +196,27 @@ private:
 
         bool operator==(const Write&) const = default;
     };
+    /// Writes one table's descriptors from its first slot on; holds no queue state, so it may
+    /// run on the recorder's worker.
+    struct TableWriter {
+        ID3D12Device* device;
+        D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+        u64 gpu; ///< for traces
+        u32 count;
+        u32 stride;
+        u32 written{};
+        /// Sources of the pending copies, written from copy_destination on.
+        boost::container::small_vector<D3D12_CPU_DESCRIPTOR_HANDLE, 64> pending_copies;
+        D3D12_CPU_DESCRIPTOR_HANDLE copy_destination{};
+
+        void WriteAll(std::span<const Write> writes);
+        D3D12_CPU_DESCRIPTOR_HANDLE Next();
+        void CreateConstantBuffer(const Write& write);
+        void CreateStorageBuffer(const Write& write);
+        void CreateTexelBuffer(const Write& write);
+        void Copy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor);
+        void FlushCopies();
+    };
     /// A table written earlier in the list being recorded.
     struct RecentTable {
         u64 tick{};
@@ -196,30 +227,22 @@ private:
     };
     static constexpr size_t NUM_RECENT_TABLES = 8;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE Next();
     /// The recent table holding exactly the recorded descriptors, if one may still be read.
     [[nodiscard]] const RecentTable* FindRecent() const;
-    void WriteRecorded();
-    void CreateConstantBuffer(const Write& write);
-    void CreateStorageBuffer(const Write& write);
-    void CreateTexelBuffer(const Write& write);
-    void Copy(D3D12_CPU_DESCRIPTOR_HANDLE descriptor);
-    void FlushCopies();
+    /// Writes the recorded descriptors (on the worker when deferred); returns the slots filled.
+    u32 WriteRecorded();
 
     ID3D12Device* device;
     DescriptorRing& ring;
     u32 stride;
+    bool defer; ///< DescriptorDeferralEnabled() when the renderer was created
     DescriptorRange range{};
     u32 count{};
-    u32 written{};
     u64 acquire_tick{};
     bool finished{};
     std::vector<Write> writes;
     std::array<RecentTable, NUM_RECENT_TABLES> recent_tables{};
     size_t next_recent{};
-    /// Sources of the pending copies, written from copy_destination on.
-    boost::container::small_vector<D3D12_CPU_DESCRIPTOR_HANDLE, 64> pending_copies;
-    D3D12_CPU_DESCRIPTOR_HANDLE copy_destination{};
     std::span<const ConstantBufferSlot> cbv_slots;
     u32 cbv_index{};
     std::array<D3D12_GPU_VIRTUAL_ADDRESS, MAX_ROOT_CBVS> root_cbvs{};
@@ -228,6 +251,7 @@ private:
     ComPtr<ID3D12Resource> zero_buffer;
     bool logged_mismatch{};
     bool logged_unaligned{};
+    bool logged_deferred{};
 };
 
 /// The one shader-visible sampler heap. D3D12 caps it at 2048 entries on every tier, too few for

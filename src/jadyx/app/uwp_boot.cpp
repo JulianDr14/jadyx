@@ -207,6 +207,7 @@ void SetDrawSamplerReuse(bool enabled);
 enum class PixelShaderScratchMode : u8; // d3d12_local_memory_scratch.h: Auto, Uav, Native
 void SetPixelShaderScratchMode(PixelShaderScratchMode mode);
 void SetAsyncRecording(bool enabled);          // d3d12_scheduler.h
+void SetDescriptorDeferral(bool enabled);      // d3d12_descriptor_heap.h
 void SetDiagUavSync(bool enabled);             // d3d12_scheduler.h
 using AppMemoryQuery = bool (*)(u64& used, u64& limit); // d3d12_device.h
 void SetAppMemoryQuery(AppMemoryQuery query);            // d3d12_device.h
@@ -516,6 +517,9 @@ struct BootConfig {
     /// Make the D3D12 command list calls on a thread of their own, so the GPU thread only records
     /// them ("async_record=0" makes them on the GPU thread, as before the recorder).
     bool async_record{true};
+    /// Draw descriptor tables written on the recording thread ("descriptor_defer=1"); needs
+    /// async_record. Off by default: the recorder took CPU time from the guest threads.
+    bool descriptor_defer{};
     /// An NV event the guest keeps giving up on stalls the guest until the GPU reaches it
     /// ("nv_event_stall=1", as before); by default the GPU commands are flushed and the wait goes on.
     bool nv_event_stall{false};
@@ -852,6 +856,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     if (config.airplane_mode) Settings::values.airplane_mode.SetValue(true); // else Settings > System
     if (config.upscaling) ApplyUpscaling(*config.upscaling); // before the renderer exists
     D3D12::SetAsyncRecording(config.async_record);
+    D3D12::SetDescriptorDeferral(config.descriptor_defer);
     D3D12::SetPresentQueue(config.present_queue);
     D3D12::SetBorderColorMode(static_cast<D3D12::BorderColorMode>(config.border_color));
     D3D12::SetDepthBiasRounding(config.depth_bias_round);
@@ -3407,6 +3412,11 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         if (line == "rt_early_out=0") {
                             config.rt_early_out = false;
                             WriteDiag("boot.cfg: attachments prepared again on every draw");
+                            continue;
+                        }
+                        if (line == "descriptor_defer=1") {
+                            config.descriptor_defer = true;
+                            WriteDiag("boot.cfg: draw descriptor tables written on the recording thread");
                             continue;
                         }
                         if (line == "dma_flush_filter=1") {

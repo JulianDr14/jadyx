@@ -36,6 +36,15 @@ public:
     void Record(Func&& func) {
         recorder.Record(std::forward<Func>(func));
     }
+    /// func(list, data pointer), reading a copy of data.
+    template <typename T, typename Func>
+    void Record(std::span<const T> data, Func&& func) {
+        recorder.Record(data, std::forward<Func>(func));
+    }
+    /// Whether recorded calls reach the list later, on the recorder's worker.
+    [[nodiscard]] bool IsThreaded() const noexcept {
+        return recorder.IsThreaded();
+    }
 
     // --- Barriers and pipeline state -------------------------------------------------------
 
