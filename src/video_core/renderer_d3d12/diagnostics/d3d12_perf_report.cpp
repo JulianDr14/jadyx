@@ -165,7 +165,7 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         "samplers {:.1f}, record {:.1f}), clears {:.1f} ms, dispatches {:.1f} ms, "
         "outside them {:.1f} ms | pipeline fast path {} hits / {} misses, {} key reuses ({} "
         "mismatched) | CBV {} ({:.1f} ms: "
-        "{} streamed, {} persistent, {} null; {} root, {} root clamped), view copies {} "
+        "{} streamed ({} reused), {} persistent, {} null; {} root, {} root clamped), view copies {} "
         "({:.1f} ms), tables {} reused of {} | guest waited for "
         "the GPU {} times ({:.1f} ms in all), syncpoints signalled {} at once and after the GPU "
         "{} (buffer downloads {}, image downloads {}, query flushes {}, operations {}, earlier "
@@ -192,7 +192,8 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         get(Counter::PipelineFastHits), get(Counter::PipelineFastMisses),
         get(Counter::PipelineKeyReuses), get(Counter::PipelineKeyMismatches),
         get(Counter::CbvCreates), ns_ms(Counter::CbvCreateNs), get(Counter::CbvStreamed),
-        get(Counter::CbvPersistent), get(Counter::CbvNull), get(Counter::CbvRoot),
+        get(Counter::CbvReused), get(Counter::CbvPersistent), get(Counter::CbvNull),
+        get(Counter::CbvRoot),
         get(Counter::CbvRootClamped), get(Counter::ViewCopies),
         ns_ms(Counter::ViewCopyNs), get(Counter::DescriptorTableReuses),
         get(Counter::DescriptorTables),

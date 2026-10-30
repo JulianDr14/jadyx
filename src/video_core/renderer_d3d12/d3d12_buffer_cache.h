@@ -25,6 +25,9 @@ class GuestDescriptorQueue;
 
 /// Opt-in regular SSE2 stores for short uploads, for subsequently created runtimes.
 void SetUniformUploadCopy(bool enabled);
+/// Opt-in rebinding of a streamed uniform buffer whose bytes did not change within a submission,
+/// for subsequently created runtimes.
+void SetUniformReuse(bool enabled);
 
 class Buffer : public VideoCommon::BufferBase {
 public:
@@ -173,6 +176,9 @@ public:
         return transform_feedback;
     }
     std::span<u8> BindMappedUniformBuffer(size_t, u32, u32 size);
+    /// Streams the guest bytes of a uniform buffer slot, or rebinds the copy streamed for the slot
+    /// earlier in this submission when they are the same. False: the caller streams them.
+    bool BindGuestUniformBuffer(size_t stage, u32 index, DAddr device_addr, u32 size);
     bool UseWriteCombinedUniformCopy(u32 size) const noexcept {
         return uniform_upload_copy && !trace_buffers && size <= 512;
     }
@@ -225,6 +231,21 @@ private:
     std::array<D3D12_VERTEX_BUFFER_VIEW, VideoCommon::NUM_VERTEX_BUFFERS> pending_vertex{};
     UniformStream uniform_stream;
     bool uniform_upload_copy{};
+    /// What each uniform slot streamed last: its guest bytes (kept in cached memory, as the stream
+    /// is write-combined) and where they went. Valid for the tick they were streamed in.
+    struct StreamedUniform {
+        DAddr device_addr{};
+        u64 tick{};
+        D3D12_GPU_VIRTUAL_ADDRESS address{};
+        u32 size{};
+        u32 reach{};
+        std::vector<u8> bytes;
+    };
+    std::array<std::array<StreamedUniform, VideoCommon::NUM_GRAPHICS_UNIFORM_BUFFERS>,
+               VideoCommon::NUM_STAGES>
+        streamed_uniforms;
+    D3D12_GPU_VIRTUAL_ADDRESS last_uniform_address{};
+    bool uniform_reuse{};
     u32 pending_vertex_mask{};
     std::optional<u32> rewritten_count;
     std::array<TransformFeedbackBinding, 4> transform_feedback{};

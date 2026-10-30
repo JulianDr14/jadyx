@@ -106,6 +106,7 @@ enum class Counter : size_t {
     CbvCreateNs,
     CbvCreates,
     CbvStreamed,
+    CbvReused,      ///< streamed uniforms rebound from the submission's earlier copy
     CbvPersistent,
     CbvNull,
     CbvRoot,        ///< bound as root CBVs instead of table descriptors

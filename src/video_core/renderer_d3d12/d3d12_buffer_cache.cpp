@@ -11,6 +11,7 @@
 
 #include "common/alignment.h"
 #include "common/logging.h"
+#include "common/write_combined_copy.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
@@ -24,6 +25,7 @@
 namespace D3D12 {
 namespace {
 std::atomic_bool uniform_upload_copy_enabled{};
+std::atomic_bool uniform_reuse_enabled{};
 // Buffer::Transition logs the first upload into a buffer between a work's bindings, and Copy the
 // first one it returns to UAV. The GPU thread alone records bindings.
 bool logged_upload_into_uav{};
@@ -31,6 +33,9 @@ bool logged_upload_left_uav{};
 }
 void SetUniformUploadCopy(bool enabled) {
     uniform_upload_copy_enabled.store(enabled, std::memory_order_relaxed);
+}
+void SetUniformReuse(bool enabled) {
+    uniform_reuse_enabled.store(enabled, std::memory_order_relaxed);
 }
 
 
@@ -255,8 +260,11 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, Scheduler& schedul
                                        Tegra::MaxwellDeviceMemoryManager& device_memory_)
     : device{device_}, scheduler{scheduler_}, staging{staging_},
       transfer_buffers{transfer_buffers_}, device_memory{device_memory_},
-      uniform_upload_copy{uniform_upload_copy_enabled.load(std::memory_order_relaxed)} {
-    LOG_INFO(Render, "D3D12: buffer cache runtime ready (short uniform upload copy {})", uniform_upload_copy ? "on" : "off");
+      uniform_upload_copy{uniform_upload_copy_enabled.load(std::memory_order_relaxed)},
+      uniform_reuse{uniform_reuse_enabled.load(std::memory_order_relaxed)} {
+    LOG_INFO(Render, "D3D12: buffer cache runtime ready (short uniform upload copy {}, uniform "
+                     "reuse {})",
+             uniform_upload_copy ? "on" : "off", uniform_reuse ? "on" : "off");
 
 }
 
@@ -607,7 +615,49 @@ std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t, u32, u32 size)
     if (reach > size) {
         std::memset(upload.mapped.data() + size, 0, reach - size);
     }
+    last_uniform_address = upload.address;
     return upload.mapped.first(size);
+}
+
+bool BufferCacheRuntime::BindGuestUniformBuffer(size_t stage, u32 index, DAddr device_addr,
+                                                u32 size) {
+    // Traced uniforms keep their own copy per draw.
+    if (!uniform_reuse || trace_buffers || size == 0) {
+        return false;
+    }
+    // Compared in place: a buffer split across separately mapped pages takes the copying path.
+    const u8* const guest = device_memory.GetSpan(device_addr, size);
+    if (!guest) {
+        return false;
+    }
+    StreamedUniform& streamed = streamed_uniforms[stage][index];
+    const u32 reach = descriptor_queue ? descriptor_queue->ConstantBufferReach(size) : size;
+    // The stream hands out memory for the submission being recorded only: an earlier copy is
+    // bound again within its tick alone. It still holds zeros up to its own reach.
+    if (streamed.tick == scheduler.CurrentTick() && streamed.device_addr == device_addr &&
+        streamed.size == size && streamed.reach >= reach &&
+        std::memcmp(streamed.bytes.data(), guest, size) == 0) {
+        VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::CbvReused, 1);
+        if (descriptor_queue) {
+            descriptor_queue->AddConstantBuffer(streamed.address, size);
+        }
+        return true;
+    }
+    // Guest memory is read once: into the cached copy, then from it to the stream.
+    streamed.bytes.resize(size);
+    std::memcpy(streamed.bytes.data(), guest, size);
+    const std::span<u8> mapped = BindMappedUniformBuffer(stage, index, size);
+    if (UseWriteCombinedUniformCopy(size)) {
+        Common::CopyToWriteCombined(mapped.data(), streamed.bytes.data(), size);
+    } else {
+        std::memcpy(mapped.data(), streamed.bytes.data(), size);
+    }
+    streamed.device_addr = device_addr;
+    streamed.tick = scheduler.CurrentTick();
+    streamed.address = last_uniform_address;
+    streamed.size = size;
+    streamed.reach = reach;
+    return true;
 }
 
 void BufferCacheRuntime::BindUniformBuffer(Buffer& buffer, u32 offset, u32 size) {

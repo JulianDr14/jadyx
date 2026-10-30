@@ -199,6 +199,7 @@ void SetComputeWorkgroupSplit(u32 factor);   // d3d12_pipeline_cache.h
 void SetTransformFeedbackStorage(bool enabled); // d3d12_pipeline_cache.h
 void SetDescriptorRemovalChecks(bool enabled); // d3d12_device.h
 void SetUniformUploadCopy(bool enabled);
+void SetUniformReuse(bool enabled);
 void SetDrawSamplerReuse(bool enabled);
 enum class PixelShaderScratchMode : u8; // d3d12_local_memory_scratch.h: Auto, Uav, Native
 void SetPixelShaderScratchMode(PixelShaderScratchMode mode);
@@ -529,6 +530,7 @@ struct BootConfig {
     /// drawn with another pipeline). Off by default until a gain is measured on the console.
     D3D12::PipelineKeyTracking::Mode pipeline_key_reuse{D3D12::PipelineKeyTracking::Mode::Off};
     bool upload_copy{}; ///< Experimental short uniform copies; default off.
+    bool uniform_reuse{}; ///< Rebind unchanged streamed uniforms within a submission; default off.
     bool draw_sampler_reuse{}; ///< Experimental gather-local TSC resolution; default off.
     /// Where pixel shaders keep large local memory: 0 auto (boot probe), 1 pool, 2 private arrays
     /// ("ps_scratch=auto|uav|native", D3D12::PixelShaderScratchMode).
@@ -859,6 +861,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     VideoCommon::SetEarlySyncpoints(config.early_syncpoints);
     D3D12::PipelineKeyTracking::SetMode(config.pipeline_key_reuse);
     D3D12::SetUniformUploadCopy(config.upload_copy);
+    D3D12::SetUniformReuse(config.uniform_reuse);
     D3D12::SetDrawSamplerReuse(config.draw_sampler_reuse);
     D3D12::SetPixelShaderScratchMode(static_cast<D3D12::PixelShaderScratchMode>(config.ps_scratch));
     if (config.debug_layer) {
@@ -3382,6 +3385,11 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             } else {
                                 WriteDiag("boot.cfg: invalid jit_prewarm_mib (8-192), ignored");
                             }
+                            continue;
+                        }
+                        if (line == "uniform_reuse=1") {
+                            config.uniform_reuse = true;
+                            WriteDiag("boot.cfg: unchanged streamed uniform reuse enabled");
                             continue;
                         }
                         if (line.starts_with("present_queue=") ||
