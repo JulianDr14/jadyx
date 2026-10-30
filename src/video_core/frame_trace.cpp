@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <utility>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -42,6 +43,15 @@ std::array<Entry, CAPACITY> entries;
 Dynarmic::JitProfile::Snapshot jit_begin{};
 bool jit_profiled{};
 Core::JitPrewarm::MissSnapshot misses_begin{};
+
+// Ring mode (ArmOnSwapIntervalRise): entries wrap until the game raises its swap interval.
+bool ring{};
+std::atomic_bool triggered{false};
+u32 trigger_index{};
+u32 ring_vsyncs_before{};
+u32 ring_vsyncs_after{};
+u32 ring_captures_left{};
+u32 last_requested_interval{};
 
 u32 CurrentThread() {
 #ifdef _WIN32
@@ -274,15 +284,67 @@ const char* Name(Event event) {
     return "?";
 }
 
-void Dump(u32 count) {
+/// Dumps `count` entries in recording order, starting at ring position `first`.
+void Dump(u32 first, u32 count) {
     LOG_INFO(Render, "Frame trace: {} events (ms from the start, host thread, event, a, b)",
              count);
     for (u32 i = 0; i < count; ++i) {
-        const Entry& entry = entries[i];
+        const Entry& entry = entries[(first + i) % CAPACITY];
         LOG_INFO(Render, "FT {:9.3f} {:>6} {} {} {}", static_cast<double>(entry.ns) / 1e6,
                  entry.thread, Name(entry.event), entry.a, entry.b);
     }
     LOG_INFO(Render, "Frame trace: end");
+}
+
+void BeginMeasuredWindow() {
+    jit_profiled = Dynarmic::JitProfile::enabled.load(std::memory_order_relaxed);
+    jit_begin = Dynarmic::JitProfile::Read();
+    misses_begin = Core::JitPrewarm::ReadMisses();
+    Core::JitPrewarm::capture_active.store(true, std::memory_order_relaxed);
+}
+
+void Arm() {
+    next_entry.store(0);
+    triggered.store(false);
+    last_requested_interval = 0;
+    vsyncs_left.store(ring_vsyncs_after);
+    start_time = std::chrono::steady_clock::now();
+    const u32 id = capture_id.fetch_add(1) + 1;
+    LOG_INFO(Render, "Frame trace: armed (capture {}), records {} vsyncs before and {} after the "
+                     "game raises its swap interval", id, ring_vsyncs_before, ring_vsyncs_after);
+    capture_state.store(CaptureState::Armed);
+    active.store(true);
+}
+
+/// Called on the queueing thread: starts the countdown once the requested interval rises.
+void CheckSwapIntervalRise(u32 index, u64 intervals) {
+    const u32 requested = static_cast<u32>(intervals);
+    const u32 previous = std::exchange(last_requested_interval, requested);
+    // From 2 up only: games often go from 1 to 2 when leaving their title screens.
+    if (triggered.load() || previous < 2 || requested <= previous) {
+        return;
+    }
+    trigger_index = index;
+    triggered.store(true);
+    BeginMeasuredWindow();
+    LOG_INFO(Render, "Frame trace: game raised its swap interval {} -> {} (capture {}), recording "
+                     "{} more vsyncs", previous, requested, capture_id.load(), ring_vsyncs_after);
+    capture_state.store(CaptureState::Recording);
+}
+
+/// First ring position of the dump: `ring_vsyncs_before` vsyncs back from the trigger.
+u32 RingDumpFirst(u32 total) {
+    const u32 oldest = total > CAPACITY ? total - static_cast<u32>(CAPACITY) : 0;
+    u32 first = trigger_index;
+    u32 vsyncs = 0;
+    while (first > oldest) {
+        if (entries[(first - 1) % CAPACITY].event == Event::Vsync &&
+            ++vsyncs > ring_vsyncs_before) {
+            break;
+        }
+        --first;
+    }
+    return first;
 }
 
 } // Anonymous namespace
@@ -291,17 +353,27 @@ void Start(u32 vsyncs) {
     if (active.load() || capture_state.load() == CaptureState::Saving || vsyncs == 0) {
         return;
     }
+    ring = false;
     next_entry.store(0);
     vsyncs_left.store(vsyncs);
-    jit_profiled = Dynarmic::JitProfile::enabled.load(std::memory_order_relaxed);
-    jit_begin = Dynarmic::JitProfile::Read();
-    misses_begin = Core::JitPrewarm::ReadMisses();
-    Core::JitPrewarm::capture_active.store(true, std::memory_order_relaxed);
+    BeginMeasuredWindow();
     start_time = std::chrono::steady_clock::now();
     const u32 id = capture_id.fetch_add(1) + 1;
     LOG_INFO(Render, "Frame trace: recording {} vsyncs (capture {}), focused address chain guests79/83", vsyncs, id);
     capture_state.store(CaptureState::Recording);
     active.store(true);
+}
+
+void ArmOnSwapIntervalRise(u32 vsyncs_before, u32 vsyncs_after, u32 captures) {
+    if (active.load() || capture_state.load() == CaptureState::Saving || vsyncs_after == 0 ||
+        captures == 0) {
+        return;
+    }
+    ring = true;
+    ring_vsyncs_before = vsyncs_before;
+    ring_vsyncs_after = vsyncs_after;
+    ring_captures_left = captures;
+    Arm();
 }
 
 bool Active() {
@@ -320,8 +392,8 @@ void Mark(Event event, u64 a, u64 b) {
     }
     writers.fetch_add(1);
     const u32 index = next_entry.fetch_add(1);
-    if (index < CAPACITY) {
-        entries[index] = {
+    if (index < CAPACITY || ring) {
+        entries[index % CAPACITY] = {
             .ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                        std::chrono::steady_clock::now() - start_time)
                                        .count()),
@@ -332,11 +404,16 @@ void Mark(Event event, u64 a, u64 b) {
         };
     }
     writers.fetch_sub(1);
-    const bool last_vsync = event == Event::Vsync && vsyncs_left.fetch_sub(1) == 1;
+    if (ring && event == Event::QueueBuffer) {
+        CheckSwapIntervalRise(index, b);
+    }
+    const bool counting = !ring || triggered.load(std::memory_order_relaxed);
+    const bool last_vsync =
+        counting && event == Event::Vsync && vsyncs_left.fetch_sub(1) == 1;
     // Guest state events can be recorded with the kernel scheduler lock held. Defer the
     // dump to VSync even when full: formatting thousands of lines under that lock would
     // stall the threads whose wakeup latency we are measuring. Entries stay bounded.
-    const bool full_at_vsync = event == Event::Vsync && index + 1 >= CAPACITY;
+    const bool full_at_vsync = !ring && event == Event::Vsync && index + 1 >= CAPACITY;
     if (!full_at_vsync && !last_vsync) {
         return;
     }
@@ -373,7 +450,17 @@ void Mark(Event event, u64 a, u64 b) {
                      (jit_end[i].ns - jit_begin[i].ns) / 1.0e6);
         }
     }
-    Dump(std::min<u32>(next_entry.load(), static_cast<u32>(CAPACITY)));
+    if (ring) {
+        const u32 total = next_entry.load();
+        const u32 first = RingDumpFirst(total);
+        Dump(first, total - first);
+        capture_state.store(CaptureState::Saved);
+        if (--ring_captures_left != 0) {
+            Arm();
+        }
+        return;
+    }
+    Dump(0, std::min<u32>(next_entry.load(), static_cast<u32>(CAPACITY)));
     capture_state.store(full_at_vsync && !last_vsync ? CaptureState::Truncated : CaptureState::Saved);
 }
 

@@ -234,6 +234,7 @@ void RendererD3D12::DrawTraceIndicator(CommandStream* cmd,
         case CaptureState::Saving: label = fmt::format("T {} GUARDANDO", status.id); break;
         case CaptureState::Saved: label = fmt::format("T {} GUARDADA", status.id); break;
         case CaptureState::Truncated: label = fmt::format("T {} TRUNCADA", status.id); break;
+        case CaptureState::Armed: label = fmt::format("T {} ARMADA", status.id); break;
         default: return;
         }
         const LONG pad = 3 * cell;

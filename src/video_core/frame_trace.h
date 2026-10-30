@@ -184,9 +184,15 @@ inline constexpr u64 SignallingGuest = 79;
 /// Records the next `vsyncs` vsyncs (ignored while a trace is running).
 void Start(u32 vsyncs);
 
+/// Keeps recording into a ring until the game raises its requested swap interval from 2 or more
+/// (e.g. 2 -> 3, its own drop to a lower frame rate). Then it records `vsyncs_after` more vsyncs
+/// and dumps them together with the `vsyncs_before` that led to the change. Re-arms itself until
+/// `captures` timelines were saved. Ignored while a trace is running.
+void ArmOnSwapIntervalRise(u32 vsyncs_before, u32 vsyncs_after, u32 captures);
+
 [[nodiscard]] bool Active();
 
-enum class CaptureState : u8 { Idle, Recording, Saving, Saved, Truncated };
+enum class CaptureState : u8 { Idle, Recording, Saving, Saved, Truncated, Armed };
 struct CaptureStatus {
     CaptureState state;
     u32 id;

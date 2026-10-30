@@ -59,7 +59,8 @@ EmuWindow_SDL3::EmuWindow_SDL3(InputCommon::InputSubsystem* input_subsystem_, Co
         if (capture.id) {
             const char* status = capture.state == State::Recording ? "CAPTURANDO"
                                : capture.state == State::Saving ? "GUARDANDO"
-                               : capture.state == State::Truncated ? "TRUNCADA" : "GUARDADA";
+                               : capture.state == State::Truncated ? "TRUNCADA"
+                               : capture.state == State::Armed ? "ARMADA" : "GUARDADA";
             title += fmt::format(" | T{} {} ({:.1f}s restantes)", capture.id, status,
                                  capture.vsyncs_remaining / 60.0f);
         }
