@@ -1873,7 +1873,9 @@ void BufferCache<P>::ChangeRegister(BufferId buffer_id) {
 
 template <class P>
 void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
-    if (buffer_id != NULL_BUFFER_ID) {
+    // The buffer is at hand; its LRU entry is not, and holds the same tick after the first touch
+    // of a frame.
+    if (buffer_id != NULL_BUFFER_ID && buffer.TouchFrame(frame_tick)) {
         lru_cache.Touch(buffer.getLRUID(), frame_tick);
     }
 }

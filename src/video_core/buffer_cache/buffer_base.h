@@ -129,6 +129,15 @@ public:
         write_tick = write_tick_;
     }
 
+    /// Records a use in frame tick; false when the buffer was already used in it.
+    bool TouchFrame(u64 tick) noexcept {
+        if (touch_tick == tick) {
+            return false;
+        }
+        touch_tick = tick;
+        return true;
+    }
+
 private:
     VAddr cpu_addr = 0;
     BufferFlagBits flags{};
@@ -136,6 +145,7 @@ private:
     size_t lru_id = SIZE_MAX;
     size_t size_bytes = 0;
     u64 write_tick = 0;
+    u64 touch_tick = ~u64{0};
 };
 
 } // namespace VideoCommon
