@@ -166,7 +166,7 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         "outside them {:.1f} ms | pipeline fast path {} hits / {} misses, {} key reuses ({} "
         "mismatched) | CBV {} ({:.1f} ms: "
         "{} streamed ({} reused), {} persistent, {} null; {} root, {} root clamped), view copies {} "
-        "({:.1f} ms), tables {} reused of {} | guest waited for "
+        "({:.1f} ms), tables {} reused of {}, attachments kept {} | guest waited for "
         "the GPU {} times ({:.1f} ms in all), syncpoints signalled {} at once and after the GPU "
         "{} (buffer downloads {}, image downloads {}, query flushes {}, operations {}, earlier "
         "fences {}) | commands: {} submit lists {:.1f} ms ({:.1f} ms "
@@ -197,6 +197,7 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         get(Counter::CbvRootClamped), get(Counter::ViewCopies),
         ns_ms(Counter::ViewCopyNs), get(Counter::DescriptorTableReuses),
         get(Counter::DescriptorTables),
+        get(Counter::RenderTargetEarlyOuts),
         get(Counter::GuestGpuWaits), Ms(d, Counter::GuestGpuWaitUs),
         get(Counter::SyncpointsEarly),
         get(Counter::SyncpointsAfterBufferDownloads) + get(Counter::SyncpointsAfterTextureDownloads) +

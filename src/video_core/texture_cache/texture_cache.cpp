@@ -15,7 +15,16 @@ namespace {
 std::atomic<bool> mip_render_targets{true};
 std::atomic<bool> render_target_inheritance{true};
 std::atomic<bool> reclaim_superseded_images{true};
+std::atomic<bool> render_target_early_out{true};
 } // namespace
+
+void SetRenderTargetEarlyOut(bool enabled) noexcept {
+    render_target_early_out.store(enabled, std::memory_order_relaxed);
+}
+
+bool RenderTargetEarlyOut() noexcept {
+    return render_target_early_out.load(std::memory_order_relaxed);
+}
 
 void SetReclaimSupersededImages(bool enabled) noexcept {
     reclaim_superseded_images.store(enabled, std::memory_order_relaxed);

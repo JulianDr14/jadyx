@@ -115,6 +115,7 @@ enum class Counter : size_t {
     ViewCopies,
     DescriptorTables,       ///< resource tables a draw or dispatch asked for
     DescriptorTableReuses,  ///< of them, served by an identical table of the same list
+    RenderTargetEarlyOuts,  ///< draws that kept the attachments prepared by an earlier one
     SubmitListNs,
     SubmitLists,
     GpuTickNs,

@@ -635,12 +635,18 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
     using namespace VideoCommon::Dirty;
     auto& flags = maxwell3d->dirty.flags;
     if (!flags[Dirty::RenderTargets]) {
+        if (!is_clear && rt_prepared_valid && rt_prepared_epoch == binding_epoch &&
+            rt_prepared_frame == frame_tick && rt_prepared_engine == maxwell3d) {
+            VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::RenderTargetEarlyOuts, 1);
+            return;
+        }
         for (size_t index = 0; index < NUM_RT; ++index) {
             ImageViewId& color_buffer_id = render_targets.color_buffer_ids[index];
             PrepareImageView(color_buffer_id, true, is_clear && IsFullClear(color_buffer_id));
         }
         const ImageViewId depth_buffer_id = render_targets.depth_buffer_id;
         PrepareImageView(depth_buffer_id, true, is_clear && IsFullClear(depth_buffer_id));
+        RecordPreparedRenderTargets();
         return;
     }
 
@@ -695,6 +701,37 @@ void TextureCache<P>::UpdateRenderTargets(bool is_clear) {
     }
 
     flags[Dirty::DepthBiasGlobal] = true;
+    RecordPreparedRenderTargets();
+}
+
+template <class P>
+void TextureCache<P>::RecordPreparedRenderTargets() {
+    // Preparing an attachment again only marks it modified once more. That changes nothing while
+    // it has no aliases (whose sync order the tick decides), holds no CPU writes to upload and is
+    // still marked GPU-modified; anything that could change one of those bumps binding_epoch.
+    const auto settled = [this](ImageViewId id) {
+        if (!id) {
+            return true;
+        }
+        const ImageViewBase& view = slot_image_views[id];
+        if (view.IsBuffer()) {
+            return true;
+        }
+        if (!view.image_id) {
+            return false;
+        }
+        const ImageBase& image = slot_images[view.image_id];
+        return image.aliased_images.empty() && False(image.flags & ImageFlagBits::CpuModified) &&
+               True(image.flags & ImageFlagBits::GpuModified);
+    };
+    bool valid = RenderTargetEarlyOut() && settled(render_targets.depth_buffer_id);
+    for (size_t index = 0; valid && index < NUM_RT; ++index) {
+        valid = settled(render_targets.color_buffer_ids[index]);
+    }
+    rt_prepared_valid = valid;
+    rt_prepared_epoch = binding_epoch;
+    rt_prepared_frame = frame_tick;
+    rt_prepared_engine = maxwell3d;
 }
 
 template <class P>
@@ -774,6 +811,7 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
             return;
         }
         image.flags |= ImageFlagBits::CpuModified;
+        ++binding_epoch;
         if (True(image.flags & ImageFlagBits::Tracked)) {
             UntrackImage(image, image_id);
         }
@@ -813,6 +851,7 @@ void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size, bool modified_
             return;
         }
         image.flags &= ~ImageFlagBits::GpuModified;
+        ++binding_epoch;
         images.push_back(image_id);
     });
     if (images.empty()) {
@@ -927,6 +966,7 @@ void TextureCache<P>::DownloadCheckpointMemory() requires HAS_CHECKPOINT_READBAC
         // Mark clean only after both the fence and the guest write succeeded. A failed operation
         // never publishes a partial session and does not claim this image is already preserved.
         image.flags &= ~ImageFlagBits::GpuModified;
+        ++binding_epoch;
         runtime.CompleteGcDownload(image);
     }
 }
@@ -981,6 +1021,7 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
         Image& image = slot_images[id];
         if (False(image.flags & ImageFlagBits::CpuModified)) {
             image.flags |= ImageFlagBits::CpuModified;
+            ++binding_epoch;
             if (True(image.flags & ImageFlagBits::Tracked)) {
                 UntrackImage(image, id);
             }
@@ -1680,6 +1721,7 @@ bool TextureCache<P>::ImageCanRescale(ImageBase& image) {
 
 template <class P>
 void TextureCache<P>::InvalidateScale(Image& image) {
+    ++binding_epoch;
     if (image.scale_tick <= frame_tick) {
         image.scale_tick = frame_tick + 1;
     }
@@ -1719,6 +1761,7 @@ void TextureCache<P>::ReleaseImageViews(Image& image) {
         channel_info.compute_image_table.Invalidate();
     }
     has_deleted_images = true;
+    ++binding_epoch;
 }
 
 template <class P>
@@ -2448,6 +2491,7 @@ void TextureCache<P>::RestoreBlitDestination(ImageId image_id, ImageFlagBits fla
     constexpr ImageFlagBits contents = ImageFlagBits::CpuModified | ImageFlagBits::GpuModified;
     image.flags = (image.flags & ~contents) | (flags & contents);
     image.modification_tick = tick;
+    ++binding_epoch;
     VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::BlitDiscardsRestored, 1);
 }
 
@@ -2932,6 +2976,8 @@ void TextureCache<P>::RegisterImage(ImageId image_id) {
     ASSERT_MSG(False(image.flags & ImageFlagBits::Registered),
                "Trying to register an already registered image");
     image.flags |= ImageFlagBits::Registered;
+    // New overlaps (aliases) and views.
+    ++binding_epoch;
     u64 tentative_size = (std::max)(image.guest_size_bytes, image.unswizzled_size_bytes);
     if ((IsPixelFormatASTC(image.info.format) &&
          True(image.flags & ImageFlagBits::AcceleratedUpload)) ||
@@ -3382,6 +3428,7 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
         channel_info.compute_image_table.Invalidate();
     }
     has_deleted_images = true;
+    ++binding_epoch;
 }
 
 template <class P>
@@ -3424,6 +3471,10 @@ template <class P>
 void TextureCache<P>::MarkModification(ImageBase& image) noexcept {
     image.flags |= ImageFlagBits::GpuModified;
     image.modification_tick = ++modification_tick;
+    if (!image.aliased_images.empty()) {
+        // Its aliases now hold older contents: preparing them copies these.
+        ++binding_epoch;
+    }
 }
 
 template <class P>
@@ -3491,6 +3542,7 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
     Image& image = slot_images[image_id];
     if (invalidate) {
         image.flags &= ~(ImageFlagBits::CpuModified | ImageFlagBits::GpuModified);
+        ++binding_epoch;
         if (False(image.flags & ImageFlagBits::Tracked)) {
             TrackImage(image, image_id);
         }

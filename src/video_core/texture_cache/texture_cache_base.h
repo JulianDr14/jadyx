@@ -57,6 +57,12 @@ using Tegra::Texture::TSCEntry;
 using VideoCore::Surface::PixelFormat;
 using namespace Common::Literals;
 
+/// Draws whose render target registers are clean skip preparing the bound attachments again while
+/// no image changed in a way that preparing them would act on (default; boot.cfg "rt_early_out=0"
+/// prepares them on every draw).
+void SetRenderTargetEarlyOut(bool enabled) noexcept;
+[[nodiscard]] bool RenderTargetEarlyOut() noexcept;
+
 /// Depth targets at a mip level of an existing mipmapped image render into that level (default)
 /// instead of a separate aliased image. Boot.cfg "mip_rt=0" turns it off to reproduce the alias
 /// path.
@@ -235,6 +241,12 @@ public:
     /// Update bound render targets and upload memory if necessary
     /// @param is_clear True when the render targets are being used for clears
     void UpdateRenderTargets(bool is_clear);
+
+private:
+    /// Records whether the attachments UpdateRenderTargets just prepared may skip it next time.
+    void RecordPreparedRenderTargets();
+
+public:
 
     /// Find a framebuffer with the currently bound render targets
     /// UpdateRenderTargets should be called before this
@@ -554,6 +566,13 @@ private:
     std::array<ImageId, 8> rt_image_id{};
     ImageId rt_depth_image_id{};
     u64 texture_bindings_serial = 0;
+    u64 binding_epoch = 0;
+    /// The attachments prepared by the last UpdateRenderTargets, under RenderTargetEarlyOut: preparing
+    /// them again is a no-op while binding_epoch and frame_tick stay the same.
+    bool rt_prepared_valid = false;
+    u64 rt_prepared_epoch = 0;
+    u64 rt_prepared_frame = 0;
+    const void* rt_prepared_engine = nullptr;
     u64 last_feedback_loop_serial = 0;
     u64 last_feedback_texture_serial = 0;
     bool last_feedback_loop_result = false;

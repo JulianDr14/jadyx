@@ -224,6 +224,7 @@ void SetOpaqueAstcToBc1(bool enabled) noexcept;        // texture_cache/util.h
 void SetMipRenderTargets(bool enabled) noexcept;       // texture_cache/texture_cache_base.h
 void SetRenderTargetInheritance(bool enabled) noexcept; // texture_cache/texture_cache_base.h
 void SetReclaimSupersededImages(bool enabled) noexcept; // texture_cache/texture_cache_base.h
+void SetRenderTargetEarlyOut(bool enabled) noexcept;   // texture_cache/texture_cache_base.h
 } // namespace VideoCommon
 
 namespace {
@@ -532,6 +533,7 @@ struct BootConfig {
     D3D12::PipelineKeyTracking::Mode pipeline_key_reuse{D3D12::PipelineKeyTracking::Mode::Off};
     bool upload_copy{}; ///< Experimental short uniform copies; default off.
     bool uniform_reuse{}; ///< Rebind unchanged streamed uniforms within a submission; default off.
+    bool rt_early_out{true}; ///< Skip re-preparing unchanged attachments per draw ("rt_early_out=0").
     bool draw_sampler_reuse{}; ///< Experimental gather-local TSC resolution; default off.
     /// Where pixel shaders keep large local memory: 0 auto (boot probe), 1 pool, 2 private arrays
     /// ("ps_scratch=auto|uav|native", D3D12::PixelShaderScratchMode).
@@ -863,6 +865,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::PipelineKeyTracking::SetMode(config.pipeline_key_reuse);
     D3D12::SetUniformUploadCopy(config.upload_copy);
     D3D12::SetUniformReuse(config.uniform_reuse);
+    VideoCommon::SetRenderTargetEarlyOut(config.rt_early_out);
     D3D12::SetDrawSamplerReuse(config.draw_sampler_reuse);
     D3D12::SetPixelShaderScratchMode(static_cast<D3D12::PixelShaderScratchMode>(config.ps_scratch));
     if (config.debug_layer) {
@@ -3391,6 +3394,11 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         if (line == "uniform_reuse=1") {
                             config.uniform_reuse = true;
                             WriteDiag("boot.cfg: unchanged streamed uniform reuse enabled");
+                            continue;
+                        }
+                        if (line == "rt_early_out=0") {
+                            config.rt_early_out = false;
+                            WriteDiag("boot.cfg: attachments prepared again on every draw");
                             continue;
                         }
                         if (line.starts_with("submit_draws=")) {
