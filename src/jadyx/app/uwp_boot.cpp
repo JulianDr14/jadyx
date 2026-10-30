@@ -97,6 +97,7 @@
 #include "video_core/readback_trace.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
+#include "video_core/renderer_d3d12/d3d12_frame_gen_pacer.h"
 #include "video_core/renderer_d3d12/d3d12_menu_image.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_mode.h"
 
@@ -535,6 +536,9 @@ struct BootConfig {
     /// Texture heaps and staging created without the OS zeroing their pages
     /// ("not_zeroed_heaps=0" turns it off).
     bool not_zeroed_heaps{true};
+    /// Frames generated between the game's ("frame_gen=off|auto|30|60"): auto takes games under
+    /// 28 fps (on average) to 30 and under 56 to 60. Off by default.
+    D3D12::FrameGenMode frame_gen{D3D12::FrameGenMode::Off};
     /// Single-sample depth bias added in the fragment shader ("depth_bias_shader=0" turns it off).
     bool depth_bias_shader{true};
     /// Whether the GPU reads process memory in place, probed and logged at device creation
@@ -915,6 +919,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetBcGpuDecode(config.bc_gpu_decode);
     D3D12::SetNotZeroedHeaps(config.not_zeroed_heaps);
     D3D12::SetShaderDepthBias(config.depth_bias_shader);
+    D3D12::SetFrameGenMode(config.frame_gen);
     D3D12::SetMemoryImportProbe(config.memory_import_probe);
     Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);
     Service::Nvidia::Devices::nvdisp_disp0::SetReleaseFence(config.nv_release_fence);
@@ -3540,7 +3545,22 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                        "memory import probe")) {
                             return;
                         }
-                        if (line == "border_color=exact" || line == "border_color=8bit" ||
+                        if (line.starts_with("frame_gen=")) {
+                            const std::string value = line.substr(10);
+                            if (value == "off" || value == "0") {
+                                config.frame_gen = D3D12::FrameGenMode::Off;
+                            } else if (value == "auto" || value == "1") {
+                                config.frame_gen = D3D12::FrameGenMode::Auto;
+                            } else if (value == "30") {
+                                config.frame_gen = D3D12::FrameGenMode::Target30;
+                            } else if (value == "60") {
+                                config.frame_gen = D3D12::FrameGenMode::Target60;
+                            } else {
+                                WriteDiag("boot.cfg: invalid frame_gen (off, auto, 30, 60), ignored");
+                                return;
+                            }
+                            WriteDiag("boot.cfg: frame generation " + value);
+                        } else if (line == "border_color=exact" || line == "border_color=8bit" ||
                                    line == "border_color=bw") {
                             config.border_color = line == "border_color=8bit" ? 1
                                                   : line == "border_color=bw" ? 2
@@ -3616,6 +3636,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             line.starts_with("bc_gpu_decode=") ||
                             line.starts_with("not_zeroed_heaps=") ||
                             line.starts_with("depth_bias_shader=") ||
+                            line.starts_with("frame_gen=") ||
                             line.starts_with("memory_import_probe=")) {
                             parse_render_key(line);
                             continue;
