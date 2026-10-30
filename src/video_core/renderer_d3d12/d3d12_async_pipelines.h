@@ -27,6 +27,11 @@ void SetWaitSmallDraws(u32 vertices);
 void SetPipelineWorkers(u32 count);
 [[nodiscard]] u32 GetPipelineWorkers() noexcept;
 
+/// Workers that build the disk cache's pipelines on the loading screen ("pso_boot_workers=",
+/// 1-12); 0 keeps the default of one per logical CPU. Read when the disk cache is loaded.
+void SetPipelineBootWorkers(u32 count);
+[[nodiscard]] u32 GetPipelineBootWorkers() noexcept;
+
 /// A draw whose pipeline is still being built.
 struct PendingDraw {
     u32 vertices;

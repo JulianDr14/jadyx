@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -367,6 +368,16 @@ size_t GetTotalPipelineWorkers() {
     }
     const size_t threads = std::max<size_t>(std::thread::hardware_concurrency(), 2) - 1;
     return std::min<size_t>(threads, 4);
+}
+
+/// Workers for the disk cache on the loading screen. Nothing else runs then but the loading
+/// animation, so every logical CPU builds; at low priority, the animation still goes first. They
+/// are gone once the game starts, which keeps the capped workers above. "pso_boot_workers=".
+size_t GetTotalPipelineBootWorkers() {
+    if (const u32 configured = GetPipelineBootWorkers(); configured != 0) {
+        return configured;
+    }
+    return std::max<size_t>(std::thread::hardware_concurrency(), 2);
 }
 
 /// Shader capabilities from D3D12's feature queries (logged at boot by Device::LogCapabilities).
@@ -965,12 +976,15 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         std::vector<std::pair<size_t, GraphicsPipeline*>> dormant;
         bool has_loaded{};
     } state;
+    const size_t boot_worker_count = GetTotalPipelineBootWorkers();
+    Common::ThreadWorker boot_workers(boot_worker_count, "D3D12PipelineBoot", {},
+                                      Common::ThreadPlacement::Background);
 
     const auto load_compute{[&](std::ifstream& file, FileEnvironment env) {
         ComputePipelineCacheKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
 
-        workers.QueueWork([this, key, env_ = std::move(env), &state, &callback]() mutable {
+        boot_workers.QueueWork([this, key, env_ = std::move(env), &state, &callback]() mutable {
             ShaderPools pools;
             auto pipeline{CreateComputePipeline(pools, key, env_, false)};
             std::scoped_lock lock{state.mutex};
@@ -992,8 +1006,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         const bool build_pso = hot_pipelines.Prewarm(key.Hash(), file_index);
         state.prewarmed += build_pso ? 1 : 0;
 
-        workers.QueueWork([this, key, envs_ = std::move(envs), &state, &callback, build_pso,
-                           file_index]() mutable {
+        boot_workers.QueueWork([this, key, envs_ = std::move(envs), &state, &callback, build_pso,
+                                file_index]() mutable {
             ShaderPools pools;
             boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
             for (auto& env : envs_) {
@@ -1032,7 +1046,13 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     state.has_loaded = true;
     lock.unlock();
 
-    workers.WaitForRequests(stop_loading);
+    const auto build_start = std::chrono::steady_clock::now();
+    boot_workers.WaitForRequests(stop_loading);
+    LOG_INFO(Render, "D3D12: disk cache built by {} loading screen workers in {} ms",
+             boot_worker_count,
+             std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::steady_clock::now() - build_start)
+                 .count());
     const auto preparation = VideoCore::Perf::Read();
     LOG_INFO(Render,
              "D3D12 PSO preparation after disk load (session totals): {} requests, {} hits, "
