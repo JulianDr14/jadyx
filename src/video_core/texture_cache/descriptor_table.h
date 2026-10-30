@@ -50,6 +50,18 @@ public:
         return result;
     }
 
+    /// True when entry index was read since the last Refresh and still holds that descriptor.
+    /// Unlike Read, it records nothing.
+    [[nodiscard]] bool Matches(Tegra::MemoryManager const& gpu_memory, u32 index) const noexcept {
+        if (index > current_limit || (read_descriptors[index / 64] & (1ULL << (index % 64))) == 0) {
+            return false;
+        }
+        T value;
+        gpu_memory.ReadBlockUnsafe(current_gpu_addr + index * sizeof(T), std::addressof(value),
+                                   sizeof(T));
+        return value == descriptors[index];
+    }
+
     void Refresh(GPUVAddr gpu_addr, u32 limit) noexcept {
         current_gpu_addr = gpu_addr;
         current_limit = limit;

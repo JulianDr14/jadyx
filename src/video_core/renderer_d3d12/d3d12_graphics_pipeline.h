@@ -182,6 +182,10 @@ private:
 /// The PSO, the driver's compiled pipeline and by far its largest part, is resident only while it
 /// is drawn (PipelineResidencyPolicy): a dormant pipeline keeps its DXIL, and Wake builds the PSO
 /// again from it.
+/// Draws reuse the views and samplers a stage resolved in the pipeline's last draw while it reads
+/// the same handles from unchanged descriptor table entries (boot.cfg "stage_view_cache=1").
+void SetStageViewCache(bool enabled);
+
 class GraphicsPipeline {
 public:
     enum class State : u8 {
@@ -466,6 +470,10 @@ private:
     std::optional<DxilDiskCache::Key> released_dxil;
     u8 released_stage_mask{};
     bool prewarmed{};      ///< GPU thread only.
+    /// What each stage resolved its views and samplers to in the last draw (stage_view_cache=1),
+    /// allocated by the first draw that uses it. GPU thread only.
+    struct StageViewState;
+    std::unique_ptr<StageViewState> stage_views;
     /// The object itself. Its DXIL and stage bindings are shared with other pipelines.
     Common::MemoryCharge charge{Common::MemoryAccount::Pipelines, sizeof(GraphicsPipeline)};
 };

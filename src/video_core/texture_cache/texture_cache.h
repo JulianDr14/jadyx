@@ -488,6 +488,7 @@ SamplerId TextureCache<P>::GetSamplerId(u32 index, bool compute) {
     auto const map_index = index | (compute ? Common::SlotId::TAGGED_VALUE : 0);
     auto const [descriptor, is_new] = table.Read(*gpu_memory, index);
     if (is_new) {
+        graphics_table_generation += compute ? 0 : 1;
         auto const id = FindSampler(descriptor, compute);
         channel_state->sampler_ids.insert_or_assign(map_index, id);
         return id;
@@ -756,6 +757,7 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
     // Is new (on the tegra engine side)?
     auto const [descriptor, is_new] = table.Read(*gpu_memory, index);
     if (is_new) {
+        graphics_table_generation += compute ? 0 : 1;
         if (IsValidEntry(*gpu_memory, descriptor)) {
             // Is new (registered view) on the texture cache side?
             const auto [pair, is_new_tc] = channel_state->image_views.try_emplace(descriptor);

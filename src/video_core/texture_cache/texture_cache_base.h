@@ -63,6 +63,19 @@ using namespace Common::Literals;
 void SetRenderTargetEarlyOut(bool enabled) noexcept;
 [[nodiscard]] bool RenderTargetEarlyOut() noexcept;
 
+/// What graphics image views and samplers resolved from the descriptor tables depend on beyond
+/// the table entries themselves. Equal stamps mean an entry that still holds the same descriptor
+/// resolves to the same, already prepared, view and sampler.
+struct GraphicsBindingStamp {
+    u64 epoch{};    ///< image changes that preparing a view acts on (uploads, aliases, deletions)
+    u64 frame{};    ///< frame tick, for the LRU touch of the images
+    u64 bindings{}; ///< table addresses and limits
+    u64 tables{};   ///< graphics table entries read with a new descriptor
+    const void* channel{};
+
+    bool operator==(const GraphicsBindingStamp&) const = default;
+};
+
 /// Depth targets at a mip level of an existing mipmapped image render into that level (default)
 /// instead of a separate aliased image. Boot.cfg "mip_rt=0" turns it off to reproduce the alias
 /// path.
@@ -233,6 +246,20 @@ public:
 
     /// Refresh the state for graphics/compute image view and sampler descriptors
     void SynchronizeDescriptors(bool compute);
+
+    /// See GraphicsBindingStamp. Call after SynchronizeDescriptors(false).
+    [[nodiscard]] GraphicsBindingStamp CurrentGraphicsBindingStamp() const noexcept {
+        return {binding_epoch, frame_tick, texture_bindings_serial, graphics_table_generation,
+                channel_state};
+    }
+
+    /// True when graphics TIC (TSC) entry index was read before and still holds that descriptor.
+    [[nodiscard]] bool GraphicsImageEntryMatches(u32 index) const noexcept {
+        return channel_state->graphics_image_table.Matches(*gpu_memory, index);
+    }
+    [[nodiscard]] bool GraphicsSamplerEntryMatches(u32 index) const noexcept {
+        return channel_state->graphics_sampler_table.Matches(*gpu_memory, index);
+    }
 
     /// Updates the Render Targets if they can be rescaled
     /// @retval True if the Render Targets have been rescaled.
@@ -566,6 +593,7 @@ private:
     std::array<ImageId, 8> rt_image_id{};
     ImageId rt_depth_image_id{};
     u64 texture_bindings_serial = 0;
+    u64 graphics_table_generation = 0;
     u64 binding_epoch = 0;
     /// The attachments prepared by the last UpdateRenderTargets, under RenderTargetEarlyOut: preparing
     /// them again is a no-op while binding_epoch and frame_tick stay the same.

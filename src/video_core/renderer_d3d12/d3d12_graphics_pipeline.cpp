@@ -54,6 +54,7 @@
 namespace D3D12 {
 
 namespace {
+std::atomic_bool stage_view_cache{};
 std::atomic_bool draw_sampler_reuse{};
 
 std::atomic<u64> dxil_released{};
@@ -67,6 +68,16 @@ struct ReloadedDxil {
     Common::MemoryCharge charge;
 };
 }
+void SetStageViewCache(bool enabled) {
+    stage_view_cache.store(enabled, std::memory_order_relaxed);
+}
+
+struct GraphicsPipeline::StageViewState {
+    VideoCommon::GraphicsBindingStamp stamp;
+    std::array<bool, NUM_STAGES> valid{};
+    std::array<std::vector<StageViewEntry>, NUM_STAGES> entries;
+};
+
 void SetDrawSamplerReuse(bool enabled) {
     draw_sampler_reuse.store(enabled, std::memory_order_relaxed);
 }
@@ -604,6 +615,25 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     texture_cache.SynchronizeDescriptors(false);
     buffer_cache.SetUniformBuffersState(enabled_uniform_buffer_masks, &uniform_buffer_sizes);
 
+    // stage_view_cache=1: what each stage resolved stays valid under the same binding stamp.
+    const bool cache_views = stage_view_cache.load(std::memory_order_relaxed);
+    VideoCommon::GraphicsBindingStamp stamp{};
+    if (cache_views) {
+        stamp = texture_cache.CurrentGraphicsBindingStamp();
+        if (!stage_views) {
+            stage_views = std::make_unique<StageViewState>();
+        }
+        if (stage_views->stamp != stamp) {
+            stage_views->valid = {};
+        }
+    }
+    std::array<bool, NUM_STAGES> reused{};
+    std::array<std::pair<u32, u32>, NUM_STAGES> view_ranges{};
+    std::array<u32, NUM_STAGES> first_samplers{};
+    boost::container::small_vector<u32, 32> tsc_handles;
+    std::array<std::pair<u32, u32>, NUM_STAGES> tsc_ranges{};
+    bool any_reused = false;
+
     const bool via_header_index = regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding;
     for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
         if (!HasStage(stage)) {
@@ -622,9 +652,82 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
             return ReadTextureHandle(gpu_memory, desc, index, via_header_index,
                                      [&](u32 cbuf) { return cbufs[cbuf].address; });
         };
-        GatherStageViews(info, texture_cache, false, read_handle, views, samplers, sampler_cache);
+        const u32 first_view = static_cast<u32>(views.size());
+        first_samplers[stage] = static_cast<u32>(samplers.size());
+        if (cache_views && stage_views->valid[stage] &&
+            ReuseStageViews(info, texture_cache, read_handle, stage_views->entries[stage], views,
+                            samplers)) {
+            reused[stage] = true;
+            any_reused = true;
+        } else if (cache_views) {
+            // The TSC handles are not kept by the views: record them for StoreStageViews.
+            const u32 first_tsc = static_cast<u32>(tsc_handles.size());
+            const auto read_and_record = [&](const auto& desc, u32 index) {
+                const auto handle = read_handle(desc, index);
+                if constexpr (std::is_same_v<std::remove_cvref_t<decltype(desc)>,
+                                             Shader::TextureDescriptor>) {
+                    tsc_handles.push_back(handle.second);
+                }
+                return handle;
+            };
+            GatherStageViews(info, texture_cache, false, read_and_record, views, samplers,
+                             sampler_cache);
+            tsc_ranges[stage] = {first_tsc, static_cast<u32>(tsc_handles.size())};
+        } else {
+            GatherStageViews(info, texture_cache, false, read_handle, views, samplers,
+                             sampler_cache);
+        }
+        view_ranges[stage] = {first_view, static_cast<u32>(views.size())};
     }
-    texture_cache.FillImageViews(std::span(views.data(), views.size()), false, has_images);
+    if (!any_reused) {
+        texture_cache.FillImageViews(std::span(views.data(), views.size()), false, has_images);
+    } else {
+        for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+            const auto [first, last] = view_ranges[stage];
+            if (!reused[stage] && first != last) {
+                texture_cache.FillImageViews(std::span(views.data() + first, last - first), false,
+                                             has_images);
+            }
+        }
+        // Resolving the others changed the images (deleted some...): resolve every view again.
+        if (texture_cache.CurrentGraphicsBindingStamp().epoch != stamp.epoch) {
+            texture_cache.FillImageViews(std::span(views.data(), views.size()), false,
+                                         has_images);
+        }
+    }
+    if (cache_views) {
+        const VideoCommon::GraphicsBindingStamp after = texture_cache.CurrentGraphicsBindingStamp();
+        if (after.epoch != stamp.epoch) {
+            // Images changed while the views were resolved: views prepared before may be stale.
+            stage_views->valid = {};
+            stage_views->stamp = {};
+        } else {
+            stage_views->stamp = after;
+            for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+                if (!HasStage(stage)) {
+                    continue;
+                }
+                if (reused[stage]) {
+                    VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::StageViewReuses, 1);
+                    continue;
+                }
+                const StageBindings& info = *stage_infos[stage];
+                const bool cacheable = StageViewsCacheable(info);
+                stage_views->valid[stage] = cacheable;
+                if (!cacheable) {
+                    continue;
+                }
+                VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::StageViewMisses, 1);
+                const auto [first, last] = view_ranges[stage];
+                const auto [first_tsc, last_tsc] = tsc_ranges[stage];
+                StoreStageViews(info, std::span(views.data() + first, last - first),
+                                std::span(samplers.data() + first_samplers[stage],
+                                          samplers.size() - first_samplers[stage]),
+                                std::span(tsc_handles.data() + first_tsc, last_tsc - first_tsc),
+                                stage_views->entries[stage]);
+            }
+        }
+    }
     if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
         DrawMetrics::sampler_resolve_requests.fetch_add(samplers.size(), std::memory_order_relaxed);
         DrawMetrics::sampler_resolve_reused.fetch_add(sampler_cache.Hits(), std::memory_order_relaxed);

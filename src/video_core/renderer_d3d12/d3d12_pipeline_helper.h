@@ -3,12 +3,14 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <optional>
 #include <span>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include <boost/container/small_vector.hpp>
 
@@ -138,6 +140,89 @@ void GatherStageViews(const Info& info, TextureCache& texture_cache, bool is_com
     for (const auto& desc : info.image_descriptors) {
         add_image(desc, desc.is_written);
     }
+}
+
+/// One handle a stage read and what it resolved to, in GatherStageViews order (stage_view_cache=1).
+struct StageViewEntry {
+    u32 tic{};
+    u32 tsc{}; ///< textures only
+    VideoCommon::ImageViewId view{};
+    VideoCommon::SamplerId sampler{}; ///< textures only
+};
+
+/// Stages that write storage images scale them down while resolving them: never reused.
+template <typename Info>
+[[nodiscard]] bool StageViewsCacheable(const Info& info) {
+    return std::ranges::none_of(info.image_descriptors,
+                                [](const auto& desc) { return desc.is_written; });
+}
+
+/// Appends the views and samplers of a stage from entries, the last draw's, when the stage reads
+/// the same handles and the descriptor tables still hold the entries they were resolved from.
+/// The caller checks the texture cache's binding stamp. False, appending nothing, otherwise.
+template <typename Info, typename ReadHandle>
+[[nodiscard]] bool ReuseStageViews(const Info& info, const TextureCache& texture_cache,
+                                   ReadHandle&& read_handle,
+                                   std::span<const StageViewEntry> entries, ImageViewList& views,
+                                   SamplerIdList& samplers) {
+    const size_t first_view = views.size();
+    const size_t first_sampler = samplers.size();
+    size_t next = 0;
+    bool same = true;
+    const auto add = [&](const auto& desc, bool is_texture) {
+        for (u32 index = 0; same && index < desc.count; ++index) {
+            const auto handle = read_handle(desc, index);
+            const StageViewEntry* const entry = next < entries.size() ? &entries[next++] : nullptr;
+            same = entry && entry->tic == handle.first &&
+                   (!is_texture || entry->tsc == handle.second) &&
+                   texture_cache.GraphicsImageEntryMatches(handle.first) &&
+                   (!is_texture || texture_cache.GraphicsSamplerEntryMatches(handle.second));
+            if (!same) {
+                return;
+            }
+            views.push_back({.index = handle.first, .blacklist = false, .id = entry->view});
+            if (is_texture) {
+                samplers.push_back(entry->sampler);
+            }
+        }
+    };
+    for (const auto& desc : info.texture_buffer_descriptors) add(desc, false);
+    for (const auto& desc : info.image_buffer_descriptors) add(desc, false);
+    for (const auto& desc : info.texture_descriptors) add(desc, true);
+    for (const auto& desc : info.image_descriptors) add(desc, false);
+    if (same && next == entries.size()) {
+        return true;
+    }
+    views.resize(first_view);
+    samplers.resize(first_sampler);
+    return false;
+}
+
+/// Records what a stage resolved: its views from first_view and samplers from first_sampler,
+/// with the TSC handles in tsc (one per texture, in order).
+template <typename Info>
+void StoreStageViews(const Info& info, std::span<const VideoCommon::ImageViewInOut> views,
+                     std::span<const VideoCommon::SamplerId> samplers, std::span<const u32> tsc,
+                     std::vector<StageViewEntry>& entries) {
+    entries.clear();
+    size_t texture = 0;
+    const auto add = [&](const auto& desc, bool is_texture) {
+        for (u32 index = 0; index < desc.count; ++index) {
+            const VideoCommon::ImageViewInOut& view = views[entries.size()];
+            StageViewEntry& entry = entries.emplace_back();
+            entry.tic = view.index;
+            entry.view = view.id;
+            if (is_texture) {
+                entry.tsc = tsc[texture];
+                entry.sampler = samplers[texture];
+                ++texture;
+            }
+        }
+    };
+    for (const auto& desc : info.texture_buffer_descriptors) add(desc, false);
+    for (const auto& desc : info.image_buffer_descriptors) add(desc, false);
+    for (const auto& desc : info.texture_descriptors) add(desc, true);
+    for (const auto& desc : info.image_descriptors) add(desc, false);
 }
 
 /// Binds the texel and image buffers of a stage through the buffer cache. bind(index, view,
