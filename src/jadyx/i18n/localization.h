@@ -641,6 +641,8 @@ enum class Text : std::uint16_t {
     ShaderBuildWait,
     GraphicsFollowGlobal,
     GameGraphicsHint,
+    AppModeTitle,
+    AppModeBody,
 
     // Tabs, sections and filters
     TabHome,

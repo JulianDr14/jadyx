@@ -117,6 +117,7 @@ add_executable(jadyx WIN32
     content/content_service.cpp
     content/content_session.cpp
     content/content_view.cpp
+    library/app_mode.h
     library/game_options_page.h
     cheats/cheat_catalog.h
     cheats/cheat_db.cpp

@@ -135,6 +135,10 @@ public:
         swap_prompt_faces = false;
         if (const auto active = SelectController(panel.devices, options.controller_id))
             swap_prompt_faces = SwapControllerFaceButtons(panel.devices[*active], options.swap_face_buttons);
+        if (view.app_mode) {
+            DrawAppMode(view.app_memory_mib);
+            return;
+        }
         using LibraryLayout::LibraryTab;
         const bool library = !view.loading && view.selected < scan.entries.size();
         const LibraryEntry* game = library ? &scan.entries[view.selected] : nullptr;
@@ -228,6 +232,24 @@ public:
                     hero.Running(now) || backdrop_fade.Running(now) || tab_slide.Running(now) ||
                     filter_slide.Running(now) || management_collapse.Running(now) ||
                     list_scroll.Running(now) || grid_scroll.Running(now);
+    }
+    /// Only this, over the whole screen, while Jadyx runs as an App: games do not fit its memory.
+    void DrawAppMode(std::uint64_t memory_mib) {
+        hits.clear();
+        ambient = false;
+        target->BeginDraw();
+        target->Clear(D2D1::ColorF(Palette::Canvas));
+        Card(140, 150, 1000, 420, 24);
+        Type(Tr(T::AppModeTitle), TypeRole::HeadlineLarge, 190, 200, 900, Palette::Warning, 1, TextAlign::Leading, 2);
+        Type(I18n::Format(T::AppModeBody, {std::to_wstring(memory_mib)}), TypeRole::BodyLarge, 190, 300, 900,
+             Palette::Text, 1, TextAlign::Leading, 6);
+        ControlPrompt(Navigation::Back, Tr(T::Exit), 190, 500);
+        if (const HRESULT drawn = target->EndDraw(); FAILED(drawn)) {
+            if (drawn == D2DERR_RECREATE_TARGET) winrt::throw_hresult(drawn);
+            last_draw_error = drawn;
+        }
+        winrt::check_hresult(swapchain->Present(1, 0));
+        animating = false;
     }
     /// The library's corner card for a new version: Y opens the update page, X hides it a day.
     void DrawUpdateNotice(const Updates::Release& release) {

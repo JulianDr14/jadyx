@@ -62,6 +62,8 @@ struct LibraryView {
     std::size_t shelf_focus{};               ///< In `shelf`; its size is the import tile.
     bool filter_focus{};                     ///< The Library tab's focus is on the filter bar.
     ControllerBattery battery{};
+    bool app_mode{};                ///< Running as an App: only the App-mode notice shows.
+    std::uint64_t app_memory_mib{}; ///< The app's memory limit, for that notice.
 };
 /// What the pointer can press on the library screen.
 enum class LibraryHit : unsigned {

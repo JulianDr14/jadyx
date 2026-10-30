@@ -35,6 +35,7 @@
 #include "jadyx/cheats/cheat_session.h"
 #include "jadyx/cheats/cheats_page.h"
 #include "jadyx/library/game_library.h"
+#include "jadyx/library/app_mode.h"
 #include "jadyx/library/game_options_page.h"
 #include "jadyx/content/content_view.h"
 #include "jadyx/mods/mod_session.h"
@@ -92,6 +93,13 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
         const double window_width = bounds.Width * dpi;
         return window_width >= 1.0 ? std::max(1.0, width / window_width) : 1.0;
     }();
+    // In App mode (Dev Home's app type) the console leaves about 1 GiB, in Game mode about 5:
+    // no game fits the first, so the library only asks to change it.
+    std::uint64_t app_memory_limit{};
+    try { app_memory_limit = winrt::Windows::System::MemoryManager::AppMemoryUsageLimit(); } catch (...) {}
+    const bool app_mode = IsAppModeMemory(app_memory_limit);
+    LOG_INFO(Frontend, "Library: app memory limit {} MiB ({} mode)", app_memory_limit >> 20,
+             app_mode ? "App" : "Game");
     LibraryScan scan;
     size_t selected = 0;
     bool rail = false; // The focus is in the played games' rail (library_layout.h).
@@ -1160,6 +1168,10 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (!(read == battery)) { battery = read; dirty = true; }
         }
         if (window_closed || QuitRequested()) return std::nullopt;
+        if (app_mode) {
+            if (actions & Quit) return std::nullopt;
+            actions = 0;
+        }
         if (actions && system_page.updated) { system_page.updated = false; dirty = true; }
         if(import_progress.confirmation.load()&&!configuration.confirm_import){
             std::lock_guard lock{import_progress.review_mutex};configuration.review_text=import_progress.review_text;
@@ -2051,7 +2063,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (scan.limited) notice = Tr(T::ScanLimit);
             dirty = true;
         }
-        if (!auto_pick.empty() && !configuration.open && !loading && !picker && !validation.valid()) {
+        if (!app_mode && !auto_pick.empty() && !configuration.open && !loading && !picker && !validation.valid()) {
             if (auto_pick_at == std::chrono::steady_clock::time_point{})
                 auto_pick_at = std::chrono::steady_clock::now() + std::chrono::seconds{2};
             if (std::chrono::steady_clock::now() >= auto_pick_at) {
@@ -2365,7 +2377,9 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
                           .shelf = &shelf,
                           .shelf_focus = shelf_focus,
                           .filter_focus = filter_focus,
-                          .battery = battery});
+                          .battery = battery,
+                          .app_mode = app_mode,
+                          .app_memory_mib = app_memory_limit >> 20});
             dirty = false;
         }
         // A drawn frame already waited for the display in Present(1); sleeping after it too made
