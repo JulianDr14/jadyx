@@ -376,6 +376,9 @@ struct BootConfig {
     u32 wait_small_draws{};
     /// Pipeline build workers, 1-8 ("pso_workers="); 0 keeps the default of 4.
     u32 pso_workers{};
+    /// Workers that build the disk cache on the loading screen, 1-12 ("pso_boot_workers="); 0
+    /// keeps the default of one per logical CPU.
+    u32 pso_boot_workers{};
     /// The driver's compiled PSOs kept on disk and handed back to it ("pso_blobs=1"); off by
     /// default, as the console's driver may not take them.
     bool pso_blobs{};
@@ -801,6 +804,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetAsyncPipelines(config.async_pipelines);
     D3D12::SetWaitSmallDraws(config.wait_small_draws);
     D3D12::SetPipelineWorkers(config.pso_workers);
+    D3D12::SetPipelineBootWorkers(config.pso_boot_workers);
     D3D12::SetPsoBlobs(config.pso_blobs);
     D3D12::SetCachedStaging(config.cached_staging);
     D3D12::SetCpuTextureWrites(config.cpu_texture_writes);
@@ -3361,6 +3365,12 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                 1U, 8U);
                             WriteDiag("boot.cfg: " + std::to_string(config.pso_workers) +
                                       " pipeline build workers");
+                        } else if (line.starts_with("pso_boot_workers=")) {
+                            config.pso_boot_workers = std::clamp(
+                                static_cast<u32>(std::strtoul(line.c_str() + 17, nullptr, 10)),
+                                1U, 12U);
+                            WriteDiag("boot.cfg: " + std::to_string(config.pso_boot_workers) +
+                                      " loading screen pipeline workers");
                         } else {
                             WriteDiag("boot.cfg: IGNORED unknown pipeline key " + line);
                         }
@@ -3486,6 +3496,7 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         if (line.starts_with("async_pipelines=") ||
                             line.starts_with("wait_small_draws=") ||
                             line.starts_with("pso_workers=") ||
+                            line.starts_with("pso_boot_workers=") ||
                             line.starts_with("pso_blobs=")) {
                             parse_pipeline_key(line);
                             continue;
