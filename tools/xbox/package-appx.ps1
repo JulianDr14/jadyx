@@ -63,6 +63,9 @@ param(
     # Package version for the staged manifest (MAJOR.MINOR.BUILD.REVISION). The manifest in the
     # repo is left as it is.
     [string] $Version,
+    # A second app next to the release one: identity Jadyx.Canary, tile "Jadyx Canary". Windows
+    # keeps its own LocalState (keys, firmware, saves, shaders); the games folder is shared.
+    [switch] $Canary,
     # Signing certificate as a PFX file (CI), its password in $env:JADYX_PFX_PASSWORD. Without it
     # the CurrentUser\My certificate for $PublisherCN is used, or minted.
     [string] $PfxPath
@@ -223,8 +226,14 @@ if ($BootNro -or $gameName -or $BootCfg.Count -gt 0) {
 if ($mf.Package.Identity.Publisher -ne $PublisherCN) {
     throw "Publisher mismatch: manifest has '$($mf.Package.Identity.Publisher)' but signing with '$PublisherCN'."
 }
-if ($Version) {
-    $mf.Package.Identity.Version = $Version
+if ($Canary) {
+    $mf.Package.Identity.Name = "Jadyx.Canary"
+    $mf.Package.Properties.DisplayName = "Jadyx Canary"
+    $mf.Package.Applications.Application.VisualElements.DisplayName = "Jadyx Canary"
+    Write-Host "identity : Jadyx.Canary (installs next to Jadyx)"
+}
+if ($Version -or $Canary) {
+    if ($Version) { $mf.Package.Identity.Version = $Version }
     # XmlDocument.Save alone writes a UTF-8 BOM; updaters up to 0.3.7.0 reject such a manifest.
     $settings = New-Object System.Xml.XmlWriterSettings
     $settings.Encoding = New-Object System.Text.UTF8Encoding $false
