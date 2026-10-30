@@ -3,6 +3,7 @@
 #pragma once
 #include <cstdint>
 #include <optional>
+#include "jadyx/settings/graphics_settings.h"
 #include "jadyx/settings/system_settings.h"
 
 namespace Service::Account {
@@ -18,11 +19,22 @@ bool SaveSystemSettings(const SystemSettings& settings);
 std::optional<bool> LoadGameOfflineMode(std::uint64_t program_id);
 bool SaveGameOfflineMode(std::uint64_t program_id, std::optional<bool> offline);
 
+/// Settings > Graphics, saved in LocalSettings. Keys of their own: an install that saved the old
+/// in-game upscaling starts with these defaults (FSR on).
+GraphicsSettings LoadGraphicsSettings();
+bool SaveGraphicsSettings(const GraphicsSettings& settings);
+
+/// A game's own graphics, set from its options in the library; nullopt fields follow
+/// Settings > Graphics.
+GameGraphics LoadGameGraphics(std::uint64_t program_id);
+bool SaveGameGraphics(std::uint64_t program_id, const GameGraphics& graphics);
+
 /// Windows' preferred languages and home region (the console's, on Xbox). Never throws.
 SystemLocale DetectSystemLocale();
 
 /// Resolves the saved settings against the system and makes the result current: the interface
-/// language for the frontend, and Eden's system language and region for the next game.
+/// language for the frontend, Eden's system language and region for the next game, and the upscaling
+/// of Settings > Graphics (a game's own is applied once its title id is known).
 ResolvedSystem ApplySystemSettings();
 
 /// Makes upscaling Eden's scaling settings, which the D3D12 present reads every frame. On the GPU

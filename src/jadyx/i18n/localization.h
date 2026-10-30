@@ -629,6 +629,18 @@ enum class Text : std::uint16_t {
     OfflineModeHint,
     MenuOfflineSystem,
     MenuOfflineThisGame,
+    Graphics,
+    GraphicsSubtitle,
+    UpscalingHint,
+    FrameGen,
+    FrameGenHint,
+    ShaderBuild,
+    ShaderBuildHint,
+    ShaderBuildSkip,
+    ShaderBuildBalanced,
+    ShaderBuildWait,
+    GraphicsFollowGlobal,
+    GameGraphicsHint,
 
     // Tabs, sections and filters
     TabHome,

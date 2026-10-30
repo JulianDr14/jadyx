@@ -79,6 +79,9 @@ add_executable(jadyx WIN32
     settings/nacp_language.h
     settings/system_page.h
     settings/upscaling.h
+    # Settings > Graphics and each game's own.
+    settings/graphics_settings.h
+    settings/graphics_page.h
     ui/text_entry.h
     ui/text_entry_panel.cpp
     ui/text_entry_panel.h

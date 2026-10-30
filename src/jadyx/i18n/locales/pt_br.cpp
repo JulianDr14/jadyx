@@ -679,6 +679,18 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::OfflineModeHint, L"Os jogos não veem a internet, como no modo avião, e não pedem login online. Vale ao iniciar um jogo"},
     {Text::MenuOfflineSystem, L"Sistema · {0}"},
     {Text::MenuOfflineThisGame, L"Só para este jogo. Alguns jogos só percebem ao reiniciar"},
+    {Text::Graphics, L"Gráficos"},
+    {Text::GraphicsSubtitle, L"Escala, geração de quadros e shaders"},
+    {Text::UpscalingHint, L"O FSR amplia a imagem até 4K. Desliga a geração de quadros"},
+    {Text::FrameGen, L"Geração de quadros"},
+    {Text::FrameGenHint, L"Cria quadros intermediários: um jogo a 20 fps parece rodar a 30. Desliga o FSR"},
+    {Text::ShaderBuild, L"Shaders novos"},
+    {Text::ShaderBuildHint, L"O que o jogo faz enquanto compila um shader"},
+    {Text::ShaderBuildSkip, L"Pular (completo)"},
+    {Text::ShaderBuildBalanced, L"Equilibrado"},
+    {Text::ShaderBuildWait, L"Esperar"},
+    {Text::GraphicsFollowGlobal, L"Ajustes · {0}"},
+    {Text::GameGraphicsHint, L"Só para este jogo. Vale na próxima vez que ele iniciar"},
 
     // Tabs, sections and filters
     {Text::TabHome, L"Início"},
