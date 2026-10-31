@@ -43,7 +43,9 @@ constexpr u32 TABLE_SIZE = NUM_SOURCES + 1;
 
 constexpr u32 GROUP_SIZE = 8;
 constexpr u32 BLOCK_SIZE = 8;
-constexpr u32 STATS_SIZE = 256;
+/// Statistics words: each slot's motion error, then d3d12_fg_motion.comp's global motion (from
+/// word 8: each slot's vector, from word 16 two words per wide vector, 41 x 41).
+constexpr u32 STATS_SIZE = 16 * 1024;
 constexpr u32 CPU_DESCRIPTORS = 96;
 
 // d3d12_fg_motion.comp flags.
@@ -51,6 +53,8 @@ constexpr u32 HAS_COARSE = 1;
 constexpr u32 HAS_TEMPORAL = 2;
 constexpr u32 FULL_SEARCH = 4;
 constexpr u32 FINEST = 8;
+constexpr u32 GLOBAL_PICK = 16;
+constexpr u32 HAS_GLOBAL = 32;
 constexpr float MOTION_LAMBDA = 0.4f;
 /// Mean level 0 motion error (0-255 luma) above which a pair is a scene cut.
 constexpr float CUT_THRESHOLD = 28.0f;
@@ -500,18 +504,21 @@ std::optional<u32> FrameGen::RecordIngest(ID3D12Resource* image) {
     if (prev) {
         Slot& previous = slots[*prev];
         const bool temporal = previous.has_motion;
+        const auto stats_barrier = [&] {
+            const D3D12_RESOURCE_BARRIER barrier = UavBarrier(stats.Get());
+            scheduler.CommandList()->ResourceBarrier(1, &barrier);
+        };
         for (u32 step = 0; step < NUM_LEVELS; ++step) {
             const u32 level = NUM_LEVELS - 1 - step;
             Texture& dest = level == 0 ? slot.motion : scratch_motion[level];
             const Texture* coarse = level + 1 < NUM_LEVELS ? &scratch_motion[level + 1] : nullptr;
-            u32 flags = (coarse ? HAS_COARSE : FULL_SEARCH) | (temporal ? HAS_TEMPORAL : 0U);
+            // The previous pair's slot rides above the flags (its global vector).
+            u32 flags = (coarse ? HAS_COARSE | HAS_GLOBAL : FULL_SEARCH) |
+                        (temporal ? HAS_TEMPORAL | (*prev << 8) : 0U);
             if (level == 0) {
                 flags |= FINEST;
-                // The level 0 pass adds to the word the luma pass cleared.
-                const D3D12_RESOURCE_BARRIER barrier = UavBarrier(stats.Get());
-                scheduler.CommandList()->ResourceBarrier(1, &barrier);
             }
-            const std::array<u32, CONSTANT_WORDS> constants{
+            std::array<u32, CONSTANT_WORDS> constants{
                 slot.luma[level].width,
                 slot.luma[level].height,
                 dest.width,
@@ -521,10 +528,23 @@ std::optional<u32> FrameGen::RecordIngest(ID3D12Resource* image) {
                 FloatBits(1.0f / static_cast<float>(1U << level)),
                 FloatBits(MOTION_LAMBDA),
             };
-            Dispatch(cmd, motion_pipeline.Get(), constants,
-                     {&previous.luma[level], &slot.luma[level], coarse,
-                      temporal ? &previous.motion : nullptr, nullptr},
-                     dest, Common::DivCeil(dest.width, GROUP_SIZE),
+            const std::array<const Texture*, NUM_SOURCES> sources{
+                &previous.luma[level], &slot.luma[level], coarse,
+                temporal ? &previous.motion : nullptr, nullptr};
+            if (!coarse) {
+                // The wide search runs a workgroup per block and adds to the global motion words
+                // the luma pass cleared; one workgroup then picks the frame's vector.
+                stats_barrier();
+                Dispatch(cmd, motion_pipeline.Get(), constants, sources, dest, dest.width,
+                         dest.height);
+                stats_barrier();
+                constants[4] = GLOBAL_PICK;
+                Dispatch(cmd, motion_pipeline.Get(), constants, sources, dest, 1, 1);
+                stats_barrier();
+                continue;
+            }
+            Dispatch(cmd, motion_pipeline.Get(), constants, sources, dest,
+                     Common::DivCeil(dest.width, GROUP_SIZE),
                      Common::DivCeil(dest.height, GROUP_SIZE));
         }
     }

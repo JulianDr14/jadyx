@@ -7,10 +7,25 @@
 // as A at -v/2 against B at +v/2, so the field is defined on the interpolated frame's grid and
 // warping it leaves no holes. One invocation finds the vector of one 8x8 block of this level.
 //
-// The coarsest level searches every vector in +-SEARCH texels; the finer levels test the coarse
-// vectors around them, the vector the previous pair had there (motion keeps going) and zero
-// (HUDs, still scenes), then refine the best one by a texel (half a texel on level 0). A
-// smoothness term prefers the coarse vector so flat areas do not pick noise.
+// The coarsest level picks each block's vector in +-SEARCH texels, and as many again around the
+// vector the previous pair had there (a turn keeps going). The smoothness term, which prefers that
+// vector, picks it over a repeating background's aliases.
+//
+// Global motion: the coarsest pass also adds every vector in +-WIDE_SEARCH texels (+-320 output
+// pixels at 1080p, a fast camera turn at 15-20 fps) to a whole-frame cost, one workgroup per block
+// sharing them among its 64 invocations. A pass of one workgroup (GLOBAL_PICK) then takes the
+// vector the whole frame matches best: a camera turn moves most of the frame by one vector, while a
+// block's own best far vector is often an alias (its samples slide off what moved onto look-alike
+// background). A far vector must beat the near ones (around zero, and around the previous pair's
+// global vector: a turn keeps going) by GLOBAL_MARGIN. The finer levels test it like the coarse
+// vectors around them, the previous pair's
+// vector and zero (HUDs, still scenes), then refine the best one by a texel (half a texel on
+// level 0). A smoothness term
+// prefers the coarse vector so flat areas do not pick noise. Texels whose match falls outside the
+// frame do not count: at the edges of a pan they are content one of the frames does not have. A
+// vector that leaves too few in the frame scores a fair EDGE_COST, the global vector a good
+// GLOBAL_EDGE_COST: a turn brings in at the edges content one frame lacks, and the camera's motion
+// explains it better than a look-alike that happens to fit inside.
 //
 // Output texel: xy the vector in texels of this level, z the block's mean absolute difference
 // (0-255 scale). Level 0 adds its cost to the frame's statistics word (scene cut detection).
@@ -22,7 +37,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(push_constant) uniform PushConstants {
     uvec2 level_size;
     uvec2 blocks;
-    uint flags;
+    uint flags;           // the bits below; from bit 8 the previous pair's slot (HAS_TEMPORAL)
     uint stats_index;
     float temporal_scale; // the previous pair's level 0 vectors to this level's texels
     float lambda;         // smoothness weight, per texel of difference
@@ -32,9 +47,26 @@ const uint HAS_COARSE = 1u;
 const uint HAS_TEMPORAL = 2u;
 const uint FULL_SEARCH = 4u;
 const uint FINEST = 8u;
+const uint GLOBAL_PICK = 16u;
+const uint HAS_GLOBAL = 32u;
 
 const int BLOCK = 8;
 const int SEARCH = 4;
+const int WIDE_SEARCH = 20;
+const int WIDE_SIDE = 2 * WIDE_SEARCH + 1;
+const uint GROUP_LANES = 64u;
+/// BlockCost when too few texels match inside the frame; scored as EDGE_COST.
+const float OUT_COST = 1000.0;
+const float EDGE_COST = 10.0;
+const float GLOBAL_EDGE_COST = 2.0;
+/// Mean cost (0-255) by which a far global vector must beat the near ones: integer vectors on the
+/// coarsest level miss sub-texel motion, so an aligned alias can beat the true vector slightly.
+const float GLOBAL_MARGIN = 3.0;
+
+// Statistics words (d3d12_frame_gen.cpp): each slot's global vector in level 0 texels (float
+// bits), then a cost sum (16ths) and a block count per wide vector, cleared by the luma pass.
+const uint GLOBAL_VECTOR = 8u;
+const uint GLOBAL_BINS = 16u;
 
 layout(binding = 0) uniform sampler2D luma_a;
 layout(binding = 1) uniform sampler2D luma_b;
@@ -46,33 +78,123 @@ layout(std430, binding = 6) buffer Stats {
     uint stats[];
 };
 
+shared float group_cost[GROUP_LANES];
+shared vec2 group_v[GROUP_LANES];
+shared uint group_index[GROUP_LANES];
+shared float group_far_cost[GROUP_LANES];
+shared uint group_far_index[GROUP_LANES];
+
 vec2 inv_size;
 vec2 block_origin;
 
-// Mean absolute difference of the block, 0-255.
+// Mean absolute difference of the block, 0-255, over the texels whose match is in the frame.
 float BlockCost(vec2 v) {
     const vec2 half_v = 0.5 * v;
+    const vec2 size = vec2(level_size);
     float sum = 0.0;
+    float count = 0.0;
     for (int y = 0; y < BLOCK; ++y) {
         for (int x = 0; x < BLOCK; ++x) {
             const vec2 p = block_origin + vec2(x, y) + 0.5;
-            const float a = textureLod(luma_a, (p - half_v) * inv_size, 0.0).r;
-            const float b = textureLod(luma_b, (p + half_v) * inv_size, 0.0).r;
-            sum += abs(a - b);
+            const vec2 pa = p - half_v;
+            const vec2 pb = p + half_v;
+            // Weighted, not skipped: a branch here keeps the samples from being fetched together.
+            const float inside = float(all(greaterThanEqual(min(pa, pb), vec2(0.0))) &&
+                                       all(lessThanEqual(max(pa, pb), size)));
+            const float a = textureLod(luma_a, pa * inv_size, 0.0).r;
+            const float b = textureLod(luma_b, pb * inv_size, 0.0).r;
+            sum += inside * abs(a - b);
+            count += inside;
         }
     }
-    return sum * (255.0 / float(BLOCK * BLOCK));
+    // A quarter of the block at least, or the vector does not fit.
+    return count >= float(BLOCK * BLOCK / 4) ? sum * 255.0 / count : OUT_COST;
 }
 
 vec2 best_v;
 float best_cost;
 vec2 predicted;
 
-void Try(vec2 v, float bonus) {
-    const float cost = BlockCost(v) + lambda * dot(abs(v - predicted), vec2(1.0)) - bonus;
+float Fair(float block_cost) {
+    return block_cost >= OUT_COST ? EDGE_COST : block_cost;
+}
+
+void TryCost(vec2 v, float block_cost, float bonus) {
+    const float cost = Fair(block_cost) + lambda * dot(abs(v - predicted), vec2(1.0)) - bonus;
     if (cost < best_cost) {
         best_cost = cost;
         best_v = v;
+    }
+}
+
+void Try(vec2 v, float bonus) {
+    TryCost(v, BlockCost(v), bonus);
+}
+
+bool Near(vec2 v, vec2 center) {
+    const vec2 d = abs(v - center);
+    return max(d.x, d.y) <= float(SEARCH);
+}
+
+/// The vector the whole frame matches best, among the wide ones every block added up.
+void PickGlobal(uint lane) {
+    const float min_blocks = 0.5 * float(blocks.x * blocks.y);
+    float best_score = 1e30;
+    uint best_index = 0u;
+    float far_score = 1e30;
+    uint far_index = 0u;
+    const bool has_previous = (flags & HAS_TEMPORAL) != 0;
+    const uint previous_slot = flags >> 8;
+    const uint previous_word = GLOBAL_VECTOR + 2u * previous_slot;
+    const vec2 previous_v = vec2(uintBitsToFloat(stats[previous_word]),
+                                 uintBitsToFloat(stats[previous_word + 1u]));
+    const vec2 previous = has_previous ? round(temporal_scale * previous_v) : vec2(0.0);
+    for (uint i = lane; i < uint(WIDE_SIDE * WIDE_SIDE); i += GROUP_LANES) {
+        const float count = float(stats[GLOBAL_BINS + 2u * i + 1u]);
+        if (count < min_blocks) {
+            continue;
+        }
+        const vec2 v = vec2(int(i) % WIDE_SIDE - WIDE_SEARCH, int(i) / WIDE_SIDE - WIDE_SEARCH);
+        // Mean block cost; near-ties go to the shorter vector.
+        const float score = float(stats[GLOBAL_BINS + 2u * i]) / (16.0 * count) +
+                            0.01 * dot(abs(v), vec2(1.0));
+        if (Near(v, vec2(0.0)) || (has_previous && Near(v, previous))) {
+            if (score < best_score) {
+                best_score = score;
+                best_index = i;
+            }
+        } else if (score < far_score) {
+            far_score = score;
+            far_index = i;
+        }
+    }
+    group_cost[lane] = best_score;
+    group_index[lane] = best_index;
+    group_far_cost[lane] = far_score;
+    group_far_index[lane] = far_index;
+    barrier();
+    for (uint stride = GROUP_LANES / 2u; stride > 0u; stride >>= 1) {
+        if (lane < stride) {
+            if (group_cost[lane + stride] < group_cost[lane]) {
+                group_cost[lane] = group_cost[lane + stride];
+                group_index[lane] = group_index[lane + stride];
+            }
+            if (group_far_cost[lane + stride] < group_far_cost[lane]) {
+                group_far_cost[lane] = group_far_cost[lane + stride];
+                group_far_index[lane] = group_far_index[lane + stride];
+            }
+        }
+        barrier();
+    }
+    if (lane == 0u) {
+        // A far vector only when the near ones clearly fail: the motion is too fast for them.
+        const bool far = group_far_cost[0] + GLOBAL_MARGIN < group_cost[0];
+        const int i = int(far ? group_far_index[0] : group_index[0]);
+        const vec2 v = min(group_cost[0], group_far_cost[0]) < 1e30
+                           ? vec2(i % WIDE_SIDE - WIDE_SEARCH, i / WIDE_SIDE - WIDE_SEARCH)
+                           : vec2(0.0);
+        stats[GLOBAL_VECTOR + 2u * stats_index] = floatBitsToUint(v.x / temporal_scale);
+        stats[GLOBAL_VECTOR + 2u * stats_index + 1u] = floatBitsToUint(v.y / temporal_scale);
     }
 }
 
@@ -82,7 +204,14 @@ vec2 CoarseVector(ivec2 block) {
 }
 
 void main() {
-    const uvec2 block = gl_GlobalInvocationID.xy;
+    const uint lane = gl_LocalInvocationIndex;
+    if ((flags & GLOBAL_PICK) != 0) {
+        PickGlobal(lane);
+        return;
+    }
+    const bool wide = (flags & FULL_SEARCH) != 0;
+    // Wide: one workgroup per block, so the early return is uniform.
+    const uvec2 block = wide ? gl_WorkGroupID.xy : gl_GlobalInvocationID.xy;
     if (any(greaterThanEqual(block, blocks))) {
         return;
     }
@@ -104,31 +233,76 @@ void main() {
         }
     }
 
-    // Zero first, with a small bonus: still pixels and HUDs stay still.
-    Try(vec2(0.0), 1.0);
-    if ((flags & FULL_SEARCH) != 0) {
-        for (int y = -SEARCH; y <= SEARCH; ++y) {
-            for (int x = -SEARCH; x <= SEARCH; ++x) {
-                Try(vec2(x, y), 0.0);
+    if (wide) {
+        // Zero first, with a small bonus: still pixels and HUDs stay still.
+        if (lane == 0u) {
+            Try(vec2(0.0), 1.0);
+        }
+        const vec2 around = round(temporal);
+        const bool has_around = (flags & HAS_TEMPORAL) != 0;
+        for (int i = int(lane); i < WIDE_SIDE * WIDE_SIDE; i += int(GROUP_LANES)) {
+            const vec2 v = vec2(i % WIDE_SIDE - WIDE_SEARCH, i / WIDE_SIDE - WIDE_SEARCH);
+            const float cost = BlockCost(v);
+            if (cost < OUT_COST) {
+                atomicAdd(stats[GLOBAL_BINS + 2u * uint(i)], uint(cost * 16.0));
+                atomicAdd(stats[GLOBAL_BINS + 2u * uint(i) + 1u], 1u);
+            }
+            if (Near(v, vec2(0.0)) || (has_around && Near(v, around))) {
+                TryCost(v, cost, 0.0);
             }
         }
-    }
-    if ((flags & HAS_TEMPORAL) != 0) {
-        Try(round(temporal), 0.0);
-    }
-    if ((flags & HAS_COARSE) != 0) {
-        Try(predicted, 0.0);
-        Try(CoarseVector(coarse_block + ivec2(-1, 0)), 0.0);
-        Try(CoarseVector(coarse_block + ivec2(1, 0)), 0.0);
-        Try(CoarseVector(coarse_block + ivec2(0, -1)), 0.0);
-        Try(CoarseVector(coarse_block + ivec2(0, 1)), 0.0);
-    }
-    // Refine around the winner.
-    const vec2 center = best_v;
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
-            if (x != 0 || y != 0) {
-                Try(center + vec2(x, y), 0.0);
+        if (has_around && max(abs(around.x), abs(around.y)) > float(WIDE_SEARCH - SEARCH)) {
+            // The previous pair's window past the wide one.
+            const int around_side = 2 * SEARCH + 1;
+            for (int i = int(lane); i < around_side * around_side; i += int(GROUP_LANES)) {
+                Try(around + vec2(i % around_side - SEARCH, i / around_side - SEARCH), 0.0);
+            }
+        }
+        group_cost[lane] = best_cost;
+        group_v[lane] = best_v;
+        barrier();
+        for (uint stride = GROUP_LANES / 2u; stride > 0u; stride >>= 1) {
+            if (lane < stride && group_cost[lane + stride] < group_cost[lane]) {
+                group_cost[lane] = group_cost[lane + stride];
+                group_v[lane] = group_v[lane + stride];
+            }
+            barrier();
+        }
+        if (lane != 0u) {
+            return;
+        }
+        best_cost = group_cost[0];
+        best_v = group_v[0];
+    } else {
+        // Zero first, with a small bonus: still pixels and HUDs stay still.
+        Try(vec2(0.0), 1.0);
+        if ((flags & HAS_TEMPORAL) != 0) {
+            Try(round(temporal), 0.0);
+        }
+        if ((flags & HAS_GLOBAL) != 0) {
+            const uint global_word = GLOBAL_VECTOR + 2u * stats_index;
+            const vec2 global_v = vec2(uintBitsToFloat(stats[global_word]),
+                                       uintBitsToFloat(stats[global_word + 1u]));
+            // Free of the smoothness term: the coarse vectors around a fast turn are wrong.
+            const vec2 v = global_v * temporal_scale;
+            const float cost = BlockCost(v);
+            TryCost(v, cost >= OUT_COST ? GLOBAL_EDGE_COST : cost,
+                    lambda * dot(abs(v - predicted), vec2(1.0)));
+        }
+        if ((flags & HAS_COARSE) != 0) {
+            Try(predicted, 0.0);
+            Try(CoarseVector(coarse_block + ivec2(-1, 0)), 0.0);
+            Try(CoarseVector(coarse_block + ivec2(1, 0)), 0.0);
+            Try(CoarseVector(coarse_block + ivec2(0, -1)), 0.0);
+            Try(CoarseVector(coarse_block + ivec2(0, 1)), 0.0);
+        }
+        // Refine around the winner.
+        const vec2 center = best_v;
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                if (x != 0 || y != 0) {
+                    Try(center + vec2(x, y), 0.0);
+                }
             }
         }
     }
@@ -140,7 +314,7 @@ void main() {
         Try(integer + vec2(0.0, -0.5), 0.0);
     }
 
-    const float cost = BlockCost(best_v);
+    const float cost = Fair(BlockCost(best_v));
     imageStore(field, ivec2(block), vec4(best_v, cost, 0.0));
     if ((flags & FINEST) != 0) {
         atomicAdd(stats[stats_index], uint(cost * 16.0));

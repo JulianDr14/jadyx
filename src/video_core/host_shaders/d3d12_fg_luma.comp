@@ -12,7 +12,8 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(push_constant) uniform PushConstants {
     uvec2 dest_size;
     uint from_color;  // 1: the source is the RGBA8 frame, 0: the previous luma level
-    uint stats_index; // the frame's motion statistics word, cleared by the level 0 pass
+    uint stats_index; // the frame's motion statistics word, cleared by the level 0 pass (with
+                      // the global motion words, d3d12_fg_motion.comp)
     uint quarter;     // 1: the source is four times the destination's size (4x4 blocks)
 };
 
@@ -23,10 +24,24 @@ layout(std430, binding = 6) buffer Stats {
     uint stats[];
 };
 
+// d3d12_fg_motion.comp's global motion words: each slot's vector, then two per wide vector
+// (41 x 41).
+const uint GLOBAL_VECTOR = 8u;
+const uint GLOBAL_BINS = 16u;
+const uint BIN_WORDS = 2u * 41u * 41u;
+
 void main() {
     const uvec2 pos = gl_GlobalInvocationID.xy;
-    if (from_color != 0 && pos == uvec2(0)) {
-        stats[stats_index] = 0;
+    if (from_color != 0) {
+        if (pos == uvec2(0)) {
+            stats[stats_index] = 0;
+            stats[GLOBAL_VECTOR + 2u * stats_index] = 0;
+            stats[GLOBAL_VECTOR + 2u * stats_index + 1u] = 0;
+        }
+        const uint word = pos.y * dest_size.x + pos.x;
+        if (word < BIN_WORDS && pos.x < dest_size.x) {
+            stats[GLOBAL_BINS + word] = 0;
+        }
     }
     if (any(greaterThanEqual(pos, dest_size))) {
         return;
