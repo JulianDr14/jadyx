@@ -5,12 +5,15 @@
 //
 // One invocation handles one texel of the luma: a 2x2 quad of output pixels (a 4x4 block on 4K
 // outputs, where the luma is at a quarter resolution).
-// It picks its vector among the nine block vectors around it and zero, by how well A at -t*v
-// matches B at +(1-t)*v on a small cross of luma texels, plus a penalty for vectors whose
-// block the trajectory does not cross; ties go to the block it does cross. Matching pixels blend
+// It picks its vector among zero, its own block's and the nine around the block that vector crosses
+// on the halfway frame, by how well A at -t*v matches B at +(1-t)*v on a small cross of luma
+// texels, plus a penalty for vectors whose block the trajectory does not cross; ties go to the
+// block it does cross. Matching pixels blend
 // A and B; a pixel that matches in neither (an area one frame covers and the other reveals) leans
-// on the nearer frame. A scene cut (the whole frame's motion error is high) shows the nearer
-// frame as it is.
+// on the nearer frame. Content entering at the frame's edge (a pan) exists in one frame only: the
+// match counts as good with the frame's global vector (d3d12_fg_motion.comp), fair with others, and
+// the pixel takes that frame. A scene cut (the whole frame's motion error
+// is high) shows the nearer frame as it is.
 
 #version 450
 
@@ -39,10 +42,31 @@ layout(std430, binding = 6) buffer Stats {
 };
 
 vec2 luma_inv;
+vec2 global_v;
+
+/// Match cost of a trajectory with one end outside the frame: good along the camera's motion, fair
+/// along others.
+const float EDGE_COST = 6.0;
+const float GLOBAL_EDGE_COST = 1.0;
+
+// d3d12_fg_motion.comp's statistics words: each slot's global vector, level 0 (luma) texels.
+const uint GLOBAL_VECTOR = 8u;
+
+bool Inside(vec2 p, vec2 size) {
+    return all(greaterThanEqual(p, vec2(0.0))) && all(lessThanEqual(p, size));
+}
 
 float MatchCost(vec2 p, vec2 v) {
     const vec2 a = p - phase * v;
     const vec2 b = p + (1.0 - phase) * v;
+    const vec2 size = vec2(luma_size);
+    if (!Inside(a, size) || !Inside(b, size)) {
+        if (!Inside(a, size) && !Inside(b, size)) {
+            return 1e3;
+        }
+        const vec2 d = abs(v - global_v);
+        return max(d.x, d.y) <= 1.0 ? GLOBAL_EDGE_COST : EDGE_COST;
+    }
     float sum = 0.0;
     const vec2 offsets[5] = vec2[5](vec2(0.0), vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0),
                                     vec2(0.0, -1.0));
@@ -61,6 +85,8 @@ void main() {
     // Output pixels per luma texel: 2 or 4.
     const uint scale = out_size.x >= luma_size.x * 3u ? 4u : 2u;
     luma_inv = 1.0 / vec2(luma_size);
+    global_v = vec2(uintBitsToFloat(stats[GLOBAL_VECTOR + 2u * stats_index]),
+                    uintBitsToFloat(stats[GLOBAL_VECTOR + 2u * stats_index + 1u]));
     const vec2 out_inv = 1.0 / vec2(out_size);
     const bool nearer_a = phase < 0.5;
 
@@ -83,7 +109,12 @@ void main() {
 
     const vec2 p = vec2(texel) + 0.5;
     const ivec2 field_size = textureSize(motion, 0);
-    const ivec2 home = ivec2(texel) / BLOCK;
+    // The field lives on the halfway frame: away from phase 0.5 a fast trajectory crosses it blocks
+    // away from p. Search around the block the home block's vector crosses, which then holds the
+    // right vector without a distance penalty.
+    const ivec2 own = clamp(ivec2(texel) / BLOCK, ivec2(0), field_size - 1);
+    const vec2 own_mid = p + (0.5 - phase) * texelFetch(motion, own, 0).xy;
+    const ivec2 home = clamp(ivec2(floor(own_mid / float(BLOCK))), ivec2(0), field_size - 1);
 
     // Zero first: a HUD over a moving scene matches only with it, by far. It gets no bonus: in a
     // flat area (inside a moving object) zero matches as well as the motion does and would show
@@ -91,24 +122,25 @@ void main() {
     vec2 best_v = vec2(0.0);
     float best_cost = MatchCost(p, vec2(0.0));
     float best_block_error = 0.0;
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
-            const ivec2 block = clamp(home + ivec2(x, y), ivec2(0), field_size - 1);
-            const vec4 sample_v = texelFetch(motion, block, 0);
-            const vec2 v = sample_v.xy;
-            // The field lives on the halfway frame: the trajectory through p crosses it at mid.
-            const vec2 mid = p + (0.5 - phase) * v;
-            const vec2 block_center = (vec2(block) + 0.5) * float(BLOCK);
-            const vec2 distance = max(abs(mid - block_center) - 0.5 * float(BLOCK), vec2(0.0));
-            // Ties go to the field: the block the trajectory crosses (still areas have a zero
-            // field, so they keep zero).
-            const float coherence = distance.x + distance.y == 0.0 ? -1.5 : 0.0;
-            const float cost = MatchCost(p, v) + 0.5 * (distance.x + distance.y) + coherence;
-            if (cost < best_cost) {
-                best_cost = cost;
-                best_v = v;
-                best_block_error = sample_v.z;
-            }
+    // The nine blocks around home, then p's own block when home is not it.
+    const int candidates = home == own ? 9 : 10;
+    for (int i = 0; i < candidates; ++i) {
+        const ivec2 block =
+            i < 9 ? clamp(home + ivec2(i % 3 - 1, i / 3 - 1), ivec2(0), field_size - 1) : own;
+        const vec4 sample_v = texelFetch(motion, block, 0);
+        const vec2 v = sample_v.xy;
+        // The trajectory through p crosses the field at mid.
+        const vec2 mid = p + (0.5 - phase) * v;
+        const vec2 block_center = (vec2(block) + 0.5) * float(BLOCK);
+        const vec2 distance = max(abs(mid - block_center) - 0.5 * float(BLOCK), vec2(0.0));
+        // Ties go to the field: the block the trajectory crosses (still areas have a zero field,
+        // so they keep zero).
+        const float coherence = distance.x + distance.y == 0.0 ? -1.5 : 0.0;
+        const float cost = MatchCost(p, v) + 0.5 * (distance.x + distance.y) + coherence;
+        if (cost < best_cost) {
+            best_cost = cost;
+            best_v = v;
+            best_block_error = sample_v.z;
         }
     }
 
@@ -126,9 +158,14 @@ void main() {
                 continue;
             }
             const vec2 q = vec2(pixel) + 0.5;
-            const vec3 a = textureLod(color_a, (q - phase * v_out) * out_inv, 0.0).rgb;
-            const vec3 b = textureLod(color_b, (q + (1.0 - phase) * v_out) * out_inv, 0.0).rgb;
-            imageStore(dest, ivec2(pixel), vec4(mix(a, b, weight_b), 1.0));
+            const vec2 qa = q - phase * v_out;
+            const vec2 qb = q + (1.0 - phase) * v_out;
+            const vec3 a = textureLod(color_a, qa * out_inv, 0.0).rgb;
+            const vec3 b = textureLod(color_b, qb * out_inv, 0.0).rgb;
+            const bool a_inside = Inside(qa, vec2(out_size));
+            const bool b_inside = Inside(qb, vec2(out_size));
+            const float weight = a_inside == b_inside ? weight_b : (b_inside ? 1.0 : 0.0);
+            imageStore(dest, ivec2(pixel), vec4(mix(a, b, weight), 1.0));
         }
     }
 }
