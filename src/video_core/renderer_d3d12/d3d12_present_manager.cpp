@@ -310,7 +310,10 @@ void PresentManager::PresentGenerated(u64 epoch) {
         StopGenerating(epoch);
         return;
     }
-    if (!swapchain.WaitForFrame()) {
+    // One frame queued ahead of the display: a second one would add a whole slot to the input
+    // latency. A slot only composes frames the GPU has finished (FrameGen::Next) on the present
+    // queue, well inside one vsync.
+    if (!swapchain.WaitForFrame(1)) {
         return;
     }
     // From here on the swapchain expects a Present: every path below presents.
