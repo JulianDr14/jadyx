@@ -20,6 +20,10 @@ namespace D3D12 {
 
 namespace {
 
+/// Overlay-only frames are left out of frame generation for this long after the game's last
+/// frame, seconds; past it the game stopped presenting and the overlay is all there is to show.
+constexpr double OVERLAY_ONLY_WINDOW = 0.25;
+
 /// Host time in seconds, the clock frame generation paces on.
 double HostSeconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
@@ -173,12 +177,23 @@ void PresentManager::Present(FrameLease&& lease, const PresentInfo& info) {
     lease.manager = nullptr; // the frame comes back through Release once presented
     lease.frame = nullptr;
     u32 rate = 0;
+    const double now = HostSeconds();
+    // A composition with only the overlay new (it runs at its own rate) is no frame of the game:
+    // frame generation would take its vsync as the game's cadence and blend two equal images.
+    // It is left out while the game presents; the overlay shows with the game's next frame.
+    const bool overlay_only = fg_running && !info.new_frame &&
+                              now - last_new_frame < OVERLAY_ONLY_WINDOW;
+    if (info.new_frame) {
+        last_new_frame = now;
+    }
     try {
         frame.Transition(scheduler.CommandList(), D3D12_RESOURCE_STATE_COPY_SOURCE);
-        if (frame_gen) {
-            rate = frame_gen->OnFrame(info.vsync_index, info.frame_gen, HostSeconds());
+        if (frame_gen && !overlay_only) {
+            rate = frame_gen->OnFrame(info.vsync_index, info.frame_gen, now, info.queue_time);
         }
-        if (rate != 0) {
+        if (overlay_only) {
+            frame.render_tick = scheduler.Flush();
+        } else if (rate != 0) {
             // Into the history on the scheduler's list; the present thread shows it in time.
             const std::optional<u32> slot = frame_gen->RecordIngest(frame.image.Get());
             frame.render_tick = scheduler.Flush();
@@ -195,6 +210,10 @@ void PresentManager::Present(FrameLease&& lease, const PresentInfo& info) {
     } catch (...) {
         Release(frame);
         throw;
+    }
+    if (overlay_only) {
+        Release(frame);
+        return;
     }
     if (rate != 0) {
         fg_running = true;

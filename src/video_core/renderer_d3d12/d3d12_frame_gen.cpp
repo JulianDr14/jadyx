@@ -59,8 +59,6 @@ constexpr D3D12_RESOURCE_STATES READ_STATE = D3D12_RESOURCE_STATE_NON_PIXEL_SHAD
 constexpr D3D12_RESOURCE_STATES COLOR_READ_STATE =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_COPY_SOURCE;
 
-constexpr double VSYNC = 1.0 / 60.0;
-
 u32 FloatBits(float value) {
     return std::bit_cast<u32>(value);
 }
@@ -406,7 +404,7 @@ void FrameGen::WaitForPresentFence(u64 value) {
                   "ID3D12Fence::SetEventOnCompletion (frame generation)");
 }
 
-u32 FrameGen::OnFrame(u64 vsync_index, bool allowed, double arrival) {
+u32 FrameGen::OnFrame(u64 vsync_index, bool allowed, double arrival, double queue_time) {
     FrameGenMode mode = allowed ? GetFrameGenMode() : FrameGenMode::Off;
     if (mode != FrameGenMode::Off && state == State::Failed) {
         mode = FrameGenMode::Off;
@@ -414,7 +412,13 @@ u32 FrameGen::OnFrame(u64 vsync_index, bool allowed, double arrival) {
     u32 rate{};
     {
         std::scoped_lock lock{mutex};
-        rate = pacer.OnFrame(mode, vsync_index, arrival);
+        const bool queue_clock = pacer.QueueClock();
+        rate = pacer.OnFrame(mode, vsync_index, arrival, queue_time);
+        frame_content = pacer.Content();
+        if (pacer.QueueClock() != queue_clock) {
+            LOG_INFO(Render, "D3D12: frame generation paces on the game's {}",
+                     pacer.QueueClock() ? "queue times" : "vsyncs");
+        }
         if (rate != target) {
             LOG_INFO(Render, "D3D12: frame generation {} (game at {:.1f} fps)",
                      rate != 0 ? fmt::format("to {} fps", rate) : std::string{"off"},
@@ -532,7 +536,7 @@ void FrameGen::Commit(u32 index, u64 tick, u64 vsync_index) {
     Slot& slot = slots[index];
     slot.tick = tick;
     slot.vsync = vsync_index;
-    slot.content = static_cast<double>(vsync_index) * VSYNC;
+    slot.content = frame_content;
     slot.valid = true;
     last_slot = index;
     continuity = true;
@@ -577,12 +581,28 @@ FrameGen::Output FrameGen::Next(double now) {
         clock_valid = true;
     }
 
+    // Only frames whose ingest the GPU has finished: the present queue would wait for the others
+    // behind the game's rendering and miss its vsync. With one queue nothing waits.
     std::array<FrameGenPacer::Frame, NUM_SLOTS> frames{};
     u32 count = 0;
+    std::optional<u32> newest_valid;
     for (u32 i = 0; i < NUM_SLOTS; ++i) {
-        if (slots[i].valid) {
-            frames[count++] = {.content = slots[i].content, .serial = slots[i].serial, .slot = i};
+        const Slot& slot = slots[i];
+        if (!slot.valid) {
+            continue;
         }
+        if (!newest_valid || slot.content > slots[*newest_valid].content) {
+            newest_valid = i;
+        }
+        if (!device.HasPresentQueue() || scheduler.IsFree(slot.tick)) {
+            frames[count++] = {.content = slot.content, .serial = slot.serial, .slot = i};
+        }
+    }
+    if (count == 0 && newest_valid) {
+        // None finished yet (the first frame): the newest, waited for.
+        frames[count++] = {.content = slots[*newest_valid].content,
+                           .serial = slots[*newest_valid].serial,
+                           .slot = *newest_valid};
     }
     std::sort(frames.begin(), frames.begin() + count,
               [](const auto& lhs, const auto& rhs) { return lhs.content < rhs.content; });

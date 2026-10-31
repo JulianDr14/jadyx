@@ -76,6 +76,10 @@ struct PresentInfo {
     u64 vsync_index{};
     /// Frame generation may show it (a game frame, not a menu or a boot screen).
     bool frame_gen{};
+    /// The game queued a new frame for it, at host time queue_time (seconds, 0 when unknown).
+    /// Without one only the overlay changed: frame generation leaves it out.
+    bool new_frame{true};
+    double queue_time{};
 };
 
 /// Presents composited frames, on a thread of its own when it can (Vulkan's PresentManager).
@@ -181,6 +185,7 @@ private:
     /// Async presentation only; built lazily on its first use.
     std::unique_ptr<FrameGen> frame_gen;
     bool fg_running{};      ///< GPU thread: the last frame went to frame generation
+    double last_new_frame{}; ///< GPU thread: host time of the game's last new frame
     u32 fg_context{};       ///< present thread: next copy context for a generated frame
 
     std::mutex error_mutex;
