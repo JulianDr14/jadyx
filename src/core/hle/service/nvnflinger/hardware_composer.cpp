@@ -82,6 +82,9 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
     // Determine the number of vsync periods to wait before composing again.
     std::optional<s32> swap_interval{};
     bool has_acquired_buffer{};
+    // A new frame of the game, not only of the overlay (frame generation leaves the latter out).
+    bool game_acquired{};
+    s64 game_queue_time{};
 
     // Acquire all necessary framebuffers.
     for (auto& layer : display.stack.layers) {
@@ -112,13 +115,18 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
             continue;
         }
 
+        const auto& buffer = m_framebuffers[consumer_id];
+        const auto& item = buffer.item;
+
         // If we acquired a new buffer, we need to present.
         if (result == CacheStatus::BufferAcquired) {
             has_acquired_buffer = true;
+            if (!layer->is_overlay) {
+                game_acquired = true;
+                game_queue_time = (std::max)(game_queue_time, item.queue_time_ns);
+            }
         }
 
-        const auto& buffer = m_framebuffers[consumer_id];
-        const auto& item = buffer.item;
         const auto& igbp_buffer = *item.graphic_buffer;
 
         if (layer->visible) {
@@ -162,6 +170,10 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
 
     // If any new buffers were acquired, we can present.
     if (has_acquired_buffer && !composition_stack.empty()) {
+        for (HwcLayer& composed : composition_stack) {
+            composed.new_frame = game_acquired;
+            composed.queue_time_ns = game_queue_time;
+        }
         // Sort back-to-front: lower z first, higher z last so top-most draws last (on top).
         std::stable_sort(composition_stack.begin(), composition_stack.end(),
                          [&](const HwcLayer& l, const HwcLayer& r) { return l.z_index < r.z_index; });

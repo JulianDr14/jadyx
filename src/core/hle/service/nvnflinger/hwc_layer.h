@@ -60,6 +60,10 @@ struct HwcLayer {
     u32 layer_stack_mask;
     /// Display vsync the layer was composed on (the content clock of frame generation).
     u64 vsync_index{};
+    /// The composition has a new frame of the game (not only of the overlay), and the host time
+    /// the game queued it (wall clock, ns; 0 when it has none).
+    bool new_frame{};
+    s64 queue_time_ns{};
 };
 
 } // namespace Service::Nvnflinger

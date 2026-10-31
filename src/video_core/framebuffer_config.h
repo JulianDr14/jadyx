@@ -40,6 +40,10 @@ struct FramebufferConfig {
     u32 layer_stack_mask{Service::Nvnflinger::DefaultLayerStackMask};
     /// Display vsync the frame was composed on (60 per second of emulated time).
     u64 vsync_index{};
+    /// The game queued a new frame for this composition (not only the overlay), at queue_time_ns
+    /// (host wall clock; 0 when unknown).
+    bool new_frame{true};
+    s64 queue_time_ns{};
 };
 
 Common::Rectangle<f32> NormalizeCrop(const FramebufferConfig& framebuffer, u32 texture_width,
