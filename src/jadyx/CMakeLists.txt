@@ -48,6 +48,13 @@ add_executable(jadyx WIN32
     app/cpu_probe.h
     input/uwp_input.cpp
     input/uwp_input.h
+    library/library_session.cpp
+    library/library_session.h
+    library/library_session_game_options.cpp
+    library/library_session_input.cpp
+    library/library_session_network.cpp
+    library/library_session_pages.cpp
+    library/library_session_scan.cpp
     library/uwp_library.cpp
     library/uwp_library_canvas.cpp
     library/uwp_library_canvas.h
