@@ -287,8 +287,22 @@ void CoreTiming::ResetTicks() {
     downcount = MAX_SLICE_LENGTH;
 }
 
+u64 CoreTiming::RawClockTicks() const {
+    return is_multicore ? Common::g_wall_clock.GetCNTPCT() - checkpoint_clock_origin : Common::WallClock::CPUTickToCNTPCT(cpu_ticks);
+}
+
+void CoreTiming::SetGuestClockPercent(u32 percent) {
+    guest_clock_base = RawClockTicks();
+    guest_clock_percent.store(percent, std::memory_order_relaxed);
+}
+
+u64 CoreTiming::ScaleGuestClock(u64 ticks) const {
+    const u64 percent = guest_clock_percent.load(std::memory_order_relaxed);
+    return percent == 100 ? ticks : guest_clock_base + (ticks - guest_clock_base) * percent / 100;
+}
+
 u64 CoreTiming::GetClockTicks() const {
-    u64 fres = is_multicore ? Common::g_wall_clock.GetCNTPCT() - checkpoint_clock_origin : Common::WallClock::CPUTickToCNTPCT(cpu_ticks);
+    u64 fres = ScaleGuestClock(RawClockTicks());
     if (const u32 target = CpuClockTargetMhz(Settings::values.cpu_clock.GetValue());
         target != CPU_CLOCK_BASE_MHZ) {
         fres = fres * target / CPU_CLOCK_BASE_MHZ;
@@ -432,7 +446,7 @@ TimingCheckpoint CoreTiming::CaptureCheckpoint(
     TimingCheckpoint state{};
     state.multicore = is_multicore;
     state.time_ns = GetGlobalTimeNs().count();
-    state.clock_ticks = Common::g_wall_clock.GetCNTPCT() - checkpoint_clock_origin;
+    state.clock_ticks = ScaleGuestClock(Common::g_wall_clock.GetCNTPCT() - checkpoint_clock_origin);
     state.gpu_ticks = Common::g_wall_clock.GetGPUTick() - checkpoint_gpu_origin;
     state.cpu_ticks = cpu_ticks;
     state.downcount = downcount;
@@ -512,6 +526,7 @@ void CoreTiming::RestoreCheckpoint(const TimingCheckpoint& state,
     checkpoint_restore_gpu = Common::g_wall_clock.GetGPUTick();
     checkpoint_ns_origin = checkpoint_restore_ns - state.time_ns;
     checkpoint_clock_origin = checkpoint_restore_clock - state.clock_ticks;
+    guest_clock_base = state.clock_ticks;
     checkpoint_gpu_origin = checkpoint_restore_gpu - state.gpu_ticks;
     checkpoint_resume_pending = true;
     cpu_ticks = state.cpu_ticks;

@@ -163,6 +163,11 @@ public:
     /// Returns the current CNTPCT tick value.
     u64 GetClockTicks() const;
 
+    /// The percent of real time the guest's tick counter advances. Guest events and vsync stay on
+    /// real time, so a game that steps by frames keeps its speed and sees shorter frame times; one
+    /// that steps by the counter runs slower. Set before guest code runs. 100 leaves it alone.
+    void SetGuestClockPercent(u32 percent);
+
     /// Returns the current GPU tick value.
     u64 GetGPUTicks() const;
 
@@ -213,6 +218,12 @@ private:
     s64 checkpoint_restore_ns{};
     u64 checkpoint_restore_clock{};
     u64 checkpoint_restore_gpu{};
+    std::atomic<u32> guest_clock_percent{100};
+    /// The scale starts here, so the counter stays continuous when it is set and across a Pulse resume.
+    u64 guest_clock_base{};
+
+    [[nodiscard]] u64 RawClockTicks() const;
+    [[nodiscard]] u64 ScaleGuestClock(u64 ticks) const;
 };
 
 /// Creates a core timing event with the given name and callback.
