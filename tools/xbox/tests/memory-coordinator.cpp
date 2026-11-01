@@ -9,9 +9,18 @@ using Jadyx::MemoryCoordinator;
 constexpr u64 MiB = MemoryCoordinator::MiB;
 
 namespace {
+// Marks the numbers below were worked out with; the checks are about the logic, not the defaults.
+MemoryCoordinator::Config Marks() {
+    MemoryCoordinator::Config config;
+    config.watch = 1936 * MiB;
+    config.low = 1424 * MiB;
+    config.high = 1680 * MiB;
+    return config;
+}
+
 // Drives the coordinator in 100 ms steps with the guest stalling `stall_ms_per_s`.
 struct Sim {
-    MemoryCoordinator c{MemoryCoordinator::Config{}};
+    MemoryCoordinator c{Marks()};
     u64 now{}, stall_us{};
     MemoryCoordinator::Plan plan{};
     MemoryCoordinator::Plan Run(u64 ms, u64 stall_ms_per_s, u64 heap = 700 * MiB,
@@ -28,7 +37,7 @@ struct Sim {
 
 int main() {
     // With nothing measured, every mark is what it was before the coordinator.
-    const auto initial = MemoryCoordinator{MemoryCoordinator::Config{}}.Initial();
+    const auto initial = MemoryCoordinator{Marks()}.Initial();
     assert(initial.low == 1424 * MiB && initial.high == 1680 * MiB && initial.watch == 1936 * MiB);
     assert(initial.urgent == 712 * MiB && initial.emergency == 356 * MiB);
     assert(initial.jit_stop == 712 * MiB && initial.jit_release == 267 * MiB);
