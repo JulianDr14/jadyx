@@ -103,6 +103,8 @@ void CoreTiming::Initialize(std::function<void()>&& on_thread_init_) {
     Reset();
     checkpoint_ns_origin = 0;
     checkpoint_clock_origin = 0;
+    guest_clock_segments = {};
+    guest_clock_slot.store(0, std::memory_order_relaxed);
     checkpoint_gpu_origin = 0;
     checkpoint_resume_pending = false;
     on_thread_init = std::move(on_thread_init_);
@@ -292,13 +294,25 @@ u64 CoreTiming::RawClockTicks() const {
 }
 
 void CoreTiming::SetGuestClockPercent(u32 percent) {
-    guest_clock_base = RawClockTicks();
-    guest_clock_percent.store(percent, std::memory_order_relaxed);
+    const u32 slot = guest_clock_slot.load(std::memory_order_relaxed);
+    if (guest_clock_segments[slot].percent == percent) {
+        return;
+    }
+    const u64 raw = RawClockTicks();
+    guest_clock_segments[slot ^ 1] = {raw, ScaleGuestClock(raw), percent};
+    guest_clock_slot.store(slot ^ 1, std::memory_order_release);
 }
 
 u64 CoreTiming::ScaleGuestClock(u64 ticks) const {
-    const u64 percent = guest_clock_percent.load(std::memory_order_relaxed);
-    return percent == 100 ? ticks : guest_clock_base + (ticks - guest_clock_base) * percent / 100;
+    const GuestClockSegment& segment =
+        guest_clock_segments[guest_clock_slot.load(std::memory_order_acquire)];
+    if (segment.percent == 100) {
+        return segment.guest_base + (ticks - segment.raw_base);
+    }
+    // A reader that took its ticks just before a change may be behind the new segment.
+    return ticks <= segment.raw_base
+               ? segment.guest_base
+               : segment.guest_base + (ticks - segment.raw_base) * segment.percent / 100;
 }
 
 u64 CoreTiming::GetClockTicks() const {
@@ -526,7 +540,9 @@ void CoreTiming::RestoreCheckpoint(const TimingCheckpoint& state,
     checkpoint_restore_gpu = Common::g_wall_clock.GetGPUTick();
     checkpoint_ns_origin = checkpoint_restore_ns - state.time_ns;
     checkpoint_clock_origin = checkpoint_restore_clock - state.clock_ticks;
-    guest_clock_base = state.clock_ticks;
+    GuestClockSegment& guest_clock = guest_clock_segments[guest_clock_slot.load(std::memory_order_relaxed)];
+    guest_clock.raw_base = state.clock_ticks;
+    guest_clock.guest_base = state.clock_ticks;
     checkpoint_gpu_origin = checkpoint_restore_gpu - state.gpu_ticks;
     checkpoint_resume_pending = true;
     cpu_ticks = state.cpu_ticks;
