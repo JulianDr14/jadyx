@@ -7,6 +7,7 @@
 #include <optional>
 
 #include "common/logging.h"
+#include "video_core/frame_pipeline.h"
 #include "video_core/frame_trace.h"
 #include "video_core/perf_counters.h"
 
@@ -97,9 +98,7 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
             auto fb_it = m_framebuffers.find(consumer_id);
             if (fb_it != m_framebuffers.end() && fb_it->second.is_acquired) {
                 const u64 frames_since_last_acquire = m_frame_number - fb_it->second.last_acquire_frame;
-                const s32 expected_interval = NormalizeSwapInterval(nullptr, fb_it->second.item.swap_interval);
-
-                if (frames_since_last_acquire < static_cast<u64>(expected_interval)) {
+                if (frames_since_last_acquire < static_cast<u64>(fb_it->second.pacing_interval)) {
                     should_try_acquire = false;
                 }
             }
@@ -291,7 +290,10 @@ bool HardwareComposer::TryAcquireFramebufferLocked(Layer& layer, Framebuffer& fr
     }
 
     // We succeeded, so set the new release frame info.
-    const s32 swap_interval = layer.is_overlay ? 1 : NormalizeSwapInterval(nullptr, framebuffer.item.swap_interval);
+    const s32 swap_interval = layer.is_overlay
+        ? 1
+        : GamePacingIntervalLocked(NormalizeSwapInterval(nullptr, framebuffer.item.swap_interval));
+    framebuffer.pacing_interval = swap_interval;
     framebuffer.release_frame_number = m_frame_number + swap_interval;
     framebuffer.last_acquire_frame = m_frame_number;
     framebuffer.is_acquired = true;
@@ -302,6 +304,24 @@ bool HardwareComposer::TryAcquireFramebufferLocked(Layer& layer, Framebuffer& fr
         static_cast<u32>(swap_interval));
 
     return true;
+}
+
+s32 HardwareComposer::GamePacingIntervalLocked(s32 requested) {
+    using VideoCore::FramePipeline::Mode;
+    static constexpr u64 HOLD_VSYNCS = 120;
+    const Mode mode = VideoCore::FramePipeline::SwapIntervalHold();
+    if (mode == Mode::Off) {
+        return requested;
+    }
+    if (requested == 2) {
+        m_last_interval_2_frame = m_frame_number;
+    }
+    if (requested != 3 || !m_last_interval_2_frame ||
+        m_frame_number - *m_last_interval_2_frame > HOLD_VSYNCS) {
+        return requested;
+    }
+    VideoCore::Perf::Add(VideoCore::Perf::Counter::GuestSwapIntervalsHeld, 1);
+    return mode == Mode::On ? 2 : requested;
 }
 
 HardwareComposer::CacheStatus HardwareComposer::CacheFramebufferLocked(Layer& layer,

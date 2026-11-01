@@ -40,6 +40,8 @@ private:
     static constexpr size_t HISTORY_COUNTERS = 9;
     std::array<std::array<u64, HISTORY_COUNTERS>, HISTORY_VSYNCS> m_history{};
     s32 m_game_swap_interval{};
+    /// swap_interval_hold: the vsync of the game's last request for interval 2.
+    std::optional<u64> m_last_interval_2_frame{};
 
 private:
     using ReleaseFrameNumber = u64;
@@ -47,6 +49,8 @@ private:
     struct Framebuffer {
         android::BufferItem item{};
         ReleaseFrameNumber release_frame_number{};
+        /// Vsyncs this buffer stays on screen, normally the interval the game asked for.
+        s32 pacing_interval{1};
         u64 last_acquire_frame{0};
         bool is_acquired{false};
         /// Signalled once the last composite that read the buffer is done with it.
@@ -63,6 +67,8 @@ private:
 
 private:
     bool TryAcquireFramebufferLocked(Layer& layer, Framebuffer& framebuffer);
+    /// The vsyncs a new buffer of the game stays on screen (swap_interval_hold).
+    s32 GamePacingIntervalLocked(s32 requested);
     CacheStatus CacheFramebufferLocked(Layer& layer, ConsumerId consumer_id);
     void ReleaseFramebuffersLocked(Display& display);
     /// Once per vsync: records the counters, and logs a change of the game's swap interval.

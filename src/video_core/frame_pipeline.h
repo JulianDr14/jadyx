@@ -29,6 +29,11 @@ inline std::atomic<Mode> present_mailbox{Mode::Off};
 /// composites are ever in flight.
 inline std::atomic<Mode> vsync_nowait{Mode::Off};
 
+/// boot.cfg "swap_interval_hold=": a game with a dynamic vsync that asked for interval 2 in the last
+/// two seconds gets its buffer back after 2 vsyncs even if it asks for 3. A game that keeps asking
+/// for 3 gets it once the two seconds pass.
+inline std::atomic<Mode> swap_interval_hold{Mode::Off};
+
 inline void SetPresentMailbox(Mode mode) {
     present_mailbox.store(mode, std::memory_order_relaxed);
 }
@@ -43,6 +48,14 @@ inline void SetVsyncNowait(Mode mode) {
 
 [[nodiscard]] inline Mode VsyncNowait() {
     return vsync_nowait.load(std::memory_order_relaxed);
+}
+
+inline void SetSwapIntervalHold(Mode mode) {
+    swap_interval_hold.store(mode, std::memory_order_relaxed);
+}
+
+[[nodiscard]] inline Mode SwapIntervalHold() {
+    return swap_interval_hold.load(std::memory_order_relaxed);
 }
 
 } // namespace VideoCore::FramePipeline
