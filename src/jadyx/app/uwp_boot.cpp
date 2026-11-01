@@ -1,2296 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Headless GATE-2 boot frontend for the Xbox/UWP AppContainer target.
-//
-// Brings up Core::System with the D3D12 renderer + native XAudio2 output, loads a payload staged in the
-// app's sandboxed local storage, runs it through the dynarmic JIT, and emits a deterministic
-// JIT-liveness marker. Input is the Xbox gamepad and/or a boot.cfg script
-// (uwp_input.h).
-//
-// The Core::System bring-up is modeled on the proven desktop boot in src/yuzu_cmd/yuzu.cpp; the
-// WinRT IFrameworkView wrapper is the UWP entry point that drives it.
-//
-// JIT-LIVENESS CONTRACT (agreed with AGENT QA for the GATE-2 checklist): GATE 2 means "Eden executed
-// guest code via the JIT", not "the process didn't crash". The homebrew NRO (NO keys/firmware/ROM â€”
-// house rule) issues svcOutputDebugString with the exact sentinel below; Eden's SVC handler logs
-// OutputDebugString, so observing this line is positive proof the JIT decoded + executed guest code.
-
-#include <algorithm>
-#include <array>
-#include <atomic>
-#include <bit>
-#include <charconv>
-#include <chrono>
-#include <condition_variable>
-#include <cstdlib>
-#include <fstream>
-#include <mutex>
-#include <cstring>
-#include <optional>
-#include <share.h>
-#include <span>
-#include <stdexcept>
-#include <string>
-#include <string_view>
-#include <thread>
-#include <unordered_map>
-#include <vector>
-
-#include <winrt/base.h>
-#include <winrt/Windows.ApplicationModel.h>
-
-#include "common/bug_tracker.h"
-#include "common/commit_census.h"
-#include "common/memory_ceiling.h"
-#include "common/fs/path_util.h"
-#include "common/log_rotation.h"
-#include "common/host_memory.h"
-#include "common/permafrost.h"
-#include "common/logging.h"
-#include "common/pulse_diagnostics.h"
-#include "common/memory_ledger.h"
-#include "common/scm_rev.h"
-#include "common/settings.h"
-#include "common/thread.h"
-#include "common/windows/cpu_pin.h"
-#include "common/windows/timed_wait_profile.h"
-#include "common/windows/sampling_profiler.h"
-#include "common/windows/timer_resolution.h"
-#include "core/arm/cpu_profile.h"
-#include "core/arm/dynarmic/arm_dynarmic.h"
-#include "dynarmic/interface/code_memory.h"
-#include "core/arm/jit_prewarm.h"
-#include "core/core.h"
-#include "core/core_timing.h"
-#include "core/perf_stats.h"
-#include "core/cpu_manager.h"
-#include "core/device_memory.h"
-#include "video_core/host1x/host1x.h"
-#include "video_core/host1x/syncpoint_manager.h"
-#include "core/file_sys/content_archive.h"
-#include "core/file_sys/control_metadata.h"
-#include "core/file_sys/registered_cache.h"
-#include "core/file_sys/vfs/vfs_real.h"
-#include "core/hle/kernel/svc/svc_debug_string.h" // Kernel::Svc::SetDebugStringObserver
-#include "core/hle/kernel/k_memory_manager.h"
-#include "core/hle/kernel/k_process.h"
-#include "core/hle/kernel/k_scheduler.h"
-#include "core/hle/service/acc/profile_manager.h"
-#include "core/hle/kernel/physical_core.h"
-#include "core/hle/service/am/applet_manager.h"
-#include "core/hle/service/am/frontend/applets.h"
-#include "core/hle/service/filesystem/filesystem.h"
-#include "core/hle/service/nvdrv/devices/nvdisp_disp0.h"
-#include "core/hle/service/nvdrv/devices/nvhost_ctrl.h"
-#include "core/loader/loader.h"
-#include "core/memory/cheat_engine.h"
-#include "hid_core/hid_core.h"
-#include "video_core/cpu_write_queue.h"
-#include "video_core/frame_pipeline.h"
-#include "video_core/frame_trace.h"
-#include "video_core/diagnostics/full_capture.h"
-#include "video_core/fence_manager.h"
-#include "video_core/gpu.h"
-#include "video_core/gpu_thread.h"
-#include "common/page_table.h"
-#include "video_core/gpu_written_pages.h"
-#include "video_core/macro.h"
-#include "video_core/perf_counters.h"
-#include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
-#include "video_core/query_cache.h"
-#include "video_core/readback_trace.h"
-#include "video_core/rasterizer_interface.h"
-#include "video_core/renderer_base.h"
-#include "video_core/renderer_d3d12/d3d12_frame_gen_pacer.h"
-#include "video_core/renderer_d3d12/d3d12_menu_image.h"
-#include "video_core/renderer_d3d12/d3d12_pipeline_key_mode.h"
-
-#include "jadyx/app/cpu_probe.h"
-#include "jadyx/app/alloc_watch.h"
-#include "jadyx/cheats/cheat_session.h"
-#include "jadyx/cheats/cheats_page.h"
-#include "jadyx/cheats/cheats_view.h"
-#include "jadyx/game/game_menu_surface.h"
-#include "jadyx/game/game_screenshot.h"
-#include "jadyx/app/headless_emu_window.h"
-#include "jadyx/app/memory_coordinator.h"
-#include "jadyx/app/prewarm_budget.h"
-#include "jadyx/pulse/pulse_gate.h"
-#include "jadyx/pulse/pulse_screen.h"
-#include "jadyx/ui/launch_splash.h"
-#include "jadyx/library/game_library.h"
-#include "jadyx/library/play_history.h"
-#include "jadyx/pulse/pulse_sessions.h"
-#include "jadyx/pulse/pulse_store_gate.h"
-#include "jadyx/input/uwp_input.h"
-#include "jadyx/ui/text_entry_input.h"
-#include "jadyx/game/game_menu.h"
-#include "jadyx/input/uwp_controllers.h"
-#include "jadyx/input/keyboard_bindings.h"
-#include "jadyx/library/uwp_library.h"
-#include "jadyx/storage/storage_path.h"
-#include "jadyx/storage/uwp_rom_storage.h"
-#include "jadyx/content/content_service.h"
-#include "jadyx/mods/mod_settings.h"
-#include "jadyx/storage/uwp_file_manager.h"
-#include "jadyx/storage/network_import_gate.h"
-#include "jadyx/i18n/localization.h"
-#include "jadyx/game/uwp_software_keyboard.h"
-#include "jadyx/settings/nacp_language.h"
-#include "jadyx/settings/uwp_system_settings.h"
-#include "video_core/performance_overlay.h"
-#include "jadyx/storage/utf8.h"
-
-namespace D3D12 {
-// renderer_d3d12.h; its includes need Mesa's headers, which only video_core sees.
-void SetTracedFrame(u32 frame, u32 count);
-void TraceNextFrames(u32 count);
-void TraceNextMaterialFrame(u64 pixel_shader = 0);
-void HuntNextFrames(u32 frames = 8);     // diagnostics/d3d12_draw_hunt.h
-void HuntOnCompute(u64 hash);            // diagnostics/d3d12_draw_hunt.h
-void SetComputeInputsShader(u64 hash);   // diagnostics/d3d12_compute_inputs.h
-void SetMaterialProbe(s32 x, s32 y);
-void SetMaterialCaptureFrame(u32 frame);
-void SetMaterialSnapshotShaders(u64 first, u64 second);
-void SetMaterialSnapshotVertexCounts(u32 first, u32 second);
-void SetDumpedShader(u64 unique_hash);
-void SetMaterialGpuProbeEnabled(bool enabled);
-void SetSkippedShader(u64 unique_hash);
-void SetGeometryDroppedShader(u64 unique_hash);
-void SetFrameDiagnostics(bool enabled);
-void SetPsoCostProbe(bool enabled);      // d3d12_graphics_pipeline.h
-std::string DescribePsoCost();            // likewise
-void ShowLoadProgress(VideoCore::RendererBase& renderer, size_t done, size_t total);
-void ShowCpuLoadProgress(VideoCore::RendererBase& renderer, size_t done, size_t total);
-void RemoveDeviceForProbe(VideoCore::RendererBase& renderer);
-void SetBcArrayDecode(bool enabled); // d3d12_texture_cache.h
-void SetAstcGpuDecode(bool enabled); // d3d12_texture_cache.h
-void SetBcGpuDecode(bool enabled); // d3d12_texture_cache.h
-void SetNotZeroedHeaps(bool enabled); // d3d12_resource_utils.h
-void SetAstcDropTopLevel(bool enabled); // d3d12_texture_cache.h
-void SetGpuUnswizzle(bool enabled); // d3d12_texture_cache.h
-void SetTextureMemoryCap(u64 bytes); // d3d12_texture_cache.h
-void SetTextureMemoryLine(u64 bytes); // d3d12_texture_cache.h
-void SetTextureYield(bool yield); // d3d12_texture_cache.h
-void GetTextureMemoryUse(u64& heap_bytes, u64& cap); // d3d12_texture_cache.h
-void SetHeapCompaction(u64 bytes_per_frame); // d3d12_texture_cache.h
-void SetSmallTextureAlignment(bool enabled); // d3d12_resource_allocator.h
-void SetSpareHeaps(bool enabled); // d3d12_resource_allocator.h
-void SetPsoBlobs(bool enabled); // d3d12_pso_blob_cache.h
-void SetCachedStaging(bool enabled); // d3d12_staging_buffer_pool.h
-void SetCpuTextureWrites(bool enabled); // d3d12_resource_allocator.h
-void SetAstcGpuVerify(bool enabled); // d3d12_texture_cache.h
-void SetStencilBlitVerify(bool enabled); // d3d12_texture_cache.h
-enum class DxilSignMode; // d3d12_shader_compiler.h
-void SetDxilSignMode(DxilSignMode mode);
-void SetDxilDiskCacheEnabled(bool enabled); // d3d12_dxil_disk_cache.h
-void SetAstcGpuSync(bool enabled); // d3d12_texture_cache.h
-void SetForceMinMaxFilter(bool enabled); // d3d12_texture_cache.h
-void SetSkipMinMaxFilter(bool enabled); // d3d12_texture_cache.h
-void SetEmulateMinMaxFilter(bool enabled); // d3d12_texture_cache.h
-void SetAstcGpuFresh(bool enabled); // d3d12_texture_cache.h
-void SetGpuBasedValidation(bool enabled); // d3d12_device.h
-void SetDredEnabled(bool enabled);         // d3d12_device.h
-void SetGpuBreadcrumbsEnabled(bool enabled); // d3d12_device.h
-void SetCloseProbeEnabled(bool enabled);     // d3d12_device.h
-void SetPresentQueue(bool enabled);          // d3d12_device.h
-enum class BorderColorMode : u8; // d3d12_render_corrections.h: Exact, Steps8, BlackWhite
-void SetBorderColorMode(BorderColorMode mode);
-void SetDepthBiasRounding(bool enabled);     // d3d12_render_corrections.h
-void SetUnormHalfDownRounding(bool enabled); // d3d12_render_corrections.h
-void SetCubeDirectionSanitize(bool enabled); // d3d12_render_corrections.h
-void SetHalfFloatFlush(bool enabled);        // d3d12_render_corrections.h
-void SetShaderAlphaToCoverage(bool enabled); // d3d12_render_corrections.h
-void SetSmallBcGuestPalette(bool enabled);   // d3d12_render_corrections.h
-void SetShaderDepthBias(bool enabled);       // d3d12_render_corrections.h
-void SetMemoryImportProbe(bool enabled);     // d3d12_memory_import_probe.h
-void SetPipelineEviction(bool enabled);      // d3d12_pipeline_cache.h
-void SetPipelinePrewarm(bool enabled);       // d3d12_pipeline_cache.h
-void SetComputeWorkgroupSplit(u32 factor);   // d3d12_pipeline_cache.h
-void SetTransformFeedbackStorage(bool enabled); // d3d12_pipeline_cache.h
-void SetDescriptorRemovalChecks(bool enabled); // d3d12_device.h
-void SetUniformUploadCopy(bool enabled);
-void SetUniformReuse(bool enabled);
-void SetStageViewCache(bool enabled); // d3d12_graphics_pipeline.h
-enum class TextureReplayMode : u8; // d3d12_graphics_pipeline.h: Off, On, Check
-void SetTextureReplay(TextureReplayMode mode);
-void SetSubmitDraws(u32 draws); // d3d12_rasterizer.h
-void SetDrawSamplerReuse(bool enabled);
-enum class PixelShaderScratchMode : u8; // d3d12_local_memory_scratch.h: Auto, Uav, Native
-void SetPixelShaderScratchMode(PixelShaderScratchMode mode);
-void SetAsyncRecording(bool enabled);          // d3d12_scheduler.h
-void SetDescriptorDeferral(bool enabled);      // d3d12_descriptor_heap.h
-void SetDiagUavSync(bool enabled);             // d3d12_scheduler.h
-using AppMemoryQuery = bool (*)(u64& used, u64& limit); // d3d12_device.h
-void SetAppMemoryQuery(AppMemoryQuery query);            // d3d12_device.h
-bool LastGpuMemory(u64& used, u64& budget);              // d3d12_device.h
-namespace MemoryReserve {
-void Configure(std::uint64_t bytes); // d3d12_memory_reserve.h
-}
-} // namespace D3D12
-
-namespace AudioCore::Sink {
-void SetXAudio2ProfileEnabled(bool enabled) noexcept; // audio_core/sink/xaudio2_sink.h
-}
-
-namespace VideoCommon {
-void SetAstcArrayRecompression(bool enabled) noexcept; // texture_cache/util.h
-void SetOpaqueAstcToBc1(bool enabled) noexcept;        // texture_cache/util.h
-void SetMipRenderTargets(bool enabled) noexcept;       // texture_cache/texture_cache_base.h
-void SetRenderTargetInheritance(bool enabled) noexcept; // texture_cache/texture_cache_base.h
-void SetReclaimSupersededImages(bool enabled) noexcept; // texture_cache/texture_cache_base.h
-void SetRenderTargetEarlyOut(bool enabled) noexcept;   // texture_cache/texture_cache_base.h
-} // namespace VideoCommon
-
-namespace {
-std::atomic<u64> g_test_memory_limit{};
-std::atomic<bool> g_gpu_command_failed{};
-/// Guest DRAM bytes the HostTrim worker read and gave back since the last heartbeat.
-std::atomic<u64> g_host_trim_visited{};
-std::atomic<u64> g_host_trim_released{};
-/// Guest DRAM bytes the GuestSwap worker gave back since the last heartbeat.
-std::atomic<u64> g_guest_swap_released{};
-/// The memory coordinator's plan as the Permafrost worker last published it, for the heartbeat.
-struct MemoryCoordinatorState {
-    std::atomic<bool> yield{};
-    std::atomic<u64> relief{}, stall_us_per_s{}, texture_line{}, texture_loan{};
-    std::atomic<u64> texture_floor{}; ///< The texture cap; the in-game menu can change it.
-    std::string Describe() const {
-        return std::string{yield.load(std::memory_order_relaxed) ? "yield" : "calm"} +
-               ", guest stall " +
-               std::to_string(stall_us_per_s.load(std::memory_order_relaxed) / 1000) +
-               " ms/s, relief " + std::to_string(relief.load(std::memory_order_relaxed) >> 20) +
-               " MiB, texture line " +
-               std::to_string(texture_line.load(std::memory_order_relaxed) >> 20) +
-               " MiB, texture loan " +
-               std::to_string(texture_loan.load(std::memory_order_relaxed) >> 20) + " MiB";
-    }
-} g_memory_coordinator_state;
-/// The PC window's mode. ApplicationView belongs to the UI thread: it publishes the state here and
-/// applies the changes the in-game menu asks for (1 full screen, 0 windowed, -1 none).
-std::atomic<bool> g_can_fullscreen{};
-std::atomic<bool> g_fullscreen{};
-std::atomic<int> g_fullscreen_request{-1};
-void WriteDiag(const std::string& msg); // defined with the UWP entry point below
-void WritePulseLog(const std::string& msg); // jadyx_pulse.txt, defined next to WriteDiag
-std::string MemoryReport();             // likewise
-std::string CpuSetReport();             // likewise
-std::string MemoryOwners();             // likewise
-std::string GuestMemoryReport(Core::System& system); // likewise
-u64 TrimFreeGuestMemory(Core::System& system, u64 budget); // likewise
-void ApplyProcessMemoryLimit(u32 limit_mib); // likewise
-[[noreturn]] void RestartApp();              // likewise
-std::string LargestAllocations();       // likewise
-std::string HeapReport();               // likewise
-bool QueryAppMemory(u64& used, u64& limit);  // likewise
-Common::MemoryCeilings QueryMemoryCeilings(); // likewise
-/// A game's learned JIT prewarm step (Jadyx::PrewarmBudget), 0 when none is stored.
-std::int32_t LoadPrewarmStep(u64 program_id);  // likewise
-void SavePrewarmStep(u64 program_id, std::int32_t step);  // likewise
-} // namespace
-
-namespace Jadyx {
-
-constexpr const char* JIT_LIVENESS_SENTINEL = "JADYX_JIT_ALIVE";
-// Emitted by the payload after its framebuffer loop, so the boot keeps presenting until then.
-constexpr const char* GFX_DONE_SENTINEL = "JADYX_GFX_DONE";
-/// RunHeadlessBoot's status when the player chose "back to the library" in the in-game menu.
-constexpr int RETURN_TO_LIBRARY = 10;
-/// A Pulse session failed to resume after the game was loaded into this System: boot it again,
-/// fresh (BootConfig::pulse_resume off). The session stays where it was.
-constexpr int PULSE_RESUME_FAILED = 18;
-/// The library asked for the Mii editor and the firmware does not have it.
-constexpr int MII_EDITOR_MISSING = 19;
-/// The game's program has no ExeFS of its own (a sparse base) and no update brings one.
-constexpr int UPDATE_REQUIRED = 20;
-
-/// Where the renderer presents: the CoreWindow (as IUnknown*) and its size in physical pixels.
-/// A null window selects the Null renderer.
-struct BootSurface {
-    void* core_window{};
-    u32 width{1920};
-    u32 height{1080};
-    /// The sizes this game can change to from the in-game menu, by what its graphics ask for: the
-    /// TV's resolution and the plain one (equal when boot.cfg forces one). Read on the UI thread.
-    u32 screen_width{};
-    u32 screen_height{};
-    u32 plain_width{};
-    u32 plain_height{};
-};
-
-// Force the device-light configuration the boot needs.
-static void ApplyHeadlessBootSettings(const BootSurface& surface) {
-    Settings::values.renderer_backend = surface.core_window != nullptr
-                                            ? Settings::RendererBackend::Direct3D12
-                                            : Settings::RendererBackend::Null;
-    Settings::values.sink_id = Settings::AudioEngine::XAudio2;
-    // The on-console failure mode is a hard crash with no jadyx_log.txt; the default 4 KiB write
-    // buffering loses exactly the lines that say where it died. Flush every line instead.
-    Settings::values.log_flush_line = true;
-    // Player 1 is bound to the virtual_gamepad engine (uwp_input.h) and presented to the game as
-    // the controller chosen in the library (a Pro Controller unless told otherwise).
-    ApplyControllerStyleSettings(LoadControllerOptions().style);
-    // Language and region from Settings > System, or from Windows (the console's own) when they
-    // follow the system; once the game is loaded, ApplyGameLanguage narrows the language to what
-    // it ships. Also sets the interface language for the in-game menu.
-    ApplySystemSettings();
-    // memory_layout_mode stays at its default until the Series-S budget is measured on-console; the
-    // DRAM clamp is a separate reservation follow-up, not here.
-}
-
-/// Many games read the system language directly and fall back to English on their own when they
-/// lack it, even when they ship a close variant (Spain's Spanish but not es-419). Give them the
-/// closest language they declare instead (PickGameLanguage: variant, then English, then any).
-static void ApplyGameLanguage(Core::System& system) {
-    FileSys::NACP nacp;
-    if (system.GetAppLoader().ReadControlData(nacp) != Loader::ResultStatus::Success) {
-        return;
-    }
-    const auto preferred = Settings::values.language_index.GetValue();
-    const auto language = PickNacpLanguage(preferred, nacp);
-    Settings::values.language_index = language;
-    LOG_INFO(Frontend, "Headless boot: game languages {:08X}, preferred {}, system language {}",
-             nacp.GetSupportedLanguages(), Settings::CanonicalizeEnum(preferred),
-             Settings::CanonicalizeEnum(language));
-}
-
-/// Optional boot.cfg next to boot.nro (written by package-appx.ps1 -RunSeconds).
-struct BootConfig {
-    /// > 0: the payload does not emit the sentinels (deko3d examples, games, ...); run it this long.
-    u32 run_seconds{};
-    /// > 0: the game's bottleneck capture starts this many seconds into the session ("hunt_at="),
-    /// so PC runs time a scene with no one at the pad.
-    u32 hunt_at{};
-    /// > 0: a frame chain timeline (the T key) starts this many seconds in ("frame_trace_at=").
-    u32 frame_trace_at{};
-    /// > 0: frame chain timelines saved automatically when the game raises its swap interval
-    /// (drops to a lower frame rate), 300 vsyncs before and 180 after ("frame_trace_on_drop=").
-    u32 frame_trace_on_drop{};
-    /// The bottleneck capture starts at the 64th dispatch of this compute shader ("hunt_cs=").
-    u64 hunt_cs{};
-    /// The storage buffers of this compute shader are dumped around four dispatches ("cs_inputs=").
-    u64 cs_inputs{};
-    /// > 0: the session closes this many seconds in ("quit_at="), for unattended PC runs.
-    u32 quit_at{};
-    /// PC test budget; hard process-commit enforcement belongs to local-run.ps1.
-    u32 memory_limit_mib{};
-    /// Per-core JIT code cache ("jit_cache_mib="). Full, it is cleared with all the blocks'
-    /// metadata, so it bounds the JIT's memory: a large game compiled 400+ MiB in two minutes on
-    /// the default 512 MiB per core, and 1 GiB with the metadata, without ever releasing any.
-    /// At 128 the same game filled it twice during its load (~150 MiB a core) and recompiled
-    /// everything; it is committed as it fills, so a smaller game never pays for the rest.
-    /// Short of memory, the caches stop growing instead (JIT_CAP_FLOOR): at 128 for a game that
-    /// had come close, it compiled 1.2M blocks loading.
-    u32 jit_cache_mib{256};
-    /// JIT code memory mapped twice, executable and writable, so no page changes protection per
-    /// compiled block ("jit_dual_map=0" keeps paged W^X). Used only where the runtime passes a probe.
-    bool jit_dual_map{true};
-    /// Texture memory past which clean textures unused for a while are evicted even with headroom
-    /// left ("texture_cap_mib=", 0 turns it off). They decode again from guest memory when used.
-    /// At 1024 a heavy world entry kept 830 MiB of textures through its load and ran out of memory;
-    /// at 768 the cap evicts during the load and the same entry held.
-    u32 texture_cap_mib{768};
-    /// Free app memory the textures leave alone ("texture_cap_line_mib=", 0 keeps the cap fixed).
-    /// Above it the cap grows into the rest; texture_cap_mib stays the floor. Below guest swap's low
-    /// mark, so cold guest memory leaves first: a world with 1150 MiB of live textures and 1 GiB free
-    /// sat over the cap for good, evicting, moving and creating textures all the time (30 heaps a
-    /// minute), and came with bursts of half-second frames. 768 leaves room for a load spike (500
-    /// MiB in ten seconds was seen) while they evict.
-    std::optional<u32> texture_cap_line_mib{768};
-    /// Small sampled textures placed at 4 KiB instead of 64 KiB ("small_textures=0" turns it off).
-    bool small_textures{true};
-    /// A texture heap class that grew gets one spare heap made on another thread while memory
-    /// is plentiful ("spare_heaps=0" turns it off).
-    bool spare_heaps{true};
-    /// Block-linear color textures of 64 KiB and more unswizzled on the GPU on upload
-    /// ("gpu_unswizzle=0" brings back the CPU).
-    bool gpu_unswizzle{true};
-    /// Commit held back for the driver: a pipeline object that runs out of memory releases it and
-    /// is created again ("oom_reserve_mib=0" turns it off).
-    u32 oom_reserve_mib{32};
-    /// What a draw does while its pipeline builds: is skipped, so the game never stops for a new
-    /// pipeline ("full"), is skipped unless it is a full-screen pass or a target's first
-    /// ("balanced"), or waits ("async_pipelines=off"). Unset follows the game's graphics settings.
-    std::optional<D3D12::AsyncPipelines> async_pipelines;
-    /// Draws of this many vertices or fewer always wait for their pipeline ("wait_small_draws=",
-    /// 0 turns it off).
-    u32 wait_small_draws{};
-    /// Pipeline build workers, 1-8 ("pso_workers="); 0 keeps the default of 4.
-    u32 pso_workers{};
-    /// Workers that build the disk cache on the loading screen, 1-12 ("pso_boot_workers="); 0
-    /// keeps the default of one per logical CPU.
-    u32 pso_boot_workers{};
-    /// The driver's compiled PSOs kept on disk and handed back to it ("pso_blobs=1"); off by
-    /// default, as the console's driver may not take them.
-    bool pso_blobs{};
-    /// Upload staging in CPU-cached memory instead of write-combined ("cached_staging=0" turns it
-    /// off).
-    bool cached_staging{true};
-    /// Plain textures in CPU-writable heaps, their first upload written in place
-    /// ("cpu_texture_writes=0" turns it off); cache-coherent UMA devices only.
-    bool cpu_texture_writes{true};
-    /// Over the texture cap, MiB of live textures a frame moves out of mostly free heaps
-    /// ("heap_compaction_mib=", 0 keeps them in place).
-    u32 heap_compaction_mib{32};
-    /// D3D12 debug layer (renderer_debug); PC only, the console has no SDK layers.
-    bool debug_layer{};
-    /// With the debug layer, GPU-based validation too ("debug_layer=gbv").
-    bool gpu_validation{};
-    /// DRED breadcrumbs and page-fault tracking ("dred=1"); diagnostic and deliberately opt-in.
-    bool dred{};
-    /// GPU-written breadcrumbs around every command ("gpu_breadcrumbs=1", turns dred on): a hang
-    /// report names the command the GPU never finished. Slows the GPU down.
-    bool gpu_breadcrumbs{};
-    /// Each command also closed alone on a scratch list ("close_probe=1"): names the call that
-    /// fails a command list's Close. Slow, diagnostic only.
-    bool close_probe{};
-    /// Release idle pipelines' PSOs ("pso_eviction=0" keeps them unless memory nearly runs out).
-    bool pso_eviction{true};
-    /// Build dormant PSOs in the background while memory is plentiful ("pso_prewarm=0" leaves
-    /// them to their first draw).
-    bool pso_prewarm{true};
-    /// Transform feedback through vertex shader storage writes instead of stream output
-    /// ("xfb=storage"): the fallback, for A/B comparison.
-    bool xfb_storage{};
-    /// Indirect draw macros read GPU-written arguments back on the CPU ("indirect_macro_cpu=1"):
-    /// A/B against drawing from the GPU-side arguments.
-    bool indirect_macro_cpu{};
-    /// Sample counts reach the guest as never zero ("occlusion_force_visible=1"): A/B for
-    /// objects the game's occlusion culling drops.
-    bool occlusion_force_visible{};
-    /// A global UAV barrier after every draw and dispatch ("uav_sync=1"): A/B for flicker from a
-    /// barrier the renderer misses.
-    bool uav_sync{};
-    /// Depth targets at a mip level of a mipmapped image become separate aliased images again
-    /// ("mip_rt=0"): reproduces the alias path depth pyramids took before.
-    bool mip_render_targets{true};
-    /// A render target redrawn at another size uploads guest memory again instead of taking the
-    /// previous size's contents on the GPU ("rt_inherit=0").
-    bool render_target_inheritance{true};
-    bool reclaim_superseded_images{true};
-    /// Filtered MIN/MAX sampler reductions go to the hardware although the device reports no
-    /// support ("min_max_filter=force").
-    bool force_min_max_filter{};
-    /// Filtered MIN/MAX samplers filter normally with no shader emulation ("min_max_filter=off"):
-    /// A/B for the cost of the emulation; results are wrong.
-    bool skip_min_max_filter{};
-    /// The shader emulates filtered MIN/MAX reductions the device has ("min_max_filter=emulate"):
-    /// times on a desktop GPU the path consoles without the reductions take.
-    bool emulate_min_max_filter{};
-    /// Look for a removed device after every descriptor a draw writes ("descriptor_checks=1"), to
-    /// name the view that removed it; costs a kernel call per descriptor.
-    bool descriptor_checks{};
-    /// Controller-accessible bounded F7 equivalent, shown only in diagnostic packages.
-    bool material_capture_menu{};
-    /// Controller bottleneck capture ("hunt=1"): LocalState/jadyx/log/jadyx_hunt.txt, read by
-    /// tools/xbox/hunt-report.py. Shown only in diagnostic packages (package-appx.ps1 -Hunt).
-    bool hunt_menu{};
-    /// Fine per-draw D3D12 CPU timers ("gpu_profile=1"). Off because clock reads are measurable.
-    bool gpu_profile{};
-    /// Writes every translated guest shader to the dump folder ("dump_guest_shaders=1").
-    bool dump_guest_shaders{};
-    bool full_gpu_capture{};
-    bool full_gpu_capture_self_test{};
-    /// Render targets are read back only after each operation ("gpu_capture_targets=after").
-    bool full_gpu_capture_targets_after{};
-    /// Logs CPU buffer writes lost to GPU-written ranges ("buffer_write_origins=1").
-    bool buffer_write_origins{};
-    /// Per-core JIT elapsed time and slow callback counts ("cpu_profile=1"). Diagnostic only.
-    bool cpu_profile{};
-    /// In-process sampling profiler over every named thread ("profile=1"; "profile=full" adds the
-    /// gpu_profile and cpu_profile timers): stacks and CPU time per thread in
-    /// LocalState/jadyx/log/jadyx_profile.txt, read by tools/xbox/profile-report.py. Off unless a
-    /// diagnostic package asks for it (package-appx.ps1 -Profile).
-    bool profile{};
-    u32 profile_hz{250};      ///< "profile_hz=": samples per second of each running thread.
-    u32 profile_window{20};   ///< "profile_window=": seconds per report window.
-    /// How idle emulated cores wait for work ("idle_spin=off|adaptive|adaptive:<us>|fixed:<us>").
-    Common::SpinPolicy idle_spin{};
-    /// Per-game JIT profile, compiled before the guest runs ("jit_prewarm=1", the default),
-    /// only learned ("jit_prewarm=record") or disabled ("jit_prewarm=0").
-    enum class JitPrewarm { Off, Record, Warm } jit_prewarm{JitPrewarm::Warm};
-    /// Fixed prewarm budget per core for A/B tests ("jit_prewarm_mib="), 0 for the learned one
-    /// (PrewarmBudget). The learned step is still observed and stored as usual.
-    u32 jit_prewarm_mib{};
-    /// XAudio2 performance samples and queue counters ("audio_profile=1").
-    bool audio_profile{};
-    /// Timed silent output for comparison and audio-device diagnosis ("audio=null").
-    bool null_audio{};
-    /// Diagnostic only: ignore requests for 30 Hz presentation ("force_swap_interval=1").
-    bool force_swap_interval_one{};
-    /// Copy and present frames on a thread of their own, so the GPU thread never waits for the
-    /// display ("async_present=0" presents on the GPU thread, as Present used to).
-    bool async_present{true};
-    /// Present on a GPU queue of its own, so a frame's copy to the screen does not wait behind
-    /// the emulation's next work ("present_queue=0" turns it off).
-    bool present_queue{true};
-    /// Sampler border colors as the guest GPU keeps them ("border_color=exact|8bit|bw",
-    /// D3D12::BorderColorMode).
-    u8 border_color{};
-    /// Pipelines keyed by the depth bias D3D12 applies, slope and clamp in 1/16 steps
-    /// ("depth_bias_round=0" turns it off).
-    bool depth_bias_round{true};
-    /// Shader outputs to 8-bit UNORM targets round ties down like the guest ("unorm_round=0"
-    /// turns it off).
-    bool unorm_round{true};
-    /// Cube samples with NaN or zero directions read a defined face ("cube_sanitize=0" turns it
-    /// off).
-    bool cube_sanitize{true};
-    /// Lowered fp16 math flushes half denormals as the guest's FTZ ("half_ftz=0" turns it off).
-    bool half_ftz{true};
-    /// Single-sample alpha-to-coverage with the guest's dither, in the shader ("a2c_shader=0"
-    /// turns it off).
-    bool a2c_shader{true};
-    /// BC1-3 textures up to 32 KiB decoded on the CPU with the guest's palette
-    /// ("small_bc_palette=0" turns it off).
-    bool small_bc_palette{true};
-    /// BC textures kept as plain texels (arrays, unaligned extents, the guest palette) decoded by
-    /// a compute shader instead of the CPU ("bc_gpu_decode=0" turns it off).
-    bool bc_gpu_decode{true};
-    /// Texture heaps and staging created without the OS zeroing their pages
-    /// ("not_zeroed_heaps=0" turns it off).
-    bool not_zeroed_heaps{true};
-    /// Frames generated between the game's ("frame_gen=off|auto|30|60"): auto takes games under
-    /// 28 fps (on average) to 30 and under 56 to 60. Unset follows the game's graphics settings
-    /// (on is auto).
-    std::optional<D3D12::FrameGenMode> frame_gen;
-    /// Single-sample depth bias added in the fragment shader ("depth_bias_shader=0" turns it off).
-    bool depth_bias_shader{true};
-    /// Whether the GPU reads process memory in place, probed and logged at device creation
-    /// ("memory_import_probe=1").
-    bool memory_import_probe{};
-    /// This boot's image upscaling instead of the saved one, for test runs ("upscaling=fsr";
-    /// upscaling.h ParseUpscaling lists the values). Not saved.
-    std::optional<Upscaling> upscaling;
-    /// Make the D3D12 command list calls on a thread of their own, so the GPU thread only records
-    /// them ("async_record=0" makes them on the GPU thread, as before the recorder).
-    bool async_record{true};
-    /// Draw descriptor tables written on the recording thread ("descriptor_defer=0" writes them on
-    /// the GPU thread); needs async_record. On since the console A/B of 0.3.9.111.
-    bool descriptor_defer{true};
-    /// An NV event the guest keeps giving up on stalls the guest until the GPU reaches it
-    /// ("nv_event_stall=1", as before); by default the GPU commands are flushed and the wait goes on.
-    bool nv_event_stall{false};
-    /// Release the displayed buffers with a fence on the composite ("nv_release_fence=0" releases
-    /// them with none and waits for every composite, as before).
-    bool nv_release_fence{true};
-    /// When the host side of a GPU syncpoint is signalled. By default ("gpu_fence=immediate") as
-    /// soon as the GPU thread reaches it: downloads land after the guest goes on. "=safe" does so
-    /// unless a download or operation queued before it waits on the GPU (a GPU-written buffer is
-    /// downloaded every frame in a game, so it waits as often as "=wait"); "=wait" always once the
-    /// D3D12 GPU ran the work before it; "=balanced"/"=accurate" are the settings' fence behaviors.
-    std::optional<Settings::GpuFenceBehavior> gpu_fence{Settings::GpuFenceBehavior::Immediate};
-    bool early_syncpoints{true};
-    /// Keep the previous draw's pipeline while no register its key reads changed
-    /// ("pipeline_key_reuse=1"; "=check" refreshes the key and logs every reuse that would have
-    /// drawn with another pipeline; "=0" turns it off).
-    D3D12::PipelineKeyTracking::Mode pipeline_key_reuse{D3D12::PipelineKeyTracking::Mode::On};
-    // The draw-path reuse below is on since the console A/B of 0.3.9.111 (per-draw CPU down about
-    // 15%); each one turns off with "<key>=0".
-    bool upload_copy{true}; ///< Short uniform copies through write-combined stores.
-    bool uniform_reuse{true}; ///< Rebind unchanged streamed uniforms within a submission.
-    bool rt_early_out{true}; ///< Skip re-preparing unchanged attachments per draw ("rt_early_out=0").
-    bool stage_view_cache{true}; ///< Reuse each stage's resolved views and samplers.
-    /// Bind the last draw's texture descriptors when a draw resolves the same views and samplers
-    /// ("texture_replay=0|1|check", D3D12::TextureReplayMode).
-    u8 texture_replay{1};
-    /// The frame chain (VideoCore::FramePipeline): "present_mailbox=0|1|check" and
-    /// "vsync_nowait=0|1|check".
-    VideoCore::FramePipeline::Mode present_mailbox{VideoCore::FramePipeline::Mode::On};
-    VideoCore::FramePipeline::Mode vsync_nowait{VideoCore::FramePipeline::Mode::On};
-    /// "guest_clock_scale=50-100", over the game's own setting (CoreTiming::SetGuestClockPercent).
-    std::optional<u32> guest_clock_percent;
-    /// "swap_interval_hold=0|1|check".
-    VideoCore::FramePipeline::Mode swap_interval_hold{VideoCore::FramePipeline::Mode::Off};
-    /// "pso_budget=0|1|check" (D3D12::SetPsoBudget).
-    VideoCore::FramePipeline::Mode pso_budget{VideoCore::FramePipeline::Mode::On};
-    /// "pso_loading=0|1|check" (D3D12::SetPsoLoading).
-    VideoCore::FramePipeline::Mode pso_loading{VideoCore::FramePipeline::Mode::On};
-    /// "cpu_write_defer=0|1|check" (VideoCommon::CpuWriteQueue).
-    VideoCore::FramePipeline::Mode cpu_write_defer{VideoCore::FramePipeline::Mode::On};
-    /// "jit_read_table=0|1|check" (Common::PageTable::SetJitReadTable).
-    VideoCore::FramePipeline::Mode jit_read_table{VideoCore::FramePipeline::Mode::On};
-    /// Pushbuffer reads skip FlushRegion over memory no cache holds GPU writes for.
-    bool dma_flush_filter{true};
-    bool draw_sampler_reuse{true}; ///< Gather-local TSC resolution.
-    /// Where pixel shaders keep large local memory: 0 auto (boot probe), 1 pool, 2 private arrays
-    /// ("ps_scratch=auto|uav|native", D3D12::PixelShaderScratchMode).
-    u8 ps_scratch{};
-    /// Host timing waits sleep on a high-resolution timer and wait only its lateness on the CPU
-    /// ("timer_sleep=0" waits the last timer tick on the CPU, as before).
-    bool timer_sleep{true};
-    /// Most microseconds a host timing wait spends on the CPU before its deadline
-    /// ("timer_spin=<us>"); past that a late timer makes the event late. Unset follows the
-    /// timer's learned lateness ("timer_spin=auto"), which on Series keeps nearly every wait on
-    /// the CPU: 0.3.8.70 measured a whole core spent there and 2-3 FPS less than with 100 us.
-    std::optional<u32> timer_spin_us{100};
-    /// Exclusive loads and stores emitted inline through the page table ("inline_exclusives=0"
-    /// calls the exclusive monitor for each one, as before 0.3.8.71).
-    bool inline_exclusives{true};
-    /// Where the guest cores and other named threads run among the app's cores ("cpu_pin=cores"
-    /// gives each guest core a physical core, "cpu_pin=split" its first logical processor and the
-    /// rest the second ones, "cpu_pin=map:name=core.logical,..." or "cpu_pin=topology" each
-    /// named thread where the map says, the default); off leaves them to the scheduler.
-    Common::Windows::CpuPin cpu_pin{Common::Windows::CpuPin::Map};
-    bool cpu_probe{}; ///< Measures the app's logical processors before the guest (cpu_probe.h).
-    bool timer_profile{}; ///< HostTiming waits only; opt-in, separate from draw profiling.
-    /// File name of a game in LocalState\games to boot instead of boot.nro (package-appx.ps1 -Game).
-    std::string game;
-    /// Eden's log filter (e.g. "*:Info HW.GPU:Debug"); empty keeps the default.
-    std::string log_filter;
-    /// Graphics bugs, unsupported features and every UNIMPLEMENTED/assert, deduplicated and
-    /// counted in LocalState/jadyx/log/jadyx_graphics_bugs.{log,json} ("bug_tracker=0" disables it).
-    bool bug_tracker{true};
-    /// Null renderer even with a window, to tell GPU hangs from CPU ones.
-    bool null_renderer{};
-    /// Presented frame whose draws the D3D12 renderer logs; 0 keeps its default.
-    u32 traced_frame{};
-    /// Presented frames the trace spans from traced_frame on (boot.cfg "trace_frames=").
-    u32 traced_frames{1};
-    s32 material_probe_x{-1}, material_probe_y{-1};
-    u32 material_capture_frame{}; // Opt-in deterministic homebrew diagnostic gate; zero in Series package.
-    bool material_gpu_probe{};
-    std::array<u64, 2> material_snapshot_ps{};
-    std::array<u32, 2> material_snapshot_vertices{};
-    /// Keep D3D12 block-compressed 2D arrays compressed instead of decoding them on the CPU.
-    bool bc_arrays_native{};
-    /// How ASTC reaches D3D12 ("astc="): BC3 for single textures and RGBA8 for arrays. "gpu" (the
-    /// default since 0.2.59) performs both decode and BC3 encode on the GPU; "bc3" keeps the CPU
-    /// reference path and "cpu" expands every image to RGBA8.
-    enum class Astc { Bc3, Gpu, GpuRgba, Cpu } astc{Astc::Gpu};
-    /// ASTC 2D arrays as BC3 too ("astc_arrays=bc3", the default) or RGBA8 ("astc_arrays=rgba").
-    /// RGBA8 is four times the memory: one array of 121 layers took 650 MiB and closed a game at
-    /// the 5 GiB limit. BC arrays read some layers wrong on the Series (0.2.44), seen with BC4
-    /// arrays uploaded by copy; "rgba" stays as the way back if ASTC arrays show it too.
-    bool astc_arrays_rgba{};
-    /// ASTC without alpha as BC1, half of BC3 ("astc_opaque=bc1", the default), or as BC3 like
-    /// the rest ("astc_opaque=bc3").
-    bool astc_opaque_bc3{};
-    /// Big mipmapped ASTC textures without their top level, a quarter of their memory
-    /// ("astc_mip0=drop", the default), or whole ("astc_mip0=keep").
-    bool astc_drop_mip0{true};
-    bool astc_verify{};
-    bool stencil_blit_verify{};
-    /// DXIL signing: 0 the validator, 1 own digest ("dxil_sign=hash"), 2 both ("dxil_sign=verify").
-    int dxil_sign{};
-    /// Keep signed DXIL across sessions, on by default ("dxil_cache=0" turns it off).
-    bool dxil_cache{true};
-    bool gpu_failure_probe{};
-    bool gpu_removal_probe{};
-    unsigned rom_storage_checks{}; // 1=record token, 2=restore after a process restart
-    bool file_manager_gate{};
-    bool network_import_gate{};
-    bool log_export_gate{};
-    bool astc_sync{};
-    bool astc_fresh{};
-    /// Played by hand ("play=1"): runs until the app is closed, without frame dumps or draw trace.
-    bool play{};
-    /// Every minute of play, the process heaps and the memory map ("memory_audit=0" turns it off):
-    /// what the commit no owner accounts for is made of. Walking the heaps locks them for a moment.
-    bool memory_audit{true};
-    bool pool_trim{true};
-    bool host_trim{true};
-    /// Permafrost: cold guest memory written to LocalState/jadyx/permafrost.bin when the app runs short
-    /// ("guest_swap=0" turns it off, private DRAM backing only). Below guest_swap_watch_mib of headroom the
-    /// guest's use of its memory is sampled. Below guest_swap_low_mib granules idle for
-    /// guest_swap_idle_ms and then untouched on probation for guest_swap_probation_ms go to disk
-    /// until guest_swap_high_mib is free again, guest_swap_batch_mib at a time (0: all at once);
-    /// guest_swap_reserve_mib of commit is held for a demand commit that would fail. A read back
-    /// pauses the guest threads while it commits and fills its pages (guest_swap_pause_fill=0:
-    /// guest_swap_fill_pages pages at a time, unpaused); guest_swap_prefetch=0 leaves hot granules
-    /// to the faults.
-    bool guest_swap{true};
-    u32 guest_swap_watch_mib{1536};
-    u32 guest_swap_low_mib{1024};
-    u32 guest_swap_high_mib{1280};
-    u32 guest_swap_idle_ms{8000};
-    u32 guest_swap_probation_ms{1500};
-    u32 guest_swap_reserve_mib{32};
-    u32 guest_swap_batch_mib{64};
-    u32 guest_swap_fill_pages{4};
-    bool guest_swap_prefetch{true};
-    bool guest_swap_pause_fill{true};
-    /// One owner for the free memory (jadyx/app/memory_coordinator.h, "memory_coordinator=0" turns
-    /// it off): when Permafrost evicts what the guest reads straight back, the textures and the
-    /// trims give way first and only then Permafrost's marks come down, never below
-    /// memory_coordinator_floor_mib for its low mark.
-    bool memory_coordinator{true};
-    u32 memory_coordinator_floor_mib{512};
-    /// Guest memory through the host-mapped arena. Xbox uses a bounded hybrid section; "full" is
-    /// diagnostic and falls back to hybrid if the complete mapping cannot be created.
-    enum class Fastmem { Off, Auto, Hybrid, Full } fastmem{Fastmem::Off};
-    u32 fastmem_hot_mib{384};
-    /// "cpu_accuracy=accurate|auto|unsafe". Unsafe: reduced-error floating point cut the guest core's
-    /// frame enough to stop most falls to 20 fps while the camera turns.
-    Settings::CpuAccuracy cpu_accuracy{Settings::CpuAccuracy::Unsafe};
-    /// GPU and DMA accuracy ("gpu_accuracy=low|high", "dma_accuracy=default|unsafe|safe"), for
-    /// A/B runs of what the high level costs the GPU thread.
-    Settings::GpuAccuracy gpu_accuracy{Settings::GpuAccuracy::High};
-    /// A game's advanced graphics; there is no boot.cfg key.
-    Settings::AnisotropyMode anisotropy{Settings::AnisotropyMode::Default};
-    Settings::ConsoleMode console_mode{Settings::ConsoleMode::Docked};
-    Settings::DmaAccuracy dma_accuracy{Settings::DmaAccuracy::Default};
-    /// Legacy setting for backends with draw-skipping async shaders. D3D12 always preserves
-    /// dependent draws, while preparing DXIL/PSOs on workers regardless of this setting.
-    bool async_shaders{true};
-    /// Buttons to press at given times ("input=25:L+R" lines).
-    std::vector<InputStep> input_script;
-    /// Pulse phase-2 gate ("pulse_cycles=", with tools/xbox/pulse_nro as boot.nro): capture,
-    /// destroy and restore the homebrew this many times (pulse_gate.h). 0 runs normally.
-    u32 pulse_cycles{};
-    u32 pulse_seed{1}; ///< "pulse_seed=": the random delays between captures
-    /// Pulse phase-1 gate ("pulse_store=1", pulse_store_gate.h): the Store in LocalState, with
-    /// process terminations across restarts. Runs before the phase-2 gate when both are set.
-    bool pulse_store{};
-    /// Played from the library: Pulse sessions (pulse_sessions.h), when the player has them on.
-    bool pulse_sessions{};
-    /// Off after a failed resume, for the fresh boot that follows, or by "pulse_resume=0": the
-    /// game boots fresh and the stored session is left as it was.
-    bool pulse_resume{true};
-    /// "airplane=1": the game sees no internet connection, as in the Switch's airplane mode.
-    bool airplane_mode{};
-};
-
-static D3D12::AsyncPipelines ToAsyncPipelines(ShaderBuild shaders) {
-    switch (shaders) {
-    case ShaderBuild::Balanced: return D3D12::AsyncPipelines::Balanced;
-    case ShaderBuild::Wait: return D3D12::AsyncPipelines::Off;
-    case ShaderBuild::Skip: break;
-    }
-    return D3D12::AsyncPipelines::Full;
-}
-
-/// A game's advanced graphics as its starting config. The session reads them while it sets up, before
-/// the game's file is open, and boot.cfg, parsed after this, still wins.
-static void UseGameAdvancedGraphics(BootConfig& config, u64 program_id) {
-    if (program_id == 0) return;
-    const GameAdvancedGraphics advanced = LoadGameGraphics(program_id).advanced;
-    config.anisotropy = advanced.anisotropy;
-    config.astc_drop_mip0 = !advanced.full_textures;
-    if (advanced.texture_cap_mib != 0) config.texture_cap_mib = advanced.texture_cap_mib;
-    config.gpu_accuracy = advanced.gpu_accuracy;
-    config.pso_workers = advanced.shader_workers;
-    config.console_mode = advanced.console_mode;
-}
-
-/// The game's graphics (its own over Settings > Graphics) where boot.cfg sets none. Upscaling is
-/// written on the GPU thread, the one that reads it once the game runs.
-static void ApplyGameGraphics(Core::System& system, const BootConfig& config, const GameGraphics& game) {
-    const GraphicsSettings graphics = ResolveGraphics(LoadGraphicsSettings(), game);
-    if (!config.upscaling) {
-        const Upscaling upscaling = graphics.upscaling;
-        system.GPU().RunOnGpuThread([upscaling] { ApplyUpscaling(upscaling); });
-    }
-    if (!config.frame_gen)
-        D3D12::SetFrameGenMode(graphics.frame_gen ? D3D12::FrameGenMode::Auto : D3D12::FrameGenMode::Off);
-    if (!config.async_pipelines) D3D12::SetAsyncPipelines(ToAsyncPipelines(graphics.shaders));
-    const u32 clock_percent = config.guest_clock_percent.value_or(game.slow_guest_clock ? SlowGuestClockPercent : 100);
-    system.CoreTiming().SetGuestClockPercent(clock_percent);
-    WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, upscaling " +
-              (config.upscaling ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(UpscalingText(graphics.upscaling)))) +
-              ", frame generation " +
-              (config.frame_gen ? std::string{"from boot.cfg"} : std::string{graphics.frame_gen ? "auto" : "off"}) +
-              ", shaders " +
-              (config.async_pipelines ? std::string{"from boot.cfg"}
-                                      : std::string{graphics.shaders == ShaderBuild::Skip       ? "skip"
-                                                    : graphics.shaders == ShaderBuild::Balanced ? "balanced"
-                                                                                                : "wait"}));
-}
-
-/// The advanced graphics that can change while the game runs, those that differ from `before`.
-/// With the guest paused (the in-game menu).
-static void ApplyRunningAdvancedGraphics(Core::System& system, const GameAdvancedGraphics& before,
-                                         const GameAdvancedGraphics& now) {
-    if (now.texture_cap_mib != before.texture_cap_mib) {
-        const u64 cap = u64{now.texture_cap_mib != 0 ? now.texture_cap_mib : BootConfig{}.texture_cap_mib} << 20;
-        D3D12::SetTextureMemoryCap(cap);
-        g_memory_coordinator_state.texture_floor.store(cap, std::memory_order_relaxed);
-        WriteDiag("graphics: texture cap " + std::to_string(cap >> 20) + " MiB");
-    }
-    if (now.gpu_accuracy != before.gpu_accuracy) {
-        const Settings::GpuAccuracy accuracy = now.gpu_accuracy;
-        system.GPU().RunOnGpuThread([accuracy] {
-            Settings::values.gpu_accuracy = accuracy;
-            Settings::UpdateGPUAccuracy();
-        });
-        WriteDiag(std::string{"graphics: GPU accuracy "} + (accuracy == Settings::GpuAccuracy::Low ? "low" : "high"));
-    }
-    if (now.console_mode != before.console_mode) {
-        Settings::values.use_docked_mode.SetValue(now.console_mode);
-        // What a real console tells the game when it goes in or out of its dock.
-        system.GetAppletManager().OperationModeChanged();
-        WriteDiag(std::string{"graphics: console mode "} +
-                  (now.console_mode == Settings::ConsoleMode::Handheld ? "handheld" : "docked"));
-    }
-}
-
-/// Games never emit the sentinels; without an explicit time they run this long.
-constexpr u32 DEFAULT_GAME_RUN_SECONDS = 120;
-
-// Returns a process exit-style status. 0 == boot reached the run phase cleanly.
-int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
-                    const BootConfig& config) {
-    // The library's Mii editor entry boots the firmware's applet instead of a game.
-    const bool mii_editor = launch_path == MiiEditorLaunch;
-    std::string nro_path = launch_path;
-    // The editor is not a game: no performance overlay over it; games get the player's choice back.
-    struct OverlayRestore {
-        bool active;
-        ~OverlayRestore() {
-            if (active)
-                VideoCore::performance_overlay_enabled.store(LoadSystemSettings().show_performance_stats,
-                                                             std::memory_order_relaxed);
-        }
-    } overlay_restore{mii_editor};
-    if (!config.log_filter.empty()) {
-        Settings::values.log_filter = config.log_filter;
-    }
-    Common::Log::Initialize();
-    if (config.bug_tracker) {
-        // Idempotent: the library launches several games in one process.
-        Common::BugTracker::Install(Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir),
-                                  std::string(Common::g_build_fullname) + " (" +
-                                      Common::g_scm_desc + ")");
-    }
-    if (config.rom_storage_checks)
-        return RunRomStorageGate(config.rom_storage_checks == 2, WriteDiag) ? 0 : 15;
-    if (config.file_manager_gate) return RunFileManagerGate(WriteDiag) ? 0 : 15;
-    if (config.log_export_gate) return RunLogExportGate(
-        std::filesystem::path{std::wstring{winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()}},
-        WriteDiag) ? 0 : 15;
-    if (config.network_import_gate) return RunNetworkImportGate(
-        std::filesystem::path{std::wstring{winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()}},
-        WriteDiag) ? 0 : 15;
-    // As yuzu_cmd: the default 15.6 ms timer resolution makes the emulated vsync (and any sleep in
-    // the core) tick every 15.6 ms and drop one frame in ten, visible as a stutter.
-    const auto timer_resolution = Common::Windows::SetCurrentTimerResolutionToMaximum();
-    WriteDiag("step: timer resolution " +
-              std::to_string(std::chrono::duration<double, std::milli>(timer_resolution).count()) +
-              " ms");
-    WriteDiag("step: CPU " + CpuSetReport());
-    // Read by each emulator thread when it is named.
-    Common::Windows::SetCpuPin(config.cpu_pin);
-    if (config.cpu_probe) Jadyx::RunCpuProbe(WriteDiag);
-    ApplyHeadlessBootSettings(config.null_renderer ? BootSurface{} : surface);
-    // After the System settings, which turn the overlay on when the player has it on.
-    if (mii_editor) VideoCore::performance_overlay_enabled.store(false, std::memory_order_relaxed);
-    if (config.null_audio) {
-        Settings::values.sink_id = Settings::AudioEngine::Null;
-    }
-    Settings::values.cpu_accuracy = config.cpu_accuracy;
-    WriteDiag(config.cpu_accuracy == Settings::CpuAccuracy::Accurate
-                  ? "step: CPU accuracy Accurate"
-                  : config.cpu_accuracy == Settings::CpuAccuracy::Unsafe ? "step: CPU accuracy Unsafe"
-                                                                         : "step: CPU accuracy Auto");
-    Settings::values.gpu_accuracy = config.gpu_accuracy;
-    Settings::values.dma_accuracy = config.dma_accuracy;
-    Settings::UpdateGPUAccuracy();
-    // Set on every session: the settings outlive it, and the next game may have other choices.
-    Settings::values.max_anisotropy.SetValue(config.anisotropy);
-    Settings::values.use_docked_mode.SetValue(config.console_mode);
-    WriteDiag("graphics: anisotropy " + std::to_string(static_cast<int>(config.anisotropy)) +
-              ", ASTC top level " + (config.astc_drop_mip0 ? "dropped" : "kept") +
-              ", texture cap " + std::to_string(config.texture_cap_mib) + " MiB, GPU accuracy " +
-              (config.gpu_accuracy == Settings::GpuAccuracy::Low ? "low" : "high") +
-              ", shader workers " + std::to_string(config.pso_workers) +
-              ", console mode " + (config.console_mode == Settings::ConsoleMode::Handheld ? "handheld" : "docked"));
-    AudioCore::Sink::SetXAudio2ProfileEnabled(config.audio_profile);
-    Core::CpuProfile::SetEnabled(config.cpu_profile);
-    // Read when Core::System builds the kernel's cores.
-    Kernel::PhysicalCore::SetIdleSpinPolicy(config.idle_spin);
-    // Read by the host timing thread's first wait.
-    Common::SetPreciseTimerSleeps(config.timer_sleep);
-    if (config.timer_spin_us) {
-        Common::SetPreciseTimerSpinCap(std::chrono::microseconds{*config.timer_spin_us});
-    }
-    Common::Windows::TimedWaitProfile::enabled.store(config.timer_profile, std::memory_order_relaxed);
-    // Read by HostMemory when Core::System builds the DRAM, so it has to be set before that.
-    // The 384-MiB Series experiment covered only 388 of 2637 MiB requested by Game C (15%). The
-    // resulting fastmem fault/recompile storm was markedly slower than the page table, so Auto
-    // must take the safe path until a selective JIT/page-table fast path exists. Keep Hybrid and
-    // Full as explicit diagnostics.
-    const bool fastmem_enabled = config.fastmem == BootConfig::Fastmem::Hybrid ||
-                                 config.fastmem == BootConfig::Fastmem::Full;
-    Settings::values.cpuopt_fastmem = fastmem_enabled;
-    Settings::values.cpuopt_fastmem_exclusives = fastmem_enabled;
-    Common::ConfigureHostMemoryFastmem(config.fastmem_hot_mib,
-                                       config.fastmem == BootConfig::Fastmem::Full);
-    Common::ConfigureGuestSwap({
-        .enabled = config.guest_swap,
-        .path = (std::filesystem::path{std::wstring{
-                     winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()}} /
-                 L"jadyx" / L"permafrost.bin")
-                    .wstring(),
-        .reserve_bytes = u64{config.guest_swap_reserve_mib} << 20,
-        .probation_ms = config.guest_swap_probation_ms,
-        .min_idle_ms = config.guest_swap_idle_ms,
-        .batch_bytes = u64{config.guest_swap_batch_mib} << 20,
-        .fill_pages = config.guest_swap_fill_pages,
-        .prefetch = config.guest_swap_prefetch,
-        .pause_fill = config.guest_swap_pause_fill,
-    });
-    // Keep the shared setting for other backends. D3D12 prepares on workers and always waits
-    // for the exact PSO when a dependent draw reaches the command stream.
-    Settings::values.use_asynchronous_shaders.SetValue(config.async_shaders);
-    WriteDiag(std::string("step: fastmem ") +
-              (config.fastmem == BootConfig::Fastmem::Off      ? "off"
-               : config.fastmem == BootConfig::Fastmem::Auto   ? "auto -> page table"
-               : config.fastmem == BootConfig::Fastmem::Full   ? "full"
-                                                               : "hybrid diagnostic") +
-              (fastmem_enabled ? " (hot " + std::to_string(config.fastmem_hot_mib) + " MiB)" : "") +
-              ", D3D12 pipeline workers on, dependent draws preserved" +
-              ", JIT cache " + std::to_string(config.jit_cache_mib) + " MiB per core");
-    D3D12::SetTracedFrame(config.traced_frame, config.traced_frames);
-    D3D12::SetMaterialProbe(config.material_probe_x, config.material_probe_y);
-    D3D12::SetMaterialCaptureFrame(config.material_capture_frame);
-    D3D12::SetMaterialGpuProbeEnabled(config.material_gpu_probe);
-    D3D12::SetMaterialSnapshotShaders(config.material_snapshot_ps[0], config.material_snapshot_ps[1]);
-    D3D12::SetMaterialSnapshotVertexCounts(config.material_snapshot_vertices[0], config.material_snapshot_vertices[1]);
-    D3D12::SetFrameDiagnostics(!config.play);
-    // The GPU spends the same 5 GiB as the emulated DRAM and the JIT: the texture and buffer
-    // caches evict against what the whole app has left, not DXGI's budget.
-    g_test_memory_limit = u64{config.memory_limit_mib} << 20;
-    Core::SetJitCodeCacheSize(config.jit_cache_mib << 20);
-    Dynarmic::SetCodeCacheCap(0);
-    Dynarmic::SetDualMappedCode(config.jit_dual_map);
-    Core::SetPageTableExclusives(config.inline_exclusives);
-    D3D12::SetAppMemoryQuery(QueryAppMemory);
-    D3D12::SetBcArrayDecode(!config.bc_arrays_native);
-    D3D12::SetTextureMemoryCap(u64{config.texture_cap_mib} << 20);
-    D3D12::SetTextureMemoryLine(
-        u64{config.texture_cap_line_mib.value_or(config.guest_swap_watch_mib + 256)} << 20);
-    D3D12::SetHeapCompaction(u64{config.heap_compaction_mib} << 20);
-    D3D12::SetSmallTextureAlignment(config.small_textures);
-    D3D12::SetSpareHeaps(config.spare_heaps);
-    D3D12::SetGpuUnswizzle(config.gpu_unswizzle);
-    D3D12::MemoryReserve::Configure(u64{config.oom_reserve_mib} << 20);
-    // Settings > Graphics until the game's own are known (ApplyGameGraphics).
-    const GraphicsSettings global_graphics = LoadGraphicsSettings();
-    D3D12::SetAsyncPipelines(config.async_pipelines.value_or(ToAsyncPipelines(global_graphics.shaders)));
-    D3D12::SetWaitSmallDraws(config.wait_small_draws);
-    D3D12::SetPipelineWorkers(config.pso_workers);
-    D3D12::SetPipelineBootWorkers(config.pso_boot_workers);
-    D3D12::SetPsoBlobs(config.pso_blobs);
-    D3D12::SetCachedStaging(config.cached_staging);
-    D3D12::SetCpuTextureWrites(config.cpu_texture_writes);
-    // RGBA8 ASTC made loading frames upload 150-260 MiB at once and the console run out of memory
-    // (0.2.50): textures become BC3 (a quarter of the memory), 2D arrays too unless
-    // astc_arrays=rgba (BootConfig::astc_arrays_rgba), all decoded and encoded on the GPU.
-    const bool astc_rgba = config.astc == BootConfig::Astc::Cpu ||
-                           config.astc == BootConfig::Astc::GpuRgba;
-    Settings::values.astc_recompression.SetValue(astc_rgba
-                                                     ? Settings::AstcRecompression::Uncompressed
-                                                     : Settings::AstcRecompression::Bc3);
-    VideoCommon::SetAstcArrayRecompression(!config.astc_arrays_rgba);
-    VideoCommon::SetOpaqueAstcToBc1(!config.astc_opaque_bc3);
-    D3D12::SetAstcDropTopLevel(config.astc_drop_mip0);
-    // The compute decoder was opt-in until its dispatches set spirv_to_dxil's compute runtime data
-    // (0.2.58): 4 minutes of Game C on the Series decoded no ASTC on the CPU, without
-    // corruption or hangs. "astc=bc3" brings back the CPU path.
-    D3D12::SetAstcGpuDecode(config.astc == BootConfig::Astc::Gpu ||
-                            config.astc == BootConfig::Astc::GpuRgba);
-    D3D12::SetAstcGpuVerify(config.astc_verify);
-    D3D12::SetStencilBlitVerify(config.stencil_blit_verify);
-    D3D12::SetDxilSignMode(static_cast<D3D12::DxilSignMode>(config.dxil_sign));
-    D3D12::SetDxilDiskCacheEnabled(config.dxil_cache);
-    D3D12::SetAstcGpuSync(config.astc_sync);
-    D3D12::SetAstcGpuFresh(config.astc_fresh);
-    D3D12::SetDescriptorRemovalChecks(config.descriptor_checks);
-    D3D12::SetDredEnabled(config.dred);
-    D3D12::SetGpuBreadcrumbsEnabled(config.gpu_breadcrumbs);
-    D3D12::SetCloseProbeEnabled(config.close_probe);
-    D3D12::SetPipelineEviction(config.pso_eviction);
-    D3D12::SetPipelinePrewarm(config.pso_prewarm);
-    D3D12::SetTransformFeedbackStorage(config.xfb_storage);
-    Tegra::SetIndirectMacroCpuRead(config.indirect_macro_cpu);
-    VideoCommon::force_occlusion_visible.store(config.occlusion_force_visible,
-                                               std::memory_order_relaxed);
-    D3D12::SetDiagUavSync(config.uav_sync);
-    VideoCommon::SetMipRenderTargets(config.mip_render_targets);
-    VideoCommon::SetRenderTargetInheritance(config.render_target_inheritance);
-    VideoCommon::SetReclaimSupersededImages(config.reclaim_superseded_images);
-    D3D12::SetForceMinMaxFilter(config.force_min_max_filter);
-    D3D12::SetSkipMinMaxFilter(config.skip_min_max_filter);
-    D3D12::SetEmulateMinMaxFilter(config.emulate_min_max_filter);
-    D3D12::HuntOnCompute(config.hunt_cs);
-    D3D12::SetComputeInputsShader(config.cs_inputs);
-    VideoCore::Perf::SetDetailedGpuProfile(config.gpu_profile);
-    if (config.dump_guest_shaders) Settings::values.dump_guest_shaders.SetValue(true);
-    VideoCommon::FullCapture::Enable(config.full_gpu_capture);
-    VideoCommon::FullCapture::RequestSelfTest(config.full_gpu_capture_self_test);
-    VideoCommon::FullCapture::SetTargetsAfterOnly(config.full_gpu_capture_targets_after);
-    VideoCommon::ReadbackTrace::SetWriteOrigins(config.buffer_write_origins);
-    if (config.full_gpu_capture) {
-        const auto version = winrt::Windows::ApplicationModel::Package::Current().Id().Version();
-        VideoCommon::FullCapture::SetSession(fmt::format(
-            "{{\"version\":\"{}.{}.{}.{}\",\"memory_limit_mib\":{},\"async_record\":{},"
-            "\"async_present\":{},\"async_shaders\":{},\"targets_after_only\":{}}}",
-            version.Major, version.Minor, version.Build, version.Revision, config.memory_limit_mib,
-            config.async_record, config.async_present, config.async_shaders,
-            config.full_gpu_capture_targets_after));
-    }
-    VideoCore::Perf::SetForceSwapIntervalOne(config.force_swap_interval_one);
-    Settings::values.async_presentation.SetValue(config.async_present);
-    if (config.airplane_mode) Settings::values.airplane_mode.SetValue(true); // else Settings > System
-    if (config.upscaling) ApplyUpscaling(*config.upscaling); // before the renderer exists
-    D3D12::SetAsyncRecording(config.async_record);
-    D3D12::SetDescriptorDeferral(config.descriptor_defer);
-    D3D12::SetPresentQueue(config.present_queue);
-    D3D12::SetBorderColorMode(static_cast<D3D12::BorderColorMode>(config.border_color));
-    D3D12::SetDepthBiasRounding(config.depth_bias_round);
-    D3D12::SetUnormHalfDownRounding(config.unorm_round);
-    D3D12::SetCubeDirectionSanitize(config.cube_sanitize);
-    D3D12::SetHalfFloatFlush(config.half_ftz);
-    D3D12::SetShaderAlphaToCoverage(config.a2c_shader);
-    D3D12::SetSmallBcGuestPalette(config.small_bc_palette);
-    D3D12::SetBcGpuDecode(config.bc_gpu_decode);
-    D3D12::SetNotZeroedHeaps(config.not_zeroed_heaps);
-    D3D12::SetShaderDepthBias(config.depth_bias_shader);
-    D3D12::SetFrameGenMode(config.frame_gen.value_or(global_graphics.frame_gen ? D3D12::FrameGenMode::Auto
-                                                                                : D3D12::FrameGenMode::Off));
-    D3D12::SetMemoryImportProbe(config.memory_import_probe);
-    Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);
-    Service::Nvidia::Devices::nvdisp_disp0::SetReleaseFence(config.nv_release_fence);
-    if (config.gpu_fence) Settings::values.gpu_fence_behavior.SetValue(*config.gpu_fence);
-    VideoCommon::SetEarlySyncpoints(config.early_syncpoints);
-    D3D12::PipelineKeyTracking::SetMode(config.pipeline_key_reuse);
-    D3D12::SetUniformUploadCopy(config.upload_copy);
-    D3D12::SetUniformReuse(config.uniform_reuse);
-    VideoCommon::SetRenderTargetEarlyOut(config.rt_early_out);
-    D3D12::SetStageViewCache(config.stage_view_cache);
-    D3D12::SetTextureReplay(static_cast<D3D12::TextureReplayMode>(config.texture_replay));
-    VideoCore::FramePipeline::SetPresentMailbox(config.present_mailbox);
-    VideoCore::FramePipeline::SetVsyncNowait(config.vsync_nowait);
-    VideoCore::FramePipeline::SetSwapIntervalHold(config.swap_interval_hold);
-    D3D12::SetPsoBudget(config.pso_budget);
-    D3D12::SetPsoLoading(config.pso_loading);
-    VideoCommon::CpuWriteQueue::SetMode(config.cpu_write_defer);
-    // The JIT load table and the write queue trust the bitmap, so it is kept for them too.
-    VideoCommon::GpuWrittenPages::SetEnabled(
-        config.dma_flush_filter ||
-        config.cpu_write_defer != VideoCore::FramePipeline::Mode::Off ||
-        config.jit_read_table != VideoCore::FramePipeline::Mode::Off);
-    static_assert(u8(Common::PageTable::JitReadTable::On) == u8(VideoCore::FramePipeline::Mode::On) &&
-                  u8(Common::PageTable::JitReadTable::Check) ==
-                      u8(VideoCore::FramePipeline::Mode::Check));
-    Common::PageTable::SetJitReadTable(
-        static_cast<Common::PageTable::JitReadTable>(config.jit_read_table));
-    D3D12::SetDrawSamplerReuse(config.draw_sampler_reuse);
-    D3D12::SetPixelShaderScratchMode(static_cast<D3D12::PixelShaderScratchMode>(config.ps_scratch));
-    if (config.debug_layer) {
-        Settings::values.renderer_debug = true;
-        D3D12::SetGpuBasedValidation(config.gpu_validation);
-        WriteDiag("step: D3D12 debug layer requested");
-    }
-    WriteDiag(std::string("step: audio ") + (config.null_audio ? "timed Null" : "XAudio2"));
-    WriteDiag(surface.core_window != nullptr && !config.null_renderer
-                  ? "step: logging up, renderer Direct3D12 on a " + std::to_string(surface.width) +
-                        "x" + std::to_string(surface.height) + " CoreWindow"
-                  : std::string("step: logging up, renderer Null"));
-
-    if (config.pulse_store) {
-        const auto result = RunPulseStoreGate(
-            {.diag = [](const std::string& line) { WriteDiag(line); }, .restart = [] { RestartApp(); }});
-        if (result != PulseStoreGateResult::Pass) return 17;
-        if (!config.pulse_cycles) return 0;
-    }
-    if (config.pulse_cycles) {
-        return RunPulseGate(nro_path, {.cycles = config.pulse_cycles,
-                                       .seed = config.pulse_seed,
-                                       .core_window = config.null_renderer ? nullptr
-                                                                           : surface.core_window,
-                                       .width = surface.width,
-                                       .height = surface.height,
-                                       .diag = [](const std::string& line) { WriteDiag(line); }});
-    }
-
-    Core::System system{};
-    g_gpu_command_failed.store(false, std::memory_order_release);
-    VideoCommon::GPUThread::SetExceptionObserver([](const char* message) {
-        // Logged here, on the GPU thread: tells a stuck recovery apart from a GPU thread that
-        // never got to report its failure.
-        if (!g_gpu_command_failed.exchange(true, std::memory_order_acq_rel)) {
-            WriteDiag(std::string("GPU thread reported a failure: ") + message);
-        }
-    });
-    WriteDiag("step: Core::System constructed");
-    system.Initialize();
-    WriteDiag("step: system.Initialize() done");
-    system.ApplySettings();
-    WriteDiag("step: system.ApplySettings() done");
-
-    HeadlessEmuWindow emu_window{surface.core_window, surface.width, surface.height};
-
-    // Before Load, so HID starts with player 1 connected and bound to the gamepad engine.
-    GamepadInput input{config.input_script};
-    system.HIDCore().ReloadInputDevices();
-    // Set only after a failed Load has returned from Core's own synchronous cleanup.
-    // Other early Load failures still require the frontend to tear down the kernel.
-    bool load_already_shutdown = false;
-    // Shown while Pulse saves or resumes a session (pulse_screen.h); it draws through the GPU
-    // thread, so it goes before anything is torn down.
-    std::optional<PulseScreen> pulse_screen;
-    // The splash over the guest's first frames (launch_splash.h); it draws as the Pulse screen.
-    std::optional<LaunchScreen> launch_screen;
-    std::optional<std::jthread> trim_worker;
-    std::optional<std::jthread> swap_worker;
-    const auto shutdown = [&] {
-        swap_worker.reset();
-        trim_worker.reset();
-        pulse_screen.reset();
-        launch_screen.reset();
-        Common::SamplingProfiler::Stop(); // writes the window in progress, if it runs
-        if (config.gpu_failure_probe) WriteDiag("GPU recovery shutdown: input.Stop");
-        input.Stop();
-        Kernel::Svc::SetDebugStringObserver(nullptr); // detach before teardown
-        if (load_already_shutdown) {
-            WriteDiag("shutdown: failed Load already cleaned up Core; skipping Pause and second shutdown");
-        } else {
-            if (g_gpu_command_failed.load(std::memory_order_acquire)) {
-                // A discarded GPU batch may never signal a guest syncpoint. Release CPU owners
-                // before Pause waits for them; Core shutdown repeats this idempotent cancellation.
-                WriteDiag("GPU recovery shutdown: cancel waits before Pause");
-                system.Host1x().GetSyncpointManager().CancelWaits();
-                system.GPU().NotifyShutdown();
-            }
-            if (config.gpu_failure_probe) WriteDiag("GPU recovery shutdown: system.Pause");
-            void(system.Pause());
-            if (config.gpu_failure_probe) WriteDiag("GPU recovery shutdown: ShutdownMainProcess");
-            system.ShutdownMainProcess();
-        }
-        if (config.gpu_failure_probe) WriteDiag("GPU recovery shutdown: HID unload");
-        system.HIDCore().UnloadInputDevices();
-        Common::BugTracker::RequestFlush(); // this game's summary, before the next one starts
-        WriteDiag("step: shutdown complete");
-    };
-
-    // Filesystem + content plumbing, as yuzu_cmd does it, plus the manual content provider the Qt
-    // and Android frontends fill from their game lists: a game dump loaded straight from its file
-    // is only found through it, and without it the game has no control data (NACP), so no save
-    // data sizes, and aborts.
-    FileSys::ManualContentProvider manual_provider;
-    system.SetContentProvider(std::make_unique<FileSys::ContentProviderUnion>());
-    system.RegisterContentProvider(FileSys::ContentProviderUnionSlot::FrontendManual,
-                                   &manual_provider);
-    system.SetFilesystem(MakeUwpFilesystem());
-    system.GetFileSystemController().CreateFactories(*system.GetFilesystem());
-    system.GetUserChannel().clear();
-    // Before Load: games read the profile name when they start.
-    if (ApplyUserName(system.GetProfileManager(), LoadSystemSettings().user_name)) {
-        WriteDiag("step: profile name from Settings > System");
-    }
-    // Played by hand, a game asking for text gets the on-screen keyboard (uwp_software_keyboard.h);
-    // unattended runs keep the core's stand-in, which answers on its own.
-    Jadyx::UwpSoftwareKeyboard* keyboard_applet = nullptr;
-    if (config.play) {
-        auto keyboard = std::make_unique<Jadyx::UwpSoftwareKeyboard>();
-        keyboard_applet = keyboard.get();
-        Service::AM::Frontend::FrontendAppletSet applets; // The others stay the core's.
-        applets.software_keyboard = std::move(keyboard);
-        system.SetFrontendAppletSet(std::move(applets));
-    }
-    // As Eden's firmware applet launcher: the applet's program from the system NAND, run as a
-    // library applet so AM hands it the input it would get from a game.
-    constexpr u64 mii_edit_program_id = static_cast<u64>(Service::AM::AppletProgramId::MiiEdit);
-    if (mii_editor) {
-        const auto applet = system.GetFileSystemController().GetSystemNANDContents()->GetEntry(
-            mii_edit_program_id, FileSys::ContentRecordType::Program);
-        if (!applet) {
-            WriteDiag("mii editor: not in the system NAND");
-            shutdown(); return MII_EDITOR_MISSING;
-        }
-        nro_path = applet->GetFullPath();
-        system.GetFrontendAppletHolder().SetCurrentAppletId(Service::AM::AppletId::MiiEdit);
-        WriteDiag("step: mii editor from the system NAND");
-    } else if (const auto file = system.GetFilesystem()->OpenFile(nro_path, FileSys::OpenMode::Read);
-        file != nullptr && manual_provider.AddEntriesFromContainer(file)) {
-        WriteDiag("step: game contents registered");
-    }
-    const auto content = mii_editor ? Content::LaunchResolution{} :
-        Content::ResolveLaunchContent(*system.GetFilesystem(), nro_path, manual_provider,
-                                      Content::ConsumeAllowMissing(nro_path));
-    if (content.error != Content::Error::None) {
-        WriteDiag("content: launch blocked error=" + std::to_string(static_cast<int>(content.error)));
-        shutdown(); return 16;
-    }
-    if (content.managed)
-        system.GetContentProviderUnion().SetApplicationContentOverride(content.application, &manual_provider);
-    // The player's mod choices (which are off, and their order) before the loader reads any mod,
-    // and nothing left of an install the app closed during.
-    Mods::ClearScratch(Mods::DefaultModPaths());
-    Mods::ApplyModChoices(Mods::DefaultModPaths());
-    ConsumeStorageReadFailure();
-    WriteDiag("step: filesystem factories created");
-
-    // As yuzu_cmd. Without the Application applet id, AM never sends the focus messages and a game
-    // waits for them forever after its first ReceiveMessage (homebrew does not wait).
-    auto load_parameters = mii_editor ?
-        Service::AM::FrontendAppletParameters{
-            .program_id = mii_edit_program_id,
-            .applet_id = Service::AM::AppletId::MiiEdit,
-            .applet_type = Service::AM::AppletType::LibraryApplet,
-        } :
-        Service::AM::FrontendAppletParameters{
-            .applet_id = Service::AM::AppletId::Application,
-        };
-    // A guest that ends on its own (the Mii editor when the player is done) goes back to the
-    // library; the play loop sees this between frames.
-    std::atomic<bool> guest_exited{false};
-    system.RegisterExitCallback([&guest_exited] { guest_exited.store(true); });
-    // Run with no caller, the editor ends by asking to return to the main program
-    // (ILibraryAppletSelfAccessor::ExitProcessAndReturn); here that is the library.
-    if (mii_editor)
-        system.RegisterExecuteProgramCallback([&guest_exited](std::size_t) { guest_exited.store(true); });
-    // Pulse: the identity this boot would save under, and the session it resumes if one matches.
-    std::optional<Common::Pulse::Identity> pulse_identity;
-    if (config.pulse_sessions && PulseSessions::Enabled() && !mii_editor) {
-        try {
-            const auto file = system.GetFilesystem()->OpenFile(nro_path, FileSys::OpenMode::Read);
-            const auto user = system.GetProfileManager().GetUser(0);
-            if (file && user) {
-                pulse_identity = PulseSessions::IdentityFor(nro_path, user->uuid, file->GetSize(),
-                                                            content.application, content.version,
-                                                            content.build_id);
-            }
-        } catch (const std::exception& e) {
-            WritePulseLog(std::string("no identity: ") + e.what());
-        }
-    }
-    // Played by hand: the launch splash stays up from the library's exit to the game's first
-    // frame. The renderer takes the window from the frontend's splash, then draws it itself until
-    // the guest is about to run.
-    const bool boot_screen = config.play && surface.core_window != nullptr && !config.null_renderer;
-    if (boot_screen) {
-        D3D12::SetWindowHandoff(ReleaseLaunchSplash);
-        D3D12::SetBootScreen(DrawLaunchSplash);
-    }
-    // Stops the renderer's splash before anything else presents.
-    const auto end_boot_screen = [&] {
-        if (!boot_screen) return;
-        D3D12::EndBootScreen(system.Renderer());
-        SetLaunchStep(LaunchStep::Starting);
-    };
-    Core::SystemResultStatus load_result{Core::SystemResultStatus::ErrorNotInitialized};
-    bool gpu_started = false, resumed = false;
-    if (pulse_identity && config.pulse_resume && PulseSessions::CanResume(*pulse_identity)) {
-        WritePulseLog("resuming the kept session | " + MemoryReport());
-        const auto resume_start = std::chrono::steady_clock::now();
-        bool loaded = false;
-        try {
-            PulseSessions::Resume(system, *pulse_identity, [&](const Kernel::ProcessLayoutPin& pin) {
-                system.Kernel().PinNextProcessLayout(pin);
-                loaded = true;
-                load_result = system.Load(emu_window, nro_path, load_parameters);
-                load_already_shutdown = load_result != Core::SystemResultStatus::Success &&
-                                        system.IsShuttingDown();
-                if (load_result != Core::SystemResultStatus::Success) {
-                    throw std::runtime_error("system.Load failed");
-                }
-                // The services the restore rebuilds talk to the GPU, as in the test bench.
-                end_boot_screen();
-                system.GPU().Start();
-                system.GetCpuManager().OnGpuReady();
-                gpu_started = true;
-                std::string title;
-                void(system.GetAppLoader().ReadTitle(title));
-                pulse_screen.emplace(system, PulseScreen::Kind::Resume, Utf8ToUtf16(title));
-            });
-            resumed = true;
-            WritePulseLog("session resumed in " +
-                      std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                         std::chrono::steady_clock::now() - resume_start)
-                                         .count()) +
-                      " ms | " + MemoryReport());
-        } catch (const std::exception& e) {
-            WritePulseLog(std::string("resume failed: ") + e.what());
-            if (loaded) {
-                // This System holds a half-rebuilt process and is never run: a fresh one boots.
-                shutdown();
-                return PULSE_RESUME_FAILED;
-            }
-            PulseSessions::SetNotice(I18n::ToUtf8(I18n::Tr(I18n::Text::PulseNotResumed)));
-        }
-    }
-    if (!resumed) {
-        load_result = system.Load(emu_window, nro_path, load_parameters);
-        load_already_shutdown = load_result != Core::SystemResultStatus::Success &&
-                                system.IsShuttingDown();
-    }
-    // Unused when Load failed before the renderer came up.
-    D3D12::SetWindowHandoff(nullptr);
-    D3D12::SetBootScreen(nullptr);
-    WriteDiag("step: system.Load() returned status " +
-              std::to_string(static_cast<int>(load_result)) + " | " + MemoryReport());
-    WriteDiag("memory map: " + LargestAllocations());
-    if (load_result != Core::SystemResultStatus::Success) {
-        LOG_CRITICAL(Frontend, "Headless boot: failed to load {} (status {})", nro_path,
-                     static_cast<int>(load_result));
-        // Some early Load failures leave kernel objects; others already shut Core down.
-        // Stop frontend owners in both cases, but never run the kernel's teardown twice.
-        shutdown();
-        // The loader already looked for the ExeFS in an installed update before giving up.
-        if (load_result == Core::SystemResultStatus(u32(Core::SystemResultStatus::ErrorLoader) +
-                                                    u32(Loader::ResultStatus::ErrorNoExeFS))) {
-            return UPDATE_REQUIRED;
-        }
-        return 2;
-    }
-    ApplyGameLanguage(system);
-    if (config.bug_tracker) {
-        std::string title;
-        void(system.GetAppLoader().ReadTitle(title));
-        Common::BugTracker::SetTitle(system.GetApplicationProcessProgramID(), std::move(title));
-    }
-
-    // Install the JIT-liveness observer BEFORE running any guest code: it watches every guest
-    // svcOutputDebugString chunk for the sentinel and signals the wait below. Cheap no-op for any
-    // write that isn't the sentinel; zero cost in builds that never install an observer.
-    std::mutex live_mutex;
-    std::condition_variable live_cv;
-    std::atomic<bool> jit_alive{false};
-    std::atomic<bool> gfx_done{false};
-    Kernel::Svc::SetDebugStringObserver([&](std::string_view chunk) {
-        if (chunk.find(JIT_LIVENESS_SENTINEL) != std::string_view::npos) {
-            jit_alive.store(true, std::memory_order_release);
-            live_cv.notify_all();
-        }
-        if (chunk.find(GFX_DONE_SENTINEL) != std::string_view::npos) {
-            gfx_done.store(true, std::memory_order_release);
-            live_cv.notify_all();
-        }
-    });
-
-    // Start the GPU host thread (null renderer â€” no device) and release the CPU manager.
-    if (!gpu_started) {
-        system.GPU().Start();
-        WriteDiag("step: GPU host thread started");
-        system.GetCpuManager().OnGpuReady();
-    }
-
-    if (Settings::values.use_disk_shader_cache.GetValue()) {
-        // As yuzu_cmd: build the pipelines earlier sessions saved (LocalState/jadyx/shader/<title>/
-        // d3d12.bin) before the guest runs, so they do not stutter in; the ones the game meets
-        // later are appended to the file. The renderer shows the progress on screen.
-        WriteDiag("step: building the disk shader cache | " + MemoryReport());
-        VideoCore::RendererBase& renderer = system.Renderer();
-        if (pulse_screen) pulse_screen->ShadersStarting();
-        renderer.ReadRasterizer()->LoadDiskResources(
-            system.GetApplicationProcessProgramID(), std::stop_token{},
-            [&renderer, &pulse_screen, boot_screen](VideoCore::LoadCallbackStage, size_t done, size_t total) {
-                // A resume's screen and the splash show the count themselves; two presenters
-                // would race.
-                if (pulse_screen) pulse_screen->Shaders(done, total);
-                else if (boot_screen) SetLaunchStep(LaunchStep::Shaders, done, total);
-                else D3D12::ShowLoadProgress(renderer, done, total);
-            });
-        WriteDiag("step: disk shader cache built | " + MemoryReport());
-    }
-
-    const u64 program_id = system.GetApplicationProcessProgramID();
-    ApplyGameGraphics(system, config, LoadGameGraphics(program_id));
-    // The game's own offline mode over Settings > System's, before any guest code runs; boot.cfg's
-    // airplane=1 wins over both.
-    if (const auto offline = LoadGameOfflineMode(program_id); offline && !config.airplane_mode)
-        Settings::values.airplane_mode.SetValue(*offline);
-    WriteDiag(Settings::values.airplane_mode.GetValue() ? "network: offline mode, the game sees no internet"
-                                                        : "network: the game sees the internet");
-    PrewarmBudget prewarm_budget{LoadPrewarmStep(program_id)};
-    if (config.jit_prewarm != BootConfig::JitPrewarm::Off) {
-        // All guest cores are still stopped. Each owns a separate JIT; never
-        // compile into an instance concurrently with Run or another compiler.
-        // A resume warms too: its JIT starts empty like a boot's, and without the pass the
-        // whole game compiled in its first minute (bursts of 25k blocks in one frame). The
-        // blocks are checked against the restored code, so a session's own loads are safe.
-        if (auto* process = system.ApplicationProcess()) {
-            const u64 prewarm_mib =
-                config.jit_prewarm_mib != 0 ? config.jit_prewarm_mib : prewarm_budget.MiBPerCore();
-            WriteDiag(std::string{"step: CPU JIT profile/prewarm starting ("} +
-                      (process->Is64Bit() ? "A64" : "A32") + "), " +
-                      std::to_string(prewarm_mib) + " MiB per core" +
-                      (config.jit_prewarm_mib != 0 ? " (boot.cfg)" : "") + " | " +
-                      MemoryReport());
-            if (pulse_screen) pulse_screen->CpuStarting();
-            Core::ConfigureApplicationPrewarm(system,
-                config.jit_prewarm == BootConfig::JitPrewarm::Warm,
-                [&system, &pulse_screen, boot_screen](size_t done, size_t total) {
-                    // A resume's screen and the splash show the count themselves; two presenters
-                    // would race.
-                    if (pulse_screen) pulse_screen->Cpu(done, total);
-                    else if (boot_screen) SetLaunchStep(LaunchStep::Cpu, done, total);
-                    else D3D12::ShowCpuLoadProgress(system.Renderer(), done, total);
-                },
-                prewarm_mib * PrewarmBudget::MiB);
-            WriteDiag("step: CPU JIT profile/prewarm ready | " + MemoryReport());
-        }
-    }
-
-    if (config.profile) {
-        const auto output =
-            Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "jadyx_profile.txt";
-        Common::SamplingProfiler::Start({.hz = config.profile_hz,
-                                         .window_seconds = config.profile_window,
-                                         .output = output});
-        WriteDiag("step: sampling profiler on, " + std::to_string(config.profile_hz) +
-                  " Hz, " + std::to_string(config.profile_window) + " s windows");
-    }
-    // Run the guest. CpuManager spins up guest threads; dynarmic compiles + executes their code.
-    // A resume's screen stays over it until the game presents.
-    if (pulse_screen) pulse_screen->GameStarting();
-    // The splash goes on over the guest until the game presents (a resume's screen ended it).
-    if (boot_screen && !pulse_screen) {
-        end_boot_screen();
-        launch_screen.emplace(system);
-    }
-    void(system.Run());
-    WriteDiag("step: CPU pin " + Common::Windows::CpuPinReport());
-    input.Start(system.HIDCore());
-    if (config.gpu_failure_probe) {
-        WriteDiag("GPU recovery probe: injecting callback failure");
-        system.GPU().RunOnGpuThread([&] {
-            if (config.gpu_removal_probe) {
-                D3D12::RemoveDeviceForProbe(system.Renderer());
-            }
-            throw std::runtime_error("injected GPU allocation failure for recovery gate");
-        });
-        WriteDiag("GPU recovery probe: failed callback waiter released");
-        // Completion of a second request also proves that the failed GPU thread can drain host
-        // sync work after its observer has run, without racing that observer's notification.
-        system.GPU().RunOnGpuThread([] {});
-        WriteDiag("GPU recovery probe: second callback completed");
-        if (!g_gpu_command_failed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("GPU exception recovery probe did not notify frontend");
-        }
-        WriteDiag("GPU recovery probe: starting shutdown");
-        shutdown();
-        WriteDiag("GPU failure recovery probe PASS: host waiter released and shutdown completed");
-        return 0;
-    }
-
-    if (config.play) {
-        // Played by hand: the guest runs until the app is closed from the console, which ends the
-        // process. The diag keeps a heartbeat of how long it ran and how much memory it used.
-        // Q on a keyboard (the PC) ends the session cleanly instead, so the run can be told apart
-        // from a crash.
-        WriteDiag("step: system.Run() issued, playing until the app is closed | " + MemoryReport());
-        // Play history (play_history.h): the launch is recorded now, play time while the guest runs
-        // (never with the menu open), saved each minute since the dashboard can end the process.
-        std::optional<PlaySession> play_session;
-        if (!mii_editor) play_session.emplace(nro_path, program_id);
-        // In-game menu (game_menu.h): the guest pauses while it is open. The frontend draws it with
-        // real text (game_menu_surface.h) and the renderer copies it over the last frame. Its
-        // cheats page changes the running game's cheats at once: the engine reloads them on its
-        // next tick after the guest resumes. Closed, the menu keeps nothing.
-        std::optional<GameMenu> menu;
-        bool graphics_changed{}; ///< In the open menu: the output's size may have to follow.
-        std::optional<GameMenuSurface> menu_surface;
-        // A keyboard the game opened (game_keyboard.h): drawn on the same surface as the menu, over
-        // the running game. The menu opens on top of it and gives it back when it closes.
-        GameKeyboard game_keyboard;
-        bool keyboard_shown = false;
-        struct TextEntryOff {
-            ~TextEntryOff() { SetTextEntryActive(false); }
-        } text_entry_off;
-        std::optional<Cheats::CheatSession> cheats;
-        Cheats::CheatsPage cheats_page;
-        std::wstring cheats_notice;
-        std::wstring game_title;
-        // Beside the menu: the game's maker and version, and how long this session has run.
-        std::wstring game_details;
-        const auto session_start = std::chrono::steady_clock::now();
-        std::wstring session_text;
-        // The paused frame while the menu is open: behind it, and what a screenshot saves.
-        D3D12::MenuImage game_frame;
-        const auto capture_frame = [&] {
-            system.GPU().RunOnGpuThread([&] { game_frame = D3D12::CaptureGameFrame(system.Renderer()); });
-            if (menu_surface) menu_surface->SetBackdrop(game_frame);
-        };
-        const Cheats::CheatGame cheat_game{program_id, system.GetApplicationProcessBuildID()};
-        const auto cheats_on = [&](const Cheats::CheatCatalog& catalog) {
-            std::size_t count = 0;
-            for (const auto category : {Cheats::CheatCategory::Gameplay, Cheats::CheatCategory::Graphics,
-                                        Cheats::CheatCategory::Mine})
-                count += catalog.EnabledCount(category);
-            return count;
-        };
-        const auto draw_menu = [&] {
-            pulse_screen.reset(); // The menu takes the screen.
-            launch_screen.reset();
-            const auto screen = D3D12::GameMenuScreenSize(system.Renderer());
-            D3D12::MenuImage image;
-            try {
-                menu_surface->SetPromptMapping(input.MenuPromptMapping());
-                const GameMenuScene scene{game_title, game_details, session_text};
-                image = cheats ? menu_surface->DrawCheats({*cheats, cheats_page, game_title, cheats_notice, true},
-                                                          scene, screen)
-                        : menu ? menu_surface->DrawMenu(*menu, scene, screen)
-                               : menu_surface->DrawKeyboard(game_keyboard.View(), game_keyboard.CanCancel(), screen);
-            } catch (const winrt::hresult_error& e) {
-                WriteDiag("menu: not drawn: " + winrt::to_string(e.message()));
-                return;
-            }
-            system.GPU().RunOnGpuThread([&] { D3D12::ShowGameMenu(system.Renderer(), std::move(image)); });
-        };
-        // Shows, redraws or hides the game's keyboard after it changed (unless the menu covers it).
-        const auto sync_keyboard = [&] {
-            const bool open = game_keyboard.IsOpen();
-            const bool was_shown = std::exchange(keyboard_shown, open);
-            if (menu) return;
-            if (open) {
-                if (!was_shown) {
-                    input.SetMenuOpen(true);
-                    SetTextEntryActive(true);
-                    WriteDiag("keyboard: shown over the game");
-                }
-                if (!menu_surface) {
-                    try {
-                        menu_surface.emplace();
-                    } catch (const winrt::hresult_error& e) {
-                        WriteDiag("keyboard: no surface: " + winrt::to_string(e.message()));
-                    }
-                }
-                if (menu_surface) draw_menu();
-            } else if (was_shown) {
-                SetTextEntryActive(false);
-                menu_surface.reset();
-                system.GPU().RunOnGpuThread([&] { D3D12::HideGameMenu(system.Renderer()); });
-                input.SetMenuOpen(false);
-                WriteDiag("keyboard: closed");
-            }
-        };
-        const auto keyboard_press = [&](std::optional<KeyboardReply> reply) {
-            if (reply && keyboard_applet) keyboard_applet->Reply(*reply);
-            sync_keyboard();
-        };
-        constexpr auto TICK = std::chrono::milliseconds(20);
-        constexpr u32 TICKS_PER_MINUTE = 3000;
-        constexpr u32 TICKS_PER_SECOND = TICKS_PER_MINUTE / 60;
-        // The next session's prewarm budget follows this one's headroom (PrewarmBudget).
-        const auto finish_prewarm_budget = [&](u32 tick) {
-            if (prewarm_budget.Finish(tick / TICKS_PER_SECOND)) {
-                SavePrewarmStep(program_id, static_cast<std::int32_t>(prewarm_budget.Step()));
-                WriteDiag("JIT prewarm budget raised to " +
-                          std::to_string(prewarm_budget.MiBPerCore()) +
-                          " MiB per core for this game's next session");
-            }
-        };
-        // memory_audit: the heaps and the memory map when the headroom runs low, since the
-        // minute reports miss the few seconds of a load that fill it. Again only after a further
-        // 50 MiB drop (at most every 2 s), or once the headroom has recovered.
-        constexpr u64 LOW_HEADROOM = 150ULL << 20;
-        constexpr u64 LOW_HEADROOM_STEP = 50ULL << 20;
-        u64 low_snapshot_headroom = ~u64{};
-        u32 low_snapshot_tick = 0;
-        // Short of memory, each JIT code cache keeps what it has committed, or this much.
-        constexpr size_t JIT_CAP_FLOOR = 64ULL << 20;
-        // Shorter still, a cache holding more than this is cleared and gives the rest back: a large
-        // game held ~160 MiB in each of three caches when a new area's textures ran it out.
-        constexpr size_t JIT_RELEASE_CAP = 96ULL << 20;
-        // With Permafrost the JIT gives way only once it falls behind: a cold guest page costs a
-        // read of ~0.6 ms when touched again, a cleared cache recompiles the game's hot code. At
-        // 768 MiB, inside Permafrost's band, a world entry froze the caches at 64 MiB with 460
-        // free and cleared them four times, compiling 60-80k blocks in a frame (up to 973 ms).
-        // So they stop growing where Permafrost turns urgent and give back only below its
-        // emergency mark, once it has had the first go: giving back clears a cache that may hold
-        // a 192 MiB prewarm. They grow again once Permafrost has brought the headroom back to
-        // its low mark.
-        // With Permafrost these marks come from the memory coordinator, which brings them down
-        // with Permafrost's when the guest stalls on reads back.
-        const bool jit_after_swap = Common::GuestSwapActive();
-        const u64 swap_low = u64{config.guest_swap_low_mib} << 20;
-        const u64 swap_high = (std::max)(u64{config.guest_swap_high_mib} << 20, swap_low);
-        const u64 swap_watch = (std::max)(u64{config.guest_swap_watch_mib} << 20, swap_high);
-        Jadyx::MemoryCoordinator::Config coordinator_config;
-        coordinator_config.watch = swap_watch;
-        coordinator_config.low = swap_low;
-        coordinator_config.high = swap_high;
-        coordinator_config.low_floor =
-            (std::min)(u64{config.memory_coordinator_floor_mib} << 20, swap_low);
-        if (config.texture_cap_line_mib) {
-            coordinator_config.texture_line = u64{*config.texture_cap_line_mib} << 20;
-        }
-        // The Permafrost worker publishes the plan; the JIT and the trims below read it.
-        struct {
-            std::mutex mutex;
-            Jadyx::MemoryCoordinator::Plan plan;
-        } memory_plan;
-        memory_plan.plan = Jadyx::MemoryCoordinator{coordinator_config}.Initial();
-        const auto read_plan = [&memory_plan] {
-            std::scoped_lock lock{memory_plan.mutex};
-            return memory_plan.plan;
-        };
-        struct JitMarks {
-            u64 stop, release, uncap;
-        };
-        const auto jit_marks = [&]() -> JitMarks {
-            if (!jit_after_swap) {
-                // ...and the cap is lifted once 1 GiB is free again.
-                return {768ULL << 20, 384ULL << 20, 1024ULL << 20};
-            }
-            const auto plan = read_plan();
-            return {plan.jit_stop, plan.jit_release, plan.jit_uncap};
-        };
-        constexpr u64 POOL_TRIM_PER_SECOND = 64ULL << 20;
-        constexpr u64 POOL_TRIM_ALL_HEADROOM = 512ULL << 20;
-        constexpr u64 TRIM_SLICE = 32ULL << 20;
-        constexpr u64 TRIM_LOW_HEADROOM = 1024ULL << 20;
-        constexpr u64 TRIM_ACTIVE_PASS = 64ULL << 20;
-        std::atomic<bool> trim_low{false};
-        std::atomic<bool> trim_paused{false};
-        struct StopTrim {
-            std::optional<std::jthread>& worker;
-            ~StopTrim() { worker.reset(); }
-        } stop_trim{trim_worker}, stop_swap{swap_worker};
-        if (config.host_trim) {
-            trim_worker.emplace([&](std::stop_token stop) {
-                Common::SetCurrentThreadName("HostTrim");
-                auto& dram = system.DeviceMemory().buffer;
-                size_t cursor = 0;
-                u64 pass_released = TRIM_ACTIVE_PASS;
-                u64 last_pass_released = TRIM_ACTIVE_PASS;
-                while (!stop.stop_requested()) {
-                    if (trim_paused.load(std::memory_order_relaxed)) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                        continue;
-                    }
-                    const size_t before = cursor;
-                    const auto slice_start = std::chrono::steady_clock::now();
-                    const auto trim = dram.Trim(cursor, TRIM_SLICE);
-                    const auto slice_time = std::chrono::steady_clock::now() - slice_start;
-                    pass_released += trim.released;
-                    g_host_trim_visited.fetch_add(trim.visited, std::memory_order_relaxed);
-                    g_host_trim_released.fetch_add(trim.released, std::memory_order_relaxed);
-                    if (cursor <= before) {
-                        last_pass_released = pass_released;
-                        pass_released = 0;
-                    }
-                    if (trim.visited != 0 && trim.released >= trim.visited / 4) {
-                        std::this_thread::sleep_for((std::max)(
-                            std::chrono::steady_clock::duration{std::chrono::milliseconds(2)},
-                            slice_time / 2));
-                        continue;
-                    }
-                    // Short of memory the passes run back to back while they give memory back. A
-                    // pass that found little slows down: reading the whole emulated DRAM every
-                    // ~1.5 s took a tenth of a core and the cache the guest cores share with it.
-                    const bool low = trim_low.load(std::memory_order_relaxed);
-                    const bool active = last_pass_released >= TRIM_ACTIVE_PASS;
-                    std::this_thread::sleep_for(
-                        std::chrono::milliseconds(low ? (active ? 20 : 100) : active ? 100 : 500));
-                }
-            });
-        }
-        // Permafrost: close to short of memory the guest's use of its granules is sampled; short
-        // of it, the idlest go on probation and then to disk until the high mark is free again.
-        // The further below the low mark, the shorter the probation and the idle time asked.
-        if (Common::GuestSwapActive()) {
-            const auto initial = read_plan();
-            WriteDiag("permafrost on: sampling below " + std::to_string(initial.watch >> 20) +
-                      " MiB free, writing below " + std::to_string(initial.low >> 20) +
-                      " MiB up to " + std::to_string(initial.high >> 20) +
-                      " MiB; JIT caches stop growing below " +
-                      std::to_string(initial.jit_stop >> 20) + " MiB, give back below " +
-                      std::to_string(initial.jit_release >> 20) + " MiB; memory coordinator " +
-                      (config.memory_coordinator
-                           ? "on, low mark down to " +
-                                 std::to_string(coordinator_config.low_floor >> 20) + " MiB"
-                           : std::string{"off"}));
-            swap_worker.emplace([&](std::stop_token stop) {
-                Common::SetCurrentThreadName("Permafrost");
-                Jadyx::MemoryCoordinator coordinator{coordinator_config};
-                g_memory_coordinator_state.texture_floor.store(u64{config.texture_cap_mib} << 20,
-                                                               std::memory_order_relaxed);
-                const auto start = std::chrono::steady_clock::now();
-                Jadyx::MemoryCoordinator::Plan plan = read_plan();
-                u64 logged_relief = 0;
-                while (!stop.stop_requested()) {
-                    u64 used{}, limit{};
-                    if (!QueryAppMemory(used, limit)) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                        continue;
-                    }
-                    const u64 headroom = limit > used ? limit - used : 0;
-                    if (config.memory_coordinator) {
-                        u64 texture_heap{}, texture_cap{};
-                        D3D12::GetTextureMemoryUse(texture_heap, texture_cap);
-                        const bool was_yielding = plan.yield;
-                        plan = coordinator.Update(
-                            {static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                  std::chrono::steady_clock::now() - start)
-                                                  .count()),
-                             headroom, Common::Permafrost::GetStats().fault_stall_us,
-                             texture_heap, g_memory_coordinator_state.texture_floor.load(std::memory_order_relaxed),
-                             texture_cap});
-                        D3D12::SetTextureMemoryLine(plan.texture_line);
-                        D3D12::SetTextureYield(plan.yield);
-                        {
-                            std::scoped_lock lock{memory_plan.mutex};
-                            memory_plan.plan = plan;
-                        }
-                        auto& state = g_memory_coordinator_state;
-                        state.yield.store(plan.yield, std::memory_order_relaxed);
-                        state.relief.store(plan.relief, std::memory_order_relaxed);
-                        state.stall_us_per_s.store(plan.stall_us_per_s, std::memory_order_relaxed);
-                        state.texture_line.store(plan.texture_line, std::memory_order_relaxed);
-                        state.texture_loan.store(plan.texture_loan, std::memory_order_relaxed);
-                        constexpr u64 LOG_RELIEF_STEP = 128ULL << 20;
-                        if (plan.yield != was_yielding ||
-                            plan.relief + LOG_RELIEF_STEP <= logged_relief ||
-                            plan.relief >= logged_relief + LOG_RELIEF_STEP ||
-                            (plan.relief == 0 && logged_relief != 0)) {
-                            logged_relief = plan.relief;
-                            WriteDiag(std::string{"memory coordinator: "} +
-                                      (plan.yield ? "yield" : "calm") + ", guest stall " +
-                                      std::to_string(plan.stall_us_per_s / 1000) +
-                                      " ms/s, relief " + std::to_string(plan.relief >> 20) +
-                                      " MiB (permafrost low " + std::to_string(plan.low >> 20) +
-                                      ", high " + std::to_string(plan.high >> 20) +
-                                      "), texture line " +
-                                      std::to_string(plan.texture_line >> 20) + " MiB, " +
-                                      std::to_string(headroom >> 20) + " MiB free");
-                        }
-                    }
-                    // The textures' loan is headroom they give back on their own: Permafrost does
-                    // not write the guest to disk for it. Urgent and below count only what is free.
-                    const u64 counted = headroom + plan.texture_loan;
-                    if (headroom < plan.urgent || counted < plan.low) {
-                        using Pressure = Common::GuestSwapPressure;
-                        const Pressure pressure =
-                            headroom < plan.emergency || Common::GuestSwapReserveReleased()
-                                ? Pressure::Emergency
-                            : headroom < plan.urgent ? Pressure::Urgent
-                                                     : Pressure::Low;
-                        const u64 base = pressure == Pressure::Low ? counted : headroom;
-                        g_guest_swap_released.fetch_add(
-                            Common::StepGuestSwap(plan.high > base ? plan.high - base : 0,
-                                                  pressure),
-                            std::memory_order_relaxed);
-                        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                        continue;
-                    }
-                    if (counted < plan.watch) {
-                        g_guest_swap_released.fetch_add(
-                            Common::StepGuestSwap(0, Common::GuestSwapPressure::Watch),
-                            std::memory_order_relaxed);
-                    }
-                    if (headroom >= plan.high) {
-                        Common::RefillGuestSwapReserve();
-                    }
-                    std::this_thread::sleep_for(
-                        std::chrono::milliseconds(counted < plan.watch ? 100 : 250));
-                }
-            });
-        }
-        // Pulse: after a resume the presented frames are logged each second for 30 s, so a guest
-        // that freezes shows when it stopped.
-        u64 resume_frames = 0;
-        Common::MemoryCeilingTrends ceiling_trends;
-        for (u32 tick = 1;; ++tick) {
-            std::this_thread::sleep_for(TICK);
-            if (play_session) play_session->Tick(!menu);
-            // The free memory under each limit every 10 s; the nearest one is logged each minute,
-            // and every 10 s while it has less than 768 MiB free.
-            if (tick % (10 * TICKS_PER_SECOND) == 0) {
-                const Common::MemoryCeilings ceilings = QueryMemoryCeilings();
-                ceiling_trends.Add(
-                    static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                         std::chrono::steady_clock::now().time_since_epoch())
-                                         .count()),
-                    ceilings);
-                const auto nearest = Common::NearestCeiling(ceilings);
-                if (tick % TICKS_PER_MINUTE == 0 ||
-                    (nearest && ceilings[*nearest].Free() < (768ULL << 20))) {
-                    WriteDiag("memory ceiling: " +
-                              Common::DescribeMemoryCeilings(ceilings, ceiling_trends));
-                }
-            }
-            if (u64 used{}, limit{}; config.memory_audit && tick % 10 == 0 &&
-                                     QueryAppMemory(used, limit)) {
-                const u64 headroom = limit > used ? limit - used : 0;
-                if (headroom >= 2 * LOW_HEADROOM) {
-                    low_snapshot_headroom = ~u64{};
-                } else if (headroom < LOW_HEADROOM &&
-                           headroom + LOW_HEADROOM_STEP <= low_snapshot_headroom &&
-                           tick - low_snapshot_tick >= 2 * TICKS_PER_SECOND) {
-                    low_snapshot_headroom = headroom;
-                    low_snapshot_tick = tick;
-                    WriteDiag("low headroom " + std::to_string(headroom >> 20) +
-                              " MiB: memory by owner: " + MemoryOwners());
-                    WriteDiag("low headroom heaps: " + HeapReport());
-                    WriteDiag("low headroom memory map: " + LargestAllocations());
-                }
-            }
-            if (u64 used{}, limit{}; tick % TICKS_PER_SECOND == 0 && QueryAppMemory(used, limit)) {
-                const u64 headroom = limit > used ? limit - used : 0;
-                if (prewarm_budget.Observe(headroom)) {
-                    SavePrewarmStep(program_id, static_cast<std::int32_t>(prewarm_budget.Step()));
-                    WriteDiag("JIT prewarm budget lowered to " +
-                              std::to_string(prewarm_budget.MiBPerCore()) +
-                              " MiB per core for this game's next session | " + MemoryReport());
-                }
-                // Short of memory, the JIT stops committing: each cache keeps the pages it has
-                // and is cleared when it fills them. Shorter, the larger caches are cleared and
-                // give memory back. Recompiling costs less than running out.
-                const JitMarks jit = jit_marks();
-                if (headroom < jit.release && !Dynarmic::CodeCacheCapReleases()) {
-                    Dynarmic::SetCodeCacheCap(JIT_RELEASE_CAP, true);
-                    WriteDiag("JIT code caches give memory back past " +
-                              std::to_string(JIT_RELEASE_CAP >> 20) + " MiB | " + MemoryReport());
-                } else if (headroom < jit.stop && Dynarmic::CodeCacheCap() == 0) {
-                    Dynarmic::SetCodeCacheCap(JIT_CAP_FLOOR);
-                    WriteDiag("JIT code caches stop growing | " + MemoryReport());
-                } else if (headroom >= jit.uncap && Dynarmic::CodeCacheCap() != 0) {
-                    // A load burst is over and the caches it froze would otherwise stay frozen
-                    // for the whole session, clearing and recompiling the game's hot code.
-                    Dynarmic::SetCodeCacheCap(0);
-                    WriteDiag("JIT code caches grow again | " + MemoryReport());
-                }
-            }
-            if (config.host_trim) {
-                trim_paused.store(menu.has_value(), std::memory_order_relaxed);
-                if (u64 used{}, limit{}; tick % TICKS_PER_SECOND == 0 &&
-                                         QueryAppMemory(used, limit)) {
-                    // A yield runs the passes back to back too: the guest stalls on reads back.
-                    trim_low.store((limit > used ? limit - used : 0) < TRIM_LOW_HEADROOM ||
-                                       read_plan().yield,
-                                   std::memory_order_relaxed);
-                }
-            }
-            if (config.pool_trim && tick % TICKS_PER_SECOND == 0) {
-                u64 used{}, limit{};
-                const bool low = (QueryAppMemory(used, limit) &&
-                                  (limit > used ? limit - used : 0) < POOL_TRIM_ALL_HEADROOM) ||
-                                 read_plan().yield;
-                TrimFreeGuestMemory(system, low ? ~u64{} : POOL_TRIM_PER_SECOND);
-            }
-            if (ConsumeStorageReadFailure()) {
-                WriteDiag("content: storage read failed; closing guest for library recovery");
-                shutdown(); return 16;
-            }
-            if (g_gpu_command_failed.load(std::memory_order_acquire)) {
-                WriteDiag("GPU command failed; shutting down game for library recovery | " + MemoryReport());
-                shutdown();
-                return 15;
-            }
-            if (resumed && tick % TICKS_PER_SECOND == 0 && tick <= 30 * TICKS_PER_SECOND) {
-                const u32 second = tick / TICKS_PER_SECOND;
-                const u64 frames = system.GetPerfStats().TotalGameFrames();
-                WritePulseLog("resumed +" + std::to_string(second) + " s: " +
-                              std::to_string(frames - resume_frames) + " frames" +
-                              (menu ? " (menu)" : ""));
-                resume_frames = frames;
-            }
-            if (config.hunt_at > 0 && tick == config.hunt_at * TICKS_PER_SECOND) {
-                D3D12::HuntNextFrames();
-                WriteDiag("hunt_at: bottleneck capture requested for next guest frames");
-            }
-            if (config.frame_trace_on_drop > 0 && tick == 1) {
-                VideoCore::FrameTrace::ArmOnSwapIntervalRise(300, 180, config.frame_trace_on_drop);
-                WriteDiag("frame_trace_on_drop: frame chain timeline armed");
-            }
-            if (config.frame_trace_at > 0 && tick == config.frame_trace_at * TICKS_PER_SECOND) {
-                VideoCore::FrameTrace::Start(480);
-                WriteDiag("frame_trace_at: frame chain timeline requested");
-            }
-            if (config.quit_at > 0 && tick == config.quit_at * TICKS_PER_SECOND) {
-                WriteDiag("quit_at: shutting down | " + MemoryReport());
-                finish_prewarm_budget(tick);
-                shutdown();
-                return 0;
-            }
-            if (Jadyx::QuitRequested()) {
-                WriteDiag("step: Q pressed after " + std::to_string(tick / 50) +
-                          " s, shutting down | " + MemoryReport());
-                finish_prewarm_budget(tick);
-                shutdown();
-                LOG_INFO(Frontend, "Headless boot: session closed with Q.");
-                return 0;
-            }
-            if (guest_exited.load()) {
-                WriteDiag("step: the guest exited after " + std::to_string(tick / 50) +
-                          " s; back to the library | " + MemoryReport());
-                finish_prewarm_budget(tick);
-                shutdown();
-                return RETURN_TO_LIBRARY;
-            }
-            if (keyboard_applet) {
-                bool changed = false;
-                for (const KeyboardEvent& event : keyboard_applet->TakeEvents())
-                    changed |= game_keyboard.Apply(event);
-                if (changed || game_keyboard.IsOpen() != keyboard_shown) sync_keyboard();
-                for (const TextEntryKey& key : TakeTextEntryKeys()) {
-                    if (menu || !game_keyboard.IsOpen()) break;
-                    keyboard_press(key.command ? game_keyboard.Handle(*key.command)
-                                               : game_keyboard.Type(key.character));
-                }
-            }
-            for (const MenuAction action : input.TakeMenuActions()) {
-                if (!menu && action != MenuAction::Toggle && game_keyboard.IsOpen()) {
-                    if (const auto command = TextEntryCommand(action))
-                        keyboard_press(game_keyboard.Handle(*command));
-                    continue;
-                }
-                if (!menu) {
-                    if (action != MenuAction::Toggle) continue;
-                    void(system.Pause());
-                    input.SetMenuOpen(true);
-                    SetTextEntryActive(false); // The real keyboard drives the menu.
-                    const ControllerOptions options = input.Options();
-                    {
-                        const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
-                                                 std::chrono::steady_clock::now() - session_start)
-                                                 .count();
-                        wchar_t text[24]{};
-                        std::swprintf(text, std::size(text), L"%lld:%02lld:%02lld",
-                                      static_cast<long long>(seconds / 3600),
-                                      static_cast<long long>(seconds / 60 % 60), static_cast<long long>(seconds % 60));
-                        session_text = text;
-                    }
-                    try {
-                        menu_surface.emplace();
-                    } catch (const winrt::hresult_error& e) {
-                        WriteDiag("menu: no surface: " + winrt::to_string(e.message()));
-                    }
-                    capture_frame();
-                    const SystemSettings system_settings = LoadSystemSettings();
-                    menu.emplace(GameMenuSettings{options.style, options.swap_face_buttons,
-                                                  options.deadzone, g_can_fullscreen.load(),
-                                                  g_fullscreen.load(), system_settings.show_performance_stats,
-                                                  pulse_identity.has_value(),
-                                                  config.material_capture_menu, config.hunt_menu,
-                                                  !game_frame.pixels.empty(), LoadGameOfflineMode(program_id),
-                                                  system_settings.offline_mode, LoadGraphicsSettings(),
-                                                  LoadGameGraphics(program_id)},
-                                 program_id != 0 && !mii_editor);
-                    if (game_title.empty()) {
-                        std::string title;
-                        void(system.GetAppLoader().ReadTitle(title));
-                        game_title = Utf8ToUtf16(title);
-                        FileSys::NACP nacp;
-                        if (system.GetAppLoader().ReadControlData(nacp) == Loader::ResultStatus::Success) {
-                            const std::string developer = nacp.GetDeveloperName();
-                            const std::string version = nacp.GetVersionString();
-                            game_details = Utf8ToUtf16(developer);
-                            if (!version.empty())
-                                game_details += (game_details.empty() ? L"v" : L" · v") + Utf8ToUtf16(version);
-                        }
-                    }
-                    if (program_id != 0 && !mii_editor) {
-                        menu->SetCheatsOn(cheats_on(Cheats::LoadCatalog(
-                            Cheats::TitleLoadDirectory(program_id), cheat_game.build_id)));
-                        menu->SetModsOn(Mods::ActiveMods(Mods::DefaultModPaths(), program_id));
-                    }
-                    WriteDiag("menu: opened, guest paused | " + MemoryReport());
-                    if (menu_surface) draw_menu();
-                    continue;
-                }
-                if (cheats && action != MenuAction::Toggle) {
-                    using Cheats::CheatsEffect;
-                    const auto pressed = Cheats::CheatsInputForAction(action);
-                    if (!pressed) continue;
-                    cheats_notice.clear();
-                    const CheatsEffect effect = Cheats::HandleCheatsInput(cheats_page, *cheats, *pressed,
-                                                                          GameMenuSurface::CheatRows);
-                    if (effect == CheatsEffect::Changed) {
-                        // Hot: the engine (created now if the game booted without cheats) runs
-                        // the new list from its next tick.
-                        system.EnsureCheatEngine().Reload(cheats->Catalog().Program());
-                        WriteDiag("menu: cheats changed, " + std::to_string(cheats->Catalog().UsedWords()) +
-                                  " VM words");
-                        if (!cheats->Saved()) cheats_notice = I18n::Tr(I18n::Text::CheatsSaveFailed);
-                    } else if (effect == CheatsEffect::OverBudget) {
-                        cheats_notice = I18n::Tr(I18n::Text::CheatsOverBudget);
-                    } else if (effect == CheatsEffect::Refresh) {
-                        cheats->Retry();
-                    } else if (effect == CheatsEffect::Back) {
-                        menu->SetCheatsOn(cheats_on(cheats->Catalog()));
-                        cheats.reset();
-                    }
-                    if (menu_surface) draw_menu();
-                    continue;
-                }
-                const GameMenuResult result = menu->Apply(action);
-                WriteDiag("menu: action " + std::to_string(static_cast<int>(action)) + ", row " +
-                          std::to_string(menu->Selected()));
-                if (result == GameMenuResult::Library ||
-                    result == GameMenuResult::LibraryWithoutSession) {
-                    if (result == GameMenuResult::Library && pulse_identity) {
-                        // The only capture: when the player leaves, never while playing.
-                        WritePulseLog("saving the session | " + MemoryReport() + " | " + MemoryOwners());
-                        pulse_screen.emplace(system, PulseScreen::Kind::Save, game_title);
-                        const auto save_start = std::chrono::steady_clock::now();
-                        // Samples the app memory while the save runs: the highest use of each
-                        // step against the use before it, so the step that peaks is known.
-                        constexpr std::array<const char*, 7> save_steps{
-                            "idle", "process", "gpu", "write", "verify", "sync", "replace"};
-                        std::array<std::atomic<u64>, save_steps.size()> step_peak{};
-                        std::atomic<int> step{-1};
-                        u64 save_base{}, save_limit{};
-                        QueryAppMemory(save_base, save_limit);
-                        std::string reason;
-                        {
-                            std::jthread sampler{[&](std::stop_token stop) {
-                                while (!stop.stop_requested()) {
-                                    const int at = step.load(std::memory_order_relaxed);
-                                    if (u64 used{}, limit{}; at >= 0 && QueryAppMemory(used, limit)) {
-                                        auto& peak = step_peak[at];
-                                        u64 seen = peak.load(std::memory_order_relaxed);
-                                        while (used > seen && !peak.compare_exchange_weak(seen, used)) {
-                                        }
-                                    }
-                                    std::this_thread::sleep_for(std::chrono::milliseconds{2});
-                                }
-                            }};
-                            reason = PulseSessions::Save(
-                                system, *pulse_identity,
-                                [] {
-                                    u64 used{}, limit{};
-                                    if (!QueryAppMemory(used, limit)) return ~u64{};
-                                    return limit > used ? limit - used : u64{};
-                                },
-                                [&](const char* name) {
-                                    pulse_screen->SaveStep(name);
-                                    for (int i = 0; i < static_cast<int>(save_steps.size()); ++i) {
-                                        if (std::string_view{name} == save_steps[i]) step.store(i);
-                                    }
-                                });
-                        }
-                        std::string peaks = "save peak over " + std::to_string(save_base >> 20) +
-                                            " MiB:";
-                        for (std::size_t i = 0; i < save_steps.size(); ++i) {
-                            const u64 peak = step_peak[i].load();
-                            if (peak == 0) continue;
-                            peaks += std::string{" "} + save_steps[i] + " " +
-                                     (peak >= save_base ? "+" + std::to_string((peak - save_base) >> 20)
-                                                        : "-" + std::to_string((save_base - peak) >> 20));
-                        }
-                        WritePulseLog(peaks + " MiB");
-                        const auto save_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                 std::chrono::steady_clock::now() - save_start)
-                                                 .count();
-                        if (reason.empty()) {
-                            WritePulseLog("session saved in " + std::to_string(save_ms) + " ms | " +
-                                          MemoryReport() + " | " + MemoryOwners());
-                            PulseSessions::SetNotice(I18n::ToUtf8(I18n::Tr(I18n::Text::PulseKept)));
-                        } else {
-                            WritePulseLog("no session (" + reason + ") after " +
-                                      std::to_string(save_ms) + " ms");
-                            PulseSessions::SetNotice(I18n::ToUtf8(
-                                I18n::Format(I18n::Text::PulseNotKept, {Utf8ToUtf16(reason)})));
-                        }
-                        pulse_screen->Finish(reason.empty());
-                    }
-                    WriteDiag("menu: back to the library, shutting the game down | " +
-                              MemoryReport());
-                    finish_prewarm_budget(tick);
-                    shutdown();
-                    return RETURN_TO_LIBRARY;
-                }
-                if (result == GameMenuResult::Cheats) {
-                    cheats.emplace(cheat_game);
-                    cheats->Poll();
-                    cheats_page = {};
-                    Cheats::ClampCheatsPage(cheats_page, cheats->Catalog(), GameMenuSurface::CheatRows);
-                    cheats_notice.clear();
-                }
-                if (result == GameMenuResult::Screenshot) {
-                    try {
-                        const auto folder = std::filesystem::path{std::wstring{
-                                                winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()}} /
-                                            L"jadyx" / L"captures";
-                        if (const auto name = SaveScreenshot(game_frame, folder)) {
-                            menu->SetScreenshotNote(I18n::Format(I18n::Text::MenuScreenshotSaved, {*name}));
-                            WriteDiag("menu: screenshot saved as " + I18n::ToUtf8(*name));
-                        } else {
-                            menu->SetScreenshotNote(std::wstring{I18n::Tr(I18n::Text::MenuScreenshotFailed)});
-                            WriteDiag("menu: screenshot could not be saved");
-                        }
-                    } catch (const winrt::hresult_error& e) {
-                        menu->SetScreenshotNote(std::wstring{I18n::Tr(I18n::Text::MenuScreenshotFailed)});
-                        WriteDiag("menu: screenshot failed: " + winrt::to_string(e.message()));
-                    }
-                }
-                if (result == GameMenuResult::Resume || result == GameMenuResult::CaptureGraphics ||
-                    result == GameMenuResult::CapturePerformance) {
-                    if (std::exchange(graphics_changed, false)) {
-                        // On closing rather than on each press: the player may be stepping through
-                        // the choices, and a resize waits for everything in flight.
-                        GraphicsSettings graphics = ResolveGraphics(LoadGraphicsSettings(), menu->Settings().graphics);
-                        if (config.upscaling) graphics.upscaling = *config.upscaling;
-                        if (config.frame_gen) graphics.frame_gen = *config.frame_gen != D3D12::FrameGenMode::Off;
-                        const bool screen = UsesScreenResolution(graphics);
-                        const u32 width = screen ? surface.screen_width : surface.plain_width;
-                        const u32 height = screen ? surface.screen_height : surface.plain_height;
-                        if (width != 0 && std::pair{width, height} != D3D12::GameMenuScreenSize(system.Renderer())) {
-                            bool resized{};
-                            system.GPU().RunOnGpuThread([&] {
-                                resized = D3D12::ResizeGameOutput(system.Renderer(), width, height);
-                                if (resized) emu_window.UpdateCurrentFramebufferLayout(width, height);
-                            });
-                            WriteDiag("menu: output " + std::to_string(width) + "x" + std::to_string(height) +
-                                      (resized ? "" : " failed, the size stays until the next boot") + " | " +
-                                      MemoryReport());
-                        }
-                    }
-                    menu.reset();
-                    cheats.reset();
-                    game_frame = {};
-                    if (game_keyboard.IsOpen() && menu_surface) {
-                        // The game's keyboard was under the menu: it comes back.
-                        SetTextEntryActive(true);
-                        draw_menu();
-                    } else {
-                        menu_surface.reset();
-                        system.GPU().RunOnGpuThread([&] { D3D12::HideGameMenu(system.Renderer()); });
-                        input.SetMenuOpen(false);
-                        keyboard_shown = false;
-                    }
-                    // Arm after hiding/re-presenting the menu, so only guest presents consume
-                    // the two capture intervals. Reuse the same bounded request as F7.
-                    if (result == GameMenuResult::CaptureGraphics) {
-                        D3D12::TraceNextMaterialFrame();
-                        WriteDiag("menu: bounded graphics capture requested for next guest frames");
-                    }
-                    if (result == GameMenuResult::CapturePerformance) {
-                        D3D12::HuntNextFrames();
-                        WriteDiag("menu: bottleneck capture requested for next guest frames");
-                    }
-                    void(system.Run());
-                    WriteDiag("menu: closed, guest running");
-                    break;
-                }
-                if (result == GameMenuResult::SettingsChanged) {
-                    ControllerOptions options = input.Options();
-                    options.style = menu->Settings().style;
-                    options.swap_face_buttons = menu->Settings().swap_face_buttons;
-                    options.deadzone = menu->Settings().deadzone;
-                    input.SetOptions(options);
-                }
-                if (result == GameMenuResult::PerformanceStatsChanged) {
-                    auto settings = LoadSystemSettings();
-                    settings.show_performance_stats = menu->Settings().show_performance_stats;
-                    if (!SaveSystemSettings(settings)) WriteDiag("menu: statistics preference could not be saved");
-                    VideoCore::performance_overlay_enabled.store(settings.show_performance_stats, std::memory_order_relaxed);
-                }
-                if (result == GameMenuResult::FullScreen) {
-                    g_fullscreen_request.store(menu->Settings().fullscreen ? 1 : 0);
-                }
-                if (result == GameMenuResult::GraphicsChanged) {
-                    const GameGraphics& game = menu->Settings().graphics;
-                    const GameGraphics before = LoadGameGraphics(program_id);
-                    if (!SaveGameGraphics(program_id, game)) WriteDiag("menu: graphics could not be saved");
-                    ApplyGameGraphics(system, config, game);
-                    ApplyRunningAdvancedGraphics(system, before.advanced, game.advanced);
-                    graphics_changed = true;
-                }
-                if (result == GameMenuResult::OfflineModeChanged) {
-                    const auto offline = menu->Settings().offline_mode;
-                    if (!SaveGameOfflineMode(program_id, offline)) WriteDiag("menu: offline mode could not be saved");
-                    // Seen by the game's next network query; boot.cfg's airplane=1 still wins.
-                    if (!config.airplane_mode)
-                        Settings::values.airplane_mode.SetValue(offline.value_or(menu->Settings().offline_default));
-                    WriteDiag(std::string{"menu: offline mode "} +
-                              (Settings::values.airplane_mode.GetValue() ? "on" : "off"));
-                }
-
-                if (menu_surface) draw_menu();
-            }
-            // Cheats the database sent while the page is open join the list.
-            if (cheats && cheats->Poll()) {
-                Cheats::ClampCheatsPage(cheats_page, cheats->Catalog(), GameMenuSurface::CheatRows);
-                if (menu_surface) draw_menu();
-            }
-            if (config.memory_audit && tick % (10 * TICKS_PER_SECOND) == 0) {
-                WriteDiag("guest memory: " + GuestMemoryReport(system));
-            }
-            if (config.memory_audit && tick % TICKS_PER_MINUTE == 0) {
-                WriteDiag("heaps: " + HeapReport());
-                if (const auto census = Common::CensusGuestZeroMemory()) {
-                    WriteDiag("guest memory census: " + Common::DescribeGuestZeroCensus(*census));
-                }
-                WriteDiag("memory map: " + LargestAllocations());
-                WriteDiag("memory by owner: " + MemoryOwners());
-                if (const std::string pso_cost = D3D12::DescribePsoCost(); !pso_cost.empty()) {
-                    WriteDiag(pso_cost);
-                }
-            }
-            if (tick % (10 * TICKS_PER_MINUTE) == 0) {
-                WriteDiag("step: playing, " + std::to_string(tick / TICKS_PER_MINUTE) +
-                          " min | " + MemoryReport());
-                WriteDiag("memory map: " + LargestAllocations());
-            }
-        }
-    }
-    if (config.run_seconds > 0) {
-        // Timed mode: nothing to wait for but the clock. The payload counts as having run if the
-        // process is still alive when the time is up; the log says what it drew.
-        WriteDiag("step: system.Run() issued, running for " + std::to_string(config.run_seconds) +
-                  " s | " + MemoryReport());
-        for (u32 second = 1; second <= config.run_seconds; ++second) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            if (ConsumeStorageReadFailure()) {
-                WriteDiag("content: storage read failed; closing guest for library recovery");
-                shutdown(); return 16;
-            }
-            if (g_gpu_command_failed.load(std::memory_order_acquire)) {
-                WriteDiag("GPU command failed during timed gate | " + MemoryReport());
-                shutdown();
-                return 15;
-            }
-            if (second % 10 == 0) {
-                WriteDiag("step: running, " + std::to_string(second) + " s | " + MemoryReport());
-                if (second % 30 == 0) {
-                    WriteDiag("memory map: " + LargestAllocations());
-                }
-            }
-        }
-        shutdown();
-        LOG_INFO(Frontend, "Headless boot: timed run of {} s finished.", config.run_seconds);
-        return 0;
-    }
-    WriteDiag("step: system.Run() issued, waiting for the JIT sentinel | " + MemoryReport());
-
-    // Headless: no window event loop. Wait for the guest to execute through the JIT and emit the
-    // sentinel; the timeout is only a backstop (a hung/failed boot), not the success path.
-    constexpr auto kLivenessTimeout = std::chrono::seconds(30);
-    {
-        std::unique_lock lock(live_mutex);
-        live_cv.wait_for(lock, kLivenessTimeout,
-                         [&] { return jit_alive.load(std::memory_order_acquire); });
-    }
-    const bool alive = jit_alive.load(std::memory_order_acquire);
-    WriteDiag(std::string(alive ? "step: sentinel observed"
-                                : "step: sentinel NOT observed within timeout") +
-              " | " + MemoryReport());
-
-    // With a real renderer the payload goes on to draw frames; keep the guest running so they reach
-    // the screen, until it reports the loop finished (or the backstop expires).
-    if (alive && surface.core_window != nullptr) {
-        constexpr auto kGfxTimeout = std::chrono::seconds(30);
-        {
-            std::unique_lock lock(live_mutex);
-            live_cv.wait_for(lock, kGfxTimeout,
-                             [&] { return gfx_done.load(std::memory_order_acquire); });
-        }
-        WriteDiag(std::string(gfx_done.load() ? "step: framebuffer loop finished"
-                                              : "step: framebuffer loop NOT finished in time") +
-                  " | " + MemoryReport());
-    }
-
-    shutdown();
-
-    if (alive) {
-        LOG_INFO(Frontend, "Headless boot: JIT liveness CONFIRMED ('{}' observed).",
-                 JIT_LIVENESS_SENTINEL);
-        return 0;
-    }
-    LOG_CRITICAL(Frontend, "Headless boot: JIT-liveness sentinel '{}' not observed within timeout.",
-                 JIT_LIVENESS_SENTINEL);
-    return 3;
-}
-
-} // namespace Jadyx
-
 // ============================================================================================
 // UWP entry point: a CoreApplication IFrameworkView whose Run() drives RunHeadlessBoot() against the
 // homebrew NRO bundled in the package install location (Package.InstalledLocation\boot.nro). Reading
@@ -2299,18 +9,17 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
 // LocalFolder; see common/fs/path_util.cpp under YUZU_UWP_APPCONTAINER.)
 // ============================================================================================
 #include <atomic>
-#include <csignal>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <fstream>
-#include <mutex>
+#include <optional>
+#include <string>
 #include <thread>
 
 #include <windows.h> // OutputDebugStringA/W + ::Sleep (sets the target-arch macros winnt.h needs)
-
-#include "common/dynamic_library.h"
 
 #include <winrt/Windows.ApplicationModel.Core.h>
 #include <winrt/Windows.ApplicationModel.h>
@@ -2324,972 +33,437 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
 #include <winrt/Windows.UI.Core.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 
+#include "common/fs/path_util.h"
+#include "common/host_memory.h"
+#include "common/permafrost.h"
+#include "jadyx/app/alloc_watch.h"
+#include "jadyx/app/boot_config.h"
+#include "jadyx/app/boot_crash.h"
+#include "jadyx/app/boot_diag.h"
+#include "jadyx/app/boot_session.h"
+#include "jadyx/app/boot_state.h"
+#include "jadyx/app/user_data_seed.h"
+#include "jadyx/i18n/localization.h"
+#include "jadyx/input/keyboard_bindings.h"
+#include "jadyx/input/uwp_controllers.h"
+#include "jadyx/library/game_library.h"
+#include "jadyx/library/uwp_library.h"
+#include "jadyx/pulse/pulse_sessions.h"
+#include "jadyx/settings/uwp_system_settings.h"
+#include "jadyx/storage/storage_path.h"
+#include "jadyx/storage/utf8.h"
+#include "jadyx/ui/launch_splash.h"
+#include "video_core/frame_trace.h"
+
 using namespace winrt;
 using namespace Windows::ApplicationModel::Core;
 using namespace Windows::UI::Core;
 
+namespace Jadyx {
+
 namespace {
 
-// Best-effort startup diagnostics that survive an early crash (before Eden's own logging is up):
-// append to a pullable file in the app's LocalFolder AND emit on the debugger channel. This is how we
-// see *where* the headless boot fails on-console when no jadyx_log.txt and no crash dump are produced.
-//
-// Every line carries milliseconds since launch, so a hang (steps stop, heartbeats continue) reads
-// differently from a crash (steps stop, a CRASH line follows, or nothing at all).
-//
-// The diag path is resolved once, on the UI thread before the boot worker exists, and cached: the
-// crash handlers below must not call into WinRT from a dying process.
-std::string g_diag_path;
-std::mutex g_diag_mutex;
-// Pulse's own log (jadyx_pulse.txt): saves, resumes and every rejection, apart from the diag.
-std::string g_pulse_path;
-std::mutex g_pulse_mutex;
-// A save retries for up to 3 s and throws the same rejection on every attempt: identical
-// consecutive rejections are counted under g_pulse_mutex and written as one line.
-std::string g_pulse_last_rejection;
-unsigned g_pulse_rejection_repeats = 0;
+struct LaunchConfig {
+    bool show_library = false;
+    std::string library_pick;
+    bool output_4k = false;
+    bool output_1080p = false;
+    std::optional<Jadyx::Upscaling> upscaling;
+    std::optional<bool> frame_gen;
+};
 
-// Under g_pulse_mutex: the line closing a run of repeated rejections (empty when there is none).
-std::string TakePulseRepeats() {
-    std::string line;
-    if (g_pulse_rejection_repeats != 0) {
-        line = "[pulse]   (repeated " + std::to_string(g_pulse_rejection_repeats) + " more times)\n";
-    }
-    g_pulse_last_rejection.clear();
-    g_pulse_rejection_repeats = 0;
-    return line;
-}
+/// What one session runs and where it presents.
+struct LaunchChoice {
+    std::optional<std::string> library_game;
+    bool show_library = false;
+    u64 library_program_id = 0;
+    Jadyx::BootSurface game_surface;
+};
 
-unsigned long long ElapsedMs() {
-    static const ULONGLONG start = GetTickCount64();
-    return GetTickCount64() - start;
-}
-
-// LocalState\jadyx\log, next to jadyx_log.txt. Created here: the diag starts before Eden's
-// logging creates the folder. These logs append across launches, so one past 8 MiB moves to its
-// .old copy first instead of growing without end.
-std::string LogFilePath(const char* name) {
-    constexpr std::uintmax_t MAX_LOG_BYTES = 8ULL << 20;
-    const std::filesystem::path dir =
-        std::filesystem::path{std::wstring{Windows::Storage::ApplicationData::Current().LocalFolder().Path()}} /
-        L"jadyx" / L"log";
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    const std::filesystem::path path = dir / name;
-    Common::RotateLogIfLarger(path, MAX_LOG_BYTES);
-    return winrt::to_string(path.wstring());
-}
-
-void WriteDiag(const std::string& msg) {
-    const std::string line = "[jadyx] [+" + std::to_string(ElapsedMs()) + "ms] " + msg + "\n";
-    OutputDebugStringA(line.c_str());
+/// Runs the self-tests boot.cfg asks for at launch. True when it turns the developer hotkeys on.
+bool ScanBootConfigEarly() {
+    bool developer_hotkeys = false;
     try {
-        std::scoped_lock lock{g_diag_mutex};
-        if (g_diag_path.empty()) {
-            g_diag_path = LogFilePath("jadyx_diag.txt");
-        }
-        std::ofstream f(g_diag_path, std::ios::app);
-        f << line;
-    } catch (...) {
-        OutputDebugStringW(L"[jadyx] WriteDiag: could not write diag file\n");
-    }
-}
-
-void WritePulseLog(const std::string& msg) {
-    const std::string line = "[pulse] [+" + std::to_string(ElapsedMs()) + "ms] " + msg + "\n";
-    OutputDebugStringA(line.c_str());
-    try {
-        std::scoped_lock lock{g_pulse_mutex};
-        if (g_pulse_path.empty()) {
-            g_pulse_path = LogFilePath("jadyx_pulse.txt");
-        }
-        std::ofstream f(g_pulse_path, std::ios::app);
-        f << TakePulseRepeats() << line;
-    } catch (...) {
-        OutputDebugStringW(L"[jadyx] WritePulseLog: could not write pulse log\n");
-    }
-}
-
-// The title's memory budget as the OS enforces it: Microsoft documents Game-mode UWP titles as capped
-// (5 GB on the Xbox resource page), and exceeding it makes allocations fail rather than paging.
-std::wstring PrewarmStepKey(u64 program_id) {
-    wchar_t key[40];
-    // v2: the steps stored before Permafrost held the headroom near 1024 MiB were lowered on a
-    // single dip below 256 and never raised again, so every game restarts at 192 MiB per core.
-    swprintf(key, std::size(key), L"jit_prewarm_v2_%016llx",
-             static_cast<unsigned long long>(program_id));
-    return key;
-}
-
-std::int32_t LoadPrewarmStep(u64 program_id) {
-    try {
-        const auto values = Windows::Storage::ApplicationData::Current().LocalSettings().Values();
-        const winrt::hstring key{PrewarmStepKey(program_id)};
-        if (values.HasKey(key)) {
-            return winrt::unbox_value<std::int32_t>(values.Lookup(key));
-        }
-    } catch (...) { /* A missing or invalid value keeps the default budget. */ }
-    return 0;
-}
-
-void SavePrewarmStep(u64 program_id, std::int32_t step) {
-    try {
-        Windows::Storage::ApplicationData::Current().LocalSettings().Values().Insert(
-            winrt::hstring{PrewarmStepKey(program_id)}, winrt::box_value(step));
-    } catch (...) {
-        WriteDiag("WARNING: JIT prewarm budget not saved");
-    }
-}
-
-/// The system's CPU sets as this process sees them: how many logical processors and cores there
-/// are, which the system allocated to this app, and which are parked.
-std::string CpuSetReport() {
-    ULONG length{};
-    GetSystemCpuSetInformation(nullptr, 0, &length, GetCurrentProcess(), 0);
-    std::vector<std::byte> buffer(length);
-    auto* const first = reinterpret_cast<SYSTEM_CPU_SET_INFORMATION*>(buffer.data());
-    if (length == 0 || !GetSystemCpuSetInformation(first, length, &length, GetCurrentProcess(), 0)) {
-        return "CPU sets unavailable (error " + std::to_string(GetLastError()) + ")";
-    }
-    unsigned sets{}, allocated{}, to_us{}, parked{}, realtime{};
-    std::vector<BYTE> cores;
-    std::string list;
-    for (ULONG offset = 0; offset < length;) {
-        const auto& info = *reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + offset);
-        offset += info.Size;
-        if (info.Type != CpuSetInformation) {
-            continue;
-        }
-        const auto& set = info.CpuSet;
-        ++sets;
-        allocated += set.Allocated;
-        to_us += set.AllocatedToTargetProcess;
-        parked += set.Parked;
-        realtime += set.RealTime;
-        if (std::find(cores.begin(), cores.end(), set.CoreIndex) == cores.end()) {
-            cores.push_back(set.CoreIndex);
-        }
-        list += " " + std::to_string(set.Id) + ":c" + std::to_string(set.CoreIndex) + "/lp" +
-                std::to_string(set.LogicalProcessorIndex) + (set.Parked ? "P" : "") +
-                (set.Allocated ? "A" : "") + (set.AllocatedToTargetProcess ? "T" : "") +
-                (set.RealTime ? "R" : "");
-    }
-    SYSTEM_INFO system{};
-    GetNativeSystemInfo(&system);
-    return std::to_string(system.dwNumberOfProcessors) + " logical processors; " +
-           std::to_string(sets) + " CPU sets on " + std::to_string(cores.size()) + " cores, " +
-           std::to_string(allocated) + " allocated (" + std::to_string(to_us) + " to this app), " +
-           std::to_string(parked) + " parked, " + std::to_string(realtime) +
-           " real-time; id:core/logical [P parked, A allocated, T to us, R real-time]:" + list;
-}
-
-std::string MemoryReport() {
-    try {
-        using winrt::Windows::System::MemoryManager;
-        // Commit is what runs out: section pages committed but never touched count there and
-        // not in AppMemoryUsage (0.2.53 died at 2.8 GiB of usage).
-        const auto report = MemoryManager::GetAppMemoryReport();
-        const std::string stats = Common::HostMemoryCommitStats();
-        return "app memory " + std::to_string(MemoryManager::AppMemoryUsage() >> 20) + " MiB of " +
-               std::to_string(MemoryManager::AppMemoryUsageLimit() >> 20) + " MiB limit, commit " +
-               std::to_string(report.TotalCommitUsage() >> 20) + " of " +
-               std::to_string(report.TotalCommitLimit() >> 20) + " MiB, peak private commit " +
-               std::to_string(report.PeakPrivateCommitUsage() >> 20) + " MiB" +
-               (g_test_memory_limit.load() == 0 ? "" : ", PC test budget " +
-                    std::to_string(g_test_memory_limit.load() >> 20) + " MiB, headroom " +
-                    std::to_string((g_test_memory_limit.load() > report.TotalCommitUsage()
-                        ? g_test_memory_limit.load() - report.TotalCommitUsage() : 0) >> 20) + " MiB") +
-               (stats.empty() ? "" : ", " + stats);
-    } catch (...) {
-        return "app memory: MemoryManager unavailable";
-    }
-}
-
-// Free space where Jadyx Portal can put games: LocalState and Dev Mode's storage on D:.
-std::string StorageReport() {
-    std::string out = "storage:";
-    const auto describe = [&out](const char* name, const std::wstring& path) {
-        ULARGE_INTEGER available{}, total{};
-        if (!GetDiskFreeSpaceExW(path.c_str(), &available, &total, nullptr)) {
-            out += std::string(" ") + name + " unavailable (" + std::to_string(GetLastError()) + ");";
-            return;
-        }
-        out += std::string(" ") + name + " " + std::to_string(available.QuadPart >> 20) + " of " +
-               std::to_string(total.QuadPart >> 20) + " MiB free;";
-    };
-    try {
-        describe("local", std::wstring{winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()});
-    } catch (...) {
-        out += " local unavailable;";
-    }
-    describe("developer", L"D:\\DevelopmentFiles\\");
-    return out;
-}
-
-// The app's commit split by owner: the emulated DRAM, the JIT's code, the renderer's accounts
-// (Common::MemoryLedger) and the rest, which no account covers: driver objects such as compiled
-// PSOs, the smaller GPU resources, the heaps and the executable.
-std::string MemoryOwners() {
-    u64 commit{};
-    try {
-        commit = winrt::Windows::System::MemoryManager::GetAppMemoryReport().TotalCommitUsage();
-    } catch (...) {
-        return "MemoryManager unavailable";
-    }
-    const std::optional<u64> dram = Common::EmulatedDramCommittedBytes();
-    const u64 jit = Dynarmic::CommittedCodeBytes();
-    const u64 known = dram.value_or(0) + jit + Common::MemoryLedgerCommittedBytes();
-    return "emulated DRAM " + (dram ? std::to_string(*dram >> 20) + " MiB" : std::string("n/a")) +
-           ", JIT code " + std::to_string(jit >> 20) + " MiB (" +
-           std::to_string(Dynarmic::DualMappedCodeCaches()) + " caches dual-mapped), " +
-           Common::DescribeMemoryLedger() +
-           "; rest " + std::to_string((commit > known ? commit - known : 0) >> 20) +
-           " MiB of " + std::to_string(commit >> 20) +
-           " MiB commit (driver objects, small GPU resources, heaps, executable); " +
-           Common::DescribeCommitCensus(Common::WalkAddressSpaceCommit(), commit);
-}
-
-// What the guest kernel has handed out against what the emulated DRAM commits. Pages the game
-// freed stay committed on the host until they are allocated again, so the difference is about what
-// decommitting the free pages could return (the kernel's own regions, outside the pools, are small).
-std::string GuestMemoryReport(Core::System& system) {
-    using Pool = Kernel::KMemoryManager::Pool;
-    auto& manager = system.Kernel().MemoryManager();
-    u64 in_use{};
-    std::string pools;
-    constexpr std::array<std::pair<Pool, const char*>, 4> POOLS{{
-        {Pool::Application, "application"},
-        {Pool::Applet, "applet"},
-        {Pool::System, "system"},
-        {Pool::SystemNonSecure, "system non-secure"},
-    }};
-    for (const auto& [pool, name] : POOLS) {
-        const u64 size = manager.GetSize(pool);
-        const u64 free = manager.GetFreeSize(pool);
-        const u64 used = size > free ? size - free : 0;
-        in_use += used;
-        pools += std::string(pools.empty() ? "" : ", ") + name + " " + std::to_string(used >> 20) +
-                 " of " + std::to_string(size >> 20) + " MiB";
-    }
-    const std::optional<u64> committed = Common::EmulatedDramCommittedBytes();
-    if (!committed) {
-        return "in use " + std::to_string(in_use >> 20) + " MiB (" + pools + ")";
-    }
-    return "in use " + std::to_string(in_use >> 20) + " MiB, DRAM committed " +
-           std::to_string(*committed >> 20) + " MiB, freed but committed about " +
-           std::to_string((*committed > in_use ? *committed - in_use : 0) >> 20) + " MiB (" +
-           pools + ")";
-}
-
-u64 TrimFreeGuestMemory(Core::System& system, u64 budget) {
-    using Pool = Kernel::KMemoryManager::Pool;
-    constexpr u64 STEP = 64ULL << 20;
-    auto& manager = system.Kernel().MemoryManager();
-    u64 total = 0;
-    for (const Pool pool : {Pool::Application, Pool::Applet, Pool::System, Pool::SystemNonSecure}) {
-        for (;;) {
-            const u64 step = (std::min)(STEP, budget > total ? budget - total : 0);
-            if (step == 0) {
-                return total;
+        const auto install = std::filesystem::path{
+            Windows::ApplicationModel::Package::Current().InstalledLocation().Path().c_str()};
+        std::ifstream cfg{install / L"boot.cfg"};
+        for (std::string line; std::getline(cfg, line);)
+            if (line == "developer_hotkeys=1") developer_hotkeys = true;
+            else if (line == "pro_hid_probe=1") {
+                WriteDiag(Jadyx::RunProControllerDecoderSelfTest() ? "Pro HID decoder self-test PASS" : "Pro HID decoder self-test FAIL");
+                Jadyx::ProbeProControllerHid([](std::string message) { WriteDiag(message); });
             }
-            const u64 released = manager.TrimFree(pool, step);
-            total += released;
-            if (released < step) {
-                break;
+            else if (line == "keyboard_self_test=1") {
+                WriteDiag(Jadyx::RunKeyboardInputSelfTest() ? "keyboard self-test PASS" : "keyboard self-test FAIL");
             }
-        }
-    }
-    return total;
+    } catch (...) {}
+    return developer_hotkeys;
 }
 
-// The PC has no app memory limit of its own: memory_limit_mib (boot.cfg) puts the process in a
-// job that refuses commit beyond it, as the Series does, however the app was launched. Applied
-// once per process, since a job's limit cannot be lifted; where the platform's limit is already
-// at or below it (the console), nothing changes.
-void ApplyProcessMemoryLimit(u32 limit_mib) {
-    static u32 applied_mib = 0;
-    if (limit_mib == 0) {
+/// A key while the library is not up.
+void HandleGameKey(Windows::System::VirtualKey key, bool pressed, bool developer_hotkeys) {
+    using Windows::System::VirtualKey;
+    if (Jadyx::TextEntryActive()) {
+        // A game's keyboard is up: keys edit its text (characters arrive through
+        // CharacterReceived) and nothing reaches the game.
+        using Command = Jadyx::TextEntry::Command;
+        std::optional<Command> command;
+        switch (key) {
+        case VirtualKey::Escape: command = Command::Cancel; break;
+        case VirtualKey::Enter: command = Command::Done; break;
+        case VirtualKey::Back: command = Command::Delete; break;
+        case VirtualKey::Up: command = Command::Up; break;
+        case VirtualKey::Down: command = Command::Down; break;
+        case VirtualKey::Left: command = Command::Left; break;
+        case VirtualKey::Right: command = Command::Right; break;
+        default: break;
+        }
+        if (pressed && command) Jadyx::PushTextEntryKey({.command = command});
         return;
     }
-    if (applied_mib != 0) {
-        if (applied_mib != limit_mib) {
-            WriteDiag("memory limit: kept " + std::to_string(applied_mib) + " MiB; " +
-                      std::to_string(limit_mib) + " MiB needs a new process");
-        }
+    if (developer_hotkeys && key == VirtualKey::Q) {
+        if (pressed) Jadyx::RequestQuit();
         return;
     }
-    const u64 bytes = u64{limit_mib} << 20;
-    try {
-        const u64 platform = winrt::Windows::System::MemoryManager::AppMemoryUsageLimit();
-        if (platform <= bytes) {
-            WriteDiag("memory limit: the platform's " + std::to_string(platform >> 20) +
-                      " MiB already applies");
-            applied_mib = limit_mib;
-            return;
-        }
-    } catch (...) {
-    }
-    HANDLE job = CreateJobObjectW(nullptr, nullptr);
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
-    limits.ProcessMemoryLimit = static_cast<SIZE_T>(bytes);
-    const bool ok = job != nullptr &&
-                    SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits,
-                                            sizeof(limits)) &&
-                    AssignProcessToJobObject(job, GetCurrentProcess());
-    const DWORD error = ok ? 0 : GetLastError();
-    if (job != nullptr) {
-        CloseHandle(job); // The process keeps the job alive.
-    }
-    if (!ok) {
-        WriteDiag("memory limit: FAILED to cap the process at " + std::to_string(limit_mib) +
-                  " MiB (error " + std::to_string(error) + ")");
+    if (developer_hotkeys && key == VirtualKey::T) {
+        if (pressed) VideoCore::FrameTrace::Start(480);
         return;
     }
-    applied_mib = limit_mib;
-    WriteDiag("memory limit: process commit capped at " + std::to_string(limit_mib) + " MiB");
+    if (developer_hotkeys && key == VirtualKey::F6) {
+        if (pressed) D3D12::TraceNextFrames(1);
+        return;
+    }
+    if (developer_hotkeys && key == VirtualKey::F7) {
+        if (pressed) D3D12::TraceNextMaterialFrame();
+        return;
+    }
+    if (developer_hotkeys && key == VirtualKey::F8) {
+        if (pressed) D3D12::HuntNextFrames();
+        return;
+    }
+    if (key == VirtualKey::Escape) {
+        if (pressed) Jadyx::RequestGameMenu();
+        return;
+    }
+    Jadyx::SetKeyboardKey(static_cast<unsigned>(key), pressed);
 }
 
-// Pulse store gate: ends this process where it stands, as a crash or a power loss would (no
-// unwinding, no flush of anything still in the process), and asks the system to start the app
-// again. Without a restart (refused, or not supported here) the next manual launch resumes.
-[[noreturn]] void RestartApp() {
+Jadyx::BootSurface ReadWindowSurface(const CoreWindow& window) {
+    // The swapchain is sized in physical pixels: CoreWindow bounds are in view pixels (DIPs).
+    Jadyx::BootSurface surface{};
+    if (window) {
+        surface.core_window = winrt::get_abi(window); // an IInspectable, so a valid IUnknown*
+        try {
+            const auto bounds = window.Bounds();
+            const double scale = Windows::Graphics::Display::DisplayInformation::
+                                     GetForCurrentView()
+                                         .RawPixelsPerViewPixel();
+            surface.width = static_cast<u32>(bounds.Width * scale + 0.5);
+            surface.height = static_cast<u32>(bounds.Height * scale + 0.5);
+        } catch (...) {
+            WriteDiag("could not read the window size, assuming 1920x1080");
+        }
+    }
+    return surface;
+}
+
+/// What boot.cfg says about the library and the output size, read again for each session.
+LaunchConfig ReadLaunchConfig(const std::filesystem::path& install) {
+    LaunchConfig cfg;
+    std::ifstream file{install / L"boot.cfg"};
+    for (std::string line; std::getline(file, line);) {
+        if (line == "library=1") cfg.show_library = true;
+        else if (line.starts_with("library_pick=")) cfg.library_pick = line.substr(13);
+        else if (line == "output=4k") cfg.output_4k = true;
+        else if (line == "output=1080p") cfg.output_1080p = true;
+        // The same keys the boot reads (BootConfig), here only for the output size.
+        else if (line.starts_with("upscaling=")) cfg.upscaling = Jadyx::ParseUpscaling(line.substr(10));
+        else if (line == "frame_gen=off") cfg.frame_gen = false;
+        else if (line == "frame_gen=auto" || line == "frame_gen=30" || line == "frame_gen=60")
+            cfg.frame_gen = true;
+    }
+    return cfg;
+}
+
+// The swapchain the size of the TV's current mode (3840x2160 on a 4K TV); the
+// window's own size (1920x1080 on the console) when the mode is not larger.
+Jadyx::BootSurface ScreenSurface(const Jadyx::BootSurface& surface, u32 session) {
+    Jadyx::BootSurface screen = surface;
+    if (surface.core_window == nullptr) return screen;
     try {
-        const auto reason = CoreApplication::RequestRestartAsync(L"").get();
-        if (reason != AppRestartFailureReason::RestartPending) {
-            WriteDiag("restart refused (" + std::to_string(static_cast<int>(reason)) +
-                      "): launch the app again to continue");
+        const auto hdmi = Windows::Graphics::Display::Core::HdmiDisplayInformation::
+            GetForCurrentView();
+        const auto mode = hdmi ? hdmi.GetCurrentDisplayMode() : nullptr;
+        if (mode && mode.ResolutionWidthInRawPixels() > surface.width) {
+            screen.width = mode.ResolutionWidthInRawPixels();
+            screen.height = mode.ResolutionHeightInRawPixels();
+        } else if (session == 1) {
+            WriteDiag("output: the display mode is not larger than " +
+                      std::to_string(surface.width) + "x" + std::to_string(surface.height));
         }
-    } catch (...) {
-        WriteDiag("restart unavailable: launch the app again to continue");
+    } catch (const winrt::hresult_error& e) {
+        WriteDiag("output: no display mode: " + winrt::to_string(e.message()));
     }
-    TerminateProcess(GetCurrentProcess(), 73);
-    for (;;) Sleep(INFINITE);
+    return screen;
 }
 
-// Where the app's memory is: committed bytes by kind over the whole address space, then the
-// largest allocations (base, committed MiB, kind), whose sizes tell their owners apart.
-std::string LargestAllocations() {
-    struct Allocation {
-        uintptr_t base;
-        u64 committed;
-        DWORD type;
-        DWORD protect; // As allocated: write-combined pages are GPU upload memory, executable JIT.
-    };
-    std::vector<Allocation> allocations;
-    u64 by_type[3]{}; // private, mapped, image
-    uintptr_t address = 0;
-    MEMORY_BASIC_INFORMATION info{};
-    while (VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) != 0) {
-        const auto base = reinterpret_cast<uintptr_t>(info.AllocationBase);
-        if (info.State == MEM_COMMIT) {
-            by_type[info.Type == MEM_PRIVATE ? 0 : info.Type == MEM_MAPPED ? 1 : 2] +=
-                info.RegionSize;
-            if (allocations.empty() || allocations.back().base != base) {
-                allocations.push_back({base, 0, info.Type, info.AllocationProtect});
-            }
-            allocations.back().committed += info.RegionSize;
+// The game's graphics (its own over Settings > Graphics, as ApplyGameGraphics
+// resolves them once it is loaded) pick the swapchain, which exists before the
+// game does: FSR presents at the TV's resolution, frame generation and the
+// bilinear blit at 1080p. A game the library did not name follows Settings.
+Jadyx::BootSurface ChooseGameSurface(const Jadyx::BootSurface& surface, const Jadyx::BootSurface& library_surface,
+                                     const LaunchConfig& cfg, u64 library_program_id, u32 session) {
+    Jadyx::BootSurface game_surface = surface;
+    if (cfg.output_4k || cfg.output_1080p) {
+        game_surface = library_surface;
+        game_surface.screen_width = game_surface.plain_width = library_surface.width;
+        game_surface.screen_height = game_surface.plain_height = library_surface.height;
+    } else {
+        Jadyx::GraphicsSettings graphics = Jadyx::ResolveGraphics(
+            Jadyx::LoadGraphicsSettings(),
+            library_program_id != 0 ? Jadyx::LoadGameGraphics(library_program_id) : Jadyx::GameGraphics{});
+        if (cfg.upscaling) graphics.upscaling = *cfg.upscaling;
+        if (cfg.frame_gen) graphics.frame_gen = *cfg.frame_gen;
+        const Jadyx::BootSurface screen = ScreenSurface(surface, session);
+        game_surface.plain_width = surface.width;
+        game_surface.plain_height = surface.height;
+        game_surface.screen_width = screen.width;
+        game_surface.screen_height = screen.height;
+        if (Jadyx::UsesScreenResolution(graphics)) {
+            game_surface.width = screen.width;
+            game_surface.height = screen.height;
+        } else {
+            game_surface.width = surface.width;
+            game_surface.height = surface.height;
         }
-        const uintptr_t next = reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
-        if (next <= address) {
-            break;
-        }
-        address = next;
     }
-    std::sort(allocations.begin(), allocations.end(),
-              [](const Allocation& a, const Allocation& b) { return a.committed > b.committed; });
-    // Committed private memory by allocation size: many equal pieces are one owner's pool.
-    constexpr u64 BUCKETS[] = {1ULL << 20, 8ULL << 20, 24ULL << 20, 40ULL << 20, 1ULL << 62};
-    u64 bucket_bytes[std::size(BUCKETS)]{};
-    u32 bucket_count[std::size(BUCKETS)]{};
-    for (const Allocation& allocation : allocations) {
-        if (allocation.type != MEM_PRIVATE) {
-            continue;
-        }
-        size_t b = 0;
-        while (allocation.committed >= BUCKETS[b]) {
-            ++b;
-        }
-        bucket_bytes[b] += allocation.committed;
-        ++bucket_count[b];
-    }
-    std::string text = "private " + std::to_string(by_type[0] >> 20) + " MiB, mapped " +
-                       std::to_string(by_type[1] >> 20) + " MiB, image " +
-                       std::to_string(by_type[2] >> 20) + " MiB; private by size: <1M " +
-                       std::to_string(bucket_count[0]) + "x=" +
-                       std::to_string(bucket_bytes[0] >> 20) + "M, 1-8M " +
-                       std::to_string(bucket_count[1]) + "x=" +
-                       std::to_string(bucket_bytes[1] >> 20) + "M, 8-24M " +
-                       std::to_string(bucket_count[2]) + "x=" +
-                       std::to_string(bucket_bytes[2] >> 20) + "M, 24-40M " +
-                       std::to_string(bucket_count[3]) + "x=" +
-                       std::to_string(bucket_bytes[3] >> 20) + "M, >=40M " +
-                       std::to_string(bucket_count[4]) + "x=" +
-                       std::to_string(bucket_bytes[4] >> 20) + "M; largest:";
-    for (size_t i = 0; i < allocations.size() && i < 12; ++i) {
-        const DWORD protect = allocations[i].protect;
-        char entry[64];
-        std::snprintf(entry, sizeof(entry), " %llx=%lluM%s%s",
-                      static_cast<unsigned long long>(allocations[i].base),
-                      static_cast<unsigned long long>(allocations[i].committed >> 20),
-                      allocations[i].type == MEM_PRIVATE  ? ""
-                      : allocations[i].type == MEM_MAPPED ? "(map)"
-                                                          : "(img)",
-                      (protect & PAGE_WRITECOMBINE) ? "(wc)"
-                      : (protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))
-                          ? "(x)"
-                          : "");
-        text += entry;
-    }
-    // Write-combined and executable private memory in total: GPU upload heaps and JIT code.
-    u64 write_combined = 0;
-    u64 executable = 0;
-    for (const Allocation& allocation : allocations) {
-        if (allocation.type != MEM_PRIVATE) continue;
-        if (allocation.protect & PAGE_WRITECOMBINE) write_combined += allocation.committed;
-        else if (allocation.protect &
-                 (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))
-            executable += allocation.committed;
-    }
-    text += "; write-combined " + std::to_string(write_combined >> 20) + " MiB, executable " +
-            std::to_string(executable >> 20) + " MiB";
-    return text;
+    return game_surface;
 }
 
-// The process heaps: allocations still live (busy) against what they keep committed, after
-// returning their free pages to the system. Live bytes left after a game are leaked objects; a
-// committed figure far above them is fragmentation.
-std::string HeapReport() {
-    std::vector<HANDLE> heaps(64);
-    const DWORD count = GetProcessHeaps(static_cast<DWORD>(heaps.size()), heaps.data());
-    heaps.resize(std::min<DWORD>(count, static_cast<DWORD>(heaps.size())));
-    u64 busy = 0;
-    u64 committed = 0;
-    // Live bytes by block size: many blocks of one size are one kind of object.
-    std::unordered_map<u64, std::pair<u64, u64>> by_size; // size -> count, bytes
-    for (const HANDLE heap : heaps) {
-        HeapCompact(heap, 0);
-        if (!HeapLock(heap)) {
-            continue;
-        }
-        PROCESS_HEAP_ENTRY entry{};
-        while (HeapWalk(heap, &entry)) {
-            if (entry.wFlags & PROCESS_HEAP_ENTRY_BUSY) {
-                busy += entry.cbData;
-                auto& [blocks, bytes] = by_size[entry.cbData];
-                ++blocks;
-                bytes += entry.cbData;
-            } else if (entry.wFlags & PROCESS_HEAP_REGION) {
-                committed += entry.Region.dwCommittedSize;
-            }
-        }
-        HeapUnlock(heap);
-    }
-    std::vector<std::pair<u64, std::pair<u64, u64>>> sizes(by_size.begin(), by_size.end());
-    std::sort(sizes.begin(), sizes.end(),
-              [](const auto& a, const auto& b) { return a.second.second > b.second.second; });
-    std::string text = std::to_string(heaps.size()) + " heaps, live " +
-                       std::to_string(busy >> 20) + " MiB, region commit " +
-                       std::to_string(committed >> 20) + " MiB; live by block size:";
-    for (size_t i = 0; i < sizes.size() && i < 10; ++i) {
-        text += " " + std::to_string(sizes[i].first) + "B x" +
-                std::to_string(sizes[i].second.first) + "=" +
-                std::to_string(sizes[i].second.second >> 10) + "K";
-    }
-    return text;
-}
-
-bool QueryAppMemory(u64& used, u64& limit) {
+/// Reads boot.cfg, shows the library when it asks for one and sizes the game's swapchain. False
+/// when the app ends here.
+bool ChooseLaunch(const Jadyx::BootSurface& surface, u32 session, std::string& library_error,
+                  bool& library_active, LaunchChoice& choice) {
     try {
-        using winrt::Windows::System::MemoryManager;
-        used = MemoryManager::AppMemoryUsage();
-        limit = MemoryManager::AppMemoryUsageLimit();
-        const u64 test_limit = g_test_memory_limit.load(std::memory_order_relaxed);
-        if (test_limit != 0) {
-            limit = (std::min)(limit, test_limit);
-            used = (std::max)(used, MemoryManager::GetAppMemoryReport().TotalCommitUsage());
+        const auto install = std::filesystem::path{
+            Windows::ApplicationModel::Package::Current().InstalledLocation().Path().c_str()};
+        const LaunchConfig cfg = ReadLaunchConfig(install);
+        choice.show_library = cfg.show_library;
+
+        // boot.cfg output=4k / output=1080p force a size on the library and the game, for
+        // test runs. 1080p is a fixed swapchain on high-DPI PC screens; the present
+        // stretches it.
+        Jadyx::BootSurface library_surface = surface;
+        if (cfg.output_4k) library_surface = ScreenSurface(surface, session);
+        if (cfg.output_1080p) library_surface = {surface.core_window, 1920, 1080};
+
+        if (cfg.show_library) {
+            if (session > 1) {
+                WriteDiag("library: back from the game | " + MemoryReport());
+                WriteDiag("heaps: " + HeapReport() + " | " + MemoryReport());
+                WriteDiag("memory map: " + LargestAllocations());
+            }
+            library_active = true;
+            const auto local = std::filesystem::path{
+                Windows::Storage::ApplicationData::Current().LocalFolder().Path().c_str()};
+            WriteDiag("library: scanning LocalState/games; waiting for user selection");
+            choice.library_game = Jadyx::ShowGameLibrary(surface.core_window, library_surface.width,
+                library_surface.height, local / L"games", [install, local] { SeedUserData(install, local); },
+                session <= 2 && library_error.empty() ? std::string_view{cfg.library_pick} : std::string_view{},
+                library_error, &choice.library_program_id);
+            library_active = false;
+            if (!choice.library_game) {
+                WriteDiag("library: closed by user");
+                return false;
+            }
+            WriteDiag("library: selected " + *choice.library_game);
+            library_error.clear();
+            // The window is never left blank while the game loads.
+            Jadyx::ShowLaunchSplash(surface.core_window, surface.width, surface.height);
         }
-        return true;
-    } catch (...) {
+
+        choice.game_surface = ChooseGameSurface(surface, library_surface, cfg, choice.library_program_id, session);
+        char program[17];
+        std::snprintf(program, sizeof(program), "%016llX",
+                      static_cast<unsigned long long>(choice.library_program_id));
+        WriteDiag("output: " + std::to_string(choice.game_surface.width) + "x" +
+                  std::to_string(choice.game_surface.height) +
+                  (cfg.output_4k || cfg.output_1080p ? std::string{" (boot.cfg)"}
+                                                     : std::string{" (graphics of "} + program + ")"));
+    } catch (const std::exception& e) {
+        WriteDiag(std::string("library: failed: ") + e.what());
+        return false;
+    } catch (const winrt::hresult_error& e) {
+        // The code first: the message can be a stale error the platform recorded earlier.
+        char code[16];
+        std::snprintf(code, sizeof(code), "%08X", static_cast<unsigned>(e.code().value));
+        WriteDiag(std::string("library: failed: ") + code + " " + winrt::to_string(e.message()));
         return false;
     }
+    return true;
 }
 
-// The app's limit, the system's commit and the GPU budget the renderer last read.
-Common::MemoryCeilings QueryMemoryCeilings() {
-    using Common::MemoryCeiling;
-    Common::MemoryCeilings ceilings;
-    if (auto& app = ceilings[MemoryCeiling::App]; !QueryAppMemory(app.used, app.limit)) {
-        app = {};
-    }
-    MEMORYSTATUSEX status{.dwLength = sizeof(MEMORYSTATUSEX)};
-    if (GlobalMemoryStatusEx(&status)) {
-        ceilings[MemoryCeiling::System] = {status.ullTotalPageFile - status.ullAvailPageFile,
-                                           status.ullTotalPageFile};
-    }
-    if (auto& gpu = ceilings[MemoryCeiling::Gpu]; !D3D12::LastGpuMemory(gpu.used, gpu.limit)) {
-        gpu = {};
-    }
-    return ceilings;
-}
-
-// Last-chance writer for the crash handlers: no WinRT, no lock (the faulting thread may hold it),
-// no allocation beyond what fopen needs.
-void WriteDiagRaw(const char* line, bool debugger_channel = true) {
-    if (debugger_channel) {
-        OutputDebugStringA(line); // raises DBG_PRINTEXCEPTION_C internally: never from the VEH
-    }
-    if (g_diag_path.empty()) {
-        return;
-    }
-    // Shared, as WriteDiag's stream: fopen_s opens without sharing, so it failed and lost the
-    // crash report whenever another process had the diag open (a tail -F watching it).
-    if (std::FILE* const f = _fsopen(g_diag_path.c_str(), "a", _SH_DENYNO)) {
-        std::fputs(line, f);
-        std::fclose(f);
-    }
-}
-
-extern "C" IMAGE_DOS_HEADER __ImageBase;
-
-std::string FormatFaultStack(const CONTEXT& fault, const char* prefix);
-
-// Unhandled SEH (access violation, illegal instruction, breakpoint from a soft assert, ...) on any
-// thread. /EHsc catch(...) does not see these, which is why the boot worker's handlers stay silent.
-// Reports the faulting address as an RVA into jadyx.exe so it can be resolved with the build's PDB.
-LONG WINAPI OnUnhandledException(EXCEPTION_POINTERS* info) {
-    const EXCEPTION_RECORD* rec = info->ExceptionRecord;
-    const auto base = reinterpret_cast<uintptr_t>(&__ImageBase);
-    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + __ImageBase.e_lfanew);
-    const auto addr = reinterpret_cast<uintptr_t>(rec->ExceptionAddress);
-
-    char where[64];
-    if (addr >= base && addr < base + nt->OptionalHeader.SizeOfImage) {
-        std::snprintf(where, sizeof(where), "jadyx.exe+0x%llx",
-                      static_cast<unsigned long long>(addr - base));
-    } else {
-        std::snprintf(where, sizeof(where), "0x%llx (outside jadyx.exe: JIT code or a DLL)",
-                      static_cast<unsigned long long>(addr));
-    }
-
-    char line[320];
-    if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2) {
-        const ULONG_PTR kind = rec->ExceptionInformation[0];
-        const char* what = kind == 0 ? "read of" : kind == 1 ? "write to" : "execute at";
-        std::snprintf(line, sizeof(line),
-                      "[jadyx] [+%llums] CRASH: access violation at %s (%s 0x%llx), thread %lu\n",
-                      ElapsedMs(), where, what,
-                      static_cast<unsigned long long>(rec->ExceptionInformation[1]),
-                      GetCurrentThreadId());
-    } else {
-        std::snprintf(line, sizeof(line),
-                      "[jadyx] [+%llums] CRASH: exception 0x%08lx at %s, thread %lu\n",
-                      ElapsedMs(), static_cast<unsigned long>(rec->ExceptionCode), where,
-                      GetCurrentThreadId());
-    }
-    WriteDiagRaw(line);
-    // Before the stack: out of commit, the unwind can overflow the stack and lose both.
-    if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2) {
-        char fault[512];
-        Common::FormatBackingFault(fault, sizeof(fault), rec->ExceptionInformation[1]);
-        if (fault[0] != '\0') {
-            std::snprintf(line, sizeof(line), "[jadyx] [+%llums] ", ElapsedMs());
-            WriteDiagRaw(line);
-            WriteDiagRaw(fault);
-            WriteDiagRaw("\n");
+/// The boot worker: runs one session on its own thread, since RunHeadlessBoot blocks.
+void RunBootWorker(const Jadyx::BootSurface& surface, const std::optional<std::string>& library_game,
+                   u64 library_program_id, std::atomic<bool>& done, std::atomic<int>& boot_status) {
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    std::set_terminate(OnTerminate); // per-thread in the MSVC runtime
+    std::string nro_path;
+    Jadyx::BootConfig config{};
+    try {
+        Jadyx::UseGameAdvancedGraphics(config, library_program_id);
+        // Bundled NRO from the read-only package install location.
+        const std::string install_path = winrt::to_string(
+            Windows::ApplicationModel::Package::Current().InstalledLocation().Path());
+        nro_path = install_path + "\\boot.nro";
+        WriteDiag("resolved NRO path: " + nro_path);
+        ParseBootConfigFile(install_path, config);
+        const std::string local_path = winrt::to_string(
+            Windows::Storage::ApplicationData::Current().LocalFolder().Path());
+        SeedUserData(std::filesystem::path{winrt::to_hstring(install_path).c_str()},
+                     std::filesystem::path{winrt::to_hstring(local_path).c_str()});
+        if (library_game) {
+            config.play = true;
+            config.run_seconds = 0;
+            config.pulse_sessions = *library_game != Jadyx::MiiEditorLaunch;
         }
-    }
-    WriteDiagRaw(FormatFaultStack(*info->ContextRecord, "[jadyx] crash stack:").c_str());
-    Common::BugTracker::DrainForCrash(); // first occurrences still queued for jadyx_graphics_bugs.log
-    Common::Log::Stop(); // flush jadyx_log.txt
-    return EXCEPTION_CONTINUE_SEARCH; // let the OS finish the crash (and WER take its dump)
-}
-
-// Fastmem faults are expected and use up the line budget within seconds, so every thread also
-// keeps its latest exception; OnAbort prints it, since a fault dynarmic cannot place aborts there.
-thread_local char t_last_exception[512];
-
-std::string FormatStack(const char* prefix);
-std::string FormatFaultStack(const CONTEXT& fault, const char* prefix);
-std::string FormatFrames(const char* prefix, void* const* frames, USHORT count);
-
-// Eden's fatal ASSERT/UNREACHABLE and the default std::terminate both end in abort(). SIGABRT is
-// process-wide in the UCRT, so this sees it from any thread.
-void OnAbort(int) {
-    char line[200];
-    std::snprintf(line, sizeof(line),
-                  "[jadyx] [+%llums] CRASH: abort() on thread %lu - fatal ASSERT/UNREACHABLE "
-                  "(see jadyx\\log\\jadyx_log.txt) or an exception escaped a thread\n",
-                  ElapsedMs(), GetCurrentThreadId());
-    WriteDiagRaw(line);
-    if (t_last_exception[0] != '\0') {
-        WriteDiagRaw("[jadyx] last exception on this thread:\n");
-        WriteDiagRaw(t_last_exception);
-    }
-    if (const std::string stats = Common::HostMemoryCommitStats(); !stats.empty()) {
-        WriteDiagRaw(("[jadyx] " + stats + "\n").c_str());
-    }
-    // An exception escaping a worker thread leaves nothing else behind.
-    WriteDiagRaw(FormatStack("[jadyx] abort stack:").c_str());
-    // Without this the async logger loses whatever it had queued (the last lines before a
-    // std::terminate on a worker thread, which never passes through AssertFatalImpl).
-    Common::BugTracker::DrainForCrash();
-    Common::Log::Stop();
-}
-
-// The calling thread's stack, as RVAs into jadyx.exe (resolve them with the build's PDB) or
-// module+offset elsewhere, after prefix, as one line.
-std::string FormatStack(const char* prefix) {
-    void* frames[48];
-    const USHORT count = RtlCaptureStackBackTrace(0, static_cast<DWORD>(std::size(frames)),
-                                                  frames, nullptr);
-    return FormatFrames(prefix, frames, count);
-}
-
-// The faulting thread's stack, unwound from the fault's context: one captured inside the handler
-// would start in the exception dispatcher. A frame without unwind data (JIT code) is taken as a
-// leaf, so the walk may stop or skip there.
-std::string FormatFaultStack(const CONTEXT& fault, const char* prefix) {
-    CONTEXT context = fault;
-    void* frames[48];
-    USHORT count = 0;
-    while (count < std::size(frames) && context.Rip != 0) {
-        frames[count++] = reinterpret_cast<void*>(context.Rip);
-        DWORD64 image_base{};
-        if (RUNTIME_FUNCTION* const function =
-                RtlLookupFunctionEntry(context.Rip, &image_base, nullptr)) {
-            void* handler_data{};
-            DWORD64 establisher{};
-            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, function, &context,
-                             &handler_data, &establisher, nullptr);
-        } else {
-            MEMORY_BASIC_INFORMATION region{};
-            if (context.Rsp == 0 ||
-                VirtualQuery(reinterpret_cast<const void*>(context.Rsp), &region,
-                             sizeof(region)) == 0 ||
-                region.State != MEM_COMMIT) {
-                break;
+        if (library_game || !config.game.empty()) {
+            // A game= path on the player's storage (jadyx-usb:/...) opens as in the library.
+            nro_path = library_game                       ? *library_game
+                       : Jadyx::IsStoragePath(config.game) ? config.game
+                                                           : local_path + "\\games\\" + config.game;
+            if (config.run_seconds == 0 && !config.play) {
+                config.run_seconds = Jadyx::DEFAULT_GAME_RUN_SECONDS;
             }
-            context.Rip = *reinterpret_cast<const DWORD64*>(context.Rsp);
-            context.Rsp += 8;
+            WriteDiag("resolved game path: " + nro_path + ", running " +
+                      (config.play ? std::string("until closed")
+                                   : std::to_string(config.run_seconds) + " s"));
         }
+    } catch (...) {
+        WriteDiag("FAILED resolving Package.InstalledLocation");
     }
-    return FormatFrames(prefix, frames, count);
+    ApplyProcessMemoryLimit(config.memory_limit_mib);
+    // Capture any early throw to the diag file instead of a silent exit.
+    try {
+        WriteDiag("calling RunHeadlessBoot");
+        int rc = Jadyx::RunHeadlessBoot(nro_path, surface, config);
+        if (rc == Jadyx::PULSE_RESUME_FAILED) {
+            Jadyx::PulseSessions::SetNotice(Jadyx::I18n::ToUtf8(
+                Jadyx::I18n::Tr(Jadyx::I18n::Text::PulseNotResumed)));
+            WritePulseLog("booting the game fresh after a failed resume");
+            config.pulse_resume = false;
+            rc = Jadyx::RunHeadlessBoot(nro_path, surface, config);
+        }
+        boot_status.store(rc);
+        WriteDiag("RunHeadlessBoot returned " + std::to_string(rc) + " | " + MemoryReport());
+    } catch (winrt::hresult_error const& e) {
+        WriteDiag("winrt::hresult_error: " + winrt::to_string(e.message()));
+    } catch (std::exception const& e) {
+        WriteDiag(std::string("std::exception: ") + e.what());
+    } catch (...) {
+        WriteDiag("unknown exception in RunHeadlessBoot");
+    }
+    done.store(true);
 }
 
-std::string FormatFrames(const char* prefix, void* const* frames, USHORT count) {
-    const auto base = reinterpret_cast<std::uintptr_t>(&__ImageBase);
-    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + __ImageBase.e_lfanew);
-    std::string stack = prefix;
-    for (USHORT i = 0; i < count; ++i) {
-        const auto addr = reinterpret_cast<std::uintptr_t>(frames[i]);
-        char frame[160];
-        HMODULE module = nullptr;
-        char module_path[MAX_PATH] = "";
-        if (addr >= base && addr < base + nt->OptionalHeader.SizeOfImage) {
-            std::snprintf(frame, sizeof(frame), " +0x%llx",
-                          static_cast<unsigned long long>(addr - base));
-        } else if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                          GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                      static_cast<LPCSTR>(frames[i]), &module) &&
-                   GetModuleFileNameA(module, module_path, MAX_PATH) != 0) {
-            // Another module (spirv_to_dxil.dll, the runtime, ...): its name and offset.
-            const char* name = std::strrchr(module_path, '\\');
-            std::snprintf(frame, sizeof(frame), " %s+0x%llx", name ? name + 1 : module_path,
-                          static_cast<unsigned long long>(
-                              addr - reinterpret_cast<std::uintptr_t>(module)));
-        } else {
-            std::snprintf(frame, sizeof(frame), " 0x%llx", static_cast<unsigned long long>(addr));
+/// PC: publishes the window mode for the in-game menu and applies the one it asked for. The
+/// choice is also kept as the launch mode. The swapchain keeps its size and is stretched.
+void ApplyWindowMode() {
+    using Windows::UI::ViewManagement::ApplicationView;
+    using Windows::UI::ViewManagement::ApplicationViewWindowingMode;
+    static const bool xbox = Windows::System::Profile::AnalyticsInfo::VersionInfo()
+                                 .DeviceFamily() == L"Windows.Xbox";
+    if (xbox) return;
+    try {
+        const auto view = ApplicationView::GetForCurrentView();
+        if (const int request = g_fullscreen_request.exchange(-1); request >= 0) {
+            if (request == 1) {
+                const bool entered = view.TryEnterFullScreenMode();
+                WriteDiag(entered ? "window: full screen" : "window: full screen refused");
+            } else {
+                view.ExitFullScreenMode();
+                WriteDiag("window: windowed");
+            }
+            ApplicationView::PreferredLaunchWindowingMode(
+                request == 1 ? ApplicationViewWindowingMode::FullScreen
+                             : ApplicationViewWindowingMode::Auto);
         }
-        stack += frame;
-    }
-    stack += '\n';
-    return stack;
-}
-
-// Terminate handlers are per-thread in the MSVC runtime; installed on the boot worker, this names the
-// exception that escaped (e.g. std::bad_alloc from the 4 GiB backing reservation).
-[[noreturn]] void OnTerminate() {
-    char line[320];
-    const char* what = "unknown (not a std::exception)";
-    std::string msg;
-    if (const std::exception_ptr e = std::current_exception()) {
-        try {
-            std::rethrow_exception(e);
-        } catch (const std::exception& ex) {
-            msg = ex.what();
-            what = msg.c_str();
-        } catch (...) {
-        }
-    } else {
-        what = "no active exception (std::terminate called directly)";
-    }
-    std::snprintf(line, sizeof(line), "[jadyx] [+%llums] CRASH: std::terminate: %s\n",
-                  ElapsedMs(), what);
-    WriteDiagRaw(line);
-    std::abort();
-}
-
-// ---- First-chance logging ------------------------------------------------------------------
-// The unhandled filter above never runs for a fault inside JIT code when the unwinder cannot walk
-// back out of it: the process just disappears (observed on-console: log stops ~300 ms after
-// system.Run(), no CRASH line, no heartbeat). A vectored handler runs BEFORE any unwinding, so it
-// sees every fault. It is installed LAST in the chain, so the demand-commit handlers (DRAM backing,
-// VirtualBuffer) resolve their own expected faults first and never reach it.
-std::atomic<int> g_first_chance_lines{0};
-constexpr int MAX_FIRST_CHANCE_LINES = 32;
-
-const char* ProtectName(DWORD protect) {
-    switch (protect & 0xFF) {
-    case PAGE_NOACCESS:          return "NOACCESS";
-    case PAGE_READONLY:          return "R";
-    case PAGE_READWRITE:         return "RW";
-    case PAGE_WRITECOPY:         return "WC";
-    case PAGE_EXECUTE:           return "X";
-    case PAGE_EXECUTE_READ:      return "RX";
-    case PAGE_EXECUTE_READWRITE: return "RWX";
-    case PAGE_EXECUTE_WRITECOPY: return "XWC";
-    default:                     return "?";
+        g_fullscreen.store(view.IsFullScreenMode());
+        g_can_fullscreen.store(true);
+    } catch (...) {
+        g_can_fullscreen.store(false);
     }
 }
 
-// "jadyx.exe+0xRVA" inside the image; otherwise the region's state/type/protection, which is what
-// tells JIT code (private RX), a code page left RW (W^X failure) and unmapped memory apart.
-void DescribeAddress(std::uintptr_t addr, char* out, std::size_t out_size) {
-    const auto base = reinterpret_cast<std::uintptr_t>(&__ImageBase);
-    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + __ImageBase.e_lfanew);
-    if (addr >= base && addr < base + nt->OptionalHeader.SizeOfImage) {
-        std::snprintf(out, out_size, "jadyx.exe+0x%llx",
-                      static_cast<unsigned long long>(addr - base));
-        return;
+/// Keeps the UI thread responsive while the worker runs.
+void PumpUntilDone(const CoreWindow& window, const std::atomic<bool>& done) {
+    // Heartbeat every 10 s: if steps stop but heartbeats continue, the boot hung rather than
+    // crashed, and the last step names where. The first 30 s also log the memory every
+    // second, since a boot can run out of commit before the first heartbeat.
+    CoreDispatcher dispatcher = window.Dispatcher();
+    const ULONGLONG boot_start = GetTickCount64();
+    ULONGLONG next_heartbeat = boot_start + 10'000;
+    ULONGLONG next_boot_memory = boot_start + 1'000;
+    while (!done.load()) {
+        Jadyx::RefreshProControllers();
+        ApplyWindowMode();
+        dispatcher.ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
+        ::Sleep(50);
+        if (const ULONGLONG now = GetTickCount64();
+            now >= next_boot_memory && now < boot_start + 30'000 && now < next_heartbeat) {
+            WriteDiag("boot memory: " + MemoryReport());
+            next_boot_memory = now + 1'000;
+        }
+        if (GetTickCount64() >= next_heartbeat) {
+            WriteDiag("heartbeat: boot worker still running | " + MemoryReport());
+            if (const u64 visited = g_host_trim_visited.exchange(0); visited != 0) {
+                WriteDiag("host trim: released " +
+                          std::to_string(g_host_trim_released.exchange(0) >> 20) +
+                          " MiB of " + std::to_string(visited >> 20) + " MiB visited");
+            }
+            if (Common::GuestSwapActive()) {
+                WriteDiag("permafrost: released " +
+                          std::to_string(g_guest_swap_released.exchange(0) >> 20) +
+                          " MiB since the last heartbeat | " + Common::DescribeGuestSwap() +
+                          " | coordinator: " + g_memory_coordinator_state.Describe());
+            }
+            WriteDiag("memory by owner: " + MemoryOwners());
+            for (const auto& capture : Jadyx::AllocWatch::TakeNew()) {
+                WriteDiag(FormatFrames(
+                    ("alloc watch: " + std::to_string(capture.size) + " bytes from").c_str(),
+                    capture.frames, capture.frame_count));
+            }
+            next_heartbeat += 10'000;
+        }
     }
-    MEMORY_BASIC_INFORMATION mbi{};
-    if (VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi)) == 0) {
-        std::snprintf(out, out_size, "0x%llx [VirtualQuery failed]",
-                      static_cast<unsigned long long>(addr));
-        return;
-    }
-    const char* state = mbi.State == MEM_COMMIT    ? "commit"
-                        : mbi.State == MEM_RESERVE ? "reserved"
-                                                   : "free";
-    const char* type = mbi.Type == MEM_PRIVATE ? "private"
-                       : mbi.Type == MEM_MAPPED ? "mapped"
-                       : mbi.Type == MEM_IMAGE  ? "image"
-                                                : "-";
-    std::snprintf(out, out_size, "0x%llx [%s %s %s, alloc base 0x%llx]",
-                  static_cast<unsigned long long>(addr), state, type,
-                  mbi.State == MEM_COMMIT ? ProtectName(mbi.Protect) : "-",
-                  static_cast<unsigned long long>(
-                      reinterpret_cast<std::uintptr_t>(mbi.AllocationBase)));
 }
 
-// C++ throws are not failures by themselves, but one that escapes a thread other than the boot
-// worker ends the process through a per-thread terminate handler nobody installed: no CRASH line,
-// just a WER event. Name them (type and what()) so the log says what was thrown.
-std::atomic<int> g_cxx_throw_lines{0};
-constexpr int MAX_CXX_THROW_LINES = 16;
-
-void LogCxxThrow(const EXCEPTION_RECORD* rec) {
-    // MSVC x64 throw: [1] = thrown object, [2] = ThrowInfo, [3] = image base of the RVAs.
-    if (rec->NumberParameters < 4) {
-        return;
-    }
-    const auto object = static_cast<std::uintptr_t>(rec->ExceptionInformation[1]);
-    const auto* throw_info = reinterpret_cast<const s32*>(rec->ExceptionInformation[2]);
-    const auto image = static_cast<std::uintptr_t>(rec->ExceptionInformation[3]);
-    if (throw_info == nullptr || image == 0) {
-        return;
-    }
-    // ThrowInfo { attributes, pmfnUnwind, pForwardCompat, pCatchableTypeArray }
-    const auto* types = reinterpret_cast<const s32*>(image + throw_info[3]);
-    const char* first_name = "?";
-    const char* what = "";
-    for (s32 i = 0; i < types[0]; ++i) {
-        // CatchableType { properties, pType, mdisp, pdisp, vdisp, sizeOrOffset, copyFunction }
-        const auto* type = reinterpret_cast<const s32*>(image + types[1 + i]);
-        // TypeDescriptor { pVFTable, spare, name[] }
-        const char* name = reinterpret_cast<const char*>(image + type[1] + 2 * sizeof(void*));
-        if (i == 0) {
-            first_name = name;
-        }
-        if (std::string_view{name} == ".?AVexception@std@@" && object != 0) {
-            what = reinterpret_cast<const std::exception*>(object + type[2])->what();
-        }
-    }
-    // Pulse rejects by throwing and retries for up to 3 s: each attempt is one line of its own log
-    // (the reason it waited on), never the diag's budget or a stack.
-    if (std::string_view{first_name}.find("@Pulse@") != std::string_view::npos) {
-        std::scoped_lock lock{g_pulse_mutex};
-        if (g_pulse_path.empty()) return;
-        if (g_pulse_last_rejection == what) {
-            ++g_pulse_rejection_repeats;
-            return;
-        }
-        const std::string repeats = TakePulseRepeats();
-        g_pulse_last_rejection = what;
-        char line[512];
-        std::snprintf(line, sizeof(line), "[pulse] [+%llums] rejected: %s | thread %lu\n",
-                      ElapsedMs(), what, GetCurrentThreadId());
-        if (std::FILE* const f = _fsopen(g_pulse_path.c_str(), "a", _SH_DENYNO)) {
-            std::fputs(repeats.c_str(), f);
-            std::fputs(line, f);
-            std::fclose(f);
-        }
-        return;
-    }
-    // The platform throws dozens of _com_error at startup and handles them itself; they used up
-    // the budget before anything interesting was thrown.
-    if (std::string_view{first_name} == ".?AV_com_error@@" ||
-        g_cxx_throw_lines.fetch_add(1, std::memory_order_relaxed) >= MAX_CXX_THROW_LINES) {
-        return;
-    }
-    char line[512];
-    std::snprintf(line, sizeof(line), "[jadyx] [+%llums] C++ throw %s: %s | thread %lu\n",
-                  ElapsedMs(), first_name, what, GetCurrentThreadId());
-    WriteDiagRaw(line, /*debugger_channel=*/false);
-    // Where it was thrown from: a caught exception (a bad_alloc a cache recovers from) is
-    // otherwise untraceable.
-    WriteDiagRaw(FormatStack("[jadyx]   thrown at:").c_str(), /*debugger_channel=*/false);
-}
-
-LONG NTAPI FirstChanceLogger(EXCEPTION_POINTERS* ep) {
-    const EXCEPTION_RECORD* rec = ep->ExceptionRecord;
-    switch (rec->ExceptionCode) {
-    case 0xE06D7363: // C++ throw
-        LogCxxThrow(rec);
-        return EXCEPTION_CONTINUE_SEARCH;
-    case 0x406D1388: // SetThreadDescription-by-exception (thread naming)
-    case 0x40010006: // DBG_PRINTEXCEPTION_C (OutputDebugStringA)
-    case 0x4001000A: // DBG_PRINTEXCEPTION_WIDE_C (OutputDebugStringW)
-        return EXCEPTION_CONTINUE_SEARCH;
+/// What the library shows when a session ended with this status; nullopt when the app ends instead.
+std::optional<std::string> LibraryNotice(int status) {
+    using I18n::Text;
+    const auto text = [](Text id) { return Jadyx::I18n::ToUtf8(Jadyx::I18n::Tr(id)); };
+    switch (status) {
+    case 2:
+        WriteDiag("boot load failed; returning to library for recovery");
+        return text(Text::GameLoadFailed);
+    case Jadyx::UPDATE_REQUIRED:
+        WriteDiag("game has no ExeFS without its update; returning to library");
+        return text(Text::GameNeedsUpdate);
+    case 16:
+        WriteDiag("content/storage failure handled; returning to library");
+        return text(Text::ContentUnavailable);
+    case Jadyx::MII_EDITOR_MISSING:
+        WriteDiag("mii editor missing; returning to library");
+        return text(Text::MiiEditorMissing);
+    case 15:
+        WriteDiag("GPU failure handled; returning to library for recovery");
+        return text(Text::GameStoppedGpu);
+    case Jadyx::RETURN_TO_LIBRARY:
+        WriteDiag("boot worker joined; back to the library");
+        return Jadyx::PulseSessions::TakeNotice();
     default:
-        break;
+        return std::nullopt;
     }
-    char at[160];
-    DescribeAddress(reinterpret_cast<std::uintptr_t>(rec->ExceptionAddress), at, sizeof(at));
-
-    char line[512];
-    if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2) {
-        const ULONG_PTR kind = rec->ExceptionInformation[0];
-        const char* what = kind == 0 ? "read of" : kind == 1 ? "write to" : "execute at";
-        char target[160];
-        DescribeAddress(static_cast<std::uintptr_t>(rec->ExceptionInformation[1]), target,
-                        sizeof(target));
-        std::snprintf(line, sizeof(line),
-                      "[jadyx] [+%llums] FIRST-CHANCE access violation: %s %s | at %s | "
-                      "thread %lu\n",
-                      ElapsedMs(), what, target, at, GetCurrentThreadId());
-    } else if ((rec->ExceptionCode == 0xE0DA0001 || rec->ExceptionCode == 0xE0DA0002) &&
-               rec->NumberParameters >= 4) {
-        std::snprintf(line, sizeof(line),
-                      "[jadyx] [+%llums] JIT MEMORY: %s failed, GetLastError=%llu, base 0x%llx, "
-                      "size 0x%llx, protection %s | thread %lu\n",
-                      ElapsedMs(),
-                      rec->ExceptionCode == 0xE0DA0001 ? "VirtualProtectFromApp"
-                                                       : "VirtualAllocFromApp(MEM_COMMIT)",
-                      static_cast<unsigned long long>(rec->ExceptionInformation[0]),
-                      static_cast<unsigned long long>(rec->ExceptionInformation[1]),
-                      static_cast<unsigned long long>(rec->ExceptionInformation[2]),
-                      ProtectName(static_cast<DWORD>(rec->ExceptionInformation[3])),
-                      GetCurrentThreadId());
-    } else {
-        std::snprintf(line, sizeof(line),
-                      "[jadyx] [+%llums] FIRST-CHANCE exception 0x%08lx | at %s | params %lu "
-                      "[0x%llx 0x%llx] | thread %lu\n",
-                      ElapsedMs(), static_cast<unsigned long>(rec->ExceptionCode), at,
-                      static_cast<unsigned long>(rec->NumberParameters),
-                      static_cast<unsigned long long>(
-                          rec->NumberParameters > 0 ? rec->ExceptionInformation[0] : 0),
-                      static_cast<unsigned long long>(
-                          rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0),
-                      GetCurrentThreadId());
-    }
-    std::memcpy(t_last_exception, line, sizeof(t_last_exception));
-    if (g_first_chance_lines.fetch_add(1, std::memory_order_relaxed) < MAX_FIRST_CHANCE_LINES) {
-        WriteDiagRaw(line, /*debugger_channel=*/false);
-    }
-    return EXCEPTION_CONTINUE_SEARCH; // observe only
-}
-
-// Resolved by name, never imported: importing the errorhandling-l1-1-1 api-set makes the app fail
-// to activate on-console (see host_memory.cpp).
-void InstallFirstChanceLogger() {
-    using PFN_AddVectoredExceptionHandler = PVOID(WINAPI*)(ULONG, PVECTORED_EXCEPTION_HANDLER);
-    static Common::DynamicLibrary kernelbase("Kernelbase");
-    PFN_AddVectoredExceptionHandler add_veh{};
-    if (kernelbase.IsOpen() && kernelbase.GetSymbol("AddVectoredExceptionHandler", &add_veh) &&
-        add_veh(/*first=*/0, FirstChanceLogger) != nullptr) {
-        WriteDiag("first-chance exception logger installed");
-    } else {
-        WriteDiag("WARNING: could not install the first-chance exception logger");
-    }
-}
-
-void InstallCrashHandlers() {
-    InstallFirstChanceLogger();
-    SetUnhandledExceptionFilter(OnUnhandledException);
-    std::signal(SIGABRT, OnAbort);
-    std::set_terminate(OnTerminate);
-}
-
-// ---- User data seeding ------------------------------------------------------------------------
-// Data for a local test reaches the console inside a local-only package, never the repo, under
-// InstalledLocation\userdata (package-appx.ps1 -Game, or what a local -StageScript adds). Eden
-// reads keys and firmware from its writable user dir, so they are copied into LocalState once;
-// LocalState survives package updates, so later packages can leave them out.
-//   userdata\keys\*      -> LocalState\jadyx\keys
-//   userdata\firmware\*  -> LocalState\jadyx\nand\system\Contents\registered
-//   userdata\games\*     -> LocalState\games
-// A file is copied when it is missing or its size differs.
-void SeedDirectory(const std::filesystem::path& from, const std::filesystem::path& to,
-                   const char* what) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    if (!fs::is_directory(from, ec)) {
-        return;
-    }
-    fs::create_directories(to, ec);
-    u32 copied = 0;
-    u32 kept = 0;
-    u64 bytes = 0;
-    const ULONGLONG start = GetTickCount64();
-    for (const fs::directory_entry& entry : fs::directory_iterator(from, ec)) {
-        if (!entry.is_regular_file(ec)) {
-            continue;
-        }
-        const fs::path target = to / entry.path().filename();
-        const u64 size = entry.file_size(ec);
-        std::error_code size_ec;
-        if (fs::exists(target, size_ec) && fs::file_size(target, size_ec) == size && !size_ec) {
-            ++kept;
-            continue;
-        }
-        std::error_code copy_ec;
-        fs::copy_file(entry.path(), target, fs::copy_options::overwrite_existing, copy_ec);
-        if (copy_ec) {
-            WriteDiag(std::string("seed ") + what + ": FAILED copying " +
-                      entry.path().filename().string() + ": " + copy_ec.message());
-            continue;
-        }
-        ++copied;
-        bytes += size;
-    }
-    WriteDiag(std::string("seed ") + what + ": " + std::to_string(copied) + " copied (" +
-              std::to_string(bytes >> 20) + " MiB in " + std::to_string(GetTickCount64() - start) +
-              " ms), " + std::to_string(kept) + " already there");
-}
-
-void SeedUserData(const std::filesystem::path& install, const std::filesystem::path& local) {
-    const std::filesystem::path userdata = install / "userdata";
-    // The data folders the core writes into without creating them (play_time, ...), as the
-    // desktop frontends do at startup.
-    Common::FS::CreateEdenPaths();
-    // Through the path manager, which knows the data folder.
-    const auto data = Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir);
-    SeedDirectory(userdata / "keys", data / "keys", "keys");
-    SeedDirectory(userdata / "firmware", data / "nand" / "system" / "Contents" / "registered",
-                  "firmware");
-    SeedDirectory(userdata / "games", local / "games", "games");
 }
 
 struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
@@ -3323,67 +497,10 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
         SystemNavigationManager::GetForCurrentView().BackRequested(
             [](auto&&, BackRequestedEventArgs const& args) { args.Handled(true); });
         bool library_active = false;
-        bool developer_hotkeys = false;
-        try {
-            const auto install = std::filesystem::path{
-                Windows::ApplicationModel::Package::Current().InstalledLocation().Path().c_str()};
-            std::ifstream cfg{install / L"boot.cfg"};
-            for (std::string line; std::getline(cfg, line);)
-                if (line == "developer_hotkeys=1") developer_hotkeys = true;
-                else if (line == "pro_hid_probe=1") {
-                    WriteDiag(Jadyx::RunProControllerDecoderSelfTest() ? "Pro HID decoder self-test PASS" : "Pro HID decoder self-test FAIL");
-                    Jadyx::ProbeProControllerHid([](std::string message) { WriteDiag(message); });
-                }
-                else if (line == "keyboard_self_test=1") {
-                    WriteDiag(Jadyx::RunKeyboardInputSelfTest() ? "keyboard self-test PASS" : "keyboard self-test FAIL");
-                }
-        } catch (...) {}
+        const bool developer_hotkeys = ScanBootConfigEarly();
         const auto on_key = [&library_active, developer_hotkeys](Windows::System::VirtualKey key, bool pressed) {
             if (library_active) return;
-            using Windows::System::VirtualKey;
-            if (Jadyx::TextEntryActive()) {
-                // A game's keyboard is up: keys edit its text (characters arrive through
-                // CharacterReceived) and nothing reaches the game.
-                using Command = Jadyx::TextEntry::Command;
-                std::optional<Command> command;
-                switch (key) {
-                case VirtualKey::Escape: command = Command::Cancel; break;
-                case VirtualKey::Enter: command = Command::Done; break;
-                case VirtualKey::Back: command = Command::Delete; break;
-                case VirtualKey::Up: command = Command::Up; break;
-                case VirtualKey::Down: command = Command::Down; break;
-                case VirtualKey::Left: command = Command::Left; break;
-                case VirtualKey::Right: command = Command::Right; break;
-                default: break;
-                }
-                if (pressed && command) Jadyx::PushTextEntryKey({.command = command});
-                return;
-            }
-            if (developer_hotkeys && key == VirtualKey::Q) {
-                if (pressed) Jadyx::RequestQuit();
-                return;
-            }
-            if (developer_hotkeys && key == VirtualKey::T) {
-                if (pressed) VideoCore::FrameTrace::Start(480);
-                return;
-            }
-            if (developer_hotkeys && key == VirtualKey::F6) {
-                if (pressed) D3D12::TraceNextFrames(1);
-                return;
-            }
-            if (developer_hotkeys && key == VirtualKey::F7) {
-                if (pressed) D3D12::TraceNextMaterialFrame();
-                return;
-            }
-            if (developer_hotkeys && key == VirtualKey::F8) {
-                if (pressed) D3D12::HuntNextFrames();
-                return;
-            }
-            if (key == VirtualKey::Escape) {
-                if (pressed) Jadyx::RequestGameMenu();
-                return;
-            }
-            Jadyx::SetKeyboardKey(static_cast<unsigned>(key), pressed);
+            HandleGameKey(key, pressed, developer_hotkeys);
         };
         auto focus = window.Activated(winrt::auto_revoke, [](auto&&, WindowActivatedEventArgs const& args) {
             if (args.WindowActivationState() != CoreWindowActivationState::Deactivated) return;
@@ -3406,1232 +523,29 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
             args.Handled(true);
         });
 
-        // The swapchain is sized in physical pixels: CoreWindow bounds are in view pixels (DIPs).
-        Jadyx::BootSurface surface{};
-        if (m_window) {
-            surface.core_window = winrt::get_abi(m_window); // an IInspectable, so a valid IUnknown*
-            try {
-                const auto bounds = m_window.Bounds();
-                const double scale = Windows::Graphics::Display::DisplayInformation::
-                                         GetForCurrentView()
-                                             .RawPixelsPerViewPixel();
-                surface.width = static_cast<u32>(bounds.Width * scale + 0.5);
-                surface.height = static_cast<u32>(bounds.Height * scale + 0.5);
-            } catch (...) {
-                WriteDiag("could not read the window size, assuming 1920x1080");
-            }
-        }
+        const Jadyx::BootSurface surface = ReadWindowSurface(m_window);
 
         // "Back to the library" in the in-game menu shuts the game down inside this process and
         // comes back here: restarting the app is slow and awkward on the console.
         std::string library_error;
         for (u32 session = 1;; ++session) {
-            std::optional<std::string> library_game;
-            bool show_library = false;
-            std::string library_pick;
-            bool output_4k = false;
-            bool output_1080p = false;
-            std::optional<Jadyx::Upscaling> cfg_upscaling;
-            std::optional<bool> cfg_frame_gen;
-            u64 library_program_id = 0;
-            Jadyx::BootSurface library_surface = surface;
-            Jadyx::BootSurface game_surface = surface;
-            try {
-                const auto install = std::filesystem::path{
-                    Windows::ApplicationModel::Package::Current().InstalledLocation().Path().c_str()};
-                std::ifstream cfg{install / L"boot.cfg"};
-                for (std::string line; std::getline(cfg, line);) {
-                    if (line == "library=1") show_library = true;
-                    else if (line.starts_with("library_pick=")) library_pick = line.substr(13);
-                    else if (line == "output=4k") output_4k = true;
-                    else if (line == "output=1080p") output_1080p = true;
-                    // The same keys the boot reads (BootConfig), here only for the output size.
-                    else if (line.starts_with("upscaling=")) cfg_upscaling = Jadyx::ParseUpscaling(line.substr(10));
-                    else if (line == "frame_gen=off") cfg_frame_gen = false;
-                    else if (line == "frame_gen=auto" || line == "frame_gen=30" || line == "frame_gen=60")
-                        cfg_frame_gen = true;
-                }
-
-                // The swapchain the size of the TV's current mode (3840x2160 on a 4K TV); the
-                // window's own size (1920x1080 on the console) when the mode is not larger.
-                const auto screen_surface = [&surface, session] {
-                    Jadyx::BootSurface screen = surface;
-                    if (surface.core_window == nullptr) return screen;
-                    try {
-                        const auto hdmi = Windows::Graphics::Display::Core::HdmiDisplayInformation::
-                            GetForCurrentView();
-                        const auto mode = hdmi ? hdmi.GetCurrentDisplayMode() : nullptr;
-                        if (mode && mode.ResolutionWidthInRawPixels() > surface.width) {
-                            screen.width = mode.ResolutionWidthInRawPixels();
-                            screen.height = mode.ResolutionHeightInRawPixels();
-                        } else if (session == 1) {
-                            WriteDiag("output: the display mode is not larger than " +
-                                      std::to_string(surface.width) + "x" + std::to_string(surface.height));
-                        }
-                    } catch (const winrt::hresult_error& e) {
-                        WriteDiag("output: no display mode: " + winrt::to_string(e.message()));
-                    }
-                    return screen;
-                };
-
-                // boot.cfg output=4k / output=1080p force a size on the library and the game, for
-                // test runs. 1080p is a fixed swapchain on high-DPI PC screens; the present
-                // stretches it.
-                if (output_4k) library_surface = screen_surface();
-                if (output_1080p) library_surface = {surface.core_window, 1920, 1080};
-
-                if (show_library) {
-                    if (session > 1) {
-                        WriteDiag("library: back from the game | " + MemoryReport());
-                        WriteDiag("heaps: " + HeapReport() + " | " + MemoryReport());
-                        WriteDiag("memory map: " + LargestAllocations());
-                    }
-                    library_active = true;
-                    const auto local = std::filesystem::path{
-                        Windows::Storage::ApplicationData::Current().LocalFolder().Path().c_str()};
-                    WriteDiag("library: scanning LocalState/games; waiting for user selection");
-                    library_game = Jadyx::ShowGameLibrary(surface.core_window, library_surface.width,
-                        library_surface.height, local / L"games", [install, local] { SeedUserData(install, local); },
-                        session <= 2 && library_error.empty() ? std::string_view{library_pick} : std::string_view{},
-                        library_error, &library_program_id);
-                    library_active = false;
-                    if (!library_game) {
-                        WriteDiag("library: closed by user");
-                        return;
-                    }
-                    WriteDiag("library: selected " + *library_game);
-                    library_error.clear();
-                    // The window is never left blank while the game loads.
-                    Jadyx::ShowLaunchSplash(surface.core_window, surface.width, surface.height);
-                }
-
-                // The game's graphics (its own over Settings > Graphics, as ApplyGameGraphics
-                // resolves them once it is loaded) pick the swapchain, which exists before the
-                // game does: FSR presents at the TV's resolution, frame generation and the
-                // bilinear blit at 1080p. A game the library did not name follows Settings.
-                if (output_4k || output_1080p) {
-                    game_surface = library_surface;
-                    game_surface.screen_width = game_surface.plain_width = library_surface.width;
-                    game_surface.screen_height = game_surface.plain_height = library_surface.height;
-                } else {
-                    Jadyx::GraphicsSettings graphics = Jadyx::ResolveGraphics(
-                        Jadyx::LoadGraphicsSettings(),
-                        library_program_id != 0 ? Jadyx::LoadGameGraphics(library_program_id) : Jadyx::GameGraphics{});
-                    if (cfg_upscaling) graphics.upscaling = *cfg_upscaling;
-                    if (cfg_frame_gen) graphics.frame_gen = *cfg_frame_gen;
-                    const Jadyx::BootSurface screen = screen_surface();
-                    game_surface.plain_width = surface.width;
-                    game_surface.plain_height = surface.height;
-                    game_surface.screen_width = screen.width;
-                    game_surface.screen_height = screen.height;
-                    if (Jadyx::UsesScreenResolution(graphics)) {
-                        game_surface.width = screen.width;
-                        game_surface.height = screen.height;
-                    } else {
-                        game_surface.width = surface.width;
-                        game_surface.height = surface.height;
-                    }
-                }
-                char program[17];
-                std::snprintf(program, sizeof(program), "%016llX",
-                              static_cast<unsigned long long>(library_program_id));
-                WriteDiag("output: " + std::to_string(game_surface.width) + "x" +
-                          std::to_string(game_surface.height) +
-                          (output_4k || output_1080p ? std::string{" (boot.cfg)"}
-                                                     : std::string{" (graphics of "} + program + ")"));
-            } catch (const std::exception& e) {
-                WriteDiag(std::string("library: failed: ") + e.what());
-                return;
-            } catch (const winrt::hresult_error& e) {
-                // The code first: the message can be a stale error the platform recorded earlier.
-                char code[16];
-                std::snprintf(code, sizeof(code), "%08X", static_cast<unsigned>(e.code().value));
-                WriteDiag(std::string("library: failed: ") + code + " " + winrt::to_string(e.message()));
-                return;
-            }
+            LaunchChoice choice;
+            if (!ChooseLaunch(surface, session, library_error, library_active, choice)) return;
 
             std::atomic<bool> done{false};
             std::atomic<int> boot_status{0};
-            std::thread worker([&done, &boot_status, surface = game_surface, library_game, library_program_id]() {
-                winrt::init_apartment(winrt::apartment_type::multi_threaded);
-                std::set_terminate(OnTerminate); // per-thread in the MSVC runtime
-                std::string nro_path;
-                Jadyx::BootConfig config{};
-                try {
-                    Jadyx::UseGameAdvancedGraphics(config, library_program_id);
-                    // Bundled NRO from the read-only package install location.
-                    const std::string install_path = winrt::to_string(
-                        Windows::ApplicationModel::Package::Current().InstalledLocation().Path());
-                    nro_path = install_path + "\\boot.nro";
-                    WriteDiag("resolved NRO path: " + nro_path);
-                    // Memory keys: their own chain, ahead of the one below, which is as deep as
-                    // MSVC lets an else-if chain nest.
-                    const auto parse_memory_key = [&config](const std::string& line) {
-                        if (line == "small_textures=1" || line == "small_textures=0") {
-                            config.small_textures = line == "small_textures=1";
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "spare_heaps=1" || line == "spare_heaps=0") {
-                            config.spare_heaps = line == "spare_heaps=1";
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "cpu_texture_writes=1" ||
-                                   line == "cpu_texture_writes=0") {
-                            config.cpu_texture_writes = line == "cpu_texture_writes=1";
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "cached_staging=1" || line == "cached_staging=0") {
-                            config.cached_staging = line == "cached_staging=1";
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line.starts_with("heap_compaction_mib=")) {
-                            const auto value = line.substr(20);
-                            unsigned long parsed{};
-                            const auto result = std::from_chars(
-                                value.data(), value.data() + value.size(), parsed);
-                            if (result.ec == std::errc{} &&
-                                result.ptr == value.data() + value.size() && parsed <= 1024) {
-                                config.heap_compaction_mib = static_cast<u32>(parsed);
-                                WriteDiag("boot.cfg: heap compaction " + std::to_string(parsed) +
-                                          " MiB a frame");
-                            } else {
-                                WriteDiag("boot.cfg: invalid heap_compaction_mib, ignored");
-                            }
-                        } else if (line == "gpu_unswizzle=1" || line == "gpu_unswizzle=0") {
-                            config.gpu_unswizzle = line == "gpu_unswizzle=1";
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "guest_swap=1" || line == "guest_swap=0") {
-                            config.guest_swap = line == "guest_swap=1";
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "memory_coordinator=1" ||
-                                   line == "memory_coordinator=0") {
-                            config.memory_coordinator = line == "memory_coordinator=1";
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line.starts_with("memory_coordinator_floor_mib=")) {
-                            config.memory_coordinator_floor_mib = std::clamp(
-                                static_cast<u32>(std::strtoul(line.c_str() + 29, nullptr, 10)),
-                                256U, 2048U);
-                            WriteDiag("boot.cfg: memory coordinator floor " +
-                                      std::to_string(config.memory_coordinator_floor_mib) + " MiB");
-                        } else if (line.starts_with("guest_swap_low_mib=")) {
-                            config.guest_swap_low_mib = std::clamp(
-                                static_cast<u32>(std::strtoul(line.c_str() + 19, nullptr, 10)),
-                                64U, 2048U);
-                            WriteDiag("boot.cfg: guest swap low " +
-                                      std::to_string(config.guest_swap_low_mib) + " MiB");
-                        } else if (line.starts_with("guest_swap_high_mib=")) {
-                            config.guest_swap_high_mib = std::clamp(
-                                static_cast<u32>(std::strtoul(line.c_str() + 20, nullptr, 10)),
-                                64U, 3072U);
-                            WriteDiag("boot.cfg: guest swap high " +
-                                      std::to_string(config.guest_swap_high_mib) + " MiB");
-                        } else if (line.starts_with("guest_swap_watch_mib=")) {
-                            config.guest_swap_watch_mib = std::clamp(
-                                static_cast<u32>(std::strtoul(line.c_str() + 21, nullptr, 10)),
-                                64U, 4096U);
-                            WriteDiag("boot.cfg: guest swap watch " +
-                                      std::to_string(config.guest_swap_watch_mib) + " MiB");
-                        } else if (line.starts_with("guest_swap_idle_ms=")) {
-                            config.guest_swap_idle_ms = std::clamp(
-                                static_cast<u32>(std::strtoul(line.c_str() + 19, nullptr, 10)),
-                                0U, 120000U);
-                            WriteDiag("boot.cfg: guest swap idle " +
-                                      std::to_string(config.guest_swap_idle_ms) + " ms");
-                        } else if (line.starts_with("guest_swap_probation_ms=")) {
-                            config.guest_swap_probation_ms = std::clamp(
-                                static_cast<u32>(std::strtoul(line.c_str() + 24, nullptr, 10)),
-                                50U, 60000U);
-                            WriteDiag("boot.cfg: guest swap probation " +
-                                      std::to_string(config.guest_swap_probation_ms) + " ms");
-                        } else if (line.starts_with("guest_swap_batch_mib=")) {
-                            config.guest_swap_batch_mib = std::clamp(
-                                static_cast<u32>(std::strtoul(line.c_str() + 21, nullptr, 10)),
-                                0U, 2048U);
-                            WriteDiag("boot.cfg: guest swap batch " +
-                                      std::to_string(config.guest_swap_batch_mib) + " MiB");
-                        } else if (line.starts_with("guest_swap_reserve_mib=")) {
-                            config.guest_swap_reserve_mib = std::clamp(
-                                static_cast<u32>(std::strtoul(line.c_str() + 23, nullptr, 10)),
-                                0U, 256U);
-                            WriteDiag("boot.cfg: guest swap reserve " +
-                                      std::to_string(config.guest_swap_reserve_mib) + " MiB");
-                        } else if (line.starts_with("guest_swap_fill_pages=")) {
-                            config.guest_swap_fill_pages = std::clamp(
-                                static_cast<u32>(std::strtoul(line.c_str() + 22, nullptr, 10)),
-                                1U, 16U);
-                            WriteDiag("boot.cfg: guest swap fill " +
-                                      std::to_string(config.guest_swap_fill_pages) + " pages");
-                        } else if (line == "guest_swap_prefetch=1" || line == "guest_swap_prefetch=0") {
-                            config.guest_swap_prefetch = line == "guest_swap_prefetch=1";
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "guest_swap_pause_fill=1" ||
-                                   line == "guest_swap_pause_fill=0") {
-                            config.guest_swap_pause_fill = line == "guest_swap_pause_fill=1";
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line.starts_with("oom_reserve_mib=")) {
-                            config.oom_reserve_mib = std::clamp(
-                                static_cast<u32>(std::strtoul(line.c_str() + 16, nullptr, 10)),
-                                0U, 256U);
-                            WriteDiag("boot.cfg: driver memory reserve " +
-                                      std::to_string(config.oom_reserve_mib) + " MiB");
-                        } else {
-                            WriteDiag("boot.cfg: IGNORED unknown memory key " + line);
-                        }
-                    };
-                    const auto parse_pipeline_key = [&config](const std::string& line) {
-                        if (line == "async_pipelines=off") {
-                            config.async_pipelines = D3D12::AsyncPipelines::Off;
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "async_pipelines=balanced") {
-                            config.async_pipelines = D3D12::AsyncPipelines::Balanced;
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "async_pipelines=full") {
-                            config.async_pipelines = D3D12::AsyncPipelines::Full;
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "pso_blobs=1" || line == "pso_blobs=0") {
-                            config.pso_blobs = line == "pso_blobs=1";
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line.starts_with("wait_small_draws=")) {
-                            config.wait_small_draws = std::min(
-                                static_cast<u32>(std::strtoul(line.c_str() + 17, nullptr, 10)),
-                                1024U);
-                            WriteDiag("boot.cfg: draws of " +
-                                      std::to_string(config.wait_small_draws) +
-                                      " vertices or fewer wait for their pipeline");
-                        } else if (line.starts_with("pso_workers=")) {
-                            config.pso_workers = std::clamp(
-                                static_cast<u32>(std::strtoul(line.c_str() + 12, nullptr, 10)),
-                                1U, 8U);
-                            WriteDiag("boot.cfg: " + std::to_string(config.pso_workers) +
-                                      " pipeline build workers");
-                        } else if (line.starts_with("pso_boot_workers=")) {
-                            config.pso_boot_workers = std::clamp(
-                                static_cast<u32>(std::strtoul(line.c_str() + 17, nullptr, 10)),
-                                1U, 12U);
-                            WriteDiag("boot.cfg: " + std::to_string(config.pso_boot_workers) +
-                                      " loading screen pipeline workers");
-                        } else {
-                            WriteDiag("boot.cfg: IGNORED unknown pipeline key " + line);
-                        }
-                    };
-                    // GPU queue and rendering switches (a lambda of their own: the main chain
-                    // is at the compiler's nesting limit).
-                    const auto parse_render_key = [&config](const std::string& line) {
-                        // "name=0" or "name=1".
-                        const auto set_switch = [&line](std::string_view name, bool& value,
-                                                        std::string_view what) {
-                            if (line.size() != name.size() + 2 || !line.starts_with(name) ||
-                                line[name.size()] != '=' ||
-                                (line.back() != '0' && line.back() != '1')) {
-                                return false;
-                            }
-                            value = line.back() == '1';
-                            WriteDiag("boot.cfg: " + std::string(what) + (value ? " on" : " off"));
-                            return true;
-                        };
-                        if (set_switch("present_queue", config.present_queue,
-                                       "present queue of its own") ||
-                            set_switch("depth_bias_round", config.depth_bias_round,
-                                       "depth bias rounding") ||
-                            set_switch("unorm_round", config.unorm_round,
-                                       "UNORM8 outputs rounded ties down") ||
-                            set_switch("cube_sanitize", config.cube_sanitize,
-                                       "cube directions sanitized") ||
-                            set_switch("half_ftz", config.half_ftz, "fp16 denormal flush") ||
-                            set_switch("a2c_shader", config.a2c_shader,
-                                       "alpha to coverage in the shader") ||
-                            set_switch("small_bc_palette", config.small_bc_palette,
-                                       "small BC1-3 with the guest palette") ||
-                            set_switch("bc_gpu_decode", config.bc_gpu_decode,
-                                       "decoded BC textures on the GPU") ||
-                            set_switch("not_zeroed_heaps", config.not_zeroed_heaps,
-                                       "heaps created without zeroing") ||
-                            set_switch("depth_bias_shader", config.depth_bias_shader,
-                                       "depth bias in the shader") ||
-                            set_switch("memory_import_probe", config.memory_import_probe,
-                                       "memory import probe")) {
-                            return;
-                        }
-                        // "<name>=0|1|check": a mechanism off, on, or off with what it would do
-                        // counted.
-                        const auto set_mode = [&line](std::string_view name,
-                                                      VideoCore::FramePipeline::Mode& value,
-                                                      std::string_view what) {
-                            using VideoCore::FramePipeline::Mode;
-                            if (!line.starts_with(name) || line.size() <= name.size() ||
-                                line[name.size()] != '=') {
-                                return false;
-                            }
-                            const std::string_view arg = std::string_view(line).substr(name.size() + 1);
-                            if (arg == "0") {
-                                value = Mode::Off;
-                            } else if (arg == "1") {
-                                value = Mode::On;
-                            } else if (arg == "check") {
-                                value = Mode::Check;
-                            } else {
-                                return false;
-                            }
-                            WriteDiag("boot.cfg: " + std::string(what) +
-                                      (value == Mode::On      ? " on"
-                                       : value == Mode::Check ? " checked"
-                                                              : " off"));
-                            return true;
-                        };
-                        if (set_mode("present_mailbox", config.present_mailbox,
-                                     "present mailbox") ||
-                            set_mode("vsync_nowait", config.vsync_nowait,
-                                     "vsync without waiting for the GPU thread") ||
-                            set_mode("swap_interval_hold", config.swap_interval_hold,
-                                     "swap interval 2 held against a passing 3") ||
-                            set_mode("pso_budget", config.pso_budget,
-                                     "pipeline wait budget per frame") ||
-                            set_mode("pso_loading", config.pso_loading,
-                                     "pipeline builds on loading screens") ||
-                            set_mode("cpu_write_defer", config.cpu_write_defer,
-                                     "guest CPU writes queued without the cache locks") ||
-                            set_mode("jit_read_table", config.jit_read_table,
-                                     "guest loads of GPU memory through a JIT load table")) {
-                            return;
-                        }
-                        if (line.starts_with("frame_gen=")) {
-                            const std::string value = line.substr(10);
-                            if (value == "off" || value == "0") {
-                                config.frame_gen = D3D12::FrameGenMode::Off;
-                            } else if (value == "auto" || value == "1") {
-                                config.frame_gen = D3D12::FrameGenMode::Auto;
-                            } else if (value == "30") {
-                                config.frame_gen = D3D12::FrameGenMode::Target30;
-                            } else if (value == "60") {
-                                config.frame_gen = D3D12::FrameGenMode::Target60;
-                            } else {
-                                WriteDiag("boot.cfg: invalid frame_gen (off, auto, 30, 60), ignored");
-                                return;
-                            }
-                            WriteDiag("boot.cfg: frame generation " + value);
-                        } else if (line == "border_color=exact" || line == "border_color=8bit" ||
-                                   line == "border_color=bw") {
-                            config.border_color = line == "border_color=8bit" ? 1
-                                                  : line == "border_color=bw" ? 2
-                                                                              : 0;
-                            WriteDiag("boot.cfg: sampler border colors " + line.substr(13));
-                        } else {
-                            WriteDiag("boot.cfg: IGNORED unknown render key " + line);
-                        }
-                    };
-                    std::ifstream cfg{install_path + "\\boot.cfg"};
-                    for (std::string line; std::getline(cfg, line);) {
-                        // Outside the chain below, which is at the compiler's nesting limit.
-                        if (line.starts_with("guest_clock_scale=")) {
-                            const std::string_view value = std::string_view{line}.substr(18);
-                            u32 parsed{};
-                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
-                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() &&
-                                parsed >= 50 && parsed <= 100) {
-                                config.guest_clock_percent = parsed;
-                                WriteDiag("boot.cfg: guest clock at " + std::to_string(parsed) + " %");
-                            } else {
-                                WriteDiag("boot.cfg: invalid guest_clock_scale (50-100), ignored");
-                            }
-                            continue;
-                        }
-                        if (line.starts_with("jit_prewarm_mib=")) {
-                            const std::string_view value = std::string_view{line}.substr(16);
-                            u32 parsed{};
-                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
-                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() &&
-                                parsed >= 8 && parsed <= 192) {
-                                config.jit_prewarm_mib = parsed;
-                                WriteDiag("boot.cfg: JIT prewarm fixed at " + std::to_string(parsed) +
-                                          " MiB per core");
-                            } else {
-                                WriteDiag("boot.cfg: invalid jit_prewarm_mib (8-192), ignored");
-                            }
-                            continue;
-                        }
-                        if (line == "uniform_reuse=0" || line == "uniform_reuse=1") {
-                            config.uniform_reuse = line.back() == '1';
-                            WriteDiag(std::string("boot.cfg: unchanged streamed uniform reuse ") +
-                                      (config.uniform_reuse ? "on" : "off"));
-                            continue;
-                        }
-                        if (line == "cpu_pin=off" || line == "cpu_pin=cores" || line == "cpu_pin=split") {
-                            using Common::Windows::CpuPin;
-                            const auto value = line.substr(8);
-                            config.cpu_pin = value == "cores"   ? CpuPin::Cores
-                                             : value == "split" ? CpuPin::Split
-                                                                : CpuPin::Off;
-                            WriteDiag("boot.cfg: cpu_pin " + value);
-                            continue;
-                        }
-                        if (line == "cpu_pin=topology" || line.starts_with("cpu_pin=map:")) {
-                            const std::string_view map = line == "cpu_pin=topology" ?
-                                Common::Windows::CpuPinTopology : std::string_view{line}.substr(12);
-                            if (Common::Windows::SetCpuPinMap(map)) {
-                                config.cpu_pin = Common::Windows::CpuPin::Map;
-                                WriteDiag("boot.cfg: cpu_pin map " + std::string(map));
-                            } else {
-                                WriteDiag("boot.cfg: cpu_pin map does not parse, ignored: " + line);
-                            }
-                            continue;
-                        }
-                        if (line.starts_with("guest_yield_pause=")) {
-                            Kernel::KScheduler::SetEmptyYieldPause(static_cast<u32>(
-                                std::strtoul(line.c_str() + 18, nullptr, 10)));
-                            WriteDiag("boot.cfg: " + line);
-                            continue;
-                        }
-                        if (line == "rt_early_out=0") {
-                            config.rt_early_out = false;
-                            WriteDiag("boot.cfg: attachments prepared again on every draw");
-                            continue;
-                        }
-                        if (line == "descriptor_defer=0" || line == "descriptor_defer=1") {
-                            config.descriptor_defer = line.back() == '1';
-                            WriteDiag(std::string("boot.cfg: draw descriptor tables written on the ") +
-                                      (config.descriptor_defer ? "recording" : "GPU") + " thread");
-                            continue;
-                        }
-                        if (line == "dma_flush_filter=0" || line == "dma_flush_filter=1") {
-                            config.dma_flush_filter = line.back() == '1';
-                            WriteDiag(std::string("boot.cfg: pushbuffer flush filter ") +
-                                      (config.dma_flush_filter ? "on" : "off"));
-                            continue;
-                        }
-                        if (line == "texture_replay=0" || line == "texture_replay=1" ||
-                            line == "texture_replay=check") {
-                            config.texture_replay = line == "texture_replay=1"       ? 1
-                                                    : line == "texture_replay=check" ? 2
-                                                                                     : 0;
-                            WriteDiag(std::string("boot.cfg: texture descriptor replay ") +
-                                      (config.texture_replay == 1   ? "on"
-                                       : config.texture_replay == 2 ? "checked"
-                                                                    : "off"));
-                            continue;
-                        }
-                        if (line == "stage_view_cache=0" || line == "stage_view_cache=1") {
-                            config.stage_view_cache = line.back() == '1';
-                            WriteDiag(std::string("boot.cfg: stage view and sampler reuse ") +
-                                      (config.stage_view_cache ? "on" : "off"));
-                            continue;
-                        }
-                        if (line.starts_with("submit_draws=")) {
-                            const std::string_view value = std::string_view{line}.substr(13);
-                            u32 parsed{};
-                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
-                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() &&
-                                parsed >= 128 && parsed <= 4096) {
-                                D3D12::SetSubmitDraws(parsed);
-                                WriteDiag("boot.cfg: command list submitted every " +
-                                          std::to_string(parsed) + " draws");
-                            } else {
-                                WriteDiag("boot.cfg: invalid submit_draws (128-4096), ignored");
-                            }
-                            continue;
-                        }
-                        if (line.starts_with("present_queue=") ||
-                            line.starts_with("border_color=") ||
-                            line.starts_with("depth_bias_round=") ||
-                            line.starts_with("unorm_round=") ||
-                            line.starts_with("cube_sanitize=") || line.starts_with("half_ftz=") ||
-                            line.starts_with("a2c_shader=") ||
-                            line.starts_with("small_bc_palette=") ||
-                            line.starts_with("bc_gpu_decode=") ||
-                            line.starts_with("not_zeroed_heaps=") ||
-                            line.starts_with("depth_bias_shader=") ||
-                            line.starts_with("frame_gen=") ||
-                            line.starts_with("memory_import_probe=") ||
-                            line.starts_with("present_mailbox=") ||
-                            line.starts_with("vsync_nowait=") ||
-                            line.starts_with("swap_interval_hold=") ||
-                            line.starts_with("pso_budget=") ||
-                            line.starts_with("pso_loading=") ||
-                            line.starts_with("cpu_write_defer=") ||
-                            line.starts_with("jit_read_table=")) {
-                            parse_render_key(line);
-                            continue;
-                        }
-                        if (line.starts_with("async_pipelines=") ||
-                            line.starts_with("wait_small_draws=") ||
-                            line.starts_with("pso_workers=") ||
-                            line.starts_with("pso_boot_workers=") ||
-                            line.starts_with("pso_blobs=")) {
-                            parse_pipeline_key(line);
-                            continue;
-                        }
-                        if (line.starts_with("guest_swap") || line.starts_with("small_textures=") ||
-                            line.starts_with("memory_coordinator") ||
-                            line.starts_with("oom_reserve_mib=") ||
-                            line.starts_with("spare_heaps=") ||
-                            line.starts_with("gpu_unswizzle=") ||
-                            line.starts_with("cached_staging=") ||
-                            line.starts_with("cpu_texture_writes=") ||
-                            line.starts_with("heap_compaction_mib=")) {
-                            parse_memory_key(line);
-                            continue;
-                        }
-                        constexpr std::string_view key = "run_seconds=";
-                        constexpr std::string_view hunt_at_key = "hunt_at=";
-                        if (line.starts_with(hunt_at_key)) {
-                            config.hunt_at = static_cast<u32>(
-                                std::strtoul(line.c_str() + hunt_at_key.size(), nullptr, 10));
-                            WriteDiag("boot.cfg: bottleneck capture at " +
-                                      std::to_string(config.hunt_at) + " s");
-                        } else if (line.starts_with("hunt_cs=")) {
-                            config.hunt_cs = std::strtoull(line.c_str() + 8, nullptr, 16);
-                            WriteDiag("boot.cfg: bottleneck capture when compute shader " +
-                                      line.substr(8) + " is warm");
-                        } else if (line.starts_with("cs_inputs=")) {
-                            config.cs_inputs = std::strtoull(line.c_str() + 10, nullptr, 16);
-                            WriteDiag("boot.cfg: storage buffers of compute shader " +
-                                      line.substr(10) + " dumped");
-                        } else if (line.starts_with("frame_trace_")) {
-                            // One branch for both keys: MSVC caps how deep this chain nests.
-                            if (line.starts_with("frame_trace_at=")) {
-                                config.frame_trace_at = static_cast<u32>(
-                                    std::strtoul(line.c_str() + 15, nullptr, 10));
-                                WriteDiag("boot.cfg: frame chain timeline at " +
-                                          std::to_string(config.frame_trace_at) + " s");
-                            } else if (line.starts_with("frame_trace_on_drop=")) {
-                                config.frame_trace_on_drop = static_cast<u32>(
-                                    std::strtoul(line.c_str() + 20, nullptr, 10));
-                                WriteDiag("boot.cfg: frame chain timelines on swap interval "
-                                          "rise: " + std::to_string(config.frame_trace_on_drop));
-                            }
-                        } else if (line.starts_with("quit_at=")) {
-                            config.quit_at =
-                                static_cast<u32>(std::strtoul(line.c_str() + 8, nullptr, 10));
-                            WriteDiag("boot.cfg: session closes at " +
-                                      std::to_string(config.quit_at) + " s");
-                        } else if (line.starts_with(key)) {
-                            config.run_seconds =
-                                static_cast<u32>(std::strtoul(line.c_str() + key.size(), nullptr, 10));
-                            WriteDiag("boot.cfg: run " + std::to_string(config.run_seconds) + " s");
-                        } else if (line == "descriptor_checks=1") {
-                            config.descriptor_checks = true;
-                            WriteDiag("boot.cfg: device removal checks after every draw descriptor");
-                        } else if (line == "dred=1") {
-                            config.dred = true;
-                            WriteDiag("boot.cfg: DRED breadcrumbs and page-fault tracking enabled");
-                        } else if (line == "gpu_breadcrumbs=1") {
-                            config.dred = true;
-                            config.gpu_breadcrumbs = true;
-                            WriteDiag("boot.cfg: GPU breadcrumbs around every command (and DRED)");
-                        } else if (line == "close_probe=1") {
-                            config.close_probe = true;
-                            WriteDiag("boot.cfg: every command also closed alone on a scratch list");
-                        } else if (line == "jit_dual_map=0") {
-                            config.jit_dual_map = false;
-                            WriteDiag("boot.cfg: JIT code memory keeps paged W^X");
-                        } else if (line == "pso_eviction=0") {
-                            config.pso_eviction = false;
-                            WriteDiag("boot.cfg: idle pipelines keep their PSOs");
-                        } else if (line == "xfb=storage") {
-                            config.xfb_storage = true;
-                            WriteDiag("boot.cfg: transform feedback through storage buffers");
-                        } else if (line == "indirect_macro_cpu=1") {
-                            config.indirect_macro_cpu = true;
-                            WriteDiag("boot.cfg: indirect draw macros read GPU-written arguments on the CPU");
-                        } else if (line == "occlusion_force_visible=1") {
-                            config.occlusion_force_visible = true;
-                            WriteDiag("boot.cfg: occlusion results reach the game as never zero");
-                        } else if (line == "uav_sync=1") {
-                            config.uav_sync = true;
-                            WriteDiag("boot.cfg: UAV barrier after every draw and dispatch");
-                        } else if (line == "rt_reclaim=0") {
-                            config.reclaim_superseded_images = false;
-                            WriteDiag("boot.cfg: superseded render targets wait for the GC");
-                        } else if (line == "mip_rt=0") {
-                            config.mip_render_targets = false;
-                            WriteDiag("boot.cfg: depth targets at a mip level use aliased images");
-                        } else if (line == "rt_inherit=0" || line == "rt_inherit=1") {
-                            config.render_target_inheritance = line.back() == '1';
-                            WriteDiag(std::string("boot.cfg: render targets at a new size ") +
-                                      (config.render_target_inheritance
-                                           ? "inherit the previous size on the GPU"
-                                           : "upload guest memory"));
-                        } else if (line == "min_max_filter=force") {
-                            config.force_min_max_filter = true;
-                            WriteDiag("boot.cfg: filtered min/max sampler reduction forced on");
-                        } else if (line == "min_max_filter=off") {
-                            config.skip_min_max_filter = true;
-                            WriteDiag("boot.cfg: filtered min/max sampler reduction not emulated");
-                        } else if (line == "pulse_resume=0") {
-                            config.pulse_resume = false;
-                            WriteDiag("boot.cfg: Pulse sessions are not resumed");
-                        } else if (line == "min_max_filter=emulate") {
-                            config.emulate_min_max_filter = true;
-                            WriteDiag("boot.cfg: filtered min/max sampler reduction always emulated");
-                        } else if (line == "airplane=1") {
-                            config.airplane_mode = true;
-                            WriteDiag("boot.cfg: airplane mode, the game sees no internet");
-                        } else if (line == "pso_prewarm=0") {
-                            config.pso_prewarm = false;
-                            WriteDiag("boot.cfg: dormant PSOs wait for their first draw");
-                        } else if (line == "gpu_capture_self_test=1") {
-                            config.full_gpu_capture = true;
-                            config.full_gpu_capture_self_test = true;
-                            WriteDiag("boot.cfg: full capture synthetic GPU gate enabled");
-                        } else if (line == "gpu_capture_full=1") {
-                            config.full_gpu_capture = true;
-                            config.material_capture_menu = true;
-                            WriteDiag("boot.cfg: full synchronous GPU capture enabled (menu)");
-                        } else if (line == "gpu_capture_targets=after") {
-                            config.full_gpu_capture_targets_after = true;
-                            WriteDiag("boot.cfg: full capture reads render targets after operations only");
-                        } else if (line == "buffer_write_origins=1") {
-                            config.buffer_write_origins = true;
-                            WriteDiag("boot.cfg: buffer GPU-write origins traced");
-                        } else if (line == "dump_guest_shaders=1") {
-                            config.dump_guest_shaders = true;
-                            WriteDiag("boot.cfg: guest shader dump enabled");
-                        } else if (line == "gpu_profile=1") {
-                            config.gpu_profile = true;
-                            WriteDiag("boot.cfg: detailed D3D12 GPU-thread profiling enabled");
-                        } else if (line == "upload_copy=0" || line == "upload_copy=1") {
-                            config.upload_copy = line.back() == '1';
-                            WriteDiag(std::string("boot.cfg: short uniform write-combined copy ") +
-                                      (config.upload_copy ? "on" : "off"));
-                        } else if (line == "draw_sampler_reuse=0" || line == "draw_sampler_reuse=1") {
-                            config.draw_sampler_reuse = line.back() == '1';
-                            WriteDiag(std::string("boot.cfg: draw-local sampler resolution reuse ") +
-                                      (config.draw_sampler_reuse ? "on" : "off"));
-                        } else if (line == "ps_scratch=auto" || line == "ps_scratch=uav" ||
-                                   line == "ps_scratch=native") {
-                            config.ps_scratch = line == "ps_scratch=uav"      ? 1
-                                                : line == "ps_scratch=native" ? 2
-                                                                              : 0;
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "cpu_probe=1") {
-                            config.cpu_probe = true;
-                            WriteDiag("boot.cfg: CPU probe before the guest");
-                        } else if (line == "timer_profile=1") {
-                            config.timer_profile = true;
-                            WriteDiag("boot.cfg: HostTiming requested waits/sleeps/spin elapsed profiling enabled");
-                        } else if (line == "cpu_profile=1") {
-                            config.cpu_profile = true;
-                        } else if (line == "profile=1") {
-                            config.profile = true;
-                            WriteDiag("boot.cfg: sampling profiler on");
-                        } else if (line == "profile=full") {
-                            // The fine timers read the clock about 15 times a draw: they slow the
-                            // GPU thread down, so they are not part of the plain profile.
-                            config.profile = true;
-                            config.gpu_profile = true;
-                            config.cpu_profile = true;
-                            WriteDiag("boot.cfg: sampling profiler with GPU and CPU timers");
-                        } else if (line.starts_with("profile_hz=") ||
-                                   line.starts_with("profile_window=")) {
-                            const bool hz = line.starts_with("profile_hz=");
-                            const std::string value = line.substr(line.find('=') + 1);
-                            const unsigned long parsed = std::strtoul(value.c_str(), nullptr, 10);
-                            if (hz && parsed >= 10 && parsed <= 1000) {
-                                config.profile_hz = static_cast<u32>(parsed);
-                            } else if (!hz && parsed >= 1 && parsed <= 600) {
-                                config.profile_window = static_cast<u32>(parsed);
-                            } else {
-                                WriteDiag("boot.cfg: invalid " + line + ", ignored");
-                            }
-                        } else if (line.starts_with("idle_spin=")) {
-                            if (const auto policy = Common::SpinPolicy::Parse(line.substr(10))) {
-                                config.idle_spin = *policy;
-                                WriteDiag("boot.cfg: idle cores " + policy->Describe());
-                            } else {
-                                WriteDiag("boot.cfg: invalid idle_spin, ignored");
-                            }
-                        } else if (line.starts_with("texture_cap_mib=") ||
-                                   line.starts_with("texture_cap_line_mib=")) {
-                            // One branch for both: another else-if passes the compiler's nesting limit.
-                            const bool cap_line = line.starts_with("texture_cap_line_mib=");
-                            const auto value = line.substr(cap_line ? 21 : 16);
-                            unsigned long parsed{};
-                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
-                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() && parsed <= 1048576) {
-                                if (cap_line) {
-                                    config.texture_cap_line_mib = static_cast<u32>(parsed);
-                                } else {
-                                    config.texture_cap_mib = static_cast<u32>(parsed);
-                                }
-                                WriteDiag(std::string("boot.cfg: texture cap ") + (cap_line ? "line " : "") +
-                                          std::to_string(parsed) + " MiB");
-                            } else {
-                                WriteDiag(std::string("boot.cfg: invalid ") +
-                                          (cap_line ? "texture_cap_line_mib" : "texture_cap_mib") + ", ignored");
-                            }
-                        } else if (line.starts_with("memory_limit_mib=")) {
-                            const auto value = line.substr(17);
-                            unsigned long parsed{};
-                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
-                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() && parsed <= 1048576) {
-                                config.memory_limit_mib = static_cast<u32>(parsed);
-                            } else {
-                                WriteDiag("boot.cfg: invalid memory_limit_mib, ignored");
-                            }
-                        } else if (line == "pulse_store=1") {
-                            config.pulse_store = true;
-                            WriteDiag("boot.cfg: Pulse store gate");
-                        } else if (line.starts_with("pulse_cycles=") ||
-                                   line.starts_with("pulse_seed=")) {
-                            const bool cycles = line.starts_with("pulse_cycles=");
-                            const std::string_view value =
-                                std::string_view{line}.substr(line.find('=') + 1);
-                            u32 parsed{};
-                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
-                            if (result.ec != std::errc{} || result.ptr != value.data() + value.size() ||
-                                (cycles && parsed > 100000)) {
-                                WriteDiag("boot.cfg: invalid " + line + ", ignored");
-                            } else if (cycles) {
-                                config.pulse_cycles = parsed;
-                                WriteDiag("boot.cfg: Pulse gate, " + std::to_string(parsed) + " cycles");
-                            } else {
-                                config.pulse_seed = parsed;
-                            }
-                        } else if (line.starts_with("jit_cache_mib=")) {
-                            const std::string_view value = std::string_view{line}.substr(14);
-                            u32 parsed{};
-                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
-                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() &&
-                                parsed >= 32 && parsed <= 512) {
-                                config.jit_cache_mib = parsed;
-                            } else {
-                                WriteDiag("boot.cfg: invalid jit_cache_mib (32-512), ignored");
-                            }
-                        } else if (line == "jit_prewarm=record") {
-                            config.jit_prewarm = Jadyx::BootConfig::JitPrewarm::Record;
-                        } else if (line == "jit_prewarm=1") {
-                            config.jit_prewarm = Jadyx::BootConfig::JitPrewarm::Warm;
-                        } else if (line == "jit_prewarm=0") {
-                            config.jit_prewarm = Jadyx::BootConfig::JitPrewarm::Off;
-                            WriteDiag("boot.cfg: JIT prewarm off");
-                        } else if (line == "audio_profile=1") {
-                            config.audio_profile = true;
-                            WriteDiag("boot.cfg: XAudio2 profiling enabled");
-                        } else if (line == "audio=null") {
-                            config.null_audio = true;
-                            WriteDiag("boot.cfg: timed Null audio");
-                        } else if (line == "audio=xaudio2") {
-                            config.null_audio = false;
-                            WriteDiag("boot.cfg: XAudio2 audio");
-                        } else if (line.starts_with("audio=")) {
-                            config.null_audio = false;
-                            WriteDiag("boot.cfg: unknown audio backend '" + line.substr(6) +
-                                      "', using XAudio2");
-                        } else if (line.starts_with("upscaling=")) {
-                            config.upscaling =
-                                Jadyx::ParseUpscaling(std::string_view{line}.substr(10));
-                            WriteDiag(config.upscaling
-                                          ? "boot.cfg: image upscaling " + line.substr(10)
-                                          : "boot.cfg: unknown upscaling '" + line.substr(10) +
-                                                "', using the saved one");
-                        } else if (line == "async_present=0" || line == "async_present=1") {
-                            config.async_present = line.back() == '1';
-                            WriteDiag(std::string("boot.cfg: presentation thread ") +
-                                      (config.async_present ? "on" : "off"));
-                        } else if (line == "nv_event_stall=0" || line == "nv_event_stall=1") {
-                            config.nv_event_stall = line.back() == '1';
-                            WriteDiag(std::string("boot.cfg: failing NV events ") +
-                                      (config.nv_event_stall ? "stall the guest" : "flush the GPU"));
-                        } else if (line == "nv_release_fence=0" || line == "nv_release_fence=1") {
-                            config.nv_release_fence = line.back() == '1';
-                            WriteDiag(std::string("boot.cfg: display release fence ") +
-                                      (config.nv_release_fence ? "on" : "off"));
-                        } else if (line == "gpu_fence=safe" || line == "gpu_fence=wait") {
-                            config.gpu_fence.reset();
-                            config.early_syncpoints = line == "gpu_fence=safe";
-                            WriteDiag(config.early_syncpoints
-                                          ? "boot.cfg: GPU syncpoints signalled at once unless "
-                                            "a download waits on the GPU"
-                                          : "boot.cfg: GPU syncpoints signalled after the GPU ran "
-                                            "the work (wait)");
-                        } else if (line == "gpu_fence=immediate" || line == "gpu_fence=balanced" ||
-                                   line == "gpu_fence=accurate") {
-                            using Settings::GpuFenceBehavior;
-                            const std::string value = line.substr(10);
-                            config.gpu_fence = value == "immediate"  ? GpuFenceBehavior::Immediate
-                                               : value == "balanced" ? GpuFenceBehavior::Balanced
-                                                                     : GpuFenceBehavior::Accurate;
-                            WriteDiag("boot.cfg: GPU syncpoints signalled " +
-                                      std::string(value == "immediate"
-                                                      ? "when the GPU thread reaches them"
-                                                      : "after the GPU ran the work (" + value + ")"));
-                        } else if (line == "async_record=0" || line == "async_record=1") {
-                            config.async_record = line.back() == '1';
-                            WriteDiag(std::string("boot.cfg: command list recording thread ") +
-                                      (config.async_record ? "on" : "off"));
-                        } else if (line == "pipeline_key_reuse=0" ||
-                                   line == "pipeline_key_reuse=1" ||
-                                   line == "pipeline_key_reuse=check") {
-                            using D3D12::PipelineKeyTracking::Mode;
-                            const std::string value = line.substr(19);
-                            config.pipeline_key_reuse = value == "check" ? Mode::Check
-                                                        : value == "1"   ? Mode::On
-                                                                         : Mode::Off;
-                            WriteDiag("boot.cfg: pipeline key reuse " +
-                                      std::string(value == "check" ? "checked"
-                                                  : value == "1"   ? "on"
-                                                                   : "off"));
-                        } else if (line == "timer_spin=auto") {
-                            config.timer_spin_us.reset();
-                            WriteDiag("boot.cfg: host timing follows the timer's lateness");
-                        } else if (line == "inline_exclusives=0" || line == "inline_exclusives=1") {
-                            config.inline_exclusives = line.back() == '1';
-                            WriteDiag(std::string("boot.cfg: exclusive accesses ") +
-                                      (config.inline_exclusives ? "inline" : "through the monitor"));
-                        } else if (line.starts_with("timer_spin=")) {
-                            const auto value = line.substr(11);
-                            u32 parsed{};
-                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
-                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() && parsed <= 100000) {
-                                config.timer_spin_us = parsed;
-                                WriteDiag("boot.cfg: host timing waits at most " + value +
-                                          " us on the CPU");
-                            } else {
-                                WriteDiag("boot.cfg: invalid timer_spin, ignored");
-                            }
-                        } else if (line == "timer_sleep=0" || line == "timer_sleep=1") {
-                            config.timer_sleep = line.back() == '1';
-                            WriteDiag(std::string("boot.cfg: host timing sleeps on ") +
-                                      (config.timer_sleep ? "a high-resolution timer"
-                                                          : "timer ticks"));
-                        } else if (line == "force_swap_interval=1") {
-                            config.force_swap_interval_one = true;
-                            WriteDiag("boot.cfg: forcing guest swap intervals above one to one");
-                        } else if (line == "debug_layer=1" || line == "debug_layer=gbv") {
-                            config.debug_layer = true;
-                            config.gpu_validation = line == "debug_layer=gbv";
-                            WriteDiag(config.gpu_validation
-                                          ? "boot.cfg: D3D12 debug layer with GPU-based validation"
-                                          : "boot.cfg: D3D12 debug layer");
-                        } else if (line == "material_gpu_probe=1") {
-                            config.material_gpu_probe = true;
-                            WriteDiag("boot.cfg: isolated material GPU intermediate probe enabled");
-                        } else if (line == "hunt=1") {
-                            config.hunt_menu = true;
-                            WriteDiag("boot.cfg: controller bottleneck capture menu enabled");
-                        } else if (line == "material_capture_menu=1") {
-                            config.material_capture_menu = true;
-                            WriteDiag("boot.cfg: controller graphics capture menu enabled");
-                        } else if (line == "bug_tracker=0") {
-                            config.bug_tracker = false;
-                            WriteDiag("boot.cfg: bug tracker off");
-                        } else if (line.starts_with("log_filter=")) {
-                            config.log_filter = line.substr(11);
-                            WriteDiag("boot.cfg: log filter " + config.log_filter);
-                        } else if (line.starts_with("dump_shader=")) {
-                            const char* cursor = line.c_str() + 12;
-                            for (char* end{}; *cursor != '\0'; cursor = *end == ',' ? end + 1 : end) {
-                                const u64 hash = std::strtoull(cursor, &end, 16);
-                                if (end == cursor) {
-                                    break;
-                                }
-                                D3D12::SetDumpedShader(hash);
-                            }
-                            WriteDiag("boot.cfg: dumping shader " + line.substr(12));
-                        } else if (line.starts_with("cs_split=")) {
-                            const u32 factor = static_cast<u32>(
-                                std::strtoul(line.c_str() + 9, nullptr, 10));
-                            // 16 by default (experimental); cs_split=1 turns the split off.
-                            if (factor >= 1 && factor <= 16 && std::has_single_bit(factor)) {
-                                D3D12::SetComputeWorkgroupSplit(factor);
-                                WriteDiag(factor == 1
-                                              ? std::string("boot.cfg: compute dispatches not split")
-                                              : "boot.cfg: small compute dispatches split by " +
-                                                    std::to_string(factor));
-                            } else {
-                                WriteDiag("boot.cfg: cs_split wants 1, 2, 4, 8 or 16; ignored");
-                            }
-                        } else if (line.starts_with("skip_shader=")) {
-                            const u64 hash = std::strtoull(line.c_str() + 12, nullptr, 16);
-                            if (hash != 0) {
-                                D3D12::SetSkippedShader(hash);
-                                WriteDiag("boot.cfg: skipping draws with shader " + line.substr(12));
-                            }
-                        } else if (line.starts_with("drop_gs=")) {
-                            const u64 hash = std::strtoull(line.c_str() + 8, nullptr, 16);
-                            if (hash != 0) {
-                                D3D12::SetGeometryDroppedShader(hash);
-                                WriteDiag("boot.cfg: building VS " + line.substr(8) +
-                                          " without its geometry shader");
-                            }
-                        } else if (line.starts_with("material_capture_frame=")) {
-                            config.material_capture_frame = static_cast<u32>(
-                                std::strtoul(line.c_str() + 23, nullptr, 10));
-                        } else if (line.starts_with("material_snapshot_vertices0=")) {
-                            config.material_snapshot_vertices[0] = static_cast<u32>(std::strtoul(line.c_str() + 28, nullptr, 10));
-                        } else if (line.starts_with("material_snapshot_vertices1=")) {
-                            config.material_snapshot_vertices[1] = static_cast<u32>(std::strtoul(line.c_str() + 28, nullptr, 10));
-                        } else if (line.starts_with("material_snapshot_ps0=")) {
-                            config.material_snapshot_ps[0] = std::strtoull(line.c_str() + 22, nullptr, 16);
-                        } else if (line.starts_with("material_snapshot_ps1=")) {
-                            config.material_snapshot_ps[1] = std::strtoull(line.c_str() + 22, nullptr, 16);
-                        } else if (line.starts_with("material_probe_x=")) {
-                            config.material_probe_x = static_cast<s32>(std::strtol(line.c_str() + 17, nullptr, 10));
-                        } else if (line.starts_with("material_probe_y=")) {
-                            config.material_probe_y = static_cast<s32>(std::strtol(line.c_str() + 17, nullptr, 10));
-                        } else if (line.starts_with("trace_frames=")) {
-                            config.traced_frames = std::max<u32>(
-                                1, static_cast<u32>(std::strtoul(line.c_str() + 13, nullptr, 10)));
-                            WriteDiag("boot.cfg: trace spans " + std::to_string(config.traced_frames) +
-                                      " frames");
-                        } else if (line.starts_with("trace_frame=")) {
-                            config.traced_frame =
-                                static_cast<u32>(std::strtoul(line.c_str() + 12, nullptr, 10));
-                            WriteDiag("boot.cfg: trace frame " + std::to_string(config.traced_frame));
-                        } else if (line == "bc_arrays=native") {
-                            config.bc_arrays_native = true;
-                            WriteDiag("boot.cfg: D3D12 block-compressed arrays stay compressed");
-                        } else if (line == "astc=gpu" || line == "astc=gpu-rgba" ||
-                                   line == "astc=cpu" || line == "astc=bc3") {
-                            using Astc = decltype(config.astc);
-                            config.astc = line == "astc=gpu"        ? Astc::Gpu
-                                          : line == "astc=gpu-rgba" ? Astc::GpuRgba
-                                          : line == "astc=cpu"      ? Astc::Cpu
-                                                                   : Astc::Bc3;
-                            WriteDiag("boot.cfg: ASTC " + line.substr(5));
-                        } else if (line == "astc_arrays=bc3" || line == "astc_arrays=rgba") {
-                            config.astc_arrays_rgba = line == "astc_arrays=rgba";
-                            WriteDiag("boot.cfg: ASTC arrays " + line.substr(12));
-                        } else if (line == "astc_opaque=bc1" || line == "astc_opaque=bc3") {
-                            config.astc_opaque_bc3 = line == "astc_opaque=bc3";
-                            WriteDiag("boot.cfg: opaque ASTC " + line.substr(12));
-                        } else if (line == "astc_mip0=drop" || line == "astc_mip0=keep") {
-                            config.astc_drop_mip0 = line == "astc_mip0=drop";
-                            WriteDiag("boot.cfg: ASTC top level " + line.substr(10));
-                        } else if (line == "astc_fresh=1") {
-                            config.astc_fresh = true;
-                            WriteDiag("boot.cfg: new ASTC scratch resources for every GPU upload");
-                        } else if (line == "astc_sync=1") {
-                            config.astc_sync = true;
-                            WriteDiag("boot.cfg: wait for the GPU after every GPU ASTC upload");
-                        } else if (line == "gpu_failure_probe=removed") {
-                            config.gpu_failure_probe = true;
-                            config.gpu_removal_probe = true;
-                        } else if (line == "gpu_failure_probe=1") {
-                            config.gpu_failure_probe = true;
-                        } else if (line == "rom_storage_checks=record") {
-                            config.rom_storage_checks = 1;
-                        } else if (line == "file_manager_gate=1") {
-                            config.file_manager_gate = true;
-                        } else if (line == "network_import_gate=1") {
-                            config.network_import_gate = true;
-                        } else if (line == "log_export_gate=1") {
-                            config.log_export_gate = true;
-                        } else if (line == "rom_storage_checks=restore") {
-                            config.rom_storage_checks = 2;
-                        } else if (line == "astc_verify=1") {
-                            config.astc_verify = true;
-                            WriteDiag("boot.cfg: verify first GPU BC3 upload against CPU");
-                        } else if (line == "dxil_sign=hash" || line == "dxil_sign=verify") {
-                            config.dxil_sign = line == "dxil_sign=hash" ? 1 : 2;
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "dxil_cache=0" || line == "dxil_cache=1") {
-                            config.dxil_cache = line == "dxil_cache=1";
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "stencil_blit_verify=1") {
-                            config.stencil_blit_verify = true;
-                            WriteDiag("boot.cfg: read back the first depth-stencil blits");
-                        } else if (line == "fastmem=0" || line == "fastmem=1" ||
-                                   line == "fastmem=hybrid" || line == "fastmem=full") {
-                            using Fastmem = decltype(config.fastmem);
-                            config.fastmem = line == "fastmem=0"      ? Fastmem::Off
-                                             : line == "fastmem=full" ? Fastmem::Full
-                                             : line == "fastmem=hybrid" ? Fastmem::Hybrid
-                                                                       : Fastmem::Auto;
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "cpu_accuracy=accurate" || line == "cpu_accuracy=auto" ||
-                                   line == "cpu_accuracy=unsafe") {
-                            config.cpu_accuracy = line == "cpu_accuracy=accurate"
-                                ? Settings::CpuAccuracy::Accurate
-                                : line == "cpu_accuracy=unsafe" ? Settings::CpuAccuracy::Unsafe
-                                                                : Settings::CpuAccuracy::Auto;
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "gpu_accuracy=low" || line == "gpu_accuracy=high") {
-                            config.gpu_accuracy = line == "gpu_accuracy=low"
-                                ? Settings::GpuAccuracy::Low : Settings::GpuAccuracy::High;
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "dma_accuracy=default" || line == "dma_accuracy=unsafe" ||
-                                   line == "dma_accuracy=safe") {
-                            config.dma_accuracy = line == "dma_accuracy=unsafe"
-                                ? Settings::DmaAccuracy::Unsafe
-                                : line == "dma_accuracy=safe" ? Settings::DmaAccuracy::Safe
-                                                              : Settings::DmaAccuracy::Default;
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line.starts_with("fastmem_hot_mib=")) {
-                            const auto requested = static_cast<u32>(
-                                std::strtoul(line.c_str() + 16, nullptr, 10));
-                            config.fastmem_hot_mib = std::clamp(requested, 128U, 448U);
-                            WriteDiag("boot.cfg: fastmem hot " +
-                                      std::to_string(config.fastmem_hot_mib) + " MiB");
-                        } else if (line == "async_shaders=0") {
-                            config.async_shaders = false;
-                            WriteDiag("boot.cfg: asynchronous shaders off");
-                        } else if (line.starts_with("alloc_watch=")) {
-                            // Byte sizes as the heap report prints them, separated by commas or
-                            // colons (a PowerShell -File argument splits at commas).
-                            std::vector<std::size_t> sizes;
-                            for (std::string_view rest = std::string_view{line}.substr(12);
-                                 !rest.empty();) {
-                                const size_t comma = rest.find_first_of(",:");
-                                const std::string_view item = rest.substr(0, comma);
-                                std::size_t size{};
-                                if (std::from_chars(item.data(), item.data() + item.size(), size)
-                                        .ec == std::errc{}) {
-                                    sizes.push_back(size);
-                                }
-                                rest = comma == std::string_view::npos ? std::string_view{}
-                                                                       : rest.substr(comma + 1);
-                            }
-                            Jadyx::AllocWatch::Watch(sizes);
-                            WriteDiag("boot.cfg: watching " + std::to_string(sizes.size()) +
-                                      " allocation sizes");
-                        } else if (line == "pso_probe=1") {
-                            D3D12::SetPsoCostProbe(true);
-                            WriteDiag("boot.cfg: measuring the driver's commit per graphics PSO");
-                        } else if (line == "host_trim=0") {
-                            config.host_trim = false;
-                            WriteDiag("boot.cfg: host_trim off");
-                        } else if (line == "pool_trim=0") {
-                            config.pool_trim = false;
-                            WriteDiag("boot.cfg: pool_trim off");
-                        } else if (line == "memory_audit=1" || line == "memory_audit=0") {
-                            config.memory_audit = line == "memory_audit=1";
-                            WriteDiag("boot.cfg: " + line);
-                        } else if (line == "pulse_diag=1") {
-                            Common::Pulse::SetDiagnostics(true);
-                            WriteDiag("boot.cfg: Pulse diagnostics on (GPU VA, shader code, page watch)");
-                        } else if (line == "play=1") {
-                            config.play = true;
-                            WriteDiag("boot.cfg: played by hand, no time limit or frame dumps");
-                        } else if (line == "renderer=null") {
-                            config.null_renderer = true;
-                            WriteDiag("boot.cfg: Null renderer");
-                        } else if (line.starts_with("input=")) {
-                            if (auto step = Jadyx::ParseInputStep(line.substr(6))) {
-                                config.input_script.push_back(std::move(*step));
-                                WriteDiag("boot.cfg: input " + line.substr(6));
-                            } else {
-                                WriteDiag("boot.cfg: IGNORED bad input line " + line.substr(6));
-                            }
-                        } else if (line.starts_with("game=")) {
-                            config.game = line.substr(5);
-                            WriteDiag("boot.cfg: game " + config.game);
-                        }
-                    }
-                    const std::string local_path = winrt::to_string(
-                        Windows::Storage::ApplicationData::Current().LocalFolder().Path());
-                    SeedUserData(std::filesystem::path{winrt::to_hstring(install_path).c_str()},
-                                 std::filesystem::path{winrt::to_hstring(local_path).c_str()});
-                    if (library_game) {
-                        config.play = true;
-                        config.run_seconds = 0;
-                        config.pulse_sessions = *library_game != Jadyx::MiiEditorLaunch;
-                    }
-                    if (library_game || !config.game.empty()) {
-                        // A game= path on the player's storage (jadyx-usb:/...) opens as in the library.
-                        nro_path = library_game                       ? *library_game
-                                   : Jadyx::IsStoragePath(config.game) ? config.game
-                                                                       : local_path + "\\games\\" + config.game;
-                        if (config.run_seconds == 0 && !config.play) {
-                            config.run_seconds = Jadyx::DEFAULT_GAME_RUN_SECONDS;
-                        }
-                        WriteDiag("resolved game path: " + nro_path + ", running " +
-                                  (config.play ? std::string("until closed")
-                                               : std::to_string(config.run_seconds) + " s"));
-                    }
-                } catch (...) {
-                    WriteDiag("FAILED resolving Package.InstalledLocation");
-                }
-                ApplyProcessMemoryLimit(config.memory_limit_mib);
-                // Capture any early throw to the diag file instead of a silent exit.
-                try {
-                    WriteDiag("calling RunHeadlessBoot");
-                    int rc = Jadyx::RunHeadlessBoot(nro_path, surface, config);
-                    if (rc == Jadyx::PULSE_RESUME_FAILED) {
-                        Jadyx::PulseSessions::SetNotice(Jadyx::I18n::ToUtf8(
-                            Jadyx::I18n::Tr(Jadyx::I18n::Text::PulseNotResumed)));
-                        WritePulseLog("booting the game fresh after a failed resume");
-                        config.pulse_resume = false;
-                        rc = Jadyx::RunHeadlessBoot(nro_path, surface, config);
-                    }
-                    boot_status.store(rc);
-                    WriteDiag("RunHeadlessBoot returned " + std::to_string(rc) + " | " + MemoryReport());
-                } catch (winrt::hresult_error const& e) {
-                    WriteDiag("winrt::hresult_error: " + winrt::to_string(e.message()));
-                } catch (std::exception const& e) {
-                    WriteDiag(std::string("std::exception: ") + e.what());
-                } catch (...) {
-                    WriteDiag("unknown exception in RunHeadlessBoot");
-                }
-                done.store(true);
+            std::thread worker([&done, &boot_status, &choice] {
+                RunBootWorker(choice.game_surface, choice.library_game, choice.library_program_id, done, boot_status);
             });
-
-            // Heartbeat every 10 s: if steps stop but heartbeats continue, the boot hung rather than
-            // crashed, and the last step names where. The first 30 s also log the memory every
-            // second, since a boot can run out of commit before the first heartbeat.
-            CoreDispatcher dispatcher = window.Dispatcher();
-            const ULONGLONG boot_start = GetTickCount64();
-            ULONGLONG next_heartbeat = boot_start + 10'000;
-            ULONGLONG next_boot_memory = boot_start + 1'000;
-            while (!done.load()) {
-                Jadyx::RefreshProControllers();
-                ApplyWindowMode();
-                dispatcher.ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
-                ::Sleep(50);
-                if (const ULONGLONG now = GetTickCount64();
-                    now >= next_boot_memory && now < boot_start + 30'000 && now < next_heartbeat) {
-                    WriteDiag("boot memory: " + MemoryReport());
-                    next_boot_memory = now + 1'000;
-                }
-                if (GetTickCount64() >= next_heartbeat) {
-                    WriteDiag("heartbeat: boot worker still running | " + MemoryReport());
-                    if (const u64 visited = g_host_trim_visited.exchange(0); visited != 0) {
-                        WriteDiag("host trim: released " +
-                                  std::to_string(g_host_trim_released.exchange(0) >> 20) +
-                                  " MiB of " + std::to_string(visited >> 20) + " MiB visited");
-                    }
-                    if (Common::GuestSwapActive()) {
-                        WriteDiag("permafrost: released " +
-                                  std::to_string(g_guest_swap_released.exchange(0) >> 20) +
-                                  " MiB since the last heartbeat | " + Common::DescribeGuestSwap() +
-                                  " | coordinator: " + g_memory_coordinator_state.Describe());
-                    }
-                    WriteDiag("memory by owner: " + MemoryOwners());
-                    for (const auto& capture : Jadyx::AllocWatch::TakeNew()) {
-                        WriteDiag(FormatFrames(
-                            ("alloc watch: " + std::to_string(capture.size) + " bytes from").c_str(),
-                            capture.frames, capture.frame_count));
-                    }
-                    next_heartbeat += 10'000;
-                }
-            }
+            PumpUntilDone(window, done);
             worker.join();
             // Still up when the boot ended before its renderer took the window; the library needs it.
             Jadyx::ReleaseLaunchSplash();
-            if (show_library && boot_status.load() == 2) {
-                library_error = Jadyx::I18n::ToUtf8(Jadyx::I18n::Tr(Jadyx::I18n::Text::GameLoadFailed));
-                WriteDiag("boot load failed; returning to library for recovery");
-                continue;
-            }
-            if (show_library && boot_status.load() == Jadyx::UPDATE_REQUIRED) {
-                library_error = Jadyx::I18n::ToUtf8(Jadyx::I18n::Tr(Jadyx::I18n::Text::GameNeedsUpdate));
-                WriteDiag("game has no ExeFS without its update; returning to library");
-                continue;
-            }
-            if (show_library && boot_status.load() == 16) {
-                library_error = Jadyx::I18n::ToUtf8(Jadyx::I18n::Tr(Jadyx::I18n::Text::ContentUnavailable));
-                WriteDiag("content/storage failure handled; returning to library");
-                continue;
-            }
-            if (show_library && boot_status.load() == Jadyx::MII_EDITOR_MISSING) {
-                library_error = Jadyx::I18n::ToUtf8(Jadyx::I18n::Tr(Jadyx::I18n::Text::MiiEditorMissing));
-                WriteDiag("mii editor missing; returning to library");
-                continue;
-            }
-            if (show_library && boot_status.load() == 15) {
-                library_error = Jadyx::I18n::ToUtf8(Jadyx::I18n::Tr(Jadyx::I18n::Text::GameStoppedGpu));
-                WriteDiag("GPU failure handled; returning to library for recovery");
-                continue;
-            }
-            if (show_library && boot_status.load() == Jadyx::RETURN_TO_LIBRARY) {
-                library_error = Jadyx::PulseSessions::TakeNotice();
-                WriteDiag("boot worker joined; back to the library");
-                continue;
+            if (choice.show_library) {
+                if (auto notice = LibraryNotice(boot_status.load())) {
+                    library_error = std::move(*notice);
+                    continue;
+                }
             }
             WriteDiag("boot worker joined; exiting");
             break;
@@ -4639,42 +553,15 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
     }
 
 private:
-    /// PC: publishes the window mode for the in-game menu and applies the one it asked for. The
-    /// choice is also kept as the launch mode. The swapchain keeps its size and is stretched.
-    static void ApplyWindowMode() {
-        using Windows::UI::ViewManagement::ApplicationView;
-        using Windows::UI::ViewManagement::ApplicationViewWindowingMode;
-        static const bool xbox = Windows::System::Profile::AnalyticsInfo::VersionInfo()
-                                     .DeviceFamily() == L"Windows.Xbox";
-        if (xbox) return;
-        try {
-            const auto view = ApplicationView::GetForCurrentView();
-            if (const int request = g_fullscreen_request.exchange(-1); request >= 0) {
-                if (request == 1) {
-                    const bool entered = view.TryEnterFullScreenMode();
-                    WriteDiag(entered ? "window: full screen" : "window: full screen refused");
-                } else {
-                    view.ExitFullScreenMode();
-                    WriteDiag("window: windowed");
-                }
-                ApplicationView::PreferredLaunchWindowingMode(
-                    request == 1 ? ApplicationViewWindowingMode::FullScreen
-                                 : ApplicationViewWindowingMode::Auto);
-            }
-            g_fullscreen.store(view.IsFullScreenMode());
-            g_can_fullscreen.store(true);
-        } catch (...) {
-            g_can_fullscreen.store(false);
-        }
-    }
-
     CoreWindow m_window{nullptr};
 };
 
 } // namespace
 
+} // namespace Jadyx
+
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     winrt::init_apartment();
-    CoreApplication::Run(winrt::make<BootView>());
+    CoreApplication::Run(winrt::make<Jadyx::BootView>());
     return 0;
 }

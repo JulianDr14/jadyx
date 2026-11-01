@@ -6,7 +6,25 @@
 # homebrew NRO through the JIT. Only built for the WindowsStore (UWP) target.
 
 add_executable(jadyx WIN32
+    app/boot_config.cpp
+    app/boot_config.h
+    app/boot_crash.cpp
+    app/boot_crash.h
+    app/boot_diag.cpp
+    app/boot_diag.h
+    app/boot_renderer_decls.h
+    app/boot_session.cpp
+    app/boot_session.h
+    app/boot_settings.cpp
+    app/boot_settings.h
+    app/boot_state.h
     app/headless_emu_window.h
+    app/session_memory.cpp
+    app/session_memory.h
+    app/session_menu.cpp
+    app/session_menu.h
+    app/user_data_seed.cpp
+    app/user_data_seed.h
     app/uwp_boot.cpp
     pulse/pulse_gate.cpp
     pulse/pulse_gate.h
@@ -30,6 +48,13 @@ add_executable(jadyx WIN32
     app/cpu_probe.h
     input/uwp_input.cpp
     input/uwp_input.h
+    library/library_session.cpp
+    library/library_session.h
+    library/library_session_game_options.cpp
+    library/library_session_input.cpp
+    library/library_session_network.cpp
+    library/library_session_pages.cpp
+    library/library_session_scan.cpp
     library/uwp_library.cpp
     library/uwp_library_canvas.cpp
     library/uwp_library_canvas.h

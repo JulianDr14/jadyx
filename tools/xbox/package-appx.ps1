@@ -21,7 +21,7 @@ param(
     # Enables the D3D12 debug layer (PC only: needs the Graphics Tools optional feature).
     [switch] $DebugLayer,
     # The user's own dumps for a game test, bundled under userdata\ and copied into LocalState by
-    # the app on its first run (uwp_boot.cpp SeedUserData). They only ever go into this local
+    # the app on its first run (user_data_seed.cpp SeedUserData). They only ever go into this local
     # package: never commit them, never publish the appx. LocalState survives package updates, so
     # once seeded, later packages can pass just -Game <file name> without the file.
     #   -Game      game dump (.nsp/.xci) to boot instead of boot.nro, or the name of one already seeded
