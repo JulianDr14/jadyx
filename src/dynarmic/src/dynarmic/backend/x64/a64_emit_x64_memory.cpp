@@ -341,7 +341,7 @@ void A64EmitX64::GenPageTableThunks() {
                         code.test(scratch, u32(~((u64{1} << (address_bits - page_table_const_bits)) - 1)));
                         code.jnz(slow, code.T_NEAR);
                     }
-                    code.mov(scratch, qword[r14 + scratch * 8]);
+                    code.mov(scratch, qword[r14 + scratch * 8 + (write ? 0 : int(conf.page_table_read_offset))]);
                     code.test(scratch, scratch);
                     code.jz(slow, code.T_NEAR);
                     const auto addr = scratch + vaddr;
