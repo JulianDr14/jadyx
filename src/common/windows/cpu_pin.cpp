@@ -6,7 +6,9 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <charconv>
 #include <mutex>
+#include <string_view>
 #include <vector>
 
 #include <windows.h>
@@ -29,9 +31,22 @@ struct Plan {
     std::vector<ULONG> siblings;
 };
 
+struct MapEntry {
+    std::string name;
+    int core{};
+    int logical{-1}; ///< -1: every logical processor of the core.
+};
+
 std::atomic<CpuPin> g_pin{CpuPin::Off};
 std::mutex g_placed_mutex;
 std::string g_placed;
+std::vector<MapEntry> g_map; ///< Under g_placed_mutex.
+
+bool ParseIndex(std::string_view text, int& value) {
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+    return result.ec == std::errc{} && result.ptr == text.data() + text.size() && value >= 0 &&
+           value < 64;
+}
 
 /// The physical cores of the logical processors allocated to this process (all of them when the
 /// system allocated none in particular), ordered by core.
@@ -105,10 +120,68 @@ std::string ListSets(const std::vector<ULONG>& sets) {
     return list;
 }
 
+/// The CPU sets the map gives a thread name: the longest matching name wins.
+std::vector<ULONG> MapSets(const Plan& plan, const char* name) {
+    const MapEntry* best{};
+    const std::string_view thread{name};
+    for (const MapEntry& entry : g_map) {
+        if (thread.starts_with(entry.name) && (!best || entry.name.size() > best->name.size())) {
+            best = &entry;
+        }
+    }
+    if (!best || static_cast<std::size_t>(best->core) >= plan.cores.size()) {
+        return {};
+    }
+    const Core& core = plan.cores[static_cast<std::size_t>(best->core)];
+    if (best->logical < 0) {
+        return core.sets;
+    }
+    if (static_cast<std::size_t>(best->logical) >= core.sets.size()) {
+        return {};
+    }
+    return {core.sets[static_cast<std::size_t>(best->logical)]};
+}
+
 } // namespace
 
 void SetCpuPin(CpuPin pin) {
+    bool no_map{};
+    if (pin == CpuPin::Map) {
+        std::scoped_lock lk{g_placed_mutex};
+        no_map = g_map.empty();
+    }
+    if (no_map) {
+        // The default: no boot.cfg key gave a map.
+        SetCpuPinMap(CpuPinTopology);
+    }
     g_pin.store(pin, std::memory_order_relaxed);
+}
+
+bool SetCpuPinMap(std::string_view map) {
+    std::vector<MapEntry> entries;
+    while (!map.empty()) {
+        const auto comma = map.find(',');
+        const std::string_view item = map.substr(0, comma);
+        map = comma == std::string_view::npos ? std::string_view{} : map.substr(comma + 1);
+        const auto equals = item.find('=');
+        if (equals == 0 || equals == std::string_view::npos) {
+            return false;
+        }
+        MapEntry entry{std::string(item.substr(0, equals))};
+        const std::string_view place = item.substr(equals + 1);
+        const auto dot = place.find('.');
+        if (!ParseIndex(place.substr(0, dot), entry.core) ||
+            (dot != std::string_view::npos && !ParseIndex(place.substr(dot + 1), entry.logical))) {
+            return false;
+        }
+        entries.push_back(std::move(entry));
+    }
+    if (entries.empty()) {
+        return false;
+    }
+    std::scoped_lock lk{g_placed_mutex};
+    g_map = std::move(entries);
+    return true;
 }
 
 void PinCurrentThread(const char* name) {
@@ -123,7 +196,13 @@ void PinCurrentThread(const char* name) {
     // Split needs a second logical processor on every core for the other threads.
     const bool split = pin == CpuPin::Split && plan.siblings.size() == plan.cores.size();
     std::vector<ULONG> sets;
-    if (const int guest = GuestCore(name); guest >= 0) {
+    if (pin == CpuPin::Map) {
+        std::scoped_lock lk{g_placed_mutex};
+        sets = MapSets(plan, name);
+        if (sets.empty()) {
+            return;
+        }
+    } else if (const int guest = GuestCore(name); guest >= 0) {
         const Core& core = plan.cores[static_cast<std::size_t>(guest) % plan.cores.size()];
         if (split) {
             sets.push_back(core.sets[0]);
@@ -147,7 +226,7 @@ std::string CpuPinReport() {
         return "off";
     }
     const Plan& plan = GetPlan();
-    std::string report = pin == CpuPin::Split ? "split;" : "cores;";
+    std::string report = pin == CpuPin::Split ? "split;" : pin == CpuPin::Map ? "map;" : "cores;";
     for (const Core& core : plan.cores) {
         report += " c" + std::to_string(core.index) + "=" + ListSets(core.sets);
     }

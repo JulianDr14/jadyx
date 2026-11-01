@@ -9,6 +9,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include <d3d12.h>
@@ -221,9 +222,12 @@ public:
 
 private:
     void LogCapabilities() const;
-    /// The GPU budget and usage the caches collect against. A discrete card's local budget is
-    /// widened into system memory (see the definition); a unified one's is DXGI's as is.
+    /// The GPU budget and usage the caches collect against, as of the last 100 ms refresh; does not
+    /// enter the kernel. A discrete card's local budget is widened into system memory (see
+    /// ReadCacheVideoMemory); a unified one's is DXGI's as is.
     [[nodiscard]] DXGI_QUERY_VIDEO_MEMORY_INFO QueryCacheVideoMemory() const;
+    [[nodiscard]] DXGI_QUERY_VIDEO_MEMORY_INFO ReadCacheVideoMemory() const;
+    void PublishCacheVideoMemory(const DXGI_QUERY_VIDEO_MEMORY_INFO& info);
 
     ComPtr<IDXGIFactory4> factory;
     ComPtr<IDXGIAdapter1> adapter;
@@ -246,6 +250,9 @@ private:
     std::string adapter_name;
     u64 initial_budget{}; ///< local video memory budget when the device was created
     bool discrete_memory{}; ///< not UMA: textures past the local budget can live in system memory
+    std::atomic<u64> cache_video_used{};
+    std::atomic<u64> cache_video_budget{};
+    std::jthread video_memory_thread; ///< last member: stops before the rest goes away
 };
 
 } // namespace D3D12

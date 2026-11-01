@@ -106,7 +106,7 @@ std::string DescribePerf(const VideoCore::Perf::Snapshot& d, double interval_ms)
         "guest flushes {} ({:.1f} ms), new resources {} ({:.1f} ms), CPU texture decode {:.1f} ms, "
         "residual estimate {:.1f} ms (scopes may overlap) | GPU busy {:.1f} ms, {} submits | {} draws, {} dispatches | "
         "uploads {} ({:.2f} MiB, {} GPU-decoded), downloads {} ({:.2f} MiB) | staging: {} "
-        "dedicated ({:.2f} MiB), {} ring waits",
+        "dedicated ({:.2f} MiB), {} ring waits | texture replays {} ({} mismatched)",
         idle, get(Counter::FenceWaits), fence, get(Counter::PipelineStalls), pipelines,
         get(Counter::GpuThreadFlushes), flushes, get(Counter::ResourcesCreated), creates, decodes,
         work,
@@ -117,7 +117,8 @@ std::string DescribePerf(const VideoCore::Perf::Snapshot& d, double interval_ms)
         static_cast<double>(get(Counter::TextureDownloadBytes)) / (1024.0 * 1024.0),
         get(Counter::StagingDedicated),
         static_cast<double>(get(Counter::StagingDedicatedBytes)) / (1024.0 * 1024.0),
-        get(Counter::StagingStreamWaits));
+        get(Counter::StagingStreamWaits), get(Counter::TextureReplays),
+        get(Counter::TextureReplayMismatches));
 }
 
 /// Where the GPU thread's draws spend their time (per draw, in microseconds), what is left outside
@@ -262,6 +263,25 @@ std::string DescribeGuestWaitSites() {
     return result.empty() ? "none" : result;
 }
 
+/// Why the emulated cores left the JIT, with the supervisor calls that did it most.
+std::string DescribeGuestExits(const VideoCore::Perf::Snapshot& d) {
+    const auto get = [&d](Counter counter) { return VideoCore::Perf::Get(d, counter); };
+    const auto svcs = VideoCore::Perf::TakeGuestSvcExits();
+    std::array<size_t, VideoCore::Perf::NUM_GUEST_SVCS> order{};
+    std::iota(order.begin(), order.end(), 0);
+    std::ranges::sort(order, [&svcs](size_t left, size_t right) { return svcs[left] > svcs[right]; });
+    std::string top;
+    for (size_t index = 0; index < 5 && svcs[order[index]] != 0; ++index) {
+        top += fmt::format("{}0x{:x} x{}", top.empty() ? "" : ", ", order[index], svcs[order[index]]);
+    }
+    return fmt::format("guest JIT runs ended {} times: {} supervisor calls ({}), {} interrupts, "
+                       "{} code cache invalidations, {} data aborts",
+                       get(Counter::GuestRunExits), get(Counter::GuestExitsSvc),
+                       top.empty() ? "none" : top, get(Counter::GuestExitsInterrupt),
+                       get(Counter::GuestExitsCacheInvalidation),
+                       get(Counter::GuestExitsDataAbort));
+}
+
 std::string DescribeMacroProfiles() {
     auto profiles = VideoCore::Perf::TakeMacroProfiles();
     std::ranges::sort(profiles, [](const auto& left, const auto& right) {
@@ -299,14 +319,30 @@ std::string DescribeFrameChain(const VideoCore::Perf::Snapshot& d) {
         "thread {:.1f} ms | composites {} ({:.1f} ms after the request on average, {} over a "
         "frame) | game waited for a free framebuffer {} times ({:.1f} ms) | forced {} swap "
         "intervals to one | emulated cores idle {:.1f} ms in all, woken {} times while "
-        "spinning and {} after blocking",
+        "spinning and {} after blocking | present frame waits: free {:.1f} ms, render {:.1f} ms, "
+        "copy {:.1f} ms, {} over 1 ms; {} queued frames reused ({} would be) | vsync waits for "
+        "the GPU thread cut at 2 ms {} times, {} full waits | game changed its swap interval {} "
+        "times ({} frames of 3 paced at 2) | CPU writes queued without the cache locks {} ({} would be, {} mismatches, {} "
+        "with the queue full), {} applied, {} GPU-modified meanwhile | JIT load table: {} pages "
+        "left after GPU writes, {} slow loads would be inline ({} mismatches), {} flushes of "
+        "unmarked memory",
         get(Counter::GuestFramesQueued), get(Counter::Vsyncs), get(Counter::VsyncsLost),
         get(Counter::VsyncFrames), Ms(d, Counter::VsyncComposeWaitUs), get(Counter::Composites),
         average_ms(Counter::CompositeLatencyUs, Counter::Composites), get(Counter::CompositesLate),
         get(Counter::GuestDequeueWaits), Ms(d, Counter::GuestDequeueWaitUs),
         get(Counter::GuestSwapIntervalOverrides),
         Ms(d, Counter::GuestCoreIdleUs), get(Counter::GuestCoreWakesSpun),
-        get(Counter::GuestCoreWakesBlocked));
+        get(Counter::GuestCoreWakesBlocked), Ms(d, Counter::PresentFreeWaitUs),
+        Ms(d, Counter::PresentRenderWaitUs), Ms(d, Counter::PresentCopyWaitUs),
+        get(Counter::PresentWaitsLong), get(Counter::PresentsReplaced),
+        get(Counter::PresentsWouldReplace), get(Counter::VsyncComposeWaitsCut),
+        get(Counter::VsyncComposeWaitsFull), get(Counter::GuestSwapIntervalChanges), get(Counter::GuestSwapIntervalsHeld),
+        get(Counter::CpuWritesDeferred), get(Counter::CpuWritesWouldDefer),
+        get(Counter::CpuWriteDeferMismatches), get(Counter::CpuWriteQueueFull),
+        get(Counter::CpuWritesDrained), get(Counter::CpuWritesLateGpu),
+        get(Counter::JitReadPagesCleared), get(Counter::JitReadsWouldInline),
+        get(Counter::JitReadMismatches), get(Counter::GpuFlushUnmarked)) +
+        " | " + DescribeGuestExits(d);
 }
 
 /// The largest share of a slow frame, in words.

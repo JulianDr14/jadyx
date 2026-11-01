@@ -648,6 +648,14 @@ public:
     /// Records what reading Handle(texture_type) needs first (a 3D image read as a 2D array
     /// refreshes its slice copy); call before the draw or dispatch, outside any other copy.
     void PrepareRead(Shader::TextureType texture_type) const;
+    /// Whether PrepareRead(texture_type) has anything to do for this view.
+    [[nodiscard]] bool NeedsPrepareRead(Shader::TextureType texture_type) const noexcept;
+    /// PREPARE_* bits of what PrepareRead(texture_type) does: one predicate for both.
+    static constexpr u8 PREPARE_REINTERPRETED = 1 << 0;
+    static constexpr u8 PREPARE_SLICE_ARRAY = 1 << 1;
+    static constexpr u8 PREPARE_VOLUME = 1 << 2;
+    static constexpr u8 PREPARE_CUBE = 1 << 3;
+    [[nodiscard]] u8 PrepareReadWork(Shader::TextureType texture_type) const noexcept;
 
     /// Same format, swizzle and subresources as Handle(), on the prepared depth snapshot.
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE DepthFeedbackHandle(

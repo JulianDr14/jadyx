@@ -161,6 +161,20 @@ GameGraphics LoadGameGraphics(std::uint64_t program_id) {
         if (values.HasKey(frame_gen)) graphics.frame_gen = winrt::unbox_value<bool>(values.Lookup(frame_gen));
         const auto shaders = GameGraphicsKey(L"shaders", program_id);
         graphics.shaders = LoadChoice(values, shaders.c_str(), SelectableShaderBuilds());
+        const auto slow_clock = GameGraphicsKey(L"slow_clock", program_id);
+        if (values.HasKey(slow_clock)) graphics.slow_guest_clock = winrt::unbox_value<bool>(values.Lookup(slow_clock));
+        auto& advanced = graphics.advanced;
+        const auto load = [&](const wchar_t* field, auto& value, auto options) {
+            const auto key = GameGraphicsKey(field, program_id);
+            if (const auto saved = LoadChoice(values, key.c_str(), options)) value = *saved;
+        };
+        load(L"anisotropy", advanced.anisotropy, SelectableAnisotropy());
+        load(L"texture_cap", advanced.texture_cap_mib, SelectableTextureCaps());
+        load(L"gpu_accuracy", advanced.gpu_accuracy, SelectableGpuAccuracy());
+        load(L"workers", advanced.shader_workers, SelectableShaderWorkers());
+        load(L"console_mode", advanced.console_mode, SelectableConsoleModes());
+        const auto full_textures = GameGraphicsKey(L"full_textures", program_id);
+        if (values.HasKey(full_textures)) advanced.full_textures = winrt::unbox_value<bool>(values.Lookup(full_textures));
     } catch (...) { /* A missing or invalid value follows Settings > Graphics. */ }
     return graphics;
 }
@@ -171,6 +185,20 @@ bool SaveGameGraphics(std::uint64_t program_id, const GameGraphics& graphics) {
         SaveOverride(values, GameGraphicsKey(L"upscaling", program_id), graphics.upscaling);
         SaveOverride(values, GameGraphicsKey(L"frame_gen", program_id), graphics.frame_gen);
         SaveOverride(values, GameGraphicsKey(L"shaders", program_id), graphics.shaders);
+        SaveOverride(values, GameGraphicsKey(L"slow_clock", program_id),
+                     graphics.slow_guest_clock ? std::optional<bool>{true} : std::nullopt);
+        // A default is not saved: a later build can change what the app does with no choice made.
+        const auto& advanced = graphics.advanced;
+        const GameAdvancedGraphics defaults;
+        const auto save = [&]<typename T>(const wchar_t* field, T value, T standard) {
+            SaveOverride(values, GameGraphicsKey(field, program_id), value == standard ? std::nullopt : std::optional<T>{value});
+        };
+        save(L"anisotropy", advanced.anisotropy, defaults.anisotropy);
+        save(L"texture_cap", advanced.texture_cap_mib, defaults.texture_cap_mib);
+        save(L"gpu_accuracy", advanced.gpu_accuracy, defaults.gpu_accuracy);
+        save(L"workers", advanced.shader_workers, defaults.shader_workers);
+        save(L"console_mode", advanced.console_mode, defaults.console_mode);
+        save(L"full_textures", advanced.full_textures, defaults.full_textures);
         return true;
     } catch (...) { return false; }
 }

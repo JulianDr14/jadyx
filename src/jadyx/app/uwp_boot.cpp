@@ -62,6 +62,7 @@
 #include "dynarmic/interface/code_memory.h"
 #include "core/arm/jit_prewarm.h"
 #include "core/core.h"
+#include "core/core_timing.h"
 #include "core/perf_stats.h"
 #include "core/cpu_manager.h"
 #include "core/device_memory.h"
@@ -74,6 +75,7 @@
 #include "core/hle/kernel/svc/svc_debug_string.h" // Kernel::Svc::SetDebugStringObserver
 #include "core/hle/kernel/k_memory_manager.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_scheduler.h"
 #include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/kernel/physical_core.h"
 #include "core/hle/service/am/applet_manager.h"
@@ -84,11 +86,14 @@
 #include "core/loader/loader.h"
 #include "core/memory/cheat_engine.h"
 #include "hid_core/hid_core.h"
+#include "video_core/cpu_write_queue.h"
+#include "video_core/frame_pipeline.h"
 #include "video_core/frame_trace.h"
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/fence_manager.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
+#include "common/page_table.h"
 #include "video_core/gpu_written_pages.h"
 #include "video_core/macro.h"
 #include "video_core/perf_counters.h"
@@ -208,6 +213,8 @@ void SetDescriptorRemovalChecks(bool enabled); // d3d12_device.h
 void SetUniformUploadCopy(bool enabled);
 void SetUniformReuse(bool enabled);
 void SetStageViewCache(bool enabled); // d3d12_graphics_pipeline.h
+enum class TextureReplayMode : u8; // d3d12_graphics_pipeline.h: Off, On, Check
+void SetTextureReplay(TextureReplayMode mode);
 void SetSubmitDraws(u32 draws); // d3d12_rasterizer.h
 void SetDrawSamplerReuse(bool enabled);
 enum class PixelShaderScratchMode : u8; // d3d12_local_memory_scratch.h: Auto, Uav, Native
@@ -248,6 +255,7 @@ std::atomic<u64> g_guest_swap_released{};
 struct MemoryCoordinatorState {
     std::atomic<bool> yield{};
     std::atomic<u64> relief{}, stall_us_per_s{}, texture_line{}, texture_loan{};
+    std::atomic<u64> texture_floor{}; ///< The texture cap; the in-game menu can change it.
     std::string Describe() const {
         return std::string{yield.load(std::memory_order_relaxed) ? "yield" : "calm"} +
                ", guest stall " +
@@ -303,6 +311,12 @@ struct BootSurface {
     void* core_window{};
     u32 width{1920};
     u32 height{1080};
+    /// The sizes this game can change to from the in-game menu, by what its graphics ask for: the
+    /// TV's resolution and the plain one (equal when boot.cfg forces one). Read on the UI thread.
+    u32 screen_width{};
+    u32 screen_height{};
+    u32 plain_width{};
+    u32 plain_height{};
 };
 
 // Force the device-light configuration the boot needs.
@@ -378,11 +392,12 @@ struct BootConfig {
     /// at 768 the cap evicts during the load and the same entry held.
     u32 texture_cap_mib{768};
     /// Free app memory the textures leave alone ("texture_cap_line_mib=", 0 keeps the cap fixed).
-    /// Above it the cap grows into the rest, so a game that leaves gigabytes free keeps its
-    /// textures; texture_cap_mib stays the floor. Unset: guest_swap_watch_mib + 256, so the
-    /// textures give memory back before guest swap starts watching, 768 MiB above its low mark:
-    /// room for a load spike (500 MiB in ten seconds was seen) while they evict.
-    std::optional<u32> texture_cap_line_mib;
+    /// Above it the cap grows into the rest; texture_cap_mib stays the floor. Below guest swap's low
+    /// mark, so cold guest memory leaves first: a world with 1150 MiB of live textures and 1 GiB free
+    /// sat over the cap for good, evicting, moving and creating textures all the time (30 heaps a
+    /// minute), and came with bursts of half-second frames. 768 leaves room for a load spike (500
+    /// MiB in ten seconds was seen) while they evict.
+    std::optional<u32> texture_cap_line_mib{768};
     /// Small sampled textures placed at 4 KiB instead of 64 KiB ("small_textures=0" turns it off).
     bool small_textures{true};
     /// A texture heap class that grew gets one spare heap made on another thread while memory
@@ -551,9 +566,9 @@ struct BootConfig {
     /// Make the D3D12 command list calls on a thread of their own, so the GPU thread only records
     /// them ("async_record=0" makes them on the GPU thread, as before the recorder).
     bool async_record{true};
-    /// Draw descriptor tables written on the recording thread ("descriptor_defer=1"); needs
-    /// async_record. Off by default: the recorder took CPU time from the guest threads.
-    bool descriptor_defer{};
+    /// Draw descriptor tables written on the recording thread ("descriptor_defer=0" writes them on
+    /// the GPU thread); needs async_record. On since the console A/B of 0.3.9.111.
+    bool descriptor_defer{true};
     /// An NV event the guest keeps giving up on stalls the guest until the GPU reaches it
     /// ("nv_event_stall=1", as before); by default the GPU commands are flushed and the wait goes on.
     bool nv_event_stall{false};
@@ -569,16 +584,36 @@ struct BootConfig {
     bool early_syncpoints{true};
     /// Keep the previous draw's pipeline while no register its key reads changed
     /// ("pipeline_key_reuse=1"; "=check" refreshes the key and logs every reuse that would have
-    /// drawn with another pipeline). Off by default until a gain is measured on the console.
-    D3D12::PipelineKeyTracking::Mode pipeline_key_reuse{D3D12::PipelineKeyTracking::Mode::Off};
-    bool upload_copy{}; ///< Experimental short uniform copies; default off.
-    bool uniform_reuse{}; ///< Rebind unchanged streamed uniforms within a submission; default off.
+    /// drawn with another pipeline; "=0" turns it off).
+    D3D12::PipelineKeyTracking::Mode pipeline_key_reuse{D3D12::PipelineKeyTracking::Mode::On};
+    // The draw-path reuse below is on since the console A/B of 0.3.9.111 (per-draw CPU down about
+    // 15%); each one turns off with "<key>=0".
+    bool upload_copy{true}; ///< Short uniform copies through write-combined stores.
+    bool uniform_reuse{true}; ///< Rebind unchanged streamed uniforms within a submission.
     bool rt_early_out{true}; ///< Skip re-preparing unchanged attachments per draw ("rt_early_out=0").
-    bool stage_view_cache{}; ///< Reuse each stage's resolved views and samplers; default off.
-    /// Pushbuffer reads skip FlushRegion over memory no cache holds GPU writes for
-    /// ("dma_flush_filter=1"); off by default: no gain was measured on the console.
-    bool dma_flush_filter{};
-    bool draw_sampler_reuse{}; ///< Experimental gather-local TSC resolution; default off.
+    bool stage_view_cache{true}; ///< Reuse each stage's resolved views and samplers.
+    /// Bind the last draw's texture descriptors when a draw resolves the same views and samplers
+    /// ("texture_replay=0|1|check", D3D12::TextureReplayMode).
+    u8 texture_replay{1};
+    /// The frame chain (VideoCore::FramePipeline): "present_mailbox=0|1|check" and
+    /// "vsync_nowait=0|1|check".
+    VideoCore::FramePipeline::Mode present_mailbox{VideoCore::FramePipeline::Mode::On};
+    VideoCore::FramePipeline::Mode vsync_nowait{VideoCore::FramePipeline::Mode::On};
+    /// "guest_clock_scale=50-100", over the game's own setting (CoreTiming::SetGuestClockPercent).
+    std::optional<u32> guest_clock_percent;
+    /// "swap_interval_hold=0|1|check".
+    VideoCore::FramePipeline::Mode swap_interval_hold{VideoCore::FramePipeline::Mode::Off};
+    /// "pso_budget=0|1|check" (D3D12::SetPsoBudget).
+    VideoCore::FramePipeline::Mode pso_budget{VideoCore::FramePipeline::Mode::On};
+    /// "pso_loading=0|1|check" (D3D12::SetPsoLoading).
+    VideoCore::FramePipeline::Mode pso_loading{VideoCore::FramePipeline::Mode::On};
+    /// "cpu_write_defer=0|1|check" (VideoCommon::CpuWriteQueue).
+    VideoCore::FramePipeline::Mode cpu_write_defer{VideoCore::FramePipeline::Mode::On};
+    /// "jit_read_table=0|1|check" (Common::PageTable::SetJitReadTable).
+    VideoCore::FramePipeline::Mode jit_read_table{VideoCore::FramePipeline::Mode::On};
+    /// Pushbuffer reads skip FlushRegion over memory no cache holds GPU writes for.
+    bool dma_flush_filter{true};
+    bool draw_sampler_reuse{true}; ///< Gather-local TSC resolution.
     /// Where pixel shaders keep large local memory: 0 auto (boot probe), 1 pool, 2 private arrays
     /// ("ps_scratch=auto|uav|native", D3D12::PixelShaderScratchMode).
     u8 ps_scratch{};
@@ -595,8 +630,9 @@ struct BootConfig {
     bool inline_exclusives{true};
     /// Where the guest cores and other named threads run among the app's cores ("cpu_pin=cores"
     /// gives each guest core a physical core, "cpu_pin=split" its first logical processor and the
-    /// rest the second ones); off leaves them to the scheduler.
-    Common::Windows::CpuPin cpu_pin{Common::Windows::CpuPin::Off};
+    /// rest the second ones, "cpu_pin=map:name=core.logical,..." or "cpu_pin=topology" each
+    /// named thread where the map says, the default); off leaves them to the scheduler.
+    Common::Windows::CpuPin cpu_pin{Common::Windows::CpuPin::Map};
     bool cpu_probe{}; ///< Measures the app's logical processors before the guest (cpu_probe.h).
     bool timer_profile{}; ///< HostTiming waits only; opt-in, separate from draw profiling.
     /// File name of a game in LocalState\games to boot instead of boot.nro (package-appx.ps1 -Game).
@@ -632,8 +668,8 @@ struct BootConfig {
     /// the rest ("astc_opaque=bc3").
     bool astc_opaque_bc3{};
     /// Big mipmapped ASTC textures without their top level, a quarter of their memory
-    /// ("astc_mip0=drop"), or whole ("astc_mip0=keep", the default).
-    bool astc_drop_mip0{};
+    /// ("astc_mip0=drop", the default), or whole ("astc_mip0=keep").
+    bool astc_drop_mip0{true};
     bool astc_verify{};
     bool stencil_blit_verify{};
     /// DXIL signing: 0 the validator, 1 own digest ("dxil_sign=hash"), 2 both ("dxil_sign=verify").
@@ -665,9 +701,9 @@ struct BootConfig {
     /// guest_swap_fill_pages pages at a time, unpaused); guest_swap_prefetch=0 leaves hot granules
     /// to the faults.
     bool guest_swap{true};
-    u32 guest_swap_watch_mib{1936};
-    u32 guest_swap_low_mib{1424};
-    u32 guest_swap_high_mib{1680};
+    u32 guest_swap_watch_mib{1536};
+    u32 guest_swap_low_mib{1024};
+    u32 guest_swap_high_mib{1280};
     u32 guest_swap_idle_ms{8000};
     u32 guest_swap_probation_ms{1500};
     u32 guest_swap_reserve_mib{32};
@@ -685,10 +721,15 @@ struct BootConfig {
     /// diagnostic and falls back to hybrid if the complete mapping cannot be created.
     enum class Fastmem { Off, Auto, Hybrid, Full } fastmem{Fastmem::Off};
     u32 fastmem_hot_mib{384};
-    Settings::CpuAccuracy cpu_accuracy{Settings::CpuAccuracy::Auto};
+    /// "cpu_accuracy=accurate|auto|unsafe". Unsafe: reduced-error floating point cut the guest core's
+    /// frame enough to stop most falls to 20 fps while the camera turns.
+    Settings::CpuAccuracy cpu_accuracy{Settings::CpuAccuracy::Unsafe};
     /// GPU and DMA accuracy ("gpu_accuracy=low|high", "dma_accuracy=default|unsafe|safe"), for
     /// A/B runs of what the high level costs the GPU thread.
     Settings::GpuAccuracy gpu_accuracy{Settings::GpuAccuracy::High};
+    /// A game's advanced graphics; there is no boot.cfg key.
+    Settings::AnisotropyMode anisotropy{Settings::AnisotropyMode::Default};
+    Settings::ConsoleMode console_mode{Settings::ConsoleMode::Docked};
     Settings::DmaAccuracy dma_accuracy{Settings::DmaAccuracy::Default};
     /// Legacy setting for backends with draw-skipping async shaders. D3D12 always preserves
     /// dependent draws, while preparing DXIL/PSOs on workers regardless of this setting.
@@ -720,10 +761,23 @@ static D3D12::AsyncPipelines ToAsyncPipelines(ShaderBuild shaders) {
     return D3D12::AsyncPipelines::Full;
 }
 
+/// A game's advanced graphics as its starting config. The session reads them while it sets up, before
+/// the game's file is open, and boot.cfg, parsed after this, still wins.
+static void UseGameAdvancedGraphics(BootConfig& config, u64 program_id) {
+    if (program_id == 0) return;
+    const GameAdvancedGraphics advanced = LoadGameGraphics(program_id).advanced;
+    config.anisotropy = advanced.anisotropy;
+    config.astc_drop_mip0 = !advanced.full_textures;
+    if (advanced.texture_cap_mib != 0) config.texture_cap_mib = advanced.texture_cap_mib;
+    config.gpu_accuracy = advanced.gpu_accuracy;
+    config.pso_workers = advanced.shader_workers;
+    config.console_mode = advanced.console_mode;
+}
+
 /// The game's graphics (its own over Settings > Graphics) where boot.cfg sets none. Upscaling is
 /// written on the GPU thread, the one that reads it once the game runs.
-static void ApplyGameGraphics(Core::System& system, const BootConfig& config, u64 program_id) {
-    const GraphicsSettings graphics = ResolveGraphics(LoadGraphicsSettings(), LoadGameGraphics(program_id));
+static void ApplyGameGraphics(Core::System& system, const BootConfig& config, const GameGraphics& game) {
+    const GraphicsSettings graphics = ResolveGraphics(LoadGraphicsSettings(), game);
     if (!config.upscaling) {
         const Upscaling upscaling = graphics.upscaling;
         system.GPU().RunOnGpuThread([upscaling] { ApplyUpscaling(upscaling); });
@@ -731,7 +785,9 @@ static void ApplyGameGraphics(Core::System& system, const BootConfig& config, u6
     if (!config.frame_gen)
         D3D12::SetFrameGenMode(graphics.frame_gen ? D3D12::FrameGenMode::Auto : D3D12::FrameGenMode::Off);
     if (!config.async_pipelines) D3D12::SetAsyncPipelines(ToAsyncPipelines(graphics.shaders));
-    WriteDiag("graphics: upscaling " +
+    const u32 clock_percent = config.guest_clock_percent.value_or(game.slow_guest_clock ? SlowGuestClockPercent : 100);
+    system.CoreTiming().SetGuestClockPercent(clock_percent);
+    WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, upscaling " +
               (config.upscaling ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(UpscalingText(graphics.upscaling)))) +
               ", frame generation " +
               (config.frame_gen ? std::string{"from boot.cfg"} : std::string{graphics.frame_gen ? "auto" : "off"}) +
@@ -740,6 +796,33 @@ static void ApplyGameGraphics(Core::System& system, const BootConfig& config, u6
                                       : std::string{graphics.shaders == ShaderBuild::Skip       ? "skip"
                                                     : graphics.shaders == ShaderBuild::Balanced ? "balanced"
                                                                                                 : "wait"}));
+}
+
+/// The advanced graphics that can change while the game runs, those that differ from `before`.
+/// With the guest paused (the in-game menu).
+static void ApplyRunningAdvancedGraphics(Core::System& system, const GameAdvancedGraphics& before,
+                                         const GameAdvancedGraphics& now) {
+    if (now.texture_cap_mib != before.texture_cap_mib) {
+        const u64 cap = u64{now.texture_cap_mib != 0 ? now.texture_cap_mib : BootConfig{}.texture_cap_mib} << 20;
+        D3D12::SetTextureMemoryCap(cap);
+        g_memory_coordinator_state.texture_floor.store(cap, std::memory_order_relaxed);
+        WriteDiag("graphics: texture cap " + std::to_string(cap >> 20) + " MiB");
+    }
+    if (now.gpu_accuracy != before.gpu_accuracy) {
+        const Settings::GpuAccuracy accuracy = now.gpu_accuracy;
+        system.GPU().RunOnGpuThread([accuracy] {
+            Settings::values.gpu_accuracy = accuracy;
+            Settings::UpdateGPUAccuracy();
+        });
+        WriteDiag(std::string{"graphics: GPU accuracy "} + (accuracy == Settings::GpuAccuracy::Low ? "low" : "high"));
+    }
+    if (now.console_mode != before.console_mode) {
+        Settings::values.use_docked_mode.SetValue(now.console_mode);
+        // What a real console tells the game when it goes in or out of its dock.
+        system.GetAppletManager().OperationModeChanged();
+        WriteDiag(std::string{"graphics: console mode "} +
+                  (now.console_mode == Settings::ConsoleMode::Handheld ? "handheld" : "docked"));
+    }
 }
 
 /// Games never emit the sentinels; without an explicit time they run this long.
@@ -797,10 +880,21 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     }
     Settings::values.cpu_accuracy = config.cpu_accuracy;
     WriteDiag(config.cpu_accuracy == Settings::CpuAccuracy::Accurate
-                  ? "step: CPU accuracy Accurate" : "step: CPU accuracy Auto");
+                  ? "step: CPU accuracy Accurate"
+                  : config.cpu_accuracy == Settings::CpuAccuracy::Unsafe ? "step: CPU accuracy Unsafe"
+                                                                         : "step: CPU accuracy Auto");
     Settings::values.gpu_accuracy = config.gpu_accuracy;
     Settings::values.dma_accuracy = config.dma_accuracy;
     Settings::UpdateGPUAccuracy();
+    // Set on every session: the settings outlive it, and the next game may have other choices.
+    Settings::values.max_anisotropy.SetValue(config.anisotropy);
+    Settings::values.use_docked_mode.SetValue(config.console_mode);
+    WriteDiag("graphics: anisotropy " + std::to_string(static_cast<int>(config.anisotropy)) +
+              ", ASTC top level " + (config.astc_drop_mip0 ? "dropped" : "kept") +
+              ", texture cap " + std::to_string(config.texture_cap_mib) + " MiB, GPU accuracy " +
+              (config.gpu_accuracy == Settings::GpuAccuracy::Low ? "low" : "high") +
+              ", shader workers " + std::to_string(config.pso_workers) +
+              ", console mode " + (config.console_mode == Settings::ConsoleMode::Handheld ? "handheld" : "docked"));
     AudioCore::Sink::SetXAudio2ProfileEnabled(config.audio_profile);
     Core::CpuProfile::SetEnabled(config.cpu_profile);
     // Read when Core::System builds the kernel's cores.
@@ -965,7 +1059,23 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     D3D12::SetUniformReuse(config.uniform_reuse);
     VideoCommon::SetRenderTargetEarlyOut(config.rt_early_out);
     D3D12::SetStageViewCache(config.stage_view_cache);
-    VideoCommon::GpuWrittenPages::SetEnabled(config.dma_flush_filter);
+    D3D12::SetTextureReplay(static_cast<D3D12::TextureReplayMode>(config.texture_replay));
+    VideoCore::FramePipeline::SetPresentMailbox(config.present_mailbox);
+    VideoCore::FramePipeline::SetVsyncNowait(config.vsync_nowait);
+    VideoCore::FramePipeline::SetSwapIntervalHold(config.swap_interval_hold);
+    D3D12::SetPsoBudget(config.pso_budget);
+    D3D12::SetPsoLoading(config.pso_loading);
+    VideoCommon::CpuWriteQueue::SetMode(config.cpu_write_defer);
+    // The JIT load table and the write queue trust the bitmap, so it is kept for them too.
+    VideoCommon::GpuWrittenPages::SetEnabled(
+        config.dma_flush_filter ||
+        config.cpu_write_defer != VideoCore::FramePipeline::Mode::Off ||
+        config.jit_read_table != VideoCore::FramePipeline::Mode::Off);
+    static_assert(u8(Common::PageTable::JitReadTable::On) == u8(VideoCore::FramePipeline::Mode::On) &&
+                  u8(Common::PageTable::JitReadTable::Check) ==
+                      u8(VideoCore::FramePipeline::Mode::Check));
+    Common::PageTable::SetJitReadTable(
+        static_cast<Common::PageTable::JitReadTable>(config.jit_read_table));
     D3D12::SetDrawSamplerReuse(config.draw_sampler_reuse);
     D3D12::SetPixelShaderScratchMode(static_cast<D3D12::PixelShaderScratchMode>(config.ps_scratch));
     if (config.debug_layer) {
@@ -1278,7 +1388,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     }
 
     const u64 program_id = system.GetApplicationProcessProgramID();
-    ApplyGameGraphics(system, config, program_id);
+    ApplyGameGraphics(system, config, LoadGameGraphics(program_id));
     // The game's own offline mode over Settings > System's, before any guest code runs; boot.cfg's
     // airplane=1 wins over both.
     if (const auto offline = LoadGameOfflineMode(program_id); offline && !config.airplane_mode)
@@ -1372,6 +1482,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         // cheats page changes the running game's cheats at once: the engine reloads them on its
         // next tick after the guest resumes. Closed, the menu keeps nothing.
         std::optional<GameMenu> menu;
+        bool graphics_changed{}; ///< In the open menu: the output's size may have to follow.
         std::optional<GameMenuSurface> menu_surface;
         // A keyboard the game opened (game_keyboard.h): drawn on the same surface as the menu, over
         // the running game. The menu opens on top of it and gives it back when it closes.
@@ -1587,7 +1698,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
             swap_worker.emplace([&](std::stop_token stop) {
                 Common::SetCurrentThreadName("Permafrost");
                 Jadyx::MemoryCoordinator coordinator{coordinator_config};
-                const u64 texture_floor = u64{config.texture_cap_mib} << 20;
+                g_memory_coordinator_state.texture_floor.store(u64{config.texture_cap_mib} << 20,
+                                                               std::memory_order_relaxed);
                 const auto start = std::chrono::steady_clock::now();
                 Jadyx::MemoryCoordinator::Plan plan = read_plan();
                 u64 logged_relief = 0;
@@ -1607,7 +1719,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                                                   std::chrono::steady_clock::now() - start)
                                                   .count()),
                              headroom, Common::Permafrost::GetStats().fault_stall_us,
-                             texture_heap, texture_floor, texture_cap});
+                             texture_heap, g_memory_coordinator_state.texture_floor.load(std::memory_order_relaxed),
+                             texture_cap});
                         D3D12::SetTextureMemoryLine(plan.texture_line);
                         D3D12::SetTextureYield(plan.yield);
                         {
@@ -1846,7 +1959,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                                                   pulse_identity.has_value(),
                                                   config.material_capture_menu, config.hunt_menu,
                                                   !game_frame.pixels.empty(), LoadGameOfflineMode(program_id),
-                                                  system_settings.offline_mode},
+                                                  system_settings.offline_mode, LoadGraphicsSettings(),
+                                                  LoadGameGraphics(program_id)},
                                  program_id != 0 && !mii_editor);
                     if (game_title.empty()) {
                         std::string title;
@@ -1998,6 +2112,26 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                 }
                 if (result == GameMenuResult::Resume || result == GameMenuResult::CaptureGraphics ||
                     result == GameMenuResult::CapturePerformance) {
+                    if (std::exchange(graphics_changed, false)) {
+                        // On closing rather than on each press: the player may be stepping through
+                        // the choices, and a resize waits for everything in flight.
+                        GraphicsSettings graphics = ResolveGraphics(LoadGraphicsSettings(), menu->Settings().graphics);
+                        if (config.upscaling) graphics.upscaling = *config.upscaling;
+                        if (config.frame_gen) graphics.frame_gen = *config.frame_gen != D3D12::FrameGenMode::Off;
+                        const bool screen = UsesScreenResolution(graphics);
+                        const u32 width = screen ? surface.screen_width : surface.plain_width;
+                        const u32 height = screen ? surface.screen_height : surface.plain_height;
+                        if (width != 0 && std::pair{width, height} != D3D12::GameMenuScreenSize(system.Renderer())) {
+                            bool resized{};
+                            system.GPU().RunOnGpuThread([&] {
+                                resized = D3D12::ResizeGameOutput(system.Renderer(), width, height);
+                                if (resized) emu_window.UpdateCurrentFramebufferLayout(width, height);
+                            });
+                            WriteDiag("menu: output " + std::to_string(width) + "x" + std::to_string(height) +
+                                      (resized ? "" : " failed, the size stays until the next boot") + " | " +
+                                      MemoryReport());
+                        }
+                    }
                     menu.reset();
                     cheats.reset();
                     game_frame = {};
@@ -2040,6 +2174,14 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                 }
                 if (result == GameMenuResult::FullScreen) {
                     g_fullscreen_request.store(menu->Settings().fullscreen ? 1 : 0);
+                }
+                if (result == GameMenuResult::GraphicsChanged) {
+                    const GameGraphics& game = menu->Settings().graphics;
+                    const GameGraphics before = LoadGameGraphics(program_id);
+                    if (!SaveGameGraphics(program_id, game)) WriteDiag("menu: graphics could not be saved");
+                    ApplyGameGraphics(system, config, game);
+                    ApplyRunningAdvancedGraphics(system, before.advanced, game.advanced);
+                    graphics_changed = true;
                 }
                 if (result == GameMenuResult::OfflineModeChanged) {
                     const auto offline = menu->Settings().offline_mode;
@@ -3154,6 +3296,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
     IFrameworkView CreateView() {
         return *this;
     }
+
+
     void Initialize(CoreApplicationView const&) {}
     void SetWindow(CoreWindow const& window) {
         m_window = window;
@@ -3367,13 +3511,26 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 // bilinear blit at 1080p. A game the library did not name follows Settings.
                 if (output_4k || output_1080p) {
                     game_surface = library_surface;
+                    game_surface.screen_width = game_surface.plain_width = library_surface.width;
+                    game_surface.screen_height = game_surface.plain_height = library_surface.height;
                 } else {
                     Jadyx::GraphicsSettings graphics = Jadyx::ResolveGraphics(
                         Jadyx::LoadGraphicsSettings(),
                         library_program_id != 0 ? Jadyx::LoadGameGraphics(library_program_id) : Jadyx::GameGraphics{});
                     if (cfg_upscaling) graphics.upscaling = *cfg_upscaling;
                     if (cfg_frame_gen) graphics.frame_gen = *cfg_frame_gen;
-                    if (Jadyx::UsesScreenResolution(graphics)) game_surface = screen_surface();
+                    const Jadyx::BootSurface screen = screen_surface();
+                    game_surface.plain_width = surface.width;
+                    game_surface.plain_height = surface.height;
+                    game_surface.screen_width = screen.width;
+                    game_surface.screen_height = screen.height;
+                    if (Jadyx::UsesScreenResolution(graphics)) {
+                        game_surface.width = screen.width;
+                        game_surface.height = screen.height;
+                    } else {
+                        game_surface.width = surface.width;
+                        game_surface.height = surface.height;
+                    }
                 }
                 char program[17];
                 std::snprintf(program, sizeof(program), "%016llX",
@@ -3395,12 +3552,13 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
 
             std::atomic<bool> done{false};
             std::atomic<int> boot_status{0};
-            std::thread worker([&done, &boot_status, surface = game_surface, library_game]() {
+            std::thread worker([&done, &boot_status, surface = game_surface, library_game, library_program_id]() {
                 winrt::init_apartment(winrt::apartment_type::multi_threaded);
                 std::set_terminate(OnTerminate); // per-thread in the MSVC runtime
                 std::string nro_path;
                 Jadyx::BootConfig config{};
                 try {
+                    Jadyx::UseGameAdvancedGraphics(config, library_program_id);
                     // Bundled NRO from the read-only package install location.
                     const std::string install_path = winrt::to_string(
                         Windows::ApplicationModel::Package::Current().InstalledLocation().Path());
@@ -3590,6 +3748,48 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                        "memory import probe")) {
                             return;
                         }
+                        // "<name>=0|1|check": a mechanism off, on, or off with what it would do
+                        // counted.
+                        const auto set_mode = [&line](std::string_view name,
+                                                      VideoCore::FramePipeline::Mode& value,
+                                                      std::string_view what) {
+                            using VideoCore::FramePipeline::Mode;
+                            if (!line.starts_with(name) || line.size() <= name.size() ||
+                                line[name.size()] != '=') {
+                                return false;
+                            }
+                            const std::string_view arg = std::string_view(line).substr(name.size() + 1);
+                            if (arg == "0") {
+                                value = Mode::Off;
+                            } else if (arg == "1") {
+                                value = Mode::On;
+                            } else if (arg == "check") {
+                                value = Mode::Check;
+                            } else {
+                                return false;
+                            }
+                            WriteDiag("boot.cfg: " + std::string(what) +
+                                      (value == Mode::On      ? " on"
+                                       : value == Mode::Check ? " checked"
+                                                              : " off"));
+                            return true;
+                        };
+                        if (set_mode("present_mailbox", config.present_mailbox,
+                                     "present mailbox") ||
+                            set_mode("vsync_nowait", config.vsync_nowait,
+                                     "vsync without waiting for the GPU thread") ||
+                            set_mode("swap_interval_hold", config.swap_interval_hold,
+                                     "swap interval 2 held against a passing 3") ||
+                            set_mode("pso_budget", config.pso_budget,
+                                     "pipeline wait budget per frame") ||
+                            set_mode("pso_loading", config.pso_loading,
+                                     "pipeline builds on loading screens") ||
+                            set_mode("cpu_write_defer", config.cpu_write_defer,
+                                     "guest CPU writes queued without the cache locks") ||
+                            set_mode("jit_read_table", config.jit_read_table,
+                                     "guest loads of GPU memory through a JIT load table")) {
+                            return;
+                        }
                         if (line.starts_with("frame_gen=")) {
                             const std::string value = line.substr(10);
                             if (value == "off" || value == "0") {
@@ -3618,6 +3818,19 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     std::ifstream cfg{install_path + "\\boot.cfg"};
                     for (std::string line; std::getline(cfg, line);) {
                         // Outside the chain below, which is at the compiler's nesting limit.
+                        if (line.starts_with("guest_clock_scale=")) {
+                            const std::string_view value = std::string_view{line}.substr(18);
+                            u32 parsed{};
+                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() &&
+                                parsed >= 50 && parsed <= 100) {
+                                config.guest_clock_percent = parsed;
+                                WriteDiag("boot.cfg: guest clock at " + std::to_string(parsed) + " %");
+                            } else {
+                                WriteDiag("boot.cfg: invalid guest_clock_scale (50-100), ignored");
+                            }
+                            continue;
+                        }
                         if (line.starts_with("jit_prewarm_mib=")) {
                             const std::string_view value = std::string_view{line}.substr(16);
                             u32 parsed{};
@@ -3632,9 +3845,36 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             }
                             continue;
                         }
-                        if (line == "uniform_reuse=1") {
-                            config.uniform_reuse = true;
-                            WriteDiag("boot.cfg: unchanged streamed uniform reuse enabled");
+                        if (line == "uniform_reuse=0" || line == "uniform_reuse=1") {
+                            config.uniform_reuse = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: unchanged streamed uniform reuse ") +
+                                      (config.uniform_reuse ? "on" : "off"));
+                            continue;
+                        }
+                        if (line == "cpu_pin=off" || line == "cpu_pin=cores" || line == "cpu_pin=split") {
+                            using Common::Windows::CpuPin;
+                            const auto value = line.substr(8);
+                            config.cpu_pin = value == "cores"   ? CpuPin::Cores
+                                             : value == "split" ? CpuPin::Split
+                                                                : CpuPin::Off;
+                            WriteDiag("boot.cfg: cpu_pin " + value);
+                            continue;
+                        }
+                        if (line == "cpu_pin=topology" || line.starts_with("cpu_pin=map:")) {
+                            const std::string_view map = line == "cpu_pin=topology" ?
+                                Common::Windows::CpuPinTopology : std::string_view{line}.substr(12);
+                            if (Common::Windows::SetCpuPinMap(map)) {
+                                config.cpu_pin = Common::Windows::CpuPin::Map;
+                                WriteDiag("boot.cfg: cpu_pin map " + std::string(map));
+                            } else {
+                                WriteDiag("boot.cfg: cpu_pin map does not parse, ignored: " + line);
+                            }
+                            continue;
+                        }
+                        if (line.starts_with("guest_yield_pause=")) {
+                            Kernel::KScheduler::SetEmptyYieldPause(static_cast<u32>(
+                                std::strtoul(line.c_str() + 18, nullptr, 10)));
+                            WriteDiag("boot.cfg: " + line);
                             continue;
                         }
                         if (line == "rt_early_out=0") {
@@ -3642,19 +3882,33 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             WriteDiag("boot.cfg: attachments prepared again on every draw");
                             continue;
                         }
-                        if (line == "descriptor_defer=1") {
-                            config.descriptor_defer = true;
-                            WriteDiag("boot.cfg: draw descriptor tables written on the recording thread");
+                        if (line == "descriptor_defer=0" || line == "descriptor_defer=1") {
+                            config.descriptor_defer = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: draw descriptor tables written on the ") +
+                                      (config.descriptor_defer ? "recording" : "GPU") + " thread");
                             continue;
                         }
-                        if (line == "dma_flush_filter=1") {
-                            config.dma_flush_filter = true;
-                            WriteDiag("boot.cfg: pushbuffer reads skip flushes of memory the GPU never wrote");
+                        if (line == "dma_flush_filter=0" || line == "dma_flush_filter=1") {
+                            config.dma_flush_filter = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: pushbuffer flush filter ") +
+                                      (config.dma_flush_filter ? "on" : "off"));
                             continue;
                         }
-                        if (line == "stage_view_cache=1") {
-                            config.stage_view_cache = true;
-                            WriteDiag("boot.cfg: stage views and samplers reused between draws");
+                        if (line == "texture_replay=0" || line == "texture_replay=1" ||
+                            line == "texture_replay=check") {
+                            config.texture_replay = line == "texture_replay=1"       ? 1
+                                                    : line == "texture_replay=check" ? 2
+                                                                                     : 0;
+                            WriteDiag(std::string("boot.cfg: texture descriptor replay ") +
+                                      (config.texture_replay == 1   ? "on"
+                                       : config.texture_replay == 2 ? "checked"
+                                                                    : "off"));
+                            continue;
+                        }
+                        if (line == "stage_view_cache=0" || line == "stage_view_cache=1") {
+                            config.stage_view_cache = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: stage view and sampler reuse ") +
+                                      (config.stage_view_cache ? "on" : "off"));
                             continue;
                         }
                         if (line.starts_with("submit_draws=")) {
@@ -3682,7 +3936,14 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             line.starts_with("not_zeroed_heaps=") ||
                             line.starts_with("depth_bias_shader=") ||
                             line.starts_with("frame_gen=") ||
-                            line.starts_with("memory_import_probe=")) {
+                            line.starts_with("memory_import_probe=") ||
+                            line.starts_with("present_mailbox=") ||
+                            line.starts_with("vsync_nowait=") ||
+                            line.starts_with("swap_interval_hold=") ||
+                            line.starts_with("pso_budget=") ||
+                            line.starts_with("pso_loading=") ||
+                            line.starts_with("cpu_write_defer=") ||
+                            line.starts_with("jit_read_table=")) {
                             parse_render_key(line);
                             continue;
                         }
@@ -3823,12 +4084,14 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                         } else if (line == "gpu_profile=1") {
                             config.gpu_profile = true;
                             WriteDiag("boot.cfg: detailed D3D12 GPU-thread profiling enabled");
-                        } else if (line == "upload_copy=1") {
-                            config.upload_copy = true;
-                            WriteDiag("boot.cfg: short uniform write-combined copy enabled");
-                        } else if (line == "draw_sampler_reuse=1") {
-                            config.draw_sampler_reuse = true;
-                            WriteDiag("boot.cfg: draw-local sampler resolution reuse enabled");
+                        } else if (line == "upload_copy=0" || line == "upload_copy=1") {
+                            config.upload_copy = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: short uniform write-combined copy ") +
+                                      (config.upload_copy ? "on" : "off"));
+                        } else if (line == "draw_sampler_reuse=0" || line == "draw_sampler_reuse=1") {
+                            config.draw_sampler_reuse = line.back() == '1';
+                            WriteDiag(std::string("boot.cfg: draw-local sampler resolution reuse ") +
+                                      (config.draw_sampler_reuse ? "on" : "off"));
                         } else if (line == "ps_scratch=auto" || line == "ps_scratch=uav" ||
                                    line == "ps_scratch=native") {
                             config.ps_scratch = line == "ps_scratch=uav"      ? 1
@@ -4010,14 +4273,6 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                             config.inline_exclusives = line.back() == '1';
                             WriteDiag(std::string("boot.cfg: exclusive accesses ") +
                                       (config.inline_exclusives ? "inline" : "through the monitor"));
-                        } else if (line == "cpu_pin=off" || line == "cpu_pin=cores" ||
-                                   line == "cpu_pin=split") {
-                            using Common::Windows::CpuPin;
-                            const auto value = line.substr(8);
-                            config.cpu_pin = value == "cores"   ? CpuPin::Cores
-                                             : value == "split" ? CpuPin::Split
-                                                                : CpuPin::Off;
-                            WriteDiag("boot.cfg: cpu_pin " + value);
                         } else if (line.starts_with("timer_spin=")) {
                             const auto value = line.substr(11);
                             u32 parsed{};
@@ -4179,9 +4434,12 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                                              : line == "fastmem=hybrid" ? Fastmem::Hybrid
                                                                        : Fastmem::Auto;
                             WriteDiag("boot.cfg: " + line);
-                        } else if (line == "cpu_accuracy=accurate" || line == "cpu_accuracy=auto") {
+                        } else if (line == "cpu_accuracy=accurate" || line == "cpu_accuracy=auto" ||
+                                   line == "cpu_accuracy=unsafe") {
                             config.cpu_accuracy = line == "cpu_accuracy=accurate"
-                                ? Settings::CpuAccuracy::Accurate : Settings::CpuAccuracy::Auto;
+                                ? Settings::CpuAccuracy::Accurate
+                                : line == "cpu_accuracy=unsafe" ? Settings::CpuAccuracy::Unsafe
+                                                                : Settings::CpuAccuracy::Auto;
                             WriteDiag("boot.cfg: " + line);
                         } else if (line == "gpu_accuracy=low" || line == "gpu_accuracy=high") {
                             config.gpu_accuracy = line == "gpu_accuracy=low"

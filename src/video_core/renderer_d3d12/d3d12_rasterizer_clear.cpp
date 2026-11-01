@@ -18,6 +18,7 @@
 namespace D3D12 {
 
 void RasterizerD3D12::DrawTexture() {
+    DrainCpuWrites();
     ++draw_counter;
     HuntScope hunt{draw_hunt, Hunt::Kind::DrawTexture};
     SCOPE_EXIT {
@@ -87,6 +88,7 @@ void RasterizerD3D12::DrawTexture() {
 }
 
 void RasterizerD3D12::Clear(u32 layer_count) {
+    DrainCpuWrites();
     ++draw_counter;
     HuntScope hunt{draw_hunt, Hunt::Kind::Clear};
     VideoCore::Perf::ScopedNsTimer clear_timer{VideoCore::Perf::Counter::ClearNs};

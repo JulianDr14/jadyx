@@ -163,6 +163,12 @@ void ArmDynarmic32::MakeJit(Common::PageTable* page_table) {
             const_cast<Common::PageTable::JitPageEntry*>(page_table->jit_entries.data()));
         config.page_table_pointer_mask = 0;
         config.page_table_marked_bit = std::nullopt;
+        // jit_read_table=1: loads take the second table (Common::PageTable::SetJitReadTable).
+        if (page_table->HasJitReadTable() &&
+            Common::PageTable::GetJitReadTable() == Common::PageTable::JitReadTable::On) {
+            ASSERT(page_table->JitReadOffsetBytes() <= std::size_t(INT32_MAX));
+            config.page_table_read_offset = std::int32_t(page_table->JitReadOffsetBytes());
+        }
         config.absolute_offset_page_table = true;
         config.detect_misaligned_access_via_page_table = 16 | 32 | 64 | 128;
         config.only_detect_misalignment_via_page_table_on_page_boundary = true;

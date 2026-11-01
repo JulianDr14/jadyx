@@ -94,6 +94,8 @@ public:
     void InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) override;
     void OnCacheInvalidation(PAddr, u64) override;
     bool OnCPUWrite(PAddr, u64) override;
+    /// GPU thread, before a cache is used: applies the guest writes cpu_write_defer queued.
+    void DrainCpuWrites();
     void InvalidateGPUCache() override;
     void UnmapMemory(DAddr, u64) override;
     void ModifyGPUMemory(size_t, GPUVAddr, u64) override;
@@ -345,6 +347,13 @@ private:
     bool logged_byte_count_draw{};
     /// Draws, clears and dispatches since the last FlushCommands submission.
     u32 draw_counter{};
+    /// cpu_write_defer: queued writes into memory that became GPU-modified meanwhile, invalidated
+    /// at the next InvalidateGPUCache as OnCPUWrite's deferred writes are.
+    std::vector<std::pair<DAddr, u64>> cpu_writes_after_gpu;
+    std::vector<std::pair<DAddr, u64>> cpu_writes_drained;
+    /// pso_loading: VideoCore::Perf Draws at the last composite.
+    u64 composite_draws{};
+    LoadingDetector loading_detector;
     /// Diagnostic: what the draws between a ZPass counter reset and its report did.
     struct ZPassDiag {
         u32 attempted{}, recorded{}, conditional{}, culled{}, no_pipeline{}, rejected{},

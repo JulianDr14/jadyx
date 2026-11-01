@@ -284,9 +284,18 @@ void Scheduler::SubmitRecorded(ID3D12GraphicsCommandList* list, u64 tick) {
         ThrowIfFailed(closed, "ID3D12GraphicsCommandList::Close");
     }
     ID3D12CommandList* const lists[] = {list};
+    std::vector<std::pair<ComPtr<ID3D12Fence>, u64>> waits;
+    {
+        std::scoped_lock waits_lock{queue_waits_mutex};
+        waits.swap(queue_waits);
+    }
     {
         // The present thread submits to the same queue (see Device::QueueMutex).
         std::scoped_lock queue_lock{device.QueueMutex()};
+        for (const auto& [wait_fence, value] : waits) {
+            ThrowIfFailed(device.Queue()->Wait(wait_fence.Get(), value),
+                          "ID3D12CommandQueue::Wait (before submit)");
+        }
         device.Queue()->ExecuteCommandLists(1, lists);
         ThrowIfFailed(device.Queue()->Signal(fence.Get(), tick), "ID3D12CommandQueue::Signal");
     }
@@ -314,6 +323,17 @@ void Scheduler::ReleaseWaitersAfterError() noexcept {
     fence->Signal(UINT64_MAX - 1);
     submitted_tick.store(UINT64_MAX - 1, std::memory_order_release);
     submitted_tick.notify_all();
+}
+
+void Scheduler::QueueWaitBeforeNextSubmit(ID3D12Fence* wait_fence, u64 value) {
+    std::scoped_lock lock{queue_waits_mutex};
+    for (auto& [pending_fence, pending_value] : queue_waits) {
+        if (pending_fence.Get() == wait_fence) {
+            pending_value = std::max(pending_value, value);
+            return;
+        }
+    }
+    queue_waits.emplace_back(wait_fence, value);
 }
 
 void Scheduler::WaitSubmitted(u64 tick) {

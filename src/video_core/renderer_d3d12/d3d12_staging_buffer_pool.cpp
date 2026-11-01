@@ -189,7 +189,19 @@ void StagingBufferPool::FreeDeferred(StagingBufferRef& ref) {
 void StagingBufferPool::TickFrame() {
     current_delete_level = (current_delete_level + 1) % NUM_LEVELS;
     ReleaseLevel(upload_cache, current_delete_level);
-    ReleaseLevel(download_cache, current_delete_level);
+    // Readbacks have no ring: releasing them made the next one a committed resource again, about
+    // 2 a second while the camera turned, each a graphics kernel call with the cache locks held.
+    // Keep a working set; pressure still releases all of them (ReleaseRetiredDownloads).
+    constexpr u64 KEPT_READBACK_BYTES = 64_MiB;
+    u64 kept{};
+    for (const StagingBuffers& level : download_cache) {
+        for (const StagingBuffer& entry : level.entries) {
+            kept += entry.mapped_span.size();
+        }
+    }
+    if (kept > KEPT_READBACK_BYTES) {
+        ReleaseLevel(download_cache, current_delete_level);
+    }
 }
 
 bool StagingBufferPool::GuardMemory(const CacheMemorySnapshot& snapshot) {

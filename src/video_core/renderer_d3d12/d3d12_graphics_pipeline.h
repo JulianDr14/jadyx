@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -171,6 +172,18 @@ public:
     /// Copies the rows to the staging stream; returns their address, or 0 if there are none.
     D3D12_GPU_VIRTUAL_ADDRESS Upload(BufferCache& buffer_cache) const;
 
+    [[nodiscard]] bool Empty() const noexcept {
+        return rows.empty();
+    }
+    [[nodiscard]] bool SameRows(const IntegerSamplerTable& other) const noexcept {
+        return num_bindings == other.num_bindings && rows.size() == other.rows.size() &&
+               std::equal(rows.begin(), rows.end(), other.rows.begin(),
+                          [](const auto& a, const auto& b) {
+                              return a.first == b.first &&
+                                     std::memcmp(&a.second, &b.second, sizeof(a.second)) == 0;
+                          });
+    }
+
 private:
     boost::container::small_vector<std::pair<u32, eden_integer_sampler_state>, 8> rows;
     u32 num_bindings{};
@@ -185,6 +198,13 @@ private:
 /// Draws reuse the views and samplers a stage resolved in the pipeline's last draw while it reads
 /// the same handles from unchanged descriptor table entries (boot.cfg "stage_view_cache=1").
 void SetStageViewCache(bool enabled);
+
+/// Draws that bind the same views and samplers as the pipeline's last draw, under the same
+/// binding stamp and depth target, take its texture descriptors, prepare flags, reduction bits
+/// and integer sampler rows instead of resolving each texture again (boot.cfg
+/// "texture_replay=1"; "=check" binds in full and logs every replay that would have differed).
+enum class TextureReplayMode : u8 { Off, On, Check };
+void SetTextureReplay(TextureReplayMode mode);
 
 class GraphicsPipeline {
 public:
@@ -259,6 +279,9 @@ public:
     /// would otherwise wait for the queue ahead of it too. A dormant pipeline must be woken first;
     /// one whose PSO ran out of memory is dormant again when this returns.
     void WaitBuilt();
+    /// Waits for the worker up to this long and never takes the build over: a driver build cannot
+    /// be cut short once it runs here. True when it is no longer building.
+    [[nodiscard]] bool WaitBuiltFor(u64 microseconds);
 
     /// GPU thread: a dormant pipeline queues the build of its PSO from the kept DXIL. False if it
     /// was not dormant.
@@ -474,6 +497,10 @@ private:
     /// allocated by the first draw that uses it. GPU thread only.
     struct StageViewState;
     std::unique_ptr<StageViewState> stage_views;
+    /// What the last draw bound per texture (texture_replay), allocated by the first draw that
+    /// uses it. GPU thread only.
+    struct TextureReplayState;
+    std::unique_ptr<TextureReplayState> texture_replay;
     /// The object itself. Its DXIL and stage bindings are shared with other pipelines.
     Common::MemoryCharge charge{Common::MemoryAccount::Pipelines, sizeof(GraphicsPipeline)};
 };

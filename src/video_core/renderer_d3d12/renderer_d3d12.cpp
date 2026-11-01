@@ -15,6 +15,9 @@
 #include "common/fs/path_util.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_local_memory_matrix.h"
 #include "common/settings.h"
+#ifdef _WIN32
+#include "common/windows/sampling_profiler.h"
+#endif
 #include "core/frontend/emu_window.h"
 #include "core/frontend/graphics_context.h"
 #include "video_core/capture.h"
@@ -170,6 +173,16 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& emu_window,
     LOG_INFO(Render, "D3D12: presenting through the scheduler (tick {})", scheduler.CurrentTick());
 }
 
+bool RendererD3D12::ResizeOutput(u32 width, u32 height) {
+    if (!present_manager.Resize(width, height)) {
+        return false;
+    }
+    const D3D12_RESOURCE_DESC image_desc = Texture2DDesc(width, height, Swapchain::FORMAT);
+    device.Get()->GetCopyableFootprints(&image_desc, 0, 1, 0, &footprint, nullptr, nullptr,
+                                        &upload_size);
+    return true;
+}
+
 RendererD3D12::~RendererD3D12() {
     EndBootScreen();
     rasterizer.EndMaterialTrace(false);
@@ -203,6 +216,9 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
         return;
     }
     last_framebuffers.assign(framebuffers.begin(), framebuffers.end());
+#ifdef _WIN32
+    Common::SamplingProfiler::NoteFrame();
+#endif
     if (!present_failed) {
         try {
             if (std::optional<std::string> error = present_manager.TakeError()) {

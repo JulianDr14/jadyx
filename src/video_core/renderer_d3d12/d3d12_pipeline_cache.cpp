@@ -662,13 +662,17 @@ void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler
                      "({} KiB), {} refused by the driver",
                      blobs.hits, blobs.misses, blobs.stored, blobs.bytes / 1024, blobs.rejected);
         }
-        if (GetAsyncPipelines() != AsyncPipelines::Off) {
+        if (GetAsyncPipelines() != AsyncPipelines::Off ||
+            GetPsoBudget() != VideoCore::FramePipeline::Mode::Off) {
             const PendingDrawStats pending = GetPendingDrawStats();
             LOG_INFO(Render,
                      "D3D12: draws while their pipeline was built (since the run began): {} "
-                     "skipped; waited {} small, {} full-screen, {} first to a target",
+                     "skipped; waited {} small, {} full-screen, {} first to a target, {} within "
+                     "the frame's budget; pso_budget=check: {} the budget would skip, {} it "
+                     "would wait for",
                      pending.skipped, pending.waited_small, pending.waited_full_screen,
-                     pending.waited_new_target);
+                     pending.waited_new_target, pending.waited_budget, pending.budget_would_skip,
+                     pending.budget_would_wait);
         }
     }
 }
@@ -679,16 +683,23 @@ void PipelineCache::TickPrewarm(const CacheMemorySnapshot& snapshot) {
         !PipelineResidencyPolicy::MayPrewarm(snapshot.app_used, snapshot.app_limit)) {
         return;
     }
+    const auto now = std::chrono::steady_clock::now();
+    if (prewarm_last && !prewarm_pacer.Rested(now)) {
+        return;
+    }
     prewarm_last = nullptr;
     while (prewarm_cursor < prewarm_order.size()) {
         GraphicsPipeline* const pipeline = prewarm_order[prewarm_cursor++];
         // Pipelines drawn meanwhile were woken by their draw and are no longer dormant; one
-        // released while idle since is left to its next draw.
-        if (!pipeline->WasEvicted() && pipeline->Wake(prewarm_thread)) {
+        // released while idle since is left to its next draw, unless a loading screen queued it
+        // to be built again.
+        const bool rebuild = prewarm_cursor > prewarm_rebuild_from;
+        if ((rebuild || !pipeline->WasEvicted()) && pipeline->Wake(prewarm_thread)) {
             // Counted as used now, so eviction does not take it back before its first draw.
             pipeline->Touch(residency_frame);
             pipeline->MarkPrewarmed();
             prewarm_last = pipeline;
+            prewarm_pacer.Queued(now);
             GetPipelineStats().prewarm_queued.fetch_add(1, std::memory_order_relaxed);
             break;
         }
@@ -699,7 +710,53 @@ void PipelineCache::TickPrewarm(const CacheMemorySnapshot& snapshot) {
                  GetPipelineStats().prewarm_hits.load(std::memory_order_relaxed));
         prewarm_order = {};
         prewarm_cursor = 0;
+        prewarm_rebuild_from = SIZE_MAX;
     }
+}
+
+void PipelineCache::SetLoadingScreen(bool loading) {
+    using VideoCore::FramePipeline::Mode;
+    const Mode mode = GetPsoLoading();
+    if (mode == Mode::Off || loading == loading_screen) {
+        return;
+    }
+    loading_screen = loading;
+    if (mode == Mode::On) {
+        prewarm_pacer.rest = loading ? 0 : PrewarmPacer::REST;
+    }
+    if (!loading) {
+        LOG_INFO(Render, "D3D12: loading screen {} ended", loading_screens);
+        return;
+    }
+    ++loading_screens;
+    // Released pipelines the game drew in a kept session, unless the last loading screen's are
+    // still queued.
+    const bool queued = prewarm_rebuild_from != SIZE_MAX;
+    size_t released = 0;
+    if (!queued) {
+        if (mode == Mode::On) {
+            prewarm_rebuild_from = prewarm_order.size();
+        }
+        for (GraphicsPipeline* const pipeline : residency_sweep) {
+            if (pipeline->WasEvicted() && pipeline->IsDormant() &&
+                hot_pipelines.Known(pipeline->KeyHash())) {
+                ++released;
+                if (mode == Mode::On) {
+                    prewarm_order.push_back(pipeline);
+                }
+            }
+        }
+        if (mode == Mode::On && released == 0) {
+            prewarm_rebuild_from = SIZE_MAX;
+        }
+    }
+    LOG_INFO(Render,
+             "D3D12: loading screen {}: {} released pipelines of earlier sessions {}, {} dormant "
+             "PSOs left to prewarm{}",
+             loading_screens, released,
+             mode == Mode::On ? "queued to build again" : "would be built again (pso_loading=check)",
+             prewarm_order.size() - (std::min)(prewarm_cursor, prewarm_order.size()),
+             mode == Mode::On ? ", built back to back" : "");
 }
 
 void PipelineCache::LogPipelineStats(std::string_view when) const {
@@ -906,7 +963,8 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
     const bool emulate_reduction =
         !reduction_shaders.empty() && reduction_shaders.contains(key.unique_hash);
     // The two variants are independent: the emulation rewrites samples, the split ids and loops.
-    const u32 workgroup_split = WorkgroupSplitFor(*kepler_compute);
+    const u32 workgroup_split =
+        compute_not_split.contains(key.Hash()) ? 1 : WorkgroupSplitFor(*kepler_compute);
     auto& cache = emulate_reduction
                       ? (workgroup_split > 1 ? compute_reduction_split_cache
                                              : compute_reduction_cache)
@@ -918,6 +976,10 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PipelineStallUs};
         VideoCore::Perf::ScopedTimer frontend{VideoCore::Perf::Counter::PipelineFrontendUs};
         pipeline = CreateComputePipeline(key, shader, emulate_reduction, workgroup_split);
+    }
+    if (is_new && !pipeline && workgroup_split > 1 && compute_not_split.contains(key.Hash())) {
+        cache.erase(pair);
+        return CurrentComputePipeline();
     }
     if (!pipeline) {
         BUG_TRACK_KEY(DrawSkipped, key.unique_hash,
@@ -1146,7 +1208,8 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
     if (pipeline->Wake(workers)) {
         ++pipelines_woken;
     }
-    if (GetAsyncPipelines() != AsyncPipelines::Off) {
+    if (GetAsyncPipelines() != AsyncPipelines::Off ||
+        GetPsoBudget() != VideoCore::FramePipeline::Mode::Off) {
         return pipeline; // the draw skips it or waits (WaitPending)
     }
     return WaitPending(pipeline);
@@ -1172,6 +1235,13 @@ GraphicsPipeline* PipelineCache::WaitPending(GraphicsPipeline* pipeline) {
         return nullptr;
     }
     return pipeline;
+}
+
+bool PipelineCache::WaitPendingFor(GraphicsPipeline* pipeline, u64 microseconds) {
+    VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PipelineStallUs,
+                                       VideoCore::Perf::Counter::PipelineStalls};
+    VideoCore::Perf::ScopedTimer wait{VideoCore::Perf::Counter::PipelineWaitUs};
+    return pipeline->WaitBuiltFor(microseconds);
 }
 
 namespace {
@@ -1540,6 +1610,10 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
         } else {
             LOG_INFO(Render, "D3D12: compute shader {:016x} not split ({})", key.unique_hash,
                      Shader::Optimization::Name(verdict));
+            // Building it would repeat the plain pipeline: 130-190 ms in the driver, with the
+            // recorder waiting for it. The caller takes the plain one instead.
+            compute_not_split.insert(key.Hash());
+            return nullptr;
         }
     }
     std::vector<u32> code{EmitSPIRV(profile, program)};

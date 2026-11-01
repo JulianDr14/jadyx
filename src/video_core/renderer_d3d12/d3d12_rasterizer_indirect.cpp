@@ -19,6 +19,7 @@
 namespace D3D12 {
 
 void RasterizerD3D12::DrawIndirect() {
+    DrainCpuWrites();
     const bool full = VideoCommon::FullCapture::Active();
     if (full) {
         ++full_capture_operation;

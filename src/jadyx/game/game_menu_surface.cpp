@@ -454,6 +454,7 @@ struct GameMenuSurface::Impl : UiPainter {
         const bool quick = page == GameMenu::Page::Quick;
         const UiIcon icon = page == GameMenu::Page::Controller ? UiIcon::Controller
                             : page == GameMenu::Page::Display  ? UiIcon::Display
+                            : page == GameMenu::Page::Graphics ? UiIcon::Settings
                                                                : UiIcon::Game;
         const std::wstring back = quick ? std::wstring{} : I18n::Format(Text::MenuBackTo, {I18n::Tr(Text::MenuQuick)});
         DrawPanel(icon, menu.PageTitle(), back, !quick);
@@ -648,7 +649,7 @@ void GameMenuSurface::SetBackdrop(const D3D12::MenuImage& frame) { impl->SetBack
 D3D12::MenuImage GameMenuSurface::DrawMenu(const GameMenu& menu, const GameMenuScene& scene,
                                           std::pair<u32, u32> screen) {
     // The display page shows the game sharp: its settings change the very image behind it.
-    const bool sharp = menu.CurrentPage() == GameMenu::Page::Display;
+    const bool sharp = menu.CurrentPage() == GameMenu::Page::Display || menu.CurrentPage() == GameMenu::Page::Graphics;
     return impl->RenderScreen(screen, sharp, [&] { impl->DrawMenu(menu, scene); });
 }
 

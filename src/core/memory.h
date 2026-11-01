@@ -481,6 +481,12 @@ public:
     void RasterizerMarkRegionCached(Common::ProcessAddress vaddr, u64 size, bool cached);
 
     /**
+     * jit_read_table: the GPU may have written the memory backing this range, so guest loads
+     * from it take the memory callbacks again (Common::PageTable::SetJitReadTable).
+     */
+    void RasterizerMarkRegionGpuWritten(Common::ProcessAddress vaddr, u64 size);
+
+    /**
      * Marks each page within the specified address range as debug or non-debug.
      * Debug addresses are not accessible from fastmem pointers.
      *

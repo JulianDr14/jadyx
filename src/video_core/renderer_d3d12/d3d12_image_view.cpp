@@ -679,29 +679,50 @@ void ImageView::PrepareRender() const {
     }
 }
 
-void ImageView::PrepareRead(Shader::TextureType texture_type) const {
+u8 ImageView::PrepareReadWork(Shader::TextureType texture_type) const noexcept {
+    u8 work = 0;
     if (srv_resource && srv_resource != image) {
-        if (Image* const source = SourceImage()) {
-            source->ReadReinterpreted();
-        }
+        work |= PREPARE_REINTERPRETED;
     }
     if (texture_type == Shader::TextureType::ColorArray2D &&
         srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D) {
-        if (Image* const source = SourceImage()) {
-            source->RefreshSliceArray();
-        }
+        work |= PREPARE_SLICE_ARRAY;
     }
     if (texture_type == Shader::TextureType::Color3D &&
         srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
-        if (Image* const source = SourceImage()) {
-            source->RefreshVolume();
-        }
+        work |= PREPARE_VOLUME;
     }
     if (texture_type == Shader::TextureType::ColorCube &&
         srv_params.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && srv_params.layers == 1) {
-        if (Image* const source = SourceImage()) {
-            source->RefreshCube();
-        }
+        work |= PREPARE_CUBE;
+    }
+    return work;
+}
+
+bool ImageView::NeedsPrepareRead(Shader::TextureType texture_type) const noexcept {
+    return PrepareReadWork(texture_type) != 0;
+}
+
+void ImageView::PrepareRead(Shader::TextureType texture_type) const {
+    const u8 work = PrepareReadWork(texture_type);
+    if (work == 0) {
+        return;
+    }
+    Image* const source = SourceImage();
+    if (!source) {
+        return;
+    }
+    if (work & PREPARE_REINTERPRETED) {
+        source->ReadReinterpreted();
+    }
+    if (work & PREPARE_SLICE_ARRAY) {
+        source->RefreshSliceArray();
+    }
+    if (work & PREPARE_VOLUME) {
+        source->RefreshVolume();
+    }
+    if (work & PREPARE_CUBE) {
+        source->RefreshCube();
     }
 }
 

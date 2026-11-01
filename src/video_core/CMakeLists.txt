@@ -95,6 +95,8 @@ add_library(video_core STATIC
     macro.h
     fence_manager.h
     frame_trace.cpp
+    cpu_write_queue.h
+    frame_pipeline.h
     frame_trace.h
     gpu.cpp
     gpu.h
@@ -555,6 +557,8 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_dxil_disk_cache.h
         renderer_d3d12/d3d12_pipeline_residency.h
         renderer_d3d12/d3d12_pipeline_helper.h
+        renderer_d3d12/d3d12_prewarm_pacer.h
+        renderer_d3d12/d3d12_texture_replay.h
         renderer_d3d12/d3d12_frame_gen.cpp
         renderer_d3d12/d3d12_frame_gen.h
         renderer_d3d12/d3d12_frame_gen_pacer.cpp

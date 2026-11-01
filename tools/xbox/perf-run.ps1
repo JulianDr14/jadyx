@@ -22,6 +22,8 @@ param(
     [string] $SavePath = '',
     [string] $OutDir = '',
     [switch] $NoInstall,
+    # Waits out the run without touching the portal, to rule the polling out as a cause of a stall.
+    [switch] $NoPoll,
     [string] $Console = $(if ($env:JADYX_CONSOLE) { $env:JADYX_CONSOLE } else { '192.168.1.50' })
 )
 $ErrorActionPreference = 'Stop'
@@ -100,8 +102,13 @@ try {
     $diagQuery = "knownfolderid=LocalAppData&packagefullname=$name&path=" + [uri]::EscapeDataString('\LocalState\jadyx\log')
     $deadline = $started.AddSeconds($Seconds + 420)
     $finished = $false
-    Start-Sleep -Seconds ([Math]::Min($Seconds, 120))
-    while ((Get-Date) -lt $deadline) {
+    if ($NoPoll) {
+        Start-Sleep -Seconds ($Seconds + 150)
+        $finished = $true
+    } else {
+        Start-Sleep -Seconds ([Math]::Min($Seconds, 120))
+    }
+    while (!$finished -and (Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 20
         $diag = & curl.exe -sSk --max-time 60 "$portal/api/filesystem/apps/file?$diagQuery&filename=jadyx_diag.txt"
         if ($LASTEXITCODE -ne 0) { continue }

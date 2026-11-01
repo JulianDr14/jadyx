@@ -63,14 +63,70 @@ struct GraphicsSettings {
     bool operator==(const GraphicsSettings&) const = default;
 };
 
+/// A game's advanced options, only its own. Each default is what the app does with no choice made,
+/// so {} is "reset". The session reads them before it starts (uwp_boot.cpp); texture memory, GPU
+/// accuracy and the console's mode can also change from the in-game menu.
+struct GameAdvancedGraphics {
+    Settings::AnisotropyMode anisotropy{Settings::AnisotropyMode::Default}; ///< Default: as the game asks.
+    bool full_textures{};            ///< Big ASTC textures keep their top level: four times their memory.
+    std::uint32_t texture_cap_mib{}; ///< 0: the app's own.
+    Settings::GpuAccuracy gpu_accuracy{Settings::GpuAccuracy::High};
+    std::uint32_t shader_workers{}; ///< 0: the app's own.
+    Settings::ConsoleMode console_mode{Settings::ConsoleMode::Docked};
+
+    bool operator==(const GameAdvancedGraphics&) const = default;
+};
+
+inline std::span<const Settings::AnisotropyMode> SelectableAnisotropy() {
+    using Settings::AnisotropyMode;
+    static constexpr std::array values{AnisotropyMode::Default, AnisotropyMode::X2, AnisotropyMode::X4,
+                                       AnisotropyMode::X8, AnisotropyMode::X16};
+    return values;
+}
+
+inline std::span<const std::uint32_t> SelectableTextureCaps() {
+    static constexpr std::array<std::uint32_t, 4> values{0, 512, 640, 1024};
+    return values;
+}
+
+inline std::span<const Settings::GpuAccuracy> SelectableGpuAccuracy() {
+    static constexpr std::array values{Settings::GpuAccuracy::High, Settings::GpuAccuracy::Low};
+    return values;
+}
+
+inline std::span<const std::uint32_t> SelectableShaderWorkers() {
+    static constexpr std::array<std::uint32_t, 6> values{0, 1, 2, 4, 6, 8};
+    return values;
+}
+
+inline std::span<const Settings::ConsoleMode> SelectableConsoleModes() {
+    static constexpr std::array values{Settings::ConsoleMode::Docked, Settings::ConsoleMode::Handheld};
+    return values;
+}
+
+/// The value after `current`, wrapping; a value not offered goes to the first.
+template <typename T>
+T StepAdvanced(T current, std::span<const T> values, bool back) {
+    const std::size_t count = values.size();
+    std::size_t index = 0;
+    while (index < count && values[index] != current) ++index;
+    if (index == count) return values.front();
+    return values[(index + (back ? count - 1 : 1)) % count];
+}
+
 /// One game's overrides; nullopt follows Settings > Graphics.
 struct GameGraphics {
     std::optional<Upscaling> upscaling;
     std::optional<bool> frame_gen;
     std::optional<ShaderBuild> shaders;
+    bool slow_guest_clock{}; ///< Only a game's own: there is no global setting to follow.
+    GameAdvancedGraphics advanced;
 
     bool operator==(const GameGraphics&) const = default;
 };
+
+/// What the guest's clock runs at for a game with slow_guest_clock on.
+inline constexpr std::uint32_t SlowGuestClockPercent = 90;
 
 inline bool IsFsr(Upscaling upscaling) {
     return upscaling != Upscaling::Bilinear;

@@ -32,9 +32,9 @@ public:
 
     struct Config {
         /// Permafrost's marks with no relief.
-        u64 watch{1936 * MiB};
-        u64 low{1424 * MiB};
-        u64 high{1680 * MiB};
+        u64 watch{1536 * MiB};
+        u64 low{1024 * MiB};
+        u64 high{1280 * MiB};
         /// The relief stops with the low mark here: the texture cache's critical level (384 MiB)
         /// stays below Permafrost's urgent mark, so the textures keep yielding before it acts.
         u64 low_floor{512 * MiB};

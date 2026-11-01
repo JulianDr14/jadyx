@@ -17,12 +17,27 @@
 
 #include <fmt/format.h>
 
+#include "common/logging.h"
 #include "common/windows/sampling_profiler.h"
 
 namespace Common::SamplingProfiler {
 namespace {
 
 constexpr size_t MAX_FRAMES = 96;
+/// How late a frame has to be for every thread to be sampled, and every how many ticks.
+constexpr u64 STALL_NS = 120'000'000;
+constexpr u32 STALL_STRIDE = 8;
+/// Pausing a thread takes microseconds; more than this and it is stuck in the kernel.
+constexpr u64 SLOW_CAPTURE_NS = 50'000'000;
+
+std::atomic<u64> g_last_frame_ns{};
+
+u64 NowNs() {
+    return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count());
+}
+
 /// Most stacks are far smaller; a deeper one is unwound as far as the copy goes.
 constexpr size_t MAX_STACK_COPY = 256 * 1024;
 /// Committed space after the copy, so an unwind that reads past a truncated one reads stale
@@ -148,6 +163,7 @@ private:
         u32 depth;
         size_t first_frame;
         u64 count;
+        bool stalled;
     };
 
     void Run() {
@@ -240,6 +256,18 @@ private:
     void Tick() {
         RefreshThreads();
         ++window_ticks;
+        // A frame late by far: every thread, blocked or not, so the stacks show what holds it up.
+        const u64 frame = g_last_frame_ns.load(std::memory_order_relaxed);
+        if (frame != 0 && NowNs() - frame > STALL_NS) {
+            if (window_ticks % STALL_STRIDE == 0) {
+                for (u32 index = 0; index < threads.size(); ++index) {
+                    if (!threads[index]->dead) {
+                        Sample(index, *threads[index], false, 1, true);
+                    }
+                }
+            }
+            return;
+        }
         for (u32 index = 0; index < threads.size(); ++index) {
             ThreadEntry& entry = *threads[index];
             if (entry.dead) {
@@ -261,7 +289,7 @@ private:
             }
             entry.waiting_ticks = 0;
             (ran ? entry.running_samples : entry.waiting_samples) += weight;
-            Sample(index, entry, !ran, weight);
+            Sample(index, entry, !ran, weight, false);
             // Without the suspension's own cycles, or a blocked thread would look running.
             QueryThreadCycleTime(entry.handle, &entry.last_cycles);
         }
@@ -283,15 +311,16 @@ private:
         if (ok && stack_copy) {
             const ULONG_PTR sp = static_cast<ULONG_PTR>(context.Rsp);
             ULONG_PTR top{};
-            if (sp >= entry.stack_low && sp < entry.stack_high) {
-                top = entry.stack_high;
-            } else {
-                // A fiber's stack (the emulated cores): its committed top is the region's end.
-                MEMORY_BASIC_INFORMATION info{};
-                if (VirtualQuery(reinterpret_cast<void*>(sp), &info, sizeof(info)) &&
-                    info.State == MEM_COMMIT &&
-                    (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0) {
-                    top = reinterpret_cast<ULONG_PTR>(info.BaseAddress) + info.RegionSize;
+            // A thread caught probing its stack has its pointer at or below the guard page, and
+            // reading that page raises STATUS_GUARD_PAGE_VIOLATION here. Only copy from a plainly
+            // committed region. A fiber's stack (the emulated cores) ends with its region too.
+            MEMORY_BASIC_INFORMATION info{};
+            if (VirtualQuery(reinterpret_cast<void*>(sp), &info, sizeof(info)) &&
+                info.State == MEM_COMMIT &&
+                (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0) {
+                top = reinterpret_cast<ULONG_PTR>(info.BaseAddress) + info.RegionSize;
+                if (sp >= entry.stack_low && sp < entry.stack_high) {
+                    top = std::min(top, entry.stack_high);
                 }
             }
             if (top > sp) {
@@ -358,17 +387,21 @@ private:
         return depth;
     }
 
-    void Sample(u32 thread_index, ThreadEntry& entry, bool waiting, u32 weight) {
+    void Sample(u32 thread_index, ThreadEntry& entry, bool waiting, u32 weight, bool stalled) {
         CONTEXT context{};
         size_t copied{};
         ULONG_PTR origin{};
+        const u64 capture_start = NowNs();
         if (!Capture(entry, context, copied, origin)) {
             return;
+        }
+        if (const u64 took = NowNs() - capture_start; took > SLOW_CAPTURE_NS) {
+            LOG_WARNING(Common, "profiler: pausing {} took {} ms", entry.name, took / 1'000'000);
         }
         DWORD64 frames[MAX_FRAMES];
         const size_t depth = Unwind(context, copied, origin, frames);
         u64 hash = 0xcbf29ce484222325ULL ^ (static_cast<u64>(thread_index) << 1) ^
-                   static_cast<u64>(waiting ? 1 : 0);
+                   static_cast<u64>(waiting ? 1 : 0) ^ (stalled ? 0x5555ULL << 16 : 0);
         for (size_t i = 0; i < depth; ++i) {
             hash = (hash ^ frames[i]) * 0x100000001b3ULL;
         }
@@ -381,12 +414,13 @@ private:
                 }
                 stack_index.emplace(probe, stacks.size());
                 stacks.push_back({thread_index, waiting, static_cast<u32>(depth), frame_pool.size(),
-                                  weight});
+                                  weight, stalled});
                 frame_pool.insert(frame_pool.end(), frames, frames + depth);
                 return;
             }
             StackRecord& record = stacks[it->second];
             if (record.thread == thread_index && record.waiting == waiting &&
+                record.stalled == stalled &&
                 record.depth == depth &&
                 std::equal(frames, frames + depth, frame_pool.begin() + record.first_frame)) {
                 record.count += weight;
@@ -490,7 +524,7 @@ private:
             const StackRecord& record = stacks[index];
             line.clear();
             fmt::format_to(std::back_inserter(line), "stack {} {} {} ", names[record.thread],
-                           record.waiting ? 'W' : 'R', record.count);
+                           record.stalled ? 'S' : record.waiting ? 'W' : 'R', record.count);
             // Root first, as flame graphs fold them.
             for (size_t i = record.depth; i-- > 0;) {
                 const DWORD64 pc = frame_pool[record.first_frame + i];
@@ -597,6 +631,10 @@ void Stop() {
 bool Running() {
     std::scoped_lock lock{sampler_mutex};
     return sampler != nullptr;
+}
+
+void NoteFrame() {
+    g_last_frame_ns.store(NowNs(), std::memory_order_relaxed);
 }
 
 } // namespace Common::SamplingProfiler

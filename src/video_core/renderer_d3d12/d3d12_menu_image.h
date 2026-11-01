@@ -34,6 +34,10 @@ struct MenuImage {
 /// D3D12 one. With the guest paused.
 [[nodiscard]] std::pair<u32, u32> GameMenuScreenSize(VideoCore::RendererBase& renderer);
 
+/// Makes the back buffer `width` x `height`. False keeps its size (or the renderer is not the
+/// D3D12 one). GPU thread only (Tegra::GPU::RunOnGpuThread), with the guest paused.
+[[nodiscard]] bool ResizeGameOutput(VideoCore::RendererBase& renderer, u32 width, u32 height);
+
 /// Shows `image` centered over the guest's last frame and presents at once, if the renderer is
 /// the D3D12 one. GPU thread only (Tegra::GPU::RunOnGpuThread), with the guest paused.
 void ShowGameMenu(VideoCore::RendererBase& renderer, MenuImage image);

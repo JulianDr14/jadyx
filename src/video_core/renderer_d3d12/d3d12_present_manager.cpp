@@ -11,6 +11,8 @@
 
 #include "common/logging.h"
 #include "common/thread.h"
+#include "video_core/frame_pipeline.h"
+#include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_present_manager.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
@@ -61,34 +63,17 @@ FrameLease& FrameLease::operator=(FrameLease&& other) noexcept {
 
 PresentManager::PresentManager(const Device& device_, Scheduler& scheduler_,
                                Swapchain& swapchain_, CpuDescriptorAllocator& rtv_descriptors_,
-                               const ShaderCompiler& shader_compiler,
-                               DescriptorRing& descriptor_ring, SamplerHeap& sampler_heap,
+                               const ShaderCompiler& shader_compiler_,
+                               DescriptorRing& descriptor_ring_, SamplerHeap& sampler_heap_,
                                bool async_presentation)
     : device{device_}, scheduler{scheduler_}, swapchain{swapchain_},
-      rtv_descriptors{rtv_descriptors_} {
+      rtv_descriptors{rtv_descriptors_}, shader_compiler{shader_compiler_},
+      descriptor_ring{descriptor_ring_}, sampler_heap{sampler_heap_} {
     ID3D12Device* const dev = device.Get();
-    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
-    const D3D12_RESOURCE_DESC desc{
-        .Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-        .Alignment = 0,
-        .Width = swapchain.Width(),
-        .Height = swapchain.Height(),
-        .DepthOrArraySize = 1,
-        .MipLevels = 1,
-        .Format = Swapchain::FORMAT,
-        .SampleDesc = {.Count = 1, .Quality = 0},
-        .Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN,
-        .Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-    };
-    const D3D12_CLEAR_VALUE clear{.Format = Swapchain::FORMAT, .Color = {0.0f, 0.0f, 0.0f, 1.0f}};
     for (u32 i = 0; i < FRAME_COUNT; ++i) {
         PresentFrame& frame = frames[i];
         frame.index = i;
-        ThrowIfFailed(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                                                   frame.state, &clear,
-                                                   IID_PPV_ARGS(&frame.image)),
-                      "CreateCommittedResource (present frame)");
-        frame.image->SetName((L"Present frame " + std::to_wstring(i)).c_str());
+        frame.image = CreateFrameImage(i, swapchain.Width(), swapchain.Height());
         frame.rtv = rtv_descriptors.Allocate();
         dev->CreateRenderTargetView(frame.image.Get(), nullptr, frame.rtv);
         ThrowIfFailed(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -112,9 +97,7 @@ PresentManager::PresentManager(const Device& device_, Scheduler& scheduler_,
     const bool use_thread = async_presentation && swapchain.HasFrameLatencyWaitable();
     if (use_thread) {
         // Generated frames are shown by the present thread, between the game's.
-        frame_gen = std::make_unique<FrameGen>(device, scheduler, shader_compiler, descriptor_ring,
-                                               sampler_heap, copy_fence.Get(), swapchain.Width(),
-                                               swapchain.Height());
+        CreateFrameGen();
         present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
     }
     LOG_INFO(Render, "D3D12: presentation {} ({} frames of {}x{})",
@@ -150,26 +133,188 @@ PresentManager::~PresentManager() {
     }
 }
 
-FrameLease PresentManager::AcquireFrame() {
-    PresentFrame* frame{};
+ComPtr<ID3D12Resource> PresentManager::CreateFrameImage(u32 index, u32 width, u32 height) const {
+    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+    const D3D12_RESOURCE_DESC desc{
+        .Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        .Alignment = 0,
+        .Width = width,
+        .Height = height,
+        .DepthOrArraySize = 1,
+        .MipLevels = 1,
+        .Format = Swapchain::FORMAT,
+        .SampleDesc = {.Count = 1, .Quality = 0},
+        .Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        .Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+    };
+    const D3D12_CLEAR_VALUE clear{.Format = Swapchain::FORMAT, .Color = {0.0f, 0.0f, 0.0f, 1.0f}};
+    ComPtr<ID3D12Resource> image;
+    ThrowIfFailed(device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                                        D3D12_RESOURCE_STATE_COPY_SOURCE, &clear,
+                                                        IID_PPV_ARGS(&image)),
+                  "CreateCommittedResource (present frame)");
+    image->SetName((L"Present frame " + std::to_wstring(index)).c_str());
+    return image;
+}
+
+void PresentManager::CreateFrameGen() {
+    frame_gen = std::make_unique<FrameGen>(device, scheduler, shader_compiler, descriptor_ring,
+                                           sampler_heap, copy_fence.Get(), swapchain.Width(),
+                                           swapchain.Height());
+}
+
+bool PresentManager::Resize(u32 width, u32 height) {
+    WaitIdle();
     {
+        std::scoped_lock lock{free_mutex};
+        if (free_frames.size() != FRAME_COUNT) {
+            LOG_ERROR(Render, "D3D12: output resize with a frame still lent");
+            return false;
+        }
+    }
+    const bool was_async = IsAsync();
+    if (was_async) {
+        {
+            std::scoped_lock lock{queue_mutex};
+            fg_active = false;
+        }
+        present_thread.request_stop();
+        present_thread.join();
+    }
+    bool resized = false;
+    try {
+        scheduler.Finish();
+        WaitForCopy(copy_fence_value);
+        // The new frames first: without memory for them nothing has changed yet.
+        std::array<ComPtr<ID3D12Resource>, FRAME_COUNT> images;
+        for (u32 i = 0; i < FRAME_COUNT; ++i) {
+            images[i] = CreateFrameImage(i, width, height);
+        }
+        // Its history is the size of the output.
+        frame_gen.reset();
+        fg_running = false;
+        {
+            std::scoped_lock lock{device.PresentQueueMutex()};
+            resized = swapchain.Resize(width, height);
+        }
+        if (resized) {
+            for (u32 i = 0; i < FRAME_COUNT; ++i) {
+                PresentFrame& frame = frames[i];
+                frame.image = std::move(images[i]);
+                frame.state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                frame.render_tick = 0;
+                frame.copy_value = 0;
+                device.Get()->CreateRenderTargetView(frame.image.Get(), nullptr, frame.rtv);
+            }
+        }
+    } catch (const std::exception& e) {
+        LOG_ERROR(Render, "D3D12: output resize to {}x{}: {}", width, height, e.what());
+    }
+    if (was_async) {
+        try {
+            CreateFrameGen();
+        } catch (const std::exception& e) {
+            LOG_ERROR(Render, "D3D12: frame generation after the resize: {}", e.what());
+        }
+        present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
+    }
+    return resized;
+}
+
+FrameLease PresentManager::AcquireFrame() {
+    using VideoCore::FramePipeline::Mode;
+    using VideoCore::Perf::Counter;
+    // Without the present thread nothing stays queued: there is no frame to reuse.
+    const Mode mailbox = IsAsync() ? VideoCore::FramePipeline::PresentMailbox() : Mode::Off;
+    const auto start = std::chrono::steady_clock::now();
+    PresentFrame* frame{};
+    if (mailbox == Mode::On) {
+        frame = TakeFreeFrame();
+        if (frame == nullptr) {
+            frame = ReuseQueuedFrame();
+        }
+    } else if (mailbox == Mode::Check && !HasFreeFrame()) {
+        std::scoped_lock lock{queue_mutex};
+        if (!queued_frames.empty()) {
+            VideoCore::Perf::Add(Counter::PresentsWouldReplace, 1);
+        }
+    }
+    if (frame == nullptr) {
+        // Every frame is queued or being copied (the mailbox only waits for the latter).
         std::unique_lock lock{free_mutex};
         free_cv.wait(lock, [this] { return !free_frames.empty(); });
         frame = free_frames.front();
         free_frames.pop_front();
     }
-    // The queue already orders new commands after the frame's previous rendering and copy; this
-    // only keeps the CPU from running more than FRAME_COUNT frames ahead of the GPU.
-    scheduler.Wait(frame->render_tick);
+    const auto free_end = std::chrono::steady_clock::now();
+    if (mailbox == Mode::On) {
+        // The queue already orders new commands after the frame's previous rendering: this only
+        // keeps the CPU from running more than RENDER_AHEAD composites ahead of the GPU.
+        scheduler.Wait(composite_ticks[composite_tick_index]);
+    } else {
+        // The queue already orders new commands after the frame's previous rendering and copy;
+        // this only keeps the CPU from running more than FRAME_COUNT frames ahead of the GPU.
+        scheduler.Wait(frame->render_tick);
+    }
+    const auto render_end = std::chrono::steady_clock::now();
     // The copy then runs outside the emulation queue's order: rendering into the frame again
     // must wait until the copy has read it. A frame comes back FRAME_COUNT frames later, so this
     // practically never blocks.
     if (device.HasPresentQueue() && copy_fence->GetCompletedValue() < frame->copy_value) {
-        // No event: the present thread owns copy_event.
-        ThrowIfFailed(copy_fence->SetEventOnCompletion(frame->copy_value, nullptr),
-                      "ID3D12Fence::SetEventOnCompletion (frame reuse)");
+        if (mailbox == Mode::On) {
+            // On the GPU: the submission rendering into the frame comes after this call.
+            scheduler.QueueWaitBeforeNextSubmit(copy_fence.Get(), frame->copy_value);
+        } else {
+            // No event: the present thread owns copy_event.
+            ThrowIfFailed(copy_fence->SetEventOnCompletion(frame->copy_value, nullptr),
+                          "ID3D12Fence::SetEventOnCompletion (frame reuse)");
+        }
+    }
+    const auto end = std::chrono::steady_clock::now();
+    const auto us = [](auto from, auto to) {
+        return static_cast<u64>(
+            std::chrono::duration_cast<std::chrono::microseconds>(to - from).count());
+    };
+    VideoCore::Perf::Add(Counter::PresentFreeWaitUs, us(start, free_end));
+    VideoCore::Perf::Add(Counter::PresentRenderWaitUs, us(free_end, render_end));
+    VideoCore::Perf::Add(Counter::PresentCopyWaitUs, us(render_end, end));
+    if (us(start, end) > 1000) {
+        VideoCore::Perf::Add(Counter::PresentWaitsLong, 1);
     }
     return FrameLease{*this, *frame};
+}
+
+bool PresentManager::HasFreeFrame() {
+    std::scoped_lock lock{free_mutex};
+    return !free_frames.empty();
+}
+
+PresentFrame* PresentManager::TakeFreeFrame() {
+    std::scoped_lock lock{free_mutex};
+    if (free_frames.empty()) {
+        return nullptr;
+    }
+    PresentFrame* const frame = free_frames.front();
+    free_frames.pop_front();
+    return frame;
+}
+
+PresentFrame* PresentManager::ReuseQueuedFrame() {
+    PresentFrame* frame{};
+    {
+        // The oldest: a newer frame stays queued to be shown in its place. A frame the present
+        // thread took is no longer in the queue, so one being copied is never reused.
+        std::scoped_lock lock{queue_mutex};
+        if (queued_frames.empty()) {
+            return nullptr;
+        }
+        frame = queued_frames.front();
+        queued_frames.pop_front();
+        --frames_in_flight;
+    }
+    idle_cv.notify_all();
+    VideoCore::Perf::Add(VideoCore::Perf::Counter::PresentsReplaced, 1);
+    return frame;
 }
 
 void PresentManager::Present(FrameLease&& lease, const PresentInfo& info) {
@@ -211,6 +356,8 @@ void PresentManager::Present(FrameLease&& lease, const PresentInfo& info) {
         Release(frame);
         throw;
     }
+    composite_ticks[composite_tick_index] = frame.render_tick;
+    composite_tick_index = (composite_tick_index + 1) % RENDER_AHEAD;
     if (overlay_only) {
         Release(frame);
         return;

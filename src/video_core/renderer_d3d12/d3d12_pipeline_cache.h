@@ -27,6 +27,7 @@
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_linked_shader_cache.h"
 #include "video_core/renderer_d3d12/d3d12_memory_guard.h"
+#include "video_core/renderer_d3d12/d3d12_prewarm_pacer.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_tracking.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_residency.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
@@ -139,6 +140,9 @@ public:
     /// app's headroom allows, a bounded slice of them a frame, and saves the hot set now and then.
     void TickResidency(const CacheMemorySnapshot& snapshot, Scheduler& scheduler);
 
+    /// GPU thread, once a composite: whether the game is on a loading screen (pso_loading).
+    void SetLoadingScreen(bool loading);
+
     /// The pipeline of the current Maxwell state, or null if shader preparation failed. Ready,
     /// unless async_pipelines is on: then it may still be building (IsBuilt false), and the draw
     /// either skips it or calls WaitPending.
@@ -147,6 +151,9 @@ public:
     /// Waits for a pipeline still being built; null if its PSO ran out of memory (its draws are
     /// skipped until it is tried again).
     [[nodiscard]] GraphicsPipeline* WaitPending(GraphicsPipeline* pipeline);
+    /// Waits for a worker's build up to this long, counted as a pipeline stall. True when the build
+    /// ended; WaitPending then returns at once.
+    [[nodiscard]] bool WaitPendingFor(GraphicsPipeline* pipeline, u64 microseconds);
 
     /// The compute pipeline of the current launch, or null if shader preparation failed. It may
     /// still be building (IsBuilt false): its dispatch is not skipped but waits on the recorder.
@@ -229,12 +236,15 @@ private:
     ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
         compute_reduction_cache;
     /// Variants of compute_cache's pipelines for launches SetComputeWorkgroupSplit applies to,
-    /// built on demand (not on disk); a shader the pass rejects is stored here unsplit.
+    /// built on demand (not on disk). A shader the pass rejects has none: see compute_not_split.
     ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
         compute_split_cache;
     /// Split variants of compute_reduction_cache's pipelines, as compute_split_cache.
     ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
         compute_reduction_split_cache;
+    /// Keys WorkgroupSplitPass rejected: the pass leaves them as written, so their launches use
+    /// the plain pipeline, which the disk cache has already built. GPU thread only.
+    std::unordered_set<u64> compute_not_split;
     /// Shaders (unique hashes) that sample with an emulated MIN/MAX reduction. GPU thread only.
     std::unordered_set<u64> reduction_shaders;
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>>
@@ -276,6 +286,11 @@ private:
     std::vector<GraphicsPipeline*> prewarm_order;
     size_t prewarm_cursor{};
     GraphicsPipeline* prewarm_last{}; ///< Queued last; the next waits until it is built.
+    PrewarmPacer prewarm_pacer;
+    /// pso_loading: prewarm_order from here on holds released pipelines to build again.
+    size_t prewarm_rebuild_from{SIZE_MAX};
+    bool loading_screen{};
+    u64 loading_screens{};
 
     // Last, so they are joined before the pipelines they build are destroyed.
     Common::ThreadWorker workers;

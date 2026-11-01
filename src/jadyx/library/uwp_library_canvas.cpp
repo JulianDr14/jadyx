@@ -1832,24 +1832,33 @@ private:
                 const auto discard = I18n::Format(T::PulseDiscardConfirm, {PromptKey(Navigation::Play).letters});
                 in_place(option, pulse, game.pulse_saved.empty() ? std::wstring_view{} : std::wstring_view{discard});
             } else if (option == GameOption::Graphics && view.graphics && view.global_graphics) {
-                // The same rows as Settings > Graphics, each one the game's own or what it follows.
-                Type(Tr(T::GameGraphicsHint), TypeRole::Body, 56, 222, 1168, Palette::TextSecondary);
+                // The rows of Settings > Graphics, each one the game's own or what it follows, then
+                // the ones only a game has. They do not all fit: the window follows the focus.
+                const bool advanced = IsAdvancedRow(static_cast<GraphicsRow>(view.graphics_row));
+                Type(Tr(advanced ? T::GameGraphicsAdvancedHint : T::GameGraphicsHint), TypeRole::Body, 56, 222, 1168,
+                     Palette::TextSecondary);
                 const bool focused = view.page.focus == GameOptionsFocus::Content;
-                for (std::size_t i = 0; i < GraphicsRowCount; ++i) {
+                static constexpr std::size_t Visible = 6;
+                const std::size_t first = view.graphics_row >= Visible ? view.graphics_row - Visible + 1 : 0;
+                for (std::size_t i = first; i < first + Visible; ++i) {
                     const auto row = static_cast<GraphicsRow>(i);
-                    const SettingsRow item{SettingsRow::Kind::Choice, std::wstring{Tr(GraphicsRowTitle(row))},
-                                           std::wstring{Tr(GraphicsRowHint(row))},
+                    const SettingsRow item{row == GraphicsRow::ResetAdvanced ? SettingsRow::Kind::Open : SettingsRow::Kind::Choice,
+                                           std::wstring{Tr(GraphicsRowTitle(row))}, std::wstring{Tr(GraphicsRowHint(row))},
                                            GameGraphicsRowValue(*view.global_graphics, *view.graphics, row)};
-                    const float y = 262 + static_cast<float>(i) * SettingsRowStride;
+                    const float y = 262 + static_cast<float>(i - first) * SettingsRowStride;
                     DrawSettingsRow(item, 56, y, 1168, SettingsRowHeight, focused && i == view.graphics_row, 1.0f);
                 }
+                ScrollIndicator(1232, 262, Visible * SettingsRowStride - (SettingsRowStride - SettingsRowHeight), first,
+                                Visible, GameGraphicsRowCount);
             } else if (option == GameOption::Remove) {
                 const bool external = IsStoragePath(game.launch_path);
                 in_place(option, Tr(external ? T::GameRemoveExternal :
                                     view.other_copies ? T::GameRemoveCopyWarning : T::GameRemoveWarning),
                          external ? std::wstring_view{} : Tr(T::GameRemove));
             } else {
-                Type(view.notice.empty() ? Tr(T::CheckingGame) : view.notice, TypeRole::BodyLarge, 56, 230, 1168, Palette::TextHint,
+                // No pane to show: the game's title is on its way, or this game cannot have one.
+                const T waiting = game.title_loaded && !view.page.activate ? T::GameOptionUnavailable : T::CheatsUnavailable;
+                Type(view.notice.empty() ? Tr(waiting) : view.notice, TypeRole::BodyLarge, 56, 230, 1168, Palette::TextHint,
                      1, TextAlign::Leading, 3);
             }
         }

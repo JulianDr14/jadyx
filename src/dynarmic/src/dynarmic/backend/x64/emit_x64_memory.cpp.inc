@@ -121,7 +121,7 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
     } else {
         // Use page table
         ASSERT(conf.page_table);
-        const auto src_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr);
+        const auto src_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr, false);
         EmitReadMemoryMov<bitsize>(code, value_idx, src_ptr, ordered);
 
         ctx.deferred_emits.emplace_back([=, this, &ctx] {
@@ -210,7 +210,7 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
     } else {
         // Use page table
         ASSERT(conf.page_table);
-        const auto dest_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr);
+        const auto dest_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr, true);
         EmitWriteMemoryMov<bitsize>(code, dest_ptr, value_idx, ordered);
 
         ctx.deferred_emits.emplace_back([=, this, &ctx] {
@@ -387,7 +387,7 @@ void AxxEmitX64::EmitExclusiveReadMemoryInline(AxxEmitContext& ctx, IR::Inst* in
     } else if (conf.page_table) {
         // Pages the page table does not map directly take the callback, as ordinary reads do.
         SharedLabel abort = ctx.GenSharedLabel(), end = ctx.GenSharedLabel();
-        const auto src_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr);
+        const auto src_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr, false);
         EmitReadMemoryMov<bitsize>(code, value_idx, src_ptr, ordered);
         code.L(*end);
 
@@ -537,7 +537,7 @@ void AxxEmitX64::EmitExclusiveWriteMemoryInline(AxxEmitContext& ctx, IR::Inst* i
     } else if (conf.page_table) {
         // Pages the page table does not map directly take the callback, as ordinary writes do.
         SharedLabel abort = ctx.GenSharedLabel();
-        const auto dest_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr);
+        const auto dest_ptr = EmitVAddrLookup(code, ctx, bitsize, *abort, vaddr, true);
         emit_cmpxchg(dest_ptr);
         code.setnz(status.cvt8());
 

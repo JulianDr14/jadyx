@@ -178,6 +178,10 @@ struct UserConfig {
     /// Log2 of the size per page entry, value should be either 3 or 4
     std::uint32_t page_table_log2_stride = 3;
 
+    /// Byte offset from page_table to a second table with the same layout that loads use; stores
+    /// keep page_table. 0: loads and stores share page_table. Must fit a 32-bit displacement.
+    std::int32_t page_table_read_offset = 0;
+
     /// Setting this value has Dynarmic check the specified bit of the page pointer provided by page table.
     /// If the bit is set to 1, Dynarmic will treat it as unmapped.
     /// This bit should be included as part of `page_table_pointer_mask`.

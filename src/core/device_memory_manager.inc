@@ -629,6 +629,13 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedCountNoLock(DAddr addr, size_
                 cache_begin = vpage;
             }
             cache_bytes += Memory::YUZU_PAGESIZE;
+            // jit_read_table: cached again over memory the GPU wrote earlier.
+            if (memory_device_inter != nullptr &&
+                DeviceMethods::IsGpuWritten(page << Memory::YUZU_PAGEBITS, Memory::YUZU_PAGESIZE)) {
+                DeviceMethods::MarkRegionGpuWritten(memory_device_inter,
+                                                    vpage << Memory::YUZU_PAGEBITS,
+                                                    Memory::YUZU_PAGESIZE);
+            }
         } else if (cache_bytes > 0) {
             MarkRegionCaching(memory_device_inter, cache_begin << Memory::YUZU_PAGEBITS,
                               cache_bytes, true);
@@ -636,6 +643,20 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedCountNoLock(DAddr addr, size_
         }
     }
     release_pending();
+}
+
+template <typename Traits>
+void DeviceMemoryManager<Traits>::MarkGpuWritten(DAddr addr, size_t size) {
+    const size_t page_end = Common::DivCeil(addr + size, Memory::YUZU_PAGESIZE);
+    for (size_t page = addr >> Memory::YUZU_PAGEBITS; page != page_end; ++page) {
+        const auto [asid, vaddr] = ExtractCPUBacking(page);
+        if (vaddr == 0 || asid.id >= registered_processes.size()) {
+            continue;
+        }
+        if (auto* const memory_device_inter = registered_processes[asid.id]) {
+            DeviceMethods::MarkRegionGpuWritten(memory_device_inter, vaddr, Memory::YUZU_PAGESIZE);
+        }
+    }
 }
 
 template <typename Traits>

@@ -115,13 +115,14 @@ float4 main(uint id:SV_VertexID):SV_Position {
         // Exercise the production GraphicsPipeline/Build/Wake/Evict path, including its
         // memory ledger and scheduler retire callback (not just the standalone index).
         const auto ps = Compile("float4 main():SV_Target{return float4(1,0,0,1);}", "ps_5_1");
-        auto bytecodes = std::make_shared<GraphicsPipeline::DxilStages>();
+        auto linked = std::make_shared<GraphicsPipeline::LinkedDxil>();
         const auto copy_blob = [](const auto& blob) {
             const auto* begin = static_cast<const u8*>(blob->GetBufferPointer());
             return std::vector<u8>(begin, begin + blob->GetBufferSize());
         };
-        (*bytecodes)[0] = copy_blob(vs);
-        (*bytecodes)[4] = copy_blob(ps);
+        linked->stages[0] = copy_blob(vs);
+        linked->stages[4] = copy_blob(ps);
+        GraphicsPipeline::SharedDxilStages bytecodes = linked;
         Shader::Info vertex{}, fragment{};
         std::array<const Shader::Info*, GraphicsPipeline::NUM_STAGES> infos{};
         infos[0] = &vertex; infos[4] = &fragment;
@@ -142,7 +143,7 @@ float4 main(uint id:SV_VertexID):SV_Position {
             for (u64 i = 0; i < 16; ++i) {
                 key.state.vertex_strides[0] = static_cast<u16>(i * 16);
                 independent.push_back(std::make_unique<GraphicsPipeline>(device, runtime, nullptr,
-                    &builders, key, [bytecodes](u64) { return bytecodes; }, infos, layout));
+                    &builders, key, [bytecodes](u64, bool) { return bytecodes; }, infos, layout));
             }
             builders.WaitForRequests();
             assert(Common::ReadMemoryAccount(Common::MemoryAccount::PipelineStates).objects == resident_before + 16);
@@ -155,7 +156,7 @@ float4 main(uint id:SV_VertexID):SV_Position {
             // must not cause repeated driver compilations.
             key.state.vertex_strides[0] = static_cast<u16>(i * 16);
             pipelines.push_back(std::make_unique<GraphicsPipeline>(device, runtime, nullptr,
-                &builders, key, [bytecodes](u64) { return bytecodes; }, infos, layout, true, &psos));
+                &builders, key, [bytecodes](u64, bool) { return bytecodes; }, infos, layout, true, &psos));
         }
         builders.WaitForRequests();
         assert(pipelines[0]->Handle());

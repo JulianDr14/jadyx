@@ -25,6 +25,16 @@ inline constexpr size_t WORDS = static_cast<size_t>(GRANULES / 64);
 inline std::atomic<bool> enabled{};
 inline std::array<std::atomic<u64>, WORDS> bits{};
 
+/// Called with the granules of a Mark that set new bits (Tegra::Host1x: the JIT load table).
+using NewlyMarkedHook = void (*)(void* context, u64 addr, u64 size);
+inline std::atomic<NewlyMarkedHook> newly_marked_hook{};
+inline std::atomic<void*> newly_marked_context{};
+
+inline void SetNewlyMarkedHook(NewlyMarkedHook hook, void* context) noexcept {
+    newly_marked_context.store(context, std::memory_order_relaxed);
+    newly_marked_hook.store(hook, std::memory_order_release);
+}
+
 inline void SetEnabled(bool value) noexcept {
     enabled.store(value, std::memory_order_relaxed);
 }
@@ -62,12 +72,24 @@ inline void Mark(u64 addr, u64 size) noexcept {
     if (!Enabled()) {
         return;
     }
-    ForEachWord(addr, size, [](std::atomic<u64>& word, u64 mask) {
+    bool newly{};
+    ForEachWord(addr, size, [&newly](std::atomic<u64>& word, u64 mask) {
         if ((word.load(std::memory_order_relaxed) & mask) != mask) {
             word.fetch_or(mask, std::memory_order_relaxed);
+            newly = true;
         }
         return false;
     });
+    if (!newly) {
+        return;
+    }
+    if (const NewlyMarkedHook hook = newly_marked_hook.load(std::memory_order_acquire)) {
+        // Every granule of the range is marked now.
+        const u64 begin = (addr >> GRANULE_BITS) << GRANULE_BITS;
+        const u64 end = ((addr + size - 1) >> GRANULE_BITS) + 1;
+        hook(newly_marked_context.load(std::memory_order_relaxed), begin,
+             (end << GRANULE_BITS) - begin);
+    }
 }
 
 [[nodiscard]] inline bool AnyMarked(u64 addr, u64 size) noexcept {

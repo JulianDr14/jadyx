@@ -12,6 +12,9 @@ std::atomic<AsyncPipelines> async_pipelines{AsyncPipelines::Off};
 std::atomic<u32> wait_small_draws{0};
 std::atomic<u32> pipeline_workers{0};
 std::atomic<u32> pipeline_boot_workers{0};
+std::atomic<VideoCore::FramePipeline::Mode> pso_budget{VideoCore::FramePipeline::Mode::Off};
+std::atomic<VideoCore::FramePipeline::Mode> pso_loading{VideoCore::FramePipeline::Mode::Off};
+u64 pending_wait_us{}; // GPU thread
 // Read by the stats line on the same GPU thread that counts.
 PendingDrawStats pending_draw_stats{};
 
@@ -25,6 +28,38 @@ void SetAsyncPipelines(AsyncPipelines mode) {
 
 AsyncPipelines GetAsyncPipelines() noexcept {
     return async_pipelines.load(std::memory_order_relaxed);
+}
+
+void SetPsoBudget(VideoCore::FramePipeline::Mode mode) {
+    pso_budget.store(mode, std::memory_order_relaxed);
+}
+
+VideoCore::FramePipeline::Mode GetPsoBudget() noexcept {
+    return pso_budget.load(std::memory_order_relaxed);
+}
+
+void SetPsoLoading(VideoCore::FramePipeline::Mode mode) {
+    pso_loading.store(mode, std::memory_order_relaxed);
+}
+
+VideoCore::FramePipeline::Mode GetPsoLoading() noexcept {
+    return pso_loading.load(std::memory_order_relaxed);
+}
+
+void AddPendingWait(u64 us) noexcept {
+    pending_wait_us += us;
+}
+
+void ResetPendingWaitBudget() noexcept {
+    pending_wait_us = 0;
+}
+
+bool PendingWaitBudgetLeft() noexcept {
+    return pending_wait_us < PSO_WAIT_BUDGET_US;
+}
+
+u64 PendingWaitBudgetRemaining() noexcept {
+    return pending_wait_us < PSO_WAIT_BUDGET_US ? PSO_WAIT_BUDGET_US - pending_wait_us : 0;
 }
 
 void SetWaitSmallDraws(u32 vertices) {
@@ -70,6 +105,23 @@ PendingDrawAction DecidePendingDraw(AsyncPipelines mode, u32 small_draws,
     return PendingDrawAction::Skip;
 }
 
+PendingDrawAction DecideBudgetedDraw(AsyncPipelines mode, u32 small_draws,
+                                     const PendingDraw& draw, bool budget_left) noexcept {
+    if (budget_left) {
+        return PendingDrawAction::WaitBudget;
+    }
+    return DecidePendingDraw(mode == AsyncPipelines::Off ? AsyncPipelines::Balanced : mode,
+                             small_draws, draw);
+}
+
+void CountBudgetDifference(bool would_skip) noexcept {
+    if (would_skip) {
+        ++pending_draw_stats.budget_would_skip;
+    } else {
+        ++pending_draw_stats.budget_would_wait;
+    }
+}
+
 void CountPendingDraw(PendingDrawAction action) noexcept {
     switch (action) {
     case PendingDrawAction::Skip:
@@ -83,6 +135,9 @@ void CountPendingDraw(PendingDrawAction action) noexcept {
         break;
     case PendingDrawAction::WaitNewTarget:
         ++pending_draw_stats.waited_new_target;
+        break;
+    case PendingDrawAction::WaitBudget:
+        ++pending_draw_stats.waited_budget;
         break;
     }
 }

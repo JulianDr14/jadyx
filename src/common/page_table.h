@@ -140,6 +140,17 @@ struct PageTable {
         std::atomic<uintptr_t> pointer{};
     };
 
+    /// "jit_read_table=0|1|check", set before the first process page table is sized. On and Check
+    /// give jit_entries a second table after the one stores use, with the page's pointer also on
+    /// rasterizer-cached pages no cache holds GPU data for (VideoCommon::GpuWrittenPages clear):
+    /// with On the JIT loads through it, so the guest reads them inline instead of through the
+    /// memory callbacks, while stores still take the callbacks. A page's load entry is cleared when
+    /// the GPU first writes its memory, and when it becomes cached over memory the GPU wrote.
+    /// Check keeps the JIT loads on the store table and compares in the slow load path.
+    enum class JitReadTable : u8 { Off, On, Check };
+    static void SetJitReadTable(JitReadTable mode) noexcept;
+    [[nodiscard]] static JitReadTable GetJitReadTable() noexcept;
+
     PageTable();
     ~PageTable() noexcept;
 
@@ -167,6 +178,20 @@ struct PageTable {
     static_assert(sizeof(PageEntryData) == 8);
     SparseLargeVector<JitPageEntry> jit_entries;
     static_assert(sizeof(JitPageEntry) == sizeof(uintptr_t));
+    /// jit_read_table: index of the load table in jit_entries, 0 without one.
+    std::size_t jit_read_base{};
+
+    [[nodiscard]] bool HasJitReadTable() const noexcept {
+        return jit_read_base != 0;
+    }
+    /// Byte offset from the store table to the load table (Dynarmic's page_table_read_offset).
+    [[nodiscard]] std::size_t JitReadOffsetBytes() const noexcept {
+        return jit_read_base * sizeof(JitPageEntry);
+    }
+    /// The page's load entry; its table page must be committed.
+    JitPageEntry& JitReadEntry(std::size_t page) noexcept {
+        return jit_entries.GetUnchecked(jit_read_base + page);
+    }
 
     u8* fastmem_arena{};
     std::size_t current_address_space_width_in_bits{};

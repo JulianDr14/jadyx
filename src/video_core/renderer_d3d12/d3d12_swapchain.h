@@ -58,8 +58,13 @@ public:
     [[nodiscard]] bool WaitForFrame(u32 latency = MAX_FRAME_LATENCY);
     /// sync_interval: vertical blanks the frame stays on screen (frame generation at 30 uses 2).
     void Present(u32 sync_interval = 1);
+    /// Changes the back buffers' size. Nothing may be using them, on the CPU or the GPU, and the
+    /// caller holds the queue's lock. False leaves the swapchain as it was.
+    [[nodiscard]] bool Resize(u32 new_width, u32 new_height);
 
 private:
+    void GetImages();
+
     ComPtr<IDXGISwapChain3> swapchain;
     std::array<ComPtr<ID3D12Resource>, IMAGE_COUNT> images;
     HANDLE frame_latency_waitable{};

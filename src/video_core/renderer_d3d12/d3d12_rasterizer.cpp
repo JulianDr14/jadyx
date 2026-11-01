@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <optional>
 #include <unordered_map>
@@ -21,6 +22,7 @@
 #include "video_core/framebuffer_config.h"
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
+#include "video_core/cpu_write_queue.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 #include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
@@ -153,21 +155,60 @@ RasterizerD3D12::~RasterizerD3D12() {
 
 bool RasterizerD3D12::WaitPendingPipeline(GraphicsPipeline* pipeline, u32 vertices,
                                           u32 instances, bool indexed) {
-    // Still building on a worker (async_pipelines): skipped, unless the draw matters enough to
-    // wait for it.
-    const PendingDrawAction action = DecidePendingDraw(
-        GetAsyncPipelines(), GetWaitSmallDraws(),
-        {
-            .vertices = vertices,
-            .instances = instances,
-            .indexed = indexed,
-            .new_target = HasNewTarget(*texture_cache.GetFramebuffer()),
-        });
+    // Still building on a worker (async_pipelines, pso_budget): skipped, unless the draw matters
+    // enough to wait for it.
+    using VideoCore::FramePipeline::Mode;
+    const AsyncPipelines mode = GetAsyncPipelines();
+    const Mode budget = GetPsoBudget();
+    const PendingDraw draw{
+        .vertices = vertices,
+        .instances = instances,
+        .indexed = indexed,
+        .new_target = HasNewTarget(*texture_cache.GetFramebuffer()),
+    };
+    // Off reaches here only with the budget on or checked: without it, every draw waits.
+    const PendingDrawAction unbudgeted = mode == AsyncPipelines::Off
+                                             ? PendingDrawAction::WaitBudget
+                                             : DecidePendingDraw(mode, GetWaitSmallDraws(), draw);
+    PendingDrawAction action = unbudgeted;
+    if (budget != Mode::Off) {
+        const PendingDrawAction budgeted =
+            DecideBudgetedDraw(mode, GetWaitSmallDraws(), draw, PendingWaitBudgetLeft());
+        if (budget == Mode::On) {
+            action = budgeted;
+        } else if ((budgeted == PendingDrawAction::Skip) !=
+                   (unbudgeted == PendingDrawAction::Skip)) {
+            CountBudgetDifference(budgeted == PendingDrawAction::Skip);
+        }
+    }
+    const auto wait_start = std::chrono::steady_clock::now();
+    const auto add_wait = [&wait_start] {
+        AddPendingWait(static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                            std::chrono::steady_clock::now() - wait_start)
+                                            .count()));
+    };
+    if (budget == Mode::On && action == PendingDrawAction::WaitBudget) {
+        // The budget has to cut the wait itself: checked only before waiting, one driver build
+        // cost 100-330 ms of a frame "within the budget" and the game dropped to 20 fps.
+        if (pipeline_cache.WaitPendingFor(pipeline, PendingWaitBudgetRemaining())) {
+            CountPendingDraw(action);
+            add_wait();
+            return pipeline_cache.WaitPending(pipeline) != nullptr;
+        }
+        add_wait();
+        action = DecideBudgetedDraw(mode, GetWaitSmallDraws(), draw, false);
+    }
     CountPendingDraw(action);
-    return action != PendingDrawAction::Skip && pipeline_cache.WaitPending(pipeline);
+    if (action == PendingDrawAction::Skip) {
+        return false;
+    }
+    const bool built = pipeline_cache.WaitPending(pipeline) != nullptr;
+    add_wait();
+    return built;
 }
 
 void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
+    DrainCpuWrites();
     const bool full = VideoCommon::FullCapture::Active();
     if (full) {
         ++full_capture_operation;
@@ -357,7 +398,8 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     }
     RecordDraw(*pipeline, bindings, *framebuffer, params, draw_state.topology);
     full_draw_recorded = true;
-    if (GetAsyncPipelines() == AsyncPipelines::Balanced) {
+    if (GetAsyncPipelines() == AsyncPipelines::Balanced ||
+        GetPsoBudget() != VideoCore::FramePipeline::Mode::Off) {
         MarkTargetsDrawn(*framebuffer);
     }
     if (material_trace.Active() && pipeline->Layout().StreamOutput() &&
@@ -440,6 +482,7 @@ void RasterizerD3D12::RecordDraw(const GraphicsPipeline& pipeline,
 }
 
 void RasterizerD3D12::DispatchCompute() {
+    DrainCpuWrites();
     const bool full = VideoCommon::FullCapture::Active();
     if (full) {
         ++full_capture_operation;
@@ -710,6 +753,7 @@ std::optional<RasterizerD3D12::DisplayTexture> RasterizerD3D12::AccelerateDispla
     if (!framebuffer_addr) {
         return std::nullopt;
     }
+    DrainCpuWrites();
     std::scoped_lock lock{texture_cache.mutex};
     const auto [image_view, scaled] =
         texture_cache.TryFindFramebufferImageView(config, framebuffer_addr);
@@ -985,6 +1029,34 @@ void RasterizerD3D12::InnerInvalidation(
     }
 }
 
+void RasterizerD3D12::DrainCpuWrites() {
+    if (VideoCommon::CpuWriteQueue::Empty()) {
+        return;
+    }
+    cpu_writes_drained.clear();
+    u64 late = 0;
+    {
+        std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+        const u64 drained = VideoCommon::CpuWriteQueue::Drain([&](u64 address, u64 size) {
+            // OnCPUWrite, with the locks taken once for the batch.
+            if (buffer_cache.OnCPUWrite(address, size)) {
+                cpu_writes_after_gpu.emplace_back(address, size);
+                ++late;
+                return;
+            }
+            texture_cache.WriteMemory(address, size);
+            cpu_writes_drained.emplace_back(address, size);
+        });
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::CpuWritesDrained, drained);
+    }
+    if (late != 0) {
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::CpuWritesLateGpu, late);
+    }
+    for (const auto& [address, size] : cpu_writes_drained) {
+        pipeline_cache.InvalidateRegion(address, size);
+    }
+}
+
 bool RasterizerD3D12::OnCPUWrite(PAddr address, u64 size) {
     {
         std::scoped_lock lock{buffer_cache.mutex};
@@ -1002,7 +1074,14 @@ void RasterizerD3D12::OnCacheInvalidation(PAddr address, u64 size) {
     InvalidateRegion(address, size, VideoCommon::CacheType::TextureCache |
                                         VideoCommon::CacheType::BufferCache);
 }
-void RasterizerD3D12::InvalidateGPUCache() { gpu.InvalidateGPUCache(); }
+void RasterizerD3D12::InvalidateGPUCache() {
+    DrainCpuWrites();
+    for (const auto& [address, size] : cpu_writes_after_gpu) {
+        OnCacheInvalidation(address, size);
+    }
+    cpu_writes_after_gpu.clear();
+    gpu.InvalidateGPUCache();
+}
 void RasterizerD3D12::UnmapMemory(DAddr address, u64 size) {
     { std::scoped_lock lock{texture_cache.mutex}; texture_cache.UnmapMemory(address, size); }
     { std::scoped_lock lock{buffer_cache.mutex}; buffer_cache.WriteMemory(address, size); }
@@ -1078,7 +1157,15 @@ void RasterizerD3D12::FlushIfUploadHeavy() {
 }
 void RasterizerD3D12::TickFrame() {
     Common::BugTracker::TickFrame();
+    DrainCpuWrites();
     draw_counter = 0;
+    ResetPendingWaitBudget();
+    if (GetPsoLoading() != VideoCore::FramePipeline::Mode::Off) {
+        const u64 draws = VideoCore::Perf::ReadCounter(VideoCore::Perf::Counter::Draws);
+        pipeline_cache.SetLoadingScreen(
+            loading_detector.Tick(LoadingDetector::Clock::now(), draws - composite_draws));
+        composite_draws = draws;
+    }
     fence_manager.TickFrame();
     {
         // The fence worker shares staging with both caches. Retire resources only while neither
@@ -1100,6 +1187,7 @@ void RasterizerD3D12::TickFrame() {
 bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
                                             const Tegra::Engines::Fermi2D::Surface& dst,
                                             const Tegra::Engines::Fermi2D::Config& config) {
+    DrainCpuWrites();
     HuntScope hunt{draw_hunt, Hunt::Kind::Blit};
     std::scoped_lock lock{texture_cache.mutex};
     hunt.Target(nullptr);
@@ -1117,9 +1205,13 @@ bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfa
     return blitted;
 }
 
-Tegra::Engines::AccelerateDMAInterface& RasterizerD3D12::AccessAccelerateDMA() { return accelerate_dma; }
+Tegra::Engines::AccelerateDMAInterface& RasterizerD3D12::AccessAccelerateDMA() {
+    DrainCpuWrites(); // called on each DMA launch
+    return accelerate_dma;
+}
 void RasterizerD3D12::AccelerateInlineToMemory(GPUVAddr address, size_t size,
                                                std::span<const u8> memory) {
+    DrainCpuWrites();
     const auto cpu_address = gpu_memory->GpuToCpuAddress(address);
     if (!cpu_address) return gpu_memory->WriteBlock(address, memory.data(), size);
     gpu_memory->WriteBlockUnsafe(address, memory.data(), size);
