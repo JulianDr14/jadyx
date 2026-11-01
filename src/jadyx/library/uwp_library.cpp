@@ -1589,6 +1589,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             if (game_options.activate && !configuration.open &&
                 scan.entries[game_options.game].title_loaded) {
                 game_options.activate = false;
+                dirty = true; // The title may arrive with no input: nothing else redraws the pane.
                 game_options.page = GameOptionHasManager(GameOptions()[game_options.selected]) ?
                     std::optional{GameOptions()[game_options.selected]} : std::nullopt;
                 if (GameOptions()[game_options.selected] == GameOption::Graphics) {

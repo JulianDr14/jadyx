@@ -1850,7 +1850,9 @@ private:
                                     view.other_copies ? T::GameRemoveCopyWarning : T::GameRemoveWarning),
                          external ? std::wstring_view{} : Tr(T::GameRemove));
             } else {
-                Type(view.notice.empty() ? Tr(T::CheckingGame) : view.notice, TypeRole::BodyLarge, 56, 230, 1168, Palette::TextHint,
+                // No pane to show: the game's title is on its way, or this game cannot have one.
+                const T waiting = game.title_loaded && !view.page.activate ? T::GameOptionUnavailable : T::CheatsUnavailable;
+                Type(view.notice.empty() ? Tr(waiting) : view.notice, TypeRole::BodyLarge, 56, 230, 1168, Palette::TextHint,
                      1, TextAlign::Leading, 3);
             }
         }

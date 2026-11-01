@@ -693,6 +693,7 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::ShaderBuildWait, L"Wait"},
     {Text::GraphicsFollowGlobal, L"Settings · {0}"},
     {Text::GameGraphicsHint, L"Only for this game. Applied the next time it starts"},
+    {Text::GameOptionUnavailable, L"This option is not available for this game."},
     {Text::AppModeTitle, L"Jadyx is in App mode"},
     {Text::AppModeBody, L"In App mode the console only gives it {0} MB of RAM and games do not fit. Go to Dev Home, select Jadyx, press View › View details and change the app type to Game. Then open Jadyx again."},
 

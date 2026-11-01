@@ -643,6 +643,7 @@ enum class Text : std::uint16_t {
     ShaderBuildWait,
     GraphicsFollowGlobal,
     GameGraphicsHint,
+    GameOptionUnavailable,
     AppModeTitle,
     AppModeBody,
 
