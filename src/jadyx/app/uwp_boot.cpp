@@ -720,6 +720,9 @@ struct BootConfig {
     /// GPU and DMA accuracy ("gpu_accuracy=low|high", "dma_accuracy=default|unsafe|safe"), for
     /// A/B runs of what the high level costs the GPU thread.
     Settings::GpuAccuracy gpu_accuracy{Settings::GpuAccuracy::High};
+    /// A game's advanced graphics; there is no boot.cfg key.
+    Settings::AnisotropyMode anisotropy{Settings::AnisotropyMode::Default};
+    Settings::ConsoleMode console_mode{Settings::ConsoleMode::Docked};
     Settings::DmaAccuracy dma_accuracy{Settings::DmaAccuracy::Default};
     /// Legacy setting for backends with draw-skipping async shaders. D3D12 always preserves
     /// dependent draws, while preparing DXIL/PSOs on workers regardless of this setting.
@@ -749,6 +752,19 @@ static D3D12::AsyncPipelines ToAsyncPipelines(ShaderBuild shaders) {
     case ShaderBuild::Skip: break;
     }
     return D3D12::AsyncPipelines::Full;
+}
+
+/// A game's advanced graphics as its starting config. The session reads them while it sets up, before
+/// the game's file is open, and boot.cfg, parsed after this, still wins.
+static void UseGameAdvancedGraphics(BootConfig& config, u64 program_id) {
+    if (program_id == 0) return;
+    const GameAdvancedGraphics advanced = LoadGameGraphics(program_id).advanced;
+    config.anisotropy = advanced.anisotropy;
+    config.astc_drop_mip0 = !advanced.full_textures;
+    if (advanced.texture_cap_mib != 0) config.texture_cap_mib = advanced.texture_cap_mib;
+    config.gpu_accuracy = advanced.gpu_accuracy;
+    config.pso_workers = advanced.shader_workers;
+    config.console_mode = advanced.console_mode;
 }
 
 /// The game's graphics (its own over Settings > Graphics) where boot.cfg sets none. Upscaling is
@@ -837,6 +853,15 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     Settings::values.gpu_accuracy = config.gpu_accuracy;
     Settings::values.dma_accuracy = config.dma_accuracy;
     Settings::UpdateGPUAccuracy();
+    // Set on every session: the settings outlive it, and the next game may have other choices.
+    Settings::values.max_anisotropy.SetValue(config.anisotropy);
+    Settings::values.use_docked_mode.SetValue(config.console_mode);
+    WriteDiag("graphics: anisotropy " + std::to_string(static_cast<int>(config.anisotropy)) +
+              ", ASTC top level " + (config.astc_drop_mip0 ? "dropped" : "kept") +
+              ", texture cap " + std::to_string(config.texture_cap_mib) + " MiB, GPU accuracy " +
+              (config.gpu_accuracy == Settings::GpuAccuracy::Low ? "low" : "high") +
+              ", shader workers " + std::to_string(config.pso_workers) +
+              ", console mode " + (config.console_mode == Settings::ConsoleMode::Handheld ? "handheld" : "docked"));
     AudioCore::Sink::SetXAudio2ProfileEnabled(config.audio_profile);
     Core::CpuProfile::SetEnabled(config.cpu_profile);
     // Read when Core::System builds the kernel's cores.
@@ -3449,12 +3474,13 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
 
             std::atomic<bool> done{false};
             std::atomic<int> boot_status{0};
-            std::thread worker([&done, &boot_status, surface = game_surface, library_game]() {
+            std::thread worker([&done, &boot_status, surface = game_surface, library_game, library_program_id]() {
                 winrt::init_apartment(winrt::apartment_type::multi_threaded);
                 std::set_terminate(OnTerminate); // per-thread in the MSVC runtime
                 std::string nro_path;
                 Jadyx::BootConfig config{};
                 try {
+                    Jadyx::UseGameAdvancedGraphics(config, library_program_id);
                     // Bundled NRO from the read-only package install location.
                     const std::string install_path = winrt::to_string(
                         Windows::ApplicationModel::Package::Current().InstalledLocation().Path());

@@ -97,7 +97,43 @@ int main() {
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Confirm) && shaders.slow_guest_clock);
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::GuestClock) == L"Sí");
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.slow_guest_clock);
-    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == 0);
+
+    // The advanced rows: only the game's, default until changed, and reset only with A.
+    GameGraphics tuned;
+    const auto go = [&](GraphicsRow target) { row = static_cast<std::size_t>(target); };
+    check(IsAdvancedRow(GraphicsRow::Anisotropy) && !IsAdvancedRow(GraphicsRow::GuestClock) && GraphicsRowCount == 3);
+    go(GraphicsRow::Anisotropy);
+    check(GameGraphicsRowValue(global, tuned, GraphicsRow::Anisotropy) == L"Lo que pida el juego");
+    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && tuned.advanced.anisotropy == Settings::AnisotropyMode::X2);
+    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Left) && tuned.advanced.anisotropy == Settings::AnisotropyMode::Default);
+    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Left) && tuned.advanced.anisotropy == Settings::AnisotropyMode::X16);
+    check(GameGraphicsRowValue(global, tuned, GraphicsRow::Anisotropy) == L"16x");
+    go(GraphicsRow::TextureQuality);
+    check(GameGraphicsRowValue(global, tuned, GraphicsRow::TextureQuality) == L"Ahorro de memoria");
+    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Confirm) && tuned.advanced.full_textures);
+    check(GameGraphicsRowValue(global, tuned, GraphicsRow::TextureQuality) == L"Completa");
+    go(GraphicsRow::TextureMemory);
+    check(GameGraphicsRowValue(global, tuned, GraphicsRow::TextureMemory) == L"Automático");
+    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && tuned.advanced.texture_cap_mib == 512);
+    check(GameGraphicsRowValue(global, tuned, GraphicsRow::TextureMemory) == L"512 MiB");
+    go(GraphicsRow::GpuAccuracy);
+    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && tuned.advanced.gpu_accuracy == Settings::GpuAccuracy::Low);
+    check(GameGraphicsRowValue(global, tuned, GraphicsRow::GpuAccuracy) == L"Baja");
+    go(GraphicsRow::ShaderWorkers);
+    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Left) && tuned.advanced.shader_workers == 8);
+    check(GameGraphicsRowValue(global, tuned, GraphicsRow::ShaderWorkers) == L"8");
+    go(GraphicsRow::ConsoleMode);
+    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && tuned.advanced.console_mode == Settings::ConsoleMode::Handheld);
+    check(GameGraphicsRowValue(global, tuned, GraphicsRow::ConsoleMode) == L"Portátil");
+    check(!HandleGameGraphicsInput(tuned, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::ResetAdvanced));
+    check(!HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && !HandleGameGraphicsInput(tuned, row, GraphicsInput::Left));
+    check(tuned.advanced.full_textures);
+    tuned.slow_guest_clock = true;
+    tuned.frame_gen = true;
+    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Confirm) && tuned.advanced == GameAdvancedGraphics{});
+    check(tuned.slow_guest_clock && tuned.frame_gen == true); // the reset leaves the other rows alone
+    check(!HandleGameGraphicsInput(tuned, row, GraphicsInput::Confirm)); // nothing left to reset
+    check(!HandleGameGraphicsInput(tuned, row, GraphicsInput::Down) && row == 0);
 
     std::puts("graphics settings: defaults, FSR or frame generation, page, per-game overrides PASS");
 }
