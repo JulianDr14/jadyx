@@ -50,14 +50,16 @@ public:
     FrameGen(const FrameGen&) = delete;
     FrameGen& operator=(const FrameGen&) = delete;
 
-    /// GPU thread: a new guest frame composed on guest vsync vsync_index. Returns the output rate
-    /// it goes out at (30 or 60), or 0 when it is presented as it is.
-    u32 OnFrame(u64 vsync_index, bool allowed, double arrival);
+    /// GPU thread: a new guest frame composed on guest vsync vsync_index, queued by the game at
+    /// host time queue_time (seconds, 0 when unknown). Returns the output rate it goes out at (30
+    /// or 60), or 0 when it is presented as it is.
+    u32 OnFrame(u64 vsync_index, bool allowed, double arrival, double queue_time = 0.0);
 
     /// GPU thread: records the ingest of image (in COPY_SOURCE) on the scheduler's list. Returns
     /// the slot to Commit once the list has been flushed, or nothing when the frame is skipped.
     [[nodiscard]] std::optional<u32> RecordIngest(ID3D12Resource* image);
-    /// GPU thread: the slot's commands were submitted as tick; the present thread may show it.
+    /// GPU thread: the slot's commands were submitted as tick; the present thread may show it at
+    /// the content time of the last OnFrame.
     void Commit(u32 slot, u64 tick, u64 vsync_index);
     /// GPU thread: a frame went out without frame generation; motion does not span it.
     void Break();
@@ -157,6 +159,7 @@ private:
 
     std::mutex mutex; ///< slots' bookkeeping and the pacer
     FrameGenPacer pacer;
+    double frame_content{}; ///< GPU thread: content time of the last OnFrame
     u32 target{};
     double slot_clock{};
     bool clock_valid{};

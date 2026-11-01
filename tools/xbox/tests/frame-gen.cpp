@@ -86,6 +86,10 @@ struct PacerRun {
     double stall_at{-1.0};    ///< host stall: arrivals from then on come stall_len later
     double stall_len{0.0};
     double gap_at{-1.0};      ///< guest gap: vsync jumps 30 (half a second of no frames)
+    u32 spike_every{};        ///< one frame in this many arrives spike_len late (a host spike)
+    double spike_len{};
+    bool self_paced{};        ///< no vsync lock: frames at 1/fps, composed on the next vsync
+    bool queue_times{};       ///< the pacer gets the times the game queued its frames
 };
 
 struct PacerResult {
@@ -97,6 +101,7 @@ struct PacerResult {
     double max_step_error{}; ///< seconds, after settling
     double rms_step_error{};
     double delay{}; ///< at the end, seconds
+    bool queue_clock{}; ///< at the end
 };
 
 PacerResult SimulatePacer(const PacerRun& run, double settle = 3.0,
@@ -105,19 +110,36 @@ PacerResult SimulatePacer(const PacerRun& run, double settle = 3.0,
     struct Arrival {
         double time;
         u64 vsync;
+        double queue; ///< host time the game queued it
+        double anim;  ///< the game's own time of the frame: what it animates by
     };
     std::vector<Arrival> arrivals;
     const double host_base = 100.0;
     u64 vsync = 1000;
     double stall_shift = 0.0;
+    double self_time = 0.0;
     for (u64 i = 0;; ++i) {
         const double content = static_cast<double>(vsync) / 60.0;
         const double game_time = content - 1000.0 / 60.0;
         if (game_time > run.seconds) break;
         if (run.stall_at >= 0.0 && game_time >= run.stall_at) stall_shift = run.stall_len;
         // Render time varies; arrivals are only ever late.
-        const double arrival = host_base + content + 0.010 + run.jitter * Noise(i) + stall_shift;
-        arrivals.push_back({arrival, vsync});
+        double arrival = host_base + content + 0.010 + run.jitter * Noise(i) + stall_shift;
+        if (run.spike_every != 0 && i % run.spike_every == run.spike_every / 2) {
+            arrival += run.spike_len;
+        }
+        // Frames come in order: a late one delays the ones behind it.
+        if (!arrivals.empty()) arrival = std::max(arrival, arrivals.back().time);
+        if (run.self_paced) {
+            arrivals.push_back({arrival, vsync, host_base + self_time + 0.002, self_time});
+            // Its next frame, 1 ms of spread, shown on the vsync after it is queued.
+            self_time += 1.0 / run.fps + 0.001 * (Noise(i + 5000) - 0.5);
+            vsync = 1000 + static_cast<u64>(std::ceil((self_time + 0.002) * 60.0));
+            continue;
+        }
+        // Vsync-locked: queued some time before the vsync it is shown on.
+        arrivals.push_back({arrival, vsync, host_base + game_time - 0.012 + 0.006 * Noise(i + 9000),
+                            game_time});
         u64 step = 0;
         if (run.fps >= 23.5 && run.fps <= 24.5) {
             step = (i % 2 == 0) ? 2 : 3;
@@ -133,6 +155,7 @@ PacerResult SimulatePacer(const PacerRun& run, double settle = 3.0,
 
     struct Held {
         double content;
+        double anim;
         u64 serial;
     };
     std::vector<Held> history; // the last FrameGen::NUM_SLOTS frames
@@ -147,9 +170,11 @@ PacerResult SimulatePacer(const PacerRun& run, double settle = 3.0,
     const double end = arrivals.back().time;
     while (slot < end) {
         while (next < arrivals.size() && arrivals[next].time <= slot) {
-            target = pacer.OnFrame(run.mode, arrivals[next].vsync, arrivals[next].time);
+            const Arrival& arrival = arrivals[next];
+            target = pacer.OnFrame(run.mode, arrival.vsync, arrival.time,
+                                   run.queue_times ? arrival.queue : 0.0);
             if (target != 0) {
-                history.push_back({static_cast<double>(arrivals[next].vsync) / 60.0, serial++});
+                history.push_back({pacer.Content(), arrival.anim, serial++});
                 if (history.size() > FrameGen::NUM_SLOTS) history.erase(history.begin());
             } else {
                 // Passthrough: FrameGen::Break forgets the history.
@@ -170,14 +195,15 @@ PacerResult SimulatePacer(const PacerRun& run, double settle = 3.0,
             frames.push_back({.content = history[i].content, .serial = history[i].serial, .slot = i});
         }
         const FrameGenPacer::Choice choice = pacer.Pick(slot, frames);
+        // Measured in the game's own time: what the motion on screen follows.
         double shown = 0.0;
         bool hold = false;
         if (choice.kind == Kind::Blend) {
-            shown = frames[choice.a].content +
-                    choice.phase * (frames[choice.b].content - frames[choice.a].content);
+            shown = history[choice.a].anim +
+                    choice.phase * (history[choice.b].anim - history[choice.a].anim);
         } else {
             const u32 index = choice.kind == Kind::Real ? choice.a : static_cast<u32>(frames.size() - 1);
-            shown = frames[index].content;
+            shown = history[index].anim;
             hold = index + 1 == frames.size() && last_shown && shown <= *last_shown + 1e-9;
         }
         const double game_time = slot - host_base - 1000.0 / 60.0;
@@ -199,6 +225,7 @@ PacerResult SimulatePacer(const PacerRun& run, double settle = 3.0,
     }
     result.target = target;
     result.delay = pacer.Delay();
+    result.queue_clock = pacer.QueueClock();
     result.rms_step_error = measured ? std::sqrt(sum_sq / measured) : 0.0;
     return result;
 }
@@ -248,6 +275,38 @@ void PacerGate() {
                 "20 fps stall: no recovery");
         // The stall does not stay as latency.
         Require(r.delay < 0.090, "20 fps stall: the delay stayed high");
+    }
+    // Rare host spikes (one frame 80 ms late every 4.5 s): held through, not kept as latency.
+    {
+        PacerRun run{.fps = 20, .jitter = 0.004, .seconds = 14.0, .spike_every = 90,
+                     .spike_len = 0.080};
+        const PacerResult r = SimulatePacer(run);
+        report("20 fps, 80 ms spikes", r);
+        Require(r.target == 30 && r.backward == 0, "20 fps spikes: no output");
+        Require(r.holds <= 2 * 3, "20 fps spikes: held more than the spikes");
+        Require(r.delay < 0.070, "20 fps spikes: a spike stayed in the delay");
+    }
+    // A game that paces itself (25 fps, no vsync lock): on the vsync clock its frames land 33 or
+    // 50 ms apart and the motion judders; its queue times are even, and the content clock.
+    {
+        PacerRun run{.fps = 25, .jitter = 0.004, .seconds = 14.0, .self_paced = true};
+        const PacerResult vsyncs = SimulatePacer(run);
+        report("25 fps self-paced, vsyncs", vsyncs);
+        run.queue_times = true;
+        const PacerResult queued = SimulatePacer(run);
+        report("25 fps self-paced, queue", queued);
+        Require(queued.queue_clock, "25 fps self-paced: the queue clock was not taken");
+        Require(queued.target == 30 && queued.backward == 0 && queued.holds == 0,
+                "25 fps self-paced: queue clock output");
+        Require(queued.rms_step_error < 0.001 && queued.rms_step_error * 3.0 < vsyncs.rms_step_error,
+                "25 fps self-paced: the queue clock did not even out the motion");
+    }
+    // A game locked to the vsync keeps the vsync clock, however its queue times spread.
+    {
+        const PacerResult r = SimulatePacer({.fps = 20, .jitter = 0.004, .queue_times = true});
+        report("20 fps locked, queue given", r);
+        Require(!r.queue_clock && r.holds == 0 && r.rms_step_error * 1000.0 <= 0.5,
+                "20 fps locked: the queue clock was taken");
     }
     // A guest gap (half a second without frames): no motion across it, then even again.
     {

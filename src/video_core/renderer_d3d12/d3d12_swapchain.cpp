@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <mutex>
@@ -105,13 +106,24 @@ u32 Swapchain::CurrentIndex() const {
     return swapchain->GetCurrentBackBufferIndex();
 }
 
-bool Swapchain::WaitForFrame() {
+bool Swapchain::WaitForFrame(u32 latency) {
     if (frame_latency_waitable == nullptr) {
+        return true;
+    }
+    const u32 want_held = MAX_FRAME_LATENCY - std::clamp(latency, 1U, MAX_FRAME_LATENCY);
+    if (held_frames > want_held) {
+        // The latency went up: a held count is a frame the swapchain already accepts.
+        --held_frames;
         return true;
     }
     const VideoCore::FrameTrace::ScopedSpan trace_wait{
         VideoCore::FrameTrace::Event::HostPresentLong, 1};
     // Not alertable: an APC ending the wait early would let Present block.
+    while (held_frames < want_held &&
+           WaitForSingleObjectEx(frame_latency_waitable, FRAME_WAIT_TIMEOUT_MS, FALSE) !=
+               WAIT_TIMEOUT) {
+        ++held_frames;
+    }
     if (WaitForSingleObjectEx(frame_latency_waitable, FRAME_WAIT_TIMEOUT_MS, FALSE) ==
         WAIT_TIMEOUT) {
         LOG_WARNING(Render, "D3D12: the swapchain accepted no frame for {} ms; frame dropped",

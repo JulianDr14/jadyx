@@ -41,6 +41,8 @@ public:
     bool acquire_called{};
     bool transform_to_display_inverse{};
     s32 swap_interval{};
+    /// Host time the producer queued the buffer (wall clock, ns).
+    s64 queue_time_ns{};
 };
 
 } // namespace Service::android

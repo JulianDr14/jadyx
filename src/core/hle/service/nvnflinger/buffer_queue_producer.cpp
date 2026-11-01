@@ -531,6 +531,7 @@ Status BufferQueueProducer::QueueBuffer(s32 slot, const QueueBufferInput& input,
         item.is_droppable = core->dequeue_buffer_cannot_block || async;
         item.swap_interval = swap_interval;
         item.acquire_called = slots[slot].acquire_called;
+        item.queue_time_ns = slots[slot].presentation_time;
 
         sticky_transform = sticky_transform_;
 

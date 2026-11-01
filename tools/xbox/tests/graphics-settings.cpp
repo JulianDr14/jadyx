@@ -50,6 +50,7 @@ int main() {
     const GraphicsSettings global;
     GameGraphics game;
     check(ResolveGraphics(global, game) == global);
+    check(UsesScreenResolution(global)); // FSR presents at the TV's resolution
     check(GameGraphicsRowValue(global, game, GraphicsRow::Upscaling) == L"Ajustes · FSR 1 · equilibrado");
     // All games at 4K, this one with frame generation: its FSR goes off, only for it.
     std::size_t row = static_cast<std::size_t>(GraphicsRow::FrameGen);
@@ -57,6 +58,7 @@ int main() {
     check(game.frame_gen == true && !game.upscaling);
     auto resolved = ResolveGraphics(global, game);
     check(resolved.frame_gen && resolved.upscaling == Upscaling::Bilinear);
+    check(!UsesScreenResolution(resolved)); // frame generation stays at 1080p
     check(GameGraphicsRowValue(global, game, GraphicsRow::FrameGen) == L"Sí");
     check(GameGraphicsRowValue(global, game, GraphicsRow::Upscaling) == L"Ajustes · Bilineal");
     // Its own FSR turns its frame generation off.
@@ -67,6 +69,7 @@ int main() {
     check(game.upscaling == Upscaling::FsrSharp && game.frame_gen == false);
     resolved = ResolveGraphics(global, game);
     check(!resolved.frame_gen && resolved.upscaling == Upscaling::FsrSharp);
+    check(UsesScreenResolution(resolved));
     // Frame generation on again for the game turns its own FSR off.
     row = static_cast<std::size_t>(GraphicsRow::FrameGen);
     check(HandleGameGraphicsInput(game, row, GraphicsInput::Left)); // off -> on
@@ -79,6 +82,8 @@ int main() {
     const GameGraphics sharp{.upscaling = Upscaling::FsrSharp};
     resolved = ResolveGraphics(with_frame_gen, sharp);
     check(!resolved.frame_gen && resolved.upscaling == Upscaling::FsrSharp);
+    check(UsesScreenResolution(resolved));
+    check(!UsesScreenResolution(ResolveGraphics(with_frame_gen, {}))); // the other games at 1080p
     // Shaders: the game's own over the global ones; B is the caller's.
     row = static_cast<std::size_t>(GraphicsRow::Shaders);
     GameGraphics shaders;
