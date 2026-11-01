@@ -592,7 +592,7 @@ struct BootConfig {
     VideoCore::FramePipeline::Mode present_mailbox{VideoCore::FramePipeline::Mode::On};
     VideoCore::FramePipeline::Mode vsync_nowait{VideoCore::FramePipeline::Mode::On};
     /// "swap_interval_hold=0|1|check".
-    VideoCore::FramePipeline::Mode swap_interval_hold{VideoCore::FramePipeline::Mode::On};
+    VideoCore::FramePipeline::Mode swap_interval_hold{VideoCore::FramePipeline::Mode::Off};
     /// "pso_budget=0|1|check" (D3D12::SetPsoBudget).
     VideoCore::FramePipeline::Mode pso_budget{VideoCore::FramePipeline::Mode::On};
     /// "pso_loading=0|1|check" (D3D12::SetPsoLoading).
