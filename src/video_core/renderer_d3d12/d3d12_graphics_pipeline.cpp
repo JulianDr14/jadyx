@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <optional>
 #include <cstddef>
 #include <cstring>
@@ -33,6 +34,7 @@
 #include "video_core/renderer_d3d12/d3d12_draw_metrics.h"
 #include "video_core/renderer_d3d12/d3d12_driver_guard.h"
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
+#include "video_core/renderer_d3d12/d3d12_texture_replay.h"
 #include "video_core/renderer_d3d12/d3d12_log.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
 #include "video_core/renderer_d3d12/d3d12_memory_reserve.h"
@@ -56,6 +58,8 @@ namespace D3D12 {
 namespace {
 std::atomic_bool stage_view_cache{};
 std::atomic_bool draw_sampler_reuse{};
+std::atomic<TextureReplayMode> texture_replay_mode{TextureReplayMode::Off};
+std::atomic<u32> texture_replay_logged{};
 
 std::atomic<u64> dxil_released{};
 std::atomic<u64> dxil_released_bytes{};
@@ -76,6 +80,22 @@ struct GraphicsPipeline::StageViewState {
     VideoCommon::GraphicsBindingStamp stamp;
     std::array<bool, NUM_STAGES> valid{};
     std::array<std::vector<StageViewEntry>, NUM_STAGES> entries;
+};
+
+void SetTextureReplay(TextureReplayMode mode) {
+    texture_replay_mode.store(mode, std::memory_order_relaxed);
+}
+
+struct GraphicsPipeline::TextureReplayState {
+    TextureReplayKey key;
+    /// Per texture descriptor, in binding order: its SRV and whether PrepareRead has work.
+    std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> handles;
+    std::vector<u8> prepare;
+    u8 unemulated_reduction_stages{};
+    IntegerSamplerTable integer_samplers;
+    /// The rows' upload, bound again within the submission it was made for.
+    u64 integer_tick{~u64{0}};
+    D3D12_GPU_VIRTUAL_ADDRESS integer_address{};
 };
 
 void SetDrawSamplerReuse(bool enabled) {
@@ -790,6 +810,32 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     const bool emulates_reduction =
         (key.shader_flags & GraphicsPipelineCacheKey::SHADER_REDUCTION) != 0;
     IntegerSamplerTable integer_samplers;
+
+    // texture_replay: a draw resolving the same views and samplers as the pipeline's last one,
+    // under the same stamp and depth target, binds what that draw computed per texture.
+    const TextureReplayMode replay_mode = texture_replay_mode.load(std::memory_order_relaxed);
+    TextureReplayState* replay = nullptr;
+    bool replay_matches = false;
+    VideoCommon::GraphicsBindingStamp replay_stamp{};
+    if (replay_mode != TextureReplayMode::Off && !out.trace_all_views && !out.trace_views &&
+        !out.trace_filters && !out.trace_types && !GpuDiagnosticsEnabled() &&
+        !VideoCommon::FullCapture::Active()) {
+        if (!texture_replay) {
+            texture_replay = std::make_unique<TextureReplayState>();
+        }
+        replay = texture_replay.get();
+        replay_stamp = texture_cache.CurrentGraphicsBindingStamp();
+        replay_matches = replay->key.Matches(replay_stamp, depth_image, writable_depth, views, samplers);
+    }
+    const bool replaying = replay_matches && replay_mode == TextureReplayMode::On;
+    // What the full path binds, kept to replay it later or, in check mode, to compare.
+    const bool recording = replay && !replaying;
+    boost::container::small_vector<D3D12_CPU_DESCRIPTOR_HANDLE, 32> recorded_handles;
+    boost::container::small_vector<u8, 32> recorded_prepare;
+    u8 texture_unemulated = 0;
+    bool aliased_depth = false;
+    size_t texture_index = 0;
+
     u32 stage_binding = 0;
     const SamplerId* samplers_it = samplers.data();
     const ImageViewInOut* views_it = views.data();
@@ -808,18 +854,35 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
         for (const auto& desc : info.texture_descriptors) {
             for (u32 index = 0; index < desc.count; ++index, ++texture_binding) {
                 const VideoCommon::ImageViewId view_id = (views_it++)->id;
+                if (replaying) {
+                    const size_t t = texture_index++;
+                    if (texture_replay->prepare[t] != 0) {
+                        texture_cache.GetImageView(view_id).PrepareRead(desc.type);
+                    }
+                    queue.AddCopy(texture_replay->handles[t]);
+                    ++samplers_it;
+                    image_transitions.emplace_back(view_id, false);
+                    continue;
+                }
                 const ImageView& image_view = texture_cache.GetImageView(view_id);
                 const bool aliases_depth = depth_image != VideoCommon::ImageId{} &&
                                            image_view.image_id == depth_image;
+                aliased_depth |= aliases_depth;
                 if (aliases_depth && writable_depth && !depth_feedback_attempted) {
                     depth_feedback_attempted = true;
                     depth_feedback_ready = image_view.SourceImage()->PrepareDepthFeedback() != nullptr;
                 }
+                D3D12_CPU_DESCRIPTOR_HANDLE handle;
                 if (aliases_depth && depth_feedback_ready) {
-                    queue.AddCopy(image_view.DepthFeedbackHandle(desc.type));
+                    handle = image_view.DepthFeedbackHandle(desc.type);
                 } else {
                     image_view.PrepareRead(desc.type);
-                    queue.AddCopy(image_view.Handle(desc.type));
+                    handle = image_view.Handle(desc.type);
+                }
+                queue.AddCopy(handle);
+                if (recording) {
+                    recorded_handles.push_back(handle);
+                    recorded_prepare.push_back(image_view.NeedsPrepareRead(desc.type) ? 1 : 0);
                 }
                 const SamplerId sampler_id = *(samplers_it++);
                 const Sampler& sampler = texture_cache.GetSampler(sampler_id);
@@ -828,7 +891,7 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                 }
                 if (!emulates_reduction && sampler.EmulatedReduction() != 0 &&
                     ReducibleTexture(desc)) {
-                    out.unemulated_reduction_stages |= static_cast<u8>(1u << stage);
+                    texture_unemulated |= static_cast<u8>(1u << stage);
                 }
                 image_transitions.emplace_back(view_id, false);
                 if (out.trace_all_views) out.trace_all_views->push_back(
@@ -897,7 +960,62 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
 
     out.resource_table = queue.Table();
     std::ranges::copy(queue.RootConstantBuffers(), out.root_cbvs.begin());
-    out.integer_samplers = integer_samplers.Upload(buffer_cache);
+    const u64 tick = context.scheduler.CurrentTick();
+    if (replaying) {
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureReplays, 1);
+        TextureReplayState& state = *texture_replay;
+        out.unemulated_reduction_stages |= state.unemulated_reduction_stages;
+        if (state.integer_samplers.Empty()) {
+            out.integer_samplers = 0;
+        } else {
+            if (state.integer_tick != tick) {
+                state.integer_address = state.integer_samplers.Upload(buffer_cache);
+                state.integer_tick = tick;
+            }
+            out.integer_samplers = state.integer_address;
+        }
+    } else {
+        out.unemulated_reduction_stages |= texture_unemulated;
+        out.integer_samplers = integer_samplers.Upload(buffer_cache);
+    }
+    if (recording) {
+        TextureReplayState& state = *texture_replay;
+        if (replay_matches) {
+            // Check mode: what a replay would have bound against what the full path bound.
+            const bool same =
+                state.handles.size() == recorded_handles.size() &&
+                std::equal(recorded_handles.begin(), recorded_handles.end(), state.handles.begin(),
+                           [](auto a, auto b) { return a.ptr == b.ptr; }) &&
+                std::equal(recorded_prepare.begin(), recorded_prepare.end(),
+                           state.prepare.begin(), state.prepare.end()) &&
+                state.unemulated_reduction_stages == texture_unemulated &&
+                state.integer_samplers.SameRows(integer_samplers);
+            if (same) {
+                VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureReplays, 1);
+            } else {
+                VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureReplayMismatches, 1);
+                if (texture_replay_logged.fetch_add(1, std::memory_order_relaxed) < 32) {
+                    LOG_WARNING(Render,
+                                "texture_replay=check: pipeline {} would have bound {} texture "
+                                "descriptors that differ from the {} bound in full",
+                                static_cast<const void*>(this), state.handles.size(),
+                                recorded_handles.size());
+                }
+                state.key.valid = false;
+            }
+        } else if (aliased_depth || texture_cache.CurrentGraphicsBindingStamp() != replay_stamp) {
+            // Depth feedback depends on its snapshot; changed images may resolve to new views.
+            state.key.valid = false;
+        } else {
+            state.key.Store(replay_stamp, depth_image, writable_depth, views, samplers);
+            state.handles.assign(recorded_handles.begin(), recorded_handles.end());
+            state.prepare.assign(recorded_prepare.begin(), recorded_prepare.end());
+            state.unemulated_reduction_stages = texture_unemulated;
+            state.integer_samplers = integer_samplers;
+            state.integer_tick = tick;
+            state.integer_address = out.integer_samplers;
+        }
+    }
     lap.Lap(VideoCore::Perf::Counter::DrawSamplersNs);
 
     // Push constants: no resolution scaling yet (all rescaling bits clear, down factor 1), then
