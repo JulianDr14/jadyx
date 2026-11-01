@@ -4,7 +4,16 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <bit>
+#ifdef ARCHITECTURE_x86_64
+#include <immintrin.h>
+#ifdef _MSC_VER
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
+#endif
 
 #include "common/assert.h"
 #include "common/bit_util.h"
@@ -682,6 +691,37 @@ void KScheduler::RotateScheduledQueue(KernelCore& kernel, s32 core_id, s32 prior
 
     // After a rotation, we need a scheduler update.
     SetSchedulerUpdateNeeded(kernel);
+}
+
+namespace {
+std::atomic<u32> g_empty_yield_max_pauses{};
+} // namespace
+
+void KScheduler::SetEmptyYieldPause(u32 max_pauses) {
+    g_empty_yield_max_pauses.store(max_pauses, std::memory_order_relaxed);
+}
+
+void KScheduler::PauseEmptyYield(KernelCore& kernel) {
+#ifdef ARCHITECTURE_x86_64
+    const u32 max_pauses = g_empty_yield_max_pauses.load(std::memory_order_relaxed);
+    if (max_pauses == 0) {
+        return;
+    }
+    const KThread& cur_thread = GetCurrentThread(kernel);
+    if (cur_thread.GetYieldScheduleCount() != GetCurrentProcess(kernel).GetScheduledCount()) {
+        return;
+    }
+    // Yields closer than this (TSC ticks, ~30 us) are the same wait: back off further.
+    static constexpr u64 SameWaitTicks = 100000;
+    thread_local u64 last_yield{};
+    thread_local u32 pauses{};
+    const u64 now = __rdtsc();
+    pauses = now - last_yield > SameWaitTicks ? 32 : (std::min)(pauses * 2, max_pauses);
+    for (u32 i = 0; i < pauses; ++i) {
+        _mm_pause();
+    }
+    last_yield = __rdtsc();
+#endif
 }
 
 void KScheduler::YieldWithoutCoreMigration(KernelCore& kernel) {
