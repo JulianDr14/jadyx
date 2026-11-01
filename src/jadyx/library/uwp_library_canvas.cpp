@@ -1200,7 +1200,7 @@ private:
                 face.on_segment = options.swap_face_buttons ? 1 : 0;
                 rows.push_back(std::move(face));
             }
-            // The dead zone's three steps (uwp_library.cpp, Zone).
+            // The dead zone's three steps (library_session_pages.cpp, Zone).
             SettingsRow zone{Kind::Segments, std::wstring{Tr(T::DeadZone)}};
             zone.segments = {L"8%", L"12%", L"18%"};
             zone.on_segment = options.deadzone < 0.10f ? 0 : options.deadzone < 0.15f ? 1 : 2;
