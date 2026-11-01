@@ -279,6 +279,9 @@ public:
     /// would otherwise wait for the queue ahead of it too. A dormant pipeline must be woken first;
     /// one whose PSO ran out of memory is dormant again when this returns.
     void WaitBuilt();
+    /// Waits for the worker up to this long and never takes the build over: a driver build cannot
+    /// be cut short once it runs here. True when it is no longer building.
+    [[nodiscard]] bool WaitBuiltFor(u64 microseconds);
 
     /// GPU thread: a dormant pipeline queues the build of its PSO from the kept DXIL. False if it
     /// was not dormant.

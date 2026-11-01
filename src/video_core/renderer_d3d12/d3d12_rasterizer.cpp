@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <optional>
 #include <unordered_map>
@@ -153,18 +154,56 @@ RasterizerD3D12::~RasterizerD3D12() {
 
 bool RasterizerD3D12::WaitPendingPipeline(GraphicsPipeline* pipeline, u32 vertices,
                                           u32 instances, bool indexed) {
-    // Still building on a worker (async_pipelines): skipped, unless the draw matters enough to
-    // wait for it.
-    const PendingDrawAction action = DecidePendingDraw(
-        GetAsyncPipelines(), GetWaitSmallDraws(),
-        {
-            .vertices = vertices,
-            .instances = instances,
-            .indexed = indexed,
-            .new_target = HasNewTarget(*texture_cache.GetFramebuffer()),
-        });
+    // Still building on a worker (async_pipelines, pso_budget): skipped, unless the draw matters
+    // enough to wait for it.
+    using VideoCore::FramePipeline::Mode;
+    const AsyncPipelines mode = GetAsyncPipelines();
+    const Mode budget = GetPsoBudget();
+    const PendingDraw draw{
+        .vertices = vertices,
+        .instances = instances,
+        .indexed = indexed,
+        .new_target = HasNewTarget(*texture_cache.GetFramebuffer()),
+    };
+    // Off reaches here only with the budget on or checked: without it, every draw waits.
+    const PendingDrawAction unbudgeted = mode == AsyncPipelines::Off
+                                             ? PendingDrawAction::WaitBudget
+                                             : DecidePendingDraw(mode, GetWaitSmallDraws(), draw);
+    PendingDrawAction action = unbudgeted;
+    if (budget != Mode::Off) {
+        const PendingDrawAction budgeted =
+            DecideBudgetedDraw(mode, GetWaitSmallDraws(), draw, PendingWaitBudgetLeft());
+        if (budget == Mode::On) {
+            action = budgeted;
+        } else if ((budgeted == PendingDrawAction::Skip) !=
+                   (unbudgeted == PendingDrawAction::Skip)) {
+            CountBudgetDifference(budgeted == PendingDrawAction::Skip);
+        }
+    }
+    const auto wait_start = std::chrono::steady_clock::now();
+    const auto add_wait = [&wait_start] {
+        AddPendingWait(static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                            std::chrono::steady_clock::now() - wait_start)
+                                            .count()));
+    };
+    if (budget == Mode::On && action == PendingDrawAction::WaitBudget) {
+        // The budget has to cut the wait itself: checked only before waiting, one driver build
+        // cost 100-330 ms of a frame "within the budget" and the game dropped to 20 fps.
+        if (pipeline_cache.WaitPendingFor(pipeline, PendingWaitBudgetRemaining())) {
+            CountPendingDraw(action);
+            add_wait();
+            return pipeline_cache.WaitPending(pipeline) != nullptr;
+        }
+        add_wait();
+        action = DecideBudgetedDraw(mode, GetWaitSmallDraws(), draw, false);
+    }
     CountPendingDraw(action);
-    return action != PendingDrawAction::Skip && pipeline_cache.WaitPending(pipeline);
+    if (action == PendingDrawAction::Skip) {
+        return false;
+    }
+    const bool built = pipeline_cache.WaitPending(pipeline) != nullptr;
+    add_wait();
+    return built;
 }
 
 void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
@@ -357,7 +396,8 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     }
     RecordDraw(*pipeline, bindings, *framebuffer, params, draw_state.topology);
     full_draw_recorded = true;
-    if (GetAsyncPipelines() == AsyncPipelines::Balanced) {
+    if (GetAsyncPipelines() == AsyncPipelines::Balanced ||
+        GetPsoBudget() != VideoCore::FramePipeline::Mode::Off) {
         MarkTargetsDrawn(*framebuffer);
     }
     if (material_trace.Active() && pipeline->Layout().StreamOutput() &&
@@ -1079,6 +1119,13 @@ void RasterizerD3D12::FlushIfUploadHeavy() {
 void RasterizerD3D12::TickFrame() {
     Common::BugTracker::TickFrame();
     draw_counter = 0;
+    ResetPendingWaitBudget();
+    if (GetPsoLoading() != VideoCore::FramePipeline::Mode::Off) {
+        const u64 draws = VideoCore::Perf::ReadCounter(VideoCore::Perf::Counter::Draws);
+        pipeline_cache.SetLoadingScreen(
+            loading_detector.Tick(LoadingDetector::Clock::now(), draws - composite_draws));
+        composite_draws = draws;
+    }
     fence_manager.TickFrame();
     {
         // The fence worker shares staging with both caches. Retire resources only while neither

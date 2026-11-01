@@ -615,6 +615,13 @@ void GraphicsPipeline::WaitBuilt() {
     });
 }
 
+bool GraphicsPipeline::WaitBuiltFor(u64 microseconds) {
+    std::unique_lock lock{build_mutex};
+    return build_condvar.wait_for(lock, std::chrono::microseconds{microseconds}, [this] {
+        return build_state.load(std::memory_order::relaxed) != State::Building;
+    });
+}
+
 void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& context,
                                  PipelineBindings& out) {
     using VideoCommon::ImageViewInOut;
