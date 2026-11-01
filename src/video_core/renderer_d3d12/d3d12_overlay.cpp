@@ -292,6 +292,13 @@ void RendererD3D12::DrawShaderIndicator(CommandStream* cmd,
     ClearRects(cmd, rtv, OVERLAY_TEXT, text);
 }
 
+bool ResizeGameOutput(VideoCore::RendererBase& renderer, u32 width, u32 height) {
+    if (Settings::values.renderer_backend.GetValue() != Settings::RendererBackend::Direct3D12) {
+        return false;
+    }
+    return static_cast<RendererD3D12&>(renderer).ResizeOutput(width, height);
+}
+
 std::pair<u32, u32> GameMenuScreenSize(VideoCore::RendererBase& renderer) {
     if (Settings::values.renderer_backend.GetValue() != Settings::RendererBackend::Direct3D12) {
         return {};

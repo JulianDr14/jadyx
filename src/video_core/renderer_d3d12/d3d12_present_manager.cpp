@@ -63,34 +63,17 @@ FrameLease& FrameLease::operator=(FrameLease&& other) noexcept {
 
 PresentManager::PresentManager(const Device& device_, Scheduler& scheduler_,
                                Swapchain& swapchain_, CpuDescriptorAllocator& rtv_descriptors_,
-                               const ShaderCompiler& shader_compiler,
-                               DescriptorRing& descriptor_ring, SamplerHeap& sampler_heap,
+                               const ShaderCompiler& shader_compiler_,
+                               DescriptorRing& descriptor_ring_, SamplerHeap& sampler_heap_,
                                bool async_presentation)
     : device{device_}, scheduler{scheduler_}, swapchain{swapchain_},
-      rtv_descriptors{rtv_descriptors_} {
+      rtv_descriptors{rtv_descriptors_}, shader_compiler{shader_compiler_},
+      descriptor_ring{descriptor_ring_}, sampler_heap{sampler_heap_} {
     ID3D12Device* const dev = device.Get();
-    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
-    const D3D12_RESOURCE_DESC desc{
-        .Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-        .Alignment = 0,
-        .Width = swapchain.Width(),
-        .Height = swapchain.Height(),
-        .DepthOrArraySize = 1,
-        .MipLevels = 1,
-        .Format = Swapchain::FORMAT,
-        .SampleDesc = {.Count = 1, .Quality = 0},
-        .Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN,
-        .Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-    };
-    const D3D12_CLEAR_VALUE clear{.Format = Swapchain::FORMAT, .Color = {0.0f, 0.0f, 0.0f, 1.0f}};
     for (u32 i = 0; i < FRAME_COUNT; ++i) {
         PresentFrame& frame = frames[i];
         frame.index = i;
-        ThrowIfFailed(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                                                   frame.state, &clear,
-                                                   IID_PPV_ARGS(&frame.image)),
-                      "CreateCommittedResource (present frame)");
-        frame.image->SetName((L"Present frame " + std::to_wstring(i)).c_str());
+        frame.image = CreateFrameImage(i, swapchain.Width(), swapchain.Height());
         frame.rtv = rtv_descriptors.Allocate();
         dev->CreateRenderTargetView(frame.image.Get(), nullptr, frame.rtv);
         ThrowIfFailed(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -114,9 +97,7 @@ PresentManager::PresentManager(const Device& device_, Scheduler& scheduler_,
     const bool use_thread = async_presentation && swapchain.HasFrameLatencyWaitable();
     if (use_thread) {
         // Generated frames are shown by the present thread, between the game's.
-        frame_gen = std::make_unique<FrameGen>(device, scheduler, shader_compiler, descriptor_ring,
-                                               sampler_heap, copy_fence.Get(), swapchain.Width(),
-                                               swapchain.Height());
+        CreateFrameGen();
         present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
     }
     LOG_INFO(Render, "D3D12: presentation {} ({} frames of {}x{})",
@@ -150,6 +131,94 @@ PresentManager::~PresentManager() {
     if (copy_event != nullptr) {
         CloseHandle(copy_event);
     }
+}
+
+ComPtr<ID3D12Resource> PresentManager::CreateFrameImage(u32 index, u32 width, u32 height) const {
+    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+    const D3D12_RESOURCE_DESC desc{
+        .Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        .Alignment = 0,
+        .Width = width,
+        .Height = height,
+        .DepthOrArraySize = 1,
+        .MipLevels = 1,
+        .Format = Swapchain::FORMAT,
+        .SampleDesc = {.Count = 1, .Quality = 0},
+        .Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        .Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+    };
+    const D3D12_CLEAR_VALUE clear{.Format = Swapchain::FORMAT, .Color = {0.0f, 0.0f, 0.0f, 1.0f}};
+    ComPtr<ID3D12Resource> image;
+    ThrowIfFailed(device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                                        D3D12_RESOURCE_STATE_COPY_SOURCE, &clear,
+                                                        IID_PPV_ARGS(&image)),
+                  "CreateCommittedResource (present frame)");
+    image->SetName((L"Present frame " + std::to_wstring(index)).c_str());
+    return image;
+}
+
+void PresentManager::CreateFrameGen() {
+    frame_gen = std::make_unique<FrameGen>(device, scheduler, shader_compiler, descriptor_ring,
+                                           sampler_heap, copy_fence.Get(), swapchain.Width(),
+                                           swapchain.Height());
+}
+
+bool PresentManager::Resize(u32 width, u32 height) {
+    WaitIdle();
+    {
+        std::scoped_lock lock{free_mutex};
+        if (free_frames.size() != FRAME_COUNT) {
+            LOG_ERROR(Render, "D3D12: output resize with a frame still lent");
+            return false;
+        }
+    }
+    const bool was_async = IsAsync();
+    if (was_async) {
+        {
+            std::scoped_lock lock{queue_mutex};
+            fg_active = false;
+        }
+        present_thread.request_stop();
+        present_thread.join();
+    }
+    bool resized = false;
+    try {
+        scheduler.Finish();
+        WaitForCopy(copy_fence_value);
+        // The new frames first: without memory for them nothing has changed yet.
+        std::array<ComPtr<ID3D12Resource>, FRAME_COUNT> images;
+        for (u32 i = 0; i < FRAME_COUNT; ++i) {
+            images[i] = CreateFrameImage(i, width, height);
+        }
+        // Its history is the size of the output.
+        frame_gen.reset();
+        fg_running = false;
+        {
+            std::scoped_lock lock{device.PresentQueueMutex()};
+            resized = swapchain.Resize(width, height);
+        }
+        if (resized) {
+            for (u32 i = 0; i < FRAME_COUNT; ++i) {
+                PresentFrame& frame = frames[i];
+                frame.image = std::move(images[i]);
+                frame.state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                frame.render_tick = 0;
+                frame.copy_value = 0;
+                device.Get()->CreateRenderTargetView(frame.image.Get(), nullptr, frame.rtv);
+            }
+        }
+    } catch (const std::exception& e) {
+        LOG_ERROR(Render, "D3D12: output resize to {}x{}: {}", width, height, e.what());
+    }
+    if (was_async) {
+        try {
+            CreateFrameGen();
+        } catch (const std::exception& e) {
+            LOG_ERROR(Render, "D3D12: frame generation after the resize: {}", e.what());
+        }
+        present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
+    }
+    return resized;
 }
 
 FrameLease PresentManager::AcquireFrame() {

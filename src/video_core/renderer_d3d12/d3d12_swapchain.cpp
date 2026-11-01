@@ -86,10 +86,7 @@ Swapchain::Swapchain(const Device& device, IUnknown* core_window, u32 width_, u3
         }
         frame_latency_waitable = swapchain->GetFrameLatencyWaitableObject();
     }
-    for (u32 i = 0; i < IMAGE_COUNT; ++i) {
-        ThrowIfFailed(swapchain->GetBuffer(i, IID_PPV_ARGS(&images[i])),
-                      "IDXGISwapChain::GetBuffer");
-    }
+    GetImages();
     LOG_INFO(Render, "D3D12: swapchain {}x{}, {} images, frame latency {}", width, height,
              IMAGE_COUNT,
              frame_latency_waitable ? fmt::format("{} (waitable)", MAX_FRAME_LATENCY)
@@ -100,6 +97,35 @@ Swapchain::~Swapchain() {
     if (frame_latency_waitable != nullptr) {
         CloseHandle(frame_latency_waitable);
     }
+}
+
+void Swapchain::GetImages() {
+    for (u32 i = 0; i < IMAGE_COUNT; ++i) {
+        ThrowIfFailed(swapchain->GetBuffer(i, IID_PPV_ARGS(&images[i])),
+                      "IDXGISwapChain::GetBuffer");
+    }
+}
+
+bool Swapchain::Resize(u32 new_width, u32 new_height) {
+    // ResizeBuffers refuses to run while a reference to a back buffer is alive.
+    for (ComPtr<ID3D12Resource>& image : images) {
+        image.Reset();
+    }
+    const UINT flags = frame_latency_waitable != nullptr
+                           ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
+                           : 0;
+    const HRESULT hr = swapchain->ResizeBuffers(IMAGE_COUNT, new_width, new_height, FORMAT, flags);
+    if (FAILED(hr)) {
+        LOG_ERROR(Render, "D3D12: swapchain resize to {}x{} failed (0x{:08X})", new_width,
+                  new_height, static_cast<u32>(hr));
+        GetImages();
+        return false;
+    }
+    width = new_width;
+    height = new_height;
+    GetImages();
+    LOG_INFO(Render, "D3D12: swapchain resized to {}x{}", width, height);
+    return true;
 }
 
 u32 Swapchain::CurrentIndex() const {

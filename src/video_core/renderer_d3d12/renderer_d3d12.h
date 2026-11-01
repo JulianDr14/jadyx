@@ -105,6 +105,9 @@ public:
     [[nodiscard]] std::pair<u32, u32> ScreenSize() const {
         return {swapchain.Width(), swapchain.Height()};
     }
+    /// Presents at another size from now on. False keeps the current one. GPU thread only, while
+    /// the guest is paused.
+    [[nodiscard]] bool ResizeOutput(u32 width, u32 height);
     /// The last guest frame composited again without the HUD or the menu and read back, never
     /// presented. Empty when it is not a GPU image. GPU thread only, while the guest is paused.
     [[nodiscard]] MenuImage CaptureFrame();

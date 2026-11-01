@@ -173,6 +173,16 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& emu_window,
     LOG_INFO(Render, "D3D12: presenting through the scheduler (tick {})", scheduler.CurrentTick());
 }
 
+bool RendererD3D12::ResizeOutput(u32 width, u32 height) {
+    if (!present_manager.Resize(width, height)) {
+        return false;
+    }
+    const D3D12_RESOURCE_DESC image_desc = Texture2DDesc(width, height, Swapchain::FORMAT);
+    device.Get()->GetCopyableFootprints(&image_desc, 0, 1, 0, &footprint, nullptr, nullptr,
+                                        &upload_size);
+    return true;
+}
+
 RendererD3D12::~RendererD3D12() {
     EndBootScreen();
     rasterizer.EndMaterialTrace(false);

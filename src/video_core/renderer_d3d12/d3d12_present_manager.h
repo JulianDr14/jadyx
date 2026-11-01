@@ -141,6 +141,10 @@ public:
     /// Blocks until every queued frame has been presented.
     void WaitIdle();
 
+    /// Changes the size of the swapchain and of the frames, once everything in flight is done.
+    /// GPU thread, with no frame lent. False keeps the current size, and everything still works.
+    [[nodiscard]] bool Resize(u32 width, u32 height);
+
     [[nodiscard]] bool IsAsync() const noexcept {
         return present_thread.joinable();
     }
@@ -157,6 +161,8 @@ private:
     };
 
     void PresentThread(std::stop_token token);
+    [[nodiscard]] ComPtr<ID3D12Resource> CreateFrameImage(u32 index, u32 width, u32 height) const;
+    void CreateFrameGen();
     /// Copies frame into the back buffer and presents it (present thread, or the caller).
     void CopyToSwapchain(PresentFrame& frame);
     /// Present thread: shows frame generation's next output, when it has one.
@@ -177,6 +183,9 @@ private:
     Scheduler& scheduler;
     Swapchain& swapchain;
     CpuDescriptorAllocator& rtv_descriptors;
+    const ShaderCompiler& shader_compiler;
+    DescriptorRing& descriptor_ring;
+    SamplerHeap& sampler_heap;
 
     std::array<PresentFrame, FRAME_COUNT> frames;
     std::array<CopyContext, FRAME_COUNT> copy_contexts;
