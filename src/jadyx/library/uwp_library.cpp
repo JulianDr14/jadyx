@@ -81,7 +81,8 @@ std::wstring Wide(std::string_view utf8) {
 std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, unsigned height,
                                          const std::filesystem::path& root,
                                          const std::function<void()>& seed,
-                                         std::string_view auto_pick, std::string_view initial_notice) {
+                                         std::string_view auto_pick, std::string_view initial_notice,
+                                         std::uint64_t* selected_program_id) {
     using namespace winrt::Windows::UI::Core;
     auto window = CoreWindow::GetForCurrentThread();
     auto canvas = std::make_unique<LibraryCanvas>(core_window, width, height);
@@ -1461,6 +1462,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             actions = 0;
             if (open_mii_editor) {
                 network_portal.Stop();
+                if (selected_program_id) *selected_program_id = 0;
                 return std::string{MiiEditorLaunch};
             }
         }
@@ -2085,6 +2087,7 @@ std::optional<std::string> ShowGameLibrary(void* core_window, unsigned width, un
             !scan.entries.empty()) {
             network_portal.Stop();
             selected_path = scan.entries[selected].launch_path;
+            if (selected_program_id) *selected_program_id = scan.entries[selected].program_id;
             notice = Tr(T::CheckingGame);
             dirty = true;
             metadata_worker.request_stop();
