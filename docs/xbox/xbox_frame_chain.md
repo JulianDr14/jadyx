@@ -21,7 +21,7 @@ cuadro tarde. Las esperas venían de:
 
 ## Claves de `boot.cfg`
 
-Todo esto viene encendido de serie; un paquete normal no lleva ninguna de estas claves. Cada
+Todo esto, salvo `swap_interval_hold`, viene encendido de serie; un paquete normal no lleva ninguna de estas claves. Cada
 mecanismo conserva su clave `=0|1|check` para diagnosticar: en `check` corre la ruta vieja y cuenta
 lo que haría la nueva, con las discrepancias aparte.
 
@@ -108,8 +108,10 @@ Sirve para ver qué disparó cada 2 → 3.
 
 Los saltos cortos 2 → 3 → 2 (~0,4 s) salían con 0 vsyncs perdidos y 0 composites tarde: los decide el
 juego. La línea cuenta lo que pide el juego, también con `swap_interval_hold`; los cuadros que siguieron
-a ritmo de 2 salen en el informe como `frames of 3 paced at 2`. Riesgo: un juego que calcule su tiempo
-de simulación con el interval que pidió, y no con el reloj, avanzaría más lento durante esos cuadros.
+a ritmo de 2 salen en el informe como `frames of 3 paced at 2`. Un juego que calcule su tiempo de
+simulación con el interval que pidió, y no con el reloj, avanza a 1,5x durante esos cuadros: 50 ms de
+juego en 33 ms de pantalla. En consola se vio como aceleraciones cada pocos segundos con los fps
+quietos, y por eso `swap_interval_hold` viene apagado de serie.
 
 ### Pipelines
 
@@ -157,7 +159,7 @@ corrida; las cifras de rotación son por ventana de 10 s.
 | 139 | 700 s, primera visita a la zona de caminar | 29,3 | 24,5 | 7 | 76 | 5 |
 | 140 | builders en el hermano del hilo GPU (descartado) | 29,0 | 24,7 | 5 | 32 | |
 | 141 | mapa actual, zonas ya visitadas | 29,4 | 23,4 | 3 | 46 | 2 |
-| 142 | `swap_interval_hold` | 29,7 | 24,5 | 1 | 40 | 1 |
+| 142 | `swap_interval_hold` (los fps de estas tres filas no cuentan las aceleraciones) | 29,7 | 24,5 | 1 | 40 | 1 |
 | 142 (repetición) | igual | 29,7 | 24,3 | 1 | 56 | 1 |
 | 144 | igual, 700 s, zonas nuevas al caminar | 29,4 | 24,1 | 6 | 74 | 3 |
 
