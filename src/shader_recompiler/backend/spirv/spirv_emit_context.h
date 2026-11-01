@@ -434,6 +434,8 @@ public:
     std::array<Id, 30> patches{};
 
     std::array<Id, 8> frag_color{};
+    /// Output 0's alpha before the UNORM8 rounding (unorm8_output_mask), for the alpha tests.
+    Id frag_alpha_unrounded{};
     Id sample_mask{};
     Id frag_depth{};
 

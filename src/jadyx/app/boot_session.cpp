@@ -607,8 +607,8 @@ int GameSession::PlayLoop() {
 }
 
 int GameSession::TimedRun() {
-    // Timed mode: nothing to wait for but the clock. The payload counts as having run if the
-    // process is still alive when the time is up; the log says what it drew.
+    // Timed mode: the clock, or the payload's own end sentinel. The payload counts as having run if
+    // the process is still alive when either comes; the log says what it drew.
     WriteDiag("step: system.Run() issued, running for " + std::to_string(config.run_seconds) +
               " s | " + MemoryReport());
     for (u32 second = 1; second <= config.run_seconds; ++second) {
@@ -621,6 +621,11 @@ int GameSession::TimedRun() {
             WriteDiag("GPU command failed during timed gate | " + MemoryReport());
             Shutdown();
             return 15;
+        }
+        // A payload that says it has finished ends the run early; run_seconds is then a backstop.
+        if (gfx_done.load(std::memory_order_acquire)) {
+            WriteDiag("step: payload finished after " + std::to_string(second) + " s");
+            break;
         }
         if (second % 10 == 0) {
             WriteDiag("step: running, " + std::to_string(second) + " s | " + MemoryReport());

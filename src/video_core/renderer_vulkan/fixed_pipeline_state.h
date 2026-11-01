@@ -119,6 +119,7 @@ struct FixedPipelineState {
         BitField<6, 14, u32> offset;
         BitField<20, 3, u32> type;
         BitField<23, 6, u32> size;
+        BitField<29, 1, u32> bgra;
 
         Maxwell::VertexAttribute::Type Type() const noexcept {
             return static_cast<Maxwell::VertexAttribute::Type>(type.Value());

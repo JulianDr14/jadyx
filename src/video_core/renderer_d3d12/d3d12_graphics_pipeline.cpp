@@ -231,6 +231,7 @@ std::atomic_bool warned_logic_op;
 std::atomic_bool warned_depth_bounds;
 std::atomic_bool warned_point_fill;
 std::atomic_bool warned_vertex_format;
+std::atomic_bool warned_vertex_bgra;
 std::atomic_bool warned_depth_feedback;
 std::atomic_bool warned_conservative;
 
@@ -1091,6 +1092,15 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
             attribute.Type(), attribute.Size(), attribute.offset, state.vertex_strides[slot]);
         if (fetch.parts > 1) {
             format = fetch.part_format;
+        }
+        // The bgra bit fetches the first and third bytes swapped; DXGI has that only for UNORM.
+        if (attribute.bgra != 0) {
+            if (format == DXGI_FORMAT_R8G8B8A8_UNORM) {
+                format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            } else {
+                WarnOnceLog(warned_vertex_bgra, "{} is not supported and is ignored",
+                            "a BGRA vertex attribute that is not 4x8 UNORM");
+            }
         }
         for (u32 part = 0; part < fetch.parts; ++part) {
             elements.push_back({

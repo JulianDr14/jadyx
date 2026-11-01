@@ -283,6 +283,22 @@ private:
         };
         // LocationDescriptor ctor() does important ops (like tflags) do not skip
         auto const arch_descriptor = A64::LocationDescriptor{descriptor};
+        // A profile can outlive its code (a rebuilt homebrew keeps its title and build ids), and
+        // translating what is there now can stop at an instruction the translator does not handle.
+        // A64 blocks read their words in order, so the hash is checked before translating.
+        if (expected) {
+            BlockProfile current{descriptor.Value()};
+            for (u64 vaddr = arch_descriptor.PC(); current.code_bytes < expected->code_bytes; vaddr += 4) {
+                const auto word = conf.callbacks->MemoryReadCode(vaddr);
+                if (!word) {
+                    return nullptr;
+                }
+                current.AddWord(*word);
+            }
+            if (current.code_hash != expected->code_hash) {
+                return nullptr;
+            }
+        }
         ir_block.Reset(arch_descriptor);
         {
             const JitProfile::Timer timer{JitProfile::Phase::Translate};
