@@ -114,7 +114,7 @@ int main() {
     shot_settings.screenshot = true;
     GameMenu with_cheats{shot_settings, true};
     with_cheats.SetCheatsOn(3);
-    check(with_cheats.Rows().size() == 7);
+    check(with_cheats.Rows().size() == 8);
     check(with_cheats.Rows()[1].label == L"Captura de pantalla" && with_cheats.Rows()[1].icon == UiIcon::Camera);
     check(with_cheats.Rows()[2].kind == GameMenuRow::Kind::Page && with_cheats.Rows()[2].detail == L"3 activos");
     with_cheats.Apply(MenuAction::Down);
@@ -128,7 +128,7 @@ int main() {
     check(with_cheats.Rows()[2].detail == L"1 activo");
     // Mods only inform, after the cheats: no button does anything on them.
     with_cheats.SetModsOn(2);
-    check(with_cheats.Rows().size() == 8 && with_cheats.Rows()[3].kind == GameMenuRow::Kind::Info);
+    check(with_cheats.Rows().size() == 9 && with_cheats.Rows()[3].kind == GameMenuRow::Kind::Info);
     with_cheats.Apply(MenuAction::Down);
     check(with_cheats.SelectedItem() == GameMenu::Mods && with_cheats.Apply(MenuAction::Confirm) == GameMenuResult::None);
     GameMenu mods_only{{}};
@@ -157,6 +157,52 @@ int main() {
     check(offline.Apply(MenuAction::Left) == GameMenuResult::OfflineModeChanged && !offline.Settings().offline_mode);
     // Without a title id there is nothing to keep it under.
     for (const auto& row : GameMenu{offline_settings}.Rows()) check(row.icon != UiIcon::Airplane);
+
+    // A game with a title id has a Graphics page, with what can change while it runs.
+    {
+        GameMenu graphics{{}, true};
+        while (graphics.SelectedItem() != GameMenu::GraphicsMenu) graphics.Apply(MenuAction::Down);
+        check(graphics.Apply(MenuAction::Confirm) == GameMenuResult::None);
+        check(graphics.CurrentPage() == GameMenu::Page::Graphics && graphics.PageTitle() == L"Gráficos");
+        check(graphics.Rows().size() == 7);
+        for (const auto& row : graphics.Rows()) {
+            check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedAnisotropy)});
+            check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedTextureQuality)});
+            check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedShaderWorkers)});
+            check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedReset)});
+        }
+        check(graphics.SelectedItem() == GameMenu::GfxUpscaling);
+        check(graphics.Rows()[0].detail == L"Como en Ajustes");
+        check(graphics.Apply(MenuAction::Right) == GameMenuResult::GraphicsChanged);
+        check(graphics.Settings().graphics.upscaling.has_value() && graphics.Rows()[0].detail == L"Solo este juego");
+        // The row steps the game's own value, whichever line of the page it is on.
+        while (graphics.SelectedItem() != GameMenu::GfxGuestClock) graphics.Apply(MenuAction::Down);
+        check(graphics.Apply(MenuAction::Confirm) == GameMenuResult::GraphicsChanged &&
+              graphics.Settings().graphics.slow_guest_clock);
+        while (graphics.SelectedItem() != GameMenu::GfxTextureMemory) graphics.Apply(MenuAction::Down);
+        check(graphics.Apply(MenuAction::Right) == GameMenuResult::GraphicsChanged &&
+              graphics.Settings().graphics.advanced.texture_cap_mib == 512);
+        // Up and Down stay in the menu's cursor: they change nothing.
+        check(graphics.Apply(MenuAction::Down) == GameMenuResult::None &&
+              graphics.Settings().graphics.advanced.texture_cap_mib == 512);
+        check(graphics.Apply(MenuAction::Back) == GameMenuResult::None);
+        check(graphics.CurrentPage() == GameMenu::Page::Quick && graphics.SelectedItem() == GameMenu::GraphicsMenu);
+
+        // The Handheld style already forces the console's mode.
+        GameMenuSettings handheld{};
+        handheld.style = ConsoleControllerStyle::Handheld;
+        GameMenu handheld_menu{handheld, true};
+        while (handheld_menu.SelectedItem() != GameMenu::GraphicsMenu) handheld_menu.Apply(MenuAction::Down);
+        handheld_menu.Apply(MenuAction::Confirm);
+        check(handheld_menu.Rows().size() == 6);
+
+        // Without a title id there is nothing to keep it under.
+        GameMenu no_title{{}};
+        for (std::size_t i = 0; i < no_title.Rows().size(); ++i) {
+            check(no_title.SelectedItem() != GameMenu::GraphicsMenu);
+            no_title.Apply(MenuAction::Down);
+        }
+    }
 
     // PC: full screen on the display page; the Series menu never shows it.
     GameMenu pc{{ConsoleControllerStyle::Auto, false, 0.12f, true, false}};

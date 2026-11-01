@@ -753,6 +753,8 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::MenuController, L"Mando"},
     {Text::MenuDisplay, L"Imagen"},
     {Text::MenuStatsShort, L"Estadísticas"},
+    {Text::MenuGraphicsOwn, L"Solo este juego"},
+    {Text::MenuGraphicsFollowsSettings, L"Como en Ajustes"},
     {Text::MenuBackTo, L"Atrás · {0}"},
 });
 } // namespace Jadyx::I18n

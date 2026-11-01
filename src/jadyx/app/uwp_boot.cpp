@@ -255,6 +255,7 @@ std::atomic<u64> g_guest_swap_released{};
 struct MemoryCoordinatorState {
     std::atomic<bool> yield{};
     std::atomic<u64> relief{}, stall_us_per_s{}, texture_line{}, texture_loan{};
+    std::atomic<u64> texture_floor{}; ///< The texture cap; the in-game menu can change it.
     std::string Describe() const {
         return std::string{yield.load(std::memory_order_relaxed) ? "yield" : "calm"} +
                ", guest stall " +
@@ -310,6 +311,12 @@ struct BootSurface {
     void* core_window{};
     u32 width{1920};
     u32 height{1080};
+    /// The sizes this game can change to from the in-game menu, by what its graphics ask for: the
+    /// TV's resolution and the plain one (equal when boot.cfg forces one). Read on the UI thread.
+    u32 screen_width{};
+    u32 screen_height{};
+    u32 plain_width{};
+    u32 plain_height{};
 };
 
 // Force the device-light configuration the boot needs.
@@ -769,8 +776,8 @@ static void UseGameAdvancedGraphics(BootConfig& config, u64 program_id) {
 
 /// The game's graphics (its own over Settings > Graphics) where boot.cfg sets none. Upscaling is
 /// written on the GPU thread, the one that reads it once the game runs.
-static void ApplyGameGraphics(Core::System& system, const BootConfig& config, u64 program_id) {
-    const GraphicsSettings graphics = ResolveGraphics(LoadGraphicsSettings(), LoadGameGraphics(program_id));
+static void ApplyGameGraphics(Core::System& system, const BootConfig& config, const GameGraphics& game) {
+    const GraphicsSettings graphics = ResolveGraphics(LoadGraphicsSettings(), game);
     if (!config.upscaling) {
         const Upscaling upscaling = graphics.upscaling;
         system.GPU().RunOnGpuThread([upscaling] { ApplyUpscaling(upscaling); });
@@ -778,9 +785,8 @@ static void ApplyGameGraphics(Core::System& system, const BootConfig& config, u6
     if (!config.frame_gen)
         D3D12::SetFrameGenMode(graphics.frame_gen ? D3D12::FrameGenMode::Auto : D3D12::FrameGenMode::Off);
     if (!config.async_pipelines) D3D12::SetAsyncPipelines(ToAsyncPipelines(graphics.shaders));
-    const u32 clock_percent = config.guest_clock_percent.value_or(
-        LoadGameGraphics(program_id).slow_guest_clock ? SlowGuestClockPercent : 100);
-    if (clock_percent != 100) system.CoreTiming().SetGuestClockPercent(clock_percent);
+    const u32 clock_percent = config.guest_clock_percent.value_or(game.slow_guest_clock ? SlowGuestClockPercent : 100);
+    system.CoreTiming().SetGuestClockPercent(clock_percent);
     WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, upscaling " +
               (config.upscaling ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(UpscalingText(graphics.upscaling)))) +
               ", frame generation " +
@@ -790,6 +796,33 @@ static void ApplyGameGraphics(Core::System& system, const BootConfig& config, u6
                                       : std::string{graphics.shaders == ShaderBuild::Skip       ? "skip"
                                                     : graphics.shaders == ShaderBuild::Balanced ? "balanced"
                                                                                                 : "wait"}));
+}
+
+/// The advanced graphics that can change while the game runs, those that differ from `before`.
+/// With the guest paused (the in-game menu).
+static void ApplyRunningAdvancedGraphics(Core::System& system, const GameAdvancedGraphics& before,
+                                         const GameAdvancedGraphics& now) {
+    if (now.texture_cap_mib != before.texture_cap_mib) {
+        const u64 cap = u64{now.texture_cap_mib != 0 ? now.texture_cap_mib : BootConfig{}.texture_cap_mib} << 20;
+        D3D12::SetTextureMemoryCap(cap);
+        g_memory_coordinator_state.texture_floor.store(cap, std::memory_order_relaxed);
+        WriteDiag("graphics: texture cap " + std::to_string(cap >> 20) + " MiB");
+    }
+    if (now.gpu_accuracy != before.gpu_accuracy) {
+        const Settings::GpuAccuracy accuracy = now.gpu_accuracy;
+        system.GPU().RunOnGpuThread([accuracy] {
+            Settings::values.gpu_accuracy = accuracy;
+            Settings::UpdateGPUAccuracy();
+        });
+        WriteDiag(std::string{"graphics: GPU accuracy "} + (accuracy == Settings::GpuAccuracy::Low ? "low" : "high"));
+    }
+    if (now.console_mode != before.console_mode) {
+        Settings::values.use_docked_mode.SetValue(now.console_mode);
+        // What a real console tells the game when it goes in or out of its dock.
+        system.GetAppletManager().OperationModeChanged();
+        WriteDiag(std::string{"graphics: console mode "} +
+                  (now.console_mode == Settings::ConsoleMode::Handheld ? "handheld" : "docked"));
+    }
 }
 
 /// Games never emit the sentinels; without an explicit time they run this long.
@@ -1355,7 +1388,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     }
 
     const u64 program_id = system.GetApplicationProcessProgramID();
-    ApplyGameGraphics(system, config, program_id);
+    ApplyGameGraphics(system, config, LoadGameGraphics(program_id));
     // The game's own offline mode over Settings > System's, before any guest code runs; boot.cfg's
     // airplane=1 wins over both.
     if (const auto offline = LoadGameOfflineMode(program_id); offline && !config.airplane_mode)
@@ -1449,6 +1482,7 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
         // cheats page changes the running game's cheats at once: the engine reloads them on its
         // next tick after the guest resumes. Closed, the menu keeps nothing.
         std::optional<GameMenu> menu;
+        bool graphics_changed{}; ///< In the open menu: the output's size may have to follow.
         std::optional<GameMenuSurface> menu_surface;
         // A keyboard the game opened (game_keyboard.h): drawn on the same surface as the menu, over
         // the running game. The menu opens on top of it and gives it back when it closes.
@@ -1664,7 +1698,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
             swap_worker.emplace([&](std::stop_token stop) {
                 Common::SetCurrentThreadName("Permafrost");
                 Jadyx::MemoryCoordinator coordinator{coordinator_config};
-                const u64 texture_floor = u64{config.texture_cap_mib} << 20;
+                g_memory_coordinator_state.texture_floor.store(u64{config.texture_cap_mib} << 20,
+                                                               std::memory_order_relaxed);
                 const auto start = std::chrono::steady_clock::now();
                 Jadyx::MemoryCoordinator::Plan plan = read_plan();
                 u64 logged_relief = 0;
@@ -1684,7 +1719,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                                                   std::chrono::steady_clock::now() - start)
                                                   .count()),
                              headroom, Common::Permafrost::GetStats().fault_stall_us,
-                             texture_heap, texture_floor, texture_cap});
+                             texture_heap, g_memory_coordinator_state.texture_floor.load(std::memory_order_relaxed),
+                             texture_cap});
                         D3D12::SetTextureMemoryLine(plan.texture_line);
                         D3D12::SetTextureYield(plan.yield);
                         {
@@ -1923,7 +1959,8 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                                                   pulse_identity.has_value(),
                                                   config.material_capture_menu, config.hunt_menu,
                                                   !game_frame.pixels.empty(), LoadGameOfflineMode(program_id),
-                                                  system_settings.offline_mode},
+                                                  system_settings.offline_mode, LoadGraphicsSettings(),
+                                                  LoadGameGraphics(program_id)},
                                  program_id != 0 && !mii_editor);
                     if (game_title.empty()) {
                         std::string title;
@@ -2075,6 +2112,26 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                 }
                 if (result == GameMenuResult::Resume || result == GameMenuResult::CaptureGraphics ||
                     result == GameMenuResult::CapturePerformance) {
+                    if (std::exchange(graphics_changed, false)) {
+                        // On closing rather than on each press: the player may be stepping through
+                        // the choices, and a resize waits for everything in flight.
+                        GraphicsSettings graphics = ResolveGraphics(LoadGraphicsSettings(), menu->Settings().graphics);
+                        if (config.upscaling) graphics.upscaling = *config.upscaling;
+                        if (config.frame_gen) graphics.frame_gen = *config.frame_gen != D3D12::FrameGenMode::Off;
+                        const bool screen = UsesScreenResolution(graphics);
+                        const u32 width = screen ? surface.screen_width : surface.plain_width;
+                        const u32 height = screen ? surface.screen_height : surface.plain_height;
+                        if (width != 0 && std::pair{width, height} != D3D12::GameMenuScreenSize(system.Renderer())) {
+                            bool resized{};
+                            system.GPU().RunOnGpuThread([&] {
+                                resized = D3D12::ResizeGameOutput(system.Renderer(), width, height);
+                                if (resized) emu_window.UpdateCurrentFramebufferLayout(width, height);
+                            });
+                            WriteDiag("menu: output " + std::to_string(width) + "x" + std::to_string(height) +
+                                      (resized ? "" : " failed, the size stays until the next boot") + " | " +
+                                      MemoryReport());
+                        }
+                    }
                     menu.reset();
                     cheats.reset();
                     game_frame = {};
@@ -2117,6 +2174,14 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                 }
                 if (result == GameMenuResult::FullScreen) {
                     g_fullscreen_request.store(menu->Settings().fullscreen ? 1 : 0);
+                }
+                if (result == GameMenuResult::GraphicsChanged) {
+                    const GameGraphics& game = menu->Settings().graphics;
+                    const GameGraphics before = LoadGameGraphics(program_id);
+                    if (!SaveGameGraphics(program_id, game)) WriteDiag("menu: graphics could not be saved");
+                    ApplyGameGraphics(system, config, game);
+                    ApplyRunningAdvancedGraphics(system, before.advanced, game.advanced);
+                    graphics_changed = true;
                 }
                 if (result == GameMenuResult::OfflineModeChanged) {
                     const auto offline = menu->Settings().offline_mode;
@@ -3446,13 +3511,26 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                 // bilinear blit at 1080p. A game the library did not name follows Settings.
                 if (output_4k || output_1080p) {
                     game_surface = library_surface;
+                    game_surface.screen_width = game_surface.plain_width = library_surface.width;
+                    game_surface.screen_height = game_surface.plain_height = library_surface.height;
                 } else {
                     Jadyx::GraphicsSettings graphics = Jadyx::ResolveGraphics(
                         Jadyx::LoadGraphicsSettings(),
                         library_program_id != 0 ? Jadyx::LoadGameGraphics(library_program_id) : Jadyx::GameGraphics{});
                     if (cfg_upscaling) graphics.upscaling = *cfg_upscaling;
                     if (cfg_frame_gen) graphics.frame_gen = *cfg_frame_gen;
-                    if (Jadyx::UsesScreenResolution(graphics)) game_surface = screen_surface();
+                    const Jadyx::BootSurface screen = screen_surface();
+                    game_surface.plain_width = surface.width;
+                    game_surface.plain_height = surface.height;
+                    game_surface.screen_width = screen.width;
+                    game_surface.screen_height = screen.height;
+                    if (Jadyx::UsesScreenResolution(graphics)) {
+                        game_surface.width = screen.width;
+                        game_surface.height = screen.height;
+                    } else {
+                        game_surface.width = surface.width;
+                        game_surface.height = surface.height;
+                    }
                 }
                 char program[17];
                 std::snprintf(program, sizeof(program), "%016llX",

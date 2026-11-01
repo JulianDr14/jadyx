@@ -753,6 +753,8 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::MenuController, L"Controle"},
     {Text::MenuDisplay, L"Tela"},
     {Text::MenuStatsShort, L"Estatísticas"},
+    {Text::MenuGraphicsOwn, L"Só este jogo"},
+    {Text::MenuGraphicsFollowsSettings, L"Como em Ajustes"},
     {Text::MenuBackTo, L"Voltar · {0}"},
 });
 } // namespace Jadyx::I18n

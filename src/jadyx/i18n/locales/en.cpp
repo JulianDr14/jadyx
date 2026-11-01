@@ -753,6 +753,8 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::MenuController, L"Controller"},
     {Text::MenuDisplay, L"Display"},
     {Text::MenuStatsShort, L"Statistics"},
+    {Text::MenuGraphicsOwn, L"This game only"},
+    {Text::MenuGraphicsFollowsSettings, L"As in Settings"},
     {Text::MenuBackTo, L"Back · {0}"},
 });
 } // namespace Jadyx::I18n

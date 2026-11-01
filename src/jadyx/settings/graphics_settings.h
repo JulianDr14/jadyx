@@ -64,7 +64,8 @@ struct GraphicsSettings {
 };
 
 /// A game's advanced options, only its own. Each default is what the app does with no choice made,
-/// so {} is "reset". They are read before the session starts (uwp_boot.cpp).
+/// so {} is "reset". The session reads them before it starts (uwp_boot.cpp); texture memory, GPU
+/// accuracy and the console's mode can also change from the in-game menu.
 struct GameAdvancedGraphics {
     Settings::AnisotropyMode anisotropy{Settings::AnisotropyMode::Default}; ///< Default: as the game asks.
     bool full_textures{};            ///< Big ASTC textures keep their top level: four times their memory.

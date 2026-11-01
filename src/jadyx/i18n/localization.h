@@ -703,6 +703,8 @@ enum class Text : std::uint16_t {
     MenuController,
     MenuDisplay,
     MenuStatsShort,
+    MenuGraphicsOwn,
+    MenuGraphicsFollowsSettings,
     MenuBackTo,
 
 
