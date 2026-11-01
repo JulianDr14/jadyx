@@ -11,6 +11,8 @@
 
 #include "common/logging.h"
 #include "common/thread.h"
+#include "video_core/frame_pipeline.h"
+#include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_present_manager.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
@@ -151,25 +153,99 @@ PresentManager::~PresentManager() {
 }
 
 FrameLease PresentManager::AcquireFrame() {
+    using VideoCore::FramePipeline::Mode;
+    using VideoCore::Perf::Counter;
+    // Without the present thread nothing stays queued: there is no frame to reuse.
+    const Mode mailbox = IsAsync() ? VideoCore::FramePipeline::PresentMailbox() : Mode::Off;
+    const auto start = std::chrono::steady_clock::now();
     PresentFrame* frame{};
-    {
+    if (mailbox == Mode::On) {
+        frame = TakeFreeFrame();
+        if (frame == nullptr) {
+            frame = ReuseQueuedFrame();
+        }
+    } else if (mailbox == Mode::Check && !HasFreeFrame()) {
+        std::scoped_lock lock{queue_mutex};
+        if (!queued_frames.empty()) {
+            VideoCore::Perf::Add(Counter::PresentsWouldReplace, 1);
+        }
+    }
+    if (frame == nullptr) {
+        // Every frame is queued or being copied (the mailbox only waits for the latter).
         std::unique_lock lock{free_mutex};
         free_cv.wait(lock, [this] { return !free_frames.empty(); });
         frame = free_frames.front();
         free_frames.pop_front();
     }
-    // The queue already orders new commands after the frame's previous rendering and copy; this
-    // only keeps the CPU from running more than FRAME_COUNT frames ahead of the GPU.
-    scheduler.Wait(frame->render_tick);
+    const auto free_end = std::chrono::steady_clock::now();
+    if (mailbox == Mode::On) {
+        // The queue already orders new commands after the frame's previous rendering: this only
+        // keeps the CPU from running more than RENDER_AHEAD composites ahead of the GPU.
+        scheduler.Wait(composite_ticks[composite_tick_index]);
+    } else {
+        // The queue already orders new commands after the frame's previous rendering and copy;
+        // this only keeps the CPU from running more than FRAME_COUNT frames ahead of the GPU.
+        scheduler.Wait(frame->render_tick);
+    }
+    const auto render_end = std::chrono::steady_clock::now();
     // The copy then runs outside the emulation queue's order: rendering into the frame again
     // must wait until the copy has read it. A frame comes back FRAME_COUNT frames later, so this
     // practically never blocks.
     if (device.HasPresentQueue() && copy_fence->GetCompletedValue() < frame->copy_value) {
-        // No event: the present thread owns copy_event.
-        ThrowIfFailed(copy_fence->SetEventOnCompletion(frame->copy_value, nullptr),
-                      "ID3D12Fence::SetEventOnCompletion (frame reuse)");
+        if (mailbox == Mode::On) {
+            // On the GPU: the submission rendering into the frame comes after this call.
+            scheduler.QueueWaitBeforeNextSubmit(copy_fence.Get(), frame->copy_value);
+        } else {
+            // No event: the present thread owns copy_event.
+            ThrowIfFailed(copy_fence->SetEventOnCompletion(frame->copy_value, nullptr),
+                          "ID3D12Fence::SetEventOnCompletion (frame reuse)");
+        }
+    }
+    const auto end = std::chrono::steady_clock::now();
+    const auto us = [](auto from, auto to) {
+        return static_cast<u64>(
+            std::chrono::duration_cast<std::chrono::microseconds>(to - from).count());
+    };
+    VideoCore::Perf::Add(Counter::PresentFreeWaitUs, us(start, free_end));
+    VideoCore::Perf::Add(Counter::PresentRenderWaitUs, us(free_end, render_end));
+    VideoCore::Perf::Add(Counter::PresentCopyWaitUs, us(render_end, end));
+    if (us(start, end) > 1000) {
+        VideoCore::Perf::Add(Counter::PresentWaitsLong, 1);
     }
     return FrameLease{*this, *frame};
+}
+
+bool PresentManager::HasFreeFrame() {
+    std::scoped_lock lock{free_mutex};
+    return !free_frames.empty();
+}
+
+PresentFrame* PresentManager::TakeFreeFrame() {
+    std::scoped_lock lock{free_mutex};
+    if (free_frames.empty()) {
+        return nullptr;
+    }
+    PresentFrame* const frame = free_frames.front();
+    free_frames.pop_front();
+    return frame;
+}
+
+PresentFrame* PresentManager::ReuseQueuedFrame() {
+    PresentFrame* frame{};
+    {
+        // The oldest: a newer frame stays queued to be shown in its place. A frame the present
+        // thread took is no longer in the queue, so one being copied is never reused.
+        std::scoped_lock lock{queue_mutex};
+        if (queued_frames.empty()) {
+            return nullptr;
+        }
+        frame = queued_frames.front();
+        queued_frames.pop_front();
+        --frames_in_flight;
+    }
+    idle_cv.notify_all();
+    VideoCore::Perf::Add(VideoCore::Perf::Counter::PresentsReplaced, 1);
+    return frame;
 }
 
 void PresentManager::Present(FrameLease&& lease, const PresentInfo& info) {
@@ -211,6 +287,8 @@ void PresentManager::Present(FrameLease&& lease, const PresentInfo& info) {
         Release(frame);
         throw;
     }
+    composite_ticks[composite_tick_index] = frame.render_tick;
+    composite_tick_index = (composite_tick_index + 1) % RENDER_AHEAD;
     if (overlay_only) {
         Release(frame);
         return;

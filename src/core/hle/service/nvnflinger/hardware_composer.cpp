@@ -6,7 +6,9 @@
 
 #include <optional>
 
+#include "common/logging.h"
 #include "video_core/frame_trace.h"
+#include "video_core/perf_counters.h"
 
 #include <boost/container/small_vector.hpp>
 
@@ -185,6 +187,12 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
         }
     }
 
+    if (game_acquired) {
+        TrackFrameChainLocked(swap_interval);
+    } else {
+        TrackFrameChainLocked(std::nullopt);
+    }
+
     // Advance by 1 frame (60 FPS compositing)
     m_frame_number += 1;
 
@@ -224,6 +232,38 @@ void HardwareComposer::ReleaseFramebuffersLocked(Display& display) {
         layer->buffer_item_consumer->ReleaseBuffer(framebuffer.item, framebuffer.release_fence);
         framebuffer.is_acquired = false;
     }
+}
+
+void HardwareComposer::TrackFrameChainLocked(std::optional<s32> game_swap_interval) {
+    using VideoCore::Perf::Counter;
+    static constexpr std::array<Counter, HISTORY_COUNTERS> COUNTERS{
+        Counter::VsyncsLost,          Counter::VsyncComposeWaitUs, Counter::CompositesLate,
+        Counter::PresentFreeWaitUs,   Counter::PresentRenderWaitUs, Counter::PresentCopyWaitUs,
+        Counter::PipelineStallUs,     Counter::GuestDequeueWaitUs, Counter::VsyncComposeWaitsCut,
+    };
+    std::array<u64, HISTORY_COUNTERS> now;
+    for (size_t i = 0; i < HISTORY_COUNTERS; ++i) {
+        now[i] = VideoCore::Perf::ReadCounter(COUNTERS[i]);
+    }
+    // The oldest entry: the counters HISTORY_VSYNCS vsyncs ago (zeros early on).
+    auto& slot = m_history[m_frame_number % HISTORY_VSYNCS];
+    if (game_swap_interval && m_game_swap_interval != 0 &&
+        *game_swap_interval != m_game_swap_interval) {
+        VideoCore::Perf::Add(Counter::GuestSwapIntervalChanges, 1);
+        const auto delta = [&](size_t i) { return now[i] - slot[i]; };
+        const auto ms = [&](size_t i) { return static_cast<double>(delta(i)) / 1000.0; };
+        LOG_INFO(Service_Nvnflinger,
+                 "frame chain: the game's swap interval went {} -> {} at vsync {}; the last {} "
+                 "vsyncs: {} lost, waited {:.1f} ms for the GPU thread ({} waits cut), {} late "
+                 "composites, present frame waits free {:.1f} / render {:.1f} / copy {:.1f} ms, "
+                 "pipeline stalls {:.1f} ms, game waited {:.1f} ms for a framebuffer",
+                 m_game_swap_interval, *game_swap_interval, m_frame_number, HISTORY_VSYNCS,
+                 delta(0), ms(1), delta(8), delta(2), ms(3), ms(4), ms(5), ms(6), ms(7));
+    }
+    if (game_swap_interval) {
+        m_game_swap_interval = *game_swap_interval;
+    }
+    slot = now;
 }
 
 void HardwareComposer::RemoveLayerLocked(Display& display, ConsumerId consumer_id) {

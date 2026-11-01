@@ -102,6 +102,12 @@ struct PresentInfo {
 ///   lent frame waits for the GPU to finish the rendering it held before (at most FRAME_COUNT
 ///   frames ahead of the GPU).
 ///
+/// present_mailbox (VideoCore::FramePipeline): the GPU thread is not paced by the display. With
+/// no free frame it takes back the oldest queued one, which is never shown; the newer one queued
+/// behind it shows in its place. A frame's previous copy is then waited for by the emulation
+/// queue (Scheduler::QueueWaitBeforeNextSubmit) rather than the CPU, and the CPU runs at most
+/// RENDER_AHEAD composites ahead of the GPU.
+///
 /// Without a waitable swapchain (Present would block holding the queue lock) or with
 /// async_presentation off, the copy and Present run on the caller's thread instead.
 ///
@@ -112,6 +118,8 @@ struct PresentInfo {
 class PresentManager {
 public:
     static constexpr u32 FRAME_COUNT = Swapchain::IMAGE_COUNT;
+    /// present_mailbox: composites the CPU may run ahead of the GPU.
+    static constexpr u32 RENDER_AHEAD = 8;
 
     PresentManager(const Device& device, Scheduler& scheduler, Swapchain& swapchain,
                    CpuDescriptorAllocator& rtv_descriptors, const ShaderCompiler& shader_compiler,
@@ -122,7 +130,9 @@ public:
     PresentManager(const PresentManager&) = delete;
     PresentManager& operator=(const PresentManager&) = delete;
 
-    /// A frame to composite into; blocks while every frame is queued for presentation.
+    /// A frame to composite into; blocks while every frame is queued for presentation. With
+    /// present_mailbox on, reuses the oldest queued frame instead, and only blocks while every
+    /// frame is being copied to the display.
     [[nodiscard]] FrameLease AcquireFrame();
 
     /// Submits the commands recorded so far (they must have rendered the frame) and presents it.
@@ -157,6 +167,11 @@ private:
     void WaitForCopy(u64 value);
     /// Returns frame to the pool.
     void Release(PresentFrame& frame);
+    [[nodiscard]] bool HasFreeFrame();
+    /// A free frame, or null.
+    [[nodiscard]] PresentFrame* TakeFreeFrame();
+    /// present_mailbox: the oldest frame queued and not yet taken by the present thread, or null.
+    [[nodiscard]] PresentFrame* ReuseQueuedFrame();
 
     const Device& device;
     Scheduler& scheduler;
@@ -187,6 +202,9 @@ private:
     bool fg_running{};      ///< GPU thread: the last frame went to frame generation
     double last_new_frame{}; ///< GPU thread: host time of the game's last new frame
     u32 fg_context{};       ///< present thread: next copy context for a generated frame
+    /// GPU thread: render ticks of the last RENDER_AHEAD composites, oldest at the index.
+    std::array<u64, RENDER_AHEAD> composite_ticks{};
+    u32 composite_tick_index{};
 
     std::mutex error_mutex;
     std::optional<std::string> error;

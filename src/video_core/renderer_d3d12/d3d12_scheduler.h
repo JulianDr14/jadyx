@@ -122,6 +122,9 @@ public:
     }
     /// Blocks until tick's list reached the queue; at once without a recording worker.
     void WaitSubmitted(u64 tick);
+    /// The next list to reach the queue waits on the GPU until fence reaches value: work recorded
+    /// after this call runs after it, without the CPU waiting. Any thread.
+    void QueueWaitBeforeNextSubmit(ID3D12Fence* fence, u64 value);
     /// Reaches each tick once its list is done on the GPU; another queue waits for it there.
     [[nodiscard]] ID3D12Fence* Fence() const noexcept {
         return fence.Get();
@@ -264,6 +267,10 @@ private:
     std::deque<PendingRelease> pending_releases;
     std::vector<std::function<void()>> on_submit;
     std::vector<std::function<void()>> on_reset;
+
+    /// QueueWaitBeforeNextSubmit: consumed by the next SubmitRecorded.
+    std::mutex queue_waits_mutex;
+    std::vector<std::pair<ComPtr<ID3D12Fence>, u64>> queue_waits;
 
     /// Serializes submissions; recursive because submit callbacks may end queries.
     std::recursive_mutex submit_mutex;

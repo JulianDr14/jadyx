@@ -6,6 +6,9 @@
 
 #pragma once
 
+#include <array>
+#include <optional>
+
 #include <boost/container/flat_map.hpp>
 
 #include "core/hle/service/nvnflinger/buffer_item.h"
@@ -31,6 +34,13 @@ public:
 private:
     u64 m_frame_number{0};
 
+    /// Frame chain counters (VideoCore::Perf) at each of the last HISTORY_VSYNCS vsyncs: what led
+    /// to a change of the game's swap interval, logged with it.
+    static constexpr size_t HISTORY_VSYNCS = 60;
+    static constexpr size_t HISTORY_COUNTERS = 9;
+    std::array<std::array<u64, HISTORY_COUNTERS>, HISTORY_VSYNCS> m_history{};
+    s32 m_game_swap_interval{};
+
 private:
     using ReleaseFrameNumber = u64;
 
@@ -55,6 +65,8 @@ private:
     bool TryAcquireFramebufferLocked(Layer& layer, Framebuffer& framebuffer);
     CacheStatus CacheFramebufferLocked(Layer& layer, ConsumerId consumer_id);
     void ReleaseFramebuffersLocked(Display& display);
+    /// Once per vsync: records the counters, and logs a change of the game's swap interval.
+    void TrackFrameChainLocked(std::optional<s32> game_swap_interval);
 };
 
 } // namespace Service::Nvnflinger

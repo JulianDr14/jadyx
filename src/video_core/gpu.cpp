@@ -34,9 +34,11 @@
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_thread.h"
+#include "video_core/gpu_written_pages.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/memory_manager.h"
+#include "video_core/frame_pipeline.h"
 #include "video_core/frame_trace.h"
 #include "video_core/perf_counters.h"
 #include "video_core/readback_trace.h"
@@ -201,6 +203,16 @@ struct GPU::Impl {
         });
     }
 
+    /// WaitForSyncOperation for at most timeout; false if the operation has not run by then.
+    [[nodiscard]] bool WaitForSyncOperationFor(const u64 fence,
+                                               std::chrono::microseconds timeout) {
+        std::unique_lock lck{sync_request_mutex};
+        return sync_request_cv.wait_for(lck, timeout, [this, fence] {
+            return CurrentSyncRequestFence() >= fence ||
+                   (shutting_down.load(std::memory_order_acquire) && !sync_request_active);
+        });
+    }
+
     void WaitForIdle() {
         if (shutting_down.load(std::memory_order_acquire)) return;
         const u64 fence = RequestSyncOperation([] {});
@@ -300,6 +312,12 @@ struct GPU::Impl {
 
     VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size) {
         auto raster_area = renderer->ReadRasterizer()->GetFlushArea(addr, size);
+        // cpu_write_defer and jit_read_table trust a clear GpuWrittenPages granule to mean no GPU
+        // data to flush.
+        if (!raster_area.preemtive && VideoCommon::GpuWrittenPages::Enabled() &&
+            !VideoCommon::GpuWrittenPages::AnyMarked(addr, size)) {
+            VideoCore::Perf::Add(VideoCore::Perf::Counter::GpuFlushUnmarked, 1);
+        }
         const auto capture_memory = [&] {
             if (!VideoCommon::FullCapture::Active()) return;
             if (size > (16ULL << 20)) {
@@ -425,6 +443,7 @@ struct GPU::Impl {
         }
         pending_composite_fence = 0;
         earlier_composite_fence = 0;
+        overdue_composite_fence = 0;
         if (shutting_down.load(std::memory_order_relaxed)) {
             return;
         }
@@ -439,7 +458,32 @@ struct GPU::Impl {
         if (shutting_down.load(std::memory_order_relaxed)) {
             return;
         }
-        WaitForSyncOperation(fence);
+        using VideoCore::FramePipeline::Mode;
+        const Mode nowait = VideoCore::FramePipeline::VsyncNowait();
+        if (nowait == Mode::Off) {
+            WaitForSyncOperation(fence);
+            return;
+        }
+        // vsync_nowait: a late GPU thread must not make the guest's vsync late, or a game with a
+        // dynamic swap interval takes the vsync as missed and slows down (interval 2 -> 3).
+        if (const u64 overdue = std::exchange(overdue_composite_fence, 0); overdue != 0) {
+            // A composite already passed over: never more than three in flight (it, the one
+            // before pending and pending), and the oldest is the closest to done.
+            if (!WaitForSyncOperationFor(overdue, std::chrono::microseconds{0})) {
+                VideoCore::Perf::Add(VideoCore::Perf::Counter::VsyncComposeWaitsFull, 1);
+                WaitForSyncOperation(overdue);
+            }
+        }
+        constexpr std::chrono::microseconds MAX_WAIT{2000};
+        if (WaitForSyncOperationFor(fence, MAX_WAIT)) {
+            return;
+        }
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::VsyncComposeWaitsCut, 1);
+        if (nowait == Mode::Check) {
+            WaitForSyncOperation(fence);
+            return;
+        }
+        overdue_composite_fence = fence;
     }
 
     std::vector<u8> GetAppletCaptureBuffer() {
@@ -498,6 +542,7 @@ struct GPU::Impl {
     std::mutex request_swap_mutex;
     u64 pending_composite_fence{};
     u64 earlier_composite_fence{}; // the request before pending_composite_fence, if not waited
+    u64 overdue_composite_fence{}; // vsync_nowait: an earlier composite not waited for in full
 
     std::atomic_bool flush_requested{};
 
