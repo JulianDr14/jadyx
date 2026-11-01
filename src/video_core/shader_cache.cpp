@@ -46,10 +46,14 @@ ShaderCache::ShaderCache(Tegra::MaxwellDeviceMemoryManager& device_memory_)
 
 bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) {
     auto& dirty{maxwell3d->dirty.flags};
-    if (!dirty[VideoCommon::Dirty::Shaders]) {
+    // The pixel stage is left out while rasterization is off. Turning it back on writes no shader
+    // register, so without this check the pixel stage stays out until the shaders change.
+    const bool rasterize_enable = maxwell3d->regs.rasterize_enable != 0;
+    if (!dirty[VideoCommon::Dirty::Shaders] && rasterize_enable == last_rasterize_enable) {
         return last_shaders_valid;
     }
     dirty[VideoCommon::Dirty::Shaders] = false;
+    last_rasterize_enable = rasterize_enable;
 
     const GPUVAddr base_addr{maxwell3d->regs.program_region.Address()};
     if (Common::Pulse::Diagnostics()) {
