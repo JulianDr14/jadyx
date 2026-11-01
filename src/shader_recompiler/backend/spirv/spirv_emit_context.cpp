@@ -2249,6 +2249,19 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
                 Name(frag_color[index], fmt::format("frag_color{}", index));
             }
         }
+        // The hardware tests the alpha the shader wrote, not the one rounded for the target.
+        if (Sirit::ValidId(frag_color[0]) && (runtime_info.unorm8_output_mask & 1) != 0 &&
+            runtime_info.color_output_types[0] == AttributeType::Float &&
+            ((runtime_info.alpha_test_func &&
+              *runtime_info.alpha_test_func != CompareFunction::Always) ||
+             runtime_info.alpha_to_coverage_footprint != 0)) {
+            frag_alpha_unrounded = AddGlobalVariable(
+                TypePointer(spv::StorageClass::Private, F32[1]), spv::StorageClass::Private);
+            Name(frag_alpha_unrounded, "frag_alpha_unrounded");
+            if (profile.supported_spirv >= 0x00010400) {
+                interfaces.push_back(frag_alpha_unrounded);
+            }
+        }
         shader_depth_bias = runtime_info.depth_bias_in_shader && !info.stores_frag_depth;
         if (info.stores_frag_depth || shader_depth_bias) {
             frag_depth = DefineOutput(*this, F32[1], std::nullopt);

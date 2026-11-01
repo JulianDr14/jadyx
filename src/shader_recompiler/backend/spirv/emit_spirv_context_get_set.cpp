@@ -520,6 +520,9 @@ void EmitSetFragColor(EmitContext& ctx, u32 index, u32 component, Id value) {
     const AttributeType type{ctx.runtime_info.color_output_types[index]};
     if (type == AttributeType::Float) {
         if ((ctx.runtime_info.unorm8_output_mask >> index) & 1) {
+            if (index == 0 && component == 3 && Sirit::ValidId(ctx.frag_alpha_unrounded)) {
+                ctx.OpStore(ctx.frag_alpha_unrounded, value);
+            }
             // ceil(x * 255 - 0.5): ties round down, the host's conversion then keeps the step.
             const Id unorm{ctx.OpFClamp(ctx.F32[1], value, ctx.f32_zero_value, ctx.Const(1.0f))};
             const Id scaled{ctx.OpFMul(ctx.F32[1], unorm, ctx.Const(255.0f))};

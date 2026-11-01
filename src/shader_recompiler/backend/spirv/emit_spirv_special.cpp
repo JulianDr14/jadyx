@@ -65,6 +65,15 @@ Id ComparisonFunction(EmitContext& ctx, CompareFunction comparison, Id operand_1
     throw InvalidArgument("Comparison function {}", comparison);
 }
 
+/// Output 0's alpha as the shader wrote it, before any rounding for a UNORM8 target.
+Id FragAlpha(EmitContext& ctx) {
+    if (Sirit::ValidId(ctx.frag_alpha_unrounded)) {
+        return ctx.OpLoad(ctx.F32[1], ctx.frag_alpha_unrounded);
+    }
+    const Id rt0_color{ctx.OpLoad(ctx.F32[4], ctx.frag_color[0])};
+    return ctx.OpCompositeExtract(ctx.F32[1], rt0_color, 3u);
+}
+
 void AlphaTest(EmitContext& ctx) {
     if (!ctx.runtime_info.alpha_test_func) {
         return;
@@ -77,9 +86,7 @@ void AlphaTest(EmitContext& ctx) {
         return;
     }
 
-    const Id type{ctx.F32[1]};
-    const Id rt0_color{ctx.OpLoad(ctx.F32[4], ctx.frag_color[0])};
-    const Id alpha{ctx.OpCompositeExtract(type, rt0_color, 3u)};
+    const Id alpha{FragAlpha(ctx)};
 
     const Id true_label{ctx.OpLabel()};
     const Id discard_label{ctx.OpLabel()};
@@ -102,8 +109,7 @@ void AlphaToCoverage(EmitContext& ctx) {
         return;
     }
     const Id type{ctx.F32[1]};
-    const Id rt0_color{ctx.OpLoad(ctx.F32[4], ctx.frag_color[0])};
-    const Id alpha{ctx.OpCompositeExtract(type, rt0_color, 3u)};
+    const Id alpha{FragAlpha(ctx)};
     Id threshold{ctx.Const(0.5f)};
     if (footprint == 2 && Sirit::ValidId(ctx.input_position)) {
         const Id position{ctx.OpLoad(ctx.F32[4], ctx.input_position)};
