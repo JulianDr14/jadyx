@@ -94,6 +94,8 @@ public:
     void InnerInvalidation(std::span<const std::pair<DAddr, std::size_t>> sequences) override;
     void OnCacheInvalidation(PAddr, u64) override;
     bool OnCPUWrite(PAddr, u64) override;
+    /// GPU thread, before a cache is used: applies the guest writes cpu_write_defer queued.
+    void DrainCpuWrites();
     void InvalidateGPUCache() override;
     void UnmapMemory(DAddr, u64) override;
     void ModifyGPUMemory(size_t, GPUVAddr, u64) override;

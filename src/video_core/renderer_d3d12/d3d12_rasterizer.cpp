@@ -22,6 +22,7 @@
 #include "video_core/framebuffer_config.h"
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
+#include "video_core/cpu_write_queue.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 #include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
@@ -207,6 +208,7 @@ bool RasterizerD3D12::WaitPendingPipeline(GraphicsPipeline* pipeline, u32 vertic
 }
 
 void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
+    DrainCpuWrites();
     const bool full = VideoCommon::FullCapture::Active();
     if (full) {
         ++full_capture_operation;
@@ -480,6 +482,7 @@ void RasterizerD3D12::RecordDraw(const GraphicsPipeline& pipeline,
 }
 
 void RasterizerD3D12::DispatchCompute() {
+    DrainCpuWrites();
     const bool full = VideoCommon::FullCapture::Active();
     if (full) {
         ++full_capture_operation;
@@ -750,6 +753,7 @@ std::optional<RasterizerD3D12::DisplayTexture> RasterizerD3D12::AccelerateDispla
     if (!framebuffer_addr) {
         return std::nullopt;
     }
+    DrainCpuWrites();
     std::scoped_lock lock{texture_cache.mutex};
     const auto [image_view, scaled] =
         texture_cache.TryFindFramebufferImageView(config, framebuffer_addr);
@@ -1025,6 +1029,34 @@ void RasterizerD3D12::InnerInvalidation(
     }
 }
 
+void RasterizerD3D12::DrainCpuWrites() {
+    if (VideoCommon::CpuWriteQueue::Empty()) {
+        return;
+    }
+    cpu_writes_drained.clear();
+    u64 late = 0;
+    {
+        std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+        const u64 drained = VideoCommon::CpuWriteQueue::Drain([&](u64 address, u64 size) {
+            // OnCPUWrite, with the locks taken once for the batch.
+            if (buffer_cache.OnCPUWrite(address, size)) {
+                cpu_writes_after_gpu.emplace_back(address, size);
+                ++late;
+                return;
+            }
+            texture_cache.WriteMemory(address, size);
+            cpu_writes_drained.emplace_back(address, size);
+        });
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::CpuWritesDrained, drained);
+    }
+    if (late != 0) {
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::CpuWritesLateGpu, late);
+    }
+    for (const auto& [address, size] : cpu_writes_drained) {
+        pipeline_cache.InvalidateRegion(address, size);
+    }
+}
+
 bool RasterizerD3D12::OnCPUWrite(PAddr address, u64 size) {
     {
         std::scoped_lock lock{buffer_cache.mutex};
@@ -1042,7 +1074,14 @@ void RasterizerD3D12::OnCacheInvalidation(PAddr address, u64 size) {
     InvalidateRegion(address, size, VideoCommon::CacheType::TextureCache |
                                         VideoCommon::CacheType::BufferCache);
 }
-void RasterizerD3D12::InvalidateGPUCache() { gpu.InvalidateGPUCache(); }
+void RasterizerD3D12::InvalidateGPUCache() {
+    DrainCpuWrites();
+    for (const auto& [address, size] : cpu_writes_after_gpu) {
+        OnCacheInvalidation(address, size);
+    }
+    cpu_writes_after_gpu.clear();
+    gpu.InvalidateGPUCache();
+}
 void RasterizerD3D12::UnmapMemory(DAddr address, u64 size) {
     { std::scoped_lock lock{texture_cache.mutex}; texture_cache.UnmapMemory(address, size); }
     { std::scoped_lock lock{buffer_cache.mutex}; buffer_cache.WriteMemory(address, size); }
@@ -1118,6 +1157,7 @@ void RasterizerD3D12::FlushIfUploadHeavy() {
 }
 void RasterizerD3D12::TickFrame() {
     Common::BugTracker::TickFrame();
+    DrainCpuWrites();
     draw_counter = 0;
     ResetPendingWaitBudget();
     if (GetPsoLoading() != VideoCore::FramePipeline::Mode::Off) {
@@ -1147,6 +1187,7 @@ void RasterizerD3D12::TickFrame() {
 bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,
                                             const Tegra::Engines::Fermi2D::Surface& dst,
                                             const Tegra::Engines::Fermi2D::Config& config) {
+    DrainCpuWrites();
     HuntScope hunt{draw_hunt, Hunt::Kind::Blit};
     std::scoped_lock lock{texture_cache.mutex};
     hunt.Target(nullptr);
@@ -1164,9 +1205,13 @@ bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surfa
     return blitted;
 }
 
-Tegra::Engines::AccelerateDMAInterface& RasterizerD3D12::AccessAccelerateDMA() { return accelerate_dma; }
+Tegra::Engines::AccelerateDMAInterface& RasterizerD3D12::AccessAccelerateDMA() {
+    DrainCpuWrites(); // called on each DMA launch
+    return accelerate_dma;
+}
 void RasterizerD3D12::AccelerateInlineToMemory(GPUVAddr address, size_t size,
                                                std::span<const u8> memory) {
+    DrainCpuWrites();
     const auto cpu_address = gpu_memory->GpuToCpuAddress(address);
     if (!cpu_address) return gpu_memory->WriteBlock(address, memory.data(), size);
     gpu_memory->WriteBlockUnsafe(address, memory.data(), size);

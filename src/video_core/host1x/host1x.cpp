@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "core/core.h"
+#include "video_core/gpu_written_pages.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/nvdec.h"
 #include "video_core/host1x/vic.h"
@@ -17,9 +18,18 @@ Host1x::Host1x(Core::System& system_)
     , memory_manager(system.DeviceMemory())
     , gmmu_manager{system, memory_manager, 32, 0, 12}
     , allocator{1 << 12}
-{}
+{
+    // jit_read_table: memory the GPU writes for the first time leaves the JIT load table.
+    VideoCommon::GpuWrittenPages::SetNewlyMarkedHook(
+        [](void* context, u64 addr, u64 size) {
+            static_cast<Tegra::MaxwellDeviceMemoryManager*>(context)->MarkGpuWritten(addr, size);
+        },
+        &memory_manager);
+}
 
-Host1x::~Host1x() = default;
+Host1x::~Host1x() {
+    VideoCommon::GpuWrittenPages::SetNewlyMarkedHook(nullptr, nullptr);
+}
 
 void Host1x::StartDevice(s32 fd, ChannelType type, u32 syncpt) {
     switch (type) {
