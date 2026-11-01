@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
@@ -11,6 +12,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <fmt/format.h>
@@ -19,6 +21,7 @@
 #include "common/logging.h"
 #include "common/memory_ledger.h"
 #include "common/settings.h"
+#include "common/thread.h"
 #include "video_core/renderer_d3d12/d3d12_command_stream.h"
 #include "video_core/renderer_d3d12/d3d12_debug_messages.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
@@ -370,9 +373,21 @@ Device::Device() {
     Common::SetGpuMemoryUnified(arch_known && arch.UMA);
     discrete_memory = arch_known && !arch.UMA;
     if (discrete_memory) {
-        const DXGI_QUERY_VIDEO_MEMORY_INFO cache = QueryCacheVideoMemory();
+        const DXGI_QUERY_VIDEO_MEMORY_INFO cache = ReadCacheVideoMemory();
         LOG_INFO(Render, "D3D12: discrete GPU memory: caches collect against {} MiB ({} MiB local)",
                  cache.Budget >> 20, initial_budget >> 20);
+    }
+    if (adapter3) {
+        // QueryVideoMemoryInfo enters the graphics kernel. On the GPU thread, with both cache locks
+        // held, every kernel stall there also stopped the guest cores waiting on those locks.
+        PublishCacheVideoMemory(ReadCacheVideoMemory());
+        video_memory_thread = std::jthread([this](std::stop_token stop) {
+            Common::SetCurrentThreadName("D3D12VideoMemory");
+            while (!stop.stop_requested()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{100});
+                PublishCacheVideoMemory(ReadCacheVideoMemory());
+            }
+        });
     }
 }
 
@@ -1150,6 +1165,18 @@ DXGI_QUERY_VIDEO_MEMORY_INFO Device::QueryVideoMemory() const {
 }
 
 DXGI_QUERY_VIDEO_MEMORY_INFO Device::QueryCacheVideoMemory() const {
+    DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+    info.CurrentUsage = cache_video_used.load(std::memory_order_relaxed);
+    info.Budget = cache_video_budget.load(std::memory_order_relaxed);
+    return info;
+}
+
+void Device::PublishCacheVideoMemory(const DXGI_QUERY_VIDEO_MEMORY_INFO& info) {
+    cache_video_used.store(info.CurrentUsage, std::memory_order_relaxed);
+    cache_video_budget.store(info.Budget, std::memory_order_relaxed);
+}
+
+DXGI_QUERY_VIDEO_MEMORY_INFO Device::ReadCacheVideoMemory() const {
     DXGI_QUERY_VIDEO_MEMORY_INFO local = QueryVideoMemory();
     DXGI_QUERY_VIDEO_MEMORY_INFO system{};
     if (!discrete_memory || local.Budget == 0 ||
