@@ -636,6 +636,8 @@ enum class Text : std::uint16_t {
     FrameGenHint,
     ShaderBuild,
     ShaderBuildHint,
+    SlowGuestClock,
+    SlowGuestClockHint,
     ShaderBuildSkip,
     ShaderBuildBalanced,
     ShaderBuildWait,

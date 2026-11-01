@@ -1832,10 +1832,11 @@ private:
                 const auto discard = I18n::Format(T::PulseDiscardConfirm, {PromptKey(Navigation::Play).letters});
                 in_place(option, pulse, game.pulse_saved.empty() ? std::wstring_view{} : std::wstring_view{discard});
             } else if (option == GameOption::Graphics && view.graphics && view.global_graphics) {
-                // The same rows as Settings > Graphics, each one the game's own or what it follows.
+                // The rows of Settings > Graphics, each one the game's own or what it follows, and
+                // the game's guest clock.
                 Type(Tr(T::GameGraphicsHint), TypeRole::Body, 56, 222, 1168, Palette::TextSecondary);
                 const bool focused = view.page.focus == GameOptionsFocus::Content;
-                for (std::size_t i = 0; i < GraphicsRowCount; ++i) {
+                for (std::size_t i = 0; i < GameGraphicsRowCount; ++i) {
                     const auto row = static_cast<GraphicsRow>(i);
                     const SettingsRow item{SettingsRow::Kind::Choice, std::wstring{Tr(GraphicsRowTitle(row))},
                                            std::wstring{Tr(GraphicsRowHint(row))},

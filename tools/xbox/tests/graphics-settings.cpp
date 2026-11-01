@@ -91,6 +91,12 @@ int main() {
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.shaders == ShaderBuild::Balanced);
     check(ResolveGraphics(global, shaders).shaders == ShaderBuild::Balanced);
     check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Back));
+    // The guest clock is the game's own: a row only in its pane, off until the player turns it on.
+    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::GuestClock));
+    check(GameGraphicsRowValue(global, shaders, GraphicsRow::GuestClock) == L"No");
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Confirm) && shaders.slow_guest_clock);
+    check(GameGraphicsRowValue(global, shaders, GraphicsRow::GuestClock) == L"Sí");
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.slow_guest_clock);
     check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == 0);
 
     std::puts("graphics settings: defaults, FSR or frame generation, page, per-game overrides PASS");

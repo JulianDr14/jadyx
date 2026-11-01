@@ -62,6 +62,7 @@
 #include "dynarmic/interface/code_memory.h"
 #include "core/arm/jit_prewarm.h"
 #include "core/core.h"
+#include "core/core_timing.h"
 #include "core/perf_stats.h"
 #include "core/cpu_manager.h"
 #include "core/device_memory.h"
@@ -591,6 +592,8 @@ struct BootConfig {
     /// "vsync_nowait=0|1|check".
     VideoCore::FramePipeline::Mode present_mailbox{VideoCore::FramePipeline::Mode::On};
     VideoCore::FramePipeline::Mode vsync_nowait{VideoCore::FramePipeline::Mode::On};
+    /// "guest_clock_scale=50-100", over the game's own setting (CoreTiming::SetGuestClockPercent).
+    std::optional<u32> guest_clock_percent;
     /// "swap_interval_hold=0|1|check".
     VideoCore::FramePipeline::Mode swap_interval_hold{VideoCore::FramePipeline::Mode::Off};
     /// "pso_budget=0|1|check" (D3D12::SetPsoBudget).
@@ -759,7 +762,10 @@ static void ApplyGameGraphics(Core::System& system, const BootConfig& config, u6
     if (!config.frame_gen)
         D3D12::SetFrameGenMode(graphics.frame_gen ? D3D12::FrameGenMode::Auto : D3D12::FrameGenMode::Off);
     if (!config.async_pipelines) D3D12::SetAsyncPipelines(ToAsyncPipelines(graphics.shaders));
-    WriteDiag("graphics: upscaling " +
+    const u32 clock_percent = config.guest_clock_percent.value_or(
+        LoadGameGraphics(program_id).slow_guest_clock ? SlowGuestClockPercent : 100);
+    if (clock_percent != 100) system.CoreTiming().SetGuestClockPercent(clock_percent);
+    WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, upscaling " +
               (config.upscaling ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(UpscalingText(graphics.upscaling)))) +
               ", frame generation " +
               (config.frame_gen ? std::string{"from boot.cfg"} : std::string{graphics.frame_gen ? "auto" : "off"}) +
@@ -3708,6 +3714,19 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     std::ifstream cfg{install_path + "\\boot.cfg"};
                     for (std::string line; std::getline(cfg, line);) {
                         // Outside the chain below, which is at the compiler's nesting limit.
+                        if (line.starts_with("guest_clock_scale=")) {
+                            const std::string_view value = std::string_view{line}.substr(18);
+                            u32 parsed{};
+                            const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+                            if (result.ec == std::errc{} && result.ptr == value.data() + value.size() &&
+                                parsed >= 50 && parsed <= 100) {
+                                config.guest_clock_percent = parsed;
+                                WriteDiag("boot.cfg: guest clock at " + std::to_string(parsed) + " %");
+                            } else {
+                                WriteDiag("boot.cfg: invalid guest_clock_scale (50-100), ignored");
+                            }
+                            continue;
+                        }
                         if (line.starts_with("jit_prewarm_mib=")) {
                             const std::string_view value = std::string_view{line}.substr(16);
                             u32 parsed{};

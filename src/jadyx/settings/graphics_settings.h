@@ -68,9 +68,13 @@ struct GameGraphics {
     std::optional<Upscaling> upscaling;
     std::optional<bool> frame_gen;
     std::optional<ShaderBuild> shaders;
+    bool slow_guest_clock{}; ///< Only a game's own: there is no global setting to follow.
 
     bool operator==(const GameGraphics&) const = default;
 };
+
+/// What the guest's clock runs at for a game with slow_guest_clock on.
+inline constexpr std::uint32_t SlowGuestClockPercent = 90;
 
 inline bool IsFsr(Upscaling upscaling) {
     return upscaling != Upscaling::Bilinear;

@@ -686,6 +686,8 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::FrameGenHint, L"Crea cuadros intermedios: un juego a 20 fps se ve a 30. Apaga el FSR"},
     {Text::ShaderBuild, L"Shaders nuevos"},
     {Text::ShaderBuildHint, L"Qué hace el juego mientras compila un shader"},
+    {Text::SlowGuestClock, L"Reloj del juego al 90 %"},
+    {Text::SlowGuestClockHint, L"Para juegos que saltan entre 20 y 30 fps. Si se ve lento, apágalo"},
     {Text::ShaderBuildSkip, L"Saltar (completo)"},
     {Text::ShaderBuildBalanced, L"Equilibrado"},
     {Text::ShaderBuildWait, L"Esperar"},

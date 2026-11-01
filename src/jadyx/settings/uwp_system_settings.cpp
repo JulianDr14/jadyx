@@ -161,6 +161,8 @@ GameGraphics LoadGameGraphics(std::uint64_t program_id) {
         if (values.HasKey(frame_gen)) graphics.frame_gen = winrt::unbox_value<bool>(values.Lookup(frame_gen));
         const auto shaders = GameGraphicsKey(L"shaders", program_id);
         graphics.shaders = LoadChoice(values, shaders.c_str(), SelectableShaderBuilds());
+        const auto slow_clock = GameGraphicsKey(L"slow_clock", program_id);
+        if (values.HasKey(slow_clock)) graphics.slow_guest_clock = winrt::unbox_value<bool>(values.Lookup(slow_clock));
     } catch (...) { /* A missing or invalid value follows Settings > Graphics. */ }
     return graphics;
 }
@@ -171,6 +173,8 @@ bool SaveGameGraphics(std::uint64_t program_id, const GameGraphics& graphics) {
         SaveOverride(values, GameGraphicsKey(L"upscaling", program_id), graphics.upscaling);
         SaveOverride(values, GameGraphicsKey(L"frame_gen", program_id), graphics.frame_gen);
         SaveOverride(values, GameGraphicsKey(L"shaders", program_id), graphics.shaders);
+        SaveOverride(values, GameGraphicsKey(L"slow_clock", program_id),
+                     graphics.slow_guest_clock ? std::optional<bool>{true} : std::nullopt);
         return true;
     } catch (...) { return false; }
 }
