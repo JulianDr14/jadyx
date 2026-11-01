@@ -208,6 +208,7 @@ void FixedPipelineState::Refresh(Tegra::Engines::Maxwell3D& maxwell3d, DynamicFe
                 attribute.offset.Assign(input.offset);
                 attribute.type.Assign(static_cast<u32>(input.type.Value()));
                 attribute.size.Assign(static_cast<u32>(input.size.Value()));
+                attribute.bgra.Assign(input.bgra);
             }
         }
     }
