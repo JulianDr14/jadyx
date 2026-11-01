@@ -15,6 +15,9 @@
 #include "common/fs/path_util.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_local_memory_matrix.h"
 #include "common/settings.h"
+#ifdef _WIN32
+#include "common/windows/sampling_profiler.h"
+#endif
 #include "core/frontend/emu_window.h"
 #include "core/frontend/graphics_context.h"
 #include "video_core/capture.h"
@@ -203,6 +206,9 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
         return;
     }
     last_framebuffers.assign(framebuffers.begin(), framebuffers.end());
+#ifdef _WIN32
+    Common::SamplingProfiler::NoteFrame();
+#endif
     if (!present_failed) {
         try {
             if (std::optional<std::string> error = present_manager.TakeError()) {

@@ -43,4 +43,8 @@ void Stop();
 
 [[nodiscard]] bool Running();
 
+/// A frame was finished. While the next one is more than 120 ms late, every thread is sampled, with
+/// state S, whether it runs or not. Cheap; safe before Start.
+void NoteFrame();
+
 } // namespace Common::SamplingProfiler
