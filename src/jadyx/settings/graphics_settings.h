@@ -103,6 +103,12 @@ inline GraphicsSettings ResolveGraphics(const GraphicsSettings& global, const Ga
     return resolved;
 }
 
+/// Whether a game presents at the TV's resolution (4K on a 4K TV): FSR enlarges its image up to
+/// it. Frame generation and the bilinear blit present at 1080p, where generating frames is cheap.
+inline bool UsesScreenResolution(const GraphicsSettings& settings) {
+    return IsFsr(settings.upscaling) && !settings.frame_gen;
+}
+
 /// Steps a game's upscaling through "as Settings > Graphics" and every choice. FSR chosen for
 /// the game turns its frame generation off.
 inline void StepGameUpscaling(GameGraphics& game, bool back) {

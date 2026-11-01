@@ -3287,6 +3287,10 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
             std::string library_pick;
             bool output_4k = false;
             bool output_1080p = false;
+            std::optional<Jadyx::Upscaling> cfg_upscaling;
+            std::optional<bool> cfg_frame_gen;
+            u64 library_program_id = 0;
+            Jadyx::BootSurface library_surface = surface;
             Jadyx::BootSurface game_surface = surface;
             try {
                 const auto install = std::filesystem::path{
@@ -3297,40 +3301,40 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     else if (line.starts_with("library_pick=")) library_pick = line.substr(13);
                     else if (line == "output=4k") output_4k = true;
                     else if (line == "output=1080p") output_1080p = true;
+                    // The same keys the boot reads (BootConfig), here only for the output size.
+                    else if (line.starts_with("upscaling=")) cfg_upscaling = Jadyx::ParseUpscaling(line.substr(10));
+                    else if (line == "frame_gen=off") cfg_frame_gen = false;
+                    else if (line == "frame_gen=auto" || line == "frame_gen=30" || line == "frame_gen=60")
+                        cfg_frame_gen = true;
                 }
 
-                // Experimental: the library and the game present on a swapchain the size of the
-                // TV's current mode (3840x2160 on a 4K TV). The library draws at that size; the
-                // game still renders at its own resolution and the present upscales it (FSR 1
-                // when the in-game menu selects it). The launch splash stays at window size.
-                if (output_4k && surface.core_window != nullptr) {
+                // The swapchain the size of the TV's current mode (3840x2160 on a 4K TV); the
+                // window's own size (1920x1080 on the console) when the mode is not larger.
+                const auto screen_surface = [&surface, session] {
+                    Jadyx::BootSurface screen = surface;
+                    if (surface.core_window == nullptr) return screen;
                     try {
                         const auto hdmi = Windows::Graphics::Display::Core::HdmiDisplayInformation::
                             GetForCurrentView();
                         const auto mode = hdmi ? hdmi.GetCurrentDisplayMode() : nullptr;
                         if (mode && mode.ResolutionWidthInRawPixels() > surface.width) {
-                            game_surface.width = mode.ResolutionWidthInRawPixels();
-                            game_surface.height = mode.ResolutionHeightInRawPixels();
-                            if (session == 1) {
-                                WriteDiag("boot.cfg: output " + std::to_string(game_surface.width) +
-                                          "x" + std::to_string(game_surface.height) + " (display mode)");
-                            }
+                            screen.width = mode.ResolutionWidthInRawPixels();
+                            screen.height = mode.ResolutionHeightInRawPixels();
                         } else if (session == 1) {
-                            WriteDiag("boot.cfg: output=4k ignored, the display mode is not larger than " +
+                            WriteDiag("output: the display mode is not larger than " +
                                       std::to_string(surface.width) + "x" + std::to_string(surface.height));
                         }
                     } catch (const winrt::hresult_error& e) {
-                        WriteDiag("boot.cfg: output=4k ignored, no display mode: " +
-                                  winrt::to_string(e.message()));
+                        WriteDiag("output: no display mode: " + winrt::to_string(e.message()));
                     }
-                }
+                    return screen;
+                };
 
-                // Experimental: a fixed 1920x1080 swapchain on high-DPI PC screens; the present stretches it.
-                if (output_1080p) {
-                    game_surface.width = 1920;
-                    game_surface.height = 1080;
-                    if (session == 1) WriteDiag("boot.cfg: output 1920x1080 (fixed)");
-                }
+                // boot.cfg output=4k / output=1080p force a size on the library and the game, for
+                // test runs. 1080p is a fixed swapchain on high-DPI PC screens; the present
+                // stretches it.
+                if (output_4k) library_surface = screen_surface();
+                if (output_1080p) library_surface = {surface.core_window, 1920, 1080};
 
                 if (show_library) {
                     if (session > 1) {
@@ -3342,10 +3346,10 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     const auto local = std::filesystem::path{
                         Windows::Storage::ApplicationData::Current().LocalFolder().Path().c_str()};
                     WriteDiag("library: scanning LocalState/games; waiting for user selection");
-                    library_game = Jadyx::ShowGameLibrary(surface.core_window, game_surface.width,
-                        game_surface.height, local / L"games", [install, local] { SeedUserData(install, local); },
+                    library_game = Jadyx::ShowGameLibrary(surface.core_window, library_surface.width,
+                        library_surface.height, local / L"games", [install, local] { SeedUserData(install, local); },
                         session <= 2 && library_error.empty() ? std::string_view{library_pick} : std::string_view{},
-                        library_error);
+                        library_error, &library_program_id);
                     library_active = false;
                     if (!library_game) {
                         WriteDiag("library: closed by user");
@@ -3356,6 +3360,28 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
                     // The window is never left blank while the game loads.
                     Jadyx::ShowLaunchSplash(surface.core_window, surface.width, surface.height);
                 }
+
+                // The game's graphics (its own over Settings > Graphics, as ApplyGameGraphics
+                // resolves them once it is loaded) pick the swapchain, which exists before the
+                // game does: FSR presents at the TV's resolution, frame generation and the
+                // bilinear blit at 1080p. A game the library did not name follows Settings.
+                if (output_4k || output_1080p) {
+                    game_surface = library_surface;
+                } else {
+                    Jadyx::GraphicsSettings graphics = Jadyx::ResolveGraphics(
+                        Jadyx::LoadGraphicsSettings(),
+                        library_program_id != 0 ? Jadyx::LoadGameGraphics(library_program_id) : Jadyx::GameGraphics{});
+                    if (cfg_upscaling) graphics.upscaling = *cfg_upscaling;
+                    if (cfg_frame_gen) graphics.frame_gen = *cfg_frame_gen;
+                    if (Jadyx::UsesScreenResolution(graphics)) game_surface = screen_surface();
+                }
+                char program[17];
+                std::snprintf(program, sizeof(program), "%016llX",
+                              static_cast<unsigned long long>(library_program_id));
+                WriteDiag("output: " + std::to_string(game_surface.width) + "x" +
+                          std::to_string(game_surface.height) +
+                          (output_4k || output_1080p ? std::string{" (boot.cfg)"}
+                                                     : std::string{" (graphics of "} + program + ")"));
             } catch (const std::exception& e) {
                 WriteDiag(std::string("library: failed: ") + e.what());
                 return;
