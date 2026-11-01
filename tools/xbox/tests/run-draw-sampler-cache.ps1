@@ -8,7 +8,7 @@ $samplerDir = New-Item -ItemType Directory -Force (Join-Path $samplerRoot 'build
 $samplerCommands = @('@echo off', ('call "' + $samplerVs + '\VC\Auxiliary\Build\vcvarsall.bat" x64'),
     'if errorlevel 1 exit /b 1', ('cd /d "' + $samplerDir.FullName + '"'),
     ('cl /nologo /O2 /std:c++20 /EHsc /I"' + $samplerRoot + '\src" "' + $PSScriptRoot + '\draw-sampler-cache.cpp" /Fo:draw-sampler-cache.obj /Fe:draw-sampler-cache.exe'),
-    'if errorlevel 1 exit /b 1', 'draw-sampler-cache.exe')
+    'if errorlevel 1 exit /b 1', '.\draw-sampler-cache.exe')
 Set-Content (Join-Path $samplerDir 'build.cmd') $samplerCommands -Encoding ascii
 & "$env:SystemRoot\System32\cmd.exe" /d /c (Join-Path $samplerDir 'build.cmd')
 if ($LASTEXITCODE -ne 0) { throw 'Draw sampler cache gate failed' }
