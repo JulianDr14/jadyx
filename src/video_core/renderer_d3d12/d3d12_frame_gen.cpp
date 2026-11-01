@@ -538,7 +538,8 @@ std::optional<u32> FrameGen::RecordIngest(ID3D12Resource* image) {
                 Dispatch(cmd, motion_pipeline.Get(), constants, sources, dest, dest.width,
                          dest.height);
                 stats_barrier();
-                constants[4] = GLOBAL_PICK;
+                // With the previous pair's slot: its global vector counts as a near one.
+                constants[4] = flags | GLOBAL_PICK;
                 Dispatch(cmd, motion_pipeline.Get(), constants, sources, dest, 1, 1);
                 stats_barrier();
                 continue;
