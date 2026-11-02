@@ -39,17 +39,13 @@ void TranslatorVisitor::CAL(u64) {
     // CAL is a no-op
 }
 
-void TranslatorVisitor::CCTL(u64) {
-    ThrowNotImplemented(Opcode::CCTL);
-}
+// Cache control only flushes or invalidates the guest GPU caches; host memory is already
+// coherent for the shader, so there is nothing to emit.
+void TranslatorVisitor::CCTL(u64) {}
 
-void TranslatorVisitor::CCTLL(u64) {
-    ThrowNotImplemented(Opcode::CCTLL);
-}
+void TranslatorVisitor::CCTLL(u64) {}
 
-void TranslatorVisitor::CCTLT(u64) {
-    ThrowNotImplemented(Opcode::CCTLT);
-}
+void TranslatorVisitor::CCTLT(u64) {}
 
 void TranslatorVisitor::CONT(u64) {
     ThrowNotImplemented(Opcode::CONT);
