@@ -224,7 +224,6 @@ void MaxwellDMA::CopyBlockLinearToPitch() {
 
 void MaxwellDMA::CopyPitchToBlockLinear() {
     UNIMPLEMENTED_IF_MSG(regs.dst_params.block_size.width != 0, "Block width is not one");
-    UNIMPLEMENTED_IF(regs.dst_params.layer != 0);
 
     const bool is_remapping = regs.launch_dma.remap_enable != 0;
     const u32 num_remap_components = regs.remap_const.num_dst_components_minus_one + 1;
@@ -243,8 +242,10 @@ void MaxwellDMA::CopyPitchToBlockLinear() {
     DMA::ImageCopy copy_info{};
     copy_info.length_x = regs.line_length_in;
     copy_info.length_y = regs.line_count;
+    // The accelerated copy has no slice offset: a copy into another slice of a 3D image (layer)
+    // takes the swizzle below.
     auto& accelerate = rasterizer->AccessAccelerateDMA();
-    if (accelerate.BufferToImage(copy_info, src_operand, dst_operand)) {
+    if (regs.dst_params.layer == 0 && accelerate.BufferToImage(copy_info, src_operand, dst_operand)) {
         return;
     }
 
@@ -284,7 +285,7 @@ void MaxwellDMA::CopyPitchToBlockLinear() {
     //  If the input is linear and the output is tiled, swizzle the input and copy it over.
     SwizzleSubrect(tmp_write_buffer, tmp_read_buffer, bytes_per_pixel, width, height, depth,
                    x_offset, dst_params.origin.y, x_elements, regs.line_count, block_height,
-                   block_depth, regs.pitch_in);
+                   block_depth, regs.pitch_in, dst_params.layer);
 }
 
 void MaxwellDMA::CopyBlockLinearToBlockLinear() {
