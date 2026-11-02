@@ -75,16 +75,19 @@ void TranslatorVisitor::BAR(u64 insn) {
     if (mode != Mode::Sync) {
         throw NotImplementedException("BAR mode {}", mode);
     }
-    if (bar.is_a_imm == 0) {
+    // Register inputs are only taken when they are RZ: nouveau-derived compilers (uam, used by
+    // deko3d) emit barrier() with both inputs in RZ instead of as immediate zeros.
+    const auto is_zero_reg{[insn](u64 offset) { return ((insn >> offset) & 0xff) == 0xff; }};
+    if (bar.is_a_imm == 0 && !is_zero_reg(8)) {
         throw NotImplementedException("Non-immediate input A");
     }
-    if (bar.imm_a != 0) {
+    if (bar.is_a_imm != 0 && bar.imm_a != 0) {
         throw NotImplementedException("Non-zero input A");
     }
-    if (bar.is_b_imm == 0) {
+    if (bar.is_b_imm == 0 && !is_zero_reg(20)) {
         throw NotImplementedException("Non-immediate input B");
     }
-    if (bar.imm_b != 0) {
+    if (bar.is_b_imm != 0 && bar.imm_b != 0) {
         throw NotImplementedException("Non-zero input B");
     }
     if (bar.pred != IR::Pred::PT && bar.neg_pred != 0) {
