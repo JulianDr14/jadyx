@@ -128,7 +128,7 @@ Failures the baseline records, by cause (2026-11-01):
 
 | Cause | Scenes |
 |---|---|
-| The default `gpu_fence=immediate` signals syncpoints before a query result reaches guest memory; with `gpu_fence=safe` they pass | `report_primitives`, `report_samples_passed` |
+| The default GPU fence (Immediate) signals syncpoints before a query result reaches guest memory; with Safe (Settings > Graphics, or `gpu_fence=safe`) they pass | `report_primitives`, `report_samples_passed` |
 | deko3d lays out 6 block rows with a GOB block height of 1, and the texture cache's inherited rule shrinks level 0 to height 0 when it reads them back; the rule is shared with every game, so it stays | `astc_4x4`, `astc_5x4`, `astc_srgb_4x4`, `astc_srgb_5x4` |
 | A domain shader without a hull shader: D3D12 needs a synthesized hull shader | `tess_quads_fixed_levels` |
 | `imageLoad` compiles to a raw 32-bit load on an RGBA8 image, and the D3D12 UAV keeps the UNORM format, so the load returns float bits; it needs relaxed format casting or a repack per binding | `image_read_fragment` |
