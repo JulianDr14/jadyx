@@ -70,13 +70,20 @@ struct GraphicsPipelineCacheKey {
     /// alpha-to-coverage with this footprint (Shader::RuntimeInfo::alpha_to_coverage_footprint)
     /// and the PSO does not. Bit 3 (SHADER_DEPTH_BIAS): the fragment shader adds the depth bias
     /// (Shader::RuntimeInfo::depth_bias_in_shader) and the PSO has none.
+    /// Bits 4-7 (SAMPLE_MASK_SHIFT): samples 0-3 the guest's sample mask turns off. Zero keeps
+    /// every sample, so the keys of pipelines already on disk stay valid.
     u8 shader_flags;
     static constexpr u8 SHADER_REDUCTION = 1;
     static constexpr u32 SHADER_A2C_SHIFT = 1;
     static constexpr u8 SHADER_DEPTH_BIAS = 8;
+    static constexpr u32 SAMPLE_MASK_SHIFT = 4;
 
     [[nodiscard]] u8 ShaderAlphaToCoverage() const noexcept {
         return static_cast<u8>((shader_flags >> SHADER_A2C_SHIFT) & 3);
+    }
+
+    [[nodiscard]] UINT SampleMask() const noexcept {
+        return ~static_cast<UINT>(shader_flags >> SAMPLE_MASK_SHIFT);
     }
 
     size_t Hash() const noexcept;

@@ -292,6 +292,12 @@ void GraphicsPipelineCacheKey::RefreshStatic(const Maxwell& regs) noexcept {
     if (shader_bias) {
         shader_flags |= SHADER_DEPTH_BIAS;
     }
+    // The mask is per position of a 2x2 footprint, which D3D12 lacks: the first one stands for all.
+    // Registers never written read 0, which keeps every sample rather than none.
+    const u32 sample_mask = regs.sample_mask_pos.x0_y0;
+    if (sample_mask != 0 && MaxwellToD3D12::SampleCount(state.msaa_mode) > 1) {
+        shader_flags |= static_cast<u8>((~sample_mask & 0xF) << SAMPLE_MASK_SHIFT);
+    }
 }
 
 GraphicsPipeline::GraphicsPipeline(const Device& device_,
@@ -1195,7 +1201,7 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
         .BackFace = StencilFace(dynamic.back),
     };
 
-    desc.SampleMask = UINT_MAX;
+    desc.SampleMask = key.SampleMask();
     desc.SampleDesc = {.Count = MaxwellToD3D12::SampleCount(state.msaa_mode), .Quality = 0};
 
     return desc;
