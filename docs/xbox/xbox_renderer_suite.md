@@ -124,16 +124,26 @@ used to check them. A scene that fails in the first baseline may be an emulator 
 expects the wrong thing. Either way the baseline records it as a known failure, and the suite then
 reports when it changes.
 
-Failures the first baseline records, by cause (2026-11-01):
+Failures the baseline records, by cause (2026-11-01):
 
 | Cause | Scenes |
 |---|---|
-| Early syncpoints (the default `gpu_fence=safe`) tell the guest the work is done before what a compute shader or a query wrote reaches guest memory; with `gpu_fence=wait` they pass | `compute_fill`, `compute_fill_copied`, `compute_indirect`, `compute_ids`, `compute_uniforms`, `compute_samples_texture`, `math_float`, `control_flow`, `report_primitives`, `report_samples_passed` |
-| Integer clears and integer draw targets | `clear_*int`, `draw_*_Sint` |
-| Shader instructions the recompiler does not translate (CCTL, IMAD and IMUL forms) | the scenes that use them |
-| Tessellation | `tess_triangles`, `tess_quads` |
-| Other query reports read zero | the remaining `report_*` |
-| D3D12 has no equivalent | blend constant mixes, logic op on UNORM, last provoking vertex, custom restart index, wide and stippled lines, points, polygon modes and stipple, viewport swizzles |
+| The default `gpu_fence=immediate` signals syncpoints before a query result reaches guest memory; with `gpu_fence=safe` they pass | `report_primitives`, `report_samples_passed` |
+| deko3d lays out 6 block rows with a GOB block height of 1, and the texture cache's inherited rule shrinks level 0 to height 0 when it reads them back; the rule is shared with every game, so it stays | `astc_4x4`, `astc_5x4`, `astc_srgb_4x4`, `astc_srgb_5x4` |
+| A domain shader without a hull shader: D3D12 needs a synthesized hull shader | `tess_quads_fixed_levels` |
+| `imageLoad` compiles to a raw 32-bit load on an RGBA8 image, and the D3D12 UAV keeps the UNORM format, so the load returns float bits; it needs relaxed format casting or a repack per binding | `image_read_fragment` |
+| D3D12 has one blend constant for color and alpha | `blend_src_Const*`, `blend_src_InvConst*` |
+| D3D12 logic ops only work on UINT render targets | `logic_op` |
+| D3D12 has one stencil reference for both faces | `stencil_separate_faces` |
+| D3D12 has no mirror-once mode that clamps to the border | `wrap_mirror_clamp_to_border` |
+| D3D12 has no last provoking vertex | `provoking_vertex_last` |
+| D3D12 only restarts strips at the all-ones index | `index_restart_custom_value` |
+| D3D12 has no point size, wide lines, stipple, point fill mode, rectangle fill or viewport swizzle | `points_*`, `line_width`, `line_stipple`, `polygon_stipple`, `polygon_mode_point`, `fill_rectangle`, `viewport_swizzle_xy` |
+
+Scenes that pass only because they expect what the guest really does:
+
+- `fragment_derivatives`: uam multiplies what `dFdy` reads by a Y factor from the shader's own constants and leaves it 0 in the dksh, so GLSL `dFdy` is 0 in these payloads.
+- `blit_stretch_linear`: deko3d gives the 2D engine a surface as wide as the GOB, so the scene does not read past the center of the last texel of the image.
 
 The blend scenes expect what deko3d really programs: it turns the alpha destination factor into a
 different hardware factor, so a scene written from the API documentation alone fails on that.
