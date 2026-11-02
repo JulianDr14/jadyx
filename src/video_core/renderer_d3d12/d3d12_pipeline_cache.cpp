@@ -275,7 +275,14 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
             }
         }
         break;
+    case Shader::Stage::TessellationControl:
+        info.patch_vertices = key.state.patch_control_points_minus_one + 1;
+        break;
     case Shader::Stage::TessellationEval:
+        // The control stage's output patch.
+        if (previous_program && previous_program->stage == Shader::Stage::TessellationControl) {
+            info.patch_vertices = previous_program->invocations;
+        }
         info.tess_clockwise = key.state.tessellation_clockwise != 0;
         info.tess_primitive = [&key] {
             switch (static_cast<Maxwell::Tessellation::DomainType>(

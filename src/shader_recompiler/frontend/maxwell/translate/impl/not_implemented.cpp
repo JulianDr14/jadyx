@@ -39,17 +39,13 @@ void TranslatorVisitor::CAL(u64) {
     // CAL is a no-op
 }
 
-void TranslatorVisitor::CCTL(u64) {
-    ThrowNotImplemented(Opcode::CCTL);
-}
+// Cache control only flushes or invalidates the guest GPU caches; host memory is already
+// coherent for the shader, so there is nothing to emit.
+void TranslatorVisitor::CCTL(u64) {}
 
-void TranslatorVisitor::CCTLL(u64) {
-    ThrowNotImplemented(Opcode::CCTLL);
-}
+void TranslatorVisitor::CCTLL(u64) {}
 
-void TranslatorVisitor::CCTLT(u64) {
-    ThrowNotImplemented(Opcode::CCTLT);
-}
+void TranslatorVisitor::CCTLT(u64) {}
 
 void TranslatorVisitor::CONT(u64) {
     ThrowNotImplemented(Opcode::CONT);
@@ -91,22 +87,6 @@ void TranslatorVisitor::IDP_imm(u64) {
     ThrowNotImplemented(Opcode::IDP_imm);
 }
 
-void TranslatorVisitor::IMAD_reg(u64) {
-    ThrowNotImplemented(Opcode::IMAD_reg);
-}
-
-void TranslatorVisitor::IMAD_rc(u64) {
-    ThrowNotImplemented(Opcode::IMAD_rc);
-}
-
-void TranslatorVisitor::IMAD_cr(u64) {
-    ThrowNotImplemented(Opcode::IMAD_cr);
-}
-
-void TranslatorVisitor::IMAD_imm(u64) {
-    ThrowNotImplemented(Opcode::IMAD_imm);
-}
-
 void TranslatorVisitor::IMAD32I(u64) {
     ThrowNotImplemented(Opcode::IMAD32I);
 }
@@ -125,22 +105,6 @@ void TranslatorVisitor::IMADSP_cr(u64) {
 
 void TranslatorVisitor::IMADSP_imm(u64) {
     ThrowNotImplemented(Opcode::IMADSP_imm);
-}
-
-void TranslatorVisitor::IMUL_reg(u64) {
-    ThrowNotImplemented(Opcode::IMUL_reg);
-}
-
-void TranslatorVisitor::IMUL_cbuf(u64) {
-    ThrowNotImplemented(Opcode::IMUL_cbuf);
-}
-
-void TranslatorVisitor::IMUL_imm(u64) {
-    ThrowNotImplemented(Opcode::IMUL_imm);
-}
-
-void TranslatorVisitor::IMUL32I(u64) {
-    ThrowNotImplemented(Opcode::IMUL32I);
 }
 
 void TranslatorVisitor::JCAL(u64) {

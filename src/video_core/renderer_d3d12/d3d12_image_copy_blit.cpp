@@ -792,7 +792,29 @@ bool TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
         return false;
     }
     if (dst_image->info.num_samples > 1 || src_image->info.num_samples > 1) {
-        WarnOnce(logged_msaa_blit, "MSAA blits and resolves need phase 5; skipped");
+        // A resolve of a whole level into an image of one sample, same format: D3D12 averages
+        // the samples as the guest's 2D engine does. Integer and depth formats, scaled or partial
+        // resolves and blits into a multisampled image are still left out.
+        const CopyPlace src_place = ViewCopyPlace(*src_image, src);
+        const CopyPlace dst_place = ViewCopyPlace(*dst_image, dst);
+        const bool whole = src_region.start.x == 0 && src_region.start.y == 0 &&
+                           src_region.end.x == src_place.width &&
+                           src_region.end.y == src_place.height && dst_region.start.x == 0 &&
+                           dst_region.start.y == 0 && dst_region.end.x == dst_place.width &&
+                           dst_region.end.y == dst_place.height &&
+                           src_place.width == dst_place.width &&
+                           src_place.height == dst_place.height;
+        if (dst_image->info.num_samples == 1 && whole && src.format == dst.format &&
+            VideoCore::Surface::GetFormatType(src.format) == SurfaceType::ColorTexture &&
+            !VideoCore::Surface::IsPixelFormatInteger(src.format)) {
+            src_image->Transition(D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
+            dst_image->Transition(D3D12_RESOURCE_STATE_RESOLVE_DEST);
+            scheduler.CommandList()->ResolveSubresource(dst_image->Handle(), dst_place.subresource,
+                                                        src_image->Handle(),
+                                                        src_place.subresource, dst_image->ViewFormat());
+            return true;
+        }
+        WarnOnce(logged_msaa_blit, "MSAA blit other than a whole-image color resolve; skipped");
         return false;
     }
     const SurfaceType src_type = VideoCore::Surface::GetFormatType(src.format);

@@ -119,6 +119,10 @@ struct RuntimeInfo {
 
     InputTopology input_topology{};
 
+    /// D3D12: vertices per patch the tessellation stage reads, as a constant (the DXIL
+    /// translation has no patch vertices input). 0 reads the input.
+    u32 patch_vertices{};
+
     std::optional<float> fixed_state_point_size;
     std::optional<CompareFunction> alpha_test_func;
     float alpha_test_reference{};

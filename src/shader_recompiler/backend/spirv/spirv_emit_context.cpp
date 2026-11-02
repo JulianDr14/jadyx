@@ -136,7 +136,11 @@ Id DefineInput(EmitContext& ctx, Id type, bool per_invocation,
     case Stage::TessellationControl:
     case Stage::TessellationEval:
         if (per_invocation) {
-            type = ctx.TypeArray(type, ctx.Const(32u));
+            // D3D12 takes the hull shader's input control point count from this array, and it
+            // must match the draw's patch size or the draw is dropped.
+            const bool sized{ctx.stage == Stage::TessellationControl &&
+                             ctx.runtime_info.patch_vertices != 0};
+            type = ctx.TypeArray(type, ctx.Const(sized ? ctx.runtime_info.patch_vertices : 32u));
         }
         break;
     case Stage::Geometry:
@@ -1941,7 +1945,7 @@ void EmitContext::DefineInputs(const IR::Program& program) {
     if (info.uses_invocation_id) {
         invocation_id = DefineInput(*this, U32[1], false, spv::BuiltIn::InvocationId);
     }
-    if (info.uses_invocation_info &&
+    if (info.uses_invocation_info && runtime_info.patch_vertices == 0 &&
         (stage == Shader::Stage::TessellationControl || stage == Shader::Stage::TessellationEval)) {
         patch_vertices_in = DefineInput(*this, U32[1], false, spv::BuiltIn::PatchVertices);
     }

@@ -608,6 +608,9 @@ Id EmitInvocationInfo(EmitContext& ctx) {
     switch (ctx.stage) {
     case Stage::TessellationControl:
     case Stage::TessellationEval:
+        if (ctx.runtime_info.patch_vertices != 0) {
+            return ctx.Const(ctx.runtime_info.patch_vertices << 16);
+        }
         return ctx.OpShiftLeftLogical(ctx.U32[1], ctx.OpLoad(ctx.U32[1], ctx.patch_vertices_in), ctx.Const(16u));
     case Stage::Geometry:
         return ctx.OpShiftLeftLogical(ctx.U32[1], ctx.Const(InputTopologyVertices::vertices(ctx.runtime_info.input_topology)), ctx.Const(16u));
