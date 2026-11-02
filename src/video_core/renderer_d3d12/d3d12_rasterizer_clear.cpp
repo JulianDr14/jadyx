@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 
 #include "common/bug_tracker.h"
 #include "common/scope_exit.h"
@@ -212,22 +213,17 @@ void RasterizerD3D12::Clear(u32 layer_count) {
             }
         } else {
             std::array<f32, 4> color{};
-            // Integer targets take the value converted to the integer range, as Vulkan's
-            // clear; D3D12 converts the floats to integers.
+            // For integer targets the clear registers hold the integers themselves; D3D12 takes
+            // them as floats and converts them back (exact up to 2^24).
             if (!IsPixelFormatInteger(format)) {
                 color = regs.clear_color;
             } else if (!IsPixelFormatSignedInteger(format)) {
-                const size_t int_size = PixelComponentSizeBitsInteger(format);
                 for (size_t i = 0; i < 4; ++i) {
-                    color[i] = static_cast<f32>(static_cast<u32>(
-                        static_cast<f32>(static_cast<u64>(int_size) << 1U) * regs.clear_color[i]));
+                    color[i] = static_cast<f32>(std::bit_cast<u32>(regs.clear_color[i]));
                 }
             } else {
-                const size_t int_size = PixelComponentSizeBitsInteger(format);
                 for (size_t i = 0; i < 4; ++i) {
-                    color[i] = static_cast<f32>(static_cast<s32>(
-                        static_cast<f32>(static_cast<s64>(int_size - 1) << 1) *
-                        (regs.clear_color[i] - 0.5f)));
+                    color[i] = static_cast<f32>(std::bit_cast<s32>(regs.clear_color[i]));
                 }
             }
             cmd->ClearRenderTargetView(color_target, color.data(), 1, &rect);
