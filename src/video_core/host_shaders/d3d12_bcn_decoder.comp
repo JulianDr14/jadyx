@@ -407,7 +407,7 @@ void main() {
             const uint indices = format == BCN_BC1 ? block.y : block.w;
             uvec4 color = colors[(indices >> (2u * texel)) & 3u];
             if (format == BCN_BC2) {
-                const uint nibble = ((texel < 8u ? block.x : block.y) >> (4u * (texel & 7u))) & 15u;
+                const uint nibble = Bits(block, 4u * texel, 4u);
                 color.a = nibble | (nibble << 4u);
             } else if (format == BCN_BC3) {
                 color.a = uint(ChannelValue(block.x, block.y, texel, false));
