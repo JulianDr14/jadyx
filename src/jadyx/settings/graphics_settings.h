@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// Settings > Graphics: how the image reaches the screen and what a draw does while its shader
-// builds. FSR and frame generation exclude each other: turning one on turns the other off. Each
-// game may override any of the three (nullopt follows Settings > Graphics). Pure logic only:
+// Settings > Graphics: how the image reaches the screen, what a draw does while its shader builds
+// and when the guest learns that the GPU finished. FSR and frame generation exclude each other:
+// turning one on turns the other off. Each game may override any of the four (nullopt follows
+// Settings > Graphics). Pure logic only:
 // persistence and applying them are in uwp_system_settings.h.
 
 #include <array>
@@ -55,10 +56,36 @@ inline I18n::Text ShaderBuildText(ShaderBuild build) {
     return Text::ShaderBuildSkip;
 }
 
+/// When the guest learns from a syncpoint that the GPU finished. Immediate: as soon as the GPU thread
+/// reaches it, so what the GPU wrote may land after the guest goes on (the fastest). Safe: the same
+/// unless a download or operation queued before it waits on the GPU. Wait: once the host GPU ran the
+/// work before it. Balanced and Accurate: as Wait, and they also wait for the host GPU on buffer
+/// copies, and Accurate on buffer reads. With a GPU accuracy of Low, Safe and Wait act as Immediate.
+enum class GpuFence : std::uint8_t { Immediate, Safe, Wait, Balanced, Accurate };
+
+inline std::span<const GpuFence> SelectableGpuFences() {
+    static constexpr std::array values{GpuFence::Immediate, GpuFence::Safe, GpuFence::Wait,
+                                       GpuFence::Balanced, GpuFence::Accurate};
+    return values;
+}
+
+inline I18n::Text GpuFenceText(GpuFence fence) {
+    using I18n::Text;
+    switch (fence) {
+    case GpuFence::Safe: return Text::GpuFenceSafe;
+    case GpuFence::Wait: return Text::GpuFenceWait;
+    case GpuFence::Balanced: return Text::GpuFenceBalanced;
+    case GpuFence::Accurate: return Text::GpuFenceAccurate;
+    case GpuFence::Immediate: break;
+    }
+    return Text::GpuFenceImmediate;
+}
+
 struct GraphicsSettings {
     Upscaling upscaling{Upscaling::FsrBalanced}; ///< FSR up to the screen (4K) by default.
     bool frame_gen{};                            ///< Off by default; on is the automatic mode.
     ShaderBuild shaders{ShaderBuild::Skip};
+    GpuFence gpu_fence{GpuFence::Immediate};
 
     bool operator==(const GraphicsSettings&) const = default;
 };
@@ -119,6 +146,7 @@ struct GameGraphics {
     std::optional<Upscaling> upscaling;
     std::optional<bool> frame_gen;
     std::optional<ShaderBuild> shaders;
+    std::optional<GpuFence> gpu_fence;
     bool slow_guest_clock{}; ///< Only a game's own: there is no global setting to follow.
     GameAdvancedGraphics advanced;
 
@@ -151,6 +179,7 @@ inline GraphicsSettings ResolveGraphics(const GraphicsSettings& global, const Ga
         .upscaling = game.upscaling.value_or(global.upscaling),
         .frame_gen = game.frame_gen.value_or(global.frame_gen),
         .shaders = game.shaders.value_or(global.shaders),
+        .gpu_fence = game.gpu_fence.value_or(global.gpu_fence),
     };
     if (resolved.frame_gen && IsFsr(resolved.upscaling)) {
         if (game.frame_gen && !game.upscaling) resolved.upscaling = Upscaling::Bilinear;
@@ -183,6 +212,10 @@ inline void StepGameFrameGen(GameGraphics& game, bool back) {
 
 inline void StepGameShaders(GameGraphics& game, bool back) {
     game.shaders = StepChoice(game.shaders, SelectableShaderBuilds(), back);
+}
+
+inline void StepGameGpuFence(GameGraphics& game, bool back) {
+    game.gpu_fence = StepChoice(game.gpu_fence, SelectableGpuFences(), back);
 }
 
 inline std::wstring OnOffText(bool on) {
