@@ -188,6 +188,21 @@ void TranslatorVisitor::SUATOM(u64 insn) {
         BitField<39, 8, IR::Reg> bindless_reg; // is_bindless
     } const suatom{insn};
 
+    // nouveau-derived compilers (uam, used by deko3d) emit SUATOM as 0xEA6 with bit 51 marking an
+    // immediate handle at bits 36-48, the same as SULD/SUST. Read as above that is a bindless 64-bit
+    // or F16x2 atomic, which never translated; the handle form carries no size, so it is U32.
+    union {
+        u64 raw;
+        BitField<53, 2, u64> form;
+        BitField<51, 1, u64> is_bound;
+    } const encoding{insn};
+    if (encoding.form == 3 && encoding.is_bound != 0) {
+        ImageAtomOp(*this, suatom.dest_reg, suatom.operand_reg, suatom.coord_reg, std::nullopt,
+                    suatom.op, suatom.clamp, Size::U32, suatom.type, suatom.bound_offset, false,
+                    true);
+        return;
+    }
+
     ImageAtomOp(*this, suatom.dest_reg, suatom.operand_reg, suatom.coord_reg, suatom.bindless_reg,
                 suatom.op, suatom.clamp, suatom.size, suatom.type, suatom.bound_offset,
                 suatom.is_bindless != 0, true);
