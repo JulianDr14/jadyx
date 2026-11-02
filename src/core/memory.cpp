@@ -786,6 +786,7 @@ struct Memory::Impl {
                           current_page_table->jit_entries[current_page_table->jit_read_base + page]
                                   .Load() != 0;
         }
+        const u64 epoch = VideoCore::DownloadAreaEpoch();
         gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
             const DAddr end_address = address + size;
             if (inline_read) {
@@ -794,12 +795,13 @@ struct Memory::Impl {
                     VideoCore::Perf::Add(VideoCore::Perf::Counter::JitReadMismatches, 1);
                 }
             }
-            if (current_area.start_address <= address && end_address <= current_area.end_address)
-                [[likely]] {
+            if (current_area.epoch == epoch && current_area.start_address <= address &&
+                end_address <= current_area.end_address) [[likely]] {
                 return;
             }
             const CpuProfile::CallbackTimer flush_timer{core, false};
             current_area = system.GPU().OnCPURead(address, size);
+            current_area.epoch = epoch;
         });
     }
 

@@ -181,7 +181,10 @@ std::optional<VideoCore::RasterizerDownloadArea> BufferCache<P>::GetFlushArea(DA
     area->start_address = device_addr_start_aligned;
     area->end_address = device_addr_end_aligned;
     if (memory_tracker.IsRegionPreflushable(device_addr, size)) {
-        area->preemtive = true;
+        // A preflushable range is downloaded at every fence, but syncpoints signalled before
+        // those downloads land let the guest read it first. While a GPU write is not yet in
+        // guest memory, the read flushes it now instead of seeing the old contents.
+        area->preemtive = !IsRegionGpuModified(device_addr, size);
         return area;
     };
     area->preemtive = !IsRegionGpuModified(device_addr_start_aligned,

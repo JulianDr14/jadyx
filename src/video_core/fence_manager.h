@@ -22,6 +22,7 @@
 #include "video_core/gpu.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
+#include "video_core/rasterizer_download_area.h"
 #include "video_core/rasterizer_interface.h"
 
 #include "video_core/frame_trace.h"
@@ -154,6 +155,9 @@ protected:
 
 private:
     void SignalFence(std::function<void()>&& func, bool is_syncpoint) {
+        // CPU reads cached as checked before this fence check again: the guest may now read what
+        // the work before it wrote.
+        VideoCore::AdvanceDownloadAreaEpoch();
         bool delay_fence = Settings::IsGPUFenceBehaviorDefault() ? Settings::IsGPULevelHigh() : Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
         const FlushSources flush_sources = PendingFlushSources();
         const bool should_flush = flush_sources.Any();
