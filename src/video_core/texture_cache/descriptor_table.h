@@ -22,7 +22,9 @@ template <typename T>
 class DescriptorTable {
 public:
     [[nodiscard]] bool Synchronize(GPUVAddr gpu_addr, u32 limit) noexcept {
-        bool ret = !(current_gpu_addr == gpu_addr && current_limit == limit);
+        // A table never refreshed holds no entries, even when the pool asked for matches the
+        // zero address and limit it starts with.
+        bool ret = descriptors.empty() || !(current_gpu_addr == gpu_addr && current_limit == limit);
         if (ret) {
             Refresh(gpu_addr, limit);
         }
