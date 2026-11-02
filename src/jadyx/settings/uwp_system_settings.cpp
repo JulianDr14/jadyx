@@ -27,6 +27,7 @@ constexpr auto OfflineModeKey = L"system_offline_mode";
 constexpr auto GraphicsUpscalingKey = L"graphics_upscaling";
 constexpr auto GraphicsFrameGenKey = L"graphics_frame_gen";
 constexpr auto GraphicsShadersKey = L"graphics_shaders";
+constexpr auto GraphicsGpuFenceKey = L"graphics_gpu_fence";
 
 /// Saved as the enum's value, or -1 for "follow the system". A value that is not a selectable
 /// option (an older or newer build's) also falls back to the system.
@@ -96,6 +97,8 @@ GraphicsSettings LoadGraphicsSettings() {
             settings.frame_gen = winrt::unbox_value<bool>(values.Lookup(GraphicsFrameGenKey));
         if (const auto shaders = LoadChoice(values, GraphicsShadersKey, SelectableShaderBuilds()))
             settings.shaders = *shaders;
+        if (const auto gpu_fence = LoadChoice(values, GraphicsGpuFenceKey, SelectableGpuFences()))
+            settings.gpu_fence = *gpu_fence;
     } catch (...) { /* Missing or invalid values keep the defaults. */ }
     // Saved by hand or by an older build with both on: FSR wins, as on a first install.
     if (IsFsr(settings.upscaling)) settings.frame_gen = false;
@@ -108,6 +111,7 @@ bool SaveGraphicsSettings(const GraphicsSettings& settings) {
         values.Insert(GraphicsUpscalingKey, winrt::box_value(static_cast<int32_t>(settings.upscaling)));
         values.Insert(GraphicsFrameGenKey, winrt::box_value(settings.frame_gen));
         values.Insert(GraphicsShadersKey, winrt::box_value(static_cast<int32_t>(settings.shaders)));
+        values.Insert(GraphicsGpuFenceKey, winrt::box_value(static_cast<int32_t>(settings.gpu_fence)));
         return true;
     } catch (...) { return false; }
 }
@@ -161,6 +165,8 @@ GameGraphics LoadGameGraphics(std::uint64_t program_id) {
         if (values.HasKey(frame_gen)) graphics.frame_gen = winrt::unbox_value<bool>(values.Lookup(frame_gen));
         const auto shaders = GameGraphicsKey(L"shaders", program_id);
         graphics.shaders = LoadChoice(values, shaders.c_str(), SelectableShaderBuilds());
+        const auto gpu_fence = GameGraphicsKey(L"gpu_fence", program_id);
+        graphics.gpu_fence = LoadChoice(values, gpu_fence.c_str(), SelectableGpuFences());
         const auto slow_clock = GameGraphicsKey(L"slow_clock", program_id);
         if (values.HasKey(slow_clock)) graphics.slow_guest_clock = winrt::unbox_value<bool>(values.Lookup(slow_clock));
         auto& advanced = graphics.advanced;
@@ -185,6 +191,7 @@ bool SaveGameGraphics(std::uint64_t program_id, const GameGraphics& graphics) {
         SaveOverride(values, GameGraphicsKey(L"upscaling", program_id), graphics.upscaling);
         SaveOverride(values, GameGraphicsKey(L"frame_gen", program_id), graphics.frame_gen);
         SaveOverride(values, GameGraphicsKey(L"shaders", program_id), graphics.shaders);
+        SaveOverride(values, GameGraphicsKey(L"gpu_fence", program_id), graphics.gpu_fence);
         SaveOverride(values, GameGraphicsKey(L"slow_clock", program_id),
                      graphics.slow_guest_clock ? std::optional<bool>{true} : std::nullopt);
         // A default is not saved: a later build can change what the app does with no choice made.

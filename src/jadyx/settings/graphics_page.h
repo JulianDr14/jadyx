@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// Settings > Graphics and a game's own Graphics pane: the same three rows, plus the ones only the
+// Settings > Graphics and a game's own Graphics pane: the same four rows, plus the ones only the
 // game's pane has, what each shows and how input changes them. The library routes input here, saves and applies on a change; the
 // canvas draws from the same state.
 
@@ -16,7 +16,7 @@
 namespace Jadyx {
 
 enum class GraphicsRow : std::size_t {
-    Upscaling, FrameGen, Shaders, GuestClock,
+    Upscaling, FrameGen, Shaders, GpuFence, GuestClock,
     Anisotropy, TextureQuality, TextureMemory, GpuAccuracy, ShaderWorkers, ConsoleMode, ResetAdvanced,
     Count,
 };
@@ -64,6 +64,9 @@ inline bool HandleGraphicsInput(GraphicsPage& page, GraphicsInput input) {
     case GraphicsRow::Shaders:
         settings.shaders = StepShaderBuild(settings.shaders, back);
         return true;
+    case GraphicsRow::GpuFence:
+        settings.gpu_fence = StepAdvanced(settings.gpu_fence, SelectableGpuFences(), back);
+        return true;
     default:
         break;
     }
@@ -80,6 +83,7 @@ inline bool HandleGameGraphicsInput(GameGraphics& game, std::size_t& selected, G
     case GraphicsRow::Upscaling: StepGameUpscaling(game, back); return true;
     case GraphicsRow::FrameGen: StepGameFrameGen(game, back); return true;
     case GraphicsRow::Shaders: StepGameShaders(game, back); return true;
+    case GraphicsRow::GpuFence: StepGameGpuFence(game, back); return true;
     case GraphicsRow::GuestClock: game.slow_guest_clock = !game.slow_guest_clock; return true;
     case GraphicsRow::Anisotropy: advanced.anisotropy = StepAdvanced(advanced.anisotropy, SelectableAnisotropy(), back); return true;
     case GraphicsRow::TextureQuality: advanced.full_textures = !advanced.full_textures; return true;
@@ -102,6 +106,7 @@ inline I18n::Text GraphicsRowTitle(GraphicsRow row) {
     switch (row) {
     case GraphicsRow::FrameGen: return Text::FrameGen;
     case GraphicsRow::Shaders: return Text::ShaderBuild;
+    case GraphicsRow::GpuFence: return Text::GpuFence;
     case GraphicsRow::GuestClock: return Text::SlowGuestClock;
     case GraphicsRow::Anisotropy: return Text::AdvancedAnisotropy;
     case GraphicsRow::TextureQuality: return Text::AdvancedTextureQuality;
@@ -119,6 +124,7 @@ inline I18n::Text GraphicsRowHint(GraphicsRow row) {
     switch (row) {
     case GraphicsRow::FrameGen: return Text::FrameGenHint;
     case GraphicsRow::Shaders: return Text::ShaderBuildHint;
+    case GraphicsRow::GpuFence: return Text::GpuFenceHint;
     case GraphicsRow::GuestClock: return Text::SlowGuestClockHint;
     case GraphicsRow::Anisotropy: return Text::AdvancedAnisotropyHint;
     case GraphicsRow::TextureQuality: return Text::AdvancedTextureQualityHint;
@@ -136,6 +142,7 @@ inline std::wstring GraphicsRowValue(const GraphicsSettings& settings, GraphicsR
     switch (row) {
     case GraphicsRow::FrameGen: return OnOffText(settings.frame_gen);
     case GraphicsRow::Shaders: return std::wstring{I18n::Tr(ShaderBuildText(settings.shaders))};
+    case GraphicsRow::GpuFence: return std::wstring{I18n::Tr(GpuFenceText(settings.gpu_fence))};
     default: return std::wstring{I18n::Tr(UpscalingText(settings.upscaling))};
     }
 }
@@ -168,6 +175,16 @@ inline std::wstring AdvancedRowValue(const GameAdvancedGraphics& advanced, Graph
     }
 }
 
+/// Whether a game has its own value for one of the rows Settings > Graphics also has.
+inline bool HasGameOverride(const GameGraphics& game, GraphicsRow row) {
+    switch (row) {
+    case GraphicsRow::FrameGen: return game.frame_gen.has_value();
+    case GraphicsRow::Shaders: return game.shaders.has_value();
+    case GraphicsRow::GpuFence: return game.gpu_fence.has_value();
+    default: return game.upscaling.has_value();
+    }
+}
+
 /// A game's row: its own value, or "Settings > Graphics · <what the game gets>". The value is
 /// what the game runs with, so FSR turned off by the game's frame generation reads as such.
 inline std::wstring GameGraphicsRowValue(const GraphicsSettings& global, const GameGraphics& game,
@@ -175,11 +192,8 @@ inline std::wstring GameGraphicsRowValue(const GraphicsSettings& global, const G
     if (row == GraphicsRow::GuestClock) return OnOffText(game.slow_guest_clock);
     if (IsAdvancedRow(row)) return AdvancedRowValue(game.advanced, row);
     const GraphicsSettings resolved = ResolveGraphics(global, game);
-    const bool own = row == GraphicsRow::Upscaling ? game.upscaling.has_value()
-                     : row == GraphicsRow::FrameGen ? game.frame_gen.has_value()
-                                                    : game.shaders.has_value();
     const auto value = GraphicsRowValue(resolved, row);
-    return own ? value : I18n::Format(I18n::Text::GraphicsFollowGlobal, {value});
+    return HasGameOverride(game, row) ? value : I18n::Format(I18n::Text::GraphicsFollowGlobal, {value});
 }
 
 } // namespace Jadyx

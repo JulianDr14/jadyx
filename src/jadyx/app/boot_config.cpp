@@ -701,25 +701,16 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 config.nv_release_fence = line.back() == '1';
                 WriteDiag(std::string("boot.cfg: display release fence ") +
                           (config.nv_release_fence ? "on" : "off"));
-            } else if (line == "gpu_fence=safe" || line == "gpu_fence=wait") {
-                config.gpu_fence.reset();
-                config.early_syncpoints = line == "gpu_fence=safe";
-                WriteDiag(config.early_syncpoints
-                              ? "boot.cfg: GPU syncpoints signalled at once unless "
-                                "a download waits on the GPU"
-                              : "boot.cfg: GPU syncpoints signalled after the GPU ran "
-                                "the work (wait)");
-            } else if (line == "gpu_fence=immediate" || line == "gpu_fence=balanced" ||
+            } else if (line == "gpu_fence=immediate" || line == "gpu_fence=safe" ||
+                       line == "gpu_fence=wait" || line == "gpu_fence=balanced" ||
                        line == "gpu_fence=accurate") {
-                using Settings::GpuFenceBehavior;
                 const std::string value = line.substr(10);
-                config.gpu_fence = value == "immediate"  ? GpuFenceBehavior::Immediate
-                                   : value == "balanced" ? GpuFenceBehavior::Balanced
-                                                         : GpuFenceBehavior::Accurate;
-                WriteDiag("boot.cfg: GPU syncpoints signalled " +
-                          std::string(value == "immediate"
-                                          ? "when the GPU thread reaches them"
-                                          : "after the GPU ran the work (" + value + ")"));
+                config.gpu_fence = value == "immediate"  ? GpuFence::Immediate
+                                   : value == "safe"     ? GpuFence::Safe
+                                   : value == "wait"     ? GpuFence::Wait
+                                   : value == "balanced" ? GpuFence::Balanced
+                                                         : GpuFence::Accurate;
+                WriteDiag("boot.cfg: GPU fence " + value);
             } else if (line == "async_record=0" || line == "async_record=1") {
                 config.async_record = line.back() == '1';
                 WriteDiag(std::string("boot.cfg: command list recording thread ") +

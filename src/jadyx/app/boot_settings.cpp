@@ -101,8 +101,17 @@ static D3D12::AsyncPipelines ToAsyncPipelines(ShaderBuild shaders) {
     return D3D12::AsyncPipelines::Full;
 }
 
-/// The game's graphics (its own over Settings > Graphics) where boot.cfg sets none. Upscaling is
-/// written on the GPU thread, the one that reads it once the game runs.
+static void ApplyGpuFence(GpuFence fence) {
+    using Settings::GpuFenceBehavior;
+    Settings::values.gpu_fence_behavior.SetValue(fence == GpuFence::Immediate  ? GpuFenceBehavior::Immediate
+                                                 : fence == GpuFence::Balanced ? GpuFenceBehavior::Balanced
+                                                 : fence == GpuFence::Accurate ? GpuFenceBehavior::Accurate
+                                                                               : GpuFenceBehavior::Default);
+    VideoCommon::SetEarlySyncpoints(fence != GpuFence::Wait);
+}
+
+/// The game's graphics (its own over Settings > Graphics) where boot.cfg sets none. Upscaling and
+/// the GPU fence are written on the GPU thread, the one that reads them once the game runs.
 void ApplyGameGraphics(Core::System& system, const BootConfig& config, const GameGraphics& game) {
     const GraphicsSettings graphics = ResolveGraphics(LoadGraphicsSettings(), game);
     if (!config.upscaling) {
@@ -112,6 +121,10 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
     if (!config.frame_gen)
         D3D12::SetFrameGenMode(graphics.frame_gen ? D3D12::FrameGenMode::Auto : D3D12::FrameGenMode::Off);
     if (!config.async_pipelines) D3D12::SetAsyncPipelines(ToAsyncPipelines(graphics.shaders));
+    if (!config.gpu_fence) {
+        const GpuFence fence = graphics.gpu_fence;
+        system.GPU().RunOnGpuThread([fence] { ApplyGpuFence(fence); });
+    }
     const u32 clock_percent = config.guest_clock_percent.value_or(game.slow_guest_clock ? SlowGuestClockPercent : 100);
     system.CoreTiming().SetGuestClockPercent(clock_percent);
     WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, upscaling " +
@@ -122,7 +135,9 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
               (config.async_pipelines ? std::string{"from boot.cfg"}
                                       : std::string{graphics.shaders == ShaderBuild::Skip       ? "skip"
                                                     : graphics.shaders == ShaderBuild::Balanced ? "balanced"
-                                                                                                : "wait"}));
+                                                                                                : "wait"}) +
+              ", GPU fence " +
+              (config.gpu_fence ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(GpuFenceText(graphics.gpu_fence)))));
 }
 
 /// The advanced graphics that can change while the game runs, those that differ from `before`.
@@ -343,8 +358,7 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetMemoryImportProbe(config.memory_import_probe);
     Service::Nvidia::Devices::nvhost_ctrl::SetFailingEventStall(config.nv_event_stall);
     Service::Nvidia::Devices::nvdisp_disp0::SetReleaseFence(config.nv_release_fence);
-    if (config.gpu_fence) Settings::values.gpu_fence_behavior.SetValue(*config.gpu_fence);
-    VideoCommon::SetEarlySyncpoints(config.early_syncpoints);
+    ApplyGpuFence(config.gpu_fence.value_or(global_graphics.gpu_fence));
     D3D12::PipelineKeyTracking::SetMode(config.pipeline_key_reuse);
     D3D12::SetUniformUploadCopy(config.upload_copy);
     D3D12::SetUniformReuse(config.uniform_reuse);

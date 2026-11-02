@@ -13,6 +13,7 @@
 #include "common/windows/cpu_pin.h"
 #include "jadyx/app/boot_renderer_decls.h"
 #include "jadyx/input/uwp_input.h"
+#include "jadyx/settings/graphics_settings.h"
 #include "jadyx/settings/upscaling.h"
 #include "video_core/frame_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
@@ -244,13 +245,10 @@ struct BootConfig {
     /// Release the displayed buffers with a fence on the composite ("nv_release_fence=0" releases
     /// them with none and waits for every composite, as before).
     bool nv_release_fence{true};
-    /// When the host side of a GPU syncpoint is signalled. By default ("gpu_fence=immediate") as
-    /// soon as the GPU thread reaches it: downloads land after the guest goes on. "=safe" does so
-    /// unless a download or operation queued before it waits on the GPU (a GPU-written buffer is
-    /// downloaded every frame in a game, so it waits as often as "=wait"); "=wait" always once the
-    /// D3D12 GPU ran the work before it; "=balanced"/"=accurate" are the settings' fence behaviors.
-    std::optional<Settings::GpuFenceBehavior> gpu_fence{Settings::GpuFenceBehavior::Immediate};
-    bool early_syncpoints{true};
+    /// When the host side of a GPU syncpoint is signalled ("gpu_fence=immediate", "=safe", "=wait",
+    /// "=balanced", "=accurate"), over Settings > Graphics and the game's own (GpuFence). "=safe"
+    /// waits as often as "=wait" where a GPU-written buffer is downloaded every frame.
+    std::optional<GpuFence> gpu_fence;
     /// Keep the previous draw's pipeline while no register its key reads changed
     /// ("pipeline_key_reuse=1"; "=check" refreshes the key and logs every reuse that would have
     /// drawn with another pipeline; "=0" turns it off).
