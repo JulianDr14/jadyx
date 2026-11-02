@@ -257,14 +257,16 @@ void RegisterTextures(std::vector<SceneEntry>& scenes) {
         uint8_t data[16] = {0xFF, 0x00, 0, 0, 0, 0, 0, 0, 0x00, 0xFF};
         FillAlphaIndices(&data[2]);
         FillAlphaIndices(&data[10]);
-        constexpr Color Rows[4] = {{1, 0, 0, 1}, {0, 1, 0, 1}, {6.0 / 7.0, 1.0 / 7.0, 0, 1}, {1.0 / 7.0, 6.0 / 7.0, 0, 1}};
+        // Green's endpoints rise, so its block takes the six-value mode: index 2 is 1/5, index 7 is 1.
+        constexpr Color Rows[4] = {{1, 0, 0, 1}, {0, 1, 0, 1}, {6.0 / 7.0, 1.0 / 5.0, 0, 1}, {1.0 / 7.0, 1, 0, 1}};
         BlockRows(gpu, DkImageFormat_RG_BC5_Unorm, data, Rows);
     }});
     scenes.push_back({"bc5_snorm", [](Gpu& gpu) {
         uint8_t data[16] = {0x7F, 0x81, 0, 0, 0, 0, 0, 0, 0x81, 0x7F};
         FillAlphaIndices(&data[2]);
         FillAlphaIndices(&data[10]);
-        constexpr Color Rows[4] = {{1, -1, 0, 1}, {-1, 1, 0, 1}, {5.0 / 7.0, -5.0 / 7.0, 0, 1}, {-5.0 / 7.0, 5.0 / 7.0, 0, 1}};
+        // Green's endpoints rise, so its block takes the six-value mode: index 2 is -76/127, index 7 is 1.
+        constexpr Color Rows[4] = {{1, -1, 0, 1}, {-1, 1, 0, 1}, {5.0 / 7.0, -76.0 / 127.0, 0, 1}, {-5.0 / 7.0, 1, 0, 1}};
         BlockRows(gpu, DkImageFormat_RG_BC5_Snorm, data, Rows);
     }});
     scenes.push_back({"bc7_mode6", [](Gpu& gpu) {
@@ -499,7 +501,8 @@ void RegisterTextures(std::vector<SceneEntry>& scenes) {
         dk::ImageView view{image.image};
         view.setFormat(DkImageFormat_R32_Uint);
         Show(gpu, view, DkImageFormat_RGBA8_Unorm, "utex_fsh");
-        gpu.Expect(16, 16, {200 / 255.0, 0, 0, 1});
+        // R32 has no alpha: it reads as integer 1, which the shader divides by 255 like the rest.
+        gpu.Expect(16, 16, {200 / 255.0, 0, 0, 1 / 255.0});
     }});
     scenes.push_back({"view_reinterpret_srgb", [](Gpu& gpu) {
         Image& image = gpu.MakeImage(DkImageFormat_RGBA8_Unorm, 1, 1);

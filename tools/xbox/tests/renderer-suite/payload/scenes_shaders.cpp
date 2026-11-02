@@ -18,6 +18,9 @@ Slice Storage(Gpu& gpu, uint32_t size, uint8_t fill = 0) {
 }
 
 void Compute(Gpu& gpu, const char* shader) {
+    // The descriptor sets are bound with the 3D state; a compute scene run alone has no earlier
+    // scene to have bound them.
+    gpu.DefaultState();
     gpu.cmd.bindShaders(DkStageFlag_Compute, {gpu.Shader(shader)});
 }
 
@@ -206,8 +209,8 @@ void RegisterShaders(std::vector<SceneEntry>& scenes) {
             static_cast<uint32_t>(__builtin_ctz(y)),
             static_cast<uint32_t>(31 - __builtin_clz(x)),
             static_cast<uint32_t>(31 - __builtin_clz(~static_cast<uint32_t>(bx))),
-            x / z,
-            x % z,
+            y / z,
+            y % z,
             static_cast<uint32_t>(bx / by),
             static_cast<uint32_t>(bx >> 3),
             x >> 3,
@@ -429,8 +432,10 @@ void RegisterShaders(std::vector<SceneEntry>& scenes) {
         gpu.Shaders("basic_vsh", "derivative_fsh");
         gpu.Full(White);
         gpu.Finish();
-        // 1/32 per pixel, times 8; the cross term is 0 and offset to 0.5 to tell it from a sign error.
-        gpu.Expect(16, 16, {0.25, 0.25, 0.5, 1}, 0.02);
+        // 1/32 per pixel, times 8. uam multiplies what dFdy reads by a Y factor from the shader's own
+        // constants (c[1][0]) and leaves it 0 in the dksh, so both dFdy terms are 0: green is 0 and
+        // blue only its 0.5 offset.
+        gpu.Expect(16, 16, {0.25, 0, 0.5, 1}, 0.02);
     }});
     scenes.push_back({"interpolation", [](Gpu& gpu) {
         gpu.Begin(DkImageFormat_RGBA16_Unorm);

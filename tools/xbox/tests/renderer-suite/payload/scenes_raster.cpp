@@ -76,7 +76,8 @@ void RegisterRaster(std::vector<SceneEntry>& scenes) {
         dk::RasterizerState rasterizer;
         rasterizer.setCullMode(DkFace_None).setPolygonMode(DkPolygonMode_Line);
         gpu.cmd.bindRasterizerState(rasterizer);
-        const float l = gpu.NdcX(4), r = gpu.NdcX(28), t = gpu.NdcY(4), b = gpu.NdcY(28);
+        // Half a pixel in: an edge on a pixel boundary may land on either column.
+        const float l = gpu.NdcX(4.5f), r = gpu.NdcX(28), t = gpu.NdcY(4), b = gpu.NdcY(28);
         const Vertex triangle[3] = {
             {{l, t, 0}, {0, 1, 0, 1}, {0, 0}}, {{l, b, 0}, {0, 1, 0, 1}, {0, 0}}, {{r, b, 0}, {0, 1, 0, 1}, {0, 0}}};
         DrawVertices(gpu, DkPrimitive_Triangles, triangle, 3);

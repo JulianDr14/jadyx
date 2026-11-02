@@ -23,8 +23,9 @@ void main()
     results[11] = uint(findLSB(a.y));
     results[12] = uint(findMSB(a.x));
     results[13] = uint(findMSB(b.x));
-    results[14] = a.x / a.z;
-    results[15] = a.x % a.z;
+    // The compiler divides through a float reciprocal: the numerator stays within 24 bits.
+    results[14] = a.y / a.z;
+    results[15] = a.y % a.z;
     results[16] = uint(b.x / b.y);
     results[17] = uint(b.x >> 3);
     results[18] = a.x >> 3;

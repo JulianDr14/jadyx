@@ -60,10 +60,12 @@ void RegisterTransfers(std::vector<SceneEntry>& scenes) {
         dk::ImageView from{source.image}, to{target.image};
         gpu.cmd.blitImage(from, {0, 0, 0, 2, 1, 1}, to, {0, 0, 0, 32, 32, 1}, DkBlitFlag_FilterLinear);
         gpu.Finish();
-        // Black at the first texel's center, white at the second's and a ramp between them.
-        gpu.Check("left", gpu.Read(2, 16).r, 0.0, 0.05);
+        // Black at the first texel's center, white at the second's and a ramp between them. deko3d
+        // gives the engine a surface as wide as the GOB (16 texels), so past the second's center
+        // the filter blends in texels of the surface that the image does not have.
+        gpu.Check("left", gpu.Read(8, 16).r, 0.0, 0.05);
         gpu.Check("middle", gpu.Read(16, 16).r, 0.5, 0.1);
-        gpu.Check("right", gpu.Read(30, 16).r, 1.0, 0.05);
+        gpu.Check("right", gpu.Read(24, 16).r, 1.0, 0.05);
     }});
     scenes.push_back({"blit_flip_x", [](Gpu& gpu) {
         Image& source = Pattern(gpu);
@@ -273,10 +275,11 @@ void RegisterTransfers(std::vector<SceneEntry>& scenes) {
         svcSleepThread(2'000'000);
         gpu.cmd.reportCounter(DkCounter_Timestamp, counters.gpu + 16);
         gpu.Submit();
+        // A report is {value, timestamp}: the timestamp is the second word.
         const auto* values = static_cast<const volatile uint64_t*>(counters.cpu);
-        if (values[2] <= values[0]) {
-            gpu.Fail("timestamps %llu then %llu", static_cast<unsigned long long>(values[0]),
-                     static_cast<unsigned long long>(values[2]));
+        if (values[3] <= values[1]) {
+            gpu.Fail("timestamps %llu then %llu", static_cast<unsigned long long>(values[1]),
+                     static_cast<unsigned long long>(values[3]));
         }
     }});
 }
