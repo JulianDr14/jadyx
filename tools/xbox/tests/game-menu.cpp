@@ -164,7 +164,7 @@ int main() {
         while (graphics.SelectedItem() != GameMenu::GraphicsMenu) graphics.Apply(MenuAction::Down);
         check(graphics.Apply(MenuAction::Confirm) == GameMenuResult::None);
         check(graphics.CurrentPage() == GameMenu::Page::Graphics && graphics.PageTitle() == L"Gráficos");
-        check(graphics.Rows().size() == 7);
+        check(graphics.Rows().size() == 8);
         for (const auto& row : graphics.Rows()) {
             check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedAnisotropy)});
             check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedTextureQuality)});

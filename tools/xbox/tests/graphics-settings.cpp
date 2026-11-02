@@ -13,6 +13,7 @@ int main() {
     // Defaults: FSR up to the screen, frame generation off, draws skipped while shaders build.
     const GraphicsSettings defaults;
     check(defaults.upscaling == Upscaling::FsrBalanced && !defaults.frame_gen && defaults.shaders == ShaderBuild::Skip);
+    check(defaults.gpu_fence == GpuFence::Immediate);
 
     // FSR and frame generation exclude each other, either way round.
     GraphicsSettings settings;
@@ -43,6 +44,13 @@ int main() {
     check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.shaders == ShaderBuild::Skip);
     check(HandleGraphicsInput(page, GraphicsInput::Left) && page.settings.shaders == ShaderBuild::Wait);
     check(GraphicsRowValue(page.settings, GraphicsRow::Shaders) == L"Esperar");
+    page.selected = static_cast<std::size_t>(GraphicsRow::GpuFence);
+    check(GraphicsRowValue(page.settings, GraphicsRow::GpuFence) == L"Inmediato");
+    for (const GpuFence fence : {GpuFence::Safe, GpuFence::Wait, GpuFence::Balanced, GpuFence::Accurate, GpuFence::Immediate})
+        check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.gpu_fence == fence);
+    check(HandleGraphicsInput(page, GraphicsInput::Left) && page.settings.gpu_fence == GpuFence::Accurate);
+    check(GraphicsRowValue(page.settings, GraphicsRow::GpuFence) == L"Preciso");
+    check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.gpu_fence == GpuFence::Immediate);
     check(!HandleGraphicsInput(page, GraphicsInput::Back) && !page.open);
     check(ShaderBuildFromValue(1) == ShaderBuild::Balanced && !ShaderBuildFromValue(7));
 
@@ -91,6 +99,17 @@ int main() {
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.shaders == ShaderBuild::Balanced);
     check(ResolveGraphics(global, shaders).shaders == ShaderBuild::Balanced);
     check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Back));
+    // The GPU fence: follows Settings > Graphics until the game has its own, only for that game.
+    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::GpuFence));
+    GraphicsSettings safe_global;
+    safe_global.gpu_fence = GpuFence::Safe;
+    check(ResolveGraphics(safe_global, shaders).gpu_fence == GpuFence::Safe);
+    check(GameGraphicsRowValue(safe_global, shaders, GraphicsRow::GpuFence) == L"Ajustes · Seguro");
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.gpu_fence == GpuFence::Immediate);
+    check(ResolveGraphics(safe_global, shaders).gpu_fence == GpuFence::Immediate);
+    check(GameGraphicsRowValue(safe_global, shaders, GraphicsRow::GpuFence) == L"Inmediato");
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Left) && !shaders.gpu_fence);
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Left) && shaders.gpu_fence == GpuFence::Accurate);
     // The guest clock is the game's own: a row only in its pane, off until the player turns it on.
     check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::GuestClock));
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::GuestClock) == L"No");
@@ -101,7 +120,7 @@ int main() {
     // The advanced rows: only the game's, default until changed, and reset only with A.
     GameGraphics tuned;
     const auto go = [&](GraphicsRow target) { row = static_cast<std::size_t>(target); };
-    check(IsAdvancedRow(GraphicsRow::Anisotropy) && !IsAdvancedRow(GraphicsRow::GuestClock) && GraphicsRowCount == 3);
+    check(IsAdvancedRow(GraphicsRow::Anisotropy) && !IsAdvancedRow(GraphicsRow::GuestClock) && GraphicsRowCount == 4);
     go(GraphicsRow::Anisotropy);
     check(GameGraphicsRowValue(global, tuned, GraphicsRow::Anisotropy) == L"Lo que pida el juego");
     check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && tuned.advanced.anisotropy == Settings::AnisotropyMode::X2);
