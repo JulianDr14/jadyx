@@ -159,6 +159,7 @@ Framebuffer::Framebuffer(TextureCacheRuntime& runtime, std::span<ImageView*, NUM
         }
         colors[index] = view->RenderTarget();
         color_images[index] = view->image_id;
+        color_views[index] = key.color_buffer_ids[index];
         if (view->RenderTargetOnCopy()) {
             copy_colors |= 1U << index;
         }

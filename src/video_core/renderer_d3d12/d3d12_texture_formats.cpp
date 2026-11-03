@@ -187,6 +187,17 @@ FormatInfo NativeFormat(PixelFormat format) {
     if (VideoCore::Surface::IsPixelFormatETC2(format)) {
         return Etc2Format(format);
     }
+    // No DXGI layout has these bits: the CPU widens them on upload (VideoCommon::ConvertImage).
+    if (format == PixelFormat::A5B5G5R1_UNORM) {
+        return FormatInfo{.resource = DXGI_FORMAT_R8G8B8A8_TYPELESS,
+                          .view = DXGI_FORMAT_R8G8B8A8_UNORM, .srv = DXGI_FORMAT_R8G8B8A8_UNORM,
+                          .converted = true, .copy_format = PixelFormat::A8B8G8R8_UNORM};
+    }
+    if (format == PixelFormat::G4R4_UNORM) {
+        return FormatInfo{.resource = DXGI_FORMAT_R8G8_TYPELESS, .view = DXGI_FORMAT_R8G8_UNORM,
+                          .srv = DXGI_FORMAT_R8G8_UNORM, .converted = true,
+                          .copy_format = PixelFormat::R8G8_UNORM};
+    }
     // Formats without a DXGI mapping yet: keep an image so the cache works, never transfer data
     // into it (its bytes would not match the resource layout).
     info.resource = DXGI_FORMAT_R8G8B8A8_TYPELESS;

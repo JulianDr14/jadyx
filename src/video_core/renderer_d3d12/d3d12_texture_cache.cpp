@@ -854,6 +854,34 @@ Image& Image::operator=(Image&& other) noexcept {
     return *this;
 }
 
+Image* Image::PrepareColorSnapshot() {
+    Image* const snapshot = TakeSnapshot();
+    if (snapshot) {
+        Transition(D3D12_RESOURCE_STATE_RENDER_TARGET);
+    }
+    return snapshot;
+}
+
+Image* Image::TakeSnapshot() {
+    if (depth_feedback_failed || !runtime || !resource) {
+        return nullptr;
+    }
+    if (!depth_feedback) {
+        depth_feedback = std::make_unique<Image>(*runtime, info, 0, 0);
+        if (!depth_feedback->Handle()) {
+            depth_feedback.reset();
+            depth_feedback_failed = true;
+            return nullptr;
+        }
+    }
+    Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
+    depth_feedback->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
+    runtime->scheduler.CommandList()->CopyResource(depth_feedback->Handle(), Handle());
+    depth_feedback->Transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    return depth_feedback.get();
+}
+
 Image* Image::PrepareDepthFeedback() {
     if (depth_feedback_failed || !runtime || !resource) {
         return nullptr;
