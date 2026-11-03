@@ -112,7 +112,7 @@ constexpr size_t FRAGMENT_STAGE = 4;
 [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE ColorSnapshotHandle(const ImageView& view,
                                                               Shader::TextureType type) {
     Image* const source = view.SourceImage();
-    if (source && source->PrepareColorSnapshot()) {
+    if (source && source->PrepareColorSnapshot(view.ReadsReinterpretedCopy())) {
         return view.DepthFeedbackHandle(type);
     }
     return view.Handle(type);

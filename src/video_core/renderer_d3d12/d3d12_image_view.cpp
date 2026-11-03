@@ -410,8 +410,15 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::Handle(Shader::TextureType texture_type) 
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE ImageView::DepthFeedbackHandle(Shader::TextureType texture_type) const {
+    // The snapshot of the resource the view's SRVs read, so it takes their format.
     Image* const source = SourceImage();
-    if (!source || !source->DepthFeedback()) {
+    ID3D12Resource* snapshot = nullptr;
+    if (source && ReadsReinterpretedCopy()) {
+        snapshot = source->ReinterpretedSnapshot();
+    } else if (source && source->DepthFeedback()) {
+        snapshot = source->DepthFeedback()->Handle();
+    }
+    if (!snapshot) {
         return Handle(texture_type);
     }
     if (!depth_feedback_srvs) {
@@ -420,7 +427,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::DepthFeedbackHandle(Shader::TextureType t
     }
     auto& handle = depth_feedback_srvs->at(static_cast<size_t>(texture_type));
     if (!handle.ptr) {
-        handle = CreateSrv(texture_type, source->DepthFeedback()->Handle());
+        handle = CreateSrv(texture_type, snapshot);
     }
     return handle;
 }
