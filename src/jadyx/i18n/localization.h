@@ -638,6 +638,8 @@ enum class Text : std::uint16_t {
     ShaderBuildHint,
     GpuFence,
     GpuFenceHint,
+    AsyncRecord,
+    AsyncRecordHint,
     SlowGuestClock,
     SlowGuestClockHint,
     GameGraphicsAdvancedHint,
