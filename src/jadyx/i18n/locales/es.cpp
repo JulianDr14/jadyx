@@ -688,6 +688,8 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::ShaderBuildHint, L"Qué hace el juego mientras compila un shader"},
     {Text::GpuFence, L"GPU Fence"},
     {Text::GpuFenceHint, L"Inmediato es lo más rápido. Los demás son más exactos pero pueden bajar los fps"},
+    {Text::AsyncRecord, L"Hilo de comandos de GPU"},
+    {Text::AsyncRecordHint, L"Avanzado. Envía los comandos en un hilo aparte. Apagarlo puede bajar los fps. Se aplica al iniciar el juego"},
     {Text::SlowGuestClock, L"Reloj del juego al 90 %"},
     {Text::SlowGuestClockHint, L"Para juegos que saltan entre 20 y 30 fps. Si se ve lento, apágalo"},
     {Text::GameGraphicsAdvancedHint, L"Avanzado, solo para este juego. Se aplica la próxima vez que lo inicies. Si algo falla, restablécelas"},

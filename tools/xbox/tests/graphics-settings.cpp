@@ -51,6 +51,12 @@ int main() {
     check(HandleGraphicsInput(page, GraphicsInput::Left) && page.settings.gpu_fence == GpuFence::Accurate);
     check(GraphicsRowValue(page.settings, GraphicsRow::GpuFence) == L"Preciso");
     check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.gpu_fence == GpuFence::Immediate);
+    // The command thread: on by default, and the page's last row.
+    check(defaults.async_record && GraphicsRowValue(page.settings, GraphicsRow::AsyncRecord) == L"Sí");
+    check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::AsyncRecord));
+    check(page.selected == GraphicsRowCount - 1);
+    check(HandleGraphicsInput(page, GraphicsInput::Confirm) && !page.settings.async_record);
+    check(GraphicsRowValue(page.settings, GraphicsRow::AsyncRecord) == L"No");
     check(!HandleGraphicsInput(page, GraphicsInput::Back) && !page.open);
     check(ShaderBuildFromValue(1) == ShaderBuild::Balanced && !ShaderBuildFromValue(7));
 
@@ -110,6 +116,18 @@ int main() {
     check(GameGraphicsRowValue(safe_global, shaders, GraphicsRow::GpuFence) == L"Inmediato");
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Left) && !shaders.gpu_fence);
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Left) && shaders.gpu_fence == GpuFence::Accurate);
+    // The command thread: follows Settings > Graphics until the game has its own, only for that game.
+    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::AsyncRecord));
+    GraphicsSettings no_thread;
+    no_thread.async_record = false;
+    check(!ResolveGraphics(no_thread, shaders).async_record);
+    check(GameGraphicsRowValue(no_thread, shaders, GraphicsRow::AsyncRecord) == L"Ajustes · No");
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.async_record == true);
+    check(ResolveGraphics(no_thread, shaders).async_record);
+    check(GameGraphicsRowValue(no_thread, shaders, GraphicsRow::AsyncRecord) == L"Sí");
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.async_record == false);
+    check(!ResolveGraphics(global, shaders).async_record);
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.async_record);
     // The guest clock is the game's own: a row only in its pane, off until the player turns it on.
     check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::GuestClock));
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::GuestClock) == L"No");
@@ -120,7 +138,7 @@ int main() {
     // The advanced rows: only the game's, default until changed, and reset only with A.
     GameGraphics tuned;
     const auto go = [&](GraphicsRow target) { row = static_cast<std::size_t>(target); };
-    check(IsAdvancedRow(GraphicsRow::Anisotropy) && !IsAdvancedRow(GraphicsRow::GuestClock) && GraphicsRowCount == 4);
+    check(IsAdvancedRow(GraphicsRow::Anisotropy) && !IsAdvancedRow(GraphicsRow::GuestClock) && GraphicsRowCount == 5);
     go(GraphicsRow::Anisotropy);
     check(GameGraphicsRowValue(global, tuned, GraphicsRow::Anisotropy) == L"Lo que pida el juego");
     check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && tuned.advanced.anisotropy == Settings::AnisotropyMode::X2);

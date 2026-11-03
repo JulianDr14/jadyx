@@ -1177,6 +1177,7 @@ private:
                 SettingsRow item{Kind::Choice, std::wstring{Tr(GraphicsRowTitle(row))},
                                  std::wstring{Tr(GraphicsRowHint(row))}, GraphicsRowValue(settings, row)};
                 if (row == GraphicsRow::FrameGen) { item.kind = Kind::Toggle; item.on = settings.frame_gen; }
+                if (row == GraphicsRow::AsyncRecord) { item.kind = Kind::Toggle; item.on = settings.async_record; }
                 rows.push_back(std::move(item));
             }
         } else if (category == HomeControllers) {

@@ -200,7 +200,9 @@ el hilo de GPU, como antes de ese cambio. El log dice qué modo se usa:
 
 Las llamadas a la command list de D3D12 se hacen por defecto en un hilo propio (`D3D12Recorder`):
 el hilo de GPU solo las graba, en bloques que ese hilo ejecuta en orden y envía a la cola. Con
-`async_record=0` en BootCfg el hilo de GPU las hace él mismo, como antes. El log dice qué modo se usa:
+`async_record=0` en BootCfg el hilo de GPU las hace él mismo, como antes. También se cambia en
+Ajustes > Gráficos y en los gráficos de cada juego, con efecto al iniciar el juego; BootCfg manda
+sobre los dos. Apagado, `descriptor_defer` tampoco se usa. El log dice qué modo se usa:
 `D3D12: command list calls made on a recording thread` o `on the GPU thread`.
 
 La reutilización del pipeline entre draws es experimental y está apagada por defecto. Con

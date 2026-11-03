@@ -4,7 +4,7 @@
 
 // Settings > Graphics: how the image reaches the screen, what a draw does while its shader builds
 // and when the guest learns that the GPU finished. FSR and frame generation exclude each other:
-// turning one on turns the other off. Each game may override any of the four (nullopt follows
+// turning one on turns the other off. Each game may override any of them (nullopt follows
 // Settings > Graphics). Pure logic only:
 // persistence and applying them are in uwp_system_settings.h.
 
@@ -86,6 +86,7 @@ struct GraphicsSettings {
     bool frame_gen{};                            ///< Off by default; on is the automatic mode.
     ShaderBuild shaders{ShaderBuild::Skip};
     GpuFence gpu_fence{GpuFence::Immediate};
+    bool async_record{true}; ///< D3D12 command list calls on a thread of their own.
 
     bool operator==(const GraphicsSettings&) const = default;
 };
@@ -147,6 +148,7 @@ struct GameGraphics {
     std::optional<bool> frame_gen;
     std::optional<ShaderBuild> shaders;
     std::optional<GpuFence> gpu_fence;
+    std::optional<bool> async_record;
     bool slow_guest_clock{}; ///< Only a game's own: there is no global setting to follow.
     GameAdvancedGraphics advanced;
 
@@ -180,6 +182,7 @@ inline GraphicsSettings ResolveGraphics(const GraphicsSettings& global, const Ga
         .frame_gen = game.frame_gen.value_or(global.frame_gen),
         .shaders = game.shaders.value_or(global.shaders),
         .gpu_fence = game.gpu_fence.value_or(global.gpu_fence),
+        .async_record = game.async_record.value_or(global.async_record),
     };
     if (resolved.frame_gen && IsFsr(resolved.upscaling)) {
         if (game.frame_gen && !game.upscaling) resolved.upscaling = Upscaling::Bilinear;
@@ -216,6 +219,11 @@ inline void StepGameShaders(GameGraphics& game, bool back) {
 
 inline void StepGameGpuFence(GameGraphics& game, bool back) {
     game.gpu_fence = StepChoice(game.gpu_fence, SelectableGpuFences(), back);
+}
+
+inline void StepGameAsyncRecord(GameGraphics& game, bool back) {
+    static constexpr std::array values{true, false};
+    game.async_record = StepChoice<bool>(game.async_record, values, back);
 }
 
 inline std::wstring OnOffText(bool on) {

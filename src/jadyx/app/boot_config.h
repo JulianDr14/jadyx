@@ -234,7 +234,8 @@ struct BootConfig {
     /// upscaling.h ParseUpscaling lists the values). Not saved.
     std::optional<Upscaling> upscaling;
     /// Make the D3D12 command list calls on a thread of their own, so the GPU thread only records
-    /// them ("async_record=0" makes them on the GPU thread, as before the recorder).
+    /// them ("async_record=0" makes them on the GPU thread, as before the recorder). boot.cfg
+    /// wins over Settings > Graphics and the game's own Graphics.
     bool async_record{true};
     /// Draw descriptor tables written on the recording thread ("descriptor_defer=0" writes them on
     /// the GPU thread); needs async_record. On since the console A/B of 0.3.9.111.
