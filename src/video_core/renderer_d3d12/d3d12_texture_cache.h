@@ -461,9 +461,15 @@ public:
     [[nodiscard]] Image* PrepareDepthFeedback();
     /// A copy of the image as it is now, in the storage depth feedback uses.
     [[nodiscard]] Image* TakeSnapshot();
-    /// TakeSnapshot of a render target, read through ImageView::DepthFeedbackHandle. Leaves the
+    /// A copy of a render target as a view of it reads it now, read through
+    /// ImageView::DepthFeedbackHandle: TakeSnapshot, or for a view of the reinterpreted copy a
+    /// copy of that, whose format the view's SRV takes. False when it cannot be made. Leaves the
     /// image in RENDER_TARGET.
-    [[nodiscard]] Image* PrepareColorSnapshot();
+    [[nodiscard]] bool PrepareColorSnapshot(bool reinterpreted_view);
+    /// The copy PrepareColorSnapshot(true) takes; null before the first.
+    [[nodiscard]] ID3D12Resource* ReinterpretedSnapshot() const noexcept {
+        return reinterpreted_snapshot.Get();
+    }
     [[nodiscard]] Image* DepthFeedback() const noexcept { return depth_feedback.get(); }
 
     /// This image's texels in another typeless family of the same texel size, for views D3D12
@@ -590,6 +596,9 @@ private:
     u64 reinterpreted_version{};
     /// The copy was rendered to and the image does not have those texels yet.
     bool reinterpreted_ahead{};
+    /// PrepareColorSnapshot of the reinterpreted copy, in its format; kept in a shader resource
+    /// state between snapshots.
+    ComPtr<ID3D12Resource> reinterpreted_snapshot;
 };
 
 class ImageView : public VideoCommon::ImageViewBase {

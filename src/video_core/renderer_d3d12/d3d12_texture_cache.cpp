@@ -803,6 +803,9 @@ void Image::ReleaseResources() {
     if (runtime && reinterpreted) {
         runtime->scheduler.DeferRelease(std::move(reinterpreted));
     }
+    if (runtime && reinterpreted_snapshot) {
+        runtime->scheduler.DeferRelease(std::move(reinterpreted_snapshot));
+    }
     guest_blocks.reset();
     depth_feedback.reset();
 }
@@ -850,16 +853,47 @@ Image& Image::operator=(Image&& other) noexcept {
         reinterpreted_state = other.reinterpreted_state;
         reinterpreted_version = other.reinterpreted_version;
         reinterpreted_ahead = other.reinterpreted_ahead;
+        reinterpreted_snapshot = std::move(other.reinterpreted_snapshot);
     }
     return *this;
 }
 
-Image* Image::PrepareColorSnapshot() {
-    Image* const snapshot = TakeSnapshot();
-    if (snapshot) {
+bool Image::PrepareColorSnapshot(bool reinterpreted_view) {
+    if (!reinterpreted_view) {
+        if (!TakeSnapshot()) {
+            return false;
+        }
         Transition(D3D12_RESOURCE_STATE_RENDER_TARGET);
+        return true;
     }
-    return snapshot;
+    // The view's SRV is in the reinterpreted copy's family, which a copy of the image (in the
+    // image's own) does not take: the snapshot is of the copy instead.
+    if (!runtime || !reinterpreted) {
+        return false;
+    }
+    constexpr D3D12_RESOURCE_STATES READ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    auto* const commands = runtime->scheduler.CommandList();
+    if (reinterpreted_snapshot) {
+        TransitionBuffer(commands, reinterpreted_snapshot.Get(), READ,
+                         D3D12_RESOURCE_STATE_COPY_DEST);
+    } else {
+        D3D12_RESOURCE_DESC desc = reinterpreted->GetDesc();
+        desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+        const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+        if (FAILED(runtime->device.Get()->CreateCommittedResource(
+                &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                IID_PPV_ARGS(&reinterpreted_snapshot)))) {
+            reinterpreted_snapshot.Reset();
+            return false;
+        }
+    }
+    RefreshReinterpreted();
+    TransitionReinterpreted(D3D12_RESOURCE_STATE_COPY_SOURCE);
+    commands->CopyResource(reinterpreted_snapshot.Get(), reinterpreted.Get());
+    TransitionBuffer(commands, reinterpreted_snapshot.Get(), D3D12_RESOURCE_STATE_COPY_DEST, READ);
+    Transition(D3D12_RESOURCE_STATE_RENDER_TARGET);
+    return true;
 }
 
 Image* Image::TakeSnapshot() {
