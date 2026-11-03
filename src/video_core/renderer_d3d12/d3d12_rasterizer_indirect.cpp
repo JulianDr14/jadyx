@@ -74,7 +74,7 @@ void RasterizerD3D12::DrawIndirect() {
 
     scheduler.BeginWork();
     hunt.PipelineStart();
-    GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
+    GraphicsPipeline* pipeline = pipeline_cache.CurrentGraphicsPipeline();
     hunt.PipelineEnd();
     if (!pipeline) {
         hunt.Outcome(Hunt::Outcome::NoPipeline);
@@ -98,14 +98,31 @@ void RasterizerD3D12::DrawIndirect() {
     }
     SCOPE_EXIT { buffer_runtime.SetTraceBuffers(nullptr); };
     buffer_cache.SetDrawIndirect(&params);
+    // The draw counts live in GPU memory, so its indices cannot be rewritten here.
+    buffer_runtime.SetIndexRestart(std::nullopt);
     pipeline->Configure(params.is_indexed,
                         {*maxwell3d, *gpu_memory, buffer_cache, texture_cache, descriptor_queue,
                          sampler_heap, scheduler},
                         bindings);
-    buffer_cache.SetDrawIndirect(nullptr);
-    if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
-        pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+    if (bindings.unemulated_reduction_stages != 0 || bindings.unemulated_mirror_border)
+        [[unlikely]] {
+        if (bindings.unemulated_reduction_stages != 0) {
+            pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+        }
+        if (bindings.unemulated_mirror_border) {
+            pipeline_cache.EmulateMirrorBorder(pipeline->Key());
+        }
+        // This draw too: only the bindings seen just now tell that it needs the other pipeline.
+        if (GraphicsPipeline* const emulating = pipeline_cache.CurrentGraphicsPipeline();
+            emulating && emulating != pipeline) {
+            pipeline = emulating;
+            pipeline->Configure(false,
+                                {*maxwell3d, *gpu_memory, buffer_cache, texture_cache,
+                                 descriptor_queue, sampler_heap, scheduler},
+                                bindings);
+        }
     }
+    buffer_cache.SetDrawIndirect(nullptr);
     if (!pipeline->IsBuilt() && !WaitPendingPipeline(pipeline, UINT32_MAX, UINT32_MAX,
                                                      params.is_indexed)) [[unlikely]] {
         hunt.Outcome(Hunt::Outcome::NoPipeline);
@@ -207,9 +224,11 @@ void RasterizerD3D12::DrawIndirect() {
                   maxwell3d->draw_manager.draw_state.topology, compatible);
     {
         const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
-        cmd->ExecuteIndirect(signature, draw_count, range.buffer, range.offset,
-                             params.include_count ? range.buffer : nullptr,
-                             params.include_count ? count_offset : 0);
+        DrawStencilFaces(*pipeline, maxwell3d->draw_manager.draw_state.topology, [&] {
+            cmd->ExecuteIndirect(signature, draw_count, range.buffer, range.offset,
+                                 params.include_count ? range.buffer : nullptr,
+                                 params.include_count ? count_offset : 0);
+        });
     }
     texture_runtime.FinishCompatibleDrawTargets(*framebuffer);
     hunt.Recorded();
@@ -299,7 +318,7 @@ void RasterizerD3D12::DrawByteCount(const IndirectParams& params) {
     gpu_memory->FlushCaching();
     ApplyPendingStateInvalidation();
     scheduler.BeginWork();
-    GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
+    GraphicsPipeline* pipeline = pipeline_cache.CurrentGraphicsPipeline();
     if (!pipeline) {
         return;
     }
@@ -311,10 +330,25 @@ void RasterizerD3D12::DrawByteCount(const IndirectParams& params) {
                         {*maxwell3d, *gpu_memory, buffer_cache, texture_cache, descriptor_queue,
                          sampler_heap, scheduler},
                         bindings);
-    buffer_cache.SetDrawIndirect(nullptr);
-    if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
-        pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+    if (bindings.unemulated_reduction_stages != 0 || bindings.unemulated_mirror_border)
+        [[unlikely]] {
+        if (bindings.unemulated_reduction_stages != 0) {
+            pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+        }
+        if (bindings.unemulated_mirror_border) {
+            pipeline_cache.EmulateMirrorBorder(pipeline->Key());
+        }
+        // This draw too: only the bindings seen just now tell that it needs the other pipeline.
+        if (GraphicsPipeline* const emulating = pipeline_cache.CurrentGraphicsPipeline();
+            emulating && emulating != pipeline) {
+            pipeline = emulating;
+            pipeline->Configure(false,
+                                {*maxwell3d, *gpu_memory, buffer_cache, texture_cache,
+                                 descriptor_queue, sampler_heap, scheduler},
+                                bindings);
+        }
     }
+    buffer_cache.SetDrawIndirect(nullptr);
     if (!pipeline->IsBuilt() && !WaitPendingPipeline(pipeline, UINT32_MAX, UINT32_MAX, false))
         [[unlikely]] {
         return;
@@ -353,7 +387,8 @@ void RasterizerD3D12::DrawByteCount(const IndirectParams& params) {
     BindDrawState(*pipeline, bindings, *framebuffer, draw_params, draw_state.topology, compatible);
     {
         const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
-        cmd->ExecuteIndirect(signature, 1, record, 0, nullptr, 0);
+        DrawStencilFaces(*pipeline, draw_state.topology,
+                         [&] { cmd->ExecuteIndirect(signature, 1, record, 0, nullptr, 0); });
     }
     texture_runtime.FinishCompatibleDrawTargets(*framebuffer);
     // The command signature wrote the runtime data constants: the next draw sets them again.

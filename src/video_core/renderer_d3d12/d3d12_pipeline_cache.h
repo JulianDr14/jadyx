@@ -165,6 +165,8 @@ public:
     void EmulateReduction(const GraphicsPipelineCacheKey& key, u8 stages);
     /// The same for a compute shader.
     void EmulateReduction(u64 compute_hash);
+    /// PipelineBindings::unemulated_mirror_border: the same for the key's fragment shader.
+    void EmulateMirrorBorder(const GraphicsPipelineCacheKey& key);
 
     /// Whether the pipelines that capture transform feedback do it through stream output.
     [[nodiscard]] bool NativeStreamOutput() const;
@@ -247,6 +249,8 @@ private:
     std::unordered_set<u64> compute_not_split;
     /// Shaders (unique hashes) that sample with an emulated MIN/MAX reduction. GPU thread only.
     std::unordered_set<u64> reduction_shaders;
+    /// Fragment shaders that sample with a mirror-once-to-border sampler. GPU thread only.
+    std::unordered_set<u64> mirror_border_shaders;
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>>
         graphics_cache;
 

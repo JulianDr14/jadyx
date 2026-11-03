@@ -180,6 +180,9 @@ public:
         return device2.Get();
     }
     /// The depth bounds test (pipeline stream DEPTH_STENCIL1 plus OMSetDepthBounds).
+    /// Any tier of conservative rasterization: the console's own answer, asked once per pipeline.
+    [[nodiscard]] bool SupportsConservativeRaster() const;
+
     [[nodiscard]] bool SupportsDepthBounds() const {
         return depth_bounds;
     }

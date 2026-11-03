@@ -20,6 +20,10 @@ namespace D3D12 {
 /// Root constants for Vulkan push constants (space 30). spirv_to_dxil sizes the CBV to the highest
 /// offset read, 16-byte aligned: RescalingLayout needs 8 dwords, RenderAreaLayout 4.
 constexpr u32 PUSH_CONSTANT_WORDS = 8;
+/// The guest's blend constant, after them, only in signatures of pipelines that read it in a shader.
+constexpr u32 BLEND_CONSTANT_WORDS = 4;
+constexpr u32 STAGE_CONSTANT_WORDS = 8;
+constexpr u32 POLYGON_STIPPLE_WORDS = 32;
 
 /// ExecuteIndirect records (see IndirectArgumentRing). A draw record starts with the first five
 /// words of the vertex runtime data (first_vertex, base_instance, is_indexed_draw, yz_flip_mask,
@@ -93,6 +97,15 @@ public:
         return xfb_buffer_indices;
     }
     /// The pipelines of this layout capture transform feedback through stream output.
+    bool StageConstants() const noexcept {
+        return stage_constants;
+    }
+    /// The polygon stipple pattern follows the stage constants.
+    bool PolygonStipple() const noexcept {
+        return polygon_stipple;
+    }
+
+    [[nodiscard]]
     bool StreamOutput() const noexcept {
         return stream_output;
     }
@@ -147,6 +160,8 @@ private:
     u32 num_samplers{};
     u32 root_cbv_index{NO_TABLE};
     bool stream_output{};
+    bool stage_constants{};
+    bool polygon_stipple{};
     std::vector<u32> root_cbv_registers;
     std::vector<u32> cbv_root_slots;
 };
@@ -165,7 +180,8 @@ template <typename Info>
 template <typename Info>
 [[nodiscard]] u32 NumStageBindings(const Info& info) {
     return FirstTextureBinding(info, 0) + Shader::NumDescriptors(info.texture_descriptors) +
-           static_cast<u32>(info.image_descriptors.size());
+           static_cast<u32>(info.image_descriptors.size()) +
+           (info.uses_destination_read ? 1 : 0);
 }
 
 /// Builds and deduplicates guest root signatures. Thread-safe: pipelines are built on workers.
@@ -177,10 +193,11 @@ public:
     /// Layout for the stages of one pipeline, in the order their SPIR-V was emitted. Null entries
     /// (absent stages) are skipped. stream_output: the pipeline declares stream output (native
     /// transform feedback). emulate_reduction: its float samples read the sampler table too
-    /// (EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION). Throws std::runtime_error if D3D12 rejects the
-    /// signature.
+    /// (EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION). blend_constants: a shader reads the blend constant.
+    /// Throws std::runtime_error if D3D12 rejects the signature.
     const PipelineLayout& Get(std::span<const Shader::Info* const> infos, bool is_compute,
-                              bool stream_output = false, bool emulate_reduction = false);
+                              bool stream_output = false, bool emulate_reduction = false,
+                              bool blend_constants = false);
 
 private:
     void CreateCommandSignatures(PipelineLayout& layout, bool is_compute);

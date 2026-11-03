@@ -25,6 +25,7 @@ struct StageBindings {
     Shader::VaryingState stores; ///< Read by the draw trace only.
     u64 interpolation{}; ///< Two bits per generic, Shader::Interpolation; diagnostic only.
     bool uses_render_area{};
+    bool uses_destination_read{};
 
     // Derived once from immutable shader metadata, never from guest handles or cache IDs.
     u32 num_texture_views{}; ///< textures + images, skipped after binding texel buffers

@@ -63,6 +63,13 @@ struct AttributeFetch {
 AttributeFetch SplitAttributeFetch(Maxwell::VertexAttribute::Type type,
                                    Maxwell::VertexAttribute::Size size, u32 offset, u32 stride);
 
+/// Components of a 32-bit vertex format, 0 for the others.
+u32 Vertex32BitComponents(Maxwell::VertexAttribute::Size size);
+
+/// The attribute's bgra bit is left to the shader: DXGI has the swapped fetch only for 4x8 UNORM.
+bool FetchesBgraInShader(Maxwell::VertexAttribute::Type type, Maxwell::VertexAttribute::Size size,
+                         u32 offset, u32 stride);
+
 /// Components of a guest vertex format whose host format has more (three 8- or 16-bit components
 /// widen to four, as DXGI has no such three-component formats). 0: the host format matches.
 constexpr u32 WidenedAttributeComponents(Maxwell::VertexAttribute::Size size) noexcept {

@@ -47,9 +47,13 @@ constexpr FormatRow ROW_16{
     {DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
      DXGI_FORMAT_R16G16B16A16_FLOAT},
 };
+// DXGI has no 32-bit normalized formats: fetched as integers, normalized in the shader
+// (Vertex32BitNormalization).
 constexpr FormatRow ROW_32{
-    {DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN},
-    {DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN},
+    {DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32G32_UINT, DXGI_FORMAT_R32G32B32_UINT,
+     DXGI_FORMAT_R32G32B32A32_UINT},
+    {DXGI_FORMAT_R32_SINT, DXGI_FORMAT_R32G32_SINT, DXGI_FORMAT_R32G32B32_SINT,
+     DXGI_FORMAT_R32G32B32A32_SINT},
     {DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32G32_UINT, DXGI_FORMAT_R32G32B32_UINT,
      DXGI_FORMAT_R32G32B32A32_UINT},
     {DXGI_FORMAT_R32_SINT, DXGI_FORMAT_R32G32_SINT, DXGI_FORMAT_R32G32B32_SINT,
@@ -336,6 +340,27 @@ D3D12_CULL_MODE CullMode(bool enabled, Maxwell::CullFace face) {
 
 D3D12_FILL_MODE FillMode(Maxwell::PolygonMode mode) {
     return mode == Maxwell::PolygonMode::Line ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
+}
+
+u32 Vertex32BitComponents(Size size) {
+    switch (size) {
+    case Size::Size_R32:
+        return 1;
+    case Size::Size_R32_G32:
+        return 2;
+    case Size::Size_R32_G32_B32:
+        return 3;
+    case Size::Size_R32_G32_B32_A32:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+bool FetchesBgraInShader(Type type, Size size, u32 offset, u32 stride) {
+    const AttributeFetch fetch = SplitAttributeFetch(type, size, offset, stride);
+    const DXGI_FORMAT format = fetch.parts > 1 ? fetch.part_format : VertexFormat(type, size);
+    return format != DXGI_FORMAT_R8G8B8A8_UNORM;
 }
 
 DXGI_FORMAT VertexFormat(Type type, Size size) {

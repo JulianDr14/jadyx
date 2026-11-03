@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <climits>
 #include <condition_variable>
 #include <cstring>
 #include <functional>
@@ -70,8 +71,9 @@ struct GraphicsPipelineCacheKey {
     /// alpha-to-coverage with this footprint (Shader::RuntimeInfo::alpha_to_coverage_footprint)
     /// and the PSO does not. Bit 3 (SHADER_DEPTH_BIAS): the fragment shader adds the depth bias
     /// (Shader::RuntimeInfo::depth_bias_in_shader) and the PSO has none.
-    /// Bits 4-7 (SAMPLE_MASK_SHIFT): samples 0-3 the guest's sample mask turns off. Zero keeps
-    /// every sample, so the keys of pipelines already on disk stay valid.
+    /// Bits 4-7 (SAMPLE_MASK_SHIFT): samples 0-3 the guest's sample mask turns off at the first
+    /// position of its 2x2 footprint, the rest in state.sample_mask_rest. Zero keeps every sample,
+    /// so the keys of pipelines already on disk stay valid.
     u8 shader_flags;
     static constexpr u8 SHADER_REDUCTION = 1;
     static constexpr u32 SHADER_A2C_SHIFT = 1;
@@ -82,8 +84,25 @@ struct GraphicsPipelineCacheKey {
         return static_cast<u8>((shader_flags >> SHADER_A2C_SHIFT) & 3);
     }
 
+    /// A mask that changes with the position needs the fragment shader: D3D12's has one value.
+    [[nodiscard]] bool SampleMaskInShader() const noexcept {
+        return state.sample_mask_rest != 0 && unique_hashes[5] != 0;
+    }
+
     [[nodiscard]] UINT SampleMask() const noexcept {
-        return ~static_cast<UINT>(shader_flags >> SAMPLE_MASK_SHIFT);
+        return SampleMaskInShader() ? UINT_MAX : ~static_cast<UINT>(shader_flags >> SAMPLE_MASK_SHIFT);
+    }
+
+    /// Shader::RuntimeInfo::sample_mask_footprint.
+    [[nodiscard]] u16 SampleMaskFootprint() const noexcept {
+        if (!SampleMaskInShader()) {
+            return 0;
+        }
+        const u32 first = shader_flags >> SAMPLE_MASK_SHIFT;
+        const u32 rest = state.sample_mask_rest;
+        return static_cast<u16>(first | (first ^ (rest & 0xF)) << 4 |
+                                (first ^ ((rest >> 4) & 0xF)) << 8 |
+                                (first ^ ((rest >> 8) & 0xF)) << 12);
     }
 
     size_t Hash() const noexcept;
@@ -153,6 +172,10 @@ struct PipelineBindings {
     /// Stages (bit per Configure stage, VS first) that sampled a float texture with a sampler whose
     /// MIN/MAX reduction is emulated while the pipeline does not emulate it. Draws filter normally.
     u8 unemulated_reduction_stages{};
+    /// Per axis (u, v), the fragment stage's texture descriptors that MirrorBorderPass mirrors.
+    std::array<u32, 2> mirror_border_masks{};
+    /// Some are, while the pipeline was built without the pass.
+    bool unemulated_mirror_border{};
 };
 
 /// Textures whose samples EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION reduces: float, not cube.
@@ -212,6 +235,22 @@ void SetStageViewCache(bool enabled);
 /// "texture_replay=1"; "=check" binds in full and logs every replay that would have differed).
 enum class TextureReplayMode : u8 { Off, On, Check };
 void SetTextureReplay(TextureReplayMode mode);
+
+/// How a pipeline's color equations share D3D12's single blend constant. Mixing constant color
+/// and constant alpha leaves it to the destination factors; the fragment shader applies the source
+/// factors that read the other one.
+struct BlendConstantPlan {
+    bool hardware_alpha{}; ///< The constant holds the guest's alpha in all four channels.
+    std::array<Shader::BlendConstantFactor, 8> shader_factors{};
+
+    [[nodiscard]] bool InShader() const noexcept {
+        return std::ranges::any_of(shader_factors, [](Shader::BlendConstantFactor factor) {
+            return factor != Shader::BlendConstantFactor::None;
+        });
+    }
+};
+
+[[nodiscard]] BlendConstantPlan PlanBlendConstants(const Vulkan::FixedPipelineState& state);
 
 class GraphicsPipeline {
 public:
@@ -388,11 +427,20 @@ public:
         return depth_bounds;
     }
 
-    /// The color equations read only the blend constant's alpha (constant-alpha factors), so
-    /// the draw sets the D3D12 blend factor to the guest's alpha in all four channels.
+    /// The D3D12 blend factor serves constant-alpha factors, so the draw sets it to the guest's
+    /// alpha in all four channels.
     [[nodiscard]] bool BlendConstantAlpha() const noexcept {
-        return blend_constant_alpha;
+        return blend_constants.hardware_alpha;
     }
+
+    /// The fragment shader reads the blend constant, so the draw sets it in the root constants.
+    [[nodiscard]] bool ShaderBlendConstants() const noexcept {
+        return blend_constants.InShader();
+    }
+
+    /// This pipeline culling one face instead of as the guest asked, built the first time a draw
+    /// needs it (draws whose faces use different stencil references). Null if it cannot be built.
+    [[nodiscard]] ID3D12PipelineState* CulledHandle(D3D12_CULL_MODE mode);
 
     [[nodiscard]] u32 LoweredNoPerspectiveMask() const noexcept {
         return lower_noperspective_mask;
@@ -474,7 +522,7 @@ private:
     bool flattened_vertex{}; ///< dxil holds the flattened vertex stage.
     u8 bound_color_targets{}; ///< Computed once from the immutable PSO write masks.
     bool depth_bounds{};
-    bool blend_constant_alpha{};
+    BlendConstantPlan blend_constants{};
     /// Guest transform feedback buffer strides, for the stream output declaration.
     std::array<UINT, Maxwell::NumTransformFeedbackBuffers> stream_output_strides{};
 
@@ -483,6 +531,8 @@ private:
     std::vector<u32> transition_order;
 
     ComPtr<ID3D12PipelineState> pipeline_state;
+    ComPtr<ID3D12PipelineState> cull_back_state;
+    ComPtr<ID3D12PipelineState> cull_front_state;
     GraphicsPsoCache* const pso_cache;
     SharedGraphicsPso shared_pso;
 

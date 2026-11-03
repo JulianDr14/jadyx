@@ -19,6 +19,8 @@
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_draw_sampler_cache.h"
+#include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
+#include "video_core/renderer_d3d12/d3d12_render_corrections.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
@@ -29,6 +31,15 @@
 // counterpart of renderer_vulkan/pipeline_helper.h).
 
 namespace D3D12 {
+
+/// The fragment shader computes the logic op: D3D12's needs a feature the console lacks. Render
+/// target 0 only, single sampled, and in a format whose bits the shader knows.
+template <typename State>
+[[nodiscard]] bool EmulatesLogicOp(const State& state) {
+    return state.dynamic_state.logic_op_enable != 0 &&
+           MaxwellToD3D12::SampleCount(state.msaa_mode) == 1 &&
+           LogicOpChannelBits(state.color_formats[0])[0] != 0;
+}
 
 using ImageViewList = boost::container::small_vector<VideoCommon::ImageViewInOut, 64>;
 using SamplerIdList = boost::container::small_vector<VideoCommon::SamplerId, 64>;
@@ -297,6 +308,12 @@ private:
     boost::container::small_vector<D3D12_CPU_DESCRIPTOR_HANDLE, 32> handles;
     boost::container::small_vector<u64, 32> keys;
 };
+
+static_assert(Shader::Backend::SPIRV::BLEND_CONSTANTS_OFFSET == PUSH_CONSTANT_WORDS * sizeof(u32));
+static_assert(Shader::Backend::SPIRV::STAGE_CONSTANTS_OFFSET ==
+              (PUSH_CONSTANT_WORDS + BLEND_CONSTANT_WORDS) * sizeof(u32));
+static_assert(Shader::Backend::SPIRV::STAGE_CONSTANT_WORDS == STAGE_CONSTANT_WORDS);
+static_assert(Shader::Backend::SPIRV::POLYGON_STIPPLE_WORDS == POLYGON_STIPPLE_WORDS);
 
 /// Push constants with no resolution scaling (all rescaling bits clear, down factor 1).
 inline void ResetPushConstants(std::array<u32, PUSH_CONSTANT_WORDS>& words) {

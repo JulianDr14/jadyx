@@ -24,6 +24,7 @@
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/gpu_thread.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
+#include "shader_recompiler/ir_opt/passes.h"
 #include "video_core/frame_trace.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
@@ -86,12 +87,46 @@ void SetTextureReplay(TextureReplayMode mode) {
     texture_replay_mode.store(mode, std::memory_order_relaxed);
 }
 
+constexpr size_t FRAGMENT_STAGE = 4;
+
+/// Whether a texture view covers a subresource a render target of the framebuffer writes.
+[[nodiscard]] bool OverlapsColorTarget(const Framebuffer& framebuffer, const ImageView& view) {
+    for (size_t index = 0; index < NUM_RT; ++index) {
+        if (framebuffer.ColorImageId(index) != view.image_id ||
+            view.image_id == VideoCommon::ImageId{}) {
+            continue;
+        }
+        const VideoCommon::SubresourceBase base = framebuffer.ColorBase(index);
+        const auto& range = view.range;
+        if (base.level >= range.base.level &&
+            base.level < range.base.level + range.extent.levels &&
+            base.layer < range.base.layer + range.extent.layers &&
+            base.layer + static_cast<s32>(framebuffer.ColorLayers(index)) > range.base.layer) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// The view's image as it is now, in a copy a draw can read while it writes the image.
+[[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE ColorSnapshotHandle(const ImageView& view,
+                                                              Shader::TextureType type) {
+    Image* const source = view.SourceImage();
+    if (source && source->PrepareColorSnapshot()) {
+        return view.DepthFeedbackHandle(type);
+    }
+    return view.Handle(type);
+}
+
 struct GraphicsPipeline::TextureReplayState {
     TextureReplayKey key;
     /// Per texture descriptor, in binding order: its SRV and whether PrepareRead has work.
     std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> handles;
     std::vector<u8> prepare;
     u8 unemulated_reduction_stages{};
+    std::array<u32, 2> mirror_border_masks{};
+    /// Not stored when a texture aliases a colour target, which this keeps true on replay.
+    const Framebuffer* framebuffer{};
     IntegerSamplerTable integer_samplers;
     /// The rows' upload, bound again within the submission it was made for.
     u64 integer_tick{~u64{0}};
@@ -150,30 +185,25 @@ D3D12_SHADER_BYTECODE Bytecode(const std::vector<u8>& code) {
             .BytecodeLength = code.size()};
 }
 
-/// True when some drawn target's color equation reads the blend constant and every such read is
-/// a constant-alpha factor. A mix of constant color and constant alpha cannot share D3D12's single
-/// constant; it keeps the color (the draw's RGB) and is reported.
-bool ReadsOnlyConstantAlpha(const FixedPipelineState& state, u8 drawn_targets) {
-    using MaxwellToD3D12::BlendConstantRead;
-    bool alpha = false;
-    bool color = false;
-    for (size_t index = 0; index < NumAttachments(state); ++index) {
-        const auto& blend = state.attachments[index];
-        if (blend.enable == 0 || (drawn_targets & (1U << index)) == 0) {
-            continue;
-        }
-        for (const auto factor : {blend.SourceRGBFactor(), blend.DestRGBFactor()}) {
-            const BlendConstantRead read = MaxwellToD3D12::ColorBlendConstantRead(factor);
-            alpha |= read == BlendConstantRead::Alpha;
-            color |= read == BlendConstantRead::Color;
-        }
+Shader::BlendConstantFactor ShaderBlendFactor(Maxwell::Blend::Factor factor) {
+    using Factor = Maxwell::Blend::Factor;
+    using Shader::BlendConstantFactor;
+    switch (factor) {
+    case Factor::BlendFactor_D3D:
+    case Factor::ConstantColor_GL:
+        return BlendConstantFactor::Color;
+    case Factor::OneMinusBlendFactor_D3D:
+    case Factor::OneMinusConstantColor_GL:
+        return BlendConstantFactor::OneMinusColor;
+    case Factor::BothSourceAlpha_D3D:
+    case Factor::ConstantAlpha_GL:
+        return BlendConstantFactor::Alpha;
+    case Factor::OneMinusBothSourceAlpha_D3D:
+    case Factor::OneMinusConstantAlpha_GL:
+        return BlendConstantFactor::OneMinusAlpha;
+    default:
+        return BlendConstantFactor::None;
     }
-    if (alpha && color) {
-        BUG_TRACK(UnsupportedState, "constant color and constant alpha blend factors in one "
-                                    "pipeline; constant alpha reads the color");
-        return false;
-    }
-    return alpha;
 }
 
 D3D12_DEPTH_STENCILOP_DESC StencilFace(const auto& face) {
@@ -185,7 +215,8 @@ D3D12_DEPTH_STENCILOP_DESC StencilFace(const auto& face) {
     };
 }
 
-D3D12_RENDER_TARGET_BLEND_DESC BlendTarget(const FixedPipelineState::BlendingAttachment& blend) {
+D3D12_RENDER_TARGET_BLEND_DESC BlendTarget(const FixedPipelineState::BlendingAttachment& blend,
+                                           bool source_in_shader) {
     const std::array mask = blend.Mask();
     const UINT8 write_mask = static_cast<UINT8>(
         (mask[0] ? D3D12_COLOR_WRITE_ENABLE_RED : 0) |
@@ -209,7 +240,9 @@ D3D12_RENDER_TARGET_BLEND_DESC BlendTarget(const FixedPipelineState::BlendingAtt
     return {
         .BlendEnable = TRUE,
         .LogicOpEnable = FALSE,
-        .SrcBlend = MaxwellToD3D12::BlendFactor(blend.SourceRGBFactor(), false),
+        .SrcBlend = source_in_shader
+                        ? D3D12_BLEND_ONE
+                        : MaxwellToD3D12::BlendFactor(blend.SourceRGBFactor(), false),
         .DestBlend = MaxwellToD3D12::BlendFactor(blend.DestRGBFactor(), false),
         .BlendOp = MaxwellToD3D12::BlendOp(blend.EquationRGB()),
         .SrcBlendAlpha = MaxwellToD3D12::BlendFactor(blend.SourceAlphaFactor(), true),
@@ -231,7 +264,6 @@ std::atomic_bool warned_logic_op;
 std::atomic_bool warned_depth_bounds;
 std::atomic_bool warned_point_fill;
 std::atomic_bool warned_vertex_format;
-std::atomic_bool warned_vertex_bgra;
 std::atomic_bool warned_depth_feedback;
 std::atomic_bool warned_conservative;
 
@@ -292,12 +324,105 @@ void GraphicsPipelineCacheKey::RefreshStatic(const Maxwell& regs) noexcept {
     if (shader_bias) {
         shader_flags |= SHADER_DEPTH_BIAS;
     }
-    // The mask is per position of a 2x2 footprint, which D3D12 lacks: the first one stands for all.
-    // Registers never written read 0, which keeps every sample rather than none.
-    const u32 sample_mask = regs.sample_mask_pos.x0_y0;
-    if (sample_mask != 0 && MaxwellToD3D12::SampleCount(state.msaa_mode) > 1) {
-        shader_flags |= static_cast<u8>((~sample_mask & 0xF) << SAMPLE_MASK_SHIFT);
+    // The mask is per position of a 2x2 footprint, which D3D12 lacks: positions that differ go to
+    // the fragment shader, except with alpha-to-coverage in the PSO, which D3D12 does not combine
+    // with a shader's coverage; the first position then stands for all. Registers never written
+    // read 0, which keeps every sample rather than none.
+    const auto samples_off = [](u32 mask) { return mask != 0 ? ~mask & 0xF : 0U; };
+    u32 mask_rest = 0;
+    if (MaxwellToD3D12::SampleCount(state.msaa_mode) > 1) {
+        const u32 first = samples_off(regs.sample_mask_pos.x0_y0);
+        shader_flags |= static_cast<u8>(first << SAMPLE_MASK_SHIFT);
+        if (state.alpha_to_coverage_enabled == 0) {
+            mask_rest = (samples_off(regs.sample_mask_pos.x1_y0) ^ first) |
+                        (samples_off(regs.sample_mask_pos.x0_y1) ^ first) << 4 |
+                        (samples_off(regs.sample_mask_pos.x1_y1) ^ first) << 8;
+        }
     }
+    state.sample_mask_rest.Assign(mask_rest);
+
+    // What D3D12 has no state for goes to generated stages and the fragment shader.
+    auto& emulated = state.dynamic_state;
+    const auto topology_type = MaxwellToD3D12::PrimitiveTopologyType(state.topology);
+    const bool lines = topology_type == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE &&
+                       state.topology != Maxwell::PrimitiveTopology::LinesAdjacency &&
+                       state.topology != Maxwell::PrimitiveTopology::LineStripAdjacency;
+    const bool triangles = topology_type == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE &&
+                           state.topology != Maxwell::PrimitiveTopology::TrianglesAdjacency &&
+                           state.topology != Maxwell::PrimitiveTopology::TriangleStripAdjacency;
+    const float line_width =
+        regs.line_anti_alias_enable != 0 ? regs.line_width_smooth : regs.line_width_aliased;
+    emulated.generated_lines.Assign(
+        lines && (line_width > 1.0f || emulated.line_stipple_enable != 0) ? 1 : 0);
+    emulated.generated_polygon_points.Assign(
+        triangles && regs.polygon_mode_front == Maxwell::PolygonMode::Point ? 1 : 0);
+    emulated.generated_fill_rectangle.Assign(
+        triangles && regs.fill_via_triangle_mode != Maxwell::FillViaTriangleMode::Disabled ? 1 : 0);
+    emulated.shader_polygon_stipple.Assign(
+        triangles && regs.polygon_stipple_enabled != 0 && unique_hashes[5] != 0 ? 1 : 0);
+    // Whether a geometry shader is needed for it depends on the fragment program's flat inputs.
+    state.provoking_vertex_last.Assign(regs.provoking_vertex == Maxwell::ProvokingVertex::Last &&
+                                               (lines || triangles) && unique_hashes[5] != 0
+                                           ? 1
+                                           : 0);
+}
+
+BlendConstantPlan PlanBlendConstants(const FixedPipelineState& state) {
+    using MaxwellToD3D12::BlendConstantRead;
+    using Equation = Maxwell::Blend::Equation;
+    const u8 writable = WritableColorTargetMask(state.attachments);
+    // Min and max ignore their factors; integer targets do not blend.
+    const auto reads_factors = [&](size_t index) {
+        const auto format = static_cast<Tegra::RenderTargetFormat>(state.color_formats[index]);
+        const auto& blend = state.attachments[index];
+        const Equation equation = blend.EquationRGB();
+        return blend.enable != 0 && (writable & (1U << index)) != 0 &&
+               format != Tegra::RenderTargetFormat::NONE &&
+               !VideoCore::Surface::IsPixelFormatInteger(
+                   VideoCore::Surface::PixelFormatFromRenderTargetFormat(format)) &&
+               equation != Equation::Min_D3D && equation != Equation::Max_D3D &&
+               equation != Equation::Min_GL && equation != Equation::Max_GL;
+    };
+    bool alpha = false;
+    bool color = false;
+    bool dest_alpha = false;
+    bool dest_color = false;
+    for (size_t index = 0; index < NumAttachments(state); ++index) {
+        if (!reads_factors(index)) {
+            continue;
+        }
+        const auto& blend = state.attachments[index];
+        const BlendConstantRead source = MaxwellToD3D12::ColorBlendConstantRead(blend.SourceRGBFactor());
+        const BlendConstantRead dest = MaxwellToD3D12::ColorBlendConstantRead(blend.DestRGBFactor());
+        dest_alpha |= dest == BlendConstantRead::Alpha;
+        dest_color |= dest == BlendConstantRead::Color;
+        alpha |= source == BlendConstantRead::Alpha || dest == BlendConstantRead::Alpha;
+        color |= source == BlendConstantRead::Color || dest == BlendConstantRead::Color;
+    }
+    BlendConstantPlan plan;
+    if (!alpha || !color) {
+        plan.hardware_alpha = alpha;
+        return plan;
+    }
+    if (dest_alpha && dest_color) {
+        BUG_TRACK(UnsupportedState, "destination blend factors of constant color and constant "
+                                    "alpha in one pipeline; constant alpha reads the color");
+        return plan;
+    }
+    plan.hardware_alpha = dest_alpha;
+    const BlendConstantRead hardware =
+        dest_alpha ? BlendConstantRead::Alpha : BlendConstantRead::Color;
+    for (size_t index = 0; index < NumAttachments(state); ++index) {
+        if (!reads_factors(index)) {
+            continue;
+        }
+        const auto factor = state.attachments[index].SourceRGBFactor();
+        const BlendConstantRead source = MaxwellToD3D12::ColorBlendConstantRead(factor);
+        if (source != BlendConstantRead::None && source != hardware) {
+            plan.shader_factors[index] = ShaderBlendFactor(factor);
+        }
+    }
+    return plan;
 }
 
 GraphicsPipeline::GraphicsPipeline(const Device& device_,
@@ -330,7 +455,7 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
     }
     depth_bounds = device.SupportsDepthBounds() && key.state.depth_enabled != 0 &&
                    key.state.dynamic_state.depth_bounds_enable != 0;
-    blend_constant_alpha = ReadsOnlyConstantAlpha(key.state, bound_color_targets);
+    blend_constants = PlanBlendConstants(key.state);
     if (key.state.xfb_enabled != 0) {
         for (size_t index = 0; index < stream_output_strides.size(); ++index) {
             stream_output_strides[index] = key.state.xfb_state.layouts[index].stride;
@@ -513,7 +638,8 @@ bool GraphicsPipeline::Evict(Scheduler& scheduler) {
     // Keep the shared entry discoverable and charged until its last submitted use retires.
     // Other guest variants may still own it or acquire it while this fence is pending.
     scheduler.DeferRelease(std::move(pipeline_state),
-                           [retired = std::move(shared_pso)] {});
+                           [retired = std::move(shared_pso), back = std::move(cull_back_state),
+                            front = std::move(cull_front_state)] {});
     return true;
 }
 
@@ -801,6 +927,7 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
         target_lap.Lap(VideoCore::Perf::Counter::DrawFramebufferNs);
     }
     lap.Lap(VideoCore::Perf::Counter::DrawTargetsNs);
+    const Framebuffer* const framebuffer = texture_cache.GetFramebuffer();
     const auto& dynamic = key.state.dynamic_state;
     const bool writable_depth =
         (dynamic.depth_test_enable != 0 && dynamic.depth_write_enable != 0) ||
@@ -839,7 +966,8 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
         }
         replay = texture_replay.get();
         replay_stamp = texture_cache.CurrentGraphicsBindingStamp();
-        replay_matches = replay->key.Matches(replay_stamp, depth_image, writable_depth, views, samplers);
+        replay_matches = replay->framebuffer == framebuffer &&
+                         replay->key.Matches(replay_stamp, depth_image, writable_depth, views, samplers);
     }
     const bool replaying = replay_matches && replay_mode == TextureReplayMode::On;
     // What the full path binds, kept to replay it later or, in check mode, to compare.
@@ -847,7 +975,9 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     boost::container::small_vector<D3D12_CPU_DESCRIPTOR_HANDLE, 32> recorded_handles;
     boost::container::small_vector<u8, 32> recorded_prepare;
     u8 texture_unemulated = 0;
+    std::array<u32, 2> mirror_border_masks{};
     bool aliased_depth = false;
+    bool aliased_color = false;
     size_t texture_index = 0;
 
     u32 stage_binding = 0;
@@ -882,12 +1012,18 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                 const bool aliases_depth = depth_image != VideoCommon::ImageId{} &&
                                            image_view.image_id == depth_image;
                 aliased_depth |= aliases_depth;
+                // Sampling what the draw writes: it reads the target as it was before the draw.
+                const bool aliases_color =
+                    !aliases_depth && OverlapsColorTarget(*framebuffer, image_view);
+                aliased_color |= aliases_color;
                 if (aliases_depth && writable_depth && !depth_feedback_attempted) {
                     depth_feedback_attempted = true;
                     depth_feedback_ready = image_view.SourceImage()->PrepareDepthFeedback() != nullptr;
                 }
                 D3D12_CPU_DESCRIPTOR_HANDLE handle;
-                if (aliases_depth && depth_feedback_ready) {
+                if (aliases_color) {
+                    handle = ColorSnapshotHandle(image_view, desc.type);
+                } else if (aliases_depth && depth_feedback_ready) {
                     handle = image_view.DepthFeedbackHandle(desc.type);
                 } else {
                     image_view.PrepareRead(desc.type);
@@ -907,7 +1043,18 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                     ReducibleTexture(desc)) {
                     texture_unemulated |= static_cast<u8>(1u << stage);
                 }
-                image_transitions.emplace_back(view_id, false);
+                if (const u32 axes = sampler.MirrorBorderAxes();
+                    axes != 0 && stage == FRAGMENT_STAGE && !desc.is_integer) {
+                    const size_t descriptor = &desc - info.texture_descriptors.data();
+                    if (descriptor < Shader::Optimization::MIRROR_BORDER_MAX_DESCRIPTORS) {
+                        const u32 bit = u32{1} << descriptor;
+                        mirror_border_masks[0] |= (axes & 1) != 0 ? bit : 0;
+                        mirror_border_masks[1] |= (axes & 2) != 0 ? bit : 0;
+                    }
+                }
+                if (!aliases_color) {
+                    image_transitions.emplace_back(view_id, false);
+                }
                 if (out.trace_all_views) out.trace_all_views->push_back(
                     {view_id, false, desc.type, aliases_depth && depth_feedback_ready});
                 if (out.trace_views) {
@@ -929,6 +1076,11 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
         }
         PushStorageImages(info, texture_cache, queue, views_it, image_transitions);
         uses_render_area |= info.uses_render_area;
+        if (info.uses_destination_read) {
+            // The emulated logic op's destination, the last binding of the last stage.
+            ImageView& target = texture_cache.GetImageView(framebuffer->ColorViewId(0));
+            queue.AddCopy(ColorSnapshotHandle(target, Shader::TextureType::Color2D));
+        }
     }
     if (buffer_cache.any_buffer_uploaded) {
         buffer_cache.runtime.PostCopyBarrier();
@@ -979,6 +1131,7 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
         VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureReplays, 1);
         TextureReplayState& state = *texture_replay;
         out.unemulated_reduction_stages |= state.unemulated_reduction_stages;
+        mirror_border_masks = state.mirror_border_masks;
         if (state.integer_samplers.Empty()) {
             out.integer_samplers = 0;
         } else {
@@ -1003,6 +1156,7 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                 std::equal(recorded_prepare.begin(), recorded_prepare.end(),
                            state.prepare.begin(), state.prepare.end()) &&
                 state.unemulated_reduction_stages == texture_unemulated &&
+                state.mirror_border_masks == mirror_border_masks &&
                 state.integer_samplers.SameRows(integer_samplers);
             if (same) {
                 VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureReplays, 1);
@@ -1017,19 +1171,25 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                 }
                 state.key.valid = false;
             }
-        } else if (aliased_depth || texture_cache.CurrentGraphicsBindingStamp() != replay_stamp) {
-            // Depth feedback depends on its snapshot; changed images may resolve to new views.
+        } else if (aliased_depth || aliased_color ||
+                   texture_cache.CurrentGraphicsBindingStamp() != replay_stamp) {
+            // Feedback depends on its snapshot; changed images may resolve to new views.
             state.key.valid = false;
         } else {
             state.key.Store(replay_stamp, depth_image, writable_depth, views, samplers);
+            state.framebuffer = framebuffer;
             state.handles.assign(recorded_handles.begin(), recorded_handles.end());
             state.prepare.assign(recorded_prepare.begin(), recorded_prepare.end());
             state.unemulated_reduction_stages = texture_unemulated;
+            state.mirror_border_masks = mirror_border_masks;
             state.integer_samplers = integer_samplers;
             state.integer_tick = tick;
             state.integer_address = out.integer_samplers;
         }
     }
+    out.mirror_border_masks = mirror_border_masks;
+    out.unemulated_mirror_border =
+        (mirror_border_masks[0] | mirror_border_masks[1]) != 0 && dynamic.shader_mirror_border == 0;
     lap.Lap(VideoCore::Perf::Counter::DrawSamplersNs);
 
     // Push constants: no resolution scaling yet (all rescaling bits clear, down factor 1), then
@@ -1103,9 +1263,6 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
         if (attribute.bgra != 0) {
             if (format == DXGI_FORMAT_R8G8B8A8_UNORM) {
                 format = DXGI_FORMAT_B8G8R8A8_UNORM;
-            } else {
-                WarnOnceLog(warned_vertex_bgra, "{} is not supported and is ignored",
-                            "a BGRA vertex attribute that is not 4x8 UNORM");
             }
         }
         for (u32 part = 0; part < fetch.parts; ++part) {
@@ -1137,17 +1294,31 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
     }
 
     const auto polygon_mode = FixedPipelineState::UnpackPolygonMode(state.polygon_mode);
-    if (polygon_mode == Maxwell::PolygonMode::Point) {
+    if (polygon_mode == Maxwell::PolygonMode::Point && stages[3].empty()) {
         WarnOnce(warned_point_fill, "point fill mode");
     }
-    if (state.conservative_raster_enable != 0) {
+    // D3D12 does not allow it with wireframe or line primitives.
+    const bool conservative_raster =
+        state.conservative_raster_enable != 0 && device.SupportsConservativeRaster() &&
+        polygon_mode == Maxwell::PolygonMode::Fill &&
+        desc.PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    if (state.conservative_raster_enable != 0 && !conservative_raster) {
         WarnOnce(warned_conservative, "conservative rasterization");
     }
     // The y-flip happens in the shader (spirv_to_dxil yz_flip), so primitives keep the winding they
     // have in Vulkan's framebuffer space and the front face maps directly.
     desc.RasterizerState = {
         .FillMode = MaxwellToD3D12::FillMode(polygon_mode),
-        .CullMode = MaxwellToD3D12::CullMode(dynamic.cull_enable != 0, dynamic.CullFace()),
+        // Points have no back face; the quads the point geometry shader makes of them would. Same
+        // for the quads made of lines, of polygon vertices and of bounding boxes.
+        .CullMode = (state.topology == Maxwell::PrimitiveTopology::Points ||
+                     (!stages[3].empty() && (dynamic.generated_lines != 0 ||
+                                             dynamic.generated_polygon_points != 0 ||
+                                             dynamic.generated_fill_rectangle != 0))) &&
+                            key.unique_hashes[2] == 0 && key.unique_hashes[3] == 0 &&
+                            key.unique_hashes[4] == 0
+                        ? D3D12_CULL_MODE_NONE
+                        : MaxwellToD3D12::CullMode(dynamic.cull_enable != 0, dynamic.CullFace()),
         .FrontCounterClockwise = dynamic.FrontFace() == Maxwell::FrontFace::CounterClockWise,
         .DepthBias = shader_bias ? 0 : static_cast<INT>(std::bit_cast<f32>(key.depth_bias) / 2.0f),
         .DepthBiasClamp = shader_bias ? 0.0f : std::bit_cast<f32>(key.depth_bias_clamp),
@@ -1157,10 +1328,12 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
         .MultisampleEnable = FALSE,
         .AntialiasedLineEnable = state.smooth_lines != 0,
         .ForcedSampleCount = 0,
-        .ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+        .ConservativeRaster = conservative_raster ? D3D12_CONSERVATIVE_RASTERIZATION_MODE_ON
+                                                  : D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
     };
 
-    if (dynamic.logic_op_enable != 0) {
+    const bool shader_logic_op = EmulatesLogicOp(state) && !stages[4].empty();
+    if (dynamic.logic_op_enable != 0 && !shader_logic_op) {
         WarnOnce(warned_logic_op, "logic op");
     }
     const size_t num_attachments = DrawColorTargetCount(NumAttachments(state), bound_color_targets);
@@ -1169,7 +1342,12 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
     desc.BlendState.IndependentBlendEnable = TRUE;
     desc.NumRenderTargets = static_cast<UINT>(num_attachments);
     for (size_t index = 0; index < num_attachments; ++index) {
-        desc.BlendState.RenderTarget[index] = BlendTarget(state.attachments[index]);
+        desc.BlendState.RenderTarget[index] =
+            BlendTarget(state.attachments[index],
+                        blend_constants.shader_factors[index] != Shader::BlendConstantFactor::None);
+        if (index == 0 && shader_logic_op) {
+            desc.BlendState.RenderTarget[0].BlendEnable = FALSE; // A logic op replaces blending.
+        }
         const auto format = static_cast<Tegra::RenderTargetFormat>(state.color_formats[index]);
         desc.RTVFormats[index] = DrawColorTargetFormat(
             format == Tegra::RenderTargetFormat::NONE
@@ -1593,6 +1771,44 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
     shared_pso.reset();
     LOG_ERROR(Render, "D3D12: graphics pipeline preparation failed with an unknown exception");
     VideoCommon::GPUThread::ReportException("D3D12 graphics pipeline preparation failed");
+}
+
+ID3D12PipelineState* GraphicsPipeline::CulledHandle(D3D12_CULL_MODE mode) {
+    ComPtr<ID3D12PipelineState>& handle =
+        mode == D3D12_CULL_MODE_BACK ? cull_back_state : cull_front_state;
+    if (handle) {
+        return handle.Get();
+    }
+    const bool reloaded = !dxil;
+    if (reloaded && !ReloadDxil()) {
+        return nullptr;
+    }
+    std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
+    auto desc = Describe(elements);
+    desc.RasterizerState.CullMode = mode;
+    const bool bounds_test = depth_bounds && desc.DSVFormat != DXGI_FORMAT_UNKNOWN;
+    DWORD fault = 0;
+    HRESULT result;
+    {
+        std::shared_lock build_lock{PipelineBuildMutex()};
+        result = CallDriverGuarded(
+            [&] {
+                if (bounds_test) {
+                    return CreateWithDepthBounds(device.Get2(), desc, handle);
+                }
+                return device.Get()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&handle));
+            },
+            fault);
+    }
+    if (result == DRIVER_FAULT_HRESULT) {
+        handle.Detach(); // whatever the driver left there is not an object to release
+    } else if (FAILED(result)) {
+        handle.Reset();
+    }
+    if (reloaded) {
+        ReleaseDxil();
+    }
+    return handle.Get();
 }
 
 void SetPsoCostProbe(bool enabled) {
