@@ -461,6 +461,10 @@ void EmitResolutionDownFactor(EmitContext& ctx, IR::Inst& inst) {
     ctx.AddF32("{}=scaling.z;", inst);
 }
 
+void EmitStageConstant(EmitContext&, IR::Inst&, u32) {
+    throw NotImplementedException("GLSL instruction");
+}
+
 void EmitRenderArea(EmitContext& ctx, IR::Inst& inst) {
     ctx.AddF32x4("{}=render_area;", inst);
 }

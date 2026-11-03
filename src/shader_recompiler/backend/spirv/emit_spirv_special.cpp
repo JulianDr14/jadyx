@@ -100,6 +100,130 @@ void AlphaTest(EmitContext& ctx) {
     ctx.AddLabel(true_label);
 }
 
+/// Ends the invocation when keep is false.
+void DiscardUnless(EmitContext& ctx, Id keep) {
+    const Id keep_label{ctx.OpLabel()};
+    const Id discard_label{ctx.OpLabel()};
+    ctx.OpSelectionMerge(keep_label, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(keep, keep_label, discard_label);
+    ctx.AddLabel(discard_label);
+    ctx.OpKill();
+    ctx.AddLabel(keep_label);
+}
+
+/// Line stipple as a discard (RuntimeInfo::line_stipple_generic).
+void LineStipple(EmitContext& ctx) {
+    const u32 generic{ctx.runtime_info.line_stipple_generic};
+    if (generic == 0 || !Sirit::ValidId(ctx.input_generics[generic - 1].id)) {
+        return;
+    }
+    const Id input{ctx.OpLoad(ctx.F32[4], ctx.input_generics[generic - 1].id)};
+    const Id pixels{ctx.OpCompositeExtract(ctx.F32[1], input, 0U)};
+    const Id step{ctx.OpFDiv(ctx.F32[1], pixels,
+                             ctx.Const(static_cast<f32>(ctx.runtime_info.line_stipple_factor)))};
+    const Id bit{ctx.OpBitwiseAnd(ctx.U32[1], ctx.OpConvertFToU(ctx.U32[1], step), ctx.Const(15u))};
+    const Id shifted{
+        ctx.OpShiftRightLogical(ctx.U32[1], ctx.Const(ctx.runtime_info.line_stipple_pattern), bit)};
+    DiscardUnless(ctx, ctx.OpINotEqual(ctx.U1, ctx.OpBitwiseAnd(ctx.U32[1], shifted, ctx.Const(1u)),
+                                       ctx.u32_zero_value));
+}
+
+/// Polygon stipple as a discard: 32 rows of 32 pixels, the leftmost in the row's top bit.
+void PolygonStipple(EmitContext& ctx) {
+    if (!ctx.runtime_info.polygon_stipple || !Sirit::ValidId(ctx.input_position) ||
+        !Sirit::ValidId(ctx.polygon_stipple_pointer)) {
+        return;
+    }
+    const Id position{ctx.OpLoad(ctx.F32[4], ctx.input_position)};
+    const auto pixel{[&](u32 axis) {
+        const Id coord{ctx.OpCompositeExtract(ctx.F32[1], position, axis)};
+        return ctx.OpBitwiseAnd(ctx.U32[1], ctx.OpConvertFToU(ctx.U32[1], coord), ctx.Const(31u));
+    }};
+    const Id row_pointer{ctx.OpAccessChain(ctx.polygon_stipple_pointer,
+                                           ctx.stage_constants_push_constant,
+                                           ctx.Const(STAGE_CONSTANT_WORDS), pixel(1))};
+    // Bytes in order, each read from its top bit: nouveau byte-swaps OpenGL's words for this register.
+    const Id shift{ctx.OpBitwiseXor(ctx.U32[1], pixel(0), ctx.Const(7u))};
+    const Id bit{ctx.OpShiftRightLogical(ctx.U32[1], ctx.OpLoad(ctx.U32[1], row_pointer), shift)};
+    DiscardUnless(ctx, ctx.OpINotEqual(ctx.U1, ctx.OpBitwiseAnd(ctx.U32[1], bit, ctx.Const(1u)),
+                                       ctx.u32_zero_value));
+}
+
+/// The logic op D3D12 does not have everywhere (RuntimeInfo::logic_op), on output 0 and in the
+/// target's own bits. The target is read from the copy made before the draw.
+void LogicOp(EmitContext& ctx) {
+    const auto& info{ctx.runtime_info};
+    if (!info.logic_op_enable || !Sirit::ValidId(ctx.frag_color[0])) {
+        return;
+    }
+    const Id source{ctx.OpLoad(ctx.F32[4], ctx.frag_color[0])};
+    Id destination{};
+    if (Sirit::ValidId(ctx.destination_read)) {
+        const Id position{ctx.OpLoad(ctx.F32[4], ctx.input_position)};
+        const Id coord{ctx.OpConvertFToU(ctx.U32[2], ctx.OpVectorShuffle(ctx.F32[2], position,
+                                                                         position, 0U, 1U))};
+        const std::array lod{ctx.u32_zero_value};
+        destination = ctx.OpImageFetch(ctx.F32[4],
+                                       ctx.OpLoad(ctx.destination_read_type, ctx.destination_read),
+                                       coord, spv::ImageOperandsMask::Lod, lod);
+    }
+    const u32 op{info.logic_op};
+    std::array<Id, 4> result{};
+    for (u32 channel = 0; channel < 4; ++channel) {
+        const Id max{ctx.Const((u32{1} << info.logic_op_bits[channel]) - 1)};
+        const Id max_float{ctx.OpConvertUToF(ctx.F32[1], max)};
+        const auto bits{[&](Id color) {
+            const Id value{ctx.OpCompositeExtract(ctx.F32[1], color, channel)};
+            const Id clamped{ctx.OpFClamp(ctx.F32[1], value, ctx.Const(0.0f), ctx.Const(1.0f))};
+            return ctx.OpConvertFToU(ctx.U32[1], ctx.OpFAdd(ctx.F32[1], ctx.Const(0.5f),
+                                                            ctx.OpFMul(ctx.F32[1], clamped,
+                                                                       max_float)));
+        }};
+        const Id s{bits(source)};
+        const Id d{Sirit::ValidId(destination) ? bits(destination) : ctx.u32_zero_value};
+        const Id not_s{ctx.OpBitwiseXor(ctx.U32[1], s, max)};
+        const Id not_d{ctx.OpBitwiseXor(ctx.U32[1], d, max)};
+        Id bitwise{ctx.u32_zero_value};
+        const auto add{[&](u32 bit, Id a, Id b) {
+            if ((op >> bit) & 1) {
+                bitwise = ctx.OpBitwiseOr(ctx.U32[1], bitwise, ctx.OpBitwiseAnd(ctx.U32[1], a, b));
+            }
+        }};
+        add(0, s, d);
+        add(1, s, not_d);
+        add(2, not_s, d);
+        add(3, not_s, not_d);
+        result[channel] = ctx.OpFDiv(ctx.F32[1], ctx.OpConvertUToF(ctx.F32[1], bitwise), max_float);
+    }
+    ctx.OpStore(ctx.frag_color[0],
+                ctx.OpCompositeConstruct(ctx.F32[4], result[0], result[1], result[2], result[3]));
+}
+
+/// The guest's viewport swizzle (RuntimeInfo::viewport_swizzle) on the position about to be used.
+void ViewportSwizzle(EmitContext& ctx) {
+    const u32 swizzle{ctx.runtime_info.viewport_swizzle};
+    if (swizzle == 0) {
+        return;
+    }
+    const Id position{ctx.OpLoad(ctx.F32[4], ctx.output_position)};
+    const auto component{[&](u32 output) {
+        const u32 selector{(swizzle >> (output * 4)) & 7};
+        const Id value{ctx.OpCompositeExtract(ctx.F32[1], position, selector / 2)};
+        return (selector & 1) != 0 ? ctx.OpFNegate(ctx.F32[1], value) : value;
+    }};
+    ctx.OpStore(ctx.output_position,
+                ctx.OpCompositeConstruct(ctx.F32[4], component(0), component(1), component(2),
+                                         component(3)));
+}
+
+/// Whether the pixel's window coordinate on this axis is odd, position being the loaded FragCoord.
+Id OddPixel(EmitContext& ctx, Id position, u32 axis) {
+    const Id coord{ctx.OpCompositeExtract(ctx.F32[1], position, axis)};
+    const Id pixel{ctx.OpConvertFToU(ctx.U32[1], coord)};
+    const Id one{ctx.Const(1u)};
+    return ctx.OpIEqual(ctx.U1, ctx.OpBitwiseAnd(ctx.U32[1], pixel, one), one);
+}
+
 /// Alpha-to-coverage as a discard (RuntimeInfo::alpha_to_coverage_footprint): a single sample
 /// is covered when output 0's alpha reaches the threshold of its pixel, 0.5 or a 2x2 ordered
 /// dither of the four quarter steps.
@@ -113,14 +237,8 @@ void AlphaToCoverage(EmitContext& ctx) {
     Id threshold{ctx.Const(0.5f)};
     if (footprint == 2 && Sirit::ValidId(ctx.input_position)) {
         const Id position{ctx.OpLoad(ctx.F32[4], ctx.input_position)};
-        const Id one{ctx.Const(1u)};
-        const auto odd{[&](u32 axis) {
-            const Id coord{ctx.OpCompositeExtract(type, position, axis)};
-            const Id pixel{ctx.OpConvertFToU(ctx.U32[1], coord)};
-            return ctx.OpIEqual(ctx.U1, ctx.OpBitwiseAnd(ctx.U32[1], pixel, one), one);
-        }};
-        const Id odd_x{odd(0)};
-        const Id odd_y{odd(1)};
+        const Id odd_x{OddPixel(ctx, position, 0)};
+        const Id odd_y{OddPixel(ctx, position, 1)};
         const Id even_row{ctx.OpSelect(type, odd_x, ctx.Const(0.625f), ctx.Const(0.125f))};
         const Id odd_row{ctx.OpSelect(type, odd_x, ctx.Const(0.375f), ctx.Const(0.875f))};
         threshold = ctx.OpSelect(type, odd_y, odd_row, even_row);
@@ -133,6 +251,60 @@ void AlphaToCoverage(EmitContext& ctx) {
     ctx.AddLabel(discard_label);
     ctx.OpKill();
     ctx.AddLabel(covered_label);
+}
+
+/// The source blend factors the host's blend constant cannot serve, on each output's RGB
+/// (RuntimeInfo::blend_constant_factors). The host pipeline blends these outputs with factor one.
+void ShaderBlendConstants(EmitContext& ctx) {
+    if (!Sirit::ValidId(ctx.blend_constants_push_constant)) {
+        return;
+    }
+    const Id type{ctx.F32[1]};
+    const Id pointer_type{ctx.TypePointer(spv::StorageClass::PushConstant, ctx.F32[4])};
+    const Id constant{ctx.OpLoad(ctx.F32[4], ctx.OpAccessChain(pointer_type,
+                                                               ctx.blend_constants_push_constant,
+                                                               ctx.u32_zero_value))};
+    const Id one{ctx.Const(1.0f)};
+    for (u32 index = 0; index < 8; ++index) {
+        const BlendConstantFactor factor{ctx.runtime_info.blend_constant_factors[index]};
+        if (factor == BlendConstantFactor::None || !Sirit::ValidId(ctx.frag_color[index]) ||
+            ctx.runtime_info.color_output_types[index] != AttributeType::Float) {
+            continue;
+        }
+        const bool alpha{factor == BlendConstantFactor::Alpha ||
+                         factor == BlendConstantFactor::OneMinusAlpha};
+        const bool inverted{factor == BlendConstantFactor::OneMinusColor ||
+                            factor == BlendConstantFactor::OneMinusAlpha};
+        const auto channel{[&](u32 element) {
+            const Id value{ctx.OpCompositeExtract(type, constant, alpha ? 3U : element)};
+            return inverted ? ctx.OpFSub(type, one, value) : value;
+        }};
+        const Id scale{ctx.OpCompositeConstruct(ctx.F32[4], channel(0), channel(1), channel(2), one)};
+        const Id color{ctx.OpLoad(ctx.F32[4], ctx.frag_color[index])};
+        ctx.OpStore(ctx.frag_color[index], ctx.OpFMul(ctx.F32[4], color, scale));
+    }
+}
+
+/// The guest's sample mask for this pixel's position (RuntimeInfo::sample_mask_footprint), on top
+/// of the coverage the shader wrote. Samples above the fourth stay on, as in the host pipeline's.
+void ShaderSampleMask(EmitContext& ctx) {
+    const u32 footprint{ctx.runtime_info.sample_mask_footprint};
+    if (footprint == 0 || !Sirit::ValidId(ctx.input_position) ||
+        !Sirit::ValidId(ctx.sample_mask)) {
+        return;
+    }
+    const auto keep{[&](u32 index) { return ctx.Const(~((footprint >> (index * 4)) & 0xF)); }};
+    const Id position{ctx.OpLoad(ctx.F32[4], ctx.input_position)};
+    const Id odd_x{OddPixel(ctx, position, 0)};
+    const Id odd_y{OddPixel(ctx, position, 1)};
+    const Id even_row{ctx.OpSelect(ctx.U32[1], odd_x, keep(1), keep(0))};
+    const Id odd_row{ctx.OpSelect(ctx.U32[1], odd_x, keep(3), keep(2))};
+    Id mask{ctx.OpSelect(ctx.U32[1], odd_y, odd_row, even_row)};
+    const Id pointer{ctx.OpAccessChain(ctx.output_u32, ctx.sample_mask, ctx.u32_zero_value)};
+    if (ctx.guest_writes_sample_mask) {
+        mask = ctx.OpBitwiseAnd(ctx.U32[1], mask, ctx.OpLoad(ctx.U32[1], pointer));
+    }
+    ctx.OpStore(pointer, mask);
 }
 
 /// Writes the rasterized depth plus RuntimeInfo's depth bias, as the host would have added it.
@@ -397,14 +569,22 @@ void EmitEpilogue(EmitContext& ctx) {
             ctx.OpStore(output.id, ctx.OpVectorTimesScalar(ctx.F32[4], value, w));
         }
     }
+    if (ctx.stage == Stage::VertexB || ctx.stage == Stage::TessellationEval) {
+        ViewportSwizzle(ctx);
+    }
     if (ctx.stage == Stage::VertexB && ctx.runtime_info.convert_depth_mode &&
         !ctx.profile.support_native_ndc) {
         ConvertDepthMode(ctx);
     }
     if (ctx.stage == Stage::Fragment) {
         EmitLocalMemoryRelease(ctx);
+        LineStipple(ctx);
+        PolygonStipple(ctx);
         AlphaTest(ctx);
         AlphaToCoverage(ctx);
+        LogicOp(ctx);
+        ShaderBlendConstants(ctx);
+        ShaderSampleMask(ctx);
         ShaderDepthBias(ctx);
     }
 }
@@ -418,6 +598,7 @@ void EmitEmitVertex(EmitContext& ctx, const IR::Value& stream) {
         passthrough_values.push_back(ctx.OpLoad(type, variable));
     }
     WriteTransformFeedbackOutputs(ctx);
+    ViewportSwizzle(ctx);
     if (ctx.runtime_info.convert_depth_mode && !ctx.profile.support_native_ndc) {
         ConvertDepthMode(ctx);
     }

@@ -66,6 +66,7 @@ struct ImageDefinition {
     Id pointer_type;
     u32 count;
     bool is_integer;
+    RawImageLoad raw_load{};
 };
 
 struct UniformDefinitions {
@@ -355,6 +356,12 @@ public:
     u32 image_rescaling_index{};
 
     Id render_area_push_constant{};
+    Id blend_constants_push_constant{};
+    Id stage_constants_push_constant{};
+    Id polygon_stipple_pointer{};
+    /// The render target before this draw (Info::uses_destination_read), and its type.
+    Id destination_read{};
+    Id destination_read_type{};
     u32 render_are_member_index{};
 
     Id local_memory{};
@@ -437,6 +444,7 @@ public:
     /// Output 0's alpha before the UNORM8 rounding (unorm8_output_mask), for the alpha tests.
     Id frag_alpha_unrounded{};
     Id sample_mask{};
+    bool guest_writes_sample_mask{};
     Id frag_depth{};
 
     std::vector<Id> interfaces;
@@ -479,6 +487,8 @@ private:
     void DefineRescalingInputPushConstant();
     void DefineRescalingInputUniformConstant();
     void DefineRenderArea(const Info& info);
+    void DefineBlendConstants();
+    void DefineStageConstants(const Info& info);
 
     void DefineInputs(const IR::Program& program);
     void DefineOutputs(const IR::Program& program);

@@ -92,6 +92,15 @@ struct TransformFeedbackRepeat {
     TransformFeedbackVarying varying;
 };
 
+/// A blend factor that reads the blend constant.
+enum class BlendConstantFactor : u8 {
+    None,
+    Color,
+    OneMinusColor,
+    Alpha,
+    OneMinusAlpha,
+};
+
 struct RuntimeInfo {
     std::array<AttributeType, 32> generic_input_types{};
     /// D3D12: vertex inputs fetched in aligned parts because their bytes sit where the whole
@@ -133,6 +142,13 @@ struct RuntimeInfo {
     /// Alpha-to-coverage computed in the fragment shader from output 0's alpha (a discard on
     /// single-sample targets): 0 off, 1 one-pixel footprint, 2 dithered 2x2, 3 virtual 1x1.
     u8 alpha_to_coverage_footprint{};
+    /// The fragment shader outputs the coverage of a guest sample mask that changes with the
+    /// pixel's position: four bits of samples turned off per position of the 2x2 footprint,
+    /// (x & 1) | (y & 1) << 1 being its index. 0 leaves the mask to the host pipeline.
+    u16 sample_mask_footprint{};
+    /// Source blend factor of each color output, applied by the fragment shader to its RGB when
+    /// the host's single blend constant has to serve the destination factors.
+    std::array<BlendConstantFactor, 8> blend_constant_factors{};
     /// The fragment shader adds the depth bias to its depth (the host pipeline has none):
     /// constant * unit + slope * max(|dz/dx|, |dz/dy|), clamped by clamp when it is not 0.
     /// unit 0 is a float depth format: 2^(exponent(z) - 23).
@@ -141,6 +157,23 @@ struct RuntimeInfo {
     float depth_bias_constant{};
     float depth_bias_slope{};
     float depth_bias_clamp{};
+
+    /// Generic plus one with the pixels from the line's start (0: no line stipple). The fragment
+    /// program discards where the guest's pattern, repeated factor times per bit, has a zero.
+    u32 line_stipple_generic{};
+    u32 line_stipple_factor{};
+    u32 line_stipple_pattern{};
+    /// The fragment program discards by the pattern after its stage constants.
+    bool polygon_stipple{};
+    /// Maxwell viewport swizzle applied to the last pre-raster stage's position (0: none).
+    u16 viewport_swizzle{};
+
+    /// Logic op the fragment shader applies to output 0: bit 0 keeps source & destination, bit 1
+    /// source & ~destination, bit 2 ~source & destination and bit 3 ~source & ~destination.
+    bool logic_op_enable{};
+    u8 logic_op{};
+    /// Bits of each channel of the UNORM target.
+    std::array<u8, 4> logic_op_bits{};
 
     /// Static Y negate value
     bool y_negate{};

@@ -410,6 +410,10 @@ F32 IREmitter::RenderAreaHeight() {
     return F32(CompositeExtract(Inst<Value>(Opcode::RenderArea), 1));
 }
 
+F32 IREmitter::StageConstant(u32 index) {
+    return Inst<F32>(Opcode::StageConstant, Imm32(index));
+}
+
 U32 IREmitter::LaneId() {
     return Inst<U32>(Opcode::LaneId);
 }

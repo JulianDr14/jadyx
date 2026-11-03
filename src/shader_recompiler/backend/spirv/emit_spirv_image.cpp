@@ -764,6 +764,47 @@ Id EmitImageGradient(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, I
     return is_integer ? ctx.OpBitcast(ctx.F32[4], color) : color;
 }
 
+// The guest reads the memory of an image as one R32 and unpacks it itself; a view of the image's
+// own format has already unpacked it. Each component: where it goes and how wide it is.
+static Id PackRawImageLoad(EmitContext& ctx, Id color, RawImageLoad layout, bool is_integer) {
+    struct Field {
+        u32 component;
+        u32 shift;
+        u32 bits;
+    };
+    const auto pack{[&](std::initializer_list<Field> fields) {
+        Id packed{ctx.u32_zero_value};
+        for (const Field& field : fields) {
+            const u32 max{(1U << field.bits) - 1};
+            const Id value{
+                is_integer
+                    ? ctx.OpBitwiseAnd(ctx.U32[1],
+                                       ctx.OpCompositeExtract(ctx.U32[1], color, field.component),
+                                       ctx.Const(max))
+                    : ctx.OpConvertFToU(
+                          ctx.U32[1],
+                          ctx.OpFAdd(ctx.F32[1],
+                                     ctx.OpFMul(ctx.F32[1],
+                                                ctx.OpCompositeExtract(ctx.F32[1], color,
+                                                                       field.component),
+                                                ctx.Const(static_cast<f32>(max))),
+                                     ctx.Const(0.5f)))};
+            packed = ctx.OpBitwiseOr(ctx.U32[1], packed,
+                                     ctx.OpShiftLeftLogical(ctx.U32[1], value, ctx.Const(field.shift)));
+        }
+        return ctx.OpCompositeConstruct(ctx.U32[4], packed, ctx.u32_zero_value, ctx.u32_zero_value,
+                                        ctx.u32_zero_value);
+    }};
+    switch (layout) {
+    case RawImageLoad::B8G8R8A8_UNORM:
+        return pack({{2, 0, 8}, {1, 8, 8}, {0, 16, 8}, {3, 24, 8}});
+    case RawImageLoad::A2B10G10R10_UNORM:
+        return pack({{0, 0, 10}, {1, 10, 10}, {2, 20, 10}, {3, 30, 2}});
+    default:
+        return pack({{0, 0, 8}, {1, 8, 8}, {2, 16, 8}, {3, 24, 8}});
+    }
+}
+
 Id EmitImageRead(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, Id coords) {
     const auto info{inst->Flags<IR::TextureInstInfo>()};
     if (info.image_format == ImageFormat::Typeless && !ctx.profile.support_typeless_image_loads) {
@@ -774,6 +815,12 @@ Id EmitImageRead(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, Id co
     const Id result_type{is_integer ? ctx.U32[4] : ctx.F32[4]};
     Id color{Emit(&EmitContext::OpImageSparseRead, &EmitContext::OpImageRead, ctx, inst,
                   result_type, image, coords, std::nullopt, std::span<const Id>{})};
+    if (ctx.profile.repack_raw_image_loads && info.type != TextureType::Buffer) {
+        const RawImageLoad raw_load{ctx.images.at(info.descriptor_index).raw_load};
+        if (raw_load != RawImageLoad::None) {
+            return PackRawImageLoad(ctx, color, raw_load, is_integer);
+        }
+    }
     if (!is_integer) {
         color = ctx.OpBitcast(ctx.U32[4], color);
     }

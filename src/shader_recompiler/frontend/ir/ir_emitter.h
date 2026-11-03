@@ -113,6 +113,7 @@ public:
 
     [[nodiscard]] F32 RenderAreaWidth();
     [[nodiscard]] F32 RenderAreaHeight();
+    [[nodiscard]] F32 StageConstant(u32 index);
 
     [[nodiscard]] U32 LaneId();
 
