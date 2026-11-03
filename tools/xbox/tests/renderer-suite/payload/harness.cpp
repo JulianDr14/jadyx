@@ -278,6 +278,8 @@ void Gpu::RecordDefaultState() {
     const uint32_t height = current_target->height;
     cmd.setViewports(0, {{0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f}});
     cmd.setScissors(0, {{0, 0, width, height}});
+    const DkViewportSwizzle identity{DkSwizzle_PositiveX, DkSwizzle_PositiveY, DkSwizzle_PositiveZ, DkSwizzle_PositiveW};
+    cmd.setViewportSwizzles(0, identity);
     dk::RasterizerState rasterizer;
     rasterizer.setCullMode(DkFace_None);
     cmd.bindRasterizerState(rasterizer);
@@ -311,6 +313,19 @@ uint32_t Gpu::Width() const {
 
 uint32_t Gpu::Height() const {
     return current_target->height;
+}
+
+bool Gpu::PatchCommands(const uint32_t* from, const uint32_t* to, uint32_t count) {
+    uint32_t* const words = static_cast<uint32_t*>(cmd_memory.getCpuAddr());
+    const uint32_t total = cmd_memory.getSize() / sizeof(uint32_t);
+    bool found = false;
+    for (uint32_t i = 0; i + count <= total; ++i) {
+        if (memcmp(words + i, from, count * sizeof(uint32_t)) == 0) {
+            memcpy(words + i, to, count * sizeof(uint32_t));
+            found = true;
+        }
+    }
+    return found;
 }
 
 Image& Gpu::Begin(DkImageFormat format, uint32_t size) {
@@ -413,6 +428,17 @@ DkResHandle Gpu::Texture(const Image& image, const dk::Sampler& sampler) {
 DkResHandle Gpu::Texture(const dk::ImageView& view, const dk::Sampler& sampler) {
     const uint32_t image_id = SetImage(view);
     return dkMakeTextureHandle(image_id, SetSampler(sampler));
+}
+
+DkResHandle Gpu::TextureAs(const Image& image, const dk::Sampler& sampler, uint32_t tic_word0) {
+    dk::ImageView view{image.image};
+    dk::ImageDescriptor descriptor;
+    descriptor.initialize(view, false);
+    std::memcpy(static_cast<void*>(&descriptor), &tic_word0, sizeof(tic_word0));
+    const uint32_t id = next_image++;
+    cmd.pushData(image_descriptors.getGpuAddr() + id * sizeof(DkImageDescriptor), &descriptor, sizeof(descriptor));
+    cmd.barrier(DkBarrier_None, DkInvalidateFlags_Descriptors);
+    return dkMakeTextureHandle(id, SetSampler(sampler));
 }
 
 void Gpu::Submit() {

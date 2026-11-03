@@ -825,6 +825,80 @@ void RegisterTextures(std::vector<SceneEntry>& scenes) {
         gpu.Expect(24, 16, Black);
     }});
 
+    // deko3d writes one sample mask to the four registers of the 2x2 footprint: the scene gives
+    // each its own value in the recorded command.
+    scenes.push_back({"ms_sample_mask_per_position", [](Gpu& gpu) {
+        constexpr uint32_t Written = 0xA5A5;
+        const uint32_t from[4] = {Written, Written, Written, Written};
+        const uint32_t to[4] = {0xF, 0x3, 0x1, 0xE};
+        Image& target = MsTarget(gpu);
+        gpu.ClearColor(Black);
+        gpu.cmd.setSampleMask(Written);
+        if (!gpu.PatchCommands(from, to, 4)) {
+            gpu.Fail("the sample mask registers are not in the recorded command");
+            return;
+        }
+        gpu.Full(Green);
+        Resolve(gpu, target);
+        gpu.Check("even x, even y", gpu.Read(16, 16).g, 1.0, 0.02);
+        gpu.Check("odd x, even y", gpu.Read(17, 16).g, 0.5, 0.02);
+        gpu.Check("even x, odd y", gpu.Read(16, 17).g, 0.25, 0.02);
+        gpu.Check("odd x, odd y", gpu.Read(17, 17).g, 0.75, 0.02);
+    }});
+
+    // Resolves that are not a whole color image of one format. The sources are one color, so the
+    // scenes only say where the result lands.
+    scenes.push_back({"ms_resolve_part", [](Gpu& gpu) {
+        Image& source = MsTarget(gpu);
+        gpu.ClearColor(Green);
+        gpu.Barrier();
+        Image& result = gpu.Begin();
+        gpu.ClearColor(Blue);
+        gpu.Barrier();
+        dk::ImageView from{source.image}, to{result.image};
+        gpu.cmd.blitImage(from, {0, 0, 0, 16, 16, 1}, to, {0, 0, 0, 16, 16, 1}, DkBlitFlag_FilterNearest);
+        gpu.Finish(&result);
+        gpu.Expect(8, 8, Green);
+        gpu.Expect(24, 24, Blue);
+    }});
+    scenes.push_back({"ms_resolve_scaled", [](Gpu& gpu) {
+        Image& source = MsTarget(gpu);
+        gpu.ClearColor(Green);
+        gpu.Barrier();
+        Image& result = gpu.Begin();
+        gpu.ClearColor(Blue);
+        gpu.Barrier();
+        dk::ImageView from{source.image}, to{result.image};
+        gpu.cmd.blitImage(from, {0, 0, 0, 16, 16, 1}, to, {0, 0, 0, 32, 16, 1}, DkBlitFlag_FilterLinear);
+        gpu.Finish(&result);
+        gpu.Expect(24, 8, Green);
+        gpu.Expect(8, 24, Blue);
+    }});
+    scenes.push_back({"ms_resolve_uint", [](Gpu& gpu) {
+        Image& target = MsTarget(gpu, DkImageFormat_RGBA8_Uint);
+        gpu.cmd.clearColor<uint32_t>(0, DkColorMask_RGBA, 12, 34, 56, 78);
+        Resolve(gpu, target);
+        gpu.ExpectUint(16, 16, 12, 34, 56, 78);
+    }});
+    scenes.push_back({"ms_resolve_sint", [](Gpu& gpu) {
+        Image& target = MsTarget(gpu, DkImageFormat_RGBA16_Sint);
+        gpu.cmd.clearColor<int32_t>(0, DkColorMask_RGBA, -12, 34, -56, 78);
+        Resolve(gpu, target);
+        gpu.Expect(16, 16, {-12.0, 34.0, -56.0, 78.0}, 0.0);
+    }});
+    scenes.push_back({"ms_blit_into", [](Gpu& gpu) {
+        Image& source = gpu.Begin();
+        gpu.ClearColor(Green);
+        gpu.Barrier();
+        Image& target = MsTarget(gpu);
+        gpu.ClearColor(Blue);
+        gpu.Barrier();
+        dk::ImageView from{source.image}, to{target.image};
+        gpu.cmd.blitImage(from, {0, 0, 0, 32, 32, 1}, to, {0, 0, 0, 32, 32, 1}, DkBlitFlag_FilterNearest);
+        Resolve(gpu, target);
+        gpu.Expect(16, 16, Green);
+    }});
+
     // Rendering into parts of an image, then sampling it.
     scenes.push_back({"render_then_sample", [](Gpu& gpu) {
         Image& first = gpu.Begin();
@@ -923,6 +997,47 @@ void RegisterTextures(std::vector<SceneEntry>& scenes) {
         gpu.Uniform(DkStage_Fragment, 0, layer, sizeof(layer));
         gpu.Rect(16, 0, 32, 32, White);
         gpu.Finish();
+        gpu.Expect(8, 16, Green);
+        gpu.Expect(24, 16, Black);
+    }});
+    // Formats deko3d does not name, with the guest's texture descriptor written by hand: format
+    // in bits 0-6, UNORM (2) in each component type, then the x/y/z/w sources.
+    scenes.push_back({"format_a5b5g5r1_unorm", [](Gpu& gpu) {
+        Image& image = gpu.MakeImage(DkImageFormat_R16_Unorm, 1, 1);
+        const uint16_t texel = 0xF821; // A 31, B 0, G 16, R 1
+        gpu.Upload(image, &texel, sizeof(texel), 1, 1);
+        Image& result = gpu.Begin();
+        gpu.Shaders("basic_vsh", "texture_fsh");
+        const uint32_t unorm = (2u << 7) | (2u << 10) | (2u << 13) | (2u << 16);
+        const uint32_t word0 = 0x13u | unorm | (2u << 19) | (3u << 22) | (4u << 25) | (5u << 28);
+        gpu.cmd.bindTextures(DkStage_Fragment, 0, gpu.TextureAs(image, Nearest(), word0));
+        gpu.Full(White);
+        gpu.Finish(&result);
+        gpu.Expect(16, 16, {1, 16.0 / 31.0, 0, 1}, 0.02);
+    }});
+    scenes.push_back({"format_g4r4_unorm", [](Gpu& gpu) {
+        Image& image = gpu.MakeImage(DkImageFormat_R8_Unorm, 1, 1);
+        const uint8_t texel = 0xA5; // G 10, R 5
+        gpu.Upload(image, &texel, sizeof(texel), 1, 1);
+        Image& result = gpu.Begin();
+        gpu.Shaders("basic_vsh", "texture_fsh");
+        const uint32_t unorm = (2u << 7) | (2u << 10) | (2u << 13) | (2u << 16);
+        const uint32_t word0 = 0x1Eu | unorm | (2u << 19) | (3u << 22) | (0u << 25) | (7u << 28);
+        gpu.cmd.bindTextures(DkStage_Fragment, 0, gpu.TextureAs(image, Nearest(), word0));
+        gpu.Full(White);
+        gpu.Finish(&result);
+        gpu.Expect(16, 16, {5.0 / 15.0, 10.0 / 15.0, 0, 1}, 0.02);
+    }});
+    // Sampling the bound colour target reads what it held before this draw.
+    scenes.push_back({"color_target_sampled_by_its_draw", [](Gpu& gpu) {
+        Image& result = gpu.Begin();
+        gpu.ClearColor(Black);
+        gpu.Rect(0, 0, 16, 32, Green);
+        gpu.Barrier();
+        gpu.Shaders("basic_vsh", "texture_fsh");
+        gpu.cmd.bindTextures(DkStage_Fragment, 0, gpu.Texture(result, Nearest()));
+        gpu.Full(White);
+        gpu.Finish(&result);
         gpu.Expect(8, 16, Green);
         gpu.Expect(24, 16, Black);
     }});
