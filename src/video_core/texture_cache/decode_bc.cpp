@@ -78,6 +78,7 @@ u32 ConvertedBytesPerBlock(VideoCore::Surface::PixelFormat pixel_format) {
         return 2; // R16, the full 11 bits
     case PixelFormat::BC5_SNORM:
     case PixelFormat::BC5_UNORM:
+    case PixelFormat::G4R4_UNORM: // widened to R8G8
         return 2;
     case PixelFormat::BC6H_SFLOAT:
     case PixelFormat::BC6H_UFLOAT:

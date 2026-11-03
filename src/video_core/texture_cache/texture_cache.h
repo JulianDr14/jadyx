@@ -2541,6 +2541,22 @@ std::optional<typename TextureCache<P>::BlitImages> TextureCache<P>::GetBlitImag
         }
         const ImageBase* const src_image = src_id ? &slot_images[src_id] : nullptr;
         if (src_image && src_image->info.num_samples > 1) {
+            // The 2D engine has no depth or integer formats, so these copies name the same bits
+            // by a color format. An image of that format would replace the multisampled one and
+            // lose its contents.
+            if (can_be_depth_blit) {
+                const ImageBase* const dst_image = dst_id ? &slot_images[dst_id] : nullptr;
+                DeduceBlitImages(dst_info, src_info, dst_image, src_image);
+            }
+            const PixelFormat src_format = src_image->info.format;
+            if (dst_info.format == src_info.format &&
+                VideoCore::Surface::IsPixelFormatInteger(src_format) &&
+                !VideoCore::Surface::IsPixelFormatInteger(src_info.format) &&
+                VideoCore::Surface::BytesPerBlock(src_format) ==
+                    VideoCore::Surface::BytesPerBlock(src_info.format)) {
+                src_info.format = src_format;
+                dst_info.format = src_format;
+            }
             RelaxedOptions find_options{FIND_OPTIONS | RelaxedOptions::ForceBrokenViews};
             src_id = FindOrInsertImage(src_info, src_addr, find_options);
             dst_id = FindOrInsertImage(dst_info, dst_addr, find_options);
