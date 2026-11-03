@@ -38,7 +38,17 @@ set(SHADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/convert_non_msaa_to_msaa_depth.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/convert_non_msaa_to_msaa_depth_stencil.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/convert_s8d24_to_abgr8.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_blit_ms_average.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_blit_ms_depth.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_blit_ms_sample.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_blit_ms_sint.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_blit_ms_stencil_bit.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_blit_ms_uint.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_blit_sint.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_blit_stencil_bit.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_blit_uint.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_clear_sint.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_clear_uint.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_depth_stencil_merge.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_depth_stencil_split.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_depth_unorm24.comp
