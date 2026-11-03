@@ -17,7 +17,7 @@ param(
     [Parameter(Mandatory)] [string] $Game,
     [int] $Seconds = 300,
     [string[]] $Pad = @(),
-    [string[]] $BootCfg = @('async_record=1', 'gpu_profile=1'),
+    [string[]] $BootCfg = @('gpu_profile=1'),
     [string] $SaveBackup = '',
     [string] $SavePath = '',
     [string] $OutDir = '',
