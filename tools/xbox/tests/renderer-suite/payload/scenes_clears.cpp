@@ -172,6 +172,40 @@ void RegisterClears(std::vector<SceneEntry>& scenes) {
             gpu.Expect(16, 16, {pick(DkColorMask_R), pick(DkColorMask_G), pick(DkColorMask_B), pick(DkColorMask_A)});
         }
     }});
+    // Values a 32-bit float cannot hold, which D3D12's own clear goes through.
+    scenes.push_back({"clear_uint32_large", [](Gpu& gpu) {
+        gpu.Begin(DkImageFormat_RGBA32_Uint);
+        gpu.cmd.clearColor<uint32_t>(0, DkColorMask_RGBA, 0xFFFFFFFF, 16777217, 0x80000001, 5);
+        gpu.Finish();
+        gpu.ExpectUint(16, 16, 0xFFFFFFFF, 16777217, 0x80000001, 5);
+    }});
+    scenes.push_back({"clear_sint32_large", [](Gpu& gpu) {
+        gpu.Begin(DkImageFormat_RGBA32_Sint);
+        gpu.cmd.clearColor<int32_t>(0, DkColorMask_RGBA, -2147483647, 16777217, -16777217, 7);
+        gpu.Finish();
+        gpu.Expect(16, 16, {-2147483647.0, 16777217.0, -16777217.0, 7.0}, 0.0);
+    }});
+    scenes.push_back({"clear_uint_masked", [](Gpu& gpu) {
+        gpu.Begin(DkImageFormat_RGBA8_Uint);
+        gpu.cmd.clearColor<uint32_t>(0, DkColorMask_RGBA, 1, 2, 3, 4);
+        gpu.cmd.clearColor<uint32_t>(0, DkColorMask_R | DkColorMask_B, 200, 201, 250, 251);
+        gpu.Finish();
+        gpu.ExpectUint(16, 16, 200, 2, 250, 4);
+    }});
+    scenes.push_back({"clear_uint32_large_masked", [](Gpu& gpu) {
+        gpu.Begin(DkImageFormat_RGBA32_Uint);
+        gpu.cmd.clearColor<uint32_t>(0, DkColorMask_RGBA, 1, 2, 3, 4);
+        gpu.cmd.clearColor<uint32_t>(0, DkColorMask_G | DkColorMask_A, 0, 0xFFFFFFFF, 0, 16777217);
+        gpu.Finish();
+        gpu.ExpectUint(16, 16, 1, 0xFFFFFFFF, 3, 16777217);
+    }});
+    scenes.push_back({"clear_sint_masked", [](Gpu& gpu) {
+        gpu.Begin(DkImageFormat_RGBA16_Sint);
+        gpu.cmd.clearColor<int32_t>(0, DkColorMask_RGBA, -1, -2, -3, -4);
+        gpu.cmd.clearColor<int32_t>(0, DkColorMask_G, 0, -3000, 0, 0);
+        gpu.Finish();
+        gpu.Expect(16, 16, {-1.0, -3000.0, -3.0, -4.0}, 0.0);
+    }});
     scenes.push_back({"clear_scissored", [](Gpu& gpu) {
         gpu.Begin();
         gpu.ClearColor(Blue);

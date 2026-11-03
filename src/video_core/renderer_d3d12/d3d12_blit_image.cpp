@@ -9,7 +9,17 @@
 #include "common/logging.h"
 #include "video_core/host_shaders/blit_color_float_frag_spv.h"
 #include "video_core/host_shaders/blit_depth_frag_spv.h"
+#include "video_core/host_shaders/d3d12_blit_ms_average_frag_spv.h"
+#include "video_core/host_shaders/d3d12_blit_ms_depth_frag_spv.h"
+#include "video_core/host_shaders/d3d12_blit_ms_sample_frag_spv.h"
+#include "video_core/host_shaders/d3d12_blit_ms_sint_frag_spv.h"
+#include "video_core/host_shaders/d3d12_blit_ms_stencil_bit_frag_spv.h"
+#include "video_core/host_shaders/d3d12_blit_ms_uint_frag_spv.h"
+#include "video_core/host_shaders/d3d12_blit_sint_frag_spv.h"
 #include "video_core/host_shaders/d3d12_blit_stencil_bit_frag_spv.h"
+#include "video_core/host_shaders/d3d12_blit_uint_frag_spv.h"
+#include "video_core/host_shaders/d3d12_clear_sint_frag_spv.h"
+#include "video_core/host_shaders/d3d12_clear_uint_frag_spv.h"
 #include "video_core/host_shaders/full_screen_triangle_vert_spv.h"
 #include "video_core/host_shaders/vulkan_color_clear_frag_spv.h"
 #include "video_core/host_shaders/vulkan_color_clear_vert_spv.h"
@@ -25,13 +35,15 @@ namespace D3D12 {
 namespace {
 
 /// Root parameters (one signature for every helper pipeline): the push-constant words the helper
-/// shaders use (four, a fifth for the stencil bit), spirv_to_dxil's vertex runtime data, then one
-/// SRV and one sampler table. The root constants cover two whole 16-byte registers.
+/// shaders use (four, a fifth for the stencil bit, a sixth for the samples a resolve averages),
+/// spirv_to_dxil's vertex runtime data, then one SRV and one sampler table. The root constants
+/// cover two whole 16-byte registers.
 constexpr u32 PUSH_CONSTANTS_PARAM = 0;
 constexpr u32 SRV_TABLE_PARAM = 2;
 constexpr u32 SAMPLER_TABLE_PARAM = 3;
 constexpr u32 PUSH_CONSTANT_WORDS = 4;
 constexpr u32 STENCIL_BIT_WORD = 4;
+constexpr u32 SAMPLE_COUNT_WORD = 5;
 constexpr u32 ROOT_CONSTANT_WORDS = 8;
 constexpr u32 RUNTIME_DATA_WORDS = 12;
 
@@ -73,16 +85,16 @@ BlitImageHelper::BlitImageHelper(const Device& device_, Scheduler& scheduler_,
         LOG_WARNING(Render, "D3D12: no shader path, texture blits and masked clears are skipped");
         return;
     }
+    // Linked like guest pipelines, so the vertex outputs match the pixel inputs.
+    const auto compile = [&compiler](std::span<const u32> vs, std::span<const u32> ps) {
+        const std::array<ShaderCompiler::PipelineStage, 2> stages{{
+            {vs, DXIL_SPIRV_SHADER_VERTEX},
+            {ps, DXIL_SPIRV_SHADER_FRAGMENT},
+        }};
+        auto compiled = compiler.CompilePipeline(stages, {});
+        return Program{std::move(compiled[0].dxil), std::move(compiled[1].dxil)};
+    };
     try {
-        // Linked like guest pipelines, so the vertex outputs match the pixel inputs.
-        const auto compile = [&compiler](std::span<const u32> vs, std::span<const u32> ps) {
-            const std::array<ShaderCompiler::PipelineStage, 2> stages{{
-                {vs, DXIL_SPIRV_SHADER_VERTEX},
-                {ps, DXIL_SPIRV_SHADER_FRAGMENT},
-            }};
-            auto compiled = compiler.CompilePipeline(stages, {});
-            return Program{std::move(compiled[0].dxil), std::move(compiled[1].dxil)};
-        };
         programs[static_cast<size_t>(Kind::BlitColor)] =
             compile(FULL_SCREEN_TRIANGLE_VERT_SPV, BLIT_COLOR_FLOAT_FRAG_SPV);
         programs[static_cast<size_t>(Kind::BlitDepth)] =
@@ -99,6 +111,33 @@ BlitImageHelper::BlitImageHelper(const Device& device_, Scheduler& scheduler_,
         LOG_INFO(Render, "D3D12: blit and clear helpers ready ({} programs)", programs.size());
     } catch (const std::exception& exception) {
         LOG_ERROR(Render, "D3D12: blit helpers unavailable: {}", exception.what());
+    }
+    // Apart from the core helpers: without these, only multisampled blits and exact integer clears
+    // are lost.
+    try {
+        if (available) {
+            const auto blit = [&](Kind kind, std::span<const u32> ps) {
+                programs[static_cast<size_t>(kind)] = compile(FULL_SCREEN_TRIANGLE_VERT_SPV, ps);
+            };
+            blit(Kind::BlitColorMsAverage, D3D12_BLIT_MS_AVERAGE_FRAG_SPV);
+            blit(Kind::BlitColorMsSample, D3D12_BLIT_MS_SAMPLE_FRAG_SPV);
+            blit(Kind::BlitUint, D3D12_BLIT_UINT_FRAG_SPV);
+            blit(Kind::BlitSint, D3D12_BLIT_SINT_FRAG_SPV);
+            blit(Kind::BlitUintMs, D3D12_BLIT_MS_UINT_FRAG_SPV);
+            blit(Kind::BlitSintMs, D3D12_BLIT_MS_SINT_FRAG_SPV);
+            blit(Kind::BlitDepthMs, D3D12_BLIT_MS_DEPTH_FRAG_SPV);
+            blit(Kind::BlitStencilBitMs, D3D12_BLIT_MS_STENCIL_BIT_FRAG_SPV);
+            multisample_available = true;
+            programs[static_cast<size_t>(Kind::ClearUint)] =
+                compile(VULKAN_COLOR_CLEAR_VERT_SPV, D3D12_CLEAR_UINT_FRAG_SPV);
+            programs[static_cast<size_t>(Kind::ClearSint)] =
+                compile(VULKAN_COLOR_CLEAR_VERT_SPV, D3D12_CLEAR_SINT_FRAG_SPV);
+            integer_clear_available = true;
+            LOG_INFO(Render, "D3D12: multisampled blit and integer clear helpers ready");
+        }
+    } catch (const std::exception& exception) {
+        LOG_ERROR(Render, "D3D12: multisampled blit or integer clear helpers unavailable: {}",
+                  exception.what());
     }
     try {
         CreatePackPipelines(compiler);
@@ -218,8 +257,13 @@ ID3D12PipelineState* BlitImageHelper::Pipeline(Kind kind, const Target& target, 
     if (const auto it = pipelines.find(key); it != pipelines.end()) {
         return it->second.Get();
     }
-    const Program& program =
-        programs[static_cast<size_t>(kind == Kind::BlitDepthStencil ? Kind::BlitDepth : kind)];
+    const Kind program_kind = kind == Kind::BlitDepthStencil     ? Kind::BlitDepth
+                              : kind == Kind::BlitDepthStencilMs ? Kind::BlitDepthMs
+                                                                 : kind;
+    const Program& program = programs[static_cast<size_t>(program_kind)];
+    if (program.ps.empty()) {
+        return nullptr;
+    }
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
     desc.pRootSignature = root_signature.Get();
     desc.VS = {program.vs.data(), program.vs.size()};
@@ -232,20 +276,34 @@ ID3D12PipelineState* BlitImageHelper::Pipeline(Kind kind, const Target& target, 
     desc.SampleDesc = {.Count = std::max(1U, target.samples), .Quality = 0};
     switch (kind) {
     case Kind::BlitColor:
-    case Kind::ClearColor:
+    case Kind::BlitColorMsAverage:
+    case Kind::BlitColorMsSample:
+    case Kind::BlitUint:
+    case Kind::BlitSint:
+    case Kind::BlitUintMs:
+    case Kind::BlitSintMs:
         desc.NumRenderTargets = 1;
         desc.RTVFormats[0] = target.format;
-        desc.BlendState.RenderTarget[0].RenderTargetWriteMask =
-            kind == Kind::BlitColor ? static_cast<UINT8>(D3D12_COLOR_WRITE_ENABLE_ALL) : mask;
+        desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        break;
+    case Kind::ClearColor:
+    case Kind::ClearUint:
+    case Kind::ClearSint:
+        desc.NumRenderTargets = 1;
+        desc.RTVFormats[0] = target.format;
+        desc.BlendState.RenderTarget[0].RenderTargetWriteMask = mask;
         break;
     case Kind::BlitDepth:
+    case Kind::BlitDepthMs:
         desc.DSVFormat = target.format;
         desc.DepthStencilState.DepthEnable = TRUE;
         desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
         desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
         break;
     case Kind::BlitDepthStencil:
+    case Kind::BlitDepthStencilMs:
     case Kind::BlitStencilBit:
+    case Kind::BlitStencilBitMs:
     case Kind::ClearDepthStencil:
         // Depth when asked (the depth-stencil blit and depth clears), the stencil bits of mask
         // from the reference.
@@ -304,7 +362,7 @@ void BlitImageHelper::Begin(ID3D12PipelineState* pipeline, const Target& target,
 bool BlitImageHelper::Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
                            const Sampling& sampler, const VideoCommon::Region2D& dst_region,
                            const VideoCommon::Region2D& src_region,
-                           const VideoCommon::Extent2D& src_size) {
+                           const VideoCommon::Extent2D& src_size, u32 src_samples) {
     if (!available || src_size.width == 0 || src_size.height == 0) {
         return false;
     }
@@ -320,8 +378,12 @@ bool BlitImageHelper::Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HA
     const D3D12_GPU_DESCRIPTOR_HANDLE srv_table = descriptor_ring.Upload({&src_srv, 1});
     const D3D12_GPU_DESCRIPTOR_HANDLE sampler_table =
         sampler_heap.GetTable({&sampler.key, 1}, {&sampler.handle, 1});
-    BeginBlit(pipeline, dst, kind != Kind::BlitColor, rect, srv_table, sampler_table, src_region,
-              src_size);
+    const bool is_depth = kind == Kind::BlitDepth || kind == Kind::BlitDepthMs;
+    BeginBlit(pipeline, dst, is_depth, rect, srv_table, sampler_table, src_region, src_size);
+    if (kind == Kind::BlitColorMsAverage) {
+        scheduler.CommandList()->SetGraphicsRoot32BitConstants(PUSH_CONSTANTS_PARAM, 1,
+                                                               &src_samples, SAMPLE_COUNT_WORD);
+    }
     scheduler.CommandList()->DrawInstanced(3, 1, 0, 0);
     return true;
 }
@@ -330,7 +392,8 @@ bool BlitImageHelper::BlitDepthStencil(const Target& dst, D3D12_CPU_DESCRIPTOR_H
                                        D3D12_CPU_DESCRIPTOR_HANDLE stencil_srv,
                                        const VideoCommon::Region2D& dst_region,
                                        const VideoCommon::Region2D& src_region,
-                                       const VideoCommon::Extent2D& src_size) {
+                                       const VideoCommon::Extent2D& src_size,
+                                       bool src_multisampled) {
     if (!available || src_size.width == 0 || src_size.height == 0) {
         return false;
     }
@@ -338,13 +401,16 @@ bool BlitImageHelper::BlitDepthStencil(const Target& dst, D3D12_CPU_DESCRIPTOR_H
     if (rect.right <= rect.left || rect.bottom <= rect.top) {
         return false;
     }
-    ID3D12PipelineState* const depth_pipeline = Pipeline(Kind::BlitDepthStencil, dst, 0xFF, true);
+    ID3D12PipelineState* const depth_pipeline = Pipeline(
+        src_multisampled ? Kind::BlitDepthStencilMs : Kind::BlitDepthStencil, dst, 0xFF, true);
     if (!depth_pipeline) {
         return false;
     }
     std::array<ID3D12PipelineState*, 8> bit_pipelines{};
     for (u32 bit = 0; bit < bit_pipelines.size(); ++bit) {
-        bit_pipelines[bit] = Pipeline(Kind::BlitStencilBit, dst, static_cast<u8>(1U << bit), false);
+        bit_pipelines[bit] =
+            Pipeline(src_multisampled ? Kind::BlitStencilBitMs : Kind::BlitStencilBit, dst,
+                     static_cast<u8>(1U << bit), false);
         if (!bit_pipelines[bit]) {
             return false;
         }
@@ -403,11 +469,31 @@ bool BlitImageHelper::BlitColor(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE s
     return Blit(Kind::BlitColor, dst, src_srv, sampler, dst_region, src_region, src_size);
 }
 
+bool BlitImageHelper::BlitColorMultisampled(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
+                                            u32 src_samples, bool per_sample,
+                                            const VideoCommon::Region2D& dst_region,
+                                            const VideoCommon::Region2D& src_region,
+                                            const VideoCommon::Extent2D& src_size) {
+    return Blit(per_sample ? Kind::BlitColorMsSample : Kind::BlitColorMsAverage, dst, src_srv,
+                nearest_sampler, dst_region, src_region, src_size, src_samples);
+}
+
+bool BlitImageHelper::BlitInteger(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
+                                  bool is_signed, bool src_multisampled,
+                                  const VideoCommon::Region2D& dst_region,
+                                  const VideoCommon::Region2D& src_region,
+                                  const VideoCommon::Extent2D& src_size) {
+    const Kind kind = is_signed ? (src_multisampled ? Kind::BlitSintMs : Kind::BlitSint)
+                                : (src_multisampled ? Kind::BlitUintMs : Kind::BlitUint);
+    return Blit(kind, dst, src_srv, nearest_sampler, dst_region, src_region, src_size);
+}
+
 bool BlitImageHelper::BlitDepth(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
                                 const VideoCommon::Region2D& dst_region,
                                 const VideoCommon::Region2D& src_region,
-                                const VideoCommon::Extent2D& src_size) {
-    return Blit(Kind::BlitDepth, dst, src_srv, nearest_sampler, dst_region, src_region, src_size);
+                                const VideoCommon::Extent2D& src_size, bool src_multisampled) {
+    return Blit(src_multisampled ? Kind::BlitDepthMs : Kind::BlitDepth, dst, src_srv,
+                nearest_sampler, dst_region, src_region, src_size);
 }
 
 void BlitImageHelper::ClearColor(const Target& dst, u8 color_mask, const std::array<f32, 4>& color,
@@ -425,6 +511,28 @@ void BlitImageHelper::ClearColor(const Target& dst, u8 color_mask, const std::ar
     scheduler.CommandList()->SetGraphicsRoot32BitConstants(PUSH_CONSTANTS_PARAM,
                                                            PUSH_CONSTANT_WORDS, color.data(), 0);
     scheduler.CommandList()->DrawInstanced(3, 1, 0, 0);
+}
+
+bool BlitImageHelper::ClearColorInteger(const Target& dst, u8 color_mask,
+                                        const std::array<u32, 4>& bits, bool is_signed,
+                                        const D3D12_RECT& rect) {
+    if (!integer_clear_available) {
+        return false;
+    }
+    if (rect.right <= rect.left || rect.bottom <= rect.top) {
+        return true;
+    }
+    ID3D12PipelineState* const pipeline =
+        Pipeline(is_signed ? Kind::ClearSint : Kind::ClearUint, dst,
+                 static_cast<u8>(color_mask & 0xF), false);
+    if (!pipeline) {
+        return false;
+    }
+    Begin(pipeline, dst, false, rect);
+    scheduler.CommandList()->SetGraphicsRoot32BitConstants(PUSH_CONSTANTS_PARAM,
+                                                           PUSH_CONSTANT_WORDS, bits.data(), 0);
+    scheduler.CommandList()->DrawInstanced(3, 1, 0, 0);
+    return true;
 }
 
 void BlitImageHelper::ClearDepthStencil(const Target& dst, bool clear_depth, f32 depth,

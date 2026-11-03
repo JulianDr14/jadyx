@@ -195,37 +195,61 @@ void RasterizerD3D12::Clear(u32 layer_count) {
         using namespace VideoCore::Surface;
         const PixelFormat format =
             PixelFormatFromRenderTargetFormat(regs.rt[color_attachment].format);
-        if (!full_mask) {
-            // Drawn with the write mask in the PSO (Vulkan uses the blend constant instead).
-            if (IsPixelFormatInteger(format)) {
+        const u8 mask = static_cast<u8>(regs.clear_surface.R | regs.clear_surface.G << 1 |
+                                        regs.clear_surface.B << 2 | regs.clear_surface.A << 3);
+        const bool integer = IsPixelFormatInteger(format);
+        const bool is_signed = integer && IsPixelFormatSignedInteger(format);
+        // For integer targets the clear registers hold the integers themselves.
+        std::array<u32, 4> bits{};
+        std::array<f32, 4> color = regs.clear_color;
+        bool float_exact = true;
+        if (integer) {
+            for (size_t i = 0; i < 4; ++i) {
+                bits[i] = std::bit_cast<u32>(regs.clear_color[i]);
+                const s32 value = std::bit_cast<s32>(bits[i]);
+                color[i] = is_signed ? static_cast<f32>(value) : static_cast<f32>(bits[i]);
+                float_exact &= is_signed ? static_cast<s64>(color[i]) == value
+                                         : static_cast<u64>(color[i]) == bits[i];
+            }
+        }
+        // ClearRenderTargetView has no mask and takes integers as floats, exact up to 2^24. The
+        // rest is drawn, with the write mask in the PSO (Vulkan uses the blend constant instead).
+        if (!full_mask || !float_exact) {
+            const BlitImageHelper::Target target{
+                color_target, framebuffer->ColorFormat(color_attachment), framebuffer->Samples()};
+            const auto draw = [&](const BlitImageHelper::Target& layer) {
+                if (integer) {
+                    return blit_helper.ClearColorInteger(layer, mask, bits, is_signed, rect);
+                }
+                blit_helper.ClearColor(layer, mask, color, rect);
+                return true;
+            };
+            // The helper's triangle only reaches the first slice of its target.
+            bool drawn = true;
+            if (layer_count <= 1) {
+                drawn = draw(target);
+            } else {
+                for (u32 layer = 0; layer < layer_count; ++layer) {
+                    const D3D12_CPU_DESCRIPTOR_HANDLE slice = texture_runtime.LayerTarget(
+                        *framebuffer, color_attachment, first_layer + layer, 1);
+                    if (slice.ptr) {
+                        drawn &= draw({slice, target.format, target.samples});
+                        texture_runtime.FreeLayerTarget(slice, false);
+                    } else if (layer == 0) {
+                        drawn &= draw(target);
+                    }
+                }
+            }
+            InvalidateGraphicsState();
+            if (!drawn && full_mask) {
+                cmd->ClearRenderTargetView(color_target, color.data(), 1, &rect);
+            } else if (!drawn) {
                 BUG_TRACK_KEY(CopySkipped, static_cast<u64>(format),
                               "masked clear of an integer render target ({}) skipped", format);
                 WarnOnceLog(logged_integer_clear,
                             "masked clears of integer render targets are skipped");
-            } else {
-                const u8 mask = static_cast<u8>(regs.clear_surface.R | regs.clear_surface.G << 1 |
-                                                regs.clear_surface.B << 2 |
-                                                regs.clear_surface.A << 3);
-                blit_helper.ClearColor({color_target, framebuffer->ColorFormat(color_attachment),
-                                        framebuffer->Samples()},
-                                       mask, regs.clear_color, rect);
-                InvalidateGraphicsState();
             }
         } else {
-            std::array<f32, 4> color{};
-            // For integer targets the clear registers hold the integers themselves; D3D12 takes
-            // them as floats and converts them back (exact up to 2^24).
-            if (!IsPixelFormatInteger(format)) {
-                color = regs.clear_color;
-            } else if (!IsPixelFormatSignedInteger(format)) {
-                for (size_t i = 0; i < 4; ++i) {
-                    color[i] = static_cast<f32>(std::bit_cast<u32>(regs.clear_color[i]));
-                }
-            } else {
-                for (size_t i = 0; i < 4; ++i) {
-                    color[i] = static_cast<f32>(std::bit_cast<s32>(regs.clear_color[i]));
-                }
-            }
             cmd->ClearRenderTargetView(color_target, color.data(), 1, &rect);
         }
     }

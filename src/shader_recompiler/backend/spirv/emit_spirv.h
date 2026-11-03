@@ -32,6 +32,14 @@ struct RenderAreaLayout {
 constexpr u32 RESCALING_LAYOUT_WORDS_OFFSET = offsetof(RescalingLayout, rescaling_textures);
 constexpr u32 RESCALING_LAYOUT_DOWN_FACTOR_OFFSET = offsetof(RescalingLayout, down_factor);
 constexpr u32 RENDERAREA_LAYOUT_OFFSET = offsetof(RenderAreaLayout, render_area);
+/// The blend constant of RuntimeInfo::blend_constant_factors, after every other push constant.
+constexpr u32 BLEND_CONSTANTS_OFFSET = sizeof(RescalingLayout);
+// Per-draw values of generated stages: fixed tessellation levels (outer 0-3, inner 4-5) or the
+// signed viewport size of the point geometry shader (4-5). Whole vec4s: the host declares the
+// constant buffer in 16-byte rows, and the root signature has to cover the last one.
+constexpr u32 STAGE_CONSTANTS_OFFSET = BLEND_CONSTANTS_OFFSET + 4 * sizeof(float);
+constexpr u32 STAGE_CONSTANT_WORDS = 8;
+constexpr u32 POLYGON_STIPPLE_WORDS = 32;
 
 [[nodiscard]] std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program, Bindings& bindings);
 [[nodiscard]] inline std::vector<u32> EmitSPIRV(const Profile& profile, IR::Program& program) {

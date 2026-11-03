@@ -166,6 +166,13 @@ struct FixedPipelineState {
             BitField<10, 1, u32> logic_op_enable;
             BitField<11, 1, u32> depth_clamp_disabled;
             BitField<12, 1, u32> line_stipple_enable;
+            // D3D12 only, from GraphicsPipelineCacheKey::RefreshStatic: state it emulates in
+            // shaders. Zero keeps the shaders as they were.
+            BitField<13, 1, u32> generated_lines;
+            BitField<14, 1, u32> generated_polygon_points;
+            BitField<15, 1, u32> generated_fill_rectangle;
+            BitField<16, 1, u32> shader_polygon_stipple;
+            BitField<17, 1, u32> shader_mirror_border;
         };
         union {
             u32 raw2;
@@ -232,6 +239,9 @@ struct FixedPipelineState {
         BitField<15, 1, u32> alpha_to_coverage_enabled;
         BitField<16, 1, u32> alpha_to_one_enabled;
         BitField<17, 3, Tegra::Engines::Maxwell3D::EngineHint> app_stage;
+        /// D3D12 only (GraphicsPipelineCacheKey::RefreshStatic): how the sample masks of the other
+        /// three positions of the 2x2 footprint differ from the first. Zero when they do not.
+        BitField<20, 12, u32> sample_mask_rest;
     };
     std::array<u8, Maxwell::NumRenderTargets> color_formats;
 

@@ -153,7 +153,10 @@ template <u32 GOB_EXTENT>
                                                     u32 level, u32 num_levels) {
     return {
         .width = AdjustMipBlockSize<GOB_SIZE_X>(num_tiles.width, block_size.width, level),
-        .height = AdjustMipBlockSize<GOB_SIZE_Y>(num_tiles.height, block_size.height, level),
+        // A lone level is laid out with the block height the guest named, even one too tall for it.
+        .height = level == 0 && num_levels == 1
+                      ? block_size.height
+                      : AdjustMipBlockSize<GOB_SIZE_Y>(num_tiles.height, block_size.height, level),
         .depth = level == 0 && num_levels == 1
                      ? block_size.depth
                      : AdjustMipBlockSize<GOB_SIZE_Z>(num_tiles.depth, block_size.depth, level),
@@ -1046,6 +1049,27 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
     return copies;
 }
 
+namespace {
+/// Texels with no host layout, to RGBA8 (A5B5G5R1, high bits first) or RG8 (G4R4).
+void WidenPackedTexels(std::span<const u8> input, std::span<u8> output, u32 texels,
+                       PixelFormat format) {
+    const auto expand5 = [](u32 value) { return static_cast<u8>((value << 3) | (value >> 2)); };
+    for (u32 i = 0; i < texels; ++i) {
+        if (format == PixelFormat::G4R4_UNORM) {
+            const u8 texel = input[i];
+            output[i * 2] = static_cast<u8>((texel & 0x0F) * 17);
+            output[i * 2 + 1] = static_cast<u8>((texel >> 4) * 17);
+            continue;
+        }
+        const u32 texel = input[i * 2] | (u32{input[i * 2 + 1]} << 8);
+        output[i * 4] = (texel & 1) != 0 ? 255 : 0;
+        output[i * 4 + 1] = expand5((texel >> 1) & 0x1F);
+        output[i * 4 + 2] = expand5((texel >> 6) & 0x1F);
+        output[i * 4 + 3] = expand5(texel >> 11);
+    }
+}
+} // Anonymous namespace
+
 void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8> output,
                   std::span<BufferImageCopy> copies) {
     u32 output_offset = 0;
@@ -1109,6 +1133,12 @@ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8
                 (aligned_plane_dim * copy.image_extent.depth * copy.image_subresource.num_layers) /
                 bpp_div;
             output_offset += static_cast<u32>(copy.buffer_size);
+        } else if (info.format == PixelFormat::A5B5G5R1_UNORM ||
+                   info.format == PixelFormat::G4R4_UNORM) {
+            const u32 slices = copy.image_subresource.num_layers * copy.image_extent.depth;
+            const u32 texels = copy.image_extent.width * copy.image_extent.height * slices;
+            WidenPackedTexels(input_offset, output.subspan(output_offset), texels, info.format);
+            output_offset += texels * ConvertedBytesPerBlock(info.format);
         } else if (const auto etc = Etc2Kind(info.format)) {
             const u32 slices = copy.image_subresource.num_layers * copy.image_extent.depth;
             Tegra::Texture::ETC2::Decompress(*etc, input_offset, copy.image_extent.width,

@@ -5,6 +5,7 @@
 
 #include <array>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "common/memory_ledger.h"
@@ -152,6 +153,13 @@ public:
     /// Index and vertex buffers are collected here and set by ApplyGeometry() right before the
     /// draw, so a flush between binding and drawing (descriptor ring or staging exhaustion)
     /// cannot leave the new command list without them.
+    /// The restart index of the next indexed draws, empty when restart is off.
+    void SetIndexRestart(std::optional<u32> value) noexcept { index_restart = value; }
+    /// The draw's inline indices, which live in no guest memory; empty for any other draw.
+    void SetInlineIndices(std::span<const u8> indices) noexcept {
+        inline_indices = indices;
+    }
+
     void BindIndexBuffer(PrimitiveTopology topology, IndexFormat format, u32 first,
                          u32 num_indices, Buffer& buffer, u32 offset, u32 size);
     /// Non-indexed quads are rewritten by EmulateTopology, like fans and loops.
@@ -213,6 +221,7 @@ public:
 private:
     /// Uploads indices to staging memory and binds them as a 32-bit or 16-bit index buffer.
     void BindRewrittenIndices(IndexRewriteCache::Entry& entry);
+    [[nodiscard]] bool NeedsRestartRewrite(IndexFormat format) const noexcept;
     ComPtr<ID3D12Resource> CreateDefaultBuffer(u64 size);
     void Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src, ID3D12Resource* src_raw,
               std::span<const VideoCommon::BufferCopy> copies);
@@ -248,11 +257,13 @@ private:
     bool uniform_reuse{};
     u32 pending_vertex_mask{};
     std::optional<u32> rewritten_count;
+    std::optional<u32> index_restart;
     std::array<TransformFeedbackBinding, 4> transform_feedback{};
     std::vector<u32> rewrite_scratch;
     IndexRewriteCache rewrite_cache;
     u64 next_buffer_id{1};
     std::vector<u8> guest_indices;
+    std::span<const u8> inline_indices;
     bool logged_rewrite{};
     bool logged_inline_rewrite{};
 };

@@ -10,8 +10,8 @@
 #include "video_core/surface.h"
 
 /// Render corrections set from boot.cfg: each changes what the host draws to match the guest GPU
-/// more closely (or to share more pipelines). All off by default; they apply to objects created
-/// after they are set.
+/// more closely (or to share more pipelines). boot.cfg turns them on by default (BootConfig), and
+/// each can be turned off there; they apply to objects created after they are set.
 namespace D3D12 {
 
 /// Sampler border colors as the guest GPU stores them.
@@ -91,6 +91,15 @@ void SetShaderDepthBias(bool enabled);
     default: // The Z24 formats
         return 0x1p-24f;
     }
+}
+
+/// Bits of each channel when the render target format (Tegra::RenderTargetFormat) is one whose
+/// logic op the fragment shader can compute: all zeros for sRGB, signed, integer and float targets.
+[[nodiscard]] std::array<u8, 4> LogicOpChannelBits(u32 format) noexcept;
+
+/// Whether the packed logic op (GL value minus 0x1500) depends on the destination at all.
+[[nodiscard]] constexpr bool LogicOpReadsDestination(u32 op) noexcept {
+    return ((op & 1) != 0) != ((op & 2) != 0) || ((op & 4) != 0) != ((op & 8) != 0);
 }
 
 /// The render target format (Tegra::RenderTargetFormat) stores 8-bit UNORM channels.

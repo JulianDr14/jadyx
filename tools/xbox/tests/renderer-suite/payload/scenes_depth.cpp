@@ -82,6 +82,37 @@ constexpr StencilCase StencilOps[] = {
     {"decr_wraps", DkStencilOp_DecrWrap, 0, 3, 255},
 };
 
+// A 4x color target and depth buffer, bound with their state on.
+Image& MsDepthTarget(Gpu& gpu, DkImageFormat depth_format, Image*& depth) {
+    constexpr uint32_t Flags = DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine;
+    Image& target = gpu.MakeImage(DkImageFormat_RGBA8_Unorm, TargetSize, TargetSize, 1, 1,
+                                  DkImageType_2DMS, Flags, DkMsMode_4x);
+    depth = &gpu.MakeImage(depth_format, TargetSize, TargetSize, 1, 1, DkImageType_2DMS, Flags, DkMsMode_4x);
+    gpu.UseTarget(target);
+    dk::ImageView view{target.image};
+    dk::ImageView depth_view{depth->image};
+    gpu.cmd.bindRenderTargets(&view, &depth_view);
+    dk::MultisampleState state;
+    state.setMode(DkMsMode_4x);
+    gpu.cmd.bindMultisampleState(state);
+    gpu.cmd.clearDepthStencil(true, 1.0f, 0, 0);
+    gpu.cmd.bindDepthStencilState(DepthTest(DkCompareOp_Always));
+    gpu.Rect(0, 0, 16, 32, White, 0.25f);
+    gpu.Rect(16, 0, 32, 32, White, 0.75f);
+    gpu.Barrier();
+    return target;
+}
+
+// What a depth image holds, read into a new single-sample target.
+void ShowDepth(Gpu& gpu, const Image& depth) {
+    Image& result = gpu.Begin();
+    dk::Sampler sampler;
+    gpu.Shaders("basic_vsh", "texture_fsh");
+    gpu.cmd.bindTextures(DkStage_Fragment, 0, gpu.Texture(depth, sampler));
+    gpu.Full(White);
+    gpu.Finish(&result);
+}
+
 } // namespace
 
 void RegisterDepthStencil(std::vector<SceneEntry>& scenes) {
@@ -130,6 +161,57 @@ void RegisterDepthStencil(std::vector<SceneEntry>& scenes) {
             gpu.cmd.bindTextures(DkStage_Fragment, 0, gpu.Texture(depth, sampler));
             gpu.Full(White);
             gpu.Finish(&result);
+            gpu.Check("left depth", gpu.Read(8, 16).r, 0.25, 0.005);
+            gpu.Check("right depth", gpu.Read(24, 16).r, 0.75, 0.005);
+        }});
+        // Sampling the depth buffer a draw also writes: the draw reads what was there before it.
+        scenes.push_back({Named("depth_read_while_written_", DepthNames[i]), [format](Gpu& gpu) {
+            Image& target = gpu.BeginDepth(format);
+            Image& depth = *gpu.current_depth;
+            gpu.cmd.clearDepthStencil(true, 1.0f, 0, 0);
+            gpu.cmd.bindDepthStencilState(DepthTest(DkCompareOp_Always));
+            gpu.Rect(0, 0, 16, 32, White, 0.25f);
+            gpu.Rect(16, 0, 32, 32, White, 0.75f);
+            gpu.Barrier();
+            dk::Sampler sampler;
+            gpu.Shaders("basic_vsh", "texture_fsh");
+            gpu.cmd.bindTextures(DkStage_Fragment, 0, gpu.Texture(depth, sampler));
+            gpu.Full(White, 0.5f);
+            gpu.Finish(&target);
+            gpu.Check("left read", gpu.Read(8, 16).r, 0.25, 0.005);
+            gpu.Check("right read", gpu.Read(24, 16).r, 0.75, 0.005);
+            gpu.Barrier();
+            ShowDepth(gpu, depth);
+            gpu.Check("left written", gpu.Read(8, 16).r, 0.5, 0.005);
+            gpu.Check("right written", gpu.Read(24, 16).r, 0.5, 0.005);
+        }});
+        scenes.push_back({Named("ms_depth_read_while_written_", DepthNames[i]), [format](Gpu& gpu) {
+            Image* depth = nullptr;
+            Image& target = MsDepthTarget(gpu, format, depth);
+            dk::Sampler sampler;
+            gpu.Shaders("basic_vsh", "ms_fetch_fsh");
+            gpu.cmd.bindTextures(DkStage_Fragment, 0, gpu.Texture(*depth, sampler));
+            const int32_t index[4] = {0, 0, 0, 0};
+            gpu.Uniform(DkStage_Fragment, 0, index, sizeof(index));
+            gpu.Full(White, 0.5f);
+            gpu.Barrier();
+            Image& result = gpu.MakeImage(target.format, TargetSize, TargetSize);
+            dk::ImageView from{target.image}, to{result.image};
+            gpu.cmd.resolveImage(from, to);
+            gpu.Finish(&result);
+            gpu.Check("left read", gpu.Read(8, 16).r, 0.25, 0.005);
+            gpu.Check("right read", gpu.Read(24, 16).r, 0.75, 0.005);
+        }});
+        scenes.push_back({Named("ms_depth_resolve_", DepthNames[i]), [format](Gpu& gpu) {
+            Image* depth = nullptr;
+            MsDepthTarget(gpu, format, depth);
+            Image& resolved = gpu.MakeImage(format, TargetSize, TargetSize, 1, 1, DkImageType_2D,
+                                            DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine);
+            dk::ImageView from{depth->image}, to{resolved.image};
+            gpu.cmd.blitImage(from, {0, 0, 0, TargetSize, TargetSize, 1}, to,
+                              {0, 0, 0, TargetSize, TargetSize, 1}, DkBlitFlag_FilterNearest);
+            gpu.Barrier();
+            ShowDepth(gpu, resolved);
             gpu.Check("left depth", gpu.Read(8, 16).r, 0.25, 0.005);
             gpu.Check("right depth", gpu.Read(24, 16).r, 0.75, 0.005);
         }});

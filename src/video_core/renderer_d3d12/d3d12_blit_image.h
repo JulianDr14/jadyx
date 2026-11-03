@@ -170,25 +170,54 @@ public:
                    const VideoCommon::Region2D& dst_region,
                    const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size);
 
-    /// Same for depth: the source's depth (its SRV's red channel) becomes the target's depth.
+    /// False when a helper for multisampled sources failed to translate (logged).
+    [[nodiscard]] bool CanBlitMultisampled() const noexcept {
+        return multisample_available;
+    }
+
+    /// BlitColor from a Texture2DMSArray SRV: a resolve that averages the source's samples, or,
+    /// with per_sample and a target of the same sample count, a copy of each sample.
+    bool BlitColorMultisampled(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
+                               u32 src_samples, bool per_sample,
+                               const VideoCommon::Region2D& dst_region,
+                               const VideoCommon::Region2D& src_region,
+                               const VideoCommon::Extent2D& src_size);
+
+    /// BlitColor between integer formats of one signedness, without a float in between. A
+    /// multisampled source (a Texture2DMSArray SRV) gives each target sample its own, and a target
+    /// of one sample sample 0.
+    bool BlitInteger(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv, bool is_signed,
+                     bool src_multisampled, const VideoCommon::Region2D& dst_region,
+                     const VideoCommon::Region2D& src_region,
+                     const VideoCommon::Extent2D& src_size);
+
+    /// Same for depth: the source's depth (its SRV's red channel) becomes the target's depth. A
+    /// multisampled source (a Texture2DMSArray SRV) goes as in BlitInteger.
     bool BlitDepth(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
                    const VideoCommon::Region2D& dst_region,
-                   const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size);
+                   const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size,
+                   bool src_multisampled = false);
 
     /// Same for depth and stencil, without shader stencil export (the Series has no
     /// SV_StencilRef): one draw writes depth and a zero stencil, then one draw per bit sets that
     /// bit (write mask 1 << bit, reference 0xFF) where the texel of stencil_srv, a Texture2DArray
-    /// SRV of the source's stencil plane with the value in red, has it. Draws nothing unless
-    /// every pipeline is available, so the target never keeps half a copy.
+    /// (multisampled source: Texture2DMSArray) SRV of the source's stencil plane with the value in
+    /// red, has it. Draws nothing unless every pipeline is available, so the target never keeps
+    /// half a copy.
     bool BlitDepthStencil(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE depth_srv,
                           D3D12_CPU_DESCRIPTOR_HANDLE stencil_srv,
                           const VideoCommon::Region2D& dst_region,
                           const VideoCommon::Region2D& src_region,
-                          const VideoCommon::Extent2D& src_size);
+                          const VideoCommon::Extent2D& src_size, bool src_multisampled = false);
 
     /// Writes color into the channels of color_mask (bit 0 red ... bit 3 alpha) inside rect.
     void ClearColor(const Target& dst, u8 color_mask, const std::array<f32, 4>& color,
                     const D3D12_RECT& rect);
+
+    /// ClearColor of an integer target with the exact bits. False when the helper is missing; an
+    /// empty rect counts as drawn.
+    bool ClearColorInteger(const Target& dst, u8 color_mask, const std::array<u32, 4>& bits,
+                           bool is_signed, const D3D12_RECT& rect);
 
     /// Writes depth (when clear_depth) and the stencil bits of stencil_mask inside rect.
     void ClearDepthStencil(const Target& dst, bool clear_depth, f32 depth, u8 stencil_mask,
@@ -243,8 +272,21 @@ private:
         ClearColor,
         ClearDepthStencil,
         BlitStencilBit,
-        BlitDepthStencil, ///< BlitDepth's program, also zeroing the stencil
+        BlitColorMsAverage,
+        BlitColorMsSample,
+        BlitUint,
+        BlitSint,
+        BlitUintMs,
+        BlitSintMs,
+        BlitDepthMs,
+        BlitStencilBitMs,
+        ClearUint,
+        ClearSint,
+        // These two have no program of their own.
+        BlitDepthStencil,   ///< BlitDepth's program, also zeroing the stencil
+        BlitDepthStencilMs, ///< BlitDepthMs's program, also zeroing the stencil
     };
+    static constexpr size_t NUM_PROGRAMS = static_cast<size_t>(Kind::BlitDepthStencil);
 
     struct Program {
         std::vector<u8> vs;
@@ -266,7 +308,8 @@ private:
                    const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size);
     bool Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
               const Sampling& sampler, const VideoCommon::Region2D& dst_region,
-              const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size);
+              const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size,
+              u32 src_samples = 1);
     /// Builds the pack root signature and both compute pipelines; throws on failure.
     void CreatePackPipelines(const ShaderCompiler& compiler);
     void DispatchPack(ID3D12PipelineState* pipeline, const DepthStencilPack& pack, u32 groups_x,
@@ -285,11 +328,13 @@ private:
     SamplerHeap& sampler_heap;
 
     ComPtr<ID3D12RootSignature> root_signature;
-    std::array<Program, 5> programs;
+    std::array<Program, NUM_PROGRAMS> programs;
     std::unordered_map<u64, ComPtr<ID3D12PipelineState>> pipelines;
     Sampling nearest_sampler{};
     Sampling linear_sampler{};
     bool available{};
+    bool multisample_available{};
+    bool integer_clear_available{};
 
     ComPtr<ID3D12RootSignature> pack_root_signature;
     ComPtr<ID3D12PipelineState> split_pipeline;

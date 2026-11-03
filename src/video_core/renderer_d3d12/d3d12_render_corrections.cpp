@@ -86,6 +86,33 @@ bool GetShaderDepthBias() {
     return shader_depth_bias.load(std::memory_order_relaxed);
 }
 
+std::array<u8, 4> LogicOpChannelBits(u32 format) noexcept {
+    using Tegra::RenderTargetFormat;
+    switch (static_cast<RenderTargetFormat>(format)) {
+    case RenderTargetFormat::A8R8G8B8_UNORM:
+    case RenderTargetFormat::A8B8G8R8_UNORM:
+    case RenderTargetFormat::X8R8G8B8_UNORM:
+    case RenderTargetFormat::X8B8G8R8_UNORM:
+    case RenderTargetFormat::R8G8_UNORM:
+    case RenderTargetFormat::R8_UNORM:
+        return {8, 8, 8, 8};
+    case RenderTargetFormat::A2B10G10R10_UNORM:
+    case RenderTargetFormat::A2R10G10B10_UNORM:
+        return {10, 10, 10, 2};
+    case RenderTargetFormat::R16G16B16A16_UNORM:
+    case RenderTargetFormat::R16G16_UNORM:
+    case RenderTargetFormat::R16_UNORM:
+        return {16, 16, 16, 16};
+    case RenderTargetFormat::R5G6B5_UNORM:
+        return {5, 6, 5, 8};
+    case RenderTargetFormat::A1R5G5B5_UNORM:
+    case RenderTargetFormat::X1R5G5B5_UNORM:
+        return {5, 5, 5, 1};
+    default:
+        return {};
+    }
+}
+
 bool IsUnorm8RenderTarget(u32 format) noexcept {
     using Tegra::RenderTargetFormat;
     switch (static_cast<RenderTargetFormat>(format)) {

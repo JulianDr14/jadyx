@@ -183,7 +183,9 @@ add_library(shader_recompiler STATIC
     ir_opt/lower_fp64_to_fp32.cpp
     ir_opt/lower_int64_to_int32.cpp
     ir_opt/passes.h
+    ir_opt/mirror_border_pass.cpp
     ir_opt/position_pass.cpp
+    ir_opt/vertex_fetch_pass.cpp
     ir_opt/quad_shuffle_pass.cpp
     ir_opt/rescaling_pass.cpp
     ir_opt/ssa_rewrite_pass.cpp

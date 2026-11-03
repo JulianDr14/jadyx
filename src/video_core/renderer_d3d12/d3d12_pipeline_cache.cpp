@@ -28,6 +28,7 @@
 #include "shader_recompiler/frontend/ir/program.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/ir_opt/demote_return_pass.h"
+#include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/ir_opt/workgroup_split_pass.h"
 #include "shader_recompiler/program_header.h"
 #include "video_core/engines/kepler_compute.h"
@@ -46,6 +47,7 @@
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
 #include "video_core/renderer_d3d12/d3d12_stream_output.h"
+#include "video_core/renderer_d3d12/d3d12_pipeline_helper.h"
 #include "video_core/renderer_d3d12/d3d12_render_corrections.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
@@ -205,6 +207,34 @@ Shader::CompareFunction MaxwellToCompareFunction(Maxwell::ComparisonOp compariso
     return Shader::CompareFunction::Always;
 }
 
+void ApplyVertexFetchFixups(Shader::IR::Program& program, const GraphicsPipelineCacheKey& key) {
+    using Shader::Optimization::VertexFetchFixup;
+    std::array<VertexFetchFixup, 32> fixups{};
+    bool any = false;
+    for (size_t index = 0; index < key.state.attributes.size(); ++index) {
+        const auto& attr = key.state.attributes[index];
+        if (attr.enabled == 0) {
+            continue;
+        }
+        VertexFetchFixup& fixup = fixups[index];
+        fixup.swap_red_blue =
+            attr.bgra != 0 &&
+            MaxwellToD3D12::FetchesBgraInShader(attr.Type(), attr.Size(), attr.offset,
+                                                key.state.vertex_strides[attr.buffer]);
+        const u32 components = MaxwellToD3D12::Vertex32BitComponents(attr.Size());
+        if (components != 0 && attr.Type() == Maxwell::VertexAttribute::Type::UNorm) {
+            fixup.normalize = VertexFetchFixup::Normalize::Unsigned;
+        } else if (components != 0 && attr.Type() == Maxwell::VertexAttribute::Type::SNorm) {
+            fixup.normalize = VertexFetchFixup::Normalize::Signed;
+        }
+        fixup.components = static_cast<u8>(components);
+        any |= fixup.swap_red_blue || fixup.normalize != VertexFetchFixup::Normalize::None;
+    }
+    if (any) {
+        Shader::Optimization::VertexFetchPass(program, fixups);
+    }
+}
+
 Shader::AttributeType CastAttributeType(const FixedPipelineState::VertexAttribute& attr) {
     if (attr.enabled == 0) {
         return Shader::AttributeType::Disabled;
@@ -214,6 +244,15 @@ Shader::AttributeType CastAttributeType(const FixedPipelineState::VertexAttribut
         // DXGI has no signed 10:10:10:2: fetched as a packed R32_UINT (VertexFormat) and normalized
         // in the shader. Game C packs normals like this; read as floats they were NaN.
         return Shader::AttributeType::SignedNormA2B10G10R10;
+    }
+    if (MaxwellToD3D12::Vertex32BitComponents(attr.Size()) != 0) {
+        // Fetched as integers and normalized by VertexFetchPass.
+        if (attr.Type() == Maxwell::VertexAttribute::Type::UNorm) {
+            return Shader::AttributeType::UnsignedInt;
+        }
+        if (attr.Type() == Maxwell::VertexAttribute::Type::SNorm) {
+            return Shader::AttributeType::SignedInt;
+        }
     }
     switch (attr.Type()) {
     case Maxwell::VertexAttribute::Type::UnusedEnumDoNotUseBecauseItWillGoAway:
@@ -234,10 +273,157 @@ Shader::AttributeType CastAttributeType(const FixedPipelineState::VertexAttribut
     return Shader::AttributeType::Float;
 }
 
+/// How points wider than a pixel, or with coordinates inside them, are drawn: D3D12 points are one
+/// pixel, so a generated geometry shader makes quads of them. Decides the generics the size and the
+/// coordinates travel in, and rewrites the guest programs to use them.
+struct PointGeometry {
+    bool enabled{};
+    std::optional<Shader::IR::Attribute> size_attr;
+    std::optional<Shader::IR::Attribute> coord_attr;
+};
+
+/// Primitive state D3D12 lacks, drawn by a generated geometry shader (PlanPrimitiveGeometry).
+struct PrimitiveGeometry {
+    enum class Kind { None, Lines, PolygonPoints, FillRectangle, ProvokingLast };
+    Kind kind{Kind::None};
+    /// Generic with the pixels from the line's start, for the fragment program's stipple.
+    std::optional<u32> stipple_generic;
+};
+
+PointGeometry PlanPointGeometry(std::span<Shader::IR::Program> programs,
+                                const GraphicsPipelineCacheKey& key, bool excluded) {
+    using Shader::IR::Attribute;
+    PointGeometry plan;
+    if (excluded || key.state.topology != Maxwell::PrimitiveTopology::Points ||
+        key.unique_hashes[1] == 0 || key.unique_hashes[2] != 0 || key.unique_hashes[3] != 0 ||
+        key.unique_hashes[4] != 0) {
+        return plan;
+    }
+    Shader::Info& vertex = programs[1].info;
+    Shader::Info& fragment = programs[5].info;
+    const bool reads_coord =
+        fragment.loads[Attribute::PointSpriteS] || fragment.loads[Attribute::PointSpriteT];
+    const bool writes_size = vertex.stores[Attribute::PointSize];
+    const float fixed_size = std::bit_cast<float>(key.state.point_size);
+    if (!reads_coord && !writes_size && fixed_size == 1.0f) {
+        return plan;
+    }
+    // A generated stage forwards position and generics only, so a point sent to another layer or
+    // viewport stays the host's.
+    if (vertex.stores[Attribute::Layer] || vertex.stores[Attribute::ViewportIndex]) {
+        return plan;
+    }
+    std::vector<Attribute> free_generics;
+    for (u32 index = Shader::IR::NUM_GENERICS; index-- > 0;) {
+        if (!vertex.stores.Generic(index) && !fragment.loads.Generic(index)) {
+            free_generics.push_back(Attribute::Generic0X + index * 4);
+        }
+    }
+    if (free_generics.size() < static_cast<size_t>(writes_size) + (reads_coord ? 1 : 0)) {
+        return plan;
+    }
+    plan.enabled = true;
+    if (writes_size) {
+        plan.size_attr = free_generics.back();
+        free_generics.pop_back();
+        vertex.stores.Set(Attribute::PointSize, false);
+        vertex.stores.Set(*plan.size_attr, true);
+        for (Shader::IR::Block* const block : programs[1].post_order_blocks) {
+            for (Shader::IR::Inst& inst : block->Instructions()) {
+                if (inst.GetOpcode() == Shader::IR::Opcode::SetAttribute &&
+                    inst.Arg(0).Attribute() == Attribute::PointSize) {
+                    inst.SetArg(0, Shader::IR::Value(*plan.size_attr));
+                }
+            }
+        }
+    }
+    if (reads_coord) {
+        plan.coord_attr = free_generics.back();
+        fragment.loads.Set(Attribute::PointSpriteS, false);
+        fragment.loads.Set(Attribute::PointSpriteT, false);
+        for (Shader::IR::Block* const block : programs[5].post_order_blocks) {
+            for (Shader::IR::Inst& inst : block->Instructions()) {
+                if (inst.GetOpcode() != Shader::IR::Opcode::GetAttribute) {
+                    continue;
+                }
+                const Attribute attr = inst.Arg(0).Attribute();
+                if (attr == Attribute::PointSpriteS || attr == Attribute::PointSpriteT) {
+                    const Attribute generic =
+                        *plan.coord_attr + (attr == Attribute::PointSpriteS ? 0 : 1);
+                    fragment.loads.Set(generic, true);
+                    inst.SetArg(0, Shader::IR::Value(generic));
+                }
+            }
+        }
+    }
+    return plan;
+}
+
+/// The swizzle a shader has to apply, or 0: a negated y is the viewport's job (SetViewports).
+u16 EmulatedViewportSwizzle(u16 swizzle) {
+    constexpr u16 IDENTITY = 0 | 2 << 4 | 4 << 8 | 6 << 12;
+    constexpr u16 Y_MASK = 7 << 4;
+    swizzle &= 0x7777;
+    if (((swizzle >> 4) & 7) == 3) {
+        swizzle = static_cast<u16>((swizzle & ~Y_MASK) | 2 << 4);
+    }
+    return swizzle == IDENTITY ? 0 : swizzle;
+}
+
+PrimitiveGeometry PlanPrimitiveGeometry(std::span<Shader::IR::Program> programs,
+                                        const GraphicsPipelineCacheKey& key, bool excluded) {
+    using Shader::IR::Attribute;
+    using Kind = PrimitiveGeometry::Kind;
+    PrimitiveGeometry plan;
+    if (excluded || key.unique_hashes[1] == 0 || key.unique_hashes[2] != 0 ||
+        key.unique_hashes[3] != 0 || key.unique_hashes[4] != 0) {
+        return plan;
+    }
+    Shader::Info& vertex = programs[1].info;
+    Shader::Info& fragment = programs[5].info;
+    // Generated stages forward position and generics only.
+    if (vertex.stores[Attribute::Layer] || vertex.stores[Attribute::ViewportIndex]) {
+        return plan;
+    }
+    for (u32 index = 0; index < 8; ++index) {
+        if (vertex.stores[Attribute::ClipDistance0 + index]) {
+            return plan;
+        }
+    }
+    const auto& dynamic = key.state.dynamic_state;
+    if (dynamic.generated_lines != 0) {
+        plan.kind = Kind::Lines;
+        if (dynamic.line_stipple_enable != 0) {
+            for (u32 index = Shader::IR::NUM_GENERICS; index-- > 0;) {
+                if (!vertex.stores.Generic(index) && !fragment.loads.Generic(index)) {
+                    plan.stipple_generic = index;
+                    fragment.loads.Set(Attribute::Generic0X + index * 4, true);
+                    fragment.interpolation[index] = Shader::Interpolation::NoPerspective;
+                    break;
+                }
+            }
+        }
+    } else if (dynamic.generated_polygon_points != 0) {
+        plan.kind = Kind::PolygonPoints;
+    } else if (dynamic.generated_fill_rectangle != 0) {
+        plan.kind = Kind::FillRectangle;
+    } else if (key.state.provoking_vertex_last != 0) {
+        for (u32 index = 0; index < Shader::IR::NUM_GENERICS; ++index) {
+            if (fragment.interpolation[index] == Shader::Interpolation::Flat &&
+                fragment.loads.Generic(index) && vertex.stores.Generic(index)) {
+                plan.kind = Kind::ProvokingLast;
+                break;
+            }
+        }
+    }
+    return plan;
+}
+
 Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> programs,
                                     const GraphicsPipelineCacheKey& key,
                                     const Shader::IR::Program& program,
-                                    const Shader::IR::Program* previous_program) {
+                                    const Shader::IR::Program* previous_program,
+                                    bool point_geometry) {
     Shader::RuntimeInfo info;
     if (previous_program) {
         info.previous_stage_stores = previous_program->info.stores;
@@ -249,7 +435,8 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
         info.previous_stage_stores.mask.set();
     }
     const Shader::Stage stage{program.stage};
-    const bool has_geometry{key.unique_hashes[4] != 0 && !programs[4].UsesNativeGeometryPassthrough()};
+    const bool has_geometry{point_geometry || (key.unique_hashes[4] != 0 &&
+                                               !programs[4].UsesNativeGeometryPassthrough())};
     const bool gl_ndc{key.state.ndc_minus_one_to_one != 0};
     const float point_size{std::bit_cast<float>(key.state.point_size)};
     switch (stage) {
@@ -328,7 +515,14 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
                 }
             }
         }
+        if (EmulatesLogicOp(key.state)) {
+            info.logic_op_enable = true;
+            info.logic_op = static_cast<u8>(key.state.dynamic_state.logic_op.Value());
+            info.logic_op_bits = LogicOpChannelBits(key.state.color_formats[0]);
+        }
         info.alpha_to_coverage_footprint = key.ShaderAlphaToCoverage();
+        info.sample_mask_footprint = key.SampleMaskFootprint();
+        info.blend_constant_factors = PlanBlendConstants(key.state).shader_factors;
         if ((key.shader_flags & GraphicsPipelineCacheKey::SHADER_DEPTH_BIAS) != 0) {
             // Maxwell's constant bias counts twice D3D12's units.
             info.depth_bias_in_shader = true;
@@ -512,6 +706,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .support_viewport_index_layer_non_geometry = caps.vp_and_rt_index_from_any_stage,
         .support_viewport_mask = false,
         .support_typeless_image_loads = caps.typed_uav_load_additional_formats,
+        .repack_raw_image_loads = true,
         // Terminal discard arms may continue as helpers after DemoteReturnPass.
         // OpKill would terminate those lanes before their derivative calculations.
         .support_demote_to_helper_invocation = true,
@@ -877,6 +1072,9 @@ GraphicsPipeline* PipelineCache::LookupGraphicsPipeline() {
     // only rereads blocks whose Maxwell registers changed.
     graphics_key.state.Refresh(*maxwell3d, dynamic_features);
     graphics_key.RefreshStatic(maxwell3d->regs);
+    graphics_key.state.dynamic_state.shader_mirror_border.Assign(
+        !mirror_border_shaders.empty() &&
+        mirror_border_shaders.contains(graphics_key.unique_hashes[5]));
     if (UsesReductionShader(graphics_key.unique_hashes)) {
         graphics_key.shader_flags |= GraphicsPipelineCacheKey::SHADER_REDUCTION;
     }
@@ -922,6 +1120,15 @@ void PipelineCache::EmulateReduction(const GraphicsPipelineCacheKey& key, u8 sta
     }
     if (added) {
         // The previous draw's pipeline must not be reused without the new key bit.
+        key_reuse.Forget();
+    }
+}
+
+void PipelineCache::EmulateMirrorBorder(const GraphicsPipelineCacheKey& key) {
+    if (mirror_border_shaders.insert(key.unique_hashes[5]).second) {
+        LOG_INFO(Render, "D3D12: shader {:016x} samples with a sampler that mirrors once to the "
+                         "border; using its emulating pipelines",
+                 key.unique_hashes[5]);
         key_reuse.Forget();
     }
 }
@@ -1343,6 +1550,31 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
     }
 
+    const PointGeometry point_geometry = PlanPointGeometry(
+        programs, key, drops_geometry || captures_xfb || layer_source_program != nullptr);
+    const bool generates_tess_control{key.unique_hashes[2] == 0 && key.unique_hashes[3] != 0};
+    if (key.unique_hashes[1] != 0) {
+        ApplyVertexFetchFixups(programs[1], key);
+    }
+    if (key.state.dynamic_state.shader_mirror_border != 0 && key.unique_hashes[5] != 0) {
+        Shader::Optimization::MirrorBorderPass(programs[5]);
+    }
+    if (EmulatesLogicOp(key.state) && key.unique_hashes[5] != 0) {
+        programs[5].info.uses_destination_read =
+            LogicOpReadsDestination(key.state.dynamic_state.logic_op);
+    }
+    if (key.state.dynamic_state.shader_polygon_stipple != 0 && key.unique_hashes[5] != 0) {
+        programs[5].info.uses_polygon_stipple = true;
+        programs[5].info.uses_stage_constants = true;
+    }
+    const PrimitiveGeometry primitive_geometry = PlanPrimitiveGeometry(
+        programs, key,
+        point_geometry.enabled || drops_geometry || captures_xfb ||
+            layer_source_program != nullptr);
+    const bool generates_geometry{point_geometry.enabled ||
+                                  primitive_geometry.kind != PrimitiveGeometry::Kind::None};
+    const bool has_any_geometry{has_geometry_stage || generates_geometry};
+
     // Series corrupts native NoPerspective coordinates when clipping volumes
     // cross W=0. Preserve screen-linear semantics via smooth(a*clipW)/clipW.
     // Only direct VS -> FS is covered here: intermediate stages/indexed loads
@@ -1350,7 +1582,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     u32 lower_noperspective_mask{};
     if (key.unique_hashes[1] && key.unique_hashes[5] &&
         !key.unique_hashes[2] && !key.unique_hashes[3] && !key.unique_hashes[4] &&
-        layer_source_program == nullptr && !programs[5].info.loads_indexed_attributes) {
+        layer_source_program == nullptr && !generates_geometry &&
+        !programs[5].info.loads_indexed_attributes) {
         const auto& vertex_info = programs[1].info;
         const auto& fragment_info = programs[5].info;
         for (u32 index = 0; index < Shader::IR::NUM_GENERICS; ++index) {
@@ -1374,7 +1607,11 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
          ++index) {
         const bool is_emulated_stage = layer_source_program != nullptr &&
                                        index == static_cast<u32>(Maxwell::ShaderType::Geometry);
-        if (key.unique_hashes[index] == 0 && !is_emulated_stage) {
+        const bool is_generated_stage =
+            (generates_tess_control &&
+             index == static_cast<u32>(Maxwell::ShaderType::TessellationInit)) ||
+            (generates_geometry && index == static_cast<u32>(Maxwell::ShaderType::Geometry));
+        if (key.unique_hashes[index] == 0 && !is_emulated_stage && !is_generated_stage) {
             continue;
         }
         if (drops_geometry && index == static_cast<u32>(Maxwell::ShaderType::Geometry))
@@ -1389,12 +1626,61 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             LOG_ERROR(Render, "D3D12: VertexA without VertexB is not implemented");
             return nullptr;
         }
+        if (is_generated_stage) {
+            // Here and not with the guest stages: they read what the vertex program ended up
+            // writing, legacy varyings already mapped to generics.
+            using Kind = PrimitiveGeometry::Kind;
+            if (index != static_cast<u32>(Maxwell::ShaderType::Geometry)) {
+                programs[index] = Shader::Maxwell::GenerateTessellationControl(
+                    pools.inst, pools.block, *previous_stage, programs[index + 1],
+                    key.state.patch_control_points_minus_one + 1);
+            } else if (primitive_geometry.kind == Kind::Lines) {
+                programs[index] = Shader::Maxwell::GenerateLineGeometry(
+                    pools.inst, pools.block, *previous_stage,
+                    primitive_geometry.stipple_generic
+                        ? std::optional{Shader::IR::Attribute::Generic0X +
+                                        *primitive_geometry.stipple_generic * 4}
+                        : std::nullopt);
+            } else if (primitive_geometry.kind == Kind::PolygonPoints) {
+                programs[index] = Shader::Maxwell::GeneratePolygonPointGeometry(
+                    pools.inst, pools.block, *previous_stage,
+                    std::bit_cast<float>(key.state.point_size));
+            } else if (primitive_geometry.kind == Kind::FillRectangle) {
+                programs[index] = Shader::Maxwell::GenerateFillRectangleGeometry(
+                    pools.inst, pools.block, *previous_stage, programs[5],
+                    key.state.provoking_vertex_last != 0 ? 2 : 0);
+            } else if (primitive_geometry.kind == Kind::ProvokingLast) {
+                programs[index] = Shader::Maxwell::GenerateProvokingLastGeometry(
+                    pools.inst, pools.block, *previous_stage,
+                    MaxwellToD3D12::PrimitiveTopologyType(key.state.topology) ==
+                            D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE
+                        ? 2
+                        : 3);
+            } else {
+                programs[index] = Shader::Maxwell::GeneratePointGeometry(
+                    pools.inst, pools.block, *previous_stage, point_geometry.size_attr,
+                    point_geometry.coord_attr, std::bit_cast<float>(key.state.point_size));
+            }
+        }
         Shader::IR::Program& program{programs[index]};
         const size_t stage_index{index - 1};
         infos[stage_index] = &program.info;
 
-        auto runtime_info{MakeRuntimeInfo(programs, key, program, previous_stage)};
+        auto runtime_info{
+            MakeRuntimeInfo(programs, key, program, previous_stage, generates_geometry)};
         runtime_info.lower_noperspective_mask = lower_noperspective_mask;
+        if (index == (has_any_geometry ? 4U : key.unique_hashes[3] != 0 ? 3U : 1U)) {
+            runtime_info.viewport_swizzle = EmulatedViewportSwizzle(key.state.viewport_swizzles[0]);
+        }
+        if (program.stage == Shader::Stage::Fragment) {
+            if (primitive_geometry.stipple_generic) {
+                runtime_info.line_stipple_generic = *primitive_geometry.stipple_generic + 1;
+                // The register holds the repeat count minus one.
+                runtime_info.line_stipple_factor = key.state.line_stipple_factor + 1;
+                runtime_info.line_stipple_pattern = key.state.line_stipple_pattern;
+            }
+            runtime_info.polygon_stipple = key.state.dynamic_state.shader_polygon_stipple != 0;
+        }
         if (captures_xfb && index == xfb_program && (native_xfb || index == 1)) {
             xfb_varyings.Apply(runtime_info);
             runtime_info.xfb_storage = !native_xfb;
@@ -1434,7 +1720,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         (key.shader_flags & GraphicsPipelineCacheKey::SHADER_REDUCTION) != 0 &&
         compiler.EmulatesReduction();
     const PipelineLayout& layout =
-        root_signatures.Get(infos, false, native_xfb, emulate_reduction);
+        root_signatures.Get(infos, false, native_xfb, emulate_reduction,
+                            PlanBlendConstants(key.state).InShader());
 
     // SPIR-V to DXIL goes with the PSO build, on a worker: done here it stalled the GPU thread for
     // 150-490 ms per 300 frames when entering new areas (0.2.59 profile). Translating the guest

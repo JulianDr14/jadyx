@@ -426,7 +426,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::DepthFeedbackHandle(Shader::TextureType t
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE ImageView::StencilHandle() const {
-    if (stencil_srv.ptr || !runtime || !image || srv_params.is_msaa ||
+    if (stencil_srv.ptr || !runtime || !image ||
         srv_params.dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
         return stencil_srv;
     }
@@ -449,15 +449,37 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::StencilHandle() const {
         .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
         .Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(1, 1, 1, 1),
     };
-    desc.Texture2DArray = {.MostDetailedMip = srv_params.base_level,
-                           .MipLevels = 1,
-                           .FirstArraySlice = srv_params.base_layer,
-                           .ArraySize = 1,
-                           .PlaneSlice = 1,
-                           .ResourceMinLODClamp = 0.0f};
+    if (srv_params.is_msaa) {
+        // A multisampled view has no plane slice: the format alone selects the plane.
+        desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+        desc.Texture2DMSArray = {srv_params.base_layer, 1};
+    } else {
+        desc.Texture2DArray = {.MostDetailedMip = srv_params.base_level,
+                               .MipLevels = 1,
+                               .FirstArraySlice = srv_params.base_layer,
+                               .ArraySize = 1,
+                               .PlaneSlice = 1,
+                               .ResourceMinLODClamp = 0.0f};
+    }
     stencil_srv = runtime->view_descriptors.Allocate();
     runtime->device.Get()->CreateShaderResourceView(image, &desc, stencil_srv);
     return stencil_srv;
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE ImageView::MultisampleHandle() const {
+    if (multisample_srv.ptr || !runtime || !image || !srv_params.is_msaa) {
+        return multisample_srv;
+    }
+    D3D12_SHADER_RESOURCE_VIEW_DESC desc{
+        .Format = srv_params.format,
+        .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY,
+        .Shader4ComponentMapping = srv_params.mapping,
+    };
+    desc.Texture2DMSArray = {srv_params.base_layer, 1};
+    multisample_srv = runtime->view_descriptors.Allocate();
+    runtime->device.Get()->CreateShaderResourceView(srv_resource ? srv_resource : image, &desc,
+                                                    multisample_srv);
+    return multisample_srv;
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE ImageView::CreateSrv(Shader::TextureType texture_type,
@@ -740,6 +762,8 @@ void ImageView::Release() {
     }
     if (stencil_srv.ptr) runtime->view_descriptors.Free(stencil_srv);
     stencil_srv = {};
+    if (multisample_srv.ptr) runtime->view_descriptors.Free(multisample_srv);
+    multisample_srv = {};
     if (uav.ptr) runtime->view_descriptors.Free(uav);
     if (rtv.ptr) runtime->rtv_descriptors.Free(rtv);
     if (dsv.ptr) runtime->dsv_descriptors.Free(dsv);
@@ -748,13 +772,14 @@ void ImageView::Release() {
 }
 ImageView::ImageView(ImageView&& other) noexcept : VideoCommon::ImageViewBase{std::move(other)}, runtime{std::exchange(other.runtime, nullptr)},
     slot_images{other.slot_images}, image{other.image}, srv_resource{other.srv_resource}, srv_params{other.srv_params}, natural_type{other.natural_type},
-    srvs{std::exchange(other.srvs, {})}, depth_feedback_srvs{std::move(other.depth_feedback_srvs)}, stencil_srv{std::exchange(other.stencil_srv, {})}, uav{other.uav}, rtv{other.rtv}, rtv_on_copy{other.rtv_on_copy}, dsv{other.dsv}, dsv_read_only{other.dsv_read_only}, buffer_size{other.buffer_size} {}
+    srvs{std::exchange(other.srvs, {})}, depth_feedback_srvs{std::move(other.depth_feedback_srvs)}, stencil_srv{std::exchange(other.stencil_srv, {})}, multisample_srv{std::exchange(other.multisample_srv, {})}, uav{other.uav}, rtv{other.rtv}, rtv_on_copy{other.rtv_on_copy}, dsv{other.dsv}, dsv_read_only{other.dsv_read_only}, buffer_size{other.buffer_size} {}
 ImageView& ImageView::operator=(ImageView&& other) noexcept {
     if (this != &other) { Release(); static_cast<VideoCommon::ImageViewBase&>(*this) = std::move(other);
         runtime = std::exchange(other.runtime, nullptr); slot_images = other.slot_images; image = other.image; srv_resource = other.srv_resource;
         srv_params = other.srv_params; natural_type = other.natural_type; srvs = std::exchange(other.srvs, {});
         depth_feedback_srvs = std::move(other.depth_feedback_srvs);
         stencil_srv = std::exchange(other.stencil_srv, {});
+        multisample_srv = std::exchange(other.multisample_srv, {});
         uav = other.uav; rtv = other.rtv; rtv_on_copy = other.rtv_on_copy; dsv = other.dsv; dsv_read_only = other.dsv_read_only; buffer_size = other.buffer_size; }
     return *this;
 }

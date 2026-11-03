@@ -653,6 +653,13 @@ Id EmitResolutionDownFactor(EmitContext& ctx) {
     }
 }
 
+Id EmitStageConstant(EmitContext& ctx, u32 index) {
+    const Id pointer_type{ctx.TypePointer(spv::StorageClass::PushConstant, ctx.F32[1])};
+    const Id pointer{
+        ctx.OpAccessChain(pointer_type, ctx.stage_constants_push_constant, ctx.Const(index))};
+    return ctx.OpLoad(ctx.F32[1], pointer);
+}
+
 Id EmitRenderArea(EmitContext& ctx) {
     if (ctx.profile.unified_descriptor_binding) {
         const Id pointer_type{ctx.TypePointer(spv::StorageClass::PushConstant, ctx.F32[4])};

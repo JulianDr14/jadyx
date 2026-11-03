@@ -212,9 +212,30 @@ private:
     // d3d12_rasterizer_clear.cpp and diagnostics/d3d12_draw_trace.cpp (SetDrawTrace).
 
     /// Records changed state and then the draw. Command-list state is invalidated on every reset.
-    void RecordDraw(const GraphicsPipeline& pipeline, const PipelineBindings& bindings,
+    void RecordDraw(GraphicsPipeline& pipeline, const PipelineBindings& bindings,
                     const Framebuffer& framebuffer, const DrawParams& params,
                     Maxwell::PrimitiveTopology topology);
+    /// Records a bound draw. D3D12 has one stencil reference, so when the guest gives each face
+    /// its own, the faces are drawn apart, each with a pipeline that culls the other.
+    template <typename Draw>
+    void DrawStencilFaces(GraphicsPipeline& pipeline, Maxwell::PrimitiveTopology topology,
+                          Draw&& draw) {
+        const auto& regs = maxwell3d->regs;
+        if (regs.stencil_enable == 0 || regs.stencil_two_side_enable == 0 ||
+            regs.stencil_front_ref == regs.stencil_back_ref) {
+            draw();
+            return;
+        }
+        if (BeginStencilFaces(pipeline, topology)) {
+            draw();
+            NextStencilFace(pipeline);
+        }
+        draw();
+    }
+    /// Prepares the first draw of DrawStencilFaces; false if that draw is the only one.
+    [[nodiscard]] bool BeginStencilFaces(GraphicsPipeline& pipeline,
+                                         Maxwell::PrimitiveTopology topology);
+    void NextStencilFace(GraphicsPipeline& pipeline);
     /// RecordDraw without the draw (ExecuteIndirect replaces it).
     void BindDrawState(const GraphicsPipeline& pipeline, const PipelineBindings& bindings,
                        const Framebuffer& framebuffer, const DrawParams& params,

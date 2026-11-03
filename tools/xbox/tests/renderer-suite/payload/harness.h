@@ -129,6 +129,9 @@ public:
     DkResHandle Texture(const Image& image, const dk::Sampler& sampler);
     /// Sampled through `view`, whose format or type may differ from the image's own.
     DkResHandle Texture(const dk::ImageView& view, const dk::Sampler& sampler);
+    /// The same, with the first word of the texture descriptor replaced: for the formats the guest
+    /// has and deko3d does not name.
+    DkResHandle TextureAs(const Image& image, const dk::Sampler& sampler, uint32_t tic_word0);
 
     /// Runs what is recorded and reads the target (`target` when given) back to guest memory.
     void Finish(const Image* target = nullptr);
@@ -143,6 +146,9 @@ public:
     /// Says whether a value computed in the guest is what it must be.
     void Check(const char* what, double got, double expected, double tolerance = 0.0);
     void Fail(const char* format, ...) __attribute__((format(printf, 2, 3)));
+    /// Rewrites `count` consecutive words of what is recorded, for GPU state deko3d has no call for.
+    /// False if they are not there.
+    bool PatchCommands(const uint32_t* from, const uint32_t* to, uint32_t count);
 
     // Called by the runner.
     void BeginScene(const char* name);

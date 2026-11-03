@@ -2410,7 +2410,10 @@ Los recursos se retiran con el allocator existente y los descriptores con ImageV
 Si falla la creacion del recurso, se conserva la ruta anterior de solo lectura y un warning.
 
 Esta ruta conserva el contenido previo al draw; no reproduce feedback entre fragmentos del
-mismo draw. Tampoco esta validada aqui con D24/S8 o MSAA. CopyResource exige recursos distintos
+mismo draw: D3D12 no permite escribir un subrecurso por DSV y leerlo por SRV a la vez. Validada
+en PC con Z16, Z24X8, Z24S8, ZF32 y ZF32_X24S8, con y sin MSAA, por las escenas
+`depth_read_while_written_*` y `ms_depth_read_while_written_*` de la suite de renderer
+(2 nov 2026); falta confirmarla en Series. CopyResource exige recursos distintos
 con dimensiones/formato y numero de muestras compatibles; DEPTH_WRITE es exclusivo, mientras
 DEPTH_READ puede combinarse con SRV. Por eso no basta trasladar una barrera Vulkan a D3D12.
 Se revisaron BarrierFeedbackLoop y CopyImage de vk_texture_cache.cpp: sirven como modelo de

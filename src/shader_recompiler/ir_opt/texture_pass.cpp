@@ -347,6 +347,20 @@ static inline TexturePixelFormat ReadTexturePixelFormatCached(Environment& env,
                                                                 const ConstBufferAddr& cbuf) {
     return env.ReadTexturePixelFormat(GetTextureHandleCached(env, cbuf));
 }
+static RawImageLoad RawImageLoadOf(TexturePixelFormat format) {
+    switch (format) {
+    case TexturePixelFormat::A8B8G8R8_UNORM:
+        return RawImageLoad::A8B8G8R8_UNORM;
+    case TexturePixelFormat::B8G8R8A8_UNORM:
+        return RawImageLoad::B8G8R8A8_UNORM;
+    case TexturePixelFormat::A2B10G10R10_UNORM:
+        return RawImageLoad::A2B10G10R10_UNORM;
+    case TexturePixelFormat::A8B8G8R8_UINT:
+        return RawImageLoad::A8B8G8R8_UINT;
+    default:
+        return RawImageLoad::None;
+    }
+}
 static inline bool IsTexturePixelFormatIntegerCached(Environment& env,
                                                         const ConstBufferAddr& cbuf) {
     return env.IsTexturePixelFormatInteger(GetTextureHandleCached(env, cbuf));
@@ -837,6 +851,8 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .size_shift = size_shift,
                 });
             } else {
+                const bool is_raw_load{inst->GetOpcode() == IR::Opcode::ImageRead &&
+                                       flags.image_format == ImageFormat::R32_UINT};
                 index = descriptors.Add(ImageDescriptor{
                     .type = flags.type,
                     .format = flags.image_format,
@@ -847,6 +863,8 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .cbuf_offset = cbuf.offset,
                     .count = count,
                     .size_shift = size_shift,
+                    .raw_load = is_raw_load ? RawImageLoadOf(ReadTexturePixelFormatCached(env, cbuf))
+                                            : RawImageLoad::None,
                 });
             }
             break;

@@ -352,8 +352,14 @@ void RegisterRaster(std::vector<SceneEntry>& scenes) {
         }
         gpu.Begin();
         gpu.ClearColor(Black);
-        // deko3d turns stippling on with a pattern and off with none.
+        // This deko3d loads a pattern but only ever writes the enable register to turn it off:
+        // record that immediate word and flip its value. 112 is where the library keeps its write
+        // pointer (see dkCmdBufSetPolygonStipple).
         gpu.cmd.setPolygonStipple(pattern);
+        gpu.cmd.setPolygonStipple(nullptr);
+        DkCmdBuf raw = gpu.cmd;
+        uint32_t* const written = *reinterpret_cast<uint32_t**>(reinterpret_cast<char*>(raw) + 112);
+        written[-1] = 0x800105A3;
         dk::RasterizerState rasterizer;
         rasterizer.setCullMode(DkFace_None);
         gpu.cmd.bindRasterizerState(rasterizer);

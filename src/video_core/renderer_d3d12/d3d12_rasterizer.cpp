@@ -254,7 +254,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
 
     scheduler.BeginWork();
     hunt.PipelineStart();
-    GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
+    GraphicsPipeline* pipeline = pipeline_cache.CurrentGraphicsPipeline();
     hunt.PipelineEnd();
     if (!pipeline) {
         if (full) VideoCommon::FullCapture::Event("draw_no_pipeline");
@@ -298,14 +298,35 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
             }
         }
     }
+    const auto& restart = maxwell3d->regs.primitive_restart;
+    buffer_runtime.SetIndexRestart(restart.enabled != 0 ? std::optional<u32>{restart.index}
+                                                        : std::nullopt);
     pipeline->Configure(is_indexed,
                         {*maxwell3d, *gpu_memory, buffer_cache, texture_cache, descriptor_queue,
                          sampler_heap, scheduler},
                         bindings);
-    buffer_runtime.SetTraceBuffers(nullptr);
-    if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
-        pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+    if ((bindings.unemulated_reduction_stages != 0 || bindings.unemulated_mirror_border))
+        [[unlikely]] {
+        if (bindings.unemulated_reduction_stages != 0) {
+            pipeline_cache.EmulateReduction(pipeline->Key(), bindings.unemulated_reduction_stages);
+        }
+        if (bindings.unemulated_mirror_border) {
+            pipeline_cache.EmulateMirrorBorder(pipeline->Key());
+        }
+        // This draw too: only the bindings seen just now tell that it needs the other pipeline.
+        if (GraphicsPipeline* const emulating = pipeline_cache.CurrentGraphicsPipeline();
+            emulating && emulating != pipeline) {
+            pipeline = emulating;
+            traced_views.clear();
+            traced_filters.clear();
+            traced_types.clear();
+            pipeline->Configure(is_indexed,
+                                {*maxwell3d, *gpu_memory, buffer_cache, texture_cache,
+                                 descriptor_queue, sampler_heap, scheduler},
+                                bindings);
+        }
     }
+    buffer_runtime.SetTraceBuffers(nullptr);
     if (!pipeline->IsBuilt()) [[unlikely]] {
         const auto& draw = maxwell3d->draw_manager.draw_state;
         if (!WaitPendingPipeline(pipeline,
@@ -459,7 +480,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     }
 }
 
-void RasterizerD3D12::RecordDraw(const GraphicsPipeline& pipeline,
+void RasterizerD3D12::RecordDraw(GraphicsPipeline& pipeline,
                                  const PipelineBindings& bindings, const Framebuffer& framebuffer,
                                  const DrawParams& params,
                                  Maxwell::PrimitiveTopology topology) {
@@ -470,13 +491,17 @@ void RasterizerD3D12::RecordDraw(const GraphicsPipeline& pipeline,
     VideoCore::Perf::Add(VideoCore::Perf::Counter::Draws, 1);
     {
         const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
-        if (params.is_indexed) {
-            cmd->DrawIndexedInstanced(params.num_vertices, params.num_instances, params.first_index,
-                                      static_cast<INT>(params.base_vertex), params.base_instance);
-        } else {
-            cmd->DrawInstanced(params.num_vertices, params.num_instances, params.base_vertex,
-                               params.base_instance);
-        }
+        DrawStencilFaces(pipeline, topology, [&] {
+            if (params.is_indexed) {
+                cmd->DrawIndexedInstanced(params.num_vertices, params.num_instances,
+                                          params.first_index,
+                                          static_cast<INT>(params.base_vertex),
+                                          params.base_instance);
+            } else {
+                cmd->DrawInstanced(params.num_vertices, params.num_instances, params.base_vertex,
+                                   params.base_instance);
+            }
+        });
     }
     texture_runtime.FinishCompatibleDrawTargets(framebuffer);
 }
@@ -506,7 +531,7 @@ void RasterizerD3D12::DispatchCompute() {
 
     scheduler.BeginWork();
     hunt.PipelineStart();
-    ComputePipeline* const pipeline = pipeline_cache.CurrentComputePipeline();
+    ComputePipeline* pipeline = pipeline_cache.CurrentComputePipeline();
     hunt.PipelineEnd();
     if (!pipeline) {
         hunt.Outcome(Hunt::Outcome::NoPipeline);
@@ -541,13 +566,22 @@ void RasterizerD3D12::DispatchCompute() {
     }
     // Still building on a worker: the dispatch is recorded all the same, and the recorder waits
     // for the PSO before it binds it (pipeline_cache.CurrentComputePipeline).
-    const bool pending = !pipeline->IsBuilt();
+    bool pending = !pipeline->IsBuilt();
     SCOPE_EXIT { buffer_runtime.SetTraceBuffers(nullptr); };
     pipeline->Configure({*kepler_compute, *gpu_memory, buffer_cache, texture_cache,
                          descriptor_queue, sampler_heap, scheduler},
                         bindings);
     if (bindings.unemulated_reduction_stages != 0) [[unlikely]] {
         pipeline_cache.EmulateReduction(pipeline->UniqueHash());
+        // This dispatch too: only the bindings seen just now tell that it needs the other one.
+        if (ComputePipeline* const emulating = pipeline_cache.CurrentComputePipeline();
+            emulating && emulating != pipeline) {
+            pipeline = emulating;
+            pending = !pipeline->IsBuilt();
+            pipeline->Configure({*kepler_compute, *gpu_memory, buffer_cache, texture_cache,
+                                 descriptor_queue, sampler_heap, scheduler},
+                                bindings);
+        }
     }
     if (!pending && !pipeline->Handle()) {
         hunt.Outcome(Hunt::Outcome::PsoRejected);

@@ -29,6 +29,14 @@
 
 namespace D3D12 {
 
+bool Device::SupportsConservativeRaster() const {
+    D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
+    return SUCCEEDED(Get()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options,
+                                                sizeof(options))) &&
+           options.ConservativeRasterizationTier !=
+               D3D12_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED;
+}
+
 namespace {
 std::atomic<bool> present_queue_enabled{false}; ///< SetPresentQueue
 

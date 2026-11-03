@@ -78,6 +78,11 @@ Sampler::Sampler(TextureCacheRuntime& runtime_, const Tegra::Texture::TSCEntry& 
         linear_mag ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
         linear_mip ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT,
         reduction);
+    const auto mirrors_to_border = [](Tegra::Texture::WrapMode mode) {
+        return mode == Tegra::Texture::WrapMode::MirrorOnceBorder;
+    };
+    mirror_border_axes =
+        (mirrors_to_border(config.wrap_u) ? 1u : 0u) | (mirrors_to_border(config.wrap_v) ? 2u : 0u);
     const auto border = CorrectBorderColor(config.BorderColor(), GetBorderColorMode());
     // D3D12 leaves MinLOD > MaxLOD and biases outside [-16, 15.99] undefined; drivers differ.
     const bool no_mips = config.mipmap_filter == Tegra::Texture::TextureMipmapFilter::None;

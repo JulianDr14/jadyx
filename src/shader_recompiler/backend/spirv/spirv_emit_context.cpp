@@ -781,11 +781,26 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineImageBuffers(program.info, image_binding);
     DefineTextures(program.info, texture_binding, bindings.texture_scaling_index);
     DefineImages(program.info, image_binding, bindings.image_scaling_index);
+    if (program.info.uses_destination_read) {
+        destination_read_type = TypeImage(F32[1], spv::Dim::Dim2D, 0, 0, 0, 1, spv::ImageFormat::Unknown);
+        destination_read = AddGlobalVariable(
+            TypePointer(spv::StorageClass::UniformConstant, destination_read_type),
+            spv::StorageClass::UniformConstant);
+        Decorate(destination_read, spv::Decoration::Binding, image_binding);
+        Decorate(destination_read, spv::Decoration::DescriptorSet, 0U);
+        Name(destination_read, "destination_read");
+        if (profile.supported_spirv >= 0x00010400) {
+            interfaces.push_back(destination_read);
+        }
+        ++image_binding;
+    }
     DefineAttributeMemAccess(program.info);
     DefineWriteStorageCasLoopFunction(program.info);
     DefineGlobalMemoryFunctions(program.info);
     DefineRescalingInput(program.info);
     DefineRenderArea(program.info);
+    DefineBlendConstants();
+    DefineStageConstants(program.info);
 }
 
 EmitContext::~EmitContext() = default;
@@ -1590,6 +1605,52 @@ void EmitContext::DefineRescalingInputUniformConstant() {
     }
 }
 
+void EmitContext::DefineBlendConstants() {
+    if (stage != Stage::Fragment ||
+        std::ranges::all_of(runtime_info.blend_constant_factors, [](BlendConstantFactor factor) {
+            return factor == BlendConstantFactor::None;
+        })) {
+        return;
+    }
+    const Id push_constant_struct{TypeStruct(F32[4])};
+    Decorate(push_constant_struct, spv::Decoration::Block);
+    Name(push_constant_struct, "BlendConstants");
+    MemberDecorate(push_constant_struct, 0U, spv::Decoration::Offset, BLEND_CONSTANTS_OFFSET);
+    MemberName(push_constant_struct, 0U, "blend_constant");
+    const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
+    blend_constants_push_constant = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
+    Name(blend_constants_push_constant, "blend_constants_push_constant");
+    if (profile.supported_spirv >= 0x00010400) {
+        interfaces.push_back(blend_constants_push_constant);
+    }
+}
+
+void EmitContext::DefineStageConstants(const Info& info) {
+    if (!info.uses_stage_constants) {
+        return;
+    }
+    std::vector<Id> members(STAGE_CONSTANT_WORDS, F32[1]);
+    if (info.uses_polygon_stipple) {
+        const Id pattern{TypeArray(U32[1], Const(POLYGON_STIPPLE_WORDS))};
+        Decorate(pattern, spv::Decoration::ArrayStride, static_cast<u32>(sizeof(u32)));
+        members.push_back(pattern);
+        polygon_stipple_pointer = TypePointer(spv::StorageClass::PushConstant, U32[1]);
+    }
+    const Id push_constant_struct{TypeStruct(std::span<const Id>(members))};
+    Decorate(push_constant_struct, spv::Decoration::Block);
+    Name(push_constant_struct, "StageConstants");
+    for (u32 index = 0; index < members.size(); ++index) {
+        MemberDecorate(push_constant_struct, index, spv::Decoration::Offset,
+                       STAGE_CONSTANTS_OFFSET + index * static_cast<u32>(sizeof(float)));
+    }
+    const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
+    stage_constants_push_constant = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
+    Name(stage_constants_push_constant, "stage_constants_push_constant");
+    if (profile.supported_spirv >= 0x00010400) {
+        interfaces.push_back(stage_constants_push_constant);
+    }
+}
+
 void EmitContext::DefineRenderArea(const Info& info) {
     if (!info.uses_render_area) {
         return;
@@ -1923,6 +1984,7 @@ void EmitContext::DefineImages(const Info& info, u32& binding, u32& scaling_inde
             .pointer_type = pointer_type,
             .count = desc.count,
             .is_integer = desc.is_integer,
+            .raw_load = desc.raw_load,
         });
         if (profile.supported_spirv >= 0x00010400) {
             interfaces.push_back(id);
@@ -2007,7 +2069,10 @@ void EmitContext::DefineInputs(const IR::Program& program) {
     // Quad shuffles through derivatives find their quad lane from the window position.
     if (loads.AnyComponent(IR::Attribute::PositionX) ||
         (stage == Stage::Fragment && runtime_info.lower_noperspective_mask != 0) ||
+        (stage == Stage::Fragment && runtime_info.polygon_stipple) ||
+        (stage == Stage::Fragment && runtime_info.logic_op_enable) ||
         (stage == Stage::Fragment && runtime_info.alpha_to_coverage_footprint == 2) ||
+        (stage == Stage::Fragment && runtime_info.sample_mask_footprint != 0) ||
         (stage == Stage::Fragment && runtime_info.depth_bias_in_shader &&
          !info.stores_frag_depth) ||
         (stage == Stage::Fragment && info.uses_quad_shuffles &&
@@ -2271,10 +2336,11 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
             frag_depth = DefineOutput(*this, F32[1], std::nullopt);
             Decorate(frag_depth, spv::Decoration::BuiltIn, spv::BuiltIn::FragDepth);
         }
-        if (info.stores_sample_mask) {
+        if (info.stores_sample_mask || runtime_info.sample_mask_footprint != 0) {
             const Id array_type{TypeArray(U32[1], Const(1U))};
             sample_mask = DefineOutput(*this, array_type, std::nullopt);
             Decorate(sample_mask, spv::Decoration::BuiltIn, spv::BuiltIn::SampleMask);
+            guest_writes_sample_mask = info.stores_sample_mask;
         }
         break;
     default:

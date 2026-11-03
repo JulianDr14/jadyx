@@ -244,6 +244,9 @@ private:
     /// a copy between layers or regions): the source region goes through a scratch texture.
     void BlitWithinImage(ImageView& dst, ImageView& src, const Region2D& dst_region,
                          const Region2D& src_region, Tegra::Engines::Fermi2D::Filter filter);
+    /// A blit with a multisampled source or target. Regions are in pixels of the images.
+    bool BlitMultisample(ImageView& dst, ImageView& src, const Region2D& dst_region,
+                         const Region2D& src_region, Tegra::Engines::Fermi2D::Filter filter);
     void EnsureSelfBlitScratch(DXGI_FORMAT format, u32 width, u32 height);
     void TransitionSelfBlitScratch(D3D12_RESOURCE_STATES next);
     /// Buffer index (0 or 1) of Image::CopyDepthStencilFrom, at least size bytes, in COMMON. Copies
@@ -456,6 +459,11 @@ public:
     /// Snapshot before a draw that samples and writes this depth/stencil attachment. Reuses the
     /// allocation; copies on the GPU without waiting. Null keeps the read-only fallback on failure.
     [[nodiscard]] Image* PrepareDepthFeedback();
+    /// A copy of the image as it is now, in the storage depth feedback uses.
+    [[nodiscard]] Image* TakeSnapshot();
+    /// TakeSnapshot of a render target, read through ImageView::DepthFeedbackHandle. Leaves the
+    /// image in RENDER_TARGET.
+    [[nodiscard]] Image* PrepareColorSnapshot();
     [[nodiscard]] Image* DepthFeedback() const noexcept { return depth_feedback.get(); }
 
     /// This image's texels in another typeless family of the same texel size, for views D3D12
@@ -661,10 +669,15 @@ public:
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE DepthFeedbackHandle(
         Shader::TextureType texture_type) const;
 
-    /// Texture2DArray SRV of the stencil plane of the view's first level and layer, the value
-    /// in every component, for blits that copy stencil. Null when the image has no stencil.
+    /// Texture2DArray SRV (Texture2DMSArray on a multisampled image) of the stencil plane of the
+    /// view's first level and layer, the value in every component, for blits that copy stencil.
+    /// Null when the image has no stencil.
     /// Created on first use.
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE StencilHandle() const;
+
+    /// Texture2DMSArray SRV of the view's first layer, whatever layer that is, for blits from a
+    /// multisampled image. Null for other images. Created on first use.
+    [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE MultisampleHandle() const;
 
     /// A sampler's border color as samples through this view return it (SampledBorderColor).
     [[nodiscard]] std::array<u32, 4> SampledBorder(const std::array<u32, 4>& raw) const noexcept {
@@ -699,6 +712,7 @@ private:
     mutable std::unique_ptr<std::array<D3D12_CPU_DESCRIPTOR_HANDLE, Shader::NUM_TEXTURE_TYPES>>
         depth_feedback_srvs;
     mutable D3D12_CPU_DESCRIPTOR_HANDLE stencil_srv{};
+    mutable D3D12_CPU_DESCRIPTOR_HANDLE multisample_srv{};
     D3D12_CPU_DESCRIPTOR_HANDLE uav{};
     D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
     bool rtv_on_copy{};
@@ -800,6 +814,9 @@ public:
     /// EDEN_SAMPLER_REDUCTION_* the shader must apply: the guest asked for a filtered MIN/MAX
     /// reduction this device cannot create, so the descriptor filters normally.
     [[nodiscard]] u32 EmulatedReduction() const noexcept { return emulated_reduction; }
+    /// Axes (bit 0 u, bit 1 v) that mirror once and clamp to the border: D3D12 has no such mode, so
+    /// the descriptor clamps to the border and the shader mirrors (MirrorBorderPass).
+    [[nodiscard]] u32 MirrorBorderAxes() const noexcept { return mirror_border_axes; }
 
 private:
     TextureCacheRuntime* runtime{};
@@ -810,6 +827,7 @@ private:
     std::array<u64, 4> guest_raw{}; ///< Original TSC words: integer border bits, diagnostics.
     u32 emulated_reduction{}; ///< EDEN_SAMPLER_REDUCTION_*
     u32 emulated_filter{};    ///< EDEN_SAMPLER_FILTER_* bits, with emulated_reduction only
+    u32 mirror_border_axes{};
 };
 
 class Framebuffer {
@@ -835,6 +853,9 @@ public:
     [[nodiscard]] SlotVector<Image>* Images() const noexcept { return images; }
     [[nodiscard]] ImageId ColorImageId(size_t index) const noexcept {
         return index < NUM_RT ? color_images[index] : ImageId{};
+    }
+    [[nodiscard]] VideoCommon::ImageViewId ColorViewId(size_t index) const noexcept {
+        return color_views[index];
     }
     [[nodiscard]] bool HasStencil() const noexcept { return has_stencil; }
     /// RTV format of render target index (UNKNOWN when empty) and the DSV format.
@@ -874,6 +895,7 @@ public:
 private:
     std::array<D3D12_CPU_DESCRIPTOR_HANDLE, NUM_RT> colors{};
     std::array<ImageId, NUM_RT> color_images{};
+    std::array<VideoCommon::ImageViewId, NUM_RT> color_views{};
     std::array<DXGI_FORMAT, NUM_RT> color_formats{};
     std::array<VideoCommon::SubresourceBase, NUM_RT> color_bases{};
     std::array<u32, NUM_RT> color_layers{};

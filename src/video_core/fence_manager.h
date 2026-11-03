@@ -186,6 +186,11 @@ private:
             delay_fence = reason != Counter::SyncpointsEarly;
             VideoCore::Perf::Add(reason, 1);
         }
+        // A counter's result reaches guest memory when the fence releases, so what tells the guest
+        // to read it waits for that under any fence setting.
+        if (flush_sources.query) {
+            delay_fence = true;
+        }
         if (delay_fence) {
             uncommitted_operations.emplace_back(std::move(func));
         }

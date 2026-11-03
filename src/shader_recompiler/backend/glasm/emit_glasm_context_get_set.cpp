@@ -442,6 +442,10 @@ void EmitResolutionDownFactor(EmitContext& ctx, IR::Inst& inst) {
     ctx.Add("MOV.F {}.x,scaling[0].z;", inst);
 }
 
+void EmitStageConstant(EmitContext&, IR::Inst&, u32) {
+    throw NotImplementedException("GLASM instruction");
+}
+
 void EmitRenderArea(EmitContext& ctx, IR::Inst& inst) {
     ctx.Add("MOV.F {},render_area[0];", inst);
 }

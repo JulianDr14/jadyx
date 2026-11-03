@@ -71,7 +71,8 @@ bool StageBindings::operator==(const StageBindings& other) const {
            texture_descriptors == other.texture_descriptors &&
            image_descriptors == other.image_descriptors && loads.mask == other.loads.mask &&
            stores.mask == other.stores.mask && interpolation == other.interpolation &&
-           uses_render_area == other.uses_render_area;
+           uses_render_area == other.uses_render_area &&
+           uses_destination_read == other.uses_destination_read;
 }
 
 std::shared_ptr<const StageBindings> InternStage(const Shader::Info& info) {
@@ -91,6 +92,7 @@ std::shared_ptr<const StageBindings> InternStage(const Shader::Info& info) {
         }
     }
     bindings->uses_render_area = info.uses_render_area;
+    bindings->uses_destination_read = info.uses_destination_read;
     bindings->num_texture_views = Shader::NumDescriptors(info.texture_descriptors) +
                                   Shader::NumDescriptors(info.image_descriptors);
     bindings->num_buffer_views = Shader::NumDescriptors(info.texture_buffer_descriptors) +
