@@ -341,7 +341,7 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     if (config.airplane_mode) Settings::values.airplane_mode.SetValue(true); // else Settings > System
     if (config.upscaling) ApplyUpscaling(*config.upscaling); // before the renderer exists
     D3D12::SetAsyncRecording(config.async_record);
-    D3D12::SetDescriptorDeferral(config.descriptor_defer);
+    D3D12::SetDescriptorDeferral(config.descriptor_defer && config.async_record);
     D3D12::SetPresentQueue(config.present_queue);
     D3D12::SetBorderColorMode(static_cast<D3D12::BorderColorMode>(config.border_color));
     D3D12::SetDepthBiasRounding(config.depth_bias_round);
