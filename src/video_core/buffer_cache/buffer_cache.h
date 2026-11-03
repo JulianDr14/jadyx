@@ -861,6 +861,9 @@ void BufferCache<P>::BindHostIndexBuffer() {
             buffer.ImmediateUpload(0, draw_state.inline_index_draw_indexes);
         }
     }
+    if constexpr (requires { runtime.SetInlineIndices(draw_state.inline_index_draw_indexes); }) {
+        runtime.SetInlineIndices(draw_state.inline_index_draw_indexes);
+    }
     if constexpr (HAS_FULL_INDEX_AND_PRIMITIVE_SUPPORT) {
         const u32 new_offset = offset + draw_state.index_buffer.first * u32(draw_state.index_buffer.FormatSizeInBytes());
         runtime.BindIndexBuffer(buffer, new_offset, size);
