@@ -42,7 +42,7 @@ Gates that need a capture or a game dump are left out. To add a gate, add its na
 
 ### scenes
 
-A homebrew program (`payload/`, deko3d) runs about 200 small scenes through the whole emulator:
+A homebrew program (`payload/`, deko3d) runs about 470 small scenes through the whole emulator:
 guest command processing, the texture and buffer caches, shader translation and the D3D12 backend.
 None of the gates covers that path end to end.
 
@@ -52,12 +52,12 @@ emulator does today. The scenes cover:
 
 | File | What |
 |---|---|
-| `scenes_clears.cpp` | clears and draws into every colour format, masked and scissored clears, two targets, odd and large sizes |
+| `scenes_clears.cpp` | clears and draws into every colour format, masked and scissored clears, integers past 2^24, two targets, odd and large sizes |
 | `scenes_blend.cpp` | blend factors, separate alpha, dual source, sRGB and float targets, logic op, write masks, MRT, alpha test |
-| `scenes_depth.cpp` | depth compare and formats, sampled depth, shadow samplers, clamp, bias, bounds, viewport depth range, stencil ops, compares and masks |
+| `scenes_depth.cpp` | depth compare and formats, sampled depth (also while a draw writes it, with and without MSAA), multisampled depth blits, shadow samplers, clamp, bias, bounds, viewport depth range, stencil ops, compares and masks |
 | `scenes_raster.cpp` | culling, front face, rasterizer discard, polygon modes, scissors, viewports and swizzles, clip distances, points, lines, stipple |
 | `scenes_geometry.cpp` | topologies (quads, fans, polygons, adjacency), index sizes, primitive restart, instancing, indirect draws, vertex formats, CPU overwrites of vertex and index buffers, tessellation, geometry shaders |
-| `scenes_textures.cpp` | BC, ASTC and ETC2 formats, texture types, swizzles and views, wrap modes, filtering, mips and LOD, fetch, offsets, gather, multisampling and resolves, render to texture |
+| `scenes_textures.cpp` | BC, ASTC and ETC2 formats, texture types, swizzles and views, wrap modes, filtering, mips and LOD, fetch, offsets, gather, multisampling, sample mask per position, resolves (whole, partial, scaled, integer) and blits into MSAA, render to texture |
 | `scenes_shaders.cpp` | compute (indirect, atomics, shared memory, images), integer and float maths, control flow, uniform and storage buffers, discard, derivatives, interpolation, provoking vertex |
 | `scenes_transfers.cpp` | blits, image and buffer copies, uploads that replace a texture, push data, query reports, and the GL conventions (lower-left origin, -1..1 depth) |
 
@@ -124,24 +124,41 @@ used to check them. A scene that fails in the first baseline may be an emulator 
 expects the wrong thing. Either way the baseline records it as a known failure, and the suite then
 reports when it changes.
 
-Failures the baseline records, by cause (2026-11-01):
+The baseline records no failures (2026-11-02): all 473 scenes pass on PC.
 
-| Cause | Scenes |
-|---|---|
-| The default GPU fence (Immediate) signals syncpoints before a query result reaches guest memory; with Safe (Settings > Graphics, or `gpu_fence=safe`) they pass | `report_primitives`, `report_samples_passed` |
-| deko3d lays out 6 block rows with a GOB block height of 1, and the texture cache's inherited rule shrinks level 0 to height 0 when it reads them back; the rule is shared with every game, so it stays | `astc_4x4`, `astc_5x4`, `astc_srgb_4x4`, `astc_srgb_5x4` |
-| A domain shader without a hull shader: D3D12 needs a synthesized hull shader | `tess_quads_fixed_levels` |
-| `imageLoad` compiles to a raw 32-bit load on an RGBA8 image, and the D3D12 UAV keeps the UNORM format, so the load returns float bits; it needs relaxed format casting or a repack per binding | `image_read_fragment` |
-| D3D12 has one blend constant for color and alpha | `blend_src_Const*`, `blend_src_InvConst*` |
-| D3D12 logic ops only work on UINT render targets | `logic_op` |
-| D3D12 has one stencil reference for both faces | `stencil_separate_faces` |
-| D3D12 has no mirror-once mode that clamps to the border | `wrap_mirror_clamp_to_border` |
-| D3D12 has no last provoking vertex | `provoking_vertex_last` |
-| D3D12 only restarts strips at the all-ones index | `index_restart_custom_value` |
-| D3D12 has no point size, wide lines, stipple, point fill mode, rectangle fill or viewport swizzle | `points_*`, `line_width`, `line_stipple`, `polygon_stipple`, `polygon_mode_point`, `fill_rectangle`, `viewport_swizzle_xy` |
+These pass on PC, within limits that no scene covers:
+
+| Emulation | Scenes | Not covered |
+|---|---|---|
+| A fence with a pending query result waits for the GPU, whatever the GPU fence setting | `report_primitives`, `report_samples_passed` | Its cost on the console is not measured |
+| The inherited GOB height rule keeps the height of a single-level image | `astc_4x4`, `astc_5x4`, `astc_srgb_4x4`, `astc_srgb_5x4` | The rule is shared with every game; multi-level images stay as they were |
+| A generated hull shader passes through what the domain shader reads, with the levels from the registers | `tess_quads_fixed_levels` | Whether the console's tessellator draws at all. D3D12 on PC rejected a hull shader with outputs and a domain shader without inputs, with no debug layer message, so a guest control program whose outputs the evaluation program never reads should fail the same way (deduced, no scene) |
+| Raw `imageLoad` on RGBA8 is repacked in the shader | `image_read_fragment` | Other formats, image buffers and raw writes; the format is read once, at compile time |
+| Constant blend factors are applied in the fragment shader | `blend_src_Const*`, `blend_src_InvConst*` | Destination factors of both kinds across targets of one pipeline; a destination factor reading the source color sees it scaled; pipelines without a fragment shader |
+| Faces with different stencil references are drawn apart, each culling the other | `stencil_separate_faces` | Geometry, tessellation or stream output (front reference, logged); primitive counters count double; the order of front and back within a draw changes; masks come from the front face |
+| Non-all-ones restart values rewrite the index buffer | `index_restart_custom_value` | Indexed indirect draws |
+| A generated geometry shader expands points to quads | `points_fixed_size`, `points_size_from_shader`, `points_coord` | Guest geometry or tessellation; a vertex shader writing layer or viewport index; stream output; clip distances; the point coord origin register; viewports other than 0; indexed writes of the point size |
+| A generated geometry shader turns lines into quads, or triangles into points or a rectangle | `line_width`, `polygon_mode_point`, `fill_rectangle` | Clip distances, layer, stream output, guest geometry or tessellation; polygon points ignore the guest cull and a size written by the vertex shader; `FillAll` is treated as the bounding box and is not verified |
+| A generated geometry shader rotates the vertices for the last provoking vertex | `provoking_vertex_last` | The same stages; rewritten quad topologies; the rotation is not combined with the lines shader |
+| Stipple patterns discard in the fragment shader | `line_stipple`, `polygon_stipple` | A line strip restarts its counter per segment; the bit order within a polygon row is inferred, only rows are verified |
+| The viewport swizzle is applied in the last stage writing the position | `viewport_swizzle_xy` | Viewports other than 0 |
+| The fragment shader mirrors the coordinate and applies the border | `wrap_mirror_clamp_to_border` | Vertex shader textures; descriptor indices of 24 or more; the P axis of 3D textures; bilinear filtering near u=0 blends with the border; compute learns only for its next dispatch |
+| The fragment shader computes the logic op from a copy of the target | `logic_op` | Render targets other than 0; MSAA; integer, sRGB, signed and float targets; overlapping fragments of one draw read the state before it; the copy per draw is not measured |
+| A draw sampling its colour target reads a copy made before it | `color_target_sampled_by_its_draw` | Copies the whole image per aliasing draw; not measured |
+| The CPU widens `A5B5G5R1_UNORM` and `G4R4_UNORM` to RGBA8 and RG8 on upload | `format_a5b5g5r1_unorm`, `format_g4r4_unorm` | Render targets and GPU copies in the original layout |
+| The vertex shader finishes BGRA and 32-bit normalized attributes | `attrib_4x8_uscaled_bgra`, `attrib_4x8_uint_bgra`, `attrib_1x32_unorm`, `attrib_2x32_snorm` | 10:10:10:2 float, sint and sscaled, 8-bit float and non-float B10G11R11 still fall back to RGBA32F |
+
+Fixed with no scene reaching them: copies within one image (from a snapshot), `R16G16B16A16` integer
+copies to 64-bit formats, conservative rasterization when the device has it, rewritten inline index
+draws, and the MIN/MAX retry on indirect draws and compute.
+
+The generated geometry shaders, the copies per draw and the framebuffer key on descriptor replay are
+not measured on the console. Nothing here has been run on it.
 
 Scenes that pass only because they expect what the guest really does:
 
+- `ms_sample_mask_per_position`: deko3d writes one mask to the four registers, so the scene rewrites them in its recorded command.
+- `ms_resolve_uint`, `ms_resolve_sint`: deko3d's 2D engine names integer images by a float format and filters them. All samples are equal in these scenes; a D3D12 integer resolve keeps sample 0 where the guest would average those bits.
 - `fragment_derivatives`: uam multiplies what `dFdy` reads by a Y factor from the shader's own constants and leaves it 0 in the dksh, so GLSL `dFdy` is 0 in these payloads.
 - `blit_stretch_linear`: deko3d gives the 2D engine a surface as wide as the GOB, so the scene does not read past the center of the last texel of the image.
 
