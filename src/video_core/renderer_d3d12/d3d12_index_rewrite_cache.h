@@ -28,6 +28,8 @@ public:
         std::uint32_t count{};
         std::uint8_t format{};      ///< guest index size in bytes, 0 for generated lists
         std::uint8_t topology{};
+        std::uint32_t restart{};    ///< guest restart index, when has_restart
+        bool has_restart{};
         bool operator==(const Key&) const = default;
     };
 
@@ -117,7 +119,8 @@ private:
         std::size_t operator()(const Key& key) const noexcept {
             // Offsets are what usually differ: mix them with a multiply, then fold in the rest.
             std::uint64_t h = key.buffer_id * 0x9E3779B97F4A7C15ull ^ key.offset;
-            h ^= (std::uint64_t{key.count} << 16) ^ (std::uint64_t{key.format} << 8) ^ key.topology;
+            h ^= (std::uint64_t{key.count} << 16) ^ (std::uint64_t{key.format} << 8) ^ key.topology ^
+                 (std::uint64_t{key.restart} << 32);
             h *= 0xBF58476D1CE4E5B9ull;
             return static_cast<std::size_t>(h ^ (h >> 31));
         }
