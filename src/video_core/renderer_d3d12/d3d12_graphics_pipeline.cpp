@@ -89,33 +89,33 @@ void SetTextureReplay(TextureReplayMode mode) {
 
 constexpr size_t FRAGMENT_STAGE = 4;
 
-/// Whether a texture view covers a subresource a render target of the framebuffer writes.
-[[nodiscard]] bool OverlapsColorTarget(const Framebuffer& framebuffer, const ImageView& view) {
-    for (size_t index = 0; index < NUM_RT; ++index) {
-        if (framebuffer.ColorImageId(index) != view.image_id ||
-            view.image_id == VideoCommon::ImageId{}) {
-            continue;
-        }
-        const VideoCommon::SubresourceBase base = framebuffer.ColorBase(index);
-        const auto& range = view.range;
-        if (base.level >= range.base.level &&
-            base.level < range.base.level + range.extent.levels &&
-            base.layer < range.base.layer + range.extent.layers &&
-            base.layer + static_cast<s32>(framebuffer.ColorLayers(index)) > range.base.layer) {
-            return true;
-        }
-    }
-    return false;
-}
-
 /// The view's image as it is now, in a copy a draw can read while it writes the image.
+/// The emulated logic op reads its destination through it.
 [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE ColorSnapshotHandle(const ImageView& view,
                                                               Shader::TextureType type) {
     Image* const source = view.SourceImage();
-    if (source && source->PrepareColorSnapshot(view.ReadsReinterpretedCopy())) {
-        return view.DepthFeedbackHandle(type);
+    if (!source) {
+        return view.Handle(type);
     }
-    return view.Handle(type);
+    using SnapshotCopy = Image::SnapshotCopy;
+    const SnapshotCopy copy = source->PrepareColorSnapshot(
+        view.ReadsReinterpretedCopy(), view.range.base.level, view.range.extent.levels);
+    switch (copy) {
+    case SnapshotCopy::Failed:
+        return view.Handle(type);
+    case SnapshotCopy::Reused:
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::SnapshotReuses, 1);
+        break;
+    case SnapshotCopy::Partial:
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::LogicOpCopies, 1);
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::SnapshotLevelCopies, 1);
+        break;
+    case SnapshotCopy::Full:
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::LogicOpCopies, 1);
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::LogicOpCopyBytes, source->guest_size_bytes);
+        break;
+    }
+    return view.DepthFeedbackHandle(type);
 }
 
 struct GraphicsPipeline::TextureReplayState {
@@ -981,7 +981,6 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     u8 texture_unemulated = 0;
     std::array<u32, 2> mirror_border_masks{};
     bool aliased_depth = false;
-    bool aliased_color = false;
     size_t texture_index = 0;
 
     u32 stage_binding = 0;
@@ -1016,18 +1015,14 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                 const bool aliases_depth = depth_image != VideoCommon::ImageId{} &&
                                            image_view.image_id == depth_image;
                 aliased_depth |= aliases_depth;
-                // Sampling what the draw writes: it reads the target as it was before the draw.
-                const bool aliases_color =
-                    !aliases_depth && OverlapsColorTarget(*framebuffer, image_view);
-                aliased_color |= aliases_color;
                 if (aliases_depth && writable_depth && !depth_feedback_attempted) {
                     depth_feedback_attempted = true;
                     depth_feedback_ready = image_view.SourceImage()->PrepareDepthFeedback() != nullptr;
                 }
                 D3D12_CPU_DESCRIPTOR_HANDLE handle;
-                if (aliases_color) {
-                    handle = ColorSnapshotHandle(image_view, desc.type);
-                } else if (aliases_depth && depth_feedback_ready) {
+                // A color target the draw also samples is read in place, as upstream does: the
+                // guest only orders such reads after its writes across a texture barrier.
+                if (aliases_depth && depth_feedback_ready) {
                     handle = image_view.DepthFeedbackHandle(desc.type);
                 } else {
                     image_view.PrepareRead(desc.type);
@@ -1056,9 +1051,7 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                         mirror_border_masks[1] |= (axes & 2) != 0 ? bit : 0;
                     }
                 }
-                if (!aliases_color) {
-                    image_transitions.emplace_back(view_id, false);
-                }
+                image_transitions.emplace_back(view_id, false);
                 if (out.trace_all_views) out.trace_all_views->push_back(
                     {view_id, false, desc.type, aliases_depth && depth_feedback_ready});
                 if (out.trace_views) {
@@ -1175,7 +1168,7 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                 }
                 state.key.valid = false;
             }
-        } else if (aliased_depth || aliased_color ||
+        } else if (aliased_depth ||
                    texture_cache.CurrentGraphicsBindingStamp() != replay_stamp) {
             // Feedback depends on its snapshot; changed images may resolve to new views.
             state.key.valid = false;

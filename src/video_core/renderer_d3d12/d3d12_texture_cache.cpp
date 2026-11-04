@@ -858,18 +858,38 @@ Image& Image::operator=(Image&& other) noexcept {
     return *this;
 }
 
-bool Image::PrepareColorSnapshot(bool reinterpreted_view) {
+Image::SnapshotCopy Image::PrepareColorSnapshot(bool reinterpreted_view, s32 first_level,
+                                                s32 num_levels) {
     if (!reinterpreted_view) {
-        if (!TakeSnapshot()) {
-            return false;
+        const s32 begin = std::clamp(first_level, 0, 63);
+        const s32 end = std::clamp(first_level + std::max(num_levels, 1), begin + 1, 64);
+        const u64 below_end = end >= 64 ? ~u64{} : (u64{1} << end) - 1;
+        const u64 wanted = below_end & ~((u64{1} << begin) - 1);
+        const u64 stale_before = depth_feedback_stale;
+        SnapshotCopy copy;
+        if (!RefreshSnapshot(wanted, &copy)) {
+            return SnapshotCopy::Failed;
         }
-        Transition(D3D12_RESOURCE_STATE_RENDER_TARGET);
-        return true;
+        if (copy != SnapshotCopy::Reused) {
+            static std::atomic<u32> logged{};
+            if (logged.fetch_add(1, std::memory_order_relaxed) < 24) {
+                LOG_INFO(Render,
+                         "D3D12: color snapshot {} {}x{}x{}, {} levels, {} layers, {} samples; "
+                         "view levels {}+{}; stale {:#x}; {}",
+                         info.format, info.size.width, info.size.height, info.size.depth,
+                         info.resources.levels, info.resources.layers, info.num_samples,
+                         first_level, num_levels, stale_before,
+                         copy == SnapshotCopy::Full ? "full copy" : "level copy");
+            }
+        }
+        // Back to the target state without outdating the snapshot: nothing wrote the image.
+        TransitionTarget(-1, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr);
+        return copy;
     }
     // The view's SRV is in the reinterpreted copy's family, which a copy of the image (in the
     // image's own) does not take: the snapshot is of the copy instead.
     if (!runtime || !reinterpreted) {
-        return false;
+        return SnapshotCopy::Failed;
     }
     constexpr D3D12_RESOURCE_STATES READ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
@@ -885,7 +905,7 @@ bool Image::PrepareColorSnapshot(bool reinterpreted_view) {
                 &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                 IID_PPV_ARGS(&reinterpreted_snapshot)))) {
             reinterpreted_snapshot.Reset();
-            return false;
+            return SnapshotCopy::Failed;
         }
     }
     RefreshReinterpreted();
@@ -893,10 +913,11 @@ bool Image::PrepareColorSnapshot(bool reinterpreted_view) {
     commands->CopyResource(reinterpreted_snapshot.Get(), reinterpreted.Get());
     TransitionBuffer(commands, reinterpreted_snapshot.Get(), D3D12_RESOURCE_STATE_COPY_DEST, READ);
     Transition(D3D12_RESOURCE_STATE_RENDER_TARGET);
-    return true;
+    return SnapshotCopy::Full;
 }
 
-Image* Image::TakeSnapshot() {
+Image* Image::RefreshSnapshot(u64 wanted, SnapshotCopy* copy) {
+    *copy = SnapshotCopy::Failed;
     if (depth_feedback_failed || !runtime || !resource) {
         return nullptr;
     }
@@ -907,44 +928,32 @@ Image* Image::TakeSnapshot() {
             depth_feedback_failed = true;
             return nullptr;
         }
+        // A new allocation holds nothing of the image yet.
+        depth_feedback_stale = ~u64{};
     }
-    Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
-    depth_feedback->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
-    runtime->scheduler.CommandList()->CopyResource(depth_feedback->Handle(), Handle());
-    depth_feedback->Transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
-                               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    return depth_feedback.get();
-}
-
-Image* Image::PrepareDepthFeedback() {
-    if (depth_feedback_failed || !runtime || !resource) {
-        return nullptr;
-    }
-    if (!depth_feedback) {
-        depth_feedback = std::make_unique<Image>(*runtime, info, 0, 0);
-        if (!depth_feedback->Handle()) {
-            depth_feedback.reset();
-            depth_feedback_failed = true;
-            return nullptr;
-        }
-        LOG_INFO(Render, "D3D12: depth feedback snapshot allocated ({} {}x{}, {} samples)",
-                 info.format, info.size.width, info.size.height, info.num_samples);
+    if (reinterpreted_ahead || needs_placed_init) {
+        // The transition to COPY_SOURCE rewrites the whole image before the copy.
+        depth_feedback_stale = ~u64{};
     }
     // The direct queue orders earlier draws, this copy and the next draw; no CPU fence is needed.
     const s32 levels = info.resources.levels;
     const u64 all_levels = levels >= 64 ? ~u64{} : (u64{1} << levels) - 1;
-    const u64 stale = depth_feedback_stale & all_levels;
+    const u64 stale = depth_feedback_stale & wanted & all_levels;
     if (stale == 0) {
+        *copy = SnapshotCopy::Reused;
         return depth_feedback.get();
     }
     Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
     depth_feedback->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
     auto* const commands = runtime->scheduler.CommandList();
     if (stale == all_levels || info.num_samples > 1) {
-        // CopyResource preserves every mip, layer and both depth/stencil planes, including MSAA.
+        // CopyResource preserves every mip, layer and both depth/stencil planes, including MSAA,
+        // whose levels copy only as a whole resource.
         commands->CopyResource(depth_feedback->Handle(), Handle());
+        depth_feedback_stale = 0;
+        *copy = SnapshotCopy::Full;
     } else {
-        // A depth pyramid rendered level by level: only the levels drawn since the last
+        // A pyramid rendered level by level: only the wanted levels drawn since the last
         // snapshot, each copied whole as depth-stencil subresources must be.
         const s32 layers = info.type == ImageType::e3D ? 1 : info.resources.layers;
         const u32 planes = IsDepthStencilPlanar() ? 2 : 1;
@@ -966,21 +975,64 @@ Image* Image::PrepareDepthFeedback() {
                 }
             }
         }
+        depth_feedback_stale &= ~stale;
+        *copy = SnapshotCopy::Partial;
     }
     depth_feedback->Transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    Transition(D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    depth_feedback_stale = 0;
-    ++runtime->depth_feedback_copies;
     return depth_feedback.get();
 }
 
-void Image::TransitionDepthTarget(s32 level, D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
+Image* Image::TakeSnapshot() {
+    SnapshotCopy copy;
+    return RefreshSnapshot(~u64{}, &copy);
+}
+
+Image* Image::PrepareDepthFeedback() {
+    const bool allocated = depth_feedback != nullptr;
+    SnapshotCopy copy;
+    Image* const snapshot = RefreshSnapshot(~u64{}, &copy);
+    if (!snapshot) {
+        return nullptr;
+    }
+    if (!allocated) {
+        LOG_INFO(Render, "D3D12: depth feedback snapshot allocated ({} {}x{}, {} samples)",
+                 info.format, info.size.width, info.size.height, info.num_samples);
+    }
+    if (copy == SnapshotCopy::Reused) {
+        return snapshot;
+    }
+    TransitionTarget(-1, D3D12_RESOURCE_STATE_DEPTH_WRITE, nullptr);
+    ++runtime->depth_feedback_copies;
+    VideoCore::Perf::Add(VideoCore::Perf::Counter::DepthFeedbackCopies, 1);
+    return snapshot;
+}
+
+void Image::TransitionTarget(s32 level, D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
     const u64 stale = depth_feedback_stale;
+    // Writing back the reinterpreted copy or initializing a placed resource rewrites every level.
+    const bool rewrites = reinterpreted_ahead || needs_placed_init;
     Transition(next, batch);
-    if ((next & D3D12_RESOURCE_STATE_DEPTH_WRITE) != 0 && level >= 0 && level < 64) {
+    if (rewrites) {
+        return;
+    }
+    constexpr D3D12_RESOURCE_STATES TARGET_WRITES =
+        D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    if ((next & TARGET_WRITES) == 0 || level == -1) {
+        // level -1: the caller only returns the image to its target state after a snapshot;
+        // the draw's own transition marks the level it writes.
+        depth_feedback_stale = stale;
+    } else if (level >= 0 && level < 64) {
         depth_feedback_stale = stale | (u64{1} << level);
     }
+}
+
+void Image::TransitionDepthTarget(s32 level, D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
+    TransitionTarget(level, next, batch);
+}
+
+void Image::TransitionColorTarget(s32 level, BarrierBatch* batch) {
+    TransitionTarget(level, D3D12_RESOURCE_STATE_RENDER_TARGET, batch);
 }
 
 u32 Image::Subresource(s32 level, s32 layer, u32 plane) const noexcept {
@@ -1000,7 +1052,7 @@ void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
         D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_COPY_DEST |
         D3D12_RESOURCE_STATE_RESOLVE_DEST;
     if ((next & WRITE_STATES) != 0 || reinterpreted_ahead || needs_placed_init) {
-        // Any write but a depth target's (TransitionDepthTarget) outdates the whole snapshot.
+        // Any write but a target's (TransitionTarget) outdates the whole snapshot.
         depth_feedback_stale = ~u64{};
     }
     if (reinterpreted_ahead || needs_placed_init) {

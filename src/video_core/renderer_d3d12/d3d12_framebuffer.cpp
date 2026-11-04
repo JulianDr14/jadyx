@@ -207,11 +207,12 @@ Framebuffer::Framebuffer(TextureCacheRuntime& runtime, std::span<ImageView*, NUM
     }
 }
 
-void Framebuffer::PrepareAttachments(Scheduler& scheduler, bool depth_sampled) const {
+void Framebuffer::PrepareAttachments(Scheduler& scheduler, bool depth_sampled,
+                                     u8 color_targets) const {
     if (!images) return;
     BarrierBatch barriers{scheduler};
     for (size_t index = 0; index < num_colors; ++index) {
-        if (color_images[index] == ImageId{}) {
+        if (color_images[index] == ImageId{} || ((color_targets >> index) & 1) == 0) {
             continue;
         }
         Image& image = (*images)[color_images[index]];
@@ -220,7 +221,7 @@ void Framebuffer::PrepareAttachments(Scheduler& scheduler, bool depth_sampled) c
             barriers.Flush();
             image.RenderToReinterpreted();
         } else {
-            image.Transition(D3D12_RESOURCE_STATE_RENDER_TARGET, &barriers);
+            image.TransitionColorTarget(color_bases[index].level, &barriers);
         }
     }
     if (depth_image != ImageId{}) {

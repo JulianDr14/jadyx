@@ -147,7 +147,8 @@ void RasterizerD3D12::DrawIndirect() {
         return;
     }
     const Framebuffer* const framebuffer = texture_cache.GetFramebuffer();
-    framebuffer->PrepareAttachments(scheduler, bindings.depth_sampled);
+    framebuffer->PrepareAttachments(scheduler, bindings.depth_sampled,
+                                    pipeline->BoundColorTargets());
     // The GPU time includes the argument copies below: two per draw.
     hunt.Target(framebuffer);
     hunt.Geometry(static_cast<u32>(params.max_draw_counts), 0,
@@ -368,7 +369,8 @@ void RasterizerD3D12::DrawByteCount(const IndirectParams& params) {
         return;
     }
     const Framebuffer* const framebuffer = texture_cache.GetFramebuffer();
-    framebuffer->PrepareAttachments(scheduler, bindings.depth_sampled);
+    framebuffer->PrepareAttachments(scheduler, bindings.depth_sampled,
+                                    pipeline->BoundColorTargets());
 
     std::array<D3D12_VIEWPORT, Maxwell::NumViewports> viewports{};
     const ViewportState viewport_state = ComputeViewports(viewports);

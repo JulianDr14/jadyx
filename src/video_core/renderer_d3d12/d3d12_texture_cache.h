@@ -461,11 +461,17 @@ public:
     [[nodiscard]] Image* PrepareDepthFeedback();
     /// A copy of the image as it is now, in the storage depth feedback uses.
     [[nodiscard]] Image* TakeSnapshot();
-    /// A copy of a render target as a view of it reads it now, read through
-    /// ImageView::DepthFeedbackHandle: TakeSnapshot, or for a view of the reinterpreted copy a
-    /// copy of that, whose format the view's SRV takes. False when it cannot be made. Leaves the
-    /// image in RENDER_TARGET.
-    [[nodiscard]] bool PrepareColorSnapshot(bool reinterpreted_view);
+    /// What bringing the snapshot up to date took.
+    enum class SnapshotCopy : u8 { Failed, Reused, Partial, Full };
+    /// A copy of a render target as a view of levels [first_level, first_level + num_levels)
+    /// reads it now, read through ImageView::DepthFeedbackHandle: the shared snapshot with those
+    /// levels brought up to date, or for a view of the reinterpreted copy a copy of that, whose
+    /// format the view's SRV takes. Leaves the image in RENDER_TARGET.
+    [[nodiscard]] SnapshotCopy PrepareColorSnapshot(bool reinterpreted_view, s32 first_level,
+                                                    s32 num_levels);
+    /// Transition for binding level as a color target: the snapshot of the other levels stays
+    /// valid.
+    void TransitionColorTarget(s32 level, BarrierBatch* batch);
     /// The copy PrepareColorSnapshot(true) takes; null before the first.
     [[nodiscard]] ID3D12Resource* ReinterpretedSnapshot() const noexcept {
         return reinterpreted_snapshot.Get();
@@ -578,6 +584,13 @@ private:
     BcBlockCoverage guest_blocks_coverage;
     u64 guest_blocks_version{};
     bool guest_blocks_upload_pending{};
+    /// Allocates the snapshot on first use and copies the stale levels among wanted into it
+    /// (the whole resource when all are stale or it is multisampled); clears their stale bits.
+    /// Leaves the image in COPY_SOURCE when it copied.
+    [[nodiscard]] Image* RefreshSnapshot(u64 wanted, SnapshotCopy* copy);
+    /// Transition for binding level as a target: marks only that level stale, unless the
+    /// transition itself rewrites the whole image.
+    void TransitionTarget(s32 level, D3D12_RESOURCE_STATES next, BarrierBatch* batch);
     std::unique_ptr<Image> depth_feedback;
     bool depth_feedback_failed{};
     /// Levels written since the depth feedback snapshot, one bit each.
@@ -899,7 +912,10 @@ public:
     /// Transitions the attachments to RENDER_TARGET and DEPTH_WRITE, or the depth buffer to
     /// DEPTH_SAMPLED_STATE when the draw also samples it (bind DepthTarget(true) then), with one
     /// ResourceBarrier call for all of them.
-    void PrepareAttachments(Scheduler& scheduler, bool depth_sampled = false) const;
+    /// color_targets: the color attachments the pipeline binds; the others are left as they
+    /// are, since the draw neither writes nor binds them.
+    void PrepareAttachments(Scheduler& scheduler, bool depth_sampled = false,
+                            u8 color_targets = 0xFF) const;
 
 private:
     std::array<D3D12_CPU_DESCRIPTOR_HANDLE, NUM_RT> colors{};
