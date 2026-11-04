@@ -144,7 +144,6 @@ These pass on PC, within limits that no scene covers:
 | The viewport swizzle is applied in the last stage writing the position | `viewport_swizzle_xy` | Viewports other than 0 |
 | The fragment shader mirrors the coordinate and applies the border | `wrap_mirror_clamp_to_border` | Vertex shader textures; descriptor indices of 24 or more; the P axis of 3D textures; bilinear filtering near u=0 blends with the border; compute learns only for its next dispatch |
 | The fragment shader computes the logic op from a copy of the target | `logic_op` | Render targets other than 0; MSAA; integer, sRGB, signed and float targets; overlapping fragments of one draw read the state before it; the copy per draw is not measured |
-| A draw sampling its colour target reads a copy made before it | `color_target_sampled_by_its_draw` | Copies the whole image per aliasing draw; not measured |
 | The CPU widens `A5B5G5R1_UNORM` and `G4R4_UNORM` to RGBA8 and RG8 on upload | `format_a5b5g5r1_unorm`, `format_g4r4_unorm` | Render targets and GPU copies in the original layout |
 | The vertex shader finishes BGRA and 32-bit normalized attributes | `attrib_4x8_uscaled_bgra`, `attrib_4x8_uint_bgra`, `attrib_1x32_unorm`, `attrib_2x32_snorm` | 10:10:10:2 float, sint and sscaled, 8-bit float and non-float B10G11R11 still fall back to RGBA32F |
 

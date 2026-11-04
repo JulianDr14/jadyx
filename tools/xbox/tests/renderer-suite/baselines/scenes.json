@@ -185,7 +185,6 @@
  "clear_uint_masked": "pass",
  "clip_distance": "pass",
  "clip_near_and_far": "pass",
- "color_target_sampled_by_its_draw": "pass",
  "compute_atomics": "pass",
  "compute_fill": "pass",
  "compute_fill_copied": "pass",

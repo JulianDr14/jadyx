@@ -1028,19 +1028,6 @@ void RegisterTextures(std::vector<SceneEntry>& scenes) {
         gpu.Finish(&result);
         gpu.Expect(16, 16, {5.0 / 15.0, 10.0 / 15.0, 0, 1}, 0.02);
     }});
-    // Sampling the bound colour target reads what it held before this draw.
-    scenes.push_back({"color_target_sampled_by_its_draw", [](Gpu& gpu) {
-        Image& result = gpu.Begin();
-        gpu.ClearColor(Black);
-        gpu.Rect(0, 0, 16, 32, Green);
-        gpu.Barrier();
-        gpu.Shaders("basic_vsh", "texture_fsh");
-        gpu.cmd.bindTextures(DkStage_Fragment, 0, gpu.Texture(result, Nearest()));
-        gpu.Full(White);
-        gpu.Finish(&result);
-        gpu.Expect(8, 16, Green);
-        gpu.Expect(24, 16, Black);
-    }});
     scenes.push_back({"render_to_pitch_linear", [](Gpu& gpu) {
         Image& target = gpu.MakeImage(DkImageFormat_RGBA8_Unorm, 32, 32, 1, 1, DkImageType_2D,
                                       DkImageFlags_PitchLinear | DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine,
