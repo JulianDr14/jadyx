@@ -1,0 +1,64 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Guest counter reports summed where the D3D12 renderer resolved its host queries, without the
+// CPU waiting for them. A guest counter runs over many host query slots (each paused by a report,
+// a submit or a disable); every report is the sum of the slots since the last reset, plus the
+// carry from slots summed in earlier batches when no reset came in between.
+//
+// Each entry sums its own slots, one thread per entry; the last entry is the batch's carry for
+// the next one, kept on the GPU in the other half of the carry buffer.
+
+#version 460 core
+
+layout(local_size_x = 64) in;
+
+/// What ResolveQueryData wrote, stride_words per slot.
+layout(std430, set = 0, binding = 0) readonly buffer Resolved {
+    uint resolved[];
+};
+
+/// x: first slot, y: slot count, z: adds the carry when not zero.
+layout(std430, set = 0, binding = 1) readonly buffer Entries {
+    uvec4 entries[];
+};
+
+layout(std430, set = 0, binding = 2) buffer Carry {
+    uvec2 carry[2];
+};
+
+/// One 64-bit report per entry but the last.
+layout(std430, set = 0, binding = 3) buffer Results {
+    uvec2 results[];
+};
+
+layout(push_constant) uniform Params {
+    uint num_entries;
+    uint stride_words;
+    uint value_word;
+    uint carry_in;
+};
+
+// 64-bit addition on 32-bit words: int64 shader ops are optional in D3D12.
+uvec2 Add64(uvec2 lhs, uvec2 rhs) {
+    const uint low = lhs.x + rhs.x;
+    return uvec2(low, lhs.y + rhs.y + (low < lhs.x ? 1u : 0u));
+}
+
+void main() {
+    const uint index = gl_GlobalInvocationID.x;
+    if (index >= num_entries) {
+        return;
+    }
+    const uvec4 entry = entries[index];
+    uvec2 sum = entry.z != 0u ? carry[carry_in] : uvec2(0u);
+    for (uint slot = entry.x; slot < entry.x + entry.y; ++slot) {
+        const uint word = slot * stride_words + value_word;
+        sum = Add64(sum, uvec2(resolved[word], resolved[word + 1u]));
+    }
+    if (index == num_entries - 1u) {
+        carry[carry_in ^ 1u] = sum;
+    } else {
+        results[index] = sum;
+    }
+}
