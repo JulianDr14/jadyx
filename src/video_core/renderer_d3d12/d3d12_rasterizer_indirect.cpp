@@ -227,6 +227,7 @@ void RasterizerD3D12::DrawIndirect() {
     BindDrawState(*pipeline, bindings, *framebuffer, draw_params,
                   maxwell3d->draw_manager.draw_state.topology, compatible);
     {
+        query_runtime.PrepareDraw(maxwell3d->regs.zpass_pixel_count_enable);
         const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
         DrawStencilFaces(*pipeline, maxwell3d->draw_manager.draw_state.topology, [&] {
             cmd->ExecuteIndirect(signature, draw_count, range.buffer, range.offset,
@@ -393,6 +394,7 @@ void RasterizerD3D12::DrawByteCount(const IndirectParams& params) {
         *framebuffer, pipeline->BoundColorTargets());
     BindDrawState(*pipeline, bindings, *framebuffer, draw_params, draw_state.topology, compatible);
     {
+        query_runtime.PrepareDraw(maxwell3d->regs.zpass_pixel_count_enable);
         const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
         DrawStencilFaces(*pipeline, draw_state.topology,
                          [&] { cmd->ExecuteIndirect(signature, 1, record, 0, nullptr, 0); });

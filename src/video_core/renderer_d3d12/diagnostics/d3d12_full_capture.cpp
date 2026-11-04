@@ -520,10 +520,9 @@ void RasterizerD3D12::CapturePickProbes(
             view.Texture2DArray = {0, 0, 1, 0};
             device.Get()->CreateRenderTargetView(images[i]->Handle(), &view, handles[i]);
         }
-        query_cache.DisableStreams();
+        query_runtime.PauseCounters();
         SCOPE_EXIT {
             command_state.valid = false;
-            query_cache.EnableCounters();
         };
         constexpr u32 passes = 39;
         for (u32 pass = 0; pass < passes; ++pass) {

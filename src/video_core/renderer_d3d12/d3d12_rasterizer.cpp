@@ -40,22 +40,6 @@ namespace {
 
 std::atomic<u32> submit_draws{512};
 
-/// Guest query types the D3D12 query cache counts on the host (see d3d12_query_cache.cpp); the
-/// rest are written by QueryFallback. Same mapping as the OpenGL backend.
-std::optional<VideoCore::QueryType> MaxwellToVideoCoreQuery(VideoCommon::QueryType type) {
-    switch (type) {
-    case VideoCommon::QueryType::PrimitivesGenerated:
-    case VideoCommon::QueryType::VtgPrimitivesOut:
-        return VideoCore::QueryType::PrimitivesGenerated;
-    case VideoCommon::QueryType::ZPassPixelCount64:
-        return VideoCore::QueryType::SamplesPassed;
-    case VideoCommon::QueryType::StreamingPrimitivesSucceeded:
-        return VideoCore::QueryType::TfbPrimitivesWritten;
-    default:
-        return std::nullopt;
-    }
-}
-
 /// Some color or depth target of the framebuffer has had no draw recorded to it yet.
 bool HasNewTarget(const Framebuffer& framebuffer) {
     for (size_t index = 0; index < VideoCommon::NUM_RT; ++index) {
@@ -131,7 +115,8 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
       buffer_cache{device_memory_, buffer_runtime_}, texture_cache{texture_runtime, device_memory_},
       pipeline_cache{device_memory_, device, compiler, texture_runtime, gpu_.ShaderNotify()},
       local_memory_pool{device, scheduler_},
-      query_cache{*this, device_memory_, device, scheduler_},
+      query_runtime{device, scheduler_, compiler, buffer_cache, buffer_runtime_, staging},
+      query_cache{gpu_, *this, device_memory_, query_runtime},
       conditional_rendering{device, scheduler_, compiler, query_cache, buffer_cache},
       accelerate_dma{buffer_cache, texture_cache, draw_hunt},
       fence_manager{*this, gpu_, texture_cache, buffer_cache, query_cache, scheduler_},
@@ -500,6 +485,7 @@ void RasterizerD3D12::RecordDraw(GraphicsPipeline& pipeline,
         VideoCore::Perf::Add(VideoCore::Perf::Counter::TessDraws, 1);
         RecordTessellatedDraw(pipeline, bindings, params);
     } else {
+        query_runtime.PrepareDraw(maxwell3d->regs.zpass_pixel_count_enable);
         const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
         DrawStencilFaces(pipeline, topology, [&] {
             if (params.is_indexed) {
@@ -543,6 +529,8 @@ void RasterizerD3D12::RecordTessellatedDraw(GraphicsPipeline& pipeline,
         shape.index_size = view->Format == DXGI_FORMAT_R16_UINT ? 2 : 4;
         shape.index_slots = TessIndexSlots();
     }
+    // The emulation's own passes are not the guest's draw: only its last one is counted.
+    query_runtime.PauseCounters();
     const u32 patches = tess_emulation.Capture(cmd, pipeline, shape);
     command_state.topology = D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
     if (patches != 0) {
@@ -551,6 +539,7 @@ void RasterizerD3D12::RecordTessellatedDraw(GraphicsPipeline& pipeline,
         tess_emulation.Control(cmd, pipeline, patches);
         tess_emulation.Tessellate(cmd, pipeline, patches, command_state.viewport.yz_flip_mask, 0);
         scheduler.SetPipelineState(pipeline.Handle());
+        query_runtime.PrepareDraw(maxwell3d->regs.zpass_pixel_count_enable);
         command_state.topology = tess_emulation.Draw(cmd, pipeline);
         // The record wrote the runtime data constants, and the index buffer is the emulation's.
         command_state.root_args.valid = false;
@@ -892,15 +881,14 @@ bool RasterizerD3D12::AccelerateConditionalRendering() {
 }
 
 void RasterizerD3D12::ResetCounter(VideoCommon::QueryType type) {
-    const auto host_type = MaxwellToVideoCoreQuery(type);
     if (type == VideoCommon::QueryType::ZPassPixelCount64) zpass_diag = {};
-    if (host_type) query_cache.ResetCounter(*host_type);
+    if (QueryCacheRuntime::IsHostCounted(type)) query_cache.CounterReset(type);
 }
 
 void RasterizerD3D12::Query(GPUVAddr address, VideoCommon::QueryType type,
                             VideoCommon::QueryPropertiesFlags flags, u32 payload,
                             u32 subreport) {
-    const auto host_type = MaxwellToVideoCoreQuery(type);
+    const bool host_type = QueryCacheRuntime::IsHostCounted(type);
     {
         // Diagnostic: every guest query by raw type, logged at 1, 2, 4, 8... requests.
         static std::array<std::atomic<u64>, 32> query_counts{};
@@ -931,10 +919,14 @@ void RasterizerD3D12::Query(GPUVAddr address, VideoCommon::QueryType type,
     if (type == VideoCommon::QueryType::StreamingByteCount && HasDrawTransformFeedback()) {
         return QueryByteCount(address, flags, subreport);
     }
-    if (!host_type) return QueryFallback(address, type, flags, payload);
-    const bool timeout = True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout);
-    query_cache.Query(address, *host_type,
-                      timeout ? std::optional<u64>{gpu.GetTicks()} : std::nullopt);
+    if (!host_type) {
+        // A report the CPU writes ends any counter report pending at the address.
+        if (const std::optional<DAddr> cpu_address = gpu_memory->GpuToCpuAddress(address)) {
+            query_cache.InvalidateRegion(*cpu_address, sizeof(u64));
+        }
+        return QueryFallback(address, type, flags, payload);
+    }
+    query_cache.CounterReport(address, type, flags, payload, subreport);
 }
 
 bool RasterizerD3D12::HasDrawTransformFeedback() {
@@ -1228,6 +1220,8 @@ void RasterizerD3D12::WaitForIdle() {
     const D3D12_RESOURCE_BARRIER barrier{.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV,
                                          .UAV = {.pResource = nullptr}};
     scheduler.CommandList()->ResourceBarrier(1, &barrier);
+    // Counter reports read after the wait are summed where the GPU reads them.
+    query_cache.NotifyWFI();
     fence_manager.SignalOrdering();
 }
 void RasterizerD3D12::FragmentBarrier() {

@@ -1408,15 +1408,15 @@ void RasterizerD3D12::ProbeMaterialIntermediates(const GraphicsPipeline& pipelin
     SCOPE_EXIT {
         command_state.valid = false;
         try {
-            // Internal draws must not contribute samples/primitives to guest query reports.
-            query_cache.EnableCounters();
             BindDrawState(pipeline, bindings, framebuffer, params, topology);
         } catch (const std::exception& e) {
             // Leave the cache invalid so the next normal draw rebinds all state.
             LOG_WARNING(Render, "D3D12 material GPU probe state restore deferred: {}", e.what());
         }
     };
-    query_cache.DisableStreams();
+    // Internal draws must not contribute samples/primitives to guest query reports; the next
+    // guest draw starts the counters again.
+    query_runtime.PauseCounters();
     const D3D12_BOX box{static_cast<UINT>(roi.left), static_cast<UINT>(roi.top), 0,
         static_cast<UINT>(roi.right), static_cast<UINT>(roi.bottom), 1};
     for (size_t pass = 0; pass < probes.size(); ++pass) {

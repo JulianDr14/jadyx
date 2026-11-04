@@ -3,142 +3,95 @@
 
 #pragma once
 
-#include <array>
-#include <deque>
 #include <memory>
-#include <mutex>
-#include <optional>
-#include <vector>
+#include <span>
 
-#include "video_core/query_cache.h"
+#include "video_core/query_cache/query_cache_base.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
+
+namespace Tegra::Engines {
+class Maxwell3D;
+}
+
+namespace VideoCommon {
+class StreamerInterface;
+template <class P>
+class BufferCache;
+} // namespace VideoCommon
 
 namespace D3D12 {
 
-class RasterizerD3D12;
+class BufferCacheRuntime;
 class Scheduler;
-class CachedQuery;
-class HostCounter;
-class QueryCache;
+class ShaderCompiler;
+class StagingBufferPool;
+struct BufferCacheParams;
+using BufferCache = VideoCommon::BufferCache<BufferCacheParams>;
 
-using CounterStream = VideoCommon::CounterStreamBase<QueryCache, HostCounter>;
+class QueryCacheRuntime;
 
-/// Query heap slots, each with its own place in a readback buffer, recycled once the GPU is past
-/// their last use (as Vulkan's QueryPool). The cache starts three counters on every command list,
-/// so creating a heap and a readback buffer per counter stalled every submit.
-class QueryPool {
+struct QueryCacheParams {
+    using RuntimeType = QueryCacheRuntime;
+};
+
+/// The guest counters (occlusion, primitives generated, stream output primitives) as the Vulkan
+/// backend runs them, on VideoCommon::QueryCacheBase: no query is ever waited for on the CPU.
+using QueryCache = VideoCommon::QueryCacheBase<QueryCacheParams>;
+
+/// D3D12 side of the query cache.
+///
+/// A guest counter runs over host query slots taken from banks (a query heap and a persistently
+/// mapped readback buffer of BANK_SIZE slots); a slot ends at each report, reset, disable and
+/// submission. Every report is the sum of the slots since the last reset, reached two ways:
+///  - on the GPU: when the guest waits for idle or a fence is queued, the pending slots are
+///    resolved in contiguous runs and a compute shader sums each report into place in the buffer
+///    cache, so draws, shaders and render conditions read it without a CPU wait;
+///  - on the CPU: at the fence, the same slots are resolved into the banks' readback memory and
+///    the fence thread sums them once the GPU is past it, for the guest's own reads.
+/// A bank is reused once both have consumed its slots and the GPU is past its last use.
+class QueryCacheRuntime {
 public:
-    struct Slot {
-        ID3D12QueryHeap* heap{};
-        ID3D12Resource* readback{};
-        u32 index{};
-        u64 offset{}; ///< byte offset of the resolved value in readback
-    };
+    explicit QueryCacheRuntime(const Device& device, Scheduler& scheduler,
+                               const ShaderCompiler& compiler, BufferCache& buffer_cache,
+                               BufferCacheRuntime& buffer_runtime, StagingBufferPool& staging);
+    ~QueryCacheRuntime();
 
-    QueryPool(const Device& device, Scheduler& scheduler);
+    QueryCacheRuntime(const QueryCacheRuntime&) = delete;
+    QueryCacheRuntime& operator=(const QueryCacheRuntime&) = delete;
 
-    [[nodiscard]] Slot Reserve(VideoCore::QueryType type);
-    /// Returns slot to the pool; it is handed out again once the GPU has completed tick.
-    void Release(VideoCore::QueryType type, const Slot& slot, u64 tick);
+    /// Whether the guest counter type is counted by a host query (else written as a payload).
+    [[nodiscard]] static bool IsHostCounted(VideoCommon::QueryType type) noexcept;
+
+    /// Right before a guest draw: starts the counters it counts into, and pauses occlusion when
+    /// the guest disabled it.
+    void PrepareDraw(bool zpass_enabled);
+
+    /// Ends every running counter (before internal draws, and before each submission); the next
+    /// guest draw starts them again.
+    void PauseCounters();
+
+    // VideoCommon::QueryCacheBase interface.
+    VideoCommon::StreamerInterface* GetStreamerInterface(VideoCommon::QueryType type);
+    void Bind3DEngine(Tegra::Engines::Maxwell3D*) {}
+    void Barriers(bool) {} // every resource is transitioned where it is used
+    template <typename SyncValuesType>
+    void SyncValues(std::span<SyncValuesType> values, ID3D12Resource* base_src = nullptr);
+    // Render conditions are predicated by ConditionalRendering, which compares any reports.
+    void EndHostConditionalRendering() {}
+    void PauseHostConditionalRendering() {}
+    void ResumeHostConditionalRendering() {}
+    bool HostConditionalRenderingCompareValue(VideoCommon::LookupData, bool) {
+        return false;
+    }
+    bool HostConditionalRenderingCompareValues(VideoCommon::LookupData, VideoCommon::LookupData,
+                                               bool, bool) {
+        return false;
+    }
+
+    struct Impl;
 
 private:
-    static constexpr u32 PAGE_SIZE = 256;
-
-    struct Page {
-        ComPtr<ID3D12QueryHeap> heap;
-        ComPtr<ID3D12Resource> readback;
-    };
-    struct FreeSlot {
-        Slot slot;
-        u64 tick;
-    };
-    struct TypePool {
-        std::vector<Page> pages;
-        std::deque<FreeSlot> free; ///< in release order, so roughly in tick order
-    };
-
-    void AddPage(VideoCore::QueryType type);
-
-    const Device& device;
-    Scheduler& scheduler;
-    std::mutex mutex;
-    std::array<TypePool, VideoCore::NumQueryTypes> pools;
-};
-
-/// A guest query report as a value known on the CPU plus the host query slices still counting
-/// into it, so its value can be compared on the GPU instead of read back (ConditionalRendering).
-struct PendingReport {
-    static constexpr size_t MAX_SLICES = 4;
-
-    u64 known{};
-    std::array<std::shared_ptr<HostCounter>, MAX_SLICES> slices{}; ///< newest first
-    size_t num_slices{};
-    bool complete{true}; ///< false when more than MAX_SLICES slices count into it
-};
-
-class QueryCache final
-    : public VideoCommon::QueryCacheLegacy<QueryCache, CachedQuery, CounterStream, HostCounter> {
-public:
-    QueryCache(RasterizerD3D12& rasterizer, Tegra::MaxwellDeviceMemoryManager& device_memory,
-               const Device& device, Scheduler& scheduler);
-    ~QueryCache();
-
-    [[nodiscard]] const Device& GetDevice() const noexcept { return device; }
-    [[nodiscard]] Scheduler& GetScheduler() const noexcept { return scheduler; }
-    [[nodiscard]] const std::shared_ptr<QueryPool>& GetPool() const noexcept { return pool; }
-    [[nodiscard]] bool AnyCommandQueued() const noexcept;
-
-    /// The report the guest reads at addr, without waiting for the GPU; nullopt when no query is
-    /// cached there (the value is in guest memory).
-    [[nodiscard]] std::optional<PendingReport> PeekReport(VAddr addr);
-
-private:
-    RasterizerD3D12& rasterizer;
-    const Device& device;
-    Scheduler& scheduler;
-    /// Shared with the counters: the base class's streams, and the counters they hold, are
-    /// destroyed after this class's members.
-    std::shared_ptr<QueryPool> pool;
-};
-
-class HostCounter final : public VideoCommon::HostCounterBase<QueryCache, HostCounter> {
-public:
-    HostCounter(QueryCache& cache, std::shared_ptr<HostCounter> dependency,
-                VideoCore::QueryType type);
-    ~HostCounter();
-    void EndQuery();
-
-    [[nodiscard]] bool Ended() const noexcept { return ended; }
-    [[nodiscard]] const QueryPool::Slot& Slot() const noexcept { return slot; }
-    [[nodiscard]] D3D12_QUERY_TYPE HostType() const noexcept { return query_type; }
-    /// Bytes ResolveQueryData writes for this query, and where the counted value is in them.
-    [[nodiscard]] u64 ResolvedBytes() const noexcept;
-    [[nodiscard]] u64 ValueOffset() const noexcept;
-
-private:
-    u64 BlockingQuery(bool async = false) const override;
-    std::optional<u64> TryQuery() const override;
-    /// The value ResolveQueryData wrote, once the GPU is past the query's list.
-    u64 ReadResolved() const;
-
-    QueryCache& cache;
-    VideoCore::QueryType type;
-    D3D12_QUERY_TYPE query_type{};
-    std::shared_ptr<QueryPool> pool;
-    QueryPool::Slot slot;
-    mutable u64 tick{};
-    u64 begin_tick{}; ///< the command list the query was begun in
-    bool ended{};
-};
-
-class CachedQuery final : public VideoCommon::CachedQueryBase<HostCounter> {
-public:
-    CachedQuery(QueryCache& cache, VideoCore::QueryType type, VAddr cpu_addr, u8* host_ptr);
-    ~CachedQuery() override = default;
-    CachedQuery(CachedQuery&&) noexcept = default;
-    CachedQuery& operator=(CachedQuery&&) noexcept = default;
-    CachedQuery(const CachedQuery&) = delete;
-    CachedQuery& operator=(const CachedQuery&) = delete;
+    std::unique_ptr<Impl> impl;
 };
 
 } // namespace D3D12

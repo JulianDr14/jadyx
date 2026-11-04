@@ -131,8 +131,6 @@ public:
     void BindChannel(Tegra::Control::ChannelState&) override;
     void ReleaseChannel(s32) override;
 
-    [[nodiscard]] bool AnyCommandQueued() const noexcept { return true; }
-
     /// A guest image the display can sample directly (see RendererD3D12::Composite).
     struct DisplayTexture {
         D3D12_CPU_DESCRIPTOR_HANDLE srv;
@@ -364,8 +362,10 @@ private:
     } command_state;
     bool channel_bound{};
     bool state_invalidation_pending{};
-    // QueryCache owns the scheduler callback lifetime and clears every submission callback in its
-    // destructor. Keep it after the state captured by our reset callback, so it is destroyed first.
+    // The query runtime owns the scheduler callback lifetime and clears every submission callback
+    // in its destructor. Keep it after the state captured by our reset callback, so it is destroyed
+    // first, and before the cache built on it, which it outlives.
+    QueryCacheRuntime query_runtime;
     QueryCache query_cache;
     ConditionalRendering conditional_rendering;
     AccelerateDMA accelerate_dma;
