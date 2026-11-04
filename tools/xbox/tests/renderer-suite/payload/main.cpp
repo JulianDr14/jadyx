@@ -4,7 +4,8 @@
 // Runs the scenes one after another and tells the host each step in sdmc:/renderer_suite/results.txt.
 // The host finds there which scene a crash or a hang stopped at, adds it to skip.txt and runs the rest.
 // A non-empty only.txt runs just the scenes it names.
-// Without mode.txt saying otherwise it runs the scenes; "perf <frames>" runs the performance loop.
+// Without mode.txt saying otherwise it runs the scenes; "perf <frames>" runs the performance loop and
+// "tess <frames> <draws> <patches> <level> <flat>" the tessellation one (perf_tess.cpp).
 
 #include "harness.h"
 
@@ -41,13 +42,27 @@ void RunList(const std::vector<SceneEntry>& scenes, const std::set<std::string>&
     }
 }
 
-uint32_t PerformanceFrames() {
+struct Mode {
     uint32_t frames = 0;
+    bool tess = false;
+    TessPerformance tess_config;
+};
+
+Mode ReadMode() {
+    Mode mode;
     if (FILE* file = fopen("sdmc:/renderer_suite/mode.txt", "r")) {
-        if (fscanf(file, "perf %lu", reinterpret_cast<unsigned long*>(&frames)) != 1) frames = 0;
+        char line[128] = {};
+        if (fgets(line, sizeof(line), file)) {
+            unsigned frames = 0, draws = 0, patches = 0, level = 0, flat = 0;
+            if (sscanf(line, "tess %u %u %u %u %u", &frames, &draws, &patches, &level, &flat) == 5) {
+                mode = {frames, true, {draws, patches, level, flat != 0}};
+            } else if (sscanf(line, "perf %u", &frames) == 1) {
+                mode.frames = frames;
+            }
+        }
         fclose(file);
     }
-    return frames;
+    return mode;
 }
 
 } // namespace
@@ -58,8 +73,10 @@ int main(int, char**) {
     static const char alive[] = "JADYX_JIT_ALIVE";
     svcOutputDebugString(alive, sizeof(alive) - 1);
 
-    if (const uint32_t frames = PerformanceFrames()) {
-        RunPerformanceLoop(frames);
+    if (const Mode mode = ReadMode(); mode.frames && mode.tess) {
+        RunTessPerformanceLoop(mode.frames, mode.tess_config);
+    } else if (mode.frames) {
+        RunPerformanceLoop(mode.frames);
     } else {
         const std::set<std::string> skip = ReadNames("sdmc:/renderer_suite/skip.txt");
         const std::set<std::string> only = ReadNames("sdmc:/renderer_suite/only.txt");

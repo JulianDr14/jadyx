@@ -205,5 +205,15 @@ void RegisterGlConventions(std::vector<SceneEntry>& scenes);
 /// The draw-heavy loop of the performance layer, on the swapchain.
 void RunPerformanceLoop(uint32_t frames);
 
+/// The tessellation loop: draws of patches of quads at a fixed level, or (flat) the same triangles
+/// drawn without tessellation, so the two runs differ only by what tessellating costs.
+struct TessPerformance {
+    uint32_t draws;
+    uint32_t patches;
+    uint32_t level;
+    bool flat;
+};
+void RunTessPerformanceLoop(uint32_t frames, const TessPerformance& config);
+
 /// One line for the host, in the results file and in the emulator's log.
 void Report(const char* format, ...) __attribute__((format(printf, 1, 2)));
