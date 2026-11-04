@@ -3188,6 +3188,15 @@ public:
         RefreshParametersImpl();
     }
 
+    /// Re-reads parameters [first, first + count) of a call whose arguments may hold GPU writes,
+    /// for macros that read only those words on the CPU and hand the rest to the GPU.
+    void RefreshParameters(size_t first, size_t count) {
+        if (!current_macro_dirty) {
+            return;
+        }
+        RefreshParametersImpl(first, count);
+    }
+
     bool AnyParametersDirty() const {
         return current_macro_dirty;
     }
@@ -3262,6 +3271,7 @@ private:
     void ProcessSyncPoint();
 
     void RefreshParametersImpl();
+    void RefreshParametersImpl(size_t first, size_t count);
 
     bool IsMethodExecutable(u32 method);
 

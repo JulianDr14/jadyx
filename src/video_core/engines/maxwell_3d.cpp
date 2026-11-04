@@ -239,6 +239,28 @@ void Maxwell3D::RefreshParametersImpl() {
     }
 }
 
+void Maxwell3D::RefreshParametersImpl(size_t first, size_t count) {
+    if (!Settings::IsGPULevelHigh()) {
+        return;
+    }
+    const size_t end = (std::min)(first + count, macro_params.size());
+    size_t segment_start = 0;
+    for (const auto& [address, words] : macro_segments) {
+        const size_t segment_end = segment_start + words;
+        const size_t read_start = (std::max)(first, segment_start);
+        const size_t read_end = (std::min)(end, segment_end);
+        if (address != 0 && read_start < read_end) {
+            memory_manager.ReadBlock(address + (read_start - segment_start) * sizeof(u32),
+                                     &macro_params[read_start],
+                                     sizeof(u32) * (read_end - read_start));
+        }
+        segment_start = segment_end;
+        if (segment_start >= end) {
+            break;
+        }
+    }
+}
+
 u32 Maxwell3D::GetMaxCurrentVertices() {
     u32 num_vertices = 0;
     for (size_t index = 0; index < Regs::NumVertexArrays; ++index) {
