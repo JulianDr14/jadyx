@@ -153,6 +153,7 @@ private:
     };
 
     std::wstring format_locale{L"en"};
+    HRESULT last_type_error = S_OK; ///< Logs a failing text once, not every frame.
     std::unordered_map<unsigned, Microsoft::WRL::ComPtr<IDWriteTextFormat>> formats;
     std::unordered_map<unsigned, Microsoft::WRL::ComPtr<IDWriteTextFormat>> role_formats;
     /// Laid-out texts by content and box: a redraw lays out only what changed. Entries unused for

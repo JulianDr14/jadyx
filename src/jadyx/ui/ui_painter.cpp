@@ -8,6 +8,7 @@
 #include <dwrite_1.h>
 #include <winrt/base.h>
 
+#include "common/logging.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/ui/ui_fonts.h"
 
@@ -94,21 +95,38 @@ IDWriteTextLayout* UiPainter::TypeLayout(std::wstring_view text, TypeRole role, 
     auto& cached = layouts[key];
     cached.frame = layout_frame;
     if (cached.layout) return cached.layout.Get();
+    // DirectWrite reads the system's fallback fonts while it lays out, and on the console that
+    // read is refused now and then (0x8007067D). A text that fails is left out of this frame
+    // and laid out again on the next one, as a failed EndDraw is: it never closes the library.
+    const auto failed = [&](HRESULT result, const char* step) {
+        if (result != last_type_error) LOG_WARNING(Frontend, "UI text: {} failed: {:08X}", step, static_cast<u32>(result));
+        last_type_error = result;
+        return nullptr;
+    };
     auto& format = role_formats[index];
     if (!format) {
         const auto typeface = InterfaceFonts(write.Get());
-        winrt::check_hresult(write->CreateTextFormat(typeface.family, typeface.collection,
-            style.weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, style.size,
-            format_locale.c_str(), &format));
+        if (const HRESULT result = write->CreateTextFormat(typeface.family, typeface.collection,
+                style.weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, style.size,
+                format_locale.c_str(), &format); FAILED(result)) {
+            format.Reset();
+            return failed(result, "format");
+        }
         format->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, style.line, style.line * 0.8f);
         DWRITE_TRIMMING trim{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
         ComPtr<IDWriteInlineObject> ellipsis;
-        winrt::check_hresult(write->CreateEllipsisTrimmingSign(format.Get(), &ellipsis));
-        format->SetTrimming(&trim, ellipsis.Get());
+        // Without the sign the text is still trimmed, just without the ellipsis.
+        if (SUCCEEDED(write->CreateEllipsisTrimmingSign(format.Get(), &ellipsis)))
+            format->SetTrimming(&trim, ellipsis.Get());
+        else
+            format->SetTrimming(&trim, nullptr);
     }
     const float height = style.line * static_cast<float>(std::max(lines, 1U));
-    winrt::check_hresult(write->CreateTextLayout(text.data(), static_cast<UINT32>(text.size()),
-        format.Get(), std::max(width, 1.0f), height, &cached.layout));
+    if (const HRESULT result = write->CreateTextLayout(text.data(), static_cast<UINT32>(text.size()),
+            format.Get(), std::max(width, 1.0f), height, &cached.layout); FAILED(result)) {
+        cached.layout.Reset();
+        return failed(result, "layout");
+    }
     auto* layout = cached.layout.Get();
     layout->SetWordWrapping(lines > 1 ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
     layout->SetTextAlignment(align == TextAlign::Center     ? DWRITE_TEXT_ALIGNMENT_CENTER
@@ -134,6 +152,7 @@ float UiPainter::Type(std::wstring_view text, TypeRole role, float x, float y, f
                       unsigned color, float alpha, TextAlign align, unsigned lines) {
     if (text.empty() || width < 1) return 0;
     auto* layout = TypeLayout(text, role, width, align, lines);
+    if (!layout) return 0;
     brush->SetColor(D2D1::ColorF(color, alpha));
     surface->DrawTextLayout(D2D1::Point2F(x, y), layout, brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
     DWRITE_TEXT_METRICS metrics{};
@@ -144,8 +163,10 @@ float UiPainter::Type(std::wstring_view text, TypeRole role, float x, float y, f
 
 float UiPainter::MeasureType(std::wstring_view text, TypeRole role) {
     if (text.empty()) return 0;
+    auto* layout = TypeLayout(text, role, 4096, TextAlign::Leading, 1);
+    if (!layout) return 0;
     DWRITE_TEXT_METRICS metrics{};
-    TypeLayout(text, role, 4096, TextAlign::Leading, 1)->GetMetrics(&metrics);
+    layout->GetMetrics(&metrics);
     return metrics.widthIncludingTrailingWhitespace;
 }
 
