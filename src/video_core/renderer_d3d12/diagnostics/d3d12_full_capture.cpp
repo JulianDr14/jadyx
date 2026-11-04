@@ -51,12 +51,10 @@ void RasterizerD3D12::RunFullCaptureSelfTest() {
             info.num_samples = 1;
             Image image{texture_runtime, info, 0, 0};
             const auto desc = image.Handle()->GetDesc();
-            ComPtr<ID3D12Device> device;
-            ThrowIfFailed(image.Handle()->GetDevice(IID_PPV_ARGS(&device)), "capture test device");
             D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
             UINT rows{};
             UINT64 row_bytes{}, bytes{};
-            device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rows, &row_bytes, &bytes);
+            device.Get()->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rows, &row_bytes, &bytes);
             auto upload = staging.Request(bytes, MemoryUsage::Upload, true);
             SCOPE_EXIT { staging.FreeDeferred(upload); };
             const u32 all_rows = rows * footprint.Footprint.Depth;
@@ -302,8 +300,6 @@ void RasterizerD3D12::CaptureFullImageRange(Image& image, std::span<const u32> s
             FC::Omit("msaa_raw_copy_unsupported", context_for(subresources.front()));
             return;
         }
-        ComPtr<ID3D12Device> device;
-        ThrowIfFailed(resource->GetDevice(IID_PPV_ARGS(&device)), "full capture image device");
         struct Copy {
             u32 subresource, rows;
             u64 row_bytes, total;
@@ -352,7 +348,7 @@ void RasterizerD3D12::CaptureFullImageRange(Image& image, std::span<const u32> s
         };
         for (const auto subresource : subresources) {
             Copy copy{.subresource = subresource};
-            device->GetCopyableFootprints(&desc, subresource, 1, 0, &copy.footprint,
+            device.Get()->GetCopyableFootprints(&desc, subresource, 1, 0, &copy.footprint,
                                           &copy.rows, &copy.row_bytes, &copy.total);
             const u64 all_rows = u64{copy.rows} * copy.footprint.Footprint.Depth;
             if (!copy.rows || !copy.row_bytes || !copy.total || copy.total > MAX_STAGING ||
@@ -381,10 +377,8 @@ void RasterizerD3D12::CaptureFullImages(const FullCaptureViews& views,
                                  s32 base_layer, s32 layer_count, std::string_view role,
                                  ID3D12Resource* actual) -> u32 {
             const auto desc = actual->GetDesc();
-            ComPtr<ID3D12Device> device;
-            ThrowIfFailed(actual->GetDevice(IID_PPV_ARGS(&device)), "full capture planes");
             D3D12_FEATURE_DATA_FORMAT_INFO info{desc.Format};
-            ThrowIfFailed(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_INFO, &info, sizeof(info)),
+            ThrowIfFailed(device.Get()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_INFO, &info, sizeof(info)),
                           "full capture format planes");
             const u32 layers = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
                 ? 1 : desc.DepthOrArraySize;
@@ -490,9 +484,6 @@ void RasterizerD3D12::CapturePickProbes(
         return;
     }
     try {
-        ComPtr<ID3D12Device> device;
-        ThrowIfFailed(framebuffer.ColorImage(0)->Handle()->GetDevice(IID_PPV_ARGS(&device)),
-                      "pick probe device");
         std::optional<D3D12_INDEX_BUFFER_VIEW> index;
         std::vector<std::pair<u32, D3D12_VERTEX_BUFFER_VIEW>> vertices;
         for (const auto& source : geometry) {

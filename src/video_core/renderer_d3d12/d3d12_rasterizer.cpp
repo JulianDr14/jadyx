@@ -115,13 +115,13 @@ bool RasterizerD3D12::CullsEveryPrimitive() const {
 
 RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
                                  Tegra::MaxwellDeviceMemoryManager& device_memory_,
-                                 const Device& device, Scheduler& scheduler_,
+                                 const Device& device_, Scheduler& scheduler_,
                                  const ShaderCompiler& compiler,
                                  BufferCacheRuntime& buffer_runtime_,
                                  TextureCacheRuntime& texture_runtime,
                                  DescriptorRing& descriptor_ring_, SamplerHeap& sampler_heap_,
                                  BlitImageHelper& blit_helper_, StagingBufferPool& staging)
-    : gpu{gpu_}, device_memory{device_memory_}, scheduler{scheduler_}, staging{staging},
+    : gpu{gpu_}, device_memory{device_memory_}, device{device_}, scheduler{scheduler_}, staging{staging},
       buffer_runtime{buffer_runtime_}, texture_runtime{texture_runtime}, descriptor_ring{descriptor_ring_},
       sampler_heap{sampler_heap_}, blit_helper{blit_helper_},
       indirect_args{device, scheduler_, staging},
@@ -1024,7 +1024,7 @@ bool RasterizerD3D12::MaterializeCheckpointMemory() {
     texture_cache.DownloadCheckpointMemory();
     buffer_cache.DownloadCheckpointMemory();
     scheduler.Finish();
-    ThrowIfFailed(query_cache.GetDevice().Get()->GetDeviceRemovedReason(),
+    ThrowIfFailed(device.Get()->GetDeviceRemovedReason(),
                   "Pulse materialize GPU memory");
     return true;
 }
@@ -1032,7 +1032,7 @@ bool RasterizerD3D12::MaterializeCheckpointMemory() {
 void RasterizerD3D12::FlushCheckpointRegion(DAddr address, u64 size) {
     if (!address || !size) return;
     // What each cache's download leaves in the app's memory, for the save's peak log.
-    const auto used = [this] { return query_cache.GetDevice().QueryCacheMemoryPressure().app_used; };
+    const auto used = [this] { return device.QueryCacheMemoryPressure().app_used; };
     const auto mib = [](u64 after, u64 before) {
         return (static_cast<s64>(after) - static_cast<s64>(before)) / (1 << 20);
     };

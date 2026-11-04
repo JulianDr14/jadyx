@@ -319,6 +319,7 @@ private:
 
     Tegra::GPU& gpu;
     Tegra::MaxwellDeviceMemoryManager& device_memory;
+    const Device& device;
     Scheduler& scheduler;
     StagingBufferPool& staging;
     BufferCacheRuntime& buffer_runtime;

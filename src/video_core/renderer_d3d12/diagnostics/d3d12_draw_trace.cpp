@@ -774,11 +774,8 @@ void RasterizerD3D12::CheckTracedTexture(const Image& target) {
             D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
             UINT num_rows = 0;
             UINT64 total_bytes = 0;
-            ID3D12Device* device = nullptr;
-            image.Handle()->GetDevice(IID_PPV_ARGS(&device));
-            device->GetCopyableFootprints(&desc, subresource, 1, 0, &footprint, &num_rows,
+            device.Get()->GetCopyableFootprints(&desc, subresource, 1, 0, &footprint, &num_rows,
                                           nullptr, &total_bytes);
-            device->Release();
             if (total_bytes == 0 || total_bytes == UINT64_MAX || num_rows < rows) {
                 return;
             }
@@ -854,13 +851,10 @@ void RasterizerD3D12::CheckTracedTexture(const Image& target) {
     {
         // The host layout the driver chose, to compare arrays that sample wrong with ones that do not.
         const D3D12_RESOURCE_DESC desc = image.Handle()->GetDesc();
-        ID3D12Device* device = nullptr;
-        image.Handle()->GetDevice(IID_PPV_ARGS(&device));
-        const D3D12_RESOURCE_ALLOCATION_INFO allocation = device->GetResourceAllocationInfo(0, 1, &desc);
+        const D3D12_RESOURCE_ALLOCATION_INFO allocation = device.Get()->GetResourceAllocationInfo(0, 1, &desc);
         u64 layer_bytes = 0;
-        device->GetCopyableFootprints(&desc, 0, desc.MipLevels, 0, nullptr, nullptr, nullptr,
+        device.Get()->GetCopyableFootprints(&desc, 0, desc.MipLevels, 0, nullptr, nullptr, nullptr,
                                       &layer_bytes);
-        device->Release();
         detail += fmt::format(" | host format {} {}x{}x{} mips {} flags 0x{:x}: allocation {} bytes "
                               "align {}, one layer's mip chain {} bytes",
                               static_cast<u32>(desc.Format), desc.Width, desc.Height,
@@ -889,10 +883,7 @@ std::string RasterizerD3D12::TraceDepthChanges(const Image& target) {
     UINT num_rows = 0;
     UINT64 row_size = 0;
     UINT64 total_bytes = 0;
-    ID3D12Device* device = nullptr;
-    resource->GetDevice(IID_PPV_ARGS(&device));
-    device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &num_rows, &row_size, &total_bytes);
-    device->Release();
+    device.Get()->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &num_rows, &row_size, &total_bytes);
     const u32 width = footprint.Footprint.Width;
     if (total_bytes == 0 || total_bytes == UINT64_MAX || width == 0 || row_size < width) {
         return {};
@@ -1039,11 +1030,8 @@ std::optional<u64> RasterizerD3D12::DumpTarget(const Image& target, const std::s
     }
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     u64 total_bytes = 0;
-    ID3D12Device* device = nullptr;
-    resource->GetDevice(IID_PPV_ARGS(&device));
-    device->GetCopyableFootprints(&desc, subresource, 1, 0, &footprint, nullptr, nullptr,
+    device.Get()->GetCopyableFootprints(&desc, subresource, 1, 0, &footprint, nullptr, nullptr,
                                   &total_bytes);
-    device->Release();
     // The depth plane of D24S8 copies as R32 with the depth in its low 24 bits. R16_TYPELESS
     // holds halves or, for D16 and R16 images, normalized integers.
     const bool unorm16 = target.info.format == VideoCore::Surface::PixelFormat::D16_UNORM ||
