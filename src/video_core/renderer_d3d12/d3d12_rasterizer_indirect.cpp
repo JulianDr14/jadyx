@@ -51,7 +51,10 @@ void RasterizerD3D12::DrawIndirect() {
         DrawByteCount(params);
         return;
     }
-    if (BufferCacheRuntime::IsEmulatedTopology(maxwell3d->draw_manager.draw_state.topology)) {
+    // Patches tessellate through TessEmulation, which sizes its work from the draw's counts.
+    const auto indirect_topology = maxwell3d->draw_manager.draw_state.topology;
+    if (BufferCacheRuntime::IsEmulatedTopology(indirect_topology) ||
+        indirect_topology == Maxwell::PrimitiveTopology::Patches) {
         hunt.Outcome(Hunt::Outcome::Expanded);
         hunt.Geometry(static_cast<u32>(params.max_draw_counts), 0,
                       static_cast<u32>(maxwell3d->draw_manager.draw_state.topology),
@@ -251,8 +254,8 @@ void RasterizerD3D12::DrawIndirectOnCpu(const IndirectParams& params) {
     // The topologies D3D12 lacks are rebuilt from guest memory on the CPU, so these draws read
     // their arguments there too. ReadBlock flushes what the GPU wrote first, which can stall.
     if (!logged_cpu_indirect_draw) {
-        LOG_INFO(Render, "D3D12: indirect draws of emulated topologies read their arguments on "
-                         "the CPU");
+        LOG_INFO(Render, "D3D12: indirect draws of emulated topologies or patches read their "
+                         "arguments on the CPU");
         logged_cpu_indirect_draw = true;
     }
     const u32 guest_words = params.is_indexed ? 5 : 4;
@@ -294,8 +297,10 @@ void RasterizerD3D12::DrawByteCount(const IndirectParams& params) {
     // DrawAuto: byte_count / stride vertices from vertex 0, one instance. The byte count is a
     // StreamingByteCount report the guest points at (QueryByteCount writes it on the GPU).
     auto& draw_state = maxwell3d->draw_manager.draw_state;
-    if (BufferCacheRuntime::IsEmulatedTopology(draw_state.topology)) {
-        // Rebuilt on the CPU, so the count is read there; ReadBlock waits for the GPU's value.
+    if (BufferCacheRuntime::IsEmulatedTopology(draw_state.topology) ||
+        draw_state.topology == Maxwell::PrimitiveTopology::Patches) {
+        // Rebuilt on the CPU (or tessellated through TessEmulation), so the count is read there;
+        // ReadBlock waits for the GPU's value.
         u32 byte_count = 0;
         gpu_memory->ReadBlock(params.indirect_start_address, &byte_count, sizeof(byte_count));
         const auto saved_vertex_buffer = draw_state.vertex_buffer;
