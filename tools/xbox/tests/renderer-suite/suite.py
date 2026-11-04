@@ -3,7 +3,7 @@
 """The renderer's regression suite. See docs/xbox/xbox_renderer_suite.md.
 
     python tools/xbox/tests/renderer-suite/suite.py [--layers gates,scenes,perf] [--only NAME ...]
-        [--no-package] [--update-baseline] [--list]
+        [--no-package] [--update-baseline] [--list] [--console 192.168.1.50 --version 0.3.9.159]
 
 Layers:
     gates   every component gate that touches the renderer, one process each.
@@ -11,6 +11,9 @@ Layers:
             what each scene states it must draw, with the reference pictures and with the
             D3D12 debug layer.
     perf    the same emulator on a draw-heavy guest scene: counters exactly, timings with a margin.
+
+--console runs the scenes on the console through the Device Portal (console.py) and leaves the payload
+installed there; the console's pictures baseline is pictures-series.zip.
 
 The result says what changed against baselines/: REGRESSION fails the run, IMPROVED asks for
 --update-baseline, KNOWN is a failure the baseline already has. Run from anywhere; exit code 0 means
@@ -141,8 +144,13 @@ def main():
     parser.add_argument("--perf-frames", type=int, default=1500)
     parser.add_argument("--perf-seconds", type=int, default=400, help="perf: backstop for one payload run")
     parser.add_argument("--perf-runs", type=int, default=2, help="perf: runs; the best one counts")
+    parser.add_argument("--console", help="scenes: run on the console at this address instead of this PC")
+    parser.add_argument("--version", help="--console: package version, above the one installed there")
+    parser.add_argument("--boot-cfg", nargs="*", default=[], help="scenes: extra boot.cfg lines, for diagnosis")
     args = parser.parse_args()
     layers = set(args.layers.split(","))
+    if args.console and not args.version:
+        parser.error("--console needs --version")
 
     sys.path.insert(0, HERE)
     if args.list:

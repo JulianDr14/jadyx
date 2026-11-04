@@ -93,7 +93,7 @@ def launch(package, run_seconds, debug_layer, boot_cfg, state):
     timeout = run_seconds + 90
     if package:
         command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                   os.path.join(REPO, "tools", "xbox", "local-run.ps1"), "-NoBuild", "-BootNro", NRO,
+                   os.path.join(REPO, "tools", "xbox", "local-run.ps1"), "-NoBuild", "-RequireShaders", "-BootNro", NRO,
                    "-RunSeconds", str(run_seconds), "-TimeoutSec", str(timeout)]
         if debug_layer:
             command.append("-DebugLayer")
@@ -176,37 +176,85 @@ def debug_by_scene(log):
     return {scene: sorted(ids) for scene, ids in found.items()}
 
 
+class PcTarget:
+    """Runs the payload on this PC, registered loose through local-run.ps1."""
+
+    def __init__(self, args):
+        self.args = args
+        self.state = local_state()
+        self.package = not args.no_package or self.state is None
+        self.sdmc = sdmc_dir(self.state) if self.state else None
+        if self.sdmc and os.path.isdir(self.sdmc):
+            shutil.rmtree(self.sdmc)
+
+    def prepare(self, skip, only):
+        if not self.sdmc:
+            return
+        os.makedirs(self.sdmc, exist_ok=True)
+        with open(os.path.join(self.sdmc, "skip.txt"), "w", newline="\n") as f:
+            f.write("".join(name + "\n" for name in skip))
+        with open(os.path.join(self.sdmc, "only.txt"), "w", newline="\n") as f:
+            f.write("".join(name + "\n" for name in only))
+        results_path = os.path.join(self.sdmc, "results.txt")
+        if os.path.exists(results_path):
+            os.remove(results_path)
+
+    def run(self):
+        exited, log = launch(self.package, self.args.scene_seconds, not self.args.no_debug_layer,
+                             scene_boot_cfg(self.args), self.state)
+        self.package = False
+        self.state = local_state()
+        self.sdmc = sdmc_dir(self.state)
+        return exited, log
+
+    def results(self):
+        results_path = os.path.join(self.sdmc, "results.txt")
+        if not os.path.exists(results_path):
+            return []
+        with open(results_path, encoding="utf-8", errors="replace") as f:
+            return f.read().splitlines()
+
+    def pictures(self, dest):
+        for path in glob.glob(os.path.join(self.sdmc, "*.bin")):
+            shutil.copy(path, dest)
+
+    def dumps(self, dest):
+        log_dir = os.path.join(self.state, "jadyx", "log") if self.state else ""
+        for pattern in ("shader_*", "dxil_*"):
+            for path in glob.glob(os.path.join(log_dir, pattern)):
+                shutil.copy(path, dest)
+
+    def close(self):
+        pass
+
+
+def scene_boot_cfg(args):
+    """The scenes' boot.cfg plus --boot-cfg's lines (diagnosis: dump_shader=..., log_filter=...)."""
+    return SCENE_BOOT_CFG + list(args.boot_cfg)
+
+
 def run_scenes(args, out_dir, report):
-    state = local_state()
-    package = not args.no_package or state is None
-    sdmc = sdmc_dir(state) if state else None
-    if sdmc and os.path.isdir(sdmc):
-        shutil.rmtree(sdmc)
+    if args.console:
+        import console
+        target = console.ConsoleTarget(REPO, NRO, args, scene_boot_cfg(args), report)
+    else:
+        target = PcTarget(args)
+    try:
+        return run_scenes_on(target, args, out_dir, report)
+    finally:
+        target.close()
+
+
+def run_scenes_on(target, args, out_dir, report):
     skip, crashed, statuses, probes, log_all = [], {}, {}, {}, []
     for attempt in range(1, 40):
-        if sdmc:
-            os.makedirs(sdmc, exist_ok=True)
-            with open(os.path.join(sdmc, "skip.txt"), "w", newline="\n") as f:
-                f.write("".join(name + "\n" for name in skip))
-            # --only runs just those scenes, so what one of them logs is not cut by the others.
-            with open(os.path.join(sdmc, "only.txt"), "w", newline="\n") as f:
-                f.write("".join(name + "\n" for name in args.only))
-            results_path = os.path.join(sdmc, "results.txt")
-            if os.path.exists(results_path):
-                os.remove(results_path)
-        exited, log = launch(package, args.scene_seconds, not args.no_debug_layer, SCENE_BOOT_CFG, state)
-        package = False
-        state = local_state()
-        sdmc = sdmc_dir(state)
+        # --only runs just those scenes, so what one of them logs is not cut by the others.
+        target.prepare(skip, args.only)
+        exited, log = target.run()
         log_all.append(log)
         with open(os.path.join(out_dir, f"scenes-log-{attempt}.txt"), "w", encoding="utf-8") as f:
             f.write(log)
-        lines = []
-        results_path = os.path.join(sdmc, "results.txt")
-        if os.path.exists(results_path):
-            with open(results_path, encoding="utf-8", errors="replace") as f:
-                lines = f.read().splitlines()
-        got, got_probes, stopped_in, done, rejected = parse_results(lines)
+        got, got_probes, stopped_in, done, rejected = parse_results(target.results())
         statuses.update(got)
         probes.update(got_probes)
         report(f"scenes run {attempt}: {len(got)} scenes ended" + ("" if done else f", stopped in {stopped_in}")
@@ -225,8 +273,9 @@ def run_scenes(args, out_dir, report):
         statuses[name] = how
     pictures = os.path.join(out_dir, "pictures")
     os.makedirs(pictures, exist_ok=True)
-    for path in glob.glob(os.path.join(sdmc, "*.bin")):
-        shutil.copy(path, pictures)
+    target.pictures(pictures)
+    # Shader dumps (--boot-cfg dump_shader=...) land in the log folder.
+    target.dumps(out_dir)
     debug = debug_by_scene("\n".join(log_all)) if not args.no_debug_layer else None
     return statuses, probes, pictures, debug
 
@@ -297,7 +346,7 @@ def picture_png(data, path):
     write_png(path, width, height, bytes(out))
 
 
-def compare_pictures(pictures, baseline_zip, update, report):
+def compare_pictures(pictures, baseline_zip, ran, update, report):
     regressions, new = [], []
     expected = {}
     if os.path.exists(baseline_zip):
@@ -317,7 +366,8 @@ def compare_pictures(pictures, baseline_zip, update, report):
             regressions.append(f"{scene}: picture {difference}")
             picture_png(expected[name], os.path.join(pictures, f"{scene}.expected.png"))
             picture_png(data, os.path.join(pictures, f"{scene}.actual.png"))
-    for name in sorted(set(expected) - set(current)):
+    # Only the scenes this run ran (--only runs a few) can miss their picture.
+    for name in sorted(n for n in set(expected) - set(current) if n[:-4] in ran):
         regressions.append(f"{name[:-4]}: picture missing")
     if update:
         merged = dict(expected)
@@ -417,9 +467,17 @@ def run_layers(layers, args, out_dir, lines, load_baseline, save_baseline, compa
         print(text, flush=True)
 
     for name, default in (("no_debug_layer", False), ("scene_seconds", 180), ("perf_frames", 1500),
-                          ("perf_seconds", 400), ("perf_runs", 2)):
+                          ("perf_seconds", 400), ("perf_runs", 2), ("console", None)):
         if not hasattr(args, name):
             setattr(args, name, default)
+    machine = MACHINE
+    if args.console:
+        # The console has no debug layer, and its perf runs go through tools/xbox/perf-run.ps1.
+        args.no_debug_layer = True
+        machine = "series"
+        if "perf" in layers:
+            lines.append("--- perf: not on the console; use tools/xbox/perf-run.ps1")
+            layers = layers - {"perf"}
     if not os.path.exists(NRO):
         lines.append(f"--- scenes/perf: payload not built ({NRO}); run build-payload.ps1")
         return True
@@ -436,8 +494,8 @@ def run_layers(layers, args, out_dir, lines, load_baseline, save_baseline, compa
         failed |= bool(regressions)
 
         picture_regressions, picture_new = compare_pictures(
-            pictures, os.path.join(os.path.dirname(os.path.abspath(__file__)), "baselines", f"pictures-{MACHINE}.zip"),
-            args.update_baseline and not args.only, report)
+            pictures, os.path.join(os.path.dirname(os.path.abspath(__file__)), "baselines", f"pictures-{machine}.zip"),
+            set(statuses), args.update_baseline and not args.only, report)
         report_section("pictures", picture_regressions, [], [], picture_new, lines)
         failed |= bool(picture_regressions)
 
@@ -448,7 +506,8 @@ def run_layers(layers, args, out_dir, lines, load_baseline, save_baseline, compa
             failed |= bool(debug_regressions)
         with open(os.path.join(out_dir, "scenes.json"), "w", encoding="utf-8") as f:
             json.dump({"statuses": statuses, "probes": probes, "debug": debug}, f, indent=1, sort_keys=True)
-        if args.update_baseline:
+        # The statuses baseline is the PC's: the console's results are compared with it, never saved over it.
+        if args.update_baseline and not args.console:
             merged = dict(baseline or {})
             merged.update(statuses)
             save_baseline("scenes.json", merged)
