@@ -90,6 +90,12 @@ bool DmaPusher::Step() {
             }
             return *gpu_written_result;
         };
+        // A segment that holds nothing but arguments of a macro call already open carries no
+        // command headers: the parser can read it as it is. The macro learns through
+        // current_dirty that the GPU wrote its arguments and either hands them to the GPU (the
+        // indirect draws) or refreshes the words it reads on the CPU, so the flush, a full GPU
+        // wait per page, waits only when a macro really reads GPU-written words.
+        bool macro_arguments_only = false;
         if (subchannels[dma_state.subchannel] && dma_state.method_count) {
             const auto engine = subchannel_type[dma_state.subchannel];
             const bool kepler_payload = engine == Engines::EngineTypes::KeplerCompute && dma_state.method == ComputeInline && dma_state.non_incrementing;
@@ -98,10 +104,12 @@ bool DmaPusher::Step() {
                 const size_t words = std::min<size_t>(dma_state.method_count, header.size);
                 subchannels[dma_state.subchannel]->current_dirty = gpu_written() && memory_manager.IsMemoryDirty(dma_state.dma_get, words * sizeof(u32));
             }
+            macro_arguments_only = macro_payload && dma_state.non_incrementing &&
+                                   dma_state.method_count >= header.size;
         }
         bool use_safe = Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe();
-        if (use_safe && filter) {
-            use_safe = gpu_written();
+        if (use_safe && (filter || macro_arguments_only)) {
+            use_safe = !macro_arguments_only && gpu_written();
             VideoCore::Perf::AddDetailed(use_safe ? VideoCore::Perf::Counter::DmaHeaderFlushes
                                                      : VideoCore::Perf::Counter::DmaHeaderFlushesSkipped,
                                          1);
