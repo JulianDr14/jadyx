@@ -20,6 +20,7 @@
 #include "video_core/renderer_d3d12/d3d12_log.h"
 #include "video_core/renderer_d3d12/d3d12_draw_targets.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
+#include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 
@@ -275,6 +276,7 @@ bool RasterizerD3D12::BeginStencilFaces(GraphicsPipeline& pipeline,
         return false;
     }
     scheduler.SetPipelineState(front_faces);
+    VideoCore::Perf::Add(VideoCore::Perf::Counter::StencilFaceSplits, 1);
     return true;
 }
 

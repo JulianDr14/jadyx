@@ -3,11 +3,13 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 
 #include "common/logging.h"
 
+#include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_query_cache.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
@@ -185,7 +187,16 @@ u64 HostCounter::BlockingQuery([[maybe_unused]] bool async) const {
     if (!ended) {
         const_cast<HostCounter*>(this)->EndQuery();
     }
-    cache.GetScheduler().Wait(tick);
+    auto& scheduler = cache.GetScheduler();
+    if (!scheduler.IsFree(tick)) {
+        const auto start = std::chrono::steady_clock::now();
+        scheduler.Wait(tick);
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::QueryBlockingWaits, 1);
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::QueryBlockingWaitUs,
+                             static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                  std::chrono::steady_clock::now() - start)
+                                                  .count()));
+    }
     return ReadResolved();
 }
 

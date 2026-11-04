@@ -2003,6 +2003,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                                                        infos, layout, build_pso, &graphics_psos,
                                                        lower_noperspective_mask, tess_plan);
     pipeline->SetFragmentHelpers(fragment_helpers);
+    pipeline->SetGeneratesGeometry(generates_geometry);
     return pipeline;
 
 } catch (const Shader::Exception& exception) {

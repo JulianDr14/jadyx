@@ -695,6 +695,22 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
              VideoCore::Perf::Get(delta, Counter::PsoCreates), Ms(delta, Counter::PsoCreateUs));
     LOG_INFO(Render, "D3D12 depth feedback: {} GPU copies in total",
              texture_cache_runtime.DepthFeedbackCopies());
+    {
+        const auto get = [&](Counter counter) { return VideoCore::Perf::Get(delta, counter); };
+        const auto mib = [](u64 bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); };
+        const u64 query_waits = get(Counter::QueryBlockingWaits);
+        LOG_INFO(Render,
+                 "D3D12 corrections: {} draws, {} tessellated, {} generated geometry, {} stencil "
+                 "face splits; copies: {} logic op ({:.2f} MiB whole), {} of them level-only, {} "
+                 "snapshots reused; {} depth feedback; {} query "
+                 "waits / {:.2f} ms ({:.3f} ms per wait)",
+                 get(Counter::Draws), get(Counter::TessDraws), get(Counter::GeneratedGeometryDraws),
+                 get(Counter::StencilFaceSplits), get(Counter::LogicOpCopies),
+                 mib(get(Counter::LogicOpCopyBytes)), get(Counter::SnapshotLevelCopies),
+                 get(Counter::SnapshotReuses), get(Counter::DepthFeedbackCopies), query_waits,
+                 Ms(delta, Counter::QueryBlockingWaitUs),
+                 query_waits != 0 ? Ms(delta, Counter::QueryBlockingWaitUs) / query_waits : 0.0);
+    }
     LOG_INFO(Render, "D3D12 guest JIT: {} full code cache clears in total",
              Dynarmic::JitProfile::full_cache_clears.load(std::memory_order_relaxed));
     if (Core::CpuProfile::Enabled()) {

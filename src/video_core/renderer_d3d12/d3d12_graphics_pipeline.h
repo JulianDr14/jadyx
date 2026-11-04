@@ -493,6 +493,15 @@ public:
         fragment_helpers = helpers;
     }
 
+    /// Whether the pipeline draws through a geometry shader generated for state D3D12 lacks.
+    void SetGeneratesGeometry(bool value) noexcept {
+        generates_geometry = value;
+    }
+
+    [[nodiscard]] bool GeneratesGeometry() const noexcept {
+        return generates_geometry;
+    }
+
     [[nodiscard]] const FragmentHelpers& GetFragmentHelpers() const noexcept {
         return fragment_helpers;
     }
@@ -547,6 +556,7 @@ private:
     const u32 lower_noperspective_mask;
     const TessEmulationPlan tess_plan;
     FragmentHelpers fragment_helpers{};
+    bool generates_geometry{};
     SharedDxilStages dxil; ///< Immutable linked bytecode shared across fixed-state PSOs.
     std::array<bool, NUM_STAGES> has_stage{};
     std::array<std::shared_ptr<const StageBindings>, NUM_STAGES> stage_infos;

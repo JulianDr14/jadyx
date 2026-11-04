@@ -492,7 +492,11 @@ void RasterizerD3D12::RecordDraw(GraphicsPipeline& pipeline,
     BindDrawState(pipeline, bindings, framebuffer, params, topology, compatible);
     CommandStream* const cmd = scheduler.CommandList();
     VideoCore::Perf::Add(VideoCore::Perf::Counter::Draws, 1);
+    if (pipeline.GeneratesGeometry()) {
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::GeneratedGeometryDraws, 1);
+    }
     if (pipeline.TessPlan().Active()) {
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::TessDraws, 1);
         RecordTessellatedDraw(pipeline, bindings, params);
     } else {
         const ConditionalRendering::Scope predicate{conditional_rendering, cmd};

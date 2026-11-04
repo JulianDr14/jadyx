@@ -226,6 +226,18 @@ enum class Counter : size_t {
     TessTessellateGpuNs,
     TessReadbackGpuNs,  ///< barriers after the tessellator and the copy of the record's needs
     TessDrawGpuNs,
+    // Draws D3D12 needs extra work for (always counted).
+    TessDraws,                ///< draws through the emulated tessellation (compute passes)
+    GeneratedGeometryDraws,   ///< draws through a generated geometry shader (lines, points,
+                              ///< fill rectangle, polygon points, last provoking vertex)
+    StencilFaceSplits,        ///< draws split per face for different stencil references
+    SnapshotLevelCopies,      ///< logic op snapshots that copied only stale levels
+    SnapshotReuses,           ///< logic op snapshots still current: no copy
+    LogicOpCopies,            ///< emulated logic op: destination copied before the draw
+    LogicOpCopyBytes,
+    DepthFeedbackCopies,      ///< depth images copied so a draw can sample its own target
+    QueryBlockingWaits,       ///< guest query reads that waited on the GPU fence
+    QueryBlockingWaitUs,
     Count,
 };
 
