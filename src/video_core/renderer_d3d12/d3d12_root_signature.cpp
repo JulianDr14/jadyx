@@ -16,6 +16,7 @@
 #include "common/cityhash.h"
 #include "common/logging.h"
 #include "shader_recompiler/local_memory_scratch.h"
+#include "shader_recompiler/tessellation_emulation.h"
 #include "shader_recompiler/transform_feedback_storage.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
@@ -167,7 +168,8 @@ void RootSignatureCache::CreateCommandSignatures(PipelineLayout& layout, bool is
 
 const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* const> infos,
                                               bool is_compute, bool stream_output,
-                                              bool emulate_reduction, bool blend_constants) {
+                                              bool emulate_reduction, bool blend_constants,
+                                              bool tess_emulation) {
     bool integer_textures = false;
     bool textures = false;
     bool local_memory_scratch = false;
@@ -207,8 +209,12 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             xfb_buffers != 0 ? Shader::TransformFeedbackStorage::CONSTANT_WORDS +
                                    2 * static_cast<u32>(std::popcount(xfb_buffers))
                              : 0;
+        // Tessellation emulation: three root SRVs, a root UAV and the constants.
+        const u32 tess_words =
+            tess_emulation ? 8 + Shader::TessellationEmulation::CONSTANT_WORDS : 0;
         const u32 used = push_constant_words + runtime_data_words + 2 +
-                         (sampler_table ? 2 : 0) + (local_memory_scratch ? 2 : 0) + xfb_words;
+                         (sampler_table ? 2 : 0) + (local_memory_scratch ? 2 : 0) + xfb_words +
+                         tess_words;
         root.budget = std::min<size_t>(PipelineLayout::MAX_ROOT_CBVS,
                                        used < ROOT_DWORDS ? (ROOT_DWORDS - used) / 2 : 0);
     }
@@ -226,7 +232,8 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
     std::vector<u32> key{(is_compute ? 1u : 0u) | (sampler_table ? 2u : 0u) |
                          (local_memory_scratch ? 4u : 0u) | (xfb_buffers << 3) |
                          (stream_output ? 1u << 7 : 0u) | (blend_constants ? 1u << 8 : 0u) |
-                         (stage_constants ? 1u << 9 : 0u) | (polygon_stipple ? 1u << 10 : 0u)};
+                         (stage_constants ? 1u << 9 : 0u) | (polygon_stipple ? 1u << 10 : 0u) |
+                         (tess_emulation ? 1u << 11 : 0u)};
     AppendKey(key, ranges.resources);
     AppendKey(key, ranges.samplers);
     key.push_back(static_cast<u32>(root.registers.size()));
@@ -320,6 +327,28 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
                 .ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX,
             });
         }
+    }
+    if (tess_emulation) {
+        namespace Tess = Shader::TessellationEmulation;
+        layout->tess_emulation_index = static_cast<u32>(params.size());
+        const auto view = [&](D3D12_ROOT_PARAMETER_TYPE type, u32 reg) {
+            params.push_back({
+                .ParameterType = type,
+                .Descriptor = {.ShaderRegister = reg, .RegisterSpace = Tess::DESCRIPTOR_SET},
+                .ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
+            });
+        };
+        view(D3D12_ROOT_PARAMETER_TYPE_SRV, Tess::INPUT_BINDING);
+        view(D3D12_ROOT_PARAMETER_TYPE_UAV, Tess::OUTPUT_BINDING);
+        view(D3D12_ROOT_PARAMETER_TYPE_SRV, Tess::POINTS_BINDING);
+        params.push_back({
+            .ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+            .Constants = {.ShaderRegister = Tess::CONSTANTS_BINDING,
+                          .RegisterSpace = Tess::DESCRIPTOR_SET,
+                          .Num32BitValues = Tess::CONSTANT_WORDS},
+            .ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
+        });
+        view(D3D12_ROOT_PARAMETER_TYPE_SRV, Tess::INDICES_BINDING);
     }
     if (!root.registers.empty()) {
         layout->root_cbv_index = static_cast<u32>(params.size());

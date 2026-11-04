@@ -200,6 +200,7 @@ add_library(shader_recompiler STATIC
     program_header.h
     runtime_info.h
     shader_info.h
+    tessellation_emulation.h
     transform_feedback_storage.h
     varying_state.h)
 

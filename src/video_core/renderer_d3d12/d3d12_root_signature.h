@@ -50,6 +50,9 @@ constexpr u32 INDIRECT_DISPATCH_WORDS = INDIRECT_DISPATCH_CONSTANT_WORDS + 3;
 ///    when the fragment shader keeps its local memory there
 ///  - root constants and root UAVs, transform feedback (Shader::TransformFeedbackStorage): b4 and
 ///    u<N> space 27, vertex stage only, when the vertex shader writes transform feedback buffers
+///  - root SRVs, UAV and constants, tessellation emulation (Shader::TessellationEmulation): t0,
+///    u1, t2 and b3 space 26, when the pipeline tessellates without the host tessellator. Visible
+///    to all stages: the control shader runs as compute with this same signature
 ///  - graphics only: root CBVs for the first constant buffers that are not arrays, up to
 ///    MAX_ROOT_CBVS and what the 64-dword root budget leaves. Setting a root address per draw
 ///    replaces creating a CBV in the table; the shaders still read b<B> space 0
@@ -96,7 +99,11 @@ public:
     const std::array<u32, 4>& TransformFeedbackBufferIndices() const noexcept {
         return xfb_buffer_indices;
     }
-    /// The pipelines of this layout capture transform feedback through stream output.
+    /// Root parameter index of the tessellation emulation input SRV, or NO_TABLE; the output UAV,
+    /// the points SRV, the constants and the indices SRV follow it in that order.
+    u32 TessEmulationIndex() const noexcept {
+        return tess_emulation_index;
+    }
     bool StageConstants() const noexcept {
         return stage_constants;
     }
@@ -105,6 +112,7 @@ public:
         return polygon_stipple;
     }
 
+    /// The pipelines of this layout capture transform feedback through stream output.
     [[nodiscard]]
     bool StreamOutput() const noexcept {
         return stream_output;
@@ -155,6 +163,7 @@ private:
     u32 integer_sampler_index{NO_TABLE};
     u32 local_memory_scratch_index{NO_TABLE};
     u32 xfb_constants_index{NO_TABLE};
+    u32 tess_emulation_index{NO_TABLE};
     std::array<u32, 4> xfb_buffer_indices{NO_TABLE, NO_TABLE, NO_TABLE, NO_TABLE};
     u32 num_resources{};
     u32 num_samplers{};
@@ -194,10 +203,11 @@ public:
     /// (absent stages) are skipped. stream_output: the pipeline declares stream output (native
     /// transform feedback). emulate_reduction: its float samples read the sampler table too
     /// (EDEN_SPIRV_TO_DXIL_EMULATE_REDUCTION). blend_constants: a shader reads the blend constant.
+    /// tess_emulation: the pipeline tessellates through Shader::TessellationEmulation.
     /// Throws std::runtime_error if D3D12 rejects the signature.
     const PipelineLayout& Get(std::span<const Shader::Info* const> infos, bool is_compute,
                               bool stream_output = false, bool emulate_reduction = false,
-                              bool blend_constants = false);
+                              bool blend_constants = false, bool tess_emulation = false);
 
 private:
     void CreateCommandSignatures(PipelineLayout& layout, bool is_compute);

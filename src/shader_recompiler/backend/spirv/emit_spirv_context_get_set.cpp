@@ -5,14 +5,125 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <bit>
+#include <optional>
 #include <tuple>
 #include <utility>
 
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
+#include "shader_recompiler/tessellation_emulation.h"
 
 namespace Shader::Backend::SPIRV {
 namespace {
+namespace Tess = TessellationEmulation;
+
+/// First word of the output vertex in the record (tessellation_emulation.h).
+Id TessOutputVertexWord(EmitContext& ctx, Id vertex) {
+    const RuntimeInfo& info{ctx.runtime_info};
+    const Id base{ctx.OpIAdd(ctx.U32[1], ctx.tess_record,
+                             ctx.Const(Tess::LEVEL_WORDS +
+                                       info.tess_record_patch_slots * Tess::SLOT_WORDS))};
+    const Id offset{ctx.OpIMul(ctx.U32[1], vertex,
+                               ctx.Const(info.tess_output_vertex_slots * Tess::SLOT_WORDS))};
+    return ctx.OpIAdd(ctx.U32[1], base, offset);
+}
+
+/// Capture slot of a vertex of the control shader's patch: its draw position, or for an indexed
+/// draw the index there, past the first slot of the instance (tessellation_emulation.h).
+Id TessInputSlot(EmitContext& ctx, Id vertex) {
+    const auto constant{[&](u32 word) {
+        return ctx.OpLoad(ctx.U32[1], ctx.OpAccessChain(ctx.tess_constant_element,
+                                                        ctx.tess_constants, ctx.Const(word)));
+    }};
+    const Id position{ctx.OpIAdd(ctx.U32[1], ctx.tess_patch_position, vertex)};
+    const Id index_size{constant(Tess::INDEX_SIZE_WORD)};
+    // A non-indexed draw binds the capture as the indices: the load stays in bounds.
+    const Id byte{ctx.OpIAdd(ctx.U32[1], constant(Tess::FIRST_INDEX_BYTE_WORD),
+                             ctx.OpIMul(ctx.U32[1], position, index_size))};
+    const Id word{ctx.OpLoad(ctx.U32[1],
+                             ctx.TessWord(ctx.tess_indices_buffer,
+                                          ctx.OpShiftRightLogical(ctx.U32[1], byte, ctx.Const(2U))))};
+    // 16-bit indices sit in the low or high half of their word.
+    const Id half_bit{ctx.OpShiftLeftLogical(
+        ctx.U32[1], ctx.OpBitwiseAnd(ctx.U32[1], byte, ctx.Const(2U)), ctx.Const(3U))};
+    const Id half{ctx.OpBitFieldUExtract(ctx.U32[1], word, half_bit, ctx.Const(16U))};
+    const Id index{ctx.OpSelect(ctx.U32[1], ctx.OpIEqual(ctx.U1, index_size, ctx.Const(2U)), half,
+                                word)};
+    const Id indexed{ctx.OpINotEqual(ctx.U1, index_size, ctx.u32_zero_value)};
+    return ctx.OpIAdd(ctx.U32[1], ctx.tess_input_vertex,
+                      ctx.OpSelect(ctx.U32[1], indexed, index, position));
+}
+
+Id TessGetAttribute(EmitContext& ctx, IR::Attribute attr, Id vertex) {
+    const RuntimeInfo& info{ctx.runtime_info};
+    const bool control{info.tess_emulation == TessEmulation::ControlCompute};
+    switch (attr) {
+    case IR::Attribute::PrimitiveId:
+        return ctx.OpBitcast(ctx.F32[1], ctx.tess_primitive);
+    case IR::Attribute::TessellationEvaluationPointU:
+        if (!control) {
+            return ctx.tess_coord_u;
+        }
+        break;
+    case IR::Attribute::TessellationEvaluationPointV:
+        if (!control) {
+            return ctx.tess_coord_v;
+        }
+        break;
+    default:
+        break;
+    }
+    const u32 group{static_cast<u32>(attr) / 4};
+    const u32 element{static_cast<u32>(attr) % 4};
+    const u32 slot{group < info.tess_input_slots.size()
+                       ? (control ? info.tess_input_slots : info.tess_output_slots)[group]
+                       : 0U};
+    if (slot == 0) {
+        // Not written by the previous stage: like a disabled input.
+        const bool vector{IR::IsGeneric(attr) || (attr >= IR::Attribute::PositionX &&
+                                                  attr <= IR::Attribute::PositionW)};
+        return ctx.Const(vector && element == 3 ? 1.0f : 0.0f);
+    }
+    const Id first{control
+                       ? ctx.OpIMul(ctx.U32[1], TessInputSlot(ctx, vertex),
+                                    ctx.Const(info.tess_input_vertex_slots * Tess::SLOT_WORDS))
+                       : TessOutputVertexWord(ctx, vertex)};
+    const Id word{ctx.OpIAdd(ctx.U32[1], first, ctx.Const((slot - 1) * Tess::SLOT_WORDS + element))};
+    return ctx.OpBitcast(ctx.F32[1], ctx.OpLoad(ctx.U32[1], ctx.TessWord(ctx.tess_input_buffer, word)));
+}
+
+void TessSetAttribute(EmitContext& ctx, IR::Attribute attr, Id value) {
+    const u32 group{static_cast<u32>(attr) / 4};
+    const u32 slot{group < ctx.runtime_info.tess_output_slots.size()
+                       ? ctx.runtime_info.tess_output_slots[group]
+                       : 0U};
+    if (slot == 0) {
+        // The evaluation shader does not read it.
+        return;
+    }
+    const Id first{TessOutputVertexWord(ctx, ctx.tess_invocation)};
+    const Id word{ctx.OpIAdd(ctx.U32[1], first,
+                             ctx.Const((slot - 1) * Tess::SLOT_WORDS + static_cast<u32>(attr) % 4))};
+    ctx.OpStore(ctx.TessWord(ctx.tess_output_buffer, word), ctx.OpBitcast(ctx.U32[1], value));
+}
+
+/// Word of a patch in the record, or nullopt if the record does not hold it.
+std::optional<Id> TessPatchWord(EmitContext& ctx, IR::Patch patch) {
+    u32 offset{};
+    if (IR::IsGeneric(patch)) {
+        const u32 slot{ctx.runtime_info.tess_patch_slots.at(IR::GenericPatchIndex(patch))};
+        if (slot == 0) {
+            return std::nullopt;
+        }
+        offset = Tess::LEVEL_WORDS + (slot - 1) * Tess::SLOT_WORDS + IR::GenericPatchElement(patch);
+    } else if (patch >= IR::Patch::TessellationLodLeft &&
+               patch <= IR::Patch::TessellationLodInteriorV) {
+        offset = static_cast<u32>(patch) - static_cast<u32>(IR::Patch::TessellationLodLeft);
+    } else {
+        throw NotImplementedException("Patch {}", patch);
+    }
+    return ctx.OpIAdd(ctx.U32[1], ctx.tess_record, ctx.Const(offset));
+}
 template <typename... Args>
 Id AttrPointer(EmitContext& ctx, Id pointer_type, Id vertex, Id base, Args&&... args) {
     switch (ctx.stage) {
@@ -304,6 +415,9 @@ Id EmitGetCbufU32x2(EmitContext& ctx, const IR::Value& binding, const IR::Value&
 }
 
 Id EmitGetAttribute(EmitContext& ctx, IR::Attribute attr, Id vertex) {
+    if (ctx.EmulatesTessellation()) {
+        return TessGetAttribute(ctx, attr, vertex);
+    }
     const u32 element{static_cast<u32>(attr) % 4};
     if (IR::IsGeneric(attr)) {
         const u32 index{IR::GenericAttributeIndex(attr)};
@@ -414,6 +528,12 @@ Id EmitGetAttribute(EmitContext& ctx, IR::Attribute attr, Id vertex) {
 }
 
 Id EmitGetAttributeU32(EmitContext& ctx, IR::Attribute attr, Id) {
+    if (ctx.EmulatesTessellation()) {
+        if (attr == IR::Attribute::PrimitiveId) {
+            return ctx.tess_primitive;
+        }
+        throw NotImplementedException("Read U32 attribute {} with emulated tessellation", attr);
+    }
     switch (attr) {
     case IR::Attribute::PrimitiveId:
         return ctx.OpLoad(ctx.U32[1], ctx.primitive_id);
@@ -443,6 +563,10 @@ Id EmitGetAttributeU32(EmitContext& ctx, IR::Attribute attr, Id) {
 }
 
 void EmitSetAttribute(EmitContext& ctx, IR::Attribute attr, Id value, [[maybe_unused]] Id vertex) {
+    if (ctx.runtime_info.tess_emulation == TessEmulation::ControlCompute) {
+        TessSetAttribute(ctx, attr, value);
+        return;
+    }
     const std::optional<OutAttr> output{OutputAttrPointer(ctx, attr)};
     if (!output) {
         return;
@@ -477,6 +601,17 @@ void EmitSetAttributeIndexed(EmitContext& ctx, Id offset, Id value, [[maybe_unus
 }
 
 Id EmitGetPatch(EmitContext& ctx, IR::Patch patch) {
+    if (ctx.EmulatesTessellation()) {
+        // The control shader reads back what it wrote, the evaluation shader its input record.
+        const std::optional<Id> word{TessPatchWord(ctx, patch)};
+        if (!word) {
+            return ctx.f32_zero_value;
+        }
+        const Id buffer{ctx.runtime_info.tess_emulation == TessEmulation::ControlCompute
+                            ? ctx.tess_output_buffer
+                            : ctx.tess_input_buffer};
+        return ctx.OpBitcast(ctx.F32[1], ctx.OpLoad(ctx.U32[1], ctx.TessWord(buffer, *word)));
+    }
     if (!IR::IsGeneric(patch)) {
         throw NotImplementedException("Non-generic patch load");
     }
@@ -488,6 +623,13 @@ Id EmitGetPatch(EmitContext& ctx, IR::Patch patch) {
 }
 
 void EmitSetPatch(EmitContext& ctx, IR::Patch patch, Id value) {
+    if (ctx.EmulatesTessellation()) {
+        if (const std::optional<Id> word{TessPatchWord(ctx, patch)}) {
+            ctx.OpStore(ctx.TessWord(ctx.tess_output_buffer, *word),
+                        ctx.OpBitcast(ctx.U32[1], value));
+        }
+        return;
+    }
     const Id pointer{[&] {
         if (IR::IsGeneric(patch)) {
             const u32 index{IR::GenericPatchIndex(patch)};
@@ -601,6 +743,9 @@ Id EmitLocalInvocationId(EmitContext& ctx) {
 }
 
 Id EmitInvocationId(EmitContext& ctx) {
+    if (ctx.EmulatesTessellation()) {
+        return ctx.tess_invocation;
+    }
     return ctx.OpLoad(ctx.U32[1], ctx.invocation_id);
 }
 
@@ -608,6 +753,13 @@ Id EmitInvocationInfo(EmitContext& ctx) {
     switch (ctx.stage) {
     case Stage::TessellationControl:
     case Stage::TessellationEval:
+        if (ctx.EmulatesTessellation()) {
+            // The control shader's patch is the captured one, the evaluation shader's its output.
+            const u32 vertices{ctx.stage == Stage::TessellationControl
+                                   ? ctx.runtime_info.tess_input_vertices
+                                   : ctx.runtime_info.tess_output_vertices};
+            return ctx.Const(vertices << 16);
+        }
         if (ctx.runtime_info.patch_vertices != 0) {
             return ctx.Const(ctx.runtime_info.patch_vertices << 16);
         }

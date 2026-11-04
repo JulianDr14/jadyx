@@ -7,7 +7,9 @@
 #include <chrono>
 #include <cstring>
 #include <optional>
+#include <span>
 #include <unordered_map>
+#include <vector>
 
 #include <spirv_to_dxil.h>
 
@@ -124,6 +126,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
       sampler_heap{sampler_heap_}, blit_helper{blit_helper_},
       indirect_args{device, scheduler_, staging},
       stream_output{device, scheduler_, compiler},
+      tess_emulation{device, scheduler_, compiler},
       descriptor_queue{device.Get(), descriptor_ring_},
       buffer_cache{device_memory_, buffer_runtime_}, texture_cache{texture_runtime, device_memory_},
       pipeline_cache{device_memory_, device, compiler, texture_runtime, gpu_.ShaderNotify()},
@@ -489,7 +492,9 @@ void RasterizerD3D12::RecordDraw(GraphicsPipeline& pipeline,
     BindDrawState(pipeline, bindings, framebuffer, params, topology, compatible);
     CommandStream* const cmd = scheduler.CommandList();
     VideoCore::Perf::Add(VideoCore::Perf::Counter::Draws, 1);
-    {
+    if (pipeline.TessPlan().Active()) {
+        RecordTessellatedDraw(pipeline, bindings, params);
+    } else {
         const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
         DrawStencilFaces(pipeline, topology, [&] {
             if (params.is_indexed) {
@@ -504,6 +509,81 @@ void RasterizerD3D12::RecordDraw(GraphicsPipeline& pipeline,
         });
     }
     texture_runtime.FinishCompatibleDrawTargets(framebuffer);
+}
+
+void RasterizerD3D12::RecordTessellatedDraw(GraphicsPipeline& pipeline,
+                                            const PipelineBindings& bindings,
+                                            const DrawParams& params) {
+    CommandStream* const cmd = scheduler.CommandList();
+    const PipelineLayout& layout = pipeline.Layout();
+    const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
+    TessEmulation::DrawShape shape{
+        .num_vertices = params.num_vertices,
+        .num_instances = params.num_instances,
+        .first_index = params.first_index,
+        .base_vertex = params.base_vertex,
+        .base_instance = params.base_instance,
+        .is_indexed = params.is_indexed,
+        .index_address = 0,
+        .index_size = 0,
+        .index_slots = 0,
+    };
+    if (params.is_indexed) {
+        const std::optional<D3D12_INDEX_BUFFER_VIEW>& view = buffer_runtime.AppliedIndex();
+        if (!view) [[unlikely]] {
+            BUG_TRACK(UnsupportedState, "tessellated indexed draw without an index buffer");
+            return;
+        }
+        shape.index_address = view->BufferLocation;
+        shape.index_size = view->Format == DXGI_FORMAT_R16_UINT ? 2 : 4;
+        shape.index_slots = TessIndexSlots();
+    }
+    const u32 patches = tess_emulation.Capture(cmd, pipeline, shape);
+    command_state.topology = D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
+    if (patches != 0) {
+        cmd->SetComputeRootSignature(layout.Handle());
+        SetTessControlRootArguments(cmd, pipeline, bindings);
+        tess_emulation.Control(cmd, pipeline, patches);
+        tess_emulation.Tessellate(cmd, pipeline, patches, command_state.viewport.yz_flip_mask, 0);
+        scheduler.SetPipelineState(pipeline.Handle());
+        command_state.topology = tess_emulation.Draw(cmd, pipeline);
+        // The record wrote the runtime data constants, and the index buffer is the emulation's.
+        command_state.root_args.valid = false;
+        buffer_runtime.InvalidateGeometry();
+    }
+}
+
+u32 RasterizerD3D12::TessIndexSlots() const {
+    // The largest index the draw reads, from the guest's indices: the rewritten ones keep their
+    // values. All ones is the restart index, which names no vertex.
+    const auto& draw_state = maxwell3d->draw_manager.draw_state;
+    const auto& index_buffer = draw_state.index_buffer;
+    const size_t size = index_buffer.FormatSizeInBytes();
+    const size_t bytes = size_t{index_buffer.count} * size;
+    std::vector<u8> guest;
+    std::span<const u8> indices;
+    if (!draw_state.inline_index_draw_indexes.empty()) {
+        const std::span<const u8> inline_indices{draw_state.inline_index_draw_indexes};
+        const size_t first = std::min(size_t{index_buffer.first} * size, inline_indices.size());
+        indices = inline_indices.subspan(first, std::min(bytes, inline_indices.size() - first));
+    } else {
+        guest.resize(bytes);
+        gpu_memory->ReadBlockUnsafe(index_buffer.IndexStart(), guest.data(), bytes);
+        indices = guest;
+    }
+    const auto largest = [&]<typename T>(T) {
+        T max{};
+        for (size_t offset = 0; offset + sizeof(T) <= indices.size(); offset += sizeof(T)) {
+            T value;
+            std::memcpy(&value, indices.data() + offset, sizeof(T));
+            if (value != static_cast<T>(~T{})) {
+                max = std::max(max, value);
+            }
+        }
+        return u64{max} + 1;
+    };
+    const u64 slots = size == 1 ? largest(u8{}) : size == 2 ? largest(u16{}) : largest(u32{});
+    return static_cast<u32>(std::min<u64>(slots, ~0u));
 }
 
 void RasterizerD3D12::DispatchCompute() {

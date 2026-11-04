@@ -55,6 +55,7 @@ set(SHADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_block_linear_unswizzle.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_draw_auto.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_render_condition.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_tessellate.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_bc3_encoder.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_bcn_decoder.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_scratch_probe.frag

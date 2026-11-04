@@ -28,6 +28,15 @@ enum class AttributeType : u8 {
     SignedNormA2B10G10R10,
 };
 
+/// How the stage runs when tessellation is emulated (tessellation_emulation.h).
+enum class TessEmulation : u8 {
+    None,
+    /// The control shader runs as compute and writes patch records.
+    ControlCompute,
+    /// The evaluation shader runs as a vertex shader over the tessellator's domain points.
+    EvalVertex,
+};
+
 enum class InputTopology {
     Points,
     Lines,
@@ -192,6 +201,24 @@ struct RuntimeInfo {
     /// repeats) go out through copies at free generic locations, stored before any position
     /// transform, so stream output reads the values the guest wrote (D3D12).
     bool xfb_copy_outputs{};
+
+    /// Tessellation without the host tessellator (tessellation_emulation.h).
+    TessEmulation tess_emulation{};
+    /// The vertex shader of that tessellation: stores its tess_input_slots to the capture.
+    bool tess_capture{};
+    /// Slot plus one of each attribute group (attribute / 4) in a captured vertex (control
+    /// inputs) and in a record's output vertex (control outputs, evaluation inputs); 0: absent.
+    std::array<u8, 128> tess_input_slots{};
+    std::array<u8, 128> tess_output_slots{};
+    /// Slot plus one of each generic patch (IR::GenericPatchIndex) in a record; 0: absent.
+    std::array<u8, 30> tess_patch_slots{};
+    /// Slots of a captured vertex, of a record's output vertex, and generic patch slots.
+    u32 tess_input_vertex_slots{};
+    u32 tess_output_vertex_slots{};
+    u32 tess_record_patch_slots{};
+    /// Vertices of an input patch and of an output patch.
+    u32 tess_input_vertices{};
+    u32 tess_output_vertices{};
 
     /// Output types for each color attachment
     std::array<AttributeType, 8> color_output_types{};

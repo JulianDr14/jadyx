@@ -48,6 +48,8 @@ param(
     # Mesa's SPIR-V -> DXIL translator for the D3D12 renderer, built by build-spirv-to-dxil.ps1.
     # Without it the renderer still presents, through its CPU fallback.
     [string] $SpirvToDxil = "..\mesa-build\build-uwp\src\microsoft\spirv_to_dxil\spirv_to_dxil.dll",
+    # Fail instead of warning when the shader path is missing: a renderer test without it draws nothing.
+    [switch] $RequireShaders,
     # Optional local diagnostic DXIL sidecars; never bundled by default.
     [string] $MaterialProbeShaders,
     [ValidateRange(6, 8)]
@@ -143,11 +145,11 @@ if (Test-Path $s2d) {
         Copy-Item $dxil $layout
         Write-Host "signing  : $dxil"
     } catch {
-        if ($Release) { throw "dxil.dll not found in the Windows SDK: a release needs the GPU shader path." }
+        if ($Release -or $RequireShaders) { throw "dxil.dll not found in the Windows SDK: the GPU shader path is needed." }
         Write-Warning "dxil.dll not found in the Windows SDK: the D3D12 renderer will present through the CPU."
     }
 } else {
-    if ($Release) { throw "spirv_to_dxil.dll not found ($s2d): a release needs the GPU shader path." }
+    if ($Release -or $RequireShaders) { throw "spirv_to_dxil.dll not found ($s2d): the GPU shader path is needed." }
     Write-Warning "spirv_to_dxil.dll not found ($s2d): the D3D12 renderer will present through the CPU."
 }
 

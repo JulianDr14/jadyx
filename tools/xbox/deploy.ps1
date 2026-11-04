@@ -4,16 +4,20 @@
 # Builds jadyx, packages it into build-uwp\package and installs it, on the console or on this PC.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\xbox\deploy.ps1 -Version 0.3.8.31
-#       [-Target Console|Pc] [-BootCfg "key=value","key=value"] [-NoBuild] [-Console 192.168.1.50]
+#       [-Target Console|Pc] [-BootCfg "key=value","key=value"] [-NoBuild] [-NoPackage]
+#       [-Console 192.168.1.50]
 #
 # Console: uploads the package, its VCLibs dependency and the certificate through the Device
 # Portal REST API and waits for the install to finish. The app keeps its Game mode setting.
+# -NoPackage installs what build-uwp\package already holds (a payload package from package-appx.ps1,
+# for one); -Version must then be the version it was packed with.
 # Pc: hands over to local-run.ps1 (loose register in Developer Mode, launch, wait for the boot).
 param(
     [Parameter(Mandatory)] [string] $Version,
     [ValidateSet('Console', 'Pc')] [string] $Target = 'Console',
     [string[]] $BootCfg = @(),
     [switch] $NoBuild,
+    [switch] $NoPackage,
     [string] $Console = $(if ($env:JADYX_CONSOLE) { $env:JADYX_CONSOLE } else { '192.168.1.50' })
 )
 $ErrorActionPreference = 'Stop'
@@ -31,11 +35,13 @@ if (-not $NoBuild) {
         throw "build failed (build-uwp\build.log)"
     }
 }
-Push-Location $r
-try {
-    & "$r\tools\xbox\package-appx.ps1" -Library -Version $Version -BootCfg $BootCfg *> "$r\build-uwp\package.log"
-} finally {
-    Pop-Location
+if (-not $NoPackage) {
+    Push-Location $r
+    try {
+        & "$r\tools\xbox\package-appx.ps1" -Library -Version $Version -BootCfg $BootCfg *> "$r\build-uwp\package.log"
+    } finally {
+        Pop-Location
+    }
 }
 $package = "$r\build-uwp\package"
 foreach ($file in 'jadyx.appx', 'Microsoft.VCLibs.x64.14.00.appx', 'jadyx.cer') {

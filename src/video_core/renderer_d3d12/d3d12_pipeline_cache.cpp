@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -31,6 +32,7 @@
 #include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/ir_opt/workgroup_split_pass.h"
 #include "shader_recompiler/program_header.h"
+#include "shader_recompiler/tessellation_emulation.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/frame_trace.h"
@@ -418,6 +420,128 @@ PrimitiveGeometry PlanPrimitiveGeometry(std::span<Shader::IR::Program> programs,
     }
     return plan;
 }
+
+/// Gives each attribute group (attribute / 4) that stores writes and loads reads a slot of an
+/// emulated tessellation vertex (RuntimeInfo::tess_input_slots), position first, then the
+/// generics in order. Legacy loads take every group stores writes. Returns the slots taken.
+u32 AssignTessSlots(const Shader::VaryingState& stores, const Shader::VaryingState& loads,
+                    std::array<u8, 128>& slots) {
+    constexpr u32 POSITION_GROUP = static_cast<u32>(Shader::IR::Attribute::PositionX) / 4;
+    constexpr u32 FIRST_GENERIC_GROUP = static_cast<u32>(Shader::IR::Attribute::Generic0X) / 4;
+    const bool all = loads.Legacy();
+    u32 count = 0;
+    const auto assign = [&](u32 group) {
+        const auto base = static_cast<Shader::IR::Attribute>(group * 4);
+        if (stores.AnyComponent(base) && (all || loads.AnyComponent(base))) {
+            slots[group] = static_cast<u8>(++count);
+        }
+    };
+    assign(POSITION_GROUP);
+    for (u32 index = 0; index < Shader::IR::NUM_GENERICS; ++index) {
+        assign(FIRST_GENERIC_GROUP + index);
+    }
+    return count;
+}
+
+/// The generic patches both the control shader writes and the evaluation shader reads get a slot
+/// of the record. Returns the slots taken.
+u32 AssignTessPatchSlots(const Shader::Info& control, const Shader::Info& eval,
+                         std::array<u8, 30>& slots) {
+    u32 count = 0;
+    for (size_t index = 0; index < slots.size(); ++index) {
+        if (control.uses_patches[index] && eval.uses_patches[index]) {
+            slots[index] = static_cast<u8>(++count);
+        }
+    }
+    return count;
+}
+
+/// The vertex layouts the stages of an emulated tessellation agree on, filled stage by stage.
+struct TessLayout {
+    TessEmulationPlan plan;
+    std::array<u8, 128> input_slots{};
+    std::array<u8, 128> output_slots{};
+    std::array<u8, 30> patch_slots{};
+    u32 input_vertex_slots{};
+    u32 output_vertex_slots{};
+    u32 record_patch_slots{};
+
+    /// Called with each stage, after ConvertLegacyToGeneric, so the producers' stores are generics.
+    void Apply(std::span<const Shader::IR::Program> programs, const GraphicsPipelineCacheKey& key,
+               const Shader::IR::Program& program, bool generates_tess_control,
+               bool has_any_geometry, Shader::RuntimeInfo& info) {
+        namespace Tess = Shader::TessellationEmulation;
+        const u32 control_points = key.state.patch_control_points_minus_one + 1;
+        switch (program.stage) {
+        case Shader::Stage::VertexB: {
+            // The generated control shader, made later from this stage, passes on what the
+            // evaluation shader reads.
+            const Shader::Info& consumer = generates_tess_control ? programs[3].info
+                                                                  : programs[2].info;
+            input_vertex_slots = AssignTessSlots(program.info.stores, consumer.loads, input_slots);
+            if (input_vertex_slots == 0) {
+                // The capture keeps one slot, so its buffer and stride are never empty.
+                input_slots[static_cast<u32>(Shader::IR::Attribute::PositionX) / 4] = 1;
+                input_vertex_slots = 1;
+            }
+            // The tessellated vertices go through the viewport, not these, and the guest's
+            // transform feedback captures the evaluation shader's.
+            info.convert_depth_mode = false;
+            info.xfb_varyings = {};
+            info.xfb_repeats.clear();
+            info.xfb_count = 0;
+            info.xfb_storage = false;
+            info.xfb_copy_outputs = false;
+            info.tess_capture = true;
+            info.tess_input_slots = input_slots;
+            info.tess_input_vertex_slots = input_vertex_slots;
+            plan.input_vertices = control_points;
+            plan.input_vertex_bytes = input_vertex_slots * Tess::SLOT_WORDS * 4;
+            break;
+        }
+        case Shader::Stage::TessellationControl: {
+            const Shader::IR::Program& eval = programs[3];
+            output_vertex_slots =
+                AssignTessSlots(program.info.stores, eval.info.loads, output_slots);
+            record_patch_slots = AssignTessPatchSlots(program.info, eval.info, patch_slots);
+            info.tess_emulation = Shader::TessEmulation::ControlCompute;
+            info.tess_input_slots = input_slots;
+            info.tess_input_vertex_slots = input_vertex_slots;
+            info.tess_input_vertices = control_points;
+            plan.output_vertices = std::max(program.invocations, 1U);
+            plan.patches_per_group = Tess::PatchesPerGroup(plan.output_vertices);
+            plan.record_words =
+                Tess::RecordWords(record_patch_slots, plan.output_vertices, output_vertex_slots);
+            break;
+        }
+        case Shader::Stage::TessellationEval:
+            info.tess_emulation = Shader::TessEmulation::EvalVertex;
+            info.convert_depth_mode = key.state.ndc_minus_one_to_one != 0 && !has_any_geometry;
+            plan.domain = static_cast<u32>(info.tess_primitive);
+            switch (info.tess_spacing) {
+            case Shader::TessSpacing::FractionalOdd:
+                plan.partitioning = 0;
+                break;
+            case Shader::TessSpacing::FractionalEven:
+                plan.partitioning = 1;
+                break;
+            case Shader::TessSpacing::Equal:
+                plan.partitioning = 2;
+                break;
+            }
+            plan.ccw = !info.tess_clockwise;
+            break;
+        default:
+            return;
+        }
+        // Both tessellation stages read a record laid out the same way.
+        info.tess_output_slots = output_slots;
+        info.tess_patch_slots = patch_slots;
+        info.tess_output_vertex_slots = output_vertex_slots;
+        info.tess_record_patch_slots = record_patch_slots;
+        info.tess_output_vertices = plan.output_vertices;
+    }
+};
 
 Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> programs,
                                     const GraphicsPipelineCacheKey& key,
@@ -1466,6 +1590,32 @@ void LogShaderSources(std::span<Shader::Environment* const> envs) {
         LOG_ERROR(Render, "D3D12: failed shader stage {}: {}", i, envs[i]->DescribeCode());
     }
 }
+
+// The two shaders an emulated tessellation runs before the draw (TessEmulationPlan): the vertex
+// shader alone, storing to the capture and unflipped since the evaluation shader flips, and the
+// control shader as compute. Returns the bytes added to linked.
+u64 CompileTessEmulation(const ShaderCompiler& compiler,
+                         std::span<const std::vector<u32>, Maxwell::MaxShaderStage> spirv,
+                         bool emulate_reduction, u64 trace_pipeline,
+                         GraphicsPipeline::LinkedDxil& linked) {
+    const std::array<ShaderCompiler::PipelineStage, 1> capture{{
+        {.spirv = spirv[0], .stage = DXIL_SPIRV_SHADER_VERTEX},
+    }};
+    auto vertex = compiler.CompilePipeline(capture,
+                                           {.yz_flip = DXIL_SPIRV_YZ_FLIP_NONE,
+                                            .first_vertex_and_base_instance =
+                                                DXIL_SPIRV_SYSVAL_TYPE_RUNTIME_DATA,
+                                            .emulate_reduction = emulate_reduction},
+                                           trace_pipeline);
+    linked.tess_capture = std::move(vertex[0].dxil);
+    const std::array<ShaderCompiler::PipelineStage, 1> control{{
+        {.spirv = spirv[1], .stage = DXIL_SPIRV_SHADER_COMPUTE},
+    }};
+    auto compute = compiler.CompilePipeline(control, {.emulate_reduction = emulate_reduction},
+                                            trace_pipeline);
+    linked.tess_control = std::move(compute[0].dxil);
+    return linked.tess_capture.capacity() + linked.tess_control.capacity();
+}
 } // namespace
 
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
@@ -1539,12 +1689,21 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                                : key.unique_hashes[3] != 0 ? 3
                                                            : 1;
     const bool captures_xfb{key.state.xfb_enabled != 0};
-    const bool native_xfb{captures_xfb && compiler.SupportsStreamOutput() &&
+    // The console's hull and domain stages emit nothing, so tessellation always runs through
+    // compute (tessellation_emulation.h), whose capture takes the stream output.
+    const bool emulates_tess{key.unique_hashes[3] != 0};
+    if (emulates_tess && !compiler.SupportsStreamOutput()) {
+        throw std::runtime_error("emulated tessellation needs stream output");
+    }
+    const bool native_xfb{captures_xfb && !emulates_tess && compiler.SupportsStreamOutput() &&
                           !transform_feedback_storage.load(std::memory_order_relaxed)};
     VideoCommon::TransformFeedbackVaryings xfb_varyings;
     if (captures_xfb) {
         xfb_varyings = VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);
-        if (!native_xfb && xfb_program != 1) {
+        if (emulates_tess) {
+            LOG_WARNING(Render, "D3D12: transform feedback after emulated tessellation is not "
+                                "written");
+        } else if (!native_xfb && xfb_program != 1) {
             LOG_WARNING(Render, "D3D12: transform feedback after tessellation or geometry "
                                 "shaders needs stream output; it is not written");
         }
@@ -1603,6 +1762,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     const Shader::IR::Program* previous_stage{};
     Shader::Backend::Bindings binding;
     GraphicsPipeline::FragmentHelpers fragment_helpers{};
+    TessLayout tess_layout;
     for (size_t index = uses_vertex_a && uses_vertex_b ? 1 : 0; index < Maxwell::MaxShaderProgram;
          ++index) {
         const bool is_emulated_stage = layer_source_program != nullptr &&
@@ -1687,6 +1847,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             runtime_info.xfb_copy_outputs = native_xfb;
         }
         ConvertLegacyToGeneric(program, runtime_info);
+        if (emulates_tess) {
+            tess_layout.Apply(programs, key, program, generates_tess_control, has_any_geometry,
+                              runtime_info);
+        }
         Shader::Optimization::DemoteReturnVerdict demote_return{};
         const auto merged_demote_returns =
             Shader::Optimization::DemoteReturnPass(program, &demote_return);
@@ -1720,8 +1884,9 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         (key.shader_flags & GraphicsPipelineCacheKey::SHADER_REDUCTION) != 0 &&
         compiler.EmulatesReduction();
     const PipelineLayout& layout =
-        root_signatures.Get(infos, false, native_xfb, emulate_reduction,
-                            PlanBlendConstants(key.state).InShader());
+        root_signatures.Get(infos, false, native_xfb || emulates_tess, emulate_reduction,
+                            PlanBlendConstants(key.state).InShader(), emulates_tess);
+    const TessEmulationPlan tess_plan = emulates_tess ? tess_layout.plan : TessEmulationPlan{};
 
     // SPIR-V to DXIL goes with the PSO build, on a worker: done here it stalled the GPU thread for
     // 150-490 ms per 300 frames when entering new areas (0.2.59 profile). Translating the guest
@@ -1729,14 +1894,25 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     auto compile_dxil = [this, spirv = std::move(spirv), stage_indices, dumps_dxil,
                          vertex_shader = key.unique_hashes[1],
                          fragment_shader = key.unique_hashes[5],
-                         pipeline_key = key.Hash(), native_xfb,
+                         pipeline_key = key.Hash(), native_xfb, emulates_tess,
                          emulate_reduction](u64 trace_pipeline, bool flatten_vertex) {
         boost::container::static_vector<ShaderCompiler::PipelineStage, Maxwell::MaxShaderStage>
             stages;
+        // The stage_indices entry of each stage, where its DXIL goes.
+        boost::container::static_vector<size_t, Maxwell::MaxShaderStage> dxil_indices;
         for (const size_t stage_index : stage_indices) {
-            // Stage indices 0-4 (VS, TCS, TES, GS, FS) match dxil_spirv_shader_stage's values.
+            if (emulates_tess && stage_index < 2) {
+                // The vertex and control shaders run before, on their own (TessEmulationPlan).
+                continue;
+            }
+            // Stage indices 0-4 (VS, TCS, TES, GS, FS) match dxil_spirv_shader_stage's values. An
+            // emulated evaluation shader is the vertex stage, and its DXIL goes in that slot.
+            const bool eval_as_vertex = emulates_tess && stage_index == 2;
             stages.push_back({.spirv = spirv[stage_index],
-                              .stage = static_cast<dxil_spirv_shader_stage>(stage_index)});
+                              .stage = eval_as_vertex
+                                           ? DXIL_SPIRV_SHADER_VERTEX
+                                           : static_cast<dxil_spirv_shader_stage>(stage_index)});
+            dxil_indices.push_back(eval_as_vertex ? 0 : stage_index);
         }
         // The guest viewport transform decides the flips per draw, through the runtime data
         // (RasterizerD3D12::UpdateViewports).
@@ -1750,11 +1926,16 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         for (const auto& stage : stages) {
             key_stages.push_back({stage.spirv, static_cast<u32>(stage.stage)});
         }
-        const std::array<u32, 7> key_options{
+        if (emulates_tess) {
+            // The capture and control shaders are not in the stage list: the key holds them.
+            key_stages.push_back({spirv[0], static_cast<u32>(DXIL_SPIRV_SHADER_VERTEX)});
+            key_stages.push_back({spirv[1], static_cast<u32>(DXIL_SPIRV_SHADER_COMPUTE)});
+        }
+        const std::array<u32, 8> key_options{
             static_cast<u32>(options.yz_flip), options.y_flip_mask, options.z_flip_mask,
             static_cast<u32>(options.first_vertex_and_base_instance),
             static_cast<u32>(options.flatten_vertex), static_cast<u32>(native_xfb),
-            static_cast<u32>(options.emulate_reduction)};
+            static_cast<u32>(options.emulate_reduction), static_cast<u32>(emulates_tess)};
         auto key = MakeLinkedShaderKey(std::span(key_stages.data(), key_stages.size()), key_options);
         const auto cached = linked_shaders.Get(std::move(key), [&] {
             std::unique_ptr<eden_spirv_to_dxil_stream_output> stream_output;
@@ -1764,13 +1945,19 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                 linked_options.stream_output = stream_output.get();
             }
             ChargedDxilStages dxil;
+            // The disk cache records plain stage lists only.
+            const bool disk_cached = !native_xfb && !emulates_tess;
             auto compiled = compiler.CompilePipeline(std::span(stages.data(), stages.size()),
                                                      linked_options, trace_pipeline,
-                                                     native_xfb ? nullptr : &dxil.linked.disk_key);
+                                                     disk_cached ? &dxil.linked.disk_key : nullptr);
             u64 bytes = 0;
             for (size_t i = 0; i < compiled.size(); ++i) {
                 bytes += compiled[i].dxil.capacity();
-                dxil.linked.stages[stage_indices[i]] = std::move(compiled[i].dxil);
+                dxil.linked.stages[dxil_indices[i]] = std::move(compiled[i].dxil);
+            }
+            if (emulates_tess) {
+                bytes += CompileTessEmulation(compiler, spirv, emulate_reduction, trace_pipeline,
+                                              dxil.linked);
             }
             if (stream_output) {
                 dxil.linked.stream_output = MakeStreamOutputDeclaration(*stream_output);
@@ -1790,11 +1977,19 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
             for (const auto& stage : dxil.linked.stages) {
                 bytes += stage.capacity();
             }
-            return bytes + dxil.linked.stream_output.capacity() * sizeof(D3D12_SO_DECLARATION_ENTRY);
+            return bytes + dxil.linked.tess_capture.capacity() + dxil.linked.tess_control.capacity() +
+                   dxil.linked.stream_output.capacity() * sizeof(D3D12_SO_DECLARATION_ENTRY);
         });
         // Export the actual linked bytes even when another pipeline populated this cache entry.
         if (dumps_dxil) [[unlikely]] {
-            DumpDxil(vertex_shader, fragment_shader, pipeline_key, cached.value->linked.stages);
+            const auto& linked = cached.value->linked;
+            DumpDxil(vertex_shader, fragment_shader, pipeline_key, linked.stages);
+            if (emulates_tess) {
+                // After the five stages: 6 the vertex capture, 7 the control as compute.
+                const std::array<std::vector<u8>, 8> tess{
+                    {{}, {}, {}, {}, {}, {}, linked.tess_capture, linked.tess_control}};
+                DumpDxil(vertex_shader, fragment_shader, pipeline_key, tess);
+            }
         }
         VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::PipelineCacheResult,
                                    static_cast<u64>(cached.outcome), trace_pipeline);
@@ -1806,7 +2001,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     auto pipeline = std::make_unique<GraphicsPipeline>(device, texture_runtime, &shader_notify,
                                                        thread_worker, key, std::move(compile_dxil),
                                                        infos, layout, build_pso, &graphics_psos,
-                                                       lower_noperspective_mask);
+                                                       lower_noperspective_mask, tess_plan);
     pipeline->SetFragmentHelpers(fragment_helpers);
     return pipeline;
 

@@ -16,6 +16,7 @@
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
 #include "shader_recompiler/frontend/ir/program.h"
+#include "shader_recompiler/tessellation_emulation.h"
 
 namespace Shader::Backend::SPIRV {
 namespace {
@@ -237,6 +238,21 @@ spv::ExecutionMode ExecutionMode(TessSpacing spacing) {
 void DefineEntryPoint(const IR::Program& program, EmitContext& ctx, Id main) {
     const std::span interfaces(ctx.interfaces.data(), ctx.interfaces.size());
     spv::ExecutionModel execution_model{};
+    switch (ctx.runtime_info.tess_emulation) {
+    case TessEmulation::ControlCompute: {
+        // Whole patches per group, one invocation per output vertex (tessellation_emulation.h).
+        const u32 vertices{ctx.runtime_info.tess_output_vertices};
+        ctx.AddExecutionMode(main, spv::ExecutionMode::LocalSize,
+                             TessellationEmulation::PatchesPerGroup(vertices) * vertices, 1U, 1U);
+        ctx.AddEntryPoint(spv::ExecutionModel::GLCompute, main, "main", interfaces);
+        return;
+    }
+    case TessEmulation::EvalVertex:
+        ctx.AddEntryPoint(spv::ExecutionModel::Vertex, main, "main", interfaces);
+        return;
+    case TessEmulation::None:
+        break;
+    }
     switch (program.stage) {
     case Stage::Compute: {
         const std::array<u32, 3> workgroup_size{program.workgroup_size};

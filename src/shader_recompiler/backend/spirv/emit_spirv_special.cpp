@@ -7,6 +7,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
+#include "shader_recompiler/tessellation_emulation.h"
 #include "shader_recompiler/transform_feedback_storage.h"
 
 namespace Shader::Backend::SPIRV {
@@ -451,6 +452,59 @@ void WriteTransformFeedbackStorage(EmitContext& ctx) {
     ctx.OpStore(w_pointer, ctx.OpSelect(ctx.F32[1], discard, ctx.Const(-1.0f), w));
 }
 
+/// Stores the slots the control shader reads of this vertex to the tessellation capture, then
+/// moves the vertex behind the viewer: the capture draw only writes the buffer
+/// (tessellation_emulation.h). Runs before every position transform, like the storage above.
+void WriteTessellationCapture(EmitContext& ctx) {
+    namespace Tess = TessellationEmulation;
+    const RuntimeInfo& info{ctx.runtime_info};
+    const Id u32_type{ctx.U32[1]};
+    const auto constant = [&](u32 word) {
+        return ctx.OpLoad(u32_type, ctx.OpAccessChain(ctx.tess_constant_element, ctx.tess_constants,
+                                                      ctx.Const(word)));
+    };
+    const Id vertex{ctx.OpISub(u32_type, ctx.OpLoad(u32_type, ctx.vertex_index),
+                               ctx.OpLoad(u32_type, ctx.base_vertex))};
+    const Id instance{ctx.OpISub(u32_type, ctx.OpLoad(u32_type, ctx.instance_index),
+                                 ctx.OpLoad(u32_type, ctx.base_instance))};
+    const Id slot{ctx.OpIAdd(
+        u32_type, vertex,
+        ctx.OpIMul(u32_type, instance, constant(Tess::VERTICES_PER_INSTANCE_WORD)))};
+    std::vector<Id> values;
+    for (u32 group = 0; group < info.tess_input_slots.size(); ++group) {
+        if (info.tess_input_slots[group] != 0) {
+            for (u32 element = 0; element < 4; ++element) {
+                values.push_back(ctx.OpBitcast(u32_type, CapturedComponent(ctx, group * 4 + element)));
+            }
+        }
+    }
+    const Id fits{ctx.OpULessThan(ctx.U1, slot, constant(Tess::CAPTURE_VERTICES_WORD))};
+    const Id store_label{ctx.OpLabel()};
+    const Id merge_label{ctx.OpLabel()};
+    ctx.OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(fits, store_label, merge_label);
+    ctx.AddLabel(store_label);
+    const Id first_word{
+        ctx.OpIMul(u32_type, slot, ctx.Const(info.tess_input_vertex_slots * Tess::SLOT_WORDS))};
+    u32 offset{};
+    for (u32 group = 0; group < info.tess_input_slots.size(); ++group) {
+        const u32 input_slot{info.tess_input_slots[group]};
+        if (input_slot == 0) {
+            continue;
+        }
+        for (u32 element = 0; element < 4; ++element) {
+            const Id word{ctx.OpIAdd(u32_type, first_word,
+                                     ctx.Const((input_slot - 1) * Tess::SLOT_WORDS + element))};
+            ctx.OpStore(ctx.TessWord(ctx.tess_output_buffer, word), values[offset++]);
+        }
+    }
+    ctx.OpBranch(merge_label);
+    ctx.AddLabel(merge_label);
+    // A negative W fails every clip plane test (-w <= x <= w), whatever X, Y and Z are.
+    const Id w_pointer{ctx.OpAccessChain(ctx.output_f32, ctx.output_position, ctx.Const(3U))};
+    ctx.OpStore(w_pointer, ctx.Const(-1.0f));
+}
+
 /// Native transform feedback outputs of this vertex (DefineTransformFeedbackOutputs). Runs before
 /// every position transform, so the copies hold the values the guest wrote.
 void WriteTransformFeedbackOutputs(EmitContext& ctx) {
@@ -486,7 +540,69 @@ void WriteTransformFeedbackOutputs(EmitContext& ctx) {
 }
 } // Anonymous namespace
 
+namespace {
+/// The values the emulated tessellation stages index their buffers with (tessellation_emulation.h).
+void TessellationEmulationPrologue(EmitContext& ctx) {
+    namespace Tess = TessellationEmulation;
+    const RuntimeInfo& info{ctx.runtime_info};
+    const Id record_words{ctx.Const(Tess::RecordWords(info.tess_record_patch_slots,
+                                                      info.tess_output_vertices,
+                                                      info.tess_output_vertex_slots))};
+    if (info.tess_emulation == TessEmulation::EvalVertex) {
+        // The index is the domain point: u and v in 16.16 fixed point, then the patch.
+        const Id point{ctx.OpIMul(ctx.U32[1], ctx.OpLoad(ctx.U32[1], ctx.vertex_index),
+                                  ctx.Const(Tess::POINT_WORDS))};
+        const auto load_point{[&](u32 word) {
+            const Id index{ctx.OpIAdd(ctx.U32[1], point, ctx.Const(word))};
+            return ctx.OpLoad(ctx.U32[1], ctx.TessWord(ctx.tess_points_buffer, index));
+        }};
+        // Exact: the fixed point values have at most 17 significant bits.
+        const Id scale{ctx.Const(1.0f / 65536.0f)};
+        ctx.tess_coord_u = ctx.OpFMul(ctx.F32[1], ctx.OpConvertUToF(ctx.F32[1], load_point(0)), scale);
+        ctx.tess_coord_v = ctx.OpFMul(ctx.F32[1], ctx.OpConvertUToF(ctx.F32[1], load_point(1)), scale);
+        ctx.tess_record = ctx.OpIMul(ctx.U32[1], load_point(2), record_words);
+        const Id primitive{ctx.OpIAdd(ctx.U32[1], ctx.tess_record, ctx.Const(Tess::PRIMITIVE_WORD))};
+        ctx.tess_primitive = ctx.OpLoad(ctx.U32[1], ctx.TessWord(ctx.tess_input_buffer, primitive));
+        return;
+    }
+    // One invocation per output vertex, whole patches per group. Invocations past the last patch
+    // read the first and write the trash record, so every invocation reaches the barriers.
+    const auto constant{[&](u32 word) {
+        return ctx.OpLoad(ctx.U32[1], ctx.OpAccessChain(ctx.tess_constant_element,
+                                                        ctx.tess_constants, ctx.Const(word)));
+    }};
+    const Id output_vertices{ctx.Const(info.tess_output_vertices)};
+    const Id local{ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.local_invocation_id), 0U)};
+    const Id group{ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.workgroup_id), 0U)};
+    const Id local_patch{ctx.OpUDiv(ctx.U32[1], local, output_vertices)};
+    ctx.tess_invocation = ctx.OpISub(ctx.U32[1], local,
+                                     ctx.OpIMul(ctx.U32[1], local_patch, output_vertices));
+    const Id patch{ctx.OpIAdd(
+        ctx.U32[1],
+        ctx.OpIMul(ctx.U32[1], group, ctx.Const(Tess::PatchesPerGroup(info.tess_output_vertices))),
+        local_patch)};
+    const Id valid{ctx.OpULessThan(ctx.U1, patch, constant(Tess::TOTAL_PATCHES_WORD))};
+    const Id read_patch{ctx.OpSelect(ctx.U32[1], valid, patch, ctx.u32_zero_value)};
+    const Id patches_per_instance{constant(Tess::PATCHES_PER_INSTANCE_WORD)};
+    const Id instance{ctx.OpUDiv(ctx.U32[1], read_patch, patches_per_instance)};
+    ctx.tess_primitive = ctx.OpISub(ctx.U32[1], read_patch,
+                                    ctx.OpIMul(ctx.U32[1], instance, patches_per_instance));
+    ctx.tess_input_vertex =
+        ctx.OpIMul(ctx.U32[1], instance, constant(Tess::VERTICES_PER_INSTANCE_WORD));
+    ctx.tess_patch_position =
+        ctx.OpIMul(ctx.U32[1], ctx.tess_primitive, ctx.Const(info.tess_input_vertices));
+    const Id write_patch{ctx.OpSelect(ctx.U32[1], valid, patch, constant(Tess::TRASH_RECORD_WORD))};
+    ctx.tess_record = ctx.OpIMul(ctx.U32[1], write_patch, record_words);
+    // Every invocation of the patch stores the same value.
+    const Id primitive{ctx.OpIAdd(ctx.U32[1], ctx.tess_record, ctx.Const(Tess::PRIMITIVE_WORD))};
+    ctx.OpStore(ctx.TessWord(ctx.tess_output_buffer, primitive), ctx.tess_primitive);
+}
+} // Anonymous namespace
+
 void EmitPrologue(EmitContext& ctx) {
+    if (ctx.EmulatesTessellation()) {
+        TessellationEmulationPrologue(ctx);
+    }
     if (Sirit::ValidId(ctx.local_memory_acquire_func)) {
         ctx.local_memory_lane_base = ctx.OpFunctionCall(ctx.U32[1], ctx.local_memory_acquire_func);
         ctx.local_memory_stride = ctx.OpLoad(ctx.U32[1], ctx.local_memory_stride_var);
@@ -539,6 +655,9 @@ void EmitPrologue(EmitContext& ctx) {
 void EmitEpilogue(EmitContext& ctx) {
     if (ctx.stage == Stage::VertexB) {
         WriteTransformFeedbackStorage(ctx);
+        if (ctx.runtime_info.tess_capture) {
+            WriteTessellationCapture(ctx);
+        }
     }
     if (ctx.stage == Stage::VertexB || ctx.stage == Stage::TessellationEval) {
         WriteTransformFeedbackOutputs(ctx);
@@ -572,8 +691,11 @@ void EmitEpilogue(EmitContext& ctx) {
     if (ctx.stage == Stage::VertexB || ctx.stage == Stage::TessellationEval) {
         ViewportSwizzle(ctx);
     }
-    if (ctx.stage == Stage::VertexB && ctx.runtime_info.convert_depth_mode &&
-        !ctx.profile.support_native_ndc) {
+    // An emulated evaluation shader is the last stage before the rasterizer, as a vertex shader.
+    const bool evaluates_as_vertex{ctx.stage == Stage::TessellationEval &&
+                                   ctx.runtime_info.tess_emulation == TessEmulation::EvalVertex};
+    if ((ctx.stage == Stage::VertexB || evaluates_as_vertex) &&
+        ctx.runtime_info.convert_depth_mode && !ctx.profile.support_native_ndc) {
         ConvertDepthMode(ctx);
     }
     if (ctx.stage == Stage::Fragment) {

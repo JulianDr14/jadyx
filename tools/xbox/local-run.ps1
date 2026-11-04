@@ -7,7 +7,7 @@
 # before going to the console.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\xbox\local-run.ps1 [-NoBuild] [-TimeoutSec 75]
-#       [-BootNro path\to\payload.nro] [-RunSeconds 20] [-DebugLayer]
+#       [-BootNro path\to\payload.nro] [-RunSeconds 20] [-DebugLayer] [-RequireShaders]
 #       [-Game path\to\game.nsp] [-StageScript path] [-MemoryLimitMiB 5120]
 #
 # -RunSeconds runs payloads without the sentinels (deko3d examples, ...) for that long, then exits.
@@ -21,7 +21,7 @@
 param([int] $TimeoutSec = 75, [switch] $NoBuild, [string] $BootNro, [int] $RunSeconds = 0,
       [switch] $DebugLayer, [string] $Game, [string] $StageScript, [string[]] $BootCfg = @(),
       [ValidateRange(0, 1048576)] [int] $MemoryLimitMiB = 5120, [switch] $Library, [switch] $AllowVersionDowngrade,
-      [string] $Version)
+      [string] $Version, [switch] $RequireShaders)
 $ErrorActionPreference = 'Stop'
 # Match package-appx's comma-separated -BootCfg handling before applying defaults.
 # Otherwise an explicit developer_hotkeys=0 later in the string gets overridden.
@@ -49,7 +49,7 @@ Push-Location $r
 try {
     & "$r\tools\xbox\package-appx.ps1" -BootNro $BootNro -RunSeconds $RunSeconds `
         -DebugLayer:$DebugLayer -Game $Game -StageScript $StageScript -BootCfg $BootCfg `
-        -Version $Version *> $null
+        -Version $Version -RequireShaders:$RequireShaders *> $null
 } finally {
     Pop-Location
 }
