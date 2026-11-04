@@ -1,0 +1,22 @@
+{
+  "01007EF00011E000": {
+    "build": "0.3.9.188",
+    "draws_per_frame": 4009.1,
+    "fps": 25.95,
+    "p50": 34.55,
+    "p95": 50.09,
+    "per_frame": {
+      "depth feedback": 0.0,
+      "generated geometry": 2.0333,
+      "logic op": 0.0,
+      "of them level-only": 0.0,
+      "query waits": 0.0,
+      "query waits ms": 0.0,
+      "snapshots reused": 0.0,
+      "stencil face splits": 0.0,
+      "tessellated": 0.0
+    },
+    "recorded": "2026-11-04",
+    "windows": 7
+  }
+}
