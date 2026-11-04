@@ -596,6 +596,49 @@ void RegisterGeometry(std::vector<SceneEntry>& scenes) {
         gpu.Expect(8, 16, {0.25, 0.5, 0, 1}, 0.05);
         gpu.Expect(24, 8, {0.75, 0.25, 0, 1}, 0.05);
     }});
+    // The same patch, its corners from the captured vertices, from 16-bit indices: out of order, after a base vertex, from an odd first
+    // index (not word-aligned) whose skipped index is larger than any the draw reads.
+    scenes.push_back({"tess_quads_indexed_u16", [](Gpu& gpu) {
+        gpu.Begin();
+        gpu.ClearColor(Black);
+        gpu.cmd.bindShaders(DkStageFlag_GraphicsMask,
+                            {gpu.Shader("pos_only_vsh"), gpu.Shader("tess_quads_pos_tesh"), gpu.Shader("color_fsh")});
+        gpu.cmd.setPatchSize(4);
+        gpu.cmd.setTessOuterLevels(4, 4, 4, 4);
+        gpu.cmd.setTessInnerLevels(4, 4);
+        const Vertex vertices[6] = {At(gpu, 16, 16, Red), At(gpu, 16, 16, Red), At(gpu, 32, 32),
+                                    At(gpu, 0, 0),         At(gpu, 32, 0),         At(gpu, 0, 32)};
+        gpu.BindVertices(vertices, 6);
+        const uint16_t indices[6] = {9, 1, 3, 2, 0, 9};
+        BindIndices(gpu, DkIdxFormat_Uint16, indices, sizeof(indices));
+        gpu.cmd.drawIndexed(DkPrimitive_Patches, 4, 1, 1, 2, 0);
+        gpu.Finish();
+        gpu.Expect(8, 16, {0.25, 0.5, 0, 1}, 0.05);
+        gpu.Expect(24, 8, {0.75, 0.25, 0, 1}, 0.05);
+    }});
+    // Two patches from 32-bit indices sharing vertices, drawn twice as instances.
+    scenes.push_back({"tess_quads_indexed_u32_instanced", [](Gpu& gpu) {
+        gpu.Begin();
+        gpu.ClearColor(Black);
+        gpu.cmd.bindShaders(DkStageFlag_GraphicsMask,
+                            {gpu.Shader("pos_only_vsh"), gpu.Shader("tess_quads_pos_tesh"), gpu.Shader("color_fsh")});
+        gpu.cmd.setPatchSize(4);
+        gpu.cmd.setTessOuterLevels(4, 4, 4, 4);
+        gpu.cmd.setTessInnerLevels(4, 4);
+        // Left half (x 0..16) and right half (x 16..32), sharing the middle edge.
+        const Vertex vertices[6] = {At(gpu, 0, 0),  At(gpu, 0, 32),  At(gpu, 16, 0),
+                                    At(gpu, 16, 32), At(gpu, 32, 0), At(gpu, 32, 32)};
+        gpu.BindVertices(vertices, 6);
+        const uint32_t indices[8] = {0, 1, 2, 3, 2, 3, 4, 5};
+        BindIndices(gpu, DkIdxFormat_Uint32, indices, sizeof(indices));
+        gpu.cmd.drawIndexed(DkPrimitive_Patches, 8, 2, 0, 0, 0);
+        gpu.Finish();
+        // Each patch spans 16 pixels in x: u runs from 0 to 1 within its half.
+        gpu.Expect(4, 16, {0.25, 0.5, 0, 1}, 0.05);
+        gpu.Expect(20, 16, {0.25, 0.5, 0, 1}, 0.05);
+        gpu.Expect(12, 8, {0.75, 0.25, 0, 1}, 0.05);
+        gpu.Expect(28, 8, {0.75, 0.25, 0, 1}, 0.05);
+    }});
     scenes.push_back({"geometry_point_to_quad", [](Gpu& gpu) {
         gpu.Begin();
         gpu.ClearColor(Black);
