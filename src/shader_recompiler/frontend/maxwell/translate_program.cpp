@@ -487,6 +487,8 @@ void BuildGeneratedProgram(IR::Program& program, ObjectPool<IR::Inst>& inst_pool
     node.data.block = current_block;
 
     IR::IREmitter ir{*current_block};
+    // Backends set up per-invocation state here (tessellation emulation, local memory lanes)
+    ir.Prologue();
     emit(ir);
 
     IR::Block* return_block{block_pool.Create(inst_pool)};

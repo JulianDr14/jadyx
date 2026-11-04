@@ -211,15 +211,18 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
 
     SetGraphicsRootArguments(cmd, pipeline, bindings, params);
 
+    // Emulated tessellation sets its own topologies (TessEmulation).
+    const bool emulates_tess = pipeline.TessPlan().Active();
     const D3D12_PRIMITIVE_TOPOLOGY d3d_topology =
-        MaxwellToD3D12::PrimitiveTopology(topology, regs.patch_vertices);
+        emulates_tess ? command_state.topology
+                      : MaxwellToD3D12::PrimitiveTopology(topology, regs.patch_vertices);
     if (!command_state.valid || command_state.topology != d3d_topology) {
         cmd->IASetPrimitiveTopology(d3d_topology);
         command_state.topology = d3d_topology;
     }
     buffer_runtime.ApplyGeometry(cmd);
     // Last: nothing after it may submit the list before the draw.
-    if (layout.StreamOutput() && regs.transform_feedback_enabled != 0) {
+    if (layout.StreamOutput() && regs.transform_feedback_enabled != 0 && !emulates_tess) {
         stream_output.Bind(cmd, regs, buffer_runtime.TransformFeedbackBindings());
     }
     command_state.valid = true;
@@ -303,32 +306,7 @@ void RasterizerD3D12::SetGraphicsRootArguments(CommandStream* cmd,
                                            PUSH_CONSTANT_WORDS);
     }
     if (layout.StageConstants()) {
-        const auto& regs = maxwell3d->regs;
-        std::array<f32, STAGE_CONSTANT_WORDS> constants{};
-        if (pipeline.Key().unique_hashes[3] != 0) {
-            const auto& lod = regs.tessellation.lod;
-            constants = {lod.outer[0], lod.outer[1], lod.outer[2], lod.outer[3],
-                         lod.inner[0], lod.inner[1], 0.0f,         0.0f};
-        } else {
-            // Signed, as SetViewports works out each orientation: the point's top left corner is
-            // where its coordinates start, whichever way the guest's y runs.
-            const auto& viewport = regs.viewport_transform[0];
-            f32 height = viewport.scale_y * 2.0f;
-            if (regs.window_origin.mode != Maxwell::WindowOrigin::Mode::UpperLeft) {
-                height = -height;
-            }
-            if (viewport.swizzle.y == Maxwell::ViewportSwizzle::NegativeY) {
-                height = -height;
-            }
-            constants[0] = regs.line_anti_alias_enable != 0 ? regs.line_width_smooth
-                                                            : regs.line_width_aliased;
-            constants[4] = viewport.scale_x != 0.0f ? viewport.scale_x * 2.0f : 1.0f;
-            constants[5] = height != 0.0f ? height : 1.0f;
-        }
-        constants[Shader::Optimization::MIRROR_BORDER_FIRST_CONSTANT] =
-            static_cast<f32>(bindings.mirror_border_masks[0]);
-        constants[Shader::Optimization::MIRROR_BORDER_FIRST_CONSTANT + 1] =
-            static_cast<f32>(bindings.mirror_border_masks[1]);
+        const std::array<f32, STAGE_CONSTANT_WORDS> constants = StageConstants(pipeline, bindings);
         cmd->SetGraphicsRoot32BitConstants(PipelineLayout::PUSH_CONSTANTS_INDEX,
                                            STAGE_CONSTANT_WORDS, constants.data(),
                                            PUSH_CONSTANT_WORDS + BLEND_CONSTANT_WORDS);
@@ -395,6 +373,67 @@ void RasterizerD3D12::SetGraphicsRootArguments(CommandStream* cmd,
         SetTransformFeedbackArguments(cmd, layout, params);
     }
     cached.valid = true;
+}
+
+std::array<f32, STAGE_CONSTANT_WORDS> RasterizerD3D12::StageConstants(
+    const GraphicsPipeline& pipeline, const PipelineBindings& bindings) const {
+    const auto& regs = maxwell3d->regs;
+    std::array<f32, STAGE_CONSTANT_WORDS> constants{};
+    if (pipeline.Key().unique_hashes[3] != 0) {
+        const auto& lod = regs.tessellation.lod;
+        constants = {lod.outer[0], lod.outer[1], lod.outer[2], lod.outer[3],
+                     lod.inner[0], lod.inner[1], 0.0f,         0.0f};
+    } else {
+        // Signed, as SetViewports works out each orientation: the point's top left corner is
+        // where its coordinates start, whichever way the guest's y runs.
+        const auto& viewport = regs.viewport_transform[0];
+        f32 height = viewport.scale_y * 2.0f;
+        if (regs.window_origin.mode != Maxwell::WindowOrigin::Mode::UpperLeft) {
+            height = -height;
+        }
+        if (viewport.swizzle.y == Maxwell::ViewportSwizzle::NegativeY) {
+            height = -height;
+        }
+        constants[0] = regs.line_anti_alias_enable != 0 ? regs.line_width_smooth
+                                                        : regs.line_width_aliased;
+        constants[4] = viewport.scale_x != 0.0f ? viewport.scale_x * 2.0f : 1.0f;
+        constants[5] = height != 0.0f ? height : 1.0f;
+    }
+    constants[Shader::Optimization::MIRROR_BORDER_FIRST_CONSTANT] =
+        static_cast<f32>(bindings.mirror_border_masks[0]);
+    constants[Shader::Optimization::MIRROR_BORDER_FIRST_CONSTANT + 1] =
+        static_cast<f32>(bindings.mirror_border_masks[1]);
+    return constants;
+}
+
+void RasterizerD3D12::SetTessControlRootArguments(CommandStream* cmd,
+                                                  const GraphicsPipeline& pipeline,
+                                                  const PipelineBindings& bindings) {
+    // The compute root holds none of the draw's: all of them, but the runtime data
+    // (TessEmulation::Control sets the compute one).
+    const PipelineLayout& layout = pipeline.Layout();
+    cmd->SetComputeRoot32BitConstants(PipelineLayout::PUSH_CONSTANTS_INDEX, PUSH_CONSTANT_WORDS,
+                                      bindings.push_constants.data(), 0);
+    if (layout.StageConstants()) {
+        const std::array<f32, STAGE_CONSTANT_WORDS> constants = StageConstants(pipeline, bindings);
+        cmd->SetComputeRoot32BitConstants(PipelineLayout::PUSH_CONSTANTS_INDEX,
+                                          STAGE_CONSTANT_WORDS, constants.data(),
+                                          PUSH_CONSTANT_WORDS + BLEND_CONSTANT_WORDS);
+    }
+    if (layout.ResourceTableIndex() != PipelineLayout::NO_TABLE) {
+        cmd->SetComputeRootDescriptorTable(layout.ResourceTableIndex(), bindings.resource_table);
+    }
+    if (layout.SamplerTableIndex() != PipelineLayout::NO_TABLE) {
+        cmd->SetComputeRootDescriptorTable(layout.SamplerTableIndex(), bindings.sampler_table);
+    }
+    for (u32 slot = 0; slot < layout.NumRootCbvs(); ++slot) {
+        cmd->SetComputeRootConstantBufferView(layout.RootCbvIndex() + slot,
+                                              bindings.root_cbvs[slot]);
+    }
+    if (layout.IntegerSamplerIndex() != PipelineLayout::NO_TABLE && bindings.integer_samplers) {
+        cmd->SetComputeRootConstantBufferView(layout.IntegerSamplerIndex(),
+                                              bindings.integer_samplers);
+    }
 }
 
 void RasterizerD3D12::SetTransformFeedbackArguments(CommandStream* cmd,

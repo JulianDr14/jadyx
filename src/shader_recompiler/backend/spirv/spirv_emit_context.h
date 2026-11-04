@@ -386,6 +386,34 @@ public:
     Id xfb_storage_constant_element{};
     Id local_memory_release_func{};
 
+    /// Tessellation emulation (tessellation_emulation.h): the storage buffers and constants, and
+    /// the values the prologue computes. tess_record is the first word of the patch record the
+    /// invocation writes (control) or reads (evaluation); tess_input_vertex the first capture
+    /// slot of the control shader's instance and tess_patch_position the draw position of its
+    /// patch's first vertex. The vertex shader of a capture writes tess_output_buffer.
+    Id tess_input_buffer{};
+    Id tess_output_buffer{};
+    Id tess_points_buffer{};
+    Id tess_indices_buffer{};
+    Id tess_constants{};
+    Id tess_storage_element{};
+    Id tess_constant_element{};
+    Id tess_record{};
+    Id tess_input_vertex{};
+    Id tess_patch_position{};
+    Id tess_invocation{};
+    Id tess_primitive{};
+    Id tess_coord_u{};
+    Id tess_coord_v{};
+
+    [[nodiscard]] bool EmulatesTessellation() const noexcept {
+        return runtime_info.tess_emulation != TessEmulation::None;
+    }
+    /// Word of a tessellation emulation storage buffer.
+    [[nodiscard]] Id TessWord(Id buffer, Id word) {
+        return OpAccessChain(tess_storage_element, buffer, u32_zero_value, word);
+    }
+
     bool uses_explicit_workgroup_layout{};
     Id shared_memory_u8{};
     Id shared_memory_u16{};
@@ -471,6 +499,8 @@ private:
     void DefineLocalMemory(IR::Program& program);
     void DefineLocalMemoryScratch(u32 words, bool tracks_lanes);
     void DefineTransformFeedbackStorage(IR::Program& program);
+    void DefineTessellationEmulation();
+    void DefineSubgroupInputs(const Info& info);
     void DefineSharedMemory(const IR::Program& program);
     void DefineSharedMemoryFunctions(const IR::Program& program);
     void DefineConstantBuffers(const Info& info, u32& binding);

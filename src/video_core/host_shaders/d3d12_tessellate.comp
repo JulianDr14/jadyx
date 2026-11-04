@@ -1,0 +1,1420 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Fixed-function tessellator for the D3D12 renderer. The console's hardware tessellator emits no
+// domain points, so tessellation runs as compute: one invocation per patch reads the tess levels
+// the control shader wrote and emits domain points and an index list, which the evaluation shader
+// then draws as a vertex shader.
+//
+// The tessellation itself is a port of the Microsoft D3D11 fixed-function tessellator reference
+// (May 7, 2012) as carried by Mesa in src/poly/cl/tessellator.h, under this license:
+//
+//   Copyright (c) Microsoft Corporation
+//
+//   Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+//   and associated documentation files (the "Software"), to deal in the Software without
+//   restriction, including without limitation the rights to use, copy, modify, merge, publish,
+//   distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+//   Software is furnished to do so, subject to the following conditions:
+//
+//   The above copyright notice and this permission notice shall be included in all copies or
+//   substantial portions of the Software.
+//
+//   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+//   BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+//   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+//   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+//   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+//
+// Three passes over the same patches, picked by the mode constant:
+//   MODE_COUNT    one invocation per patch writes its point and index counts.
+//   MODE_PREFIX   one group turns the counts into offsets, finds the first patch that no longer
+//                 fits the point and index buffers, and writes the indexed draw record.
+//   MODE_GENERATE one invocation per patch writes its points and indices at those offsets.
+// A point is three words: u and v in 16.16 fixed point and the patch index. An index is the
+// global point number, so the evaluation shader reads its point by vertex index. Patches past the
+// first that does not fit are dropped and the record reports the sizes needed, so the host can
+// grow the buffers for the next draws.
+
+#version 460 core
+
+#define GROUP_SIZE 64
+
+layout(local_size_x = GROUP_SIZE) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Factors {
+    float factors[];
+};
+
+layout(std430, set = 0, binding = 1) buffer Counts {
+    // Two words per patch: points and indices; offsets after MODE_PREFIX.
+    uint counts[];
+};
+
+layout(std430, set = 0, binding = 2) buffer Points {
+    uint points[];
+};
+
+layout(std430, set = 0, binding = 3) buffer Indices {
+    uint indices[];
+};
+
+// The indexed draw record of INDIRECT_DRAW_INDEXED_WORDS (d3d12_root_signature.h), then the
+// point and index counts all patches need and the first patch dropped.
+layout(std430, set = 0, binding = 4) buffer Record {
+    uint record[13];
+};
+
+layout(push_constant) uniform Params {
+    uint mode;
+    uint nr_patches;
+    uint partitioning;
+    uint domain;
+    uint points_mode;
+    uint ccw;
+    uint factor_stride;
+    uint factor_offset;
+    uint max_points;
+    uint max_indices;
+    uint yz_flip_mask;
+    uint draw_id;
+};
+
+#define MODE_COUNT 0
+#define MODE_PREFIX 1
+#define MODE_GENERATE 2
+
+#define DOMAIN_ISOLINES 0
+#define DOMAIN_TRIANGLES 1
+#define DOMAIN_QUADS 2
+
+#define PARTITIONING_FRACTIONAL_ODD 0
+#define PARTITIONING_FRACTIONAL_EVEN 1
+#define PARTITIONING_INTEGER 2
+
+#define RECORD_NEEDED_POINTS 10
+#define RECORD_NEEDED_INDICES 11
+#define RECORD_FIRST_DROPPED 12
+
+#define MIN_ISOLINE_DENSITY_TESSELLATION_FACTOR 1.0
+#define MAX_ISOLINE_DENSITY_TESSELLATION_FACTOR 64.0
+#define MIN_ODD_TESSELLATION_FACTOR 1.0
+#define MAX_ODD_TESSELLATION_FACTOR 63.0
+#define MIN_EVEN_TESSELLATION_FACTOR 2.0
+#define MAX_EVEN_TESSELLATION_FACTOR 64.0
+
+// 2^(-16), min positive fixed point fraction
+#define EPSILON 0.0000152587890625
+#define MIN_ODD_TESSFACTOR_PLUS_HALF_EPSILON (MIN_ODD_TESSELLATION_FACTOR + EPSILON / 2.0)
+
+#define U 0
+#define V 1
+#define Ueq0 0
+#define Veq0 1
+#define Weq0 2
+#define Ueq1 2
+#define Veq1 3
+#define QUAD_AXES 2
+#define QUAD_EDGES 4
+#define TRI_EDGES 3
+
+#define DIAGONALS_INSIDE_TO_OUTSIDE 0
+#define DIAGONALS_INSIDE_TO_OUTSIDE_EXCEPT_MIDDLE 1
+#define DIAGONALS_MIRRORED 2
+
+#define FXP_FRACTION_BITS 16
+#define FXP_FRACTION_MASK 0x0000ffffu
+#define FXP_INTEGER_MASK 0x7fff0000u
+#define FXP_ONE 0x00010000u
+#define FXP_ONE_THIRD 0x00005555u
+#define FXP_TWO_THIRDS 0x0000aaaau
+#define FXP_ONE_HALF 0x00008000u
+
+struct TessFactorCtx {
+    uint fxpInvNumSegmentsOnFloorTessFactor;
+    uint fxpInvNumSegmentsOnCeilTessFactor;
+    uint fxpHalfTessFactorFraction;
+    int numHalfTessFactorPoints;
+    int splitPointOnFloorHalfTessFactor;
+};
+
+// Per-invocation tessellator state (CHWTessellator in the reference).
+uint point_base;
+uint index_base;
+bool bUsingPatchedIndices;
+bool bUsingPatchedIndices2;
+int insidePointIndexDeltaToRealValue;
+int insidePointIndexBadValue;
+int insidePointIndexReplacementValue;
+int outsidePointIndexPatchBase;
+int outsidePointIndexDeltaToRealValue;
+int outsidePointIndexBadValue;
+int outsidePointIndexReplacementValue;
+int baseIndexToInvert;
+int indexInversionEndPoint;
+int cornerCaseBadValue;
+int cornerCaseReplacementValue;
+
+shared uint partial_points[GROUP_SIZE];
+shared uint partial_indices[GROUP_SIZE];
+shared uint first_dropped;
+
+float Factor(uint patch_index, uint i) {
+    return factors[factor_offset + patch_index * factor_stride + i];
+}
+
+// Records the patch's counts in MODE_COUNT; in MODE_GENERATE takes its offsets. Returns whether the
+// patch has to be generated now.
+bool BeginPatch(uint patch_index, uint num_points, uint num_indices) {
+    if (mode == MODE_COUNT) {
+        counts[patch_index * 2] = num_points;
+        counts[patch_index * 2 + 1] = num_indices;
+        return false;
+    }
+    if (patch_index >= record[RECORD_FIRST_DROPPED]) {
+        return false;
+    }
+    point_base = counts[patch_index * 2];
+    index_base = counts[patch_index * 2 + 1];
+    bUsingPatchedIndices = false;
+    bUsingPatchedIndices2 = false;
+    return true;
+}
+
+void EmptyPatch(uint patch_index) {
+    if (mode == MODE_COUNT) {
+        counts[patch_index * 2] = 0;
+        counts[patch_index * 2 + 1] = 0;
+    }
+}
+
+float ClampFactor(float factor, float maxf) {
+    float lower = (partitioning == PARTITIONING_FRACTIONAL_EVEN) ? MIN_EVEN_TESSELLATION_FACTOR
+                                                                 : MIN_ODD_TESSELLATION_FACTOR;
+    const float upper = (partitioning == PARTITIONING_FRACTIONAL_ODD)
+                            ? MAX_ODD_TESSELLATION_FACTOR
+                            : MAX_EVEN_TESSELLATION_FACTOR;
+    // If any TessFactor will end up > 1 after floatToFixed conversion later,
+    // then force the inside TessFactors to be > 1 so there is a picture frame.
+    if (partitioning == PARTITIONING_FRACTIONAL_ODD && maxf > MIN_ODD_TESSFACTOR_PLUS_HALF_EPSILON) {
+        lower = MIN_ODD_TESSELLATION_FACTOR + EPSILON;
+    }
+    // Written so a NaN factor maps to the lower bound.
+    factor = factor > lower ? min(factor, upper) : lower;
+    if (partitioning == PARTITIONING_INTEGER) {
+        factor = ceil(factor);
+    }
+    return factor;
+}
+
+uint FloatToFixed(float value) {
+    return uint(value * float(FXP_ONE) + 0.5);
+}
+
+bool IsOdd(float value) {
+    return (int(value) & 1) != 0;
+}
+
+uint FxpCeil(uint value) {
+    if ((value & FXP_FRACTION_MASK) != 0) {
+        return (value & FXP_INTEGER_MASK) + FXP_ONE;
+    }
+    return value;
+}
+
+uint FxpFloor(uint value) {
+    return value & FXP_INTEGER_MASK;
+}
+
+int PatchIndexValue(int index) {
+    if (bUsingPatchedIndices) {
+        // assumed remapped outide indices are > remapped inside vertices
+        if (index >= outsidePointIndexPatchBase) {
+            if (index == outsidePointIndexBadValue) {
+                return outsidePointIndexReplacementValue;
+            }
+            return index + outsidePointIndexDeltaToRealValue;
+        }
+        if (index == insidePointIndexBadValue) {
+            return insidePointIndexReplacementValue;
+        }
+        return index + insidePointIndexDeltaToRealValue;
+    } else if (bUsingPatchedIndices2) {
+        if (index == cornerCaseBadValue) {
+            return cornerCaseReplacementValue;
+        } else if (index >= baseIndexToInvert) {
+            return indexInversionEndPoint - index;
+        }
+    }
+    return index;
+}
+
+void DefinePoint(int point, uint u, uint v, uint patch_index) {
+    const uint base = (point_base + uint(point)) * 3;
+    points[base] = u;
+    points[base + 1] = v;
+    points[base + 2] = patch_index;
+}
+
+void DefineIndex(int index, int offset) {
+    indices[index_base + uint(offset)] = point_base + uint(PatchIndexValue(index));
+}
+
+void DefineTriangle(int index0, int index1, int index2, int offset) {
+    const uint base = index_base + uint(offset);
+    // The tessellator emits clockwise triangles; counter-clockwise swaps the second and third.
+    if (ccw != 0) {
+        const int swap = index1;
+        index1 = index2;
+        index2 = swap;
+    }
+    indices[base] = point_base + uint(PatchIndexValue(index0));
+    indices[base + 1] = point_base + uint(PatchIndexValue(index1));
+    indices[base + 2] = point_base + uint(PatchIndexValue(index2));
+}
+
+void DefinePointIndices(uint count) {
+    for (uint i = 0; i < count; ++i) {
+        indices[index_base + i] = point_base + i;
+    }
+}
+
+uint RemoveMSB(uint value) {
+    const uint bit = value != 0 ? (1u << uint(findMSB(value))) : 0u;
+    return value & ~bit;
+}
+
+int NumPointsForTessFactor(bool odd, uint fxpTessFactor) {
+    // Add epsilon for rounding and add 1 for odd
+    const uint f = fxpTessFactor + (odd ? (FXP_ONE + 1) : 1);
+    const int r = int(FxpCeil(f / 2) >> (FXP_FRACTION_BITS - 1));
+    return odd ? r : r + 1;
+}
+
+TessFactorCtx ComputeTessFactorCtx(bool odd, uint fxpTessFactor) {
+    TessFactorCtx ctx;
+    // fxpHalfTessFactor == 1/2 if TessFactor is 1,
+    // but we're pretending we are even.
+    uint fxpHalfTessFactor = (fxpTessFactor + 1 /*round*/) / 2;
+    if (odd || (fxpHalfTessFactor == FXP_ONE_HALF)) {
+        fxpHalfTessFactor += FXP_ONE_HALF;
+    }
+    const uint fxpFloorHalfTessFactor = FxpFloor(fxpHalfTessFactor);
+    const uint fxpCeilHalfTessFactor = FxpCeil(fxpHalfTessFactor);
+    ctx.fxpHalfTessFactorFraction = fxpHalfTessFactor - fxpFloorHalfTessFactor;
+    // for EVEN, we don't include the point always fixed at the midpoint of the TessFactor
+    ctx.numHalfTessFactorPoints = int(fxpCeilHalfTessFactor >> FXP_FRACTION_BITS);
+    if (fxpCeilHalfTessFactor == fxpFloorHalfTessFactor) {
+        /*pick value to cause this to be ignored*/
+        ctx.splitPointOnFloorHalfTessFactor = ctx.numHalfTessFactorPoints + 1;
+    } else if (odd) {
+        if (fxpFloorHalfTessFactor == FXP_ONE) {
+            ctx.splitPointOnFloorHalfTessFactor = 0;
+        } else {
+            ctx.splitPointOnFloorHalfTessFactor =
+                int((RemoveMSB((fxpFloorHalfTessFactor >> FXP_FRACTION_BITS) - 1) << 1) + 1);
+        }
+    } else {
+        ctx.splitPointOnFloorHalfTessFactor =
+            int((RemoveMSB(fxpFloorHalfTessFactor >> FXP_FRACTION_BITS) << 1) + 1);
+    }
+    int numFloorSegments = int((fxpFloorHalfTessFactor * 2) >> FXP_FRACTION_BITS);
+    int numCeilSegments = int((fxpCeilHalfTessFactor * 2) >> FXP_FRACTION_BITS);
+    if (odd) {
+        numFloorSegments -= 1;
+        numCeilSegments -= 1;
+    }
+    ctx.fxpInvNumSegmentsOnFloorTessFactor = FloatToFixed(1.0 / float(numFloorSegments));
+    ctx.fxpInvNumSegmentsOnCeilTessFactor = FloatToFixed(1.0 / float(numCeilSegments));
+    return ctx;
+}
+
+uint PlacePointIn1D(TessFactorCtx ctx, bool odd, int point) {
+    const bool bFlip = point >= ctx.numHalfTessFactorPoints;
+    if (bFlip) {
+        point = (ctx.numHalfTessFactorPoints << 1) - point - (odd ? 1 : 0);
+    }
+    // special casing middle since 16 bit fixed math below can't reproduce 0.5 exactly
+    if (point == ctx.numHalfTessFactorPoints) {
+        return FXP_ONE_HALF;
+    }
+    const uint indexOnCeilHalfTessFactor = uint(point);
+    uint indexOnFloorHalfTessFactor = indexOnCeilHalfTessFactor;
+    if (point > ctx.splitPointOnFloorHalfTessFactor) {
+        indexOnFloorHalfTessFactor -= 1;
+    }
+    // For the fixed point multiplies below, we know the results are <= 16 bits
+    // because the locations on the halfTessFactor are <= half the number of
+    // segments for the total TessFactor. So a number divided by a number that
+    // is at least twice as big will give a result no bigger than 0.5 (which in
+    // fixed point is 16 bits in our case)
+    const uint fxpLocationOnFloorHalfTessFactor =
+        indexOnFloorHalfTessFactor * ctx.fxpInvNumSegmentsOnFloorTessFactor;
+    const uint fxpLocationOnCeilHalfTessFactor =
+        indexOnCeilHalfTessFactor * ctx.fxpInvNumSegmentsOnCeilTessFactor;
+    // Since we know the numbers calculated above are <= fixed point 0.5, and the
+    // equation below is just lerping between two values <= fixed point 0.5
+    // (0x00008000), then we know that the final result before shifting by 16 bits
+    // is no larger than 0x80000000.  Once we shift that down by 16, we get the
+    // result of lerping 2 numbers <= 0.5, which is obviously at most 0.5
+    // (0x00008000)
+    uint fxpLocation =
+        fxpLocationOnFloorHalfTessFactor * (FXP_ONE - ctx.fxpHalfTessFactorFraction) +
+        fxpLocationOnCeilHalfTessFactor * ctx.fxpHalfTessFactorFraction;
+    fxpLocation = (fxpLocation + FXP_ONE_HALF /*round*/) >> FXP_FRACTION_BITS; // get back to n.16
+    if (bFlip) {
+        fxpLocation = FXP_ONE - fxpLocation;
+    }
+    return fxpLocation;
+}
+
+void StitchRegular(bool bTrapezoid, int diagonals, int baseIndexOffset, int numInsideEdgePoints,
+                   int insideEdgePointBaseOffset, int outsideEdgePointBaseOffset) {
+    int insidePoint = insideEdgePointBaseOffset;
+    int outsidePoint = outsideEdgePointBaseOffset;
+    if (bTrapezoid) {
+        DefineTriangle(outsidePoint, outsidePoint + 1, insidePoint, baseIndexOffset);
+        baseIndexOffset += 3;
+        outsidePoint++;
+    }
+    int p;
+    switch (diagonals) {
+    case DIAGONALS_INSIDE_TO_OUTSIDE:
+        // Diagonals pointing from inside edge forward towards outside edge
+        for (p = 0; p < numInsideEdgePoints - 1; p++) {
+            DefineTriangle(insidePoint, outsidePoint, outsidePoint + 1, baseIndexOffset);
+            baseIndexOffset += 3;
+            DefineTriangle(insidePoint, outsidePoint + 1, insidePoint + 1, baseIndexOffset);
+            baseIndexOffset += 3;
+            insidePoint++;
+            outsidePoint++;
+        }
+        break;
+    case DIAGONALS_INSIDE_TO_OUTSIDE_EXCEPT_MIDDLE: // Assumes ODD tessellation
+        // Diagonals pointing from outside edge forward towards inside edge
+
+        // First half
+        for (p = 0; p < numInsideEdgePoints / 2 - 1; p++) {
+            DefineTriangle(outsidePoint, outsidePoint + 1, insidePoint, baseIndexOffset);
+            baseIndexOffset += 3;
+            DefineTriangle(insidePoint, outsidePoint + 1, insidePoint + 1, baseIndexOffset);
+            baseIndexOffset += 3;
+            insidePoint++;
+            outsidePoint++;
+        }
+
+        // Middle
+        DefineTriangle(outsidePoint, insidePoint + 1, insidePoint, baseIndexOffset);
+        baseIndexOffset += 3;
+        DefineTriangle(outsidePoint, outsidePoint + 1, insidePoint + 1, baseIndexOffset);
+        baseIndexOffset += 3;
+        insidePoint++;
+        outsidePoint++;
+        p += 2;
+
+        // Second half
+        for (; p < numInsideEdgePoints; p++) {
+            DefineTriangle(outsidePoint, outsidePoint + 1, insidePoint, baseIndexOffset);
+            baseIndexOffset += 3;
+            DefineTriangle(insidePoint, outsidePoint + 1, insidePoint + 1, baseIndexOffset);
+            baseIndexOffset += 3;
+            insidePoint++;
+            outsidePoint++;
+        }
+        break;
+    case DIAGONALS_MIRRORED:
+        // First half, diagonals pointing from outside of outside edge to inside of
+        // inside edge
+        for (p = 0; p < numInsideEdgePoints / 2; p++) {
+            DefineTriangle(outsidePoint, insidePoint + 1, insidePoint, baseIndexOffset);
+            baseIndexOffset += 3;
+            DefineTriangle(outsidePoint, outsidePoint + 1, insidePoint + 1, baseIndexOffset);
+            baseIndexOffset += 3;
+            insidePoint++;
+            outsidePoint++;
+        }
+        // Second half, diagonals pointing from inside of inside edge to outside of
+        // outside edge
+        for (; p < numInsideEdgePoints - 1; p++) {
+            DefineTriangle(insidePoint, outsidePoint, outsidePoint + 1, baseIndexOffset);
+            baseIndexOffset += 3;
+            DefineTriangle(insidePoint, outsidePoint + 1, insidePoint + 1, baseIndexOffset);
+            baseIndexOffset += 3;
+            insidePoint++;
+            outsidePoint++;
+        }
+        break;
+    }
+    if (bTrapezoid) {
+        DefineTriangle(outsidePoint, outsidePoint + 1, insidePoint, baseIndexOffset);
+        baseIndexOffset += 3;
+    }
+}
+
+// loop_start and loop_end give optimal loop bounds for
+// the stitching algorithm further below, for any given halfTssFactor.
+//
+// Return the FIRST entry in finalPointPositionTable awhich is less than
+// halfTessFactor, except entry 0 and 1 which are set up to skip the loop.
+int LoopStart(int n) {
+    if (n < 2) {
+        return 1;
+    } else if (n == 2) {
+        return 17;
+    } else if (n < 5) {
+        return 9;
+    } else if (n < 9) {
+        return 5;
+    } else if (n < 17) {
+        return 3;
+    }
+    return 2;
+}
+
+// Return the LAST entry in finalPointPositionTable[] which is less than
+// halfTessFactor, except entry 0 and 1 which are set up to skip the loop.
+int LoopEnd(int n) {
+    if (n < 2) {
+        return 0;
+    } else if (n < 4) {
+        return 17;
+    } else if (n < 8) {
+        return 25;
+    } else if (n < 16) {
+        return 29;
+    } else if (n < 32) {
+        return 31;
+    }
+    return 32;
+}
+
+// Where vertex i [0..33] ends up on the half-edge at the max tessellation amount given
+// ruler-function split order. Recall the other half of an edge is mirrored,
+// so we only need to deal with one half. This table is used to decide when
+// to advance a point on the interior or exterior. It supports odd TessFactor
+// up to 65 and even TessFactor up to 64.
+int FinalPointPositionTable(uint x) {
+    if (x == 0) {
+        return 0;
+    }
+    if (x == 1) {
+        return 0x20;
+    }
+    uint shift;
+    if ((x & 1) == 0) {
+        shift = 1;
+    } else if ((x & 3) == 3) {
+        shift = 2;
+    } else if ((x & 7) == 5) {
+        shift = 3;
+    } else if (x != 17) {
+        shift = 4;
+    } else {
+        shift = 5;
+    }
+    // SWAR vectorized right-shift of (0x20, x)
+    // We're calculating `min(0xf, 0x20 >> shift) + (x >> shift)`.
+    const uint items_to_shift = x | (0x20u << 16);
+    const uint shifted = items_to_shift >> shift;
+    const uint bias = min(0xfu, shifted >> 16);
+    return int(bias + (shifted & 0xffffu));
+}
+
+void StitchTransition(int baseIndexOffset, int insideEdgePointBaseOffset,
+                      int insideNumHalfTessFactorPoints, bool insideEdgeTessFactorOdd,
+                      int outsideEdgePointBaseOffset, int outsideNumHalfTessFactorPoints,
+                      bool outsideTessFactorOdd) {
+    if (insideEdgeTessFactorOdd) {
+        insideNumHalfTessFactorPoints -= 1;
+    }
+    if (outsideTessFactorOdd) {
+        outsideNumHalfTessFactorPoints -= 1;
+    }
+    // Walk first half
+    int outsidePoint = outsideEdgePointBaseOffset;
+    int insidePoint = insideEdgePointBaseOffset;
+
+    // iStart,iEnd are a small optimization so the loop below doesn't have to go
+    // from 0 up to 31
+    const int iStart =
+        min(LoopStart(insideNumHalfTessFactorPoints), LoopStart(outsideNumHalfTessFactorPoints));
+    const int iEnd = LoopEnd(max(insideNumHalfTessFactorPoints, outsideNumHalfTessFactorPoints));
+
+    // since we don't start the loop at 0 below, we need a special case.
+    if (0 < outsideNumHalfTessFactorPoints) {
+        // Advance outside
+        DefineTriangle(outsidePoint, outsidePoint + 1, insidePoint, baseIndexOffset);
+        baseIndexOffset += 3;
+        outsidePoint++;
+    }
+
+    for (int i = iStart; i <= iEnd; i++) {
+        const int bound = FinalPointPositionTable(uint(i));
+        if (bound < insideNumHalfTessFactorPoints) {
+            // Advance inside
+            DefineTriangle(insidePoint, outsidePoint, insidePoint + 1, baseIndexOffset);
+            baseIndexOffset += 3;
+            insidePoint++;
+        }
+        if (bound < outsideNumHalfTessFactorPoints) {
+            // Advance outside
+            DefineTriangle(outsidePoint, outsidePoint + 1, insidePoint, baseIndexOffset);
+            baseIndexOffset += 3;
+            outsidePoint++;
+        }
+    }
+
+    if ((insideEdgeTessFactorOdd != outsideTessFactorOdd) || insideEdgeTessFactorOdd) {
+        if (insideEdgeTessFactorOdd == outsideTessFactorOdd) {
+            // Quad in the middle
+            DefineTriangle(insidePoint, outsidePoint, insidePoint + 1, baseIndexOffset);
+            baseIndexOffset += 3;
+            DefineTriangle(insidePoint + 1, outsidePoint, outsidePoint + 1, baseIndexOffset);
+            baseIndexOffset += 3;
+            insidePoint++;
+            outsidePoint++;
+        } else if (!insideEdgeTessFactorOdd) {
+            // Triangle pointing inside
+            DefineTriangle(insidePoint, outsidePoint, outsidePoint + 1, baseIndexOffset);
+            baseIndexOffset += 3;
+            outsidePoint++;
+        } else {
+            // Triangle pointing outside
+            DefineTriangle(insidePoint, outsidePoint, insidePoint + 1, baseIndexOffset);
+            baseIndexOffset += 3;
+            insidePoint++;
+        }
+    }
+
+    // Walk second half.
+    for (int i = iEnd; i >= iStart; i--) {
+        const int bound = FinalPointPositionTable(uint(i));
+        if (bound < outsideNumHalfTessFactorPoints) {
+            // Advance outside
+            DefineTriangle(outsidePoint, outsidePoint + 1, insidePoint, baseIndexOffset);
+            baseIndexOffset += 3;
+            outsidePoint++;
+        }
+        if (bound < insideNumHalfTessFactorPoints) {
+            // Advance inside
+            DefineTriangle(insidePoint, outsidePoint, insidePoint + 1, baseIndexOffset);
+            baseIndexOffset += 3;
+            insidePoint++;
+        }
+    }
+    // Below case is not needed if we didn't optimize loop above and made it run
+    // from 31 down to 0.
+    if (0 < outsideNumHalfTessFactorPoints) {
+        DefineTriangle(outsidePoint, outsidePoint + 1, insidePoint, baseIndexOffset);
+        baseIndexOffset += 3;
+        outsidePoint++;
+    }
+}
+
+void IsolineProcess(uint patch_index) {
+    float TessFactor_V_LineDensity = Factor(patch_index, 0);
+    float TessFactor_U_LineDetail = Factor(patch_index, 1);
+
+    // Is the patch culled? NaN will pass.
+    if (!(TessFactor_V_LineDensity > 0.0) || !(TessFactor_U_LineDetail > 0.0)) {
+        EmptyPatch(patch_index);
+        return;
+    }
+
+    // Clamp edge TessFactors
+    TessFactor_V_LineDensity = clamp(TessFactor_V_LineDensity, MIN_ISOLINE_DENSITY_TESSELLATION_FACTOR,
+                                     MAX_ISOLINE_DENSITY_TESSELLATION_FACTOR);
+    TessFactor_U_LineDetail = ClampFactor(TessFactor_U_LineDetail, 0.0);
+
+    // Process tessFactors
+    bool lineDetailOdd;
+    if (partitioning == PARTITIONING_INTEGER) {
+        lineDetailOdd = IsOdd(TessFactor_U_LineDetail);
+    } else {
+        lineDetailOdd = (partitioning == PARTITIONING_FRACTIONAL_ODD);
+    }
+
+    const uint fxpTessFactor_U_LineDetail = FloatToFixed(TessFactor_U_LineDetail);
+    const TessFactorCtx lineDetailTessFactorCtx =
+        ComputeTessFactorCtx(lineDetailOdd, fxpTessFactor_U_LineDetail);
+    const int numPointsPerLine = NumPointsForTessFactor(lineDetailOdd, fxpTessFactor_U_LineDetail);
+
+    TessFactor_V_LineDensity = ceil(TessFactor_V_LineDensity);
+    const bool lineDensityOdd = IsOdd(TessFactor_V_LineDensity);
+    const uint fxpTessFactor_V_LineDensity = FloatToFixed(TessFactor_V_LineDensity);
+    const TessFactorCtx lineDensityTessFactorCtx =
+        ComputeTessFactorCtx(lineDensityOdd, fxpTessFactor_V_LineDensity);
+
+    // don't draw last line at V == 1.
+    const int numLines = NumPointsForTessFactor(lineDensityOdd, fxpTessFactor_V_LineDensity) - 1;
+
+    const uint num_points = uint(numPointsPerLine * numLines);
+    const uint num_indices =
+        points_mode != 0 ? num_points : uint(numLines * (numPointsPerLine - 1) * 2);
+    if (!BeginPatch(patch_index, num_points, num_indices)) {
+        return;
+    }
+
+    for (int line = 0, pointOffset = 0; line < numLines; line++) {
+        const uint fxpV = PlacePointIn1D(lineDensityTessFactorCtx, lineDensityOdd, line);
+        for (int point = 0; point < numPointsPerLine; point++) {
+            const uint fxpU = PlacePointIn1D(lineDetailTessFactorCtx, lineDetailOdd, point);
+            DefinePoint(pointOffset++, fxpU, fxpV, patch_index);
+        }
+    }
+
+    if (points_mode != 0) {
+        DefinePointIndices(num_points);
+        return;
+    }
+    for (int line = 0, pointOffset = 0, indexOffset = 0; line < numLines; line++) {
+        pointOffset++;
+        for (int point = 1; point < numPointsPerLine; point++) {
+            DefineIndex(pointOffset - 1, indexOffset++);
+            DefineIndex(pointOffset, indexOffset++);
+            pointOffset++;
+        }
+    }
+}
+
+void TriProcess(uint patch_index) {
+    float tessFactor_Ueq0 = Factor(patch_index, 0);
+    float tessFactor_Veq0 = Factor(patch_index, 1);
+    float tessFactor_Weq0 = Factor(patch_index, 2);
+    float insideTessFactor_f = Factor(patch_index, 4);
+
+    // Is the patch culled? NaN will pass.
+    if (!(tessFactor_Ueq0 > 0.0) || !(tessFactor_Veq0 > 0.0) || !(tessFactor_Weq0 > 0.0)) {
+        EmptyPatch(patch_index);
+        return;
+    }
+
+    uint outsideTessFactor[TRI_EDGES];
+    bool outsideTessFactorOdd[TRI_EDGES];
+    TessFactorCtx outsideTessFactorCtx[TRI_EDGES];
+    int numPointsForOutsideEdge[TRI_EDGES];
+
+    // Clamp TessFactors
+    tessFactor_Ueq0 = ClampFactor(tessFactor_Ueq0, 0.0);
+    tessFactor_Veq0 = ClampFactor(tessFactor_Veq0, 0.0);
+    tessFactor_Weq0 = ClampFactor(tessFactor_Weq0, 0.0);
+
+    const float maxf = max(max(tessFactor_Ueq0, tessFactor_Veq0), tessFactor_Weq0);
+    insideTessFactor_f = ClampFactor(insideTessFactor_f, maxf);
+    // Note the above clamps map NaN to the lower bound
+
+    // Process tessFactors
+    const float outsideTessFactor_f[TRI_EDGES] = {tessFactor_Ueq0, tessFactor_Veq0,
+                                                  tessFactor_Weq0};
+    bool insideTessFactorOdd;
+    if (partitioning == PARTITIONING_INTEGER) {
+        for (int edge = 0; edge < TRI_EDGES; edge++) {
+            outsideTessFactorOdd[edge] = IsOdd(outsideTessFactor_f[edge]);
+        }
+        insideTessFactorOdd = IsOdd(insideTessFactor_f) && (1.0 != insideTessFactor_f);
+    } else {
+        const bool odd = (partitioning == PARTITIONING_FRACTIONAL_ODD);
+        for (int edge = 0; edge < TRI_EDGES; edge++) {
+            outsideTessFactorOdd[edge] = odd;
+        }
+        insideTessFactorOdd = odd;
+    }
+
+    // Save fixed point TessFactors
+    for (int edge = 0; edge < TRI_EDGES; edge++) {
+        outsideTessFactor[edge] = FloatToFixed(outsideTessFactor_f[edge]);
+    }
+    const uint insideTessFactor = FloatToFixed(insideTessFactor_f);
+
+    if (partitioning != PARTITIONING_FRACTIONAL_EVEN) {
+        // Special case if all TessFactors are 1
+        if ((FXP_ONE == insideTessFactor) && (FXP_ONE == outsideTessFactor[Ueq0]) &&
+            (FXP_ONE == outsideTessFactor[Veq0]) && (FXP_ONE == outsideTessFactor[Weq0])) {
+            /* Just do minimum tess factor */
+            if (!BeginPatch(patch_index, 3, 3)) {
+                return;
+            }
+            DefinePoint(0, 0, FXP_ONE, patch_index); // V=1 (beginning of Ueq0 edge VW)
+            DefinePoint(1, 0, 0, patch_index);       // W=1 (beginning of Veq0 edge WU)
+            DefinePoint(2, FXP_ONE, 0, patch_index); // U=1 (beginning of Weq0 edge UV)
+            if (points_mode == 0) {
+                DefineTriangle(0, 1, 2, /*indexStorageBaseOffset*/ 0);
+            } else {
+                DefinePointIndices(3);
+            }
+            return;
+        }
+    }
+
+    // Compute per-TessFactor metadata
+    for (int edge = 0; edge < TRI_EDGES; edge++) {
+        outsideTessFactorCtx[edge] =
+            ComputeTessFactorCtx(outsideTessFactorOdd[edge], outsideTessFactor[edge]);
+    }
+    const TessFactorCtx insideTessFactorCtx =
+        ComputeTessFactorCtx(insideTessFactorOdd, insideTessFactor);
+
+    // Compute some initial data.
+    int NumPoints = 0;
+
+    // outside edge offsets and storage
+    for (int edge = 0; edge < TRI_EDGES; edge++) {
+        numPointsForOutsideEdge[edge] =
+            NumPointsForTessFactor(outsideTessFactorOdd[edge], outsideTessFactor[edge]);
+        NumPoints += numPointsForOutsideEdge[edge];
+    }
+    NumPoints -= 3;
+
+    // inside edge offsets
+    int numPointsForInsideTessFactor = NumPointsForTessFactor(insideTessFactorOdd, insideTessFactor);
+    {
+        const int pointCountMin = insideTessFactorOdd ? 4 : 3;
+        // max() allows degenerate transition regions when inside TessFactor == 1
+        numPointsForInsideTessFactor = max(pointCountMin, numPointsForInsideTessFactor);
+    }
+
+    const int insideEdgePointBaseOffset = NumPoints;
+
+    // inside storage, including interior edges above
+    {
+        const int interiorRings = (numPointsForInsideTessFactor >> 1) - 1;
+        const int even = insideTessFactorOdd ? 0 : 1;
+        NumPoints += TRI_EDGES * (interiorRings * (interiorRings + even)) + even;
+    }
+
+    // Generate primitives for all the concentric rings, one side at a time
+    // for each ring +1 is so even tess includes the center point, which we
+    // want to now
+    const int numStitchRings = ((numPointsForInsideTessFactor + 1) >> 1);
+    int NumIndices = NumPoints;
+    if (points_mode == 0) {
+        const int OuterPoints =
+            numPointsForOutsideEdge[0] + numPointsForOutsideEdge[1] + numPointsForOutsideEdge[2];
+        const int numRings18 = numStitchRings * 18;
+        NumIndices = ((numRings18 - 27) * numPointsForInsideTessFactor) + (3 * OuterPoints) -
+                     (numRings18 * (numStitchRings - 1)) + (insideTessFactorOdd ? 3 : 0);
+    }
+    if (!BeginPatch(patch_index, uint(NumPoints), uint(NumIndices))) {
+        return;
+    }
+
+    /* GENERATE POINTS */
+    {
+        // Generate exterior ring edge points, clockwise starting from point V
+        // (VW, the U==0 edge)
+        int pointOffset = 0;
+        for (int edge = 0; edge < TRI_EDGES; edge++) {
+            const bool odd = (edge & 0x1) != 0;
+            const int endPoint = numPointsForOutsideEdge[edge] - 1;
+            // don't include end, since next edge starts with it.
+            for (int p = 0; p < endPoint; p++, pointOffset++) {
+                // whether to reverse point order given we are defining V or U (W
+                // implicit): edge0, VW, has V decreasing, so reverse 1D points
+                // below edge1, WU, has U increasing, so don't reverse 1D points
+                // below edge2, UV, has U decreasing, so reverse 1D points below
+                const int q = odd ? p : endPoint - p;
+                const uint fxpParam =
+                    PlacePointIn1D(outsideTessFactorCtx[edge], outsideTessFactorOdd[edge], q);
+                DefinePoint(pointOffset, (edge == 0) ? 0 : fxpParam,
+                            (edge == 0)   ? fxpParam
+                            : (edge == 2) ? FXP_ONE - fxpParam
+                                          : 0,
+                            patch_index);
+            }
+        }
+
+        // Generate interior ring points, clockwise spiralling in
+        const int numRings = (numPointsForInsideTessFactor >> 1);
+        for (int ring = 1; ring < numRings; ring++) {
+            const int startPoint = ring;
+            const int endPoint = numPointsForInsideTessFactor - 1 - startPoint;
+
+            const int perpendicularAxisPoint = startPoint;
+            uint fxpPerpParam =
+                PlacePointIn1D(insideTessFactorCtx, insideTessFactorOdd, perpendicularAxisPoint);
+
+            // Map location to the right size in
+            // barycentric space. We know this fixed
+            // point math won't over/underflow
+            fxpPerpParam *= FXP_TWO_THIRDS;
+            fxpPerpParam = (fxpPerpParam + FXP_ONE_HALF /*round*/) >>
+                           FXP_FRACTION_BITS; // get back to n.16
+
+            for (int edge = 0; edge < TRI_EDGES; edge++) {
+                const bool odd = (edge & 0x1) != 0;
+
+                // don't include end: next edge starts with it.
+                for (int p = startPoint; p < endPoint; p++, pointOffset++) {
+                    // whether to reverse point given we are defining V or U (W
+                    // implicit): edge0, VW, has V decreasing, so reverse 1D points
+                    // below edge1, WU, has U increasing, so don't reverse 1D points
+                    // below edge2, UV, has U decreasing, so reverse 1D points below
+                    const int q = odd ? p : endPoint - (p - startPoint);
+                    const uint fxpParam =
+                        PlacePointIn1D(insideTessFactorCtx, insideTessFactorOdd, q);
+                    // edge0 VW, has perpendicular parameter U constant
+                    // edge1 WU, has perpendicular parameter V constant
+                    // edge2 UV, has perpendicular parameter W constant
+                    // reciprocal is the rate of change of edge-parallel parameters
+                    // as they are pushed into the triangle
+                    const uint deriv = 2;
+
+                    // we know this fixed point math won't over/underflow
+                    const uint tmp = fxpParam - (fxpPerpParam + 1 /*round*/) / deriv;
+
+                    DefinePoint(pointOffset, edge > 0 ? tmp : fxpPerpParam,
+                                edge == 0   ? tmp
+                                : edge == 1 ? fxpPerpParam
+                                            : FXP_ONE - tmp - fxpPerpParam,
+                                patch_index);
+                }
+            }
+        }
+        if (!insideTessFactorOdd) {
+            // Last point is the point at the center.
+            DefinePoint(pointOffset, FXP_ONE_THIRD, FXP_ONE_THIRD, patch_index);
+        }
+    }
+
+    if (points_mode != 0) {
+        DefinePointIndices(uint(NumPoints));
+        return;
+    }
+
+    {
+        int insideOffset = insideEdgePointBaseOffset;
+        int outsideEdgePointBaseOffset = 0;
+
+        NumIndices = 0;
+        for (int ring = 1; ring < numStitchRings; ring++) {
+            const int numPointsForInsideEdge = numPointsForInsideTessFactor - 2 * ring;
+            const int edge0InsidePointBaseOffset = insideOffset;
+            const int edge0OutsidePointBaseOffset = outsideEdgePointBaseOffset;
+            for (int edge = 0; edge < TRI_EDGES; edge++) {
+                const int outsidePoints =
+                    ring == 1 ? numPointsForOutsideEdge[edge] : (numPointsForInsideEdge + 2);
+
+                const int numTriangles = numPointsForInsideEdge + outsidePoints - 2;
+
+                int insideBaseOffset;
+                int outsideBaseOffset;
+                if (edge == 2) {
+                    insidePointIndexDeltaToRealValue = insideOffset;
+                    insidePointIndexBadValue = numPointsForInsideEdge - 1;
+                    insidePointIndexReplacementValue = edge0InsidePointBaseOffset;
+                    // past inside patched index range
+                    outsidePointIndexPatchBase = insidePointIndexBadValue + 1;
+                    outsidePointIndexDeltaToRealValue =
+                        outsideEdgePointBaseOffset - outsidePointIndexPatchBase;
+                    outsidePointIndexBadValue = outsidePointIndexPatchBase + outsidePoints - 1;
+                    outsidePointIndexReplacementValue = edge0OutsidePointBaseOffset;
+                    bUsingPatchedIndices = true;
+                    insideBaseOffset = 0;
+                    outsideBaseOffset = outsidePointIndexPatchBase;
+                } else {
+                    insideBaseOffset = insideOffset;
+                    outsideBaseOffset = outsideEdgePointBaseOffset;
+                }
+                if (ring == 1) {
+                    StitchTransition(/*baseIndexOffset: */ NumIndices, insideBaseOffset,
+                                     insideTessFactorCtx.numHalfTessFactorPoints,
+                                     insideTessFactorOdd, outsideBaseOffset,
+                                     outsideTessFactorCtx[edge].numHalfTessFactorPoints,
+                                     outsideTessFactorOdd[edge]);
+                } else {
+                    StitchRegular(/*bTrapezoid*/ true, DIAGONALS_MIRRORED,
+                                  /*baseIndexOffset: */ NumIndices, numPointsForInsideEdge,
+                                  insideBaseOffset, outsideBaseOffset);
+                }
+                if (2 == edge) {
+                    bUsingPatchedIndices = false;
+                }
+                NumIndices += numTriangles * 3;
+                outsideEdgePointBaseOffset += outsidePoints - 1;
+                insideOffset += numPointsForInsideEdge - 1;
+            }
+        }
+        if (insideTessFactorOdd) {
+            // Triangulate center (a single triangle)
+            DefineTriangle(outsideEdgePointBaseOffset, outsideEdgePointBaseOffset + 1,
+                           outsideEdgePointBaseOffset + 2, NumIndices);
+            NumIndices += 3;
+        }
+    }
+}
+
+void QuadProcess(uint patch_index) {
+    float tessFactor_Ueq0 = Factor(patch_index, 0);
+    float tessFactor_Veq0 = Factor(patch_index, 1);
+    float tessFactor_Ueq1 = Factor(patch_index, 2);
+    float tessFactor_Veq1 = Factor(patch_index, 3);
+
+    float insideTessFactor_U = Factor(patch_index, 4);
+    float insideTessFactor_V = Factor(patch_index, 5);
+
+    // Is the patch culled?
+    if (!(tessFactor_Ueq0 > 0.0) || // NaN will pass
+        !(tessFactor_Veq0 > 0.0) || !(tessFactor_Ueq1 > 0.0) || !(tessFactor_Veq1 > 0.0)) {
+        EmptyPatch(patch_index);
+        return;
+    }
+
+    uint outsideTessFactor[QUAD_EDGES];
+    uint insideTessFactor[QUAD_AXES];
+    bool outsideTessFactorOdd[QUAD_EDGES];
+    bool insideTessFactorOdd[QUAD_AXES];
+    TessFactorCtx outsideTessFactorCtx[QUAD_EDGES];
+    TessFactorCtx insideTessFactorCtx[QUAD_AXES];
+    int numPointsForOutsideEdge[QUAD_EDGES];
+    int numPointsForInsideTessFactor[QUAD_AXES];
+
+    // Clamp edge TessFactors
+    tessFactor_Ueq0 = ClampFactor(tessFactor_Ueq0, 0.0);
+    tessFactor_Veq0 = ClampFactor(tessFactor_Veq0, 0.0);
+    tessFactor_Ueq1 = ClampFactor(tessFactor_Ueq1, 0.0);
+    tessFactor_Veq1 = ClampFactor(tessFactor_Veq1, 0.0);
+
+    const float maxf =
+        max(max(max(tessFactor_Ueq0, tessFactor_Veq0), max(tessFactor_Ueq1, tessFactor_Veq1)),
+            max(insideTessFactor_U, insideTessFactor_V));
+
+    insideTessFactor_U = ClampFactor(insideTessFactor_U, maxf);
+    insideTessFactor_V = ClampFactor(insideTessFactor_V, maxf);
+    // Note the above clamps map NaN to lowerBound
+
+    // Process tessFactors
+    const float outsideTessFactor_f[QUAD_EDGES] = {tessFactor_Ueq0, tessFactor_Veq0,
+                                                   tessFactor_Ueq1, tessFactor_Veq1};
+    const float insideTessFactor_f[QUAD_AXES] = {insideTessFactor_U, insideTessFactor_V};
+    if (partitioning == PARTITIONING_INTEGER) {
+        for (int edge = 0; edge < QUAD_EDGES; edge++) {
+            outsideTessFactorOdd[edge] = IsOdd(outsideTessFactor_f[edge]);
+        }
+        for (int axis = 0; axis < QUAD_AXES; axis++) {
+            insideTessFactorOdd[axis] =
+                IsOdd(insideTessFactor_f[axis]) && (1.0 != insideTessFactor_f[axis]);
+        }
+    } else {
+        const bool odd = (partitioning == PARTITIONING_FRACTIONAL_ODD);
+        for (int edge = 0; edge < QUAD_EDGES; edge++) {
+            outsideTessFactorOdd[edge] = odd;
+        }
+        insideTessFactorOdd[U] = odd;
+        insideTessFactorOdd[V] = odd;
+    }
+
+    // Save fixed point TessFactors
+    for (int edge = 0; edge < QUAD_EDGES; edge++) {
+        outsideTessFactor[edge] = FloatToFixed(outsideTessFactor_f[edge]);
+    }
+    for (int axis = 0; axis < QUAD_AXES; axis++) {
+        insideTessFactor[axis] = FloatToFixed(insideTessFactor_f[axis]);
+    }
+
+    if (partitioning != PARTITIONING_FRACTIONAL_EVEN) {
+        // Special case if all TessFactors are 1
+        if ((FXP_ONE == insideTessFactor[U]) && (FXP_ONE == insideTessFactor[V]) &&
+            (FXP_ONE == outsideTessFactor[Ueq0]) && (FXP_ONE == outsideTessFactor[Veq0]) &&
+            (FXP_ONE == outsideTessFactor[Ueq1]) && (FXP_ONE == outsideTessFactor[Veq1])) {
+            /* Just do minimum tess factor */
+            if (!BeginPatch(patch_index, 4, points_mode != 0 ? 4 : 6)) {
+                return;
+            }
+            if (points_mode == 0) {
+                DefineTriangle(0, 1, 3, /*indexStorageOffset*/ 0);
+                DefineTriangle(1, 2, 3, /*indexStorageOffset*/ 3);
+            } else {
+                DefinePointIndices(4);
+            }
+            DefinePoint(0, 0, 0, patch_index);
+            DefinePoint(1, FXP_ONE, 0, patch_index);
+            DefinePoint(2, FXP_ONE, FXP_ONE, patch_index);
+            DefinePoint(3, 0, FXP_ONE, patch_index);
+            return;
+        }
+    }
+
+    // Compute TessFactor-specific metadata
+    for (int edge = 0; edge < QUAD_EDGES; edge++) {
+        outsideTessFactorCtx[edge] =
+            ComputeTessFactorCtx(outsideTessFactorOdd[edge], outsideTessFactor[edge]);
+    }
+    for (int axis = 0; axis < QUAD_AXES; axis++) {
+        insideTessFactorCtx[axis] =
+            ComputeTessFactorCtx(insideTessFactorOdd[axis], insideTessFactor[axis]);
+    }
+
+    int NumPoints = 0;
+
+    // outside edge offsets and storage
+    for (int edge = 0; edge < QUAD_EDGES; edge++) {
+        numPointsForOutsideEdge[edge] =
+            NumPointsForTessFactor(outsideTessFactorOdd[edge], outsideTessFactor[edge]);
+        NumPoints += numPointsForOutsideEdge[edge];
+    }
+    NumPoints -= 4;
+
+    // inside edge offsets
+    for (int axis = 0; axis < QUAD_AXES; axis++) {
+        numPointsForInsideTessFactor[axis] =
+            NumPointsForTessFactor(insideTessFactorOdd[axis], insideTessFactor[axis]);
+        const int pointCountMin = insideTessFactorOdd[axis] ? 4 : 3;
+        // max() allows degenerate transition regions when inside TessFactor == 1
+        numPointsForInsideTessFactor[axis] = max(pointCountMin, numPointsForInsideTessFactor[axis]);
+    }
+
+    const int insideEdgePointBaseOffset = NumPoints;
+
+    // inside storage, including interior edges above
+    const int numInteriorPoints =
+        (numPointsForInsideTessFactor[U] - 2) * (numPointsForInsideTessFactor[V] - 2);
+    NumPoints += numInteriorPoints;
+
+    // Generate primitives for all the concentric rings, one side at a time
+    // for each ring. +1 is so even tess includes the center point
+    const int numPointRowsToCenter[QUAD_AXES] = {
+        (numPointsForInsideTessFactor[U] + 1) >> 1,
+        (numPointsForInsideTessFactor[V] + 1) >> 1,
+    };
+    const int numStitchRings = min(numPointRowsToCenter[U], numPointRowsToCenter[V]);
+
+    int NumIndices = NumPoints;
+    if (points_mode == 0) {
+        /* Handle main case */
+        const int OuterPoints = numPointsForOutsideEdge[0] + numPointsForOutsideEdge[1] +
+                                numPointsForOutsideEdge[2] + numPointsForOutsideEdge[3];
+        const int InnerPoints = numPointsForInsideTessFactor[U] + numPointsForInsideTessFactor[V];
+        NumIndices = (OuterPoints * 3) + (12 * numStitchRings * InnerPoints) - (InnerPoints * 18) -
+                     (24 * numStitchRings * (numStitchRings - 1));
+
+        /* Determine major/minor axes */
+        const bool U_major = (numPointsForInsideTessFactor[U] > numPointsForInsideTessFactor[V]);
+        const int M = U_major ? U : V;
+        const int m = U_major ? V : U;
+
+        /* Handle degenerate ring */
+        if (insideTessFactorOdd[m]) {
+            NumIndices += 12 * ((numPointsForInsideTessFactor[M] >> 1) -
+                                (numPointsForInsideTessFactor[m] >> 1));
+            NumIndices += (insideTessFactorOdd[M] ? 6 : 12);
+        }
+    }
+    if (!BeginPatch(patch_index, uint(NumPoints), uint(NumIndices))) {
+        return;
+    }
+
+    {
+        // Generate exterior ring edge points, clockwise from top-left
+        int pointOffset = 0;
+        for (int edge = 0; edge < QUAD_EDGES; edge++) {
+            const bool odd = (edge & 0x1) != 0;
+            // don't include end, since next edge starts with it.
+            const int endPoint = numPointsForOutsideEdge[edge] - 1;
+            for (int p = 0; p < endPoint; p++, pointOffset++) {
+                const int q = ((edge == 1) || (edge == 2)) ? p : endPoint - p; // reverse order
+                const uint fxpParam =
+                    PlacePointIn1D(outsideTessFactorCtx[edge], outsideTessFactorOdd[edge], q);
+                const uint u = odd ? fxpParam : ((edge == 2) ? FXP_ONE : 0);
+                const uint v = odd ? ((edge == 3) ? FXP_ONE : 0) : fxpParam;
+                DefinePoint(pointOffset, u, v, patch_index);
+            }
+        }
+
+        // Generate interior ring points, clockwise from (U==0,V==1) (bottom-left)
+        // spiralling toward center
+        const int minNumPointsForTessFactor =
+            min(numPointsForInsideTessFactor[U], numPointsForInsideTessFactor[V]);
+        // note for even tess we aren't counting center point here.
+        const int numRings = (minNumPointsForTessFactor >> 1);
+
+        for (int ring = 1; ring < numRings; ring++) {
+            const int startPoint = ring;
+            const int endPoint[QUAD_AXES] = {
+                numPointsForInsideTessFactor[U] - 1 - startPoint,
+                numPointsForInsideTessFactor[V] - 1 - startPoint,
+            };
+
+            for (int edge = 0; edge < QUAD_EDGES; edge++) {
+                const int odd0 = edge & 0x1;
+                const int odd1 = (edge + 1) & 0x1;
+                const int perpendicularAxisPoint = (edge < 2) ? startPoint : endPoint[odd0];
+                const uint fxpPerpParam = PlacePointIn1D(
+                    insideTessFactorCtx[odd0], insideTessFactorOdd[odd0], perpendicularAxisPoint);
+
+                // don't include end: next edge starts with it.
+                for (int p = startPoint; p < endPoint[odd1]; p++, pointOffset++) {
+                    const int q =
+                        ((edge == 1) || (edge == 2)) ? p : endPoint[odd1] - (p - startPoint);
+                    const uint fxpParam =
+                        PlacePointIn1D(insideTessFactorCtx[odd1], insideTessFactorOdd[odd1], q);
+                    DefinePoint(pointOffset, odd1 != 0 ? fxpPerpParam : fxpParam,
+                                odd1 != 0 ? fxpParam : fxpPerpParam, patch_index);
+                }
+            }
+        }
+        // For even tessellation, the inner "ring" is degenerate - a row of points
+        if ((numPointsForInsideTessFactor[U] > numPointsForInsideTessFactor[V]) &&
+            !insideTessFactorOdd[V]) {
+            const int startPoint = numRings;
+            const int endPoint = numPointsForInsideTessFactor[U] - 1 - startPoint;
+            for (int p = startPoint; p <= endPoint; p++, pointOffset++) {
+                const uint fxpParam =
+                    PlacePointIn1D(insideTessFactorCtx[U], insideTessFactorOdd[U], p);
+                DefinePoint(pointOffset, fxpParam, FXP_ONE_HALF, patch_index);
+            }
+        } else if ((numPointsForInsideTessFactor[V] >= numPointsForInsideTessFactor[U]) &&
+                   !insideTessFactorOdd[U]) {
+            const int startPoint = numRings;
+            const int endPoint = numPointsForInsideTessFactor[V] - 1 - startPoint;
+            for (int p = endPoint; p >= startPoint; p--, pointOffset++) {
+                const uint fxpParam =
+                    PlacePointIn1D(insideTessFactorCtx[V], insideTessFactorOdd[V], p);
+                DefinePoint(pointOffset, FXP_ONE_HALF, fxpParam, patch_index);
+            }
+        }
+    }
+
+    if (points_mode != 0) {
+        DefinePointIndices(uint(NumPoints));
+        return;
+    }
+
+    /* CONNECTIVITY */
+    {
+        const int degeneratePointRing[QUAD_AXES] = {
+            // Even partitioning causes degenerate row of points,
+            // which results in exceptions to the point ordering conventions
+            // when travelling around the rings counterclockwise.
+            !insideTessFactorOdd[V] ? numPointRowsToCenter[V] - 1 : -1,
+            !insideTessFactorOdd[U] ? numPointRowsToCenter[U] - 1 : -1,
+        };
+
+        int numPointsForOutsideEdge_[QUAD_EDGES] = {
+            numPointsForOutsideEdge[Ueq0],
+            numPointsForOutsideEdge[Veq0],
+            numPointsForOutsideEdge[Ueq1],
+            numPointsForOutsideEdge[Veq1],
+        };
+
+        int insideEdgePointBaseOffset_ = insideEdgePointBaseOffset;
+        int outsideEdgePointBaseOffset = 0;
+
+        NumIndices = 0;
+
+        for (int ring = 1; ring < numStitchRings; ring++) {
+            const int numPointsForInsideEdge[QUAD_AXES] = {
+                numPointsForInsideTessFactor[U] - 2 * ring,
+                numPointsForInsideTessFactor[V] - 2 * ring};
+
+            const int edge0InsidePointBaseOffset = insideEdgePointBaseOffset_;
+            const int edge0OutsidePointBaseOffset = outsideEdgePointBaseOffset;
+
+            for (int edge = 0; edge < QUAD_EDGES; edge++) {
+                const int odd = (edge + 1) & 0x1;
+
+                const int numTriangles =
+                    numPointsForInsideEdge[odd] + numPointsForOutsideEdge_[edge] - 2;
+                int insideBaseOffset;
+                int outsideBaseOffset;
+
+                // We need to patch the indexing so Stitch() can think it sees 2
+                // sequentially increasing rows of points, even though we have
+                // wrapped around to the end of the inner and outer ring's points,
+                // so the last point is really the first point for the ring. We make
+                // it so that when Stitch() calls AddIndex(), that function will do
+                // any necessary index adjustment.
+                if (edge == 3) {
+                    if (ring == degeneratePointRing[odd]) {
+                        baseIndexToInvert = insideEdgePointBaseOffset_ + 1;
+                        cornerCaseBadValue =
+                            outsideEdgePointBaseOffset + numPointsForOutsideEdge_[edge] - 1;
+                        cornerCaseReplacementValue = edge0OutsidePointBaseOffset;
+                        indexInversionEndPoint = (baseIndexToInvert << 1) - 1;
+                        insideBaseOffset = baseIndexToInvert;
+                        outsideBaseOffset = outsideEdgePointBaseOffset;
+                        bUsingPatchedIndices2 = true;
+                    } else {
+                        insidePointIndexDeltaToRealValue = insideEdgePointBaseOffset_;
+                        insidePointIndexBadValue = numPointsForInsideEdge[odd] - 1;
+                        insidePointIndexReplacementValue = edge0InsidePointBaseOffset;
+                        // past inside patched index range
+                        outsidePointIndexPatchBase = insidePointIndexBadValue + 1;
+                        outsidePointIndexDeltaToRealValue =
+                            outsideEdgePointBaseOffset - outsidePointIndexPatchBase;
+                        outsidePointIndexBadValue =
+                            outsidePointIndexPatchBase + numPointsForOutsideEdge_[edge] - 1;
+                        outsidePointIndexReplacementValue = edge0OutsidePointBaseOffset;
+
+                        insideBaseOffset = 0;
+                        outsideBaseOffset = outsidePointIndexPatchBase;
+                        bUsingPatchedIndices = true;
+                    }
+                } else if ((edge == 2) && (ring == degeneratePointRing[odd])) {
+                    baseIndexToInvert = insideEdgePointBaseOffset_;
+                    cornerCaseBadValue = -1;         // unused
+                    cornerCaseReplacementValue = -1; // unused
+                    indexInversionEndPoint = baseIndexToInvert << 1;
+                    insideBaseOffset = baseIndexToInvert;
+                    outsideBaseOffset = outsideEdgePointBaseOffset;
+                    bUsingPatchedIndices2 = true;
+                } else {
+                    insideBaseOffset = insideEdgePointBaseOffset_;
+                    outsideBaseOffset = outsideEdgePointBaseOffset;
+                }
+                if (ring == 1) {
+                    StitchTransition(/*baseIndexOffset: */ NumIndices, insideBaseOffset,
+                                     insideTessFactorCtx[odd].numHalfTessFactorPoints,
+                                     insideTessFactorOdd[odd], outsideBaseOffset,
+                                     outsideTessFactorCtx[edge].numHalfTessFactorPoints,
+                                     outsideTessFactorOdd[edge]);
+                } else {
+                    StitchRegular(/*bTrapezoid*/ true, DIAGONALS_MIRRORED,
+                                  /*baseIndexOffset: */ NumIndices, numPointsForInsideEdge[odd],
+                                  insideBaseOffset, outsideBaseOffset);
+                }
+                bUsingPatchedIndices = false;
+                bUsingPatchedIndices2 = false;
+                NumIndices += numTriangles * 3;
+                outsideEdgePointBaseOffset += numPointsForOutsideEdge_[edge] - 1;
+                if ((edge == 2) && (ring == degeneratePointRing[odd])) {
+                    insideEdgePointBaseOffset_ -= numPointsForInsideEdge[odd] - 1;
+                } else {
+                    insideEdgePointBaseOffset_ += numPointsForInsideEdge[odd] - 1;
+                }
+                numPointsForOutsideEdge_[edge] = numPointsForInsideEdge[odd];
+            }
+        }
+
+        // Triangulate center - a row of quads if odd
+        // This triangulation may be producing diagonals that are asymmetric about
+        // the center of the patch in this region.
+        if ((numPointsForInsideTessFactor[U] > numPointsForInsideTessFactor[V]) &&
+            insideTessFactorOdd[V]) {
+            bUsingPatchedIndices2 = true;
+            const int stripNumQuads =
+                (((numPointsForInsideTessFactor[U] >> 1) - (numPointsForInsideTessFactor[V] >> 1))
+                 << 1) +
+                (insideTessFactorOdd[U] ? 1 : 2);
+            baseIndexToInvert = outsideEdgePointBaseOffset + stripNumQuads + 2;
+            cornerCaseBadValue = baseIndexToInvert;
+            cornerCaseReplacementValue = outsideEdgePointBaseOffset;
+            indexInversionEndPoint = baseIndexToInvert + baseIndexToInvert + stripNumQuads;
+            StitchRegular(/*bTrapezoid*/ false, DIAGONALS_INSIDE_TO_OUTSIDE,
+                          /*baseIndexOffset: */ NumIndices,
+                          /*numInsideEdgePoints:*/ stripNumQuads + 1,
+                          /*insideEdgePointBaseOffset*/ baseIndexToInvert,
+                          outsideEdgePointBaseOffset + 1);
+            bUsingPatchedIndices2 = false;
+            NumIndices += stripNumQuads * 6;
+        } else if ((numPointsForInsideTessFactor[V] >= numPointsForInsideTessFactor[U]) &&
+                   insideTessFactorOdd[U]) {
+            bUsingPatchedIndices2 = true;
+            const int stripNumQuads =
+                (((numPointsForInsideTessFactor[V] >> 1) - (numPointsForInsideTessFactor[U] >> 1))
+                 << 1) +
+                (insideTessFactorOdd[V] ? 1 : 2);
+            baseIndexToInvert = outsideEdgePointBaseOffset + stripNumQuads + 1;
+            cornerCaseBadValue = -1; // unused
+            indexInversionEndPoint = baseIndexToInvert + baseIndexToInvert + stripNumQuads;
+            const int diag = insideTessFactorOdd[V] ? DIAGONALS_INSIDE_TO_OUTSIDE_EXCEPT_MIDDLE
+                                                    : DIAGONALS_INSIDE_TO_OUTSIDE;
+            StitchRegular(/*bTrapezoid*/ false, diag,
+                          /*baseIndexOffset: */ NumIndices,
+                          /*numInsideEdgePoints:*/ stripNumQuads + 1,
+                          /*insideEdgePointBaseOffset*/ baseIndexToInvert,
+                          outsideEdgePointBaseOffset);
+            bUsingPatchedIndices2 = false;
+            NumIndices += stripNumQuads * 6;
+        }
+    }
+}
+
+// Exclusive prefix sum of the counts by one group: each invocation sums a contiguous run of
+// patches, the first sums the runs, then each rewrites its run as offsets.
+void Prefix() {
+    const uint lane = gl_LocalInvocationID.x;
+    const uint run = (nr_patches + GROUP_SIZE - 1) / GROUP_SIZE;
+    const uint begin = min(lane * run, nr_patches);
+    const uint end = min(begin + run, nr_patches);
+    uint run_points = 0;
+    uint run_indices = 0;
+    for (uint patch_index = begin; patch_index < end; ++patch_index) {
+        run_points += counts[patch_index * 2];
+        run_indices += counts[patch_index * 2 + 1];
+    }
+    partial_points[lane] = run_points;
+    partial_indices[lane] = run_indices;
+    if (lane == 0) {
+        first_dropped = nr_patches;
+    }
+    barrier();
+    if (lane == 0) {
+        uint total_points = 0;
+        uint total_indices = 0;
+        for (uint i = 0; i < GROUP_SIZE; ++i) {
+            const uint p = partial_points[i];
+            const uint n = partial_indices[i];
+            partial_points[i] = total_points;
+            partial_indices[i] = total_indices;
+            total_points += p;
+            total_indices += n;
+        }
+        record[RECORD_NEEDED_POINTS] = total_points;
+        record[RECORD_NEEDED_INDICES] = total_indices;
+    }
+    barrier();
+    uint point_offset = partial_points[lane];
+    uint index_offset = partial_indices[lane];
+    for (uint patch_index = begin; patch_index < end; ++patch_index) {
+        const uint p = counts[patch_index * 2];
+        const uint n = counts[patch_index * 2 + 1];
+        counts[patch_index * 2] = point_offset;
+        counts[patch_index * 2 + 1] = index_offset;
+        point_offset += p;
+        index_offset += n;
+        if (point_offset > max_points || index_offset > max_indices) {
+            atomicMin(first_dropped, patch_index);
+            break;
+        }
+    }
+    memoryBarrierBuffer();
+    barrier();
+    if (lane == 0) {
+        const uint dropped = first_dropped;
+        const uint draw_indices = dropped < nr_patches ? counts[dropped * 2 + 1]
+                                                       : record[RECORD_NEEDED_INDICES];
+        record[RECORD_FIRST_DROPPED] = dropped;
+        record[0] = 0;
+        record[1] = 0;
+        record[2] = 1;
+        record[3] = yz_flip_mask;
+        record[4] = draw_id;
+        record[5] = draw_indices;
+        record[6] = 1;
+        record[7] = 0;
+        record[8] = 0;
+        record[9] = 0;
+    }
+}
+
+void main() {
+    if (mode == MODE_PREFIX) {
+        Prefix();
+        return;
+    }
+    const uint patch_index = gl_GlobalInvocationID.x;
+    if (patch_index >= nr_patches) {
+        return;
+    }
+    switch (domain) {
+    case DOMAIN_ISOLINES:
+        IsolineProcess(patch_index);
+        break;
+    case DOMAIN_TRIANGLES:
+        TriProcess(patch_index);
+        break;
+    default:
+        QuadProcess(patch_index);
+        break;
+    }
+}

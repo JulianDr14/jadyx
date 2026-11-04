@@ -24,6 +24,7 @@
 #include "video_core/renderer_d3d12/d3d12_conditional_rendering.h"
 #include "video_core/renderer_d3d12/d3d12_query_cache.h"
 #include "video_core/renderer_d3d12/d3d12_stream_output.h"
+#include "video_core/renderer_d3d12/d3d12_tess_emulation.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_draw_hunt.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_material_trace.h"
@@ -250,6 +251,19 @@ private:
     /// differ from the ones the command list holds for the bound root signature.
     void SetGraphicsRootArguments(CommandStream* cmd, const GraphicsPipeline& pipeline,
                                   const PipelineBindings& bindings, const DrawParams& params);
+    /// The stage constants of a draw (the tess levels, or the line width and viewport size),
+    /// with the mirrored border masks.
+    [[nodiscard]] std::array<f32, STAGE_CONSTANT_WORDS> StageConstants(
+        const GraphicsPipeline& pipeline, const PipelineBindings& bindings) const;
+    /// A draw of a pipeline that emulates tessellation (TessEmulation), on the state
+    /// BindDrawState bound.
+    /// Capture slots of an instance of the current indexed draw: its largest index plus one.
+    [[nodiscard]] u32 TessIndexSlots() const;
+    void RecordTessellatedDraw(GraphicsPipeline& pipeline, const PipelineBindings& bindings,
+                               const DrawParams& params);
+    /// The guest root arguments of the draw, as compute ones, for its control shader.
+    void SetTessControlRootArguments(CommandStream* cmd, const GraphicsPipeline& pipeline,
+                                     const PipelineBindings& bindings);
     void ApplyPendingStateInvalidation();
     /// A configured draw whose pipeline is still building: whether it waited for it (true, the
     /// pipeline is ready) or is skipped (async_pipelines). UINT32_MAX vertices when unknown.
@@ -314,6 +328,7 @@ private:
     BlitImageHelper& blit_helper;
     IndirectArgumentRing indirect_args;
     StreamOutput stream_output;
+    TessEmulation tess_emulation;
     std::vector<u32> indirect_words; ///< CPU part of the ExecuteIndirect records
     GuestDescriptorQueue descriptor_queue;
     BufferCache buffer_cache;

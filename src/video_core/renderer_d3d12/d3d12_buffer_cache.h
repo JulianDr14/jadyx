@@ -216,6 +216,11 @@ public:
     /// A new command list starts without an index buffer.
     void InvalidateGeometry() noexcept { applied_index.reset(); }
 
+    /// The index buffer ApplyGeometry set on the command list, if any.
+    [[nodiscard]] const std::optional<D3D12_INDEX_BUFFER_VIEW>& AppliedIndex() const noexcept {
+        return applied_index;
+    }
+
     [[nodiscard]] static bool IsEmulatedTopology(PrimitiveTopology topology) noexcept;
 
 private:

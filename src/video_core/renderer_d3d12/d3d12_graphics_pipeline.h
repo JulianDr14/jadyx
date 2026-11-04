@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -252,6 +253,23 @@ struct BlendConstantPlan {
 
 [[nodiscard]] BlendConstantPlan PlanBlendConstants(const Vulkan::FixedPipelineState& state);
 
+/// What the draws of a pipeline that emulates tessellation (Shader::TessellationEmulation) size
+/// and dispatch its passes with. Zero output_vertices: the pipeline does not emulate it.
+struct TessEmulationPlan {
+    u32 input_vertices{};      ///< Patch control points.
+    u32 output_vertices{};     ///< Control shader invocations per patch.
+    u32 input_vertex_bytes{};  ///< Stride of a captured vertex.
+    u32 record_words{};        ///< Words of a patch record (TessellationEmulation::RecordWords).
+    u32 patches_per_group{};   ///< Patches per control shader group.
+    u32 domain{};              ///< d3d12_tessellate.comp: isolines 0, triangles 1, quads 2.
+    u32 partitioning{};        ///< d3d12_tessellate.comp: odd 0, even 1, integer 2.
+    bool ccw{};                ///< Triangles wind counterclockwise.
+
+    [[nodiscard]] bool Active() const noexcept {
+        return output_vertices != 0;
+    }
+};
+
 class GraphicsPipeline {
 public:
     enum class State : u8 {
@@ -269,6 +287,11 @@ public:
         std::vector<D3D12_SO_DECLARATION_ENTRY> stream_output;
         /// The disk cache record the stages can be read back from, if any.
         std::optional<DxilDiskCache::Key> disk_key;
+        /// Emulated tessellation (TessEmulationPlan): the vertex shader alone, storing to the
+        /// capture, and the control shader as compute. stages then holds the
+        /// evaluation shader as the vertex stage, and no hull or domain stage.
+        std::vector<u8> tess_capture;
+        std::vector<u8> tess_control;
     };
     using SharedDxilStages = std::shared_ptr<const LinkedDxil>;
     /// (trace id, flatten the vertex stage's branches) -> linked DXIL.
@@ -281,7 +304,8 @@ public:
                      const GraphicsPipelineCacheKey& key, CompileDxil compile_dxil,
                      const std::array<const Shader::Info*, NUM_STAGES>& infos,
                      const PipelineLayout& layout, bool build_pso = true,
-                     GraphicsPsoCache* pso_cache = nullptr, u32 lower_noperspective_mask = 0);
+                     GraphicsPsoCache* pso_cache = nullptr, u32 lower_noperspective_mask = 0,
+                     const TessEmulationPlan& tess_plan = {});
     ~GraphicsPipeline();
 
     GraphicsPipeline(const GraphicsPipeline&) = delete;
@@ -391,6 +415,18 @@ public:
     [[nodiscard]] const PipelineLayout& Layout() const noexcept {
         return layout;
     }
+
+    [[nodiscard]] const TessEmulationPlan& TessPlan() const noexcept {
+        return tess_plan;
+    }
+    /// With TessPlan().Active(): the capture PSO (vertex shader and stream output) and the control
+    /// compute PSO, both built with Handle(), both null when it is.
+    [[nodiscard]] ID3D12PipelineState* TessCaptureHandle() const noexcept {
+        return tess_capture_state.Get();
+    }
+    [[nodiscard]] ID3D12PipelineState* TessControlHandle() const noexcept {
+        return tess_control_state.Get();
+    }
     /// Words per lane of the local memory pool the fragment stage uses, or 0 without it.
     [[nodiscard]] u32 LocalMemoryScratchWords() const noexcept {
         return local_memory_scratch_words;
@@ -481,6 +517,8 @@ private:
     /// flatten_on_fault: on a driver fault, leave the failure to the caller (flatten_retry) instead
     /// of reporting it, since it can retranslate the shaders.
     void Build(bool flatten_on_fault = false);
+    /// Creates the capture and control pipelines of an emulated tessellation; false if refused.
+    bool BuildTessEmulation(std::span<const D3D12_INPUT_ELEMENT_DESC> elements);
     /// Drops dxil when its disk cache record can stand in for it (no stream output).
     void ReleaseDxil();
     /// Reads back the DXIL ReleaseDxil dropped. False if it could not.
@@ -507,6 +545,7 @@ private:
     const u64 key_hash;
     const PipelineLayout& layout;
     const u32 lower_noperspective_mask;
+    const TessEmulationPlan tess_plan;
     FragmentHelpers fragment_helpers{};
     SharedDxilStages dxil; ///< Immutable linked bytecode shared across fixed-state PSOs.
     std::array<bool, NUM_STAGES> has_stage{};
@@ -533,6 +572,8 @@ private:
     ComPtr<ID3D12PipelineState> pipeline_state;
     ComPtr<ID3D12PipelineState> cull_back_state;
     ComPtr<ID3D12PipelineState> cull_front_state;
+    ComPtr<ID3D12PipelineState> tess_capture_state;
+    ComPtr<ID3D12PipelineState> tess_control_state;
     GraphicsPsoCache* const pso_cache;
     SharedGraphicsPso shared_pso;
 

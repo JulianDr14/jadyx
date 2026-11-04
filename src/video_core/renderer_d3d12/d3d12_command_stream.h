@@ -189,6 +189,10 @@ public:
         Probed("SetGraphicsRootConstantBufferView", [=](List* list) { list->SetGraphicsRootConstantBufferView(param, address); },
                [=] { return fmt::format("param={} VA={:x}", param, address); });
     }
+    void SetGraphicsRootShaderResourceView(UINT param, D3D12_GPU_VIRTUAL_ADDRESS address) {
+        Probed("SetGraphicsRootShaderResourceView", [=](List* list) { list->SetGraphicsRootShaderResourceView(param, address); },
+               [=] { return fmt::format("param={} VA={:x}", param, address); });
+    }
     void SetGraphicsRootUnorderedAccessView(UINT param, D3D12_GPU_VIRTUAL_ADDRESS address) {
         Probed("SetGraphicsRootUnorderedAccessView", [=](List* list) { list->SetGraphicsRootUnorderedAccessView(param, address); },
                [=] { return fmt::format("param={} VA={:x}", param, address); });

@@ -433,9 +433,11 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
                                    CompileDxil compile_dxil,
                                    const std::array<const Shader::Info*, NUM_STAGES>& infos,
                                    const PipelineLayout& layout_, bool build_pso,
-                                   GraphicsPsoCache* pso_cache_, u32 lower_noperspective_mask_)
+                                   GraphicsPsoCache* pso_cache_, u32 lower_noperspective_mask_,
+                                   const TessEmulationPlan& tess_plan_)
     : device{device_}, texture_runtime{texture_runtime_}, key{key_}, key_hash{key_.Hash()},
-      layout{layout_}, lower_noperspective_mask{lower_noperspective_mask_}, pso_cache{pso_cache_},
+      layout{layout_}, lower_noperspective_mask{lower_noperspective_mask_}, tess_plan{tess_plan_},
+      pso_cache{pso_cache_},
       from_disk{worker_thread == nullptr} {
     u8 valid_targets{};
     for (size_t index = 0; index < key.state.color_formats.size(); ++index) {
@@ -639,7 +641,9 @@ bool GraphicsPipeline::Evict(Scheduler& scheduler) {
     // Other guest variants may still own it or acquire it while this fence is pending.
     scheduler.DeferRelease(std::move(pipeline_state),
                            [retired = std::move(shared_pso), back = std::move(cull_back_state),
-                            front = std::move(cull_front_state)] {});
+                            front = std::move(cull_front_state),
+                            capture = std::move(tess_capture_state),
+                            control = std::move(tess_control_state)] {});
     return true;
 }
 
@@ -1278,13 +1282,23 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
             });
         }
     }
-    desc.InputLayout = {.pInputElementDescs = elements.empty() ? nullptr : elements.data(),
-                        .NumElements = static_cast<UINT>(elements.size())};
+    // An emulated evaluation shader reads its domain points and patches from buffers; the
+    // vertex shader that fetches these runs in the capture pipeline (BuildTessEmulation).
+    if (!tess_plan.Active()) {
+        desc.InputLayout = {.pInputElementDescs = elements.empty() ? nullptr : elements.data(),
+                            .NumElements = static_cast<UINT>(elements.size())};
+    }
     desc.IBStripCutValue = static_cast<D3D12_INDEX_BUFFER_STRIP_CUT_VALUE>(key.strip_cut);
 
     const bool has_tessellation = !stages[1].empty() || !stages[2].empty();
     desc.PrimitiveTopologyType = MaxwellToD3D12::PrimitiveTopologyType(state.topology);
-    if (has_tessellation) {
+    if (tess_plan.Active()) {
+        // The tessellator's index list: segments for isolines, triangles otherwise.
+        const bool isolines =
+            tess_plan.domain == static_cast<u32>(Shader::TessPrimitive::Isolines);
+        desc.PrimitiveTopologyType = isolines ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE
+                                              : D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    } else if (has_tessellation) {
         desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
     } else if (desc.PrimitiveTopologyType == D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH) {
         BUG_TRACK(UnsupportedState, "patch topology without tessellation drawn as points");
@@ -1748,6 +1762,11 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
         pipeline_state.Reset();
         return;
     }
+    if (tess_plan.Active() && !BuildTessEmulation(elements)) {
+        pipeline_state.Reset();
+        shared_pso.reset();
+        return;
+    }
     if (GpuDiagnosticsEnabled()) {
         LOG_INFO(Render, "D3D12 PSO identity: PSO={} shaders={:016x}/{:016x}/{:016x}/{:016x}/{:016x}/{:016x} RTs={} RT0={} DSV={}",
             static_cast<void*>(pipeline_state.Get()), key.unique_hashes[0], key.unique_hashes[1],
@@ -1771,6 +1790,52 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
     shared_pso.reset();
     LOG_ERROR(Render, "D3D12: graphics pipeline preparation failed with an unknown exception");
     VideoCommon::GPUThread::ReportException("D3D12 graphics pipeline preparation failed");
+}
+
+bool GraphicsPipeline::BuildTessEmulation(std::span<const D3D12_INPUT_ELEMENT_DESC> elements) {
+    // The vertex shader alone over the guest's vertices, one point each, storing to the capture
+    // buffer. Its points land behind the viewer, with nothing to write to anyway.
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC capture{};
+    capture.pRootSignature = layout.Handle();
+    capture.VS = Bytecode(dxil->tess_capture);
+    capture.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    capture.SampleMask = UINT_MAX;
+    capture.RasterizerState = {.FillMode = D3D12_FILL_MODE_SOLID,
+                               .CullMode = D3D12_CULL_MODE_NONE,
+                               .DepthClipEnable = TRUE};
+    capture.InputLayout = {.pInputElementDescs = elements.empty() ? nullptr : elements.data(),
+                           .NumElements = static_cast<UINT>(elements.size())};
+    capture.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED;
+    capture.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+    capture.SampleDesc = {.Count = 1, .Quality = 0};
+    const D3D12_COMPUTE_PIPELINE_STATE_DESC control{
+        .pRootSignature = layout.Handle(),
+        .CS = Bytecode(dxil->tess_control),
+    };
+    HRESULT hr;
+    {
+        std::shared_lock build_lock{PipelineBuildMutex()};
+        hr = device.Get()->CreateGraphicsPipelineState(&capture, IID_PPV_ARGS(&tess_capture_state));
+        if (SUCCEEDED(hr)) {
+            hr = device.Get()->CreateComputePipelineState(&control,
+                                                          IID_PPV_ARGS(&tess_control_state));
+        }
+    }
+    if (SUCCEEDED(hr)) {
+        return true;
+    }
+    tess_capture_state.Reset();
+    tess_control_state.Reset();
+    BUG_TRACK_KEY(PipelineRejected, key.Hash(),
+                  "tessellation emulation pipelines rejected (HRESULT 0x{:08X}) for VS {:016x} "
+                  "TCS {:016x}; its draws are skipped",
+                  static_cast<u32>(hr), key.unique_hashes[1], key.unique_hashes[2]);
+    const Common::BugTracker::TapMute bug_tracker_mute;
+    LOG_ERROR(Render,
+              "D3D12: tessellation emulation pipelines failed (HRESULT 0x{:08X}) for VS {:016x} "
+              "TCS {:016x}",
+              static_cast<u32>(hr), key.unique_hashes[1], key.unique_hashes[2]);
+    return false;
 }
 
 ID3D12PipelineState* GraphicsPipeline::CulledHandle(D3D12_CULL_MODE mode) {
