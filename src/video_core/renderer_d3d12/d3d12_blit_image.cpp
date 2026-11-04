@@ -20,6 +20,16 @@
 #include "video_core/host_shaders/d3d12_blit_uint_frag_spv.h"
 #include "video_core/host_shaders/d3d12_clear_sint_frag_spv.h"
 #include "video_core/host_shaders/d3d12_clear_uint_frag_spv.h"
+#include "video_core/host_shaders/d3d12_flat_to_msaa_depth_frag_spv.h"
+#include "video_core/host_shaders/d3d12_flat_to_msaa_frag_spv.h"
+#include "video_core/host_shaders/d3d12_flat_to_msaa_sint_frag_spv.h"
+#include "video_core/host_shaders/d3d12_flat_to_msaa_stencil_bit_frag_spv.h"
+#include "video_core/host_shaders/d3d12_flat_to_msaa_uint_frag_spv.h"
+#include "video_core/host_shaders/d3d12_msaa_to_flat_depth_frag_spv.h"
+#include "video_core/host_shaders/d3d12_msaa_to_flat_frag_spv.h"
+#include "video_core/host_shaders/d3d12_msaa_to_flat_sint_frag_spv.h"
+#include "video_core/host_shaders/d3d12_msaa_to_flat_stencil_bit_frag_spv.h"
+#include "video_core/host_shaders/d3d12_msaa_to_flat_uint_frag_spv.h"
 #include "video_core/host_shaders/full_screen_triangle_vert_spv.h"
 #include "video_core/host_shaders/vulkan_color_clear_frag_spv.h"
 #include "video_core/host_shaders/vulkan_color_clear_vert_spv.h"
@@ -45,6 +55,8 @@ constexpr u32 SAMPLER_TABLE_PARAM = 3;
 constexpr u32 PUSH_CONSTANT_WORDS = 4;
 constexpr u32 STENCIL_BIT_WORD = 4;
 constexpr u32 SAMPLE_COUNT_WORD = 5;
+/// The multisample copies' stencil bit, after their three ivec2.
+constexpr u32 MSAA_COPY_BIT_WORD = 6;
 constexpr u32 ROOT_CONSTANT_WORDS = 8;
 constexpr u32 RUNTIME_DATA_WORDS = 12;
 
@@ -128,6 +140,16 @@ BlitImageHelper::BlitImageHelper(const Device& device_, Scheduler& scheduler_,
             blit(Kind::BlitSintMs, D3D12_BLIT_MS_SINT_FRAG_SPV);
             blit(Kind::BlitDepthMs, D3D12_BLIT_MS_DEPTH_FRAG_SPV);
             blit(Kind::BlitStencilBitMs, D3D12_BLIT_MS_STENCIL_BIT_FRAG_SPV);
+            blit(Kind::MsaaToFlat, D3D12_MSAA_TO_FLAT_FRAG_SPV);
+            blit(Kind::MsaaToFlatUint, D3D12_MSAA_TO_FLAT_UINT_FRAG_SPV);
+            blit(Kind::MsaaToFlatSint, D3D12_MSAA_TO_FLAT_SINT_FRAG_SPV);
+            blit(Kind::MsaaToFlatDepth, D3D12_MSAA_TO_FLAT_DEPTH_FRAG_SPV);
+            blit(Kind::MsaaToFlatStencilBit, D3D12_MSAA_TO_FLAT_STENCIL_BIT_FRAG_SPV);
+            blit(Kind::FlatToMsaa, D3D12_FLAT_TO_MSAA_FRAG_SPV);
+            blit(Kind::FlatToMsaaUint, D3D12_FLAT_TO_MSAA_UINT_FRAG_SPV);
+            blit(Kind::FlatToMsaaSint, D3D12_FLAT_TO_MSAA_SINT_FRAG_SPV);
+            blit(Kind::FlatToMsaaDepth, D3D12_FLAT_TO_MSAA_DEPTH_FRAG_SPV);
+            blit(Kind::FlatToMsaaStencilBit, D3D12_FLAT_TO_MSAA_STENCIL_BIT_FRAG_SPV);
             multisample_available = true;
             programs[static_cast<size_t>(Kind::ClearUint)] =
                 compile(VULKAN_COLOR_CLEAR_VERT_SPV, D3D12_CLEAR_UINT_FRAG_SPV);
@@ -258,9 +280,23 @@ ID3D12PipelineState* BlitImageHelper::Pipeline(Kind kind, const Target& target, 
     if (const auto it = pipelines.find(key); it != pipelines.end()) {
         return it->second.Get();
     }
-    const Kind program_kind = kind == Kind::BlitDepthStencil     ? Kind::BlitDepth
-                              : kind == Kind::BlitDepthStencilMs ? Kind::BlitDepthMs
-                                                                 : kind;
+    Kind program_kind = kind;
+    switch (kind) {
+    case Kind::BlitDepthStencil:
+        program_kind = Kind::BlitDepth;
+        break;
+    case Kind::BlitDepthStencilMs:
+        program_kind = Kind::BlitDepthMs;
+        break;
+    case Kind::MsaaToFlatDepthStencil:
+        program_kind = Kind::MsaaToFlatDepth;
+        break;
+    case Kind::FlatToMsaaDepthStencil:
+        program_kind = Kind::FlatToMsaaDepth;
+        break;
+    default:
+        break;
+    }
     const Program& program = programs[static_cast<size_t>(program_kind)];
     if (program.ps.empty()) {
         return nullptr;
@@ -283,6 +319,12 @@ ID3D12PipelineState* BlitImageHelper::Pipeline(Kind kind, const Target& target, 
     case Kind::BlitSint:
     case Kind::BlitUintMs:
     case Kind::BlitSintMs:
+    case Kind::MsaaToFlat:
+    case Kind::MsaaToFlatUint:
+    case Kind::MsaaToFlatSint:
+    case Kind::FlatToMsaa:
+    case Kind::FlatToMsaaUint:
+    case Kind::FlatToMsaaSint:
         desc.NumRenderTargets = 1;
         desc.RTVFormats[0] = target.format;
         desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
@@ -296,6 +338,8 @@ ID3D12PipelineState* BlitImageHelper::Pipeline(Kind kind, const Target& target, 
         break;
     case Kind::BlitDepth:
     case Kind::BlitDepthMs:
+    case Kind::MsaaToFlatDepth:
+    case Kind::FlatToMsaaDepth:
         desc.DSVFormat = target.format;
         desc.DepthStencilState.DepthEnable = TRUE;
         desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
@@ -305,6 +349,10 @@ ID3D12PipelineState* BlitImageHelper::Pipeline(Kind kind, const Target& target, 
     case Kind::BlitDepthStencilMs:
     case Kind::BlitStencilBit:
     case Kind::BlitStencilBitMs:
+    case Kind::MsaaToFlatDepthStencil:
+    case Kind::FlatToMsaaDepthStencil:
+    case Kind::MsaaToFlatStencilBit:
+    case Kind::FlatToMsaaStencilBit:
     case Kind::ClearDepthStencil:
         // Depth when asked (the depth-stencil blit and depth clears), the stencil bits of mask
         // from the reference.
@@ -444,6 +492,92 @@ bool BlitImageHelper::BlitDepthStencil(const Target& dst, D3D12_CPU_DESCRIPTOR_H
         scheduler.SetPipelineState(bit_pipelines[bit]);
         const u32 bit_mask = 1U << bit;
         cmd->SetGraphicsRoot32BitConstants(PUSH_CONSTANTS_PARAM, 1, &bit_mask, STENCIL_BIT_WORD);
+        cmd->DrawInstanced(3, 1, 0, 0);
+    }
+    return true;
+}
+
+bool BlitImageHelper::CopyMultisample(const Target& dst, bool to_flat, MsaaCopy type,
+                                      D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
+                                      D3D12_CPU_DESCRIPTOR_HANDLE stencil_srv,
+                                      const D3D12_RECT& dst_rect, s32 src_offset_x,
+                                      s32 src_offset_y, s32 scale_x, s32 scale_y) {
+    if (!multisample_available || scale_x <= 0 || scale_y <= 0) {
+        return false;
+    }
+    if (dst_rect.right <= dst_rect.left || dst_rect.bottom <= dst_rect.top) {
+        return true;
+    }
+    const bool depth = type == MsaaCopy::Depth || type == MsaaCopy::DepthStencil;
+    const bool stencil = type == MsaaCopy::DepthStencil;
+    if (stencil && stencil_srv.ptr == 0) {
+        return false;
+    }
+    Kind kind = Kind::MsaaToFlat;
+    switch (type) {
+    case MsaaCopy::Float:
+        kind = to_flat ? Kind::MsaaToFlat : Kind::FlatToMsaa;
+        break;
+    case MsaaCopy::Uint:
+        kind = to_flat ? Kind::MsaaToFlatUint : Kind::FlatToMsaaUint;
+        break;
+    case MsaaCopy::Sint:
+        kind = to_flat ? Kind::MsaaToFlatSint : Kind::FlatToMsaaSint;
+        break;
+    case MsaaCopy::Depth:
+        kind = to_flat ? Kind::MsaaToFlatDepth : Kind::FlatToMsaaDepth;
+        break;
+    case MsaaCopy::DepthStencil:
+        kind = to_flat ? Kind::MsaaToFlatDepthStencil : Kind::FlatToMsaaDepthStencil;
+        break;
+    }
+    ID3D12PipelineState* const pipeline =
+        Pipeline(kind, dst, stencil ? u8{0xFF} : u8{0}, stencil);
+    if (!pipeline) {
+        return false;
+    }
+    std::array<ID3D12PipelineState*, 8> bit_pipelines{};
+    if (stencil) {
+        const Kind bit_kind = to_flat ? Kind::MsaaToFlatStencilBit : Kind::FlatToMsaaStencilBit;
+        for (u32 bit = 0; bit < bit_pipelines.size(); ++bit) {
+            bit_pipelines[bit] = Pipeline(bit_kind, dst, static_cast<u8>(1U << bit), false);
+            if (!bit_pipelines[bit]) {
+                return false;
+            }
+        }
+    }
+    // Descriptors first, both in one upload: a full ring or sampler heap flushes the list.
+    const std::array srvs{src_srv, stencil ? stencil_srv : src_srv};
+    const D3D12_GPU_DESCRIPTOR_HANDLE src_table =
+        descriptor_ring.Upload(std::span{srvs.data(), stencil ? size_t{2} : size_t{1}});
+    const D3D12_GPU_DESCRIPTOR_HANDLE stencil_table{src_table.ptr + descriptor_ring.Stride()};
+    const D3D12_GPU_DESCRIPTOR_HANDLE sampler_table =
+        sampler_heap.GetTable({&nearest_sampler.key, 1}, {&nearest_sampler.handle, 1});
+
+    Begin(pipeline, dst, depth, dst_rect);
+    CommandStream* const cmd = scheduler.CommandList();
+    // The shaders' push constants: dst_offset, src_offset and scale, an ivec2 each, from word 0.
+    const std::array<s32, 6> push{dst_rect.left, dst_rect.top, src_offset_x,
+                                  src_offset_y,  scale_x,      scale_y};
+    cmd->SetGraphicsRoot32BitConstants(PUSH_CONSTANTS_PARAM, static_cast<u32>(push.size()),
+                                       push.data(), 0);
+    cmd->SetGraphicsRootDescriptorTable(SRV_TABLE_PARAM, src_table);
+    cmd->SetGraphicsRootDescriptorTable(SAMPLER_TABLE_PARAM, sampler_table);
+    if (stencil) {
+        cmd->OMSetStencilRef(0);
+    }
+    cmd->DrawInstanced(3, 1, 0, 0);
+    if (!stencil) {
+        return true;
+    }
+    // Same target, viewport and offsets: only the PSO (its write mask) and the bit change.
+    cmd->SetGraphicsRootDescriptorTable(SRV_TABLE_PARAM, stencil_table);
+    cmd->OMSetStencilRef(0xFF);
+    for (u32 bit = 0; bit < bit_pipelines.size(); ++bit) {
+        scheduler.SetPipelineState(bit_pipelines[bit]);
+        const u32 bit_mask = 1U << bit;
+        cmd->SetGraphicsRoot32BitConstants(PUSH_CONSTANTS_PARAM, 1, &bit_mask,
+                                           MSAA_COPY_BIT_WORD);
         cmd->DrawInstanced(3, 1, 0, 0);
     }
     return true;

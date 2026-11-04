@@ -284,9 +284,21 @@ private:
         BlitStencilBitMs,
         ClearUint,
         ClearSint,
+        MsaaToFlat,
+        MsaaToFlatUint,
+        MsaaToFlatSint,
+        MsaaToFlatDepth,
+        MsaaToFlatStencilBit,
+        FlatToMsaa,
+        FlatToMsaaUint,
+        FlatToMsaaSint,
+        FlatToMsaaDepth,
+        FlatToMsaaStencilBit,
         // These two have no program of their own.
         BlitDepthStencil,   ///< BlitDepth's program, also zeroing the stencil
         BlitDepthStencilMs, ///< BlitDepthMs's program, also zeroing the stencil
+        MsaaToFlatDepthStencil, ///< MsaaToFlatDepth's program, also zeroing the stencil
+        FlatToMsaaDepthStencil, ///< FlatToMsaaDepth's program, also zeroing the stencil
     };
     static constexpr size_t NUM_PROGRAMS = static_cast<size_t>(Kind::BlitDepthStencil);
 
@@ -305,6 +317,25 @@ private:
                const D3D12_RECT& rect);
     /// The source's and the target's sample counts for the sample-by-sample blits.
     void SetSampleCounts(u32 src_samples, u32 dst_samples, bool average);
+
+public:
+    /// What CopyMultisample moves: the shader's texel type, or depth and maybe stencil.
+    enum class MsaaCopy : u8 { Float, Uint, Sint, Depth, DepthStencil };
+
+    /// Copies between a multisampled image and its single-sample alias, whose texels are the
+    /// samples: scale_x by scale_y texels per pixel, sample index = x + scale_x * y, as the guest
+    /// stores them. to_flat reads src_srv as a one-layer Texture2DMSArray into a single-sample
+    /// target; otherwise it reads a one-level, one-layer Texture2DArray into a multisampled
+    /// target. dst_rect is what it writes; src_offset is in the single-sample alias's texels, as
+    /// the texture cache's ImageCopy gives it. DepthStencil also needs stencil_srv (same
+    /// dimension, stencil in red) and writes the stencil bit by bit, as BlitDepthStencil.
+    /// One draw (nine with stencil) per call, its pipelines cached like every blit's.
+    bool CopyMultisample(const Target& dst, bool to_flat, MsaaCopy type,
+                         D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
+                         D3D12_CPU_DESCRIPTOR_HANDLE stencil_srv, const D3D12_RECT& dst_rect,
+                         s32 src_offset_x, s32 src_offset_y, s32 scale_x, s32 scale_y);
+
+private:
     /// Begin, then the source mapping of a blit and its descriptor tables.
     void BeginBlit(ID3D12PipelineState* pipeline, const Target& dst, bool is_depth,
                    const D3D12_RECT& rect, D3D12_GPU_DESCRIPTOR_HANDLE srv_table,

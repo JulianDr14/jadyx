@@ -119,6 +119,7 @@ inline bool logged_depth_size = false;
 inline bool logged_view_format = false;
 inline bool logged_self_blit = false;
 inline bool logged_msaa_blit = false;
+inline bool logged_msaa_copy = false;
 inline bool logged_mixed_blit = false;
 inline bool logged_integer_blit = false;
 inline bool logged_blit_target = false;

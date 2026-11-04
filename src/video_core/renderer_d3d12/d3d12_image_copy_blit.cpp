@@ -15,6 +15,7 @@
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/surface.h"
+#include "video_core/texture_cache/samples_helper.h"
 
 // Image to image copies and blits.
 
@@ -714,8 +715,177 @@ bool TextureCacheRuntime::CopyBlocksIntoDecoded(Image& dst, Image& src,
     return true;
 }
 
-void TextureCacheRuntime::CopyImageMSAA(Image&, Image&, std::span<const ImageCopy>) {
-    LOG_WARNING(Render, "D3D12: MSAA texture copies are deferred to phase 5");
+void TextureCacheRuntime::CopyImageMSAA(Image& dst, Image& src, std::span<const ImageCopy> copies) {
+    using BlitCopy = BlitImageHelper::MsaaCopy;
+    using VideoCore::Surface::IsPixelFormatInteger;
+    using VideoCore::Surface::IsPixelFormatSignedInteger;
+    const u32 src_samples = static_cast<u32>(src.info.num_samples);
+    const u32 dst_samples = static_cast<u32>(dst.info.num_samples);
+    // The texture cache calls this only when the counts differ; one side is single-sampled.
+    const bool to_flat = src_samples > 1 && dst_samples == 1;
+    if (!to_flat && !(src_samples == 1 && dst_samples > 1)) {
+        WarnOnce(logged_msaa_copy, "copy between {} and {} samples skipped", src_samples,
+                 dst_samples);
+        CaptureCopySkip(dst, src, "msaa_counts");
+        return;
+    }
+    if (!blit_helper || !blit_helper->CanBlitMultisampled()) {
+        WarnOnce(logged_no_blit_helper, "multisampled copies need the shader path; skipped");
+        CaptureCopySkip(dst, src, "msaa_no_helper");
+        return;
+    }
+    const SurfaceType src_type = VideoCore::Surface::GetFormatType(src.info.format);
+    const SurfaceType dst_type = VideoCore::Surface::GetFormatType(dst.info.format);
+    const bool color = src_type == SurfaceType::ColorTexture;
+    if (color != (dst_type == SurfaceType::ColorTexture) ||
+        (color && !IntegerBlitCompatible(src.info.format, dst.info.format))) {
+        WarnOnce(logged_msaa_copy, "multisampled copy between {} and {} skipped", src.info.format,
+                 dst.info.format);
+        CaptureCopySkip(dst, src, "msaa_formats");
+        return;
+    }
+    const D3D12_RESOURCE_DESC dst_desc = dst.Handle()->GetDesc();
+    const D3D12_RESOURCE_FLAGS needed =
+        color ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    if ((dst_desc.Flags & needed) == 0) {
+        WarnOnce(logged_msaa_copy, "multisampled copy into {}, not renderable, skipped",
+                 dst.info.format);
+        CaptureCopySkip(dst, src, "msaa_target");
+        return;
+    }
+    const FormatInfo src_format = Format(src.info.format);
+    const FormatInfo dst_format = Format(dst.info.format);
+    // Stencil only when both sides have it: the stencil plane's SRV formats, as StencilHandle.
+    DXGI_FORMAT stencil_format = DXGI_FORMAT_UNKNOWN;
+    if (!color && dst_type == SurfaceType::DepthStencil && src_type == SurfaceType::DepthStencil) {
+        switch (src.Handle()->GetDesc().Format) {
+        case DXGI_FORMAT_R24G8_TYPELESS:
+        case DXGI_FORMAT_D24_UNORM_S8_UINT:
+            stencil_format = DXGI_FORMAT_X24_TYPELESS_G8_UINT;
+            break;
+        case DXGI_FORMAT_R32G8X24_TYPELESS:
+        case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+            stencil_format = DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;
+            break;
+        default:
+            break;
+        }
+    }
+    BlitCopy type = BlitCopy::Float;
+    if (!color) {
+        type = stencil_format != DXGI_FORMAT_UNKNOWN ? BlitCopy::DepthStencil : BlitCopy::Depth;
+    } else if (IsPixelFormatInteger(src.info.format)) {
+        type = IsPixelFormatSignedInteger(src.info.format) ? BlitCopy::Sint : BlitCopy::Uint;
+    }
+    const DXGI_FORMAT src_view = color ? src.ViewFormat() : src_format.srv;
+    const DXGI_FORMAT dst_view = color ? dst.ViewFormat() : dst_format.dsv;
+    const auto [log_x, log_y] = VideoCommon::SamplesLog2(static_cast<int>(to_flat ? src_samples
+                                                                                   : dst_samples));
+    const s32 scale_x = 1 << log_x;
+    const s32 scale_y = 1 << log_y;
+    ID3D12Device* const device_handle = device.Get();
+
+    src.Transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    dst.Transition(color ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    for (const ImageCopy& copy : copies) {
+        const u32 src_level = static_cast<u32>(copy.src_subresource.base_level);
+        const u32 dst_level = static_cast<u32>(copy.dst_subresource.base_level);
+        if (src_level < src.LevelBias() || dst_level < dst.LevelBias()) {
+            continue; // Not on the host (a dropped top level).
+        }
+        const u32 src_mip = src_level - src.LevelBias();
+        const u32 dst_mip = dst_level - dst.LevelBias();
+        // The target's level, in its own pixels: the copy never writes past it.
+        const s32 dst_width = static_cast<s32>(std::max<u64>(1, dst_desc.Width >> dst_mip));
+        const s32 dst_height = static_cast<s32>(std::max(1U, dst_desc.Height >> dst_mip));
+        const D3D12_RECT rect{
+            .left = copy.dst_offset.x,
+            .top = copy.dst_offset.y,
+            .right = std::min(dst_width, copy.dst_offset.x + static_cast<s32>(copy.extent.width)),
+            .bottom =
+                std::min(dst_height, copy.dst_offset.y + static_cast<s32>(copy.extent.height)),
+        };
+        if (rect.right <= rect.left || rect.bottom <= rect.top) {
+            continue;
+        }
+        const s32 layers =
+            std::min(copy.src_subresource.num_layers, copy.dst_subresource.num_layers);
+        for (s32 layer = 0; layer < layers; ++layer) {
+            const u32 src_layer = static_cast<u32>(copy.src_subresource.base_layer + layer);
+            const u32 dst_layer = static_cast<u32>(copy.dst_subresource.base_layer + layer);
+            // The source's one layer (and level), as the shaders read it.
+            const auto make_srv = [&](DXGI_FORMAT format, UINT mapping, UINT plane) {
+                D3D12_SHADER_RESOURCE_VIEW_DESC desc{.Format = format,
+                                                     .Shader4ComponentMapping = mapping};
+                if (to_flat) {
+                    desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+                    desc.Texture2DMSArray = {src_layer, 1};
+                } else {
+                    desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                    desc.Texture2DArray = {.MostDetailedMip = src_mip,
+                                           .MipLevels = 1,
+                                           .FirstArraySlice = src_layer,
+                                           .ArraySize = 1,
+                                           .PlaneSlice = plane,
+                                           .ResourceMinLODClamp = 0.0f};
+                }
+                const D3D12_CPU_DESCRIPTOR_HANDLE handle = view_descriptors.Allocate();
+                device_handle->CreateShaderResourceView(src.Handle(), &desc, handle);
+                return handle;
+            };
+            const D3D12_CPU_DESCRIPTOR_HANDLE srv =
+                make_srv(src_view, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, 0);
+            D3D12_CPU_DESCRIPTOR_HANDLE stencil_srv{};
+            if (type == BlitCopy::DepthStencil) {
+                // The stencil formats hold the value in G; the shaders read red.
+                stencil_srv = make_srv(stencil_format,
+                                       D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(1, 1, 1, 1), 1);
+            }
+            D3D12_CPU_DESCRIPTOR_HANDLE target_view{};
+            if (color) {
+                target_view = rtv_descriptors.Allocate();
+                D3D12_RENDER_TARGET_VIEW_DESC desc{.Format = dst_view};
+                if (to_flat) {
+                    desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
+                    desc.Texture2DArray = {dst_mip, dst_layer, 1, 0};
+                } else {
+                    desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY;
+                    desc.Texture2DMSArray = {dst_layer, 1};
+                }
+                device_handle->CreateRenderTargetView(dst.Handle(), &desc, target_view);
+            } else {
+                target_view = dsv_descriptors.Allocate();
+                D3D12_DEPTH_STENCIL_VIEW_DESC desc{.Format = dst_view,
+                                                   .Flags = D3D12_DSV_FLAG_NONE};
+                if (to_flat) {
+                    desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+                    desc.Texture2DArray = {dst_mip, dst_layer, 1};
+                } else {
+                    desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY;
+                    desc.Texture2DMSArray = {dst_layer, 1};
+                }
+                device_handle->CreateDepthStencilView(dst.Handle(), &desc, target_view);
+            }
+            const bool copied = blit_helper->CopyMultisample(
+                {target_view, dst_view, dst_samples}, to_flat, type, srv, stencil_srv, rect,
+                copy.src_offset.x, copy.src_offset.y, scale_x, scale_y);
+            if (!copied) {
+                WarnOnce(logged_msaa_copy, "multisampled copy of {} ({} -> {} samples) failed",
+                         src.info.format, src_samples, dst_samples);
+                CaptureCopySkip(dst, src, "msaa_pipeline");
+            }
+            // Recorded already: CPU descriptors are copied into the ring when uploaded.
+            view_descriptors.Free(srv);
+            if (stencil_srv.ptr) {
+                view_descriptors.Free(stencil_srv);
+            }
+            if (color) {
+                rtv_descriptors.Free(target_view);
+            } else {
+                dsv_descriptors.Free(target_view);
+            }
+        }
+    }
 }
 bool TextureCacheRuntime::ShouldReinterpret(Image& dst, Image& src) const noexcept {
     using VideoCore::Surface::PixelFormat;

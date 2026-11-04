@@ -48,6 +48,12 @@ set(SHADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_blit_stencil_bit.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_blit_uint.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_clear_sint.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_flat_to_msaa.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_flat_to_msaa_depth.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_flat_to_msaa_stencil_bit.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_msaa_to_flat.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_msaa_to_flat_depth.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_msaa_to_flat_stencil_bit.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_clear_uint.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_depth_stencil_merge.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_depth_stencil_split.comp
@@ -200,6 +206,10 @@ set(SHADER_TYPE_VARIANTS
     "convert_msaa_to_non_msaa.frag|uint|usampler2DMS|uvec4"
     "convert_non_msaa_to_msaa.frag|sint|isampler2D|ivec4"
     "convert_non_msaa_to_msaa.frag|uint|usampler2D|uvec4"
+    "d3d12_msaa_to_flat.frag|sint|isampler2DMSArray|ivec4"
+    "d3d12_msaa_to_flat.frag|uint|usampler2DMSArray|uvec4"
+    "d3d12_flat_to_msaa.frag|sint|isampler2DArray|ivec4"
+    "d3d12_flat_to_msaa.frag|uint|usampler2DArray|uvec4"
 )
 
 foreach(VARIANT IN ITEMS ${SHADER_TYPE_VARIANTS})
