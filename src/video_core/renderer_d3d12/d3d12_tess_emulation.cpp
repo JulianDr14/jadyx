@@ -13,6 +13,7 @@
 #include "shader_recompiler/runtime_info.h"
 #include "shader_recompiler/tessellation_emulation.h"
 #include "video_core/host_shaders/d3d12_tessellate_comp_spv.h"
+#include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_command_stream.h"
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
@@ -53,13 +54,20 @@ struct TessellatorConstants {
     u32 max_indices;
     u32 yz_flip_mask;
     u32 draw_id;
+    u32 lanes_per_patch;
 };
 constexpr u32 TESSELLATOR_CONSTANT_WORDS = sizeof(TessellatorConstants) / sizeof(u32);
 
 constexpr u32 MODE_COUNT = 0;
 constexpr u32 MODE_PREFIX = 1;
 constexpr u32 MODE_GENERATE = 2;
+constexpr u32 MODE_FUSED = 3;
+constexpr u32 MODE_COUNT_PREFIX = 4;
 constexpr u32 TESSELLATOR_GROUP_SIZE = 64;
+/// Invocations that generate a patch together. With fewer than MIN_FUSED_LANES per patch, the
+/// one-group pass leaves generation to its own dispatch.
+constexpr u32 LANES_PER_PATCH = 16;
+constexpr u32 MIN_FUSED_LANES = 8;
 
 /// The draw record: INDIRECT_DRAW_INDEXED_WORDS, then the points and indices all patches need and
 /// the first patch dropped.
@@ -104,21 +112,30 @@ TessEmulation::~TessEmulation() {
         readback->Unmap(0, nullptr);
         scheduler.DeferRelease(std::move(readback));
     }
+    if (stamp_readback) {
+        stamp_readback->Unmap(0, nullptr);
+        scheduler.DeferRelease(std::move(stamp_readback));
+    }
 }
 
-void TessEmulation::Transition(CommandStream* cmd, TrackedBuffer& buffer,
-                               D3D12_RESOURCE_STATES next) {
+void TessEmulation::Transition(TrackedBuffer& buffer, D3D12_RESOURCE_STATES next) {
     const u64 tick = scheduler.CurrentTick();
     const D3D12_RESOURCE_STATES before =
         buffer.state_tick == tick ? buffer.state : D3D12_RESOURCE_STATE_COMMON;
     if (before != next) {
-        TransitionResource(cmd, buffer.resource.Get(), before, next);
+        barriers.push_back(TransitionBarrier(buffer.resource.Get(), before, next));
     } else if (next == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
-        const D3D12_RESOURCE_BARRIER barrier = UavBarrier(buffer.resource.Get());
-        cmd->ResourceBarrier(1, &barrier);
+        barriers.push_back(UavBarrier(buffer.resource.Get()));
     }
     buffer.state = next;
     buffer.state_tick = tick;
+}
+
+void TessEmulation::FlushBarriers(CommandStream* cmd) {
+    if (!barriers.empty()) {
+        cmd->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+        barriers.clear();
+    }
 }
 
 void TessEmulation::Reserve(TrackedBuffer& buffer, u64 size, bool unordered_access,
@@ -206,6 +223,79 @@ void TessEmulation::ReadNeeds() {
     }
 }
 
+void TessEmulation::Stamp(CommandStream* cmd, u32 step) {
+    if (step == 0) {
+        stamping = false;
+        if (!VideoCore::Perf::DetailedGpuProfileEnabled() || stamp_countdown-- != 0) {
+            return;
+        }
+        stamp_countdown = STAMP_EVERY - 1;
+        if (!stamps_tried) {
+            stamps_tried = true;
+            u64 frequency = 0;
+            ID3D12Device* const dev = device.Get();
+            const D3D12_QUERY_HEAP_DESC heap_desc{.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                                                  .Count = STAMP_SLOTS * STAMPS_PER_DRAW,
+                                                  .NodeMask = 0};
+            void* mapped = nullptr;
+            if (FAILED(device.Queue()->GetTimestampFrequency(&frequency)) || frequency == 0 ||
+                FAILED(dev->CreateQueryHeap(&heap_desc, IID_PPV_ARGS(&stamp_heap)))) {
+                stamp_heap.Reset();
+                return;
+            }
+            stamp_readback = CreateCommittedBuffer(
+                dev, STAMP_SLOTS * STAMPS_PER_DRAW * sizeof(u64), D3D12_HEAP_TYPE_READBACK,
+                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE,
+                "CreateCommittedResource (tessellation timestamps)");
+            ThrowIfFailed(stamp_readback->Map(0, nullptr, &mapped),
+                          "Map (tessellation timestamps)");
+            stamp_data = static_cast<const u64*>(mapped);
+            stamp_ns_per_tick = 1e9 / static_cast<double>(frequency);
+        }
+        if (!stamp_heap || stamp_ticks[stamp_next] != 0) {
+            return; // the GPU still holds this slot: the draw goes unmeasured
+        }
+        stamping = true;
+        stamp_slot = stamp_next;
+        stamp_next = (stamp_next + 1) % STAMP_SLOTS;
+    }
+    if (!stamping) {
+        return;
+    }
+    const u32 first = stamp_slot * STAMPS_PER_DRAW;
+    cmd->EndQuery(stamp_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, first + step);
+    if (step == STAMPS_PER_DRAW - 1) {
+        cmd->ResolveQueryData(stamp_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, first,
+                              STAMPS_PER_DRAW, stamp_readback.Get(), first * sizeof(u64));
+        stamp_ticks[stamp_slot] = scheduler.CurrentTick();
+        stamping = false;
+    }
+}
+
+void TessEmulation::ReadStamps() {
+    using VideoCore::Perf::Counter;
+    static constexpr std::array<Counter, STAMPS_PER_DRAW - 1> steps{
+        Counter::TessCaptureGpuNs,    Counter::TessControlGpuNs,  Counter::TessBarriersGpuNs,
+        Counter::TessTessellateGpuNs, Counter::TessReadbackGpuNs, Counter::TessDrawGpuNs};
+    for (u32 slot = 0; slot < STAMP_SLOTS; ++slot) {
+        const u64 tick = stamp_ticks[slot];
+        if (tick == 0 || !scheduler.IsKnownFree(tick)) {
+            continue;
+        }
+        stamp_ticks[slot] = 0;
+        const u64* const stamps = stamp_data + slot * STAMPS_PER_DRAW;
+        if (stamps[STAMPS_PER_DRAW - 1] <= stamps[0]) {
+            continue;
+        }
+        VideoCore::Perf::Add(Counter::TessDrawsSampled, 1);
+        for (u32 step = 0; step < steps.size(); ++step) {
+            const u64 ticks = stamps[step + 1] > stamps[step] ? stamps[step + 1] - stamps[step] : 0;
+            VideoCore::Perf::Add(steps[step],
+                                 static_cast<u64>(static_cast<double>(ticks) * stamp_ns_per_tick));
+        }
+    }
+}
+
 u32 TessEmulation::Capture(CommandStream* cmd, const GraphicsPipeline& pipeline,
                            const DrawShape& shape) {
     const TessEmulationPlan& plan = pipeline.TessPlan();
@@ -248,7 +338,10 @@ u32 TessEmulation::Capture(CommandStream* cmd, const GraphicsPipeline& pipeline,
     first_index_byte = shape.is_indexed ? static_cast<u32>(shape.index_address & 3) +
                                               shape.first_index * shape.index_size
                                         : 0;
-    Transition(cmd, capture, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    ReadStamps();
+    Stamp(cmd, 0);
+    Transition(capture, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    FlushBarriers(cmd);
 
     // Every root parameter is set before a draw; the capture reads only its constants.
     const PipelineLayout& layout = pipeline.Layout();
@@ -271,7 +364,8 @@ u32 TessEmulation::Capture(CommandStream* cmd, const GraphicsPipeline& pipeline,
         cmd->DrawInstanced(draw_vertices, shape.num_instances, shape.base_vertex,
                            shape.base_instance);
     }
-    Transition(cmd, capture, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Stamp(cmd, 1);
+    Transition(capture, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     return static_cast<u32>(patches);
 }
 
@@ -280,7 +374,8 @@ void TessEmulation::Control(CommandStream* cmd, const GraphicsPipeline& pipeline
     const PipelineLayout& layout = pipeline.Layout();
     const u32 index = layout.TessEmulationIndex();
     const u32 groups = DivCeil(patches, plan.patches_per_group);
-    Transition(cmd, records, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Transition(records, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    FlushBarriers(cmd);
     cmd->SetComputeRootShaderResourceView(index, capture.address);
     cmd->SetComputeRootUnorderedAccessView(index + 1, records.address);
     cmd->SetComputeRootShaderResourceView(index + 2, capture.address);
@@ -296,7 +391,8 @@ void TessEmulation::Control(CommandStream* cmd, const GraphicsPipeline& pipeline
     SetComputeRuntimeData(cmd, PipelineLayout::RUNTIME_DATA_INDEX, groups);
     scheduler.SetPipelineState(pipeline.TessControlHandle());
     cmd->Dispatch(groups, 1, 1);
-    Transition(cmd, records, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Stamp(cmd, 2);
+    Transition(records, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 }
 
 void TessEmulation::Tessellate(CommandStream* cmd, const GraphicsPipeline& pipeline, u32 patches,
@@ -314,10 +410,12 @@ void TessEmulation::Tessellate(CommandStream* cmd, const GraphicsPipeline& pipel
     Reserve(counts, u64{patches} * 2 * sizeof(u32), true,
             "CreateCommittedResource (tessellation counts)");
 
-    Transition(cmd, counts, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    Transition(cmd, points, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    Transition(cmd, indices, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    Transition(cmd, record, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Transition(counts, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Transition(points, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Transition(indices, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Transition(record, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    FlushBarriers(cmd);
+    Stamp(cmd, 3);
 
     cmd->SetComputeRootSignature(tessellator_root_signature.Get());
     scheduler.SetPipelineState(tessellator_pipeline.Get());
@@ -340,8 +438,8 @@ void TessEmulation::Tessellate(CommandStream* cmd, const GraphicsPipeline& pipel
         .max_indices = static_cast<u32>(indices.size / sizeof(u32)),
         .yz_flip_mask = yz_flip_mask,
         .draw_id = draw_id,
+        .lanes_per_patch = LANES_PER_PATCH,
     };
-    const u32 patch_groups = DivCeil(patches, TESSELLATOR_GROUP_SIZE);
     const auto pass = [&](u32 mode, u32 groups) {
         constants.mode = mode;
         cmd->SetComputeRoot32BitConstants(TESSELLATOR_CONSTANTS_PARAM, TESSELLATOR_CONSTANT_WORDS,
@@ -349,24 +447,45 @@ void TessEmulation::Tessellate(CommandStream* cmd, const GraphicsPipeline& pipel
         SetComputeRuntimeData(cmd, TESSELLATOR_RUNTIME_DATA_PARAM, groups);
         cmd->Dispatch(groups, 1, 1);
     };
-    pass(MODE_COUNT, patch_groups);
-    std::array<D3D12_RESOURCE_BARRIER, 2> barriers{UavBarrier(counts.resource.Get()),
-                                                   UavBarrier(record.resource.Get())};
-    cmd->ResourceBarrier(1, barriers.data());
-    pass(MODE_PREFIX, 1);
-    cmd->ResourceBarrier(2, barriers.data());
-    pass(MODE_GENERATE, patch_groups);
+    const std::array<D3D12_RESOURCE_BARRIER, 2> uav{UavBarrier(counts.resource.Get()),
+                                                    UavBarrier(record.resource.Get())};
+    const u32 fused_lanes = TESSELLATOR_GROUP_SIZE / std::bit_ceil(patches);
+    if (patches <= TESSELLATOR_GROUP_SIZE && fused_lanes >= MIN_FUSED_LANES) {
+        // One group counts, sums and generates, with no barrier between the passes.
+        constants.lanes_per_patch = fused_lanes;
+        pass(MODE_FUSED, 1);
+    } else {
+        if (patches <= TESSELLATOR_GROUP_SIZE) {
+            pass(MODE_COUNT_PREFIX, 1);
+        } else {
+            pass(MODE_COUNT, DivCeil(patches, TESSELLATOR_GROUP_SIZE));
+            cmd->ResourceBarrier(1, uav.data());
+            pass(MODE_PREFIX, 1);
+        }
+        cmd->ResourceBarrier(2, uav.data());
+        // Each group generates GROUP_SIZE / lanes patches.
+        u32 lanes = LANES_PER_PATCH;
+        while (lanes > 1 &&
+               DivCeil(patches, TESSELLATOR_GROUP_SIZE / lanes) > MAX_DISPATCH_GROUPS) {
+            lanes /= 2;
+        }
+        constants.lanes_per_patch = lanes;
+        pass(MODE_GENERATE, DivCeil(patches, TESSELLATOR_GROUP_SIZE / lanes));
+    }
+    Stamp(cmd, 4);
 
-    Transition(cmd, points, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    Transition(cmd, indices, D3D12_RESOURCE_STATE_INDEX_BUFFER);
-    Transition(cmd, record, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT |
-                                D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Transition(points, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(indices, D3D12_RESOURCE_STATE_INDEX_BUFFER);
+    Transition(record, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT |
+                           D3D12_RESOURCE_STATE_COPY_SOURCE);
+    FlushBarriers(cmd);
     // What this draw needed, for the buffers of the next ones.
     const u32 slot = readback_next;
     readback_next = (readback_next + 1) % READBACK_SLOTS;
     cmd->CopyBufferRegion(readback.Get(), slot * READBACK_SLOT_BYTES, record.resource.Get(),
                           RECORD_NEEDED_POINTS * sizeof(u32), READBACK_SLOT_BYTES);
     readback_ticks[slot] = scheduler.CurrentTick();
+    Stamp(cmd, 5);
 }
 
 D3D12_PRIMITIVE_TOPOLOGY TessEmulation::Draw(CommandStream* cmd,
@@ -387,6 +506,7 @@ D3D12_PRIMITIVE_TOPOLOGY TessEmulation::Draw(CommandStream* cmd,
             : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     cmd->IASetPrimitiveTopology(topology);
     cmd->ExecuteIndirect(layout.DrawSignature(true), 1, record.resource.Get(), 0, nullptr, 0);
+    Stamp(cmd, 6);
     return topology;
 }
 

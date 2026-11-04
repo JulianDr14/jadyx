@@ -5,6 +5,8 @@
 
 #include <array>
 
+#include <boost/container/small_vector.hpp>
+
 #include "common/common_types.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
 
@@ -78,11 +80,19 @@ private:
         u64 state_tick{};
     };
 
-    void Transition(CommandStream* cmd, TrackedBuffer& buffer, D3D12_RESOURCE_STATES next);
+    /// Queues the buffer's barrier; FlushBarriers records the queued ones with one call, before
+    /// the next command that touches them. Each step queues what it leaves behind, so the next
+    /// step's barriers go in the same call.
+    void Transition(TrackedBuffer& buffer, D3D12_RESOURCE_STATES next);
+    void FlushBarriers(CommandStream* cmd);
     void Reserve(TrackedBuffer& buffer, u64 size, bool unordered_access, const char* what);
     void CreateTessellatorPipeline();
     /// Folds the sizes finished draws reported into the point and index needs.
     void ReadNeeds();
+    /// gpu_profile=1: a timestamp after each step of one draw in STAMP_EVERY, read back into the
+    /// Tess*GpuNs counters once the GPU ran it.
+    void Stamp(CommandStream* cmd, u32 step);
+    void ReadStamps();
 
     const Device& device;
     Scheduler& scheduler;
@@ -94,6 +104,7 @@ private:
     TrackedBuffer points;
     TrackedBuffer indices;
     TrackedBuffer record;
+    boost::container::small_vector<D3D12_RESOURCE_BARRIER, 8> barriers;
     ComPtr<ID3D12RootSignature> tessellator_root_signature;
     ComPtr<ID3D12PipelineState> tessellator_pipeline;
 
@@ -106,6 +117,20 @@ private:
     u32 readback_next{};
     u64 needed_points{};
     u64 needed_indices{};
+
+    static constexpr u32 STAMP_SLOTS = 16;
+    static constexpr u32 STAMPS_PER_DRAW = 7;
+    static constexpr u32 STAMP_EVERY = 16;
+    ComPtr<ID3D12QueryHeap> stamp_heap;
+    ComPtr<ID3D12Resource> stamp_readback;
+    const u64* stamp_data{};
+    double stamp_ns_per_tick{};
+    std::array<u64, STAMP_SLOTS> stamp_ticks{};
+    u32 stamp_next{};
+    u32 stamp_slot{};
+    u32 stamp_countdown{};
+    bool stamping{};
+    bool stamps_tried{};
 
     /// What Capture left for Control: the constants of how the capture is laid out and where
     /// the indices are.
