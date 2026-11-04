@@ -83,6 +83,17 @@ NCA::NCA(VirtualFile file_, const NCA* base_nca, bool allow_missing_base)
     for (s32 i = 0; i < fs_count; i++) {
         NcaFsHeaderReader header_reader;
         if (Result rc = fs.OpenStorage(&filesystems[i], &header_reader, i); R_FAILED(rc)) {
+            // A patch section reads its unchanged blocks from the base NCA, and its hash and
+            // compression layers sit on top of them. Without the base it cannot be opened or
+            // verified: that happens when the game is opened against its base, as on the console.
+            NcaFsHeaderReader patch_header;
+            if (base_nca == nullptr && R_SUCCEEDED(patch_header.Initialize(*reader, i)) &&
+                patch_header.GetPatchInfo().HasIndirectTable()) {
+                is_update = true;
+                continue;
+            }
+            LOG_ERROR(Loader, "Cannot open section {} of {}: result 0x{:08X}", i, file->GetName(),
+                      rc.raw);
             status = Loader::ResultStatus::ErrorBadNCAHeader;
             return;
         }
