@@ -35,7 +35,8 @@ namespace D3D12 {
 namespace {
 
 /// Root parameters (one signature for every helper pipeline): the push-constant words the helper
-/// shaders use (four, a fifth for the stencil bit, a sixth for the samples a resolve averages),
+/// shaders use (four, a fifth for the stencil bit, a sixth for the source's samples, a seventh for
+/// the target's),
 /// spirv_to_dxil's vertex runtime data, then one SRV and one sampler table. The root constants
 /// cover two whole 16-byte registers.
 constexpr u32 PUSH_CONSTANTS_PARAM = 0;
@@ -383,6 +384,9 @@ bool BlitImageHelper::Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HA
     if (kind == Kind::BlitColorMsAverage) {
         scheduler.CommandList()->SetGraphicsRoot32BitConstants(PUSH_CONSTANTS_PARAM, 1,
                                                                &src_samples, SAMPLE_COUNT_WORD);
+    } else if (kind == Kind::BlitUintMs || kind == Kind::BlitSintMs || kind == Kind::BlitDepthMs) {
+        // A linear blit averages a multisampled depth source; integers always average.
+        SetSampleCounts(src_samples, dst.samples, &sampler == &linear_sampler);
     }
     scheduler.CommandList()->DrawInstanced(3, 1, 0, 0);
     return true;
@@ -393,7 +397,8 @@ bool BlitImageHelper::BlitDepthStencil(const Target& dst, D3D12_CPU_DESCRIPTOR_H
                                        const VideoCommon::Region2D& dst_region,
                                        const VideoCommon::Region2D& src_region,
                                        const VideoCommon::Extent2D& src_size,
-                                       bool src_multisampled) {
+                                       u32 src_samples, bool linear) {
+    const bool src_multisampled = src_samples > 1;
     if (!available || src_size.width == 0 || src_size.height == 0) {
         return false;
     }
@@ -419,11 +424,17 @@ bool BlitImageHelper::BlitDepthStencil(const Target& dst, D3D12_CPU_DESCRIPTOR_H
     const std::array srvs{depth_srv, stencil_srv};
     const D3D12_GPU_DESCRIPTOR_HANDLE depth_table = descriptor_ring.Upload(srvs);
     const D3D12_GPU_DESCRIPTOR_HANDLE stencil_table{depth_table.ptr + descriptor_ring.Stride()};
+    // Depth filtered as the guest asks; the stencil passes fetch texels, whatever the sampler.
+    const Sampling& depth_sampler = linear ? linear_sampler : nearest_sampler;
     const D3D12_GPU_DESCRIPTOR_HANDLE sampler_table =
-        sampler_heap.GetTable({&nearest_sampler.key, 1}, {&nearest_sampler.handle, 1});
+        sampler_heap.GetTable({&depth_sampler.key, 1}, {&depth_sampler.handle, 1});
 
     BeginBlit(depth_pipeline, dst, true, rect, depth_table, sampler_table, src_region, src_size);
     CommandStream* const cmd = scheduler.CommandList();
+    if (src_multisampled) {
+        // The stencil passes keep them: they set only the bit word.
+        SetSampleCounts(src_samples, dst.samples, linear);
+    }
     cmd->OMSetStencilRef(0);
     cmd->DrawInstanced(3, 1, 0, 0);
     // Same target, viewport and mapping: only the PSO (its write mask) and the bit change.
@@ -436,6 +447,13 @@ bool BlitImageHelper::BlitDepthStencil(const Target& dst, D3D12_CPU_DESCRIPTOR_H
         cmd->DrawInstanced(3, 1, 0, 0);
     }
     return true;
+}
+
+void BlitImageHelper::SetSampleCounts(u32 src_samples, u32 dst_samples, bool average) {
+    // The source's in SAMPLE_COUNT_WORD, then the target's, then whether depth averages.
+    const std::array<u32, 3> counts{src_samples, std::max(1U, dst_samples), average ? 1U : 0U};
+    scheduler.CommandList()->SetGraphicsRoot32BitConstants(
+        PUSH_CONSTANTS_PARAM, static_cast<u32>(counts.size()), counts.data(), SAMPLE_COUNT_WORD);
 }
 
 void BlitImageHelper::BeginBlit(ID3D12PipelineState* pipeline, const Target& dst, bool is_depth,
@@ -479,21 +497,25 @@ bool BlitImageHelper::BlitColorMultisampled(const Target& dst, D3D12_CPU_DESCRIP
 }
 
 bool BlitImageHelper::BlitInteger(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
-                                  bool is_signed, bool src_multisampled,
+                                  bool is_signed, u32 src_samples,
                                   const VideoCommon::Region2D& dst_region,
                                   const VideoCommon::Region2D& src_region,
                                   const VideoCommon::Extent2D& src_size) {
+    const bool src_multisampled = src_samples > 1;
     const Kind kind = is_signed ? (src_multisampled ? Kind::BlitSintMs : Kind::BlitSint)
                                 : (src_multisampled ? Kind::BlitUintMs : Kind::BlitUint);
-    return Blit(kind, dst, src_srv, nearest_sampler, dst_region, src_region, src_size);
+    return Blit(kind, dst, src_srv, nearest_sampler, dst_region, src_region, src_size,
+                src_samples);
 }
 
 bool BlitImageHelper::BlitDepth(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
                                 const VideoCommon::Region2D& dst_region,
                                 const VideoCommon::Region2D& src_region,
-                                const VideoCommon::Extent2D& src_size, bool src_multisampled) {
-    return Blit(src_multisampled ? Kind::BlitDepthMs : Kind::BlitDepth, dst, src_srv,
-                nearest_sampler, dst_region, src_region, src_size);
+                                const VideoCommon::Extent2D& src_size, u32 src_samples,
+                                bool linear) {
+    return Blit(src_samples > 1 ? Kind::BlitDepthMs : Kind::BlitDepth, dst, src_srv,
+                linear ? linear_sampler : nearest_sampler, dst_region, src_region, src_size,
+                src_samples);
 }
 
 void BlitImageHelper::ClearColor(const Target& dst, u8 color_mask, const std::array<f32, 4>& color,

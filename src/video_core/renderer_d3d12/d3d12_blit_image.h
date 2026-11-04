@@ -183,11 +183,12 @@ public:
                                const VideoCommon::Region2D& src_region,
                                const VideoCommon::Extent2D& src_size);
 
-    /// BlitColor between integer formats of one signedness, without a float in between. A
-    /// multisampled source (a Texture2DMSArray SRV) gives each target sample its own, and a target
-    /// of one sample sample 0.
+    /// BlitColor between integer formats of one signedness, without a float in between, point
+    /// sampled. A multisampled source (src_samples > 1, a Texture2DMSArray SRV) gives each target
+    /// sample one of its own: the same one at equal counts, sample 0 for a target of one, spread
+    /// evenly between other counts.
     bool BlitInteger(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv, bool is_signed,
-                     bool src_multisampled, const VideoCommon::Region2D& dst_region,
+                     u32 src_samples, const VideoCommon::Region2D& dst_region,
                      const VideoCommon::Region2D& src_region,
                      const VideoCommon::Extent2D& src_size);
 
@@ -196,7 +197,7 @@ public:
     bool BlitDepth(const Target& dst, D3D12_CPU_DESCRIPTOR_HANDLE src_srv,
                    const VideoCommon::Region2D& dst_region,
                    const VideoCommon::Region2D& src_region, const VideoCommon::Extent2D& src_size,
-                   bool src_multisampled = false);
+                   u32 src_samples = 1, bool linear = false);
 
     /// Same for depth and stencil, without shader stencil export (the Series has no
     /// SV_StencilRef): one draw writes depth and a zero stencil, then one draw per bit sets that
@@ -208,7 +209,8 @@ public:
                           D3D12_CPU_DESCRIPTOR_HANDLE stencil_srv,
                           const VideoCommon::Region2D& dst_region,
                           const VideoCommon::Region2D& src_region,
-                          const VideoCommon::Extent2D& src_size, bool src_multisampled = false);
+                          const VideoCommon::Extent2D& src_size, u32 src_samples = 1,
+                          bool linear = false);
 
     /// Writes color into the channels of color_mask (bit 0 red ... bit 3 alpha) inside rect.
     void ClearColor(const Target& dst, u8 color_mask, const std::array<f32, 4>& color,
@@ -301,6 +303,8 @@ private:
     /// Binds the root signature, the PSO, the target and the viewport and scissor of rect.
     void Begin(ID3D12PipelineState* pipeline, const Target& target, bool is_depth,
                const D3D12_RECT& rect);
+    /// The source's and the target's sample counts for the sample-by-sample blits.
+    void SetSampleCounts(u32 src_samples, u32 dst_samples, bool average);
     /// Begin, then the source mapping of a blit and its descriptor tables.
     void BeginBlit(ID3D12PipelineState* pipeline, const Target& dst, bool is_depth,
                    const D3D12_RECT& rect, D3D12_GPU_DESCRIPTOR_HANDLE srv_table,
