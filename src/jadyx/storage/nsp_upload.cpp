@@ -71,7 +71,7 @@ bool ValidName(const std::string& name, bool system_files = false) {
     auto lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (system_files ? !(lower.ends_with(".zip") || lower.ends_with(".nca") || lower=="prod.keys" || lower=="title.keys") :
-                       !lower.ends_with(".nsp")) return false;
+                       !(lower.ends_with(".nsp") || lower.ends_with(".xci") || lower.ends_with(".nro"))) return false;
     const auto stem = lower.substr(0, lower.find('.'));
     if (stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" ||
         (stem.size() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) && stem[3] >= '0' && stem[3] <= '9')) return false;

@@ -184,7 +184,7 @@ bool RunNetworkImportGate(const std::filesystem::path& local,
         }
         const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         require(status(client->Post(url + "/finish", headers)) == 204, "finish HTTP");
-        const auto validation = portal->FinalizeGame(ValidateUploadedNsp);
+        const auto validation = portal->FinalizeGame(ValidateUploadedGame);
         require(validation.empty(), "production validation/publication: " + validation);
         require(portal->Status().transfer.phase == "complete", "published phase");
         portal->Stop(); client.reset(); portal.reset();

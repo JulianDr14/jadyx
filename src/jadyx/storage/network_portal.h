@@ -88,6 +88,7 @@ struct PortalLibrary {
 
 /// Installs an update/DLC upload; `tag` is the validated "<kind>:<application hex>".
 using ContentValidator = std::function<std::string(const std::filesystem::path&, const std::string& tag, std::stop_token)>;
+using GameValidator = std::function<std::string(const std::filesystem::path&, const std::string& name, std::stop_token)>;
 /// Carries out the pending removal; returns an error word, empty on success.
 using RemovalRunner = std::function<std::string(const PortalRemoval&)>;
 
@@ -115,7 +116,7 @@ public:
     // Configure the library view before Start; without it the library routes answer 503.
     void SetLibrary(PortalLibrary library);
     bool BlockForLocalOperation();
-    std::string FinalizeGame(const NspValidator& validate);
+    std::string FinalizeGame(const GameValidator& validate);
     /// Only the library coordinator calls this, after its metadata worker has joined.
     std::string FinalizeContent(const ContentValidator& validate);
     /// Runs the pending removal, if any. Only the library coordinator calls this, from its

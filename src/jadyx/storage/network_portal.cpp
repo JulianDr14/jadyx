@@ -1151,9 +1151,12 @@ bool NetworkPortal::BlockForLocalOperation() {
     if(!impl->BlockUploads()){if(impl->system)impl->system->SetAvailable(impl->imports_available);return false;}
     return true;
 }
-std::string NetworkPortal::FinalizeGame(const NspValidator& validate) {
+std::string NetworkPortal::FinalizeGame(const GameValidator& validate) {
     if (!impl->upload) return "unavailable";
-    const auto error=impl->upload->Finalize(validate);
+    const auto name=impl->upload->Snapshot().name;
+    const auto error=impl->upload->Finalize([&](const std::filesystem::path& path, std::stop_token stop) {
+        return validate(path, name, stop);
+    });
     if (error == "interrupted" && Status().running) impl->upload->Resume();
     return error;
 }
