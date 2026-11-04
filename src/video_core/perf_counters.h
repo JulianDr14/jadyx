@@ -218,6 +218,14 @@ enum class Counter : size_t {
     // Cache garbage collection under memory pressure (always counted, once per frame at most).
     CacheGcRuns,              ///< texture and buffer cache collections
     CacheGcUs,                ///< time they took, including buffer downloads before deletion
+    // Emulated tessellation, GPU time per step of the sampled draws (gpu_profile=1, timestamps).
+    TessDrawsSampled,
+    TessCaptureGpuNs,
+    TessControlGpuNs,
+    TessBarriersGpuNs,  ///< transitions of the tessellator's buffers back to unordered access
+    TessTessellateGpuNs,
+    TessReadbackGpuNs,  ///< barriers after the tessellator and the copy of the record's needs
+    TessDrawGpuNs,
     Count,
 };
 

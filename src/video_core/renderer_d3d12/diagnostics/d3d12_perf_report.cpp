@@ -600,6 +600,18 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
         if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
             LOG_INFO(Render, "D3D12 transfer buffer users: {}", transfer_buffers.TakeUserReport());
         }
+        if (const u64 sampled = get(Counter::TessDrawsSampled); sampled != 0) {
+            const auto us = [&](Counter counter) {
+                return static_cast<double>(get(counter)) / (1000.0 * static_cast<double>(sampled));
+            };
+            LOG_INFO(Render,
+                     "D3D12 tessellation GPU per draw: capture {:.2f} us, control {:.2f} us, "
+                     "barriers {:.2f} us, tessellator {:.2f} us, readback {:.2f} us, draw {:.2f} us "
+                     "({} sampled draws)",
+                     us(Counter::TessCaptureGpuNs), us(Counter::TessControlGpuNs),
+                     us(Counter::TessBarriersGpuNs), us(Counter::TessTessellateGpuNs), us(Counter::TessReadbackGpuNs),
+                     us(Counter::TessDrawGpuNs), sampled);
+        }
     }
     if (VideoCore::Perf::DetailedGpuProfileEnabled()) {
         std::array<u64, 64> bins{};
