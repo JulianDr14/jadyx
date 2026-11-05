@@ -475,8 +475,11 @@ public:
     }
 
     /// This pipeline culling one face instead of as the guest asked, built the first time a draw
-    /// needs it (draws whose faces use different stencil references). Null if it cannot be built.
-    [[nodiscard]] ID3D12PipelineState* CulledHandle(D3D12_CULL_MODE mode);
+    /// needs it (draws whose faces use different stencil state). The one culling front faces
+    /// draws the back ones, with the back-face stencil masks given (D3D12 has one pair for both
+    /// faces and the key holds the front one). Null if it cannot be built.
+    [[nodiscard]] ID3D12PipelineState* CulledHandle(D3D12_CULL_MODE mode, u8 back_read_mask = 0,
+                                                    u8 back_write_mask = 0);
 
     [[nodiscard]] u32 LoweredNoPerspectiveMask() const noexcept {
         return lower_noperspective_mask;
@@ -581,7 +584,8 @@ private:
 
     ComPtr<ID3D12PipelineState> pipeline_state;
     ComPtr<ID3D12PipelineState> cull_back_state;
-    ComPtr<ID3D12PipelineState> cull_front_state;
+    /// Back faces only, one per pair of back-face stencil masks (read | write << 8).
+    std::vector<std::pair<u16, ComPtr<ID3D12PipelineState>>> cull_front_states;
     ComPtr<ID3D12PipelineState> tess_capture_state;
     ComPtr<ID3D12PipelineState> tess_control_state;
     GraphicsPsoCache* const pso_cache;

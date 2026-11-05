@@ -119,6 +119,11 @@ button.back{height:34px;padding:0 14px;margin-bottom:20px;font-size:13px;color:v
 .items li{display:flex;align-items:center;gap:14px;padding:12px 14px;border-radius:14px;background:var(--row);border:1px solid var(--line)}
 .items li span{flex:1;min-width:0}.items b{display:block;font-weight:600;overflow-wrap:anywhere}.items small{display:block;font-size:13px}
 .items li.empty{justify-content:center;color:var(--muted)}.items button{height:36px;padding:0 16px}
+#save-intro,#save-warning{font-size:13px;margin:0 0 16px}#save-pane .drop{margin-top:4px}#save-warning{margin-top:12px}
+#save-error{margin:0 0 16px;padding:12px 14px;border-radius:12px;color:var(--warn);background:rgba(240,194,122,.08);border:1px solid rgba(240,194,122,.24);overflow-wrap:anywhere}
+button.link{height:auto;padding:0;border:0;background:none;color:var(--cyan);text-decoration:underline;font-weight:500}button.link:hover:not(:disabled){background:none}
+#save-help{margin:0 0 20px;padding:14px 16px;border-radius:12px;background:var(--row);border:1px solid var(--line)}#save-help.flash{border-color:var(--cyan)}
+#save-help pre{margin:0 0 10px;font:13px/1.5 ui-monospace,Consolas,monospace;overflow-x:auto;color:var(--text)}#save-help p{font-size:13px;margin-top:6px}
 footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:24px 16px 32px;font-size:13px;color:var(--muted)}footer .ico{width:16px;height:16px}
 body.updating .tabs{visibility:hidden}body.updating #view-content,body.updating #view-system,body.updating #log-export{display:none!important}
 #view-update{display:none;max-width:760px;margin:0 auto}body.updating #view-update{display:block}
@@ -178,7 +183,7 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <button class="cat" id="cat-games" aria-selected="true"><svg class="ico" viewBox="0 0 24 24"><path d="M6.5 8h11a4 4 0 0 1 3.9 4.9l-1 4.4a2.4 2.4 0 0 1-4.2 1L14.5 16h-5l-1.7 2.3a2.4 2.4 0 0 1-4.2-1l-1-4.4A4 4 0 0 1 6.5 8z"/><path d="M8 11v3M6.5 12.5h3M15.5 12h.01M17.5 14h.01"/></svg>
 <span><b id="cat-games-title">Games</b><small id="cat-games-sub">NSP · XCI · NRO · base game</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
 <button class="cat" id="cat-library" aria-selected="false" hidden><svg class="ico" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
-<span><b id="cat-library-title">Library</b><small id="cat-library-sub">Updates · DLC · delete</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
+<span><b id="cat-library-title">Library</b><small id="cat-library-sub">Updates · DLC · saves · delete</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
 <div class="store"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13 7.5 5h9L19 13M7 16.5h.01"/></svg><span id="space"></span></div></nav>
 <section id="upload" class="card" hidden><div class="head"><h2 id="uploadtitle">Import games</h2><p id="uploadintro">Base games only. Choose where your console keeps them.</p></div>
 <nav class="seg" id="where" role="tablist" hidden><button id="where-internal" role="tab" aria-selected="true">Internal storage</button><button id="where-developer" role="tab" aria-selected="false">Dev storage (D:)</button></nav>
@@ -190,15 +195,21 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <div class="panel"><div class="panel-top"><p id="job" role="status" aria-live="polite"></p><span class="pct" id="percent"></span></div>
 <progress id="progress" max="1" value="0"></progress><div class="stats"><p id="confirmed"></p><p id="rate"></p><p id="eta"></p><p id="queue"></p></div></div></section>
 <section id="library" class="card" hidden><p id="library-note" role="status" aria-live="polite"></p>
-<div id="library-list"><div class="head"><h2 id="library-title">Your library</h2><p id="library-intro">Open a game to manage its updates and DLC, or to delete it.</p></div>
+<div id="library-list"><div class="head"><h2 id="library-title">Your library</h2><p id="library-intro">Open a game to manage its updates, DLC and save, or to delete it.</p></div>
 <div class="grid" id="games"></div><p id="library-empty" hidden>No games yet.</p></div>
 <div id="game" hidden><button class="back" id="game-back">← Library</button>
 <div class="hero"><div class="art" id="game-art"></div><div><h2 id="game-name"></h2><p id="game-meta"></p></div><button class="danger" id="game-remove">Delete game</button></div>
 <p id="game-warning"></p>
-<nav class="seg" role="tablist"><button id="kind-update" role="tab" aria-selected="true">Updates</button><button id="kind-dlc" role="tab" aria-selected="false">DLC</button></nav>
+<nav class="seg" role="tablist"><button id="kind-update" role="tab" aria-selected="true">Updates</button><button id="kind-dlc" role="tab" aria-selected="false">DLC</button><button id="kind-save" role="tab" aria-selected="false">Save</button></nav>
 <ul class="items" id="items"></ul>
-<label class="drop"><input id="content-files" type="file" accept=".nsp,.xci" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+<label class="drop" id="content-zone"><input id="content-files" type="file" accept=".nsp,.xci" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
 <strong id="content-pick">Choose update NSP or XCI files</strong><span id="content-drop">or drop them here</span><span class="picked" id="content-picked"></span></label>
+<div id="save-pane" hidden><p id="save-intro"></p><div class="actions"><button id="save-download" class="primary">Download save</button></div>
+<label class="drop"><input id="save-file" type="file" accept=".zip,.7z,.rar"><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+<strong id="save-pick">Choose the save (.zip, .7z or .rar)</strong><span id="save-drop">or drop it here</span><span class="picked" id="save-picked"></span></label>
+<p id="save-warning"></p><div id="save-error" role="alert" hidden><span id="save-error-text"></span> <button class="link" id="save-error-help" type="button"></button></div>
+<div class="actions"><button id="save-send" class="primary">Load save</button><button id="save-help-toggle" type="button"></button></div>
+<div id="save-help" hidden><pre id="save-tree"></pre><p id="save-pc"></p><p id="save-rules"></p></div></div>
 <div class="actions"><button id="content-send" class="primary">Upload and install</button><button id="content-pause">Pause</button><button class="danger" id="content-discard">Discard partial file</button></div>
 <div class="panel"><div class="panel-top"><p id="content-job" role="status" aria-live="polite"></p><span class="pct" id="content-percent"></span></div>
 <progress id="content-progress" max="1" value="0"></progress><div class="stats"><p id="content-rate"></p><p id="content-eta"></p></div></div></div></section></div>
@@ -276,9 +287,9 @@ const words=pt?{
 if(es||pt){document.documentElement.lang=pt?'pt-BR':'es';for(const id of ['title','intro','label','connect','uploadtitle','uploadintro','fileslabel','namelabel','send','rename','pause','discard','privacy',
  'kicker','status-off','status-on','code-hint','files-drop','where-internal','where-developer'])$(id).textContent=words[id];}
 const labels=pt?{'tab-content':'Conteúdo','tab-system':'Sistema','content-kicker':'Instalar','cat-games-title':'Jogos','cat-games-sub':'NSP · XCI · NRO · jogo base',
- 'cat-library-title':'Biblioteca','cat-library-sub':'Atualizações · DLC · apagar','system-kicker':'Arquivos do sistema','cat-keys-title':'Chaves'}
+ 'cat-library-title':'Biblioteca','cat-library-sub':'Atualizações · DLC · saves · apagar','system-kicker':'Arquivos do sistema','cat-keys-title':'Chaves'}
 :es?{'tab-content':'Contenido','tab-system':'Sistema','content-kicker':'Instalar','cat-games-title':'Juegos','cat-games-sub':'NSP · XCI · NRO · juego base',
- 'cat-library-title':'Biblioteca','cat-library-sub':'Actualizaciones · DLC · eliminar','system-kicker':'Archivos del sistema','cat-keys-title':'Claves'}:{};
+ 'cat-library-title':'Biblioteca','cat-library-sub':'Actualizaciones · DLC · partidas · eliminar','system-kicker':'Archivos del sistema','cat-keys-title':'Claves'}:{};
 for(const [id,text]of Object.entries(labels))$(id).textContent=text;
 if(es||pt)document.title='Portal Jadyx';
 // The header's tabs and each page's categories, as in the console: one of each group is shown.
@@ -288,7 +299,7 @@ for(const group of [tabs,categories])for(const [button]of group)$(button).addEve
 const selectedChunk=Number(new URLSearchParams(location.search).get('chunk'));
 const chunk=(selectedChunk===4||selectedChunk===16||selectedChunk===64?selectedChunk:16)*1048576;
 let session='',timer,state={},running=false,stopped=false,currentXHR=null,currentId='',rates=[],pane='games',contentRunning=false,where='internal';
-let systemRunning=false,systemReviewId='';
+let systemRunning=false,systemReviewId='',saveDownloading=false;
 const delay=ms=>new Promise(r=>setTimeout(r,ms)),mib=n=>(n/1048576).toFixed(1),reason=e=>words[e.message]||words.interrupted;
 const size=n=>n>=1073741824?(n/1073741824).toFixed(2)+' GiB':mib(n)+' MiB',percent=(done,total)=>total?Math.floor(100*Math.min(1,done/total))+' %':'';
 // What a drop zone holds: the file's name, or how many and their total size.
@@ -447,7 +458,7 @@ $('rename').addEventListener('click',async()=>{try{await api('/api/v1/uploads/'+
 // in internal storage by the console's content import; a deletion runs there too, after the
 // same second press the console asks for.
 const libraryWords=pt?{
- title:'Sua biblioteca',intro:'Abra um jogo para gerenciar suas atualizações e DLC ou para apagá-lo.',empty:'Ainda não há jogos.',back:'← Biblioteca',
+ title:'Sua biblioteca',intro:'Abra um jogo para gerenciar suas atualizações, DLC e save, ou para apagá-lo.',empty:'Ainda não há jogos.',back:'← Biblioteca',
  update:'Atualizações',dlc:'DLC',none_update:'Nenhuma atualização instalada.',none_dlc:'Nenhum DLC instalado.',pick_update:'Selecionar NSP ou XCI de atualização',pick_dlc:'Selecionar NSP ou XCI de DLC',
  send:'Enviar e instalar',remove_game:'Apagar jogo',remove:'Apagar',confirm:'Clique de novo para confirmar',external_item:'Pasta externa',
  warning:'Apagar o jogo remove também seus saves, atualizações e DLC deste console. Mods e cheats são mantidos. Não pode ser desfeito.',
@@ -457,7 +468,7 @@ const libraryWords=pt?{
  wrong_game:'Esse pacote pertence a outro jogo.',kind:'O pacote não é do tipo escolhido (atualização ou DLC).',conflict:'Já existe uma versão conflitante desse conteúdo.',
  hash:'O pacote está danificado.',requirements:'O pacote exige uma versão mais nova do jogo ou do firmware.',unsupported:'Esse pacote não é compatível.',invalid:'O pacote não é válido.',metadata:'Recarregue a página e tente de novo.'
 }:es?{
- title:'Tu biblioteca',intro:'Abre un juego para gestionar sus actualizaciones y DLC, o para eliminarlo.',empty:'Todavía no hay juegos.',back:'← Biblioteca',
+ title:'Tu biblioteca',intro:'Abre un juego para gestionar sus actualizaciones, DLC y partida, o para eliminarlo.',empty:'Todavía no hay juegos.',back:'← Biblioteca',
  update:'Actualizaciones',dlc:'DLC',none_update:'No hay actualizaciones instaladas.',none_dlc:'No hay DLC instalados.',pick_update:'Seleccionar NSP o XCI de actualización',pick_dlc:'Seleccionar NSP o XCI de DLC',
  send:'Subir e instalar',remove_game:'Eliminar juego',remove:'Eliminar',confirm:'Pulsa otra vez para confirmar',external_item:'Carpeta externa',
  warning:'Eliminar el juego borra también sus partidas, actualizaciones y DLC de esta consola. Los mods y trucos se conservan. No se puede deshacer.',
@@ -467,7 +478,7 @@ const libraryWords=pt?{
  wrong_game:'Ese paquete es de otro juego.',kind:'El paquete no es del tipo elegido (actualización o DLC).',conflict:'Ya hay una versión de ese contenido que choca con esta.',
  hash:'El paquete está dañado.',requirements:'El paquete necesita una versión más nueva del juego o del firmware.',unsupported:'Ese paquete no es compatible.',invalid:'El paquete no es válido.',metadata:'Recarga la página y vuelve a intentarlo.'
 }:{
- title:'Your library',intro:'Open a game to manage its updates and DLC, or to delete it.',empty:'No games yet.',back:'← Library',
+ title:'Your library',intro:'Open a game to manage its updates, DLC and save, or to delete it.',empty:'No games yet.',back:'← Library',
  update:'Updates',dlc:'DLC',none_update:'No updates installed.',none_dlc:'No DLC installed.',pick_update:'Choose update NSP or XCI files',pick_dlc:'Choose DLC NSP or XCI files',
  send:'Upload and install',remove_game:'Delete game',remove:'Delete',confirm:'Click again to confirm',external_item:'External folder',
  warning:'Deleting the game also deletes its saves, updates and DLC from this console. Mods and cheats are kept. This cannot be undone.',
@@ -480,6 +491,94 @@ for(const [id,key]of [['library-title','title'],['library-intro','intro'],['libr
  ['kind-update','update'],['kind-dlc','dlc'],['content-send','send'],['content-pick','pick_update']])$(id).textContent=libraryWords[key];
 for(const [id,key]of [['content-drop','files-drop'],['content-pause','pause'],['content-discard','discard']])if(words[key])$(id).textContent=words[key];
 const libraryReason=error=>libraryWords[error.message]||words[error.message]||libraryWords.failed;
+// A game's save: downloaded as a .zip, loaded from an archive the player made anywhere. The file
+// is checked here first so a wrong one never spends an upload; the console checks it all again.
+const saveWords=pt?{
+ tab:'Save',intro:'Baixe o save deste jogo como .zip, ou carregue um feito aqui, em outro console ou no PC.',download:'Baixar save',downloaded:'Save baixado.',
+ pick:'Selecionar o save (.zip, .7z ou .rar)',drop:'ou arraste-o para cá',send:'Carregar save',choose:'Selecione o arquivo do save.',
+ warning:'Carregar substitui o save atual deste jogo. O anterior é guardado como cópia no console.',loaded:'Save carregado. Se havia um, o anterior foi guardado como cópia no console.',
+ help:'Como o arquivo deve ser?',
+ direct:'✔ Os arquivos do save direto',inside:'✔ Ou dentro da pasta do jogo',archive_name:'save.zip',file1:'arquivo do save',more:'pasta/…',
+ pc:'No PC (Eden ou yuzu): clique com o botão direito no jogo → Abrir pasta de save e comprima o que há dentro (ou a pasta inteira). Do Ryujinx serve a pasta …/bis/user/save/<número>/0.',
+ rules:'✘ Sem senha · ✘ Sem jogos nem atualizações (.nsp/.xci) · ✘ Sem saves de outros jogos · Máximo de 1 GiB.',
+ save_file:'Escolha um arquivo .zip, .7z ou .rar com o save.',save_limit:'O arquivo é grande demais para ser um save (máx. 1 GiB e 8192 arquivos).',
+ not_archive:'O arquivo não é um compactado válido (foi renomeado para .zip?).',file_empty:'O arquivo está vazio.',
+ archive:'O compactado está danificado ou incompleto. Crie-o de novo.',encrypted:'O compactado tem senha. Crie-o sem senha.',
+ empty:'O compactado não tem nenhum arquivo de save.',archive_unsafe:'O compactado tem caminhos não permitidos e não será usado: «{detail}».',
+ bad_name:'Há arquivos com nomes que o console não aceita: «{detail}». Renomeie-os.',not_save:'Isto parece um jogo ou uma atualização, não um save: «{detail}».',
+ wrong_game:'Este save é de outro jogo. Encontrado: {detail}. Esperado: a pasta {game}/ ou os arquivos direto.',
+ space:'Não há espaço livre suficiente no console.',profile:'Não há um usuário no Jadyx. Abra um jogo uma vez e tente de novo.',
+ disk:'Não foi possível guardar o save; o anterior foi mantido.',export_disk:'Não foi possível ler o save no console.',
+ no_save:'Este jogo ainda não tem save neste console.',failed:'Não foi possível carregar o save; o anterior foi mantido.'
+}:es?{
+ tab:'Partida',intro:'Descarga la partida de este juego como .zip, o carga una hecha aquí, en otra consola o en el PC.',download:'Descargar partida',downloaded:'Partida descargada.',
+ pick:'Seleccionar la partida (.zip, .7z o .rar)',drop:'o suéltala aquí',send:'Cargar partida',choose:'Selecciona el archivo de la partida.',
+ warning:'Cargar reemplaza la partida actual de este juego. La anterior se guarda como copia en la consola.',loaded:'Partida cargada. Si había una, la anterior se guardó como copia en la consola.',
+ help:'¿Cómo debe ser el archivo?',
+ direct:'✔ Los archivos de la partida directamente',inside:'✔ O dentro de la carpeta del juego',archive_name:'partida.zip',file1:'archivo de la partida',more:'carpeta/…',
+ pc:'En el PC (Eden o yuzu): clic derecho en el juego → Abrir carpeta de partida, y comprime lo que hay dentro (o la carpeta entera). De Ryujinx vale la carpeta …/bis/user/save/<número>/0.',
+ rules:'✘ Sin contraseña · ✘ Sin juegos ni actualizaciones (.nsp/.xci) · ✘ Sin partidas de otros juegos · Máximo 1 GiB.',
+ save_file:'Elige un archivo .zip, .7z o .rar con la partida.',save_limit:'El archivo es demasiado grande para ser una partida (máx. 1 GiB y 8192 archivos).',
+ not_archive:'El archivo no es un comprimido válido (¿se renombró a .zip?).',file_empty:'El archivo está vacío.',
+ archive:'El comprimido está dañado o incompleto. Vuelve a crearlo.',encrypted:'El comprimido tiene contraseña. Créalo sin contraseña.',
+ empty:'El comprimido no tiene ningún archivo de partida.',archive_unsafe:'El comprimido tiene rutas no permitidas y no se usará: «{detail}».',
+ bad_name:'Hay archivos con nombres que la consola no admite: «{detail}». Renómbralos.',not_save:'Esto parece un juego o una actualización, no una partida: «{detail}».',
+ wrong_game:'Esta partida es de otro juego. Encontrado: {detail}. Se esperaba la carpeta {game}/ o los archivos directamente.',
+ space:'No hay espacio libre suficiente en la consola.',profile:'No hay un usuario en Jadyx. Abre un juego una vez y vuelve a intentarlo.',
+ disk:'No se pudo guardar la partida; la anterior se conserva.',export_disk:'No se pudo leer la partida en la consola.',
+ no_save:'Este juego todavía no tiene partida en esta consola.',failed:'No se pudo cargar la partida; la anterior se conserva.'
+}:{
+ tab:'Save',intro:'Download this game\'s save as a .zip, or load one made here, on another console or on a PC.',download:'Download save',downloaded:'Save downloaded.',
+ pick:'Choose the save (.zip, .7z or .rar)',drop:'or drop it here',send:'Load save',choose:'Choose the save file.',
+ warning:'Loading replaces this game\'s current save. The previous one is kept as a copy on the console.',loaded:'Save loaded. If there was one, the previous save was kept as a copy on the console.',
+ help:'What should the file look like?',
+ direct:'✔ The save files directly',inside:'✔ Or inside the game\'s folder',archive_name:'save.zip',file1:'save file',more:'folder/…',
+ pc:'On a PC (Eden or yuzu): right-click the game → Open Save Data Location, and compress what is inside (or the whole folder). From Ryujinx, the …/bis/user/save/<number>/0 folder works.',
+ rules:'✘ No password · ✘ No games or updates (.nsp/.xci) · ✘ No saves of other games · 1 GiB at most.',
+ save_file:'Choose a .zip, .7z or .rar file with the save.',save_limit:'The file is too large to be a save (1 GiB and 8192 files at most).',
+ not_archive:'The file is not a valid archive (was it renamed to .zip?).',file_empty:'The file is empty.',
+ archive:'The archive is damaged or incomplete. Create it again.',encrypted:'The archive has a password. Create it without one.',
+ empty:'The archive has no save files.',archive_unsafe:'The archive has paths that are not allowed and will not be used: «{detail}».',
+ bad_name:'Some files have names the console does not accept: «{detail}». Rename them.',not_save:'This looks like a game or an update, not a save: «{detail}».',
+ wrong_game:'This save belongs to another game. Found: {detail}. Expected: the {game}/ folder or the files directly.',
+ space:'There is not enough free space on the console.',profile:'There is no user in Jadyx. Open a game once and try again.',
+ disk:'The save could not be written; the previous one was kept.',export_disk:'The save could not be read on the console.',
+ no_save:'This game has no save on this console yet.',failed:'The save could not be loaded; the previous one was kept.'};
+// The errors the guide answers: what the archive holds, not how it travelled.
+const saveStructural=['empty','not_save','wrong_game','archive_unsafe','bad_name','not_archive','save_file'];
+for(const [id,key]of [['kind-save','tab'],['save-intro','intro'],['save-download','download'],['save-pick','pick'],['save-drop','drop'],['save-send','send'],
+ ['save-warning','warning'],['save-help-toggle','help'],['save-error-help','help'],['save-pc','pc'],['save-rules','rules']])$(id).textContent=saveWords[key];
+function saveTree(){
+ const id=(gameId||'0100000000000000').toUpperCase(),w=saveWords;
+ const left=[w.direct,'  '+w.archive_name,'  ├─ '+w.file1,'  └─ '+w.more,''];
+ const right=[w.inside,'  '+w.archive_name,'  └─ '+id+'/','     ├─ '+w.file1,'     └─ '+w.more];
+ const width=Math.max(...left.map(l=>l.length))+4;
+ $('save-tree').textContent=left.map((l,i)=>l.padEnd(width)+right[i]).join('\n');
+}
+function showSaveHelp(open,flash){
+ saveTree();$('save-help').hidden=!open;
+ if(flash){$('save-help').classList.add('flash');setTimeout(()=>$('save-help').classList.remove('flash'),2000);}
+}
+// "word" or "word:detail", as the console reports it.
+function saveError(error,download){
+ const text=String(error&&error.message||error),colon=text.indexOf(':');
+ let word=colon<0?text:text.slice(0,colon);const detail=colon<0?'':text.slice(colon+1);
+ if(download&&word==='disk')word='export_disk';
+ const message=(saveWords[word]||libraryWords[word]||words[word]||saveWords.failed).replace('{detail}',detail||'?').replace('{game}',(gameId||'').toUpperCase());
+ $('save-error-text').textContent=message;$('save-error-help').hidden=!saveStructural.includes(word);$('save-error').hidden=false;
+}
+function clearSaveError(){$('save-error').hidden=true;$('save-error-text').textContent='';}
+// What the browser can tell before uploading: the name, the size and the first bytes.
+async function checkSave(file){
+ if(!/\.(zip|7z|rar)$/i.test(file.name))return 'save_file';
+ if(!file.size)return 'file_empty';
+ if(file.size>1073741824)return 'save_limit';
+ const b=new Uint8Array(await file.slice(0,8).arrayBuffer());
+ const zip=b[0]===0x50&&b[1]===0x4B&&[3,5,7].includes(b[2])&&b[3]===b[2]+1;
+ const rar=b[0]===0x52&&b[1]===0x61&&b[2]===0x72&&b[3]===0x21&&b[4]===0x1A&&b[5]===0x07;
+ const seven=b[0]===0x37&&b[1]===0x7A&&b[2]===0xBC&&b[3]===0xAF&&b[4]===0x27&&b[5]===0x1C;
+ return zip||rar||seven?'':'not_archive';
+}
 let games=[],revision=-1,libraryAt=0,gameId='',kind='update',contents=null,armed='',armedTimer=0,removalSerial=0,lastContent='';
 const covers=new Map(),gone=new Set();
 const contentTarget=()=>({key:'content',base:'/api/v1/content/uploads',tag:kind+':'+gameId,metadata:{kind,application:gameId},rate:'content-rate',eta:'content-eta'});
@@ -522,14 +621,17 @@ async function loadContents(){
 function openGame(id,fresh){
  const game=games.find(g=>g.id===id);
  if(!game||gone.has(id)){gameId='';render();return;}
- if(fresh){gameId=id;contents=null;armed='';chooseKind('update');$('library-note').textContent='';$('content-files').value='';$('content-picked').textContent='';}
+ if(fresh){gameId=id;contents=null;armed='';chooseKind('update');$('library-note').textContent='';$('content-files').value='';$('content-picked').textContent='';
+  $('save-file').value='';$('save-picked').textContent='';clearSaveError();showSaveHelp(false);}
  $('game-name').textContent=game.name;$('game-meta').textContent=[game.developer,game.version].filter(Boolean).join(' · ');
  showCover($('game-art'),id);loadContents();render();
 }
 function chooseKind(next){
- kind=next;armed='';
- for(const k of ['update','dlc'])$('kind-'+k).ariaSelected=String(k===kind);
- $('content-pick').textContent=libraryWords['pick_'+kind];renderItems();
+ kind=next;armed='';const save=kind==='save';
+ for(const k of ['update','dlc','save'])$('kind-'+k).ariaSelected=String(k===kind);
+ $('items').hidden=save;$('content-zone').hidden=save;$('content-send').hidden=save;$('save-pane').hidden=!save;
+ if(!save)$('content-pick').textContent=libraryWords['pick_'+kind];else saveTree();
+ renderItems();
 }
 // Nothing deletes or installs while another storage job runs; the server refuses it as well.
 function libraryBusy(){
@@ -548,7 +650,7 @@ async function remove(path,key){
  renderItems();
 }
 function renderItems(){
- if(!gameId)return;
+ if(!gameId||kind==='save')return;
  const list=(contents||[]).filter(c=>c.kind===kind),busy=libraryBusy();
  $('items').replaceChildren(...(list.length?list.map(item=>{
   const row=node('li'),text=node('span'),button=node('button','danger',armed===item.id?libraryWords.confirm:libraryWords.remove);
@@ -576,6 +678,7 @@ function renderLibrary(){
  const active=s.id&&!['complete','validating','publishing'].includes(s.phase);
  $('content-files').disabled=contentRunning;
  $('content-send').disabled=busy||s.available===false||['ready','validating','publishing'].includes(s.phase);
+ $('save-send').disabled=$('content-send').disabled;$('save-file').disabled=contentRunning;$('save-download').disabled=busy||saveDownloading;
  $('content-pause').disabled=!active||systemRunning;$('content-discard').disabled=!active||systemRunning;
  $('content-job').textContent=(s.name?s.name+'\n':'')+(installing&&install.total?libraryWords.validating+' · '+install.done+' / '+install.total+' MiB':
   libraryWords[s.phase]||words[s.phase]||libraryWords.idle);
@@ -603,6 +706,33 @@ function choosePane(next){pane=next;$('message').textContent='';if(next==='libra
 $('cat-games').addEventListener('click',()=>choosePane('games'));$('cat-library').addEventListener('click',()=>choosePane('library'));
 $('game-back').addEventListener('click',()=>{gameId='';armed='';render();});
 $('kind-update').addEventListener('click',()=>chooseKind('update'));$('kind-dlc').addEventListener('click',()=>chooseKind('dlc'));
+$('kind-save').addEventListener('click',()=>chooseKind('save'));
+$('save-help-toggle').addEventListener('click',()=>showSaveHelp($('save-help').hidden,false));
+$('save-error-help').addEventListener('click',()=>showSaveHelp(true,true));
+$('save-file').addEventListener('change',()=>{picked('save-picked','save-file');clearSaveError();});
+// Fetched with the session header, then handed to the browser as a file.
+$('save-download').addEventListener('click',async()=>{
+ if(!gameId||libraryBusy()||saveDownloading)return;const id=gameId;
+ saveDownloading=true;clearSaveError();$('library-note').textContent='';$('message').textContent='';render();
+ try{
+  const blob=await(await api('/api/v1/library/'+id+'/save')).blob(),url=URL.createObjectURL(blob),link=document.createElement('a');
+  link.href=url;link.download=id.toUpperCase()+'-save.zip';document.body?.append(link);link.click();link.remove?.();
+  setTimeout(()=>URL.revokeObjectURL(url),60000);$('library-note').textContent=saveWords.downloaded;
+ }catch(error){saveError(error,true);}finally{saveDownloading=false;render();}
+});
+$('save-send').addEventListener('click',async()=>{
+ if(libraryBusy()||!gameId)return;const file=$('save-file').files[0];clearSaveError();$('library-note').textContent='';$('message').textContent='';
+ if(!file){saveError(Error('choose'));return;}
+ const problem=await checkSave(file);if(problem){saveError(Error(problem));return;}
+ contentRunning=true;stopped=false;rates=[];const target=contentTarget();render();
+ try{await sendFile(file,file.name,target);$('library-note').textContent=saveWords.loaded;$('save-file').value='';$('save-picked').textContent='';}
+ catch(error){
+  saveError(error);
+  // A save the console refused is not resumed: it is dropped so the next file can go.
+  const s=state.content||{};
+  if(s.id&&s.error&&s.phase==='paused'&&s.tag===target.tag)try{await api(target.base+'/'+s.id,{method:'DELETE'});}catch{}
+ }finally{contentRunning=false;currentXHR=null;try{await refresh();}catch{}render();}
+});
 $('game-remove').addEventListener('click',()=>remove(gameId,'game'));
 $('content-files').addEventListener('change',()=>picked('content-picked','content-files'));
 $('content-send').addEventListener('click',async()=>{

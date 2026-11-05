@@ -16,6 +16,7 @@ void LibraryTests(int port) {
     constexpr std::uint64_t application=0x0100000000010000ULL;
     const std::string game="0100000000010000",item(64,'d');
     std::atomic<std::uint64_t> covers{};
+    std::atomic<bool> no_save{};
     {
     Jadyx::NetworkPortal portal{fixture/"games"};
     portal.SetLibrary({
@@ -23,6 +24,11 @@ void LibraryTests(int port) {
         .cover=[&](std::uint64_t id) { ++covers; return id==application ? std::optional<std::string>{"jpeg"} : std::nullopt; },
         .contents=[&](std::uint64_t) { return std::vector<Jadyx::PortalContent>{{.id=item,.kind="update",.name="Update",.version="1.0.1",.bytes=5,.internal=true}}; },
         .progress=[] { return std::pair{std::uint64_t{3},std::uint64_t{9}}; },
+        .save_export=[&](std::uint64_t id,std::string& zip) -> std::string {
+            if (id!=application) return "game";
+            if (no_save) return "no_save";
+            zip="PK"; return {};
+        },
     });
     Check(portal.Start("127.0.0.1",static_cast<unsigned short>(port)),"library listener");
     portal.SetUploadsAvailable(true);
@@ -49,10 +55,11 @@ void LibraryTests(int port) {
     Check(Json::parse(client.Get("/api/v1/status",headers)->body).at("install")==Json{{"done",3},{"total",9}},"install progress in status");
 
     // A content upload names its kind and game; both are checked before anything is created.
-    const auto create=[&](const std::string& kind,const std::string& target) {
+    const auto create=[&](const std::string& kind,const std::string& target,const std::string& file="patch.nsp",
+                          const std::string& length="4") {
         auto request=headers;
-        request.emplace("Upload-Length","4");
-        request.emplace("Upload-Metadata","filename "+httplib::detail::base64_encode("patch.nsp")+",fingerprint "+
+        request.emplace("Upload-Length",length);
+        request.emplace("Upload-Metadata","filename "+httplib::detail::base64_encode(file)+",fingerprint "+
             httplib::detail::base64_encode(std::string(64,'a'))+",kind "+httplib::detail::base64_encode(kind)+
             ",application "+httplib::detail::base64_encode(target));
         return client.Post("/api/v1/content/uploads",request);
@@ -72,6 +79,34 @@ void LibraryTests(int port) {
         seen=tag; return fs::file_size(path)==4 ? std::string{} : std::string{"disk"};
     }).empty() && seen=="update:"+game,"the installer receives the validated tag");
     Check(portal.Status().content.phase=="complete","content consumed");
+
+    // A save is a game's archive: only .zip/.7z/.rar, never a package, and not a huge file.
+    const auto refused=[&](const auto& reply,int code,const char* error) {
+        return Status(reply)==code && Json::parse(reply->body).at("error")==error;
+    };
+    Check(refused(create("save",game),400,"save_file"),"a save is not a package");
+    Check(refused(create("save",game,"save.zip",std::to_string((1ull<<30)+1)),413,"save_limit"),"a save is small");
+    Check(refused(create("save","0100000000020000","save.zip"),404,"game"),"a save targets a known game");
+    Check(Status(create("update",game,"save.zip"))==400,"an update is not an archive");
+    const auto save_created=create("save",game,"Save.ZIP");
+    Check(Status(save_created)==201,"save upload created");
+    const auto save_url=save_created->get_header_value("Location");
+    Check(Status(client.Patch(save_url,patch,"PK","application/offset+octet-stream"))==204,"save bytes");
+    Check(Status(client.Post(save_url+"/finish",headers))==204,"save ready");
+    Check(portal.FinalizeContent([&](const fs::path&,const std::string& tag,std::stop_token) {
+        seen=tag; return std::string{"wrong_game:0100FFFF00000000"};
+    })=="wrong_game:0100FFFF00000000" && seen=="save:"+game,"the save loader receives the save tag");
+    Check(portal.Status().content.error=="wrong_game:0100FFFF00000000","the save's refusal reaches the page");
+    Check(Status(client.Delete(save_url,headers))==204,"a refused save is discarded");
+
+    // The download is the console's zip, named after the game.
+    Check(Status(client.Get("/api/v1/library/"+game+"/save"))==401,"save download requires the session");
+    const auto save=client.Get("/api/v1/library/"+game+"/save",headers);
+    Check(Status(save)==200 && save->body=="PK" && save->get_header_value("Content-Type")=="application/zip" &&
+          save->get_header_value("Content-Disposition")=="attachment; filename=\"0100000000010000-save.zip\"","save download");
+    Check(refused(client.Get("/api/v1/library/0100000000020000/save",headers),404,"game"),"unknown game has no save");
+    no_save=true;
+    Check(refused(client.Get("/api/v1/library/"+game+"/save",headers),404,"no_save"),"a game never saved");
 
     // Deletions queue one job; uploads stay closed from the request until the job has run.
     Check(Status(client.Delete("/api/v1/library/0100000000020000",headers))==404,"unknown game cannot be deleted");
@@ -98,5 +133,5 @@ void LibraryTests(int port) {
     portal.Stop();
     }
     std::error_code ignored;fs::remove_all(fixture,ignored);
-    std::puts("PASS: library listing/cover/content views, update upload kind+game admission, queued deletions and upload exclusion (synthetic view)");
+    std::puts("PASS: library listing/cover/content views, update/save upload kind+game admission, save download, queued deletions and upload exclusion (synthetic view)");
 }

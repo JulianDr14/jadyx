@@ -3,20 +3,73 @@
 #include "jadyx/library/portal_library.h"
 #include <algorithm>
 #include <charconv>
+#include <mutex>
 #include <stdexcept>
+#include <fmt/format.h>
+#include "common/fs/path_util.h"
+#include "common/logging.h"
+#include "common/settings.h"
 #include "core/file_sys/common_funcs.h"
+#include "core/hle/service/acc/profile_manager.h"
 #include "jadyx/content/content_actions.h"
 #include "jadyx/content/content_service.h"
+#include "jadyx/library/save_transfer.h"
 #include "jadyx/storage/storage_path.h"
 #include "jadyx/storage/utf8.h"
 
 namespace Jadyx {
+namespace {
+
+/// The current user's save folder for `application`, the one the game opens; empty when there
+/// is no user profile.
+std::filesystem::path GameSavePath(std::uint64_t application) {
+    // Reading the profiles makes the default user when there is none, as a game's boot would:
+    // one at a time, so two portal jobs never make two.
+    static std::mutex profiles_mutex;
+    std::lock_guard lock{profiles_mutex};
+    Service::Account::ProfileManager profiles;
+    const auto index = static_cast<std::size_t>(std::clamp<int>(
+        Settings::values.current_user.GetValue(), 0, static_cast<int>(Service::Account::MAX_USERS) - 1));
+    const auto user = profiles.GetUser(index);
+    if (!user) return {};
+    // SaveDataFactory::GetFullPath: the newer account layout when it exists, else the older one.
+    const auto saves = Common::FS::GetEdenPath(Common::FS::EdenPath::SaveDir) / "user" / "save";
+    const auto future = saves / "account" / user->RawString() / fmt::format("{:016X}", application & ~0xFFull) / "0";
+    std::error_code ec;
+    if (std::filesystem::is_directory(future, ec)) return future;
+    const auto id = user->AsU128();
+    return saves / "0000000000000000" / fmt::format("{:016X}{:016X}", id[1], id[0]) /
+           fmt::format("{:016X}", application);
+}
+
+std::string ExportSave(std::uint64_t application, std::string& zip) {
+    const auto folder = GameSavePath(application);
+    if (folder.empty()) return "profile";
+    const auto error = ExportSaveFolder(folder, zip);
+    if (!error.empty() && error != "no_save")
+        LOG_WARNING(Frontend, "Portal save {:016X}: export failed: {}", application, error);
+    return error;
+}
+
+std::string ImportSave(const std::filesystem::path& archive, std::uint64_t application, std::stop_token stop,
+                       const Mods::ArchiveProgress& progress) {
+    const auto target = GameSavePath(application);
+    if (target.empty()) return "profile";
+    const auto backups = Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) / "mods" / "save-backups";
+    std::string log;
+    const auto error = ImportSaveArchive(archive, application, target, backups, stop, progress, &log);
+    if (error.empty()) LOG_INFO(Frontend, "Portal save {:016X}: loaded, {}", application, log);
+    else LOG_WARNING(Frontend, "Portal save {:016X}: not loaded: {} ({})", application, error, log);
+    return error;
+}
+
+} // namespace
 
 std::uint64_t ContentTagApplication(const std::string& tag) {
     const auto colon = tag.find(':');
     const auto kind = tag.substr(0, colon);
     std::uint64_t application{};
-    if (colon == std::string::npos || (kind != "update" && kind != "dlc") ||
+    if (colon == std::string::npos || (kind != "update" && kind != "dlc" && kind != "save") ||
         std::from_chars(tag.data() + colon + 1, tag.data() + tag.size(), application, 16).ec != std::errc{})
         return 0;
     return application;
@@ -87,6 +140,10 @@ PortalLibrary PortalLibrarySource::View() {
             return list;
         },
         .progress = [this] { return std::pair{installed.load() >> 20, install_total.load() >> 20}; },
+        .save_export = [this](std::uint64_t application, std::string& zip) -> std::string {
+            if (!Find(application)) return "game";
+            return ExportSave(application, zip);
+        },
     };
 }
 
@@ -105,11 +162,13 @@ std::string PortalLibrarySource::Install(const std::filesystem::path& package, c
     if (!application) return "file";
     const auto game = Find(application);
     if (!game) return "game";
+    const auto report = [&](std::uint64_t done, std::uint64_t total) {
+        Progress(done, total);
+        if (progress) progress(done, total);
+    };
+    if (tag.starts_with("save:")) return ImportSave(package, application, stop, report);
     return Content::ImportUploadedContent(package, tag.starts_with("update:") ? Content::Kind::Update : Content::Kind::Dlc,
-        application, game->launch_path, stop, [&](std::uint64_t done, std::uint64_t total) {
-            Progress(done, total);
-            if (progress) progress(done, total);
-        });
+        application, game->launch_path, stop, report);
 }
 
 std::string PortalLibrarySource::Remove(const PortalRemoval& removal) {

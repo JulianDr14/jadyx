@@ -38,12 +38,14 @@ for(const size of [0,3,55,56,63,64,65,128,131072]){
  console.log('PASS: browser keys/firmware, ZIP/loose, review warning checkbox and explicit confirmation (mock HTTP)');
  for(const language of ['es','en','pt-BR'])await libraryScenario(language);
  console.log('PASS: browser library, update upload with kind/game metadata, two-press content and game deletion (mock HTTP)');
+ for(const language of ['es','en','pt-BR'])await saveScenario(language);
+ console.log('PASS: browser save tab: structure guide, file checks before upload, console refusals shown with their detail and discarded, save metadata, zip download (mock HTTP)');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 
 async function browserScenario(options){
  const elements=new Map(),callbacks=new Map();
  const element=id=>{
-  if(!elements.has(id))elements.set(id,{value:'',textContent:'',files:[],hidden:false,disabled:false,
+  if(!elements.has(id))elements.set(id,{...dom(),value:'',textContent:'',files:[],hidden:false,disabled:false,
    addEventListener:(event,callback)=>callbacks.set(id+':'+event,callback)});
   return elements.get(id);
  };
@@ -90,7 +92,7 @@ async function browserScenario(options){
    });
   }
  }
- context=vm.createContext({document:{getElementById:element,documentElement:{}},navigator:{language:'es'},
+ context=vm.createContext({document:{getElementById:element,documentElement:{},body:{classList:{toggle(){},add(){},remove(){}},append(){}}},navigator:{language:'es'},
   location:{search:'?chunk='+(options.chunk||16)},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
   performance,XMLHttpRequest:XHR,fetch,btoa:value=>Buffer.from(value,'binary').toString('base64'),
   setTimeout:callback=>{queueMicrotask(callback);return 1;},setInterval:()=>1,clearInterval:()=>{},selected});
@@ -115,7 +117,7 @@ async function browserScenario(options){
 
 async function systemScenario(kind,zip,language){
  const elements=new Map(),callbacks=new Map();
- const element=id=>{if(!elements.has(id))elements.set(id,{value:'',checked:false,textContent:'',files:[],hidden:false,disabled:false,
+ const element=id=>{if(!elements.has(id))elements.set(id,{...dom(),value:'',checked:false,textContent:'',files:[],hidden:false,disabled:false,
   addEventListener:(event,callback)=>callbacks.set(id+':'+event,callback)});return elements.get(id);};
  const id='b'.repeat(32),fileid='c'.repeat(32),length=1024*1024+1;
  const selected={name:zip?'source.zip':kind==='keys'?'prod.keys':'0'.repeat(32)+'.nca',size:length,lastModified:123,
@@ -149,7 +151,7 @@ async function systemScenario(kind,zip,language){
   getResponseHeader(k){return k==='Upload-Offset'?String(system.file.offset):null;}
   send(blob){assert.equal(Number(this.headers['Upload-Offset']),system.file.offset);system.file.offset+=blob.size;system.file.received=system.file.offset;writes++;queueMicrotask(()=>{this.status=204;this.onload();});}
  }
- const context=vm.createContext({document:{getElementById:element,documentElement:{}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
+ const context=vm.createContext({document:{getElementById:element,documentElement:{},body:{classList:{toggle(){},add(){},remove(){}},append(){}}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
   performance,XMLHttpRequest:XHR,fetch,btoa:v=>Buffer.from(v,'binary').toString('base64'),setTimeout:cb=>{queueMicrotask(cb);return 1;},setInterval:()=>1,clearInterval:()=>{}});
  vm.runInContext(script,context);
  assert.equal(element('keys-title').textContent,language==='es'?'Importar claves':language==='pt-BR'?'Importar chaves':'Import keys','initial keys card is a title, never an error');
@@ -164,8 +166,8 @@ async function systemScenario(kind,zip,language){
 
 async function libraryScenario(language){
  const elements=new Map(),requests=[];
- const make=tag=>{const n={tag,value:'',textContent:'',files:[],hidden:false,disabled:false,style:{},dataset:{},children:[],listeners:{},
-  classList:{add(){},remove(){}},addEventListener:(event,callback)=>{n.listeners[event]=callback;},
+ const make=tag=>{const n={...dom(),tag,value:'',textContent:'',files:[],hidden:false,disabled:false,style:{},dataset:{},children:[],listeners:{},
+  addEventListener:(event,callback)=>{n.listeners[event]=callback;},
   append:(...c)=>n.children.push(...c),replaceChildren:(...c)=>{n.children=c;}};return n;};
  const element=id=>{if(!elements.has(id))elements.set(id,make('#'+id));return elements.get(id);};
  const click=n=>n.listeners.click();
@@ -206,7 +208,7 @@ async function libraryScenario(language){
   send(blob){assert.equal(Number(this.headers['Upload-Offset']),content.offset);content.offset+=blob.size;content.received=content.offset;queueMicrotask(()=>{this.status=204;this.onload();});}
  }
  const file={name:'patch.nsp',size:length,lastModified:1,slice:(start,end=length)=>({size:end-start,arrayBuffer:async()=>new Uint8Array(end-start).buffer})};
- const context=vm.createContext({document:{getElementById:element,createElement:make,documentElement:{}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
+ const context=vm.createContext({document:{getElementById:element,createElement:make,documentElement:{},body:{classList:{toggle(){},add(){},remove(){}},append(){}}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
   performance,XMLHttpRequest:XHR,fetch,URL:{createObjectURL:()=>'blob:x',revokeObjectURL(){}},btoa:v=>Buffer.from(v,'binary').toString('base64'),
   setTimeout:(cb,ms)=>{if(!(ms>=6000))queueMicrotask(cb);return 1;},clearTimeout:()=>{},setInterval:()=>1,clearInterval:()=>{}});
  vm.runInContext(script,context);
@@ -228,4 +230,82 @@ async function libraryScenario(language){
  await click(element('game-remove'));assert.ok(requests.includes('DELETE /api/v1/library/'+app));
  await delay();assert.equal(element('game').hidden,true);assert.equal(element('library-list').hidden,false);assert.equal(element('games').children.length,0);
 }
+async function saveScenario(language){
+ const elements=new Map(),requests=[],links=[];
+ const make=tag=>{const n={...dom(),tag,value:'',textContent:'',files:[],hidden:false,disabled:false,style:{},dataset:{},children:[],listeners:{},
+  addEventListener:(event,callback)=>{n.listeners[event]=callback;},click(){links.push(n);},
+  append:(...c)=>n.children.push(...c),replaceChildren:(...c)=>{n.children=c;}};return n;};
+ const element=id=>{if(!elements.has(id))elements.set(id,make('#'+id));return elements.get(id);};
+ const click=n=>n.listeners.click();
+ const app='0100000000010000',upload='e'.repeat(32);
+ let content={},refuse='',exported={status:200,body:'PK\x05\x06'};
+ const response=(status,data={},headers={})=>({status,ok:status>=200&&status<300,json:async()=>JSON.parse(JSON.stringify(data)),
+  blob:async()=>new Blob([data]),headers:{get:k=>headers[k]??null}});
+ const fetch=async(url,request={})=>{
+  if(url==='/api/v1/pair')return response(200,{session:'test-session'});
+  assert.equal(request.headers.Authorization,'Bearer test-session');requests.push((request.method||'GET')+' '+url);
+  if(url==='/api/v1/status')return response(200,{uploads:true,transfer:{},library:true,content,install:{done:0,total:0},removal:{serial:0,phase:''}});
+  if(url==='/api/v1/library')return response(200,{revision:1,games:[{id:app,name:'Game',developer:'Dev',version:'1.0.0',removable:true}]});
+  if(url.endsWith('/cover'))return response(404,{error:'cover'});
+  if(url==='/api/v1/library/'+app+'/content')return response(200,{contents:[]});
+  if(url==='/api/v1/library/'+app+'/save')return exported.status===200?response(200,exported.body):response(exported.status,{error:exported.error});
+  if(url==='/api/v1/content/uploads'){
+   const metadata=Object.fromEntries(request.headers['Upload-Metadata'].split(',').map(s=>{const [key,b64]=s.split(' ');return[key,Buffer.from(b64,'base64').toString('utf8')];}));
+   assert.equal(metadata.kind,'save');assert.equal(metadata.application,app);assert.equal(metadata.filename,'mi partida.zip');
+   content={id:upload,name:metadata.filename,fingerprint:metadata.fingerprint,tag:'save:'+app,length:Number(request.headers['Upload-Length']),offset:0,received:0,phase:'receiving',busy:true,available:true};
+   return response(201,{}, {Location:'/api/v1/content/uploads/'+upload});
+  }
+  if(request.method==='DELETE'&&url==='/api/v1/content/uploads/'+upload){content={};return response(204);}
+  if(request.method==='HEAD')return response(200,{}, {'Upload-Offset':String(content.offset)});
+  if(url.endsWith('/finish')){assert.equal(content.offset,content.length);
+   content=refuse?{...content,phase:'paused',busy:false,error:refuse}:{...content,phase:'complete',busy:false};return response(204);}
+  throw Error('unexpected save request '+url);
+ };
+ class XHR{
+  open(method,url){assert.equal(method,'PATCH');assert.equal(url,'/api/v1/content/uploads/'+upload);this.headers={};}
+  setRequestHeader(k,v){this.headers[k]=v;}
+  getResponseHeader(k){return k==='Upload-Offset'?String(content.offset):null;}
+  send(blob){assert.equal(Number(this.headers['Upload-Offset']),content.offset);content.offset+=blob.size;content.received=content.offset;queueMicrotask(()=>{this.status=204;this.onload();});}
+ }
+ const fileOf=(name,bytes)=>{const blob=new Blob([Buffer.from(bytes)]);return{name,size:blob.size,lastModified:1,slice:(a,b)=>blob.slice(a,b)};};
+ const zip=fileOf('mi partida.zip',[0x50,0x4B,0x03,0x04,...Array(60).fill(7)]);
+ const context=vm.createContext({document:{getElementById:element,createElement:make,documentElement:{},body:{classList:{toggle(){},add(){},remove(){}},append(){}}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
+  performance,XMLHttpRequest:XHR,fetch,URL:{createObjectURL:()=>'blob:x',revokeObjectURL(){}},btoa:v=>Buffer.from(v,'binary').toString('base64'),
+  setTimeout:(cb,ms)=>{if(!(ms>=6000))queueMicrotask(cb);return 1;},clearTimeout:()=>{},setInterval:()=>1,clearInterval:()=>{}});
+ vm.runInContext(script,context);
+ element('code').value='1234';await element('pair').listeners.submit({preventDefault(){}});
+ click(element('cat-library'));await delay();click(element('games').children[0]);await delay();
+ click(element('kind-save'));await delay();
+ assert.equal(element('save-pane').hidden,false);assert.equal(element('items').hidden,true);assert.equal(element('content-zone').hidden,true);
+ assert.notEqual(element('kind-save').textContent,'');assert.notEqual(element('save-warning').textContent,'');
+ // The guide names this game's folder.
+ click(element('save-help-toggle'));assert.equal(element('save-help').hidden,false);
+ assert.match(element('save-tree').textContent,/0100000000010000\//);assert.match(element('save-tree').textContent,/├─/);
+ const error=()=>({shown:!element('save-error').hidden,text:element('save-error-text').textContent,help:!element('save-error-help').hidden});
+ // Checked in the browser: nothing is uploaded.
+ const before=requests.length,messages=new Set();
+ for(const [file,help] of [[null,false],[fileOf('juego.nsp',[1,2,3,4]),true],[fileOf('partida.zip',[]),false],
+  [fileOf('partida.zip',[0x3C,0x68,0x74,0x6D,0x6C,0x3E,0,0]),true],[{name:'grande.7z',size:2**30+1,slice:()=>{throw Error('read');}},false]]){
+  element('save-file').files=file?[file]:[];await click(element('save-send'));
+  const e=error();assert.ok(e.shown&&e.text,'precheck error shown');assert.equal(e.help,help,'guide link on structural errors');messages.add(e.text);
+ }
+ assert.equal(messages.size,5,'each precheck has its own message');
+ assert.ok(!requests.slice(before).some(r=>r.includes('/content/uploads')),'prechecks never upload');
+ element('save-file').listeners.change();assert.equal(element('save-error').hidden,true,'a new file clears the error');
+ // Refused by the console: the page says which game it found and drops the upload.
+ refuse='wrong_game:0100FFFF00000000';element('save-file').files=[zip];await click(element('save-send'));await delay();
+ let e=error();assert.ok(e.shown&&e.help);assert.match(e.text,/0100FFFF00000000/);assert.match(e.text,/0100000000010000\//);
+ assert.ok(requests.includes('DELETE /api/v1/content/uploads/'+upload),'refused save discarded');
+ refuse='encrypted';element('save-file').files=[zip];await click(element('save-send'));await delay();
+ e=error();assert.ok(e.shown&&!e.help&&!/0100FFFF/.test(e.text));
+ refuse='';element('save-file').files=[zip];await click(element('save-send'));await delay();
+ assert.equal(element('save-error').hidden,true);assert.notEqual(element('library-note').textContent,'');assert.equal(content.phase,'complete');
+ // The download is handed to the browser under the game's name.
+ await click(element('save-download'));await delay();
+ assert.equal(links.length,1);assert.equal(links[0].download,'0100000000010000-save.zip');assert.equal(element('save-error').hidden,true);
+ exported={status:404,error:'no_save'};await click(element('save-download'));await delay();
+ e=error();assert.ok(e.shown&&e.text&&!e.help);assert.equal(links.length,1);
+}
 function delay(){return new Promise(resolve=>setImmediate(resolve));}
+// What the page touches on any element beyond its own fields.
+function dom(){return{style:{},dataset:{},classList:{add(){},remove(){},toggle(){},contains:()=>false},setAttribute(){},removeAttribute(){},focus(){},append(){},replaceChildren(){},querySelector:()=>null};}

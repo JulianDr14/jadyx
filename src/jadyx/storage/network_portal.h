@@ -57,7 +57,7 @@ struct PortalStatus {
     unsigned short port{}; ///< Listening port, or the first one tried when the start failed.
     int os_error{};        ///< WSA code behind a failed bind, 0 when there was none.
     UploadSnapshot transfer;
-    UploadSnapshot content; ///< Update/DLC package; its tag is "<kind>:<application hex>".
+    UploadSnapshot content; ///< Update/DLC package or save archive; its tag is "<kind>:<application hex>".
     SystemUploadStatus system;
     PortalRemoval removal;
 };
@@ -84,6 +84,8 @@ struct PortalLibrary {
     std::function<std::optional<std::string>(std::uint64_t)> cover;          ///< JPEG bytes
     std::function<std::vector<PortalContent>(std::uint64_t)> contents;
     std::function<std::pair<std::uint64_t, std::uint64_t>()> progress;      ///< installed MiB, total MiB
+    /// Zips the game's save into the string; returns an error word ("no_save" when there is none).
+    std::function<std::string(std::uint64_t, std::string&)> save_export;
 };
 
 /// Installs an update/DLC upload; `tag` is the validated "<kind>:<application hex>".

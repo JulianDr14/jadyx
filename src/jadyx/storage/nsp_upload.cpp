@@ -63,15 +63,22 @@ fs::path Filename(const std::string& name) {
     return fs::path{std::u8string{name.begin(), name.end()}};
 }
 
-bool ValidName(const std::string& name, bool system_files = false) {
+/// A content upload tagged "save:<application>" is a save archive, not a package.
+bool SaveTag(const std::string& tag) {
+    return tag.starts_with("save:");
+}
+
+bool ValidName(const std::string& name, bool system_files = false, const std::string& tag = {}) {
     if (name.size() < 5 || name.size() > 200 || name.back() == ' ' || name.back() == '.') return false;
     for (const unsigned char c : name)
         if (c < 32 || std::string_view{"/\\:<>\"|?*"}.find(static_cast<char>(c)) != std::string_view::npos) return false;
     if (name.find("..") != std::string::npos) return false;
     auto lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (system_files ? !(lower.ends_with(".zip") || lower.ends_with(".nca") || lower=="prod.keys" || lower=="title.keys") :
-                       !(lower.ends_with(".nsp") || lower.ends_with(".xci") || lower.ends_with(".nro"))) return false;
+    const bool allowed = system_files ? lower.ends_with(".zip") || lower.ends_with(".nca") || lower=="prod.keys" || lower=="title.keys"
+                         : SaveTag(tag) ? lower.ends_with(".zip") || lower.ends_with(".7z") || lower.ends_with(".rar")
+                                        : lower.ends_with(".nsp") || lower.ends_with(".xci") || lower.ends_with(".nro");
+    if (!allowed) return false;
     const auto stem = lower.substr(0, lower.find('.'));
     if (stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" ||
         (stem.size() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) && stem[3] >= '0' && stem[3] <= '9')) return false;
@@ -160,7 +167,7 @@ struct NspUpload::Impl {
                 if ((destination != "internal" && !on_developer) || (on_developer && !developer)) continue;
                 const auto target_games = GamesFor(on_developer);
                 const auto data_path = PayloadFor(on_developer);
-                if (json.at("version") != 1 || next <= generation || !ValidName(filename,system_files) || !ValidTag(tag) ||
+                if (json.at("version") != 1 || next <= generation || !ValidName(filename,system_files,tag) || !ValidTag(tag) ||
                     !Hex(id, 32) || !Hex(fingerprint, 64) || !length || length > MaxLength || offset > length) continue;
                 const auto identity = json.at("file_id").get<std::uint64_t>();
                 const auto serial = json.at("volume").get<DWORD>();
@@ -254,7 +261,7 @@ void NspUpload::Resume() {
 
 UploadResult NspUpload::Create(std::string name, std::string fingerprint, std::uint64_t length, std::string tag,
                               bool developer) {
-    if (!ValidName(name,impl->system_files) || !Hex(fingerprint, 64) || !ValidTag(tag) || !length || length > MaxLength) return {400, "file"};
+    if (!ValidName(name,impl->system_files,tag) || !Hex(fingerprint, 64) || !ValidTag(tag) || !length || length > MaxLength) return {400, "file"};
     if (developer && !impl->developer) return {400, "destination"};
     std::unique_lock operation{impl->operation, std::try_to_lock};
     if (!operation.owns_lock()) return {409, "busy"};
