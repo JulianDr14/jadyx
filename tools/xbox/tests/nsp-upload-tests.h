@@ -199,7 +199,7 @@ void UploadTests(int port, bool large) {
     Check(profile.at("confirmed_offset")==total && profile.at("bytes")==16ULL << 20,"performance JSON matches acknowledged block");
     std::printf("Last block profile: %s\n",profile.dump().c_str());
     Check(Status(client.Post(url+"/finish",headers))==204 && portal.Status().transfer.phase=="ready","HTTP finish waits for coordinator");
-    Check(portal.FinalizeGame(verify).empty(),"coordinator validates then publishes HTTP upload");
+    Check(portal.FinalizeGame([&](const fs::path& path,const std::string&,std::stop_token stop) { return verify(path,stop); }).empty(),"coordinator validates then publishes HTTP upload");
     std::printf("TCP loopback %llu MiB, %.2f s, %.2f MiB/s (desktop synthetic, not Xbox/LAN certification)\n",
         static_cast<unsigned long long>(total >> 20),seconds,(total/1048576.0)/seconds);
     portal.Stop();

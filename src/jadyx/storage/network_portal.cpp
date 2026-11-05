@@ -31,6 +31,8 @@ namespace Jadyx {
 namespace {
 using Clock = std::chrono::steady_clock;
 using Json = nlohmann::json;
+/// The largest save archive a game's Save tab takes (SaveMaxImportBytes in save_transfer.h).
+constexpr std::uint64_t SaveUploadLimit = 1ull << 30;
 
 // Keep short OS polling intervals for cancellation, but tolerate 30s idle LAN retransmits.
 // Windows WSAPoll may not wake on local shutdown, so a 30s kernel timeout is not suitable.
@@ -806,6 +808,32 @@ struct NetworkPortal::Impl {
                 Reply(response, 200, {{"contents", std::move(list)}});
             } catch (...) { Reply(response, 500, {{"error", "library"}}); }
         });
+        // The save as a .zip. Not while it is being replaced or deleted from here: the files move.
+        server->Get("/api/v1/library/([0-9a-f]{16})/save", [this](const auto& request, auto& response) {
+            std::uint64_t id{};
+            const auto game = request.matches[1].str();
+            if (!library.save_export || !ParseHex16(game, id) || !KnownGame(id)) { Reply(response, 404, {{"error", "game"}}); return; }
+            {
+                std::lock_guard admission_lock{admission};
+                const auto loading = content ? content->Snapshot() : UploadSnapshot{};
+                if (RemovalActive() || (loading.phase == "validating" && loading.tag == "save:" + game)) {
+                    Reply(response, 409, {{"error", "busy"}}); return;
+                }
+            }
+            std::string zip;
+            std::string error;
+            try { error = library.save_export(id, zip); } catch (...) { error = "disk"; }
+            if (!error.empty()) {
+                const int code = error == "no_save" || error == "game" ? 404 : error == "save_limit" ? 413 :
+                                 error == "profile" ? 409 : 500;
+                Reply(response, code, {{"error", error}}); return;
+            }
+            auto name = game;
+            std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            response.set_header("Content-Disposition", "attachment; filename=\"" + name + "-save.zip\"");
+            response.set_header("Cache-Control", "no-store");
+            response.set_content(std::move(zip), "application/zip");
+        });
         server->Delete("/api/v1/library/([0-9a-f]{16})", [this](const auto& request, auto& response) {
             RequestRemoval(request.matches[1].str(), {}, response);
         });
@@ -895,8 +923,17 @@ struct NetworkPortal::Impl {
             std::string tag;
             if (valid && tagged) {
                 std::uint64_t id{};
-                if ((kind != "update" && kind != "dlc") || !ParseHex16(application,id)) valid=false;
+                if ((kind != "update" && kind != "dlc" && kind != "save") || !ParseHex16(application,id)) valid=false;
                 else if (!KnownGame(id)) { Reply(response,404,{{"error","game"}}); return; }
+                else if (kind == "save") {
+                    // A save is an archive, and a small one: anything else is the wrong file.
+                    auto lower=name;
+                    std::transform(lower.begin(),lower.end(),lower.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+                    if (!lower.ends_with(".zip") && !lower.ends_with(".7z") && !lower.ends_with(".rar")) {
+                        Reply(response,400,{{"error","save_file"}}); return;
+                    }
+                    if (length > SaveUploadLimit) { Reply(response,413,{{"error","save_limit"}}); return; }
+                }
                 tag=kind+":"+application;
             }
             if (valid && !destination.empty() && destination != "internal" && destination != "developer") valid=false;
