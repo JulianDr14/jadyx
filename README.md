@@ -71,21 +71,23 @@ contains additional reports and retests.
 
 | Part | How it is done here | Notes |
 | --- | --- | --- |
-| Renderer | Own D3D12 backend, modelled on Eden's Vulkan backend | Feature level 11.0, shader model 6.4, no Agility SDK on the console. See [Inside the renderer](#inside-the-renderer) |
+| Renderer | Own D3D12 backend, modelled on Eden's Vulkan backend | Feature level 11.0, shader model 6.4, no Agility SDK on the console. Tessellation is emulated with compute shaders, because the console's tessellator draws nothing. See [Inside the renderer](#inside-the-renderer) |
+| Image output | FSR 1 upscaling to the TV's resolution, or frame generation at 1080p | Frame generation interpolates frames from the presented image, so a game at 20 fps looks like 30. See [Graphics settings](#graphics-settings) |
 | Guest shaders | Eden's recompiler emits SPIR-V, Mesa's `spirv_to_dxil` turns it into DXIL, `dxil.dll` signs it | Cached on disk per game and rebuilt in parallel at boot; integer textures lowered to texel fetches |
 | Pipelines | A pipeline keeps its DXIL; its PSO is built when it is drawn and released when it sits idle | The pipelines of recent sessions are built at boot (`d3d12_hot.bin`); pipelines share one copy of each stage's bindings |
 | Conditional rendering | Evaluated on the GPU with `SetPredication` | The GPU thread no longer waits for query results each frame |
 | CPU | Dynarmic JIT with W^X inside the AppContainer, 64-bit and 32-bit games | Code cache capped at 128 MiB per core on Xbox (`jit_cache_mib`); a per-game profile compiles known code before the game starts, see [The JIT warm-up](#the-jit-warm-up) |
 | Emulated cores | Idle cores spin briefly (`MWAITX`/`UMWAIT`/`pause`) before blocking | Handoffs between cores skip most of the ~40 µs OS wake latency |
-| Guest memory | Placeholder memory through the `*FromApp` APIs, committed on demand; fiber stacks grow on demand | No fastmem: every guest access goes through a page table |
-| App memory | A memory guard that shrinks the caches as the 5120 MiB limit nears, and a ledger of who owns each MiB | See [The memory guard](#the-memory-guard) and [The memory wall](#the-memory-wall) |
+| Guest memory | Placeholder memory through the `*FromApp` APIs, committed on demand; fiber stacks grow on demand; cold guest memory written to a swap file when the app runs short (Permafrost) | No fastmem: every guest access goes through a page table. See [Permafrost](#permafrost-cold-guest-memory-on-disk) |
+| App memory | A memory coordinator that shares the free memory between Permafrost, the textures and the JIT; a memory guard that shrinks the caches as the 5120 MiB limit nears; a ledger of who owns each MiB | See [The memory guard](#the-memory-guard) and [The memory wall](#the-memory-wall) |
 | Textures | ASTC decoded on the GPU into BC3, BC1 when the texture has no alpha, or BC4 when it is an alpha mask over white or black; arrays included | `astc=bc3` keeps the CPU path, `astc_opaque=bc3` keeps every ASTC texture as BC3, `astc_arrays=rgba` keeps arrays in RGBA8, `astc_mip0=drop` leaves out the top level of big mipmapped ASTC textures (a quarter of their memory, half the detail) |
 | Audio | XAudio2 2.9 | Same path on PC and Series |
-| Front end | Home, Library and Settings tabs; library with cover art cached on disk, filters and pinned games; full-screen in-game menu (View + Menu held) with screenshots | English, Spanish and Brazilian Portuguese interface; games, keys and firmware sent from a PC or phone with the [Jadyx Portal](#jadyx-portal), or imported from a folder, ZIP or USB drive. See [The front end](#the-front-end) |
-| Game options | Mods, Cheats, Updates, DLC and Pulse for each game, opened from the library | Cheats also change from the in-game menu, while playing. See [Game options](#game-options) |
+| Front end | Home, Library and Settings tabs; library with cover art cached on disk, filters, play time and pinned games; full-screen in-game menu (View + Menu held) with screenshots and graphics options | English, Spanish and Brazilian Portuguese interface; games, keys, firmware, updates, DLC and saves sent from a PC or phone with the [Jadyx Portal](#jadyx-portal), or imported from a folder, ZIP or USB drive. See [The front end](#the-front-end) |
+| Game options | Mods, Cheats, Updates, DLC, Graphics and Pulse for each game, opened from the library | Cheats and part of the graphics options also change from the in-game menu, while playing. See [Game options](#game-options) |
 | Mods | Installed in priority order; browsed and downloaded from GameBanana or the CNX index, or installed from archives on disk | `.zip`, `.7z` and `.rar`; an archive with several variants lets you pick. See [Mods](#mods) |
 | Cheats | Atmosphere cheats from the game's files and the online nx-cheats-db, turned on before playing or while playing | See [Cheats](#cheats) |
-| Updates and DLC | Imported from NSP or XCI, verified, kept in internal storage or read in place from USB | Several versions kept; one active at a time. See [Updates and DLC](#updates-and-dlc) |
+| Updates and DLC | Imported from NSP or XCI, verified, kept in internal storage or read in place from USB; also sent from the Jadyx Portal | Several versions kept; one active at a time. See [Updates and DLC](#updates-and-dlc) |
+| App updates | Jadyx finds its own new releases, downloads and verifies them; on the Series the install is guided from a phone or PC through the Device Portal | Stable and Preview channels; signed manifest and SHA-256 check; the download resumes. See [Updating Jadyx](#updating-jadyx) |
 | Input | Xbox controllers, keyboard on PC with rebindable keys | Emulated controller type (Pro, Joy-Cons, handheld) chosen per game; a chosen pad that disconnects is never silently replaced; held directions repeat in menus |
 | Recovery | A GPU failure returns to the library instead of killing the app | Still being validated on the Series |
 | Sessions (Pulse) | **Back to home** saves the running game; picking it again resumes it where it was | 64-bit and 32-bit games save and resume on the Series and on PC. See [Pulse: resume where you left off](#pulse-resume-where-you-left-off) |
@@ -93,8 +95,10 @@ contains additional reports and retests.
 ### The memory wall
 
 The heaviest game tested is where this port meets its hardest limit. On the Series it draws correctly,
-but in the heaviest area loads the app runs out of memory: the renderer cannot create a buffer and
-the game returns to the library.
+but its heaviest loads need more memory than the app has. Before Permafrost, the renderer could not
+create a buffer there and the game returned to the library within minutes. Permafrost now writes the
+guest memory the game is not using to disk, and the game keeps running; the price is frame drops
+while that memory is read back.
 
 **Why it does not fit.** In Game mode the whole app gets 5120 MiB, and the GPU shares that memory.
 The Switch gives the game about 3.2 GiB, and this game uses almost all of it. An emulator then needs
@@ -135,16 +139,21 @@ app peaks around 6.4 GiB.
 - A buffer or texture the system refuses is retried after memory is reclaimed.
 - ASTC textures without alpha are re-encoded as BC1, half the size of BC3. This game uses few of
   them, so it gains little here.
+- Texture heaps and staging buffers are created without zeroing them, small textures are packed at
+  4 KiB, and sparse heaps are compacted.
+- Cold guest memory goes to disk ([Permafrost](#permafrost-cold-guest-memory-on-disk)), and a
+  memory coordinator decides who gives way first: idle textures before guest memory.
+- **Graphics > Texture quality** (Memory saver) and **Texture memory limit**, per game, trade
+  sharpness or texture streaming for room.
 
 **What comes next:**
 - Find out what the ~400 MiB of large heap blocks are and cut them.
-- An option to lower the resolution of the largest textures. It costs sharpness, but it would leave
-  enough room for the heaviest loads.
+- Fewer read-backs from Permafrost in the heaviest areas, where they cost frames.
 
 Fitting in memory is not the end of it. Fastmem, which mirrors the Switch's address space in the
-host's so that JIT code reaches guest memory with a single instruction, is impossible inside the
-Xbox sandbox. Every memory access of the emulated CPU goes through a page table instead, and this
-game leans hard on the CPU. Its frame rate on the Series is still unknown.
+host's so that JIT code reaches guest memory with a single instruction, does not fit in the Series'
+memory. Every memory access of the emulated CPU goes through a page table instead, and this game
+leans hard on the CPU. In its heaviest areas it still runs below 30 fps on the Series.
 
 ## Architecture
 
@@ -158,8 +167,9 @@ flowchart TB
     subgraph front["jadyx · front end"]
         direction LR
         lib["Home · Library · Settings<br/>cover art · USB and external folders"]
-        opts["Game options<br/>mods · cheats · updates · DLC"]
-        menu["In-game menu<br/>screenshots · configuration panel"]
+        portal["Jadyx Portal<br/>games · updates · DLC · saves<br/>keys · firmware"]
+        opts["Game options<br/>mods · cheats · updates · DLC · graphics"]
+        menu["In-game menu<br/>screenshots · controller · graphics"]
         input["Controllers · keyboard<br/>emulated pad type per game"]
     end
 
@@ -177,7 +187,8 @@ flowchart TB
         caches["Buffer and texture caches<br/>ASTC → BC1/BC3 on the GPU"]
         pipes["Pipeline cache<br/>PSOs built on use, idle ones released"]
         pred["Conditional rendering<br/>GPU predication"]
-        present["Present manager<br/>own present thread"]
+        tess["Tessellation<br/>emulated in compute"]
+        present["Present manager<br/>own present thread<br/>FSR 1 · frame generation"]
     end
 
     subgraph shaders["Shader translation"]
@@ -187,6 +198,8 @@ flowchart TB
 
     subgraph mem["Memory · 5120 MiB for the whole app"]
         direction LR
+        coord["Memory coordinator<br/>who gives way first"]
+        frost["Permafrost<br/>cold guest memory to disk"]
         guard["Memory guard<br/>pressure levels"]
         ledger["Ledger<br/>MiB by owner"]
     end
@@ -208,6 +221,10 @@ flowchart TB
     guard -- "evict textures · release PSOs · shrink upload ring" --> d3d
     ledger -. "measures" .-> d3d
     ledger -. "measures" .-> core
+    coord --> frost
+    coord -- "textures yield first" --> d3d
+    frost -. "freezes and thaws" .-> hle
+    portal -. "installs on the storage worker" .-> lib
     d3d --> dx
     hle --> xa
     front --> win
@@ -219,14 +236,18 @@ Where things live:
 | --- | --- |
 | `src/jadyx/` | Front end: CoreWindow boot (`app/`), library and its metadata cache (`library/`), in-game menu (`game/`), settings, interface languages (`i18n/locales/`), controllers and keyboard (`input/`), shared drawing and design tokens (`ui/`), file import and external storage (`storage/`), `jadyx_diag.txt` |
 | `src/jadyx/mods/`, `cheats/`, `content/` | The game options: the mods manager and its store, cheats, the updates and DLC manager |
+| `src/jadyx/settings/` | The System and Graphics pages, global graphics settings and their per-game overrides |
+| `src/jadyx/storage/network_portal*`, `library/portal_library.*`, `library/save_transfer.*` | The Jadyx Portal: its HTTP server and embedded page, resumable uploads, the library view it publishes, save export and import |
+| `src/jadyx/updates/` | The app updater: releases, signed manifests, resumable downloads, guided install |
 | `src/dynarmic/` | The JIT, with W^X for the AppContainer, the warm-up profiles and compact block metadata |
-| `src/common/` | Shared pieces this port added to: the memory ledger, the spin-then-block core wait, fiber stacks that grow on demand, Pulse's archive format |
+| `src/common/` | Shared pieces this port added to: the memory ledger, Permafrost (`permafrost.*`), the spin-then-block core wait, fiber stacks that grow on demand, Pulse's archive format |
 | `src/core/pulse_*` | Pulse: capture and restore of the guest process (threads, memory, kernel objects) and of each HLE service's state; the sessions in the library live in `src/jadyx/pulse_sessions.*` |
 | `src/video_core/renderer_d3d12/` | The D3D12 renderer: scheduler, buffer and texture caches, pipelines, root signatures, presentation (see [Inside the renderer](#inside-the-renderer)) |
 | `src/shader_recompiler/` | Eden's shader recompiler, with the adjustments the D3D12 profile needs |
 | `tools/xbox/mesa/` | Our additions to Mesa's `spirv_to_dxil` (pipeline linking, integer sampling) |
 | `tools/xbox/` | Build, packaging, local run, Mesa build and crash symbolication scripts |
-| `tools/xbox/tests/` | Standalone tests of the pure policies: memory guard, PSO residency, JIT warm-up, controllers, library, languages, system settings, on-screen keyboard, cheats, mods |
+| `tools/xbox/tests/` | Standalone gates (`run-*.ps1`) of the pure policies and components: memory guard, Permafrost, PSO residency, JIT warm-up, frame generation, controllers, library, languages, settings, on-screen keyboard, cheats, mods, the portal and its page, saves, the updater |
+| `tools/xbox/tests/renderer-suite/` | The renderer regression suite: the gates, about 470 guest scenes run through the whole emulator, and performance loops ([docs](docs/xbox/xbox_renderer_suite.md)) |
 | `dist/uwp/` | App manifest and package assets |
 
 Two runtime DLLs are loaded from the package root: `spirv_to_dxil.dll` (built from Mesa by
@@ -242,8 +263,10 @@ the renderer falls back to presenting the guest framebuffer through the CPU.
 | Area | Files | What |
 | --- | --- | --- |
 | Device and submission | `d3d12_device`, `d3d12_scheduler`, `d3d12_fence_manager`, `d3d12_query_cache` | Device, direct queue, command lists and allocators, GPU ticks, deferred releases, guest fences and queries |
-| Presentation | `renderer_d3d12`, `d3d12_present_manager`, `d3d12_swapchain`, `d3d12_present_blit`, `d3d12_present_cpu`, `d3d12_overlay` | Composites each frame into a frame of its own; a dedicated thread copies it to the swapchain and presents (see below) |
+| Presentation | `renderer_d3d12`, `d3d12_present_manager`, `d3d12_swapchain`, `d3d12_present_blit`, `d3d12_present_cpu`, `d3d12_overlay`, `d3d12_present_fsr`, `d3d12_fsr_plan` | Composites each frame into a frame of its own, upscaled with FSR 1 when it is on; a dedicated thread copies it to the swapchain and presents (see below) |
+| Frame generation | `d3d12_frame_gen`, `d3d12_frame_gen_pacer` | Motion-compensated in-between frames from the presented image, and their pacing on the present thread ([docs](docs/xbox/xbox_frame_gen.md), in Spanish) |
 | Draws | `d3d12_rasterizer*`, `d3d12_accelerate_dma`, `d3d12_maxwell_to_d3d12`, `d3d12_indirect_buffer`, `d3d12_conditional_rendering` | Draw state, clears, DMA, indirect draws rebuilt for `ExecuteIndirect`, conditional rendering by GPU predication |
+| Tessellation | `d3d12_tess_emulation` | The console's hardware tessellator produces no geometry, so a tessellated draw runs as compute: the vertex shader captures its outputs, the hull stage and a port of the reference tessellator run as compute, and the domain shader draws as a vertex shader |
 | Pipelines | `d3d12_graphics_pipeline`, `d3d12_compute_pipeline`, `d3d12_root_signature`, `d3d12_stage_bindings`, `d3d12_pipeline_residency` | PSOs and their root arguments, stage bindings shared between pipelines, which PSOs stay built |
 | Shaders | `d3d12_pipeline_cache`, `d3d12_shader_compiler`, `d3d12_linked_shader_cache` | SPIR-V → DXIL translation on worker threads, the per-game disk cache of guest pipelines, reuse of linked shaders |
 | Textures | `d3d12_texture_cache`, `d3d12_image_*`, `d3d12_depth_stencil_transfer`, `d3d12_astc_gpu_decoder`, `d3d12_sampler`, `d3d12_framebuffer`, `d3d12_texture_formats` | Images, views, uploads and downloads, copies and blits, ASTC on the GPU |
@@ -258,6 +281,12 @@ copies the frame into the back buffer and presents it, so the GPU thread never w
 Both threads submit to the same queue under one lock, because `Present` and `ExecuteCommandLists`
 racing on two threads can deadlock. Without a waitable swapchain, or with `async_present=0` in
 `boot.cfg`, presentation runs on the GPU thread as before.
+
+With no free frame, the GPU thread reuses the oldest queued frame that has not been copied yet
+instead of waiting, and the guest's vsync no longer waits for a late composite. Waits for pipelines
+still being built have a budget per frame. Together these keep a game that asks for 30 fps from
+falling to 20 because of one late frame ([the frame chain](docs/xbox/xbox_frame_chain.md), in
+Spanish).
 
 ### The JIT warm-up
 
@@ -369,6 +398,34 @@ are written every minute of play, and again whenever free memory drops below 150
 `boot.cfg` caps the process from inside with a job object, so a PC run hits the same wall as the
 Series.
 
+### Permafrost: cold guest memory on disk
+
+**The problem.** The emulated Switch's memory is committed as the game touches it, and a big game
+touches gigabytes it then leaves alone for minutes. Inside 5120 MiB, which the GPU shares, that
+cold memory was enough to run the app out of memory in the heaviest loads.
+
+**What this fork does.** Permafrost (`src/common/permafrost.*`) writes guest memory the game is
+not using to a swap file (`LocalState\jadyx\permafrost.bin`) when the app runs short, and reads it
+back when the game touches it again:
+- Guest memory is cut into 2 MiB granules. Windows has no accessed bit, so a scout makes one random
+  page of each resident granule no-access once a second; a fault on it means the granule is in use.
+- When memory runs short, the granules idle longest go on probation. One left untouched for the
+  probation time is written out by a writer thread, and its pages are decommitted. Pages holding
+  only zeros are decommitted without being written.
+- A fault in a granule on disk reads back a window around the fault, wider when the faults walk
+  forward. A granule that comes back soon after it left was hot: it is kept in memory longer each
+  time, and read back whole by a prefetch thread.
+
+A **memory coordinator** (`src/jadyx/app/memory_coordinator.h`) owns the free memory that
+Permafrost, the texture cache and the JIT used to fight over. When the guest stalls on read-backs,
+memory the game uses is being evicted. Then the others give way first: idle textures go and free
+pool pages are trimmed. Only if the stall lasts do Permafrost's marks come down. With no stall,
+textures may grow into the headroom Permafrost freed.
+
+It is on by default; without it the heaviest game tested runs out of memory in about four
+minutes. `guest_swap=0` in `boot.cfg` turns it off for tests, and `tools/xbox/tests/run-permafrost.ps1`
+is its gate.
+
 ### The bug tracker
 
 **The problem.** The first run of one game turned up a series of bugs. About
@@ -431,15 +488,20 @@ under a header with the controller's battery, the clock and the user. The select
 blurred, fills the background.
 - *Home*: a rail of the pinned and the recently played games.
 - *Library*: every game in a grid, filtered by all, played, A–Z, pinned, recently added or with a
-  Pulse session. **Y** pins a game, **X** scans the folders again, **Menu** opens its
+  Pulse session, or sorted by play time. **Y** pins a game, **X** scans the folders again, **Menu** opens its
   [options](#game-options).
-- *Settings*: one page with a list of sections on the left (System, Controllers and keyboard,
-  Files) beside a card with the emulator's data.
+- *Settings*: one page with a list of sections on the left (System, Graphics, Controllers and
+  keyboard, Files) beside a card with the emulator's data. System also holds the app's
+  [updates](#updating-jadyx), play time, multiple controllers (players 2 to 8), offline mode and
+  the Pulse switch.
+
+The library is drawn at the 4K output size. Started in App mode, where games do not fit in memory,
+Jadyx explains how to switch it to Game mode in Dev Home.
 
 **The in-game menu.** View + Menu held pauses the game and opens a full-screen menu over the
 blurred frame: the game's title and how long this session has run, quick actions (continue,
-[cheats](#cheats), **Back to home**), and pages for the controller (style, face buttons, dead zone)
-and the display (upscaling, statistics). **Screenshot**
+[cheats](#cheats), **Back to home**), and pages for the controller (style, face buttons, dead zone),
+the display (statistics) and the [graphics](#graphics-settings) of this game. **Screenshot**
 saves the paused frame as a PNG in `LocalState\jadyx\captures`.
 
 **Cover art and titles are cached.** Reading a game's title and icon means opening the NSP or XCI
@@ -483,31 +545,87 @@ X deletes, Y adds a space, View is Shift, Menu confirms and B cancels.
 
 ### Jadyx Portal
 
-The portal sends games, keys and firmware from a PC or phone to the console over the local network,
-with no Device Portal or USB drive. Open **Settings > File manager > Network connection > Start
-server** in Jadyx, open the address it shows (`http://<console-ip>:8080`) in a browser on the same
-network, then choose **Generate connection code** and type the 8-digit code in the browser. The code
-lasts 5 minutes and works once.
+The portal sends games and system files from a PC or phone to the console over the local network,
+with no Xbox Device Portal or USB drive. Open **Settings > File manager > Jadyx Portal > Start
+portal** in Jadyx, open the address it shows (`http://<console-ip>:8080`) in a browser on the same
+network, then choose **Generate connection code** and type the 4-digit code in the browser. The code
+lasts 5 minutes and works once; five wrong tries a minute are allowed.
 
-- **Content** receives base games (`.nsp`). Each upload is checked before it reaches the library, so
-  an incomplete or damaged file never shows up as a game.
+- **Games** receives base games (`.nsp`, `.xci` or `.nro`), into internal storage or Dev Mode's
+  storage on `D:`. Each upload is checked before it reaches the library, so an incomplete or
+  damaged file never shows up as a game, and the page says whether a file was cut short or damaged.
+- **Library** shows the console's games with their covers. For each one it sends updates and DLC
+  (`.nsp` or `.xci`), downloads and loads [saves](#saves), and deletes content or the game, with a
+  second press to confirm.
 - **System** receives keys (`prod.keys`, `title.keys` or a `.zip`) and firmware (a `.zip`, the loose
   `.nca` files or their folder). Nothing is installed until you confirm a review that compares the
   installed and the new firmware version and key generation, and warns about downgrades and keys
   that may not open the installed firmware. If an import fails, the previous keys and firmware stay.
 - **Interrupted uploads resume.** After a dropped connection or a restart of the browser or the app,
   pair again and pick the same file: the upload continues from the last confirmed block.
+- **Logs.** The whole log folder, graphics captures included, downloads as one `.tar.zst` archive.
+- **App updates.** On the Series the browser downloads the package Jadyx already verified and hands
+  it to the Xbox Device Portal (see [Updating Jadyx](#updating-jadyx)).
 
 The server only listens on the local network (Ethernet or Wi-Fi), never on the internet, and stops
-when a game starts or when you choose **Stop server**. Keys and firmware can also be imported from a
+when a game starts or when you choose **Stop portal**. Keys and firmware can also be imported from a
 folder or ZIP on a USB drive in **Settings > File manager**, with the same review. Design and
 protocol: [docs/xbox/xbox_network_portal.md](docs/xbox/xbox_network_portal.md) (in Spanish).
+
+#### Saves
+
+In the portal's **Library**, a game's **Save** tab has two actions:
+- **Download save** gives a `.zip` of the game's save for the current Jadyx user.
+- **Load save** takes a `.zip`, `.7z` or `.rar` and installs it as the game's save. It replaces the
+  whole save; the previous one is moved to `mods/save-backups` in the app's data, never deleted.
+
+The archive holds the save's files, either directly or inside one folder named after the game's
+title id. That is what Eden or yuzu on a PC shows with **Open save data location**, and a downloaded
+save always loads back. A Ryujinx `bis/user/save/<number>/0` folder works too. Mac and Windows
+leftovers (`__MACOSX`, `.DS_Store`, `Thumbs.db`) are ignored.
+
+Before anything changes, the whole listing is checked. The upload is refused, with the reason on
+the page and the current save kept, when the archive:
+- is damaged, password-protected or empty;
+- holds unsafe paths or names Windows cannot store;
+- contains a game (`.nsp`, `.xci`, `.nca`, `.nro`) or another game's save (the page names the title
+  id it found);
+- unpacks past 1 GiB or 8192 files.
+
+The page checks the extension, the size and the archive signature before uploading, and shows the
+expected layout with the game's own title id.
 
 ### Game options
 
 **Menu** on a game in the library opens its options, a bar of categories: **Mods**, **Cheats**,
-**Updates**, **DLC** and **Pulse**. Mods, updates and DLC change in the library and apply the next
-time the game boots; cheats can also change while playing.
+**Updates**, **DLC**, **Graphics**, **Pulse** and **Delete game**. Mods, updates, DLC and graphics
+change in the library and apply the next time the game boots; cheats and part of the graphics can
+also change while playing.
+
+### Graphics settings
+
+**Settings > Graphics** sets them for every game, and the **Graphics** tab of a game's options
+overrides any of them for that game alone. The in-game menu's **Graphics** page changes the first
+four, the game clock, the texture memory limit, GPU accuracy and the console mode for the running
+game.
+
+| Option | Choices | What it does |
+| --- | --- | --- |
+| Image upscaling | Bilinear, FSR 1 sharp, balanced or soft | FSR 1 enlarges the image to the TV's resolution, up to 4K. Turns frame generation off |
+| Frame generation | Off or on (automatic) | In-between frames made from the presented image, at 1080p: a game stuck at 20 fps looks like 30, one at 30 like 60. Turns FSR off ([docs](docs/xbox/xbox_frame_gen.md), in Spanish) |
+| New shaders | Skip (full), Balanced, Wait | What a draw does while its pipeline builds: skipped, skipped unless it is a full-screen pass or a target's first draw, or waited for. Balanced is the default |
+| GPU Fence | Immediate, Safe, Wait, Balanced, Accurate | When the game learns that the GPU finished. Immediate is the fastest; the others are more exact and can cost fps |
+| GPU command thread | On or off | Records GPU commands on a thread of their own. Turning it off can lower the fps |
+
+Each game also has advanced options of its own: a game clock at 90 % (for games that jump between
+20 and 30 fps), anisotropic filtering, texture quality (Memory saver or Full), the texture memory
+limit, GPU accuracy, the number of shader build threads, and docked or handheld mode, which lowers
+the resolution of many games and saves memory. One button resets them.
+
+Frame generation does not use FSR 3 or the game's motion vectors: FSR 3 needs typed UAV loads and a
+window swapchain the console does not offer, and an emulator has no motion vectors from the game.
+FSR 2 and 3 upscaling need the depth and motion vectors too, and FSR 4 needs newer AMD GPUs, so the
+upscaler is FSR 1 ([docs](docs/xbox/xbox_fsr.md), in Spanish).
 
 ### Mods
 
@@ -531,7 +649,8 @@ of an installed mod is out. Mods belong to their authors.
 
 ### Updates and DLC
 
-**Updates** and **DLC** import a game's update or additional content from a complete NSP or XCI.
+**Updates** and **DLC** import a game's update or additional content from a complete NSP or XCI,
+from a USB drive or folder, or sent from the [Jadyx Portal](#jadyx-portal).
 Each package is checked before it replaces anything: that it belongs to this game, that your keys
 can read it, that its contents and sizes are complete, and optionally its full integrity. You pick
 where it lives: copied to internal storage, or read in place from the USB drive or folder it came
@@ -601,15 +720,29 @@ Requirements: an Xbox Series X|S in Developer Mode, the package from the
    address), choose **Add**, select the appx and add VCLibs as a dependency if a compatible
    version is not already installed. Since Jadyx 0.3.9.0, no separate `.cer` upload is required.
 2. In Dev Home, select Jadyx → **View details** and set **App type** to **Game**. App mode has
-   much less memory than the 5120 MiB the emulator expects.
+   much less memory than the 5120 MiB the emulator expects; Jadyx says so if it starts in App mode.
 3. Start Jadyx and import your own keys and firmware in **Settings > File manager**, from a
-   folder or ZIP on USB, or with the [Jadyx Portal](#jadyx-portal): **Network connection > Start
-   server**, then open its address on a PC or phone on the same network and enter the code.
+   folder or ZIP on USB, or with the [Jadyx Portal](#jadyx-portal): **Jadyx Portal > Start
+   portal**, then open its address on a PC or phone on the same network and enter the code.
 4. Add your own games from a USB drive or external folder, send them with the Jadyx Portal, or
    copy them to `LocalState\games` with the Device Portal file explorer.
 
-To update Jadyx, install the new package over the old one. Do not uninstall first: that deletes
-the keys, firmware, saves and games stored in the app.
+### Updating Jadyx
+
+Jadyx checks for new releases each time it opens and tells you in the library;
+**Settings > System > Updates** shows the release notes and picks the channel (Stable or Preview).
+The package is downloaded, can pause and resume, and is checked against a signed manifest and its
+SHA-256 before it is offered.
+
+On the Series an app in Developer Mode cannot replace itself: the Device Portal registers it for one
+user while it runs as another, and the app cannot reach the Device Portal. So the install is guided:
+open the Jadyx Portal on a phone or PC, which hands the verified package to the Device Portal in
+another tab. Then open Jadyx again, and it confirms the new version. On a PC the update installs
+itself.
+
+To update by hand, install the new package over the old one. Do not uninstall first: that deletes
+the keys, firmware, saves and games stored in the app. To keep a game's save apart, download it
+from the portal first ([Saves](#saves)).
 
 If something fails, `jadyx_diag.txt` and `jadyx_log.txt` in `LocalState\jadyx\log` describe what
 happened. Help and compatibility reports live on [Discord](https://discord.gg/3BhyyXGxpd); bugs go to
@@ -654,6 +787,10 @@ This fork stands on other people's work:
   this fork started from.
 - [Mesa](https://gitlab.freedesktop.org/mesa/mesa): `spirv_to_dxil` and the NIR passes behind
   the shader translation.
+- [AMD FidelityFX FSR 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR), the upscaler, under
+  the MIT license (`externals/FidelityFX-FSR/`).
+- Microsoft's D3D11 reference tessellator, as carried by Mesa, under the MIT license: the base of
+  the emulated tessellation.
 - [@dramon8945](https://www.instagram.com/dramon8945/): the Jadyx logo, tiles and splash screen
   (`dist/uwp/Assets/`).
 - [Inter](https://rsms.me/inter/) by Rasmus Andersson, the interface typeface, under the SIL Open
