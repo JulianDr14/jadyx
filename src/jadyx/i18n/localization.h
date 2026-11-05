@@ -335,6 +335,7 @@ enum class Text : std::uint16_t {
     ContentInvalid,
     ContentMissingKeys,
     ContentIncomplete,
+    ContentTruncated,
     ContentHashMismatch,
     ContentWrongGame,
     ContentConflict,

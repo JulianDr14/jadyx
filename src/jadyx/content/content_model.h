@@ -8,7 +8,7 @@
 
 namespace Jadyx::Content {
 enum class Kind { Update, Dlc };
-enum class Error { None, Cancelled, Unavailable, Unsupported, Invalid, MissingKeys, Incomplete,
+enum class Error { None, Cancelled, Unavailable, Unsupported, Invalid, MissingKeys, Incomplete, Truncated,
                    HashMismatch, WrongGame, Conflict, Space, Io, Registry, Requirements };
 enum class ImportAction { Add, Duplicate, Conflict };
 struct Revision {

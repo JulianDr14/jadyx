@@ -18,6 +18,7 @@ I18n::Text ErrorText(Error error) {
     case Error::Invalid: return T::ContentInvalid;
     case Error::MissingKeys: return T::ContentMissingKeys;
     case Error::Incomplete: return T::ContentIncomplete;
+    case Error::Truncated: return T::ContentTruncated;
     case Error::HashMismatch: return T::ContentHashMismatch;
     case Error::WrongGame: return T::ContentWrongGame;
     case Error::Conflict: return T::ContentConflict;

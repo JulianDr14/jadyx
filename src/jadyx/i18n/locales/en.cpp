@@ -386,6 +386,7 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::ContentInvalid, L"Invalid package or metadata. No content was replaced."},
     {Text::ContentMissingKeys, L"The existing keys cannot read this content. Check your keys in File Manager."},
     {Text::ContentIncomplete, L"The package is missing required content or its sizes do not match."},
+    {Text::ContentTruncated, L"The file is empty or incomplete. Copy or download it again."},
     {Text::ContentHashMismatch, L"Integrity verification failed. Check your source files."},
     {Text::ContentWrongGame, L"This content belongs to another game."},
     {Text::ContentConflict, L"Conflicting content with the same title and version. Remove or relocate the existing entry explicitly."},

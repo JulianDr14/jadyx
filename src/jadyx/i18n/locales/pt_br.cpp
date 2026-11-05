@@ -386,6 +386,7 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::ContentInvalid, L"Pacote ou metadados inválidos. Nenhum conteúdo foi substituído."},
     {Text::ContentMissingKeys, L"As chaves atuais não conseguem ler este conteúdo. Verifique suas chaves no Gerenciador de arquivos."},
     {Text::ContentIncomplete, L"Falta conteúdo obrigatório no pacote ou os tamanhos não batem."},
+    {Text::ContentTruncated, L"O arquivo está vazio ou incompleto. Copie ou baixe-o novamente."},
     {Text::ContentHashMismatch, L"A verificação de integridade falhou. Confira seus arquivos de origem."},
     {Text::ContentWrongGame, L"Este conteúdo é de outro jogo."},
     {Text::ContentConflict, L"Conteúdo em conflito com o mesmo título e versão. Remova ou realoque a entrada existente explicitamente."},

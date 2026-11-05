@@ -20,7 +20,7 @@ std::string Word(Error error) {
     case Error::None: return {};
     case Error::Cancelled: return "interrupted";
     case Error::MissingKeys: return "keys";
-    case Error::Incomplete: return "incomplete";
+    case Error::Incomplete: case Error::Truncated: return "incomplete";
     case Error::HashMismatch: return "hash";
     case Error::WrongGame: return "wrong_game";
     case Error::Conflict: return "conflict";

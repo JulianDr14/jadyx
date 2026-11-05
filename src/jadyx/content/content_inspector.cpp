@@ -3,10 +3,14 @@
 #include "jadyx/content/content_inspector.h"
 #include <array>
 #include <span>
+#include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <map>
+#include <optional>
 #include <set>
 #include <openssl/evp.h>
+#include "common/logging.h"
 #include "core/crypto/key_manager.h"
 #include "core/file_sys/card_image.h"
 #include "core/file_sys/common_funcs.h"
@@ -21,6 +25,51 @@
 namespace Jadyx::Content {
 namespace {
 using namespace FileSys;
+/// Where the partition (PFS0 or HFS0) at `offset` says its last file ends, or nothing when
+/// there is no partition header there.
+std::optional<u64> PartitionEnd(const VirtualFile& file, u64 offset) {
+    const auto header = file->ReadBytes(16, offset);
+    if (header.size() != 16) return std::nullopt;
+    const bool hfs = !std::memcmp(header.data(), "HFS0", 4);
+    if (!hfs && std::memcmp(header.data(), "PFS0", 4)) return std::nullopt;
+    u32 count{}, strtab{};
+    std::memcpy(&count, header.data() + 4, 4);
+    std::memcpy(&strtab, header.data() + 8, 4);
+    if (count > 4096) return std::nullopt;
+    const u64 entry_size = hfs ? 0x40 : 0x18;
+    const auto entries = file->ReadBytes(count * entry_size, offset + 16);
+    if (entries.size() != count * entry_size) return offset + 16 + count * entry_size;
+    u64 data_end{};
+    for (u32 i = 0; i < count; ++i) {
+        u64 begin{}, size{};
+        std::memcpy(&begin, entries.data() + i * entry_size, 8);
+        std::memcpy(&size, entries.data() + i * entry_size + 8, 8);
+        data_end = std::max(data_end, begin + size);
+    }
+    return offset + 16 + count * entry_size + strtab + data_end;
+}
+
+/// A package cut short: empty, shorter than its header, or shorter than the files its partition
+/// table lists. Told apart from a damaged one so the message says to copy it again.
+bool Truncated(const VirtualFile& file, const std::string& extension) {
+    const u64 size = file->GetSize();
+    if (size == 0) return true;
+    if (extension == "nsp") {
+        const auto end = PartitionEnd(file, 0);
+        return size < 16 || (end && *end > size);
+    }
+    if (extension == "xci") {
+        if (size < 0x200) return true;
+        u64 hfs_offset{};
+        if (file->ReadBytes(&hfs_offset, sizeof(hfs_offset), 0x130) != sizeof(hfs_offset)) return true;
+        if (hfs_offset >= size) return true;
+        // The secure partition is the root's last file, so the root's end is the image's end.
+        const auto end = PartitionEnd(file, hfs_offset);
+        return end && *end > size;
+    }
+    return extension == "nca" && size < 0xC00;
+}
+
 std::string Hex(std::span<const u8> bytes) {
     static constexpr char digits[] = "0123456789abcdef";
     std::string result;
@@ -87,6 +136,10 @@ Inspection InspectPackage(FileSys::VfsFilesystem& vfs, const std::string& source
         if (!file) return {Error::Unavailable, {}};
         auto extension = format.empty() ? file->GetExtension() : std::string{format};
         std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return std::tolower(c); });
+        if (Truncated(file, extension)) {
+            LOG_WARNING(Frontend, "Content: {} is empty or cut short ({} bytes)", source, file->GetSize());
+            return {Error::Truncated, {}};
+        }
         if (extension == "nsp") {
             PartitionFilesystem nsp{file};
             if (nsp.GetStatus() != Loader::ResultStatus::Success) return {Error::Invalid, {}};
