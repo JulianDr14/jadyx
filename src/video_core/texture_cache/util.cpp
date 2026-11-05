@@ -153,10 +153,9 @@ template <u32 GOB_EXTENT>
                                                     u32 level, u32 num_levels) {
     return {
         .width = AdjustMipBlockSize<GOB_SIZE_X>(num_tiles.width, block_size.width, level),
-        // A lone level is laid out with the block height the guest named, even one too tall for it.
-        .height = level == 0 && num_levels == 1
-                      ? block_size.height
-                      : AdjustMipBlockSize<GOB_SIZE_Y>(num_tiles.height, block_size.height, level),
+        // Every level, a lone one included: the GPU lays a surface out with the named block
+        // height lowered to fit it (Tegra::Texture::FitBlockHeight, used by the copy engines).
+        .height = AdjustMipBlockSize<GOB_SIZE_Y>(num_tiles.height, block_size.height, level),
         .depth = level == 0 && num_levels == 1
                      ? block_size.depth
                      : AdjustMipBlockSize<GOB_SIZE_Z>(num_tiles.depth, block_size.depth, level),

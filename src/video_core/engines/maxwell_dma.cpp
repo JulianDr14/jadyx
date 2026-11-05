@@ -205,7 +205,7 @@ void MaxwellDMA::CopyBlockLinearToPitch() {
     bytes_per_pixel = base_bpp << bpp_shift;
     const u32 height = src_params.height;
     const u32 depth = src_params.depth;
-    const u32 block_height = src_params.block_size.height;
+    const u32 block_height = FitBlockHeight(height, src_params.block_size.height);
     const u32 block_depth = src_params.block_size.depth;
     const size_t src_size =
         CalculateSize(true, bytes_per_pixel, width, height, depth, block_height, block_depth);
@@ -269,7 +269,7 @@ void MaxwellDMA::CopyPitchToBlockLinear() {
     bytes_per_pixel = base_bpp << bpp_shift;
     const u32 height = dst_params.height;
     const u32 depth = dst_params.depth;
-    const u32 block_height = dst_params.block_size.height;
+    const u32 block_height = FitBlockHeight(height, dst_params.block_size.height);
     const u32 block_depth = dst_params.block_size.depth;
     const size_t dst_size =
         CalculateSize(true, bytes_per_pixel, width, height, depth, block_height, block_depth);
@@ -321,10 +321,12 @@ void MaxwellDMA::CopyBlockLinearToBlockLinear() {
     }
 
     const u32 bytes_per_pixel = base_bpp << bpp_shift;
+    const u32 src_block_height = FitBlockHeight(src.height, src.block_size.height);
+    const u32 dst_block_height = FitBlockHeight(dst.height, dst.block_size.height);
     const size_t src_size = CalculateSize(true, bytes_per_pixel, src_width, src.height, src.depth,
-                                          src.block_size.height, src.block_size.depth);
+                                          src_block_height, src.block_size.depth);
     const size_t dst_size = CalculateSize(true, bytes_per_pixel, dst_width, dst.height, dst.depth,
-                                          dst.block_size.height, dst.block_size.depth);
+                                          dst_block_height, dst.block_size.depth);
 
     const u32 pitch = x_elements * bytes_per_pixel;
     const size_t mid_buffer_size = pitch * regs.line_count;
@@ -338,11 +340,11 @@ void MaxwellDMA::CopyBlockLinearToBlockLinear() {
 
     UnswizzleSubrect(intermediate_buffer, tmp_read_buffer, bytes_per_pixel, src_width, src.height,
                      src.depth, src_x_offset, src.origin.y, x_elements, regs.line_count,
-                     src.block_size.height, src.block_size.depth, pitch);
+                     src_block_height, src.block_size.depth, pitch);
 
     SwizzleSubrect(tmp_write_buffer, intermediate_buffer, bytes_per_pixel, dst_width, dst.height,
                    dst.depth, dst_x_offset, dst.origin.y, x_elements, regs.line_count,
-                   dst.block_size.height, dst.block_size.depth, pitch);
+                   dst_block_height, dst.block_size.depth, pitch);
 }
 
 void MaxwellDMA::ReleaseSemaphore() {
