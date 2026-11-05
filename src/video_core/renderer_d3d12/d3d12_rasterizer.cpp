@@ -147,21 +147,23 @@ bool RasterizerD3D12::WaitPendingPipeline(GraphicsPipeline* pipeline, u32 vertic
     // enough to wait for it.
     using VideoCore::FramePipeline::Mode;
     const AsyncPipelines mode = GetAsyncPipelines();
-    const Mode budget = GetPsoBudget();
+    // The budget belongs to Balanced: under it Wait (Off) used to skip too once the frame's few
+    // ms were spent, and Skip (Full) waited, so every choice behaved alike.
+    const Mode budget = mode == AsyncPipelines::Balanced ? GetPsoBudget() : Mode::Off;
     const PendingDraw draw{
         .vertices = vertices,
         .instances = instances,
         .indexed = indexed,
         .new_target = HasNewTarget(*texture_cache.GetFramebuffer()),
     };
-    // Off reaches here only with the budget on or checked: without it, every draw waits.
+    // Off waits for every draw, here or in the pipeline cache when no budget is configured.
     const PendingDrawAction unbudgeted = mode == AsyncPipelines::Off
                                              ? PendingDrawAction::WaitBudget
                                              : DecidePendingDraw(mode, GetWaitSmallDraws(), draw);
     PendingDrawAction action = unbudgeted;
     if (budget != Mode::Off) {
         const PendingDrawAction budgeted =
-            DecideBudgetedDraw(mode, GetWaitSmallDraws(), draw, PendingWaitBudgetLeft());
+            DecideBudgetedDraw(GetWaitSmallDraws(), draw, PendingWaitBudgetLeft());
         if (budget == Mode::On) {
             action = budgeted;
         } else if ((budgeted == PendingDrawAction::Skip) !=
@@ -184,7 +186,7 @@ bool RasterizerD3D12::WaitPendingPipeline(GraphicsPipeline* pipeline, u32 vertic
             return pipeline_cache.WaitPending(pipeline) != nullptr;
         }
         add_wait();
-        action = DecideBudgetedDraw(mode, GetWaitSmallDraws(), draw, false);
+        action = DecideBudgetedDraw(GetWaitSmallDraws(), draw, false);
     }
     CountPendingDraw(action);
     if (action == PendingDrawAction::Skip) {
@@ -408,8 +410,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     }
     RecordDraw(*pipeline, bindings, *framebuffer, params, draw_state.topology);
     full_draw_recorded = true;
-    if (GetAsyncPipelines() == AsyncPipelines::Balanced ||
-        GetPsoBudget() != VideoCore::FramePipeline::Mode::Off) {
+    if (GetAsyncPipelines() == AsyncPipelines::Balanced) {
         MarkTargetsDrawn(*framebuffer);
     }
     if (material_trace.Active() && pipeline->Layout().StreamOutput() &&

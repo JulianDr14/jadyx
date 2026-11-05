@@ -105,13 +105,12 @@ PendingDrawAction DecidePendingDraw(AsyncPipelines mode, u32 small_draws,
     return PendingDrawAction::Skip;
 }
 
-PendingDrawAction DecideBudgetedDraw(AsyncPipelines mode, u32 small_draws,
-                                     const PendingDraw& draw, bool budget_left) noexcept {
+PendingDrawAction DecideBudgetedDraw(u32 small_draws, const PendingDraw& draw,
+                                     bool budget_left) noexcept {
     if (budget_left) {
         return PendingDrawAction::WaitBudget;
     }
-    return DecidePendingDraw(mode == AsyncPipelines::Off ? AsyncPipelines::Balanced : mode,
-                             small_draws, draw);
+    return DecidePendingDraw(AsyncPipelines::Balanced, small_draws, draw);
 }
 
 void CountBudgetDifference(bool would_skip) noexcept {

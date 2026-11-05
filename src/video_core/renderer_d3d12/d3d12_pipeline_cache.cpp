@@ -1546,8 +1546,7 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
     if (pipeline->Wake(workers)) {
         ++pipelines_woken;
     }
-    if (GetAsyncPipelines() != AsyncPipelines::Off ||
-        GetPsoBudget() != VideoCore::FramePipeline::Mode::Off) {
+    if (GetAsyncPipelines() != AsyncPipelines::Off) {
         return pipeline; // the draw skips it or waits (WaitPending)
     }
     return WaitPending(pipeline);

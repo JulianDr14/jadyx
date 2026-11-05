@@ -18,11 +18,11 @@ enum class AsyncPipelines : u8 {
 void SetAsyncPipelines(AsyncPipelines mode);
 [[nodiscard]] AsyncPipelines GetAsyncPipelines() noexcept;
 
-/// "pso_budget=0|1|check" (VideoCore::FramePipeline::Mode): draws with a pending pipeline wait
-/// for it until the GPU thread has waited PSO_WAIT_BUDGET_US for pipelines since the last
-/// composite, cutting the wait that spends it; past that, the mode's rules apply, Off's being
-/// Balanced's. Every mode then waits for what fits in the frame. Check: the mode alone
-/// decides, and draws the budget would decide otherwise are counted.
+/// "pso_budget=0|1|check" (VideoCore::FramePipeline::Mode), in Balanced mode only: draws with a
+/// pending pipeline wait for it until the GPU thread has waited PSO_WAIT_BUDGET_US for pipelines
+/// since the last composite, cutting the wait that spends it; past that, Balanced's rules apply.
+/// Off always waits and Full never does, so each mode keeps the meaning the user chose. Check:
+/// the mode alone decides, and draws the budget would decide otherwise are counted.
 void SetPsoBudget(VideoCore::FramePipeline::Mode mode);
 [[nodiscard]] VideoCore::FramePipeline::Mode GetPsoBudget() noexcept;
 constexpr u64 PSO_WAIT_BUDGET_US = 6000;
@@ -75,10 +75,8 @@ enum class PendingDrawAction : u8 {
 [[nodiscard]] PendingDrawAction DecidePendingDraw(AsyncPipelines mode, u32 wait_small_draws,
                                                   const PendingDraw& draw) noexcept;
 
-/// The decision with pso_budget on: wait while budget is left, then the mode's rules (Off's
-/// being Balanced's).
-[[nodiscard]] PendingDrawAction DecideBudgetedDraw(AsyncPipelines mode, u32 wait_small_draws,
-                                                   const PendingDraw& draw,
+/// Balanced with pso_budget on: wait while budget is left, then Balanced's rules.
+[[nodiscard]] PendingDrawAction DecideBudgetedDraw(u32 wait_small_draws, const PendingDraw& draw,
                                                    bool budget_left) noexcept;
 
 /// GPU thread: counts what draws with pending pipelines did, for the periodic stats line.
