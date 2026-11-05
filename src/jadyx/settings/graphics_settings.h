@@ -84,7 +84,7 @@ inline I18n::Text GpuFenceText(GpuFence fence) {
 struct GraphicsSettings {
     Upscaling upscaling{Upscaling::FsrBalanced}; ///< FSR up to the screen (4K) by default.
     bool frame_gen{};                            ///< Off by default; on is the automatic mode.
-    ShaderBuild shaders{ShaderBuild::Skip};
+    ShaderBuild shaders{ShaderBuild::Balanced}; ///< The only mode with the frame's wait budget.
     GpuFence gpu_fence{GpuFence::Immediate};
     bool async_record{true}; ///< D3D12 command list calls on a thread of their own.
 
