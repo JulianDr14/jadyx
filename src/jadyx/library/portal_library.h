@@ -24,7 +24,8 @@
 
 namespace Jadyx {
 
-/// The application of a content upload's "<kind>:<application hex>" tag; 0 when malformed.
+/// The application of a content upload's "<kind>:<application hex>" tag (kind "update", "dlc"
+/// or "save"); 0 when malformed.
 std::uint64_t ContentTagApplication(const std::string& tag);
 
 class PortalLibrarySource {
@@ -40,7 +41,8 @@ public:
     PortalLibrary View();
     /// Bytes installed by the running portal import; reported to the browser in MiB.
     void Progress(std::uint64_t done, std::uint64_t total) { installed = done; install_total = total; }
-    /// Installs a portal update/DLC upload; `tag` is its "<kind>:<application hex>".
+    /// Installs a portal update/DLC upload, or loads a save archive ("save:" tag); `tag` is its
+    /// "<kind>:<application hex>".
     /// `progress` also hears the bytes copied. Returns a portal error word.
     std::string Install(const std::filesystem::path& package, const std::string& tag, std::stop_token stop,
                         const Content::Progress& progress = {});
