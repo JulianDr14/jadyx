@@ -246,11 +246,15 @@ bool RasterizerD3D12::BeginStencilFaces(GraphicsPipeline& pipeline,
     const bool plain = triangles && hashes[2] == 0 && hashes[3] == 0 && hashes[4] == 0 &&
                        !pipeline.Layout().StreamOutput();
     const auto warn = [&] {
-        BUG_TRACK(UnsupportedState, "different front ({}) and back ({}) stencil references; the "
-                                    "front one is used",
-                  regs.stencil_front_ref, regs.stencil_back_ref);
+        BUG_TRACK(UnsupportedState,
+                  "different front and back stencil state (reference {}/{}, compare mask "
+                  "{:02x}/{:02x}, write mask {:02x}/{:02x}); the front one is used",
+                  regs.stencil_front_ref, regs.stencil_back_ref,
+                  static_cast<u8>(regs.stencil_front_func_mask),
+                  static_cast<u8>(regs.stencil_back_func_mask),
+                  static_cast<u8>(regs.stencil_front_mask), static_cast<u8>(regs.stencil_back_mask));
         WarnOnceLog(logged_stencil_ref,
-                    "different front and back stencil references; using the front");
+                    "different front and back stencil state; using the front");
     };
     if (!plain) {
         warn();
@@ -263,14 +267,24 @@ bool RasterizerD3D12::BeginStencilFaces(GraphicsPipeline& pipeline,
     };
     const auto& dynamic = pipeline.Key().state.dynamic_state;
     if (dynamic.cull_enable != 0) {
-        // One face is drawn already: it just needs its own reference.
+        // One face is drawn already: it just needs its own reference and masks.
         if (dynamic.CullFace() == Maxwell::CullFace::Front) {
+            const bool own_masks =
+                static_cast<u8>(regs.stencil_back_func_mask) != pipeline.Key().stencil_read_mask ||
+                static_cast<u8>(regs.stencil_back_mask) != pipeline.Key().stencil_write_mask;
+            if (own_masks) {
+                if (ID3D12PipelineState* const back_faces = BackFaces(pipeline)) {
+                    scheduler.SetPipelineState(back_faces);
+                } else {
+                    warn();
+                }
+            }
             set_reference(regs.stencil_back_ref);
         }
         return false;
     }
     ID3D12PipelineState* const front_faces = pipeline.CulledHandle(D3D12_CULL_MODE_BACK);
-    ID3D12PipelineState* const back_faces = pipeline.CulledHandle(D3D12_CULL_MODE_FRONT);
+    ID3D12PipelineState* const back_faces = BackFaces(pipeline);
     if (!front_faces || !back_faces) {
         warn();
         return false;
@@ -280,8 +294,14 @@ bool RasterizerD3D12::BeginStencilFaces(GraphicsPipeline& pipeline,
     return true;
 }
 
+ID3D12PipelineState* RasterizerD3D12::BackFaces(GraphicsPipeline& pipeline) {
+    const auto& regs = maxwell3d->regs;
+    return pipeline.CulledHandle(D3D12_CULL_MODE_FRONT, static_cast<u8>(regs.stencil_back_func_mask),
+                                 static_cast<u8>(regs.stencil_back_mask));
+}
+
 void RasterizerD3D12::NextStencilFace(GraphicsPipeline& pipeline) {
-    scheduler.SetPipelineState(pipeline.CulledHandle(D3D12_CULL_MODE_FRONT));
+    scheduler.SetPipelineState(BackFaces(pipeline));
     const u32 reference = maxwell3d->regs.stencil_back_ref;
     scheduler.CommandList()->OMSetStencilRef(reference);
     command_state.stencil_ref = reference;

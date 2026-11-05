@@ -214,14 +214,18 @@ private:
     void RecordDraw(GraphicsPipeline& pipeline, const PipelineBindings& bindings,
                     const Framebuffer& framebuffer, const DrawParams& params,
                     Maxwell::PrimitiveTopology topology);
-    /// Records a bound draw. D3D12 has one stencil reference, so when the guest gives each face
-    /// its own, the faces are drawn apart, each with a pipeline that culls the other.
+    /// Records a bound draw. D3D12 has one stencil reference and one pair of masks, so when the
+    /// guest gives each face its own, the faces are drawn apart, each with a pipeline that culls
+    /// the other.
     template <typename Draw>
     void DrawStencilFaces(GraphicsPipeline& pipeline, Maxwell::PrimitiveTopology topology,
                           Draw&& draw) {
         const auto& regs = maxwell3d->regs;
         if (regs.stencil_enable == 0 || regs.stencil_two_side_enable == 0 ||
-            regs.stencil_front_ref == regs.stencil_back_ref) {
+            (regs.stencil_front_ref == regs.stencil_back_ref &&
+             static_cast<u8>(regs.stencil_front_func_mask) ==
+                 static_cast<u8>(regs.stencil_back_func_mask) &&
+             static_cast<u8>(regs.stencil_front_mask) == static_cast<u8>(regs.stencil_back_mask))) {
             draw();
             return;
         }
@@ -235,6 +239,8 @@ private:
     [[nodiscard]] bool BeginStencilFaces(GraphicsPipeline& pipeline,
                                          Maxwell::PrimitiveTopology topology);
     void NextStencilFace(GraphicsPipeline& pipeline);
+    /// The pipeline drawing only back faces, with the guest's back-face stencil masks.
+    [[nodiscard]] ID3D12PipelineState* BackFaces(GraphicsPipeline& pipeline);
     /// RecordDraw without the draw (ExecuteIndirect replaces it).
     void BindDrawState(const GraphicsPipeline& pipeline, const PipelineBindings& bindings,
                        const Framebuffer& framebuffer, const DrawParams& params,

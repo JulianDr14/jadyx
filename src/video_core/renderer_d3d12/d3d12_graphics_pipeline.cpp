@@ -641,7 +641,7 @@ bool GraphicsPipeline::Evict(Scheduler& scheduler) {
     // Other guest variants may still own it or acquire it while this fence is pending.
     scheduler.DeferRelease(std::move(pipeline_state),
                            [retired = std::move(shared_pso), back = std::move(cull_back_state),
-                            front = std::move(cull_front_state),
+                            front = std::move(cull_front_states),
                             capture = std::move(tess_capture_state),
                             control = std::move(tess_control_state)] {});
     return true;
@@ -1831,9 +1831,18 @@ bool GraphicsPipeline::BuildTessEmulation(std::span<const D3D12_INPUT_ELEMENT_DE
     return false;
 }
 
-ID3D12PipelineState* GraphicsPipeline::CulledHandle(D3D12_CULL_MODE mode) {
-    ComPtr<ID3D12PipelineState>& handle =
-        mode == D3D12_CULL_MODE_BACK ? cull_back_state : cull_front_state;
+ID3D12PipelineState* GraphicsPipeline::CulledHandle(D3D12_CULL_MODE mode, u8 back_read_mask,
+                                                    u8 back_write_mask) {
+    const bool back_faces = mode == D3D12_CULL_MODE_FRONT;
+    const u16 masks = static_cast<u16>(back_read_mask | back_write_mask << 8);
+    ComPtr<ID3D12PipelineState>* slot = &cull_back_state;
+    if (back_faces) {
+        const auto it = std::ranges::find_if(
+            cull_front_states, [masks](const auto& entry) { return entry.first == masks; });
+        slot = it != cull_front_states.end() ? &it->second
+                                             : &cull_front_states.emplace_back(masks, nullptr).second;
+    }
+    ComPtr<ID3D12PipelineState>& handle = *slot;
     if (handle) {
         return handle.Get();
     }
@@ -1844,6 +1853,10 @@ ID3D12PipelineState* GraphicsPipeline::CulledHandle(D3D12_CULL_MODE mode) {
     std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
     auto desc = Describe(elements);
     desc.RasterizerState.CullMode = mode;
+    if (back_faces && desc.DepthStencilState.StencilEnable) {
+        desc.DepthStencilState.StencilReadMask = back_read_mask;
+        desc.DepthStencilState.StencilWriteMask = back_write_mask;
+    }
     const bool bounds_test = depth_bounds && desc.DSVFormat != DXGI_FORMAT_UNKNOWN;
     DWORD fault = 0;
     HRESULT result;
