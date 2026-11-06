@@ -54,6 +54,20 @@ void Expect(const std::vector<std::string>& paths, const std::set<std::string>& 
     Check(got == expected, what);
 }
 
+void ExpectLike(const std::vector<std::string>& paths, const std::vector<std::string>& existing,
+                const std::set<std::string>& expected, const char* what) {
+    const auto plan = PlanSaveImport(Items(paths), Title, existing);
+    std::set<std::string> got;
+    if (!plan.error.empty()) got.insert("!" + plan.error + ":" + plan.detail);
+    else for (const auto& file : plan.files) got.insert(file.to);
+    if (got != expected) {
+        std::printf("  %s got:", what);
+        for (const auto& path : got) std::printf(" [%s]", path.c_str());
+        std::printf("\n");
+    }
+    Check(got == expected, what);
+}
+
 void Write(const fs::path& path, const std::string& data) {
     fs::create_directories(path.parent_path());
     std::ofstream{path, std::ios::binary} << data;
@@ -82,6 +96,13 @@ void PlanCases() {
     Expect({"0100AAAABBBB0000/main.dat", "0100AAAABBBB0000/slot/1.bin"}, {"main.dat", "slot/1.bin"},
            "title folder");
     Expect({"0100aaaabbbb0000/main.dat"}, {"main.dat"}, "title folder, lower case");
+    Expect({"0100AAAABBBB0000-save/main.dat", "0100AAAABBBB0000-save/slot/1.bin"}, {"main.dat", "slot/1.bin"},
+           "a downloaded save unpacked and zipped again");
+    Expect({"0100AAAABBBB0000-save (1)/main.dat"}, {"main.dat"}, "a second copy of it");
+    Expect({"0100FFFF00000000-save/main.dat"}, {"!wrong_game:0100FFFF00000000-save"},
+           "a downloaded save of another game");
+    Expect({"0100AAAABBBB00001/main.dat"}, {"!save_folder:0100AAAABBBB00001"}, "a longer number is not a title");
+    Expect({"0100AAAABBBB0000x/main.dat"}, {"!save_folder:0100AAAABBBB0000x"}, "a longer name is not a title");
     Expect({"0/main.dat"}, {"main.dat"}, "newer layout's 0 folder");
     Expect({"0/main.dat", "1/old.dat"}, {"main.dat"}, "Ryujinx's 0 and 1");
     Expect({"0100AAAABBBB0000/0/main.dat"}, {"main.dat"}, "title then 0");
@@ -91,10 +112,32 @@ void PlanCases() {
            {"main.dat"}, "Ryujinx's tree");
     Expect({"0100AAAABBBB0000/main.dat", "0100CCCC00000000/other.dat"}, {"main.dat"},
            "several games with ours");
-    // A game's own folders are never taken for wrappers.
-    Expect({"save/slot1.dat"}, {"save/slot1.dat"}, "a game's save folder stays");
-    Expect({"user/profile.dat"}, {"user/profile.dat"}, "a game's user folder stays");
+    // With no save to compare with, a lone folder could be a wrapper or the game's own.
+    Expect({"save/slot1.dat"}, {"!save_folder:save"}, "a lone folder with no save to compare");
+    Expect({"partida/a/main.dat"}, {"!save_folder:partida"}, "lone folders with no save to compare");
     Expect({"0/a.dat", "2/b.dat"}, {"0/a.dat", "2/b.dat"}, "numbered slots stay");
+
+    // The save being replaced tells where the new one starts, whatever the folders are called.
+    const std::vector<std::string> slots{"0/game.sav", "1/game.sav", "option.sav"};
+    ExpectLike({"mi partida/0/game.sav", "mi partida/1/game.sav", "mi partida/option.sav"}, slots,
+               {"0/game.sav", "1/game.sav", "option.sav"}, "a renamed wrapper");
+    ExpectLike({"a/b/c/0/game.sav", "a/b/c/option.sav"}, slots, {"0/game.sav", "option.sav"}, "several wrappers");
+    ExpectLike({"MI PARTIDA/0/GAME.SAV"}, slots, {"0/GAME.SAV"}, "another case");
+    ExpectLike({"mi partida/0/game.sav", "readme.txt"}, slots, {"0/game.sav"}, "a file beside the wrapper is dropped");
+    ExpectLike({"0/game.sav", "1/game.sav", "option.sav"}, slots, {"0/game.sav", "1/game.sav", "option.sav"},
+               "slots 0 and 1 are not Ryujinx's when the save has them");
+    ExpectLike({"mi partida/5/new.sav"}, slots, {"!save_unknown:mi partida"}, "a lone folder unlike the save");
+    ExpectLike({"nothing.dat", "alike.dat"}, slots, {"nothing.dat", "alike.dat"}, "unlike files at the root still load");
+    const std::vector<std::string> own{"save/slot1.dat"};
+    ExpectLike({"save/slot2.dat"}, own, {"save/slot2.dat"}, "a game's own folder stays");
+    ExpectLike({"save/slot1.dat"}, own, {"save/slot1.dat"}, "a game's own folder stays, same files");
+    ExpectLike({"copia/save/slot1.dat"}, own, {"save/slot1.dat"}, "a wrapper around a game's own folder");
+    const std::vector<std::string> plain{"main.dat"};
+    ExpectLike({"0/main.dat", "1/main.dat"}, plain, {"main.dat"}, "Ryujinx's 0 and 1 against the save");
+    ExpectLike({"0100FFFF00000000/main.dat"}, plain, {"!wrong_game:0100FFFF00000000"},
+               "another game with the same names");
+    ExpectLike({"x/0100FFFF00000000-save/main.dat"}, plain, {"!save_unknown:x"},
+               "another game's names inside a wrapper");
     Expect({"0100AAAABBBB0000/main.dat", "readme.txt"}, {"0100AAAABBBB0000/main.dat", "readme.txt"},
            "a folder beside files is not a wrapper");
     // What Mac and Windows add.
@@ -188,10 +231,27 @@ void DiskCases(const fs::path& root) {
     Check(Read(fresh / "main.dat") == "W" && Count(fresh) == 1, "wrapper and junk dropped");
     Check(Count(kept) == 1, "no backup when there was no save");
 
+    // A renamed folder, loaded over the save it was made from.
+    const auto renamed = root / "renamed.zip";
+    WriteZip(renamed, {{"mi partida/main.dat", "R"}, {"mi partida/slot/1.bin", "S"}});
+    const auto slotted = root / "slotted" / "0100AAAABBBB0000";
+    Write(slotted / "main.dat", "OLD");
+    Check(ImportSaveArchive(renamed, Title, slotted, root / "slotted-backups", {}).empty(),
+          "import of a renamed folder");
+    Check(Read(slotted / "main.dat") == "R" && Read(slotted / "slot" / "1.bin") == "S" && Count(slotted) == 2,
+          "renamed folder lands at the root");
+
     // Every refusal leaves the save as it was and says why.
     const auto unchanged = [&](const char* what) {
         Check(Read(target / "main.dat") == "MAIN" && !fs::exists(root / "user" / "0100AAAABBBB0000.import"), what);
     };
+    const auto unknown = root / "unknown.zip";
+    WriteZip(unknown, {{"mi partida/nothing.dat", "U"}});
+    Check(ImportSaveArchive(unknown, Title, target, backups, {}) == "save_unknown:mi partida", "unknown folder word");
+    unchanged("unknown folder keeps the save");
+    Check(ImportSaveArchive(unknown, Title, root / "user" / "none", backups, {}) == "save_folder:mi partida",
+          "lone folder with no save word");
+    Check(!fs::exists(root / "user" / "none"), "lone folder with no save writes nothing");
     const auto other = root / "other.zip";
     WriteZip(other, {{"0100FFFF00000000/main.dat", "O"}});
     Check(ImportSaveArchive(other, Title, target, backups, {}) == "wrong_game:0100FFFF00000000", "wrong game word");

@@ -32,9 +32,14 @@ struct SavePlan {
 };
 
 /// Checks an archive listing and maps it onto the save folder. Pure: tested without a disk.
-/// Ignores what Mac and Windows add to archives, and steps into the folders a save is usually
-/// zipped in (the title id, "0", Ryujinx's bis/user/save/<n>/0...).
-SavePlan PlanSaveImport(const std::vector<Mods::ArchiveItem>& items, std::uint64_t application);
+/// Ignores what Mac and Windows add to archives. `existing` lists the files of the save being
+/// replaced ('/'-separated): the folder that shares the most with them is where the save starts,
+/// at any depth and under any name. Failing that, steps into the folders a save is usually zipped
+/// in (the title id, alone or as "<id>-save", "0", Ryujinx's bis/user/save/<n>/0...). A lone folder
+/// that is still unexplained is refused: "save_folder" with no save to compare with, "save_unknown"
+/// when it shares nothing with the current one.
+SavePlan PlanSaveImport(const std::vector<Mods::ArchiveItem>& items, std::uint64_t application,
+                        const std::vector<std::string>& existing = {});
 
 /// Zips `folder`'s contents (stored, no compression) into `zip`. Returns an error word.
 std::string ExportSaveFolder(const std::filesystem::path& folder, std::string& zip);
