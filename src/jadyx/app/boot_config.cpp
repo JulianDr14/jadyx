@@ -729,6 +729,25 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                           std::string(value == "check" ? "checked"
                                       : value == "1"   ? "on"
                                                        : "off"));
+            } else if (line == "pso_fold=off" || line == "pso_fold=check" ||
+                       line == "pso_fold=on") {
+                using D3D12::PipelineKeyFold::Mode;
+                const std::string value = line.substr(9);
+                config.pso_fold = value == "on"      ? Mode::On
+                                  : value == "check" ? Mode::Check
+                                                     : Mode::Off;
+                WriteDiag("boot.cfg: pipeline key folding " + value);
+            } else if (line.starts_with("pso_fold_rules=")) {
+                const std::string value = line.substr(15);
+                u32 rules = 0;
+                const auto [end, error] =
+                    std::from_chars(value.data(), value.data() + value.size(), rules, 16);
+                if (error == std::errc{} && end == value.data() + value.size()) {
+                    config.pso_fold_rules = rules;
+                    WriteDiag("boot.cfg: pipeline key folding rules " + value);
+                } else {
+                    WriteDiag("boot.cfg: IGNORED " + line);
+                }
             } else if (line == "timer_spin=auto") {
                 config.timer_spin_us.reset();
                 WriteDiag("boot.cfg: host timing follows the timer's lateness");
