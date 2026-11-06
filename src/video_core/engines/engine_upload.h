@@ -77,9 +77,16 @@ public:
         return copy_size;
     }
 
+    /// Uploads dropped so far because their destination is past the GPU address space.
+    u64 DroppedUploads() const {
+        return dropped_uploads;
+    }
+
 private:
     void ProcessData(std::span<const u8> read_buffer);
+    bool DestinationFits(u64 size);
 
+    u64 dropped_uploads = 0;
     u32 write_offset = 0;
     u32 copy_size = 0;
     Common::ScratchBuffer<u8> inner_buffer;

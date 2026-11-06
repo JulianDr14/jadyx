@@ -8,6 +8,7 @@
 
 #include "common/algorithm.h"
 #include "common/assert.h"
+#include "common/logging.h"
 #include "video_core/engines/engine_upload.h"
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
@@ -47,9 +48,29 @@ void State::ProcessData(const u32* data, size_t num_data) {
     ProcessData(read_buffer);
 }
 
+bool State::DestinationFits(u64 size) {
+    if (memory_manager.IsRangeWithinGPUAddressRange(regs.dest.Address(), size)) [[likely]] {
+        return true;
+    }
+    if (dropped_uploads < 16) {
+        LOG_WARNING(Render,
+                    "Upload past the address space dropped: dest {:#x}, {} bytes, pitch {:#x}, "
+                    "line length {:#x}, lines {}, {}, {}x{}x{} at ({}, {})",
+                    regs.dest.Address(), size, regs.dest.pitch, regs.line_length_in,
+                    regs.line_count, is_linear ? "linear" : "block linear", regs.dest.width,
+                    regs.dest.height, regs.dest.depth, regs.dest.x, regs.dest.y);
+    }
+    ++dropped_uploads;
+    return false;
+}
+
 void State::ProcessData(std::span<const u8> read_buffer) {
     const GPUVAddr address{regs.dest.Address()};
     if (is_linear) {
+        if (regs.line_count != 0 &&
+            !DestinationFits(u64{regs.line_count - 1} * regs.dest.pitch + regs.line_length_in)) {
+            return;
+        }
         for (size_t line = 0; line < regs.line_count; ++line) {
             const GPUVAddr dest_line = address + line * regs.dest.pitch;
             std::span<const u8> buffer(read_buffer.data() + line * regs.line_length_in,
@@ -72,6 +93,9 @@ void State::ProcessData(std::span<const u8> read_buffer) {
         const std::size_t dst_size = Tegra::Texture::CalculateSize(
             true, bytes_per_pixel, width, regs.dest.height, regs.dest.depth, block_height,
             regs.dest.BlockDepth());
+        if (!DestinationFits(dst_size)) {
+            return;
+        }
 
         Tegra::Memory::GpuGuestMemoryScoped<u8,
                                             Tegra::Memory::GuestMemoryFlags::SafeReadCachedWrite>

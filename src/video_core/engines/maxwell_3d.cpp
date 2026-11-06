@@ -4,11 +4,16 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <optional>
+#include <span>
+#include <string>
+#include <fmt/format.h>
 #include "common/assert.h"
 #include "common/bit_util.h"
+#include "common/logging.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/core.h"
@@ -411,7 +416,16 @@ void Maxwell3D::CallMacroMethod(Core::System& system, u32 method, const std::vec
         ((method - MacroRegistersStart) >> 1) % static_cast<u32>(macro_positions.size());
 
     // Execute the current macro.
+    const u64 dropped_uploads = upload_state.DroppedUploads();
     macro_engine.Execute(system, *this, macro_positions[entry], parameters);
+    if (upload_state.DroppedUploads() != dropped_uploads && dropped_uploads < 16) [[unlikely]] {
+        std::string arguments;
+        for (const u32 parameter : std::span{parameters}.first((std::min)(parameters.size(), size_t{16}))) {
+            arguments += fmt::format(" {:#x}", parameter);
+        }
+        LOG_WARNING(Render, "Macro {:#x} at {:#x} dropped an upload, {} arguments:{}", method,
+                    macro_positions[entry], parameters.size(), arguments);
+    }
     draw_manager.DrawDeferred(*this);
 }
 
