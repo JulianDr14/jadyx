@@ -28,7 +28,9 @@
 #include "core/hle/service/nvdrv/devices/nvdisp_disp0.h"
 #include "core/hle/service/nvdrv/devices/nvhost_ctrl.h"
 #include "core/loader/loader.h"
+#include "common/windows/sampling_profiler.h"
 #include "dynarmic/interface/code_memory.h"
+#include "dynarmic/interface/jit_profile.h"
 #include "video_core/cpu_write_queue.h"
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/fence_manager.h"
@@ -203,6 +205,15 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
               ", console mode " + (config.console_mode == Settings::ConsoleMode::Handheld ? "handheld" : "docked"));
     AudioCore::Sink::SetXAudio2ProfileEnabled(config.audio_profile);
     Core::CpuProfile::SetEnabled(config.cpu_profile);
+    // Before the first compile, the prewarm's included: a bottleneck capture names the guest code.
+    Common::SamplingProfiler::ClearJitBlocks();
+    const bool name_guest_code = config.hunt_menu || config.hunt_at > 0;
+    Dynarmic::JitProfile::block_observer.store(
+        name_guest_code ? &Common::SamplingProfiler::NoteJitBlock : nullptr,
+        std::memory_order_relaxed);
+    Dynarmic::JitProfile::thunks_observer.store(
+        name_guest_code ? &Common::SamplingProfiler::NoteJitThunks : nullptr,
+        std::memory_order_relaxed);
     // Read when Core::System builds the kernel's cores.
     Kernel::PhysicalCore::SetIdleSpinPolicy(config.idle_spin);
     // Read by the host timing thread's first wait.

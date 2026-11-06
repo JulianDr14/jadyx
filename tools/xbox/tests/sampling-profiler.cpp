@@ -21,6 +21,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -30,7 +31,14 @@
 #include <thread>
 #include <vector>
 
+#include "common/logging.h"
 #include "common/windows/sampling_profiler.h"
+
+// The profiler logs slow captures; the gate does not link the logging backend.
+namespace Common::Log {
+void FmtLogMessageImpl(Class, Level, const char*, unsigned int, const char*, fmt::string_view,
+                       const fmt::format_args&) {}
+} // namespace Common::Log
 
 namespace {
 
@@ -114,11 +122,52 @@ __declspec(noinline) void FiberThread() {
     ConvertFiberToThread();
 }
 
+/// Code outside every module, as a JIT block is: loop while *rcx != 0; ret.
+constexpr unsigned char JIT_LOOP[] = {0x48, 0x8B, 0x01, 0x48, 0x85, 0xC0, 0x75, 0xF8, 0xC3};
+constexpr u64 JIT_GUEST_PC = 0x80001000;
+std::atomic<unsigned long long> jit_flag{1};
+
+/// A block that calls a thunk for its load: call thunk; test rax, rax; jnz block; ret, and at +16
+/// the thunk: mov rax, [rcx]; ret.
+constexpr unsigned char JIT_CALLER[] = {0xE8, 0x0B, 0x00, 0x00, 0x00, 0x48, 0x85, 0xC0,
+                                        0x75, 0xF6, 0xC3};
+constexpr unsigned char JIT_THUNK[] = {0x48, 0x8B, 0x01, 0xC3};
+constexpr size_t JIT_CALLER_OFFSET = 256;
+constexpr size_t JIT_THUNK_OFFSET = JIT_CALLER_OFFSET + 16;
+constexpr u64 JIT_CALLER_PC = 0x80002000;
+
+__declspec(noinline) void JitThread(const char* name, const void* code) {
+    Common::SamplingProfiler::RegisterCurrentThread(name);
+    reinterpret_cast<void (*)(std::atomic<unsigned long long>*)>(const_cast<void*>(code))(&jit_flag);
+}
+
 } // Anonymous namespace
 
 int main() {
     const std::string path = "profile.txt";
+    void* const jit_code =
+        VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    assert(jit_code != nullptr);
+    std::memcpy(jit_code, JIT_LOOP, sizeof(JIT_LOOP));
+    // A stale block at the same address: the later one wins.
+    Common::SamplingProfiler::NoteJitBlock(jit_code, sizeof(JIT_LOOP), 0x70000000, 0x70000004);
+    Common::SamplingProfiler::NoteJitBlock(jit_code, sizeof(JIT_LOOP), JIT_GUEST_PC,
+                                           JIT_GUEST_PC + 8);
+    auto* const code_bytes = static_cast<unsigned char*>(jit_code);
+    std::memcpy(code_bytes + JIT_CALLER_OFFSET, JIT_CALLER, sizeof(JIT_CALLER));
+    std::memcpy(code_bytes + JIT_THUNK_OFFSET, JIT_THUNK, sizeof(JIT_THUNK));
+    Common::SamplingProfiler::NoteJitBlock(code_bytes + JIT_CALLER_OFFSET, sizeof(JIT_CALLER),
+                                           JIT_CALLER_PC, JIT_CALLER_PC + 8);
+    Common::SamplingProfiler::NoteJitThunks(code_bytes + JIT_THUNK_OFFSET, sizeof(JIT_THUNK));
+    Common::SamplingProfiler::SetGuestCodeReader(
+        [](u64 address, void* out, size_t size) {
+            std::memset(out, 0xAB, size);
+            return address == JIT_GUEST_PC;
+        },
+        0x80000000);
     std::vector<std::thread> threads;
+    threads.emplace_back(JitThread, "jit", jit_code);
+    threads.emplace_back(JitThread, "caller", code_bytes + JIT_CALLER_OFFSET);
     threads.emplace_back(BusyThread);
     threads.emplace_back(DeepThread);
     threads.emplace_back(SleeperThread);
@@ -131,13 +180,19 @@ int main() {
     Common::SamplingProfiler::Stop();
 
     running = false;
+    jit_flag = 0;
     wait_cv.notify_all();
     for (auto& thread : threads) {
         thread.join();
     }
+    Common::SamplingProfiler::SetGuestCodeReader({}, 0);
+    Common::SamplingProfiler::ClearJitBlocks();
+    VirtualFree(jit_code, 0, MEM_RELEASE);
 
     std::ifstream file{path};
     std::string line;
+    unsigned long long jit_guest_samples = 0, thunk_samples = 0, caller_samples = 0;
+    bool stale_block = false, guest_code = false, guest_base = false;
     unsigned windows = 0;
     unsigned long long busy_running = 0, sleeper_waiting = 0, fiber_running = 0;
     unsigned long long deep_running = 0, allocator_running = 0, sleeper_running = 0;
@@ -147,6 +202,29 @@ int main() {
             ++windows;
             continue;
         }
+        if (line.starts_with("guest jit ")) {
+            std::istringstream tokens{line};
+            std::string tag, thread, pc, end;
+            unsigned long long self{}, calls{};
+            tokens >> tag >> thread >> pc >> end >> self >> calls;
+            jit_guest_samples += pc == "0x80001000" && end == "0x80001008" ? self : 0;
+            stale_block |= pc == "0x70000000";
+            continue;
+        }
+        if (line.starts_with("guestthunk caller 0x80002000 0x80002008 ")) {
+            thunk_samples += std::stoull(line.substr(line.rfind(' ') + 1));
+            continue;
+        }
+        if (line.starts_with("guest caller 0x80002000 0x80002008 ")) {
+            std::istringstream tokens{line};
+            std::string tag, thread, pc, end;
+            unsigned long long self{}, calls{};
+            tokens >> tag >> thread >> pc >> end >> self >> calls;
+            caller_samples += self;
+            continue;
+        }
+        guest_base |= line == "guestbase 0x80000000";
+        guest_code |= line == "guestcode 0x80001000 abababababababab";
         if (!line.starts_with("stack ")) {
             continue;
         }
@@ -176,8 +254,13 @@ int main() {
               << busy_max_depth << "), deep " << deep_running << " (depth up to " << deep_max_depth
               << "), fiber " << fiber_running << " (depth up to " << fiber_max_depth
               << "), allocator " << allocator_running << ", sleeper waiting " << sleeper_waiting
-              << "\n";
+              << ", JIT guest samples " << jit_guest_samples << ", in the thunk " << thunk_samples
+              << ", in its caller " << caller_samples << "\n";
     assert(windows >= 2);
+    // Samples in code outside the modules name the guest block, the latest one at that address.
+    assert(jit_guest_samples > 1000 && !stale_block && guest_base && guest_code);
+    // A sample in a thunk goes to the block that called it, through the return address.
+    assert(thunk_samples > 100 && caller_samples > 100);
     // About 1000 samples a second for 4.5 s; leave room for a loaded machine.
     assert(busy_running > 2000);
     // BusyLeaf + 7 BusyMiddle + BusyThread + the thread's start frames.

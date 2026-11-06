@@ -25,6 +25,7 @@
 #include "dynarmic/backend/x64/perf_map.h"
 #include "dynarmic/common/spin_lock_x64.h"
 #include "dynarmic/interface/exclusive_monitor.h"
+#include "dynarmic/interface/jit_profile.h"
 
 namespace Dynarmic::Backend::X64 {
 
@@ -299,6 +300,7 @@ void A64EmitX64::GenPageTableThunks() {
         return;
     }
     const auto unusable = [](int idx) { return idx == 4 || idx == 14 || idx == 15; };
+    const auto* const thunks_begin = code.getCurr();
     for (const bool write : {false, true}) {
         for (size_t size_log2 = 0; size_log2 < 5; ++size_log2) {
             const size_t bitsize = 8u << size_log2;
@@ -376,6 +378,9 @@ void A64EmitX64::GenPageTableThunks() {
                 }
             }
         }
+    }
+    if (const auto observer = JitProfile::thunks_observer.load(std::memory_order_relaxed)) {
+        observer(thunks_begin, size_t(code.getCurr() - thunks_begin));
     }
 }
 

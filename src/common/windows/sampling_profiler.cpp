@@ -8,11 +8,16 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <functional>
+#include <iterator>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <fmt/format.h>
@@ -77,6 +82,32 @@ u64 registry_generation{};
 /// append to it. Windows are numbered across sessions.
 bool output_started{};
 u64 window_counter{};
+
+/// Blocks with their bytes in the file: enough to read what the hottest code does.
+constexpr size_t GUEST_CODE_BLOCKS = 64;
+constexpr size_t GUEST_CODE_BYTES = 512;
+
+struct JitBlock {
+    u64 host;
+    u64 host_size;
+    u64 guest_pc;
+    u64 guest_end;
+};
+/// In compile order: a later block at the same host address replaced the earlier one.
+std::mutex jit_blocks_mutex;
+std::vector<JitBlock> jit_blocks;
+std::vector<std::pair<u64, u64>> jit_thunks; // start, end; one per JIT
+
+bool InJitThunks(u64 pc) {
+    std::scoped_lock lock{jit_blocks_mutex};
+    return std::ranges::any_of(jit_thunks, [pc](const std::pair<u64, u64>& range) {
+        return pc >= range.first && pc < range.second;
+    });
+}
+
+std::mutex guest_reader_mutex;
+GuestCodeReader guest_reader;
+u64 guest_code_base{};
 
 u64 CpuTime100ns(HANDLE thread) {
     FILETIME creation{}, exit{}, kernel{}, user{};
@@ -246,6 +277,7 @@ private:
         stacks.clear();
         stack_index.clear();
         frame_pool.clear();
+        thunk_samples.clear();
         for (ThreadEntry* entry : threads) {
             entry->window_cpu_start = CpuTime100ns(entry->handle);
             entry->running_samples = 0;
@@ -398,6 +430,13 @@ private:
         if (const u64 took = NowNs() - capture_start; took > SLOW_CAPTURE_NS) {
             LOG_WARNING(Common, "profiler: pausing {} took {} ms", entry.name, took / 1'000'000);
         }
+        // A thunk keeps the return address on top of the stack, or under the register it saved.
+        // The thread runs again by now, but these are the copy's words.
+        if (!waiting && !stalled && copied >= 2 * sizeof(u64) && InJitThunks(context.Rip)) {
+            u64 top[2];
+            std::memcpy(top, stack_copy, sizeof(top));
+            thunk_samples[{thread_index, top[0], top[1]}] += weight;
+        }
         DWORD64 frames[MAX_FRAMES];
         const size_t depth = Unwind(context, copied, origin, frames);
         u64 hash = 0xcbf29ce484222325ULL ^ (static_cast<u64>(thread_index) << 1) ^
@@ -542,8 +581,118 @@ private:
             line += '\n';
             std::fputs(line.c_str(), file);
         }
+        WriteGuestCode(file, names);
         std::fputs("end\n", file);
         std::fclose(file);
+    }
+
+    /// Which guest code the running samples in JIT code ran: "self" with the leaf in the block,
+    /// "calls" inside a callback it made into the emulator.
+    void WriteGuestCode(std::FILE* file, const std::vector<std::string>& names) {
+        std::vector<JitBlock> blocks;
+        {
+            std::scoped_lock lock{jit_blocks_mutex};
+            blocks = jit_blocks;
+        }
+        if (blocks.empty()) {
+            return;
+        }
+        std::ranges::stable_sort(blocks, {}, &JitBlock::host);
+        const auto find_block = [&blocks](u64 pc) -> const JitBlock* {
+            const auto next = std::ranges::upper_bound(blocks, pc, {}, &JitBlock::host);
+            if (next == blocks.begin()) {
+                return nullptr;
+            }
+            const JitBlock& block = *std::prev(next);
+            return pc < block.host + block.host_size ? &block : nullptr;
+        };
+        struct Hits {
+            u64 end{};
+            u64 self{};
+            u64 calls{};
+        };
+        std::map<std::pair<u32, u64>, Hits> hits;
+        for (const StackRecord& record : stacks) {
+            if (record.waiting || record.stalled) {
+                continue;
+            }
+            for (size_t i = 0; i < record.depth; ++i) {
+                const DWORD64 pc = frame_pool[record.first_frame + i];
+                DWORD64 base{};
+                ModuleName(pc, base);
+                if (base != 0) {
+                    continue;
+                }
+                if (i == 0 && InJitThunks(pc)) {
+                    break; // counted by thunk_samples, for the block that called the thunk
+                }
+                const JitBlock* const block = find_block(pc);
+                // Host code that is no block (Dynarmic's dispatcher, its fallbacks) stays at pc 0.
+                Hits& entry = hits[{record.thread, block ? block->guest_pc : 0}];
+                entry.end = block ? block->guest_end : 0;
+                (i == 0 ? entry.self : entry.calls) += record.count;
+                break;
+            }
+        }
+        std::map<u64, std::pair<u64, u64>> totals; // guest pc -> samples, end
+        for (const auto& [key, entry] : hits) {
+            std::fputs(fmt::format("guest {} 0x{:x} 0x{:x} {} {}\n", names[key.first], key.second,
+                                   entry.end, entry.self, entry.calls)
+                           .c_str(),
+                       file);
+            if (key.second != 0) {
+                auto& total = totals[key.second];
+                total.first += entry.self + entry.calls;
+                total.second = entry.end;
+            }
+        }
+        std::map<std::pair<u32, u64>, std::pair<u64, u64>> thunk_hits; // caller: samples, end
+        for (const auto& [key, samples] : thunk_samples) {
+            const auto& [thread_index, first, second] = key;
+            const JitBlock* block = find_block(first);
+            if (!block) {
+                block = find_block(second);
+            }
+            auto& entry = thunk_hits[{thread_index, block ? block->guest_pc : 0}];
+            entry.first += samples;
+            entry.second = block ? block->guest_end : 0;
+        }
+        for (const auto& [key, entry] : thunk_hits) {
+            std::fputs(fmt::format("guestthunk {} 0x{:x} 0x{:x} {}\n", names[key.first], key.second,
+                                   entry.second, entry.first)
+                           .c_str(),
+                       file);
+            if (key.second != 0) {
+                auto& total = totals[key.second];
+                total.first += entry.first;
+                total.second = entry.second;
+            }
+        }
+        std::scoped_lock lock{guest_reader_mutex};
+        if (!guest_reader) {
+            return;
+        }
+        std::fputs(fmt::format("guestbase 0x{:x}\n", guest_code_base).c_str(), file);
+        std::vector<std::pair<u64, u64>> hottest; // samples, guest pc
+        for (const auto& [pc, total] : totals) {
+            hottest.emplace_back(total.first, pc);
+        }
+        std::ranges::sort(hottest, std::greater{});
+        hottest.resize(std::min(hottest.size(), GUEST_CODE_BLOCKS));
+        u8 bytes[GUEST_CODE_BYTES];
+        for (const auto& [samples, pc] : hottest) {
+            const u64 end = totals[pc].second;
+            const size_t size = end > pc ? std::min<u64>(end - pc, sizeof(bytes)) : 0;
+            if (size == 0 || !guest_reader(pc, bytes, size)) {
+                continue;
+            }
+            std::string line = fmt::format("guestcode 0x{:x} ", pc);
+            for (size_t i = 0; i < size; ++i) {
+                fmt::format_to(std::back_inserter(line), "{:02x}", bytes[i]);
+            }
+            line += '\n';
+            std::fputs(line.c_str(), file);
+        }
     }
 
     Options options;
@@ -570,6 +719,7 @@ private:
     std::vector<StackRecord> stacks;
     std::unordered_map<u64, size_t> stack_index;
     std::vector<DWORD64> frame_pool;
+    std::map<std::tuple<u32, u64, u64>, u64> thunk_samples; // thread, top two stack words
     std::unordered_map<DWORD64, std::string> module_names;
 };
 
@@ -631,6 +781,29 @@ void Stop() {
 bool Running() {
     std::scoped_lock lock{sampler_mutex};
     return sampler != nullptr;
+}
+
+void NoteJitBlock(const void* host, size_t host_size, u64 guest_pc, u64 guest_end) {
+    std::scoped_lock lock{jit_blocks_mutex};
+    jit_blocks.push_back({reinterpret_cast<u64>(host), host_size, guest_pc, guest_end});
+}
+
+void NoteJitThunks(const void* host, size_t host_size) {
+    const u64 start = reinterpret_cast<u64>(host);
+    std::scoped_lock lock{jit_blocks_mutex};
+    jit_thunks.emplace_back(start, start + host_size);
+}
+
+void ClearJitBlocks() {
+    std::scoped_lock lock{jit_blocks_mutex};
+    jit_blocks = {};
+    jit_thunks = {};
+}
+
+void SetGuestCodeReader(GuestCodeReader reader, u64 code_base) {
+    std::scoped_lock lock{guest_reader_mutex};
+    guest_reader = std::move(reader);
+    guest_code_base = code_base;
 }
 
 void NoteFrame() {
