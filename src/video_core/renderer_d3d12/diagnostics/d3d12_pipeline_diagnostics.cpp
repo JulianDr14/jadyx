@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -286,6 +287,108 @@ void DiagnoseFailedPipeline(ID3D12Device* device, const D3D12_GRAPHICS_PIPELINE_
         }
         try_variant("render targets RGBA8", v);
     }
+}
+
+namespace {
+
+template <typename Create>
+void ProbeFaultedShader(ID3D12Device* device, u64 fragment_shader, const char* kind,
+                        Create&& create) {
+    namespace fs = std::filesystem;
+    const fs::path folder = Common::FS::GetEdenPath(Common::FS::EdenPath::EdenDir) / "pso_probe" /
+                            fmt::format("{:016x}", fragment_shader);
+    std::error_code ec;
+    if (!fs::is_directory(folder, ec)) {
+        return;
+    }
+    std::vector<fs::path> variants;
+    for (const auto& entry : fs::directory_iterator(folder, ec)) {
+        if (entry.path().extension() == ".dxil") {
+            variants.push_back(entry.path());
+        }
+    }
+    std::sort(variants.begin(), variants.end());
+    // One line per attempt, written before the call: a variant that takes the process or the
+    // device down is marked on the next run and skipped.
+    const fs::path results = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) /
+                             fmt::format("pso_probe_{:016x}.txt", fragment_shader);
+    std::vector<std::string> done;
+    std::string unfinished;
+    {
+        std::ifstream in{results};
+        for (std::string line; std::getline(in, line);) {
+            if (line.starts_with("TRY ")) {
+                unfinished = line.substr(4);
+            } else if (const size_t space = line.find(' '); space != std::string::npos) {
+                done.push_back(line.substr(0, space));
+                if (done.back() == unfinished) {
+                    unfinished.clear();
+                }
+            }
+        }
+    }
+    std::ofstream out{results, std::ios::app};
+    if (!unfinished.empty()) {
+        out << unfinished << " CRASHED (the process or the device died on it)\n" << std::flush;
+        done.push_back(unfinished);
+    }
+    LOG_ERROR(Render, "D3D12 PSO probe: {} {:016x}, {} variants, {} done before", kind,
+              fragment_shader, variants.size(), done.size());
+    for (const fs::path& path : variants) {
+        const std::string name = path.stem().string();
+        if (std::find(done.begin(), done.end(), name) != done.end()) {
+            continue;
+        }
+        std::vector<char> bytecode;
+        {
+            std::ifstream in{path, std::ios::binary};
+            bytecode.assign(std::istreambuf_iterator<char>{in}, {});
+        }
+        out << "TRY " << name << '\n' << std::flush;
+        ComPtr<ID3D12PipelineState> pso;
+        DWORD fault_code = 0;
+        const D3D12_SHADER_BYTECODE shader{bytecode.data(), bytecode.size()};
+        const HRESULT hr = CallDriverGuarded([&] { return create(shader, pso); }, fault_code);
+        std::string result;
+        if (hr == DRIVER_FAULT_HRESULT) {
+            pso.Detach();
+            result = fmt::format("FAULT 0x{:08X}", static_cast<u32>(fault_code));
+        } else {
+            result = SUCCEEDED(hr) ? "BUILDS" : fmt::format("FAILS 0x{:08X}", static_cast<u32>(hr));
+        }
+        const HRESULT removed = device->GetDeviceRemovedReason();
+        if (removed != S_OK) {
+            result += fmt::format(" DEVICE REMOVED 0x{:08X}", static_cast<u32>(removed));
+        }
+        out << name << ' ' << result << '\n' << std::flush;
+        LOG_ERROR(Render, "D3D12 PSO probe: {} {:016x} variant '{}' -> {}", kind, fragment_shader,
+                  name, result);
+        if (removed != S_OK) {
+            return;
+        }
+    }
+}
+
+} // Anonymous namespace
+
+void ProbeFaultedPixelShader(ID3D12Device* device, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,
+                             u64 fragment_shader) {
+    ProbeFaultedShader(device, fragment_shader, "PS",
+                       [&](D3D12_SHADER_BYTECODE shader, ComPtr<ID3D12PipelineState>& pso) {
+                           D3D12_GRAPHICS_PIPELINE_STATE_DESC v = desc;
+                           v.PS = shader;
+                           return device->CreateGraphicsPipelineState(&v, IID_PPV_ARGS(&pso));
+                       });
+}
+
+void ProbeFaultedComputeShader(ID3D12Device* device, const D3D12_COMPUTE_PIPELINE_STATE_DESC& desc,
+                               u64 compute_shader) {
+    ProbeFaultedShader(device, compute_shader, "CS",
+                       [&](D3D12_SHADER_BYTECODE shader, ComPtr<ID3D12PipelineState>& pso) {
+                           D3D12_COMPUTE_PIPELINE_STATE_DESC v = desc;
+                           v.CS = shader;
+                           return device->CreateComputePipelineState(&v, IID_PPV_ARGS(&pso));
+                       });
 }
 
 void DumpFaultedPipeline(u64 vertex_shader, u64 fragment_shader,

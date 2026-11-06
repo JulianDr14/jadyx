@@ -107,18 +107,8 @@ static std::string_view StageToPrefix(Shader::Stage stage) {
     }
 }
 
-static void DumpImpl(u64 /*pipeline_hash*/, u64 shader_hash, std::span<const u64> code,
-                     [[maybe_unused]] u32 read_highest, [[maybe_unused]] u32 read_lowest,
-                     u32 initial_offset, Shader::Stage stage) {
-    const auto dump_dir{Common::FS::GetEdenPath(Common::FS::EdenPath::DumpDir)};
-    if (!Common::FS::CreateDir(dump_dir)) {
-        LOG_ERROR(Common_Filesystem, "Failed to create dump directory");
-        return;
-    }
-    const auto prefix = StageToPrefix(stage);
-    const auto name{dump_dir /
-                    fmt::format("{:016x}_{:016x}_{}.ash",
-                                Settings::GetCurrentProgramID(), shader_hash, prefix)};
+static void WriteGuestCode(const std::filesystem::path& name, std::span<const u64> code,
+                           u32 initial_offset) {
     std::fstream shader_file(name, std::ios::out | std::ios::binary);
     ASSERT(initial_offset % sizeof(u64) == 0);
     const size_t jump_index = initial_offset / sizeof(u64);
@@ -131,6 +121,29 @@ static void DumpImpl(u64 /*pipeline_hash*/, u64 shader_hash, std::span<const u64
     for (size_t i = 0; i < INST_SIZE + padding_needed; i++) {
         shader_file.put(0);
     }
+}
+
+static void DumpImpl(u64 /*pipeline_hash*/, u64 shader_hash, std::span<const u64> code,
+                     [[maybe_unused]] u32 read_highest, [[maybe_unused]] u32 read_lowest,
+                     u32 initial_offset, Shader::Stage stage) {
+    const auto dump_dir{Common::FS::GetEdenPath(Common::FS::EdenPath::DumpDir)};
+    if (!Common::FS::CreateDir(dump_dir)) {
+        LOG_ERROR(Common_Filesystem, "Failed to create dump directory");
+        return;
+    }
+    const auto prefix = StageToPrefix(stage);
+    WriteGuestCode(dump_dir / fmt::format("{:016x}_{:016x}_{}.ash",
+                                          Settings::GetCurrentProgramID(), shader_hash, prefix),
+                   code, initial_offset);
+}
+
+static void DumpToLog(const std::string& file_name, std::span<const u64> code,
+                      u32 initial_offset) {
+    if (code.size_bytes() <= initial_offset) {
+        return;
+    }
+    WriteGuestCode(Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / file_name, code,
+                   initial_offset);
 }
 
 GenericEnvironment::GenericEnvironment(Tegra::MemoryManager& gpu_memory_, GPUVAddr program_base_,
@@ -249,6 +262,10 @@ u64 GenericEnvironment::CalculateHash() const {
 
 void GenericEnvironment::Dump(u64 pipeline_hash, u64 shader_hash) {
     DumpImpl(pipeline_hash, shader_hash, code, read_highest, read_lowest, initial_offset, stage);
+}
+
+void GenericEnvironment::DumpToLogFolder(const std::string& file_name) {
+    DumpToLog(file_name, code, initial_offset);
 }
 
 void GenericEnvironment::Serialize(std::ofstream& file) const {
@@ -587,6 +604,10 @@ void FileEnvironment::Deserialize(std::ifstream& file) {
 
 void FileEnvironment::Dump(u64 pipeline_hash, u64 shader_hash) {
     DumpImpl(pipeline_hash, shader_hash, code, read_highest, read_lowest, initial_offset, stage);
+}
+
+void FileEnvironment::DumpToLogFolder(const std::string& file_name) {
+    DumpToLog(file_name, code, initial_offset);
 }
 
 u64 FileEnvironment::ReadInstruction(u32 address) {

@@ -1749,6 +1749,7 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
             std::unique_lock build_lock{PipelineBuildMutex()};
             if (hr == DRIVER_FAULT_HRESULT) {
                 DumpFaultedPipeline(key.unique_hashes[1], key.unique_hashes[5], stages);
+                ProbeFaultedPixelShader(device.Get(), desc, key.unique_hashes[5]);
             }
             DiagnoseFailedPipeline(device.Get(), desc);
         }

@@ -24,6 +24,7 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
+#include "video_core/renderer_d3d12/diagnostics/d3d12_pipeline_diagnostics.h"
 #include "video_core/shader_notify.h"
 #include "video_core/surface.h"
 #include "video_core/textures/texture.h"
@@ -295,6 +296,8 @@ void ComputePipeline::Build() {
                       "the driver faulted (0x{:08X}) building compute pipeline {:016x}; its "
                       "dispatches are skipped",
                       static_cast<u32>(fault), unique_hash);
+        DumpFaultedPipeline(unique_hash, 0, std::span{&dxil, 1});
+        ProbeFaultedComputeShader(raw, desc, unique_hash);
     }
     CheckRemovedAfter(device.Get(), [&] {
         return fmt::format("compute PSO for {:016x} (HRESULT 0x{:08X})", unique_hash,

@@ -64,6 +64,8 @@ public:
 
     void Dump(u64 pipeline_hash, u64 shader_hash) override;
 
+    void DumpToLogFolder(const std::string& file_name) override;
+
     void Serialize(std::ofstream& file) const;
 
     bool HasHLEMacroState() const override {
@@ -207,6 +209,8 @@ public:
     }
 
     void Dump(u64 pipeline_hash, u64 shader_hash) override;
+
+    void DumpToLogFolder(const std::string& file_name) override;
 
 private:
     std::vector<u64> code;

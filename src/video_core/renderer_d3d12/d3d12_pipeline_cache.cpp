@@ -1583,10 +1583,23 @@ bool PipelineCache::WaitPendingFor(GraphicsPipeline* pipeline, u64 microseconds)
 
 namespace {
 // A shader that fails to build: whether its code came from the disk cache or from guest memory,
-// and from where in guest memory.
-void LogShaderSources(std::span<Shader::Environment* const> envs) {
+// and from where in guest memory. The first failures also keep their guest code in the log folder
+// (guest_fault_<first>_<second>_<stage>.ash), to read offline what the recompiler did not handle.
+void LogShaderSources(std::span<Shader::Environment* const> envs, u64 first_hash,
+                      u64 second_hash) {
+    constexpr int MAX_DUMPED_SOURCES = 16;
+    static std::atomic_int dumped;
+    const bool dump{dumped.fetch_add(1, std::memory_order_relaxed) < MAX_DUMPED_SOURCES};
     for (size_t i = 0; i < envs.size(); ++i) {
         LOG_ERROR(Render, "D3D12: failed shader stage {}: {}", i, envs[i]->DescribeCode());
+        if (dump) {
+            envs[i]->DumpToLogFolder(
+                fmt::format("guest_fault_{:016x}_{:016x}_{}.ash", first_hash, second_hash, i));
+        }
+    }
+    if (dump) {
+        LOG_ERROR(Render, "D3D12: guest code of {:016x} {:016x} dumped to the log folder",
+                  first_hash, second_hash);
     }
 }
 
@@ -2012,7 +2025,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     const Common::BugTracker::TapMute bug_tracker_mute;
     LOG_ERROR(Render, "D3D12: recompiling VS {:016x} PS {:016x} failed: {}", key.unique_hashes[1],
               key.unique_hashes[5], exception.what());
-    LogShaderSources(envs);
+    LogShaderSources(envs, key.unique_hashes[1], key.unique_hashes[5]);
     return nullptr;
 } catch (const std::exception& exception) {
     BUG_TRACK_KEY(ShaderCompile, key.unique_hashes[1] ^ std::rotl(key.unique_hashes[5], 1),
@@ -2140,7 +2153,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     LOG_ERROR(Render, "D3D12: recompiling compute {:016x} failed: {}", key.unique_hash,
               exception.what());
     Shader::Environment* const compute_env[]{&env};
-    LogShaderSources(compute_env);
+    LogShaderSources(compute_env, key.unique_hash, 0);
     return nullptr;
 } catch (const std::exception& exception) {
     BUG_TRACK_KEY(ShaderCompile, key.unique_hash, "building compute pipeline {:016x} failed: {}",

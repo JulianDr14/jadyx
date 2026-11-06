@@ -100,6 +100,10 @@ public:
 
     virtual void Dump(u64 pipeline_hash, u64 shader_hash) = 0;
 
+    /// Writes the guest code, as Dump does, to file_name in the log folder: kept for a shader that
+    /// failed to build so that it can be read offline.
+    virtual void DumpToLogFolder([[maybe_unused]] const std::string& file_name) {}
+
     /// Where the shader's code came from, for a log of a shader that failed to build.
     [[nodiscard]] virtual std::string DescribeCode() const {
         return "code from the disk cache";
