@@ -8,6 +8,8 @@
 #include <ctime>
 #include <cstdio>
 #include <fstream>
+#include <map>
+#include <optional>
 #include <set>
 #include <string_view>
 #include <system_error>
@@ -169,6 +171,59 @@ Step Next(const Level& level, std::string_view ours) {
     return {};
 }
 
+/// Where the save starts in the archive, judged against the save it replaces: the folder whose
+/// contents share the most with it, then the shallowest. Nothing when no folder shares anything.
+/// Never inside another game's folder, however alike the names are.
+std::optional<std::string> RootLike(const std::vector<const Mods::ArchiveItem*>& items,
+                                    const std::vector<std::string>& existing, std::string_view ours) {
+    std::set<std::string> files, tops;
+    for (const auto& path : existing) {
+        const auto lower = Lower(path);
+        tops.insert(lower.substr(0, lower.find('/')));
+        files.insert(lower);
+    }
+    struct Score {
+        std::size_t files{}, tops{};
+    };
+    std::map<std::string, Score> scores;
+    for (const auto* item : items) {
+        const auto lower = Lower(item->path);
+        for (std::size_t start = 0;;) {
+            const auto rest = lower.substr(start);
+            auto& score = scores[item->path.substr(0, start)];
+            score.files += files.contains(rest) ? 1 : 0;
+            score.tops += tops.contains(rest.substr(0, rest.find('/'))) ? 1 : 0;
+            const auto slash = rest.find('/');
+            if (slash == std::string::npos) break;
+            const auto folder = std::string_view{rest}.substr(0, slash);
+            if (TitleFolder(folder) && folder.substr(0, 16) != Lower(ours)) break;
+            start += slash + 1;
+        }
+    }
+    const auto depth = [](const std::string& root) { return std::count(root.begin(), root.end(), '/'); };
+    std::optional<std::string> best;
+    Score top;
+    for (const auto& [root, score] : scores) {
+        if (score.files == 0 && score.tops == 0) continue;
+        const bool better = !best || score.files > top.files ||
+                            (score.files == top.files &&
+                             (score.tops > top.tops || (score.tops == top.tops && depth(root) < depth(*best))));
+        if (!better) continue;
+        best = root;
+        top = score;
+    }
+    return best;
+}
+
+/// Every file of a save folder, relative to it and '/'-separated.
+std::vector<std::string> SaveFiles(const fs::path& folder) {
+    std::vector<std::string> files;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it{folder, ec}, end; !ec && it != end; it.increment(ec))
+        if (it->is_regular_file(ec)) files.push_back(Utf8(it->path().lexically_relative(folder)));
+    return files;
+}
+
 std::string ArchiveWord(Mods::ArchiveError error) {
     switch (error) {
     case Mods::ArchiveError::None:
@@ -235,7 +290,8 @@ std::pair<std::uint16_t, std::uint16_t> DosNow() {
 
 } // namespace
 
-SavePlan PlanSaveImport(const std::vector<Mods::ArchiveItem>& items, std::uint64_t application) {
+SavePlan PlanSaveImport(const std::vector<Mods::ArchiveItem>& items, std::uint64_t application,
+                        const std::vector<std::string>& existing) {
     const auto fail = [](std::string error, std::string_view detail = {}) {
         SavePlan plan;
         plan.error = std::move(error);
@@ -274,8 +330,9 @@ SavePlan PlanSaveImport(const std::vector<Mods::ArchiveItem>& items, std::uint64
         return result;
     };
     const auto ours = TitleName(application);
-    std::string root;
-    for (int depth = 0; depth < 16; ++depth) {
+    const auto like = RootLike(kept, existing, ours);
+    std::string root = like.value_or("");
+    for (int depth = 0; !like && depth < 16; ++depth) {
         const auto here = level(root);
         const auto next = Next(here, ours);
         if (next.kind == Step::Kind::WrongGame) return fail("wrong_game", next.name);
@@ -320,6 +377,13 @@ SavePlan PlanSaveImport(const std::vector<Mods::ArchiveItem>& items, std::uint64
     for (const auto& folder : folders)
         if (files.contains(folder)) return fail("bad_name", folder);
     if (plan.files.empty()) return fail("empty");
+    // One unknown folder holding everything: a wrapper or the game's own, and nothing tells which.
+    // Loading it could leave the save where the game never looks, so the player decides.
+    if (!like && root.empty()) {
+        const auto here = level(root);
+        if (!here.files && here.folders.size() == 1)
+            return fail(existing.empty() ? "save_folder" : "save_unknown", *here.folders.begin());
+    }
     return plan;
 }
 
@@ -430,7 +494,7 @@ std::string ImportSaveArchive(const fs::path& archive, std::uint64_t application
     const auto listing = Mods::ListArchive(volumes, stop);
     if (listing.error != Mods::ArchiveError::None)
         return fail(ArchiveWord(listing.error), {}, listing.detail);
-    const auto plan = PlanSaveImport(listing.items, application);
+    const auto plan = PlanSaveImport(listing.items, application, SaveFiles(target));
     if (!plan.error.empty()) return fail(plan.error, plan.detail, plan.detail);
     if (stop.stop_requested()) return fail("interrupted", {}, "cancelled");
 

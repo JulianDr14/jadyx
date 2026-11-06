@@ -508,6 +508,8 @@ const saveWords=pt?{
  empty:'O compactado não tem nenhum arquivo de save.',archive_unsafe:'O compactado tem caminhos não permitidos e não será usado: «{detail}».',
  bad_name:'Há arquivos com nomes que o console não aceita: «{detail}». Renomeie-os.',not_save:'Isto parece um jogo ou uma atualização, não um save: «{detail}».',
  wrong_game:'Este save é de outro jogo. Encontrado: {detail}. Esperado: a pasta {game}/ ou os arquivos direto.',
+ save_folder:'O save está dentro da pasta «{detail}» e não dá para saber se ela faz parte dele. Comprima o que há dentro, sem a pasta. Se a pasta for mesmo do jogo, jogue até salvar uma vez e carregue de novo.',
+ save_unknown:'A pasta «{detail}» não tem nada em comum com o save deste jogo. Pode estar danificada ou ser de outro jogo, por isso não foi carregada. Abra-a e confira.',
  space:'Não há espaço livre suficiente no console.',profile:'Não há um usuário no Jadyx. Abra um jogo uma vez e tente de novo.',
  disk:'Não foi possível guardar o save; o anterior foi mantido.',export_disk:'Não foi possível ler o save no console.',
  no_save:'Este jogo ainda não tem save neste console.',failed:'Não foi possível carregar o save; o anterior foi mantido.'
@@ -525,6 +527,8 @@ const saveWords=pt?{
  empty:'El comprimido no tiene ningún archivo de partida.',archive_unsafe:'El comprimido tiene rutas no permitidas y no se usará: «{detail}».',
  bad_name:'Hay archivos con nombres que la consola no admite: «{detail}». Renómbralos.',not_save:'Esto parece un juego o una actualización, no una partida: «{detail}».',
  wrong_game:'Esta partida es de otro juego. Encontrado: {detail}. Se esperaba la carpeta {game}/ o los archivos directamente.',
+ save_folder:'La partida está dentro de la carpeta «{detail}» y no se puede saber si es parte de ella. Comprime lo que hay dentro, sin la carpeta. Si la carpeta sí es del juego, juega hasta guardar una vez y vuelve a cargarla.',
+ save_unknown:'La carpeta «{detail}» no tiene nada en común con la partida de este juego. Puede estar dañada o ser de otro juego, así que no se cargó. Ábrela y revísala.',
  space:'No hay espacio libre suficiente en la consola.',profile:'No hay un usuario en Jadyx. Abre un juego una vez y vuelve a intentarlo.',
  disk:'No se pudo guardar la partida; la anterior se conserva.',export_disk:'No se pudo leer la partida en la consola.',
  no_save:'Este juego todavía no tiene partida en esta consola.',failed:'No se pudo cargar la partida; la anterior se conserva.'
@@ -542,11 +546,13 @@ const saveWords=pt?{
  empty:'The archive has no save files.',archive_unsafe:'The archive has paths that are not allowed and will not be used: «{detail}».',
  bad_name:'Some files have names the console does not accept: «{detail}». Rename them.',not_save:'This looks like a game or an update, not a save: «{detail}».',
  wrong_game:'This save belongs to another game. Found: {detail}. Expected: the {game}/ folder or the files directly.',
+ save_folder:'The save is inside the folder «{detail}», and there is no way to tell whether it is part of the save. Compress what is inside, without the folder. If the folder really belongs to the game, play until it saves once and load it again.',
+ save_unknown:'The folder «{detail}» has nothing in common with this game\'s save. It may be damaged or from another game, so it was not loaded. Open it and check.',
  space:'There is not enough free space on the console.',profile:'There is no user in Jadyx. Open a game once and try again.',
  disk:'The save could not be written; the previous one was kept.',export_disk:'The save could not be read on the console.',
  no_save:'This game has no save on this console yet.',failed:'The save could not be loaded; the previous one was kept.'};
 // The errors the guide answers: what the archive holds, not how it travelled.
-const saveStructural=['empty','not_save','wrong_game','archive_unsafe','bad_name','not_archive','save_file'];
+const saveStructural=['empty','not_save','wrong_game','archive_unsafe','bad_name','not_archive','save_file','save_folder','save_unknown'];
 for(const [id,key]of [['kind-save','tab'],['save-intro','intro'],['save-download','download'],['save-pick','pick'],['save-drop','drop'],['save-send','send'],
  ['save-warning','warning'],['save-help-toggle','help'],['save-error-help','help'],['save-pc','pc'],['save-rules','rules']])$(id).textContent=saveWords[key];
 function saveTree(){
