@@ -291,7 +291,29 @@ void PipelineKey() {
     Check((biased.shader_flags & Key::SHADER_DEPTH_BIAS) != 0, "slope-only bias in the shader");
     D3D12::SetShaderDepthBias(false);
     D3D12::SetDepthBiasRounding(false);
-    std::cout << "PASS pipeline key: a2c footprint and shader depth bias only where they apply\n";
+
+    // The stipple of a generated line is in its shaders, so it splits only those pipelines.
+    Key stippled{};
+    stippled.state.dynamic_state.generated_lines.Assign(1);
+    stippled.state.dynamic_state.line_stipple_enable.Assign(1);
+    stippled.state.line_stipple_pattern = 0x00FF;
+    Key other_pattern = stippled;
+    other_pattern.state.line_stipple_pattern = 0x0F0F;
+    Check(stippled != other_pattern, "generated lines with another stipple pattern differ");
+    Check(stippled.Hash() != other_pattern.Hash(), "and hash apart");
+    Key other_factor = stippled;
+    other_factor.state.line_stipple_factor = 3;
+    Check(stippled != other_factor, "generated lines with another stipple factor differ");
+    Key same = stippled;
+    Check(stippled == same && stippled.Hash() == same.Hash(), "equal stipple keeps the pipeline");
+    Key disabled = stippled;
+    disabled.state.dynamic_state.line_stipple_enable.Assign(0);
+    Key disabled_other = disabled;
+    disabled_other.state.line_stipple_pattern = 0x0F0F;
+    Check(disabled == disabled_other && disabled.Hash() == disabled_other.Hash(),
+          "a stipple not in use splits nothing");
+    std::cout << "PASS pipeline key: a2c footprint, shader depth bias and line stipple only where "
+                 "they apply\n";
 }
 
 std::array<u8, 4> DecodeBc1Texel(const std::array<u8, 8>& block) {
