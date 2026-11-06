@@ -34,6 +34,8 @@ public:
     };
     using ActionHandle = std::list<RegisteredAction>::iterator;
 
+    static constexpr size_t NUM_MAX_SYNCPOINTS = 192;
+
     template <typename Func>
     ActionHandle RegisterGuestAction(u32 syncpoint_id, u32 expected_value, Func&& action) {
         return RegisterAction(syncpoints_guest[syncpoint_id], guest_action_storage[syncpoint_id],
@@ -92,8 +94,6 @@ private:
     void DeregisterAction(std::list<RegisteredAction>& action_storage, const ActionHandle& handle);
 
     void Wait(std::atomic<u32>& syncpoint, std::condition_variable& wait_cv, u32 expected_value);
-
-    static constexpr size_t NUM_MAX_SYNCPOINTS = 192;
 
     std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> syncpoints_guest{};
     std::array<std::atomic<u32>, NUM_MAX_SYNCPOINTS> syncpoints_host{};

@@ -6,6 +6,7 @@
 #include "video_core/renderer_d3d12/d3d12_cache_policy.h"
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -106,10 +107,12 @@ void SetCloseProbeEnabled(bool enabled);
 /// after whatever the emulation submitted behind it.
 void SetPresentQueue(bool enabled);
 bool CloseProbeEnabled();
-/// Runs run(ctx, scratch) on the scratch lists, on the recording worker after the real call.
+/// Runs run(scratch) on the scratch lists, on the recording worker after the real call. Kept
+/// until the command's window closes: a failing window is run again call by call, to name the
+/// first one that makes Close fail.
 void ProbeAppend(ID3D12GraphicsCommandList* list,
-                 void (*run)(void* ctx, ID3D12GraphicsCommandList* scratch), void* ctx,
-                 const char* call, std::string arguments);
+                 std::function<void(ID3D12GraphicsCommandList*)> run, const char* call,
+                 std::string arguments);
 /// The real list is about to close: closes the scratch lists.
 void ProbeBeforeClose();
 /// Logs how the real list's Close went next to the scratch lists'.

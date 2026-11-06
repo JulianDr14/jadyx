@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_set>
@@ -1842,12 +1843,15 @@ ID3D12PipelineState* GraphicsPipeline::CulledHandle(D3D12_CULL_MODE mode, u8 bac
                                                     u8 back_write_mask) {
     const bool back_faces = mode == D3D12_CULL_MODE_FRONT;
     const u16 masks = static_cast<u16>(back_read_mask | back_write_mask << 8);
-    ComPtr<ID3D12PipelineState>* slot = &cull_back_state;
+    // std::addressof: operator& on a WRL ComPtr converts by releasing the object it holds, and the
+    // commands already recorded with that object run later.
+    ComPtr<ID3D12PipelineState>* slot = std::addressof(cull_back_state);
     if (back_faces) {
         const auto it = std::ranges::find_if(
             cull_front_states, [masks](const auto& entry) { return entry.first == masks; });
-        slot = it != cull_front_states.end() ? &it->second
-                                             : &cull_front_states.emplace_back(masks, nullptr).second;
+        slot = it != cull_front_states.end()
+                   ? std::addressof(it->second)
+                   : std::addressof(cull_front_states.emplace_back(masks, nullptr).second);
     }
     ComPtr<ID3D12PipelineState>& handle = *slot;
     if (handle) {

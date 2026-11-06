@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <cstring>
 #include <optional>
 #include "common/assert.h"
@@ -16,6 +17,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/gpu.h"
+#include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
 #include "video_core/rasterizer_interface.h"
@@ -616,6 +618,16 @@ void Maxwell3D::ProcessCounterReset() {
 void Maxwell3D::ProcessSyncPoint() {
     const u32 sync_point = regs.sync_info.sync_point.Value();
     [[maybe_unused]] const u32 cache_flush = regs.sync_info.clean_l2.Value();
+    // The register holds 16 bits and indexes fixed arrays. An id past them comes from a bad command
+    // stream: signalling it would write outside the syncpoint manager.
+    if (sync_point >= Host1x::SyncpointManager::NUM_MAX_SYNCPOINTS) {
+        static std::atomic_int logged{};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+            LOG_ERROR(HW_GPU, "Maxwell3D: dropped signal of syncpoint {} (of {}), clean_l2 {}",
+                      sync_point, Host1x::SyncpointManager::NUM_MAX_SYNCPOINTS, cache_flush);
+        }
+        return;
+    }
     rasterizer->SignalSyncPoint(sync_point);
 }
 
