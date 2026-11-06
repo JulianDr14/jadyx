@@ -1583,10 +1583,23 @@ bool PipelineCache::WaitPendingFor(GraphicsPipeline* pipeline, u64 microseconds)
 
 namespace {
 // A shader that fails to build: whether its code came from the disk cache or from guest memory,
-// and from where in guest memory.
-void LogShaderSources(std::span<Shader::Environment* const> envs) {
+// and from where in guest memory. The first failures also keep their guest code in the log folder
+// (guest_fault_<first>_<second>_<stage>.ash), to read offline what the recompiler did not handle.
+void LogShaderSources(std::span<Shader::Environment* const> envs, u64 first_hash,
+                      u64 second_hash) {
+    constexpr int MAX_DUMPED_SOURCES = 16;
+    static std::atomic_int dumped;
+    const bool dump{dumped.fetch_add(1, std::memory_order_relaxed) < MAX_DUMPED_SOURCES};
     for (size_t i = 0; i < envs.size(); ++i) {
         LOG_ERROR(Render, "D3D12: failed shader stage {}: {}", i, envs[i]->DescribeCode());
+        if (dump) {
+            envs[i]->DumpToLogFolder(
+                fmt::format("guest_fault_{:016x}_{:016x}_{}.ash", first_hash, second_hash, i));
+        }
+    }
+    if (dump) {
+        LOG_ERROR(Render, "D3D12: guest code of {:016x} {:016x} dumped to the log folder",
+                  first_hash, second_hash);
     }
 }
 
@@ -1614,6 +1627,60 @@ u64 CompileTessEmulation(const ShaderCompiler& compiler,
                                             trace_pipeline);
     linked.tess_control = std::move(compute[0].dxil);
     return linked.tess_capture.capacity() + linked.tess_control.capacity();
+}
+
+/// Where the fragment shader's per-primitive texture handle comes from: the vertex attribute the
+/// vertex shader copies to that output. Throws what cannot be drawn, like any unsupported shader.
+std::optional<GraphicsPipeline::VertexTextureHandle> FindVertexTextureHandle(
+    const std::array<Shader::IR::Program, Maxwell::MaxShaderProgram>& programs,
+    const GraphicsPipelineCacheKey& key) {
+    using Shader::IR::Attribute;
+    using Shader::IR::Opcode;
+    if (key.unique_hashes[5] == 0) {
+        return std::nullopt;
+    }
+    std::optional<u32> output;
+    for (const Shader::TextureDescriptor& desc : programs[5].info.texture_descriptors) {
+        if (!desc.varying_handle) {
+            continue;
+        }
+        if (output && *output != desc.cbuf_offset) {
+            throw Shader::NotImplementedException("Textures with two per-primitive handles");
+        }
+        output = desc.cbuf_offset;
+    }
+    if (!output) {
+        return std::nullopt;
+    }
+    if (key.unique_hashes[2] != 0 || key.unique_hashes[3] != 0 || key.unique_hashes[4] != 0) {
+        throw Shader::NotImplementedException("Per-primitive handle after the vertex shader");
+    }
+    const Shader::IR::Inst* source{};
+    for (const Shader::IR::Block* const block : programs[1].post_order_blocks) {
+        for (const Shader::IR::Inst& inst : block->Instructions()) {
+            if (inst.GetOpcode() != Opcode::SetAttribute || !inst.Arg(0).IsImmediate() ||
+                static_cast<u32>(inst.Arg(0).Attribute()) != *output) {
+                continue;
+            }
+            if (source != nullptr || inst.Arg(1).IsImmediate()) {
+                throw Shader::NotImplementedException("Computed per-primitive handle");
+            }
+            source = inst.Arg(1).InstRecursive();
+        }
+    }
+    while (source != nullptr && (source->GetOpcode() == Opcode::BitCastF32U32 ||
+                                 source->GetOpcode() == Opcode::BitCastU32F32)) {
+        source = source->Arg(0).IsImmediate() ? nullptr : source->Arg(0).InstRecursive();
+    }
+    if (source == nullptr || source->GetOpcode() != Opcode::GetAttribute ||
+        !source->Arg(0).IsImmediate() || !Shader::IR::IsGeneric(source->Arg(0).Attribute())) {
+        throw Shader::NotImplementedException("Computed per-primitive handle");
+    }
+    const Attribute input{source->Arg(0).Attribute()};
+    return GraphicsPipeline::VertexTextureHandle{
+        .attribute = Shader::IR::GenericAttributeIndex(input),
+        .component = Shader::IR::GenericAttributeElement(input),
+    };
 }
 } // namespace
 
@@ -1708,6 +1775,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
     }
 
+    const auto vertex_texture_handle = FindVertexTextureHandle(programs, key);
     const PointGeometry point_geometry = PlanPointGeometry(
         programs, key, drops_geometry || captures_xfb || layer_source_program != nullptr);
     const bool generates_tess_control{key.unique_hashes[2] == 0 && key.unique_hashes[3] != 0};
@@ -2003,6 +2071,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                                                        lower_noperspective_mask, tess_plan);
     pipeline->SetFragmentHelpers(fragment_helpers);
     pipeline->SetGeneratesGeometry(generates_geometry);
+    pipeline->SetVertexTextureHandle(vertex_texture_handle);
     return pipeline;
 
 } catch (const Shader::Exception& exception) {
@@ -2012,7 +2081,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     const Common::BugTracker::TapMute bug_tracker_mute;
     LOG_ERROR(Render, "D3D12: recompiling VS {:016x} PS {:016x} failed: {}", key.unique_hashes[1],
               key.unique_hashes[5], exception.what());
-    LogShaderSources(envs);
+    LogShaderSources(envs, key.unique_hashes[1], key.unique_hashes[5]);
     return nullptr;
 } catch (const std::exception& exception) {
     BUG_TRACK_KEY(ShaderCompile, key.unique_hashes[1] ^ std::rotl(key.unique_hashes[5], 1),
@@ -2140,7 +2209,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     LOG_ERROR(Render, "D3D12: recompiling compute {:016x} failed: {}", key.unique_hash,
               exception.what());
     Shader::Environment* const compute_env[]{&env};
-    LogShaderSources(compute_env);
+    LogShaderSources(compute_env, key.unique_hash, 0);
     return nullptr;
 } catch (const std::exception& exception) {
     BUG_TRACK_KEY(ShaderCompile, key.unique_hash, "building compute pipeline {:016x} failed: {}",

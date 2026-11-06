@@ -219,6 +219,9 @@ struct TextureDescriptor {
     u32 secondary_shift_left;
     u32 count;
     u32 size_shift;
+    /// The handle arrives per primitive through the generic input IR::Attribute(cbuf_offset),
+    /// so the draw provides it (GraphicsPipeline::VertexTextureHandle); no constant buffer holds it.
+    bool varying_handle;
 
     auto operator<=>(const TextureDescriptor&) const = default;
 };

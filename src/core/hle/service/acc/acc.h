@@ -56,6 +56,9 @@ public:
         void GetBaasAccountManagerForSystemService(HLERequestContext& ctx);
         void StoreSaveDataThumbnailSystem(HLERequestContext& ctx);
         void GetPinCodeLength(HLERequestContext& ctx);
+        void ClearSaveDataThumbnail(HLERequestContext& ctx);
+        void LoadSaveDataThumbnail(HLERequestContext& ctx);
+        void GetSaveDataThumbnailExistence(HLERequestContext& ctx);
 
     private:
         Result InitializeApplicationInfoBase();

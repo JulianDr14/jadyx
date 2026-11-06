@@ -813,6 +813,12 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
         }
         const auto& cbufs = maxwell3d.state.shader_stages[stage].const_buffers;
         const auto read_handle = [&](const auto& desc, u32 index) {
+            if constexpr (std::is_same_v<std::remove_cvref_t<decltype(desc)>,
+                                         Shader::TextureDescriptor>) {
+                if (desc.varying_handle) [[unlikely]] {
+                    return Tegra::Texture::TexturePair(out.vertex_texture_handle, via_header_index);
+                }
+            }
             return ReadTextureHandle(gpu_memory, desc, index, via_header_index,
                                      [&](u32 cbuf) { return cbufs[cbuf].address; });
         };
@@ -1749,6 +1755,7 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
             std::unique_lock build_lock{PipelineBuildMutex()};
             if (hr == DRIVER_FAULT_HRESULT) {
                 DumpFaultedPipeline(key.unique_hashes[1], key.unique_hashes[5], stages);
+                ProbeFaultedPixelShader(device.Get(), desc, key.unique_hashes[5]);
             }
             DiagnoseFailedPipeline(device.Get(), desc);
         }

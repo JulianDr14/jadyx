@@ -22,7 +22,19 @@ namespace D3D12 {
 /// first few failures are diagnosed.
 void DiagnoseFailedPipeline(ID3D12Device* device, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc);
 
-/// Writes the DXIL of a pipeline the driver faulted on next to the log, for the first few.
+/// Diagnosis of a pixel shader the driver faults on: retries the pipeline with every replacement
+/// PS in <EdenDir>/pso_probe/<ps hash>/*.dxil (reduced variants made offline) and logs each result
+/// to <LogDir>/pso_probe_<ps hash>.txt. Resumes after a variant that killed the process. Does
+/// nothing without that folder.
+void ProbeFaultedPixelShader(ID3D12Device* device, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,
+                             u64 fragment_shader);
+
+/// The same for a compute shader: <EdenDir>/pso_probe/<cs hash>/*.dxil replace its CS.
+void ProbeFaultedComputeShader(ID3D12Device* device, const D3D12_COMPUTE_PIPELINE_STATE_DESC& desc,
+                               u64 compute_shader);
+
+/// Writes the DXIL of a pipeline the driver faulted on next to the log, for the first few. A
+/// compute pipeline passes its shader as vertex_shader and 0 as fragment_shader.
 void DumpFaultedPipeline(u64 vertex_shader, u64 fragment_shader,
                          std::span<const std::vector<u8>> stages);
 

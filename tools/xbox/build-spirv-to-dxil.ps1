@@ -63,6 +63,7 @@ Copy-Item (Join-Path $PSScriptRoot "mesa\eden_pipeline.c") $s2d -Force
 Copy-Item (Join-Path $PSScriptRoot "mesa\eden_integer_sampling.h") $s2d -Force
 Copy-Item (Join-Path $PSScriptRoot "mesa\eden_reduction_sampling.h") $s2d -Force
 Copy-Item (Join-Path $PSScriptRoot "..\..\externals\spirv-to-dxil\include\eden_spirv_to_dxil.h") $s2d -Force
+Copy-Item (Join-Path $PSScriptRoot "mesa\eden_hoist_resource_handles.h") (Join-Path $src "src\microsoft\compiler") -Force
 Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
     "    spirv_to_dxil_get_version`n" `
     "    spirv_to_dxil_get_version`n    eden_spirv_to_dxil_pipeline`n"
@@ -113,6 +114,14 @@ Patch-File "src\microsoft\compiler\dxil_function.c" `
 Patch-File "src\microsoft\compiler\dxil_function.c" `
     "{`"dx.op.atomicCompareExchange`", `"O`", `"i@iiiii`", DXIL_ATTR_KIND_READ_NONE}," `
     "{`"dx.op.atomicCompareExchange`", `"O`", `"i@iiiii`", DXIL_ATTR_KIND_NO_UNWIND},"
+# One handle per texture/sampler/image, created in the entry block instead of in every branch that
+# reads it: the Series' driver compiler faults on some shaders with the per-branch copies.
+Patch-File "src\microsoft\compiler\nir_to_dxil.c" `
+    "extern uint64_t eden_phase_ns[];`n" `
+    "extern uint64_t eden_phase_ns[];`n#include `"eden_hoist_resource_handles.h`"`n"
+Patch-File "src\microsoft\compiler\nir_to_dxil.c" `
+    "   NIR_PASS(_, s, dxil_nir_guess_image_formats);`n" `
+    "   NIR_PASS(_, s, dxil_nir_guess_image_formats);`n   if (opts->environment == DXIL_ENVIRONMENT_VULKAN)`n      NIR_PASS(_, s, eden_hoist_resource_handles);`n"
 Patch-File "src\microsoft\spirv_to_dxil\meson.build" `
     "      'spirv_to_dxil.h',`n" `
     "      'spirv_to_dxil.h',`n      'eden_pipeline.c',`n      'eden_spirv_to_dxil.h',`n"

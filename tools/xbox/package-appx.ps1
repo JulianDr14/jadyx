@@ -279,6 +279,25 @@ if ($LASTEXITCODE -ne 0) { throw "MakeAppx failed ($LASTEXITCODE)." }
 # --- 4. sign -----------------------------------------------------------------------------
 $signtool = Find-SdkTool "SignTool.exe"
 $cer = Join-Path $repo "$OutDir\jadyx.cer"
+
+# Timestamp servers fail now and then ("could not be reached"): try several RFC 3161 ones before
+# giving up. SignTool's stderr must not end the script while there are servers left to try.
+function Invoke-SignTool([string[]] $signArgs) {
+    $servers = @("http://timestamp.digicert.com", "http://timestamp.sectigo.com",
+                 "http://timestamp.acs.microsoft.com")
+    foreach ($attempt in 1..2) {
+        foreach ($server in $servers) {
+            $output = & {
+                $ErrorActionPreference = "Continue"
+                & $signtool sign /fd SHA256 @signArgs /tr $server /td SHA256 $appx 2>&1
+            }
+            if ($LASTEXITCODE -eq 0) { return }
+            Write-Warning "SignTool with $server failed ($LASTEXITCODE): $($output -join ' ')"
+        }
+        Start-Sleep -Seconds 5
+    }
+    throw "SignTool failed with every timestamp server."
+}
 if ($PfxPath) {
     # CI: the project's certificate comes from a secret, so every release has the same signer.
     if (-not $env:JADYX_PFX_PASSWORD) { throw "JADYX_PFX_PASSWORD is not set for $PfxPath." }
@@ -287,9 +306,7 @@ if ($PfxPath) {
     if ($cert.Subject -ne $PublisherCN) {
         throw "The PFX is issued to '$($cert.Subject)', not '$PublisherCN'."
     }
-    & $signtool sign /fd SHA256 /f (Resolve-Path $PfxPath).Path /p $env:JADYX_PFX_PASSWORD `
-        /t http://timestamp.digicert.com $appx
-    if ($LASTEXITCODE -ne 0) { throw "SignTool failed ($LASTEXITCODE)." }
+    Invoke-SignTool @("/f", (Resolve-Path $PfxPath).Path, "/p", $env:JADYX_PFX_PASSWORD)
     [IO.File]::WriteAllBytes($cer, $cert.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
 } else {
     # The updater pins the distribution public key. Never silently mint a different signer.
@@ -300,8 +317,7 @@ if ($PfxPath) {
         throw 'The Jadyx signing certificate is missing. Restore the distribution certificate; do not mint a replacement for an update.'
     }
 
-    & $signtool sign /fd SHA256 /sha1 $cert.Thumbprint /t http://timestamp.digicert.com $appx
-    if ($LASTEXITCODE -ne 0) { throw "SignTool failed ($LASTEXITCODE)." }
+    Invoke-SignTool @("/sha1", $cert.Thumbprint)
 
     # The console must trust the signer: upload this .cer alongside the appx in the Device Portal.
     Export-Certificate -Cert $cert -FilePath $cer -Type CERT | Out-Null

@@ -438,6 +438,8 @@
  "texel_fetch": "pass",
  "texel_fetch_level": "pass",
  "texture_gather": "pass",
+ "texture_gather_offset_green": "pass",
+ "texture_gather_offsets_blue": "pass",
  "texture_offset": "pass",
  "texture_replaced_by_upload": "pass",
  "two_textures": "pass",

@@ -197,7 +197,164 @@ bool RasterizerD3D12::WaitPendingPipeline(GraphicsPipeline* pipeline, u32 vertic
     return built;
 }
 
+void RasterizerD3D12::DrawVertexTextureRuns(const GraphicsPipeline& pipeline, bool is_indexed,
+                                            u32 instance_count) {
+    using Maxwell = Tegra::Engines::Maxwell3D::Regs;
+    using Topology = Maxwell::PrimitiveTopology;
+    const GraphicsPipeline::VertexTextureHandle source = *pipeline.GetVertexTextureHandle();
+    const auto& regs = maxwell3d->regs;
+    auto& draw = maxwell3d->draw_manager.draw_state;
+    const auto& attribute = regs.vertex_attrib_format[source.attribute];
+    const u32 stream_index = attribute.buffer;
+    const auto& stream = regs.vertex_streams[stream_index];
+    const bool holds_words = attribute.size == Maxwell::VertexAttribute::Size::Size_R32 ||
+                             attribute.size == Maxwell::VertexAttribute::Size::Size_R32_G32 ||
+                             attribute.size == Maxwell::VertexAttribute::Size::Size_R32_G32_B32 ||
+                             attribute.size == Maxwell::VertexAttribute::Size::Size_R32_G32_B32_A32;
+    if (attribute.constant != 0 || !stream.IsEnabled() || !holds_words ||
+        source.component >= attribute.ComponentCount()) {
+        BUG_TRACK_KEY(DrawSkipped, reinterpret_cast<std::uintptr_t>(&pipeline),
+                      "draw skipped: unreadable per-primitive texture handle (attribute {} "
+                      "{:#x}, PS {:016x})",
+                      source.attribute, attribute.hex, pipeline.Key().unique_hashes[5]);
+        return;
+    }
+    const GPUVAddr words = stream.Address() + attribute.offset + source.component * sizeof(u32);
+    const u32 count = is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count;
+    const u32 first = is_indexed ? draw.index_buffer.first : draw.vertex_buffer.first;
+    const auto& restart = regs.primitive_restart;
+
+    const auto read_vertex = [&](u32 element, u32& vertex) {
+        if (!is_indexed) {
+            vertex = first + element;
+            return true;
+        }
+        u32 index{};
+        if (!draw.inline_index_draw_indexes.empty()) {
+            const size_t offset = (size_t{first} + element) * sizeof(u32);
+            if (offset + sizeof(u32) > draw.inline_index_draw_indexes.size()) {
+                return false;
+            }
+            std::memcpy(&index, draw.inline_index_draw_indexes.data() + offset, sizeof(u32));
+        } else {
+            const GPUVAddr address = draw.index_buffer.StartAddress() +
+                                     (u64{first} + element) * draw.index_buffer.FormatSizeInBytes();
+            switch (draw.index_buffer.format) {
+            case Maxwell::IndexFormat::UnsignedByte:
+                index = gpu_memory->Read<u8>(address);
+                break;
+            case Maxwell::IndexFormat::UnsignedShort:
+                index = gpu_memory->Read<u16>(address);
+                break;
+            case Maxwell::IndexFormat::UnsignedInt:
+                index = gpu_memory->Read<u32>(address);
+                break;
+            }
+        }
+        if (restart.enabled != 0 && index == restart.index) {
+            return false;
+        }
+        vertex = index + draw.base_index;
+        return true;
+    };
+    const auto read_handle = [&](u32 element, u32 previous) {
+        u32 vertex{};
+        return read_vertex(element, vertex)
+                   ? gpu_memory->Read<u32>(words + u64{vertex} * stream.stride)
+                   : previous;
+    };
+
+    // Primitives of a list stand alone, so a run can start at any of them. Strips and fans cannot
+    // be cut without changing their winding: they draw with one texture and report if they had more.
+    const u32 primitive = [&]() -> u32 {
+        switch (draw.topology) {
+        case Topology::Points:
+            return 1;
+        case Topology::Lines:
+            return 2;
+        case Topology::Triangles:
+            return 3;
+        case Topology::Quads:
+        case Topology::LinesAdjacency:
+            return 4;
+        case Topology::TrianglesAdjacency:
+            return 6;
+        default:
+            return 0;
+        }
+    }();
+    const bool per_instance = regs.vertex_stream_instances.IsInstancingEnabled(stream_index);
+    const u32 provoking =
+        primitive != 0 && regs.provoking_vertex == Maxwell::ProvokingVertex::Last ? primitive - 1 : 0;
+
+    // The state is what the guest would have set for each run: the draw path works as for any draw.
+    const auto saved_index = draw.index_buffer;
+    const auto saved_vertex = draw.vertex_buffer;
+    SCOPE_EXIT {
+        draw.index_buffer = saved_index;
+        draw.vertex_buffer = saved_vertex;
+        if (is_indexed) {
+            maxwell3d->dirty.flags[VideoCommon::Dirty::IndexBuffer] = true;
+        }
+    };
+    const auto draw_run = [&](u32 run_first, u32 run_count, u32 handle) {
+        if (is_indexed) {
+            draw.index_buffer.first = first + run_first;
+            draw.index_buffer.count = run_count;
+            maxwell3d->dirty.flags[VideoCommon::Dirty::IndexBuffer] = true;
+        } else {
+            draw.vertex_buffer.first = first + run_first;
+            draw.vertex_buffer.count = run_count;
+        }
+        DrawRun(is_indexed, instance_count, handle);
+    };
+
+    if (per_instance) {
+        const u32 handle = gpu_memory->Read<u32>(words + u64{draw.base_instance} * stream.stride);
+        if (instance_count > 1) {
+            BUG_TRACK_KEY(UnsupportedState, reinterpret_cast<std::uintptr_t>(&pipeline),
+                          "per-instance texture handle in a draw of {} instances (PS {:016x})",
+                          instance_count, pipeline.Key().unique_hashes[5]);
+        }
+        draw_run(0, count, handle);
+        return;
+    }
+    if (primitive == 0) {
+        const u32 handle = count != 0 ? read_handle(0, 0) : 0;
+        for (u32 element = 1; element < count; ++element) {
+            if (read_handle(element, handle) != handle) {
+                BUG_TRACK_KEY(UnsupportedState, reinterpret_cast<std::uintptr_t>(&pipeline),
+                              "several per-primitive texture handles in topology {} (PS {:016x})",
+                              static_cast<u32>(draw.topology), pipeline.Key().unique_hashes[5]);
+                break;
+            }
+        }
+        draw_run(0, count, handle);
+        return;
+    }
+    if (count < primitive) {
+        draw_run(0, count, 0);
+        return;
+    }
+    u32 run_first = 0;
+    u32 run_handle = read_handle(provoking, 0);
+    for (u32 element = primitive; element + primitive <= count; element += primitive) {
+        const u32 handle = read_handle(element + provoking, run_handle);
+        if (handle != run_handle) {
+            draw_run(run_first, element - run_first, run_handle);
+            run_first = element;
+            run_handle = handle;
+        }
+    }
+    draw_run(run_first, count - run_first, run_handle);
+}
+
 void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
+    DrawRun(is_indexed, instance_count, std::nullopt);
+}
+
+void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
+                              std::optional<u32> vertex_texture_handle) {
     DrainCpuWrites();
     const bool full = VideoCommon::FullCapture::Active();
     if (full) {
@@ -256,6 +413,10 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
         return;
     }
     hunt.Shaders(pipeline->Key().unique_hashes[1], pipeline->Key().unique_hashes[5]);
+    if (pipeline->GetVertexTextureHandle() && !vertex_texture_handle) [[unlikely]] {
+        DrawVertexTextureRuns(*pipeline, is_indexed, instance_count);
+        return;
+    }
     const DrawMetrics::CacheLockTimer lock_timer;
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     lock_timer.Locked();
@@ -263,6 +424,7 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
     const bool trace_this_draw = trace_draws ||
         material_trace.Select(pipeline->Key().unique_hashes[5]) || full;
     PipelineBindings bindings;
+    bindings.vertex_texture_handle = vertex_texture_handle.value_or(0);
     std::vector<VideoCommon::ImageViewId> traced_views;
     std::vector<std::string> traced_filters;
     std::vector<u32> traced_types;

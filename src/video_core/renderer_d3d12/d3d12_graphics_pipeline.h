@@ -173,6 +173,8 @@ struct PipelineBindings {
     /// Stages (bit per Configure stage, VS first) that sampled a float texture with a sampler whose
     /// MIN/MAX reduction is emulated while the pipeline does not emulate it. Draws filter normally.
     u8 unemulated_reduction_stages{};
+    /// In: the handle of the textures whose shader takes it per primitive (varying_handle).
+    u32 vertex_texture_handle{};
     /// Per axis (u, v), the fragment stage's texture descriptors that MirrorBorderPass mirrors.
     std::array<u32, 2> mirror_border_masks{};
     /// Some are, while the pipeline was built without the pass.
@@ -485,6 +487,21 @@ public:
         return lower_noperspective_mask;
     }
 
+    /// The vertex attribute a fragment shader's texture handle comes from, passed through flat by
+    /// the vertex shader: each run of primitives with one handle is a draw of its own.
+    struct VertexTextureHandle {
+        u32 attribute{};
+        u32 component{};
+    };
+
+    void SetVertexTextureHandle(const std::optional<VertexTextureHandle>& source) noexcept {
+        vertex_texture_handle = source;
+    }
+
+    [[nodiscard]] const std::optional<VertexTextureHandle>& GetVertexTextureHandle() const noexcept {
+        return vertex_texture_handle;
+    }
+
     /// How the fragment shader keeps the helper lanes of its derivatives, for draw traces.
     struct FragmentHelpers {
         Shader::Optimization::DemoteReturnVerdict demote_return{};
@@ -559,6 +576,7 @@ private:
     const u32 lower_noperspective_mask;
     const TessEmulationPlan tess_plan;
     FragmentHelpers fragment_helpers{};
+    std::optional<VertexTextureHandle> vertex_texture_handle;
     bool generates_geometry{};
     SharedDxilStages dxil; ///< Immutable linked bytecode shared across fixed-state PSOs.
     std::array<bool, NUM_STAGES> has_stage{};

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 
+#include "common/bug_tracker.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
 #include "video_core/gpu.h"
@@ -84,6 +85,13 @@ void RasterizerD3D12::DrawIndirect() {
         return;
     }
     hunt.Shaders(pipeline->Key().unique_hashes[1], pipeline->Key().unique_hashes[5]);
+    if (pipeline->GetVertexTextureHandle()) [[unlikely]] {
+        // The primitives of an indirect draw are unknown here, so neither are their textures.
+        BUG_TRACK_KEY(DrawSkipped, reinterpret_cast<std::uintptr_t>(pipeline),
+                      "indirect draw skipped: per-primitive texture handle (PS {:016x})",
+                      pipeline->Key().unique_hashes[5]);
+        return;
+    }
     const DrawMetrics::CacheLockTimer lock_timer;
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     lock_timer.Locked();
@@ -327,6 +335,13 @@ void RasterizerD3D12::DrawByteCount(const IndirectParams& params) {
     scheduler.BeginWork();
     GraphicsPipeline* pipeline = pipeline_cache.CurrentGraphicsPipeline();
     if (!pipeline) {
+        return;
+    }
+    if (pipeline->GetVertexTextureHandle()) [[unlikely]] {
+        // The primitives of an indirect draw are unknown here, so neither are their textures.
+        BUG_TRACK_KEY(DrawSkipped, reinterpret_cast<std::uintptr_t>(pipeline),
+                      "indirect draw skipped: per-primitive texture handle (PS {:016x})",
+                      pipeline->Key().unique_hashes[5]);
         return;
     }
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
