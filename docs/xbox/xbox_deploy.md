@@ -205,23 +205,32 @@ Ajustes > Gráficos y en los gráficos de cada juego, con efecto al iniciar el j
 sobre los dos. Apagado, `descriptor_defer` tampoco se usa. El log dice qué modo se usa:
 `D3D12: command list calls made on a recording thread` o `on the GPU thread`.
 
-La reutilización del pipeline entre draws es experimental y está apagada por defecto. Con
-`pipeline_key_reuse=1` en BootCfg, un draw reutiliza el pipeline del anterior sin recalcular su
-clave cuando no cambió ningún registro que la clave lea, ni el engine, la topología, el hint de
-macro HLE o los shaders. La lista de registros que no la afectan está en
-`d3d12_pipeline_key_tracking.cpp` y la verifica `tools/xbox/tests/run-pipeline-key-tracking.ps1`
-contra el refresco real de la clave. Con `pipeline_key_reuse=check` se recalcula siempre y el log
-registra cada draw en el que la reutilización habría dado otro pipeline (`D3D12: pipeline key
-changed with no tracked register write`); cada perf report añade
-`D3D12 pipeline key check: N reusable draws verified, M mismatched`. Con `gpu_profile=1` el detalle
-del hilo de GPU cuenta además los `key reuses` del modo `=1`.
+La reutilización del pipeline entre draws está encendida por defecto (`pipeline_key_reuse=0` la
+apaga). Un draw reutiliza el pipeline del anterior sin recalcular su clave cuando no cambió ningún
+registro que la clave lea, ni el engine, la topología, el hint de macro HLE o los shaders. La lista
+de registros que no la afectan está en `d3d12_pipeline_key_tracking.cpp` y la verifica
+`tools/xbox/tests/run-pipeline-key-tracking.ps1` contra el refresco real de la clave. Con
+`pipeline_key_reuse=check` se recalcula siempre y el log registra cada draw en el que la reutilización
+habría dado otro pipeline (`D3D12: pipeline key changed with no tracked register write`); cada perf
+report añade `D3D12 pipeline key check: N reusable draws verified, M mismatched`. Con `gpu_profile=1`
+el detalle del hilo de GPU cuenta además los `key reuses`.
 
-Sigue en investigación. En consola, el modo check verificó unos 7,3 M draws reutilizables (~74% de
-los draws) sin ninguna discrepancia, pero eso cubre una sola zona del juego. Las sesiones con la
-reutilización activa no mostraron una ganancia medible frente a las que no la tenían: lo esperado
-es 1 ms por frame o menos, y las diferencias de escena (día y noche, pipelines nuevos, descargas
-GPU→CPU) lo tapan. Falta una comparación A/B en el mismo sitio y más cobertura del modo check antes
-de activarla por defecto.
+En consola, el modo check verificó unos 7,3 M draws reutilizables (~74% de los draws) sin ninguna
+discrepancia, en una sola zona de un juego. No hay registrada una comparación A/B en el mismo sitio.
+
+El plegado de claves de pipeline está apagado por defecto. Con `pso_fold=on` en BootCfg, las claves
+que solo difieren en estado que su pipeline no puede mostrar comparten un pipeline, y al arrancar las
+guardadas se pliegan antes de traducirlas. Solo corre cuando una clave falla en las búsquedas rápidas.
+Con `pso_fold=check` los pipelines no cambian: el log resume lo que ahorraría (`D3D12: pipeline
+cache: N stored keys, M distinct once folded`) y compara los pipelines que uniría
+(`D3D12: folding would merge pipelines`). `pso_fold_rules=<máscara hex>` elige las reglas, en el orden
+de `PipelineKeyFold::Rule`. Lo verifica `tools/xbox/tests/run-pipeline-key-fold.ps1`.
+
+Sigue apagado porque rinde poco y falta una duda por resolver. Una simulación sobre las cachés de 26
+juegos da una mediana de ~6 % menos de compilaciones del driver, porque la caché de PSOs ya deduplica
+casi todo. En consola, `pso_fold=check` en un juego dio 78 de 879 pares con shaders distintos, todos
+con el shader en otra dirección de memoria del juego, y no se sabe por qué difieren. `pso_fold=on` no
+se ha probado en consola.
 
 El hilo `HostTiming` duerme hasta poco antes de cada evento con un timer de alta resolución y
 solo espera en la CPU el retraso que ese timer suele tener (decenas de microsegundos). Con
