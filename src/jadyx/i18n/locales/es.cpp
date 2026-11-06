@@ -693,6 +693,8 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::AsyncRecordHint, L"Avanzado. Envía los comandos en un hilo aparte. Apagarlo puede bajar los fps. Se aplica al iniciar el juego"},
     {Text::SlowGuestClock, L"Reloj del juego al 90 %"},
     {Text::SlowGuestClockHint, L"Para juegos que saltan entre 20 y 30 fps. Si se ve lento, apágalo"},
+    {Text::ExactGpuReads, L"Lecturas exactas de GPU"},
+    {Text::ExactGpuReadsHint, L"Solo si un juego falla o se comporta raro. Puede bajar los fps"},
     {Text::GameGraphicsAdvancedHint, L"Avanzado, solo para este juego. Se aplica la próxima vez que lo inicies. Si algo falla, restablécelas"},
     {Text::AdvancedAnisotropy, L"Filtro anisotrópico"},
     {Text::AdvancedAnisotropyHint, L"Texturas más nítidas vistas en ángulo. Usa un poco más de GPU"},

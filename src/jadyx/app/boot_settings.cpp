@@ -41,6 +41,7 @@
 #include "video_core/perf_counters.h"
 #include "video_core/performance_overlay.h"
 #include "video_core/query_cache.h"
+#include "video_core/rasterizer_download_area.h"
 #include "video_core/readback_trace.h"
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 #include "video_core/renderer_d3d12/d3d12_frame_gen_pacer.h"
@@ -129,7 +130,10 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
     }
     const u32 clock_percent = config.guest_clock_percent.value_or(game.slow_guest_clock ? SlowGuestClockPercent : 100);
     system.CoreTiming().SetGuestClockPercent(clock_percent);
-    WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, upscaling " +
+    const bool exact_gpu_reads = config.exact_gpu_reads.value_or(game.exact_gpu_reads);
+    VideoCore::SetExactGpuReads(exact_gpu_reads);
+    WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, exact GPU reads " +
+              (exact_gpu_reads ? "on" : "off") + ", upscaling " +
               (config.upscaling ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(UpscalingText(graphics.upscaling)))) +
               ", frame generation " +
               (config.frame_gen ? std::string{"from boot.cfg"} : std::string{graphics.frame_gen ? "auto" : "off"}) +

@@ -17,9 +17,22 @@ struct RasterizerDownloadArea {
     u64 epoch{~u64{}};
 };
 
-/// Advanced before every fence and syncpoint the GPU thread signals. A CPU read that skips the
-/// flush check because an earlier read checked the same area must not skip it once the guest can
-/// have learned of GPU work done after that check.
+/// A game's "exact GPU reads": a CPU read waits for a GPU write not yet in guest memory, and a read
+/// checks again after every fence. Off, the guest may read a preflushable range before its download
+/// lands, but core 0 does not stop for the GPU's whole queue on each rewritten page.
+inline std::atomic<bool> exact_gpu_reads{false};
+
+inline bool ExactGpuReads() {
+    return exact_gpu_reads.load(std::memory_order_relaxed);
+}
+
+inline void SetExactGpuReads(bool enabled) {
+    exact_gpu_reads.store(enabled, std::memory_order_relaxed);
+}
+
+/// Advanced before every fence and syncpoint the GPU thread signals while exact GPU reads are on. A
+/// CPU read that skips the flush check because an earlier read checked the same area must not skip
+/// it once the guest can have learned of GPU work done after that check.
 inline std::atomic<u64> download_area_epoch{0};
 
 inline u64 DownloadAreaEpoch() {

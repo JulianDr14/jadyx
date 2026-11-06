@@ -134,6 +134,12 @@ int main() {
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Confirm) && shaders.slow_guest_clock);
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::GuestClock) == L"Sí");
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.slow_guest_clock);
+    // Exact GPU reads are the game's own too, and off until the player turns them on.
+    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::ExactGpuReads));
+    check(!IsAdvancedRow(GraphicsRow::ExactGpuReads) && GameGraphicsRowValue(global, shaders, GraphicsRow::ExactGpuReads) == L"No");
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Confirm) && shaders.exact_gpu_reads);
+    check(GameGraphicsRowValue(global, shaders, GraphicsRow::ExactGpuReads) == L"Sí");
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.exact_gpu_reads);
 
     // The advanced rows: only the game's, default until changed, and reset only with A.
     GameGraphics tuned;

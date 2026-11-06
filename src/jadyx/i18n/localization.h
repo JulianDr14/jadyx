@@ -643,6 +643,8 @@ enum class Text : std::uint16_t {
     AsyncRecordHint,
     SlowGuestClock,
     SlowGuestClockHint,
+    ExactGpuReads,
+    ExactGpuReadsHint,
     GameGraphicsAdvancedHint,
     AdvancedAnisotropy,
     AdvancedAnisotropyHint,

@@ -164,7 +164,7 @@ int main() {
         while (graphics.SelectedItem() != GameMenu::GraphicsMenu) graphics.Apply(MenuAction::Down);
         check(graphics.Apply(MenuAction::Confirm) == GameMenuResult::None);
         check(graphics.CurrentPage() == GameMenu::Page::Graphics && graphics.PageTitle() == L"Gráficos");
-        check(graphics.Rows().size() == 8);
+        check(graphics.Rows().size() == 9);
         for (const auto& row : graphics.Rows()) {
             check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedAnisotropy)});
             check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedTextureQuality)});
@@ -179,6 +179,10 @@ int main() {
         while (graphics.SelectedItem() != GameMenu::GfxGuestClock) graphics.Apply(MenuAction::Down);
         check(graphics.Apply(MenuAction::Confirm) == GameMenuResult::GraphicsChanged &&
               graphics.Settings().graphics.slow_guest_clock);
+        while (graphics.SelectedItem() != GameMenu::GfxExactGpuReads) graphics.Apply(MenuAction::Down);
+        check(!graphics.Settings().graphics.exact_gpu_reads);
+        check(graphics.Apply(MenuAction::Confirm) == GameMenuResult::GraphicsChanged &&
+              graphics.Settings().graphics.exact_gpu_reads);
         while (graphics.SelectedItem() != GameMenu::GfxTextureMemory) graphics.Apply(MenuAction::Down);
         check(graphics.Apply(MenuAction::Right) == GameMenuResult::GraphicsChanged &&
               graphics.Settings().graphics.advanced.texture_cap_mib == 512);
@@ -194,7 +198,7 @@ int main() {
         GameMenu handheld_menu{handheld, true};
         while (handheld_menu.SelectedItem() != GameMenu::GraphicsMenu) handheld_menu.Apply(MenuAction::Down);
         handheld_menu.Apply(MenuAction::Confirm);
-        check(handheld_menu.Rows().size() == 6);
+        check(handheld_menu.Rows().size() == 8);
 
         // Without a title id there is nothing to keep it under.
         GameMenu no_title{{}};

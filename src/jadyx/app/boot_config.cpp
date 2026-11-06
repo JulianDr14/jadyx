@@ -306,6 +306,11 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 }
                 continue;
             }
+            if (line == "exact_gpu_reads=0" || line == "exact_gpu_reads=1") {
+                config.exact_gpu_reads = line.back() == '1';
+                WriteDiag(std::string("boot.cfg: exact GPU reads ") + (*config.exact_gpu_reads ? "on" : "off"));
+                continue;
+            }
             if (line.starts_with("jit_prewarm_mib=")) {
                 const std::string_view value = std::string_view{line}.substr(16);
                 u32 parsed{};

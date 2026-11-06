@@ -278,6 +278,8 @@ struct BootConfig {
     VideoCore::FramePipeline::Mode vsync_nowait{VideoCore::FramePipeline::Mode::On};
     /// "guest_clock_scale=50-100", over the game's own setting (CoreTiming::SetGuestClockPercent).
     std::optional<u32> guest_clock_percent;
+    /// "exact_gpu_reads=0|1", over the game's own setting (VideoCore::SetExactGpuReads).
+    std::optional<bool> exact_gpu_reads;
     /// "swap_interval_hold=0|1|check".
     VideoCore::FramePipeline::Mode swap_interval_hold{VideoCore::FramePipeline::Mode::Off};
     /// "pso_budget=0|1|check" (D3D12::SetPsoBudget).
