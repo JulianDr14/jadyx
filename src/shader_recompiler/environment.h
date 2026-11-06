@@ -67,6 +67,8 @@ struct ConstBufferAddr {
     IR::U32 dynamic_offset;
     u32 count;
     bool has_secondary;
+    /// The handle is a fragment input instead of a constant buffer word; offset holds the attribute.
+    bool varying_handle{};
 };
 
 class Environment {
