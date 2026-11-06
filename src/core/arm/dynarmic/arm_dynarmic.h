@@ -50,4 +50,11 @@ inline void SetPageTableExclusives(bool enabled) {
     g_page_table_exclusives.store(enabled, std::memory_order_relaxed);
 }
 
+/// Whether JITs created afterwards share their page table loads and stores in thunks (off: inline
+/// in each block). Defaults on: inline code fills the code caches much sooner.
+inline std::atomic<bool> g_page_table_thunks{true};
+inline void SetPageTableThunks(bool enabled) {
+    g_page_table_thunks.store(enabled, std::memory_order_relaxed);
+}
+
 } // namespace Core

@@ -182,6 +182,10 @@ struct UserConfig {
     /// keep page_table. 0: loads and stores share page_table. Must fit a 32-bit displacement.
     std::int32_t page_table_read_offset = 0;
 
+    /// Blocks call shared thunks for their page table loads and stores (small code, a call and a
+    /// return per access). False: each block holds the lookup inline (bigger code, no call).
+    bool page_table_thunks = true;
+
     /// Setting this value has Dynarmic check the specified bit of the page pointer provided by page table.
     /// If the bit is set to 1, Dynarmic will treat it as unmapped.
     /// This bit should be included as part of `page_table_pointer_mask`.

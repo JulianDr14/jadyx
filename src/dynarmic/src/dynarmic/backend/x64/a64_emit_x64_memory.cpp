@@ -290,7 +290,8 @@ void A64EmitX64::GenFastmemFallbacks() {
 // The slow path restores the registers and tail-calls the fallback, which returns to the block.
 void A64EmitX64::GenPageTableThunks() {
     const size_t address_bits = conf.page_table_address_space_bits;
-    if (!conf.page_table || conf.check_halt_on_memory_access || !conf.absolute_offset_page_table ||
+    if (!conf.page_table_thunks ||
+        !conf.page_table || conf.check_halt_on_memory_access || !conf.absolute_offset_page_table ||
         conf.page_table_pointer_mask != 0 || conf.page_table_marked_bit ||
         conf.page_table_sign_extension || conf.silently_mirror_page_table ||
         conf.page_table_log2_stride != 3 || address_bits <= page_table_const_bits ||

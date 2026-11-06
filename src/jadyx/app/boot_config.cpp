@@ -42,6 +42,9 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
             if (line == "small_textures=1" || line == "small_textures=0") {
                 config.small_textures = line == "small_textures=1";
                 WriteDiag("boot.cfg: " + line);
+            } else if (line == "jit_thunks=1" || line == "jit_thunks=0") {
+                config.jit_thunks = line == "jit_thunks=1";
+                WriteDiag("boot.cfg: " + line);
             } else if (line == "spare_heaps=1" || line == "spare_heaps=0") {
                 config.spare_heaps = line == "spare_heaps=1";
                 WriteDiag("boot.cfg: " + line);
@@ -431,6 +434,7 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 line.starts_with("memory_coordinator") ||
                 line.starts_with("oom_reserve_mib=") ||
                 line.starts_with("spare_heaps=") ||
+                line.starts_with("jit_thunks=") ||
                 line.starts_with("gpu_unswizzle=") ||
                 line.starts_with("cached_staging=") ||
                 line.starts_with("cpu_texture_writes=") ||

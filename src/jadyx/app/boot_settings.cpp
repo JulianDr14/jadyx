@@ -246,7 +246,8 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
                                                                : "hybrid diagnostic") +
               (fastmem_enabled ? " (hot " + std::to_string(config.fastmem_hot_mib) + " MiB)" : "") +
               ", D3D12 pipeline workers on, dependent draws preserved" +
-              ", JIT cache " + std::to_string(config.jit_cache_mib) + " MiB per core");
+              ", JIT cache " + std::to_string(config.jit_cache_mib) + " MiB per core" +
+              ", guest memory accesses " + (config.jit_thunks ? "through thunks" : "inline"));
     D3D12::SetTracedFrame(config.traced_frame, config.traced_frames);
     D3D12::SetMaterialProbe(config.material_probe_x, config.material_probe_y);
     D3D12::SetMaterialCaptureFrame(config.material_capture_frame);
@@ -261,6 +262,7 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     Dynarmic::SetCodeCacheCap(0);
     Dynarmic::SetDualMappedCode(config.jit_dual_map);
     Core::SetPageTableExclusives(config.inline_exclusives);
+    Core::SetPageTableThunks(config.jit_thunks);
     D3D12::SetAppMemoryQuery(QueryAppMemory);
     D3D12::SetBcArrayDecode(!config.bc_arrays_native);
     D3D12::SetTextureMemoryCap(u64{config.texture_cap_mib} << 20);
