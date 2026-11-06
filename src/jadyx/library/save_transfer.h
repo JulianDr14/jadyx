@@ -33,7 +33,7 @@ struct SavePlan {
 
 /// Checks an archive listing and maps it onto the save folder. Pure: tested without a disk.
 /// Ignores what Mac and Windows add to archives, and steps into the folders a save is usually
-/// zipped in (the title id, "0", Ryujinx's bis/user/save/<n>/0...).
+/// zipped in (the title id, alone or as "<id>-save", "0", Ryujinx's bis/user/save/<n>/0...).
 SavePlan PlanSaveImport(const std::vector<Mods::ArchiveItem>& items, std::uint64_t application);
 
 /// Zips `folder`'s contents (stored, no compression) into `zip`. Returns an error word.

@@ -42,10 +42,12 @@ bool Hex(std::string_view text, std::size_t size) {
            std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isxdigit(c) != 0; });
 }
 
-/// A program id folder (0100...): the title a save belongs to. Other 16-digit folders are the
-/// device and user folders around it ("0000000000000000", Ryujinx's "0000000000000001").
+/// A program id folder (0100...): the title a save belongs to. The id may have a suffix: a downloaded
+/// save unpacks into "<id>-save", and Windows adds " (1)" to a second copy. Other 16-digit folders
+/// are the device and user folders around it ("0000000000000000", Ryujinx's "0000000000000001").
 bool TitleFolder(std::string_view name) {
-    return Hex(name, 16) && name.starts_with("01");
+    if (name.size() > 16 && std::isalnum(static_cast<unsigned char>(name[16])) != 0) return false;
+    return Hex(name.substr(0, 16), 16) && name.starts_with("01");
 }
 
 /// A folder a save is found inside of when copied from an emulator's tree, never one of a game's.
@@ -152,7 +154,7 @@ Step Next(const Level& level, std::string_view ours) {
                                     [](const std::string& f) { return TitleFolder(f); });
     if (titles) {
         for (const auto& folder : level.folders)
-            if (Lower(folder) == Lower(ours)) return {Step::Kind::Enter, folder};
+            if (Lower(folder.substr(0, 16)) == Lower(ours)) return {Step::Kind::Enter, folder};
         std::string found;
         std::size_t listed = 0;
         for (const auto& folder : level.folders) {

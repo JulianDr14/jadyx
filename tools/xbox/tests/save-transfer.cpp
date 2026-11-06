@@ -82,6 +82,13 @@ void PlanCases() {
     Expect({"0100AAAABBBB0000/main.dat", "0100AAAABBBB0000/slot/1.bin"}, {"main.dat", "slot/1.bin"},
            "title folder");
     Expect({"0100aaaabbbb0000/main.dat"}, {"main.dat"}, "title folder, lower case");
+    Expect({"0100AAAABBBB0000-save/main.dat", "0100AAAABBBB0000-save/slot/1.bin"}, {"main.dat", "slot/1.bin"},
+           "a downloaded save unpacked and zipped again");
+    Expect({"0100AAAABBBB0000-save (1)/main.dat"}, {"main.dat"}, "a second copy of it");
+    Expect({"0100FFFF00000000-save/main.dat"}, {"!wrong_game:0100FFFF00000000-save"},
+           "a downloaded save of another game");
+    Expect({"0100AAAABBBB00001/main.dat"}, {"0100AAAABBBB00001/main.dat"}, "a longer number is not a title");
+    Expect({"0100AAAABBBB0000x/main.dat"}, {"0100AAAABBBB0000x/main.dat"}, "a longer name is not a title");
     Expect({"0/main.dat"}, {"main.dat"}, "newer layout's 0 folder");
     Expect({"0/main.dat", "1/old.dat"}, {"main.dat"}, "Ryujinx's 0 and 1");
     Expect({"0100AAAABBBB0000/0/main.dat"}, {"main.dat"}, "title then 0");
