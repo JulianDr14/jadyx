@@ -254,6 +254,12 @@ struct BootConfig {
     /// ("pipeline_key_reuse=1"; "=check" refreshes the key and logs every reuse that would have
     /// drawn with another pipeline; "=0" turns it off).
     D3D12::PipelineKeyTracking::Mode pipeline_key_reuse{D3D12::PipelineKeyTracking::Mode::On};
+    /// Keys that differ only in state their pipeline cannot show share one pipeline ("pso_fold=on";
+    /// "=check" keeps the pipelines apart, logs what it would save and compares the ones it would
+    /// merge; "=off"). Off until it has passed on the console.
+    D3D12::PipelineKeyFold::Mode pso_fold{D3D12::PipelineKeyFold::Mode::Off};
+    /// The rules it may use, a hexadecimal mask ("pso_fold_rules=ff"): one build tests each.
+    u32 pso_fold_rules{D3D12::PipelineKeyFold::ALL_RULES};
     // The draw-path reuse below is on since the console A/B of 0.3.9.111 (per-draw CPU down about
     // 15%); each one turns off with "<key>=0".
     bool upload_copy{true}; ///< Short uniform copies through write-combined stores.

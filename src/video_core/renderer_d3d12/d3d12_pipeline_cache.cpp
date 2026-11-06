@@ -43,6 +43,7 @@
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
 #include "video_core/renderer_d3d12/d3d12_memory_reserve.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_cache.h"
+#include "video_core/renderer_d3d12/d3d12_pipeline_key_fold.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/renderer_d3d12/d3d12_pso_blob_cache.h"
 #include "video_core/renderer_d3d12/d3d12_dxil_disk_cache.h"
@@ -911,9 +912,62 @@ PipelineCache::~PipelineCache() {
     }
 }
 
+void PipelineCache::NoteFoldCheck(GraphicsPipeline* pipeline) {
+    const auto [first, is_first] = fold_check_first.try_emplace(
+        PipelineKeyFold::Fold(pipeline->Key(), PipelineKeyFold::ActiveRules()), pipeline);
+    if (!is_first) {
+        fold_check_pending.emplace_back(first->second, pipeline);
+    }
+}
+
+void PipelineCache::TickFoldCheck() {
+    // Most pairs may stay dormant for long: each frame looks at a few and moves on.
+    static constexpr size_t PAIRS_PER_FRAME = 8;
+    for (size_t step = 0; step < PAIRS_PER_FRAME && !fold_check_pending.empty(); ++step) {
+        const auto [a, b] = fold_check_pending.front();
+        fold_check_pending.pop_front();
+        if (!a->IsBuilt() || !b->IsBuilt()) {
+            fold_check_pending.emplace_back(a, b);
+            continue;
+        }
+        if (!a->Handle() || !b->Handle()) {
+            continue;
+        }
+        const auto identity_a = a->FoldIdentity();
+        const auto identity_b = b->FoldIdentity();
+        if (!identity_a || !identity_b) {
+            continue;
+        }
+        ++fold_check_compared;
+        if (*identity_a == *identity_b) {
+            continue;
+        }
+        ++fold_check_mismatches;
+        const bool same_shaders = std::ranges::equal(
+            identity_a->shaders, identity_b->shaders,
+            [](const auto& x, const auto& y) { return std::ranges::equal(x, y); });
+        std::string rules;
+        for (size_t index = 0; index < PipelineKeyFold::NUM_RULES; ++index) {
+            const u32 bit = 1U << index;
+            if (PipelineKeyFold::Fold(a->Key(), bit) != a->Key() ||
+                PipelineKeyFold::Fold(b->Key(), bit) != b->Key()) {
+                rules += fmt::format(" {}", PipelineKeyFold::RULE_NAMES[index]);
+            }
+        }
+        LOG_ERROR(Render,
+                  "D3D12: folding would merge pipelines {:016x} and {:016x} (VS {:016x} PS "
+                  "{:016x}) whose {} differ; rules that change them:{}",
+                  a->KeyHash(), b->KeyHash(), a->Key().unique_hashes[1], a->Key().unique_hashes[5],
+                  same_shaders ? "descriptions" : "shaders", rules);
+    }
+}
+
 void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler& scheduler) {
     using Policy = PipelineResidencyPolicy;
     ++residency_frame;
+    if (!fold_check_pending.empty()) {
+        TickFoldCheck();
+    }
     u64 idle_frames = Policy::IdleFrames(snapshot.app_used, snapshot.app_limit);
     const u64 ledger = Common::MemoryLedgerCommittedBytes();
     const auto verdict_before = release_probe.GetVerdict();
@@ -1118,6 +1172,13 @@ void PipelineCache::LogPipelineStats(std::string_view when) const {
              when, stats.inline_builds.load(std::memory_order_relaxed),
              stats.prewarm_queued.load(std::memory_order_relaxed),
              stats.prewarm_hits.load(std::memory_order_relaxed), line);
+    if (PipelineKeyFold::GetMode() != PipelineKeyFold::Mode::Off) {
+        LOG_INFO(Render,
+                 "D3D12 pipeline key folding ({}): {} keys found a pipeline through it; checks: {} "
+                 "pairs compared, {} differ, {} waiting",
+                 when, fold_aliases, fold_check_compared, fold_check_mismatches,
+                 fold_check_pending.size());
+    }
     LogDxilDigestChecks();
     LogTranslatorPhases(when);
 }
@@ -1398,12 +1459,32 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         });
         ++state.total;
     }};
+    const PipelineKeyFold::Mode fold_mode = PipelineKeyFold::GetMode();
+    const u32 fold_rules = PipelineKeyFold::ActiveRules();
+    PipelineKeyFold::Census fold_census{fold_rules};
+    std::unordered_set<u64> folded_keys;
+    // Pipelines with a stored key in the hot set that was not the first to fold into them.
+    std::unordered_set<u64> hot_through_fold;
     const auto load_graphics{[&](std::ifstream& file, std::vector<FileEnvironment> envs) {
         GraphicsPipelineCacheKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
+        if (fold_mode != PipelineKeyFold::Mode::Off) {
+            fold_census.Add(key);
+        }
+        const u64 stored_hash = key.Hash();
+        if (fold_mode == PipelineKeyFold::Mode::On) {
+            key = PipelineKeyFold::Fold(key, fold_rules);
+            if (!folded_keys.insert(key.Hash()).second) {
+                if (hot_pipelines.Known(stored_hash)) {
+                    hot_through_fold.insert(key.Hash());
+                }
+                return; // Its pipeline is on its way, and nothing is translated for this one.
+            }
+        }
         // Every pipeline gets its DXIL; only the hot ones a PSO, the rest when first drawn.
         const size_t file_index = state.graphics++;
-        const bool build_pso = hot_pipelines.Prewarm(key.Hash(), file_index);
+        const bool build_pso = hot_pipelines.Prewarm(stored_hash, file_index) ||
+                               hot_pipelines.Prewarm(key.Hash(), file_index);
         state.prewarmed += build_pso ? 1 : 0;
 
         boot_workers.QueueWork([this, key, envs_ = std::move(envs), &state, &callback, build_pso,
@@ -1440,6 +1521,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
              hot_pipelines.HasHistory()
                  ? fmt::format("drawn in the last sessions, {} known", hot_pipelines.Size())
                  : std::string("no history yet: the first ones of the cache"));
+    if (fold_mode != PipelineKeyFold::Mode::Off) {
+        LOG_INFO(Render, "D3D12: pipeline cache: {}", fold_census.Describe());
+    }
 
     std::unique_lock lock{state.mutex};
     callback(VideoCore::LoadCallbackStage::Build, 0, state.total);
@@ -1469,14 +1553,21 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     for (const auto& [key, pipeline] : graphics_cache) {
         if (pipeline) {
             residency_sweep.push_back(pipeline.get());
+            if (fold_mode == PipelineKeyFold::Mode::Check) {
+                NoteFoldCheck(pipeline.get());
+            }
         }
     }
     // The background prewarm's order: drawn in a kept session but past the boot cap first, then
     // the rest in the order the game first drew them, which is roughly the order it goes through
     // its areas. Pipelines whose DXIL failed are Ready, not dormant, and are skipped when reached.
-    std::ranges::sort(state.dormant, [this](const auto& a, const auto& b) {
-        const bool known_a = hot_pipelines.Known(a.second->KeyHash());
-        const bool known_b = hot_pipelines.Known(b.second->KeyHash());
+    std::ranges::sort(state.dormant, [this, &hot_through_fold](const auto& a, const auto& b) {
+        const auto known = [&](const GraphicsPipeline* pipeline) {
+            return hot_pipelines.Known(pipeline->KeyHash()) ||
+                   hot_through_fold.contains(pipeline->KeyHash());
+        };
+        const bool known_a = known(a.second);
+        const bool known_b = known(b.second);
         return known_a != known_b ? known_a : a.first < b.first;
     });
     prewarm_order.clear();
@@ -1491,18 +1582,30 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
 }
 
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
-    const auto [pair, is_new]{graphics_cache.try_emplace(graphics_key)};
+    // Only here, past every faster way to find a pipeline: the draws that find one pay nothing,
+    // and graphics_key stays as the registers give it, since Refresh rewrites only what changed.
+    const PipelineKeyFold::Mode fold_mode = PipelineKeyFold::GetMode();
+    const GraphicsPipelineCacheKey key = fold_mode == PipelineKeyFold::Mode::On
+                                             ? PipelineKeyFold::Fold(graphics_key,
+                                                                     PipelineKeyFold::ActiveRules())
+                                             : graphics_key;
+    const auto [pair, is_new]{graphics_cache.try_emplace(key)};
     auto& pipeline{pair->second};
     if (is_new) {
         // Translating the shaders runs here, on the GPU thread, before the build is queued.
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PipelineStallUs};
         VideoCore::Perf::ScopedTimer frontend{VideoCore::Perf::Counter::PipelineFrontendUs};
         const u64 frontend_start = SteadyMicros();
-        pipeline = CreateGraphicsPipeline();
+        pipeline = CreateGraphicsPipeline(key);
         GetPipelineStats().Record(PipelineStage::Frontend, SteadyMicros() - frontend_start);
         if (pipeline) {
             residency_sweep.push_back(pipeline.get());
+            if (fold_mode == PipelineKeyFold::Mode::Check) {
+                NoteFoldCheck(pipeline.get());
+            }
         }
+    } else if (key != graphics_key) {
+        ++fold_aliases;
     }
     if (!pipeline) {
         // Its shaders failed to recompile or translate (reported once, below): every draw with
@@ -1514,7 +1617,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
         return nullptr;
     }
     if (current_pipeline) {
-        current_pipeline->AddTransition(pipeline.get());
+        current_pipeline->AddTransition(graphics_key, pipeline.get());
     }
     current_pipeline = pipeline.get();
     return BuiltPipeline(current_pipeline);
@@ -2093,18 +2196,19 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     return nullptr;
 }
 
-std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
+std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
+    const GraphicsPipelineCacheKey& key) {
     VideoCore::FrameTrace::ScopedSpan frontend_span{
-        VideoCore::FrameTrace::Event::PipelineFrontendLong, graphics_key.Hash()};
+        VideoCore::FrameTrace::Event::PipelineFrontendLong, key.Hash()};
     GraphicsEnvironments environments;
-    GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
+    GetGraphicsEnvironments(environments, key.unique_hashes);
 
     main_pools.ReleaseContents();
-    auto pipeline{CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), true)};
+    auto pipeline{CreateGraphicsPipeline(main_pools, key, environments.Span(), true)};
     if (!pipeline || pipeline_cache_filename.empty()) {
         return pipeline;
     }
-    serialization_thread.QueueWork([this, key = graphics_key, envs = std::move(environments.envs)] {
+    serialization_thread.QueueWork([this, key, envs = std::move(environments.envs)] {
         boost::container::static_vector<const GenericEnvironment*, Maxwell::MaxShaderProgram>
             env_ptrs;
         for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {

@@ -360,6 +360,8 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     Service::Nvidia::Devices::nvdisp_disp0::SetReleaseFence(config.nv_release_fence);
     ApplyGpuFence(config.gpu_fence.value_or(global_graphics.gpu_fence));
     D3D12::PipelineKeyTracking::SetMode(config.pipeline_key_reuse);
+    D3D12::PipelineKeyFold::SetMode(config.pso_fold);
+    D3D12::PipelineKeyFold::SetRules(config.pso_fold_rules);
     D3D12::SetUniformUploadCopy(config.upload_copy);
     D3D12::SetUniformReuse(config.uniform_reuse);
     VideoCommon::SetRenderTargetEarlyOut(config.rt_early_out);

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <deque>
 #include <filesystem>
 #include <memory>
 #include <span>
@@ -198,7 +199,13 @@ private:
     /// Logs each preparation stage's distribution and the waits by cause, totals so far.
     void LogPipelineStats(std::string_view when) const;
 
-    std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline();
+    std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(const GraphicsPipelineCacheKey& key);
+
+    /// boot.cfg "pso_fold=check": queues the pipeline against the first one folding would merge it
+    /// with. GPU thread, or the loading thread once its workers are done.
+    void NoteFoldCheck(GraphicsPipeline* pipeline);
+    /// Compares a few of the queued pairs that are built by now, once a frame.
+    void TickFoldCheck();
 
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
         ShaderPools& pools, const GraphicsPipelineCacheKey& key,
@@ -253,6 +260,12 @@ private:
     std::unordered_set<u64> mirror_border_shaders;
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>>
         graphics_cache;
+    u64 fold_aliases{}; ///< Keys that found a pipeline only through folding. GPU thread only.
+    // boot.cfg "pso_fold=check". GPU thread only once the disk cache is loaded.
+    ::Common::unordered_map<GraphicsPipelineCacheKey, GraphicsPipeline*> fold_check_first;
+    std::deque<std::pair<GraphicsPipeline*, GraphicsPipeline*>> fold_check_pending;
+    u64 fold_check_compared{};
+    u64 fold_check_mismatches{};
 
     ShaderPools main_pools;
 
