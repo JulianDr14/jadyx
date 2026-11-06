@@ -607,6 +607,13 @@ TextureResourceAllocator::Resource TextureResourceAllocator::CreateImpl(
 
     if (want_spare) spare_worker->Request(heap_class);
 
+    // A sudden jump in commit otherwise has no owner in the log.
+    if (info.SizeInBytes >= 128ULL * 1024 * 1024) {
+        LOG_WARNING(Render, "D3D12: large texture: {} MiB, {}x{}x{} format {}, {} mips",
+                    info.SizeInBytes / (1024 * 1024), desc.Width, desc.Height,
+                    desc.DepthOrArraySize, static_cast<u32>(desc.Format), desc.MipLevels);
+    }
+
     Resource result;
     if (selected != SIZE_MAX) {
         const HRESULT placed_hr = device.Get()->CreatePlacedResource(
