@@ -24,7 +24,18 @@
         "ENABLE_OPENGL": "OFF",
         "YUZU_TESTS": "OFF",
         "DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT": "ON",
-        "DYNARMIC_UWP_APPCONTAINER": "ON"
+        "DYNARMIC_UWP_APPCONTAINER": "ON",
+        "JADYX_HOST_LTO": "ON"
+      }
+    },
+    {
+      "name": "uwp-x64-nolto",
+      "inherits": "uwp-x64",
+      "displayName": "Xbox UWP / AppContainer (x64, no LTO, fast iteration)",
+      "description": "Same build as uwp-x64 without whole-program optimization, in its own binary dir: links far faster for fixes that need many builds, such as graphics corrections. Runs slower, so never use it for performance measurements or releases.",
+      "binaryDir": "${sourceDir}/build-uwp-nolto",
+      "cacheVariables": {
+        "JADYX_HOST_LTO": "OFF"
       }
     }
   ],
@@ -33,6 +44,11 @@
       "name": "uwp-x64",
       "configurePreset": "uwp-x64",
       "description": "Build the Eden core stack for UWP. Add --target <core|dynarmic|common|video_core> to scope."
+    },
+    {
+      "name": "uwp-x64-nolto",
+      "configurePreset": "uwp-x64-nolto",
+      "description": "Build without LTO for fast iteration. Add --target jadyx."
     }
   ]
 }
