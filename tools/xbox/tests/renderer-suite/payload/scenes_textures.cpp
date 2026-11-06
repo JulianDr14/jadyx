@@ -744,6 +744,44 @@ void RegisterTextures(std::vector<SceneEntry>& scenes) {
         // In gather order: (0,1), (1,1), (1,0), (0,0).
         gpu.Expect(16, 16, {0.6, 0.8, 0.4, 0.2});
     }});
+    // Gathers of the green and blue channels with texel offsets, which the console's compiler
+    // faults on as instructions: they move the coordinates instead. Texel (x, y) holds green
+    // (x + 4y) * 16 + 8 and blue 255 minus that; the footprint at the centre starts at (1, 1).
+    const auto offset_texels = [](Gpu& gpu) -> Image& {
+        Image& image = gpu.MakeImage(DkImageFormat_RGBA8_Unorm, 4, 4);
+        uint8_t texels[64];
+        for (uint32_t i = 0; i < 16; ++i) {
+            const uint8_t green = static_cast<uint8_t>(i * 16 + 8);
+            texels[i * 4 + 0] = 0;
+            texels[i * 4 + 1] = green;
+            texels[i * 4 + 2] = static_cast<uint8_t>(255 - green);
+            texels[i * 4 + 3] = 255;
+        }
+        gpu.Upload(image, texels, sizeof(texels), 4, 4);
+        return image;
+    };
+    scenes.push_back({"texture_gather_offset_green", [offset_texels](Gpu& gpu) {
+        Image& image = offset_texels(gpu);
+        Image& result = gpu.Begin();
+        gpu.Shaders("basic_vsh", "gather_offset_fsh");
+        gpu.cmd.bindTextures(DkStage_Fragment, 0, gpu.Texture(image, Linear()));
+        gpu.Full(White);
+        gpu.Finish(&result);
+        // Offset (-1, 1): texels (0,3), (1,3), (1,2), (0,2).
+        gpu.Expect(8, 16, {200 / 255.0, 216 / 255.0, 152 / 255.0, 136 / 255.0});
+        // Offset (2, -1): x 3..4 clamps to 3, texels (3,1), (3,1), (3,0), (3,0).
+        gpu.Expect(24, 16, {120 / 255.0, 120 / 255.0, 56 / 255.0, 56 / 255.0});
+    }});
+    scenes.push_back({"texture_gather_offsets_blue", [offset_texels](Gpu& gpu) {
+        Image& image = offset_texels(gpu);
+        Image& result = gpu.Begin();
+        gpu.Shaders("basic_vsh", "gather_offsets_fsh");
+        gpu.cmd.bindTextures(DkStage_Fragment, 0, gpu.Texture(image, Linear()));
+        gpu.Full(White);
+        gpu.Finish(&result);
+        // Blue of texels (1,1), (2,1), (0,2), (2,2).
+        gpu.Expect(16, 16, {167 / 255.0, 151 / 255.0, 119 / 255.0, 87 / 255.0});
+    }});
 
     // Multisampling.
     scenes.push_back({"ms_resolve_solid", [](Gpu& gpu) {
