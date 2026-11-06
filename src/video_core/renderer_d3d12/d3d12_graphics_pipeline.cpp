@@ -722,9 +722,10 @@ GraphicsPipeline::DxilReleaseStats GraphicsPipeline::GetDxilReleaseStats() noexc
             .failed = dxil_reload_failed.load(std::memory_order_relaxed)};
 }
 
-void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
+void GraphicsPipeline::AddTransition(const GraphicsPipelineCacheKey& from_key,
+                                     GraphicsPipeline* transition) {
     transition_order.push_back(static_cast<u32>(transition_keys.size()));
-    transition_keys.push_back(transition->key);
+    transition_keys.push_back(from_key);
     transitions.push_back(transition);
 }
 
@@ -1854,6 +1855,31 @@ bool GraphicsPipeline::BuildTessEmulation(std::span<const D3D12_INPUT_ELEMENT_DE
               "TCS {:016x}",
               static_cast<u32>(hr), key.unique_hashes[1], key.unique_hashes[2]);
     return false;
+}
+
+std::optional<GraphicsPsoKey> GraphicsPipeline::FoldIdentity() const {
+    if (!dxil) {
+        return std::nullopt;
+    }
+    std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
+    auto desc = Describe(elements);
+    auto& depth = desc.DepthStencilState;
+    if (!depth.StencilEnable) {
+        depth.FrontFace = {};
+        depth.BackFace = {};
+    }
+    if (!depth.DepthEnable) {
+        depth.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    }
+    for (auto& target : desc.BlendState.RenderTarget) {
+        if (target.RenderTargetWriteMask == 0) {
+            target = {};
+        }
+    }
+    desc.RasterizerState.DepthBiasClamp = RoundDepthBiasStep(desc.RasterizerState.DepthBiasClamp);
+    desc.RasterizerState.SlopeScaledDepthBias =
+        RoundDepthBiasStep(desc.RasterizerState.SlopeScaledDepthBias);
+    return MakeGraphicsPsoKey(desc, dxil);
 }
 
 ID3D12PipelineState* GraphicsPipeline::CulledHandle(D3D12_CULL_MODE mode, u8 back_read_mask,

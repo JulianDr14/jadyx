@@ -313,7 +313,9 @@ public:
     GraphicsPipeline(const GraphicsPipeline&) = delete;
     GraphicsPipeline& operator=(const GraphicsPipeline&) = delete;
 
-    void AddTransition(GraphicsPipeline* transition);
+    /// A draw with from_key, the key as the guest's registers give it, goes to transition. Folding
+    /// makes that a key other than the transition's own, and may make the transition this pipeline.
+    void AddTransition(const GraphicsPipelineCacheKey& from_key, GraphicsPipeline* transition);
 
     [[nodiscard]] GraphicsPipeline* Next(const GraphicsPipelineCacheKey& current_key) noexcept {
         if (key == current_key) {
@@ -455,6 +457,10 @@ public:
     [[nodiscard]] const GraphicsPipelineCacheKey& Key() const noexcept {
         return key;
     }
+
+    /// GPU thread, built: its PSO's identity without what the folding rules may change, to compare
+    /// pipelines folding would merge. Empty while it holds no DXIL.
+    [[nodiscard]] std::optional<GraphicsPsoKey> FoldIdentity() const;
 
     [[nodiscard]] u8 BoundColorTargets() const noexcept {
         return bound_color_targets;
