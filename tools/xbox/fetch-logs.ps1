@@ -19,7 +19,10 @@ function Get-Portal([string] $path, [string] $outFile = '') {
 }
 
 $packages = (Get-Portal '/api/app/packagemanager/packages' | Out-String | ConvertFrom-Json).InstalledPackages
-$package = $packages | Where-Object { $_.PackageFullName -like 'Jadyx_*' } | Select-Object -First 1
+# Several versions can be registered at once (one per console user): the newest has the logs.
+$package = $packages | Where-Object { $_.PackageFullName -like 'Jadyx_*' } |
+    Sort-Object { [version]"$($_.Version.Major).$($_.Version.Minor).$($_.Version.Build).$($_.Version.Revision)" } -Descending |
+    Select-Object -First 1
 if (!$package) { throw "Jadyx is not installed on $Console" }
 $name = $package.PackageFullName
 $query = "knownfolderid=LocalAppData&packagefullname=$name&path=" + [uri]::EscapeDataString('\LocalState\jadyx\log')
