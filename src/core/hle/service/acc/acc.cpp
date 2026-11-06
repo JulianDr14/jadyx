@@ -9,6 +9,7 @@
 
 #include "common/common_types.h"
 #include "common/fs/file.h"
+#include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include <ranges>
@@ -37,6 +38,13 @@ constexpr std::size_t THUMBNAIL_SIZE = 0x24000;
 static std::filesystem::path GetImagePath(const Common::UUID& uuid) {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir) /
            fmt::format("system/save/8000000000000010/su/avators/{}.jpg", uuid.FormattedString());
+}
+
+/// Save data thumbnails are per user and application, in the account service's system save.
+static std::filesystem::path ThumbnailPath(const Common::UUID& uuid, u64 application) {
+    return Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir) /
+           fmt::format("system/save/8000000000000010/su/thumbnails/{}/{:016X}.bin",
+                       uuid.FormattedString(), application);
 }
 
 static void JPGToMemory(void* context, void* data, int len) {
@@ -1151,13 +1159,9 @@ void Module::Interface::StoreSaveDataThumbnailApplication(HLERequestContext& ctx
     IPC::RequestParser rp{ctx};
     const auto uuid = rp.PopRaw<Common::UUID>();
 
-    LOG_WARNING(Service_ACC, "(STUBBED) called, uuid=0x{}", uuid.RawString());
+    LOG_DEBUG(Service_ACC, "called, uuid=0x{}", uuid.RawString());
 
-    // TODO(ogniK): Check if application ID is zero on acc initialize. As we don't have a reliable
-    // way of confirming things like the TID, we're going to assume a non zero value for the time
-    // being.
-    constexpr u64 tid{1};
-    StoreSaveDataThumbnail(ctx, uuid, tid);
+    StoreSaveDataThumbnail(ctx, uuid, system.GetApplicationProcessProgramID());
 }
 
 void Module::Interface::GetBaasAccountManagerForSystemService(HLERequestContext& ctx) {
@@ -1176,7 +1180,7 @@ void Module::Interface::StoreSaveDataThumbnailSystem(HLERequestContext& ctx) {
     const auto uuid = rp.PopRaw<Common::UUID>();
     const auto tid = rp.Pop<u64_le>();
 
-    LOG_WARNING(Service_ACC, "(STUBBED) called, uuid=0x{}, tid={:016X}", uuid.RawString(), tid);
+    LOG_DEBUG(Service_ACC, "called, uuid=0x{}, tid={:016X}", uuid.RawString(), tid);
     StoreSaveDataThumbnail(ctx, uuid, tid);
 }
 
@@ -1211,8 +1215,81 @@ void Module::Interface::StoreSaveDataThumbnail(HLERequestContext& ctx, const Com
         return;
     }
 
-    // TODO(ogniK): Construct save data thumbnail
+    const auto path = ThumbnailPath(uuid, tid);
+    const auto thumbnail = ctx.ReadBuffer();
+    if (!Common::FS::CreateParentDirs(path) ||
+        Common::FS::IOFile{path, Common::FS::FileAccessMode::Write,
+                           Common::FS::FileType::BinaryFile}
+                .WriteSpan(thumbnail) != thumbnail.size()) {
+        LOG_ERROR(Service_ACC, "Could not write the save data thumbnail of {:016X}", tid);
+    }
     rb.Push(ResultSuccess);
+}
+
+void Module::Interface::ClearSaveDataThumbnail(HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto uuid = rp.PopRaw<Common::UUID>();
+    const auto tid = rp.Pop<u64_le>();
+
+    LOG_DEBUG(Service_ACC, "called, uuid=0x{}, tid={:016X}", uuid.RawString(), tid);
+
+    IPC::ResponseBuilder rb{ctx, 2};
+    if (tid == 0) {
+        rb.Push(Account::ResultInvalidApplication);
+        return;
+    }
+    if (uuid.IsInvalid()) {
+        rb.Push(Account::ResultInvalidUserId);
+        return;
+    }
+    Common::FS::RemoveFile(ThumbnailPath(uuid, tid));
+    rb.Push(ResultSuccess);
+}
+
+void Module::Interface::LoadSaveDataThumbnail(HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto uuid = rp.PopRaw<Common::UUID>();
+    const auto tid = rp.Pop<u64_le>();
+
+    LOG_DEBUG(Service_ACC, "called, uuid=0x{}, tid={:016X}", uuid.RawString(), tid);
+
+    if (tid == 0 || uuid.IsInvalid()) {
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(tid == 0 ? Account::ResultInvalidApplication : Account::ResultInvalidUserId);
+        return;
+    }
+    // A save without a thumbnail is normal: nothing has been stored for it yet.
+    size_t size = 0;
+    const auto path = ThumbnailPath(uuid, tid);
+    if (Common::FS::Exists(path)) {
+        std::vector<u8> thumbnail(std::min(ctx.GetWriteBufferSize(), THUMBNAIL_SIZE));
+        Common::FS::IOFile file{path, Common::FS::FileAccessMode::Read,
+                                Common::FS::FileType::BinaryFile};
+        size = file.ReadSpan(std::span<u8>{thumbnail});
+        if (size != 0) {
+            ctx.WriteBuffer(thumbnail.data(), size);
+        }
+    }
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(ResultSuccess);
+    rb.Push(static_cast<u32>(size));
+}
+
+void Module::Interface::GetSaveDataThumbnailExistence(HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto uuid = rp.PopRaw<Common::UUID>();
+    const auto tid = rp.Pop<u64_le>();
+
+    LOG_DEBUG(Service_ACC, "called, uuid=0x{}, tid={:016X}", uuid.RawString(), tid);
+
+    if (tid == 0 || uuid.IsInvalid()) {
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(tid == 0 ? Account::ResultInvalidApplication : Account::ResultInvalidUserId);
+        return;
+    }
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(ResultSuccess);
+    rb.Push<u8>(Common::FS::Exists(ThumbnailPath(uuid, tid)) ? 1 : 0);
 }
 
 void Module::Interface::TrySelectUserWithoutInteractionDeprecated(HLERequestContext& ctx) {
@@ -1337,9 +1414,9 @@ public:
             {105, nullptr, "CheckNetworkServiceAvailabilityAsync"},
             {106, nullptr, "GetProfileSyncNotifier"},
             {110, &ACC_SU::StoreSaveDataThumbnailSystem, "StoreSaveDataThumbnail"},
-            {111, nullptr, "ClearSaveDataThumbnail"},
-            {112, nullptr, "LoadSaveDataThumbnail"},
-            {113, nullptr, "GetSaveDataThumbnailExistence"},
+            {111, &ACC_SU::ClearSaveDataThumbnail, "ClearSaveDataThumbnail"},
+            {112, &ACC_SU::LoadSaveDataThumbnail, "LoadSaveDataThumbnail"},
+            {113, &ACC_SU::GetSaveDataThumbnailExistence, "GetSaveDataThumbnailExistence"},
             {120, nullptr, "ListOpenUsersInApplication"},
             {130, nullptr, "ActivateOpenContextRetention"},
             {140, &ACC_SU::ListQualifiedUsers, "ListQualifiedUsers"},
@@ -1410,7 +1487,7 @@ public:
             {102, nullptr, "AuthenticateApplicationAsync"},
             {103, nullptr, "CheckNetworkServiceAvailabilityAsync"}, // 4.0.0+
             {110, &ACC_U0::StoreSaveDataThumbnailApplication, "StoreSaveDataThumbnail"},
-            {111, nullptr, "ClearSaveDataThumbnail"},
+            {111, &ACC_U0::ClearSaveDataThumbnail, "ClearSaveDataThumbnail"},
             {120, nullptr, "CreateGuestLoginRequest"},
             {130, nullptr, "LoadOpenContext"}, // 5.0.0+
             {131, &ACC_U0::ListOpenContextStoredUsers, "ListOpenContextStoredUsers"}, // 6.0.0+
@@ -1452,9 +1529,9 @@ public:
             {105, nullptr, "CheckNetworkServiceAvailabilityAsync"},
             {106, nullptr, "GetProfileSyncNotifier"},
             {110, &ACC_U1::StoreSaveDataThumbnailApplication, "StoreSaveDataThumbnail"},
-            {111, nullptr, "ClearSaveDataThumbnail"},
-            {112, nullptr, "LoadSaveDataThumbnail"},
-            {113, nullptr, "GetSaveDataThumbnailExistence"},
+            {111, &ACC_U1::ClearSaveDataThumbnail, "ClearSaveDataThumbnail"},
+            {112, &ACC_U1::LoadSaveDataThumbnail, "LoadSaveDataThumbnail"},
+            {113, &ACC_U1::GetSaveDataThumbnailExistence, "GetSaveDataThumbnailExistence"},
             {120, nullptr, "ListOpenUsersInApplication"},
             {130, nullptr, "ActivateOpenContextRetention"},
             {140, &ACC_U1::ListQualifiedUsers, "ListQualifiedUsers"},
