@@ -170,6 +170,14 @@ size_t PrefixSize(const GraphicsPipelineCacheKey& key) {
     return sizeof(key.unique_hashes) + key.state.Size();
 }
 
+/// A generated line's stipple is compiled into its shaders, yet lies past the prefix unless the
+/// pipeline captures transform feedback. Other keys ignore it, as it has no effect on them.
+bool ComparesStippleApart(const GraphicsPipelineCacheKey& key) {
+    const auto& dynamic = key.state.dynamic_state;
+    return dynamic.generated_lines != 0 && dynamic.line_stipple_enable != 0 &&
+           key.state.xfb_enabled == 0;
+}
+
 size_t NumAttachments(const FixedPipelineState& state) {
     size_t num{};
     for (size_t index = 0; index < Maxwell::NumRenderTargets; ++index) {
@@ -274,8 +282,14 @@ size_t GraphicsPipelineCacheKey::Hash() const noexcept {
     const u64 prefix = Common::CityHash64(reinterpret_cast<const char*>(this), PrefixSize(*this));
     const u64 extra = Common::CityHash64(reinterpret_cast<const char*>(this) + KEY_EXTRA_OFFSET,
                                          KEY_EXTRA_SIZE);
-    return static_cast<size_t>(prefix ^ (extra + 0x9e3779b97f4a7c15ULL + (prefix << 6) +
-                                         (prefix >> 2)));
+    const u64 hash = prefix ^ (extra + 0x9e3779b97f4a7c15ULL + (prefix << 6) + (prefix >> 2));
+    if (ComparesStippleApart(*this)) {
+        const u64 stipple = (static_cast<u64>(state.line_stipple_factor) << 32) |
+                            state.line_stipple_pattern;
+        return static_cast<size_t>(hash ^ (stipple + 0x9e3779b97f4a7c15ULL + (hash << 6) +
+                                           (hash >> 2)));
+    }
+    return static_cast<size_t>(hash);
 }
 
 bool GraphicsPipelineCacheKey::operator==(const GraphicsPipelineCacheKey& rhs) const noexcept {
@@ -283,7 +297,10 @@ bool GraphicsPipelineCacheKey::operator==(const GraphicsPipelineCacheKey& rhs) c
     return prefix == PrefixSize(rhs) && std::memcmp(this, &rhs, prefix) == 0 &&
            std::memcmp(reinterpret_cast<const char*>(this) + KEY_EXTRA_OFFSET,
                        reinterpret_cast<const char*>(&rhs) + KEY_EXTRA_OFFSET,
-                       KEY_EXTRA_SIZE) == 0;
+                       KEY_EXTRA_SIZE) == 0 &&
+           (!ComparesStippleApart(*this) ||
+            (state.line_stipple_factor == rhs.state.line_stipple_factor &&
+             state.line_stipple_pattern == rhs.state.line_stipple_pattern));
 }
 
 void GraphicsPipelineCacheKey::RefreshStatic(const Maxwell& regs) noexcept {
