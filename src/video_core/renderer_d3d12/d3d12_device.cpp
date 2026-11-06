@@ -636,13 +636,18 @@ struct ProbeList {
 /// happens between recording and Close, such as a resource released too early).
 ProbeList probe_window;
 ProbeList probe_whole;
+ProbeList probe_replay;
 std::vector<std::string> window_calls;
+std::vector<std::function<void(ID3D12GraphicsCommandList*)>> window_runs;
+/// The state the window started from and a list to get the device from, for its replay.
+ProbeState window_start;
+ID3D12GraphicsCommandList* window_real{};
 u64 window_index{};
 u64 window_failures{};
 u64 probed_calls{};
 bool whole_failed{};
 
-bool OpenProbe(ID3D12GraphicsCommandList* real, ProbeList& probe) {
+bool OpenProbe(ID3D12GraphicsCommandList* real, ProbeList& probe, const ProbeState& state) {
     if (probe.open) {
         return true;
     }
@@ -664,17 +669,17 @@ bool OpenProbe(ID3D12GraphicsCommandList* real, ProbeList& probe) {
     }
     probe.open = true;
     // The state the real list has here, which the commands are checked against.
-    if (probe_state.heap_count != 0) {
-        probe.list->SetDescriptorHeaps(probe_state.heap_count, probe_state.heaps.data());
+    if (state.heap_count != 0) {
+        probe.list->SetDescriptorHeaps(state.heap_count, state.heaps.data());
     }
-    if (probe_state.graphics) {
-        probe.list->SetGraphicsRootSignature(probe_state.graphics);
+    if (state.graphics) {
+        probe.list->SetGraphicsRootSignature(state.graphics);
     }
-    if (probe_state.compute) {
-        probe.list->SetComputeRootSignature(probe_state.compute);
+    if (state.compute) {
+        probe.list->SetComputeRootSignature(state.compute);
     }
-    if (probe_state.pipeline) {
-        probe.list->SetPipelineState(probe_state.pipeline);
+    if (state.pipeline) {
+        probe.list->SetPipelineState(state.pipeline);
     }
     return true;
 }
@@ -712,6 +717,39 @@ void QueryError(std::string_view what) {
     }
 }
 
+/// Whether a new list with the window's first count commands closes, or with only the one at
+/// index when alone is set.
+bool ReplayCloses(size_t count, bool alone) {
+    if (!OpenProbe(window_real, probe_replay, window_start)) {
+        return true;
+    }
+    for (size_t i = alone ? count : 0; i < (alone ? count + 1 : count); ++i) {
+        window_runs[i](probe_replay.list.Get());
+    }
+    return CloseProbe(probe_replay);
+}
+
+/// Names the first command of a failing window that makes Close fail.
+void ReplayFailedWindow() {
+    LOG_CRITICAL(Render, "D3D12 close probe: window started with signature={} PSO={}",
+                 static_cast<void*>(window_start.graphics),
+                 static_cast<void*>(window_start.pipeline));
+    for (size_t count = 0; count <= window_runs.size(); ++count) {
+        if (ReplayCloses(count, false)) {
+            continue;
+        }
+        if (count == 0) {
+            LOG_CRITICAL(Render, "D3D12 close probe: the window's starting state alone fails");
+            return;
+        }
+        LOG_CRITICAL(Render, "D3D12 close probe: first failing command: {}; alone it {}",
+                     window_calls[count - 1],
+                     ReplayCloses(count - 1, true) ? "closes" : "fails too");
+        return;
+    }
+    LOG_CRITICAL(Render, "D3D12 close probe: the window closed when run again");
+}
+
 void CloseWindow() {
     if (window_calls.empty()) {
         return;
@@ -725,12 +763,14 @@ void CloseWindow() {
             for (const std::string& call : window_calls) {
                 LOG_CRITICAL(Render, "D3D12 close probe:   {}", call);
             }
+            ReplayFailedWindow();
         } else if ((window_failures & (window_failures - 1)) == 0) {
             LOG_CRITICAL(Render, "D3D12 close probe: {} windows failed Close so far",
                          window_failures);
         }
     }
     window_calls.clear();
+    window_runs.clear();
 }
 } // Anonymous namespace
 
@@ -803,14 +843,14 @@ void ProbeTrackQuery(bool begin, ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, U
 }
 
 void ProbeAppend(ID3D12GraphicsCommandList* list,
-                 void (*run)(void* ctx, ID3D12GraphicsCommandList* scratch), void* ctx,
-                 const char* call, std::string arguments) {
+                 std::function<void(ID3D12GraphicsCommandList*)> run, const char* call,
+                 std::string arguments) {
     std::scoped_lock lock{probe_mutex};
     if (!close_probe_enabled.load(std::memory_order_relaxed)) {
         return;
     }
-    if (OpenProbe(list, probe_whole)) {
-        run(ctx, probe_whole.list.Get());
+    if (OpenProbe(list, probe_whole, probe_state)) {
+        run(probe_whole.list.Get());
     }
     // Begin and End fall in different windows: ProbeTrackQuery pairs them over the whole list.
     const std::string_view name{call};
@@ -818,10 +858,15 @@ void ProbeAppend(ID3D12GraphicsCommandList* list,
         ++probed_calls;
         return;
     }
-    if (!OpenProbe(list, probe_window)) {
+    if (!probe_window.open) {
+        window_start = probe_state;
+    }
+    if (!OpenProbe(list, probe_window, probe_state)) {
         return;
     }
-    run(ctx, probe_window.list.Get());
+    run(probe_window.list.Get());
+    window_real = list;
+    window_runs.push_back(std::move(run));
     window_calls.push_back(fmt::format("#{} {} {}", probed_calls++, call, arguments));
     if (window_calls.size() >= PROBE_WINDOW) {
         CloseWindow();
