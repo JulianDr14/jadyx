@@ -5,7 +5,11 @@
 #
 #   powershell -ExecutionPolicy Bypass -File tools\xbox\deploy.ps1 -Version 0.3.8.31
 #       [-Target Console|Pc] [-BootCfg "key=value","key=value"] [-NoBuild] [-NoPackage]
-#       [-Console 192.168.1.50]
+#       [-Console 192.168.1.50] [-BuildDir build-uwp-nolto]
+#
+# -BuildDir picks the binary dir to build and package: build-uwp (LTO, for performance work and
+# releases) or build-uwp-nolto (preset uwp-x64-nolto, fast links for fixes that need many builds).
+# The package always lands in build-uwp\package.
 #
 # Console: uploads the package, its VCLibs dependency and the certificate through the Device
 # Portal REST API and waits for the install to finish. The app keeps its Game mode setting.
@@ -18,6 +22,7 @@ param(
     [string[]] $BootCfg = @(),
     [switch] $NoBuild,
     [switch] $NoPackage,
+    [ValidateSet('build-uwp', 'build-uwp-nolto')] [string] $BuildDir = 'build-uwp',
     [string] $Console = $(if ($env:JADYX_CONSOLE) { $env:JADYX_CONSOLE } else { '192.168.1.50' })
 )
 $ErrorActionPreference = 'Stop'
@@ -29,16 +34,16 @@ if ($Target -eq 'Pc') {
 }
 
 if (-not $NoBuild) {
-    & $env:ComSpec /c "call `"$r\tools\xbox\build-env.bat`" && cmake --build `"$r\build-uwp`" --config Release --target jadyx" *> "$r\build-uwp\build.log"
+    & $env:ComSpec /c "call `"$r\tools\xbox\build-env.bat`" && cmake --build `"$r\$BuildDir`" --config Release --target jadyx" *> "$r\$BuildDir\build.log"
     if ($LASTEXITCODE -ne 0) {
-        Select-String -Path "$r\build-uwp\build.log" -Pattern ' error ' | Select-Object -First 10 | Write-Host
-        throw "build failed (build-uwp\build.log)"
+        Select-String -Path "$r\$BuildDir\build.log" -Pattern ' error ' | Select-Object -First 10 | Write-Host
+        throw "build failed ($BuildDir\build.log)"
     }
 }
 if (-not $NoPackage) {
     Push-Location $r
     try {
-        & "$r\tools\xbox\package-appx.ps1" -Library -Version $Version -BootCfg $BootCfg *> "$r\build-uwp\package.log"
+        & "$r\tools\xbox\package-appx.ps1" -BuildDir $BuildDir -Library -Version $Version -BootCfg $BootCfg *> "$r\build-uwp\package.log"
     } finally {
         Pop-Location
     }

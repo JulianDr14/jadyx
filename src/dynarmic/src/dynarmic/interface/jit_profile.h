@@ -34,6 +34,14 @@ struct Counters {
 };
 inline std::array<Counters, static_cast<std::size_t>(Phase::Count)> counters;
 inline std::atomic_bool enabled{};
+/// Told of every A64 block compiled, on the compiling thread, so a profiler can tell which guest
+/// code a host address runs. Null: only a branch per compile.
+using BlockObserver = void (*)(const void* host, std::size_t host_size, std::uint64_t guest_pc,
+                               std::uint64_t guest_end);
+inline std::atomic<BlockObserver> block_observer{};
+/// Told where a JIT's page table thunks are, when it is created.
+using ThunksObserver = void (*)(const void* host, std::size_t host_size);
+inline std::atomic<ThunksObserver> thunks_observer{};
 /// Code caches emptied because they filled up, all their blocks dropped with them. Always counted.
 inline std::atomic<std::uint64_t> full_cache_clears{};
 

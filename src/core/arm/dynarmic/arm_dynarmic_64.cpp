@@ -264,6 +264,7 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
             ASSERT(page_table->JitReadOffsetBytes() <= std::size_t(INT32_MAX));
             config.page_table_read_offset = std::int32_t(page_table->JitReadOffsetBytes());
         }
+        config.page_table_thunks = g_page_table_thunks.load(std::memory_order_relaxed);
         config.silently_mirror_page_table = false;
         config.absolute_offset_page_table = true;
         config.detect_misaligned_access_via_page_table = 16 | 32 | 64 | 128;

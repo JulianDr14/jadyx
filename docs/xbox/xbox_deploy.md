@@ -194,6 +194,48 @@ El informe incluye:
 `perfil.folded` se abre en https://www.speedscope.app como flame graph. `--window N` o `--window
 N-M` limitan el informe a unas ventanas, por ejemplo las de la zona lenta.
 
+### Captura de rendimiento: por qué la GPU está ociosa
+
+Para saber por qué bajan los FPS en una zona pesada con la GPU sin llenar. Se empaqueta con
+`package-appx.ps1 -Library -Hunt` (`hunt=1` en `boot.cfg`; no cuesta nada hasta capturar) y sin
+`profile=1`: si ese perfilador ya corre, la captura no tiene el suyo.
+
+En la zona lenta: View+Menu 1 s → **Capturar rendimiento y continuar** → A, y seguir jugando sin
+moverse unos 7 s. Se puede repetir en varias zonas: cada captura lleva su número. Tras 30 cuadros de
+calentamiento, la captura guarda:
+
+- `jadyx_hunt.txt`: 8 cuadros con el tiempo de CPU y de GPU de cada draw, y la cadena de cuadros
+  durante 5 s: lo que pidió el juego (swap interval), vsyncs perdidos y las esperas de cada hilo.
+- `jadyx_hunt_profile_<N>.txt`: la CPU y las pilas de todos los hilos durante esos mismos 5 s.
+
+Los archivos se bajan con `tools/xbox/fetch-logs.ps1`. En el PC, con el PDB del mismo build:
+
+```
+python tools/xbox/hunt-report.py jadyx_hunt.txt --capture N --out informe.md
+```
+
+El informe empieza con «Why the GPU sits idle»: una conclusión, el trabajo por cuadro de cada eslabón
+(GPU, hilo de GPU, grabador, núcleos guest) y la tabla de esperas. La conclusión indica correlación
+en esa ventana, no una causa probada. El hilo de GPU se mide en tiempo real sin sus esperas; los
+demás, en tiempo de CPU, así que un hilo expulsado de su núcleo parece más ligero y un núcleo guest
+que gira esperando parece ocupado: sus pilas lo aclaran.
+
+Después viene «Guest code»: los bloques del juego que más ejecuta el núcleo guest más ocupado, con su
+dirección, cuánto del tiempo se fue en llamadas al emulador y sus instrucciones (desensambladas con
+`pip install capstone`). Marca los que parecen una espera: WFE/YIELD, o un bucle corto y cerrado que no
+escribe en memoria. Un bucle de sondeo más largo no se detecta solo, así que conviene leer los
+primeros bloques. Solo cubre código A64. Con `hunt=1` el JIT anota cada bloque compilado (unos 32 bytes
+por bloque, de ahí que no se active sin esa clave). Lo verifican `tools/xbox/tests/hunt-report-chain.py`
+y `tools/xbox/tests/sampling-profiler.cpp`.
+
+La misma sección reparte el tiempo en JIT entre los bloques del juego, los thunks de acceso a memoria y
+el resto del JIT. Una muestra dentro de un thunk se atribuye al bloque que lo llamó, por la dirección de
+retorno en la pila. Ese tiempo incluye esperar los datos del juego, que costaría igual sin thunks.
+
+`jit_thunks=0` en BootCfg emite los accesos a memoria dentro de cada bloque, sin llamada. Ocupan mucho
+más: cada acceso son ~85 bytes en vez de 5, en la misma caché de código. Es una clave para comparar; por
+defecto siguen los thunks. El diagnóstico indica el modo en `guest memory accesses`.
+
 La presentación usa un hilo propio por defecto. Con `async_present=0` en BootCfg se presenta en
 el hilo de GPU, como antes de ese cambio. El log dice qué modo se usa:
 `D3D12: presentation on its own thread` o `on the GPU thread`.

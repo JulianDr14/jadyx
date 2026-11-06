@@ -147,6 +147,13 @@ These pass on PC, within limits that no scene covers:
 | The CPU widens `A5B5G5R1_UNORM` and `G4R4_UNORM` to RGBA8 and RG8 on upload | `format_a5b5g5r1_unorm`, `format_g4r4_unorm` | Render targets and GPU copies in the original layout |
 | The vertex shader finishes BGRA and 32-bit normalized attributes | `attrib_4x8_uscaled_bgra`, `attrib_4x8_uint_bgra`, `attrib_1x32_unorm`, `attrib_2x32_snorm` | 10:10:10:2 float, sint and sscaled, 8-bit float and non-float B10G11R11 still fall back to RGBA32F |
 
+The scenes run with `exact_gpu_reads=1`, which is off by default (a game's own setting, "Exact GPU
+reads"). Off, a CPU read does not wait for a GPU write that has not reached guest memory, so a guest
+reading right after a fence can see the old contents. `--boot-cfg exact_gpu_reads=0` runs the scenes as
+players get them, and these fail with zeros (2026-11-06, PC, same list in two runs): `compute_atomics`,
+`compute_fill`, `compute_fill_copied`, `compute_ids`, `compute_indirect`, `compute_samples_texture`,
+`compute_shared_memory`, `compute_uniforms`, `control_flow`, `math_float`, `math_integer`.
+
 Fixed with no scene reaching them: copies within one image (from a snapshot), `R16G16B16A16` integer
 copies to 64-bit formats, conservative rasterization when the device has it, rewritten inline index
 draws, and the MIN/MAX retry on indirect draws and compute.

@@ -175,6 +175,8 @@ GameGraphics LoadGameGraphics(std::uint64_t program_id) {
         if (values.HasKey(async_record)) graphics.async_record = winrt::unbox_value<bool>(values.Lookup(async_record));
         const auto slow_clock = GameGraphicsKey(L"slow_clock", program_id);
         if (values.HasKey(slow_clock)) graphics.slow_guest_clock = winrt::unbox_value<bool>(values.Lookup(slow_clock));
+        const auto exact_reads = GameGraphicsKey(L"exact_gpu_reads", program_id);
+        if (values.HasKey(exact_reads)) graphics.exact_gpu_reads = winrt::unbox_value<bool>(values.Lookup(exact_reads));
         auto& advanced = graphics.advanced;
         const auto load = [&](const wchar_t* field, auto& value, auto options) {
             const auto key = GameGraphicsKey(field, program_id);
@@ -201,6 +203,8 @@ bool SaveGameGraphics(std::uint64_t program_id, const GameGraphics& graphics) {
         SaveOverride(values, GameGraphicsKey(L"async_record", program_id), graphics.async_record);
         SaveOverride(values, GameGraphicsKey(L"slow_clock", program_id),
                      graphics.slow_guest_clock ? std::optional<bool>{true} : std::nullopt);
+        SaveOverride(values, GameGraphicsKey(L"exact_gpu_reads", program_id),
+                     graphics.exact_gpu_reads ? std::optional<bool>{true} : std::nullopt);
         // A default is not saved: a later build can change what the app does with no choice made.
         const auto& advanced = graphics.advanced;
         const GameAdvancedGraphics defaults;

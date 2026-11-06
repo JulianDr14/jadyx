@@ -211,6 +211,9 @@ finish_this_inst:
         const JitProfile::Timer registration{JitProfile::Phase::Register};
         bdesc = RegisterBlock(descriptor, entrypoint, size);
     }
+    if (const auto observer = JitProfile::block_observer.load(std::memory_order_relaxed)) {
+        observer(entrypoint, size, descriptor.PC(), end_location.PC());
+    }
     JitProfile::Timer write_close{JitProfile::Phase::WriteClose};
     code.DisableWriting();
     write_close.Stop();

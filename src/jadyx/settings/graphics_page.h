@@ -16,7 +16,7 @@
 namespace Jadyx {
 
 enum class GraphicsRow : std::size_t {
-    Upscaling, FrameGen, Shaders, GpuFence, AsyncRecord, GuestClock,
+    Upscaling, FrameGen, Shaders, GpuFence, AsyncRecord, GuestClock, ExactGpuReads,
     Anisotropy, TextureQuality, TextureMemory, GpuAccuracy, ShaderWorkers, ConsoleMode, ResetAdvanced,
     Count,
 };
@@ -89,6 +89,7 @@ inline bool HandleGameGraphicsInput(GameGraphics& game, std::size_t& selected, G
     case GraphicsRow::GpuFence: StepGameGpuFence(game, back); return true;
     case GraphicsRow::AsyncRecord: StepGameAsyncRecord(game, back); return true;
     case GraphicsRow::GuestClock: game.slow_guest_clock = !game.slow_guest_clock; return true;
+    case GraphicsRow::ExactGpuReads: game.exact_gpu_reads = !game.exact_gpu_reads; return true;
     case GraphicsRow::Anisotropy: advanced.anisotropy = StepAdvanced(advanced.anisotropy, SelectableAnisotropy(), back); return true;
     case GraphicsRow::TextureQuality: advanced.full_textures = !advanced.full_textures; return true;
     case GraphicsRow::TextureMemory: advanced.texture_cap_mib = StepAdvanced(advanced.texture_cap_mib, SelectableTextureCaps(), back); return true;
@@ -113,6 +114,7 @@ inline I18n::Text GraphicsRowTitle(GraphicsRow row) {
     case GraphicsRow::GpuFence: return Text::GpuFence;
     case GraphicsRow::AsyncRecord: return Text::AsyncRecord;
     case GraphicsRow::GuestClock: return Text::SlowGuestClock;
+    case GraphicsRow::ExactGpuReads: return Text::ExactGpuReads;
     case GraphicsRow::Anisotropy: return Text::AdvancedAnisotropy;
     case GraphicsRow::TextureQuality: return Text::AdvancedTextureQuality;
     case GraphicsRow::TextureMemory: return Text::AdvancedTextureMemory;
@@ -132,6 +134,7 @@ inline I18n::Text GraphicsRowHint(GraphicsRow row) {
     case GraphicsRow::GpuFence: return Text::GpuFenceHint;
     case GraphicsRow::AsyncRecord: return Text::AsyncRecordHint;
     case GraphicsRow::GuestClock: return Text::SlowGuestClockHint;
+    case GraphicsRow::ExactGpuReads: return Text::ExactGpuReadsHint;
     case GraphicsRow::Anisotropy: return Text::AdvancedAnisotropyHint;
     case GraphicsRow::TextureQuality: return Text::AdvancedTextureQualityHint;
     case GraphicsRow::TextureMemory: return Text::AdvancedTextureMemoryHint;
@@ -198,6 +201,7 @@ inline bool HasGameOverride(const GameGraphics& game, GraphicsRow row) {
 inline std::wstring GameGraphicsRowValue(const GraphicsSettings& global, const GameGraphics& game,
                                          GraphicsRow row) {
     if (row == GraphicsRow::GuestClock) return OnOffText(game.slow_guest_clock);
+    if (row == GraphicsRow::ExactGpuReads) return OnOffText(game.exact_gpu_reads);
     if (IsAdvancedRow(row)) return AdvancedRowValue(game.advanced, row);
     const GraphicsSettings resolved = ResolveGraphics(global, game);
     const auto value = GraphicsRowValue(resolved, row);

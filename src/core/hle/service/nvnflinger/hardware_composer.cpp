@@ -261,6 +261,7 @@ void HardwareComposer::TrackFrameChainLocked(std::optional<s32> game_swap_interv
     }
     if (game_swap_interval) {
         m_game_swap_interval = *game_swap_interval;
+        VideoCore::Perf::guest_swap_interval.store(*game_swap_interval, std::memory_order_relaxed);
     }
     slot = now;
 }

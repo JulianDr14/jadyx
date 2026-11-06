@@ -28,7 +28,9 @@
 #include "core/hle/service/nvdrv/devices/nvdisp_disp0.h"
 #include "core/hle/service/nvdrv/devices/nvhost_ctrl.h"
 #include "core/loader/loader.h"
+#include "common/windows/sampling_profiler.h"
 #include "dynarmic/interface/code_memory.h"
+#include "dynarmic/interface/jit_profile.h"
 #include "video_core/cpu_write_queue.h"
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/fence_manager.h"
@@ -39,6 +41,7 @@
 #include "video_core/perf_counters.h"
 #include "video_core/performance_overlay.h"
 #include "video_core/query_cache.h"
+#include "video_core/rasterizer_download_area.h"
 #include "video_core/readback_trace.h"
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 #include "video_core/renderer_d3d12/d3d12_frame_gen_pacer.h"
@@ -127,7 +130,10 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
     }
     const u32 clock_percent = config.guest_clock_percent.value_or(game.slow_guest_clock ? SlowGuestClockPercent : 100);
     system.CoreTiming().SetGuestClockPercent(clock_percent);
-    WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, upscaling " +
+    const bool exact_gpu_reads = config.exact_gpu_reads.value_or(game.exact_gpu_reads);
+    VideoCore::SetExactGpuReads(exact_gpu_reads);
+    WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, exact GPU reads " +
+              (exact_gpu_reads ? "on" : "off") + ", upscaling " +
               (config.upscaling ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(UpscalingText(graphics.upscaling)))) +
               ", frame generation " +
               (config.frame_gen ? std::string{"from boot.cfg"} : std::string{graphics.frame_gen ? "auto" : "off"}) +
@@ -203,6 +209,15 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
               ", console mode " + (config.console_mode == Settings::ConsoleMode::Handheld ? "handheld" : "docked"));
     AudioCore::Sink::SetXAudio2ProfileEnabled(config.audio_profile);
     Core::CpuProfile::SetEnabled(config.cpu_profile);
+    // Before the first compile, the prewarm's included: a bottleneck capture names the guest code.
+    Common::SamplingProfiler::ClearJitBlocks();
+    const bool name_guest_code = config.hunt_menu || config.hunt_at > 0;
+    Dynarmic::JitProfile::block_observer.store(
+        name_guest_code ? &Common::SamplingProfiler::NoteJitBlock : nullptr,
+        std::memory_order_relaxed);
+    Dynarmic::JitProfile::thunks_observer.store(
+        name_guest_code ? &Common::SamplingProfiler::NoteJitThunks : nullptr,
+        std::memory_order_relaxed);
     // Read when Core::System builds the kernel's cores.
     Kernel::PhysicalCore::SetIdleSpinPolicy(config.idle_spin);
     // Read by the host timing thread's first wait.
@@ -246,7 +261,8 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
                                                                : "hybrid diagnostic") +
               (fastmem_enabled ? " (hot " + std::to_string(config.fastmem_hot_mib) + " MiB)" : "") +
               ", D3D12 pipeline workers on, dependent draws preserved" +
-              ", JIT cache " + std::to_string(config.jit_cache_mib) + " MiB per core");
+              ", JIT cache " + std::to_string(config.jit_cache_mib) + " MiB per core" +
+              ", guest memory accesses " + (config.jit_thunks ? "through thunks" : "inline"));
     D3D12::SetTracedFrame(config.traced_frame, config.traced_frames);
     D3D12::SetMaterialProbe(config.material_probe_x, config.material_probe_y);
     D3D12::SetMaterialCaptureFrame(config.material_capture_frame);
@@ -261,6 +277,7 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     Dynarmic::SetCodeCacheCap(0);
     Dynarmic::SetDualMappedCode(config.jit_dual_map);
     Core::SetPageTableExclusives(config.inline_exclusives);
+    Core::SetPageTableThunks(config.jit_thunks);
     D3D12::SetAppMemoryQuery(QueryAppMemory);
     D3D12::SetBcArrayDecode(!config.bc_arrays_native);
     D3D12::SetTextureMemoryCap(u64{config.texture_cap_mib} << 20);

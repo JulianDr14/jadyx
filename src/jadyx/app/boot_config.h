@@ -53,6 +53,9 @@ struct BootConfig {
     /// Short of memory, the caches stop growing instead (JIT_CAP_FLOOR): at 128 for a game that
     /// had come close, it compiled 1.2M blocks loading.
     u32 jit_cache_mib{256};
+    /// Guest loads and stores call shared thunks ("jit_thunks=0" emits them inline in each block:
+    /// no call per access, but much bigger code in the same caches).
+    bool jit_thunks{true};
     /// JIT code memory mapped twice, executable and writable, so no page changes protection per
     /// compiled block ("jit_dual_map=0" keeps paged W^X). Used only where the runtime passes a probe.
     bool jit_dual_map{true};
@@ -275,6 +278,8 @@ struct BootConfig {
     VideoCore::FramePipeline::Mode vsync_nowait{VideoCore::FramePipeline::Mode::On};
     /// "guest_clock_scale=50-100", over the game's own setting (CoreTiming::SetGuestClockPercent).
     std::optional<u32> guest_clock_percent;
+    /// "exact_gpu_reads=0|1", over the game's own setting (VideoCore::SetExactGpuReads).
+    std::optional<bool> exact_gpu_reads;
     /// "swap_interval_hold=0|1|check".
     VideoCore::FramePipeline::Mode swap_interval_hold{VideoCore::FramePipeline::Mode::Off};
     /// "pso_budget=0|1|check" (D3D12::SetPsoBudget).

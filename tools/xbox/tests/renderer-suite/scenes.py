@@ -34,8 +34,10 @@ MACHINE = os.environ.get("COMPUTERNAME", "pc").lower()
 KINDS = ["unorm", "snorm", "uint", "sint", "float", "raw"]
 SCENE_LINE = re.compile(r"\b(START|END|PROBE|SKIP|ALL_DONE|DEKO_ERROR|PERF_START|PERF_DONE)\b ?(.*)$")
 # Scenes need every draw drawn: with asynchronous pipelines a draw whose pipeline is still building is
-# skipped, and the scene would test the compile workers instead of the renderer.
-SCENE_BOOT_CFG = ["async_pipelines=off"]
+# skipped, and the scene would test the compile workers instead of the renderer. They read shader results
+# back right after a fence, which is only exact with exact GPU reads (off by default): --boot-cfg
+# exact_gpu_reads=0 runs what players get, and the scenes listed in xbox_renderer_suite.md then fail.
+SCENE_BOOT_CFG = ["async_pipelines=off", "exact_gpu_reads=1"]
 DEBUG_ID = re.compile(r"D3D12 debug layer \[(\d+)\]")
 RENDER_ERROR = re.compile(r"\bRender(?:\.\w+)? <(Error|Critical)>")
 # Perf windows: the first one includes start-up; timings may move this much before it is a regression.

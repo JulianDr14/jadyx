@@ -150,6 +150,7 @@ struct GameGraphics {
     std::optional<GpuFence> gpu_fence;
     std::optional<bool> async_record;
     bool slow_guest_clock{}; ///< Only a game's own: there is no global setting to follow.
+    bool exact_gpu_reads{};  ///< Only a game's own (VideoCore::SetExactGpuReads).
     GameAdvancedGraphics advanced;
 
     bool operator==(const GameGraphics&) const = default;

@@ -143,8 +143,8 @@ public:
     enum Item : std::size_t {
         Continue, Cheats, Mods, Style, FaceButtons, Deadzone, FullScreen, PerformanceStats, Library,
         CaptureGraphics, CapturePerformance, Screenshot, ControllerPage, DisplayPage, OfflineMode,
-        GraphicsMenu, GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxTextureMemory, GfxGpuAccuracy,
-        GfxConsoleMode,
+        GraphicsMenu, GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxExactGpuReads, GfxTextureMemory,
+        GfxGpuAccuracy, GfxConsoleMode,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics };
 
@@ -246,7 +246,7 @@ private:
 
     /// The Handheld style forces the console's mode (uwp_input.cpp): there is nothing to choose.
     void UpdateGraphicsItems() {
-        graphics = {GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxTextureMemory, GfxGpuAccuracy};
+        graphics = {GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxExactGpuReads, GfxTextureMemory, GfxGpuAccuracy};
         if (settings.style != ConsoleControllerStyle::Handheld) graphics.push_back(GfxConsoleMode);
     }
 
@@ -256,6 +256,7 @@ private:
         case GfxShaders: return GraphicsRow::Shaders;
         case GfxGpuFence: return GraphicsRow::GpuFence;
         case GfxGuestClock: return GraphicsRow::GuestClock;
+        case GfxExactGpuReads: return GraphicsRow::ExactGpuReads;
         case GfxTextureMemory: return GraphicsRow::TextureMemory;
         case GfxGpuAccuracy: return GraphicsRow::GpuAccuracy;
         case GfxConsoleMode: return GraphicsRow::ConsoleMode;
@@ -313,6 +314,7 @@ private:
                     Tr(HasGameOverride(settings.graphics, row) ? Text::MenuGraphicsOwn : Text::MenuGraphicsFollowsSettings)};
         }
         case GfxGuestClock:
+        case GfxExactGpuReads:
         case GfxTextureMemory:
         case GfxGpuAccuracy:
         case GfxConsoleMode:
@@ -379,6 +381,7 @@ private:
         case GfxShaders:
         case GfxGpuFence:
         case GfxGuestClock:
+        case GfxExactGpuReads:
         case GfxTextureMemory:
         case GfxGpuAccuracy:
         case GfxConsoleMode: {

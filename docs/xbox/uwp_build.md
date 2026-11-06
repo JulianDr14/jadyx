@@ -51,6 +51,12 @@ Run it from **cmd or PowerShell**, not Git Bash. With no arguments it leaves an 
 with the environment set. The rest of this section explains what it does and why, which is worth
 reading when something goes wrong.
 
+There are two build folders. `build-uwp` (preset `uwp-x64`) uses LTO and is the one for performance
+work and releases. `build-uwp-nolto` (preset `uwp-x64-nolto`) links much faster and is for fixes that
+need many builds, such as graphics corrections. It runs slower, so never measure performance on it
+or release from it. Install from it with
+`tools\xbox\deploy.ps1 -Version <version> -BuildDir build-uwp-nolto`.
+
 ## Why Ninja (not the Visual Studio generator)
 
 We use **Ninja**, not `-G "Visual Studio 17 2022"`, on purpose: the VS generator
