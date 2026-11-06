@@ -149,6 +149,10 @@ public:
         return gpu_addr < address_space_size;
     }
 
+    bool IsRangeWithinGPUAddressRange(GPUVAddr gpu_addr, size_t size) const {
+        return gpu_addr < address_space_size && size <= address_space_size - gpu_addr;
+    }
+
     PTEKind GetPageKind(GPUVAddr gpu_addr) const;
 
     size_t GetMemoryLayoutSize(GPUVAddr gpu_addr,

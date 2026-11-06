@@ -409,6 +409,16 @@ void MemoryManager::ReadBlockUnsafe(GPUVAddr gpu_src_addr, void* dest_buffer, co
 }
 
 void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffer, std::size_t size, [[maybe_unused]] VideoCommon::CacheType which, bool unsafe) {
+    // The entry tables are only as long as the address space, so a guest address past it would
+    // read outside them.
+    if (!IsRangeWithinGPUAddressRange(gpu_dest_addr, size)) [[unlikely]] {
+        static std::atomic<u32> logged{};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+            LOG_WARNING(Render, "GPU write past the address space dropped: {:#x}, {} bytes",
+                        gpu_dest_addr, size);
+        }
+        return;
+    }
     auto just_advance = [&]([[maybe_unused]] std::size_t page_index, [[maybe_unused]] std::size_t offset, std::size_t copy_amount) {
         src_buffer = static_cast<const u8*>(src_buffer) + copy_amount;
     };
