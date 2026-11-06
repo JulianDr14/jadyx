@@ -331,10 +331,11 @@ function render(){
  // Both volumes: the internal one and, when present, Dev Mode's storage on D:.
  const gib=bytes=>((bytes||0)/1073741824).toFixed(2)+' GiB';
  $('space').textContent=words.free+': '+(s.developer_available?'\n'+words['where-internal']+' · '+gib(s.free_bytes)+'\n'+words['where-developer']+' · '+gib(s.developer_free_bytes):gib(s.free_bytes));
- $('job').textContent=(s.name?s.name+'\n':'')+(words[s.phase]||words.idle);
- $('progress').value=s.length?Math.min(1,(s.received||0)/s.length):0;
- $('percent').textContent=percent(s.received||0,s.length);
- $('confirmed').textContent=words.confirmed+': '+mib(s.offset||0)+' / '+mib(s.length||0)+' MiB';
+ const transfer=s.phase==='complete'&&!running?{}:s;
+ $('job').textContent=(transfer.name?transfer.name+'\n':'')+(words[transfer.phase]||words.idle);
+ $('progress').value=transfer.length?Math.min(1,(transfer.received||0)/transfer.length):0;
+ $('percent').textContent=percent(transfer.received||0,transfer.length);
+ $('confirmed').textContent=words.confirmed+': '+mib(transfer.offset||0)+' / '+mib(transfer.length||0)+' MiB';
  $('files').disabled=running;$('name').disabled=running||s.phase==='validating'||s.phase==='publishing';
  $('send').disabled=running||contentRunning||systemRunning||state.system?.busy||!session||!state.uploads||s.phase==='ready'||s.phase==='validating'||s.phase==='publishing';
  $('pause').disabled=systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
@@ -441,8 +442,8 @@ for(const id of ['files','content-files','keys-files','firmware-files']){
 $('send').addEventListener('click',async()=>{
  if(running||systemRunning||state.system?.busy)return;const files=Array.from($('files').files);if(!files.length){$('message').textContent=words.choose;return;}
  running=true;stopped=false;rates=[];$('message').textContent='';render();
- try{for(let i=0;i<files.length;i++){if(stopped)break;$('queue').textContent=words.queue+': '+(files.length-i-1);await sendFile(files[i],files.length===1?$('name').value:files[i].name);}}
- catch(error){$('message').textContent=reason(error);}finally{running=false;currentXHR=null;try{await refresh();}catch{}render();}
+ try{for(let i=0;i<files.length;i++){if(stopped)break;$('queue').textContent=words.queue+': '+(files.length-i-1);await sendFile(files[i],files.length===1?$('name').value:files[i].name);}if(!stopped){$('files').value='';$('name').value='';$('message').textContent=words.complete;}}
+ catch(error){$('message').textContent=reason(error);}finally{running=false;currentXHR=null;for(const id of ['rate','eta','queue'])$(id).textContent='';try{await refresh();}catch{}render();}
 });
 async function control(action,target=gameTarget){
  stopped=true;if(currentXHR)currentXHR.abort();$('message').textContent='';
@@ -670,7 +671,8 @@ function renderLibrary(){
  const r=state.removal||{};
  if(r.phase==='pending'||r.phase==='running')$('library-note').textContent=libraryWords.removing;
  if(!game)return;
- const busy=libraryBusy(),s=state.content||{},install=state.install||{},installing=s.phase==='validating';
+ const busy=libraryBusy(),content=state.content||{},s=content.phase==='complete'&&!contentRunning?{}:content;
+ const install=state.install||{},installing=s.phase==='validating';
  if(busy!==lastBusy){lastBusy=busy;renderItems();}
  $('game-remove').hidden=!game.removable;$('game-remove').disabled=busy;
  $('game-remove').textContent=armed==='game'?libraryWords.confirm:libraryWords.remove_game;
@@ -678,7 +680,7 @@ function renderLibrary(){
  const active=s.id&&!['complete','validating','publishing'].includes(s.phase);
  $('content-files').disabled=contentRunning;
  $('content-send').disabled=busy||s.available===false||['ready','validating','publishing'].includes(s.phase);
- $('save-send').disabled=$('content-send').disabled;$('save-file').disabled=contentRunning;$('save-download').disabled=busy||saveDownloading;
+ $('save-send').disabled=$('content-send').disabled;$('save-file').disabled=contentRunning;$('save-download').disabled=saveDownloading;
  $('content-pause').disabled=!active||systemRunning;$('content-discard').disabled=!active||systemRunning;
  $('content-job').textContent=(s.name?s.name+'\n':'')+(installing&&install.total?libraryWords.validating+' · '+install.done+' / '+install.total+' MiB':
   libraryWords[s.phase]||words[s.phase]||libraryWords.idle);
@@ -712,7 +714,7 @@ $('save-error-help').addEventListener('click',()=>showSaveHelp(true,true));
 $('save-file').addEventListener('change',()=>{picked('save-picked','save-file');clearSaveError();});
 // Fetched with the session header, then handed to the browser as a file.
 $('save-download').addEventListener('click',async()=>{
- if(!gameId||libraryBusy()||saveDownloading)return;const id=gameId;
+ if(!gameId||saveDownloading)return;const id=gameId;
  saveDownloading=true;clearSaveError();$('library-note').textContent='';$('message').textContent='';render();
  try{
   const blob=await(await api('/api/v1/library/'+id+'/save')).blob(),url=URL.createObjectURL(blob),link=document.createElement('a');
@@ -773,8 +775,9 @@ function renderSystem(){
  $('tab-system').hidden=!state.system_supported;
  if(!state.system_supported){if(!$('view-system').hidden)choose(tabs,'tab-content');return;}
  for(const kind of ['keys','firmware'])$(kind+'-send').disabled=running||systemRunning||state.transfer?.busy||!s.available||(s.busy&&s.kind!==kind)||!['idle','receiving','complete'].includes(s.phase);
- $('system-job').textContent=(systemWords[s.phase]||systemWords.idle)+(s.count?' · '+(s.completed||0)+' / '+s.count:'')+(s.error?'\n'+systemReason(Error(s.error)):'');
- const f=s.file||{};$('system-progress').value=f.length?Math.min(1,(f.received||0)/f.length):0;$('system-percent').textContent=percent(f.received||0,f.length);
+ const job=s.phase==='complete'&&!systemRunning?{}:s;
+ $('system-job').textContent=(systemWords[job.phase]||systemWords.idle)+(job.count?' · '+(job.completed||0)+' / '+job.count:'')+(job.error?'\n'+systemReason(Error(job.error)):'');
+ const f=job.file||{};$('system-progress').value=f.length?Math.min(1,(f.received||0)/f.length):0;$('system-percent').textContent=percent(f.received||0,f.length);
  $('system-review').hidden=s.phase!=='review';
  if(s.phase!=='review')systemReviewId='';
  if(s.phase==='review'){

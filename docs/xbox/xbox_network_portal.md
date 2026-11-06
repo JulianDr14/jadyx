@@ -523,3 +523,12 @@ admisión kind/juego, tag al instalador, cola de eliminación, exclusión de sub
 visible); test de página network-portal-page.cjs (es/en/pt-BR, mock HTTP, ejecutado con
 Electron de VS Code en modo node); UWP compila/enlaza. Pendiente: gate en Series con
 update/DLC reales y eliminación desde ambos lados.
+
+### Estado visible de las instalaciones y descarga de partidas
+
+El portal sirve el estado con `Cache-Control: no-store`. El progreso antiguo
+venia del registro de finalizacion que devolvia el servidor. La pagina deja de
+mostrar ese registro como trabajo activo al terminar su cola, pero conserva el
+estado del servidor para confirmar el resultado y recuperar subidas parciales.
+La descarga ZIP usa la ruta de exportacion aunque haya una subida ajena activa.
+Si el servidor devuelve un conflicto, la pestaña Partida muestra el error.

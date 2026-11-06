@@ -112,6 +112,11 @@ async function browserScenario(options){
   element('name').value='renamed.nsp';await callbacks.get('send:click')();assert.equal(job.name,'renamed.nsp');assert.equal(job.phase,'complete');
  }else if(options.pause){assert.equal(job.offset,16*1048576);assert.equal(job.phase,'paused');}
  else{assert.equal(job.offset,length);assert.equal(job.phase,'complete');}
+ if(job.phase==='complete'){
+  assert.equal(element('job').textContent,'Listo para importar.');
+  assert.equal(element('progress').value,0);
+  assert.equal(element('queue').textContent,'');
+ }
  if(options.queue)assert.deepEqual(completed,[name,'second.nsp']);
 }
 
@@ -238,13 +243,14 @@ async function saveScenario(language){
  const element=id=>{if(!elements.has(id))elements.set(id,make('#'+id));return elements.get(id);};
  const click=n=>n.listeners.click();
  const app='0100000000010000',upload='e'.repeat(32);
+ let poll;
  let content={},refuse='',exported={status:200,body:'PK\x05\x06'};
  const response=(status,data={},headers={})=>({status,ok:status>=200&&status<300,json:async()=>JSON.parse(JSON.stringify(data)),
   blob:async()=>new Blob([data]),headers:{get:k=>headers[k]??null}});
  const fetch=async(url,request={})=>{
   if(url==='/api/v1/pair')return response(200,{session:'test-session'});
   assert.equal(request.headers.Authorization,'Bearer test-session');requests.push((request.method||'GET')+' '+url);
-  if(url==='/api/v1/status')return response(200,{uploads:true,transfer:{},library:true,content,install:{done:0,total:0},removal:{serial:0,phase:''}});
+  if(url==='/api/v1/status')return response(200,{uploads:true,transfer:{busy:exported.busy},library:true,content,install:{done:0,total:0},removal:{serial:0,phase:''}});
   if(url==='/api/v1/library')return response(200,{revision:1,games:[{id:app,name:'Game',developer:'Dev',version:'1.0.0',removable:true}]});
   if(url.endsWith('/cover'))return response(404,{error:'cover'});
   if(url==='/api/v1/library/'+app+'/content')return response(200,{contents:[]});
@@ -271,7 +277,7 @@ async function saveScenario(language){
  const zip=fileOf('mi partida.zip',[0x50,0x4B,0x03,0x04,...Array(60).fill(7)]);
  const context=vm.createContext({document:{getElementById:element,createElement:make,documentElement:{},body:{classList:{toggle(){},add(){},remove(){}},append(){}}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
   performance,XMLHttpRequest:XHR,fetch,URL:{createObjectURL:()=>'blob:x',revokeObjectURL(){}},btoa:v=>Buffer.from(v,'binary').toString('base64'),
-  setTimeout:(cb,ms)=>{if(!(ms>=6000))queueMicrotask(cb);return 1;},clearTimeout:()=>{},setInterval:()=>1,clearInterval:()=>{}});
+  setTimeout:(cb,ms)=>{if(!(ms>=6000))queueMicrotask(cb);return 1;},clearTimeout:()=>{},setInterval:callback=>{poll=callback;return 1;},clearInterval:()=>{}});
  vm.runInContext(script,context);
  element('code').value='1234';await element('pair').listeners.submit({preventDefault(){}});
  click(element('cat-library'));await delay();click(element('games').children[0]);await delay();
@@ -300,7 +306,10 @@ async function saveScenario(language){
  e=error();assert.ok(e.shown&&!e.help&&!/0100FFFF/.test(e.text));
  refuse='';element('save-file').files=[zip];await click(element('save-send'));await delay();
  assert.equal(element('save-error').hidden,true);assert.notEqual(element('library-note').textContent,'');assert.equal(content.phase,'complete');
- // The download is handed to the browser under the game's name.
+ // An unrelated upload blocks library writes, but the save can still be downloaded.
+ exported.busy=true;await poll();
+ assert.equal(element('save-send').disabled,true);
+ assert.equal(element('save-download').disabled,false);
  await click(element('save-download'));await delay();
  assert.equal(links.length,1);assert.equal(links[0].download,'0100000000010000-save.zip');assert.equal(element('save-error').hidden,true);
  exported={status:404,error:'no_save'};await click(element('save-download'));await delay();
