@@ -211,6 +211,12 @@ private:
     // d3d12_rasterizer_clear.cpp and diagnostics/d3d12_draw_trace.cpp (SetDrawTrace).
 
     /// Records changed state and then the draw. Command-list state is invalidated on every reset.
+    /// Draw, with the texture handle of pipelines that take it per primitive once it is known.
+    void DrawRun(bool is_indexed, u32 instance_count, std::optional<u32> vertex_texture_handle);
+    /// Splits a draw of such a pipeline into runs of primitives with one handle, in guest order,
+    /// reading the handles from the vertex buffer.
+    void DrawVertexTextureRuns(const GraphicsPipeline& pipeline, bool is_indexed,
+                               u32 instance_count);
     void RecordDraw(GraphicsPipeline& pipeline, const PipelineBindings& bindings,
                     const Framebuffer& framebuffer, const DrawParams& params,
                     Maxwell::PrimitiveTopology topology);

@@ -1628,6 +1628,60 @@ u64 CompileTessEmulation(const ShaderCompiler& compiler,
     linked.tess_control = std::move(compute[0].dxil);
     return linked.tess_capture.capacity() + linked.tess_control.capacity();
 }
+
+/// Where the fragment shader's per-primitive texture handle comes from: the vertex attribute the
+/// vertex shader copies to that output. Throws what cannot be drawn, like any unsupported shader.
+std::optional<GraphicsPipeline::VertexTextureHandle> FindVertexTextureHandle(
+    const std::array<Shader::IR::Program, Maxwell::MaxShaderProgram>& programs,
+    const GraphicsPipelineCacheKey& key) {
+    using Shader::IR::Attribute;
+    using Shader::IR::Opcode;
+    if (key.unique_hashes[5] == 0) {
+        return std::nullopt;
+    }
+    std::optional<u32> output;
+    for (const Shader::TextureDescriptor& desc : programs[5].info.texture_descriptors) {
+        if (!desc.varying_handle) {
+            continue;
+        }
+        if (output && *output != desc.cbuf_offset) {
+            throw Shader::NotImplementedException("Textures with two per-primitive handles");
+        }
+        output = desc.cbuf_offset;
+    }
+    if (!output) {
+        return std::nullopt;
+    }
+    if (key.unique_hashes[2] != 0 || key.unique_hashes[3] != 0 || key.unique_hashes[4] != 0) {
+        throw Shader::NotImplementedException("Per-primitive handle after the vertex shader");
+    }
+    const Shader::IR::Inst* source{};
+    for (const Shader::IR::Block* const block : programs[1].post_order_blocks) {
+        for (const Shader::IR::Inst& inst : block->Instructions()) {
+            if (inst.GetOpcode() != Opcode::SetAttribute || !inst.Arg(0).IsImmediate() ||
+                static_cast<u32>(inst.Arg(0).Attribute()) != *output) {
+                continue;
+            }
+            if (source != nullptr || inst.Arg(1).IsImmediate()) {
+                throw Shader::NotImplementedException("Computed per-primitive handle");
+            }
+            source = inst.Arg(1).InstRecursive();
+        }
+    }
+    while (source != nullptr && (source->GetOpcode() == Opcode::BitCastF32U32 ||
+                                 source->GetOpcode() == Opcode::BitCastU32F32)) {
+        source = source->Arg(0).IsImmediate() ? nullptr : source->Arg(0).InstRecursive();
+    }
+    if (source == nullptr || source->GetOpcode() != Opcode::GetAttribute ||
+        !source->Arg(0).IsImmediate() || !Shader::IR::IsGeneric(source->Arg(0).Attribute())) {
+        throw Shader::NotImplementedException("Computed per-primitive handle");
+    }
+    const Attribute input{source->Arg(0).Attribute()};
+    return GraphicsPipeline::VertexTextureHandle{
+        .attribute = Shader::IR::GenericAttributeIndex(input),
+        .component = Shader::IR::GenericAttributeElement(input),
+    };
+}
 } // namespace
 
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
@@ -1721,6 +1775,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
     }
 
+    const auto vertex_texture_handle = FindVertexTextureHandle(programs, key);
     const PointGeometry point_geometry = PlanPointGeometry(
         programs, key, drops_geometry || captures_xfb || layer_source_program != nullptr);
     const bool generates_tess_control{key.unique_hashes[2] == 0 && key.unique_hashes[3] != 0};
@@ -2016,6 +2071,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                                                        lower_noperspective_mask, tess_plan);
     pipeline->SetFragmentHelpers(fragment_helpers);
     pipeline->SetGeneratesGeometry(generates_geometry);
+    pipeline->SetVertexTextureHandle(vertex_texture_handle);
     return pipeline;
 
 } catch (const Shader::Exception& exception) {
