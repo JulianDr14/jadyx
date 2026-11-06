@@ -966,15 +966,22 @@ static void EmitFPRecipStepFused(BlockOfCode& code, EmitContext& ctx, IR::Inst* 
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
 
     if constexpr (fsize != 16) {
-        if (code.HasHostFeature(HostFeature::FMA) && ctx.HasOptimization(OptimizationFlag::Unsafe_InaccurateNaN)) {
-            Xbyak::Label end, fallback;
-
+        if (code.HasHostFeature(HostFeature::FMA | HostFeature::AVX) && ctx.HasOptimization(OptimizationFlag::Unsafe_InaccurateNaN)) {
             const Xbyak::Xmm operand1 = ctx.reg_alloc.UseXmm(code, args[0]);
             const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(code, args[1]);
             const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm special = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm ordered = ctx.reg_alloc.ScratchXmm(code);
 
             code.movaps(result, code.Const(xword, FP::FPValue<FPT, false, 0, 2>()));
             FCODE(vfnmadd231s)(result, operand1, operand2);
+            // Inaccurate NaN only relaxes which NaN comes out. FRECPS(0, inf) is 2.0 on ARM, not
+            // NaN: the zero-length normalize idiom depends on it. The upper lanes of special come
+            // from the constant (zero), so the blend leaves them alone.
+            FCODE(vcmpunords)(special, result, result);
+            FCODE(vcmpords)(ordered, operand1, operand2);
+            code.vandps(special, special, ordered);
+            code.vblendvps(result, result, code.Const(xword, FP::FPValue<FPT, false, 0, 2>()), special);
 
             ctx.reg_alloc.DefineValue(code, inst, result);
             return;
@@ -1286,10 +1293,17 @@ static void EmitFPRSqrtStepFused(BlockOfCode& code, EmitContext& ctx, IR::Inst* 
             const Xbyak::Xmm operand1 = ctx.reg_alloc.UseXmm(code, args[0]);
             const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(code, args[1]);
             const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm special = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm ordered = ctx.reg_alloc.ScratchXmm(code);
 
             code.vmovaps(result, code.Const(xword, FP::FPValue<FPT, false, 0, 3>()));
             FCODE(vfnmadd231s)(result, operand1, operand2);
             FCODE(vmuls)(result, result, code.Const(xword, FP::FPValue<FPT, false, -1, 1>()));
+            // FRSQRTS(0, inf) is 1.5 on ARM, not NaN (see EmitFPRecipStepFused).
+            FCODE(vcmpunords)(special, result, result);
+            FCODE(vcmpords)(ordered, operand1, operand2);
+            code.vandps(special, special, ordered);
+            code.vblendvps(result, result, code.Const(xword, FP::FPValue<FPT, false, -1, 3>()), special);
 
             ctx.reg_alloc.DefineValue(code, inst, result);
             return;

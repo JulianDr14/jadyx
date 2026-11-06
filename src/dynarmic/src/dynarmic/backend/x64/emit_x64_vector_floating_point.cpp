@@ -1569,9 +1569,18 @@ static void EmitRecipStepFused(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
             const Xbyak::Xmm operand1 = ctx.reg_alloc.UseXmm(code, args[0]);
             const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(code, args[1]);
 
+            const Xbyak::Xmm special = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm ordered = ctx.reg_alloc.ScratchXmm(code);
+
             MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
                 code.movaps(result, GetVectorOf<fsize, false, 0, 2>(code));
                 FCODE(vfnmadd231p)(result, operand1, operand2);
+                // Inaccurate NaN only relaxes which NaN comes out. FRECPS(0, inf) is 2.0 on ARM,
+                // not NaN: the zero-length normalize idiom depends on it.
+                FCODE(vcmpunordp)(special, result, result);
+                FCODE(vcmpordp)(ordered, operand1, operand2);
+                FCODE(vandp)(special, special, ordered);
+                FCODE(vblendvp)(result, result, GetVectorOf<fsize, false, 0, 2>(code), special);
             });
 
             ctx.reg_alloc.DefineValue(code, inst, result);
@@ -1821,10 +1830,18 @@ static void EmitRSqrtStepFused(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
             const Xbyak::Xmm operand1 = ctx.reg_alloc.UseXmm(code, args[0]);
             const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(code, args[1]);
 
+            const Xbyak::Xmm special = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm ordered = ctx.reg_alloc.ScratchXmm(code);
+
             MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
                 code.vmovaps(result, GetVectorOf<fsize, false, 0, 3>(code));
                 FCODE(vfnmadd231p)(result, operand1, operand2);
                 FCODE(vmulp)(result, result, GetVectorOf<fsize, false, -1, 1>(code));
+                // FRSQRTS(0, inf) is 1.5 on ARM, not NaN (see EmitRecipStepFused).
+                FCODE(vcmpunordp)(special, result, result);
+                FCODE(vcmpordp)(ordered, operand1, operand2);
+                FCODE(vandp)(special, special, ordered);
+                FCODE(vblendvp)(result, result, GetVectorOf<fsize, false, -1, 3>(code), special);
             });
 
             ctx.reg_alloc.DefineValue(code, inst, result);
