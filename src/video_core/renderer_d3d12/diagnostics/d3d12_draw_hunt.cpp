@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <fstream>
+#include <system_error>
 #include <utility>
 
 #include <fmt/format.h>
@@ -88,6 +90,32 @@ constexpr NamedCounter REPORTED[] = {
     {Counter::Composites, "Composites"},
 };
 
+/// Who waits for whom, over the CPU profile's seconds: eight frames are too few to average vsyncs.
+constexpr NamedCounter CHAIN[] = {
+    {Counter::GuestFramesQueued, "GuestFramesQueued"},
+    {Counter::GuestSwapIntervalChanges, "GuestSwapIntervalChanges"},
+    {Counter::GpuBusyUs, "GpuBusyUs"},
+    {Counter::Draws, "Draws"},
+    {Counter::Submits, "Submits"},
+    {Counter::PsoCreates, "PsoCreates"},
+    {Counter::GpuThreadIdleUs, "GpuThreadIdleUs"},
+    {Counter::FenceWaitUs, "FenceWaitUs"},
+    {Counter::GpuThreadFlushUs, "GpuThreadFlushUs"},
+    {Counter::PipelineStallUs, "PipelineStallUs"},
+    {Counter::ResourceCreateUs, "ResourceCreateUs"},
+    {Counter::TextureDecodeUs, "TextureDecodeUs"},
+    {Counter::Vsyncs, "Vsyncs"},
+    {Counter::VsyncsLost, "VsyncsLost"},
+    {Counter::VsyncComposeWaitUs, "VsyncComposeWaitUs"},
+    {Counter::CompositesLate, "CompositesLate"},
+    {Counter::GuestDequeueWaitUs, "GuestDequeueWaitUs"},
+    {Counter::GuestGpuWaitUs, "GuestGpuWaitUs"},
+    {Counter::GuestCoreIdleUs, "GuestCoreIdleUs"},
+    {Counter::PresentFreeWaitUs, "PresentFreeWaitUs"},
+    {Counter::PresentRenderWaitUs, "PresentRenderWaitUs"},
+    {Counter::PresentCopyWaitUs, "PresentCopyWaitUs"},
+};
+
 u32 ElapsedNs(std::chrono::steady_clock::time_point since) {
     const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - since)
@@ -157,21 +185,54 @@ void DrawHunt::Begin() {
     perf_start = VideoCore::Perf::Read();
     started = std::chrono::steady_clock::now();
     if (!Common::SamplingProfiler::Running()) {
-        Common::SamplingProfiler::Start(
-            {.hz = PROFILE_HZ,
-             .window_seconds = static_cast<u32>(PROFILE_TIME.count()),
-             .output = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) /
-                       "jadyx_hunt_profile.txt"});
+        // One file per capture, so each report reads the stacks of its own spot. The profiler
+        // appends once it has written in this process: a previous session's file goes first.
+        const auto output = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) /
+                            fmt::format("jadyx_hunt_profile_{}.txt", captures + 1);
+        std::error_code ignored;
+        std::filesystem::remove(output, ignored);
+        Common::SamplingProfiler::Start({.hz = PROFILE_HZ,
+                                         .window_seconds = static_cast<u32>(PROFILE_TIME.count()),
+                                         .output = output});
         owns_profiler = true;
         profiler_until = started + PROFILE_TIME;
+        chain_start = perf_start;
+        chain_swap_interval = VideoCore::Perf::guest_swap_interval.load(std::memory_order_relaxed);
+        chain_capture = captures + 1;
     }
+}
+
+std::string DrawHunt::ChainWindow() const {
+    const VideoCore::Perf::Snapshot now = VideoCore::Perf::Read();
+    const double window_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                  (profiler_until - PROFILE_TIME))
+            .count();
+    std::string text = fmt::format(
+        "chain {0} window_ms {1:.3f}\nchain {0} swap_interval_start {2}\n"
+        "chain {0} swap_interval_end {3}\n",
+        chain_capture, window_ms, chain_swap_interval,
+        VideoCore::Perf::guest_swap_interval.load(std::memory_order_relaxed));
+    for (const NamedCounter& named : CHAIN) {
+        text += fmt::format("chain {} {} {}\n", chain_capture, named.name,
+                            VideoCore::Perf::Get(now, named.counter) -
+                                VideoCore::Perf::Get(chain_start, named.counter));
+    }
+    return text;
 }
 
 void DrawHunt::FrameEnd(double interval_ms) {
     if (owns_profiler && std::chrono::steady_clock::now() >= profiler_until) {
         Common::SamplingProfiler::Stop();
         owns_profiler = false;
-        LOG_INFO(Render, "D3D12 hunt: CPU profile written (jadyx_hunt_profile.txt)");
+        chain_text = ChainWindow();
+        LOG_INFO(Render, "D3D12 hunt: CPU profile {} written", chain_capture);
+    }
+    if (state == State::Idle && !chain_text.empty()) {
+        std::ofstream file{Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "jadyx_hunt.txt",
+                           std::ios::app};
+        file << chain_text;
+        chain_text.clear();
     }
     switch (state) {
     case State::Idle:

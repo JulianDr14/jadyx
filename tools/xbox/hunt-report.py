@@ -4,13 +4,16 @@
 built with package-appx.ps1 -Hunt, or F8 with developer hotkeys).
 
     python tools/xbox/hunt-report.py jadyx_hunt.txt [--capture N] [--top 15] [--out report.md]
-        [--profile jadyx_hunt_profile.txt] [--exe build-uwp/bin/jadyx.exe] [--no-profile]
+        [--profile jadyx_hunt_profile_N.txt] [--exe build-uwp/bin/jadyx.exe] [--no-profile]
 
-Both files are in LocalState/jadyx/log on the console. The report says who limits the frame
-(the GPU, the GPU thread recording draws, or the guest CPU), then where the draws come from
-and what they cost: per kind and skip reason, per render target (pass), per pipeline, per guest
-macro, runs of draws that could be batched, and repeated draw signatures. With the CPU profile
-next to the capture (or --profile), profile-report.py's stacks are appended.
+The files are in LocalState/jadyx/log on the console. The report opens with why the GPU sits idle:
+what the game asked for and which link of the frame chain (guest cores, GPU thread, recorder, GPU)
+sets the pace, over the seconds of the CPU profile. Next, which guest code the busiest emulated
+core runs: its hottest blocks, disassembled with capstone if installed, and those that look like a
+wait. Then it says who limits the captured frames,
+where the draws come from and what they cost: per kind and skip reason, per render target (pass),
+per pipeline, per guest macro, runs of draws that could be batched, and repeated draw signatures.
+With the capture's CPU profile next to it (or --profile), profile-report.py's stacks are appended.
 
 GPU times are timestamp deltas: each call's time runs from the previous call of the same command
 list, so barriers, copies and uploads recorded in between count for the call after them. The first
@@ -22,9 +25,16 @@ Timestamps are bottom-of-pipe, so overlapping draws share time loosely; a pass's
 """
 import argparse
 import collections
+import importlib.util
 import os
+import re
 import subprocess
 import sys
+
+try:
+    import capstone
+except ImportError:
+    capstone = None
 
 KINDS = ["draw", "draw indexed", "draw indirect", "draw texture", "clear", "dispatch", "2D blit",
          "DMA copy", "list tail", "dispatch setup"]
@@ -65,11 +75,13 @@ class Capture:
         self.meta = {}
         self.records = []
         self.dropped = 0
+        self.chain = {}
 
 
 def parse(path):
     captures = []
     current = None
+    chains = collections.defaultdict(dict)
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             p = line.split()
@@ -80,6 +92,8 @@ def parse(path):
                 current = Capture(int(p[3]))
                 current.dropped = int(p[9])
                 captures.append(current)
+            elif tag == "chain":
+                chains[int(p[1])][p[2]] = float(p[3])
             elif current is None:
                 continue
             elif tag == "r":
@@ -93,7 +107,253 @@ def parse(path):
             elif tag == "meta":
                 it = iter(p[1:])
                 current.meta = {k: float(v) for k, v in zip(it, it)}
+    for capture in captures:
+        capture.chain = chains.get(capture.number, {})
     return captures
+
+
+def profile_threads(path):
+    """CPU ms per second of each thread in a sampling profile; empty when there is no file."""
+    if not path or not os.path.exists(path):
+        return {}
+    spec = importlib.util.spec_from_file_location(
+        "profile_report", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       "profile-report.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    windows = module.parse(path).windows
+    seconds = sum(w.seconds for w in windows)
+    totals = collections.Counter()
+    for window in windows:
+        for name, stats in window.threads.items():
+            totals[name] += stats[0]
+    return {name: cpu_ms / seconds for name, cpu_ms in totals.items()} if seconds else {}
+
+
+def parse_guest_code(path):
+    """The guest code of a sampling profile: samples per thread and block, bytes of the hottest."""
+    samples = collections.defaultdict(collections.Counter)  # thread -> guest pc -> samples
+    calls = collections.Counter()  # (thread, guest pc) -> samples inside its callbacks
+    thunks = collections.Counter()  # (thread, guest pc of the caller) -> samples in memory thunks
+    code, base = {}, None
+    if not path or not os.path.exists(path):
+        return samples, calls, thunks, code, base
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            p = line.split()
+            if not p:
+                continue
+            if p[0] == "guest":
+                pc = int(p[2], 16)
+                samples[p[1]][pc] += int(p[4]) + int(p[5])
+                calls[(p[1], pc)] += int(p[5])
+            elif p[0] == "guestthunk":
+                pc = int(p[2], 16)
+                thunks[(p[1], pc)] += int(p[4])
+                samples[p[1]][pc] += 0  # a block seen only through its thunk calls still counts
+            elif p[0] == "guestbase":
+                base = int(p[1], 16)
+            elif p[0] == "guestcode" and len(p) > 2:
+                code[int(p[1], 16)] = bytes.fromhex(p[2])
+    return samples, calls, thunks, code, base
+
+
+BRANCH_TARGET = re.compile(r"#(0x[0-9a-f]+)$")
+SIMD_REGISTER = re.compile(r"\b[vqdsh]\d+\b")
+EXCLUSIVE = re.compile(r"^(ldx|ldax|stx|stlx|cas|swp|ldadd|ldset|ldclr)")
+
+
+def describe_block(pc, data):
+    """What a guest block does, from its instructions; None without capstone or code."""
+    if capstone is None or not data:
+        return None
+    engine = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+    insns = list(engine.disasm(data, pc))
+    if not insns:
+        return None
+    mnemonics = [i.mnemonic.split(".")[0] for i in insns]
+    last = insns[-1]
+    target = BRANCH_TARGET.search(last.op_str)
+    loops = bool(target) and int(target.group(1), 16) == pc and last.mnemonic.split(".")[0] in \
+        ("b", "cbz", "cbnz", "tbz", "tbnz")
+    loads = sum(m.startswith(("ldr", "ldp", "ldur", "ld1", "ld2", "ld3", "ld4")) for m in mnemonics)
+    stores = sum(m.startswith(("str", "stp", "stur", "st1", "st2", "st3", "st4")) for m in mnemonics)
+    exclusive = sum(bool(EXCLUSIVE.match(m)) for m in mnemonics)
+    wait = sum(m in ("wfe", "wfi", "yield") for m in mnemonics)
+    # A wait reads and tests, and writes nothing but perhaps its exclusive: short and closed.
+    waiting = wait > 0 or (loops and len(insns) <= 12 and stores == 0)
+    return dict(instructions=len(insns), loads=loads, stores=stores, exclusive=exclusive,
+                simd=sum(bool(SIMD_REGISTER.search(i.op_str)) for i in insns), loops=loops,
+                waiting=waiting, svc=mnemonics.count("svc"),
+                text=[f"{i.address:x}: {i.mnemonic} {i.op_str}" for i in insns])
+
+
+def guest_section(profile, threads, top, out):
+    samples, calls, thunks, code, base = parse_guest_code(profile)
+    cores = [name for name in samples if name.startswith("CPUCore_")]
+    if not cores:
+        out.append("# Guest code\n\nNo guest code in this profile: older build, or no CPU profile.\n")
+        return
+    core = max(cores, key=lambda name: threads.get(name, 0.0) or sum(samples[name].values()))
+    blocks = samples[core]
+    own = sum(n for pc, n in blocks.items() if pc)
+    outside = blocks.get(0, 0)
+    in_thunks = {pc: n for (name, pc), n in thunks.items() if name == core}
+    thunk_total = sum(in_thunks.values())
+    total = own + outside + thunk_total
+    known = own + thunk_total - in_thunks.get(0, 0)
+    ranked = sorted(((n + in_thunks.get(pc, 0), pc) for pc, n in blocks.items() if pc), reverse=True)
+    share = lambda count: 100 * sum(n for n, _ in ranked[:count]) / max(1, known)
+    percent = lambda part: f"{100 * part / max(1, total):.0f}%"
+    out.append(f"# Guest code of the busiest core ({core})\n")
+    out.append(f"- {total} samples in JIT code: **{percent(own)} in the game's blocks, "
+               f"{percent(thunk_total)} in memory access thunks, {percent(outside)} in the rest of "
+               f"the JIT** (dispatcher, memory fallbacks; with what they call). Without thunks in "
+               f"the build, their accesses are inside the blocks.")
+    out.append(f"- Thunk time includes waiting for the guest's data, which costs the same inline; "
+               f"{in_thunks.get(0, 0)} thunk samples have no known caller.")
+    out.append(f"- Concentration over {len(ranked)} blocks, thunk calls included: the hottest "
+               f"{share(1):.0f}%, top 10 {share(10):.0f}%, "
+               f"top 50 {share(50):.0f}%.")
+    described = {pc: describe_block(pc, code.get(pc)) for _, pc in ranked if pc in code}
+    if capstone is None:
+        out.append("- capstone is not installed: no disassembly (pip install capstone).")
+    else:
+        looked_at = sum(n for n, pc in ranked if described.get(pc))
+        waiting = sum(n for n, pc in ranked if (described.get(pc) or {}).get("waiting"))
+        out.append(f"- Blocks that look like a wait (WFE/YIELD, or a short closed loop that stores "
+                   f"nothing): **{100 * waiting / max(1, looked_at):.0f}%** of the "
+                   f"{100 * looked_at / max(1, known):.0f}% of samples with code in the file. A "
+                   "longer polling loop goes unnoticed: read the hottest blocks.")
+    rows = []
+    for n, pc in ranked[:top]:
+        info = described.get(pc)
+        offset = f"+0x{pc - base:x}" if base is not None and pc >= base else "-"
+        cells = [f"{100 * n / max(1, total):.1f}%", f"0x{pc:x}", offset,
+                 f"{100 * in_thunks.get(pc, 0) / max(1, n):.0f}%",
+                 f"{100 * calls[(core, pc)] / max(1, n):.0f}%"]
+        if info:
+            flags = [name for name, on in (("wait?", info["waiting"]), ("loop", info["loops"]),
+                                           ("exclusive", info["exclusive"]), ("svc", info["svc"]))
+                     if on]
+            cells += [info["instructions"], info["loads"], info["stores"], info["simd"],
+                      ", ".join(flags) or "-"]
+        else:
+            cells += ["-"] * 5
+        rows.append(cells)
+    out.append("")
+    out.append(table(["samples", "guest PC", "from code start", "in thunks", "in callbacks",
+                      "instructions",
+                      "loads", "stores", "SIMD/FP", "flags"], rows))
+    disassembled = [(n, pc) for n, pc in ranked[:5] if described.get(pc)]
+    for n, pc in disassembled:
+        out.append(f"\n## Block 0x{pc:x} ({100 * n / max(1, total):.1f}% of the core)\n\n```")
+        out += described[pc]["text"]
+        out.append("```")
+    out.append("")
+
+
+def chain_links(chain, threads, frames):
+    """(link, ms per frame) of each link that hands work to the next one, busiest first. The GPU
+    thread counts as wall time without its waits: on a shared core it takes longer than its CPU
+    time. The others have only their CPU time, so preemption makes them look lighter."""
+    window_ms = chain["window_ms"]
+    waits_us = sum(chain.get(name, 0) for name in ("GpuThreadIdleUs", "FenceWaitUs",
+                                                   "GpuThreadFlushUs", "PipelineStallUs"))
+    links = [("GPU thread (recording draws)", max(0.0, window_ms - waits_us / 1e3) / frames)]
+    for name, cpu_ms_per_s in threads.items():
+        if name.startswith("CPUCore_") or name.startswith("D3D12Recorder"):
+            label = f"guest core {name[8:]}" if name.startswith("CPUCore_") else "command list recorder"
+            links.append((label, cpu_ms_per_s * window_ms / frames / 1e3))
+    return sorted(links, key=lambda link: -link[1])
+
+
+def chain_verdict(chain, threads):
+    """Why the GPU sits idle, in one conclusion; correlation over the window, not proof."""
+    frames = chain.get("GuestFramesQueued", 0)
+    if not frames:
+        return "The game queued no frames in this window: nothing to conclude."
+    frame_ms = chain["window_ms"] / frames
+    refresh = 1000 / 60
+    asked = int(chain.get("swap_interval_end", 0))
+    gpu_ms = chain.get("GpuBusyUs", 0) / 1e3 / frames
+    if gpu_ms >= 0.75 * frame_ms:
+        return f"**The GPU is the limit**: busy {gpu_ms:.1f} of {frame_ms:.1f} ms per frame."
+    if not threads:
+        return "No CPU profile for this capture: the links other than the GPU thread are unknown."
+    name, busiest = chain_links(chain, threads, frames)[0]
+    idle = f"The GPU works {gpu_ms:.1f} ms and has nothing to do for {frame_ms - gpu_ms:.1f} ms."
+    # The game's own pace: at or under what it asked for, it is waiting on purpose.
+    if asked >= 1 and frame_ms <= asked * refresh * 1.03:
+        if asked == 1:
+            return f"**Nothing limits this window**: it holds the 60 FPS the game asks for. {idle}"
+        faster = (asked - 1) * refresh
+        reason = (f"{name} takes {busiest:.1f} ms, over the {faster:.1f} ms that "
+                  f"{60 / (asked - 1):.0f} FPS needs: a likely reason it chose this rate."
+                  if busiest >= 0.9 * faster else
+                  f"The busiest link, {name}, takes {busiest:.1f} ms and fits the {faster:.1f} ms "
+                  f"of {60 / (asked - 1):.0f} FPS: this looks like the game's own cap, not a "
+                  "shortage of power.")
+        return (f"**The game asked for {60 / asked:.0f} FPS** (swap interval {asked}) and gets it. "
+                f"{reason} {idle}")
+    # Slower than asked. Above 85% a link fills the frame; below, the time goes to waits between
+    # links, and the wait table says which.
+    if busiest >= 0.85 * frame_ms:
+        return (f"**{name} sets the pace**: {busiest:.1f} of {frame_ms:.1f} ms per frame. The GPU "
+                f"cannot work more than this link feeds it. {idle}")
+    return (f"**No link fills the frame**: the busiest, {name}, takes {busiest:.1f} of "
+            f"{frame_ms:.1f} ms. The time goes to waits between links: see the wait table. {idle}")
+
+
+def chain_section(c, threads, out):
+    chain = c.chain
+    frames = chain.get("GuestFramesQueued", 0)
+    out.append(f"# Why the GPU sits idle — capture {c.number}\n")
+    if "window_ms" not in chain:
+        out.append("No frame chain for this capture: the game closed before its window ended, "
+                   "another capture overlapped it, or the build is older.\n")
+        return
+    out.append(f"- {chain_verdict(chain, threads)}")
+    if not frames:
+        out.append("")
+        return
+    window_ms = chain["window_ms"]
+    frame_ms = window_ms / frames
+    asked = (int(chain.get("swap_interval_start", 0)), int(chain.get("swap_interval_end", 0)))
+    out.append(f"- Over {window_ms / 1e3:.1f} s: **{1000 / frame_ms:.1f} FPS** ({frame_ms:.1f} ms "
+               f"per frame), GPU busy **{100 * chain.get('GpuBusyUs', 0) / 1e3 / window_ms:.0f}%**.")
+    out.append(f"- The game asked for swap interval {asked[0]} at the start and {asked[1]} at the "
+               f"end, changing it {chain.get('GuestSwapIntervalChanges', 0):.0f} times; "
+               f"{chain.get('VsyncsLost', 0):.0f} vsyncs lost, "
+               f"{chain.get('CompositesLate', 0):.0f} late composites.")
+    out.append(f"- {chain.get('Draws', 0) / frames:.0f} draws and "
+               f"{chain.get('Submits', 0) / frames:.1f} submits per frame, "
+               f"{chain.get('PsoCreates', 0):.0f} PSOs created in the window.")
+    per_frame = lambda name: chain.get(name, 0) / 1e3 / frames
+    rows = [("GPU (hardware)", per_frame("GpuBusyUs"))] + chain_links(chain, threads, frames)
+    out.append("\n## Work per frame\n")
+    out.append(table(["link", "ms/frame", "% of frame"],
+                     [[name, f"{value:.1f}", f"{100 * value / frame_ms:.0f}%"]
+                      for name, value in sorted(rows, key=lambda row: -row[1])]))
+    waits = [("GPU thread waited for the game's commands", "GpuThreadIdleUs"),
+             ("GPU thread waited for the GPU (fences)", "FenceWaitUs"),
+             ("GPU thread flushed guest readbacks", "GpuThreadFlushUs"),
+             ("GPU thread waited for pipelines", "PipelineStallUs"),
+             ("GPU thread created resources", "ResourceCreateUs"),
+             ("GPU thread decoded textures", "TextureDecodeUs"),
+             ("Vsync thread waited for the GPU thread", "VsyncComposeWaitUs"),
+             ("Present waited: free frame", "PresentFreeWaitUs"),
+             ("Present waited: render", "PresentRenderWaitUs"),
+             ("Present waited: copy", "PresentCopyWaitUs"),
+             ("Game waited for a free framebuffer", "GuestDequeueWaitUs"),
+             ("Game waited for the GPU (syncpoints)", "GuestGpuWaitUs"),
+             ("Emulated cores idle (all cores added)", "GuestCoreIdleUs")]
+    out.append("\n## Waits per frame\n")
+    out.append(table(["who", "ms/frame"],
+                     [[label, f"{per_frame(name):.1f}"] for label, name in
+                      sorted(waits, key=lambda wait: -per_frame(wait[1]))]))
+    out.append("\nThe first 8 frames of the window carry the per-draw timers below, so they run a "
+               "little slower than the rest. The waits overlap and do not add up to the frame.\n")
 
 
 def describe_pass(p):
@@ -409,7 +669,7 @@ def main():
     parser.add_argument("--capture", type=int, help="capture number; the last one by default")
     parser.add_argument("--top", type=int, default=15)
     parser.add_argument("--out", help="write the report here instead of printing it")
-    parser.add_argument("--profile", help="CPU profile; jadyx_hunt_profile.txt next to it by default")
+    parser.add_argument("--profile", help="CPU profile; jadyx_hunt_profile_N.txt next to it by default")
     parser.add_argument("--exe", default=os.path.join("build-uwp", "bin", "jadyx.exe"))
     parser.add_argument("--no-profile", action="store_true", help="skip the CPU profile")
     args = parser.parse_args()
@@ -425,11 +685,15 @@ def main():
             sys.exit(f"capture {args.capture} not found; there are "
                      f"{', '.join(str(c.number) for c in captures)}")
         capture = matches[0]
+    profile = args.profile or os.path.join(os.path.dirname(os.path.abspath(args.hunt)),
+                                           f"jadyx_hunt_profile_{capture.number}.txt")
     out = []
+    threads = profile_threads(None if args.no_profile else profile)
+    chain_section(capture, threads, out)
+    if not args.no_profile:
+        guest_section(profile, threads, args.top, out)
     report(capture, args.top, out)
 
-    profile = args.profile or os.path.join(os.path.dirname(os.path.abspath(args.hunt)),
-                                           "jadyx_hunt_profile.txt")
     if not args.no_profile and os.path.exists(profile):
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profile-report.py")
         result = subprocess.run([sys.executable, script, profile, "--exe", args.exe,

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <chrono>
+#include <string>
 
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
@@ -13,9 +14,9 @@ namespace D3D12 {
 class Framebuffer;
 class Scheduler;
 
-/// Captures the next `frames` presented frames into LogDir/jadyx_hunt.txt (any thread), and
-/// samples the CPU into jadyx_hunt_profile.txt meanwhile. Read on the PC with
-/// tools/xbox/hunt-report.py.
+/// Captures the next `frames` presented frames into LogDir/jadyx_hunt.txt (any thread), and over
+/// the next seconds samples the CPU into jadyx_hunt_profile_<capture>.txt and sums the frame chain
+/// into jadyx_hunt.txt. Read on the PC with tools/xbox/hunt-report.py.
 void HuntNextFrames(u32 frames = 8);
 
 /// Diagnostic ("hunt_cs="): the capture starts once, at the 64th dispatch of this compute shader
@@ -53,6 +54,8 @@ private:
     void ListStart();
     void ListEnd();
     void Write();
+    /// The frame chain's counters since the CPU profile started, as jadyx_hunt.txt lines.
+    [[nodiscard]] std::string ChainWindow() const;
     [[nodiscard]] u32 PassOf(const Framebuffer& framebuffer);
     /// A timestamp to measure the next call from, when the list being recorded has none yet.
     void Baseline();
@@ -75,6 +78,11 @@ private:
     std::chrono::steady_clock::time_point started{};
     bool owns_profiler{};
     std::chrono::steady_clock::time_point profiler_until{};
+    VideoCore::Perf::Snapshot chain_start{};
+    s32 chain_swap_interval{};
+    u32 chain_capture{};
+    /// Finished chain window, held until its capture is in the file.
+    std::string chain_text;
 };
 
 /// One guest draw, clear or dispatch for the hunt; committed when it goes out of scope.
