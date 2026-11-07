@@ -691,6 +691,8 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::GpuFenceHint, L"Imediato é o mais rápido. Os outros são mais exatos, mas podem baixar os fps"},
     {Text::AsyncRecord, L"Thread de comandos da GPU"},
     {Text::AsyncRecordHint, L"Avançado. Envia os comandos em uma thread separada. Desligar pode baixar os fps. Vale ao iniciar o jogo"},
+    {Text::CpuWriteQueue, L"Fila de escritas da CPU"},
+    {Text::CpuWriteQueueHint, L"Avançado. Só se um jogo melhorar com ela: em outros baixa muito os fps. Vale ao iniciar o jogo"},
     {Text::SlowGuestClock, L"Relógio do jogo a 90%"},
     {Text::SlowGuestClockHint, L"Para jogos que oscilam entre 20 e 30 fps. Se ficar lento, desligue"},
     {Text::ExactGpuReads, L"Leituras exatas da GPU"},

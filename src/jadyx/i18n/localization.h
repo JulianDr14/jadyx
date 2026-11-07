@@ -641,6 +641,8 @@ enum class Text : std::uint16_t {
     GpuFenceHint,
     AsyncRecord,
     AsyncRecordHint,
+    CpuWriteQueue,
+    CpuWriteQueueHint,
     SlowGuestClock,
     SlowGuestClockHint,
     ExactGpuReads,

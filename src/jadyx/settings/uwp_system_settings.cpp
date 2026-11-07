@@ -29,6 +29,7 @@ constexpr auto GraphicsFrameGenKey = L"graphics_frame_gen";
 constexpr auto GraphicsShadersKey = L"graphics_shaders";
 constexpr auto GraphicsGpuFenceKey = L"graphics_gpu_fence";
 constexpr auto GraphicsAsyncRecordKey = L"graphics_async_record";
+constexpr auto GraphicsCpuWriteQueueKey = L"graphics_cpu_write_queue";
 
 /// Saved as the enum's value, or -1 for "follow the system". A value that is not a selectable
 /// option (an older or newer build's) also falls back to the system.
@@ -102,6 +103,8 @@ GraphicsSettings LoadGraphicsSettings() {
             settings.gpu_fence = *gpu_fence;
         if (values.HasKey(GraphicsAsyncRecordKey))
             settings.async_record = winrt::unbox_value<bool>(values.Lookup(GraphicsAsyncRecordKey));
+        if (values.HasKey(GraphicsCpuWriteQueueKey))
+            settings.cpu_write_queue = winrt::unbox_value<bool>(values.Lookup(GraphicsCpuWriteQueueKey));
     } catch (...) { /* Missing or invalid values keep the defaults. */ }
     // Saved by hand or by an older build with both on: FSR wins, as on a first install.
     if (IsFsr(settings.upscaling)) settings.frame_gen = false;
@@ -116,6 +119,7 @@ bool SaveGraphicsSettings(const GraphicsSettings& settings) {
         values.Insert(GraphicsShadersKey, winrt::box_value(static_cast<int32_t>(settings.shaders)));
         values.Insert(GraphicsGpuFenceKey, winrt::box_value(static_cast<int32_t>(settings.gpu_fence)));
         values.Insert(GraphicsAsyncRecordKey, winrt::box_value(settings.async_record));
+        values.Insert(GraphicsCpuWriteQueueKey, winrt::box_value(settings.cpu_write_queue));
         return true;
     } catch (...) { return false; }
 }
@@ -173,6 +177,8 @@ GameGraphics LoadGameGraphics(std::uint64_t program_id) {
         graphics.gpu_fence = LoadChoice(values, gpu_fence.c_str(), SelectableGpuFences());
         const auto async_record = GameGraphicsKey(L"async_record", program_id);
         if (values.HasKey(async_record)) graphics.async_record = winrt::unbox_value<bool>(values.Lookup(async_record));
+        const auto cpu_write_queue = GameGraphicsKey(L"cpu_write_queue", program_id);
+        if (values.HasKey(cpu_write_queue)) graphics.cpu_write_queue = winrt::unbox_value<bool>(values.Lookup(cpu_write_queue));
         const auto slow_clock = GameGraphicsKey(L"slow_clock", program_id);
         if (values.HasKey(slow_clock)) graphics.slow_guest_clock = winrt::unbox_value<bool>(values.Lookup(slow_clock));
         const auto exact_reads = GameGraphicsKey(L"exact_gpu_reads", program_id);
@@ -201,6 +207,7 @@ bool SaveGameGraphics(std::uint64_t program_id, const GameGraphics& graphics) {
         SaveOverride(values, GameGraphicsKey(L"shaders", program_id), graphics.shaders);
         SaveOverride(values, GameGraphicsKey(L"gpu_fence", program_id), graphics.gpu_fence);
         SaveOverride(values, GameGraphicsKey(L"async_record", program_id), graphics.async_record);
+        SaveOverride(values, GameGraphicsKey(L"cpu_write_queue", program_id), graphics.cpu_write_queue);
         SaveOverride(values, GameGraphicsKey(L"slow_clock", program_id),
                      graphics.slow_guest_clock ? std::optional<bool>{true} : std::nullopt);
         SaveOverride(values, GameGraphicsKey(L"exact_gpu_reads", program_id),

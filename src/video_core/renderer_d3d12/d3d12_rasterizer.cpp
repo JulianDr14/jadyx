@@ -1307,11 +1307,14 @@ void RasterizerD3D12::DrainCpuWrites() {
     if (VideoCommon::CpuWriteQueue::Empty()) {
         return;
     }
+    const bool testing = VideoCommon::CpuWriteQueue::Testing();
+    const auto test_start = testing ? std::chrono::steady_clock::now()
+                                    : std::chrono::steady_clock::time_point{};
     cpu_writes_drained.clear();
     u64 late = 0;
     {
         std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
-        const u64 drained = VideoCommon::CpuWriteQueue::Drain([&](u64 address, u64 size) {
+        const auto drained = VideoCommon::CpuWriteQueue::Drain([&](u64 address, u64 size) {
             // OnCPUWrite, with the locks taken once for the batch.
             if (buffer_cache.OnCPUWrite(address, size)) {
                 cpu_writes_after_gpu.emplace_back(address, size);
@@ -1321,13 +1324,24 @@ void RasterizerD3D12::DrainCpuWrites() {
             texture_cache.WriteMemory(address, size);
             cpu_writes_drained.emplace_back(address, size);
         });
-        VideoCore::Perf::Add(VideoCore::Perf::Counter::CpuWritesDrained, drained);
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::CpuWritesDrained, drained.writes);
+        if (testing) {
+            VideoCore::Perf::Add(VideoCore::Perf::Counter::CpuWriteDrains, 1);
+            VideoCore::Perf::Add(VideoCore::Perf::Counter::CpuWriteRanges, drained.ranges);
+            VideoCore::Perf::Add(VideoCore::Perf::Counter::CpuWritePageRuns, drained.pages);
+        }
     }
     if (late != 0) {
         VideoCore::Perf::Add(VideoCore::Perf::Counter::CpuWritesLateGpu, late);
     }
     for (const auto& [address, size] : cpu_writes_drained) {
         pipeline_cache.InvalidateRegion(address, size);
+    }
+    if (testing) {
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::CpuWriteDrainNs,
+                             static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                  std::chrono::steady_clock::now() - test_start)
+                                                  .count()));
     }
 }
 

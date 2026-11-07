@@ -24,7 +24,10 @@ namespace Jadyx {
 
 void UseGameAdvancedGraphics(BootConfig& config, u64 program_id) {
     const GameGraphics game = program_id != 0 ? LoadGameGraphics(program_id) : GameGraphics{};
-    config.async_record = ResolveGraphics(LoadGraphicsSettings(), game).async_record;
+    const GraphicsSettings graphics = ResolveGraphics(LoadGraphicsSettings(), game);
+    config.async_record = graphics.async_record;
+    config.cpu_write_defer = graphics.cpu_write_queue ? VideoCore::FramePipeline::Mode::On
+                                                      : VideoCore::FramePipeline::Mode::Off;
     if (program_id == 0) return;
     const GameAdvancedGraphics& advanced = game.advanced;
     config.anisotropy = advanced.anisotropy;
@@ -585,6 +588,9 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
             } else if (line == "timer_profile=1") {
                 config.timer_profile = true;
                 WriteDiag("boot.cfg: HostTiming requested waits/sleeps/spin elapsed profiling enabled");
+            } else if (line == "cpu_write_test=1") {
+                config.cpu_write_test = true;
+                WriteDiag("boot.cfg: guest CPU write test, one phase per pacing window");
             } else if (line == "cpu_profile=1") {
                 config.cpu_profile = true;
             } else if (line == "profile=1") {

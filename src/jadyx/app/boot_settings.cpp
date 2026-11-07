@@ -133,7 +133,8 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
     const bool exact_gpu_reads = config.exact_gpu_reads.value_or(game.exact_gpu_reads);
     VideoCore::SetExactGpuReads(exact_gpu_reads);
     WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, exact GPU reads " +
-              (exact_gpu_reads ? "on" : "off") + ", upscaling " +
+              (exact_gpu_reads ? "on" : "off") + ", CPU write queue " +
+              (config.cpu_write_defer == VideoCore::FramePipeline::Mode::Off ? "off" : "on") + ", upscaling " +
               (config.upscaling ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(UpscalingText(graphics.upscaling)))) +
               ", frame generation " +
               (config.frame_gen ? std::string{"from boot.cfg"} : std::string{graphics.frame_gen ? "auto" : "off"}) +
@@ -390,10 +391,11 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetPsoBudget(config.pso_budget);
     D3D12::SetPsoLoading(config.pso_loading);
     VideoCommon::CpuWriteQueue::SetMode(config.cpu_write_defer);
+    VideoCommon::CpuWriteQueue::EnableTest(config.cpu_write_test);
     // The JIT load table and the write queue trust the bitmap, so it is kept for them too.
     VideoCommon::GpuWrittenPages::SetEnabled(
         config.dma_flush_filter ||
-        config.cpu_write_defer != VideoCore::FramePipeline::Mode::Off ||
+        config.cpu_write_defer != VideoCore::FramePipeline::Mode::Off || config.cpu_write_test ||
         config.jit_read_table != VideoCore::FramePipeline::Mode::Off);
     static_assert(u8(Common::PageTable::JitReadTable::On) == u8(VideoCore::FramePipeline::Mode::On) &&
                   u8(Common::PageTable::JitReadTable::Check) ==

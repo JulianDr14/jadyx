@@ -16,7 +16,7 @@
 namespace Jadyx {
 
 enum class GraphicsRow : std::size_t {
-    Upscaling, FrameGen, Shaders, GpuFence, AsyncRecord, GuestClock, ExactGpuReads,
+    Upscaling, FrameGen, Shaders, GpuFence, AsyncRecord, CpuWriteQueue, GuestClock, ExactGpuReads,
     Anisotropy, TextureQuality, TextureMemory, GpuAccuracy, ShaderWorkers, ConsoleMode, ResetAdvanced,
     Count,
 };
@@ -70,6 +70,9 @@ inline bool HandleGraphicsInput(GraphicsPage& page, GraphicsInput input) {
     case GraphicsRow::AsyncRecord:
         settings.async_record = !settings.async_record;
         return true;
+    case GraphicsRow::CpuWriteQueue:
+        settings.cpu_write_queue = !settings.cpu_write_queue;
+        return true;
     default:
         break;
     }
@@ -88,6 +91,7 @@ inline bool HandleGameGraphicsInput(GameGraphics& game, std::size_t& selected, G
     case GraphicsRow::Shaders: StepGameShaders(game, back); return true;
     case GraphicsRow::GpuFence: StepGameGpuFence(game, back); return true;
     case GraphicsRow::AsyncRecord: StepGameAsyncRecord(game, back); return true;
+    case GraphicsRow::CpuWriteQueue: StepGameCpuWriteQueue(game, back); return true;
     case GraphicsRow::GuestClock: game.slow_guest_clock = !game.slow_guest_clock; return true;
     case GraphicsRow::ExactGpuReads: game.exact_gpu_reads = !game.exact_gpu_reads; return true;
     case GraphicsRow::Anisotropy: advanced.anisotropy = StepAdvanced(advanced.anisotropy, SelectableAnisotropy(), back); return true;
@@ -113,6 +117,7 @@ inline I18n::Text GraphicsRowTitle(GraphicsRow row) {
     case GraphicsRow::Shaders: return Text::ShaderBuild;
     case GraphicsRow::GpuFence: return Text::GpuFence;
     case GraphicsRow::AsyncRecord: return Text::AsyncRecord;
+    case GraphicsRow::CpuWriteQueue: return Text::CpuWriteQueue;
     case GraphicsRow::GuestClock: return Text::SlowGuestClock;
     case GraphicsRow::ExactGpuReads: return Text::ExactGpuReads;
     case GraphicsRow::Anisotropy: return Text::AdvancedAnisotropy;
@@ -133,6 +138,7 @@ inline I18n::Text GraphicsRowHint(GraphicsRow row) {
     case GraphicsRow::Shaders: return Text::ShaderBuildHint;
     case GraphicsRow::GpuFence: return Text::GpuFenceHint;
     case GraphicsRow::AsyncRecord: return Text::AsyncRecordHint;
+    case GraphicsRow::CpuWriteQueue: return Text::CpuWriteQueueHint;
     case GraphicsRow::GuestClock: return Text::SlowGuestClockHint;
     case GraphicsRow::ExactGpuReads: return Text::ExactGpuReadsHint;
     case GraphicsRow::Anisotropy: return Text::AdvancedAnisotropyHint;
@@ -153,6 +159,7 @@ inline std::wstring GraphicsRowValue(const GraphicsSettings& settings, GraphicsR
     case GraphicsRow::Shaders: return std::wstring{I18n::Tr(ShaderBuildText(settings.shaders))};
     case GraphicsRow::GpuFence: return std::wstring{I18n::Tr(GpuFenceText(settings.gpu_fence))};
     case GraphicsRow::AsyncRecord: return OnOffText(settings.async_record);
+    case GraphicsRow::CpuWriteQueue: return OnOffText(settings.cpu_write_queue);
     default: return std::wstring{I18n::Tr(UpscalingText(settings.upscaling))};
     }
 }
@@ -192,6 +199,7 @@ inline bool HasGameOverride(const GameGraphics& game, GraphicsRow row) {
     case GraphicsRow::Shaders: return game.shaders.has_value();
     case GraphicsRow::GpuFence: return game.gpu_fence.has_value();
     case GraphicsRow::AsyncRecord: return game.async_record.has_value();
+    case GraphicsRow::CpuWriteQueue: return game.cpu_write_queue.has_value();
     default: return game.upscaling.has_value();
     }
 }
