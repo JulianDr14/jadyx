@@ -1,6 +1,6 @@
 # Jadyx game compatibility
 
-Updated **28 October 2026**. This page collects console tests and community reports,
+Updated **6 November 2026**. This page collects console tests and community reports,
 not an exhaustive compatibility database. For the latest comments and additional games, visit
 [the compatibility forum](https://discord.com/channels/1561574819672100994/1561576709772419083).
 [Back to the project README](../../README.md#games).
@@ -18,6 +18,20 @@ The README's internal measurements were taken after shader compilation, in Game 
 
 | Game | Console | Performance | Notes |
 | --- | --- | --- | --- |
+| Super Smash Bros. Ultimate *(community)* | Series S | Playable; screen freeze reported fixed | Jadyx 0.3.10.3 retest reports that the screen no longer freezes. Earlier reports reached 60 FPS with first-use shader stutters; that figure was not remeasured in the latest retest. Importing the Steve DLC remains an issue for one tester. [Report](https://discord.com/channels/1561574819672100994/1564802235785936920/1568325179506167870) |
+| Absolum *(community)* | Series S | **60 FPS** | Jadyx 0.3.10.2; tester reports no issues during the reported test. [Report](https://discord.com/channels/1561574819672100994/1568276227167494355) |
+| Hitman: Blood Money – Reprisal *(community)* | Series S | **30 FPS**, reported stable | Jadyx 0.3.10.1; game v1.2_71588; no crashes or major visual glitches observed during gameplay. [Report](https://discord.com/channels/1561574819672100994/1567794026999185408) |
+| Streets of Rage 4 *(community)* | Series S | Playable; no issues reported across three stages | Jadyx 0.3.10.1; game 1.09 with DLC installed. FPS not stated. [Report](https://discord.com/channels/1561574819672100994/1567888001881743400) |
+| Animal Crossing: New Horizons *(community)* | Series X | Stable FPS reported; exact rate not stated | More than one hour of gameplay with no errors or graphical glitches reported. Jadyx build not stated. [Report](https://discord.com/channels/1561574819672100994/1565861939723116646) |
+| Pokkén Tournament DX *(community)* | Series S | **60 FPS**, reported stable | Jadyx 0.3.9.0; no graphical errors observed in this Series S report. [Report](https://discord.com/channels/1561574819672100994/1566073481328853182) |
+| Ori and the Blind Forest: Definitive Edition *(community)* | Series S | **60 FPS**, reported stable after initial startup | Jadyx 0.3.8.6; game 1.0.2; smooth gameplay reported after startup. [Report](https://discord.com/channels/1561574819672100994/1563818446196834345) |
+| Resident Evil 6 *(community)* | Series S | **30 FPS**, reported stable | Jadyx 0.3.8.6; game 1.0.2; no graphical or texture errors observed during gameplay. Two-player local co-op also reported working. [Report](https://discord.com/channels/1561574819672100994/1564187073345490954) |
+| Luigi’s Mansion 2 HD *(community)* | Series X | **30 FPS**, reported stable after shader compilation | Jadyx 0.3.8.6; reported fully playable after shaders load. [Report](https://discord.com/channels/1561574819672100994/1563788873157578803) |
+| Suikoden I & II HD Remaster *(community)* | Series S | **30 FPS**, no drops reported | Jadyx 0.3.9.0; tester reports smooth operation. [Report](https://discord.com/channels/1561574819672100994/1565500766427283547) |
+| Call of Juarez: Gunslinger *(community)* | Series S | **30 FPS**, reported stable | Jadyx 0.3.8.6; game 1.0.5; consistent frame rate and smooth gameplay reported. [Report](https://discord.com/channels/1561574819672100994/1564158857431879722) |
+| Kill la Kill IF *(community)* | Series S | **60 FPS**, with little to no drops reported | Jadyx 0.3.8.5. [Report](https://discord.com/channels/1561574819672100994/1563646204527517856) |
+| Taiko no Tatsujin: Rhythm Festival *(community)* | Series S | **60 FPS**, no drops reported | Jadyx 0.3.8.6. [Report](https://discord.com/channels/1561574819672100994/1564080714826125414) |
+| Tokyo Mirage Sessions #FE Encore *(community)* | Series S | **30 FPS** by default; **60 FPS with a mod** | Jadyx 0.3.8.5; tester reports no graphical glitches or FPS drops in or out of battles at either frame rate. The 60 FPS result uses a mod. [Report](https://discord.com/channels/1561574819672100994/1563469919344005140) |
 | Pokémon Legends: Arceus *(community)* | Series S | **30 FPS**, reported stable | Jadyx 0.3.9.0; tester reports rare frame drops and no graphical issues so far. [Report](https://discord.com/channels/1561574819672100994/1563655903243272222) |
 | Yoshi’s Crafted World *(community)* | Series S | **60 FPS**, reported stable | Jadyx 0.3.9.0; game update 1.0.1; about 3.45 GB RAM reported. [Report](https://discord.com/channels/1561574819672100994/1564796636448948304) |
 | Persona 4 Golden *(community)* | Series S | **60 FPS**, reported stable | Jadyx 0.3.9.0; no bugs observed during the reported testing. [Report](https://discord.com/channels/1561574819672100994/1564898078626943096) |
