@@ -133,7 +133,8 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
     const bool exact_gpu_reads = config.exact_gpu_reads.value_or(game.exact_gpu_reads);
     VideoCore::SetExactGpuReads(exact_gpu_reads);
     WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, exact GPU reads " +
-              (exact_gpu_reads ? "on" : "off") + ", upscaling " +
+              (exact_gpu_reads ? "on" : "off") + ", CPU write queue " +
+              (config.cpu_write_defer == VideoCore::FramePipeline::Mode::Off ? "off" : "on") + ", upscaling " +
               (config.upscaling ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(UpscalingText(graphics.upscaling)))) +
               ", frame generation " +
               (config.frame_gen ? std::string{"from boot.cfg"} : std::string{graphics.frame_gen ? "auto" : "off"}) +

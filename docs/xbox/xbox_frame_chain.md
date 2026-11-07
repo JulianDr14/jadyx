@@ -55,6 +55,12 @@ ella hubo menos cambios de interval, pero el cuadro quieto subió a 35 ms.
 `cpu_write_defer` y `jit_read_table` mantienen el bitmap de páginas escritas por la GPU
 (`GpuWrittenPages`) aunque `dma_flush_filter=0`.
 
+`cpu_write_defer` viene apagada. Se enciende en Ajustes > Gráficos o en los gráficos de cada juego
+(«Cola de escrituras de CPU»), al iniciar el juego; la clave de boot.cfg manda sobre ambos. En
+0.3.10.39, un juego con unos 324.000 escrituras por cuadro bajó de ~59 a ~27 FPS con ella, porque la
+página sigue vigilada hasta que el hilo GPU vacía la cola y cada escritura va por la ruta lenta.
+`cpu_write_test=1` la enciende y compara `current`, `merged` y `off` por ventana.
+
 ### Mapa de `cpu_pin=topology`
 
 | Núcleo físico | Lógico 0 | Lógico 1 |

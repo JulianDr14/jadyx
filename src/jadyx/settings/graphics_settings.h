@@ -87,6 +87,7 @@ struct GraphicsSettings {
     ShaderBuild shaders{ShaderBuild::Balanced}; ///< The only mode with the frame's wait budget.
     GpuFence gpu_fence{GpuFence::Immediate};
     bool async_record{true}; ///< D3D12 command list calls on a thread of their own.
+    bool cpu_write_queue{};  ///< VideoCommon::CpuWriteQueue: lowered one game from ~59 to ~27 fps.
 
     bool operator==(const GraphicsSettings&) const = default;
 };
@@ -149,6 +150,7 @@ struct GameGraphics {
     std::optional<ShaderBuild> shaders;
     std::optional<GpuFence> gpu_fence;
     std::optional<bool> async_record;
+    std::optional<bool> cpu_write_queue;
     bool slow_guest_clock{}; ///< Only a game's own: there is no global setting to follow.
     bool exact_gpu_reads{};  ///< Only a game's own (VideoCore::SetExactGpuReads).
     GameAdvancedGraphics advanced;
@@ -184,6 +186,7 @@ inline GraphicsSettings ResolveGraphics(const GraphicsSettings& global, const Ga
         .shaders = game.shaders.value_or(global.shaders),
         .gpu_fence = game.gpu_fence.value_or(global.gpu_fence),
         .async_record = game.async_record.value_or(global.async_record),
+        .cpu_write_queue = game.cpu_write_queue.value_or(global.cpu_write_queue),
     };
     if (resolved.frame_gen && IsFsr(resolved.upscaling)) {
         if (game.frame_gen && !game.upscaling) resolved.upscaling = Upscaling::Bilinear;
@@ -225,6 +228,11 @@ inline void StepGameGpuFence(GameGraphics& game, bool back) {
 inline void StepGameAsyncRecord(GameGraphics& game, bool back) {
     static constexpr std::array values{true, false};
     game.async_record = StepChoice<bool>(game.async_record, values, back);
+}
+
+inline void StepGameCpuWriteQueue(GameGraphics& game, bool back) {
+    static constexpr std::array values{true, false};
+    game.cpu_write_queue = StepChoice<bool>(game.cpu_write_queue, values, back);
 }
 
 inline std::wstring OnOffText(bool on) {
