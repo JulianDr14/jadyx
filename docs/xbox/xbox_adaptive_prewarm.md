@@ -22,7 +22,8 @@ requests per PipelineCache session, only when all of these hold:
 - GPU budget is known and at least512MiB remains.
 - The existing release probe returned DoesNotPay and stopped pressure eviction.
 - No allocation OOM was observed in this session.
-- The candidate was known in the hot set and was never evicted.
+- The candidate was known directly in the hot set or recognized through a hot
+  folded alias during disk loading, and was never evicted.
 
 The allowance uses the same single background worker. Its next queue waits at
 least seven times the preceding observed build duration, including during loading
@@ -74,3 +75,12 @@ this source tree; [Microsoft MemoryManager](https://learn.microsoft.com/en-us/uw
 and [DXGI QueryVideoMemoryInfo](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_4/nf-dxgi1_4-idxgiadapter3-queryvideomemoryinfo)
 describe the two measured domains. The candidate reuses existing snapshots rather
 than querying OS memory once per draw.
+
+Review follow-up: preserve folded hot aliases for the lifetime of the prewarm
+queue. Disk ordering and TickPrewarm use the same FoldedHotPipelineSet::Known
+predicate. Clear aliases on each disk load without recording synthetic draws in
+HotPipelineSet. The regression checks a folded-only head followed by a directly
+known candidate and an unknown tail: the first two advance, the unknown tail
+still waits, evicted/loading-rebuild rules remain intact, and a later load clears
+folded-only knowledge. Hardware execution of this policy is still unverified;
+keep this proposal draft.

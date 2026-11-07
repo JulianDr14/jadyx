@@ -281,6 +281,7 @@ private:
 
     // Residency, GPU thread only once the disk cache is loaded.
     HotPipelineSet hot_pipelines;
+    FoldedHotPipelineSet hot_through_fold;
     std::filesystem::path hot_pipelines_filename;
     bool hot_pipelines_dirty{};
     std::vector<GraphicsPipeline*> residency_sweep; ///< Every graphics pipeline; never shrinks.

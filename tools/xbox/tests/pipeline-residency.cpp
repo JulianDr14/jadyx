@@ -8,6 +8,7 @@
 
 // The checks must run in any configuration: an NDEBUG build would otherwise pass vacuously.
 #undef NDEBUG
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <iostream>
@@ -48,6 +49,40 @@ void TestPrewarmGate() {
     }
     // An unknown limit is no promise of room.
     assert(!P::MayPrewarm(0, 0));
+}
+
+void TestFoldedHotPrewarmQueue() {
+    using B = AdaptivePrewarmBudget;
+    using C = B::Candidate;
+    HotPipelineSet hot;
+    constexpr std::uint64_t stored_alias = 11, folded_key = 22, direct_key = 33, unknown = 44;
+    hot.MarkUsed(stored_alias);
+    hot.MarkUsed(direct_key);
+    FoldedHotPipelineSet folded;
+    // Disk loading recognized a hot stored alias after an earlier cold record folded to 22.
+    assert(hot.Known(stored_alias) && !hot.Known(folded_key));
+    folded.MarkKnown(folded_key);
+    assert(B::Inspect(hot.Known(folded_key), false, false) == C::WaitForPlentiful);
+    B budget;
+    assert(budget.Select(limit - 1024*M, limit, 3584*M, 4096*M, true, false) == B::Mode::Adaptive);
+    const std::array queue{folded_key, direct_key, unknown};
+    std::size_t cursor = 0;
+    for (; cursor < queue.size(); ++cursor) {
+        const auto action = B::Inspect(folded.Known(hot, queue[cursor]), false, false);
+        if (action == C::WaitForPlentiful) break;
+        assert(action == C::TryWake);
+        budget.Queued(B::Mode::Adaptive);
+    }
+    // The folded-only head no longer strands a valid direct-known candidate behind it.
+    // The genuinely unknown tail still waits, and the ordinary 128-request budget applies.
+    assert(cursor == 2 && budget.Count() == 2 && queue[cursor] == unknown);
+    assert(B::Inspect(folded.Known(hot, folded_key), true, false) == C::Skip);
+    assert(B::Inspect(folded.Known(hot, folded_key), true, true) == C::WaitForPlentiful);
+    folded.Clear(); // a later disk load, including folding off, must not inherit aliases
+    assert(!folded.Known(hot, folded_key) && folded.Known(hot, direct_key));
+    assert(!hot.Known(folded_key)); // no synthetic draw/history entry was persisted
+    std::cout << "PASS: folded-only prewarm head advances to a direct-known candidate; "
+                 "unknown/rebuild barriers and per-load alias reset preserved\n";
 }
 
 void TestAdaptivePrewarm() {
@@ -302,6 +337,7 @@ int main() {
     TestIdleFrames();
     TestPrewarmGate();
     TestAdaptivePrewarm();
+    TestFoldedHotPrewarmQueue();
     TestReleaseProbe();
     TestHotSet();
     TestLatencyHistogram();

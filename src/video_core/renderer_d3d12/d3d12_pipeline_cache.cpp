@@ -1084,7 +1084,7 @@ void PipelineCache::TickPrewarm(const CacheMemorySnapshot& snapshot) {
         // still visit it later. Known entries are already ordered ahead of unknown ones.
         if (adaptive) {
             const auto candidate = AdaptivePrewarmBudget::Inspect(
-                hot_pipelines.Known(pipeline->KeyHash()), pipeline->WasEvicted(),
+                hot_through_fold.Known(hot_pipelines, pipeline->KeyHash()), pipeline->WasEvicted(),
                 prewarm_cursor >= prewarm_rebuild_from);
             if (candidate == AdaptivePrewarmBudget::Candidate::Skip) {
                 ++prewarm_cursor;
@@ -1433,6 +1433,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     if (title_id == 0) {
         return;
     }
+    hot_through_fold.Clear();
     GetPipelineStats().Reset();
     if (!pipeline_cache_filename.empty()) {
         serialization_thread.WaitForRequests();
@@ -1495,8 +1496,6 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     const u32 fold_rules = PipelineKeyFold::ActiveRules();
     PipelineKeyFold::Census fold_census{fold_rules};
     std::unordered_set<u64> folded_keys;
-    // Pipelines with a stored key in the hot set that was not the first to fold into them.
-    std::unordered_set<u64> hot_through_fold;
     const auto load_graphics{[&](std::ifstream& file, std::vector<FileEnvironment> envs) {
         GraphicsPipelineCacheKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
@@ -1508,7 +1507,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             key = PipelineKeyFold::Fold(key, fold_rules);
             if (!folded_keys.insert(key.Hash()).second) {
                 if (hot_pipelines.Known(stored_hash)) {
-                    hot_through_fold.insert(key.Hash());
+                    hot_through_fold.MarkKnown(key.Hash());
                 }
                 return; // Its pipeline is on its way, and nothing is translated for this one.
             }
@@ -1593,10 +1592,9 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     // The background prewarm's order: drawn in a kept session but past the boot cap first, then
     // the rest in the order the game first drew them, which is roughly the order it goes through
     // its areas. Pipelines whose DXIL failed are Ready, not dormant, and are skipped when reached.
-    std::ranges::sort(state.dormant, [this, &hot_through_fold](const auto& a, const auto& b) {
+    std::ranges::sort(state.dormant, [this](const auto& a, const auto& b) {
         const auto known = [&](const GraphicsPipeline* pipeline) {
-            return hot_pipelines.Known(pipeline->KeyHash()) ||
-                   hot_through_fold.contains(pipeline->KeyHash());
+            return hot_through_fold.Known(hot_pipelines, pipeline->KeyHash());
         };
         const bool known_a = known(a.second);
         const bool known_b = known(b.second);

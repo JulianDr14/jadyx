@@ -332,4 +332,19 @@ private:
     std::unordered_set<std::uint64_t> prewarm;                  ///< chosen at Load
 };
 
+/// Boot-only aliases recognized through folding must remain known when the GPU thread
+/// later visits the same prewarm queue. They are not persisted as newly drawn pipelines.
+class FoldedHotPipelineSet {
+public:
+    void Clear() { folded.clear(); }
+    void MarkKnown(std::uint64_t hash) { folded.insert(hash); }
+
+    [[nodiscard]] bool Known(const HotPipelineSet& hot, std::uint64_t hash) const {
+        return hot.Known(hash) || folded.contains(hash);
+    }
+
+private:
+    std::unordered_set<std::uint64_t> folded;
+};
+
 } // namespace D3D12
