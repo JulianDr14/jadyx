@@ -75,7 +75,8 @@ void SessionMenu::DrawMenu() {
                 : cheats ? menu_surface->DrawCheats({*cheats, cheats_page, game_title, cheats_notice, true},
                                                   scene, screen)
                 : amiibo_screen ? menu_surface->DrawAmiibo({amiibo_screen->rows, amiibo_screen->page,
-                                                            amiibo_screen->placed, amiibo_screen->has_key},
+                                                            amiibo_screen->placed, amiibo_screen->has_key,
+                                                            amiibo_screen->placed_name, amiibo_screen->placed_new},
                                                            scene, screen)
                 : menu ? menu_surface->DrawMenu(*menu, scene, screen)
                        : menu_surface->DrawKeyboard(game_keyboard.View(), game_keyboard.CanCancel(), screen);
@@ -290,25 +291,29 @@ void SessionMenu::OpenAmiibo() {
     screen.has_key = store.HasKey();
     screen.placed = input.Amiibo().GetCurrentState() == InputCommon::VirtualAmiibo::State::TagNearby;
     if (screen.placed) {
-        screen.rows.push_back(I18n::Format(I18n::Text::AmiiboRemoveNamed,
-                                           {Utf8ToUtf16(AmiiboDisplayName(input.Amiibo().GetLastFilePath()))}));
+        screen.placed_name = Utf8ToUtf16(AmiiboDisplayName(input.Amiibo().GetLastFilePath()));
+        screen.placed_new = input.Amiibo().IsNewFigure();
+        screen.rows.push_back(I18n::Format(I18n::Text::AmiiboRemoveNamed, {screen.placed_name}));
         screen.paths.emplace_back();
     } else {
         for (const AmiiboFile& file : store.List()) {
             screen.rows.push_back(Utf8ToUtf16(AmiiboDisplayName(file.name)));
             screen.paths.push_back(store.PathOf(file.name));
+            if (screen.paths.back() == amiibo_last) screen.page.selected = screen.paths.size() - 1;
         }
+        ClampListWindow(screen.page.selected, screen.page.first, screen.rows.size(), GameMenuSurface::AmiiboRows);
     }
     WriteDiag("menu: amiibo page, " + std::to_string(screen.rows.size()) + " row(s), key " +
-              (screen.has_key ? "yes" : "no"));
+              (screen.has_key ? "yes" : "no") + (screen.placed_new ? ", placed as new figure" : ""));
     amiibo_screen = std::move(screen);
 }
 
 bool SessionMenu::HandleAmiiboAction(MenuAction action) {
     const AmiiboEffect effect = HandleAmiiboInput(amiibo_screen->page, action, amiibo_screen->rows.size(),
-                                                  GameMenuSurface::AmiiboRows);
+                                                  GameMenuSurface::AmiiboRows, amiibo_screen->placed);
     if (effect == AmiiboEffect::Choose) {
-        amiibo_choice = amiibo_screen->paths[amiibo_screen->page.selected];
+        amiibo_choice = AmiiboChoice{amiibo_screen->paths[amiibo_screen->page.selected],
+                                     !amiibo_screen->placed && amiibo_screen->page.new_figure};
         Close(GameMenuResult::Resume);
         return true;
     }
@@ -386,9 +391,12 @@ void SessionMenu::Close(GameMenuResult result) {
     WriteDiag("menu: closed, guest running");
     // With the guest running, as a tag signals the game's events.
     if (const auto choice = std::exchange(amiibo_choice, std::nullopt)) {
-        const auto info = choice->empty() ? input.Amiibo().CloseAmiibo() : input.Amiibo().LoadAmiibo(*choice);
-        WriteDiag(std::string{"menu: amiibo "} + (choice->empty() ? "removed" : "placed") + ", result " +
-                  std::to_string(static_cast<int>(info)));
+        const bool remove = choice->path.empty();
+        const auto info =
+            remove ? input.Amiibo().CloseAmiibo() : input.Amiibo().LoadAmiibo(choice->path, choice->new_figure);
+        if (!remove) amiibo_last = choice->path;
+        const char* what = remove ? "removed" : choice->new_figure ? "placed as new figure" : "placed";
+        WriteDiag(std::string{"menu: amiibo "} + what + ", result " + std::to_string(static_cast<int>(info)));
     }
 }
 

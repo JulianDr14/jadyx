@@ -38,8 +38,9 @@ class GameMenuSurface {
 public:
     /// Cheats in view at once on the menu's cheats page.
     static constexpr std::size_t CheatRows = 5;
-    /// Files in view at once on the menu's amiibo page, which has no tabs above its list.
-    static constexpr std::size_t AmiiboRows = 6;
+    /// Files in view at once on the menu's amiibo page, under its "New figure" card.
+    static constexpr std::size_t AmiiboRows = 4;
+    static constexpr float AmiiboCardHeight = 104;
 
     GameMenuSurface();
     ~GameMenuSurface();
