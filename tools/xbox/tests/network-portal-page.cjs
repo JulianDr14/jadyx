@@ -40,8 +40,8 @@ for(const size of [0,3,55,56,63,64,65,128,131072]){
  console.log('PASS: browser library, update upload with kind/game metadata, two-press content and game deletion (mock HTTP)');
  for(const language of ['es','en','pt-BR'])await saveScenario(language);
  console.log('PASS: browser save tab: structure guide, file checks before upload, console refusals shown with their detail and discarded, save metadata, zip download (mock HTTP)');
- for(const language of ['es','en','pt-BR'])await amiiboScenario(language);
- console.log('PASS: browser amiibo: per-file results, explicit replace, two-press deletion, key upload and removal (mock HTTP)');
+ for(const language of ['es','en','pt-BR']){await amiiboScenario(language);await amiiboScenario(language,true);}
+ console.log('PASS: browser amiibo: separate list, add and key panes, search and sort, per-file results, explicit replace, two-press deletion, key upload and removal (mock HTTP)');
  for(const language of ['es','en','pt-BR'])await navigationScenario(language);
  console.log('PASS: browser navigation: library first, import from it, upload controls only with an upload, unfinished upload reopened, system panes, logs without system imports (mock HTTP)');
 })().catch(error=>{console.error(error);process.exitCode=1;});
@@ -318,14 +318,14 @@ async function saveScenario(language){
  exported={status:404,error:'no_save'};await click(element('save-download'));await delay();
  e=error();assert.ok(e.shown&&e.text&&!e.help);assert.equal(links.length,1);
 }
-async function amiiboScenario(language){
+async function amiiboScenario(language,empty=false){
  const elements=new Map(),requests=[];
  const make=tag=>{const n={...dom(),tag,value:'',textContent:'',files:[],hidden:false,disabled:false,style:{},dataset:{},children:[],listeners:{},
   addEventListener:(event,callback)=>{n.listeners[event]=callback;},
   append:(...c)=>n.children.push(...c),replaceChildren:(...c)=>{n.children=c;}};return n;};
  const element=id=>{if(!elements.has(id))elements.set(id,make('#'+id));return elements.get(id);};
  const click=n=>n.listeners.click();
- const stored=new Map([['old.bin',new Uint8Array(540)]]);let key=false,body;
+ const stored=new Map(empty?[]:[['old.bin',new Uint8Array(540)]]);let key=false,body;
  const response=(status,data={})=>({status,ok:status>=200&&status<300,json:async()=>JSON.parse(JSON.stringify(data)),headers:{get:()=>null}});
  const fetch=async(url,request={})=>{
   if(url==='/api/v1/pair')return response(200,{session:'test-session'});
@@ -359,6 +359,10 @@ async function amiiboScenario(language){
  assert.equal(element('tab-amiibo').hidden,false);assert.equal(element('view-amiibo').hidden,true);
  click(element('tab-amiibo'));await delay();
  assert.equal(element('view-amiibo').hidden,false);assert.equal(element('view-content').hidden,true);
+ // With nothing to manage it opens on adding; with something, on the list.
+ assert.equal(element('amiibo-pane-add').hidden,!empty);assert.equal(element('amiibo-pane-list').hidden,empty);assert.equal(element('amiibo-pane-key').hidden,true);
+ assert.equal(element('amiibo-tools').hidden,empty);
+ if(empty)return;
  assert.equal(element('amiibo-items').children.length,1);assert.equal(element('amiibo-key-remove').hidden,true);
  const noKey=element('amiibo-key-status').textContent;assert.notEqual(noKey,'');
  // Nothing chosen: says so and sends nothing.
@@ -384,6 +388,26 @@ async function amiiboScenario(language){
  await click(row('dos.bin').children[1]);assert.ok(stored.has('dos.bin'),'first press never deletes');
  await click(row('dos.bin').children[1]);await delay();
  assert.ok(!stored.has('dos.bin'));assert.equal(row('dos.bin'),undefined);
+ // Managing a long list: A-Z by default, numbers in order, search ignoring case and accents.
+ for(const name of ['Zeta.bin','Figura 10.bin','Figura 2.bin','Piñón.bin'])stored.set(name,new Uint8Array(540));
+ click(element('tab-amiibo'));await delay();
+ const names=()=>element('amiibo-items').children.map(r=>r.children[0].children[0].textContent);
+ const search=async text=>{element('amiibo-search').value=text;await element('amiibo-search').listeners.input();};
+ assert.deepEqual(Array.from(names()),['Figura 2.bin','Figura 10.bin','old.bin','Piñón.bin','uno á.bin','Zeta.bin']);
+ const total=element('amiibo-count').textContent;assert.ok(total.startsWith('6'),total);
+ click(element('amiibo-sort'));assert.equal(names()[0],'Zeta.bin');click(element('amiibo-sort'));assert.equal(names()[0],'Figura 2.bin');
+ await search('PINON');assert.deepEqual(Array.from(names()),['Piñón.bin']);assert.ok(element('amiibo-count').textContent.startsWith('1 '));assert.ok(element('amiibo-count').textContent.includes('6'));
+ // The search survives a removal, and a press only arms the row it was pressed on.
+ await search('figura');await click(row('Figura 2.bin').children[1]);await click(row('Figura 2.bin').children[1]);await delay();
+ assert.ok(!stored.has('Figura 2.bin'));assert.deepEqual(Array.from(names()),['Figura 10.bin']);
+ await search('nada');assert.equal(element('amiibo-items').children[0].children.length,0,'no match: a message, no rows');assert.notEqual(element('amiibo-items').children[0].textContent,'');
+ await search('');assert.equal(names().length,5);
+ for(const name of ['Zeta.bin','Figura 10.bin','Piñón.bin'])stored.delete(name);click(element('tab-amiibo'));await delay();
+ // Each part is on its own: the list, the upload and the key are never shown together.
+ const shown=()=>['list','add','key'].filter(pane=>!element('amiibo-pane-'+pane).hidden);
+ assert.deepEqual(Array.from(shown()),['list']);
+ click(element('amiibo-tab-add'));assert.deepEqual(Array.from(shown()),['add']);assert.equal(element('amiibo-tab-add').ariaSelected,'true');
+ click(element('amiibo-tab-key'));assert.deepEqual(Array.from(shown()),['key']);
  // The key: refused with its reason, then installed, then removed in two presses.
  element('amiibo-key-file').files=[fileOf('key_retail.bin',10)];await click(element('amiibo-key-send'));await delay();
  assert.equal(key,false);const refused=element('amiibo-note').textContent;assert.notEqual(refused,'');
