@@ -1059,17 +1059,42 @@ void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler
 
 void PipelineCache::TickPrewarm(const CacheMemorySnapshot& snapshot) {
     if (prewarm_cursor >= prewarm_order.size() || (prewarm_last && !prewarm_last->IsBuilt()) ||
-        !pipeline_prewarm.load(std::memory_order_relaxed) ||
-        !PipelineResidencyPolicy::MayPrewarm(snapshot.app_used, snapshot.app_limit)) {
+        !pipeline_prewarm.load(std::memory_order_relaxed)) {
         return;
     }
+    const auto mode = adaptive_prewarm_budget.Select(
+        snapshot.app_used, snapshot.app_limit, snapshot.gpu_used, snapshot.gpu_budget,
+        release_probe.GetVerdict() == PipelineReleaseProbe::Verdict::DoesNotPay,
+        seen_oom_events != 0);
+    if (mode == AdaptivePrewarmBudget::Mode::Blocked) {
+        return;
+    }
+    const bool adaptive = mode == AdaptivePrewarmBudget::Mode::Adaptive;
     const auto now = std::chrono::steady_clock::now();
-    if (prewarm_last && !prewarm_pacer.Rested(now)) {
+    const int minimum_rest = AdaptivePrewarmBudget::MinimumRest(
+        mode, prewarm_last && prewarm_last->AdaptivePrewarmed());
+    if (prewarm_last && !prewarm_pacer.Rested(now, minimum_rest)) {
         return;
     }
     prewarm_last = nullptr;
     while (prewarm_cursor < prewarm_order.size()) {
-        GraphicsPipeline* const pipeline = prewarm_order[prewarm_cursor++];
+        GraphicsPipeline* const pipeline = prewarm_order[prewarm_cursor];
+        // The extra allowance is only for known, never-evicted disk-cache entries. Preserve the
+        // cursor at the first speculative entry so the original plentiful-memory path can
+        // still visit it later. Known entries are already ordered ahead of unknown ones.
+        if (adaptive) {
+            const auto candidate = AdaptivePrewarmBudget::Inspect(
+                hot_pipelines.Known(pipeline->KeyHash()), pipeline->WasEvicted(),
+                prewarm_cursor >= prewarm_rebuild_from);
+            if (candidate == AdaptivePrewarmBudget::Candidate::Skip) {
+                ++prewarm_cursor;
+                continue;
+            }
+            if (candidate == AdaptivePrewarmBudget::Candidate::WaitForPlentiful) {
+                return;
+            }
+        }
+        ++prewarm_cursor;
         // Pipelines drawn meanwhile were woken by their draw and are no longer dormant; one
         // released while idle since is left to its next draw, unless a loading screen queued it
         // to be built again.
@@ -1077,7 +1102,8 @@ void PipelineCache::TickPrewarm(const CacheMemorySnapshot& snapshot) {
         if ((rebuild || !pipeline->WasEvicted()) && pipeline->Wake(prewarm_thread)) {
             // Counted as used now, so eviction does not take it back before its first draw.
             pipeline->Touch(residency_frame);
-            pipeline->MarkPrewarmed();
+            pipeline->MarkPrewarmed(adaptive);
+            adaptive_prewarm_budget.Queued(mode);
             prewarm_last = pipeline;
             prewarm_pacer.Queued(now);
             GetPipelineStats().prewarm_queued.fetch_add(1, std::memory_order_relaxed);
@@ -1172,6 +1198,12 @@ void PipelineCache::LogPipelineStats(std::string_view when) const {
              when, stats.inline_builds.load(std::memory_order_relaxed),
              stats.prewarm_queued.load(std::memory_order_relaxed),
              stats.prewarm_hits.load(std::memory_order_relaxed), line);
+    LOG_INFO(Render,
+             "D3D12 adaptive prewarm ({}): {} queued (cap {}), {} first-drawn; "
+             "requires app free {} MiB, GPU free {} MiB, stopped pressure eviction and no OOM",
+             when, adaptive_prewarm_budget.Count(), AdaptivePrewarmBudget::MAX_QUEUED,
+             adaptive_prewarms_drawn, AdaptivePrewarmBudget::APP_HEADROOM / MemoryGuard::MiB,
+             AdaptivePrewarmBudget::GPU_HEADROOM / MemoryGuard::MiB);
     if (PipelineKeyFold::GetMode() != PipelineKeyFold::Mode::Off) {
         LOG_INFO(Render,
                  "D3D12 pipeline key folding ({}): {} keys found a pipeline through it; checks: {} "
@@ -1628,6 +1660,9 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
     if (pipeline->MarkDrawn()) {
         if (pipeline->Prewarmed()) {
             GetPipelineStats().prewarm_hits.fetch_add(1, std::memory_order_relaxed);
+            if (pipeline->AdaptivePrewarmed()) {
+                ++adaptive_prewarms_drawn;
+            }
         }
         if (hot_pipelines.MarkUsed(pipeline->KeyHash())) {
             hot_pipelines_dirty = true;

@@ -304,6 +304,8 @@ private:
     size_t prewarm_cursor{};
     GraphicsPipeline* prewarm_last{}; ///< Queued last; the next waits until it is built.
     PrewarmPacer prewarm_pacer;
+    AdaptivePrewarmBudget adaptive_prewarm_budget;
+    u64 adaptive_prewarms_drawn{};
     /// pso_loading: prewarm_order from here on holds released pipelines to build again.
     size_t prewarm_rebuild_from{SIZE_MAX};
     bool loading_screen{};

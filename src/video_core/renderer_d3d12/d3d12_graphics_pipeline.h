@@ -372,11 +372,15 @@ public:
     }
 
     /// GPU thread: its PSO was built ahead of any draw, by the background prewarm.
-    void MarkPrewarmed() noexcept {
+    void MarkPrewarmed(bool adaptive = false) noexcept {
         prewarmed = true;
+        adaptive_prewarmed = adaptive;
     }
     [[nodiscard]] bool Prewarmed() const noexcept {
         return prewarmed;
+    }
+    [[nodiscard]] bool AdaptivePrewarmed() const noexcept {
+        return adaptive_prewarmed;
     }
 
     /// GPU thread: releases the PSO of a ready pipeline once the GPU is done with it, and its DXIL
@@ -629,6 +633,7 @@ private:
     std::optional<DxilDiskCache::Key> released_dxil;
     u8 released_stage_mask{};
     bool prewarmed{};      ///< GPU thread only.
+    bool adaptive_prewarmed{}; ///< GPU thread only; first-draw attribution.
     /// What each stage resolved its views and samplers to in the last draw (stage_view_cache=1),
     /// allocated by the first draw that uses it. GPU thread only.
     struct StageViewState;

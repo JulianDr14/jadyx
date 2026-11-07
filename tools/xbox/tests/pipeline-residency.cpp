@@ -4,7 +4,7 @@
 // Pipeline residency gate: idle limits and the background prewarm against the app's headroom, the
 // hot pipeline set's sessions, decay, prewarm choice and file round trip, and the stage latency
 // histogram's buckets and percentiles. Run with
-// build-uwp/diagnostics/pipeline-residency/run.bat.
+// tools/xbox/tests/renderer-suite/run-unit.ps1 -Name pipeline-residency.
 
 // The checks must run in any configuration: an NDEBUG build would otherwise pass vacuously.
 #undef NDEBUG
@@ -14,6 +14,7 @@
 #include <vector>
 #include "video_core/renderer_d3d12/d3d12_pipeline_residency.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
+#include "video_core/renderer_d3d12/d3d12_prewarm_pacer.h"
 
 namespace {
 using namespace D3D12;
@@ -47,6 +48,79 @@ void TestPrewarmGate() {
     }
     // An unknown limit is no promise of room.
     assert(!P::MayPrewarm(0, 0));
+}
+
+void TestAdaptivePrewarm() {
+    using B = AdaptivePrewarmBudget;
+    using Mode = B::Mode;
+    B budget;
+    const auto choose = [&](std::uint64_t free, std::uint64_t gpu_free,
+                            bool probe = true, bool oom = false) {
+        return budget.Select(limit - free, limit, 4096*M - gpu_free, 4096*M, probe, oom);
+    };
+    assert(choose(1024*M, 512*M) == Mode::Adaptive);
+    assert(choose(1024*M - 1, 512*M) == Mode::Blocked);
+    assert(choose(1024*M, 512*M - 1) == Mode::Blocked);
+    assert(choose(1024*M, 512*M, false) == Mode::Blocked);
+    assert(choose(1024*M, 512*M, true, true) == Mode::Blocked);
+    assert(budget.Select(0, 0, 0, 4096*M, true, false) == Mode::Blocked);
+    assert(budget.Select(4096*M, limit, 0, 0, true, false) == Mode::Blocked);
+    assert(budget.Select(4096*M, limit, 0, 128*M, true, false) == Mode::Blocked);
+    assert(budget.Select(limit + 1, limit, 0, 4096*M, true, false) == Mode::Blocked);
+    assert(budget.Select(4096*M, limit, 4096*M + 1, 4096*M, true, false) == Mode::Blocked);
+    using Candidate = B::Candidate;
+    for (bool known : {false, true}) for (bool evicted : {false, true}) {
+        for (bool rebuild : {false, true}) {
+            const auto action = B::Inspect(known, evicted, rebuild);
+            if (evicted && !rebuild) assert(action == Candidate::Skip);
+            else if (!known || evicted) assert(action == Candidate::WaitForPlentiful);
+            else assert(action == Candidate::TryWake);
+        }
+    }
+    for (unsigned i = 0; i < B::MAX_QUEUED; ++i) {
+        budget.Queued(Mode::Plentiful);
+        budget.Queued(Mode::Blocked);
+        assert(budget.Count() == i && choose(1024*M, 512*M) == Mode::Adaptive);
+        budget.Queued(Mode::Adaptive);
+    }
+    assert(budget.Count() == B::MAX_QUEUED);
+    assert(choose(1024*M, 512*M) == Mode::Blocked);
+    budget.Queued(Mode::Adaptive);
+    assert(budget.Count() == B::MAX_QUEUED);
+    // The legacy path keeps working with unknown GPU budgets, OOM history or a spent allowance.
+    assert(budget.Select(0, limit, 0, 0, false, true) == Mode::Plentiful);
+    B fresh;
+    std::size_t cases = 0;
+    for (std::uint64_t free = 0; free <= limit; free += 16*M) {
+        for (std::uint64_t gpu_free = 0; gpu_free <= 4096*M; gpu_free += 16*M) {
+            for (bool probe : {false, true}) for (bool oom : {false, true}) {
+                const auto mode = fresh.Select(limit-free, limit, 4096*M-gpu_free,
+                                               4096*M, probe, oom);
+                const bool plentiful = PipelineResidencyPolicy::MayPrewarm(limit-free, limit);
+                assert((mode == Mode::Plentiful) == plentiful);
+                if (!plentiful) {
+                    assert((mode == Mode::Adaptive) ==
+                           (probe && !oom && free >= B::APP_HEADROOM && gpu_free >= B::GPU_HEADROOM));
+                }
+                ++cases;
+            }
+        }
+    }
+    // Loading screens can remove the normal rest, but not the adaptive allowance's minimum.
+    using namespace std::chrono_literals;
+    PrewarmPacer pacer;
+    const auto start = PrewarmPacer::Clock::time_point{} + 10ms;
+    pacer.rest = 0;
+    pacer.Queued(start);
+    assert(B::MinimumRest(Mode::Plentiful, false) == 0);
+    assert(B::MinimumRest(Mode::Adaptive, false) == B::MIN_REST);
+    assert(B::MinimumRest(Mode::Adaptive, true) == B::MIN_REST);
+    const int rest_after_adaptive = B::MinimumRest(Mode::Plentiful, true);
+    assert(rest_after_adaptive == B::MIN_REST);
+    assert(!pacer.Rested(start + 10ms, rest_after_adaptive));
+    assert(!pacer.Rested(start + 79ms, rest_after_adaptive));
+    assert(pacer.Rested(start + 80ms, rest_after_adaptive));
+    std::cout << "PASS: adaptive prewarm " << cases << " quota/probe/OOM combinations, 128-queue cap, loading-screen pacing\n";
 }
 
 void TestReleaseProbe() {
@@ -227,6 +301,7 @@ void TestHotSet() {
 int main() {
     TestIdleFrames();
     TestPrewarmGate();
+    TestAdaptivePrewarm();
     TestReleaseProbe();
     TestHotSet();
     TestLatencyHistogram();
