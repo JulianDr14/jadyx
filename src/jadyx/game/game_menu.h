@@ -244,6 +244,7 @@ public:
         case MenuAction::Refresh:
         case MenuAction::PreviousTab:
         case MenuAction::NextTab:
+        case MenuAction::Menu:
             break;
         }
         return GameMenuResult::None;

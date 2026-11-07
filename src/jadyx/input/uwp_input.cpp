@@ -967,7 +967,9 @@ void GamepadInput::Run(std::stop_token stop) {
                          (nav(VirtualButton::ButtonX, false) ? 64U : 0U) |
                          (nav(VirtualButton::ButtonY, false) ? 128U : 0U) |
                          (nav(VirtualButton::TriggerL, false) ? 256U : 0U) |
-                         (nav(VirtualButton::TriggerR, false) ? 512U : 0U);
+                         (nav(VirtualButton::TriggerR, false) ? 512U : 0U) |
+                         // Menu alone, as the shortcut's filter let it through.
+                         (plus ? 1024U : 0U);
         const u32 pressed = held & ~menu_held;
         menu_held = held;
         if (toggle || (in_menu && pressed)) {
@@ -978,7 +980,8 @@ void GamepadInput::Run(std::stop_token stop) {
                                          MenuAction::Left,        MenuAction::Right,
                                          MenuAction::Confirm,     MenuAction::Back,
                                          MenuAction::Alternate,   MenuAction::Refresh,
-                                         MenuAction::PreviousTab, MenuAction::NextTab};
+                                         MenuAction::PreviousTab, MenuAction::NextTab,
+                                         MenuAction::Menu};
                 for (std::size_t i = 0; i < NAV.size(); ++i)
                     if (pressed & (1U << i)) menu_actions.push_back(NAV[i]);
             }

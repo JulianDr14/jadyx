@@ -8,5 +8,7 @@ namespace Jadyx {
 // the platform input adapter; page models own what each action does.
 enum class MenuAction : std::uint8_t {
     Toggle, Up, Down, Left, Right, Confirm, Back, Alternate, Refresh, PreviousTab, NextTab,
+    /// The pad's Menu (Switch +) alone, inside the menu.
+    Menu,
 };
 }

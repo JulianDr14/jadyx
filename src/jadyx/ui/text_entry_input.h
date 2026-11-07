@@ -21,7 +21,8 @@ inline std::optional<TextEntry::Command> TextEntryCommand(MenuAction action) {
     case MenuAction::Refresh: return Command::Space;
     case MenuAction::PreviousTab: return Command::Shift;
     case MenuAction::NextTab: return Command::Done;
-    case MenuAction::Toggle: return std::nullopt;
+    case MenuAction::Toggle:
+    case MenuAction::Menu: return std::nullopt;
     }
     return std::nullopt;
 }

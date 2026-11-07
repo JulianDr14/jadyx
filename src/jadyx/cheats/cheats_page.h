@@ -51,7 +51,8 @@ inline std::optional<CheatsInput> CheatsInputForAction(MenuAction action) {
     case MenuAction::Alternate: return CheatsInput::ToggleAll;
     case MenuAction::Refresh: return CheatsInput::Refresh;
     case MenuAction::Back: return CheatsInput::Back;
-    case MenuAction::Toggle: return std::nullopt;
+    case MenuAction::Toggle:
+    case MenuAction::Menu: return std::nullopt;
     }
     return std::nullopt;
 }
