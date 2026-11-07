@@ -32,6 +32,7 @@
 #include "jadyx/game/game_menu.h"
 #include "hid_core/frontend/emulated_controller.h"
 #include "hid_core/hid_core.h"
+#include "input_common/drivers/virtual_amiibo.h"
 #include "input_common/drivers/virtual_gamepad.h"
 #include "input_common/input_poller.h"
 
@@ -45,6 +46,8 @@ using winrt::Windows::Gaming::Input::Gamepad;
 using winrt::Windows::Gaming::Input::GamepadButtons;
 
 constexpr std::string_view ENGINE = "virtual_gamepad";
+/// The name EmulatedController asks for; without this engine it gets a device with no NFC.
+constexpr std::string_view AMIIBO_ENGINE = "virtual_amiibo";
 constexpr std::size_t PLAYER = 0;
 /// Eden's handheld controller reads virtual_gamepad port 8; it gets the same input as player 1.
 constexpr std::size_t HANDHELD_PORT = 8;
@@ -453,18 +456,25 @@ std::optional<InputStep> ParseInputStep(std::string_view spec) {
 
 GamepadInput::GamepadInput(std::vector<InputStep> script_)
     : gamepad{std::make_shared<InputCommon::VirtualGamepad>(std::string{ENGINE})},
+      amiibo{std::make_shared<InputCommon::VirtualAmiibo>(std::string{AMIIBO_ENGINE})},
       script{std::move(script_)}, options{LoadControllerOptions()} {
     InitializeKeyboardBindings();
     Common::Input::RegisterInputFactory(std::string{ENGINE},
                                         std::make_shared<InputCommon::InputFactory>(gamepad));
     Common::Input::RegisterOutputFactory(std::string{ENGINE},
                                          std::make_shared<InputCommon::OutputFactory>(gamepad));
+    Common::Input::RegisterInputFactory(std::string{AMIIBO_ENGINE},
+                                        std::make_shared<InputCommon::InputFactory>(amiibo));
+    Common::Input::RegisterOutputFactory(std::string{AMIIBO_ENGINE},
+                                         std::make_shared<InputCommon::OutputFactory>(amiibo));
 }
 
 GamepadInput::~GamepadInput() {
     Stop();
     Common::Input::UnregisterInputFactory(std::string{ENGINE});
     Common::Input::UnregisterOutputFactory(std::string{ENGINE});
+    Common::Input::UnregisterInputFactory(std::string{AMIIBO_ENGINE});
+    Common::Input::UnregisterOutputFactory(std::string{AMIIBO_ENGINE});
 }
 
 namespace {

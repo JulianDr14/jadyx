@@ -28,6 +28,7 @@ namespace Core::HID {
 class HIDCore;
 }
 namespace InputCommon {
+class VirtualAmiibo;
 class VirtualGamepad;
 }
 
@@ -83,10 +84,14 @@ void ApplyControllerStyleSettings(ConsoleControllerStyle style);
 
 class GamepadInput {
 public:
-    /// Registers the virtual_gamepad engine; do it before HIDCore().ReloadInputDevices().
+    /// Registers the virtual_gamepad and virtual_amiibo engines; do it before
+    /// HIDCore().ReloadInputDevices().
     explicit GamepadInput(std::vector<InputStep> script);
-    /// Unregisters the engine; call HIDCore().UnloadInputDevices() first.
+    /// Unregisters the engines; call HIDCore().UnloadInputDevices() first.
     ~GamepadInput();
+
+    /// The tag reader the guest polls; the in-game menu puts and removes the amiibo.
+    [[nodiscard]] InputCommon::VirtualAmiibo& Amiibo() { return *amiibo; }
 
     GamepadInput(const GamepadInput&) = delete;
     GamepadInput& operator=(const GamepadInput&) = delete;
@@ -113,6 +118,7 @@ private:
     ConsoleControllerStyle SyncControllerStyle();
 
     std::shared_ptr<InputCommon::VirtualGamepad> gamepad;
+    std::shared_ptr<InputCommon::VirtualAmiibo> amiibo;
     std::vector<InputStep> script;
     std::mutex options_mutex;
     ControllerOptions options;

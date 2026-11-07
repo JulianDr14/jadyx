@@ -5,10 +5,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <cstring>
+#include <filesystem>
 #include <fmt/ranges.h>
 
 #include "common/fs/file.h"
 #include "common/fs/fs.h"
+#include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/settings.h"
@@ -83,7 +85,9 @@ Common::Input::NfcState VirtualAmiibo::ReadAmiiboData(const PadIdentifier& ident
 
 Common::Input::NfcState VirtualAmiibo::WriteNfcData(
     [[maybe_unused]] const PadIdentifier& identifier_, const std::vector<u8>& data) {
-    const Common::FS::IOFile nfc_file{file_path, Common::FS::FileAccessMode::ReadWrite,
+    // The path is UTF-8: a narrow string would be read in the system code page.
+    const Common::FS::IOFile nfc_file{std::filesystem::path{Common::FS::ToU8String(file_path)},
+                                      Common::FS::FileAccessMode::ReadWrite,
                                       Common::FS::FileType::BinaryFile};
 
     if (!nfc_file.IsOpen()) {
@@ -169,7 +173,8 @@ VirtualAmiibo::State VirtualAmiibo::GetCurrentState() const {
 }
 
 VirtualAmiibo::Info VirtualAmiibo::LoadAmiibo(const std::string& filename) {
-    const Common::FS::IOFile nfc_file{filename, Common::FS::FileAccessMode::Read,
+    const Common::FS::IOFile nfc_file{std::filesystem::path{Common::FS::ToU8String(filename)},
+                                      Common::FS::FileAccessMode::Read,
                                       Common::FS::FileType::BinaryFile};
     std::vector<u8> data{};
 
