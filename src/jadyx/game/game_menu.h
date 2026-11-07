@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "jadyx/input/controller_style.h"
+#include "jadyx/input/right_stick_settings.h"
 #include "jadyx/settings/graphics_page.h"
 #include "jadyx/ui/ui_actions.h"
 #include "jadyx/ui/ui_icon.h"
@@ -113,6 +114,11 @@ struct GameMenuSettings {
     GameGraphics graphics{};
     /// The game's memory is one Memory Edit can look through.
     bool memory_edit{};
+    /// Settings > Controller's right stick and this game's own. Without `right_stick_per_game`
+    /// (no title id) the rows change Settings' values instead.
+    RightStickSettings right_stick_global{};
+    GameRightStick right_stick{};
+    bool right_stick_per_game{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -127,6 +133,8 @@ enum class GameMenuResult : std::uint8_t {
     GraphicsChanged,
     Amiibo,
     MemoryEdit,
+    /// The right stick's rows: Settings() holds the new values (the game's own or Settings').
+    RightStickChanged,
 };
 
 /// The console's tag reader as the game left it, for the Amiibo row.
@@ -153,6 +161,7 @@ public:
         CaptureGraphics, CapturePerformance, Screenshot, ControllerPage, DisplayPage, OfflineMode,
         GraphicsMenu, GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxExactGpuReads, GfxTextureMemory,
         GfxGpuAccuracy, GfxConsoleMode, Amiibo, MemoryEdit,
+        RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics };
 
@@ -169,7 +178,8 @@ public:
         if (settings.material_capture) quick.push_back(CaptureGraphics);
         if (settings.performance_capture) quick.push_back(CapturePerformance);
         quick.push_back(Library);
-        controller = {Style, FaceButtons, Deadzone};
+        controller = {Style, FaceButtons, Deadzone, RStickInvertX, RStickInvertY, RStickSensitivity,
+                      RStickMouse, RStickMouseSensitivity};
         display = {PerformanceStats};
         if (settings.can_fullscreen) display.push_back(FullScreen);
         UpdateGraphicsItems();
@@ -362,6 +372,42 @@ private:
                     Choice};
         case Deadzone:
             return {Tr(Text::DeadZone), DeadzoneText(), Choice};
+        case RStickInvertX:
+        case RStickInvertY:
+        case RStickSensitivity:
+        case RStickMouse:
+        case RStickMouseSensitivity: {
+            const RightStickSettings resolved = ResolveRightStick(settings.right_stick_global, settings.right_stick);
+            const auto& game = settings.right_stick;
+            const auto yes_no = [](bool on) { return Tr(on ? Text::Yes : Text::No); };
+            const auto percent = [](int value) { return std::to_wstring(value) + L"%"; };
+            Text label{};
+            std::wstring value;
+            bool own{};
+            switch (item) {
+            case RStickInvertX:
+                label = Text::RightStickInvertX, value = yes_no(resolved.invert_x), own = game.invert_x.has_value();
+                break;
+            case RStickInvertY:
+                label = Text::RightStickInvertY, value = yes_no(resolved.invert_y), own = game.invert_y.has_value();
+                break;
+            case RStickSensitivity:
+                label = Text::RightStickSensitivity, value = percent(resolved.stick_sensitivity);
+                own = game.stick_sensitivity.has_value();
+                break;
+            case RStickMouse:
+                label = Text::RightStickMouse, value = yes_no(resolved.mouse), own = game.mouse.has_value();
+                break;
+            default:
+                label = Text::MouseSensitivity, value = percent(resolved.mouse_sensitivity);
+                own = game.mouse_sensitivity.has_value();
+                break;
+            }
+            std::wstring detail;
+            if (settings.right_stick_per_game)
+                detail = Tr(own ? Text::MenuGraphicsOwn : Text::MenuGraphicsFollowsSettings);
+            return {Tr(label), value, Choice, detail};
+        }
         case PerformanceStats:
             return {Tr(Text::PerformanceStats), Tr(settings.show_performance_stats ? Text::Yes : Text::No), Choice};
         case FullScreen:
@@ -452,6 +498,13 @@ private:
             settings.deadzone = steps[i];
             return GameMenuResult::SettingsChanged;
         }
+        case RStickInvertX:
+        case RStickInvertY:
+        case RStickSensitivity:
+        case RStickMouse:
+        case RStickMouseSensitivity:
+            ChangeRightStick(SelectedItem(), back);
+            return GameMenuResult::RightStickChanged;
         case PerformanceStats:
             settings.show_performance_stats = !settings.show_performance_stats;
             return GameMenuResult::PerformanceStatsChanged;
@@ -468,6 +521,41 @@ private:
         }
         }
         return GameMenuResult::None;
+    }
+
+    /// Steps what the row shows. For a game, the result is its own unless it lands on Settings'
+    /// value, which follows Settings again; without a game, Settings' value itself changes.
+    void ChangeRightStick(Item item, bool back) {
+        const RightStickSettings& global = settings.right_stick_global;
+        const RightStickSettings resolved = ResolveRightStick(global, settings.right_stick);
+        RightStickSettings stepped = resolved;
+        switch (item) {
+        case RStickInvertX: stepped.invert_x = !resolved.invert_x; break;
+        case RStickInvertY: stepped.invert_y = !resolved.invert_y; break;
+        case RStickSensitivity:
+            stepped.stick_sensitivity = StepSensitivity(StickSensitivitySteps, resolved.stick_sensitivity, back);
+            break;
+        case RStickMouse: stepped.mouse = !resolved.mouse; break;
+        default:
+            stepped.mouse_sensitivity = StepSensitivity(MouseSensitivitySteps, resolved.mouse_sensitivity, back);
+            break;
+        }
+        if (!settings.right_stick_per_game) {
+            settings.right_stick_global = stepped;
+            return;
+        }
+        auto& game = settings.right_stick;
+        switch (item) {
+        case RStickInvertX: game.invert_x = GameOverride(stepped.invert_x, global.invert_x); break;
+        case RStickInvertY: game.invert_y = GameOverride(stepped.invert_y, global.invert_y); break;
+        case RStickSensitivity:
+            game.stick_sensitivity = GameOverride(stepped.stick_sensitivity, global.stick_sensitivity);
+            break;
+        case RStickMouse: game.mouse = GameOverride(stepped.mouse, global.mouse); break;
+        default:
+            game.mouse_sensitivity = GameOverride(stepped.mouse_sensitivity, global.mouse_sensitivity);
+            break;
+        }
     }
 
     GameMenuSettings settings;

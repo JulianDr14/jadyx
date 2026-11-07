@@ -149,7 +149,9 @@ void SessionMenu::Open() {
                                   !game_frame.pixels.empty(), LoadGameOfflineMode(program_id),
                                   system_settings.offline_mode, LoadGraphicsSettings(),
                                   LoadGameGraphics(program_id),
-                                  program_id != 0 && !mii_editor && MemoryEdit::CanSearchGuest(system)},
+                                  program_id != 0 && !mii_editor && MemoryEdit::CanSearchGuest(system),
+                                  options.right_stick, input.GameRightStickSettings(),
+                                  program_id != 0 && !mii_editor},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
     if (game_title.empty()) {
@@ -397,6 +399,18 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         options.swap_face_buttons = menu->Settings().swap_face_buttons;
         options.deadzone = menu->Settings().deadzone;
         input.SetOptions(options);
+    }
+    if (result == GameMenuResult::RightStickChanged) {
+        const GameMenuSettings& settings = menu->Settings();
+        if (settings.right_stick_per_game) {
+            if (!SaveGameRightStick(program_id, settings.right_stick))
+                WriteDiag("menu: right stick settings could not be saved");
+            input.SetGameRightStick(settings.right_stick);
+        } else {
+            ControllerOptions options = input.Options();
+            options.right_stick = settings.right_stick_global;
+            input.SetOptions(options);
+        }
     }
     if (result == GameMenuResult::PerformanceStatsChanged) {
         auto settings = LoadSystemSettings();

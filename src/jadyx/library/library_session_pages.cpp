@@ -357,16 +357,30 @@ void LibrarySession::HandleControllerPanel() {
         }
         actions &= ~(Swap | Zone);
     } else {
-        // Rows: device, controller type, A/B/X/Y, deadzone, keyboard, controller mapping.
-        constexpr unsigned rows = 6;
+        // Rows: device, controller type, A/B/X/Y, deadzone, keyboard, controller mapping, then the
+        // right stick's (invert X, invert Y, sensitivity, mouse, mouse sensitivity). The floating
+        // panel outside the Settings tab draws only the first six.
+        const unsigned rows = tab == LibraryTab::Settings ? 11 : 6;
+        if (setting_row >= rows) setting_row = 0;
         if (actions & Up) setting_row = (setting_row + rows - 1) % rows;
         if (actions & Down) setting_row = (setting_row + 1) % rows;
         if (actions & (Up | Down)) dirty = true;
-        const bool opens = setting_row == 0 || setting_row >= 4;
+        const bool opens = setting_row == 0 || setting_row == 4 || setting_row == 5;
         if (opens && actions & Left && !(actions & (Play | Right))) {
             if (configuration.open) { settings = return_to_configuration = false; dirty = true; }
         } else if (actions & (Play | Left | Right)) {
-            if (setting_row == 4) {
+            if (setting_row >= 6) {
+                auto& stick = options.right_stick;
+                const bool back = (actions & Left) && !(actions & (Play | Right));
+                switch (setting_row) {
+                case 6: stick.invert_x = !stick.invert_x; break;
+                case 7: stick.invert_y = !stick.invert_y; break;
+                case 8: stick.stick_sensitivity = StepSensitivity(StickSensitivitySteps, stick.stick_sensitivity, back); break;
+                case 9: stick.mouse = !stick.mouse; break;
+                default: stick.mouse_sensitivity = StepSensitivity(MouseSensitivitySteps, stick.mouse_sensitivity, back); break;
+                }
+                device_changed = true; dirty = true;
+            } else if (setting_row == 4) {
                 panel.keyboard.open = true; panel.keyboard.capturing = false; dirty = true;
             } else if (setting_row == 5) {
                 OpenPadPicker();

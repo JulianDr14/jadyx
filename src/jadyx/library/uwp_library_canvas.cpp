@@ -1387,6 +1387,21 @@ private:
             rows.push_back(std::move(zone));
             rows.push_back({Kind::Open, std::wstring{Tr(T::SetUpKeyboard)}});
             rows.push_back({Kind::Open, std::wstring{Tr(T::SetUpPadMap)}});
+            // The right stick (a game can keep its own from the in-game menu).
+            const auto& stick = options.right_stick;
+            const auto toggle = [&](T title, bool on) {
+                SettingsRow row{Kind::Toggle, std::wstring{Tr(title)}};
+                row.on = on;
+                row.value = std::wstring{Tr(on ? T::Yes : T::No)};
+                rows.push_back(std::move(row));
+            };
+            toggle(T::RightStickInvertX, stick.invert_x);
+            toggle(T::RightStickInvertY, stick.invert_y);
+            rows.push_back({Kind::Choice, std::wstring{Tr(T::RightStickSensitivity)}, {},
+                            std::to_wstring(stick.stick_sensitivity) + L"%"});
+            toggle(T::RightStickMouse, stick.mouse);
+            rows.push_back({Kind::Choice, std::wstring{Tr(T::MouseSensitivity)}, {},
+                            std::to_wstring(stick.mouse_sensitivity) + L"%"});
         } else {
             const auto& status = view.configuration.status;
             rows.push_back({Kind::Open, std::wstring{Tr(T::AddGamesFolder)}});
