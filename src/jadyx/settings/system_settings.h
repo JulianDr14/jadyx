@@ -35,6 +35,7 @@ struct SystemSettings {
     bool track_play_time{true}; ///< Counts play time per game and orders the library by it (play_history.h).
     bool multiple_controllers{true}; ///< Extra pads play as players 2-8 (uwp_input.cpp); off keeps one.
     bool offline_mode{true}; ///< Games see no internet, as in airplane mode, so none waits on an online login.
+    bool memory_edit_warned{}; ///< The player took Memory Edit's warning: it does not come up again.
 
     bool operator==(const SystemSettings&) const = default;
 };

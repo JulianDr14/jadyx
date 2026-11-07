@@ -110,6 +110,8 @@ struct GameMenuSettings {
     /// Settings > Graphics and this game's own, for the Graphics page.
     GraphicsSettings graphics_global{};
     GameGraphics graphics{};
+    /// The game's memory is one Memory Edit can look through.
+    bool memory_edit{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -123,6 +125,7 @@ enum class GameMenuResult : std::uint8_t {
     OfflineModeChanged,
     GraphicsChanged,
     Amiibo,
+    MemoryEdit,
 };
 
 /// The console's tag reader as the game left it, for the Amiibo row.
@@ -148,7 +151,7 @@ public:
         Continue, Cheats, Mods, Style, FaceButtons, Deadzone, FullScreen, PerformanceStats, Library,
         CaptureGraphics, CapturePerformance, Screenshot, ControllerPage, DisplayPage, OfflineMode,
         GraphicsMenu, GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxExactGpuReads, GfxTextureMemory,
-        GfxGpuAccuracy, GfxConsoleMode, Amiibo,
+        GfxGpuAccuracy, GfxConsoleMode, Amiibo, MemoryEdit,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics };
 
@@ -158,6 +161,7 @@ public:
         quick = {Continue};
         if (settings.screenshot) quick.push_back(Screenshot);
         if (cheats) quick.push_back(Cheats);
+        if (cheats && settings.memory_edit) quick.push_back(MemoryEdit);
         quick.insert(quick.end(), {ControllerPage, DisplayPage});
         if (cheats) quick.push_back(GraphicsMenu);
         if (cheats) quick.push_back(OfflineMode);
@@ -198,6 +202,8 @@ public:
 
     /// What the last screenshot did, under its row (empty: where they go).
     void SetScreenshotNote(std::wstring note) { screenshot_note = std::move(note); }
+    /// The results of the search Memory Edit keeps, on its row.
+    void SetMemoryEditHits(std::uint64_t hits) { memory_edit_hits = hits; }
 
     GameMenuResult Apply(MenuAction action) {
         const auto& items = Items();
@@ -295,6 +301,12 @@ private:
             return {Tr(Text::MenuCaptureGraphics), {}, Action, {}, UiIcon::Archive};
         case CapturePerformance:
             return {Tr(Text::MenuCapturePerformance), {}, Action, {}, UiIcon::Archive};
+        case MemoryEdit:
+            return {Tr(Text::MemoryEditTitle), {}, Page,
+                    memory_edit_hits != 0
+                        ? I18n::Plural(Text::MemoryEditResultsOne, Text::MemoryEditResultsOther, memory_edit_hits)
+                        : Tr(Text::MemoryEditRowIdle),
+                    UiIcon::Cache};
         case Cheats:
             return {Tr(Text::CheatsTitle), {}, Page, I18n::Plural(Text::CheatsOnOne, Text::CheatsOnOther, cheats_on),
                     UiIcon::Cheats};
@@ -384,6 +396,8 @@ private:
             return confirm ? GameMenuResult::CaptureGraphics : GameMenuResult::None;
         case CapturePerformance:
             return confirm ? GameMenuResult::CapturePerformance : GameMenuResult::None;
+        case MemoryEdit:
+            return confirm ? GameMenuResult::MemoryEdit : GameMenuResult::None;
         case Cheats:
             return confirm ? GameMenuResult::Cheats : GameMenuResult::None;
         case Mods:
@@ -464,6 +478,7 @@ private:
     AmiiboReader amiibo_reader{};
     std::wstring amiibo_name;
     std::wstring screenshot_note;
+    std::uint64_t memory_edit_hits{};
     bool keep_session{true};
 };
 } // namespace Jadyx

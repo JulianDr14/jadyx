@@ -161,6 +161,21 @@ add_executable(jadyx WIN32
     cheats/cheats_page.h
     cheats/cheats_view.cpp
     cheats/cheats_view.h
+    # Memory Edit: search and change a value the player sees, without moving the guest's memory.
+    memory_edit/jme_guest_memory.cpp
+    memory_edit/jme_guest_memory.h
+    memory_edit/jme_matcher.cpp
+    memory_edit/jme_matcher.h
+    memory_edit/jme_page.h
+    memory_edit/jme_results.cpp
+    memory_edit/jme_results.h
+    memory_edit/jme_scanner.cpp
+    memory_edit/jme_scanner.h
+    memory_edit/jme_screen.cpp
+    memory_edit/jme_screen.h
+    memory_edit/jme_session.cpp
+    memory_edit/jme_session.h
+    memory_edit/jme_value.h
     # Per-game mods: archives (zip, 7z, rar) read through libarchive, installed into load/, with
     # their order, conflicts and on/off state handed to the loader at boot; and the store
     # (GameBanana, the CNX index) that downloads them, resuming and checking each file.

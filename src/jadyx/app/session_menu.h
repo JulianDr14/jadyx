@@ -23,6 +23,7 @@
 #include "jadyx/game/game_menu.h"
 #include "jadyx/game/game_menu_surface.h"
 #include "jadyx/input/uwp_input.h"
+#include "jadyx/memory_edit/jme_screen.h"
 #include "jadyx/pulse/pulse_screen.h"
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/ui/launch_splash.h"
@@ -103,6 +104,10 @@ private:
     std::optional<AmiiboScreen> amiibo_screen;
     /// What the player chose, applied with the guest running: a file's path, or empty to remove.
     std::optional<std::string> amiibo_choice;
+    /// Memory Edit, from its first use on: its search outlives the menu, as the player goes back to
+    /// the game between numbers. What runs in it stops before the guest does.
+    std::optional<MemoryEdit::Screen> memory_edit;
+    bool memory_edit_open{};
     std::wstring game_title;
     // Beside the menu: the game's maker and version, and how long this session has run.
     std::wstring game_details;

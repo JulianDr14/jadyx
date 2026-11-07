@@ -21,6 +21,7 @@
 #include "jadyx/game/amiibo_page.h"
 #include "jadyx/game/game_menu.h"
 #include "jadyx/i18n/localization.h"
+#include "jadyx/memory_edit/jme_page.h"
 #include "jadyx/storage/utf8.h"
 #include "jadyx/ui/list_navigation.h"
 #include "jadyx/ui/text_entry_panel.h"
@@ -638,6 +639,112 @@ struct GameMenuSurface::Impl : UiPainter {
         }
     }
 
+    void DrawMemoryEdit(const MemoryEdit::MenuView& view, const GameMenuScene& scene) {
+        using S = Screen;
+        using MemoryEdit::EntryPurpose;
+        using MemoryEdit::PageMode;
+        const MemoryEdit::Page& page = view.page;
+        DrawScene(scene);
+        std::wstring subtitle;
+        if (page.mode == PageMode::List) {
+            subtitle = I18n::Plural(Text::MemoryEditResultsOne, Text::MemoryEditResultsOther, view.hits);
+        } else if (page.mode == PageMode::Entry) {
+            subtitle = I18n::Tr(page.purpose == EntryPurpose::Edit     ? Text::MemoryEditStepEdit
+                                : page.purpose == EntryPurpose::Refine ? Text::MemoryEditStepRefine
+                                                                       : Text::MemoryEditStepSearch);
+        }
+        DrawPanel(UiIcon::Cache, I18n::Tr(Text::MemoryEditTitle), subtitle);
+        const float x = S::InnerX;
+        const float width = S::InnerWidth - 10;
+        switch (page.mode) {
+        case PageMode::Warning:
+            Icon(UiIcon::Cache, S::InnerX + S::InnerWidth / 2 - 16, 250, Palette::Warning);
+            Type(I18n::Tr(Text::MemoryEditWarning), TypeRole::Body, S::InnerX + 10, 300, S::InnerWidth - 20,
+                 Palette::Text, 1, TextAlign::Center, 6);
+            Prompts({{L"A", ButtonColor::A, I18n::Tr(Text::MemoryEditContinue)},
+                     {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
+            break;
+        case PageMode::Searching: {
+            const std::wstring percent = std::to_wstring(view.permille / 10);
+            Icon(UiIcon::Cache, S::InnerX + S::InnerWidth / 2 - 16, 240, Palette::TextSecondary);
+            Type(I18n::Format(view.searching_disk ? Text::MemoryEditSearchingDisk : Text::MemoryEditSearching, {percent}),
+                 TypeRole::Body, S::InnerX + 10, 290, S::InnerWidth - 20, Palette::Text, 1, TextAlign::Center);
+            Round(x, 324, width, 8, 4, Palette::Track);
+            if (view.permille != 0) {
+                Round(x, 324, std::max(8.0f, width * static_cast<float>(view.permille) / 1000.0f), 8, 4, Palette::Accent);
+            }
+            Prompts({{L"B", ButtonColor::B, I18n::Tr(Text::MemoryEditStop)}});
+            break;
+        }
+        case PageMode::Entry: {
+            Round(x, 168, width, 56, 14, Palette::Row);
+            Type(Utf8ToUtf16(page.text) + L"_", TypeRole::HeadlineMedium, x + 16, 180, width - 32, Palette::Text, 1,
+                 TextAlign::Trailing);
+            if (!view.kind.empty()) {
+                const bool can_change = page.purpose == EntryPurpose::Search;
+                if (can_change) {
+                    const auto [previous, previous_tint] = Key(L"LB", ButtonColor::Neutral);
+                    const auto [next, next_tint] = Key(L"RB", ButtonColor::Neutral);
+                    Badge(previous, x + BadgeWidth(previous) / 2, 245, previous_tint);
+                    Badge(next, x + width - BadgeWidth(next) / 2, 245, next_tint);
+                }
+                Type(view.kind, TypeRole::Label, x + 44, 236, width - 88, Palette::TextSecondary, 1, TextAlign::Center);
+            }
+            constexpr float PadTop = 274;
+            constexpr float KeyHeight = 50;
+            constexpr float KeyStride = 56;
+            constexpr float KeyGap = 8;
+            const float key_width = (width - KeyGap * (MemoryEdit::PAD_COLUMNS - 1)) / MemoryEdit::PAD_COLUMNS;
+            for (std::size_t i = 0; i < MemoryEdit::PAD_KEYS.size(); ++i) {
+                const float key_x = x + static_cast<float>(i % MemoryEdit::PAD_COLUMNS) * (key_width + KeyGap);
+                const float key_y = PadTop + static_cast<float>(i / MemoryEdit::PAD_COLUMNS) * KeyStride;
+                const bool active = i == page.key;
+                Round(key_x, key_y, key_width, KeyHeight, 12, active ? Palette::Text : Palette::Row);
+                const wchar_t letter[2]{static_cast<wchar_t>(MemoryEdit::PAD_KEYS[i]), L'\0'};
+                Type(letter, TypeRole::BodyLarge, key_x, key_y + 12, key_width, active ? Palette::OnAccent : Palette::Text, 1,
+                     TextAlign::Center);
+            }
+            if (!view.notice.empty()) {
+                Type(view.notice, TypeRole::Label, x, 506, width, view.notice_warns ? Palette::Warning : Palette::TextHint, 1,
+                     TextAlign::Leading, 5);
+            }
+            const std::wstring_view action = I18n::Tr(page.purpose == EntryPurpose::Edit     ? Text::MemoryEditApply
+                                                      : page.purpose == EntryPurpose::Refine ? Text::MemoryEditRefine
+                                                                                             : Text::MemoryEditSearch);
+            Prompts({{L"A", ButtonColor::A, I18n::Tr(Text::TypeKey)},
+                     {L"X", ButtonColor::X, I18n::Tr(Text::DeleteKey)},
+                     {L"Y", ButtonColor::Y, action},
+                     {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
+            break;
+        }
+        case PageMode::List: {
+            for (std::size_t i = 0; i < view.rows.size(); ++i) {
+                const float top = S::ListTop + static_cast<float>(i) * S::CheatStride;
+                const bool active = page.first + i == page.selected;
+                Round(x, top, width, S::CheatHeight, 14, active ? Palette::Text : Palette::Row);
+                Type(view.rows[i].value, TypeRole::Body, x + 18, top + 6, width - 36, active ? Palette::OnAccent : Palette::Text);
+                Type(view.rows[i].details, TypeRole::Label, x + 18, top + 29, width - 36,
+                     active ? Palette::OnAccent : Palette::TextSecondary);
+            }
+            ScrollIndicator(S::InnerX + S::InnerWidth - 4, S::ListTop,
+                            MemoryEdit::LIST_ROWS * S::CheatStride - (S::CheatStride - S::CheatHeight), page.first,
+                            MemoryEdit::LIST_ROWS, static_cast<std::size_t>(view.shown));
+            float y = 474;
+            if (!view.notice.empty()) {
+                y += Type(view.notice, TypeRole::Label, x, y, width, view.notice_warns ? Palette::Warning : Palette::Text, 1,
+                          TextAlign::Leading, 2) + 6;
+            }
+            Type(view.hint, TypeRole::Label, x, y, width, Palette::TextHint, 1, TextAlign::Leading, 4);
+            Prompts({{L"A", ButtonColor::A, I18n::Tr(Text::MemoryEditEdit)},
+                     {L"Y", ButtonColor::Y, I18n::Tr(Text::MemoryEditRefine)},
+                     {L"X", ButtonColor::X, I18n::Tr(Text::MemoryEditNew)},
+                     {L"LB", ButtonColor::Neutral, I18n::Tr(Text::MemoryEditPage)},
+                     {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
+            break;
+        }
+        }
+    }
+
     void DrawKeyboard(const TextEntryPanelView& view, bool can_cancel) {
         using K = TextEntryPanelLayout;
         DrawTextEntryPanel(*this, view, 0, 0);
@@ -694,6 +801,11 @@ D3D12::MenuImage GameMenuSurface::DrawCheats(const Cheats::CheatsView& view, con
 D3D12::MenuImage GameMenuSurface::DrawAmiibo(const AmiiboMenuView& view, const GameMenuScene& scene,
                                             std::pair<u32, u32> screen) {
     return impl->RenderScreen(screen, false, [&] { impl->DrawAmiibo(view, scene); });
+}
+
+D3D12::MenuImage GameMenuSurface::DrawMemoryEdit(const MemoryEdit::MenuView& view, const GameMenuScene& scene,
+                                                std::pair<u32, u32> screen) {
+    return impl->RenderScreen(screen, false, [&] { impl->DrawMemoryEdit(view, scene); });
 }
 
 D3D12::MenuImage GameMenuSurface::DrawKeyboard(const TextEntryPanelView& view, bool can_cancel,

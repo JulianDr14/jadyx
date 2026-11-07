@@ -23,6 +23,9 @@ struct TextEntryPanelView;
 namespace Cheats {
 struct CheatsView;
 }
+namespace MemoryEdit {
+struct MenuView;
+}
 
 /// What the screen says about the paused game, beside the menu.
 struct GameMenuScene {
@@ -55,6 +58,9 @@ public:
                                 std::pair<u32, u32> screen);
     /// The amiibo page.
     D3D12::MenuImage DrawAmiibo(const AmiiboMenuView& view, const GameMenuScene& scene, std::pair<u32, u32> screen);
+    /// Memory Edit's page.
+    D3D12::MenuImage DrawMemoryEdit(const MemoryEdit::MenuView& view, const GameMenuScene& scene,
+                                    std::pair<u32, u32> screen);
     /// The keyboard a game opened (game_keyboard.h); B's prompt only when the game lets it cancel.
     D3D12::MenuImage DrawKeyboard(const TextEntryPanelView& view, bool can_cancel, std::pair<u32, u32> screen);
 
