@@ -888,6 +888,8 @@ enum class Text : std::uint16_t {
     MemoryEditKindMixed,
     MemoryEditEditedMany,
     MemoryEditEditedSome,
+    MemoryEditHide,
+    MemoryEditShow,
     Count
 };
 inline constexpr std::size_t TextCount = static_cast<std::size_t>(Text::Count);

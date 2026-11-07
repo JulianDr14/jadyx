@@ -862,5 +862,7 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::MemoryEditKindMixed, L"Vários tipos"},
     {Text::MemoryEditEditedMany, L"Os {0} agora têm {1}."},
     {Text::MemoryEditEditedSome, L"Só {0} de {1} mudaram."},
+    {Text::MemoryEditHide, L"Ocultar"},
+    {Text::MemoryEditShow, L"Mostrar"},
 });
 } // namespace Jadyx::I18n

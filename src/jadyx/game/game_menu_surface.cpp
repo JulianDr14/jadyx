@@ -155,10 +155,18 @@ struct GameMenuSurface::Impl : UiPainter {
         return Pixels();
     }
 
-    /// The whole screen: the paused game (blurred, or `sharp` to judge the image settings), the
-    /// scrims that keep text legible over it, and `draw` in the centred 1280x720 layout.
+    /// How the paused game shows behind the menu.
+    enum class Shade : u8 {
+        Soft,  ///< Blurred and dimmed.
+        Sharp, ///< As it is, to judge the image settings, with scrims under the text.
+        Clear, ///< As it is with nothing over it, to read numbers on it: the page draws its own backing.
+    };
+
+    /// The whole screen: the paused game as `shade` says, the scrims that keep text legible over it,
+    /// and `draw` in the centred 1280x720 layout.
     template <typename Draw>
-    D3D12::MenuImage RenderScreen(std::pair<u32, u32> screen, bool sharp, Draw&& draw) {
+    D3D12::MenuImage RenderScreen(std::pair<u32, u32> screen, Shade shade, Draw&& draw) {
+        const bool sharp = shade != Shade::Soft;
         const auto [width, height] = screen;
         if (width == 0 || height == 0) return {};
         Prepare(width, height);
@@ -168,8 +176,11 @@ struct GameMenuSurface::Impl : UiPainter {
         target->BeginDraw();
         target->SetTransform(D2D1::Matrix3x2F::Identity());
         target->Clear(D2D1::ColorF(Palette::Canvas));
-        if (ID2D1Bitmap* const picture = Backdrop(sharp)) {
+        ID2D1Bitmap* const picture = Backdrop(sharp);
+        if (picture) {
             target->DrawBitmap(picture, D2D1::RectF(0, 0, w, h), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+        if (picture && shade != Shade::Clear) {
             const float strength = sharp ? 0.7f : 0.85f;
             Scrim({0, 0}, {w * 0.62f, 0}, strength, w, h);
             Scrim({0, h * 0.55f}, {0, h}, sharp ? 0.0f : 0.75f, w, h, true);
@@ -312,13 +323,15 @@ struct GameMenuSurface::Impl : UiPainter {
         std::wstring_view label;
     };
 
-    /// The prompts in a line that ends at the screen's right margin.
-    void Prompts(std::initializer_list<PromptItem> items) {
+    /// The prompts in a line that ends at the screen's right margin; `backed` over a game no scrim
+    /// darkens.
+    void Prompts(std::initializer_list<PromptItem> items, bool backed = false) {
         float width = 0;
         for (const auto& item : items)
             width += BadgeWidth(Key(item.letters, item.color).first) + 8 +
                      MeasureType(item.label, TypeRole::LabelLarge) + 28;
         float x = Screen::Right - (width - 28);
+        if (backed) Round(x - 14, Screen::Footer - 4, width - 28 + 28, 40, 20, Palette::Surface, 0.9f);
         for (const auto& item : items) x += Prompt(item.letters, item.color, item.label, x, Screen::Footer);
     }
 
@@ -640,12 +653,37 @@ struct GameMenuSurface::Impl : UiPainter {
         }
     }
 
+    /// A small pill at the top left that says the game is still paused, with Menu's prompt when the
+    /// page is away.
+    void PausedChip(std::wstring_view text, std::wstring_view prompt) {
+        using S = Screen;
+        const std::wstring caps = Upper(text);
+        const float text_width = std::min(MeasureType(caps, TypeRole::Caps), 520.0f);
+        const auto [key, tint] = Key(L"Menu", ButtonColor::Neutral);
+        const float prompt_width =
+            prompt.empty() ? 0.0f : 20 + BadgeWidth(key) + 8 + MeasureType(prompt, TypeRole::LabelLarge);
+        const float pill = 32 + text_width + prompt_width + 16;
+        Round(S::Left, S::Pill, pill, 32, 16, Palette::Surface, 0.85f);
+        Outline(S::Left + 0.5f, S::Pill + 0.5f, pill - 1, 31, 15.5f, 0xffffff, 0.08f);
+        Round(S::Left + 14, S::Pill + 12, 8, 8, 4, Palette::Text);
+        Type(caps, TypeRole::Caps, S::Left + 32, S::Pill + 8, text_width + 2, Palette::Text);
+        if (!prompt.empty()) UiPainter::Prompt(key, tint, prompt, S::Left + 32 + text_width + 20, S::Pill);
+    }
+
     void DrawMemoryEdit(const MemoryEdit::MenuView& view, const GameMenuScene& scene) {
         using S = Screen;
         using MemoryEdit::EntryPurpose;
         using MemoryEdit::PageMode;
         const MemoryEdit::Page& page = view.page;
-        DrawScene(scene);
+        // The game shows clear behind the page; Menu puts the page away and only this pill stays.
+        if (page.hidden) {
+            PausedChip(I18n::Tr(Text::MenuPaused), I18n::Tr(Text::MemoryEditShow));
+            return;
+        }
+        std::wstring paused{I18n::Tr(Text::MenuPaused)};
+        if (!scene.title.empty()) paused += L" · " + std::wstring{scene.title};
+        PausedChip(paused, {});
+        const PromptItem hide{L"Menu", ButtonColor::Neutral, I18n::Tr(Text::MemoryEditHide)};
         std::wstring subtitle;
         if (page.mode == PageMode::List) {
             subtitle = I18n::Plural(Text::MemoryEditResultsOne, Text::MemoryEditResultsOther, view.hits);
@@ -665,7 +703,9 @@ struct GameMenuSurface::Impl : UiPainter {
             Type(I18n::Tr(Text::MemoryEditWarning), TypeRole::Body, S::InnerX + 10, 300, S::InnerWidth - 20,
                  Palette::Text, 1, TextAlign::Center, 6);
             Prompts({{L"A", ButtonColor::A, I18n::Tr(Text::MemoryEditContinue)},
-                     {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
+                     hide,
+                     {L"B", ButtonColor::B, I18n::Tr(Text::Back)}},
+                    true);
             break;
         case PageMode::Searching: {
             const std::wstring percent = std::to_wstring(view.permille / 10);
@@ -676,7 +716,7 @@ struct GameMenuSurface::Impl : UiPainter {
             if (view.permille != 0) {
                 Round(x, 324, std::max(8.0f, width * static_cast<float>(view.permille) / 1000.0f), 8, 4, Palette::Accent);
             }
-            Prompts({{L"B", ButtonColor::B, I18n::Tr(Text::MemoryEditStop)}});
+            Prompts({hide, {L"B", ButtonColor::B, I18n::Tr(Text::MemoryEditStop)}}, true);
             break;
         }
         case PageMode::Entry: {
@@ -717,7 +757,9 @@ struct GameMenuSurface::Impl : UiPainter {
             Prompts({{L"A", ButtonColor::A, I18n::Tr(Text::TypeKey)},
                      {L"X", ButtonColor::X, I18n::Tr(Text::DeleteKey)},
                      {L"Y", ButtonColor::Y, action},
-                     {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
+                     hide,
+                     {L"B", ButtonColor::B, I18n::Tr(Text::Back)}},
+                    true);
             break;
         }
         case PageMode::List: {
@@ -746,7 +788,9 @@ struct GameMenuSurface::Impl : UiPainter {
                      {L"Y", ButtonColor::Y, I18n::Tr(Text::MemoryEditRefine)},
                      {L"X", ButtonColor::X, I18n::Tr(Text::MemoryEditNew)},
                      {L"LB", ButtonColor::Neutral, I18n::Tr(Text::MemoryEditPage)},
-                     {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
+                     hide,
+                     {L"B", ButtonColor::B, I18n::Tr(Text::Back)}},
+                    true);
             break;
         }
         }
@@ -797,22 +841,24 @@ D3D12::MenuImage GameMenuSurface::DrawMenu(const GameMenu& menu, const GameMenuS
                                           std::pair<u32, u32> screen) {
     // The display page shows the game sharp: its settings change the very image behind it.
     const bool sharp = menu.CurrentPage() == GameMenu::Page::Display || menu.CurrentPage() == GameMenu::Page::Graphics;
-    return impl->RenderScreen(screen, sharp, [&] { impl->DrawMenu(menu, scene); });
+    return impl->RenderScreen(screen, sharp ? Impl::Shade::Sharp : Impl::Shade::Soft,
+                              [&] { impl->DrawMenu(menu, scene); });
 }
 
 D3D12::MenuImage GameMenuSurface::DrawCheats(const Cheats::CheatsView& view, const GameMenuScene& scene,
                                             std::pair<u32, u32> screen) {
-    return impl->RenderScreen(screen, false, [&] { impl->DrawCheats(view, scene); });
+    return impl->RenderScreen(screen, Impl::Shade::Soft, [&] { impl->DrawCheats(view, scene); });
 }
 
 D3D12::MenuImage GameMenuSurface::DrawAmiibo(const AmiiboMenuView& view, const GameMenuScene& scene,
                                             std::pair<u32, u32> screen) {
-    return impl->RenderScreen(screen, false, [&] { impl->DrawAmiibo(view, scene); });
+    return impl->RenderScreen(screen, Impl::Shade::Soft, [&] { impl->DrawAmiibo(view, scene); });
 }
 
 D3D12::MenuImage GameMenuSurface::DrawMemoryEdit(const MemoryEdit::MenuView& view, const GameMenuScene& scene,
                                                 std::pair<u32, u32> screen) {
-    return impl->RenderScreen(screen, false, [&] { impl->DrawMemoryEdit(view, scene); });
+    // The game as it is: the player reads on it the number to look for.
+    return impl->RenderScreen(screen, Impl::Shade::Clear, [&] { impl->DrawMemoryEdit(view, scene); });
 }
 
 D3D12::MenuImage GameMenuSurface::DrawKeyboard(const TextEntryPanelView& view, bool can_cancel,

@@ -937,6 +937,19 @@ void TestPage() {
     running.mode = PageMode::Searching;
     assert(press(running, Confirm) == PageEffect::None && press(running, Refresh) == PageEffect::None);
     assert(press(running, Back) == PageEffect::Stop);
+
+    // Menu puts the page away in any mode, still paused; only Menu and B bring it back.
+    for (const PageMode mode : {PageMode::Warning, PageMode::Entry, PageMode::Searching, PageMode::List}) {
+        Page away;
+        away.mode = mode;
+        assert(press(away, Menu, ROWS, true) == PageEffect::Redraw && away.hidden);
+        for (const MenuAction other : {Up, Down, Left, Right, Confirm, Alternate, Refresh, PreviousTab, NextTab})
+            assert(press(away, other, ROWS, true) == PageEffect::None);
+        assert(away.mode == mode && away.text.empty() && away.selected == 0);
+        assert(press(away, Menu, ROWS, true) == PageEffect::Redraw && !away.hidden);
+        assert(press(away, Menu, ROWS, true) == PageEffect::Redraw && away.hidden);
+        assert(press(away, Back, ROWS, true) == PageEffect::Redraw && !away.hidden && away.mode == mode);
+    }
 }
 
 } // namespace

@@ -52,6 +52,8 @@ struct Page {
     std::size_t selected{};
     std::size_t first{};
     std::vector<Marked> marked;
+    /// Menu put the page away to show the game, still paused.
+    bool hidden{};
 };
 
 [[nodiscard]] inline bool IsMarked(const Page& page, const Marked& result) {
@@ -190,6 +192,12 @@ inline PageEffect HandleList(Page& page, MenuAction action, std::size_t rows) {
 
 /// `rows`: the results the list shows. `has_list`: there are any to go back to.
 inline PageEffect HandlePageInput(Page& page, MenuAction action, std::size_t rows, bool has_list) {
+    // Menu shows the game behind, to read the number on it, and brings the page back; so does B.
+    if (action == MenuAction::Menu || (page.hidden && action == MenuAction::Back)) {
+        page.hidden = !page.hidden;
+        return PageEffect::Redraw;
+    }
+    if (page.hidden) return PageEffect::None;
     switch (page.mode) {
     case PageMode::Warning:
         if (action == MenuAction::Confirm) return PageEffect::Accept;

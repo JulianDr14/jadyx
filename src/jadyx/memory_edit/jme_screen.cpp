@@ -95,6 +95,7 @@ Screen::Screen(Core::System& system_)
 void Screen::Open() {
     notice.clear();
     notice_warns = false;
+    page.hidden = false;
     if (session.Running()) return; // It cannot be, as closing the menu stops it.
     if (!LoadSystemSettings().memory_edit_warned) {
         page.mode = PageMode::Warning;
