@@ -831,7 +831,7 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::MemoryEditKindF64, L"Decimal de 64 bits"},
     {Text::MemoryEditSearching, L"Procurando na memória… {0} %"},
     {Text::MemoryEditSearchingDisk, L"Procurando no armazenamento… {0} %"},
-    {Text::MemoryEditHintFew, L"Restam poucos. Aperte A em um para alterar; você verá ao voltar ao jogo."},
+    {Text::MemoryEditHintFew, L"Restam poucos. Aperte A em um para alterar, ou marque-os com ←→ e o A altera todos de uma vez; você verá ao voltar ao jogo."},
     {Text::MemoryEditHintMany, L"Ainda são muitos. Jogue até o número mudar, volte e procure o novo."},
     {Text::MemoryEditHintTooMany, L"Muitos para listar: estes são os primeiros {0}. Jogue até o número mudar, volte e refine."},
     {Text::MemoryEditHintPartial, L"A busca foi interrompida, então parte da memória não foi verificada."},
@@ -855,5 +855,12 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::MemoryEditApply, L"Gravar"},
     {Text::MemoryEditStop, L"Parar"},
     {Text::MemoryEditContinue, L"Continuar"},
+    {Text::MemoryEditMark, L"Marcar"},
+    {Text::MemoryEditEditMarked, L"Editar marcados"},
+    {Text::MemoryEditMarkedOne, L"{0} marcado"},
+    {Text::MemoryEditMarkedOther, L"{0} marcados"},
+    {Text::MemoryEditKindMixed, L"Vários tipos"},
+    {Text::MemoryEditEditedMany, L"Os {0} agora têm {1}."},
+    {Text::MemoryEditEditedSome, L"Só {0} de {1} mudaram."},
 });
 } // namespace Jadyx::I18n

@@ -45,6 +45,8 @@ private:
     void Start();
     void ApplyEdit();
     void PickSelected();
+    void MarkSelected();
+    [[nodiscard]] const ResultEntry* SelectedEntry() const;
     void AfterSearch();
     void LoadRows(bool force = false);
     void UpdateHint();
@@ -58,7 +60,8 @@ private:
     std::vector<ResultRow> rows;
     std::size_t rows_first{};
     bool rows_loaded{};
-    ResultEntry editing{};
+    /// What the pad writes to: the marked results, or the one picked.
+    std::vector<Marked> editing;
     bool show_signed{};
     std::wstring notice;
     bool notice_warns{};

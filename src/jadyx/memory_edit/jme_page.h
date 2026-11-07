@@ -12,6 +12,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "common/common_types.h"
 #include "jadyx/memory_edit/jme_value.h"
@@ -33,6 +34,15 @@ inline constexpr std::size_t KIND_CHOICES = VALUE_KINDS + 1;
 enum class PageMode : u8 { Warning, Entry, Searching, List };
 enum class EntryPurpose : u8 { Search, Refine, Edit };
 
+/// A result the player marked: a game tends to keep the same number in more than one place, and the
+/// marked ones are written together.
+struct Marked {
+    u64 va{};
+    ValueKind kind{};
+
+    bool operator==(const Marked&) const = default;
+};
+
 struct Page {
     PageMode mode{PageMode::Entry};
     EntryPurpose purpose{EntryPurpose::Search};
@@ -41,7 +51,21 @@ struct Page {
     std::size_t kind_choice{};
     std::size_t selected{};
     std::size_t first{};
+    std::vector<Marked> marked;
 };
+
+[[nodiscard]] inline bool IsMarked(const Page& page, const Marked& result) {
+    return std::find(page.marked.begin(), page.marked.end(), result) != page.marked.end();
+}
+
+/// Marks the result, or unmarks it if it was.
+inline void ToggleMark(Page& page, const Marked& result) {
+    if (const auto found = std::find(page.marked.begin(), page.marked.end(), result); found != page.marked.end()) {
+        page.marked.erase(found);
+    } else {
+        page.marked.push_back(result);
+    }
+}
 
 enum class PageEffect : u8 {
     None,
@@ -49,7 +73,8 @@ enum class PageEffect : u8 {
     Accept, ///< The player took the warning.
     Start,  ///< Search, refine or write what is typed, as `purpose` says.
     Stop,   ///< Stop the search.
-    Pick,   ///< Edit the selected result.
+    Pick,   ///< Edit the marked results, or the selected one if none is.
+    Mark,   ///< Mark or unmark the selected result.
     Leave,  ///< Back to the menu.
 };
 
@@ -131,13 +156,14 @@ inline PageEffect HandleList(Page& page, MenuAction action, std::size_t rows) {
         if (rows < 2) return PageEffect::None;
         page.selected = action == MenuAction::Up ? (page.selected + rows - 1) % rows : (page.selected + 1) % rows;
         break;
-    // The menu's input does not repeat a held button: a page at a time is how a long list goes by.
     case MenuAction::Left:
+    case MenuAction::Right:
+        return rows != 0 ? PageEffect::Mark : PageEffect::None;
+    // The menu's input does not repeat a held button: a page at a time is how a long list goes by.
     case MenuAction::PreviousTab:
         if (page.selected == 0) return PageEffect::None;
         page.selected -= std::min(page.selected, LIST_ROWS);
         break;
-    case MenuAction::Right:
     case MenuAction::NextTab:
         if (rows == 0 || page.selected + 1 >= rows) return PageEffect::None;
         page.selected = std::min(page.selected + LIST_ROWS, rows - 1);
@@ -181,6 +207,7 @@ inline PageEffect HandlePageInput(Page& page, MenuAction action, std::size_t row
 struct ResultRow {
     std::wstring value;
     std::wstring details;
+    bool marked{};
 };
 
 /// What the page shows; all of it belongs to the screen.

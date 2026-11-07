@@ -501,6 +501,18 @@ struct GameMenuSurface::Impl : UiPainter {
         }
     }
 
+    /// A list row's switch; on the selected (white) row it is inverted: dark when on, a light grey
+    /// track when off.
+    void RowSwitch(float x, float y, bool on, bool active) {
+        if (!active) {
+            Switch(x, y, on, false);
+            return;
+        }
+        Round(x, y, 52, 28, 14, on ? Palette::OnAccent : 0xd3d4d8);
+        brush->SetColor(D2D1::ColorF(0xffffff));
+        surface->FillEllipse(D2D1::Ellipse(D2D1::Point2F(on ? x + 38 : x + 14, y + 14), 10, 10), brush.Get());
+    }
+
     void DrawCheatList(const Cheats::CheatCatalog& catalog, const Cheats::CheatsPage& page) {
         using S = Screen;
         const auto cheats = catalog.Cheats(page.category);
@@ -514,18 +526,7 @@ struct GameMenuSurface::Impl : UiPainter {
             Round(x, top, width, S::CheatHeight, 14, active ? Palette::Text : Palette::Row);
             Type(Utf8ToUtf16(catalog.Name(cheats[i])), TypeRole::Body, x + 18, top + 15, width - 18 - 80,
                  active ? Palette::OnAccent : on ? Palette::Text : Palette::TextHint);
-            const float switch_x = x + width - 52 - 14;
-            const float switch_y = top + 12;
-            if (active) {
-                // The switch inverted on the white row: dark when on, a light grey track when off.
-                Round(switch_x, switch_y, 52, 28, 14, on ? Palette::OnAccent : 0xd3d4d8);
-                brush->SetColor(D2D1::ColorF(0xffffff));
-                surface->FillEllipse(D2D1::Ellipse(D2D1::Point2F(on ? switch_x + 38 : switch_x + 14, switch_y + 14),
-                                                   10, 10),
-                                     brush.Get());
-            } else {
-                Switch(switch_x, switch_y, on, false);
-            }
+            RowSwitch(x + width - 52 - 14, top + 12, on, active);
         }
         ScrollIndicator(S::InnerX + S::InnerWidth - 4, S::CheatTop,
                         CheatRows * S::CheatStride - (S::CheatStride - S::CheatHeight), page.first, CheatRows,
@@ -648,6 +649,8 @@ struct GameMenuSurface::Impl : UiPainter {
         std::wstring subtitle;
         if (page.mode == PageMode::List) {
             subtitle = I18n::Plural(Text::MemoryEditResultsOne, Text::MemoryEditResultsOther, view.hits);
+            if (!page.marked.empty())
+                subtitle += L" · " + I18n::Plural(Text::MemoryEditMarkedOne, Text::MemoryEditMarkedOther, page.marked.size());
         } else if (page.mode == PageMode::Entry) {
             subtitle = I18n::Tr(page.purpose == EntryPurpose::Edit     ? Text::MemoryEditStepEdit
                                 : page.purpose == EntryPurpose::Refine ? Text::MemoryEditStepRefine
@@ -722,9 +725,11 @@ struct GameMenuSurface::Impl : UiPainter {
                 const float top = S::ListTop + static_cast<float>(i) * S::CheatStride;
                 const bool active = page.first + i == page.selected;
                 Round(x, top, width, S::CheatHeight, 14, active ? Palette::Text : Palette::Row);
-                Type(view.rows[i].value, TypeRole::Body, x + 18, top + 6, width - 36, active ? Palette::OnAccent : Palette::Text);
-                Type(view.rows[i].details, TypeRole::Label, x + 18, top + 29, width - 36,
+                Type(view.rows[i].value, TypeRole::Body, x + 18, top + 6, width - 18 - 80,
+                     active ? Palette::OnAccent : Palette::Text);
+                Type(view.rows[i].details, TypeRole::Label, x + 18, top + 29, width - 18 - 80,
                      active ? Palette::OnAccent : Palette::TextSecondary);
+                RowSwitch(x + width - 52 - 14, top + 12, view.rows[i].marked, active);
             }
             ScrollIndicator(S::InnerX + S::InnerWidth - 4, S::ListTop,
                             MemoryEdit::LIST_ROWS * S::CheatStride - (S::CheatStride - S::CheatHeight), page.first,
@@ -735,7 +740,9 @@ struct GameMenuSurface::Impl : UiPainter {
                           TextAlign::Leading, 2) + 6;
             }
             Type(view.hint, TypeRole::Label, x, y, width, Palette::TextHint, 1, TextAlign::Leading, 4);
-            Prompts({{L"A", ButtonColor::A, I18n::Tr(Text::MemoryEditEdit)},
+            Prompts({{L"A", ButtonColor::A,
+                      I18n::Tr(page.marked.empty() ? Text::MemoryEditEdit : Text::MemoryEditEditMarked)},
+                     {L"←→", ButtonColor::Neutral, I18n::Tr(Text::MemoryEditMark)},
                      {L"Y", ButtonColor::Y, I18n::Tr(Text::MemoryEditRefine)},
                      {L"X", ButtonColor::X, I18n::Tr(Text::MemoryEditNew)},
                      {L"LB", ButtonColor::Neutral, I18n::Tr(Text::MemoryEditPage)},

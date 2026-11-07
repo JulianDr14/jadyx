@@ -881,6 +881,13 @@ enum class Text : std::uint16_t {
     MemoryEditApply,
     MemoryEditStop,
     MemoryEditContinue,
+    MemoryEditMark,
+    MemoryEditEditMarked,
+    MemoryEditMarkedOne,
+    MemoryEditMarkedOther,
+    MemoryEditKindMixed,
+    MemoryEditEditedMany,
+    MemoryEditEditedSome,
     Count
 };
 inline constexpr std::size_t TextCount = static_cast<std::size_t>(Text::Count);

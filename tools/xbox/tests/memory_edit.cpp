@@ -890,15 +890,32 @@ void TestPage() {
     assert(press(list, Down, ROWS, true) == PageEffect::Redraw && list.selected == 0 && list.first == 0);
     assert(press(list, NextTab, ROWS, true) == PageEffect::Redraw && list.selected == LIST_ROWS);
     assert(list.selected >= list.first && list.selected < list.first + LIST_ROWS);
-    assert(press(list, Right, ROWS, true) == PageEffect::Redraw && list.selected == 2 * LIST_ROWS);
-    assert(press(list, Right, ROWS, true) == PageEffect::Redraw && list.selected == ROWS - 1);
-    assert(press(list, Right, ROWS, true) == PageEffect::None);
+    assert(press(list, NextTab, ROWS, true) == PageEffect::Redraw && list.selected == 2 * LIST_ROWS);
+    assert(press(list, NextTab, ROWS, true) == PageEffect::Redraw && list.selected == ROWS - 1);
+    assert(press(list, NextTab, ROWS, true) == PageEffect::None);
     assert(press(list, PreviousTab, ROWS, true) == PageEffect::Redraw && list.selected == ROWS - 1 - LIST_ROWS);
-    assert(press(list, Left, ROWS, true) == PageEffect::Redraw && press(list, Left, ROWS, true) == PageEffect::Redraw);
+    assert(press(list, PreviousTab, ROWS, true) == PageEffect::Redraw &&
+           press(list, PreviousTab, ROWS, true) == PageEffect::Redraw);
     assert(list.selected == 0 && list.first == 0);
-    assert(press(list, Left, ROWS, true) == PageEffect::None);
+    assert(press(list, PreviousTab, ROWS, true) == PageEffect::None);
     assert(press(list, Confirm, ROWS, true) == PageEffect::Pick);
     assert(press(list, Confirm, 0, false) == PageEffect::None);
+    // Left and right mark the selected result; the screen does the marking.
+    assert(press(list, Right, ROWS, true) == PageEffect::Mark && list.selected == 0);
+    assert(press(list, Left, ROWS, true) == PageEffect::Mark);
+    assert(press(list, Left, 0, false) == PageEffect::None);
+    {
+        Page marks;
+        const Marked a{0x1000, ValueKind::I32};
+        const Marked b{0x2000, ValueKind::I32};
+        const Marked a_float{0x1000, ValueKind::F32};
+        assert(!IsMarked(marks, a));
+        ToggleMark(marks, a);
+        ToggleMark(marks, b);
+        assert(IsMarked(marks, a) && IsMarked(marks, b) && !IsMarked(marks, a_float) && marks.marked.size() == 2);
+        ToggleMark(marks, a);
+        assert(!IsMarked(marks, a) && IsMarked(marks, b) && marks.marked.size() == 1);
+    }
     Page one;
     one.mode = PageMode::List;
     assert(press(one, Up, 1, true) == PageEffect::None && press(one, Down, 1, true) == PageEffect::None);

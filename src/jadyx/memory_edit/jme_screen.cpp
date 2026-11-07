@@ -141,6 +141,9 @@ Screen::Reply Screen::Handle(MenuAction action) {
     case PageEffect::Pick:
         PickSelected();
         break;
+    case PageEffect::Mark:
+        MarkSelected();
+        break;
     default:
         if (page.mode == PageMode::List) LoadRows();
         break;
@@ -203,6 +206,8 @@ void Screen::AfterSearch() {
         show_signed = typed && typed->negative;
         page.selected = 0;
         page.first = 0;
+        // A new list: what was marked may not be in it.
+        page.marked.clear();
         page.mode = PageMode::List;
         UpdateHint();
         LoadRows(true);
@@ -263,43 +268,81 @@ void Screen::LoadRows(bool force) {
         ResultRow row;
         row.value = bits ? Utf8ToUtf16(FormatValue(entry.kind, *bits, show_signed)) : L"—";
         row.details = std::wstring{I18n::Tr(KindName(entry.kind))} + L" · " + Utf8ToUtf16(Address(entry.va));
+        row.marked = IsMarked(page, {entry.va, entry.kind});
         rows.push_back(std::move(row));
     }
 }
 
-void Screen::PickSelected() {
+const ResultEntry* Screen::SelectedEntry() const {
     const std::size_t index = page.selected - rows_first;
-    if (page.selected < rows_first || index >= entries.size()) return;
-    editing = entries[index];
-    kind_text = I18n::Tr(KindName(editing.kind));
+    if (page.selected < rows_first || index >= entries.size()) return nullptr;
+    return &entries[index];
+}
+
+void Screen::MarkSelected() {
+    const ResultEntry* entry = SelectedEntry();
+    if (!entry) return;
+    ToggleMark(page, {entry->va, entry->kind});
+    LoadRows(true);
+}
+
+void Screen::PickSelected() {
+    const ResultEntry* entry = SelectedEntry();
+    if (!entry) return;
+    const Marked selected{entry->va, entry->kind};
+    editing = page.marked.empty() ? std::vector<Marked>{selected} : page.marked;
+    // The pad opens on the selected one when it is among those written, or on the first marked.
+    const Marked shown = std::find(editing.begin(), editing.end(), selected) != editing.end() ? selected : editing.front();
+    const bool one_kind = std::all_of(editing.begin(), editing.end(),
+                                      [&](const Marked& target) { return target.kind == shown.kind; });
+    kind_text = I18n::Tr(one_kind ? KindName(shown.kind) : Text::MemoryEditKindMixed);
     // The pad opens on what memory holds, when the pad could have written it: not 1e+20 or nan.
     std::string current;
-    if (const auto bits = ReadGuestValue(system, editing.va, editing.kind)) {
-        current = FormatValue(editing.kind, *bits, show_signed);
+    if (const auto bits = ReadGuestValue(system, shown.va, shown.kind)) {
+        current = FormatValue(shown.kind, *bits, show_signed);
         if (current.size() > MAX_TYPED || !ParseNumber(current)) current.clear();
     }
     EnterNumber(page, EntryPurpose::Edit, current);
 }
 
 void Screen::ApplyEdit() {
+    if (editing.empty()) return;
     const auto number = ParseNumber(page.text);
-    const auto bits = number ? EncodeValue(*number, editing.kind) : std::nullopt;
-    if (!bits) {
-        SetNotice(std::wstring{I18n::Tr(Text::MemoryEditBadNumber)}, true);
-        return;
+    // All of them or none: a number one of them cannot hold writes nowhere.
+    std::vector<u64> encoded;
+    for (const Marked& target : editing) {
+        const auto bits = number ? EncodeValue(*number, target.kind) : std::nullopt;
+        if (!bits) {
+            SetNotice(std::wstring{I18n::Tr(Text::MemoryEditBadNumber)}, true);
+            return;
+        }
+        encoded.push_back(*bits);
     }
-    const bool wrote = WriteGuestValue(system, editing.va, *bits, editing.kind);
-    const auto now = ReadGuestValue(system, editing.va, editing.kind);
-    const bool held = wrote && now && *now == *bits;
+    std::size_t held_count = 0;
+    std::optional<u64> first_now;
+    for (std::size_t i = 0; i < editing.size(); ++i) {
+        const Marked& target = editing[i];
+        const bool wrote = WriteGuestValue(system, target.va, encoded[i], target.kind);
+        const auto now = ReadGuestValue(system, target.va, target.kind);
+        const bool held = wrote && now && *now == encoded[i];
+        if (held) ++held_count;
+        if (i == 0) first_now = now;
+        WriteDiag("jme: wrote " + page.text + " at " + Address(target.va) + (held ? ", it holds" : ", it did NOT hold"));
+    }
     show_signed = show_signed || number->negative;
-    WriteDiag("jme: wrote " + page.text + " at " + Address(editing.va) + (held ? ", it holds" : ", it did NOT hold"));
     page.mode = PageMode::List;
     UpdateHint();
     LoadRows(true);
-    if (held) {
-        SetNotice(I18n::Format(Text::MemoryEditEdited, {Utf8ToUtf16(FormatValue(editing.kind, *now, show_signed))}), false);
-    } else {
+    const std::size_t total = editing.size();
+    if (held_count == 0) {
         SetNotice(std::wstring{I18n::Tr(Text::MemoryEditEditFailed)}, true);
+    } else if (held_count < total) {
+        SetNotice(I18n::Format(Text::MemoryEditEditedSome, {std::to_wstring(held_count), std::to_wstring(total)}), true);
+    } else {
+        const std::wstring value = Utf8ToUtf16(FormatValue(editing.front().kind, *first_now, show_signed));
+        SetNotice(total == 1 ? I18n::Format(Text::MemoryEditEdited, {value})
+                             : I18n::Format(Text::MemoryEditEditedMany, {std::to_wstring(total), value}),
+                  false);
     }
 }
 
