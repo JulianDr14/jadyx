@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -56,6 +57,36 @@ inline void SetMode(Mode value) noexcept {
     return mode.load(std::memory_order_relaxed);
 }
 
+/// "cpu_write_test=1": one session compares three ways of handling these writes, one phase per
+/// pacing window, and logs what each costs. Off, nothing below changes the drain.
+enum class TestPhase : u8 { Current, Merged, Off, Count };
+
+inline std::atomic<bool> test_enabled{false};
+inline std::atomic<TestPhase> test_phase{TestPhase::Current};
+
+inline void EnableTest(bool enabled) noexcept {
+    test_enabled.store(enabled, std::memory_order_relaxed);
+    if (enabled) {
+        SetMode(Mode::On); // The first phase is Current, whatever the settings say.
+    }
+}
+
+[[nodiscard]] inline bool Testing() noexcept {
+    return test_enabled.load(std::memory_order_relaxed);
+}
+
+[[nodiscard]] inline TestPhase CurrentTestPhase() noexcept {
+    return test_phase.load(std::memory_order_relaxed);
+}
+
+/// The next phase. Only the mode changes here: writes already queued drain as usual.
+inline void NextTestPhase() noexcept {
+    const auto next = static_cast<TestPhase>((static_cast<u8>(CurrentTestPhase()) + 1) %
+                                             static_cast<u8>(TestPhase::Count));
+    test_phase.store(next, std::memory_order_relaxed);
+    SetMode(next == TestPhase::Off ? Mode::Off : Mode::On);
+}
+
 /// Producer. False when the queue is full: the caller takes OnCPUWrite instead.
 [[nodiscard]] inline bool Push(size_t queue, u64 address, u64 size) noexcept {
     Queue& q = queues[queue];
@@ -86,22 +117,58 @@ inline void SetMode(Mode value) noexcept {
     return true;
 }
 
-/// Consumer: calls func(address, size) for each queued write, oldest first per queue. Returns how
-/// many there were.
+struct DrainResult {
+    u64 writes{};
+    u64 ranges{}; ///< cpu_write_test: runs of writes that touch or overlap
+    u64 pages{};  ///< cpu_write_test: runs of writes inside one 4 KiB page, gaps included
+};
+
+/// Consumer: calls func(address, size) for each queued write, oldest first per queue.
 template <typename Func>
-inline u64 Drain(Func&& func) {
-    u64 drained = 0;
+inline DrainResult Drain(Func&& func) {
+    DrainResult result{};
+    const bool testing = Testing();
+    const bool merging = testing && CurrentTestPhase() == TestPhase::Merged;
     for (Queue& q : queues) {
         const u64 tail = q.tail.load(std::memory_order_acquire);
         u64 head = q.head.load(std::memory_order_relaxed);
-        drained += tail - head;
+        result.writes += tail - head;
+        u64 run_start = 0;
+        u64 run_end = 0;
+        u64 page = ~u64{0};
         for (; head != tail; ++head) {
-            const Write& write = q.writes[head & (CAPACITY - 1)];
-            func(write.address, write.size);
+            const Write write = q.writes[head & (CAPACITY - 1)];
+            if (!testing) {
+                func(write.address, write.size);
+                continue;
+            }
+            const u64 write_end = write.address + write.size;
+            if ((write.address >> 12) != page || ((write_end - 1) >> 12) != page) {
+                ++result.pages;
+                page = write.address >> 12;
+            }
+            // Only ranges that touch: a gap could hold GPU data this write never reached.
+            if (run_start != run_end && write.address <= run_end && write_end >= run_start) {
+                run_start = (std::min)(run_start, write.address);
+                run_end = (std::max)(run_end, write_end);
+            } else {
+                ++result.ranges;
+                if (merging && run_start != run_end) {
+                    func(run_start, run_end - run_start);
+                }
+                run_start = write.address;
+                run_end = write_end;
+            }
+            if (!merging) {
+                func(write.address, write.size);
+            }
+        }
+        if (merging && run_start != run_end) {
+            func(run_start, run_end - run_start);
         }
         q.head.store(head, std::memory_order_release);
     }
-    return drained;
+    return result;
 }
 
 } // namespace VideoCommon::CpuWriteQueue

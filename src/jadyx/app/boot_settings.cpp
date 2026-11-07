@@ -390,10 +390,11 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetPsoBudget(config.pso_budget);
     D3D12::SetPsoLoading(config.pso_loading);
     VideoCommon::CpuWriteQueue::SetMode(config.cpu_write_defer);
+    VideoCommon::CpuWriteQueue::EnableTest(config.cpu_write_test);
     // The JIT load table and the write queue trust the bitmap, so it is kept for them too.
     VideoCommon::GpuWrittenPages::SetEnabled(
         config.dma_flush_filter ||
-        config.cpu_write_defer != VideoCore::FramePipeline::Mode::Off ||
+        config.cpu_write_defer != VideoCore::FramePipeline::Mode::Off || config.cpu_write_test ||
         config.jit_read_table != VideoCore::FramePipeline::Mode::Off);
     static_assert(u8(Common::PageTable::JitReadTable::On) == u8(VideoCore::FramePipeline::Mode::On) &&
                   u8(Common::PageTable::JitReadTable::Check) ==

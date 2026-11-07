@@ -15,6 +15,7 @@
 #include "core/arm/cpu_profile.h"
 #include "common/windows/timed_wait_profile.h"
 #include "dynarmic/interface/jit_profile.h"
+#include "video_core/cpu_write_queue.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_draw_metrics.h"
 #include "video_core/renderer_d3d12/renderer_d3d12.h"
@@ -666,6 +667,26 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
                  t.late_max_ns / 1e3, t.durations[0], t.durations[1], t.durations[2], t.durations[3]);
     }
     LOG_INFO(Render, "D3D12 frame chain: {}", DescribeFrameChain(delta));
+    if (VideoCommon::CpuWriteQueue::Testing()) {
+        using VideoCommon::CpuWriteQueue::TestPhase;
+        const TestPhase phase = VideoCommon::CpuWriteQueue::CurrentTestPhase();
+        LOG_INFO(Render,
+                 "D3D12 CPU write test: phase {}, {:.2f} FPS over {:.0f} ms | draining {:.1f} ms in "
+                 "{} drains | {} writes queued, {} applied, {} touching ranges, {} page runs, {} "
+                 "with the queue full",
+                 phase == TestPhase::Current  ? "current"
+                 : phase == TestPhase::Merged ? "merged"
+                                              : "off",
+                 1000.0 * frames / total_ms, total_ms,
+                 static_cast<double>(VideoCore::Perf::Get(delta, Counter::CpuWriteDrainNs)) / 1e6,
+                 VideoCore::Perf::Get(delta, Counter::CpuWriteDrains),
+                 VideoCore::Perf::Get(delta, Counter::CpuWritesDeferred),
+                 VideoCore::Perf::Get(delta, Counter::CpuWritesDrained),
+                 VideoCore::Perf::Get(delta, Counter::CpuWriteRanges),
+                 VideoCore::Perf::Get(delta, Counter::CpuWritePageRuns),
+                 VideoCore::Perf::Get(delta, Counter::CpuWriteQueueFull));
+        VideoCommon::CpuWriteQueue::NextTestPhase();
+    }
     LOG_INFO(Render,
              "D3D12 indirect macros: {} from GPU arguments, {} from CPU arguments ({} GPU-written, "
              "{} with no instances)",

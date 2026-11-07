@@ -288,6 +288,8 @@ struct BootConfig {
     VideoCore::FramePipeline::Mode pso_loading{VideoCore::FramePipeline::Mode::On};
     /// "cpu_write_defer=0|1|check" (VideoCommon::CpuWriteQueue).
     VideoCore::FramePipeline::Mode cpu_write_defer{VideoCore::FramePipeline::Mode::On};
+    /// "cpu_write_test=1" (VideoCommon::CpuWriteQueue::TestPhase). Diagnostic only.
+    bool cpu_write_test{};
     /// "jit_read_table=0|1|check" (Common::PageTable::SetJitReadTable).
     VideoCore::FramePipeline::Mode jit_read_table{VideoCore::FramePipeline::Mode::On};
     /// Pushbuffer reads skip FlushRegion over memory no cache holds GPU writes for.

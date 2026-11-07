@@ -195,6 +195,10 @@ enum class Counter : size_t {
     CpuWriteQueueFull,        ///< cpu_write_defer=1: queue full, OnCPUWrite instead
     CpuWritesDrained,         ///< queued writes the GPU thread applied
     CpuWritesLateGpu,         ///< of those, ranges that became GPU-modified while queued
+    CpuWriteDrains,           ///< cpu_write_test: drains that found writes queued
+    CpuWriteDrainNs,          ///< cpu_write_test: GPU thread time applying them
+    CpuWriteRanges,           ///< cpu_write_test: runs of queued writes that touch or overlap
+    CpuWritePageRuns,         ///< cpu_write_test: runs of queued writes inside one page
     // Guest loads of rasterizer-cached memory (jit_read_table, Common::PageTable).
     JitReadPagesCleared,      ///< load entries cleared when the GPU first wrote their memory
     JitReadsWouldInline,      ///< check: slow loads the load table would have done inline

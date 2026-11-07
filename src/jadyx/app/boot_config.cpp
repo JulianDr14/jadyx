@@ -585,6 +585,9 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
             } else if (line == "timer_profile=1") {
                 config.timer_profile = true;
                 WriteDiag("boot.cfg: HostTiming requested waits/sleeps/spin elapsed profiling enabled");
+            } else if (line == "cpu_write_test=1") {
+                config.cpu_write_test = true;
+                WriteDiag("boot.cfg: guest CPU write test, one phase per pacing window");
             } else if (line == "cpu_profile=1") {
                 config.cpu_profile = true;
             } else if (line == "profile=1") {
