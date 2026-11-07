@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <utility>
 #include <dwrite_1.h>
 #include <winrt/base.h>
 
@@ -401,6 +402,14 @@ void UiPainter::Icon(UiIcon icon, float x, float y, unsigned color, float size) 
         line(16, 3, 16, 27);
         line(3, 19, 16, 11); line(16, 11, 29, 19);
         line(10, 29, 16, 25); line(16, 25, 22, 29);
+        break;
+    case UiIcon::Dice:
+        // A die showing five: a new, random figure.
+        surface->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x + 4, y + 4, x + 28, y + 28), 5, 5),
+                                      brush.Get(), 2);
+        for (const auto [cx, cy] : {std::pair{11.0f, 11.0f}, std::pair{21.0f, 11.0f}, std::pair{16.0f, 16.0f},
+                                    std::pair{11.0f, 21.0f}, std::pair{21.0f, 21.0f}})
+            surface->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x + cx, y + cy), 2.2f, 2.2f), brush.Get());
         break;
     }
 }
