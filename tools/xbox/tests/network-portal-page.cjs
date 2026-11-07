@@ -42,6 +42,8 @@ for(const size of [0,3,55,56,63,64,65,128,131072]){
  console.log('PASS: browser save tab: structure guide, file checks before upload, console refusals shown with their detail and discarded, save metadata, zip download (mock HTTP)');
  for(const language of ['es','en','pt-BR'])await amiiboScenario(language);
  console.log('PASS: browser amiibo: per-file results, explicit replace, two-press deletion, key upload and removal (mock HTTP)');
+ for(const language of ['es','en','pt-BR'])await navigationScenario(language);
+ console.log('PASS: browser navigation: library first, import from it, upload controls only with an upload, unfinished upload reopened, system panes, logs without system imports (mock HTTP)');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 
 async function browserScenario(options){
@@ -220,8 +222,7 @@ async function libraryScenario(language){
   setTimeout:(cb,ms)=>{if(!(ms>=6000))queueMicrotask(cb);return 1;},clearTimeout:()=>{},setInterval:()=>1,clearInterval:()=>{}});
  vm.runInContext(script,context);
  element('code').value='1234';await element('pair').listeners.submit({preventDefault(){}});
- assert.equal(element('cat-library').hidden,false);
- click(element('cat-library'));await delay();
+ await delay();
  assert.equal(element('upload').hidden,true);assert.equal(element('library').hidden,false);assert.equal(element('games').children.length,1);
  click(element('games').children[0]);await delay();
  assert.equal(element('game').hidden,false);assert.equal(element('game-name').textContent,'Game');assert.equal(element('items').children.length,1);
@@ -282,7 +283,7 @@ async function saveScenario(language){
   setTimeout:(cb,ms)=>{if(!(ms>=6000))queueMicrotask(cb);return 1;},clearTimeout:()=>{},setInterval:callback=>{poll=callback;return 1;},clearInterval:()=>{}});
  vm.runInContext(script,context);
  element('code').value='1234';await element('pair').listeners.submit({preventDefault(){}});
- click(element('cat-library'));await delay();click(element('games').children[0]);await delay();
+ await delay();click(element('games').children[0]);await delay();
  click(element('kind-save'));await delay();
  assert.equal(element('save-pane').hidden,false);assert.equal(element('items').hidden,true);assert.equal(element('content-zone').hidden,true);
  assert.notEqual(element('kind-save').textContent,'');assert.notEqual(element('save-warning').textContent,'');
@@ -352,12 +353,12 @@ async function amiiboScenario(language){
   performance,fetch,URL:{createObjectURL:()=>'blob:x',revokeObjectURL(){}},btoa:v=>Buffer.from(v,'binary').toString('base64'),
   setTimeout:(cb,ms)=>{if(!(ms>=6000))queueMicrotask(cb);return 1;},clearTimeout:()=>{},setInterval:()=>1,clearInterval:()=>{}});
  vm.runInContext(script,context);
- assert.ok(/id="cat-amiibo"[^>]* hidden/.test(header)&&/id="amiibo"[^>]* hidden/.test(header),'not offered before pairing');
+ assert.ok(/id="tab-amiibo"[^>]* hidden/.test(header)&&/id="view-amiibo"[^>]* hidden/.test(header),'not offered before pairing');
  assert.notEqual(element('amiibo-intro').textContent,'');
  element('code').value='1234';await element('pair').listeners.submit({preventDefault(){}});
- assert.equal(element('cat-amiibo').hidden,false);assert.equal(element('amiibo').hidden,true);
- click(element('cat-amiibo'));await delay();
- assert.equal(element('amiibo').hidden,false);assert.equal(element('upload').hidden,true);assert.equal(element('library').hidden,true);
+ assert.equal(element('tab-amiibo').hidden,false);assert.equal(element('view-amiibo').hidden,true);
+ click(element('tab-amiibo'));await delay();
+ assert.equal(element('view-amiibo').hidden,false);assert.equal(element('view-content').hidden,true);
  assert.equal(element('amiibo-items').children.length,1);assert.equal(element('amiibo-key-remove').hidden,true);
  const noKey=element('amiibo-key-status').textContent;assert.notEqual(noKey,'');
  // Nothing chosen: says so and sends nothing.
@@ -392,8 +393,55 @@ async function amiiboScenario(language){
  await click(element('amiibo-key-remove'));assert.equal(key,true,'first press never deletes');
  await click(element('amiibo-key-remove'));await delay();
  assert.equal(key,false);assert.equal(element('amiibo-key-status').textContent,noKey);assert.equal(element('amiibo-key-remove').hidden,true);
- // Back to another category: the section hides.
- click(element('cat-games'));assert.equal(element('amiibo').hidden,true);assert.equal(element('upload').hidden,false);
+ // Back to another tab: the section hides.
+ click(element('tab-games'));assert.equal(element('view-amiibo').hidden,true);assert.equal(element('upload').hidden,false);
+}
+async function navigationScenario(language){
+ const open=async status=>{
+  const elements=new Map();
+  const make=tag=>{const n={...dom(),tag,value:'',textContent:'',files:[],hidden:false,disabled:false,style:{},dataset:{},children:[],listeners:{},
+   addEventListener:(event,callback)=>{n.listeners[event]=callback;},
+   append:(...c)=>n.children.push(...c),replaceChildren:(...c)=>{n.children=c;}};return n;};
+  const element=id=>{if(!elements.has(id))elements.set(id,make('#'+id));return elements.get(id);};
+  const response=data=>({status:200,ok:true,json:async()=>JSON.parse(JSON.stringify(data)),headers:{get:()=>null}});
+  const fetch=async url=>url==='/api/v1/pair'?response({session:'test-session'}):url==='/api/v1/status'?response(status):
+   url==='/api/v1/library'?response({revision:1,games:[{id:'0100000000010000',name:'Game',removable:true}]}):response({contents:[]});
+  const context=vm.createContext({document:{getElementById:element,createElement:make,documentElement:{},body:{classList:{toggle(){},add(){},remove(){}},append(){}}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
+   performance,fetch,URL:{createObjectURL:()=>'blob:x',revokeObjectURL(){}},btoa:v=>Buffer.from(v,'binary').toString('base64'),
+   setTimeout:(cb,ms)=>{if(!(ms>=6000))queueMicrotask(cb);return 1;},clearTimeout:()=>{},setInterval:()=>1,clearInterval:()=>{}});
+  vm.runInContext(script,context);
+  element('code').value='1234';await element('pair').listeners.submit({preventDefault(){}});await delay();
+  return element;
+ };
+ const click=n=>n.listeners.click();
+ // Nothing uploading: the library comes first and importing is one press away, without its controls.
+ let page=await open({uploads:true,transfer:{},library:true,system_supported:true,system:{phase:'idle',available:true},logs:{supported:true}});
+ assert.equal(page('library').hidden,false);assert.equal(page('upload').hidden,true);assert.equal(page('library-add').hidden,false);
+ click(page('library-add'));assert.equal(page('upload').hidden,false);assert.equal(page('library').hidden,true);assert.equal(page('upload-back').hidden,false);
+ for(const id of ['pause','discard','rename','upload-panel','name-field'])assert.equal(page(id).hidden,true,id+' waits for an upload');
+ page('files').files=[{name:'a.nsp',size:1}];page('files').listeners.change();assert.equal(page('name-field').hidden,false,'one file can be named');
+ page('files').files=[{name:'a.nsp',size:1},{name:'b.nsp',size:1}];page('files').listeners.change();assert.equal(page('name-field').hidden,true,'several keep their names');
+ click(page('upload-back'));await delay();assert.equal(page('library').hidden,false);assert.equal(page('upload').hidden,true);
+ // Games pressed again leaves a game for the library.
+ click(page('games').children[0]);await delay();assert.equal(page('game').hidden,false);
+ for(const id of ['content-pause','content-discard','content-panel'])assert.equal(page(id).hidden,true,id+' waits for an upload');
+ click(page('tab-games'));await delay();assert.equal(page('game').hidden,true);assert.equal(page('library-list').hidden,false);
+ // System: one pane at a time, the job only with a job.
+ click(page('tab-system'));assert.equal(page('view-system').hidden,false);assert.equal(page('view-content').hidden,true);
+ assert.equal(page('keys-pane').hidden,false);assert.equal(page('firmware-pane').hidden,true);assert.equal(page('log-export').hidden,true);
+ assert.equal(page('system-panel').hidden,true);assert.equal(page('system-cancel').hidden,true);
+ click(page('cat-firmware'));assert.equal(page('keys-pane').hidden,true);assert.equal(page('firmware-pane').hidden,false);
+ click(page('cat-logs'));assert.equal(page('system-upload').hidden,true);assert.equal(page('log-export').hidden,false);
+ // An unfinished upload is reopened with its controls, and the library would say so.
+ page=await open({uploads:true,library:true,transfer:{id:'a'.repeat(32),name:'a.nsp',phase:'paused',length:100,received:40,offset:40}});
+ assert.equal(page('upload').hidden,false);assert.equal(page('library').hidden,true);
+ for(const id of ['pause','discard','rename','upload-panel','name-field'])assert.equal(page(id).hidden,false,id+' with an upload');
+ assert.match(page('library-add').textContent,/40 %/);
+ // No system imports: the logs stay reachable. Neither: no tab.
+ page=await open({uploads:true,transfer:{},logs:{supported:true}});
+ assert.equal(page('tab-system').hidden,false);assert.equal(page('cat-keys').hidden,true);assert.equal(page('cat-logs').hidden,false);assert.equal(page('upload').hidden,false);
+ click(page('tab-system'));assert.equal(page('log-export').hidden,false);assert.equal(page('upload-back').hidden,true);
+ page=await open({uploads:true,transfer:{}});assert.equal(page('tab-system').hidden,true);assert.equal(page('tab-amiibo').hidden,true);
 }
 function delay(){return new Promise(resolve=>setImmediate(resolve));}
 // What the page touches on any element beyond its own fields.
