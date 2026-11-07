@@ -2343,6 +2343,15 @@ std::optional<DramRegion> QueryDramRegion(const void* host) {
 #endif
 }
 
+std::mutex& DramDecommitMutex() {
+#ifdef HOST_MEMORY_USE_FROM_APP
+    return g_backing_decommit_mutex;
+#else
+    static std::mutex unused;
+    return unused;
+#endif
+}
+
 std::optional<GuestZeroCensus> CensusGuestZeroMemory() {
 #ifdef HOST_MEMORY_USE_FROM_APP
     if (g_backing_is_file.load(std::memory_order_acquire) ||

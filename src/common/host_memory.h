@@ -7,6 +7,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include "common/common_funcs.h"
@@ -167,6 +168,10 @@ struct DramRegion {
     bool untouched{};
 };
 std::optional<DramRegion> QueryDramRegion(const void* host);
+
+/// Held around every decommit of the DRAM backing and every move of the guest swap that needs
+/// one, so what is committed stays committed while a reader holds it (Permafrost::InspectCommitted).
+std::mutex& DramDecommitMutex();
 
 /// Diagnostic, Xbox private DRAM backing: the committed bytes that hold only zeros, by guest swap
 /// granule. Reads every committed page, so it costs a pass over the DRAM. Empty elsewhere.

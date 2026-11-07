@@ -1139,6 +1139,162 @@ const u8* ClipUntouched(const u8* begin, const u8* end) {
     return end;
 }
 
+namespace {
+
+// Owns the granule, whatever its state. Under the decommit mutex this waits on writers and reads
+// back only, and those never take it.
+u8 Hold(Granule& g) {
+    for (;;) {
+        u8 state = g.state.load(std::memory_order_acquire);
+        if (state == Busy) {
+            Wait(g.state);
+        } else if (g.state.compare_exchange_strong(state, Busy)) {
+            return state;
+        }
+    }
+}
+
+// The pages [first, last) of the granule that are committed, and those of them with no access.
+void LookAtPages(const u8* granule, size_t first, size_t last, Mask& committed, Mask& no_access) {
+    for (size_t page = first; page < last;) {
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQuery(granule + page * PAGE_SIZE, &info, sizeof(info)) == 0) {
+            break;
+        }
+        const size_t end = (std::min)(
+            last, static_cast<size_t>(static_cast<const u8*>(info.BaseAddress) + info.RegionSize - granule) /
+                      PAGE_SIZE);
+        if (info.State == MEM_COMMIT) {
+            for (size_t i = page; i < end; ++i) committed.set(i);
+            if (info.Protect == PAGE_NOACCESS) {
+                for (size_t i = page; i < end; ++i) no_access.set(i);
+            }
+        }
+        page = (std::max)(end, page + 1);
+    }
+}
+
+// Pages [first, last) of a granule; `shown` is how many pages of the range came before them.
+void InspectGranuleCommitted(Engine& e, size_t index, size_t first, size_t last, size_t shown,
+                             PageVisitor visit, void* context) {
+    Granule& g = e.table[index];
+    u8* const granule = e.base + index * GRANULE_SIZE;
+    const u8 state = Hold(g);
+    Mask committed;
+    Mask no_access;
+    LookAtPages(granule, first, last, committed, no_access);
+    Mask opened;
+    ForEachRun(no_access, [&](size_t run, size_t count) {
+        if (e.platform.protect(granule + run * PAGE_SIZE, count * PAGE_SIZE, PAGE_READONLY)) {
+            for (size_t i = run; i < run + count; ++i) opened.set(i);
+        }
+    });
+    ForEachRun(committed & (~no_access | opened), [&](size_t run, size_t count) {
+        visit(context, shown + run - first, count, granule + run * PAGE_SIZE);
+    });
+    if (state == Probation) {
+        ProtectRuns(e, granule, opened, PAGE_NOACCESS);
+    } else {
+        // Only the probe stays closed. If its fault came meanwhile the probe is gone, and if it comes
+        // between this check and the protect the commit in OnFault gives the access back.
+        const u16 probe = g.probe.load();
+        if (probe != NO_PROBE && opened[probe]) {
+            opened.reset(probe);
+            e.platform.protect(granule + size_t{probe} * PAGE_SIZE, PAGE_SIZE, PAGE_NOACCESS);
+        }
+        ProtectRuns(e, granule, opened, PAGE_READWRITE);
+    }
+    Settle(g, static_cast<State>(state));
+}
+
+bool InspectGranuleSwapped(Engine& e, size_t index, size_t first, size_t last, size_t shown,
+                           PageVisitor visit, void* context) {
+    Granule& g = e.table[index];
+    if (!g.has_data.load(std::memory_order_relaxed)) {
+        return true;
+    }
+    const u8 state = Hold(g);
+    Mask want;
+    for (size_t page = first; page < last; ++page) {
+        if (g.data[page]) want.set(page);
+    }
+    if (want.none()) {
+        Settle(g, static_cast<State>(state));
+        return true;
+    }
+    const auto [span_first, span_last] = Span(want);
+    const size_t buffer_index = AcquireReadBuffer(e);
+    u8* const buffer = e.read_buffers[buffer_index];
+    const bool ok = Transfer(e.file, e.read_events[buffer_index], false, buffer + span_first * PAGE_SIZE,
+                             u64{g.slot} * GRANULE_SIZE + span_first * PAGE_SIZE,
+                             (span_last - span_first) * PAGE_SIZE);
+    // The buffer is its own from here: a fault in the granule need not wait for the visitor.
+    Settle(g, static_cast<State>(state));
+    if (ok) {
+        ForEachRun(want, [&](size_t run, size_t count) {
+            visit(context, shown + run - first, count, buffer + run * PAGE_SIZE);
+        });
+    }
+    ReleaseReadBuffer(e, buffer_index);
+    return ok;
+}
+
+// Calls `f(index, first, last, shown)` for the part of the range in each granule of the backing.
+template <typename F>
+void ForEachGranulePart(const Engine& e, const u8* begin, size_t pages, F&& f) {
+    for (size_t shown = 0; shown < pages;) {
+        const size_t offset = static_cast<size_t>(begin - e.base) + shown * PAGE_SIZE;
+        const size_t first = offset % GRANULE_SIZE / PAGE_SIZE;
+        const size_t last = (std::min)(GRANULE_PAGES, first + pages - shown);
+        if (!f(offset / GRANULE_SIZE, first, last, shown)) {
+            return;
+        }
+        shown += last - first;
+    }
+}
+
+} // namespace
+
+void InspectCommitted(const u8* begin, size_t pages, PageVisitor visit, void* context) {
+    size_t index{};
+    Engine* const e = Find(begin, index);
+    if (e == nullptr) {
+        // Nothing here can turn no-access: only what is committed is left to tell.
+        for (size_t page = 0; page < pages;) {
+            MEMORY_BASIC_INFORMATION info{};
+            if (VirtualQuery(begin + page * PAGE_SIZE, &info, sizeof(info)) == 0) {
+                return;
+            }
+            const size_t end = (std::min)(
+                pages, static_cast<size_t>(static_cast<const u8*>(info.BaseAddress) + info.RegionSize - begin) /
+                           PAGE_SIZE);
+            if (info.State == MEM_COMMIT && info.Protect != PAGE_NOACCESS && end > page) {
+                visit(context, page, end - page, begin + page * PAGE_SIZE);
+            }
+            page = (std::max)(end, page + 1);
+        }
+        return;
+    }
+    ForEachGranulePart(*e, begin, pages, [&](size_t granule, size_t first, size_t last, size_t shown) {
+        InspectGranuleCommitted(*e, granule, first, last, shown, visit, context);
+        return true;
+    });
+}
+
+bool InspectSwapped(const u8* begin, size_t pages, PageVisitor visit, void* context) {
+    size_t index{};
+    Engine* const e = Find(begin, index);
+    if (e == nullptr) {
+        return true;
+    }
+    bool ok = true;
+    ForEachGranulePart(*e, begin, pages, [&](size_t granule, size_t first, size_t last, size_t shown) {
+        ok = InspectGranuleSwapped(*e, granule, first, last, shown, visit, context);
+        return ok;
+    });
+    return ok;
+}
+
 StepResult Step(u64 want, Urgency urgency, std::mutex& decommit_mutex) {
     StepResult result;
     Engine* const e = g_engine.load(std::memory_order_acquire);
@@ -1473,6 +1629,12 @@ bool IsResident(const u8*) {
 }
 const u8* ClipUntouched(const u8*, const u8* end) {
     return end;
+}
+void InspectCommitted(const u8* begin, size_t pages, PageVisitor visit, void* context) {
+    visit(context, 0, pages, begin);
+}
+bool InspectSwapped(const u8*, size_t, PageVisitor, void*) {
+    return true;
 }
 StepResult Step(u64, Urgency, std::mutex&) {
     return {};

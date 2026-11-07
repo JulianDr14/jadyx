@@ -388,6 +388,250 @@ void TestCommitOverNoAccess() {
     VirtualFree(page, 0, MEM_RELEASE);
 }
 
+// What a look at a granule must leave as it was.
+struct GranuleLook {
+    u8 state{};
+    u16 probe{};
+    u64 last_access{};
+    u64 shield_until{};
+    u32 slot{};
+    u8 heat{};
+    bool has_data{};
+    size_t on_disk{};
+    u64 committed{};
+    bool operator==(const GranuleLook&) const = default;
+};
+
+GranuleLook Look(size_t granule) {
+    const Granule& g = g_engine.load()->table[granule];
+    return {g.state.load(), g.probe.load(), g.last_access.load(), g.shield_until.load(), g.slot, g.heat,
+            g.has_data.load(), g.data.count(), Committed(g_base + granule * GRANULE_SIZE, GRANULE_SIZE)};
+}
+
+// The counters a look must not move, for the engine as a whole.
+void AssertStatsKept(const Stats& a, const Stats& b) {
+    assert(a.swapped_bytes == b.swapped_bytes && a.probation_bytes == b.probation_bytes);
+    assert(a.read_bytes == b.read_bytes && a.swap_ins == b.swap_ins && a.refaults == b.refaults);
+    assert(a.probation_touches == b.probation_touches && a.probe_hits == b.probe_hits);
+    assert(a.zero_faults == b.zero_faults && a.fault_stall_us == b.fault_stall_us);
+}
+
+// Pages a look was shown and whether each held what it should, as seen from the page's first word.
+struct Shown {
+    size_t first_page{};
+    const std::vector<u32>* version{};
+    std::vector<u32> times;
+    u32 wrong{};
+    static void Visit(void* context, size_t first, size_t count, const u8* data) {
+        auto& self = *static_cast<Shown*>(context);
+        for (size_t i = 0; i < count; ++i) {
+            const size_t page = first + i;
+            ++self.times[page];
+            const auto* const words = reinterpret_cast<const u64*>(data + i * PAGE_SIZE);
+            const u32 version_now = (*self.version)[self.first_page + page];
+            for (size_t w = 0; w < PAGE_SIZE / 8; ++w) {
+                if (words[w] != Word(self.first_page + page, version_now, w)) {
+                    ++self.wrong;
+                    break;
+                }
+            }
+        }
+    }
+};
+
+Shown LookInMemory(size_t first_page, size_t pages, const std::vector<u32>& version) {
+    Shown shown{first_page, &version, std::vector<u32>(pages)};
+    std::scoped_lock lock{g_decommit};
+    InspectCommitted(g_base + first_page * PAGE_SIZE, pages, Shown::Visit, &shown);
+    return shown;
+}
+
+Shown LookOnDisk(size_t first_page, size_t pages, const std::vector<u32>& version) {
+    Shown shown{first_page, &version, std::vector<u32>(pages)};
+    assert(InspectSwapped(g_base + first_page * PAGE_SIZE, pages, Shown::Visit, &shown));
+    return shown;
+}
+
+u64 Total(const Shown& shown) {
+    u64 total = 0;
+    for (const u32 times : shown.times) total += times;
+    return total;
+}
+
+void TestInspect(std::vector<u32>& version) {
+    // Everything back in memory first, and the shields of the earlier tests gone.
+    CheckAll(version);
+    Settle();
+    Pause(900);
+
+    // Resident, with a probe armed: every page is shown, and the probe is still armed.
+    const size_t resident = 90;
+    const size_t resident_first = resident * GRANULE_PAGES;
+    for (size_t page = resident_first; page < resident_first + GRANULE_PAGES; ++page) {
+        Fill(page, version[page] = 21);
+    }
+    Pause(150);
+    Step(0, Urgency::Watch, g_decommit);
+    GranuleLook before = Look(resident);
+    assert(before.state == Resident && before.probe != NO_PROBE);
+    const u8* const probe_page = g_base + resident * GRANULE_SIZE + size_t{before.probe} * PAGE_SIZE;
+    assert(PageProtection(probe_page) == PAGE_NOACCESS);
+    Stats stats = GetStats();
+    Shown shown = LookInMemory(resident_first, GRANULE_PAGES, version);
+    assert(shown.wrong == 0 && Total(shown) == GRANULE_PAGES);
+    assert(Look(resident) == before);
+    assert(PageProtection(probe_page) == PAGE_NOACCESS);
+    AssertStatsKept(stats, GetStats());
+
+    // A range inside the granule shows only its pages, numbered from the range.
+    shown = LookInMemory(resident_first + 100, 50, version);
+    assert(shown.wrong == 0 && Total(shown) == 50);
+    assert(Look(resident) == before);
+
+    // A range across two granules, from the middle of one to the middle of the next.
+    const size_t next = resident + 1;
+    for (size_t page = next * GRANULE_PAGES; page < (next + 1) * GRANULE_PAGES; ++page) {
+        Fill(page, version[page] = 22);
+    }
+    shown = LookInMemory(next * GRANULE_PAGES - 10, 20, version);
+    assert(shown.wrong == 0 && Total(shown) == 20);
+
+    // Nothing committed: nothing shown, no page gets committed.
+    const size_t reserved = 100;
+    Clear(reserved * GRANULE_PAGES, GRANULE_PAGES);
+    for (size_t page = reserved * GRANULE_PAGES; page < (reserved + 1) * GRANULE_PAGES; ++page) {
+        version[page] = 0;
+    }
+    assert(Committed(g_base + reserved * GRANULE_SIZE, GRANULE_SIZE) == 0);
+    shown = LookInMemory(reserved * GRANULE_PAGES, GRANULE_PAGES, version);
+    assert(Total(shown) == 0);
+    assert(Committed(g_base + reserved * GRANULE_SIZE, GRANULE_SIZE) == 0);
+
+    // Partly committed: the committed ones only.
+    Fill(reserved * GRANULE_PAGES + 7, version[reserved * GRANULE_PAGES + 7] = 23);
+    const u64 committed = Committed(g_base + reserved * GRANULE_SIZE, GRANULE_SIZE);
+    shown = LookInMemory(reserved * GRANULE_PAGES, GRANULE_PAGES, version);
+    assert(shown.wrong == 0 && Total(shown) == committed / PAGE_SIZE && shown.times[7] == 1);
+
+    // On probation: shown, and no less on probation afterwards. No touch is counted.
+    Step(BACKING, Urgency::Normal, g_decommit);
+    before = Look(resident);
+    assert(before.state == Probation);
+    stats = GetStats();
+    shown = LookInMemory(resident_first, GRANULE_PAGES, version);
+    assert(shown.wrong == 0 && Total(shown) == GRANULE_PAGES);
+    assert(Look(resident) == before);
+    AssertStatsKept(stats, GetStats());
+    assert(PageProtection(g_base + resident * GRANULE_SIZE) == PAGE_NOACCESS);
+
+    // On disk: shown from there, with nothing committed, nothing read back and its time out kept.
+    Pause(PROBATION_MS + 5);
+    assert(SwapOut(resident));
+    before = Look(resident);
+    assert(before.on_disk == GRANULE_PAGES && before.committed == 0);
+    stats = GetStats();
+    assert(Total(LookInMemory(resident_first, GRANULE_PAGES, version)) == 0);
+    shown = LookOnDisk(resident_first, GRANULE_PAGES, version);
+    assert(shown.wrong == 0 && Total(shown) == GRANULE_PAGES);
+    assert(Look(resident) == before);
+    AssertStatsKept(stats, GetStats());
+    shown = LookOnDisk(resident_first + 300, 12, version);
+    assert(shown.wrong == 0 && Total(shown) == 12);
+
+    // Part on disk, part back: each page shown once, by one look or the other.
+    assert(Check(resident_first + 200, version[resident_first + 200]));
+    Settle();
+    before = Look(resident);
+    assert(before.on_disk != 0 && before.on_disk < GRANULE_PAGES && before.committed != 0);
+    stats = GetStats();
+    const Shown memory = LookInMemory(resident_first, GRANULE_PAGES, version);
+    const Shown disk = LookOnDisk(resident_first, GRANULE_PAGES, version);
+    assert(memory.wrong == 0 && disk.wrong == 0);
+    for (size_t page = 0; page < GRANULE_PAGES; ++page) {
+        assert(memory.times[page] + disk.times[page] == 1);
+    }
+    assert(Look(resident) == before);
+    AssertStatsKept(stats, GetStats());
+    CheckAll(version);
+    Settle();
+    std::printf("inspect: ok\n");
+}
+
+void TestInspectConcurrent(std::vector<u32>& version) {
+    // Looks at the whole backing, with the mutex in slices and without it, while writers fault and
+    // clear and the swapper moves granules. No deadlock, and the guest's data stays right. What a
+    // look shows is not checked here: the writers change it under it.
+    constexpr size_t STRESS_PAGES = 128 * MiB / PAGE_SIZE;
+    constexpr size_t SLICE = 16 * GRANULE_PAGES;
+    constexpr int THREADS = 4;
+    std::atomic<bool> stop{false};
+    std::atomic<u64> mismatches{0};
+    std::atomic<u64> looks{0};
+    std::atomic<u64> pages_shown{0};
+    std::vector<std::thread> threads;
+    const auto count_pages = [](void* context, size_t, size_t count, const u8* data) {
+        static_cast<std::atomic<u64>*>(context)->fetch_add(count, std::memory_order_relaxed);
+        // Read it for real: a page that stopped being readable would crash the gate.
+        volatile u8 sink = data[(count - 1) * PAGE_SIZE];
+        (void)sink;
+    };
+    for (int t = 0; t < THREADS; ++t) {
+        threads.emplace_back([&, t] {
+            RegisterGuestThread();
+            std::mt19937_64 random(0xCAFE + t);
+            while (!stop.load(std::memory_order_relaxed)) {
+                size_t page = random() % STRESS_PAGES;
+                page = page - page % THREADS + static_cast<size_t>(t);
+                if (!Check(page, version[page])) mismatches.fetch_add(1);
+                const u64 action = random() % 64;
+                if (action == 0) {
+                    Clear(page, 1);
+                    version[page] = 0;
+                } else if (action < 16) {
+                    Fill(page, ++version[page]);
+                }
+            }
+            UnregisterGuestThread();
+        });
+    }
+    std::thread swapper([&] {
+        constexpr Urgency CYCLE[]{Urgency::Normal, Urgency::Urgent, Urgency::Watch, Urgency::Emergency};
+        for (u32 step = 0; !stop.load(std::memory_order_relaxed); ++step) {
+            Step(64 * MiB, CYCLE[step % 4], g_decommit);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    });
+    std::vector<std::thread> lookers;
+    for (int l = 0; l < 2; ++l) {
+        lookers.emplace_back([&] {
+            while (!stop.load(std::memory_order_relaxed)) {
+                for (size_t page = 0; page < STRESS_PAGES; page += SLICE) {
+                    {
+                        std::scoped_lock lock{g_decommit};
+                        InspectCommitted(g_base + page * PAGE_SIZE, SLICE, count_pages, &pages_shown);
+                    }
+                    assert(InspectSwapped(g_base + page * PAGE_SIZE, SLICE, count_pages, &pages_shown));
+                }
+                looks.fetch_add(1);
+            }
+        });
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    stop = true;
+    for (auto& thread : threads) thread.join();
+    for (auto& thread : lookers) thread.join();
+    swapper.join();
+    Settle();
+    std::printf("inspect under load: %llu whole looks, %llu pages shown, %llu mismatches\n",
+                static_cast<unsigned long long>(looks.load()),
+                static_cast<unsigned long long>(pages_shown.load()),
+                static_cast<unsigned long long>(mismatches.load()));
+    assert(mismatches.load() == 0);
+    assert(looks.load() > 0);
+    assert(GetStats().write_failures == 0);
+    CheckAll(version);
+}
+
 void TestConcurrent(std::vector<u32>& version) {
     // Four writers share every granule of the first 128 MiB (page % 4). Almost every operation
     // lands in the hot first 16 MiB; one in 4096 goes anywhere, so a cold granule is touched about
@@ -400,6 +644,8 @@ void TestConcurrent(std::vector<u32>& version) {
     std::vector<std::thread> threads;
     for (int t = 0; t < THREADS; ++t) {
         threads.emplace_back([&, t] {
+            // As the game's threads are: a read back pauses them, or they would see its pages zero.
+            RegisterGuestThread();
             std::mt19937_64 random(0x5EED + t);
             u64 done = 0;
             while (!stop.load(std::memory_order_relaxed)) {
@@ -419,6 +665,7 @@ void TestConcurrent(std::vector<u32>& version) {
                 ++done;
             }
             ops.fetch_add(done);
+            UnregisterGuestThread();
         });
     }
     std::atomic<u64> steps{0};
@@ -527,6 +774,8 @@ int main() {
     assert(!Init(g_base, BACKING, PLATFORM, config)); // one backing only
     Pause(50);
     assert(g_named.load() == 1 + config.writers); // the writers and the prefetch thread
+    // Reads guest memory as a guest thread does: a fill on the prefetch thread must pause it.
+    RegisterGuestThread();
 
     std::vector<u32> version(PAGES, 0);
     TestCommitOverNoAccess();
@@ -538,6 +787,8 @@ int main() {
     TestZeroPageInPartial(version);
     TestRefaultShield(version);
     TestProbes(version);
+    TestInspect(version);
+    TestInspectConcurrent(version);
     TestConcurrent(version);
     std::cout << Describe() << '\n';
 
@@ -545,6 +796,7 @@ int main() {
     assert(!Active());
     assert(GetFileAttributesW(config.path.c_str()) == INVALID_FILE_ATTRIBUTES); // deleted on close
     TestBatches(config);
+    UnregisterGuestThread();
     RemoveVectoredExceptionHandler(handler);
     VirtualFree(g_base, 0, MEM_RELEASE);
     std::cout << "permafrost gates passed\n";

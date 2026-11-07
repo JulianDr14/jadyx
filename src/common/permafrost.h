@@ -108,6 +108,21 @@ void ForgetPages(u8* begin, u8* end);
 /// with data on disk ends it. `end` when nothing in it is on disk.
 [[nodiscard]] const u8* ClipUntouched(const u8* begin, const u8* end);
 
+/// Sees `count` contiguous pages, from page `first_page` of the inspected range, at `data`. It may
+/// touch nothing of the backing but `data`: a fault on a granule its caller holds never returns.
+using PageVisitor = void (*)(void* context, size_t first_page, size_t count, const u8* data);
+
+/// Shows the committed pages of [begin, begin + pages * PAGE_SIZE) without moving anything: no fault,
+/// no read back, and no granule looks used. Pages on probation or holding a probe open read-only
+/// meanwhile and close again. Faults in the granule being read wait for it. Called with the decommit
+/// mutex held, which `visit` must not take.
+void InspectCommitted(const u8* begin, size_t pages, PageVisitor visit, void* context);
+
+/// Shows what the swap file holds for the same range, read into a buffer: nothing is committed.
+/// Takes no lock. False when a read failed; the pages seen before it were shown. Each page is shown
+/// once, and a page read back or evicted meanwhile belongs to InspectCommitted.
+[[nodiscard]] bool InspectSwapped(const u8* begin, size_t pages, PageVisitor visit, void* context);
+
 enum class Urgency : u8 {
     Watch,     // not short yet: the scout samples, nothing goes out
     Normal,    // short: idle granules go out
