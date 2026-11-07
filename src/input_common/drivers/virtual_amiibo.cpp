@@ -6,6 +6,7 @@
 
 #include <cstring>
 #include <filesystem>
+#include <random>
 #include <fmt/ranges.h>
 
 #include "common/fs/file.h"
@@ -172,7 +173,7 @@ VirtualAmiibo::State VirtualAmiibo::GetCurrentState() const {
     return state;
 }
 
-VirtualAmiibo::Info VirtualAmiibo::LoadAmiibo(const std::string& filename) {
+VirtualAmiibo::Info VirtualAmiibo::LoadAmiibo(const std::string& filename, bool new_figure_) {
     const Common::FS::IOFile nfc_file{std::filesystem::path{Common::FS::ToU8String(filename)},
                                       Common::FS::FileAccessMode::Read,
                                       Common::FS::FileType::BinaryFile};
@@ -202,10 +203,10 @@ VirtualAmiibo::Info VirtualAmiibo::LoadAmiibo(const std::string& filename) {
     }
 
     file_path = filename;
-    return LoadAmiibo(data);
+    return LoadAmiibo(data, new_figure_);
 }
 
-VirtualAmiibo::Info VirtualAmiibo::LoadAmiibo(std::span<u8> data) {
+VirtualAmiibo::Info VirtualAmiibo::LoadAmiibo(std::span<u8> data, bool new_figure_) {
     if (state != State::WaitingForAmiibo) {
         return Info::WrongDeviceState;
     }
@@ -233,6 +234,17 @@ VirtualAmiibo::Info VirtualAmiibo::LoadAmiibo(std::span<u8> data) {
     status.state = Common::Input::NfcState::NewAmiibo,
     memcpy(nfc_data.data(), data.data(), data.size_bytes());
     memcpy(status.uuid.data(), nfc_data.data(), status.uuid_length);
+    // Drawn here, once, so every read during this placement sees the same tag. NXP's maker byte
+    // stays first, as on a real NTAG215.
+    new_figure = new_figure_ && status.tag_type == 1U << 1;
+    if (new_figure) {
+        std::random_device seed;
+        std::mt19937 rng{seed()};
+        std::uniform_int_distribution<int> byte{0, 255};
+        for (std::size_t i = 1; i < status.uuid_length; ++i) {
+            status.uuid[i] = static_cast<u8>(byte(rng));
+        }
+    }
     SetNfc(identifier, status);
     return Info::Success;
 }
@@ -252,10 +264,15 @@ VirtualAmiibo::Info VirtualAmiibo::CloseAmiibo() {
     }
 
     state = State::WaitingForAmiibo;
+    new_figure = false;
     status.state = Common::Input::NfcState::AmiiboRemoved;
     SetNfc(identifier, status);
     status.tag_type = 0;
     return Info::Success;
+}
+
+bool VirtualAmiibo::IsNewFigure() const {
+    return new_figure && state == State::TagNearby;
 }
 
 std::string VirtualAmiibo::GetLastFilePath() const {
