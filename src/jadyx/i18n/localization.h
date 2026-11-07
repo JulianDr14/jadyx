@@ -794,6 +794,16 @@ enum class Text : std::uint16_t {
     UpdateGuidePortalBody,
     UpdateGuideWarning,
     UpdaterUpdatedTo,
+    AmiiboTitle,
+    AmiiboNotLooking,
+    AmiiboLooking,
+    AmiiboPlaced,
+    AmiiboEmpty,
+    AmiiboWithKey,
+    AmiiboWithoutKey,
+    AmiiboUse,
+    AmiiboRemove,
+    AmiiboRemoveNamed,
     Count
 };
 inline constexpr std::size_t TextCount = static_cast<std::size_t>(Text::Count);

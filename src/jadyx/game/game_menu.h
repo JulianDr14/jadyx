@@ -122,7 +122,11 @@ enum class GameMenuResult : std::uint8_t {
     Screenshot,
     OfflineModeChanged,
     GraphicsChanged,
+    Amiibo,
 };
+
+/// The console's tag reader as the game left it, for the Amiibo row.
+enum class AmiiboReader : std::uint8_t { Off, Looking, Placed };
 
 /// One row as drawn: a label, a line under it, and the value of a setting (changed with
 /// left/right) or of a page.
@@ -144,7 +148,7 @@ public:
         Continue, Cheats, Mods, Style, FaceButtons, Deadzone, FullScreen, PerformanceStats, Library,
         CaptureGraphics, CapturePerformance, Screenshot, ControllerPage, DisplayPage, OfflineMode,
         GraphicsMenu, GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxExactGpuReads, GfxTextureMemory,
-        GfxGpuAccuracy, GfxConsoleMode,
+        GfxGpuAccuracy, GfxConsoleMode, Amiibo,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics };
 
@@ -178,6 +182,18 @@ public:
         const auto cheats = std::find(quick.begin(), quick.end(), Cheats);
         const auto after = cheats != quick.end() ? cheats : std::find(quick.begin(), quick.end(), ControllerPage) - 1;
         quick.insert(after + 1, Mods);
+    }
+
+    /// Adds the Amiibo row, after the game's cheats and mods. `name`: the tag placed, if any.
+    /// While the game isn't reading tags the row only says so: placing one would do nothing.
+    void SetAmiibo(AmiiboReader reader, std::wstring name = {}) {
+        amiibo_reader = reader;
+        amiibo_name = std::move(name);
+        if (std::find(quick.begin(), quick.end(), Amiibo) != quick.end()) return;
+        auto after = std::find(quick.begin(), quick.end(), Mods);
+        if (after == quick.end()) after = std::find(quick.begin(), quick.end(), Cheats);
+        if (after == quick.end()) after = std::find(quick.begin(), quick.end(), ControllerPage) - 1;
+        quick.insert(after + 1, Amiibo);
     }
 
     /// What the last screenshot did, under its row (empty: where they go).
@@ -287,6 +303,12 @@ private:
                     I18n::Plural(Text::ModsActiveOne, Text::ModsActiveOther, mods_on) + L" · " +
                         Tr(Text::MenuModsAtBoot),
                     UiIcon::Mods};
+        case Amiibo:
+            if (amiibo_reader == AmiiboReader::Off) {
+                return {Tr(Text::AmiiboTitle), {}, GameMenuRow::Kind::Info, Tr(Text::AmiiboNotLooking), UiIcon::User};
+            }
+            return {Tr(Text::AmiiboTitle), {}, Page,
+                    amiibo_reader == AmiiboReader::Placed ? amiibo_name : Tr(Text::AmiiboLooking), UiIcon::User};
         case ControllerPage:
             return {Tr(Text::MenuController), {}, Page,
                     Tr(ControllerStyleText(settings.style)) + L" · " +
@@ -366,6 +388,8 @@ private:
             return confirm ? GameMenuResult::Cheats : GameMenuResult::None;
         case Mods:
             return GameMenuResult::None;
+        case Amiibo:
+            return confirm && amiibo_reader != AmiiboReader::Off ? GameMenuResult::Amiibo : GameMenuResult::None;
         case ControllerPage:
         case DisplayPage:
         case GraphicsMenu:
@@ -437,6 +461,8 @@ private:
     std::size_t selected{};
     std::size_t cheats_on{};
     std::size_t mods_on{};
+    AmiiboReader amiibo_reader{};
+    std::wstring amiibo_name;
     std::wstring screenshot_note;
     bool keep_session{true};
 };

@@ -768,5 +768,15 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::MenuGraphicsOwn, L"This game only"},
     {Text::MenuGraphicsFollowsSettings, L"As in Settings"},
     {Text::MenuBackTo, L"Back · {0}"},
+    {Text::AmiiboTitle, L"Amiibo"},
+    {Text::AmiiboNotLooking, L"The game isn't looking for an amiibo right now"},
+    {Text::AmiiboLooking, L"The game is waiting for an amiibo"},
+    {Text::AmiiboPlaced, L"The game is reading this amiibo"},
+    {Text::AmiiboEmpty, L"No amiibo yet. Upload your .bin files with Jadyx Portal, from the library screen."},
+    {Text::AmiiboWithKey, L"The game can save data on the amiibo. It is kept in its file."},
+    {Text::AmiiboWithoutKey, L"Without key_retail.bin the game reads the amiibo but can't save on it. Add the key with Jadyx Portal."},
+    {Text::AmiiboUse, L"Use"},
+    {Text::AmiiboRemove, L"Remove"},
+    {Text::AmiiboRemoveNamed, L"Remove {0}"},
 });
 } // namespace Jadyx::I18n

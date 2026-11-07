@@ -276,6 +276,48 @@ int main() {
     I18n::SetUiLanguage(*I18n::FindUiLanguage(L"en"));
     check(hunt.Rows()[hunt.Selected()].label == L"Capture performance and resume");
     for (const auto& row : normal_rows) check(row.label != L"Capture performance and resume");
+    // The Amiibo row: after the mods, or the cheats, or the first rows; reachable, and it only
+    // opens while the game reads tags.
+    {
+        GameMenu game{GameMenuSettings{}, true};
+        const auto without = game.Rows().size();
+        game.SetAmiibo(AmiiboReader::Off);
+        check(game.Rows().size() == without + 1);
+        game.SetAmiibo(AmiiboReader::Looking);
+        check(game.Rows().size() == without + 1);
+        GameMenu with_mods{GameMenuSettings{}, true};
+        with_mods.SetModsOn(2);
+        with_mods.SetAmiibo(AmiiboReader::Off);
+        while (with_mods.SelectedItem() != GameMenu::Mods) with_mods.Apply(MenuAction::Down);
+        with_mods.Apply(MenuAction::Down);
+        check(with_mods.SelectedItem() == GameMenu::Amiibo);
+        check(with_mods.Rows()[with_mods.Selected()].kind == GameMenuRow::Kind::Info);
+        check(with_mods.Rows()[with_mods.Selected()].icon == UiIcon::User);
+        check(!with_mods.Rows()[with_mods.Selected()].detail.empty());
+        check(with_mods.Apply(MenuAction::Confirm) == GameMenuResult::None);
+        check(with_mods.Apply(MenuAction::Right) == GameMenuResult::None);
+
+        with_mods.SetAmiibo(AmiiboReader::Looking);
+        check(with_mods.Rows()[with_mods.Selected()].kind == GameMenuRow::Kind::Page);
+        check(with_mods.Apply(MenuAction::Left) == GameMenuResult::None);
+        check(with_mods.Apply(MenuAction::Right) == GameMenuResult::None);
+        check(with_mods.Apply(MenuAction::Confirm) == GameMenuResult::Amiibo);
+
+        with_mods.SetAmiibo(AmiiboReader::Placed, L"Figure");
+        check(with_mods.Rows()[with_mods.Selected()].detail == L"Figure");
+        check(with_mods.Apply(MenuAction::Confirm) == GameMenuResult::Amiibo);
+
+        GameMenu only_cheats{GameMenuSettings{}, true};
+        only_cheats.SetAmiibo(AmiiboReader::Off);
+        while (only_cheats.SelectedItem() != GameMenu::Cheats) only_cheats.Apply(MenuAction::Down);
+        only_cheats.Apply(MenuAction::Down);
+        check(only_cheats.SelectedItem() == GameMenu::Amiibo);
+        only_cheats.Apply(MenuAction::Down);
+        check(only_cheats.SelectedItem() == GameMenu::ControllerPage);
+
+        // A row nobody asked for stays out of the menu without a game.
+        for (const auto& row : GameMenu{GameMenuSettings{}}.Rows()) check(row.icon != UiIcon::User);
+    }
     std::puts("game menu: controller combo, pages, navigation, settings, cheats, screenshot, "
-              "opt-in capture PASS");
+              "opt-in capture, amiibo PASS");
 }

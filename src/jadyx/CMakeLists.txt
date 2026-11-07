@@ -148,6 +148,7 @@ add_executable(jadyx WIN32
     library/game_options_page.h
     amiibo/amiibo_store.cpp
     amiibo/amiibo_store.h
+    game/amiibo_page.h
     cheats/cheat_catalog.h
     cheats/cheat_db.cpp
     cheats/cheat_db.h

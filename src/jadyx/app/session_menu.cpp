@@ -19,6 +19,7 @@
 #include "core/file_sys/control_metadata.h"
 #include "core/loader/loader.h"
 #include "core/memory/cheat_engine.h"
+#include "input_common/drivers/virtual_amiibo.h"
 #include "video_core/gpu.h"
 #include "video_core/performance_overlay.h"
 #include "video_core/renderer_base.h"
@@ -28,6 +29,7 @@
 #include "jadyx/app/boot_settings.h"
 #include "jadyx/app/boot_state.h"
 #include "jadyx/app/session_menu.h"
+#include "jadyx/amiibo/amiibo_store.h"
 #include "jadyx/cheats/cheats_view.h"
 #include "jadyx/game/game_screenshot.h"
 #include "jadyx/game/uwp_software_keyboard.h"
@@ -70,6 +72,9 @@ void SessionMenu::DrawMenu() {
         const GameMenuScene scene{game_title, game_details, session_text};
         image = cheats ? menu_surface->DrawCheats({*cheats, cheats_page, game_title, cheats_notice, true},
                                                   scene, screen)
+                : amiibo_screen ? menu_surface->DrawAmiibo({amiibo_screen->rows, amiibo_screen->page,
+                                                            amiibo_screen->placed, amiibo_screen->has_key},
+                                                           scene, screen)
                 : menu ? menu_surface->DrawMenu(*menu, scene, screen)
                        : menu_surface->DrawKeyboard(game_keyboard.View(), game_keyboard.CanCancel(), screen);
     } catch (const winrt::hresult_error& e) {
@@ -160,6 +165,14 @@ void SessionMenu::Open() {
         menu->SetCheatsOn(CheatsOn(Cheats::LoadCatalog(
             Cheats::TitleLoadDirectory(program_id), cheat_game.build_id)));
         menu->SetModsOn(Mods::ActiveMods(Mods::DefaultModPaths(), program_id));
+        using AmiiboState = InputCommon::VirtualAmiibo::State;
+        const auto reader = input.Amiibo().GetCurrentState();
+        menu->SetAmiibo(reader == AmiiboState::TagNearby          ? AmiiboReader::Placed
+                        : reader == AmiiboState::WaitingForAmiibo ? AmiiboReader::Looking
+                                                                  : AmiiboReader::Off,
+                        reader == AmiiboState::TagNearby
+                            ? Utf8ToUtf16(AmiiboDisplayName(input.Amiibo().GetLastFilePath()))
+                            : std::wstring{});
     }
     WriteDiag("menu: opened, guest paused | " + MemoryReport());
     if (menu_surface) DrawMenu();
@@ -265,6 +278,39 @@ void SessionMenu::OpenCheats() {
     cheats_notice.clear();
 }
 
+void SessionMenu::OpenAmiibo() {
+    const AmiiboStore store;
+    AmiiboScreen screen;
+    screen.has_key = store.HasKey();
+    screen.placed = input.Amiibo().GetCurrentState() == InputCommon::VirtualAmiibo::State::TagNearby;
+    if (screen.placed) {
+        screen.rows.push_back(I18n::Format(I18n::Text::AmiiboRemoveNamed,
+                                           {Utf8ToUtf16(AmiiboDisplayName(input.Amiibo().GetLastFilePath()))}));
+        screen.paths.emplace_back();
+    } else {
+        for (const AmiiboFile& file : store.List()) {
+            screen.rows.push_back(Utf8ToUtf16(AmiiboDisplayName(file.name)));
+            screen.paths.push_back(store.PathOf(file.name));
+        }
+    }
+    WriteDiag("menu: amiibo page, " + std::to_string(screen.rows.size()) + " row(s), key " +
+              (screen.has_key ? "yes" : "no"));
+    amiibo_screen = std::move(screen);
+}
+
+bool SessionMenu::HandleAmiiboAction(MenuAction action) {
+    const AmiiboEffect effect = HandleAmiiboInput(amiibo_screen->page, action, amiibo_screen->rows.size(),
+                                                  GameMenuSurface::AmiiboRows);
+    if (effect == AmiiboEffect::Choose) {
+        amiibo_choice = amiibo_screen->paths[amiibo_screen->page.selected];
+        Close(GameMenuResult::Resume);
+        return true;
+    }
+    if (effect == AmiiboEffect::Back) amiibo_screen.reset();
+    if (effect != AmiiboEffect::None && menu_surface) DrawMenu();
+    return false;
+}
+
 void SessionMenu::SaveMenuScreenshot() {
     try {
         const auto folder = std::filesystem::path{std::wstring{
@@ -306,6 +352,7 @@ void SessionMenu::Close(GameMenuResult result) {
     }
     menu.reset();
     cheats.reset();
+    amiibo_screen.reset();
     game_frame = {};
     if (game_keyboard.IsOpen() && menu_surface) {
         // The game's keyboard was under the menu: it comes back.
@@ -329,6 +376,12 @@ void SessionMenu::Close(GameMenuResult result) {
     }
     void(system.Run());
     WriteDiag("menu: closed, guest running");
+    // With the guest running, as a tag signals the game's events.
+    if (const auto choice = std::exchange(amiibo_choice, std::nullopt)) {
+        const auto info = choice->empty() ? input.Amiibo().CloseAmiibo() : input.Amiibo().LoadAmiibo(*choice);
+        WriteDiag(std::string{"menu: amiibo "} + (choice->empty() ? "removed" : "placed") + ", result " +
+                  std::to_string(static_cast<int>(info)));
+    }
 }
 
 void SessionMenu::ApplyChoice(GameMenuResult result) {
@@ -394,6 +447,10 @@ SessionMenu::Outcome SessionMenu::Update() {
             HandleCheatsAction(action);
             continue;
         }
+        if (amiibo_screen && action != MenuAction::Toggle) {
+            if (HandleAmiiboAction(action)) break;
+            continue;
+        }
         const GameMenuResult result = menu->Apply(action);
         WriteDiag("menu: action " + std::to_string(static_cast<int>(action)) + ", row " +
                   std::to_string(menu->Selected()));
@@ -405,6 +462,7 @@ SessionMenu::Outcome SessionMenu::Update() {
             return Outcome::BackToLibrary;
         }
         if (result == GameMenuResult::Cheats) OpenCheats();
+        if (result == GameMenuResult::Amiibo) OpenAmiibo();
         if (result == GameMenuResult::Screenshot) SaveMenuScreenshot();
         if (result == GameMenuResult::Resume || result == GameMenuResult::CaptureGraphics ||
             result == GameMenuResult::CapturePerformance) {
