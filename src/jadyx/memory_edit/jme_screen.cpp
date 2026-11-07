@@ -205,6 +205,7 @@ void Screen::AfterSearch() {
     if (end == SearchEnd::Done || end == SearchEnd::Partial) {
         const auto typed = ParseNumber(page.text);
         show_signed = typed && typed->negative;
+        page.searched = page.text;
         page.selected = 0;
         page.first = 0;
         // A new list: what was marked may not be in it.

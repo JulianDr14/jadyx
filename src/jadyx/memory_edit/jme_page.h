@@ -52,6 +52,8 @@ struct Page {
     std::size_t selected{};
     std::size_t first{};
     std::vector<Marked> marked;
+    /// The number the list came from: refining starts on it, as the next one is often close.
+    std::string searched;
     /// Menu put the page away to show the game, still paused.
     bool hidden{};
 };
@@ -173,7 +175,7 @@ inline PageEffect HandleList(Page& page, MenuAction action, std::size_t rows) {
     case MenuAction::Confirm:
         return rows != 0 ? PageEffect::Pick : PageEffect::None;
     case MenuAction::Refresh:
-        EnterNumber(page, EntryPurpose::Refine);
+        EnterNumber(page, EntryPurpose::Refine, page.searched);
         return PageEffect::Redraw;
     case MenuAction::Alternate:
         // The list stays until a new search really starts: B comes back to it.

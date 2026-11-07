@@ -921,6 +921,12 @@ void TestPage() {
     assert(press(one, Up, 1, true) == PageEffect::None && press(one, Down, 1, true) == PageEffect::None);
     assert(press(list, Refresh, ROWS, true) == PageEffect::Redraw);
     assert(list.mode == PageMode::Entry && list.purpose == EntryPurpose::Refine && list.text.empty());
+    // Refining starts on the number the list came from.
+    list.mode = PageMode::List;
+    list.searched = "5";
+    list.text = "123";
+    assert(press(list, Refresh, ROWS, true) == PageEffect::Redraw);
+    assert(list.mode == PageMode::Entry && list.purpose == EntryPurpose::Refine && list.text == "5");
     list.mode = PageMode::List;
     assert(press(list, Alternate, ROWS, true) == PageEffect::Redraw);
     assert(list.mode == PageMode::Entry && list.purpose == EntryPurpose::Search);
