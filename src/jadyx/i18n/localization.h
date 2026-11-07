@@ -429,6 +429,9 @@ enum class Text : std::uint16_t {
     ContentSourcesStep,
     ContentEnable,
     ContentDisable,
+    ContentCopyToConsole,
+    ContentKeepOnUsb,
+    ContentNoUsbHint,
 
     // Mods
     ModsTitle,

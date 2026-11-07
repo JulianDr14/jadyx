@@ -63,7 +63,7 @@ private:
     FileSys::VirtualFilesystem vfs;
     ContentSnapshot view;
     std::atomic<std::uint64_t> done{}, total{};
-    bool copy_internal{}, authorize{}, changed{}, relocating{};
+    bool copy_internal{true}, authorize{}, changed{}, relocating{};
     std::future<ContentSnapshot> pending;
     std::jthread worker;
 };

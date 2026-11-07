@@ -84,8 +84,9 @@ void DrawContentPanel(UiPainter& paint, const ContentSession& session, std::wstr
     case Screen::Manager: header = Tr(T::ContentManagerHint); break;
     case Screen::Storage: header = Tr(T::ContentChooseStorage); break;
     case Screen::Sources: header = Tr(T::ContentSourcesStep); break;
-    case Screen::Browser: header = std::wstring{Tr(T::ContentChooseFiles)} + L"  ·  " + std::wstring{storage}; break;
-    case Screen::Preview: case Screen::ConfirmImport:
+    case Screen::Browser: header = Tr(T::ContentChooseFiles); break;
+    case Screen::Preview: header = Tr(T::ContentReview); break;
+    case Screen::ConfirmImport:
         header = std::wstring{Tr(T::ContentReview)} + L"  ·  " + std::wstring{storage}; break;
     case Screen::Result:
         header = I18n::Format(T::ContentResult, {std::to_wstring(view.added), std::to_wstring(view.already_present)}); break;
@@ -136,8 +137,8 @@ void DrawContentPanel(UiPainter& paint, const ContentSession& session, std::wstr
             rows.push_back({Label(view.rows[i]), Detail(view.rows[i], view.row_errors[i]), view.rows[i].enabled});
         break;
     case Screen::Storage:
-        rows.push_back({std::wstring{Tr(T::ContentUsb)}, std::wstring{Tr(T::ContentUsbHint)}});
-        rows.push_back({std::wstring{Tr(T::ContentInternal)}, std::wstring{Tr(T::ContentInternalHint)}});
+        rows.push_back({std::wstring{Tr(T::ContentCopyToConsole)}, std::wstring{Tr(T::ContentInternalHint)}});
+        rows.push_back({std::wstring{Tr(T::ContentKeepOnUsb)}, std::wstring{Tr(T::ContentUsbHint)}});
         break;
     case Screen::Result:
         for (const auto& item : view.completed) rows.push_back({Label(item), Detail(item, Error::None), item.enabled});
@@ -167,7 +168,7 @@ void DrawContentPanel(UiPainter& paint, const ContentSession& session, std::wstr
             } else detail += L"  ·  " + std::to_wstring(item.revision.bytes / (1024*1024)) + L" MiB";
             rows.push_back({Label(item.revision), std::move(detail), view.checked[i]});
         }
-        rows.push_back({I18n::Format(T::ContentContinueItems, {std::to_wstring(std::count(view.checked.begin(), view.checked.end(), true))}), std::wstring{storage}});
+        rows.push_back({I18n::Format(T::ContentContinueItems, {std::to_wstring(std::count(view.checked.begin(), view.checked.end(), true))}), {}});
         break;
     case Screen::Actions: {
         const auto item = std::find_if(view.rows.begin(), view.rows.end(), [&](const auto& r) { return r.id == view.action_id; });
@@ -215,6 +216,16 @@ void DrawContentPanel(UiPainter& paint, const ContentSession& session, std::wstr
                           VisibleRows, rows.size());
     if (rows.empty()) paint.Text(Tr(T::ContentEmpty), 80, Rows + 16, 22, Palette::TextHint, row_width - 48);
     if (view.error != Error::None) paint.Text(Tr(ErrorText(view.error)), 56, Status, 17, Palette::Warning, 1168, 32);
+    // Without a USB the in-app flow has no source at all; the portal is the way in.
+    else if (view.screen == Screen::Sources) paint.Text(Tr(T::ContentNoUsbHint), 56, Status, 17, Palette::Text, 1168, 32);
+    else if (view.screen == Screen::Storage) {
+        std::uint64_t required{};
+        for (size_t i = 0; i < view.preview.size() && i < view.checked.size(); ++i)
+            if (view.checked[i] && PlanImport(view.catalog.revisions, view.preview[i].revision) == ImportAction::Add)
+                required += view.preview[i].revision.bytes;
+        paint.Text(std::to_wstring(required / (1024*1024)) + L" MiB  ·  " +
+            I18n::Format(T::ContentFreeSpace, {std::to_wstring(view.available / (1024*1024))}), 56, Status, 17, Palette::TextHint, 1168, 32);
+    }
     float next = 56;
     next += paint.Prompt(keys.confirm.letters, keys.confirm.color, Tr(view.screen == Screen::Result ? T::ContentReturnManager : T::Select), next, Footer);
     if (view.screen == Screen::Browser || view.screen == Screen::Preview)
