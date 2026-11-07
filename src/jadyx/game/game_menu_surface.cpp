@@ -621,6 +621,36 @@ struct GameMenuSurface::Impl : UiPainter {
         }
     }
 
+    /// The card above the amiibo list. While the game waits: the "New figure" switch (X), with what
+    /// it does in plain words. With a tag placed: which one, and whether it went in as a new figure.
+    void DrawAmiiboCard(const AmiiboMenuView& view, float x, float top, float width) {
+        const bool placed = view.placed;
+        const bool lit = placed ? view.placed_new : view.page.new_figure;
+        Round(x, top, width, AmiiboCardHeight, 16, Palette::Row);
+        if (lit) Outline(x + 1, top + 1, width - 2, AmiiboCardHeight - 2, 15, Palette::Accent, 0.9f, 2);
+        Round(x + 16, top + 16, 44, 44, 12, lit ? Palette::Accent : Palette::Graphite);
+        Icon(placed && !lit ? UiIcon::User : UiIcon::Dice, x + 26, top + 26,
+             lit ? Palette::OnAccent : Palette::TextSecondary, 24);
+        const float text_x = x + 76;
+        const float text_width = width - 76 - 16;
+        if (placed) {
+            Type(view.placed_name, TypeRole::BodyLarge, text_x, top + 14, text_width, Palette::Text);
+            Type(I18n::Tr(lit ? Text::AmiiboPlacedNew : Text::AmiiboPlacedOwn), TypeRole::Label, text_x, top + 44,
+                 text_width, lit ? Palette::Text : Palette::TextSecondary, 1, TextAlign::Leading, 3);
+            return;
+        }
+        // The switch, with the button that flips it beside it.
+        const float switch_x = x + width - 52 - 16;
+        Switch(switch_x, top + 16, lit, false);
+        const auto [key, tint] = Key(L"X", ButtonColor::X);
+        const float badge = BadgeWidth(key);
+        Badge(key, switch_x - 10 - badge / 2, top + 30, tint);
+        Type(I18n::Tr(Text::AmiiboNewFigure), TypeRole::Body, text_x, top + 18, switch_x - 20 - badge - text_x,
+             Palette::Text);
+        Type(I18n::Tr(lit ? Text::AmiiboNewFigureOn : Text::AmiiboNewFigureOff), TypeRole::Label, text_x, top + 46,
+             text_width, lit ? Palette::Text : Palette::TextSecondary, 1, TextAlign::Leading, 3);
+    }
+
     void DrawAmiibo(const AmiiboMenuView& view, const GameMenuScene& scene) {
         using S = Screen;
         DrawScene(scene);
@@ -632,23 +662,36 @@ struct GameMenuSurface::Impl : UiPainter {
             Icon(UiIcon::User, S::InnerX + S::InnerWidth / 2 - 16, 250, Palette::TextSecondary);
             Type(I18n::Tr(Text::AmiiboEmpty), TypeRole::Body, S::InnerX + 10, 300, S::InnerWidth - 20,
                  Palette::TextHint, 1, TextAlign::Center, 5);
+        } else {
+            DrawAmiiboCard(view, x, S::ListTop, width);
         }
+        const bool dice = !view.placed && view.page.new_figure;
+        const float list_top = S::ListTop + AmiiboCardHeight + 14;
         const std::size_t end = std::min(view.rows.size(), view.page.first + AmiiboRows);
         for (std::size_t i = view.page.first; i < end; ++i) {
-            const float top = S::ListTop + static_cast<float>(i - view.page.first) * S::CheatStride;
+            const float top = list_top + static_cast<float>(i - view.page.first) * S::CheatStride;
             const bool active = i == view.page.selected;
             Round(x, top, width, S::CheatHeight, 14, active ? Palette::Text : Palette::Row);
-            Type(view.rows[i], TypeRole::Body, x + 18, top + 15, width - 36, active ? Palette::OnAccent : Palette::Text);
+            // With "New figure" on, every figure carries the die: what A does to it is visible.
+            Type(view.rows[i], TypeRole::Body, x + 18, top + 15, width - 36 - (dice ? 32 : 0),
+                 active ? Palette::OnAccent : Palette::Text);
+            if (dice)
+                Icon(UiIcon::Dice, x + width - 18 - 22, top + 15, active ? Palette::OnAccent : Palette::TextSecondary,
+                     22);
         }
-        ScrollIndicator(S::InnerX + S::InnerWidth - 4, S::ListTop,
+        ScrollIndicator(S::InnerX + S::InnerWidth - 4, list_top,
                         AmiiboRows * S::CheatStride - (S::CheatStride - S::CheatHeight), view.page.first, AmiiboRows,
                         view.rows.size());
         Type(I18n::Tr(view.has_key ? Text::AmiiboWithKey : Text::AmiiboWithoutKey), TypeRole::Label, x, S::Note, width,
              view.has_key ? Palette::TextHint : Palette::Warning, 1, TextAlign::Leading, 2);
         if (view.rows.empty()) {
             Prompts({{L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
+        } else if (view.placed) {
+            Prompts({{L"A", ButtonColor::A, I18n::Tr(Text::AmiiboRemove)},
+                     {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
         } else {
-            Prompts({{L"A", ButtonColor::A, I18n::Tr(view.placed ? Text::AmiiboRemove : Text::AmiiboUse)},
+            Prompts({{L"A", ButtonColor::A, I18n::Tr(dice ? Text::AmiiboUseNew : Text::AmiiboUse)},
+                     {L"X", ButtonColor::X, I18n::Tr(Text::AmiiboNewFigure)},
                      {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
         }
     }

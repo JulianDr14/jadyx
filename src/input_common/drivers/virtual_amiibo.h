@@ -56,12 +56,16 @@ public:
 
     State GetCurrentState() const;
 
-    Info LoadAmiibo(const std::string& amiibo_file);
-    Info LoadAmiibo(std::span<u8> data);
+    // `new_figure`: the tag reports a random UID, drawn once for this placement, so a game that
+    // accepts each figure once a day takes it as one it has not seen. Its data stays the file's.
+    Info LoadAmiibo(const std::string& amiibo_file, bool new_figure = false);
+    Info LoadAmiibo(std::span<u8> data, bool new_figure = false);
     Info ReloadAmiibo();
     Info CloseAmiibo();
 
     std::string GetLastFilePath() const;
+    // Whether the tag placed now reports a random UID.
+    bool IsNewFigure() const;
 
 private:
     static constexpr std::size_t AmiiboSize = 0x21C;
@@ -70,6 +74,7 @@ private:
     static constexpr std::size_t MifareSize = 0x400;
 
     std::string file_path{};
+    bool new_figure{};
     State state{State::Disabled};
     std::vector<u8> nfc_data;
     Common::Input::NfcStatus status;

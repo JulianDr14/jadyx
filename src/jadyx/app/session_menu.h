@@ -100,10 +100,19 @@ private:
         AmiiboPage page;
         bool placed{};
         bool has_key{};
+        std::wstring placed_name;
+        bool placed_new{};
     };
     std::optional<AmiiboScreen> amiibo_screen;
-    /// What the player chose, applied with the guest running: a file's path, or empty to remove.
-    std::optional<std::string> amiibo_choice;
+    /// What the player chose, applied with the guest running: a file's path, or empty to remove;
+    /// `new_figure` places it with a random UID.
+    struct AmiiboChoice {
+        std::string path;
+        bool new_figure{};
+    };
+    std::optional<AmiiboChoice> amiibo_choice;
+    /// The file placed last, so the page opens on it again after the game asks for another tap.
+    std::string amiibo_last;
     /// Memory Edit, from its first use on: its search outlives the menu, as the player goes back to
     /// the game between numbers. What runs in it stops before the guest does.
     std::optional<MemoryEdit::Screen> memory_edit;
