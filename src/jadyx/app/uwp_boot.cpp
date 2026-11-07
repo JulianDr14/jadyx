@@ -23,6 +23,7 @@
 
 #include <winrt/Windows.ApplicationModel.Core.h>
 #include <winrt/Windows.ApplicationModel.h>
+#include <winrt/Windows.Devices.Input.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Graphics.Display.h>
@@ -46,6 +47,7 @@
 #include "jadyx/i18n/localization.h"
 #include "jadyx/input/keyboard_bindings.h"
 #include "jadyx/input/uwp_controllers.h"
+#include "jadyx/input/uwp_input.h"
 #include "jadyx/library/game_library.h"
 #include "jadyx/library/uwp_library.h"
 #include "jadyx/pulse/pulse_sessions.h"
@@ -522,6 +524,20 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
             if (c >= 0x20 && c != 0x7F) Jadyx::PushTextEntryKey({.character = c});
             args.Handled(true);
         });
+        // Raw relative motion (not the cursor, which stops at the screen's edge): the input thread
+        // turns it into the right stick when the player chose the mouse for it.
+        Windows::Devices::Input::MouseDevice::MouseMoved_revoker mouse_moved;
+        try {
+            mouse_moved = Windows::Devices::Input::MouseDevice::GetForCurrentView().MouseMoved(
+                winrt::auto_revoke, [&library_active](auto&&, Windows::Devices::Input::MouseEventArgs const& args) {
+                    if (library_active) return;
+                    const auto delta = args.MouseDelta();
+                    Jadyx::AddMouseMotion(delta.X, delta.Y);
+                });
+            WriteDiag("input: mouse motion events on");
+        } catch (const winrt::hresult_error& e) {
+            WriteDiag("input: no mouse motion events: " + winrt::to_string(e.message()));
+        }
 
         const Jadyx::BootSurface surface = ReadWindowSurface(m_window);
 

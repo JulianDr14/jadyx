@@ -7,6 +7,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cwchar>
+#include <span>
+#include <type_traits>
 #include <utility>
 #include <mutex>
 #include <winrt/Windows.System.h>
@@ -28,6 +31,7 @@
 #include "jadyx/input/uwp_controllers.h"
 #include "jadyx/input/controller_catalog.h"
 #include "jadyx/input/menu_input_capture.h"
+#include "jadyx/input/mouse_stick.h"
 #include "jadyx/input/player_slots.h"
 #include "jadyx/settings/uwp_system_settings.h"
 #include "jadyx/game/game_menu.h"
@@ -124,6 +128,9 @@ void ApplyDeadzone(double x, double y, float deadzone, float& out_x, float& out_
 }
 
 std::atomic<u32> pressed_keys{0};
+/// Mouse motion since the input thread last took it, in pixels.
+std::atomic<int> mouse_dx{0};
+std::atomic<int> mouse_dy{0};
 std::atomic<bool> quit_requested{false};
 std::atomic<bool> game_menu_requested{false};
 std::atomic<bool> game_menu_open_requested{false};
@@ -229,6 +236,27 @@ bool IsConsole() {
     return console;
 }
 
+/// Settings > Controller's right stick, saved under `prefix`; invalid values stay default.
+RightStickSettings LoadRightStick(const winrt::Windows::Foundation::Collections::IPropertySet& values,
+                                  std::wstring_view prefix) {
+    RightStickSettings stick;
+    const auto key = [&](std::wstring_view field) { return winrt::hstring{std::wstring{prefix} + std::wstring{field}}; };
+    try {
+        if (values.HasKey(key(L"invert_x"))) stick.invert_x = winrt::unbox_value<bool>(values.Lookup(key(L"invert_x")));
+        if (values.HasKey(key(L"invert_y"))) stick.invert_y = winrt::unbox_value<bool>(values.Lookup(key(L"invert_y")));
+        if (values.HasKey(key(L"mouse"))) stick.mouse = winrt::unbox_value<bool>(values.Lookup(key(L"mouse")));
+        if (values.HasKey(key(L"sensitivity"))) {
+            const auto value = winrt::unbox_value<int32_t>(values.Lookup(key(L"sensitivity")));
+            if (IsSensitivityStep(StickSensitivitySteps, value)) stick.stick_sensitivity = static_cast<u8>(value);
+        }
+        if (values.HasKey(key(L"mouse_sensitivity"))) {
+            const auto value = winrt::unbox_value<int32_t>(values.Lookup(key(L"mouse_sensitivity")));
+            if (IsSensitivityStep(MouseSensitivitySteps, value)) stick.mouse_sensitivity = static_cast<u8>(value);
+        }
+    } catch (...) {}
+    return stick;
+}
+
 } // namespace
 
 ControllerOptions LoadControllerOptions() {
@@ -248,6 +276,7 @@ ControllerOptions LoadControllerOptions() {
             const float zone = static_cast<float>(winrt::unbox_value<double>(values.Lookup(L"controller_deadzone")));
             if (std::isfinite(zone) && zone >= 0.01f && zone <= 0.5f) options.deadzone = zone;
         }
+        options.right_stick = LoadRightStick(values, L"controller_rstick_");
     } catch (...) { /* Missing or invalid settings retain safe defaults. */ }
     // "Keyboard only" with no keyboard left the console unplayable: back to automatic.
     try {
@@ -265,6 +294,67 @@ bool SaveControllerOptions(const ControllerOptions& options) {
         values.Insert(L"controller_device", winrt::box_value(winrt::hstring{options.controller_id}));
         values.Insert(L"controller_deadzone", winrt::box_value(static_cast<double>(options.deadzone)));
         values.Insert(L"controller_style", winrt::box_value(static_cast<int32_t>(options.style)));
+        const auto& stick = options.right_stick;
+        values.Insert(L"controller_rstick_invert_x", winrt::box_value(stick.invert_x));
+        values.Insert(L"controller_rstick_invert_y", winrt::box_value(stick.invert_y));
+        values.Insert(L"controller_rstick_sensitivity", winrt::box_value(static_cast<int32_t>(stick.stick_sensitivity)));
+        values.Insert(L"controller_rstick_mouse", winrt::box_value(stick.mouse));
+        values.Insert(L"controller_rstick_mouse_sensitivity", winrt::box_value(static_cast<int32_t>(stick.mouse_sensitivity)));
+        return true;
+    } catch (...) { return false; }
+}
+
+namespace {
+std::wstring GameRightStickKey(std::wstring_view field, u64 program_id) {
+    wchar_t id[17];
+    swprintf(id, std::size(id), L"%016llx", static_cast<unsigned long long>(program_id));
+    return L"game_rstick_" + std::wstring{field} + L"_" + id;
+}
+} // namespace
+
+GameRightStick LoadGameRightStick(u64 program_id) {
+    GameRightStick game;
+    if (program_id == 0) return game;
+    try {
+        const auto values = winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        const auto flag = [&](std::wstring_view field, std::optional<bool>& out) {
+            const winrt::hstring key{GameRightStickKey(field, program_id)};
+            if (values.HasKey(key)) out = winrt::unbox_value<bool>(values.Lookup(key));
+        };
+        const auto percent = [&](std::wstring_view field, std::span<const u8> steps, std::optional<u8>& out) {
+            const winrt::hstring key{GameRightStickKey(field, program_id)};
+            if (!values.HasKey(key)) return;
+            const auto value = winrt::unbox_value<int32_t>(values.Lookup(key));
+            if (IsSensitivityStep(steps, value)) out = static_cast<u8>(value);
+        };
+        flag(L"invert_x", game.invert_x);
+        flag(L"invert_y", game.invert_y);
+        percent(L"sensitivity", StickSensitivitySteps, game.stick_sensitivity);
+        flag(L"mouse", game.mouse);
+        percent(L"mouse_sensitivity", MouseSensitivitySteps, game.mouse_sensitivity);
+    } catch (...) { /* A missing or invalid value follows Settings > Controller. */ }
+    return game;
+}
+
+bool SaveGameRightStick(u64 program_id, const GameRightStick& game) {
+    if (program_id == 0) return false;
+    try {
+        const auto values = winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        const auto save = [&](std::wstring_view field, const auto& value) {
+            const winrt::hstring key{GameRightStickKey(field, program_id)};
+            if (!value) {
+                if (values.HasKey(key)) values.Remove(key);
+            } else if constexpr (std::is_same_v<std::decay_t<decltype(*value)>, bool>) {
+                values.Insert(key, winrt::box_value(*value));
+            } else {
+                values.Insert(key, winrt::box_value(static_cast<int32_t>(*value)));
+            }
+        };
+        save(L"invert_x", game.invert_x);
+        save(L"invert_y", game.invert_y);
+        save(L"sensitivity", game.stick_sensitivity);
+        save(L"mouse", game.mouse);
+        save(L"mouse_sensitivity", game.mouse_sensitivity);
         return true;
     } catch (...) { return false; }
 }
@@ -417,6 +507,11 @@ void PushTextEntryKey(TextEntryKey key) {
 std::vector<TextEntryKey> TakeTextEntryKeys() {
     std::scoped_lock lock{text_entry_mutex};
     return std::exchange(text_entry_keys, {});
+}
+
+void AddMouseMotion(int dx, int dy) {
+    mouse_dx.fetch_add(dx, std::memory_order_relaxed);
+    mouse_dy.fetch_add(dy, std::memory_order_relaxed);
 }
 
 std::optional<InputStep> ParseInputStep(std::string_view spec) {
@@ -623,6 +718,16 @@ void GamepadInput::SetOptions(const ControllerOptions& next) {
     }
 }
 
+void GamepadInput::SetGameRightStick(const GameRightStick& game) {
+    std::scoped_lock lock{options_mutex};
+    game_right_stick = game;
+}
+
+GameRightStick GamepadInput::GameRightStickSettings() {
+    std::scoped_lock lock{options_mutex};
+    return game_right_stick;
+}
+
 void GamepadInput::Start(Core::HID::HIDCore& hid_) {
     hid = &hid_;
     // A focus lost while the game was still loading does not pause it once it starts.
@@ -664,6 +769,8 @@ void GamepadInput::Run(std::stop_token stop) {
     PadShortcutFilter custom_shortcut;
     u32 menu_held = 0; // Navigation bits held last poll, for press edges.
     MenuInputCapture menu_capture;
+    MouseStick mouse;
+    auto last_poll = std::chrono::steady_clock::now();
     ControllerCatalog<ControllerDevice> controllers;
     std::vector<bool> announced(script.size());
     PlayerSlots slots;
@@ -716,6 +823,7 @@ void GamepadInput::Run(std::stop_token stop) {
         }
         // The gamepad list is cheap to query but changes rarely: look again twice a second.
         const ControllerOptions current_options = Options();
+        const RightStickSettings right_stick = ResolveRightStick(current_options.right_stick, GameRightStickSettings());
         if (controller_api_ready) {
             try {
                 const bool catalog_changed = controllers.Update(std::chrono::steady_clock::now(),
@@ -793,6 +901,26 @@ void GamepadInput::Run(std::stop_token stop) {
             static_cast<u8>((SwapControllerFaceButtons(*pad, current_options.swap_face_buttons) ? 1 : 0) |
                            (pad->pro ? 2 : 0)) : 0);
         ApplyKeyboard(state);
+        // The right stick: sensitivity on the pad's or the keyboard's, the mouse over both while
+        // it moves, then the inversion over whichever it was.
+        const auto now = std::chrono::steady_clock::now();
+        const float poll_ms = std::chrono::duration<float, std::milli>(now - last_poll).count();
+        last_poll = now;
+        ScaleStick(state.right_x, state.right_y, right_stick.stick_sensitivity);
+        const int dx = mouse_dx.exchange(0, std::memory_order_relaxed);
+        const int dy = mouse_dy.exchange(0, std::memory_order_relaxed);
+        if (right_stick.mouse && !menu_open.load(std::memory_order_relaxed) && !TextEntryActive()) {
+            if (dx != 0 || dy != 0)
+                mouse.Move(static_cast<float>(dx), static_cast<float>(dy), right_stick.mouse_sensitivity);
+            if (!mouse.Idle()) {
+                const auto position = mouse.Update(poll_ms);
+                state.right_x = position.x;
+                state.right_y = position.y;
+            }
+        } else {
+            mouse.Reset();
+        }
+        InvertStick(state.right_x, state.right_y, right_stick.invert_x, right_stick.invert_y);
         for (std::size_t index = 0; index < script.size(); ++index) {
             const InputStep& step = script[index];
             if (elapsed < step.at_ms || elapsed >= step.at_ms + step.duration_ms) {
@@ -873,6 +1001,9 @@ void GamepadInput::Run(std::stop_token stop) {
             try {
                 extra_state = ReadGamepad(*extra.pad, current_options);
             } catch (...) {} // Gone: the next catalog check frees the player.
+            // The same right stick settings as player 1, like the deadzone (the mouse is player 1's).
+            ScaleStick(extra_state.right_x, extra_state.right_y, right_stick.stick_sensitivity);
+            InvertStick(extra_state.right_x, extra_state.right_y, right_stick.invert_x, right_stick.invert_y);
             // A pad the game disconnected (the controller applet, single-player modes) joins
             // again with a press, like a paired pad on a Switch.
             const bool joined = (extra_state.buttons & ~extra.held) != 0;
