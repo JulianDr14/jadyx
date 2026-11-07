@@ -15,9 +15,10 @@
 #include "jadyx/ui/ui_text.h"
 
 namespace Jadyx {
-// In-game menu: View + Menu held for a second (Escape on a keyboard) pauses the game and opens it.
-// The guide button belongs to the system, so the shortcut has to come from game buttons: Switch -
-// and +, which almost no game holds together.
+// In-game menu (Jadyx Hub to the player): View + Menu held for a second (Escape on a keyboard) pauses
+// the game and opens it. The guide button belongs to the system, so the shortcut has to come from game
+// buttons: Switch - and +, which almost no game holds together. A controller's mapping can replace
+// the combination (PadMenuShortcut); this one stays the default.
 
 /// Holds back a lone + or - for a moment, so pressing View and Menu together never reaches the
 /// game as a pause press; both held for HoldMs fire Toggle. A lone press is delivered after

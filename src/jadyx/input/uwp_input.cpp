@@ -14,6 +14,7 @@
 #include "input_common/drivers/keyboard.h"
 #include "input_common/main.h"
 
+#include <winrt/Windows.Devices.Input.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Gaming.Input.h>
 #include <winrt/Windows.Storage.h>
@@ -149,8 +150,7 @@ void ApplyKeyboard(PadState& state) {
     stick(24, state.right_x, state.right_y);
 }
 
-PadState ReadGamepad(const ControllerDevice& pad, const ControllerOptions& options) {
-    const auto full = ReadController(pad);
+PadState PadStateFrom(const ControllerReading& full, const ControllerDevice& pad, const ControllerOptions& options) {
     const auto& reading = full.gamepad;
     const auto buttons = MapFaceButtons(reading.Buttons,
         SwapControllerFaceButtons(pad, options.swap_face_buttons));
@@ -172,6 +172,10 @@ PadState ReadGamepad(const ControllerDevice& pad, const ControllerOptions& optio
     ApplyDeadzone(reading.RightThumbstickX, reading.RightThumbstickY, options.deadzone, state.right_x,
                   state.right_y);
     return state;
+}
+
+PadState ReadGamepad(const ControllerDevice& pad, const ControllerOptions& options) {
+    return PadStateFrom(ReadController(pad), pad, options);
 }
 
 /// Diagnostic: player 1's press/release of L, A and ZR, to line up guest GPU activity with them.
@@ -216,6 +220,15 @@ struct ExtraPlayer {
     MenuInputCapture capture;
 };
 
+bool IsConsole() {
+    static const bool console = [] {
+        try {
+            return winrt::Windows::System::Profile::AnalyticsInfo::VersionInfo().DeviceFamily() == L"Windows.Xbox";
+        } catch (const winrt::hresult_error&) { return false; }
+    }();
+    return console;
+}
+
 } // namespace
 
 ControllerOptions LoadControllerOptions() {
@@ -236,9 +249,10 @@ ControllerOptions LoadControllerOptions() {
             if (std::isfinite(zone) && zone >= 0.01f && zone <= 0.5f) options.deadzone = zone;
         }
     } catch (...) { /* Missing or invalid settings retain safe defaults. */ }
-    // Xbox always uses its default controller, even if settings originated on PC.
+    // "Keyboard only" with no keyboard left the console unplayable: back to automatic.
     try {
-        if (winrt::Windows::System::Profile::AnalyticsInfo::VersionInfo().DeviceFamily() == L"Windows.Xbox")
+        if (options.controller_id == KeyboardControllerId && IsConsole() &&
+            winrt::Windows::Devices::Input::KeyboardCapabilities{}.KeyboardPresent() == 0)
             options.controller_id.clear();
     } catch (const winrt::hresult_error&) {}
     return options;
@@ -647,6 +661,7 @@ void GamepadInput::Run(std::stop_token stop) {
     ConsoleControllerStyle style = ConsoleControllerStyle::Pro;
     u32 style_polls = 0;
     MenuComboFilter combo;
+    PadShortcutFilter custom_shortcut;
     u32 menu_held = 0; // Navigation bits held last poll, for press edges.
     MenuInputCapture menu_capture;
     ControllerCatalog<ControllerDevice> controllers;
@@ -682,6 +697,7 @@ void GamepadInput::Run(std::stop_token stop) {
         LOG_INFO(Input, "UWP input: player {} left", player + 1);
         extra = {};
     };
+    if (controller_api_ready) LogRawControllers();
     while (!stop.stop_requested()) {
         // Games declare the controllers they accept after boot: check again twice a second, and
         // at once after the menu picked another style.
@@ -706,12 +722,15 @@ void GamepadInput::Run(std::stop_token stop) {
                                    EnumerateControllers, SameControllerList);
                 const auto& devices = controllers.Devices();
                 const auto& chosen_id = current_options.controller_id;
-                const auto selected = controllers.Select(chosen_id.empty() ?
+                // The console has no other way to pick one: a chosen pad that left is automatic.
+                const bool automatic = chosen_id.empty() ||
+                    (IsConsole() && chosen_id != KeyboardControllerId && !controllers.Select(chosen_id));
+                const auto selected = controllers.Select(automatic ?
                     PreferredPlayerOne(player1_id, slots, [&](const std::wstring& id) {
                         return controllers.Select(id) != nullptr;
                     }) : chosen_id);
                 if (selected) player1_id = selected->id;
-                else if (!chosen_id.empty())
+                else if (!automatic)
                     player1_id = chosen_id == KeyboardControllerId ? std::wstring{} : chosen_id;
                 const bool selection_changed = bool(pad) != bool(selected) ||
                     (pad && selected && pad->id != selected->id);
@@ -721,7 +740,7 @@ void GamepadInput::Run(std::stop_token stop) {
                     if (pad) {
                         LOG_INFO(Input, "UWP input: player 1 is {} ({}, {} layout, {} connected)",
                                  winrt::to_string(pad->name),
-                                 pad->pad ? "Windows gamepad" : "Pro Controller HID",
+                                 pad->pad ? "Windows gamepad" : pad->raw ? "generic" : "Pro Controller HID",
                                  pad->nintendo ? "Nintendo" : "Xbox", devices.size());
                     } else {
                         LOG_INFO(Input, "UWP input: controller disconnected ({} connected)",
@@ -749,10 +768,21 @@ void GamepadInput::Run(std::stop_token stop) {
                 pad.reset();
             }
         }
+        const auto elapsed = static_cast<u32>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                  std::chrono::steady_clock::now() - start)
+                                                  .count());
         PadState state{};
+        // Set when this pad replaced View + Menu: whether its own shortcut fired.
+        std::optional<bool> custom_fired;
         if (pad) {
             try {
-                state = ReadGamepad(*pad, current_options);
+                if (pad->menu_shortcut) {
+                    PadSnapshot snapshot = ReadPadSnapshot(*pad);
+                    custom_fired = ApplyMenuShortcut(*pad->menu_shortcut, snapshot, custom_shortcut, elapsed);
+                    state = PadStateFrom(ReadingFromSnapshot(*pad, snapshot), *pad, current_options);
+                } else {
+                    state = ReadGamepad(*pad, current_options);
+                }
                 LogWatchedButtons(state);
             } catch (...) {
                 controllers.ReadFailed();
@@ -763,9 +793,6 @@ void GamepadInput::Run(std::stop_token stop) {
             static_cast<u8>((SwapControllerFaceButtons(*pad, current_options.swap_face_buttons) ? 1 : 0) |
                            (pad->pro ? 2 : 0)) : 0);
         ApplyKeyboard(state);
-        const auto elapsed = static_cast<u32>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                  std::chrono::steady_clock::now() - start)
-                                                  .count());
         for (std::size_t index = 0; index < script.size(); ++index) {
             const InputStep& step = script[index];
             if (elapsed < step.at_ms || elapsed >= step.at_ms + step.duration_ms) {
@@ -786,13 +813,13 @@ void GamepadInput::Run(std::stop_token stop) {
                 state.right_y = step.right_y;
             }
         }
-        // Menu shortcut: View + Menu (Switch - and +) held, or Escape.
+        // Menu shortcut: View + Menu (Switch - and +) held or the pad's own one, or Escape.
         bool plus = (state.buttons & Bit(VirtualButton::ButtonPlus)) != 0;
         bool minus = (state.buttons & Bit(VirtualButton::ButtonMinus)) != 0;
         // One snapshot for both navigation and guest filtering: closing the menu on the
         // frontend thread must not expose this poll's confirmation to the guest.
         const bool in_menu = menu_open.load(std::memory_order_relaxed);
-        const bool toggle = combo.Filter(plus, minus, elapsed) |
+        const bool toggle = (custom_fired ? *custom_fired : combo.Filter(plus, minus, elapsed)) |
                             game_menu_requested.exchange(false, std::memory_order_relaxed) |
                             (game_menu_open_requested.exchange(false, std::memory_order_relaxed) && !in_menu);
         state.buttons &= ~(Bit(VirtualButton::ButtonPlus) | Bit(VirtualButton::ButtonMinus));

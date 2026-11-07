@@ -183,8 +183,8 @@ winrt::fire_and_forget DiscoverPro(bool* busy) {
     *busy = false; // coroutine resumes on the initiating UI apartment
 }
 }
-ControllerDevice::operator bool() const { return pad || pro_ready; }
-ControllerReading ReadController(const ControllerDevice& device) {
+ControllerDevice::operator bool() const { return pad || raw || pro_ready; }
+ControllerReading ReadStandardController(const ControllerDevice& device) {
     if (device.pad) {
         ControllerReading reading{device.pad.GetCurrentReading(), false, false};
         // Windows reports a Nintendo pad's face buttons by position, Xbox style; report them by
