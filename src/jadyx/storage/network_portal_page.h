@@ -184,6 +184,8 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <span><b id="cat-games-title">Games</b><small id="cat-games-sub">NSP · XCI · NRO · base game</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
 <button class="cat" id="cat-library" aria-selected="false" hidden><svg class="ico" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
 <span><b id="cat-library-title">Library</b><small id="cat-library-sub">Updates · DLC · saves · delete</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
+<button class="cat" id="cat-amiibo" aria-selected="false" hidden><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>
+<span><b>Amiibo</b><small id="cat-amiibo-sub"></small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
 <div class="store"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13 7.5 5h9L19 13M7 16.5h.01"/></svg><span id="space"></span></div></nav>
 <section id="upload" class="card" hidden><div class="head"><h2 id="uploadtitle">Import games</h2><p id="uploadintro">Base games only. Choose where your console keeps them.</p></div>
 <nav class="seg" id="where" role="tablist" hidden><button id="where-internal" role="tab" aria-selected="true">Internal storage</button><button id="where-developer" role="tab" aria-selected="false">Dev storage (D:)</button></nav>
@@ -212,7 +214,16 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <div id="save-help" hidden><pre id="save-tree"></pre><p id="save-pc"></p><p id="save-rules"></p></div></div>
 <div class="actions"><button id="content-send" class="primary">Upload and install</button><button id="content-pause">Pause</button><button class="danger" id="content-discard">Discard partial file</button></div>
 <div class="panel"><div class="panel-top"><p id="content-job" role="status" aria-live="polite"></p><span class="pct" id="content-percent"></span></div>
-<progress id="content-progress" max="1" value="0"></progress><div class="stats"><p id="content-rate"></p><p id="content-eta"></p></div></div></div></section></div>
+<progress id="content-progress" max="1" value="0"></progress><div class="stats"><p id="content-rate"></p><p id="content-eta"></p></div></div></div></section>
+<section id="amiibo" class="card" hidden><div class="head"><h2>Amiibo</h2><p id="amiibo-intro"></p></div><p id="amiibo-note" role="status" aria-live="polite"></p>
+<label class="drop"><input id="amiibo-files" type="file" accept=".bin" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+<strong id="amiibo-pick"></strong><span id="amiibo-drop"></span><span class="picked" id="amiibo-picked"></span></label>
+<div class="actions"><button id="amiibo-send" class="primary"></button></div><ul class="items" id="amiibo-results"></ul>
+<h3 id="amiibo-list-title"></h3><ul class="items" id="amiibo-items"></ul>
+<article class="sub"><h3 id="amiibo-key-title"></h3><p id="amiibo-key-status"></p><p id="amiibo-key-help"></p>
+<label class="drop"><input id="amiibo-key-file" type="file" accept=".bin"><svg class="ico" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/></svg>
+<strong id="amiibo-key-pick"></strong><span class="picked" id="amiibo-key-picked"></span></label>
+<div class="actions"><button id="amiibo-key-send" class="primary"></button><button class="danger" id="amiibo-key-remove"></button></div></article></section></div>
 <div class="view" id="view-system" hidden><nav class="cats"><p class="kicker" id="system-kicker">System files</p>
 <button class="cat" id="cat-keys" aria-selected="true"><svg class="ico" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/></svg>
 <span><b id="cat-keys-title">Keys</b><small>prod.keys · title.keys · ZIP</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
@@ -320,6 +331,7 @@ async function api(path,options={}){
  return response;
 }
 function render(){
+ if(pane==='amiibo'&&!(session&&state.amiibo))pane='games';
  renderLogs();
  renderUpdate();
  const s=state.transfer||{};
@@ -344,6 +356,7 @@ function render(){
  if(s.error)$('message').textContent=words[s.error]||words.interrupted;
  renderSystem();
  renderLibrary();
+ renderAmiibo();
 }
 async function refresh(){const response=await api('/api/v1/status');state=await response.json();render();followLibrary();return state;}
 $('pair').addEventListener('submit',async event=>{
@@ -648,7 +661,7 @@ function libraryBusy(){
 // The first press arms a deletion and the second, within six seconds, sends it.
 function arm(key){
  if(armed===key){armed='';clearTimeout(armedTimer);return true;}
- armed=key;clearTimeout(armedTimer);armedTimer=setTimeout(()=>{armed='';renderItems();render();},6000);renderItems();render();return false;
+ armed=key;clearTimeout(armedTimer);armedTimer=setTimeout(()=>{armed='';renderItems();renderAmiiboItems();render();},6000);renderItems();renderAmiiboItems();render();return false;
 }
 async function remove(path,key){
  if(!arm(key))return;
@@ -710,8 +723,105 @@ function followLibrary(){
  if(phase!==lastContent){lastContent=phase;if(s.phase==='complete'&&s.tag===kind+':'+gameId)loadContents();}
  if(pane==='library'&&Date.now()-libraryAt>10000)loadLibrary();
 }
-function choosePane(next){pane=next;$('message').textContent='';if(next==='library')loadLibrary();render();}
+function choosePane(next){pane=next;$('message').textContent='';if(next==='library')loadLibrary();if(next==='amiibo')loadAmiibo();render();}
 $('cat-games').addEventListener('click',()=>choosePane('games'));$('cat-library').addEventListener('click',()=>choosePane('library'));
+$('cat-amiibo').addEventListener('click',()=>choosePane('amiibo'));
+// Amiibo: small files, one request each, so one bad file never stops the others. The key can be
+// sent or removed from here, never read back.
+const amiiboWords=pt?{
+ 'cat-amiibo-sub':'Arquivos .bin · key_retail.bin','amiibo-intro':'Envie seus arquivos .bin. Quando um jogo pedir um amiibo, abra o menu do jogo e escolha um.','amiibo-pick':'Selecionar arquivos .bin','amiibo-drop':'ou arraste-os para cá','amiibo-send':'Enviar','amiibo-list-title':'No console',
+ 'amiibo-key-title':'Chave (opcional)','amiibo-key-help':'Sem key_retail.bin os jogos leem o amiibo, mas não podem salvar dados nele. Ela fica no console e não pode ser baixada por aqui.','amiibo-key-pick':'Selecionar key_retail.bin',
+ key_on:'Chave instalada: os jogos podem salvar dados nos seus amiibos.',key_off:'Sem chave: os amiibos são somente leitura.',key_send:'Enviar chave',key_replace:'Substituir chave',key_saved:'Chave instalada.',key_removed:'Chave removida.',
+ none:'Ainda não há amiibos.',uploaded:'Enviado',replace:'Substituir',choose:'Selecione um ou mais arquivos .bin.',choose_key:'Selecione o arquivo key_retail.bin.',
+ name:'Nome de arquivo inválido.',not_amiibo:'Não é um amiibo: deve ser um .bin de 532, 540 ou 572 bytes.',exists:'Já está no console. Substituí-lo apaga o que os jogos salvaram nele.',not_key:'Não é um key_retail.bin válido.',disk:'Não foi possível gravar no console.',missing:'Esse arquivo já não está no console.',unavailable:'Os amiibos não estão disponíveis no momento.'
+}:es?{
+ 'cat-amiibo-sub':'Archivos .bin · key_retail.bin','amiibo-intro':'Sube tus archivos .bin. Cuando un juego pida un amiibo, abre el menú del juego y elige uno.','amiibo-pick':'Seleccionar archivos .bin','amiibo-drop':'o arrástralos aquí','amiibo-send':'Subir','amiibo-list-title':'En la consola',
+ 'amiibo-key-title':'Clave (opcional)','amiibo-key-help':'Sin key_retail.bin los juegos leen el amiibo, pero no pueden guardar datos en él. Se queda en la consola y no se puede descargar desde aquí.','amiibo-key-pick':'Seleccionar key_retail.bin',
+ key_on:'Clave instalada: los juegos pueden guardar datos en tus amiibos.',key_off:'Sin clave: los amiibos son de solo lectura.',key_send:'Subir clave',key_replace:'Reemplazar clave',key_saved:'Clave instalada.',key_removed:'Clave eliminada.',
+ none:'Aún no hay amiibos.',uploaded:'Subido',replace:'Reemplazar',choose:'Selecciona uno o varios archivos .bin.',choose_key:'Selecciona el archivo key_retail.bin.',
+ name:'Nombre de archivo no válido.',not_amiibo:'No es un amiibo: debe ser un .bin de 532, 540 o 572 bytes.',exists:'Ya está en la consola. Reemplazarlo borra lo que los juegos guardaron en él.',not_key:'No es un key_retail.bin válido.',disk:'No se pudo escribir en la consola.',missing:'Ese archivo ya no está en la consola.',unavailable:'Los amiibos no están disponibles en este momento.'
+}:{
+ 'cat-amiibo-sub':'.bin files · key_retail.bin','amiibo-intro':'Upload your .bin files. When a game asks for an amiibo, open the in-game menu and choose one.','amiibo-pick':'Choose .bin files','amiibo-drop':'or drop them here','amiibo-send':'Upload','amiibo-list-title':'On the console',
+ 'amiibo-key-title':'Key (optional)','amiibo-key-help':'Without key_retail.bin games read the amiibo but can\'t save data on it. It stays on the console and can\'t be downloaded from here.','amiibo-key-pick':'Choose key_retail.bin',
+ key_on:'Key installed: games can save data on your amiibo.',key_off:'No key: amiibo are read-only.',key_send:'Upload key',key_replace:'Replace key',key_saved:'Key installed.',key_removed:'Key removed.',
+ none:'No amiibo yet.',uploaded:'Uploaded',replace:'Replace',choose:'Choose one or more .bin files.',choose_key:'Choose the key_retail.bin file.',
+ name:'Invalid file name.',not_amiibo:'Not an amiibo: it must be a 532, 540 or 572 byte .bin file.',exists:'Already on the console. Replacing it erases what games saved on it.',not_key:'Not a valid key_retail.bin.',disk:'Could not write on the console.',missing:'That file is no longer on the console.',unavailable:'Amiibo are not available right now.'
+};
+for(const id of ['cat-amiibo-sub','amiibo-intro','amiibo-pick','amiibo-drop','amiibo-send','amiibo-list-title','amiibo-key-title','amiibo-key-help','amiibo-key-pick'])$(id).textContent=amiiboWords[id];
+let amiiboFiles=null,amiiboKey=false,amiiboResults=[],amiiboSending=false;
+const amiiboReason=error=>amiiboWords[error.message]||words[error.message]||words.interrupted;
+const amiiboBody=file=>file.arrayBuffer().then(body=>({method:'POST',headers:{'Content-Type':'application/octet-stream'},body}));
+async function loadAmiibo(){
+ try{const data=await(await api('/api/v1/amiibo')).json();amiiboFiles=data.files;amiiboKey=data.key;renderAmiiboItems();render();}
+ catch(error){$('amiibo-note').textContent=amiiboReason(error);}
+}
+function renderAmiiboItems(){
+ if(!amiiboFiles)return;
+ $('amiibo-items').replaceChildren(...(amiiboFiles.length?amiiboFiles.map(file=>{
+  const row=node('li'),text=node('span'),key='amiibo:'+file.name,button=node('button','danger',armed===key?libraryWords.confirm:libraryWords.remove);
+  text.append(node('b','',file.name),node('small','',file.bytes+' B'));
+  button.addEventListener('click',()=>removeAmiibo(file.name));row.append(text,button);return row;
+ }):[node('li','empty',amiiboWords.none)]));
+}
+function renderAmiiboResults(){
+ $('amiibo-results').replaceChildren(...amiiboResults.map(result=>{
+  const row=node('li'),text=node('span');
+  text.append(node('b','',result.file.name),node('small','',result.error?amiiboReason(Error(result.error)):amiiboWords.uploaded));row.append(text);
+  if(result.error==='exists'){const button=node('button','danger',amiiboWords.replace);button.disabled=amiiboSending;button.addEventListener('click',()=>replaceAmiibo(result));row.append(button);}
+  return row;
+ }));
+}
+function renderAmiibo(){
+ const on=!!session&&!!state.amiibo;
+ $('cat-amiibo').hidden=!on;$('cat-amiibo').ariaSelected=String(pane==='amiibo');
+ $('amiibo').hidden=!on||pane!=='amiibo';if($('amiibo').hidden)return;
+ $('amiibo-send').disabled=amiiboSending;$('amiibo-key-send').disabled=amiiboSending;
+ $('amiibo-key-status').textContent=amiiboWords[amiiboKey?'key_on':'key_off'];
+ $('amiibo-key-send').textContent=amiiboWords[amiiboKey?'key_replace':'key_send'];
+ $('amiibo-key-remove').hidden=!amiiboKey;$('amiibo-key-remove').disabled=amiiboSending;
+ $('amiibo-key-remove').textContent=armed==='amiibo-key'?libraryWords.confirm:libraryWords.remove;
+}
+// Refused here when it can't fit: the console would refuse it anyway, with a less useful word.
+async function sendAmiibo(file,replace){
+ if(file.size>4096)return 'not_amiibo';
+ try{await api('/api/v1/amiibo/files?name='+encodeURIComponent(file.name)+(replace?'&replace=1':''),await amiiboBody(file));return '';}
+ catch(error){return error.message;}
+}
+async function replaceAmiibo(result){
+ if(amiiboSending)return;amiiboSending=true;renderAmiiboResults();render();
+ result.error=await sendAmiibo(result.file,true);
+ amiiboSending=false;renderAmiiboResults();await loadAmiibo();
+}
+async function removeAmiibo(name){
+ if(!arm('amiibo:'+name))return;
+ try{await api('/api/v1/amiibo/files?name='+encodeURIComponent(name),{method:'DELETE'});$('amiibo-note').textContent='';}
+ catch(error){$('amiibo-note').textContent=amiiboReason(error);}
+ await loadAmiibo();
+}
+$('amiibo-files').addEventListener('change',()=>picked('amiibo-picked','amiibo-files'));
+$('amiibo-key-file').addEventListener('change',()=>picked('amiibo-key-picked','amiibo-key-file'));
+$('amiibo-send').addEventListener('click',async()=>{
+ const list=Array.from($('amiibo-files').files||[]);$('amiibo-note').textContent=list.length?'':amiiboWords.choose;
+ if(!list.length||amiiboSending)return;
+ amiiboSending=true;amiiboResults=[];render();
+ for(const file of list){const result={file,error:await sendAmiibo(file,false)};amiiboResults.push(result);renderAmiiboResults();}
+ amiiboSending=false;renderAmiiboResults();$('amiibo-files').value='';$('amiibo-picked').textContent='';await loadAmiibo();
+});
+$('amiibo-key-send').addEventListener('click',async()=>{
+ const file=($('amiibo-key-file').files||[])[0];$('amiibo-note').textContent=file?'':amiiboWords.choose_key;
+ if(!file||amiiboSending)return;
+ if(file.size>4096){$('amiibo-note').textContent=amiiboWords.not_key;return;}
+ amiiboSending=true;render();
+ try{await api('/api/v1/amiibo/key',await amiiboBody(file));$('amiibo-note').textContent=amiiboWords.key_saved;$('amiibo-key-file').value='';$('amiibo-key-picked').textContent='';}
+ catch(error){$('amiibo-note').textContent=amiiboReason(error);}
+ amiiboSending=false;await loadAmiibo();
+});
+$('amiibo-key-remove').addEventListener('click',async()=>{
+ if(!arm('amiibo-key'))return;
+ try{await api('/api/v1/amiibo/key',{method:'DELETE'});$('amiibo-note').textContent=amiiboWords.key_removed;}
+ catch(error){$('amiibo-note').textContent=amiiboReason(error);}
+ await loadAmiibo();
+});
 $('game-back').addEventListener('click',()=>{gameId='';armed='';render();});
 $('kind-update').addEventListener('click',()=>chooseKind('update'));$('kind-dlc').addEventListener('click',()=>chooseKind('dlc'));
 $('kind-save').addEventListener('click',()=>chooseKind('save'));

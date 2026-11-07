@@ -40,6 +40,8 @@ for(const size of [0,3,55,56,63,64,65,128,131072]){
  console.log('PASS: browser library, update upload with kind/game metadata, two-press content and game deletion (mock HTTP)');
  for(const language of ['es','en','pt-BR'])await saveScenario(language);
  console.log('PASS: browser save tab: structure guide, file checks before upload, console refusals shown with their detail and discarded, save metadata, zip download (mock HTTP)');
+ for(const language of ['es','en','pt-BR'])await amiiboScenario(language);
+ console.log('PASS: browser amiibo: per-file results, explicit replace, two-press deletion, key upload and removal (mock HTTP)');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 
 async function browserScenario(options){
@@ -314,6 +316,84 @@ async function saveScenario(language){
  assert.equal(links.length,1);assert.equal(links[0].download,'0100000000010000-save.zip');assert.equal(element('save-error').hidden,true);
  exported={status:404,error:'no_save'};await click(element('save-download'));await delay();
  e=error();assert.ok(e.shown&&e.text&&!e.help);assert.equal(links.length,1);
+}
+async function amiiboScenario(language){
+ const elements=new Map(),requests=[];
+ const make=tag=>{const n={...dom(),tag,value:'',textContent:'',files:[],hidden:false,disabled:false,style:{},dataset:{},children:[],listeners:{},
+  addEventListener:(event,callback)=>{n.listeners[event]=callback;},
+  append:(...c)=>n.children.push(...c),replaceChildren:(...c)=>{n.children=c;}};return n;};
+ const element=id=>{if(!elements.has(id))elements.set(id,make('#'+id));return elements.get(id);};
+ const click=n=>n.listeners.click();
+ const stored=new Map([['old.bin',new Uint8Array(540)]]);let key=false,body;
+ const response=(status,data={})=>({status,ok:status>=200&&status<300,json:async()=>JSON.parse(JSON.stringify(data)),headers:{get:()=>null}});
+ const fetch=async(url,request={})=>{
+  if(url==='/api/v1/pair')return response(200,{session:'test-session'});
+  assert.equal(request.headers.Authorization,'Bearer test-session');requests.push((request.method||'GET')+' '+url);
+  if(url==='/api/v1/status')return response(200,{uploads:true,transfer:{},amiibo:true});
+  if(url==='/api/v1/amiibo')return response(200,{files:[...stored].map(([name,bytes])=>({name,bytes:bytes.byteLength})),key});
+  const [path,query]=url.split('?'),params=new URLSearchParams(query);
+  if(path==='/api/v1/amiibo/files'){
+   const name=params.get('name');
+   if(request.method==='DELETE'){stored.delete(name);return response(204);}
+   assert.equal(request.headers['Content-Type'],'application/octet-stream');body=request.body;
+   if(request.body.byteLength!==540)return response(400,{error:'not_amiibo'});
+   if(stored.has(name)&&params.get('replace')!=='1')return response(409,{error:'exists'});
+   stored.set(name,request.body);return response(201);
+  }
+  if(path==='/api/v1/amiibo/key'){
+   if(request.method==='DELETE'){key=false;return response(204);}
+   if(request.body.byteLength!==160)return response(400,{error:'not_key'});
+   key=true;return response(204);
+  }
+  throw Error('unexpected amiibo request '+url);
+ };
+ const fileOf=(name,size)=>({name,size,arrayBuffer:async()=>new ArrayBuffer(size)});
+ const context=vm.createContext({document:{getElementById:element,createElement:make,documentElement:{},body:{classList:{toggle(){},add(){},remove(){}},append(){}}},navigator:{language},location:{search:''},URLSearchParams,TextEncoder,Uint8Array,Uint32Array,DataView,
+  performance,fetch,URL:{createObjectURL:()=>'blob:x',revokeObjectURL(){}},btoa:v=>Buffer.from(v,'binary').toString('base64'),
+  setTimeout:(cb,ms)=>{if(!(ms>=6000))queueMicrotask(cb);return 1;},clearTimeout:()=>{},setInterval:()=>1,clearInterval:()=>{}});
+ vm.runInContext(script,context);
+ assert.ok(/id="cat-amiibo"[^>]* hidden/.test(header)&&/id="amiibo"[^>]* hidden/.test(header),'not offered before pairing');
+ assert.notEqual(element('amiibo-intro').textContent,'');
+ element('code').value='1234';await element('pair').listeners.submit({preventDefault(){}});
+ assert.equal(element('cat-amiibo').hidden,false);assert.equal(element('amiibo').hidden,true);
+ click(element('cat-amiibo'));await delay();
+ assert.equal(element('amiibo').hidden,false);assert.equal(element('upload').hidden,true);assert.equal(element('library').hidden,true);
+ assert.equal(element('amiibo-items').children.length,1);assert.equal(element('amiibo-key-remove').hidden,true);
+ const noKey=element('amiibo-key-status').textContent;assert.notEqual(noKey,'');
+ // Nothing chosen: says so and sends nothing.
+ const before=requests.length;await click(element('amiibo-send'));await click(element('amiibo-key-send'));
+ assert.equal(requests.length,before);assert.notEqual(element('amiibo-note').textContent,'');
+ // One bad file does not stop the others; a file too big never leaves the browser.
+ element('amiibo-files').files=[fileOf('uno á.bin',540),fileOf('malo.bin',16),fileOf('grande.bin',5000),fileOf('old.bin',540),fileOf('dos.bin',540)];
+ await click(element('amiibo-send'));await delay();
+ assert.ok(stored.has('uno á.bin')&&stored.has('dos.bin'),'good files stored');assert.ok(!stored.has('malo.bin'));
+ assert.ok(requests.includes('POST /api/v1/amiibo/files?name=uno%20%C3%A1.bin'),'name encoded');
+ assert.ok(!requests.some(r=>r.includes('grande')),'oversized file not sent');
+ const results=element('amiibo-results').children;assert.equal(results.length,5);
+ const detail=i=>results[i].children[0].children[1].textContent;
+ assert.equal(detail(0),detail(4));assert.notEqual(detail(1),detail(0));assert.equal(detail(1),detail(2));
+ // Only the taken name offers to replace, and it takes that press.
+ assert.equal(results.filter(r=>r.children.length>1).length,1);assert.ok(!requests.some(r=>r.includes('replace=1')));
+ assert.equal(element('amiibo-items').children.length,3);assert.equal(element('amiibo-picked').textContent,'');
+ await click(results[3].children[1]);await delay();
+ assert.ok(requests.includes('POST /api/v1/amiibo/files?name=old.bin&replace=1'));
+ assert.equal(element('amiibo-results').children[3].children.length,1,'replaced: nothing left to confirm');
+ // One press arms a deletion; only the second sends it.
+ const row=name=>element('amiibo-items').children.find(r=>r.children[0].children[0].textContent===name);
+ await click(row('dos.bin').children[1]);assert.ok(stored.has('dos.bin'),'first press never deletes');
+ await click(row('dos.bin').children[1]);await delay();
+ assert.ok(!stored.has('dos.bin'));assert.equal(row('dos.bin'),undefined);
+ // The key: refused with its reason, then installed, then removed in two presses.
+ element('amiibo-key-file').files=[fileOf('key_retail.bin',10)];await click(element('amiibo-key-send'));await delay();
+ assert.equal(key,false);const refused=element('amiibo-note').textContent;assert.notEqual(refused,'');
+ element('amiibo-key-file').files=[fileOf('key_retail.bin',160)];await click(element('amiibo-key-send'));await delay();
+ assert.equal(key,true);assert.notEqual(element('amiibo-note').textContent,refused);
+ assert.notEqual(element('amiibo-key-status').textContent,noKey);assert.equal(element('amiibo-key-remove').hidden,false);
+ await click(element('amiibo-key-remove'));assert.equal(key,true,'first press never deletes');
+ await click(element('amiibo-key-remove'));await delay();
+ assert.equal(key,false);assert.equal(element('amiibo-key-status').textContent,noKey);assert.equal(element('amiibo-key-remove').hidden,true);
+ // Back to another category: the section hides.
+ click(element('cat-games'));assert.equal(element('amiibo').hidden,true);assert.equal(element('upload').hidden,false);
 }
 function delay(){return new Promise(resolve=>setImmediate(resolve));}
 // What the page touches on any element beyond its own fields.
