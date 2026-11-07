@@ -39,8 +39,21 @@ int main() {
     check(HandleAmiiboInput(single, MenuAction::Down, 1, Visible) == AmiiboEffect::None, "one row stays");
     check(HandleAmiiboInput(single, MenuAction::Confirm, 1, Visible) == AmiiboEffect::Choose, "removes");
 
+    // X flips "New figure", which starts off; only while there is a figure to place.
+    check(!page.new_figure, "new figure starts off");
+    check(HandleAmiiboInput(page, MenuAction::Alternate, Rows, Visible) == AmiiboEffect::Toggled, "x flips");
+    check(page.new_figure, "new figure on");
+    check(HandleAmiiboInput(page, MenuAction::Alternate, Rows, Visible) == AmiiboEffect::Toggled, "x flips back");
+    check(!page.new_figure, "new figure off again");
+    check(HandleAmiiboInput(empty, MenuAction::Alternate, 0, Visible) == AmiiboEffect::None && !empty.new_figure,
+          "nothing to place");
+    check(HandleAmiiboInput(single, MenuAction::Alternate, 1, Visible, true) == AmiiboEffect::None &&
+              !single.new_figure,
+          "a placed tag keeps its UID");
+    check(page.selected == 6, "x leaves the cursor");
+
     // Other buttons do nothing on this page.
-    for (const auto action : {MenuAction::Left, MenuAction::Right, MenuAction::Alternate, MenuAction::Refresh,
+    for (const auto action : {MenuAction::Left, MenuAction::Right, MenuAction::Refresh,
                               MenuAction::PreviousTab, MenuAction::NextTab}) {
         check(HandleAmiiboInput(page, action, Rows, Visible) == AmiiboEffect::None, "other buttons");
     }
