@@ -96,7 +96,8 @@ void LibrarySession::SwitchTab(LibraryTab to) {
         system_page.open = graphics_page.open = false;
         configuration.open = configuration.files = false;
         settings = return_to_configuration = false;
-        panel.expanded = panel.keyboard.open = panel.keyboard.capturing = false;
+        panel.expanded = false;
+        panel.CloseBindingEditors();
     }
     tab = to;
     if (to == LibraryTab::Settings) {
@@ -141,7 +142,7 @@ void LibrarySession::HandlePressedTab(bool top_level) {
 
 void LibrarySession::HandleTabBumpers(bool top_level) {
     const bool settings_page = tab == LibraryTab::Settings && (settings || system_page.open || graphics_page.open || configuration.files) &&
-                               !panel.keyboard.open && !panel.expanded && !system_page.name_editor &&
+                               !panel.BindingEditorOpen() && !panel.expanded && !system_page.name_editor &&
                                !configuration.busy && !picker && !validation.valid() && !game_options.open &&
                                !missing_content;
     if ((top_level || settings_page) && (actions & (PreviousTab | NextTab))) {
@@ -205,7 +206,7 @@ void LibrarySession::HandleGraphicsPage(TimePoint now) {
 
 bool LibrarySession::HandleQuit() {
     if (actions & Quit) {
-        if (panel.keyboard.open) { panel.keyboard.open = panel.keyboard.capturing = false; dirty = true; actions &= ~Quit; }
+        if (panel.BindingEditorOpen()) { CloseBindingEditor(); actions &= ~Quit; }
         else if (panel.expanded) { panel.expanded = false; dirty = true; actions &= ~Quit; }
         else if (settings) { settings = false; configuration.open = return_to_configuration; return_to_configuration = false; dirty = true; actions &= ~Quit; }
         else if (configuration.open) {
@@ -220,7 +221,7 @@ bool LibrarySession::HandleQuit() {
 }
 
 void LibrarySession::HandlePageShortcuts() {
-    if (actions & Panel && !configuration.open) { settings = !settings; panel.keyboard.open = panel.keyboard.capturing = false; panel.expanded = false; dirty = true; }
+    if (actions & Panel && !configuration.open) { settings = !settings; panel.CloseBindingEditors(); panel.expanded = false; dirty = true; }
     if (actions & AddFolder && !settings && !picker && !configuration.busy && !validation.valid() &&
         !configuration.open)
         SwitchTab(LibraryTab::Settings);
@@ -338,7 +339,7 @@ void LibrarySession::ActivateFilesRow() {
 }
 
 void LibrarySession::HandleControllerPanel() {
-    if (panel.keyboard.open) { actions &= ~(Swap | Zone); }
+    if (panel.BindingEditorOpen()) { actions &= ~(Swap | Zone); }
     else if (panel.expanded) {
         const size_t count = panel.devices.size() + 2;
         if (actions & Up) panel.choice = (panel.choice + count - 1) % count;
@@ -356,28 +357,29 @@ void LibrarySession::HandleControllerPanel() {
         }
         actions &= ~(Swap | Zone);
     } else {
-        // Rows: [device (PC)], controller type, A/B/X/Y, deadzone, [keyboard (PC)].
-        const unsigned offset = panel.xbox ? 0 : 1;
-        const unsigned rows = panel.xbox ? 3 : 5;
+        // Rows: device, controller type, A/B/X/Y, deadzone, keyboard, controller mapping.
+        constexpr unsigned rows = 6;
         if (actions & Up) setting_row = (setting_row + rows - 1) % rows;
         if (actions & Down) setting_row = (setting_row + 1) % rows;
         if (actions & (Up | Down)) dirty = true;
-        const bool opens = !panel.xbox && (setting_row == 0 || setting_row == 4);
+        const bool opens = setting_row == 0 || setting_row >= 4;
         if (opens && actions & Left && !(actions & (Play | Right))) {
             if (configuration.open) { settings = return_to_configuration = false; dirty = true; }
         } else if (actions & (Play | Left | Right)) {
-            if (!panel.xbox && setting_row == 4) {
+            if (setting_row == 4) {
                 panel.keyboard.open = true; panel.keyboard.capturing = false; dirty = true;
-            } else if (!panel.xbox && setting_row == 0) {
+            } else if (setting_row == 5) {
+                OpenPadPicker();
+            } else if (setting_row == 0) {
                 panel.expanded = true;
                 panel.choice = options.controller_id == KeyboardControllerId ? 1 : 0;
                 for (size_t i = 0; i < panel.devices.size(); ++i)
                     if (panel.devices[i].id == options.controller_id) panel.choice = i + 2;
                 dirty = true;
-            } else if (setting_row == offset) {
+            } else if (setting_row == 1) {
                 options.style = StepConsoleControllerStyle(options.style, (actions & Left) != 0);
                 device_changed = true; dirty = true;
-            } else if (setting_row == offset + 1) {
+            } else if (setting_row == 2) {
                 actions |= Swap;
             } else if (actions & Left) {
                 // Back along the 8 / 12 / 18 % segments; A and Right go forward.
@@ -452,7 +454,8 @@ void LibrarySession::HandlePin(bool on_game) {
 }
 
 void LibrarySession::SaveControllerChoices(TimePoint now) {
-    if (actions & Swap) { options.swap_face_buttons = !options.swap_face_buttons; dirty = true; }
+    // A mapped pad's letters come from its mapping: there is nothing here to swap.
+    if (actions & Swap && !(pad && pad->bindings)) { options.swap_face_buttons = !options.swap_face_buttons; dirty = true; }
     if (actions & Zone) {
         options.deadzone = options.deadzone < 0.10f ? 0.12f : options.deadzone < 0.15f ? 0.18f : 0.08f;
         dirty = true;

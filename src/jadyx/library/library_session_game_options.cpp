@@ -12,7 +12,7 @@ void LibrarySession::Notify(TimePoint now, T text) {
 
 void LibrarySession::OpenGameOptions(bool on_game) {
     if (actions & Options && on_game && !game_options.open && !settings && !configuration.open &&
-        !panel.keyboard.open && !loading && !picker && !validation.valid() && !scan.entries.empty()) {
+        !panel.BindingEditorOpen() && !loading && !picker && !validation.valid() && !scan.entries.empty()) {
         if (!network_portal.BlockForLocalOperation()) {
             notice=Tr(T::NetworkBusy); actions=0; dirty=true;
         } else {

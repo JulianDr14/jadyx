@@ -263,11 +263,11 @@ void LibrarySession::AutoPick() {
 }
 
 void LibrarySession::StartValidation(bool on_game) {
-    if (actions & Play && on_game && !configuration.open && !settings && !panel.keyboard.open && !loading &&
+    if (actions & Play && on_game && !configuration.open && !settings && !panel.BindingEditorOpen() && !loading &&
         !scan.entries.empty() && !network_portal.BlockForLocalOperation()) {
         notice=Tr(T::NetworkBusy); actions &= ~Play; dirty=true;
     }
-    if (actions & Play && on_game && !configuration.open && !settings && !panel.keyboard.open && !loading &&
+    if (actions & Play && on_game && !configuration.open && !settings && !panel.BindingEditorOpen() && !loading &&
         !scan.entries.empty()) {
         network_portal.Stop();
         selected_path = scan.entries[selected].launch_path;

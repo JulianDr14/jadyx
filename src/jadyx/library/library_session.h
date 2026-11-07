@@ -126,6 +126,17 @@ private:
 
     // library_session_input.cpp: keys, the pointer and the controller become `actions`.
     void SaveKeyboard();
+    void SavePadMap(bool reset);
+    /// Lists the controllers to map; with only one there is nothing to choose.
+    void OpenPadPicker();
+    void BuildPadPicker();
+    void WatchPadPicker();
+    void OpenPadMap(const ControllerDevice& device, size_t number);
+    void ClearBinding();
+    void RestoreBindings();
+    void RefuseBinding(BindingEditor& editor, T reason, size_t action);
+    /// Saves a changed pad mapping, or stays on what it lacks.
+    void CloseBindingEditor();
     void BeginCapture();
     void OnKeyDown(winrt::Windows::UI::Core::KeyEventArgs const& e);
     void OnPointerPressed(winrt::Windows::UI::Core::PointerEventArgs const& e);
@@ -135,11 +146,17 @@ private:
     bool PressHeader(float x, float y);
     bool PressConfiguration(float x, float y);
     bool PressKeyboardEditor(float x, float y);
+    bool PressPadPicker(float x, float y);
     void PressControllerPanel(float x, float y);
     void PressLibrary(float x, float y);
     void OnWheel(winrt::Windows::UI::Core::PointerEventArgs const& e);
     void ExpireNotices(TimePoint now);
     void UpdateControllers(TimePoint now);
+    /// The controller being mapped, or the picker's: what isn't the primary pad's own input.
+    void ReadMapTarget(TimePoint now);
+    void ReadPadPicker();
+    void WorkPadPicker(unsigned directions, GamepadButtons edges);
+    void WorkBindingEditor(BindingEditor& editor, unsigned directions, GamepadButtons edges);
     void ReadPad(TimePoint now);
     void ReadBattery(TimePoint now);
 
@@ -313,6 +330,10 @@ private:
     TriggerTabs trigger_tabs;
     unsigned navigation_context = 0;
     std::optional<ControllerDevice> pad;
+    // What the mapping editor edits, not always `pad`: that one also works it, and so does this.
+    std::optional<ControllerDevice> map_target;
+    GamepadButtons target_previous{};
+    StickNavigation target_stick;
     ControllerCatalog<ControllerDevice> controllers;
     // 8080, or one of the next ports when another app holds it or the console refuses it.
     static constexpr unsigned short portal_port = 8080;

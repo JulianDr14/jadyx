@@ -328,7 +328,7 @@ void LibrarySession::HandleUpdatesPage() {
 void LibrarySession::HandleUpdateNotice() {
     if (system_page.update.notice && system_page.update.release && !system_page.updates_open && !settings &&
         !configuration.open && !configuration.network_screen && !game_options.open && !missing_content &&
-        !panel.keyboard.open && tab != LibraryTab::Settings && actions & (Pin | Refresh)) {
+        !panel.BindingEditorOpen() && tab != LibraryTab::Settings && actions & (Pin | Refresh)) {
         if (actions & Pin) { system_page.updates_open = true; system_page.update_row = 0; }
         else { updater.Dismiss(false); system_page.update.notice = false; }
         actions &= ~(Pin | Refresh);

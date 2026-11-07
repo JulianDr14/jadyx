@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/library_session.h"
+#include "jadyx/ui/ui_text.h"
 
 namespace Jadyx {
 using namespace winrt::Windows::UI::Core;
@@ -14,10 +15,167 @@ void LibrarySession::SaveKeyboard() {
     dirty = true;
 }
 
+void LibrarySession::SavePadMap(bool reset) {
+    auto& editor = panel.pad_map;
+    const bool saved = map_target &&
+                       (reset ? ResetPadBindings(*map_target) && SavePadMenuShortcut(*map_target, std::nullopt)
+                              : SavePadBindings(*map_target, editor.bindings) &&
+                                    SavePadMenuShortcut(*map_target, editor.menu_shortcut));
+    if (saved) {
+        editor.bindings = CurrentPadBindings(*map_target);
+        editor.menu_shortcut = map_target->menu_shortcut ? std::optional{*map_target->menu_shortcut} : std::nullopt;
+        if (pad && pad->id == map_target->id) {
+            pad->bindings = map_target->bindings;
+            pad->menu_shortcut = map_target->menu_shortcut;
+        }
+    }
+    editor.notice = Tr(saved ? T::PadMapSaved : T::PadMapSaveFailed);
+    keyboard_notice_until = saved ? std::chrono::steady_clock::now() + std::chrono::seconds{3} :
+                                   std::chrono::steady_clock::time_point::max();
+    dirty = true;
+}
+
+void LibrarySession::OpenPadPicker() {
+    panel.pad_picker.cards.clear();
+    panel.pad_picker.selected = 0;
+    BuildPadPicker();
+    auto& chooser = panel.pad_picker;
+    if (chooser.cards.size() == 1) OpenPadMap(chooser.cards.front(), 1);
+    else if (!chooser.cards.empty()) chooser.open = true;
+    dirty = true;
+}
+
+void LibrarySession::BuildPadPicker() {
+    auto& chooser = panel.pad_picker;
+    const std::wstring focused = chooser.selected < chooser.cards.size() ? chooser.cards[chooser.selected].id : L"";
+    std::vector<bool> usable;
+    std::optional<size_t> primary;
+    for (size_t i = 0; i < panel.devices.size(); ++i) {
+        usable.push_back(bool(panel.devices[i]));
+        if (pad && panel.devices[i].id == pad->id) primary = i;
+    }
+    chooser.cards.clear();
+    chooser.selected = 0;
+    chooser.primary_id = pad ? pad->id : L"";
+    for (const size_t i : PadPickerOrder(usable, primary)) {
+        if (panel.devices[i].id == focused) chooser.selected = chooser.cards.size();
+        chooser.cards.push_back(panel.devices[i]);
+    }
+    if (chooser.cards.empty()) {
+        chooser.open = false;
+        panel.notice = Tr(T::PadMapNoController);
+        controller_notice_until = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+    }
+    WatchPadPicker();
+    dirty = true;
+}
+
+void LibrarySession::WatchPadPicker() {
+    auto& chooser = panel.pad_picker;
+    chooser.lit = {};
+    // What is held right now, like the press that got here, is not a press on this screen.
+    chooser.previous.fill(static_cast<GamepadButtons>(0xFFFFFFFFu));
+    for (size_t i = 0; i < chooser.cards.size(); ++i) {
+        try {
+            chooser.watch[i].Begin(ReadPadSnapshot(chooser.cards[i]));
+        } catch (...) {}
+    }
+}
+
+void LibrarySession::OpenPadMap(const ControllerDevice& device, size_t number) {
+    map_target = device;
+    target_previous = static_cast<GamepadButtons>(0xFFFFFFFFu);
+    target_stick.Reset();
+    auto& editor = panel.pad_map;
+    editor.bindings = CurrentPadBindings(device);
+    editor.menu_shortcut = device.menu_shortcut ? std::optional{*device.menu_shortcut} : std::nullopt;
+    editor.device_name = device.name + L"  ·  " + std::wstring{Tr(device.wireless ? T::Wireless : T::Usb)};
+    if (pad && pad->id == device.id) editor.device_name += L"  ·  " + std::wstring{Tr(T::PadPrimary)};
+    editor.device_id = device.id;
+    editor.number = number;
+    editor.standard = !device.raw;
+    editor.page = 0;
+    editor.selected = KeyboardPageActions(0).front();
+    editor.notice.clear();
+    editor.capturing = false;
+    editor.open = true;
+    dirty = true;
+}
+
+void LibrarySession::RefuseBinding(BindingEditor& editor, T reason, size_t action) {
+    editor.notice = std::wstring{Tr(reason)} + L": " + std::wstring{KeyboardActionName(action)};
+    keyboard_notice_until = std::chrono::steady_clock::now() + std::chrono::seconds{4};
+    dirty = true;
+}
+
+void LibrarySession::CloseBindingEditor() {
+    dirty = true;
+    if (!panel.pad_map.open) return panel.CloseBindingEditors();
+    auto& editor = panel.pad_map;
+    editor.capturing = false;
+    const std::optional<PadMenuShortcut> saved_shortcut =
+        map_target && map_target->menu_shortcut ? std::optional{*map_target->menu_shortcut} : std::nullopt;
+    // Without changes it just leaves, whatever a pad with few inputs can't complete.
+    if (map_target && (editor.bindings != CurrentPadBindings(*map_target) || editor.menu_shortcut != saved_shortcut)) {
+        if (const auto missing = PadMissingAction(editor.bindings)) {
+            editor.page = KeyboardPageFor(*missing);
+            editor.selected = *missing;
+            return RefuseBinding(editor, T::PadMapMissing, *missing);
+        }
+        SavePadMap(false);
+        panel.notice = std::move(editor.notice);
+        editor.notice.clear();
+        controller_notice_until = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+        // The input that closed this may mean something else now: no press until it is released.
+        previous = static_cast<GamepadButtons>(0xFFFFFFFFu);
+    }
+    // Back to the list it came from, if there was one.
+    editor.open = false;
+    map_target.reset();
+    if (panel.pad_picker.open) WatchPadPicker();
+}
+
+void LibrarySession::ClearBinding() {
+    if (panel.keyboard.open) {
+        AssignKeyboardKey(panel.keyboard.bindings, panel.keyboard.selected, 0);
+        SaveKeyboard();
+    } else if (panel.pad_map.open && panel.pad_map.selected == MenuShortcutAction) {
+        // Clearing it means the default: the pad always has a way to open the menu.
+        panel.pad_map.menu_shortcut.reset();
+        panel.pad_map.notice.clear();
+        dirty = true;
+    } else if (panel.pad_map.open) {
+        // Only a draft: leaving is what requires A, B and the directions.
+        AssignPadSource(panel.pad_map.bindings, panel.pad_map.selected, {});
+        panel.pad_map.notice.clear();
+        dirty = true;
+    }
+}
+
+void LibrarySession::RestoreBindings() {
+    if (panel.keyboard.open) {
+        panel.keyboard.bindings = DefaultKeyboardBindings;
+        SaveKeyboard();
+    } else if (panel.pad_map.open) {
+        SavePadMap(true);
+    }
+}
+
 void LibrarySession::BeginCapture() {
-    panel.keyboard.notice.clear();
-    panel.keyboard.capturing = true;
-    capture_until = std::chrono::steady_clock::now() + std::chrono::seconds{4};
+    BindingEditor* const editor = panel.OpenEditor();
+    if (!editor) return;
+    const bool on_pad = editor == &panel.pad_map;
+    if (on_pad) {
+        if (!map_target) return;
+        try {
+            const auto current = ReadPadSnapshot(*map_target);
+            panel.pad_map.capture.Begin(current);
+            panel.pad_map.shortcut_capture.Begin(current);
+        } catch (const winrt::hresult_error&) { return; }
+    }
+    editor->notice.clear();
+    editor->capturing = true;
+    capture_until = std::chrono::steady_clock::now() + std::chrono::seconds{on_pad ? 6 : 4};
     dirty = true;
 }
 
@@ -46,34 +204,49 @@ void LibrarySession::OnKeyDown(KeyEventArgs const& e) {
         e.Handled(true);
         return;
     }
-    auto& editor = panel.keyboard;
-    if (editor.open) {
+    if (BindingEditor* const editor = panel.OpenEditor()) {
         const auto key = e.VirtualKey();
-        if (editor.capturing) {
-            if (key != VirtualKey::Escape) {
-                if (AssignKeyboardKey(editor.bindings, editor.selected, static_cast<unsigned>(key))) SaveKeyboard();
-                else {
-                    editor.notice = Tr(T::KeyUnsupported);
-                    keyboard_notice_until = std::chrono::steady_clock::time_point::max();
+        const auto code = static_cast<unsigned>(key);
+        if (editor->capturing && editor == &panel.keyboard) {
+            // The console sends each pad press here too, starting with the A that opened this.
+            if (!IsGamepadVirtualKey(code)) {
+                if (key != VirtualKey::Escape) {
+                    if (const auto owner = KeyboardKeyOwner(panel.keyboard.bindings, editor->selected, code)) {
+                        RefuseBinding(*editor, T::BindingInUse, *owner);
+                    } else if (AssignKeyboardKey(panel.keyboard.bindings, editor->selected, code)) SaveKeyboard();
+                    else {
+                        editor->notice = Tr(T::KeyUnsupported);
+                        keyboard_notice_until = std::chrono::steady_clock::time_point::max();
+                    }
                 }
+                editor->capturing = false;
+                dirty = true;
             }
-            editor.capturing = false;
+        } else if (editor->capturing) {
+            // Mapping a pad: ReadPad detects it, the keyboard can only cancel.
+            if (key == VirtualKey::Escape) { editor->capturing = false; dirty = true; }
+        } else if (key == VirtualKey::Escape) CloseBindingEditor();
+        else if (key == VirtualKey::Tab) { TurnBindingPage(*editor, false); dirty = true; }
+        else if (key == VirtualKey::Enter) BeginCapture();
+        else if (key == VirtualKey::Delete) ClearBinding();
+        else if (key == VirtualKey::Up || key == VirtualKey::Down ||
+                 key == VirtualKey::Left || key == VirtualKey::Right) {
+            MoveBindingSelection(*editor, key == VirtualKey::Up || key == VirtualKey::Down,
+                                 key == VirtualKey::Up || key == VirtualKey::Left);
             dirty = true;
-        } else if (key == VirtualKey::Escape) { editor.open = false; dirty = true; }
-        else if (key == VirtualKey::Tab) {
-            editor.page = (editor.page + 1) % 3; editor.selected = KeyboardPageActions(editor.page).front(); dirty = true;
-        } else if (key == VirtualKey::Enter) BeginCapture();
-        else if (key == VirtualKey::Delete) {
-            AssignKeyboardKey(editor.bindings, editor.selected, 0); SaveKeyboard();
-        } else if (key == VirtualKey::Up || key == VirtualKey::Down ||
-                   key == VirtualKey::Left || key == VirtualKey::Right) {
-            const auto items = KeyboardPageActions(editor.page);
-            const size_t count = items.size();
-            const size_t index = static_cast<size_t>(std::find(items.begin(), items.end(), editor.selected) - items.begin());
-            const size_t step = key == VirtualKey::Up || key == VirtualKey::Down ? 2 : 1;
-            const bool reverse = key == VirtualKey::Up || key == VirtualKey::Left;
-            editor.selected = items[(index + (reverse ? count - step : step)) % count];
-            dirty = true;
+        }
+        e.Handled(true);
+        return;
+    }
+    if (panel.pad_picker.open) {
+        switch (e.VirtualKey()) {
+        case VirtualKey::Escape: actions |= Quit; break;
+        case VirtualKey::Enter: WorkPadPicker(0, GamepadButtons::A); break;
+        case VirtualKey::Up: WorkPadPicker(Up, GamepadButtons::None); break;
+        case VirtualKey::Down: WorkPadPicker(Down, GamepadButtons::None); break;
+        case VirtualKey::Left: WorkPadPicker(Left, GamepadButtons::None); break;
+        case VirtualKey::Right: WorkPadPicker(Right, GamepadButtons::None); break;
+        default: break;
         }
         e.Handled(true);
         return;
@@ -107,7 +280,7 @@ void LibrarySession::OnPointerPressed(PointerEventArgs const& e) {
     const float x = static_cast<float>((p.X * dpi - (width - 1280 * scale) / 2) / scale);
     const float y = static_cast<float>((p.Y * dpi - (height - 720 * scale) / 2) / scale);
     const bool handled = PressDialog(x, y) || PressGameOptions(x, y) || PressUpdatePage(x, y) || PressHeader(x, y) ||
-                         PressConfiguration(x, y) || PressKeyboardEditor(x, y);
+                         PressConfiguration(x, y) || PressKeyboardEditor(x, y) || PressPadPicker(x, y);
     if (!handled) {
         if (settings) PressControllerPanel(x, y);
         else if (!loading) PressLibrary(x, y);
@@ -208,7 +381,7 @@ bool LibrarySession::PressUpdatePage(float x, float y) {
 
     // The header's tabs and controller work over every page that is not a dialog.
 bool LibrarySession::PressHeader(float x, float y) {
-    if ((!settings || configuration.open) && !panel.keyboard.open && !panel.expanded && !game_options.open &&
+    if ((!settings || configuration.open) && !panel.BindingEditorOpen() && !panel.expanded && !game_options.open &&
         !missing_content && !configuration.busy) {
         const auto target = canvas->HitAt(x, y);
         if (target.hit == LibraryHit::Tab) {
@@ -224,7 +397,7 @@ bool LibrarySession::PressHeader(float x, float y) {
 }
 
 bool LibrarySession::PressConfiguration(float x, float y) {
-    if (configuration.open && !content_session && !panel.keyboard.open && !panel.expanded) {
+    if (configuration.open && !content_session && !panel.BindingEditorOpen() && !panel.expanded) {
         const auto target = canvas->HitAt(x, y);
         const bool in_page = system_page.open || graphics_page.open || configuration.files || settings;
         const size_t shown = system_page.open ? HomeSystem : graphics_page.open ? HomeGraphics :
@@ -256,34 +429,54 @@ bool LibrarySession::PressConfiguration(float x, float y) {
 }
 
 bool LibrarySession::PressKeyboardEditor(float x, float y) {
-    if (panel.keyboard.open) {
-        auto& editor = panel.keyboard;
-        if (Contains({1120, 112, 48, 40}, x, y)) {
-            editor.open = editor.capturing = false; dirty = true;
-        } else if (!editor.capturing) {
-            if (Contains({635, 203, 514, 36}, x, y)) {
-                editor.page = std::min(2U, static_cast<unsigned>((x - 635) / 174));
-                editor.selected = KeyboardPageActions(editor.page).front(); dirty = true;
-            } else if (Contains({635, 603, 155, 36}, x, y)) {
-                AssignKeyboardKey(editor.bindings, editor.selected, 0); SaveKeyboard();
-            } else if (Contains({806, 603, 170, 36}, x, y)) {
-                editor.bindings = DefaultKeyboardBindings; SaveKeyboard();
-            } else {
-                for (size_t i = 0; i < KeyboardButtonCount; ++i) {
-                    if (Contains(KeyboardDiagramTile(i), x, y)) {
-                        editor.page = KeyboardPageFor(i); editor.selected = i; BeginCapture(); break;
-                    }
+    BindingEditor* const open = panel.OpenEditor();
+    if (!open) return false;
+    auto& editor = *open;
+    if (Contains(BindingCloseButton, x, y)) {
+        CloseBindingEditor();
+    } else if (!editor.capturing) {
+        bool on_tab = false;
+        for (unsigned page = 0; page < editor.page_count; ++page) {
+            if (!Contains(BindingTabFor(editor, page), x, y)) continue;
+            editor.page = page;
+            editor.selected = KeyboardPageActions(page).front();
+            on_tab = dirty = true;
+        }
+        if (on_tab) {
+        } else if (Contains(BindingClearButton, x, y)) {
+            ClearBinding();
+        } else if (Contains(BindingRestoreButton, x, y)) {
+            RestoreBindings();
+        } else {
+            for (size_t i = 0; i < KeyboardButtonCount; ++i) {
+                if (Contains(KeyboardDiagramTile(i), x, y)) {
+                    editor.page = KeyboardPageFor(i); editor.selected = i; BeginCapture(); break;
                 }
-                for (const size_t i : KeyboardPageActions(editor.page)) {
-                    if (!editor.capturing && Contains(KeyboardTileFor(i), x, y)) {
-                        editor.selected = i; BeginCapture(); break;
-                    }
+            }
+            for (const size_t i : KeyboardPageActions(editor.page)) {
+                if (!editor.capturing && Contains(KeyboardTileFor(i), x, y)) {
+                    editor.selected = i; BeginCapture(); break;
                 }
             }
         }
+    }
+    return true;
+}
+
+bool LibrarySession::PressPadPicker(float x, float y) {
+    auto& chooser = panel.pad_picker;
+    if (!chooser.open) return false;
+    if (Contains(BindingCloseButton, x, y)) {
+        CloseBindingEditor();
         return true;
     }
-    return false;
+    for (size_t i = 0; i < chooser.cards.size(); ++i) {
+        if (!Contains(PadPickerCardFor(i, chooser.cards.size()), x, y)) continue;
+        chooser.selected = i;
+        WorkPadPicker(0, GamepadButtons::A);
+        break;
+    }
+    return true;
 }
 
 void LibrarySession::PressControllerPanel(float x, float y) {
@@ -296,11 +489,12 @@ void LibrarySession::PressControllerPanel(float x, float y) {
                 actions |= Play;
             } else actions |= Quit;
         } else actions |= Quit;
-    } else if (!panel.xbox && Contains({648, 510, 530, 34}, x, y)) {
-        panel.keyboard.open = true; panel.keyboard.capturing = false; dirty = true;
+    } else if (Contains({648, 510, 260, 34}, x, y) || Contains({918, 510, 260, 34}, x, y)) {
+        setting_row = x < 918 ? 4 : 5;
+        actions |= Play;
     } else if (x < 620 || x > 1206 || y < 133 || y > 620) actions |= Panel;
     else if (x >= 648 && x < 1178 && y >= ControllerRowTop &&
-             y < ControllerRowTop + (panel.xbox ? 3 : 4) * ControllerRowHeight) {
+             y < ControllerRowTop + 4 * ControllerRowHeight) {
         setting_row = static_cast<unsigned>((y - ControllerRowTop) / ControllerRowHeight);
         actions |= Play;
     }
@@ -360,7 +554,7 @@ void LibrarySession::OnWheel(PointerEventArgs const& e) {
         return;
     }
 
-    if (settings && panel.expanded && !panel.keyboard.open) {
+    if (settings && panel.expanded && !panel.BindingEditorOpen()) {
         const int delta = e.CurrentPoint().Properties().MouseWheelDelta();
         const size_t count = panel.devices.size() + 2;
         if (delta > 0 && panel.choice) --panel.choice;
@@ -371,8 +565,8 @@ void LibrarySession::OnWheel(PointerEventArgs const& e) {
 }
 
 void LibrarySession::ExpireNotices(TimePoint now) {
-    if (!panel.keyboard.notice.empty() && now >= keyboard_notice_until) {
-        panel.keyboard.notice.clear(); dirty = true;
+    if (now >= keyboard_notice_until && !(panel.keyboard.notice.empty() && panel.pad_map.notice.empty())) {
+        panel.keyboard.notice.clear(); panel.pad_map.notice.clear(); dirty = true;
     }
     if (!panel.notice.empty() && now >= controller_notice_until) {
         panel.notice.clear(); dirty = true;
@@ -386,8 +580,8 @@ void LibrarySession::ExpireNotices(TimePoint now) {
     SYSTEMTIME clock{};
     GetLocalTime(&clock);
     if (clock.wMinute != shown_minute) { shown_minute = clock.wMinute; dirty = true; }
-    if (panel.keyboard.capturing && now >= capture_until) {
-        panel.keyboard.capturing = false; dirty = true;
+    if ((panel.keyboard.capturing || panel.pad_map.capturing) && now >= capture_until) {
+        panel.keyboard.capturing = panel.pad_map.capturing = false; dirty = true;
     }
 }
 
@@ -407,26 +601,159 @@ void LibrarySession::UpdateControllers(TimePoint now) {
         dirty = true;
     }
     // Selection follows settings immediately; discovery remains rate limited.
-    const auto next = controllers.Select(options.controller_id);
+    // The console's menus need a pad: a chosen one that left, or "keyboard only", must not lock them.
+    const auto next = controllers.Select(panel.xbox && !controllers.Select(options.controller_id) ?
+                                             std::wstring{} : options.controller_id);
     if (bool(pad) != bool(next) || (pad && next &&
-        (pad->id != next->id || pad->pad != next->pad || pad->pro != next->pro))) {
+        (pad->id != next->id || pad->pad != next->pad || pad->raw != next->raw || pad->pro != next->pro))) {
         previous = {}; stick_navigation.Reset(); manager_dpad.Reset(); trigger_tabs.Reset();
         battery_read_at = {}; // Another controller: read its battery now.
     }
     if (catalog_changed || !pad || !next || pad->id != next->id)
         pad = next ? std::optional<ControllerDevice>{*next} : std::nullopt;
+    if (catalog_changed && panel.pad_map.open) {
+        const auto found = std::ranges::find(panel.devices, panel.pad_map.device_id, &ControllerDevice::id);
+        if (found != panel.devices.end() && bool(*found)) {
+            map_target = *found;
+        } else {
+            panel.pad_map.open = panel.pad_map.capturing = false;
+            map_target.reset();
+            panel.notice = Tr(T::PadMapNoController);
+            controller_notice_until = now + std::chrono::seconds{3};
+            dirty = true;
+        }
+    }
+    if (catalog_changed && panel.pad_picker.open) BuildPadPicker();
     const unsigned context = configuration.confirm_import ? 1001 : configuration.network_screen ? 1000 : game_options.open ? (7 + static_cast<unsigned>(game_options.selected) * 3 + static_cast<unsigned>(game_options.focus)) :
         graphics_page.open ? 1002 : system_page.name_editor ? 6 : system_page.open ? 5 :
-        panel.keyboard.open ? 3 : panel.expanded ? 2 : settings ? 1 : configuration.open ? 4 : 0;
+        panel.BindingEditorOpen() ? 3 : panel.expanded ? 2 : settings ? 1 : configuration.open ? 4 : 0;
     if (context != navigation_context) {
         stick_navigation.Reset(); manager_dpad.Reset(); trigger_tabs.Reset(); navigation_context = context;
     }
 }
 
+void LibrarySession::WorkBindingEditor(BindingEditor& editor, unsigned directions, GamepadButtons edges) {
+    if (editor.capturing) return;
+    const auto hit = [&](GamepadButtons b) { return (edges & b) == b; };
+    if (directions & (Up | Down | Left | Right)) {
+        if (directions & Up) MoveBindingSelection(editor, true, true);
+        else if (directions & Down) MoveBindingSelection(editor, true, false);
+        else MoveBindingSelection(editor, false, (directions & Left) != 0);
+        dirty = true;
+    }
+    if (hit(GamepadButtons::LeftShoulder)) { TurnBindingPage(editor, true); dirty = true; }
+    if (hit(GamepadButtons::RightShoulder)) { TurnBindingPage(editor, false); dirty = true; }
+    if (hit(GamepadButtons::X)) ClearBinding();
+    if (hit(GamepadButtons::Y)) RestoreBindings();
+    if (hit(GamepadButtons::A)) BeginCapture();
+}
+
+void LibrarySession::WorkPadPicker(unsigned directions, GamepadButtons edges) {
+    auto& chooser = panel.pad_picker;
+    if (chooser.cards.empty()) return;
+    if (directions & (Up | Down | Left | Right)) {
+        chooser.selected = MovePadPicker(chooser.selected, chooser.cards.size(), (directions & (Up | Down)) != 0,
+                                        (directions & (Up | Left)) != 0);
+        dirty = true;
+    }
+    if ((edges & GamepadButtons::A) != GamepadButtons::None)
+        OpenPadMap(chooser.cards[std::min(chooser.selected, chooser.cards.size() - 1)], chooser.selected + 1);
+}
+
+/// Every controller lights its card, so the player sees which one is in the hand. A controller other
+/// than the primary brings the focus to its own card first; once there, A and B work the list.
+void LibrarySession::ReadPadPicker() {
+    auto& chooser = panel.pad_picker;
+    for (size_t i = 0; i < chooser.cards.size(); ++i) {
+        const auto& device = chooser.cards[i];
+        const bool primary = pad && pad->id == device.id;
+        bool lit = false;
+        GamepadButtons edges{};
+        try {
+            lit = chooser.watch[i].Detect(ReadPadSnapshot(device)).has_value();
+            if (!primary) {
+                const auto buttons = ReadMenuController(device).gamepad.Buttons;
+                edges = MapFaceButtons(buttons & ~chooser.previous[i],
+                                       SwapControllerFaceButtons(device, options.swap_face_buttons));
+                chooser.previous[i] = buttons;
+            }
+        } catch (...) {}
+        if (!primary && chooser.selected == i) {
+            if ((edges & GamepadButtons::B) != GamepadButtons::None) { actions |= Quit; continue; }
+            if ((edges & GamepadButtons::A) != GamepadButtons::None) return WorkPadPicker(0, GamepadButtons::A);
+        }
+        if (lit != chooser.lit[i]) {
+            if (lit && !primary) chooser.selected = i;
+            chooser.lit[i] = lit;
+            dirty = true;
+        }
+    }
+}
+
+void LibrarySession::ReadMapTarget(TimePoint now) {
+    if (panel.pad_picker.open && !panel.pad_map.open) return ReadPadPicker();
+    if (!panel.pad_map.open || !map_target) return;
+    auto& editor = panel.pad_map;
+    try {
+        if (editor.capturing && editor.selected == MenuShortcutAction) {
+            if (const auto shortcut = editor.shortcut_capture.Update(ReadPadSnapshot(*map_target))) {
+                editor.capturing = false;
+                editor.menu_shortcut = *shortcut;
+                // Whatever is still held opens nothing in the editor until it is released.
+                previous = target_previous = static_cast<GamepadButtons>(0xFFFFFFFFu);
+                dirty = true;
+            }
+        } else if (editor.capturing) {
+            if (const auto source = editor.capture.Detect(ReadPadSnapshot(*map_target))) {
+                editor.capturing = false;
+                if (const auto owner = PadSourceOwner(editor.bindings, editor.selected, *source)) {
+                    RefuseBinding(editor, T::BindingInUse, *owner);
+                } else {
+                    AssignPadSource(editor.bindings, editor.selected, *source);
+                }
+                // The input just pressed must not also work the editor: nothing until it is released.
+                previous = target_previous = static_cast<GamepadButtons>(0xFFFFFFFFu);
+                dirty = true;
+            }
+        } else if (!pad || pad->id != map_target->id) {
+            // The primary pad works the editor below; the one in the player's hands does too.
+            const auto reading = ReadMenuController(*map_target).gamepad;
+            const auto buttons = reading.Buttons;
+            const auto edges = MapFaceButtons(buttons & ~target_previous,
+                SwapControllerFaceButtons(*map_target, options.swap_face_buttons));
+            target_previous = buttons;
+            unsigned directions = 0;
+            constexpr auto dpad = GamepadButtons::DPadUp | GamepadButtons::DPadDown |
+                                  GamepadButtons::DPadLeft | GamepadButtons::DPadRight;
+            if ((buttons & dpad) != GamepadButtons::None) target_stick.Reset();
+            else {
+                switch (target_stick.Update(reading.LeftThumbstickX, reading.LeftThumbstickY, now)) {
+                case StickDirection::Up: directions |= Up; break;
+                case StickDirection::Down: directions |= Down; break;
+                case StickDirection::Left: directions |= Left; break;
+                case StickDirection::Right: directions |= Right; break;
+                case StickDirection::None: break;
+                }
+            }
+            if ((edges & GamepadButtons::DPadUp) != GamepadButtons::None) directions |= Up;
+            if ((edges & GamepadButtons::DPadDown) != GamepadButtons::None) directions |= Down;
+            if ((edges & GamepadButtons::DPadLeft) != GamepadButtons::None) directions |= Left;
+            if ((edges & GamepadButtons::DPadRight) != GamepadButtons::None) directions |= Right;
+            if ((edges & GamepadButtons::B) != GamepadButtons::None) actions |= Quit;
+            WorkBindingEditor(editor, directions, edges);
+        }
+    } catch (...) {
+        // The catalog will notice it left; until then it just doesn't answer.
+        editor.capturing = false;
+        dirty = true;
+    }
+}
+
 void LibrarySession::ReadPad(TimePoint now) {
+    ReadMapTarget(now);
     if (pad) {
         try {
-            const auto reading = ReadController(*pad).gamepad;
+            const auto reading = ReadMenuController(*pad).gamepad;
             const auto buttons = reading.Buttons;
             // Track physical edges before mapping: changing the option while holding a
             // button must not synthesize a second press of its new logical counterpart.
@@ -470,7 +797,9 @@ void LibrarySession::ReadPad(TimePoint now) {
                 if (hit(GamepadButtons::DPadLeft)) directions |= Left;
                 if (hit(GamepadButtons::DPadRight)) directions |= Right;
             }
-            if (system_page.name_editor) {
+            if (panel.pad_map.open && panel.pad_map.capturing) {
+                // ReadMapTarget listens to the controller being mapped.
+            } else if (system_page.name_editor) {
                 // Like the console's keyboard: A types, X deletes, Y adds a space, Menu (or RB)
                 // is done, View (or LB) is Shift and B leaves without saving. The bumpers are
                 // what a game's keyboard uses, where + and - belong to the game menu.
@@ -498,9 +827,13 @@ void LibrarySession::ReadPad(TimePoint now) {
                 }
             } else {
                 // Back must remain available while editing/capturing keyboard input.
-                // Track all edges, but suppress other pad actions inside that modal.
                 if (hit(GamepadButtons::B)) actions |= Quit;
-                if (!panel.keyboard.open) {
+                if (BindingEditor* const editor = panel.OpenEditor()) {
+                    // The pad works the editor; the console may have no other way to.
+                    WorkBindingEditor(*editor, directions, edges);
+                } else if (panel.pad_picker.open) {
+                    WorkPadPicker(directions, edges);
+                } else {
                     actions |= directions;
                     if (hit(GamepadButtons::A)) actions |= Play;
                     // On the library X rescans and Y pins; the pages keep their own X and Y.

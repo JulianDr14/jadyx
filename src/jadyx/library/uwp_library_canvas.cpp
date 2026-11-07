@@ -3,7 +3,6 @@
 #include "jadyx/library/uwp_library_canvas.h"
 #include "jadyx/updates/update_ui.h"
 #include <ctime>
-#include "jadyx/input/pro_controller_geometry.h"
 
 #include <algorithm>
 #include <array>
@@ -205,7 +204,25 @@ public:
         // On the Settings tab the controller's rows are its page; only the device list floats.
         if (view.controller_panel && view.tab != LibraryTab::Settings) DrawControllerPanel(view);
         else if (view.controller_panel && panel.expanded) DrawControllerChoices(view, true);
-        if (panel.keyboard.open) DrawKeyboard(panel.keyboard);
+        if (panel.keyboard.open) {
+            DrawBindingEditor(panel.keyboard, 0, Tr(T::KeyboardTitle), Tr(T::KeyboardSubtitle), T::PressAKey, T::WaitingForKey, T::Back,
+                              [&](size_t action) { return KeyboardKeyName(panel.keyboard.bindings[action]); },
+                              [](size_t) { return false; });
+        } else if (panel.pad_map.open) {
+            const auto& map = panel.pad_map;
+            const bool on_shortcut = map.selected == MenuShortcutAction;
+            DrawBindingEditor(map, map.number, Tr(T::PadMapTitle), map.device_name,
+                              on_shortcut ? T::PressACombination : T::PressAnInput,
+                              on_shortcut ? T::WaitingForCombination : T::WaitingForInput, T::SaveAndBack,
+                              [&](size_t action) {
+                                  return action == MenuShortcutAction ?
+                                      PadMenuShortcutName(map.menu_shortcut, map.bindings, map.standard) :
+                                      PadSourceName(map.bindings[action], map.standard);
+                              },
+                              [&](size_t action) { return PadActionRequired(map.bindings, action); });
+        } else if (panel.pad_picker.open) {
+            DrawPadPicker(panel.pad_picker, panel.notice);
+        }
         if (configuration.open && view.system.open && view.system.name_editor) DrawNameEditor(view.system);
         if (management) {
             DrawGameOptions(view.game_options);
@@ -214,7 +231,7 @@ public:
             DrawHeader(view, now);
         }
         if (!view.system.updates_open && !management && !configuration.network_screen && !configuration.open &&
-            view.tab != LibraryTab::Settings && !view.controller_panel && !view.missing_content && !panel.keyboard.open) {
+            view.tab != LibraryTab::Settings && !view.controller_panel && !view.missing_content && !panel.BindingEditorOpen()) {
             if (view.system.updated) DrawUpdatedNotice(view.system.update.installed);
             else if (view.system.update.notice && view.system.update.release) DrawUpdateNotice(*view.system.update.release);
         }
@@ -932,15 +949,15 @@ private:
         Round(620, 133, 586, 487, 24, Palette::Surface);
         Text(Tr(T::ControllerTitle), 658, 168, 34, Palette::Text, 490, 55, true);
         Text(Tr(T::ControllerSubtitle), 658, 227, 21, Palette::TextSecondary, 490);
-        const unsigned offset = panel.xbox ? 0 : 1;
         const auto active = SelectController(panel.devices, options.controller_id);
         const bool nintendo = active && panel.devices[*active].nintendo;
-        for (unsigned row = 0; row < 3 + offset; ++row) {
+        const bool mapped = active && panel.devices[*active].bindings;
+        for (unsigned row = 0; row < 4; ++row) {
             const float y = ControllerRowTop + row * ControllerRowHeight;
             Round(648, y, 530, 56, 14, row == view.controller_row ? Palette::RowActive : Palette::Row);
-            const bool device = offset && row == 0;
-            const bool type = row == offset;
-            const bool face = row == offset + 1;
+            const bool device = row == 0;
+            const bool type = row == 1;
+            const bool face = row == 2;
             Text(Tr(device ? T::ControllerDevice : type ? T::ControllerSeenAs :
                     face ? T::FaceButtons : T::DeadZone),
                  669, y + 2, 19, Palette::Text, 400, 28, true);
@@ -953,17 +970,17 @@ private:
             } else if (type) {
                 value = Tr(ControllerStyleText(options.style));
             } else if (face) {
-                value = Tr(nintendo ? T::NintendoFaceButtons :
+                value = Tr(mapped ? T::FaceButtonsMapped : nintendo ? T::NintendoFaceButtons :
                            options.swap_face_buttons ? T::ByPosition : T::ByLetter);
             } else {
                 value = std::to_wstring(static_cast<int>(options.deadzone * 100)) + L"%";
             }
             Text(value, 669, y + 28, 18, Palette::Accent, 460, 26);
         }
-        if (!panel.xbox) {
-            Round(648, 510, 530, 34, 10, view.controller_row == 4 ? Palette::RowActive : Palette::Row);
-            Text(std::wstring{Tr(T::SetUpKeyboard)} + L"   >", 669, 512, 19, Palette::Accent, 460, 30, true);
-        }
+        Round(648, 510, 260, 34, 10, view.controller_row == 4 ? Palette::RowActive : Palette::Row);
+        Text(std::wstring{Tr(T::SetUpKeyboard)} + L"   >", 662, 512, 17, Palette::Accent, 240, 30, true);
+        Round(918, 510, 260, 34, 10, view.controller_row == 5 ? Palette::RowActive : Palette::Row);
+        Text(std::wstring{Tr(T::SetUpPadMap)} + L"   >", 932, 512, 17, Palette::Accent, 240, 30, true);
         ControlPrompt(Navigation::Play, Tr(T::Change), 658, 551);
         ControlPrompt(Navigation::Back, Tr(T::Back), 1018, 551);
         if (!panel.notice.empty()) Text(panel.notice, 658, 594, 16, Palette::Accent, 515, 25);
@@ -996,114 +1013,274 @@ private:
                             first, ControllerVisibleChoices, count);
         }
     }
-    void DrawKeyboard(const KeyboardEditor& editor) {
+    /// Built once: the editor draws it big, the picker's cards small.
+    void BuildControllerShapes() {
+        if (controller_outline) return;
+        // One outline: the right half in curves from the top center, then the same way back mirrored.
+        static constexpr std::array<D2D1_POINT_2F, 28> Half{{
+            {0, 6}, {30, 6}, {55, 3}, {85, 3}, {115, 3}, {140, 10}, {155, 26}, {170, 42}, {176, 70}, {180, 100},
+            {184, 135}, {192, 180}, {192, 222}, {192, 250}, {180, 272}, {160, 272}, {143, 272}, {132, 258},
+            {122, 240}, {110, 218}, {98, 192}, {80, 180}, {68, 172}, {50, 170}, {35, 170}, {20, 170}, {10, 170},
+            {0, 170}}};
+        // The right side's: what the body doesn't cover shows above the shoulder.
+        static constexpr std::array<D2D1_POINT_2F, 7> Bumper{{
+            {50, 20}, {65, -6}, {100, -13}, {125, -10}, {145, -8}, {158, 8}, {158, 32}}};
+        static constexpr std::array<D2D1_POINT_2F, 7> Trigger{{
+            {62, 10}, {66, -12}, {85, -23}, {100, -23}, {115, -23}, {128, -14}, {132, 10}}};
+        const auto at = [](D2D1_POINT_2F point, float side) {
+            return D2D1::Point2F(360 + side * point.x, 272 + point.y);
+        };
+        ComPtr<ID2D1Factory> factory; target->GetFactory(&factory);
+        const auto shoulder = [&](const auto& curve, float side, ComPtr<ID2D1PathGeometry>& geometry) {
+            winrt::check_hresult(factory->CreatePathGeometry(&geometry));
+            ComPtr<ID2D1GeometrySink> sink;
+            winrt::check_hresult(geometry->Open(&sink));
+            sink->BeginFigure(at(curve[0], side), D2D1_FIGURE_BEGIN_FILLED);
+            for (size_t i = 1; i < curve.size(); i += 3)
+                sink->AddBezier(D2D1::BezierSegment(at(curve[i], side), at(curve[i + 1], side), at(curve[i + 2], side)));
+            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            winrt::check_hresult(sink->Close());
+        };
+        shoulder(Bumper, -1, controller_shoulders[0]); shoulder(Bumper, 1, controller_shoulders[1]);
+        shoulder(Trigger, -1, controller_shoulders[2]); shoulder(Trigger, 1, controller_shoulders[3]);
+        winrt::check_hresult(factory->CreatePathGeometry(&controller_outline));
+        ComPtr<ID2D1GeometrySink> sink;
+        winrt::check_hresult(controller_outline->Open(&sink));
+        sink->BeginFigure(at(Half[0], 1), D2D1_FIGURE_BEGIN_FILLED);
+        for (size_t i = 1; i < Half.size(); i += 3)
+            sink->AddBezier(D2D1::BezierSegment(at(Half[i], 1), at(Half[i + 1], 1), at(Half[i + 2], 1)));
+        for (size_t i = Half.size() - 1; i >= 3; i -= 3)
+            sink->AddBezier(D2D1::BezierSegment(at(Half[i - 1], -1), at(Half[i - 2], -1), at(Half[i - 3], -1)));
+        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        winrt::check_hresult(sink->Close());
+    }
+    void DrawBindingClose() {
+        const auto& close = BindingCloseButton;
+        Round(close.x, close.y, close.w, close.h, 10, Palette::Graphite);
+        brush->SetColor(D2D1::ColorF(Palette::TextHint));
+        const float x = close.x + close.w / 2, y = close.y + close.h / 2;
+        target->DrawLine(D2D1::Point2F(x - 7, y - 7), D2D1::Point2F(x + 7, y + 7), brush.Get(), 2);
+        target->DrawLine(D2D1::Point2F(x + 7, y - 7), D2D1::Point2F(x - 7, y + 7), brush.Get(), 2);
+    }
+    /// The filled number that says which controller a screen is about.
+    void DrawPadNumber(size_t number, float x, float y, float size, bool active) {
+        Round(x, y, size, size, size / 2, active ? Palette::Accent : Palette::Graphite);
+        Text(std::to_wstring(number), x, y, size * 0.5f, active ? Palette::OnAccent : Palette::Text, size, size, true, false, true);
+    }
+    /// A label in a pill, its right edge at `right`.
+    void DrawCardChip(std::wstring_view label, float right, float y, unsigned fill, unsigned color) {
+        const float width = MeasureText(label, 12, true) + 18;
+        Round(right - width, y, width, 22, 11, fill);
+        Text(label, right - width, y, 12, color, width, 22, true, false, true);
+    }
+    /// The same silhouette as the editor's, small; lit while its controller has an input held.
+    void DrawCardSilhouette(float center_x, float center_y, float scale, bool lit) {
+        BuildControllerShapes();
+        D2D1_MATRIX_3X2_F base;
+        target->GetTransform(&base);
+        const auto place = D2D1::Matrix3x2F::Translation(-360, -396) * D2D1::Matrix3x2F::Scale(scale, scale) *
+                           D2D1::Matrix3x2F::Translation(center_x, center_y);
+        target->SetTransform(place * *D2D1::Matrix3x2F::ReinterpretBaseType(&base));
+        const float edge = 1.5f / scale;
+        const unsigned body = lit ? Palette::Accent : 0x2a2d32, part = lit ? Palette::OnAccent : 0x4d5157;
+        brush->SetColor(D2D1::ColorF(lit ? Palette::TextHint : 0x3d4046));
+        for (const auto& shape : controller_shoulders) target->FillGeometry(shape.Get(), brush.Get());
+        brush->SetColor(D2D1::ColorF(body));
+        target->FillGeometry(controller_outline.Get(), brush.Get());
+        brush->SetColor(D2D1::ColorF(lit ? Palette::Accent : 0x4d5157));
+        target->DrawGeometry(controller_outline.Get(), brush.Get(), edge);
+        brush->SetColor(D2D1::ColorF(part));
+        for (size_t i = 0; i < 6; ++i) {
+            const auto tile = KeyboardDiagramTile(i);
+            const float radius = i >= 4 ? tile.w / 2 - 6 : tile.w / 2 - 2;
+            target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(tile.x + tile.w / 2, tile.y + tile.h / 2), radius, radius), brush.Get());
+        }
+        target->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(291, 372, 311, 432), 4, 4), brush.Get());
+        target->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(271, 392, 331, 412), 4, 4), brush.Get());
+        target->SetTransform(base);
+    }
+    /// One card per controller; press something on any of them to see which card it is.
+    void DrawPadPicker(const PadPicker& picker, std::wstring_view notice) {
         brush->SetColor(D2D1::ColorF(0, 0, 0, 0.86f));
         target->FillRectangle(D2D1::RectF(0, 0, 1280, 720), brush.Get());
-        Round(80, 88, 1120, 584, 22, Palette::Surface);
-        Text(Tr(T::KeyboardTitle), 120, 118, 28, Palette::Text, 900, 44, true);
-        Text(Tr(T::KeyboardSubtitle), 120, 166, 17, Palette::TextSecondary, 650, 30);
-        Round(1120, 112, 48, 40, 10, Palette::Graphite);
-        brush->SetColor(D2D1::ColorF(Palette::TextHint));
-        target->DrawLine(D2D1::Point2F(1137, 125), D2D1::Point2F(1151, 139), brush.Get(), 2);
-        target->DrawLine(D2D1::Point2F(1151, 125), D2D1::Point2F(1137, 139), brush.Get(), 2);
-        Round(120, 210, 480, 342, 16, Palette::Row);
-        Text(Tr(T::ControllerView), 143, 225, 13, Palette::TextSecondary, 220, 24, true);
-        // Reuse Eden Qt's original Pro Controller contours and button coordinates.
-        // Create paths once; fills/strokes/highlights share cached GPU resources.
-        if (!controller_paths[0]) {
-            using namespace ProControllerGeometry;
-            ComPtr<ID2D1Factory> factory; target->GetFactory(&factory);
-            auto polygon = [&](size_t index, const auto& points, bool mirror, bool symmetric) {
-                winrt::check_hresult(factory->CreatePathGeometry(&controller_paths[index]));
-                ComPtr<ID2D1GeometrySink> sink;
-                winrt::check_hresult(controller_paths[index]->Open(&sink));
-                auto point = [&](size_t i, bool reflected) {
-                    const float x = points[i * 2] * (reflected ? -1.0f : 1.0f);
-                    return D2D1::Point2F(350 + x, 390 + points[i * 2 + 1]);
-                };
-                sink->BeginFigure(point(0, mirror), D2D1_FIGURE_BEGIN_FILLED);
-                for (size_t i = 1; i < points.size() / 2; ++i) sink->AddLine(point(i, mirror));
-                if (symmetric)
-                    for (size_t i = points.size() / 2; i-- > 0;) sink->AddLine(point(i, !mirror));
-                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-                winrt::check_hresult(sink->Close());
-            };
-            polygon(0, pro_body, false, true);
-            polygon(1, pro_left_handle, false, false); polygon(2, pro_left_handle, true, false);
-            polygon(3, pro_left_trigger, false, false); polygon(4, pro_left_trigger, true, false);
+        Round(80, 72, 1120, 616, 22, Palette::Surface);
+        Text(Tr(T::PadPickerTitle), 120, 88, 28, Palette::Text, 960, 44, true);
+        Text(Tr(T::PadPickerHint), 120, 132, 16, Palette::TextSecondary, 980, 28);
+        DrawBindingClose();
+        const size_t count = picker.cards.size();
+        for (size_t i = 0; i < count; ++i) {
+            const auto card = PadPickerCardFor(i, count);
+            const auto& device = picker.cards[i];
+            const bool focused = i == picker.selected, lit = picker.lit[i];
+            Round(card.x, card.y, card.w, card.h, 16, focused ? Palette::RowActive : Palette::Row);
+            if (focused) Outline(card.x + 1, card.y + 1, card.w - 2, card.h - 2, 15, Palette::Accent, 1, 2);
+            const float badge = card.h > 250 ? 44.0f : 34.0f;
+            DrawPadNumber(i + 1, card.x + 14, card.y + 14, badge, focused);
+            if (device.id == picker.primary_id)
+                DrawCardChip(Tr(T::PadPrimary), card.x + card.w - 14, card.y + 20, Palette::Graphite, Palette::TextHint);
+            // Below the number's row, so the silhouette never covers it.
+            const float top = card.y + 20 + badge, bottom = card.y + card.h - 72;
+            const float scale = std::min((bottom - top) / 300.0f, (card.w - 80) / 390.0f);
+            DrawCardSilhouette(card.x + card.w / 2, (top + bottom) / 2, scale, lit);
+            Text(device.name, card.x + 16, card.y + card.h - 64, 16, Palette::Text, card.w - 32, 26, true);
+            Text(Tr(device.wireless ? T::Wireless : T::Usb), card.x + 16, card.y + card.h - 34, 13, Palette::TextSecondary, card.w - 130, 22);
+            DrawCardChip(Tr(device.custom_mapping ? T::PadCustomMapping : T::PadDefaultMapping),
+                         card.x + card.w - 14, card.y + card.h - 34,
+                         device.custom_mapping ? Palette::Accent : Palette::Graphite,
+                         device.custom_mapping ? Palette::OnAccent : Palette::TextSecondary);
         }
-        auto path = [&](size_t i, unsigned color) {
-            brush->SetColor(D2D1::ColorF(color)); target->FillGeometry(controller_paths[i].Get(), brush.Get());
-            brush->SetColor(D2D1::ColorF(0x45484d)); target->DrawGeometry(controller_paths[i].Get(), brush.Get(), 1.2f);
-        };
+        if (!notice.empty()) Text(notice, 120, 614, 14, Palette::Text, 1040, 24, true);
+        Round(120, 644, 1040, 1, 0, Palette::Graphite);
+        if (prompt_family == PromptFamily::Keyboard) {
+            Text(Tr(T::KeyboardPickerHelp), 120, 654, 14, Palette::TextSecondary, 1040, 24);
+            return;
+        }
+        ControlPrompt(Navigation::Play, Tr(T::PromptConfigure), 120, 650);
+        const auto back = Tr(T::Back);
+        ControlPrompt(Navigation::Back, back, 1160 - PromptWidth(Navigation::Back, back) + 28, 650);
+    }
+    /// The keyboard's and the controller's: `number` is the card it came from (0: none), `bound` names
+    /// what drives an action and `missing` marks what leaving would stop at.
+    void DrawBindingEditor(const BindingEditor& editor, size_t number, std::wstring_view title, std::wstring_view subtitle,
+                           T press, T waiting, T back, const auto& bound, const auto& missing) {
+        BuildControllerShapes();
+        brush->SetColor(D2D1::ColorF(0, 0, 0, 0.86f));
+        target->FillRectangle(D2D1::RectF(0, 0, 1280, 720), brush.Get());
+        Round(80, 72, 1120, 616, 22, Palette::Surface);
+        const float title_x = number ? 190.0f : 120.0f;
+        if (number) DrawPadNumber(number, 120, 92, 56, true);
+        Text(title, title_x, 86, 28, Palette::Text, 900, 44, true);
+        Text(subtitle, title_x, 130, 16, Palette::TextSecondary, 900, 28);
+        DrawBindingClose();
+        Round(120, 196, 480, 360, 16, Palette::Row);
         const size_t action = editor.selected;
-        path(1, Palette::Graphite); path(2, Palette::Graphite); path(0, Palette::Graphite);
-        path(3, action == 6 ? Palette::Accent : Palette::RowActive); path(4, action == 7 ? Palette::Accent : Palette::RowActive);
-        auto circle = [&](float x, float y, float radius, const wchar_t* label, bool active, float font = 16) {
+        constexpr unsigned BodyFill = 0x2a2d32, BodyEdge = 0x4d5157, PartFill = 0x3d4046;
+        // Behind the body, so only their tops show: the triggers, then the bumpers over them.
+        for (const size_t i : {size_t{8}, size_t{9}, size_t{6}, size_t{7}}) {
+            const auto& shape = controller_shoulders[i - 6];
+            brush->SetColor(D2D1::ColorF(action == i ? Palette::Accent : i < 8 ? PartFill : BodyFill));
+            target->FillGeometry(shape.Get(), brush.Get());
+            brush->SetColor(D2D1::ColorF(BodyEdge)); target->DrawGeometry(shape.Get(), brush.Get(), 1.2f);
+        }
+        brush->SetColor(D2D1::ColorF(BodyFill)); target->FillGeometry(controller_outline.Get(), brush.Get());
+        brush->SetColor(D2D1::ColorF(BodyEdge)); target->DrawGeometry(controller_outline.Get(), brush.Get(), 1.5f);
+        for (const size_t i : {size_t{8}, size_t{9}}) {
+            const auto tile = KeyboardDiagramTile(i);
+            Text(i == 8 ? L"ZL" : L"ZR", tile.x, tile.y, 11, action == i ? Palette::OnAccent : Palette::TextHint,
+                 tile.w, tile.h, true, false, true);
+        }
+        for (const size_t i : {size_t{6}, size_t{7}}) {
+            const auto tile = KeyboardDiagramTile(i);
+            Text(i == 6 ? L"L" : L"R", tile.x, tile.y, 12, action == i ? Palette::OnAccent : Palette::TextHint,
+                 tile.w, tile.h, true, false, true);
+        }
+        auto circle = [&](float x, float y, float radius, const wchar_t* label, bool active, float font, unsigned fill) {
             const auto shape = D2D1::Ellipse(D2D1::Point2F(x, y), radius, radius);
-            brush->SetColor(D2D1::ColorF(active ? Palette::Accent : Palette::Row)); target->FillEllipse(shape, brush.Get());
-            brush->SetColor(D2D1::ColorF(active ? Palette::Text : 0x45484d)); target->DrawEllipse(shape, brush.Get(), 1.4f);
+            brush->SetColor(D2D1::ColorF(active ? Palette::Accent : fill)); target->FillEllipse(shape, brush.Get());
+            brush->SetColor(D2D1::ColorF(active ? Palette::Text : BodyEdge)); target->DrawEllipse(shape, brush.Get(), 1.2f);
             Text(label, x - radius, y - radius, font, active ? Palette::OnAccent : Palette::TextHint,
                  radius * 2, radius * 2, true, false, true);
         };
-        auto stick = [&](float x, float y, const wchar_t* label, bool active) {
-            circle(x, y, 32, L"", active);
-            circle(x, y, 22, label, false, 12);
+        // The diagram's tiles are its hit areas: each part is drawn on its own.
+        auto button = [&](size_t i, const wchar_t* label, float font) {
+            const auto tile = KeyboardDiagramTile(i);
+            circle(tile.x + tile.w / 2, tile.y + tile.h / 2, tile.w / 2, label, action == i, font, Palette::Row);
         };
-        stick(239, 335, L"L3", action == 4 || (action >= 20 && action < 24));
-        stick(401, 390, L"R3", action == 5 || action >= 24);
-        circle(486, 334, 15, L"A", action == 0); circle(455, 365, 15, L"B", action == 1);
-        circle(455, 303, 15, L"X", action == 2); circle(424, 334, 15, L"Y", action == 3);
-        Round(278, 359, 22, 62, 4, Palette::Row); Round(258, 379, 62, 22, 4, Palette::Row);
+        auto stick = [&](size_t i, const wchar_t* label, bool active) {
+            const auto tile = KeyboardDiagramTile(i);
+            const float x = tile.x + tile.w / 2, y = tile.y + tile.h / 2;
+            circle(x, y, tile.w / 2, L"", active, 12, Palette::Row);
+            circle(x, y, tile.w / 2 - 9, label, false, 12, PartFill);
+        };
+        stick(4, L"L3", action == 4 || (action >= 20 && action < 24));
+        stick(5, L"R3", action == 5 || (action >= 24 && action < KeyboardActionCount));
+        button(0, L"A", 15); button(1, L"B", 15); button(2, L"X", 15); button(3, L"Y", 15);
+        Round(291, 372, 20, 60, 4, Palette::Row); Round(271, 392, 60, 20, 4, Palette::Row);
+        // Left, up, right, down: an arrowhead on each arm.
+        static constexpr std::array<D2D1_POINT_2F, 4> Arms{{{-1, 0}, {0, -1}, {1, 0}, {0, 1}}};
         for (size_t i = 12; i <= 15; ++i) {
             const auto tile = KeyboardDiagramTile(i);
-            Round(tile.x, tile.y, tile.w, tile.h, 3, action == i ? Palette::Accent : Palette::RowActive);
+            if (action == i) Round(tile.x, tile.y, tile.w, tile.h, 4, Palette::Accent);
+            const auto arm = Arms[i - 12];
+            const float x = tile.x + tile.w / 2, y = tile.y + tile.h / 2;
+            const auto tip = D2D1::Point2F(x + arm.x * 3, y + arm.y * 3);
+            brush->SetColor(D2D1::ColorF(action == i ? Palette::OnAccent : Palette::TextSecondary));
+            target->DrawLine(tip, D2D1::Point2F(x - arm.x + arm.y * 3, y - arm.y + arm.x * 3), brush.Get(), 1.4f);
+            target->DrawLine(tip, D2D1::Point2F(x - arm.x - arm.y * 3, y - arm.y - arm.x * 3), brush.Get(), 1.4f);
         }
-        circle(300, 304, 10, L"-", action == 11, 14); circle(400, 304, 10, L"+", action == 10, 14);
-        circle(379, 334, 10, L"", action == 18);
+        button(11, L"-", 14); button(10, L"+", 14);
+        button(18, L"", 12);
+        const auto home = KeyboardDiagramTile(18);
+        const float home_x = home.x + 9, home_y = home.y + 9;
         brush->SetColor(D2D1::ColorF(action == 18 ? Palette::OnAccent : Palette::TextHint));
-        target->DrawLine(D2D1::Point2F(374, 334), D2D1::Point2F(379, 330), brush.Get(), 1.4f);
-        target->DrawLine(D2D1::Point2F(379, 330), D2D1::Point2F(384, 334), brush.Get(), 1.4f);
-        target->DrawRectangle(D2D1::RectF(376, 334, 382, 339), brush.Get(), 1.2f);
-        Round(314, 327, 14, 14, 3, action == 19 ? Palette::Accent : Palette::Row);
-        brush->SetColor(D2D1::ColorF(Palette::TextSecondary));
-        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(321, 334), 4, 4), brush.Get(), 1.2f);
-        for (const auto i : {size_t{8}, size_t{9}}) {
-            const auto tile = KeyboardDiagramTile(i);
-            Round(tile.x, tile.y, tile.w, tile.h, 8, action == i ? Palette::Accent : Palette::Graphite);
-            Text(i == 8 ? L"ZL" : L"ZR", tile.x, tile.y, 14, action == i ? Palette::OnAccent : Palette::TextHint,
-                 tile.w, tile.h, true, false, true);
+        target->DrawLine(D2D1::Point2F(home_x - 5, home_y), D2D1::Point2F(home_x, home_y - 4), brush.Get(), 1.4f);
+        target->DrawLine(D2D1::Point2F(home_x, home_y - 4), D2D1::Point2F(home_x + 5, home_y), brush.Get(), 1.4f);
+        target->DrawRectangle(D2D1::RectF(home_x - 3, home_y, home_x + 3, home_y + 5), brush.Get(), 1.2f);
+        const auto capture = KeyboardDiagramTile(19);
+        Round(capture.x, capture.y, capture.w, capture.h, 3, action == 19 ? Palette::Accent : Palette::Row);
+        brush->SetColor(D2D1::ColorF(action == 19 ? Palette::OnAccent : Palette::TextSecondary));
+        target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(capture.x + 8, capture.y + 8), 4, 4), brush.Get(), 1.2f);
+        Round(120, 564, 480, 67, 12, editor.capturing ? Palette::Accent : Palette::RowActive);
+        Text(Tr(T::SelectedBinding), 140, 574, 11, editor.capturing ? Palette::OnAccent : Palette::TextSecondary, 300, 19, true);
+        Text(KeyboardActionName(action), 140, 594, 20, editor.capturing ? Palette::OnAccent : Palette::Text, 285, 30, true);
+        Round(436, 579, 142, 38, 8, editor.capturing ? Palette::Canvas : Palette::Row);
+        const std::wstring bound_now = editor.capturing ? std::wstring{Tr(press)} : bound(action);
+        // A combination's name can be long for this box.
+        Text(bound_now, 436, 579, bound_now.size() > 14 ? 11.0f : 16.0f, Palette::Accent, 142, 38, true, false, true);
+        // The categories are one solid bar with the current one lit: nothing like the tiles below it.
+        const std::array<std::wstring_view, 4> pages{Tr(T::KeyPageButtons), Tr(T::KeyPageSystem), Tr(T::KeyPageSticks), Tr(T::KeyPageHub)};
+        const auto& bar = BindingTabBar;
+        Round(bar.x, bar.y, bar.w, bar.h, bar.h / 2, Palette::Canvas);
+        if (prompt_family != PromptFamily::Keyboard) {
+            const bool xbox = prompt_family == PromptFamily::Xbox;
+            Text(xbox ? L"LB" : L"L", bar.x, bar.y, 13, Palette::TextSecondary, 48, bar.h, true, false, true);
+            Text(xbox ? L"RB" : L"R", bar.x + bar.w - 48, bar.y, 13, Palette::TextSecondary, 48, bar.h, true, false, true);
         }
-        Text(L"L", 220, 252, 14, action == 6 ? Palette::OnAccent : Palette::TextHint, 60, 22, true, false, true);
-        Text(L"R", 450, 252, 14, action == 7 ? Palette::OnAccent : Palette::TextHint, 40, 22, true, false, true);
-        Round(120, 564, 480, 67, 12, Palette::RowActive);
-        Text(Tr(T::SelectedBinding), 140, 574, 11, Palette::TextSecondary, 300, 19, true);
-        Text(KeyboardActionName(action), 140, 594, 20, Palette::Text, 285, 30, true);
-        Round(436, 579, 142, 38, 8, Palette::Row);
-        Text(editor.capturing ? std::wstring{Tr(T::PressAKey)} : KeyboardKeyName(editor.bindings[action]),
-             436, 579, 16, Palette::Accent, 142, 38, true, false, true);
-        const std::array<std::wstring_view, 3> pages{Tr(T::KeyPageButtons), Tr(T::KeyPageSystem), Tr(T::KeyPageSticks)};
-        for (unsigned page = 0; page < pages.size(); ++page) {
-            const float x = 635 + page * 174.0f;
-            Round(x, 203, 166, 36, 9, page == editor.page ? Palette::RowActive : Palette::Graphite);
-            Text(pages[page], x, 203, 15, page == editor.page ? Palette::Text : Palette::TextSecondary,
-                 166, 36, true, false, true);
+        for (unsigned page = 0; page < editor.page_count; ++page) {
+            const auto tab = BindingTabFor(editor, page);
+            if (page == editor.page) Round(tab.x, tab.y, tab.w, tab.h, tab.h / 2, Palette::Accent);
+            Text(pages[page], tab.x, tab.y, 14, page == editor.page ? Palette::OnAccent : Palette::TextSecondary,
+                 tab.w, tab.h, true, false, true);
         }
-        for (const size_t i : KeyboardPageActions(editor.page)) {
+        if (action == MenuShortcutAction) Text(Tr(T::MenuShortcutHelp), 649, 318, 15, Palette::TextSecondary, 486, 240, false, true);
+        // The tile being edited is the brightest thing here; one the mapping can't do without shows it.
+        const auto draw_tile = [&](size_t i) {
             const auto tile = KeyboardTileFor(i);
-            Round(tile.x, tile.y, tile.w, tile.h, 9, i == action ? Palette::RowActive : Palette::Row);
-            Text(KeyboardActionName(i), tile.x + 14, tile.y, 15, Palette::TextHint, 136, tile.h, false, false, true);
-            Round(tile.x + 153, tile.y + 9, 86, 27, 6, Palette::Row);
-            Text(i == action && editor.capturing ? std::wstring{L"..."} : KeyboardKeyName(editor.bindings[i]),
-                 tile.x + 153, tile.y + 9, 14, i == action ? Palette::Accent : Palette::TextSecondary, 86, 27, true, false, true);
+            const bool active = i == action;
+            const float value_width = tile.w - 165;
+            Round(tile.x, tile.y, tile.w, tile.h, 9, active ? Palette::Accent : Palette::Row);
+            Text(KeyboardActionName(i), tile.x + 14, tile.y, 15, active ? Palette::OnAccent : Palette::TextHint, 136, tile.h, active, false, true);
+            Round(tile.x + 153, tile.y + 9, value_width, 27, 6, active ? Palette::Canvas : Palette::Graphite);
+            Text(active && editor.capturing ? std::wstring{L"..."} : bound(i), tile.x + 153, tile.y + 9, 14,
+                 missing(i) ? Palette::Warning : active ? Palette::Accent : Palette::Text, value_width, 27, true, false, true);
+        };
+        for (const size_t i : KeyboardPageActions(editor.page)) {
+            if (i != action) draw_tile(i);
         }
-        Round(635, 603, 155, 36, 8, Palette::Graphite); Text(Tr(T::ClearBinding), 635, 603, 15, Palette::TextHint, 155, 36, false, false, true);
-        Round(806, 603, 170, 36, 8, Palette::Graphite); Text(Tr(T::RestoreDefaults), 806, 603, 15, Palette::TextHint, 170, 36, false, false, true);
-        if (!editor.notice.empty()) Text(editor.notice, 990, 609, 13, Palette::TextSecondary, 172, 30);
-        Text(Tr(editor.capturing ? T::WaitingForKey : T::KeyboardHelp),
-             120, 644, 13, Palette::TextSecondary, prompt_family == PromptFamily::Keyboard ? 1030.0f : 860.0f, 22);
-        if (prompt_family != PromptFamily::Keyboard)
-            ControlPrompt(Navigation::Back, Tr(T::Back), 1010, 637);
+        // Waiting for an input: only the tile that gets it stays lit.
+        if (editor.capturing) Round(635, 196, 514, 441, 12, Palette::Surface, 0.6f);
+        if (KeyboardPageFor(action) == editor.page) draw_tile(action);
+        const auto command = [&](const KeyboardTile& where, std::wstring_view label) {
+            Round(where.x, where.y, where.w, where.h, 8, Palette::Graphite);
+            Text(label, where.x, where.y, 15, Palette::TextHint, where.w, where.h, false, false, true);
+        };
+        command(BindingClearButton, Tr(T::ClearBinding));
+        command(BindingRestoreButton, Tr(T::RestoreDefaults));
+        if (!editor.notice.empty()) Text(editor.notice, 984, 592, 13, Palette::Text, 176, 44, true, true);
+        Round(120, 644, 1040, 1, 0, Palette::Graphite);
+        if (editor.capturing) {
+            Text(Tr(waiting), 120, 654, 15, Palette::Text, 1040, 24, true);
+        } else if (prompt_family == PromptFamily::Keyboard) {
+            Text(Tr(T::KeyboardHelp), 120, 654, 14, Palette::TextSecondary, 1040, 24);
+        } else {
+            float x = 120;
+            x += ControlPrompt(Navigation::Play, Tr(T::PromptAssign), x, 650);
+            x += ControlPrompt(Navigation::Tabs, Tr(T::PromptCategory), x, 650);
+            x += ControlPrompt(Navigation::AddFolder, Tr(T::PromptClear), x, 650);
+            ControlPrompt(Navigation::Refresh, Tr(T::PromptRestore), x, 650);
+            const auto leave = Tr(back);
+            ControlPrompt(Navigation::Back, leave, 1160 - PromptWidth(Navigation::Back, leave) + 28, 650);
+        }
     }
     ComPtr<ID2D1Bitmap1> LoadAssetBitmap(const std::filesystem::path& relative) {
         ComPtr<ID2D1Bitmap1> bitmap;
@@ -1182,18 +1359,19 @@ private:
                 rows.push_back(std::move(item));
             }
         } else if (category == HomeControllers) {
-            // As the controller panel: [device (PC)], type, A/B/X/Y, dead zone, [keyboard (PC)].
+            // As the controller panel: device, type, A/B/X/Y, dead zone, keyboard, controller mapping.
             const auto& options = view.options;
             const auto& panel = view.panel;
-            if (!panel.xbox) {
-                const auto label = ControllerLabel(panel.devices, options.controller_id);
-                rows.push_back({Kind::Open, std::wstring{Tr(T::ControllerDevice)}, {},
-                                options.controller_id.empty() ? I18n::Format(T::AutomaticValue, {label}) : label});
-            }
+            const auto label = ControllerLabel(panel.devices, options.controller_id);
+            rows.push_back({Kind::Open, std::wstring{Tr(T::ControllerDevice)}, {},
+                            options.controller_id.empty() ? I18n::Format(T::AutomaticValue, {label}) : label});
             rows.push_back({Kind::Choice, std::wstring{Tr(T::ControllerSeenAs)}, {},
                             std::wstring{Tr(ControllerStyleText(options.style))}});
             const auto active = SelectController(panel.devices, options.controller_id);
-            if (active && panel.devices[*active].nintendo) {
+            if (active && panel.devices[*active].bindings) {
+                rows.push_back({Kind::Value, std::wstring{Tr(T::FaceButtons)}, {},
+                                std::wstring{Tr(T::FaceButtonsMapped)}});
+            } else if (active && panel.devices[*active].nintendo) {
                 rows.push_back({Kind::Value, std::wstring{Tr(T::FaceButtons)}, {},
                                 std::wstring{Tr(T::NintendoFaceButtons)}});
             } else {
@@ -1207,7 +1385,8 @@ private:
             zone.segments = {L"8%", L"12%", L"18%"};
             zone.on_segment = options.deadzone < 0.10f ? 0 : options.deadzone < 0.15f ? 1 : 2;
             rows.push_back(std::move(zone));
-            if (!panel.xbox) rows.push_back({Kind::Open, std::wstring{Tr(T::SetUpKeyboard)}});
+            rows.push_back({Kind::Open, std::wstring{Tr(T::SetUpKeyboard)}});
+            rows.push_back({Kind::Open, std::wstring{Tr(T::SetUpPadMap)}});
         } else {
             const auto& status = view.configuration.status;
             rows.push_back({Kind::Open, std::wstring{Tr(T::AddGamesFolder)}});
@@ -2224,7 +2403,9 @@ private:
     ComPtr<IDXGISwapChain1> swapchain;
     ComPtr<ID2D1DeviceContext> target;
     ComPtr<IWICImagingFactory> wic;
-    std::array<ComPtr<ID2D1PathGeometry>, 5> controller_paths;
+    ComPtr<ID2D1PathGeometry> controller_outline;
+    /// L, R, ZL, ZR.
+    std::array<ComPtr<ID2D1PathGeometry>, 4> controller_shoulders;
     ComPtr<ID2D1PathGeometry> pad_outline; ///< The header's controller (DrawPadGlyph).
     PromptFamily prompt_family{PromptFamily::Keyboard};
     HRESULT last_draw_error{S_OK}; ///< Logged once, not every frame.
