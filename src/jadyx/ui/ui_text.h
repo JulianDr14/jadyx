@@ -45,6 +45,7 @@ inline std::wstring_view KeyboardActionName(std::size_t action) {
         {{}, Text::ActionRightStickUp}, {{}, Text::ActionRightStickDown},
         {{}, Text::ActionRightStickLeft}, {{}, Text::ActionRightStickRight},
     }};
+    if (action == MenuShortcutAction) return I18n::Tr(Text::ActionMenuShortcut);
     if (action >= names.size()) return {};
     return names[action].literal.empty() ? I18n::Tr(names[action].text) : names[action].literal;
 }

@@ -69,7 +69,7 @@ int main() {
     // Quick menu, in Spanish: actions, and a page each for the controller and the display.
     I18n::SetUiLanguage(*I18n::FindUiLanguage(L"es"));
     GameMenu menu{{ConsoleControllerStyle::Auto, false, 0.12f}};
-    check(menu.CurrentPage() == GameMenu::Page::Quick && menu.PageTitle() == L"Menú rápido");
+    check(menu.CurrentPage() == GameMenu::Page::Quick && menu.PageTitle() == L"Jadyx Hub");
     check(menu.Rows().size() == 4 && menu.SelectedItem() == GameMenu::Continue);
     check(menu.Rows()[0].kind == GameMenuRow::Kind::Action && menu.Rows()[0].icon == UiIcon::Play);
     check(menu.Apply(MenuAction::Confirm) == GameMenuResult::Resume);
