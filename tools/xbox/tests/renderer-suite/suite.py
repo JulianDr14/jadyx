@@ -39,7 +39,7 @@ GATES = [
     "compute-pipeline-claim", "cpu-texture-writes", "demote-helper", "depth-region-copy",
     "draw-preparation", "draw-sampler-cache", "draw-targets", "etc2-decode", "frame-gen",
     "frame-gen-suite", "full-capture", "geometry-passthrough", "gpu-unswizzle", "heap-compaction",
-    "heap-growth", "index-rewrite-cache", "memory-import-probe",
+    "heap-growth", "index-rewrite-cache", "memory-edit", "memory-import-probe",
     "noperspective-lowering", "pipeline-key-fold", "pipeline-key-tracking",
     "pipeline-transition-order", "present-queue", "pso-blobs", "pso-cache", "recorder-d3d12",
     "reduction-sampling", "render-corrections", "srv-dimensions", "texture-replay",
