@@ -4,8 +4,9 @@
 #include <string_view>
 namespace Jadyx::PortalWeb {
 // The page is laid out like the console frontend: the wordmark and segmented tabs in the header,
-// and each tab is a Settings-style page, a list of categories beside the chosen one's pane; the
-// library's games open into their updates/DLC. Palette, Inter and capsule buttons follow
+// one tab for each kind of thing the player manages. What exists comes first and adding to it
+// second, and upload controls appear only while there is an upload. Games open into their
+// updates/DLC/save. Palette, Inter and capsule buttons follow
 // Jadyx::Palette; the only colour is the logo's. The CSP allows images from the portal itself
 // (/logo.png) and nothing external, so icons are inline SVG.
 inline constexpr std::string_view Page=R"HTML(<!doctype html>
@@ -49,16 +50,16 @@ body:has(#pair[hidden]) .status-off{display:none}body:has(#pair[hidden]) .status
 #connect{width:100%;height:52px;margin-top:14px}.hint{font-size:13px;margin-top:12px}
 #connection{margin-top:16px;font-size:14px;color:var(--hint)}#connection:empty{display:none}
 .app{display:none}body:has(#pair[hidden]) .app{display:block}body:has(#pair[hidden]) .gate{display:none}
-.view{display:grid;grid-template-columns:288px minmax(0,1fr);gap:32px;align-items:start}
-.cats{position:sticky;top:116px;display:flex;flex-direction:column;gap:6px}.cats .kicker{margin:0 0 10px 16px}
-button.cat{display:flex;align-items:center;gap:14px;width:100%;height:auto;min-height:64px;padding:10px 16px;border-radius:14px;background:none;border-color:transparent;
- color:var(--hint);text-align:left;font-weight:400}
-.cat span{flex:1;min-width:0}.cat b{display:block;font-size:15px;font-weight:600}.cat small{display:block;font-size:13px;margin-top:2px}
-.cat .chev{width:16px;height:16px;opacity:.5}button.cat:hover:not(:disabled){background:var(--row)}
-button.cat[aria-selected=true]{background:var(--active);border-color:rgba(255,255,255,.14);color:var(--text)}.cat[aria-selected=true] small{color:var(--hint)}
-button.cat:disabled{opacity:1;color:var(--muted)}.cat:disabled .ico{opacity:.6}
+.view{max-width:960px;margin:0 auto}
+.head-row{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}.head-row .head{margin:0}.head-row button{flex:none}
+.items:empty{display:none}#amiibo-results{margin:16px 0 0}#amiibo-items{margin:0}
+.amiibo-tools{display:flex;gap:10px;margin-bottom:12px}.amiibo-tools button{flex:none;height:48px}
+#amiibo-search{flex:1;min-width:0;height:48px;padding:0 16px;font:inherit;background:var(--canvas);color:var(--text);border:1px solid var(--field);border-radius:12px}#amiibo-search:focus{outline:none;border-color:var(--text)}
+#amiibo-count{font-size:13px;margin:0 0 12px;font-variant-numeric:tabular-nums}#amiibo-count:empty{display:none}#amiibo-key-status{margin-bottom:20px;color:var(--text)}
+.actions:not(:has(>:not([hidden]))){display:none}
+#amiibo-note{position:sticky;top:92px;z-index:5;margin-bottom:16px;padding:12px 14px;border-radius:12px;color:var(--cyan);background:var(--row);border:1px solid var(--line)}#amiibo-note:empty{display:none}
 .tag{font-size:10px;line-height:20px;font-style:normal;font-weight:600;letter-spacing:.08em;text-transform:uppercase;padding:0 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
-.store{display:flex;align-items:center;gap:14px;margin-top:16px;padding:16px;border-radius:16px;background:var(--surface);border:1px solid var(--line);color:var(--hint)}
+.store{display:flex;align-items:center;gap:14px;margin-top:16px;padding:14px 16px;border-radius:16px;background:var(--surface);border:1px solid var(--line);color:var(--hint)}
 #space{font-size:14px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums;white-space:pre-line}#space:empty::before{content:"—"}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:32px;box-shadow:0 32px 64px -32px rgba(0,0,0,.7)}
 .head{margin-bottom:24px}.head p{margin-top:6px;max-width:44em}
@@ -119,13 +120,13 @@ button.back{height:34px;padding:0 14px;margin-bottom:20px;font-size:13px;color:v
 .items li{display:flex;align-items:center;gap:14px;padding:12px 14px;border-radius:14px;background:var(--row);border:1px solid var(--line)}
 .items li span{flex:1;min-width:0}.items b{display:block;font-weight:600;overflow-wrap:anywhere}.items small{display:block;font-size:13px}
 .items li.empty{justify-content:center;color:var(--muted)}.items button{height:36px;padding:0 16px}
-#save-intro,#save-warning{font-size:13px;margin:0 0 16px}#save-pane .drop{margin-top:4px}#save-warning{margin-top:12px}
+#save-intro,#save-warning{font-size:13px;margin:0 0 16px}#save-pane .drop{margin-top:20px}#save-warning{margin-top:12px}#logs-help{margin-top:6px;max-width:44em}
 #save-error{margin:0 0 16px;padding:12px 14px;border-radius:12px;color:var(--warn);background:rgba(240,194,122,.08);border:1px solid rgba(240,194,122,.24);overflow-wrap:anywhere}
 button.link{height:auto;padding:0;border:0;background:none;color:var(--cyan);text-decoration:underline;font-weight:500}button.link:hover:not(:disabled){background:none}
 #save-help{margin:0 0 20px;padding:14px 16px;border-radius:12px;background:var(--row);border:1px solid var(--line)}#save-help.flash{border-color:var(--cyan)}
 #save-help pre{margin:0 0 10px;font:13px/1.5 ui-monospace,Consolas,monospace;overflow-x:auto;color:var(--text)}#save-help p{font-size:13px;margin-top:6px}
 footer{display:flex;align-items:center;justify-content:center;gap:8px;padding:24px 16px 32px;font-size:13px;color:var(--muted)}footer .ico{width:16px;height:16px}
-body.updating .tabs{visibility:hidden}body.updating #view-content,body.updating #view-system,body.updating #log-export{display:none!important}
+body.updating .tabs{visibility:hidden}body.updating #view-content,body.updating #view-amiibo,body.updating #view-system{display:none!important}
 #view-update{display:none;max-width:760px;margin:0 auto}body.updating #view-update{display:block}
 .update-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:32px}.update-top h1{margin-top:8px}.update-top p{margin-top:6px}
 .badge{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap;
@@ -144,20 +145,18 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 .installing{padding:24px 0 8px;text-align:center}.installing p{max-width:30em;margin:10px auto 0}.installing button{margin-top:24px}
 .spin{width:48px;height:48px;margin:0 auto 22px;border-radius:50%;border:3px solid var(--graphite);border-top-color:var(--cyan);animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-#update-banner .panel-top{align-items:center;margin:0}#update-banner p{margin-top:4px}
+#update-banner{max-width:960px;margin:0 auto 24px}#update-banner .panel-top{align-items:center;margin:0}#update-banner p{margin-top:4px}
 @media(max-width:860px){.bar{grid-template-columns:minmax(0,1fr) auto;padding:12px 16px;row-gap:12px}.tabs{grid-column:1/-1}.tabs button{flex:1}
- .shell{padding:20px 16px 32px}.view{grid-template-columns:minmax(0,1fr);gap:16px}
- .cats{position:static;flex-direction:row;overflow-x:auto;scrollbar-width:none;margin:0 -16px;padding:0 16px}.cats::-webkit-scrollbar{display:none}
- .cats .kicker,.cat .chev,.cat small{display:none}button.cat{flex:none;width:auto;min-height:48px;padding:8px 16px;background:var(--row)}
- .store{flex:none;margin:0;padding:8px 16px}#message{top:132px}
+ .shell{padding:20px 16px 32px}
+ #message,#amiibo-note{top:132px}.head-row{flex-direction:column}
  .grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}.hero{grid-template-columns:72px minmax(0,1fr)}.hero .art{width:72px}.hero .danger{grid-column:1/-1}
- .card{padding:22px}h1{font-size:28px;line-height:34px}.actions button{flex:1 1 calc(50% - 10px)}#code{font-size:28px;letter-spacing:.28em;text-indent:.28em}}
+ .card{padding:22px}h1{font-size:28px;line-height:34px}.actions button{flex:1 1 calc(50% - 10px);height:auto;min-height:44px;padding:10px 16px;line-height:1.25}#code{font-size:28px;letter-spacing:.28em;text-indent:.28em}}
 @media(max-width:600px){.update-top{flex-direction:column}.steps li{gap:14px}.steps .actions>*{flex:1 1 100%;justify-content:center}}
 @media(max-width:420px){.brand img{width:36px;height:36px}.word{font-size:16px;letter-spacing:.3em}.caps,.link span{display:none}.link{padding:0 11px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 <body><header class="bar"><div class="brand"><img src="/logo.png" alt="Jadyx" width="44" height="44"><span class="word">JADYX</span><span class="caps">Portal</span></div>
-<nav class="tabs" role="tablist"><button id="tab-content" role="tab" aria-selected="true">Content</button><button id="tab-system" role="tab" aria-selected="false">System</button></nav>
+<nav class="tabs" role="tablist"><button id="tab-games" role="tab" aria-selected="true">Games</button><button id="tab-amiibo" role="tab" aria-selected="false" hidden>Amiibo</button><button id="tab-system" role="tab" aria-selected="false">System</button></nav>
 <span class="link" role="status"><i></i><span class="status-off" id="status-off">Not connected</span><span class="status-on" id="status-on">Connected</span></span></header>
 <div class="shell"><p id="message" role="alert"></p>
 <main class="gate"><img src="/logo.png" alt="" width="132" height="132"><p class="kicker" id="kicker">Local network portal</p><h1 id="title">Connect to your console</h1>
@@ -179,23 +178,20 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <div class="installing" id="update-installing" hidden><div class="spin"></div><h2 id="update-installing-title">Installing the update</h2><p id="update-installing-body"></p>
 <button id="update-reconnect">Connect again</button></div>
 <p class="keep" id="update-keep"></p><div class="update-foot"><button class="back" id="update-skip">Go to content</button></div></section>
-<div class="view" id="view-content"><nav class="cats"><p class="kicker" id="content-kicker">Install</p>
-<button class="cat" id="cat-games" aria-selected="true"><svg class="ico" viewBox="0 0 24 24"><path d="M6.5 8h11a4 4 0 0 1 3.9 4.9l-1 4.4a2.4 2.4 0 0 1-4.2 1L14.5 16h-5l-1.7 2.3a2.4 2.4 0 0 1-4.2-1l-1-4.4A4 4 0 0 1 6.5 8z"/><path d="M8 11v3M6.5 12.5h3M15.5 12h.01M17.5 14h.01"/></svg>
-<span><b id="cat-games-title">Games</b><small id="cat-games-sub">NSP · XCI · NRO · base game</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
-<button class="cat" id="cat-library" aria-selected="false" hidden><svg class="ico" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
-<span><b id="cat-library-title">Library</b><small id="cat-library-sub">Updates · DLC · saves · delete</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
-<div class="store"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13 7.5 5h9L19 13M7 16.5h.01"/></svg><span id="space"></span></div></nav>
-<section id="upload" class="card" hidden><div class="head"><h2 id="uploadtitle">Import games</h2><p id="uploadintro">Base games only. Choose where your console keeps them.</p></div>
+<section class="panel" id="update-banner" hidden><div class="panel-top"><div><h3 id="update-banner-title"></h3><p id="update-banner-body"></p></div>
+<button class="primary" id="update-banner-open"></button></div></section>
+<div class="view" id="view-content">
+<section id="upload" class="card" hidden><button class="back" id="upload-back">← Library</button><div class="head"><h2 id="uploadtitle">Import games</h2><p id="uploadintro">Base games only. Choose where your console keeps them.</p></div>
 <nav class="seg" id="where" role="tablist" hidden><button id="where-internal" role="tab" aria-selected="true">Internal storage</button><button id="where-developer" role="tab" aria-selected="false">Dev storage (D:)</button></nav>
 <label class="drop" id="files-zone"><input id="files" type="file" accept=".nsp,.xci,.nro" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
 <strong id="fileslabel">Choose NSP, XCI or NRO files</strong><span id="files-drop">or drop them here</span><span class="picked" id="files-picked"></span></label>
-<div class="field"><label id="namelabel" for="name">Destination name (one file)</label><input id="name" maxlength="100" autocomplete="off"></div>
+<div class="field" id="name-field" hidden><label id="namelabel" for="name">Destination name (one file)</label><input id="name" maxlength="100" autocomplete="off"></div>
 <div class="actions"><button id="send" class="primary">Upload / resume</button><button id="pause">Pause</button><button id="rename">Rename pending file</button>
 <button class="danger" id="discard">Discard partial file</button></div>
-<div class="panel"><div class="panel-top"><p id="job" role="status" aria-live="polite"></p><span class="pct" id="percent"></span></div>
+<div class="panel" id="upload-panel" hidden><div class="panel-top"><p id="job" role="status" aria-live="polite"></p><span class="pct" id="percent"></span></div>
 <progress id="progress" max="1" value="0"></progress><div class="stats"><p id="confirmed"></p><p id="rate"></p><p id="eta"></p><p id="queue"></p></div></div></section>
 <section id="library" class="card" hidden><p id="library-note" role="status" aria-live="polite"></p>
-<div id="library-list"><div class="head"><h2 id="library-title">Your library</h2><p id="library-intro">Open a game to manage its updates, DLC and save, or to delete it.</p></div>
+<div id="library-list"><div class="head-row"><div class="head"><h2 id="library-title">Your library</h2><p id="library-intro">Open a game to manage its updates, DLC and save, or to delete it.</p></div><button class="primary" id="library-add" hidden></button></div>
 <div class="grid" id="games"></div><p id="library-empty" hidden>No games yet.</p></div>
 <div id="game" hidden><button class="back" id="game-back">← Library</button>
 <div class="hero"><div class="art" id="game-art"></div><div><h2 id="game-name"></h2><p id="game-meta"></p></div><button class="danger" id="game-remove">Delete game</button></div>
@@ -211,13 +207,23 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <div class="actions"><button id="save-send" class="primary">Load save</button><button id="save-help-toggle" type="button"></button></div>
 <div id="save-help" hidden><pre id="save-tree"></pre><p id="save-pc"></p><p id="save-rules"></p></div></div>
 <div class="actions"><button id="content-send" class="primary">Upload and install</button><button id="content-pause">Pause</button><button class="danger" id="content-discard">Discard partial file</button></div>
-<div class="panel"><div class="panel-top"><p id="content-job" role="status" aria-live="polite"></p><span class="pct" id="content-percent"></span></div>
-<progress id="content-progress" max="1" value="0"></progress><div class="stats"><p id="content-rate"></p><p id="content-eta"></p></div></div></div></section></div>
-<div class="view" id="view-system" hidden><nav class="cats"><p class="kicker" id="system-kicker">System files</p>
-<button class="cat" id="cat-keys" aria-selected="true"><svg class="ico" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/></svg>
-<span><b id="cat-keys-title">Keys</b><small>prod.keys · title.keys · ZIP</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
-<button class="cat" id="cat-firmware" aria-selected="false"><svg class="ico" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3v3M14 3v3M10 18v3M14 18v3M3 10h3M3 14h3M18 10h3M18 14h3"/></svg>
-<span><b>Firmware</b><small>ZIP · NCA</small></span><svg class="ico chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button></nav>
+<div class="panel" id="content-panel" hidden><div class="panel-top"><p id="content-job" role="status" aria-live="polite"></p><span class="pct" id="content-percent"></span></div>
+<progress id="content-progress" max="1" value="0"></progress><div class="stats"><p id="content-rate"></p><p id="content-eta"></p></div></div></div></section>
+<div class="store"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13 7.5 5h9L19 13M7 16.5h.01"/></svg><span id="space"></span></div></div>
+<div class="view" id="view-amiibo" hidden><nav class="seg" role="tablist"><button id="amiibo-tab-list" role="tab" aria-selected="true"></button><button id="amiibo-tab-add" role="tab" aria-selected="false"></button><button id="amiibo-tab-key" role="tab" aria-selected="false"></button></nav>
+<section id="amiibo" class="card"><p id="amiibo-note" role="status" aria-live="polite"></p>
+<div id="amiibo-pane-list"><div class="head"><h2 id="amiibo-list-title"></h2><p id="amiibo-intro"></p></div>
+<div class="amiibo-tools" id="amiibo-tools"><input id="amiibo-search" type="search" autocomplete="off"><button id="amiibo-sort"></button></div>
+<p id="amiibo-count"></p><ul class="items" id="amiibo-items"></ul></div>
+<div id="amiibo-pane-add" hidden><div class="head"><h2 id="amiibo-add-title"></h2><p id="amiibo-add-help"></p></div>
+<label class="drop"><input id="amiibo-files" type="file" accept=".bin" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+<strong id="amiibo-pick"></strong><span id="amiibo-drop"></span><span class="picked" id="amiibo-picked"></span></label>
+<div class="actions"><button id="amiibo-send" class="primary"></button></div><ul class="items" id="amiibo-results"></ul></div>
+<div id="amiibo-pane-key" hidden><div class="head"><h2 id="amiibo-key-title"></h2><p id="amiibo-key-help"></p></div><p id="amiibo-key-status"></p>
+<label class="drop"><input id="amiibo-key-file" type="file" accept=".bin"><svg class="ico" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/></svg>
+<strong id="amiibo-key-pick"></strong><span class="picked" id="amiibo-key-picked"></span></label>
+<div class="actions"><button id="amiibo-key-send" class="primary"></button><button class="danger" id="amiibo-key-remove"></button></div></div></section></div>
+<div class="view" id="view-system" hidden><nav class="seg" role="tablist"><button id="cat-keys" role="tab" aria-selected="true">Keys</button><button id="cat-firmware" role="tab" aria-selected="false">Firmware</button><button id="cat-logs" role="tab" aria-selected="false" hidden>Logs</button></nav>
 <section id="system-upload" class="card" hidden><div class="head"><h2 id="system-title">Keys and firmware</h2><p id="system-intro">Everything is checked before installing. Your current files stay until you confirm.</p></div>
 <article class="sub" id="keys-pane"><h3 id="keys-title">Import keys</h3><p id="keys-help">ZIP or prod.keys / title.keys.</p>
 <label class="drop"><input id="keys-files" type="file" accept=".keys,.zip" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
@@ -228,17 +234,17 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <strong id="firmware-pick">Choose files</strong><span id="firmware-drop">or drop them here</span><span class="picked" id="firmware-picked"></span></label>
 <label class="folder"><input id="firmware-folder" type="file" webkitdirectory multiple><svg class="ico" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span id="firmware-folder-label">Or choose an extracted folder</span></label>
 <button id="firmware-send" class="primary">Upload and review</button></article>
-<div class="panel"><div class="panel-top"><p id="system-job" role="status" aria-live="polite"></p><span class="pct" id="system-percent"></span></div><progress id="system-progress" max="1" value="0"></progress>
+<div class="panel" id="system-panel" hidden><div class="panel-top"><p id="system-job" role="status" aria-live="polite"></p><span class="pct" id="system-percent"></span></div><progress id="system-progress" max="1" value="0"></progress>
 <div id="system-review" class="review" hidden><p id="system-versions"></p><p id="system-warnings"></p>
 <label id="system-warning-row"><input id="system-warning-accept" type="checkbox"><span id="system-warning-label">I understand and accept these warnings.</span></label>
-<button id="system-confirm" class="primary">Confirm installation</button></div></div><button id="system-cancel" class="danger">Cancel and discard system import</button></section></div>
-</div><section class="panel" id="log-export" hidden>
+<button id="system-confirm" class="primary">Confirm installation</button></div></div><button id="system-cancel" class="danger">Cancel and discard system import</button></section>
+<section class="card" id="log-export" hidden>
 <h2 id="logs-title"></h2><p id="logs-help"></p>
 <div class="actions"><button id="logs-download" class="primary"></button><button id="logs-cancel" hidden></button>
 <a id="logs-file" hidden></a></div><progress id="logs-progress" max="1" value="0" hidden></progress>
 <p id="logs-status" role="status" aria-live="polite"></p>
-</section><section class="panel" id="update-banner" hidden><div class="panel-top"><div><h3 id="update-banner-title"></h3><p id="update-banner-body"></p></div>
-<button class="primary" id="update-banner-open"></button></div></section>
+</section></div>
+</div>
 </div>
 <footer><svg class="ico" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/></svg><span id="privacy">Local network · HTTP connection without encryption.</span></footer>
 <script>
@@ -286,20 +292,26 @@ const words=pt?{
  attempts:'Too many attempts. Wait one minute.',version:'Incompatible upload version. Reload this page.',idle:'Ready to import.'};
 if(es||pt){document.documentElement.lang=pt?'pt-BR':'es';for(const id of ['title','intro','label','connect','uploadtitle','uploadintro','fileslabel','namelabel','send','rename','pause','discard','privacy',
  'kicker','status-off','status-on','code-hint','files-drop','where-internal','where-developer'])$(id).textContent=words[id];}
-const labels=pt?{'tab-content':'Conteúdo','tab-system':'Sistema','content-kicker':'Instalar','cat-games-title':'Jogos','cat-games-sub':'NSP · XCI · NRO · jogo base',
- 'cat-library-title':'Biblioteca','cat-library-sub':'Atualizações · DLC · saves · apagar','system-kicker':'Arquivos do sistema','cat-keys-title':'Chaves'}
-:es?{'tab-content':'Contenido','tab-system':'Sistema','content-kicker':'Instalar','cat-games-title':'Juegos','cat-games-sub':'NSP · XCI · NRO · juego base',
- 'cat-library-title':'Biblioteca','cat-library-sub':'Actualizaciones · DLC · partidas · eliminar','system-kicker':'Archivos del sistema','cat-keys-title':'Claves'}:{};
+const labels=pt?{'tab-games':'Jogos','tab-system':'Sistema','cat-keys':'Chaves'}
+:es?{'tab-games':'Juegos','tab-system':'Sistema','cat-keys':'Claves'}:{};
+const nav=pt?{add:'Adicionar jogos',uploading:'Envio em andamento'}:es?{add:'Añadir juegos',uploading:'Subida en curso'}:{add:'Add games',uploading:'Upload in progress'};
 for(const [id,text]of Object.entries(labels))$(id).textContent=text;
 if(es||pt)document.title='Portal Jadyx';
-// The header's tabs and each page's categories, as in the console: one of each group is shown.
-const tabs=[['tab-content','view-content'],['tab-system','view-system']],categories=[['cat-keys','keys-pane'],['cat-firmware','firmware-pane']];
+// The header's tabs, one view each; one is shown.
+const tabs=[['tab-games','view-content'],['tab-amiibo','view-amiibo'],['tab-system','view-system']];
 function choose(group,chosen){for(const [button,view]of group){$(button).ariaSelected=String(button===chosen);$(view).hidden=button!==chosen;}}
-for(const group of [tabs,categories])for(const [button]of group)$(button).addEventListener('click',()=>choose(group,button));
+for(const [button]of tabs)$(button).addEventListener('click',()=>{
+ const again=$(button).ariaSelected==='true';choose(tabs,button);$('message').textContent='';
+ if(button==='tab-amiibo')loadAmiibo();
+ // Games pressed again, from a game or from importing, is the way back to the library.
+ if(button==='tab-games'&&again&&state.library){gameId='';armed='';choosePane('library');}
+});
+choose(tabs,'tab-games');
+for(const kind of ['keys','firmware','logs'])$('cat-'+kind).addEventListener('click',()=>{systemPane=kind;render();});
 const selectedChunk=Number(new URLSearchParams(location.search).get('chunk'));
 const chunk=(selectedChunk===4||selectedChunk===16||selectedChunk===64?selectedChunk:16)*1048576;
-let session='',timer,state={},running=false,stopped=false,currentXHR=null,currentId='',rates=[],pane='games',contentRunning=false,where='internal';
-let systemRunning=false,systemReviewId='',saveDownloading=false;
+let session='',timer,state={},running=false,stopped=false,currentXHR=null,currentId='',rates=[],pane='library',contentRunning=false,where='internal';
+let systemPane='keys',systemRunning=false,systemReviewId='',saveDownloading=false;
 const delay=ms=>new Promise(r=>setTimeout(r,ms)),mib=n=>(n/1048576).toFixed(1),reason=e=>words[e.message]||words.interrupted;
 const size=n=>n>=1073741824?(n/1073741824).toFixed(2)+' GiB':mib(n)+' MiB',percent=(done,total)=>total?Math.floor(100*Math.min(1,done/total))+' %':'';
 // What a drop zone holds: the file's name, or how many and their total size.
@@ -320,6 +332,8 @@ async function api(path,options={}){
  return response;
 }
 function render(){
+ if(session&&!state.library&&pane==='library')pane='games';
+ if(session&&!state.system_supported)systemPane='logs';
  renderLogs();
  renderUpdate();
  const s=state.transfer||{};
@@ -341,9 +355,14 @@ function render(){
  $('pause').disabled=systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
  $('discard').disabled=systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
  $('rename').disabled=running||systemRunning||state.system?.busy||!s.id||s.phase==='complete'||s.phase==='validating'||s.phase==='publishing';
+ $('name-field').hidden=!pending&&$('files').files.length!==1;
+ $('pause').hidden=$('discard').hidden=$('rename').hidden=!pending;$('upload-panel').hidden=!pending&&!running;
+ $('upload-back').hidden=!state.library;$('library-add').hidden=!state.uploads;
+ $('library-add').textContent=pending?nav.uploading+' · '+percent(s.received||0,s.length):nav.add;
  if(s.error)$('message').textContent=words[s.error]||words.interrupted;
  renderSystem();
  renderLibrary();
+ renderAmiibo();
 }
 async function refresh(){const response=await api('/api/v1/status');state=await response.json();render();followLibrary();return state;}
 $('pair').addEventListener('submit',async event=>{
@@ -353,6 +372,8 @@ $('pair').addEventListener('submit',async event=>{
  if(!response.ok){$('connection').textContent=response.status===429?words.attempts:words.bad;return;}
  session=(await response.json()).session;$('code').value='';$('pair').hidden=true;$('connection').textContent=words.ok;
  await refresh();clearInterval(timer);let polling=false;
+ // An upload left unfinished is what the player came back for.
+ if(state.uploads&&state.transfer?.id&&state.transfer.phase!=='complete'){pane='games';render();}
  timer=setInterval(async()=>{if(polling)return;polling=true;try{await refresh();failures=0;$('connection').textContent=words.ok;}catch(error){
  // After the package went to Device Portal, the console going away is the install closing Jadyx.
  if(updateStarted&&(error.message==='lost'||++failures>=3)){clearInterval(timer);session='';updateGone=true;renderUpdate();}
@@ -433,7 +454,7 @@ async function sendFile(file,name,target=gameTarget){
  if(stopped)throw Error('paused');await api(url+'/finish',{method:'POST'});
  for(;;){await delay(500);await refresh();s=state[target.key];if(s.phase==='complete')return;if(s.error)throw Error(s.error);if(stopped||s.phase==='paused')throw Error('paused');}
 }
-$('files').addEventListener('change',()=>{if($('files').files.length)$('name').value=$('files').files[0].name;picked('files-picked','files');});
+$('files').addEventListener('change',()=>{if($('files').files.length)$('name').value=$('files').files[0].name;picked('files-picked','files');render();});
 // The file inputs cover their drop zones, so a drop lands on the input itself; this only lights the zone.
 for(const id of ['files','content-files','keys-files','firmware-files']){
  for(const event of ['dragenter','dragover'])$(id).addEventListener(event,e=>e.target.parentElement.classList.add('over'));
@@ -488,7 +509,7 @@ const libraryWords=pt?{
  game:'The game is no longer in the library or could not be deleted.',content:'That content could not be deleted.',saves:'The game was deleted, but some saves could not be removed.',
  wrong_game:'That package belongs to another game.',kind:'The package is not the chosen kind (update or DLC).',conflict:'A conflicting version of this content is already installed.',
  hash:'The package is damaged.',requirements:'The package needs a newer game or firmware version.',unsupported:'That package is not supported.',invalid:'The package is not valid.',metadata:'Reload this page and try again.'};
-for(const [id,key]of [['library-title','title'],['library-intro','intro'],['library-empty','empty'],['game-back','back'],['game-warning','warning'],
+for(const [id,key]of [['library-title','title'],['library-intro','intro'],['library-empty','empty'],['game-back','back'],['upload-back','back'],['game-warning','warning'],
  ['kind-update','update'],['kind-dlc','dlc'],['content-send','send'],['content-pick','pick_update']])$(id).textContent=libraryWords[key];
 for(const [id,key]of [['content-drop','files-drop'],['content-pause','pause'],['content-discard','discard']])if(words[key])$(id).textContent=words[key];
 const libraryReason=error=>libraryWords[error.message]||words[error.message]||libraryWords.failed;
@@ -648,7 +669,7 @@ function libraryBusy(){
 // The first press arms a deletion and the second, within six seconds, sends it.
 function arm(key){
  if(armed===key){armed='';clearTimeout(armedTimer);return true;}
- armed=key;clearTimeout(armedTimer);armedTimer=setTimeout(()=>{armed='';renderItems();render();},6000);renderItems();render();return false;
+ armed=key;clearTimeout(armedTimer);armedTimer=setTimeout(()=>{armed='';renderItems();renderAmiiboItems();render();},6000);renderItems();renderAmiiboItems();render();return false;
 }
 async function remove(path,key){
  if(!arm(key))return;
@@ -669,8 +690,6 @@ function renderItems(){
 let lastBusy=false;
 function renderLibrary(){
  const on=!!session&&!!state.library;
- $('cat-library').hidden=!on;if(!on&&pane==='library')pane='games';
- $('cat-games').ariaSelected=String(pane==='games');$('cat-library').ariaSelected=String(pane==='library');
  $('library').hidden=!on||pane!=='library';if($('library').hidden)return;
  const game=gameId&&games.find(g=>g.id===gameId);
  $('library-list').hidden=!!game;$('game').hidden=!game;
@@ -692,6 +711,7 @@ function renderLibrary(){
   libraryWords[s.phase]||words[s.phase]||libraryWords.idle);
  $('content-progress').value=installing?(install.total?Math.min(1,install.done/install.total):0):s.length?Math.min(1,(s.received||0)/s.length):0;
  $('content-percent').textContent=installing?percent(install.done||0,install.total):percent(s.received||0,s.length);
+ $('content-pause').hidden=$('content-discard').hidden=!active;$('content-panel').hidden=!s.id&&!contentRunning;
 }
 // Follows this page's own deletion and installs to their end, then reloads what they changed.
 function followLibrary(){
@@ -711,7 +731,127 @@ function followLibrary(){
  if(pane==='library'&&Date.now()-libraryAt>10000)loadLibrary();
 }
 function choosePane(next){pane=next;$('message').textContent='';if(next==='library')loadLibrary();render();}
-$('cat-games').addEventListener('click',()=>choosePane('games'));$('cat-library').addEventListener('click',()=>choosePane('library'));
+$('library-add').addEventListener('click',()=>choosePane('games'));$('upload-back').addEventListener('click',()=>choosePane('library'));
+// Amiibo: small files, one request each, so one bad file never stops the others. The key can be
+// sent or removed from here, never read back.
+const amiiboWords=pt?{
+ 'amiibo-tab-list':'Meus amiibos','amiibo-tab-add':'Adicionar','amiibo-tab-key':'Chave','amiibo-list-title':'Seus amiibos','amiibo-intro':'Quando um jogo pedir um amiibo, abra o menu do jogo e escolha um.',
+ 'amiibo-add-title':'Adicionar amiibos','amiibo-add-help':'Selecione seus arquivos .bin. Você pode enviar vários de uma vez.','amiibo-pick':'Selecionar arquivos .bin','amiibo-drop':'ou arraste-os para cá','amiibo-send':'Enviar',
+ search:'Buscar amiibo',sort_up:'A–Z',sort_down:'Z–A',sort_label:'Mudar a ordem',count:n=>n+(n===1?' amiibo':' amiibos'),count_of:(n,total)=>n+' de '+total,no_match:'Nenhum amiibo corresponde à sua busca.',
+ 'amiibo-key-title':'Chave de amiibo (opcional)','amiibo-key-help':'O arquivo key_retail.bin permite que os jogos salvem dados nos seus amiibos. Ele fica no console e não pode ser baixado por aqui.','amiibo-key-pick':'Selecionar key_retail.bin',
+ key_on:'Chave instalada: os jogos podem salvar dados nos seus amiibos.',key_off:'Sem chave: os amiibos são somente leitura.',key_send:'Enviar chave',key_replace:'Substituir chave',key_saved:'Chave instalada.',key_removed:'Chave removida.',
+ none:'Ainda não há amiibos.',uploaded:'Enviado',replace:'Substituir',choose:'Selecione um ou mais arquivos .bin.',choose_key:'Selecione o arquivo key_retail.bin.',
+ name:'Nome de arquivo inválido.',not_amiibo:'Não é um amiibo: deve ser um .bin de 532, 540 ou 572 bytes.',exists:'Já está no console. Substituí-lo apaga o que os jogos salvaram nele.',not_key:'Não é um key_retail.bin válido.',disk:'Não foi possível gravar no console.',missing:'Esse arquivo já não está no console.',unavailable:'Os amiibos não estão disponíveis no momento.'
+}:es?{
+ 'amiibo-tab-list':'Mis amiibos','amiibo-tab-add':'Añadir','amiibo-tab-key':'Clave','amiibo-list-title':'Tus amiibos','amiibo-intro':'Cuando un juego pida un amiibo, abre el menú del juego y elige uno.',
+ 'amiibo-add-title':'Añadir amiibos','amiibo-add-help':'Selecciona tus archivos .bin. Puedes subir varios a la vez.','amiibo-pick':'Seleccionar archivos .bin','amiibo-drop':'o arrástralos aquí','amiibo-send':'Subir',
+ search:'Buscar amiibo',sort_up:'A–Z',sort_down:'Z–A',sort_label:'Cambiar el orden',count:n=>n+(n===1?' amiibo':' amiibos'),count_of:(n,total)=>n+' de '+total,no_match:'Ningún amiibo coincide con tu búsqueda.',
+ 'amiibo-key-title':'Clave de amiibo (opcional)','amiibo-key-help':'El archivo key_retail.bin permite que los juegos guarden datos en tus amiibos. Se queda en la consola y no se puede descargar desde aquí.','amiibo-key-pick':'Seleccionar key_retail.bin',
+ key_on:'Clave instalada: los juegos pueden guardar datos en tus amiibos.',key_off:'Sin clave: los amiibos son de solo lectura.',key_send:'Subir clave',key_replace:'Reemplazar clave',key_saved:'Clave instalada.',key_removed:'Clave eliminada.',
+ none:'Aún no hay amiibos.',uploaded:'Subido',replace:'Reemplazar',choose:'Selecciona uno o varios archivos .bin.',choose_key:'Selecciona el archivo key_retail.bin.',
+ name:'Nombre de archivo no válido.',not_amiibo:'No es un amiibo: debe ser un .bin de 532, 540 o 572 bytes.',exists:'Ya está en la consola. Reemplazarlo borra lo que los juegos guardaron en él.',not_key:'No es un key_retail.bin válido.',disk:'No se pudo escribir en la consola.',missing:'Ese archivo ya no está en la consola.',unavailable:'Los amiibos no están disponibles en este momento.'
+}:{
+ 'amiibo-tab-list':'My amiibo','amiibo-tab-add':'Add','amiibo-tab-key':'Key','amiibo-list-title':'Your amiibo','amiibo-intro':'When a game asks for an amiibo, open the in-game menu and choose one.',
+ 'amiibo-add-title':'Add amiibo','amiibo-add-help':'Choose your .bin files. You can upload several at once.','amiibo-pick':'Choose .bin files','amiibo-drop':'or drop them here','amiibo-send':'Upload',
+ search:'Search amiibo',sort_up:'A–Z',sort_down:'Z–A',sort_label:'Change the order',count:n=>n+' amiibo',count_of:(n,total)=>n+' of '+total,no_match:'No amiibo match your search.',
+ 'amiibo-key-title':'Amiibo key (optional)','amiibo-key-help':'The key_retail.bin file lets games save data on your amiibo. It stays on the console and can\'t be downloaded from here.','amiibo-key-pick':'Choose key_retail.bin',
+ key_on:'Key installed: games can save data on your amiibo.',key_off:'No key: amiibo are read-only.',key_send:'Upload key',key_replace:'Replace key',key_saved:'Key installed.',key_removed:'Key removed.',
+ none:'No amiibo yet.',uploaded:'Uploaded',replace:'Replace',choose:'Choose one or more .bin files.',choose_key:'Choose the key_retail.bin file.',
+ name:'Invalid file name.',not_amiibo:'Not an amiibo: it must be a 532, 540 or 572 byte .bin file.',exists:'Already on the console. Replacing it erases what games saved on it.',not_key:'Not a valid key_retail.bin.',disk:'Could not write on the console.',missing:'That file is no longer on the console.',unavailable:'Amiibo are not available right now.'
+};
+for(const id of ['amiibo-tab-list','amiibo-tab-add','amiibo-tab-key','amiibo-intro','amiibo-add-title','amiibo-add-help','amiibo-pick','amiibo-drop','amiibo-send','amiibo-list-title','amiibo-key-title','amiibo-key-help','amiibo-key-pick'])$(id).textContent=amiiboWords[id];
+$('amiibo-search').placeholder=$('amiibo-search').ariaLabel=amiiboWords.search;$('amiibo-sort').title=$('amiibo-sort').ariaLabel=amiiboWords.sort_label;
+let amiiboFiles=null,amiiboKey=false,amiiboResults=[],amiiboSending=false,amiiboDescending=false;
+// The list, the upload and the key are one view each; one is shown.
+const amiiboPanes=[['amiibo-tab-list','amiibo-pane-list'],['amiibo-tab-add','amiibo-pane-add'],['amiibo-tab-key','amiibo-pane-key']];
+for(const [button]of amiiboPanes)$(button).addEventListener('click',()=>{choose(amiiboPanes,button);armed='';$('amiibo-note').textContent='';renderAmiiboItems();render();});
+choose(amiiboPanes,'amiibo-tab-list');
+$('amiibo-search').addEventListener('input',renderAmiiboItems);
+$('amiibo-sort').addEventListener('click',()=>{amiiboDescending=!amiiboDescending;renderAmiiboItems();});
+// Case and accents don't count when searching, so "pinon" finds "Piñón".
+const amiiboFold=text=>text.normalize('NFD').replace(/\p{M}/gu,'').toLowerCase();
+const amiiboReason=error=>amiiboWords[error.message]||words[error.message]||words.interrupted;
+const amiiboBody=file=>file.arrayBuffer().then(body=>({method:'POST',headers:{'Content-Type':'application/octet-stream'},body}));
+async function loadAmiibo(){
+ try{
+  const data=await(await api('/api/v1/amiibo')).json(),first=!amiiboFiles;amiiboFiles=data.files;amiiboKey=data.key;
+  // With nothing to manage yet, the first thing to do is adding some.
+  if(first&&!amiiboFiles.length)choose(amiiboPanes,'amiibo-tab-add');
+  renderAmiiboItems();render();
+ }catch(error){$('amiibo-note').textContent=amiiboReason(error);}
+}
+function renderAmiiboItems(){
+ if(!amiiboFiles)return;
+ const search=amiiboFold($('amiibo-search').value.trim()),sign=amiiboDescending?-1:1;
+ const shown=amiiboFiles.filter(file=>amiiboFold(file.name).includes(search)).sort((a,b)=>sign*a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:'base'}));
+ $('amiibo-tools').hidden=!amiiboFiles.length;
+ $('amiibo-sort').textContent=amiiboWords[amiiboDescending?'sort_down':'sort_up'];
+ $('amiibo-count').textContent=!amiiboFiles.length?'':search?amiiboWords.count_of(shown.length,amiiboFiles.length):amiiboWords.count(amiiboFiles.length);
+ $('amiibo-items').replaceChildren(...(shown.length?shown.map(file=>{
+  const row=node('li'),text=node('span'),key='amiibo:'+file.name,button=node('button','danger',armed===key?libraryWords.confirm:libraryWords.remove);
+  text.append(node('b','',file.name));
+  button.addEventListener('click',()=>removeAmiibo(file.name));row.append(text,button);return row;
+ }):[node('li','empty',amiiboWords[amiiboFiles.length?'no_match':'none'])]));
+}
+function renderAmiiboResults(){
+ $('amiibo-results').replaceChildren(...amiiboResults.map(result=>{
+  const row=node('li'),text=node('span');
+  text.append(node('b','',result.file.name),node('small','',result.error?amiiboReason(Error(result.error)):amiiboWords.uploaded));row.append(text);
+  if(result.error==='exists'){const button=node('button','danger',amiiboWords.replace);button.disabled=amiiboSending;button.addEventListener('click',()=>replaceAmiibo(result));row.append(button);}
+  return row;
+ }));
+}
+function renderAmiibo(){
+ const on=!!session&&!!state.amiibo;
+ $('tab-amiibo').hidden=!on;if(!on&&!$('view-amiibo').hidden)choose(tabs,'tab-games');
+ if(!on||$('view-amiibo').hidden)return;
+ $('amiibo-send').disabled=amiiboSending;$('amiibo-key-send').disabled=amiiboSending;
+ $('amiibo-key-status').textContent=amiiboWords[amiiboKey?'key_on':'key_off'];
+ $('amiibo-key-send').textContent=amiiboWords[amiiboKey?'key_replace':'key_send'];
+ $('amiibo-key-remove').hidden=!amiiboKey;$('amiibo-key-remove').disabled=amiiboSending;
+ $('amiibo-key-remove').textContent=armed==='amiibo-key'?libraryWords.confirm:libraryWords.remove;
+}
+// Refused here when it can't fit: the console would refuse it anyway, with a less useful word.
+async function sendAmiibo(file,replace){
+ if(file.size>4096)return 'not_amiibo';
+ try{await api('/api/v1/amiibo/files?name='+encodeURIComponent(file.name)+(replace?'&replace=1':''),await amiiboBody(file));return '';}
+ catch(error){return error.message;}
+}
+async function replaceAmiibo(result){
+ if(amiiboSending)return;amiiboSending=true;renderAmiiboResults();render();
+ result.error=await sendAmiibo(result.file,true);
+ amiiboSending=false;renderAmiiboResults();await loadAmiibo();
+}
+async function removeAmiibo(name){
+ if(!arm('amiibo:'+name))return;
+ try{await api('/api/v1/amiibo/files?name='+encodeURIComponent(name),{method:'DELETE'});$('amiibo-note').textContent='';}
+ catch(error){$('amiibo-note').textContent=amiiboReason(error);}
+ await loadAmiibo();
+}
+$('amiibo-files').addEventListener('change',()=>picked('amiibo-picked','amiibo-files'));
+$('amiibo-key-file').addEventListener('change',()=>picked('amiibo-key-picked','amiibo-key-file'));
+$('amiibo-send').addEventListener('click',async()=>{
+ const list=Array.from($('amiibo-files').files||[]);$('amiibo-note').textContent=list.length?'':amiiboWords.choose;
+ if(!list.length||amiiboSending)return;
+ amiiboSending=true;amiiboResults=[];render();
+ for(const file of list){const result={file,error:await sendAmiibo(file,false)};amiiboResults.push(result);renderAmiiboResults();}
+ amiiboSending=false;renderAmiiboResults();$('amiibo-files').value='';$('amiibo-picked').textContent='';await loadAmiibo();
+});
+$('amiibo-key-send').addEventListener('click',async()=>{
+ const file=($('amiibo-key-file').files||[])[0];$('amiibo-note').textContent=file?'':amiiboWords.choose_key;
+ if(!file||amiiboSending)return;
+ if(file.size>4096){$('amiibo-note').textContent=amiiboWords.not_key;return;}
+ amiiboSending=true;render();
+ try{await api('/api/v1/amiibo/key',await amiiboBody(file));$('amiibo-note').textContent=amiiboWords.key_saved;$('amiibo-key-file').value='';$('amiibo-key-picked').textContent='';}
+ catch(error){$('amiibo-note').textContent=amiiboReason(error);}
+ amiiboSending=false;await loadAmiibo();
+});
+$('amiibo-key-remove').addEventListener('click',async()=>{
+ if(!arm('amiibo-key'))return;
+ try{await api('/api/v1/amiibo/key',{method:'DELETE'});$('amiibo-note').textContent=amiiboWords.key_removed;}
+ catch(error){$('amiibo-note').textContent=amiiboReason(error);}
+ await loadAmiibo();
+});
 $('game-back').addEventListener('click',()=>{gameId='';armed='';render();});
 $('kind-update').addEventListener('click',()=>chooseKind('update'));$('kind-dlc').addEventListener('click',()=>chooseKind('dlc'));
 $('kind-save').addEventListener('click',()=>chooseKind('save'));
@@ -777,9 +917,13 @@ for(const [id,text]of Object.entries({'keys-title':systemWords.keysTitle,'firmwa
 function systemReason(error){return systemWords[error.message]||words[error.message]||systemWords.failed;}
 function renderSystem(){
  const s=state.system||{},r=s.review||{},warnings=r.warnings||[];
- $('system-upload').hidden=!session||!state.system_supported;
- $('tab-system').hidden=!state.system_supported;
- if(!state.system_supported){if(!$('view-system').hidden)choose(tabs,'tab-content');return;}
+ const supported=!!state.system_supported,logs=!!state.logs?.supported;
+ for(const kind of ['keys','firmware','logs'])$('cat-'+kind).ariaSelected=String(kind===systemPane);
+ $('cat-keys').hidden=$('cat-firmware').hidden=!supported;$('cat-logs').hidden=!logs;
+ $('keys-pane').hidden=systemPane!=='keys';$('firmware-pane').hidden=systemPane!=='firmware';
+ $('system-upload').hidden=!session||!supported||systemPane==='logs';
+ $('tab-system').hidden=!supported&&!logs;
+ if(!supported){if($('tab-system').hidden&&!$('view-system').hidden)choose(tabs,'tab-games');return;}
  for(const kind of ['keys','firmware'])$(kind+'-send').disabled=running||systemRunning||state.transfer?.busy||!s.available||(s.busy&&s.kind!==kind)||!['idle','receiving','complete'].includes(s.phase);
  const job=s.phase==='complete'&&!systemRunning?{}:s;
  $('system-job').textContent=(systemWords[job.phase]||systemWords.idle)+(job.count?' · '+(job.completed||0)+' / '+job.count:'')+(job.error?'\n'+systemReason(Error(job.error)):'');
@@ -795,6 +939,8 @@ function renderSystem(){
   $('system-warning-row').hidden=!warnings.length;$('system-confirm').disabled=!!warnings.length&&!$('system-warning-accept').checked;
  }
  $('system-cancel').disabled=!s.id||s.phase==='complete'||s.phase==='publishing'||s.phase==='commit_pending';
+ $('system-cancel').hidden=$('system-cancel').disabled;
+ $('system-panel').hidden=!systemRunning&&!job.error&&!(s.id&&s.phase!=='complete');
 }
 async function sendSystem(kind){
  if(running||systemRunning)return;
@@ -871,7 +1017,7 @@ async function saveLogs(){
  const link=$('logs-file');link.href=data.download;link.download=data.filename;link.hidden=false;link.click();
 }
 function renderLogs(){
- const s=state.logs||{};$('log-export').hidden=!session||!s.supported;
+ const s=state.logs||{};$('log-export').hidden=!session||!s.supported||systemPane!=='logs';
  if(!session||!s.supported)return;
  $('logs-download').disabled=!!s.busy||logsRequesting;$('logs-cancel').hidden=!s.busy;
  $('logs-progress').hidden=s.phase!=='compressing';

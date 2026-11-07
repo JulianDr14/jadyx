@@ -454,6 +454,7 @@ struct NetworkPortal::Impl {
     std::unique_ptr<NspUpload> content; ///< Update/DLC packages, consumed into internal storage.
     std::unique_ptr<SystemUpload> system;
     PortalLibrary library;
+    PortalAmiibo amiibo;
     bool storage_failed{};
 
     /// Excludes both resumable uploads, or neither. Caller holds `admission`.
@@ -591,7 +592,8 @@ struct NetworkPortal::Impl {
         server->Get("/api/v1/status", [this](const auto&, auto& response) {
             Reply(response, 200, {{"running", true}, {"stage", upload ? "nsp" : "connection-test"},
                 {"uploads", bool(upload)}, {"transfer", upload ? UploadJson(upload->Snapshot()) : Json::object()},
-                {"library", bool(library.games)}, {"content", content ? UploadJson(content->Snapshot()) : Json::object()},
+                {"library", bool(library.games)}, {"amiibo", bool(amiibo.list)},
+                {"content", content ? UploadJson(content->Snapshot()) : Json::object()},
                 {"install", InstallJson()},
                 {"removal", [this] { std::lock_guard lock{mutex}; return RemovalJson(status.removal); }()},
                 {"system_supported",system_supported},{"system",system ? SystemJson(system->Snapshot()) : Json::object()},
@@ -652,6 +654,7 @@ struct NetworkPortal::Impl {
         UploadRoutes("/api/v1/uploads", upload.get(), content.get());
         UploadRoutes("/api/v1/content/uploads", content.get(), upload.get());
         LibraryRoutes();
+        AmiiboRoutes();
         SystemRoutes();
         LogRoutes();
     }
@@ -839,6 +842,48 @@ struct NetworkPortal::Impl {
         });
         server->Delete("/api/v1/library/([0-9a-f]{16})/content/([0-9a-f]{64})", [this](const auto& request, auto& response) {
             RequestRemoval(request.matches[1].str(), request.matches[2].str(), response);
+        });
+    }
+
+    /// Answers one amiibo write from the store's error word.
+    static void AmiiboReply(httplib::Response& response, const std::string& error, int done) {
+        if (error.empty()) { response.status = done; return; }
+        Reply(response, error == "exists" ? 409 : error == "missing" ? 404 : error == "disk" ? 500 : 400, {{"error", error}});
+    }
+
+    /// Runs one amiibo write, unless the coordinator supplied no store.
+    template <typename Write>
+    void AmiiboWrite(httplib::Response& response, int done, Write&& write) {
+        if (!amiibo.list) { Reply(response, 503, {{"error", "unavailable"}}); return; }
+        std::string error;
+        try { error = write(); } catch (...) { error = "disk"; }
+        AmiiboReply(response, error, done);
+    }
+
+    // Small enough for one request each: they fit the body limit every non-upload route has. The
+    // key can be replaced or removed, never read back.
+    void AmiiboRoutes() {
+        server->Get("/api/v1/amiibo", [this](const auto&, auto& response) {
+            if (!amiibo.list) { Reply(response, 503, {{"error", "unavailable"}}); return; }
+            try {
+                auto files = Json::array();
+                for (const auto& file : amiibo.list()) files.push_back({{"name", file.name}, {"bytes", file.bytes}});
+                Reply(response, 200, {{"files", std::move(files)}, {"key", amiibo.has_key()}});
+            } catch (...) { Reply(response, 500, {{"error", "disk"}}); }
+        });
+        server->Post("/api/v1/amiibo/files", [this](const auto& request, auto& response) {
+            AmiiboWrite(response, 201, [&] {
+                return amiibo.add(request.get_param_value("name"), request.body, request.get_param_value("replace") == "1");
+            });
+        });
+        server->Delete("/api/v1/amiibo/files", [this](const auto& request, auto& response) {
+            AmiiboWrite(response, 204, [&] { return amiibo.remove(request.get_param_value("name")); });
+        });
+        server->Post("/api/v1/amiibo/key", [this](const auto& request, auto& response) {
+            AmiiboWrite(response, 204, [&] { return amiibo.set_key(request.body); });
+        });
+        server->Delete("/api/v1/amiibo/key", [this](const auto&, auto& response) {
+            AmiiboWrite(response, 204, [&] { return amiibo.remove_key(); });
         });
     }
 
@@ -1174,6 +1219,11 @@ void NetworkPortal::SetLibrary(PortalLibrary library) {
     std::lock_guard lock{impl->lifecycle};
     if (impl->server) throw std::logic_error{"SetLibrary must precede Start"};
     impl->library = std::move(library);
+}
+void NetworkPortal::SetAmiibo(PortalAmiibo amiibo) {
+    std::lock_guard lock{impl->lifecycle};
+    if (impl->server) throw std::logic_error{"SetAmiibo must precede Start"};
+    impl->amiibo = std::move(amiibo);
 }
 void NetworkPortal::SetUploadsAvailable(bool enabled) {
     std::lock_guard lock{impl->admission};impl->imports_available=enabled;

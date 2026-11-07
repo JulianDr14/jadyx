@@ -18,6 +18,7 @@
 #include <winrt/Windows.ApplicationModel.h>
 
 #include "jadyx/cheats/cheats_view.h"
+#include "jadyx/game/amiibo_page.h"
 #include "jadyx/game/game_menu.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/storage/utf8.h"
@@ -605,6 +606,38 @@ struct GameMenuSurface::Impl : UiPainter {
         }
     }
 
+    void DrawAmiibo(const AmiiboMenuView& view, const GameMenuScene& scene) {
+        using S = Screen;
+        DrawScene(scene);
+        DrawPanel(UiIcon::User, I18n::Tr(Text::AmiiboTitle),
+                  I18n::Tr(view.placed ? Text::AmiiboPlaced : Text::AmiiboLooking));
+        const float x = S::InnerX;
+        const float width = S::InnerWidth - 10;
+        if (view.rows.empty()) {
+            Icon(UiIcon::User, S::InnerX + S::InnerWidth / 2 - 16, 250, Palette::TextSecondary);
+            Type(I18n::Tr(Text::AmiiboEmpty), TypeRole::Body, S::InnerX + 10, 300, S::InnerWidth - 20,
+                 Palette::TextHint, 1, TextAlign::Center, 5);
+        }
+        const std::size_t end = std::min(view.rows.size(), view.page.first + AmiiboRows);
+        for (std::size_t i = view.page.first; i < end; ++i) {
+            const float top = S::ListTop + static_cast<float>(i - view.page.first) * S::CheatStride;
+            const bool active = i == view.page.selected;
+            Round(x, top, width, S::CheatHeight, 14, active ? Palette::Text : Palette::Row);
+            Type(view.rows[i], TypeRole::Body, x + 18, top + 15, width - 36, active ? Palette::OnAccent : Palette::Text);
+        }
+        ScrollIndicator(S::InnerX + S::InnerWidth - 4, S::ListTop,
+                        AmiiboRows * S::CheatStride - (S::CheatStride - S::CheatHeight), view.page.first, AmiiboRows,
+                        view.rows.size());
+        Type(I18n::Tr(view.has_key ? Text::AmiiboWithKey : Text::AmiiboWithoutKey), TypeRole::Label, x, S::Note, width,
+             view.has_key ? Palette::TextHint : Palette::Warning, 1, TextAlign::Leading, 2);
+        if (view.rows.empty()) {
+            Prompts({{L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
+        } else {
+            Prompts({{L"A", ButtonColor::A, I18n::Tr(view.placed ? Text::AmiiboRemove : Text::AmiiboUse)},
+                     {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
+        }
+    }
+
     void DrawKeyboard(const TextEntryPanelView& view, bool can_cancel) {
         using K = TextEntryPanelLayout;
         DrawTextEntryPanel(*this, view, 0, 0);
@@ -656,6 +689,11 @@ D3D12::MenuImage GameMenuSurface::DrawMenu(const GameMenu& menu, const GameMenuS
 D3D12::MenuImage GameMenuSurface::DrawCheats(const Cheats::CheatsView& view, const GameMenuScene& scene,
                                             std::pair<u32, u32> screen) {
     return impl->RenderScreen(screen, false, [&] { impl->DrawCheats(view, scene); });
+}
+
+D3D12::MenuImage GameMenuSurface::DrawAmiibo(const AmiiboMenuView& view, const GameMenuScene& scene,
+                                            std::pair<u32, u32> screen) {
+    return impl->RenderScreen(screen, false, [&] { impl->DrawAmiibo(view, scene); });
 }
 
 D3D12::MenuImage GameMenuSurface::DrawKeyboard(const TextEntryPanelView& view, bool can_cancel,

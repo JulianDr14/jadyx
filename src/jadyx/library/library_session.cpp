@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/library_session.h"
 
+#include <memory>
+
+#include "jadyx/amiibo/amiibo_store.h"
+
 namespace Jadyx {
 using namespace winrt::Windows::UI::Core;
 namespace {
@@ -19,6 +23,24 @@ std::uint64_t ReadAppMemoryLimit() {
              IsAppModeMemory(app_memory_limit) ? "App" : "Game");
     return app_memory_limit;
 }
+
+PortalAmiibo AmiiboForPortal() {
+    const auto store = std::make_shared<AmiiboStore>();
+    return {
+        .list = [store] {
+            std::vector<PortalAmiiboFile> files;
+            for (const AmiiboFile& file : store->List()) files.push_back({file.name, file.bytes});
+            return files;
+        },
+        .has_key = [store] { return store->HasKey(); },
+        .add = [store](const std::string& name, const std::string& bytes, bool replace) {
+            return store->Add(name, bytes, replace);
+        },
+        .remove = [store](const std::string& name) { return store->Remove(name); },
+        .set_key = [store](const std::string& bytes) { return store->SetKey(bytes); },
+        .remove_key = [store] { return store->RemoveKey(); },
+    };
+}
 } // namespace
 
 LibrarySession::LibrarySession(void* window_abi, unsigned swap_width, unsigned swap_height,
@@ -32,6 +54,7 @@ LibrarySession::LibrarySession(void* window_abi, unsigned swap_width, unsigned s
       app_mode{IsAppModeMemory(app_memory_limit)} {
     network_portal.SetLogDirectory(Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir));
     network_portal.SetLibrary(portal_library.View());
+    network_portal.SetAmiibo(AmiiboForPortal());
     network_portal.SetUpdatePackage([&] { return updater.PrepareAssistedDownload(); });
     network_suspending = winrt::Windows::ApplicationModel::Core::CoreApplication::Suspending(
         winrt::auto_revoke, [&](const auto&, const winrt::Windows::ApplicationModel::SuspendingEventArgs&) {

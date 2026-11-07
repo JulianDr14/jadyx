@@ -88,6 +88,23 @@ struct PortalLibrary {
     std::function<std::string(std::uint64_t, std::string&)> save_export;
 };
 
+struct PortalAmiiboFile {
+    std::string name;
+    std::uint64_t bytes{};
+};
+
+/// The player's amiibo files and key (amiibo_store.h). Every callback runs on a portal worker,
+/// must be thread safe and must outlive the server. Writes return an error word, empty on
+/// success. Nothing here hands the key back or says where anything lives on the console.
+struct PortalAmiibo {
+    std::function<std::vector<PortalAmiiboFile>()> list;
+    std::function<bool()> has_key;
+    std::function<std::string(const std::string& name, const std::string& bytes, bool replace)> add;
+    std::function<std::string(const std::string& name)> remove;
+    std::function<std::string(const std::string& bytes)> set_key;
+    std::function<std::string()> remove_key;
+};
+
 /// Installs an update/DLC upload; `tag` is the validated "<kind>:<application hex>".
 using ContentValidator = std::function<std::string(const std::filesystem::path&, const std::string& tag, std::stop_token)>;
 using GameValidator = std::function<std::string(const std::filesystem::path&, const std::string& name, std::stop_token)>;
@@ -117,6 +134,8 @@ public:
     void SetLogDirectory(std::filesystem::path directory);
     // Configure the library view before Start; without it the library routes answer 503.
     void SetLibrary(PortalLibrary library);
+    // Configure the amiibo files before Start; without them the amiibo routes answer 503.
+    void SetAmiibo(PortalAmiibo amiibo);
     bool BlockForLocalOperation();
     std::string FinalizeGame(const GameValidator& validate);
     /// Only the library coordinator calls this, after its metadata worker has joined.

@@ -18,6 +18,7 @@
 namespace Jadyx {
 
 class GameMenu;
+struct AmiiboMenuView;
 struct TextEntryPanelView;
 namespace Cheats {
 struct CheatsView;
@@ -34,6 +35,8 @@ class GameMenuSurface {
 public:
     /// Cheats in view at once on the menu's cheats page.
     static constexpr std::size_t CheatRows = 5;
+    /// Files in view at once on the menu's amiibo page, which has no tabs above its list.
+    static constexpr std::size_t AmiiboRows = 6;
 
     GameMenuSurface();
     ~GameMenuSurface();
@@ -50,6 +53,8 @@ public:
     /// The cheats page.
     D3D12::MenuImage DrawCheats(const Cheats::CheatsView& view, const GameMenuScene& scene,
                                 std::pair<u32, u32> screen);
+    /// The amiibo page.
+    D3D12::MenuImage DrawAmiibo(const AmiiboMenuView& view, const GameMenuScene& scene, std::pair<u32, u32> screen);
     /// The keyboard a game opened (game_keyboard.h); B's prompt only when the game lets it cancel.
     D3D12::MenuImage DrawKeyboard(const TextEntryPanelView& view, bool can_cancel, std::pair<u32, u32> screen);
 
