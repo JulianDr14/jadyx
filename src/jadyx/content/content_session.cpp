@@ -116,8 +116,8 @@ bool ContentSession::Handle(Input input) {
     if (input == Input::Back) {
         switch (view.screen) {
         case Screen::Manager: return true;
-        case Screen::Storage: view.screen = Screen::Manager; break;
-        case Screen::Sources: view.screen = relocating ? Screen::Manager : Screen::Storage; break;
+        case Screen::Storage: view.screen = Screen::Preview; view.selected = view.preview.size(); return false;
+        case Screen::Sources: view.screen = Screen::Manager; break;
         case Screen::Result: view.screen = Screen::Manager; break;
         case Screen::Browser: {
             const auto path = ParseStoragePath(view.folder);
@@ -129,22 +129,24 @@ bool ContentSession::Handle(Input input) {
             break;
         }
         case Screen::Preview: Browse(view.folder); break;
-        case Screen::ConfirmImport: view.screen = Screen::Preview; break;
+        case Screen::ConfirmImport: view.screen = Screen::Storage; view.selected = copy_internal ? 0 : 1; return false;
         default: view.screen = Screen::Manager; break;
         }
         view.selected = 0; return false;
     }
     if (view.screen == Screen::Manager) {
         if (input == Input::Import || (input == Input::Confirm && view.selected == 0)) {
+            // Files first, destination last: the files always come from a USB or folder, so asking
+            // "internal?" before that read as if internal storage could be the source.
             relocating = false; view.selected_files.clear(); view.completed.clear();
-            view.screen = Screen::Storage; view.selected = copy_internal ? 1 : 0;
+            Sources();
         }
         else if (input == Input::Refresh) Start([this](auto& state, auto stop) { Reload(state, stop); });
         else if (input == Input::Confirm && view.selected > 0 && view.selected <= view.rows.size()) {
             view.action_id = view.rows[view.selected - 1].id; view.screen = Screen::Actions; view.selected = 0;
         }
     } else if (view.screen == Screen::Storage && input == Input::Confirm) {
-        copy_internal = view.selected == 1; Sources();
+        copy_internal = view.selected == 0; view.screen = Screen::ConfirmImport; view.selected = 0;
     } else if (view.screen == Screen::Result && input == Input::Confirm) {
         view.screen = Screen::Manager; view.selected = 0;
     } else if (view.screen == Screen::Sources && input == Input::Confirm) {
@@ -210,7 +212,7 @@ bool ContentSession::Handle(Input input) {
         if (input == Input::Confirm && view.selected < view.checked.size() && view.preview[view.selected].error == Error::None)
             view.checked[view.selected] = !view.checked[view.selected];
         if (input == Input::Import && std::any_of(view.checked.begin(), view.checked.end(), [](bool b) { return b; })) {
-            view.screen = Screen::ConfirmImport; view.selected = 0;
+            view.screen = Screen::Storage; view.selected = copy_internal ? 0 : 1;
         }
     } else if (view.screen == Screen::ConfirmImport && input == Input::Confirm) {
         const bool destination_internal = copy_internal;
