@@ -2148,6 +2148,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
                                   stream_output->dropped_entries);
                 }
             }
+            dxil.linked.PreparePsoHashes();
             dxil.charge = Common::MemoryCharge(Common::MemoryAccount::ShaderBytecode, bytes);
             return dxil;
         }, [](const ChargedDxilStages& dxil) {

@@ -15,12 +15,48 @@
 
 namespace D3D12 {
 
+using PsoShaderSpans = std::array<std::span<const std::uint8_t>, 5>;
+constexpr std::uint64_t PSO_SHADER_HASH_SEED = 14695981039346656037ULL;
+
+inline std::uint64_t HashPsoShader(std::span<const std::uint8_t> bytes) noexcept {
+    std::uint64_t hash = PSO_SHADER_HASH_SEED;
+    for (const auto byte : bytes) {
+        hash = (hash ^ byte) * 1099511628211ULL;
+    }
+    return hash;
+}
+
+/// Owned alongside immutable linked DXIL. A descriptor may omit or replace a stage (stream
+/// output disables PS), so only reuse a digest for the exact span that was hashed.
+class PsoShaderHashCache {
+public:
+    explicit PsoShaderHashCache(PsoShaderSpans sources_) : sources{sources_} {
+        for (size_t i = 0; i < sources.size(); ++i) {
+            hashes[i] = HashPsoShader(sources[i]);
+        }
+    }
+
+    [[nodiscard]] std::uint64_t Get(size_t stage, std::span<const std::uint8_t> bytes) const {
+        return bytes.data() == sources[stage].data() && bytes.size() == sources[stage].size()
+                   ? hashes[stage]
+                   : HashPsoShader(bytes);
+    }
+
+private:
+    PsoShaderSpans sources;
+    std::array<std::uint64_t, 5> hashes{};
+};
+
 /// Host identity, independent of the guest key and pointer/padding representations. Shader
 /// spans are kept alive by bytecode_owner. Root signatures are interned by PipelineCache and
 /// outlive this per-device index. Hash collisions always compare the complete input bytes.
 struct GraphicsPsoKey {
     std::shared_ptr<const void> bytecode_owner;
-    std::array<std::span<const std::uint8_t>, 5> shaders;
+    PsoShaderSpans shaders;
+    // Shader bytes and their spans are immutable after MakeGraphicsPsoKey. State may still
+    // acquire the depth-bounds word; its hash is evaluated separately at lookup.
+    std::array<std::uint64_t, 5> shader_hashes{PSO_SHADER_HASH_SEED, PSO_SHADER_HASH_SEED,
+        PSO_SHADER_HASH_SEED, PSO_SHADER_HASH_SEED, PSO_SHADER_HASH_SEED};
     ID3D12RootSignature* root{};
     std::vector<std::uint32_t> state;
 
@@ -29,7 +65,9 @@ struct GraphicsPsoKey {
             return false;
         }
         for (size_t i = 0; i < shaders.size(); ++i) {
-            if (!std::ranges::equal(shaders[i], other.shaders[i])) {
+            if (shaders[i].size() != other.shaders[i].size() ||
+                (shaders[i].data() != other.shaders[i].data() &&
+                 !std::ranges::equal(shaders[i], other.shaders[i]))) {
                 return false;
             }
         }
@@ -44,23 +82,24 @@ struct GraphicsPsoKeyHash {
         for (const auto word : key.state) {
             add(word);
         }
-        for (const auto shader : key.shaders) {
-            add(shader.size());
-            for (const auto byte : shader) {
-                add(byte);
-            }
+        for (size_t i = 0; i < key.shaders.size(); ++i) {
+            add(key.shaders[i].size());
+            add(key.shader_hashes[i]);
         }
         return static_cast<size_t>(hash);
     }
 };
 
 inline GraphicsPsoKey MakeGraphicsPsoKey(const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc,
-                                        std::shared_ptr<const void> bytecode_owner) {
+                                        std::shared_ptr<const void> bytecode_owner,
+                                        const PsoShaderHashCache* shader_hashes = nullptr) {
     GraphicsPsoKey key{.bytecode_owner = std::move(bytecode_owner), .root = desc.pRootSignature};
     const std::array bytecodes{desc.VS, desc.HS, desc.DS, desc.GS, desc.PS};
     for (size_t i = 0; i < bytecodes.size(); ++i) {
         key.shaders[i] = {static_cast<const std::uint8_t*>(bytecodes[i].pShaderBytecode),
                           bytecodes[i].BytecodeLength};
+        key.shader_hashes[i] = shader_hashes ? shader_hashes->Get(i, key.shaders[i])
+                                           : HashPsoShader(key.shaders[i]);
     }
     auto& words = key.state;
     words.reserve(256 + desc.InputLayout.NumElements * 16);

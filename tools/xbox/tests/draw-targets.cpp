@@ -122,6 +122,7 @@ float4 main(uint id:SV_VertexID):SV_Position {
         };
         linked->stages[0] = copy_blob(vs);
         linked->stages[4] = copy_blob(ps);
+        linked->PreparePsoHashes();
         GraphicsPipeline::SharedDxilStages bytecodes = linked;
         Shader::Info vertex{}, fragment{};
         std::array<const Shader::Info*, GraphicsPipeline::NUM_STAGES> infos{};

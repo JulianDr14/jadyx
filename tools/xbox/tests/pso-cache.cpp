@@ -225,4 +225,12 @@ static void Gpu() {
               << old_ms << " -> " << new_ms << " ms; distinct PSO/debug PASS\n";
 }
 
-int main() { Identity(); CheckConcurrency(); Gpu(); }
+int main(int argc, char** argv) {
+    Identity();
+    CheckConcurrency();
+    if (argc == 2 && std::string_view{argv[1]} == "--cpu-only") {
+        std::cout << "GPU/debug gate not requested (--cpu-only)\n";
+        return 0;
+    }
+    Gpu();
+}

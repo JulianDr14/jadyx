@@ -294,6 +294,16 @@ public:
         /// evaluation shader as the vertex stage, and no hull or domain stage.
         std::vector<u8> tess_capture;
         std::vector<u8> tess_control;
+
+        /// Called by the bytecode producer before publishing immutable linked stages. An
+        /// unprepared standalone pipeline still hashes its bytes normally.
+        void PreparePsoHashes();
+        [[nodiscard]] const PsoShaderHashCache* PsoHashes() const {
+            return pso_hashes ? &*pso_hashes : nullptr;
+        }
+
+    private:
+        std::optional<PsoShaderHashCache> pso_hashes;
     };
     using SharedDxilStages = std::shared_ptr<const LinkedDxil>;
     /// (trace id, flatten the vertex stage's branches) -> linked DXIL.
