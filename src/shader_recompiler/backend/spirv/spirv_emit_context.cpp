@@ -1002,9 +1002,16 @@ void EmitContext::DefineLocalMemory(IR::Program& program) {
     if (program.local_memory_size == 0) {
         return;
     }
-    if (stage == Stage::Fragment && profile.SupportsSubgroupStage(stage)) {
-        const u32 words{LocalMemoryScratch::PoolWords(profile.fragment_local_memory_scratch_lanes,
-                                                      program.local_memory_size)};
+    // The host stage decides: an emulated evaluation shader runs as a vertex shader.
+    const Stage host_stage{stage == Stage::TessellationEval &&
+                                   runtime_info.tess_emulation == TessEmulation::EvalVertex
+                               ? Stage::VertexB
+                               : stage};
+    if ((profile.local_memory_scratch_stages & (1U << static_cast<u32>(host_stage))) != 0 &&
+        profile.SupportsSubgroupStage(stage)) {
+        const u32 words{LocalMemoryScratch::PoolWords(profile.local_memory_scratch_lanes,
+                                                      program.local_memory_size,
+                                                      profile.local_memory_private_words)};
         size_t exits{};
         bool indexed{};
         for (IR::Block* const block : program.blocks) {
@@ -1015,6 +1022,8 @@ void EmitContext::DefineLocalMemory(IR::Program& program) {
                            !inst.Arg(0).IsImmediate();
             }
         }
+        program.info.local_memory_words = Common::DivCeil(program.local_memory_size, 4U);
+        program.info.local_memory_indexed = indexed;
         // Local memory reached only at constant offsets (register spills) becomes registers in the
         // host compiler and keeps its values: only indexed access needs the pool.
         if (words != 0 && indexed) {

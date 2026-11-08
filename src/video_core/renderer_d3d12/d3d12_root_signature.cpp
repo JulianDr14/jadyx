@@ -173,14 +173,19 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
     bool integer_textures = false;
     bool textures = false;
     bool local_memory_scratch = false;
+    // Graphics infos are indexed by stage, the pixel shader last.
+    bool scratch_outside_pixel = false;
     bool stage_constants = false;
     bool polygon_stipple = false;
     u32 xfb_buffers = 0;
-    for (const Shader::Info* info : infos) {
+    for (size_t index = 0; index < infos.size(); ++index) {
+        const Shader::Info* const info = infos[index];
         if (info) {
             stage_constants |= info->uses_stage_constants;
             polygon_stipple |= info->uses_polygon_stipple;
-            local_memory_scratch |= info->local_memory_scratch_words != 0;
+            const bool scratch = info->local_memory_scratch_words != 0;
+            local_memory_scratch |= scratch;
+            scratch_outside_pixel |= scratch && (is_compute || index + 1 != infos.size());
             xfb_buffers |= info->xfb_storage_buffers;
             for (const auto& desc : info->texture_descriptors) {
                 integer_textures |= desc.is_integer;
@@ -233,7 +238,8 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
                          (local_memory_scratch ? 4u : 0u) | (xfb_buffers << 3) |
                          (stream_output ? 1u << 7 : 0u) | (blend_constants ? 1u << 8 : 0u) |
                          (stage_constants ? 1u << 9 : 0u) | (polygon_stipple ? 1u << 10 : 0u) |
-                         (tess_emulation ? 1u << 11 : 0u)};
+                         (tess_emulation ? 1u << 11 : 0u) |
+                         (scratch_outside_pixel ? 1u << 12 : 0u)};
     AppendKey(key, ranges.resources);
     AppendKey(key, ranges.samplers);
     key.push_back(static_cast<u32>(root.registers.size()));
@@ -303,7 +309,9 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             .ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV,
             .Descriptor = {.ShaderRegister = Shader::LocalMemoryScratch::BINDING,
                            .RegisterSpace = Shader::LocalMemoryScratch::DESCRIPTOR_SET},
-            .ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL,
+            // Pixel only unless another stage keeps local memory there too.
+            .ShaderVisibility = scratch_outside_pixel ? D3D12_SHADER_VISIBILITY_ALL
+                                                      : D3D12_SHADER_VISIBILITY_PIXEL,
         });
     }
     if (xfb_buffers != 0) {

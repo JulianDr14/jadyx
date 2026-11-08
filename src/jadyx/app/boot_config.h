@@ -296,9 +296,14 @@ struct BootConfig {
     /// Pushbuffer reads skip FlushRegion over memory no cache holds GPU writes for.
     bool dma_flush_filter{true};
     bool draw_sampler_reuse{true}; ///< Gather-local TSC resolution.
-    /// Where pixel shaders keep large local memory: 0 auto (boot probe), 1 pool, 2 private arrays
-    /// ("ps_scratch=auto|uav|native", D3D12::PixelShaderScratchMode).
+    /// Where pixel and vertex shaders keep large local memory: 0 auto (boot probe), 1 pool,
+    /// 2 private arrays ("ps_scratch=" and "vs_scratch=auto|uav|native",
+    /// D3D12::LocalMemoryScratchMode).
     u8 ps_scratch{};
+    u8 vs_scratch{};
+    /// Indexed local memory of up to this many words stays private when the pool is on
+    /// ("scratch_private=N", D3D12::SetLocalMemoryPrivateWords).
+    u32 scratch_private{64};
     /// Host timing waits sleep on a high-resolution timer and wait only its lateness on the CPU
     /// ("timer_sleep=0" waits the last timer tick on the CPU, as before).
     bool timer_sleep{true};

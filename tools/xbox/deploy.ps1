@@ -34,7 +34,9 @@ if ($Target -eq 'Pc') {
 }
 
 if (-not $NoBuild) {
-    & $env:ComSpec /c "call `"$r\tools\xbox\build-env.bat`" && cmake --build `"$r\$BuildDir`" --config Release --target jadyx" *> "$r\$BuildDir\build.log"
+    # cmd redirects its own output: under 'Stop', PowerShell 5.1 turns any stderr line (a CMake
+    # deprecation warning on a reconfigure) into a terminating error.
+    & $env:ComSpec /c "call `"$r\tools\xbox\build-env.bat`" && cmake --build `"$r\$BuildDir`" --config Release --target jadyx > `"$r\$BuildDir\build.log`" 2>&1"
     if ($LASTEXITCODE -ne 0) {
         Select-String -Path "$r\$BuildDir\build.log" -Pattern ' error ' | Select-Object -First 10 | Write-Host
         throw "build failed ($BuildDir\build.log)"

@@ -122,9 +122,15 @@ struct Profile {
     /// Maxwell and earlier nVidia architectures have broken robust support
     bool has_broken_robust{};
 
-    /// Lanes per wave (the maximum the host may use) when fragment shaders keep large guest local
-    /// memory in a storage buffer (local_memory_scratch.h); 0 keeps it in a private array.
-    u32 fragment_local_memory_scratch_lanes{};
+    /// Lanes per wave (the maximum the host may use) of the storage buffer that replaces large
+    /// guest local memory (local_memory_scratch.h) in the stages of local_memory_scratch_stages.
+    u32 local_memory_scratch_lanes{};
+    /// Host stages (1 << Stage, vertex and fragment) whose private arrays lose their values, so
+    /// their indexed local memory goes to the pool. An evaluation shader run as a vertex shader
+    /// follows the vertex bit.
+    u32 local_memory_scratch_stages{};
+    /// With the pool on, indexed local memory up to this many words stays in a private array.
+    u32 local_memory_private_words{};
 
     u64 min_ssbo_alignment{};
     u32 max_user_clip_distances{};

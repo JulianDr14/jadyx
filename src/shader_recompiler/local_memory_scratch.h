@@ -6,10 +6,11 @@
 #include "common/common_types.h"
 #include "common/div_ceil.h"
 
-/// Guest local memory of fragment shaders kept in a storage buffer instead of a private array,
-/// for hosts whose pixel shaders lose large private arrays (Profile::fragment_local_memory_
-/// scratch_lanes). Small arrays stay private: drivers keep them in registers. So do arrays only
-/// accessed at constant offsets, whatever their size: only indexed access loses its values.
+/// Guest local memory kept in a storage buffer instead of a private array, in the host stages whose
+/// private arrays lose their values (Profile::local_memory_scratch_stages: the Series loses them
+/// in vertex and pixel shaders, not in compute). Small arrays stay private: drivers keep them in
+/// registers. So do arrays only accessed at constant offsets, whatever their size: only indexed
+/// access loses its values. Every stage shares one pool.
 ///
 /// Each wave takes a slot of the pool when it starts and frees it when its last live lane leaves,
 /// at the epilogue or at a demote, so slots never leak while waves run concurrently across draws.
@@ -36,9 +37,9 @@ namespace Shader::LocalMemoryScratch {
 constexpr u32 DESCRIPTOR_SET = 28;
 constexpr u32 BINDING = 0;
 
-/// Arrays up to this many words stay private (64 words measured as register-promoted on the
-/// Series; 128 lose their data).
-constexpr u32 MAX_PRIVATE_WORDS = 64;
+/// Indexed arrays up to this many words stay private by default (Profile::local_memory_private_
+/// words): measured as register-promoted on the Series by the matrix; 128 lost their data.
+constexpr u32 DEFAULT_PRIVATE_WORDS = 64;
 /// Larger local memory stays private too: it would need a pool too large for console memory.
 constexpr u32 MAX_WORDS = 4096;
 
@@ -67,10 +68,12 @@ static_assert(MIN_SLOTS % 32 == 0 && (MIN_SLOTS & (MIN_SLOTS - 1)) == 0);
 static_assert(MAX_SLOTS % 32 == 0 && (MAX_SLOTS & (MAX_SLOTS - 1)) == 0);
 static_assert(HEADER_WORDS <= BITMAP_BASE);
 
-/// Words of local memory a fragment shader keeps in the pool, or 0 to keep a private array.
-[[nodiscard]] constexpr u32 PoolWords(u32 lanes, u32 local_memory_size) noexcept {
+/// Words of local memory a shader keeps in the pool, or 0 to keep a private array.
+/// Arrays of up to private_words words stay private.
+[[nodiscard]] constexpr u32 PoolWords(u32 lanes, u32 local_memory_size,
+                                      u32 private_words) noexcept {
     const u32 words = Common::DivCeil(local_memory_size, 4U);
-    if (lanes == 0 || words <= MAX_PRIVATE_WORDS || words > MAX_WORDS) {
+    if (lanes == 0 || words == 0 || words <= private_words || words > MAX_WORDS) {
         return 0;
     }
     return words;

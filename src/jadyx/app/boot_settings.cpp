@@ -403,7 +403,10 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     Common::PageTable::SetJitReadTable(
         static_cast<Common::PageTable::JitReadTable>(config.jit_read_table));
     D3D12::SetDrawSamplerReuse(config.draw_sampler_reuse);
-    D3D12::SetPixelShaderScratchMode(static_cast<D3D12::PixelShaderScratchMode>(config.ps_scratch));
+    using ScratchMode = D3D12::LocalMemoryScratchMode;
+    D3D12::SetPixelShaderScratchMode(static_cast<ScratchMode>(config.ps_scratch));
+    D3D12::SetVertexShaderScratchMode(static_cast<ScratchMode>(config.vs_scratch));
+    D3D12::SetLocalMemoryPrivateWords(config.scratch_private);
     if (config.debug_layer) {
         Settings::values.renderer_debug = true;
         D3D12::SetGpuBasedValidation(config.gpu_validation);

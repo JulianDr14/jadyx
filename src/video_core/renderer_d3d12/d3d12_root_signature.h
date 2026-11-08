@@ -46,8 +46,8 @@ constexpr u32 INDIRECT_DISPATCH_WORDS = INDIRECT_DISPATCH_CONSTANT_WORDS + 3;
 ///  - root CBV, integer sampler states (eden_integer_sampler_state per texture binding): b0
 ///    space 29, only when a texture is integer. D3D12 cannot Sample() integer resources, so
 ///    spirv_to_dxil turns those samples into texel loads and emulates the sampler with this data
-///  - root UAV, local memory pool (Shader::LocalMemoryScratch): u0 space 28, pixel stage only,
-///    when the fragment shader keeps its local memory there
+///  - root UAV, local memory pool (Shader::LocalMemoryScratch): u0 space 28, when a stage
+///    keeps its local memory there; pixel stage only unless another stage does too
 ///  - root constants and root UAVs, transform feedback (Shader::TransformFeedbackStorage): b4 and
 ///    u<N> space 27, vertex stage only, when the vertex shader writes transform feedback buffers
 ///  - root SRVs, UAV and constants, tessellation emulation (Shader::TessellationEmulation): t0,

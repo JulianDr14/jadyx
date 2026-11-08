@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Validate fragment local memory kept in the pool (Shader::LocalMemoryScratch) through the
-// production emitter, SPIR-V validation and the Mesa linker: one exit, and a conditional demote.
+// Validate local memory kept in the pool (Shader::LocalMemoryScratch) through the production
+// emitter, SPIR-V validation and the Mesa linker: fragment shaders with one exit and with a
+// conditional demote, and a vertex shader.
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -36,11 +37,13 @@ int main(int argc, char** argv) try {
     if (!compiler.IsAvailable()) throw std::runtime_error("compiler unavailable");
     auto validator = spvContextCreate(SPV_ENV_VULKAN_1_1);
     // indexed: offsets from a varying, else constant ones, which stay private (registers).
-    struct Case { const char* name; bool demote; u32 lanes; bool indexed; bool pool; };
-    for (const Case c : {Case{"pool_single_exit", false, 64, true, true},
-                         Case{"pool_demote", true, 64, true, true},
-                         Case{"private_control", false, 0, true, false},
-                         Case{"constant_offsets", false, 64, false, false}}) {
+    // vertex: the vertex shader also keeps indexed local memory, in the pool.
+    struct Case { const char* name; bool demote; u32 lanes; bool indexed; bool pool; bool vertex; };
+    for (const Case c : {Case{"pool_single_exit", false, 64, true, true, false},
+                         Case{"pool_demote", true, 64, true, true, false},
+                         Case{"private_control", false, 0, true, false, false},
+                         Case{"constant_offsets", false, 64, false, false, false},
+                         Case{"vertex_pool", false, 64, true, true, true}}) {
         ObjectPool<IR::Inst> insts;
         ObjectPool<IR::Block> blocks;
         IR::Program vs, ps;
@@ -58,6 +61,15 @@ int main(int argc, char** argv) try {
             vs.info.loads.Set(IR::Attribute::Generic0X + i);
             vs.info.stores.Set(IR::Attribute::PositionX + i);
             vs.info.stores.Set(IR::Attribute::Generic0X + i);
+        }
+        if (c.vertex) {
+            vs.local_memory_size = 588 * 4;
+            const IR::U32 vindex{v.ConvertFToU(32, v.GetAttribute(IR::Attribute::Generic0X))};
+            v.WriteLocal(v.ShiftLeftLogical(vindex, v.Imm32(2U)), v.Imm32(0x3f123456U));
+            const IR::U32 vloaded{v.LoadLocal(
+                v.ShiftLeftLogical(v.BitwiseXor(vindex, v.Imm32(1U)), v.Imm32(2U)))};
+            v.SetAttribute(IR::Attribute::Generic0X + 3, v.BitCast<IR::F32>(vloaded),
+                           v.Imm32(0U));
         }
         v.Epilogue();
 
@@ -107,15 +119,25 @@ int main(int argc, char** argv) try {
         profile.support_demote_to_helper_invocation = true;
         profile.supported_subgroup_stages = 0x7F;
         profile.warp_size_potentially_larger_than_guest = true;
-        profile.fragment_local_memory_scratch_lanes = c.lanes;
+        profile.local_memory_scratch_lanes = c.lanes;
+        profile.local_memory_scratch_stages = (1U << static_cast<u32>(Stage::VertexB)) |
+                                              (1U << static_cast<u32>(Stage::Fragment));
         RuntimeInfo vr, pr;
         vr.previous_stage_stores.mask.set();
         pr.previous_stage_stores = vs.info.stores;
         Backend::Bindings bindings;
         const auto vertex = Backend::SPIRV::EmitSPIRV(profile, vr, vs, bindings);
         const auto pixel = Backend::SPIRV::EmitSPIRV(profile, pr, ps, bindings);
-        if ((ps.info.local_memory_scratch_words != 0) != c.pool)
+        if ((ps.info.local_memory_scratch_words != 0) != c.pool ||
+            (vs.info.local_memory_scratch_words != 0) != c.vertex)
             throw std::runtime_error(std::string(c.name) + ": wrong storage choice");
+        spv_diagnostic vertex_diagnostic{};
+        if (spvValidateBinary(validator, vertex.data(), vertex.size(), &vertex_diagnostic) !=
+            SPV_SUCCESS)
+            throw std::runtime_error(std::string(c.name) + " vertex: " +
+                                     (vertex_diagnostic ? vertex_diagnostic->error
+                                                        : "invalid SPIR-V"));
+        spvDiagnosticDestroy(vertex_diagnostic);
         {
             std::ofstream file{std::filesystem::path(argv[1]) / (std::string(c.name) + ".spv"),
                                std::ios::binary};
