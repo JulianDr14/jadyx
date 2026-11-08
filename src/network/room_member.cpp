@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
+#include <utility>
 #include <list>
 #include <mutex>
 #include <set>
@@ -57,6 +58,19 @@ public:
     IPv4Address fake_ip; ///< The fake ip of this member.
 
     std::mutex network_mutex; ///< Mutex that controls access to the `client` variable.
+
+    /// GetConnectionStats' numbers: the loop publishes the peer's after each service.
+    std::atomic<u32> round_trip_ms{}, round_trip_variance_ms{}, packet_loss{};
+    std::atomic<u64> bytes_sent{}, bytes_received{}, game_packets_sent{}, game_packets_received{};
+    void ResetStats() noexcept {
+        round_trip_ms = 0;
+        round_trip_variance_ms = 0;
+        packet_loss = 0;
+        bytes_sent = 0;
+        bytes_received = 0;
+        game_packets_sent = 0;
+        game_packets_received = 0;
+    }
     /// Thread that receives and dispatches network packets
     std::optional<std::jthread> loop_thread;
     std::mutex send_list_mutex;  ///< Mutex that controls access to the `send_list` variable.
@@ -170,9 +184,11 @@ void RoomMember::RoomMemberImpl::StartLoop() {
                 case ENET_EVENT_TYPE_RECEIVE:
                     switch (event.packet->data[0]) {
                     case IdProxyPacket:
+                        game_packets_received.fetch_add(1, std::memory_order_relaxed);
                         HandleProxyPackets(&event);
                         break;
                     case IdLdnPacket:
+                        game_packets_received.fetch_add(1, std::memory_order_relaxed);
                         HandleLdnPackets(&event);
                         break;
                     case IdChatMessage:
@@ -267,6 +283,14 @@ void RoomMember::RoomMemberImpl::StartLoop() {
                 enet_peer_send(server, 0, enetPacket);
             }
             enet_host_flush(client);
+            // ENet's byte totals are 32-bit and left for the user to reset.
+            bytes_sent.fetch_add(std::exchange(client->totalSentData, 0), std::memory_order_relaxed);
+            bytes_received.fetch_add(std::exchange(client->totalReceivedData, 0), std::memory_order_relaxed);
+            if (server) {
+                round_trip_ms.store(server->roundTripTime, std::memory_order_relaxed);
+                round_trip_variance_ms.store(server->roundTripTimeVariance, std::memory_order_relaxed);
+                packet_loss.store(server->packetLoss, std::memory_order_relaxed);
+            }
         }
         Disconnect();
     });
@@ -571,6 +595,16 @@ RoomInformation RoomMember::GetRoomInformation() const {
     return room_member_impl->room_information;
 }
 
+RoomMember::ConnectionStats RoomMember::GetConnectionStats() const {
+    const auto& impl = *room_member_impl;
+    if (!impl.IsConnected()) return {};
+    constexpr auto relaxed = std::memory_order_relaxed;
+    return {impl.round_trip_ms.load(relaxed),     impl.round_trip_variance_ms.load(relaxed),
+            impl.packet_loss.load(relaxed),       impl.bytes_sent.load(relaxed),
+            impl.bytes_received.load(relaxed),    impl.game_packets_sent.load(relaxed),
+            impl.game_packets_received.load(relaxed)};
+}
+
 void RoomMember::Join(const std::string& nick, const char* server_addr, u16 server_port,
                       u16 client_port, const IPv4Address& preferred_fake_ip,
                       const std::string& password, const std::string& token) {
@@ -589,6 +623,7 @@ void RoomMember::Join(const std::string& nick, const char* server_addr, u16 serv
     }
 
     room_member_impl->SetState(State::Joining);
+    room_member_impl->ResetStats();
 
     ENetAddress address{};
     enet_address_set_host(&address, server_addr);
@@ -636,6 +671,7 @@ void RoomMember::SendProxyPacket(const ProxyPacket& proxy_packet) {
     packet.Write(proxy_packet.broadcast);
     packet.Write(proxy_packet.data);
 
+    room_member_impl->game_packets_sent.fetch_add(1, std::memory_order_relaxed);
     room_member_impl->Send(std::move(packet));
 }
 
@@ -651,6 +687,7 @@ void RoomMember::SendLdnPacket(const LDNPacket& ldn_packet) {
 
     packet.Write(ldn_packet.data);
 
+    room_member_impl->game_packets_sent.fetch_add(1, std::memory_order_relaxed);
     room_member_impl->Send(std::move(packet));
 }
 
