@@ -15,6 +15,7 @@
 #include <winrt/Windows.Storage.h>
 
 #include "common/settings.h"
+#include "common/string_util.h"
 #include "core/core.h"
 #include "core/file_sys/control_metadata.h"
 #include "core/loader/loader.h"
@@ -24,6 +25,7 @@
 #include "video_core/performance_overlay.h"
 #include "video_core/renderer_base.h"
 
+#include "jadyx/network/online_rooms.h"
 #include "jadyx/app/boot_diag.h"
 #include "jadyx/app/boot_renderer_decls.h"
 #include "jadyx/app/boot_settings.h"
@@ -70,7 +72,14 @@ void SessionMenu::DrawMenu() {
     D3D12::MenuImage image;
     try {
         menu_surface->SetPromptMapping(input.MenuPromptMapping());
-        const GameMenuScene scene{game_title, game_details, session_text};
+        // The room, so the paused menu says the game is online (or was, until the room dropped it).
+        const auto online = Online::Snapshot();
+        std::wstring room;
+        if (online.phase == Online::Phase::Joined)
+            room = Common::UTF8ToUTF16W(online.room_name.empty() ? online.address : online.room_name);
+        const bool dropped = online.phase == Online::Phase::Idle && (online.failure == Online::Failure::LostConnection ||
+                                                                     online.failure == Online::Failure::Kicked);
+        const GameMenuScene scene{game_title, game_details, session_text, room, dropped};
         image = memory_edit_open ? menu_surface->DrawMemoryEdit(memory_edit->View(), scene, screen)
                 : cheats ? menu_surface->DrawCheats({*cheats, cheats_page, game_title, cheats_notice, true},
                                                   scene, screen)
@@ -442,7 +451,8 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         if (!SaveGameOfflineMode(program_id, offline)) WriteDiag("menu: offline mode could not be saved");
         // Seen by the game's next network query; boot.cfg's airplane=1 still wins.
         if (!config.airplane_mode)
-            Settings::values.airplane_mode.SetValue(offline.value_or(menu->Settings().offline_default));
+            Settings::values.airplane_mode.SetValue(offline.value_or(menu->Settings().offline_default) &&
+                                                    !Online::InRoom()); // A room needs the network.
         WriteDiag(std::string{"menu: offline mode "} +
                   (Settings::values.airplane_mode.GetValue() ? "on" : "off"));
     }

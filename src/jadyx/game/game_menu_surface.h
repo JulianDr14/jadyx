@@ -32,6 +32,10 @@ struct GameMenuScene {
     std::wstring_view title;
     std::wstring_view details; ///< Developer and version, as the game's control data has them.
     std::wstring_view session; ///< How long this session has run, "1:42:18".
+    /// The online room the console is in; empty outside one. `online_dropped`: the room let go of
+    /// the console during this game.
+    std::wstring_view online;
+    bool online_dropped{};
 };
 
 class GameMenuSurface {

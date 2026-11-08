@@ -359,14 +359,28 @@ struct GameMenuSurface::Impl : UiPainter {
             renderer += L" · " + std::to_wstring(frame_size.first) + L"×" + std::to_wstring(frame_size.second);
         const float clock_width = MeasureType(clock, TypeRole::LabelLarge);
         const float renderer_width = MeasureType(renderer, TypeRole::LabelLarge);
-        const float pill = 14 + 16 + 8 + clock_width + 25 + renderer_width + 16;
+        float pill = 14 + 16 + 8 + clock_width + 25 + renderer_width + 16;
+        // Online first: a green dot and the room, or an amber one when the room dropped the game.
+        std::wstring room{scene.online};
+        if (room.empty() && scene.online_dropped) room = I18n::Tr(Text::OnlineDropped);
+        const float room_width = room.empty() ? 0 : std::min(MeasureType(room, TypeRole::LabelLarge), 220.0f);
+        const float online = room.empty() ? 0 : 14 + 8 + 8 + room_width + 13;
+        pill += online;
         const float x = S::Right - pill;
         Round(x, S::Pill, pill, 32, 16, Palette::Surface, 0.85f);
         Outline(x + 0.5f, S::Pill + 0.5f, pill - 1, 31, 15.5f, 0xffffff, 0.08f);
-        Icon(UiIcon::Clock, x + 14, S::Pill + 8, Palette::TextSecondary, 16);
-        Type(clock, TypeRole::LabelLarge, x + 38, S::Pill + 6, clock_width + 2, Palette::Text);
-        Round(x + 38 + clock_width + 12, S::Pill + 9, 1, 14, 0.5f, 0xffffff, 0.2f);
-        Type(renderer, TypeRole::LabelLarge, x + 38 + clock_width + 25, S::Pill + 6, renderer_width + 2,
+        if (online) {
+            const unsigned dot = scene.online.empty() ? Palette::Warning : 0x5ad08a;
+            Round(x + 14, S::Pill + 12, 8, 8, 4, dot);
+            Type(room, TypeRole::LabelLarge, x + 30, S::Pill + 6, room_width + 2,
+                 scene.online.empty() ? Palette::Warning : Palette::Text);
+            Round(x + online - 1, S::Pill + 9, 1, 14, 0.5f, 0xffffff, 0.2f);
+        }
+        const float cx = x + online;
+        Icon(UiIcon::Clock, cx + 14, S::Pill + 8, Palette::TextSecondary, 16);
+        Type(clock, TypeRole::LabelLarge, cx + 38, S::Pill + 6, clock_width + 2, Palette::Text);
+        Round(cx + 38 + clock_width + 12, S::Pill + 9, 1, 14, 0.5f, 0xffffff, 0.2f);
+        Type(renderer, TypeRole::LabelLarge, cx + 38 + clock_width + 25, S::Pill + 6, renderer_width + 2,
              Palette::TextSecondary);
 
         std::wstring caption = L"Jadyx";
