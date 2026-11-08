@@ -440,6 +440,15 @@ struct System::Impl {
         LOG_INFO(Core, "Shutdown: services reset");
         services.reset();
         service_manager.reset();
+        {
+            // The general channel event is created lazily from a kernel service
+            // context; release it while the kernel is alive, or ~Impl closes
+            // kernel objects that kernel.Shutdown() already freed.
+            std::scoped_lock lk{general_channel_mutex};
+            general_channel.clear();
+            general_channel_event.reset();
+            general_channel_context.reset();
+        }
         fs_controller.Reset();
         cheat_engine.reset();
         core_timing.ClearPendingEvents();
