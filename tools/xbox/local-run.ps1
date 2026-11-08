@@ -9,6 +9,9 @@
 #   powershell -ExecutionPolicy Bypass -File tools\xbox\local-run.ps1 [-NoBuild] [-TimeoutSec 75]
 #       [-BootNro path\to\payload.nro] [-RunSeconds 20] [-DebugLayer] [-RequireShaders]
 #       [-Game path\to\game.nsp] [-StageScript path] [-MemoryLimitMiB 5120]
+#       [-BuildDir build-uwp-nolto]
+#
+# -BuildDir picks the binary dir to build and package: build-uwp (LTO) or build-uwp-nolto (fast links).
 #
 # -RunSeconds runs payloads without the sentinels (deko3d examples, ...) for that long, then exits.
 # -DebugLayer turns on the D3D12 debug layer; its errors and warnings land in jadyx_log.txt.
@@ -21,7 +24,8 @@
 param([int] $TimeoutSec = 75, [switch] $NoBuild, [string] $BootNro, [int] $RunSeconds = 0,
       [switch] $DebugLayer, [string] $Game, [string] $StageScript, [string[]] $BootCfg = @(),
       [ValidateRange(0, 1048576)] [int] $MemoryLimitMiB = 5120, [switch] $Library, [switch] $AllowVersionDowngrade,
-      [string] $Version, [switch] $RequireShaders)
+      [string] $Version, [switch] $RequireShaders,
+      [ValidateSet('build-uwp', 'build-uwp-nolto')] [string] $BuildDir = 'build-uwp')
 $ErrorActionPreference = 'Stop'
 # Match package-appx's comma-separated -BootCfg handling before applying defaults.
 # Otherwise an explicit developer_hotkeys=0 later in the string gets overridden.
@@ -39,7 +43,7 @@ $BootNro = (Resolve-Path $BootNro).Path
 $cmd = "$env:SystemRoot\System32\cmd.exe"
 
 if (-not $NoBuild) {
-    $out = & $cmd /c "`"$r\tools\xbox\build-env.bat`" cmake --build `"$r\build-uwp`" --target jadyx 2>&1"
+    $out = & $cmd /c "`"$r\tools\xbox\build-env.bat`" cmake --build `"$r\$BuildDir`" --config Release --target jadyx 2>&1"
     $out | Where-Object { $_ -match 'error|warning C|\[\d+/\d+\]' } | Select-Object -Last 8
     if ($LASTEXITCODE -ne 0) { throw "build failed" }
 }
@@ -49,7 +53,7 @@ Push-Location $r
 try {
     & "$r\tools\xbox\package-appx.ps1" -BootNro $BootNro -RunSeconds $RunSeconds `
         -DebugLayer:$DebugLayer -Game $Game -StageScript $StageScript -BootCfg $BootCfg `
-        -Version $Version -RequireShaders:$RequireShaders *> $null
+        -Version $Version -RequireShaders:$RequireShaders -BuildDir $BuildDir *> $null
 } finally {
     Pop-Location
 }
