@@ -188,6 +188,8 @@ private:
     void OpenOnlineEditor(EditorPurpose purpose);
     void FinishOnlineEditor(bool accept, TimePoint now);
     void JoinOnline(const std::string& address, std::uint16_t port, const std::string& password, TimePoint now);
+    void HandleOnlineHost(TimePoint now);
+    void HostOnline(TimePoint now);
     void PollOnline();
     bool HandleQuit();
     void HandlePageShortcuts();

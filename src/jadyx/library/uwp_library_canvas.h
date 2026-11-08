@@ -78,6 +78,8 @@ enum class LibraryHit : unsigned {
     UpdateNotice,  ///< The library's new-version notice: 0 opens the update page, 1 hides it.
     OnlineRow,     ///< A row of the Online tab (OnlinePage::selected).
     OnlineRefresh, ///< The Online tab's refresh button.
+    OnlineHostRow, ///< A row of the Online tab in Host mode (OnlinePage::host_selected).
+    OnlineMode,    ///< The Online tab's Join/Host switch: 0 joins, 1 hosts.
 };
 inline constexpr std::size_t UpdateBackHit = 99;
 /// A press: what, and which (the tab, the filter, the entry, the shelf position or the row).

@@ -414,6 +414,17 @@ bool LibrarySession::PressOnline(float x, float y) {
         dirty = true;
         return true;
     }
+    if (target.hit == LibraryHit::OnlineHostRow && target.index < OnlinePage::HostRows) {
+        online_page.host_selected = target.index;
+        actions |= Play;
+        dirty = true;
+        return true;
+    }
+    if (target.hit == LibraryHit::OnlineMode) {
+        if (online_page.host != (target.index == 1)) actions |= Pin;
+        dirty = true;
+        return true;
+    }
     return false;
 }
 

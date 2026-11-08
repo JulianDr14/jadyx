@@ -110,6 +110,8 @@ void LibrarySession::SwitchTab(LibraryTab to) {
         online_page.open = true;
         system_page.notice.clear();
         PollOnline();
+        // While this console hosts a room, the tab opens on it.
+        if (OnlineHosting(online_page.status)) online_page.host = true;
         // The public list downloads when the tab first opens, and again after a failure; the
         // refresh button downloads it whenever asked.
         if (online_page.lobby.state == Online::LobbyState::Empty || online_page.lobby.state == Online::LobbyState::Failed)
@@ -576,6 +578,21 @@ void LibrarySession::HandleOnlinePage(TimePoint now) {
         return;
     }
     auto& page = online_page;
+    // Y switches the left card between joining and hosting.
+    if (actions & Pin) {
+        page.host = !page.host;
+        system_page.notice.clear();
+        system_notice_until = now;
+        dirty = true;
+        actions &= Panel;
+        return;
+    }
+    if (page.host) {
+        HandleOnlineHost(now);
+        dirty = true;
+        actions &= Panel;
+        return;
+    }
     const std::size_t rooms = page.lobby.rooms.size();
     if (OnlineInRooms(page)) {
         const std::size_t room = page.selected - OnlinePage::FixedRows;
@@ -625,6 +642,60 @@ void LibrarySession::HandleOnlinePage(TimePoint now) {
     actions &= Panel;
 }
 
+// Host mode: the rows stack, except players and port, which share a line.
+void LibrarySession::HandleOnlineHost(TimePoint now) {
+    auto& page = online_page;
+    auto& row = page.host_selected;
+    if (actions & Up) {
+        if (row == OnlinePage::HostPort) row = OnlinePage::HostName;
+        else if (row == OnlinePage::HostPassword) row = OnlinePage::HostSlots;
+        else if (row > OnlinePage::HostNickname) row--;
+    }
+    if (actions & Down) {
+        if (row == OnlinePage::HostSlots) row = OnlinePage::HostPassword;
+        else if (row + 1 < OnlinePage::HostRows) row++;
+    }
+    if (actions & Left && row == OnlinePage::HostPort) row = OnlinePage::HostSlots;
+    if (actions & Right && row == OnlinePage::HostSlots) row = OnlinePage::HostPort;
+    if (actions & Quit) {
+        SwitchTab(LibraryTab::Home);
+        return;
+    }
+    if (!(actions & Play)) return;
+    switch (row) {
+    case OnlinePage::HostNickname: OpenOnlineEditor(EditorPurpose::OnlineNickname); break;
+    case OnlinePage::HostName: OpenOnlineEditor(EditorPurpose::HostName); break;
+    case OnlinePage::HostSlots: OpenOnlineEditor(EditorPurpose::HostSlots); break;
+    case OnlinePage::HostPort: OpenOnlineEditor(EditorPurpose::HostPort); break;
+    case OnlinePage::HostPassword: OpenOnlineEditor(EditorPurpose::HostPassword); break;
+    case OnlinePage::HostCreate: {
+        const auto phase = page.status.phase;
+        if (phase == Online::Phase::Joined || phase == Online::Phase::Joining) {
+            // In a room: the button closes the hosted one, or leaves the joined one first.
+            if (OnlineHosting(page.status)) {
+                Online::Leave();
+                break;
+            }
+        }
+        HostOnline(now);
+        break;
+    }
+    default: break;
+    }
+}
+
+void LibrarySession::HostOnline(TimePoint now) {
+    const auto& user = system_page.settings.user_name;
+    const std::wstring_view name = user.empty() ? std::wstring_view{DefaultUserName} : std::wstring_view{user};
+    const auto& page = online_page;
+    Online::Host(OnlineNickname(page, name), {.name = OnlineRoomName(page, name),
+                                             .slots = page.fields.slots,
+                                             .port = page.fields.host_port,
+                                             .password = OnlineNarrow(page.host_password)});
+    system_page.notice.clear();
+    system_notice_until = now;
+}
+
 void LibrarySession::OpenOnlineEditor(EditorPurpose purpose) {
     const auto& fields = online_page.fields;
     std::wstring initial;
@@ -643,6 +714,19 @@ void LibrarySession::OpenOnlineEditor(EditorPurpose purpose) {
         max_length = 5;
         break;
     case EditorPurpose::OnlinePassword: initial = online_page.password; break;
+    case EditorPurpose::HostName:
+        initial = fields.room_name;
+        max_length = Online::MaxNicknameLength;
+        break;
+    case EditorPurpose::HostSlots:
+        initial = std::to_wstring(fields.slots);
+        max_length = 2;
+        break;
+    case EditorPurpose::HostPort:
+        initial = std::to_wstring(fields.host_port);
+        max_length = 5;
+        break;
+    case EditorPurpose::HostPassword: initial = online_page.host_password; break;
     default: break;
     }
     system_page.name_editor.emplace(std::move(initial), max_length);
@@ -688,6 +772,34 @@ void LibrarySession::FinishOnlineEditor(bool accept, TimePoint now) {
         save = false;
         if (const auto room = std::exchange(page.pending_room, std::nullopt))
             JoinOnline(room->address, room->port, OnlineNarrow(value), now);
+        break;
+    case EditorPurpose::HostName: {
+        while (!value.empty() && value.back() == L' ') value.pop_back();
+        // Empty follows the nickname; anything else is made acceptable to the room.
+        page.fields.room_name = value.empty() ? std::wstring{} : OnlineWiden(Online::MakeRoomName(value));
+        break;
+    }
+    case EditorPurpose::HostSlots: {
+        const auto slots = Online::ParseSlots(value);
+        if (!slots) {
+            system_page.editor_notice = Tr(T::OnlineBadSlots);
+            return;
+        }
+        page.fields.slots = *slots;
+        break;
+    }
+    case EditorPurpose::HostPort: {
+        const auto port = Online::ParsePort(value);
+        if (!port) {
+            system_page.editor_notice = Tr(T::OnlineBadPort);
+            return;
+        }
+        page.fields.host_port = *port;
+        break;
+    }
+    case EditorPurpose::HostPassword:
+        page.host_password = std::move(value);
+        save = false;
         break;
     case EditorPurpose::UserName: break;
     }

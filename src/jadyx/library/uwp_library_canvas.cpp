@@ -1658,8 +1658,10 @@ private:
         ControlPrompt(Navigation::Back, Tr(T::Back), 400, 676);
     }
     /// The Online tab, in two columns. At the left, what concerns this console: the connection
-    /// (its state, the room's people and the nickname they see) over the direct join (address,
-    /// port, password and the join/leave button). At the right, the public rooms to pick from.
+    /// (its state, the room's people and the nickname they see) over a card with two modes (Y, or a
+    /// press on its switch): the direct join (address, port, password and the join/leave button) or
+    /// the hosted room (name, players and port, password and the create/close button). At the
+    /// right, the public rooms to pick from, or how friends reach the hosted room.
     static constexpr float OnlineLeftX = LibraryLayout::Margin, OnlineLeftWidth = 500;
     static constexpr float OnlineRightX = OnlineLeftX + OnlineLeftWidth + 28;
     static constexpr float OnlineRightWidth = 1280 - LibraryLayout::Margin - OnlineRightX;
@@ -1675,10 +1677,10 @@ private:
                                                                   : std::wstring_view{view.system.settings.user_name};
         // A row of the left column: its icon, a small label over the value, and the chevron that
         // says A edits it.
-        const auto field = [&](OnlinePage::Row row, UiIcon icon, T label, const std::wstring& value, bool placeholder,
+        const auto field = [&](std::size_t row, UiIcon icon, T label, const std::wstring& value, bool placeholder,
                                float x, float y, float w) {
             constexpr float h = 52;
-            const bool focused = !in_rooms && page.selected == row;
+            const bool focused = page.host ? page.host_selected == row : !in_rooms && page.selected == row;
             if (focused) {
                 FocusGlow(x, y, w, h, 12, 1);
                 Round(x, y, w, h, 12, 0x333537);
@@ -1690,8 +1692,23 @@ private:
             Type(value, TypeRole::LabelLarge, x + 54, y + 25, w - 100,
                  placeholder ? Palette::TextSecondary : Palette::Text, placeholder ? 0.8f : 1.0f);
             Chevron(x + w - 22, y + h / 2, focused ? Palette::Text : Palette::TextSecondary);
-            AddHit(x, y, w, h, LibraryHit::OnlineRow, row);
+            AddHit(x, y, w, h, page.host ? LibraryHit::OnlineHostRow : LibraryHit::OnlineRow, row);
         };
+        // The card's main button: white when focused, as the primary action of the column.
+        const auto button = [&](bool focused, T label, float bx, float by, float bw, LibraryHit hit, std::size_t row) {
+            constexpr float bh = 52;
+            if (focused) {
+                FocusGlow(bx, by, bw, bh, bh / 2, 1);
+                Round(bx, by, bw, bh, bh / 2, Palette::Accent);
+            } else {
+                Round(bx, by, bw, bh, bh / 2, 0xffffff, 0.10f);
+                Outline(bx + 0.5f, by + 0.5f, bw - 1, bh - 1, bh / 2 - 0.5f, 0xffffff, 0.08f);
+            }
+            Type(Tr(label), TypeRole::BodyLarge, bx, by + 13, bw, focused ? Palette::OnAccent : Palette::Text, 1,
+                 TextAlign::Center);
+            AddHit(bx, by, bw, bh, hit, row);
+        };
+        const bool hosting = OnlineHosting(status);
         const float lx = OnlineLeftX, lw = OnlineLeftWidth;
         // The connection.
         {
@@ -1705,7 +1722,7 @@ private:
             const bool failed = status.phase == Online::Phase::Idle && status.failure != Online::Failure::None;
             const bool busy = status.phase == Online::Phase::Joining || status.phase == Online::Phase::Leaving;
             const unsigned state_color = joined ? Palette::Text : failed ? Palette::Warning : Palette::TextSecondary;
-            const std::wstring state{Tr(joined ? T::OnlineConnected : busy ? (status.phase == Online::Phase::Joining
+            const std::wstring state{Tr(joined ? (hosting ? T::OnlineHosting : T::OnlineConnected) : busy ? (status.phase == Online::Phase::Joining
                                                                                   ? T::OnlineConnecting : T::OnlineLeaving)
                                                                     : T::OnlineNotConnected)};
             const float state_w = MeasureType(state, TypeRole::Label) + 2;
@@ -1716,6 +1733,8 @@ private:
             std::wstring headline;
             if (joined || status.phase == Online::Phase::Leaving)
                 headline = OnlineWiden(status.room_name.empty() ? status.address : status.room_name);
+            else if (status.phase == Online::Phase::Joining && hosting)
+                headline = OnlineWiden(OnlineRoomName(page, user));
             else if (status.phase == Online::Phase::Joining)
                 headline = OnlineWiden(status.address) + L":" + std::to_wstring(status.port);
             else
@@ -1741,15 +1760,54 @@ private:
                      TextAlign::Leading, 2);
             }
             const bool own = !page.fields.nickname.empty();
-            field(OnlinePage::Nickname, UiIcon::User, T::OnlineNickname, OnlineWiden(OnlineNickname(page, user)), !own,
-                  lx + 12, y + h - 64, lw - 24);
+            field(page.host ? OnlinePage::HostNickname : OnlinePage::Nickname, UiIcon::User, T::OnlineNickname,
+                  OnlineWiden(OnlineNickname(page, user)), !own, lx + 12, y + h - 64, lw - 24);
+        }
+        // The second card: its caption, and at its right the switch between joining and hosting.
+        const float card_y = OnlineTop + 212 + 16;
+        {
+            const float y = card_y, h = OnlineBottom - y;
+            Round(lx, y, lw, h, 18, Palette::Surface, 0.86f);
+            Outline(lx + 0.5f, y + 0.5f, lw - 1, h - 1, 18, 0xffffff, 0.06f);
+            Type(Upper(Tr(page.host ? T::OnlineHostCaption : T::OnlineDirect)), TypeRole::Caps, lx + 24, y + 22, 260,
+                 Palette::TextSecondary);
+            const auto join_label = Tr(T::OnlineModeJoin), host_label = Tr(T::OnlineModeHost);
+            const float join_w = MeasureType(join_label, TypeRole::Label) + 24;
+            const float host_w = MeasureType(host_label, TypeRole::Label) + 24;
+            const float sh = 30, sy = y + 14, sx = lx + lw - 16 - join_w - host_w - 8;
+            Round(sx, sy, join_w + host_w + 8, sh, sh / 2, Palette::Canvas, 0.7f);
+            const auto segment = [&](std::wstring_view label, float x, float w, bool active, std::size_t index) {
+                if (active) Round(x, sy + 3, w, sh - 6, (sh - 6) / 2, 0xffffff, 0.16f);
+                Type(std::wstring{label}, TypeRole::Label, x, sy + 6, w, active ? Palette::Text : Palette::TextSecondary,
+                     1, TextAlign::Center);
+                AddHit(x, sy, w, sh, LibraryHit::OnlineMode, index);
+            };
+            segment(join_label, sx + 4, join_w, !page.host, 0);
+            segment(host_label, sx + 4 + join_w, host_w, page.host, 1);
+        }
+        if (page.host) {
+            // The hosted room: its name, the players and the port side by side, the password.
+            const float y = card_y;
+            const auto& fields = page.fields;
+            field(OnlinePage::HostName, UiIcon::Game, T::OnlineRoomName, OnlineWiden(OnlineRoomName(page, user)),
+                  fields.room_name.empty(), lx + 12, y + 50, lw - 24);
+            const float half = (lw - 24 - 8) / 2;
+            field(OnlinePage::HostSlots, UiIcon::User, T::OnlineSlots, std::to_wstring(fields.slots), false, lx + 12,
+                  y + 108, half);
+            field(OnlinePage::HostPort, UiIcon::Settings, T::OnlinePort, std::to_wstring(fields.host_port), false,
+                  lx + 12 + half + 8, y + 108, half);
+            const bool no_password = page.host_password.empty();
+            field(OnlinePage::HostPassword, UiIcon::Key, T::OnlinePassword,
+                  no_password ? std::wstring{Tr(T::OnlinePasswordNone)} : std::wstring(page.host_password.size(), L'•'),
+                  no_password, lx + 12, y + 166, lw - 24);
+            button(page.host_selected == OnlinePage::HostCreate, hosting ? T::OnlineClose : T::OnlineCreate, lx + 12,
+                   y + 232, lw - 24, LibraryHit::OnlineHostRow, OnlinePage::HostCreate);
+            DrawOnlineShare(view, user);
+            return;
         }
         // The direct join.
         {
-            const float y = OnlineTop + 212 + 16, h = OnlineBottom - y;
-            Round(lx, y, lw, h, 18, Palette::Surface, 0.86f);
-            Outline(lx + 0.5f, y + 0.5f, lw - 1, h - 1, 18, 0xffffff, 0.06f);
-            Type(Upper(Tr(T::OnlineDirect)), TypeRole::Caps, lx + 24, y + 22, 300, Palette::TextSecondary);
+            const float y = card_y;
             const auto& fields = page.fields;
             const bool no_address = fields.address.empty();
             field(OnlinePage::Address, UiIcon::Globe, T::OnlineAddress,
@@ -1761,20 +1819,9 @@ private:
             field(OnlinePage::Password, UiIcon::Key, T::OnlinePassword,
                   no_password ? std::wstring{Tr(T::OnlinePasswordNone)} : std::wstring(page.password.size(), L'•'),
                   no_password, lx + 12, y + 166, lw - 24);
-            // The button: white when focused, as the primary action of the column.
             const bool leave = status.phase == Online::Phase::Joined || status.phase == Online::Phase::Joining;
-            const bool focused = !in_rooms && page.selected == OnlinePage::Connect;
-            const float bx = lx + 12, by = y + 232, bw = lw - 24, bh = 52;
-            if (focused) {
-                FocusGlow(bx, by, bw, bh, bh / 2, 1);
-                Round(bx, by, bw, bh, bh / 2, Palette::Accent);
-            } else {
-                Round(bx, by, bw, bh, bh / 2, 0xffffff, 0.10f);
-                Outline(bx + 0.5f, by + 0.5f, bw - 1, bh - 1, bh / 2 - 0.5f, 0xffffff, 0.08f);
-            }
-            Type(Tr(leave ? T::OnlineLeave : T::OnlineJoin), TypeRole::BodyLarge, bx, by + 13, bw,
-                 focused ? Palette::OnAccent : Palette::Text, 1, TextAlign::Center);
-            AddHit(bx, by, bw, bh, LibraryHit::OnlineRow, OnlinePage::Connect);
+            button(!in_rooms && page.selected == OnlinePage::Connect, leave ? T::OnlineLeave : T::OnlineJoin, lx + 12,
+                   y + 232, lw - 24, LibraryHit::OnlineRow, OnlinePage::Connect);
         }
         // The public rooms.
         const float rx = OnlineRightX, rw = OnlineRightWidth;
@@ -1861,17 +1908,73 @@ private:
         }
         ScrollIndicator(rx + rw + 8, top + 12, card_h - 24, online_first, visible, rooms);
     }
-    /// The Online tab's prompts: what A does on the focused row, the list's refresh and Back; the
-    /// page's notice at the right.
+    /// Host mode's right column: before the room opens, what hosting means; once open, the
+    /// addresses friends type (on the same network and over the internet) and who is in it.
+    void DrawOnlineShare(const LibraryView& view, std::wstring_view user) {
+        const auto& page = view.online;
+        const auto& status = page.status;
+        const float rx = OnlineRightX, rw = OnlineRightWidth;
+        Type(Tr(T::OnlineShareTitle), TypeRole::HeadlineMedium, rx, OnlineTop - 2, rw, Palette::Text);
+        Type(Tr(T::OnlineNotListed), TypeRole::Label, rx, OnlineTop + 36, rw, Palette::TextSecondary);
+        const float top = OnlineListTop, card_h = OnlineBottom - top;
+        Round(rx, top, rw, card_h, 18, Palette::Surface, 0.86f);
+        Outline(rx + 0.5f, top + 0.5f, rw - 1, card_h - 1, 18, 0xffffff, 0.06f);
+        if (!OnlineHosting(status)) {
+            const float middle = top + card_h / 2;
+            Icon(UiIcon::Globe, rx + rw / 2 - 20, middle - 72, Palette::TextSecondary, 40);
+            Type(Tr(T::OnlineHostIntro), TypeRole::BodyLarge, rx + 48, middle - 16, rw - 96, Palette::Text, 1,
+                 TextAlign::Center, 3);
+            return;
+        }
+        const float x = rx + 28, w = rw - 56;
+        const std::wstring port = std::to_wstring(status.port);
+        const std::wstring local = status.local_address.empty() ? std::wstring{} : OnlineWiden(status.local_address);
+        float y = top + 24;
+        // On the same network: the console's own address.
+        Type(Upper(Tr(T::OnlineShareLocal)), TypeRole::Caps, x, y, w, Palette::TextSecondary);
+        Type(local.empty() ? std::wstring{Tr(T::OnlineThisConsole)} + L" : " + port : local + L" : " + port,
+             TypeRole::HeadlineMedium, x, y + 22, w, Palette::Text);
+        Type(Tr(T::OnlineShareLocalHow), TypeRole::Body, x, y + 62, w, Palette::TextHint);
+        // Over the internet: the router has to send the port to this console.
+        y += 112;
+        Type(Upper(Tr(T::OnlineShareInternet)), TypeRole::Caps, x, y, w, Palette::TextSecondary);
+        Type(I18n::Format(T::OnlineShareInternetHow,
+                          {port, local.empty() ? std::wstring{Tr(T::OnlineThisConsole)} : local}),
+             TypeRole::Body, x, y + 24, w, Palette::TextHint, 1, TextAlign::Leading, 3);
+        // Who is in the room.
+        y += 120;
+        Round(x, y - 12, w, 1, 0.5f, 0xffffff, 0.08f);
+        Type(Upper(I18n::Format(T::OnlinePlayers, {std::to_wstring(status.members.size()),
+                                                    std::to_wstring(status.slots ? status.slots : page.fields.slots)})),
+             TypeRole::Caps, x, y + 4, w, Palette::TextSecondary);
+        const std::string own = OnlineNickname(page, user);
+        y += 30;
+        for (const auto& member : status.members) {
+            if (y + 28 > OnlineBottom - 12) break;
+            std::wstring name = OnlineWiden(member.nickname);
+            if (member.nickname == own) name += L"  (" + std::wstring{Tr(T::OnlineYouHost)} + L")";
+            Icon(UiIcon::User, x, y + 3, Palette::TextSecondary, 18);
+            Type(name, TypeRole::LabelLarge, x + 28, y, w - 28, Palette::Text);
+            y += 30;
+        }
+    }
+    /// The Online tab's prompts: what A does on the focused row, the mode switch, the list's
+    /// refresh and Back; the page's notice at the right.
     void DrawOnlineFooter(const LibraryView& view, float x, float y) {
         const auto& page = view.online;
         const auto phase = page.status.phase;
         T play = T::Change;
-        if (OnlineInRooms(page)) play = T::OnlineJoin;
-        else if (page.selected == OnlinePage::Connect)
+        if (page.host) {
+            if (page.host_selected == OnlinePage::HostCreate)
+                play = OnlineHosting(page.status) ? T::OnlineClose : T::OnlineCreate;
+        } else if (OnlineInRooms(page)) {
+            play = T::OnlineJoin;
+        } else if (page.selected == OnlinePage::Connect) {
             play = phase == Online::Phase::Joined || phase == Online::Phase::Joining ? T::OnlineLeave : T::OnlineJoin;
+        }
         x += ControlPrompt(Navigation::Play, Tr(play), x, y);
-        x += ControlPrompt(Navigation::Rescan, Tr(T::OnlineRefresh), x, y);
+        x += ControlPrompt(Navigation::Pin, Tr(page.host ? T::OnlineModeJoin : T::OnlineModeHost), x, y);
+        if (!page.host) x += ControlPrompt(Navigation::Rescan, Tr(T::OnlineRefresh), x, y);
         ControlPrompt(Navigation::Back, Tr(T::Back), x, y);
         if (!view.system.notice.empty())
             Type(view.system.notice, TypeRole::Label, 1280 - LibraryLayout::Margin - 600, y + 8, 600, Palette::TextHint, 1,
@@ -2069,6 +2172,10 @@ private:
         case EditorPurpose::OnlinePort: title = T::OnlinePort; hint = T::OnlinePortEditorHint; break;
         case EditorPurpose::OnlinePassword: title = T::OnlinePassword; hint = T::OnlinePasswordEditorHint; break;
         case EditorPurpose::RoomPassword: title = T::OnlineRoomPassword; hint = T::OnlinePasswordEditorHint; break;
+        case EditorPurpose::HostName: title = T::OnlineRoomName; hint = T::OnlineRoomNameEditorHint; break;
+        case EditorPurpose::HostSlots: title = T::OnlineSlots; hint = T::OnlineSlotsEditorHint; break;
+        case EditorPurpose::HostPort: title = T::OnlinePort; hint = T::OnlinePortEditorHint; break;
+        case EditorPurpose::HostPassword: title = T::OnlinePassword; hint = T::OnlinePasswordEditorHint; break;
         case EditorPurpose::UserName: break;
         }
         DrawTextEntryPanel(*this, {*page.name_editor, Tr(title), Tr(hint), page.editor_notice},
