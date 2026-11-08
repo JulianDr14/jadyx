@@ -411,6 +411,13 @@ void UiPainter::Icon(UiIcon icon, float x, float y, unsigned color, float size) 
                                     std::pair{11.0f, 21.0f}, std::pair{21.0f, 21.0f}})
             surface->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x + cx, y + cy), 2.2f, 2.2f), brush.Get());
         break;
+    case UiIcon::Globe:
+        // The earth's outline, a meridian and two parallels: playing with the world.
+        surface->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(x + 16, y + 16), 13, 13), brush.Get(), 2);
+        surface->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(x + 16, y + 16), 5.5f, 13), brush.Get(), 2);
+        line(3, 16, 29, 16);
+        line(6, 9.5f, 26, 9.5f); line(6, 22.5f, 26, 22.5f);
+        break;
     }
 }
 

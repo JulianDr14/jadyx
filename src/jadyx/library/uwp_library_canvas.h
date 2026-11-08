@@ -13,6 +13,7 @@
 #include "jadyx/mods/mod_session.h"
 #include "jadyx/mods/mods_page.h"
 #include "jadyx/settings/graphics_page.h"
+#include "jadyx/settings/online_page.h"
 #include "jadyx/settings/system_page.h"
 #include "jadyx/input/uwp_input.h"
 #include "jadyx/input/uwp_controllers.h"
@@ -53,6 +54,7 @@ struct LibraryView {
     const ConfigurationPanel& configuration;
     const SystemPage& system;
     const GraphicsPage& graphics;
+    const OnlinePage& online;
     const GameOptionsView& game_options;
     bool missing_content{};
     bool rail{}; ///< The focus is in the played games' row (library_layout.h).
@@ -74,6 +76,8 @@ enum class LibraryHit : unsigned {
     UpdateAction,  ///< A row of the update page, or UpdateBackHit for its Back prompt.
     NetworkAction, ///< Full-screen network page: back, renew code, stop.
     UpdateNotice,  ///< The library's new-version notice: 0 opens the update page, 1 hides it.
+    OnlineRow,     ///< A row of the Online tab (OnlinePage::selected).
+    OnlineRefresh, ///< The Online tab's refresh button.
 };
 inline constexpr std::size_t UpdateBackHit = 99;
 /// A press: what, and which (the tab, the filter, the entry, the shelf position or the row).

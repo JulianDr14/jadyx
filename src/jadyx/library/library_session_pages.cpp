@@ -92,6 +92,12 @@ void LibrarySession::HandlePicker() {
     // Switching tabs: the bumpers (Q/E) at the top level, or a press on the header.
 void LibrarySession::SwitchTab(LibraryTab to) {
     if (to == tab) return;
+    if (tab == LibraryTab::Online) {
+        online_page.open = false;
+        if (system_page.editor_purpose != EditorPurpose::UserName) system_page.name_editor.reset();
+        online_page.pending_room.reset();
+        system_page.notice.clear();
+    }
     if (tab == LibraryTab::Settings) {
         system_page.open = graphics_page.open = false;
         configuration.open = configuration.files = false;
@@ -100,6 +106,15 @@ void LibrarySession::SwitchTab(LibraryTab to) {
         panel.CloseBindingEditors();
     }
     tab = to;
+    if (to == LibraryTab::Online) {
+        online_page.open = true;
+        system_page.notice.clear();
+        PollOnline();
+        // The public list downloads when the tab first opens, and again after a failure; the
+        // refresh button downloads it whenever asked.
+        if (online_page.lobby.state == Online::LobbyState::Empty || online_page.lobby.state == Online::LobbyState::Failed)
+            Online::RefreshLobby();
+    }
     if (to == LibraryTab::Settings) {
         configuration.open = true; configuration.files = false; configuration.selected = HomeSystem;
         configuration.notice.clear(); RefreshSetup();
@@ -515,6 +530,7 @@ void LibrarySession::Draw() {
                   .configuration = configuration,
                   .system = system_page,
                   .graphics = graphics_page,
+                  .online = online_page,
                   .game_options = options_view,
                   .missing_content = missing_content,
                   .rail = rail,
@@ -527,6 +543,169 @@ void LibrarySession::Draw() {
                   .app_mode = app_mode,
                   .app_memory_mib = app_memory_limit >> 20});
     dirty = false;
+}
+
+// The Online tab. The room and the public list live in Jadyx::Online; the tab copies them while
+// it shows, so a join answered on the network thread redraws the screen.
+void LibrarySession::PollOnline() {
+    // The connection on every tab: the header marks the Online tab while in a room.
+    auto status = Online::Snapshot();
+    if (status.version != online_page.status.version) {
+        online_page.status = std::move(status);
+        dirty = true;
+    }
+    if (tab != LibraryTab::Online) return;
+    auto lobby = Online::Lobby();
+    if (lobby.version != online_page.lobby.version) {
+        online_page.lobby = std::move(lobby);
+        auto& page = online_page;
+        const std::size_t rooms = page.lobby.rooms.size();
+        page.last_room = rooms ? std::min(page.last_room, rooms - 1) : 0;
+        // A list that shrank under the focus hands it to its last room, or back to the form.
+        if (OnlineInRooms(page) && page.selected >= OnlineRowCount(page))
+            page.selected = rooms ? OnlinePage::FixedRows + rooms - 1 : page.last_form;
+        dirty = true;
+    }
+}
+
+void LibrarySession::HandleOnlinePage(TimePoint now) {
+    if (tab != LibraryTab::Online || settings || game_options.open) return;
+    // The keyboard takes its input in the handlers above; the page waits behind it.
+    if (system_page.name_editor || !actions) {
+        actions &= ~(Up | Down | Left | Right | Play | Refresh | Pin | Swap | AddFolder | Options);
+        return;
+    }
+    auto& page = online_page;
+    const std::size_t rooms = page.lobby.rooms.size();
+    if (OnlineInRooms(page)) {
+        const std::size_t room = page.selected - OnlinePage::FixedRows;
+        if (actions & Up && room > 0) page.selected--;
+        if (actions & Down && room + 1 < rooms) page.selected++;
+        page.last_room = page.selected - OnlinePage::FixedRows;
+        if (actions & Left) page.selected = page.last_form;
+    } else {
+        if (actions & Up && page.selected > 0) page.selected--;
+        if (actions & Down && page.selected + 1 < OnlinePage::FixedRows) page.selected++;
+        page.last_form = page.selected;
+        if (actions & Right && rooms) page.selected = OnlinePage::FixedRows + std::min(page.last_room, rooms - 1);
+    }
+    if (actions & Refresh) Online::RefreshLobby();
+    if (actions & Quit) {
+        SwitchTab(LibraryTab::Home);
+    } else if (actions & Play) {
+        switch (page.selected) {
+        case OnlinePage::Nickname: OpenOnlineEditor(EditorPurpose::OnlineNickname); break;
+        case OnlinePage::Address: OpenOnlineEditor(EditorPurpose::OnlineAddress); break;
+        case OnlinePage::Port: OpenOnlineEditor(EditorPurpose::OnlinePort); break;
+        case OnlinePage::Password: OpenOnlineEditor(EditorPurpose::OnlinePassword); break;
+        case OnlinePage::Connect:
+            if (page.status.phase == Online::Phase::Joined || page.status.phase == Online::Phase::Joining) {
+                Online::Leave();
+            } else if (page.fields.address.empty()) {
+                system_page.notice = Tr(T::OnlineNoAddress);
+                system_notice_until = now + std::chrono::seconds{3};
+            } else {
+                JoinOnline(OnlineNarrow(page.fields.address), page.fields.port, OnlineNarrow(page.password), now);
+            }
+            break;
+        default:
+            if (const auto* room = OnlineRoomAt(page, page.selected)) {
+                if (room->password) {
+                    page.pending_room = *room;
+                    OpenOnlineEditor(EditorPurpose::RoomPassword);
+                } else {
+                    JoinOnline(room->address, room->port, {}, now);
+                }
+            }
+            break;
+        }
+    }
+    dirty = true;
+    // View still opens the controller panel, as on the other tabs; the rest belongs to this one.
+    actions &= Panel;
+}
+
+void LibrarySession::OpenOnlineEditor(EditorPurpose purpose) {
+    const auto& fields = online_page.fields;
+    std::wstring initial;
+    std::size_t max_length = Online::MaxPasswordLength;
+    switch (purpose) {
+    case EditorPurpose::OnlineNickname:
+        initial = fields.nickname;
+        max_length = Online::MaxNicknameLength;
+        break;
+    case EditorPurpose::OnlineAddress:
+        initial = fields.address;
+        max_length = Online::MaxAddressLength;
+        break;
+    case EditorPurpose::OnlinePort:
+        initial = std::to_wstring(fields.port);
+        max_length = 5;
+        break;
+    case EditorPurpose::OnlinePassword: initial = online_page.password; break;
+    default: break;
+    }
+    system_page.name_editor.emplace(std::move(initial), max_length);
+    system_page.editor_purpose = purpose;
+    system_page.editor_notice.clear();
+}
+
+void LibrarySession::FinishOnlineEditor(bool accept, TimePoint now) {
+    if (!system_page.name_editor) return;
+    auto& page = online_page;
+    if (!accept) {
+        system_page.name_editor.reset();
+        page.pending_room.reset();
+        return;
+    }
+    std::wstring value = system_page.name_editor->Value();
+    bool save = true;
+    switch (system_page.editor_purpose) {
+    case EditorPurpose::OnlineNickname: {
+        while (!value.empty() && value.back() == L' ') value.pop_back();
+        // Empty follows the user name; anything else is made acceptable to the rooms.
+        page.fields.nickname = value.empty() ? std::wstring{} : OnlineWiden(Online::MakeNickname(value));
+        break;
+    }
+    case EditorPurpose::OnlineAddress:
+        SplitAddress(value, page.fields.port);
+        page.fields.address = std::move(value);
+        break;
+    case EditorPurpose::OnlinePort: {
+        const auto port = Online::ParsePort(value);
+        if (!port) {
+            system_page.editor_notice = Tr(T::OnlineBadPort);
+            return;
+        }
+        page.fields.port = *port;
+        break;
+    }
+    case EditorPurpose::OnlinePassword:
+        page.password = std::move(value);
+        save = false;
+        break;
+    case EditorPurpose::RoomPassword:
+        save = false;
+        if (const auto room = std::exchange(page.pending_room, std::nullopt))
+            JoinOnline(room->address, room->port, OnlineNarrow(value), now);
+        break;
+    case EditorPurpose::UserName: break;
+    }
+    system_page.name_editor.reset();
+    if (save) {
+        const bool saved = Online::SaveFields(page.fields);
+        system_page.notice = Tr(saved ? T::SettingsSaved : T::SystemSaveFailed);
+        system_notice_until = now + std::chrono::seconds{3};
+    }
+}
+
+void LibrarySession::JoinOnline(const std::string& address, std::uint16_t port, const std::string& password,
+                                TimePoint now) {
+    const auto& user = system_page.settings.user_name;
+    Online::Join(OnlineNickname(online_page, user.empty() ? std::wstring_view{DefaultUserName} : std::wstring_view{user}),
+                 address, port, password);
+    system_page.notice.clear();
+    system_notice_until = now;
 }
 
 } // namespace Jadyx

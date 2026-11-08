@@ -49,7 +49,7 @@ inline std::size_t RailCount(const std::vector<LibraryEntry>& entries) {
     return count;
 }
 
-enum class LibraryTab : unsigned { Home, Library, Settings, Count };
+enum class LibraryTab : unsigned { Home, Library, Online, Settings, Count };
 
 /// The focus: an entry, and whether it is focused in the rail (the same game also has a place
 /// in the collection).

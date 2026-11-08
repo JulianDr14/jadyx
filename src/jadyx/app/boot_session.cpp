@@ -86,6 +86,7 @@
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/pulse/pulse_store_gate.h"
 #include "jadyx/settings/uwp_system_settings.h"
+#include "jadyx/network/online_rooms.h"
 #include "jadyx/storage/network_import_gate.h"
 #include "jadyx/storage/utf8.h"
 #include "jadyx/storage/uwp_file_manager.h"
@@ -299,7 +300,8 @@ std::optional<int> GameSession::LoadGuest() {
     if (mii_editor)
         system.RegisterExecuteProgramCallback([this](std::size_t) { guest_exited.store(true); });
     // Pulse: the identity this boot would save under, and the session it resumes if one matches.
-    if (config.pulse_sessions && PulseSessions::Enabled() && !mii_editor) {
+    // Not in a multiplayer room: a resumed snapshot would bring back a session the room never saw.
+    if (config.pulse_sessions && PulseSessions::Enabled() && !mii_editor && !Online::InRoom()) {
         try {
             const auto file = system.GetFilesystem()->OpenFile(nro_path, FileSys::OpenMode::Read);
             const auto user = system.GetProfileManager().GetUser(0);
@@ -311,6 +313,8 @@ std::optional<int> GameSession::LoadGuest() {
         } catch (const std::exception& e) {
             WritePulseLog(std::string("no identity: ") + e.what());
         }
+    } else if (config.pulse_sessions && Online::InRoom()) {
+        WritePulseLog("in a multiplayer room: no resume and no save this boot");
     }
     if (boot_screen) {
         D3D12::SetWindowHandoff(ReleaseLaunchSplash);
@@ -441,6 +445,11 @@ void GameSession::PrepareGame() {
     // airplane=1 wins over both.
     if (const auto offline = LoadGameOfflineMode(program_id); offline && !config.airplane_mode)
         Settings::values.airplane_mode.SetValue(*offline);
+    // In a multiplayer room the game must see a network: the room is how it reaches the others.
+    if (Online::InRoom() && !config.airplane_mode && Settings::values.airplane_mode.GetValue()) {
+        Settings::values.airplane_mode.SetValue(false);
+        WriteDiag("network: in a multiplayer room, offline mode is off for this game");
+    }
     WriteDiag(Settings::values.airplane_mode.GetValue() ? "network: offline mode, the game sees no internet"
                                                         : "network: the game sees the internet");
     prewarm_budget = PrewarmBudget{LoadPrewarmStep(program_id)};

@@ -64,6 +64,7 @@ LibrarySession::LibrarySession(void* window_abi, unsigned swap_width, unsigned s
     system_page.updated = updater.CurrentPhase() == Updates::Phase::Confirmed;
     system_page.settings = LoadSystemSettings();
     graphics_page.settings = LoadGraphicsSettings();
+    online_page.fields = Online::LoadSavedFields();
     system_page.locale = DetectSystemLocale();
     title_language = ApplySystemSettings().game_language;
     panel.xbox = winrt::Windows::System::Profile::AnalyticsInfo::VersionInfo().DeviceFamily() == L"Windows.Xbox";
@@ -118,7 +119,10 @@ std::optional<std::string> LibrarySession::Run() {
         HandleImportConfirm();
         HandleNetworkScreen();
         if (finish_name_editor) {
-            ApplySystemEffect(FinishNameEditor(system_page, *finish_name_editor), now);
+            if (system_page.editor_purpose == EditorPurpose::UserName)
+                ApplySystemEffect(FinishNameEditor(system_page, *finish_name_editor), now);
+            else
+                FinishOnlineEditor(*finish_name_editor, now);
             finish_name_editor.reset();
             dirty = true;
         }
@@ -138,12 +142,14 @@ std::optional<std::string> LibrarySession::Run() {
         // Leaving the update page to use another feature pauses network work before dispatching it.
         if (!system_page.updates_open && actions &&
             (updater.CurrentPhase() == Updates::Phase::Downloading || updater.CurrentPhase() == Updates::Phase::Verifying)) updater.Pause();
+        PollOnline();
         const bool top_level = !settings && !system_page.open && !graphics_page.open && !configuration.files && !configuration.busy &&
                                !picker && !validation.valid() && !game_options.open && !missing_content;
         HandlePressedTab(top_level);
         HandleTabBumpers(top_level);
         if (HandleSystemPage(now)) return launch;
         HandleGraphicsPage(now);
+        HandleOnlinePage(now);
         const bool on_game = tab == LibraryTab::Home ||
                              (tab == LibraryTab::Library && !filter_focus && shelf_focus < shelf.size());
         OpenGameOptions(on_game);
