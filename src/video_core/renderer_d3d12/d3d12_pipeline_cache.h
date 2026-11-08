@@ -172,9 +172,9 @@ public:
     /// Whether the pipelines that capture transform feedback do it through stream output.
     [[nodiscard]] bool NativeStreamOutput() const;
 
-    /// Lanes of the fragment local memory pool (Shader::LocalMemoryScratch), or 0 without it.
-    [[nodiscard]] u32 FragmentScratchLanes() const noexcept {
-        return profile.fragment_local_memory_scratch_lanes;
+    /// Lanes of the local memory pool (Shader::LocalMemoryScratch), or 0 without it.
+    [[nodiscard]] u32 LocalMemoryScratchLanes() const noexcept {
+        return profile.local_memory_scratch_lanes;
     }
 
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,

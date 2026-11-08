@@ -90,8 +90,10 @@ enum class TextureReplayMode : u8; // d3d12_graphics_pipeline.h: Off, On, Check
 void SetTextureReplay(TextureReplayMode mode);
 void SetSubmitDraws(u32 draws); // d3d12_rasterizer.h
 void SetDrawSamplerReuse(bool enabled);
-enum class PixelShaderScratchMode : u8; // d3d12_local_memory_scratch.h: Auto, Uav, Native
-void SetPixelShaderScratchMode(PixelShaderScratchMode mode);
+enum class LocalMemoryScratchMode : u8; // d3d12_local_memory_scratch.h: Auto, Uav, Native
+void SetPixelShaderScratchMode(LocalMemoryScratchMode mode);
+void SetVertexShaderScratchMode(LocalMemoryScratchMode mode);
+void SetLocalMemoryPrivateWords(u32 words); // d3d12_local_memory_scratch.h
 void SetAsyncRecording(bool enabled);          // d3d12_scheduler.h
 void SetDescriptorDeferral(bool enabled);      // d3d12_descriptor_heap.h
 void SetDiagUavSync(bool enabled);             // d3d12_scheduler.h

@@ -385,7 +385,7 @@ void RasterizerD3D12::SetGraphicsRootArguments(CommandStream* cmd,
     }
     if (layout.LocalMemoryScratchIndex() != PipelineLayout::NO_TABLE) [[unlikely]] {
         const D3D12_GPU_VIRTUAL_ADDRESS pool = local_memory_pool.Address(
-            pipeline_cache.FragmentScratchLanes(), pipeline.LocalMemoryScratchWords());
+            pipeline_cache.LocalMemoryScratchLanes(), pipeline.LocalMemoryScratchWords());
         if (!cached.valid || cached.local_memory_scratch != pool) {
             cmd->SetGraphicsRootUnorderedAccessView(layout.LocalMemoryScratchIndex(), pool);
             cached.local_memory_scratch = pool;

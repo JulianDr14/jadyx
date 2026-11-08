@@ -55,6 +55,10 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                        line == "cpu_texture_writes=0") {
                 config.cpu_texture_writes = line == "cpu_texture_writes=1";
                 WriteDiag("boot.cfg: " + line);
+            } else if (line.starts_with("scratch_private=")) {
+                config.scratch_private = static_cast<u32>(
+                    std::strtoul(line.c_str() + sizeof("scratch_private=") - 1, nullptr, 10));
+                WriteDiag("boot.cfg: " + line);
             } else if (line == "cached_staging=1" || line == "cached_staging=0") {
                 config.cached_staging = line == "cached_staging=1";
                 WriteDiag("boot.cfg: " + line);
@@ -577,10 +581,10 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 WriteDiag(std::string("boot.cfg: draw-local sampler resolution reuse ") +
                           (config.draw_sampler_reuse ? "on" : "off"));
             } else if (line == "ps_scratch=auto" || line == "ps_scratch=uav" ||
-                       line == "ps_scratch=native") {
-                config.ps_scratch = line == "ps_scratch=uav"      ? 1
-                                    : line == "ps_scratch=native" ? 2
-                                                                  : 0;
+                       line == "ps_scratch=native" || line == "vs_scratch=auto" ||
+                       line == "vs_scratch=uav" || line == "vs_scratch=native") {
+                const u8 mode = line.ends_with("=uav") ? 1 : line.ends_with("=native") ? 2 : 0;
+                (line.starts_with("ps_") ? config.ps_scratch : config.vs_scratch) = mode;
                 WriteDiag("boot.cfg: " + line);
             } else if (line == "cpu_probe=1") {
                 config.cpu_probe = true;

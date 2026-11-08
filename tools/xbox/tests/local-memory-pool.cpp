@@ -116,7 +116,8 @@ std::vector<u32> EmitPixelShader(u32 lanes, bool demote) {
     profile.support_demote_to_helper_invocation = true;
     profile.supported_subgroup_stages = 0x7F;
     profile.warp_size_potentially_larger_than_guest = lanes > 32;
-    profile.fragment_local_memory_scratch_lanes = lanes;
+    profile.local_memory_scratch_lanes = lanes;
+    profile.local_memory_scratch_stages = 1U << static_cast<u32>(Stage::Fragment);
     RuntimeInfo runtime;
     runtime.color_output_types[0] = AttributeType::UnsignedInt;
     Backend::Bindings bindings;

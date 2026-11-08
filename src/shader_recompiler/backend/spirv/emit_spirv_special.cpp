@@ -698,8 +698,9 @@ void EmitEpilogue(EmitContext& ctx) {
         ctx.runtime_info.convert_depth_mode && !ctx.profile.support_native_ndc) {
         ConvertDepthMode(ctx);
     }
+    // Before the fragment output passes, which may demote the lanes that still own the slot.
+    EmitLocalMemoryRelease(ctx);
     if (ctx.stage == Stage::Fragment) {
-        EmitLocalMemoryRelease(ctx);
         LineStipple(ctx);
         PolygonStipple(ctx);
         AlphaTest(ctx);

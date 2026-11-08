@@ -11,26 +11,47 @@
 #include "video_core/renderer_d3d12/d3d12_device.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 
+namespace Shader {
+struct Info;
+}
+
 namespace D3D12 {
 
 class ShaderCompiler;
 
-/// Where fragment shaders keep large guest local memory (Shader::LocalMemoryScratch).
-enum class PixelShaderScratchMode : u8 {
-    Auto,   ///< Pool only when the boot probe finds pixel shader private arrays broken
+/// Where the shaders of one host stage keep large guest local memory (Shader::LocalMemoryScratch).
+enum class LocalMemoryScratchMode : u8 {
+    Auto,   ///< Pool only when the boot probe finds the stage's private arrays broken
     Uav,    ///< Always the pool
     Native, ///< Always private arrays
 };
 
-/// Boot setting (ps_scratch=auto|uav|native), read when the pipeline cache is created.
-void SetPixelShaderScratchMode(PixelShaderScratchMode mode);
+/// Boot settings (ps_scratch= and vs_scratch=auto|uav|native), read when the pipeline cache is
+/// created.
+void SetPixelShaderScratchMode(LocalMemoryScratchMode mode);
+void SetVertexShaderScratchMode(LocalMemoryScratchMode mode);
 
-/// Lanes for Profile::fragment_local_memory_scratch_lanes: 0 keeps private arrays. In Auto mode
-/// it draws one pixel with a large private array and enables the pool if the value is lost.
-[[nodiscard]] u32 SelectFragmentScratchLanes(const Device& device, const ShaderCompiler& compiler,
-                                             bool wave_ops, u32 wave_lanes);
+/// Boot setting (scratch_private=N): indexed local memory of up to N words stays in a private
+/// array when the pool is on. Default 64 (LocalMemoryScratch::DEFAULT_PRIVATE_WORDS).
+void SetLocalMemoryPrivateWords(u32 words);
+[[nodiscard]] u32 LocalMemoryPrivateWords();
 
-/// The storage buffer bound to the fragment shaders that keep local memory in the pool. One pool
+/// Logs once per shader hash its local memory size, whether it is indexed and where the backend
+/// placed it, so a broken pass can be matched to its shader.
+void LogLocalMemory(const char* stage, u64 hash, const Shader::Info& info);
+
+struct LocalMemoryScratchSelection {
+    u32 lanes{};  ///< Profile::local_memory_scratch_lanes, 0 without the pool
+    u32 stages{}; ///< Profile::local_memory_scratch_stages
+};
+
+/// Stages that keep indexed local memory in the pool. In Auto mode each host stage draws one
+/// pixel with a large private array in that stage, and gets the pool if the value is lost.
+[[nodiscard]] LocalMemoryScratchSelection SelectLocalMemoryScratch(const Device& device,
+                                                                   const ShaderCompiler& compiler,
+                                                                   bool wave_ops, u32 wave_lanes);
+
+/// The storage buffer bound to the shaders that keep local memory in the pool. One pool
 /// serves every pipeline: slots are taken per wave, so its size depends only on the largest local
 /// memory drawn and on the waves the GPU runs at once.
 ///

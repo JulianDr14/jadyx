@@ -7,12 +7,18 @@
 #include <climits>
 #include <cstring>
 #include <exception>
+#include <mutex>
 #include <stdexcept>
+#include <unordered_set>
 
 #include "common/alignment.h"
 #include "common/logging.h"
 #include "shader_recompiler/local_memory_scratch.h"
+#include "shader_recompiler/shader_info.h"
+#include "shader_recompiler/stage.h"
+#include "video_core/host_shaders/d3d12_scratch_probe_copy_frag_spv.h"
 #include "video_core/host_shaders/d3d12_scratch_probe_frag_spv.h"
+#include "video_core/host_shaders/d3d12_scratch_probe_vert_spv.h"
 #include "video_core/host_shaders/full_screen_triangle_vert_spv.h"
 #include "video_core/renderer_d3d12/d3d12_local_memory_scratch.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
@@ -22,7 +28,9 @@
 
 namespace D3D12 {
 namespace {
-std::atomic<PixelShaderScratchMode> scratch_mode{PixelShaderScratchMode::Auto};
+std::atomic<LocalMemoryScratchMode> pixel_mode{LocalMemoryScratchMode::Auto};
+std::atomic<LocalMemoryScratchMode> vertex_mode{LocalMemoryScratchMode::Auto};
+std::atomic<u32> private_words{Shader::LocalMemoryScratch::DEFAULT_PRIVATE_WORDS};
 
 /// Pool rows are allocated in steps, so pipelines of similar sizes share one pool.
 constexpr u32 ROW_STEP = 64;
@@ -41,11 +49,16 @@ constexpr u32 PROBE_INDEX = 511;
 constexpr u32 PROBE_VALUE = 0x3f123456;
 constexpr DWORD PROBE_TIMEOUT_MS = 5000;
 
-/// Draws one pixel of d3d12_scratch_probe.frag on a private queue and returns its first output.
-u32 RunProbe(ID3D12Device* device, const ShaderCompiler& compiler) {
+/// Draws one pixel on a private queue with the large private array in the vertex or the pixel
+/// shader (d3d12_scratch_probe.vert or .frag) and returns the value the array kept.
+u32 RunProbe(ID3D12Device* device, const ShaderCompiler& compiler, bool vertex) {
     const std::array<ShaderCompiler::PipelineStage, 2> stages{{
-        {FULL_SCREEN_TRIANGLE_VERT_SPV, DXIL_SPIRV_SHADER_VERTEX},
-        {D3D12_SCRATCH_PROBE_FRAG_SPV, DXIL_SPIRV_SHADER_FRAGMENT},
+        {vertex ? std::span<const u32>{D3D12_SCRATCH_PROBE_VERT_SPV}
+                : std::span<const u32>{FULL_SCREEN_TRIANGLE_VERT_SPV},
+         DXIL_SPIRV_SHADER_VERTEX},
+        {vertex ? std::span<const u32>{D3D12_SCRATCH_PROBE_COPY_FRAG_SPV}
+                : std::span<const u32>{D3D12_SCRATCH_PROBE_FRAG_SPV},
+         DXIL_SPIRV_SHADER_FRAGMENT},
     }};
     const auto compiled = compiler.CompilePipeline(stages, {});
 
@@ -188,44 +201,84 @@ u32 RunProbe(ID3D12Device* device, const ShaderCompiler& compiler) {
 }
 } // Anonymous namespace
 
-void SetPixelShaderScratchMode(PixelShaderScratchMode mode) {
-    scratch_mode.store(mode, std::memory_order_relaxed);
+void SetPixelShaderScratchMode(LocalMemoryScratchMode mode) {
+    pixel_mode.store(mode, std::memory_order_relaxed);
 }
 
-u32 SelectFragmentScratchLanes(const Device& device, const ShaderCompiler& compiler,
-                               bool wave_ops, u32 wave_lanes) {
-    const PixelShaderScratchMode mode = scratch_mode.load(std::memory_order_relaxed);
+void SetVertexShaderScratchMode(LocalMemoryScratchMode mode) {
+    vertex_mode.store(mode, std::memory_order_relaxed);
+}
+
+void SetLocalMemoryPrivateWords(u32 words) {
+    private_words.store(words, std::memory_order_relaxed);
+}
+
+u32 LocalMemoryPrivateWords() {
+    return private_words.load(std::memory_order_relaxed);
+}
+
+void LogLocalMemory(const char* stage, u64 hash, const Shader::Info& info) {
+    if (info.local_memory_words == 0) {
+        return;
+    }
+    static std::mutex mutex;
+    static std::unordered_set<u64> logged;
+    {
+        std::scoped_lock lock{mutex};
+        if (!logged.insert(hash).second) {
+            return;
+        }
+    }
+    LOG_INFO(Render, "D3D12: {} {:016x} local memory {} words, {} access, {}", stage, hash,
+             info.local_memory_words, info.local_memory_indexed ? "indexed" : "constant-offset",
+             info.local_memory_scratch_words != 0 ? "in the UAV pool" : "private array");
+}
+
+LocalMemoryScratchSelection SelectLocalMemoryScratch(const Device& device,
+                                                     const ShaderCompiler& compiler,
+                                                     bool wave_ops, u32 wave_lanes) {
     // The pool's allocation needs wave ops (ballots of 128 lanes at most).
-    if (mode == PixelShaderScratchMode::Native || !wave_ops || wave_lanes == 0 ||
+    if (!wave_ops || wave_lanes == 0 ||
         wave_lanes > Shader::LocalMemoryScratch::MASK_WORDS * 32) {
-        LOG_INFO(Render, "D3D12: pixel shader local memory in private arrays ({})",
-                 mode == PixelShaderScratchMode::Native ? "forced" : "no wave ops");
-        return 0;
+        LOG_INFO(Render, "D3D12: local memory in private arrays (no wave ops)");
+        return {};
     }
-    if (mode == PixelShaderScratchMode::Uav) {
-        LOG_INFO(Render, "D3D12: pixel shader local memory in the UAV pool (forced, {} lanes)",
-                 wave_lanes);
-        return wave_lanes;
+    const auto uses_pool = [&](const char* stage, LocalMemoryScratchMode mode, bool vertex) {
+        if (mode != LocalMemoryScratchMode::Auto) {
+            const bool pool = mode == LocalMemoryScratchMode::Uav;
+            LOG_INFO(Render, "D3D12: {} shader local memory in {} (forced)", stage,
+                     pool ? "the UAV pool" : "private arrays");
+            return pool;
+        }
+        if (!compiler.IsAvailable()) {
+            return false;
+        }
+        try {
+            const u32 result = RunProbe(device.Get(), compiler, vertex);
+            const bool works = result == PROBE_VALUE;
+            LOG_INFO(Render,
+                     "D3D12: {} shader private array probe read {:#010x} (expected {:#010x}): "
+                     "local memory in {}",
+                     stage, result, PROBE_VALUE, works ? "private arrays" : "the UAV pool");
+            return !works;
+        } catch (const std::exception& e) {
+            // Without an answer, keep the native path: the pool costs memory and atomics.
+            LOG_ERROR(Render,
+                      "D3D12: {} shader private array probe failed ({}); keeping private "
+                      "arrays",
+                      stage, e.what());
+            return false;
+        }
+    };
+    const auto bit = [](Shader::Stage stage) { return 1U << static_cast<u32>(stage); };
+    u32 stages{};
+    if (uses_pool("pixel", pixel_mode.load(std::memory_order_relaxed), false)) {
+        stages |= bit(Shader::Stage::Fragment);
     }
-    if (!compiler.IsAvailable()) {
-        return 0;
+    if (uses_pool("vertex", vertex_mode.load(std::memory_order_relaxed), true)) {
+        stages |= bit(Shader::Stage::VertexB);
     }
-    try {
-        const u32 result = RunProbe(device.Get(), compiler);
-        const bool works = result == PROBE_VALUE;
-        LOG_INFO(Render,
-                 "D3D12: pixel shader private array probe read {:#010x} (expected {:#010x}): "
-                 "local memory in {}",
-                 result, PROBE_VALUE, works ? "private arrays" : "the UAV pool");
-        return works ? 0 : wave_lanes;
-    } catch (const std::exception& e) {
-        // Without an answer, keep the native path: the pool costs memory and atomics.
-        LOG_ERROR(Render,
-                  "D3D12: pixel shader private array probe failed ({}); keeping private "
-                  "arrays, ps_scratch=uav forces the pool",
-                  e.what());
-        return 0;
-    }
+    return {.lanes = stages != 0 ? wave_lanes : 0, .stages = stages};
 }
 
 LocalMemoryPool::LocalMemoryPool(const Device& device_, Scheduler& scheduler_)

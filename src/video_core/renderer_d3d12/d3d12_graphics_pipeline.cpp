@@ -37,6 +37,7 @@
 #include "video_core/renderer_d3d12/d3d12_driver_guard.h"
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_texture_replay.h"
+#include "video_core/renderer_d3d12/d3d12_local_memory_scratch.h"
 #include "video_core/renderer_d3d12/d3d12_log.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
 #include "video_core/renderer_d3d12/d3d12_memory_reserve.h"
@@ -58,6 +59,10 @@
 namespace D3D12 {
 
 namespace {
+/// Log names of the pipeline stages, VertexA excluded.
+constexpr std::array<const char*, GraphicsPipeline::NUM_STAGES> STAGE_NAMES{"VS", "HS", "DS", "GS",
+                                                                      "PS"};
+
 std::atomic_bool stage_view_cache{};
 std::atomic_bool draw_sampler_reuse{};
 std::atomic<TextureReplayMode> texture_replay_mode{TextureReplayMode::Off};
@@ -496,6 +501,8 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
         has_images |= !info->image_descriptors.empty();
         local_memory_scratch_words =
             std::max(local_memory_scratch_words, info->local_memory_scratch_words);
+        // infos skip VertexA, the first hash.
+        LogLocalMemory(STAGE_NAMES[stage], key.unique_hashes[stage + 1], *info);
     }
     // The buffer cache binds each stage's enabled constant buffers in index order, the order of
     // the descriptors that RootSignatureCache walked.

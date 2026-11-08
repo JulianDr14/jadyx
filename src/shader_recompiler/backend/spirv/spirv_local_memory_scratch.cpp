@@ -23,7 +23,7 @@ u32 MaskWords(const EmitContext& ctx, bool tracks_lanes) {
     if (!tracks_lanes) {
         return 0;
     }
-    return std::min(Common::DivCeil(ctx.profile.fragment_local_memory_scratch_lanes, 32U),
+    return std::min(Common::DivCeil(ctx.profile.local_memory_scratch_lanes, 32U),
                     Scratch::MASK_WORDS);
 }
 
@@ -50,7 +50,7 @@ Id IsLeader(EmitContext& ctx, Id lane, Id ballot) {
 /// time and then shares the overflow slot. Both outcomes are counted for the host, which grows
 /// the pool when waves wait.
 Id DefineAcquire(EmitContext& ctx, Id slot_var, Id live_var, Id stride_var, u32 mask_words) {
-    const u32 lanes{ctx.profile.fragment_local_memory_scratch_lanes};
+    const u32 lanes{ctx.profile.local_memory_scratch_lanes};
     const Id u32_type{ctx.U32[1]};
     const Id scope{ctx.Const(static_cast<u32>(spv::Scope::Subgroup))};
     const Id device{ctx.Const(static_cast<u32>(spv::Scope::Device))};
@@ -299,7 +299,9 @@ void EmitContext::DefineLocalMemoryScratch(u32 words, bool tracks_lanes) {
         subgroup_local_invocation_id = AddGlobalVariable(pointer, spv::StorageClass::Input);
         Decorate(subgroup_local_invocation_id, spv::Decoration::BuiltIn,
                  spv::BuiltIn::SubgroupLocalInvocationId);
-        Decorate(subgroup_local_invocation_id, spv::Decoration::Flat);
+        if (stage == Stage::Fragment) {
+            Decorate(subgroup_local_invocation_id, spv::Decoration::Flat);
+        }
         interfaces.push_back(subgroup_local_invocation_id);
     }
     const Id slot_var{AddGlobalVariable(TypePointer(spv::StorageClass::Private, U32[1]),
