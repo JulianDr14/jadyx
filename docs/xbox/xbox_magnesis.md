@@ -833,3 +833,35 @@ Coste: PS sin memoria local indexada, cero (array privado, como upstream). PS co
 pool: una carga de la cabecera por lane y las atomicas por wave que ya tenia; en
 CPU una comparacion de tick por draw con pool y una copia de 16 bytes por muestra.
 Gate PC: anade `constant_offsets` (espera array privado); 4/4 PASS.
+
+### Pool por etapa: vertex shaders (0.3.12.4 - 0.3.12.5)
+Otro juego reproducia el sintoma de Magnesis en Series y no en PC: su herramienta
+de agarre no detectaba objetos. Captura completa PC/Series: el productor es un draw
+de un punto cuyo **vertex shader** lee el render target de IDs y guarda el ID en un
+SSBO de 64 bytes a traves de un array privado indexado de 300 palabras. Mismo DXIL
+en las dos plataformas; en Series el SSBO queda a cero. Es el mismo fallo del
+driver (los arrays privados indexados pierden sus valores), en otra etapa: el pool
+solo cubria pixel shaders. Compute no lo sufre (matriz .24, 42/42).
+
+Arreglo general, no por hash:
+
+- `Profile::local_memory_scratch_stages` (mascara `1 << Stage`) sustituye a
+  `fragment_local_memory_*`: el pool se usa en las etapas host cuyo array privado
+  pierde datos. Un shader de evaluacion emulado (`TessEmulation::EvalVertex`) sigue
+  el bit de vertex porque corre como VS.
+- Sonda de arranque por etapa: la de PS de siempre y una de VS
+  (`d3d12_scratch_probe.vert` + `d3d12_scratch_probe_copy.frag`, mismo array de 512
+  palabras). En PC ambas pasan y nada cambia.
+- El release corre en el epilogo de cualquier etapa (el de PS en el mismo punto, antes
+  de los pases de salida que pueden hacer demote).
+- La UAV raiz sigue siendo solo pixel cuando solo el PS usa el pool (mismo root
+  signature que antes, Magnesis intacto); visible a todas las etapas solo si otra
+  etapa lo usa (bit 12 de la clave del root signature).
+- boot.cfg: `ps_scratch=` y `vs_scratch=auto|uav|native` por etapa;
+  `scratch_private=N` (antes `ps_scratch_private`, sin publicar) umbral comun, 64.
+- Log por shader: `D3D12: VS|PS <hash> local memory N words, indexed|constant-offset,
+  in the UAV pool|private array`.
+
+Coste: shaders sin memoria local indexada de mas de 64 palabras, cero. VS con pool:
+el mismo coste por wave que un PS (lectura de cabecera, atomicas del lider al entrar
+y salir). Gate PC `local-memory-scratch` anade `vertex_pool`.
