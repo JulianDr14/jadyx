@@ -164,8 +164,17 @@ void RendererD3D12::DrawPerformanceOverlay(CommandStream* cmd,
             hitch_line = fmt::format("TIRON {:.0f} MS {}", hitch.last_ms,
                                      HITCH_CAUSES[static_cast<size_t>(hitch.last_cause)]);
         }
-        std::array<std::string, 6> lines{
+        std::vector<std::string> lines{
             "FPS --", "FRAME -- MS MAX --", "CPU --", "GPUQ --", hud.memory_line, hitch_line};
+        // The frontend's lines under ours (online play), amber when they say something is wrong.
+        const std::size_t own_lines = lines.size();
+        std::vector<bool> warning(own_lines, false);
+        if (const auto source = VideoCore::overlay_extra_lines.load(std::memory_order_relaxed)) {
+            for (auto& line : source()) {
+                lines.push_back(std::move(line.text));
+                warning.push_back(line.warning);
+            }
+        }
         if (!first && hud.frames != 0) {
             const double frames = static_cast<double>(hud.frames);
             lines[0] = fmt::format("FPS {:.1f}", frames * 1000.0 / elapsed_ms);
@@ -192,13 +201,15 @@ void RendererD3D12::DrawPerformanceOverlay(CommandStream* cmd,
             chars = std::max(chars, line.size());
         }
         const LONG left = right - TextWidth(chars, cell) - 2 * pad;
-        hud.panel = {left, top, right,
-                     top + 2 * pad + static_cast<LONG>(lines.size()) * 7 * cell - 2 * cell};
+        const size_t rows = lines.size() + (lines.size() > own_lines ? 1 : 0);
+        hud.panel = {left, top, right, top + 2 * pad + static_cast<LONG>(rows) * 7 * cell - 2 * cell};
         hud.text.clear();
         hud.text.reserve(1536);
+        hud.warning_text.clear();
         for (size_t row = 0; row < lines.size(); ++row) {
-            AppendText(hud.text, lines[row], left + pad,
-                       top + pad + static_cast<LONG>(row) * 7 * cell, cell);
+            // A gap of one line between ours and the frontend's.
+            const LONG line_top = top + pad + static_cast<LONG>(row + (row >= own_lines ? 1 : 0)) * 7 * cell;
+            AppendText(warning[row] ? hud.warning_text : hud.text, lines[row], left + pad, line_top, cell);
         }
         hud.sample_time = now;
         hud.cpu_ticks = cpu_ticks;
@@ -209,6 +220,7 @@ void RendererD3D12::DrawPerformanceOverlay(CommandStream* cmd,
     }
     ClearRects(cmd, rtv, OVERLAY_PANEL, {&hud.panel, 1});
     ClearRects(cmd, rtv, OVERLAY_TEXT, hud.text);
+    ClearRects(cmd, rtv, OVERLAY_ACCENT, hud.warning_text);
     DrawTraceIndicator(cmd, rtv);
 }
 

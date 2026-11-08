@@ -266,6 +266,7 @@ private:
         double last_frame_ms{};
         double max_frame_ms{};
         std::vector<D3D12_RECT> text;
+        std::vector<D3D12_RECT> warning_text; ///< The frontend's amber lines.
         D3D12_RECT panel{};
         u64 trace_key{};
         LONG trace_top{};
