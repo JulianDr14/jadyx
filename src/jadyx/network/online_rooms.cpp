@@ -14,6 +14,8 @@
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 #include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Networking.Connectivity.h>
+#include <winrt/Windows.Networking.h>
 #include <winrt/Windows.Storage.h>
 
 #include "common/logging.h"
@@ -30,6 +32,9 @@ using Network::RoomMember;
 constexpr auto NicknameKey = L"online_nickname";
 constexpr auto AddressKey = L"online_address";
 constexpr auto PortKey = L"online_port";
+constexpr auto RoomNameKey = L"online_room_name";
+constexpr auto SlotsKey = L"online_slots";
+constexpr auto HostPortKey = L"online_host_port";
 
 // The room callbacks run on the RoomMember's loop thread and take this lock. Never hold it while
 // calling into RoomMember: Leave() joins that thread.
@@ -199,21 +204,60 @@ void SetFailed(Failure failure) {
     Touch();
 }
 
+/// Closes the room this console hosts, if any. Its members are dropped with it.
+void CloseHostedRoom() {
+    const auto room = Network::GetRoom().lock();
+    if (!room || room->GetState() != Network::Room::State::Open) return;
+    room->Destroy();
+    LOG_INFO(Network, "Online: closed the hosted room");
+}
+
 void LeaveNow(RoomMember& member) {
     {
         std::scoped_lock lock{g_mutex};
-        if (g_status.phase == Phase::Idle && !member.IsConnected()) return;
+        if (g_status.phase == Phase::Idle && !member.IsConnected() && !g_status.hosting) return;
         g_status.phase = Phase::Leaving;
         Touch();
     }
+    // The member first, so the room never reports its own host as lost.
     member.Leave();
+    CloseHostedRoom();
     std::scoped_lock lock{g_mutex};
     g_status.phase = Phase::Idle;
+    g_status.hosting = false;
+    g_status.local_address.clear();
     g_status.room_name.clear();
     g_status.members.clear();
     g_status.slots = 0;
     Touch();
     LOG_INFO(Network, "Online: left the room");
+}
+
+/// The console's IPv4 address on the network that reaches the internet (or on any, without one).
+std::string LocalAddress() {
+    using namespace winrt::Windows::Networking;
+    try {
+        winrt::guid adapter{};
+        bool known = false;
+        if (const auto profile = Connectivity::NetworkInformation::GetInternetConnectionProfile())
+            if (const auto network = profile.NetworkAdapter()) {
+                adapter = network.NetworkAdapterId();
+                known = true;
+            }
+        std::string fallback;
+        for (const auto& host : Connectivity::NetworkInformation::GetHostNames()) {
+            if (host.Type() != HostNameType::Ipv4) continue;
+            const auto info = host.IPInformation();
+            if (!info || !info.NetworkAdapter()) continue;
+            std::string text = winrt::to_string(host.CanonicalName());
+            if (text.starts_with("169.254.") || text.starts_with("127.")) continue;
+            if (known && info.NetworkAdapter().NetworkAdapterId() == adapter) return text;
+            if (fallback.empty()) fallback = std::move(text);
+        }
+        return fallback;
+    } catch (...) {
+        return {};
+    }
 }
 
 template <typename Job>
@@ -239,6 +283,21 @@ wchar_t Unmark(wchar_t c) {
     static_assert(from.size() == to.size());
     const auto at = from.find(c);
     return at == std::wstring_view::npos ? c : to[at];
+}
+
+/// The nickname rules (Room::IsValidNickname), which Eden's host dialog applies to room names too:
+/// marks dropped, unsupported characters and repeated spaces removed, at most 20.
+std::string Sanitize(std::wstring_view name) {
+    std::string out;
+    for (const wchar_t raw : name) {
+        const wchar_t c = Unmark(raw);
+        if (!IsNicknameChar(c)) continue;
+        if (c == L' ' && (out.empty() || out.back() == ' ')) continue;
+        out.push_back(static_cast<char>(c));
+        if (out.size() == MaxNicknameLength) break;
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    return out;
 }
 
 std::string LobbyUrl() {
@@ -343,6 +402,57 @@ void Join(const std::string& nickname, const std::string& address, std::uint16_t
     });
 }
 
+void Host(const std::string& nickname, const HostOptions& options) {
+    RunOnWorker([nickname, options] {
+        {
+            std::scoped_lock lock{g_mutex};
+            g_status.phase = Phase::Joining;
+            g_status.failure = Failure::None;
+            g_status.address = "127.0.0.1";
+            g_status.port = options.port;
+            g_status.room_name.clear();
+            g_status.members.clear();
+            Touch();
+        }
+        if (nickname.size() < MinNicknameLength || nickname.size() > MaxNicknameLength) {
+            SetFailed(Failure::BadNickname);
+            return;
+        }
+        if (options.name.size() < MinNicknameLength || options.name.size() > MaxNicknameLength) {
+            SetFailed(Failure::BadRoomName);
+            return;
+        }
+        const auto member = BoundMember();
+        const auto room = Network::GetRoom().lock();
+        if (!member || !room) {
+            SetFailed(Failure::Unknown);
+            return;
+        }
+        LeaveNow(*member);
+        const std::uint32_t slots = std::clamp(options.slots, MinSlots, MaxSlots);
+        // Every interface, and no verification backend: a private room takes nicknames as given.
+        if (!room->Create(options.name, "Jadyx", "", options.port, options.password, slots, nickname)) {
+            LOG_WARNING(Network, "Online: could not open a room on port {}", options.port);
+            SetFailed(Failure::CouldNotHost);
+            return;
+        }
+        const std::string local = LocalAddress();
+        {
+            std::scoped_lock lock{g_mutex};
+            g_status.phase = Phase::Joining;
+            g_status.hosting = true;
+            g_status.local_address = local;
+            g_status.address = "127.0.0.1";
+            g_status.port = options.port;
+            Touch();
+        }
+        LOG_INFO(Network, "Online: hosting a room for {} on port {} (local address {})", slots, options.port,
+                 local.empty() ? "unknown" : local);
+        // The host is the room's first member, over loopback.
+        member->Join(nickname, "127.0.0.1", options.port, 0, Network::NoPreferredIP, options.password);
+    });
+}
+
 void Leave() {
     RunOnWorker([] {
         if (const auto member = BoundMember()) LeaveNow(*member);
@@ -363,18 +473,28 @@ void Shutdown() {
 }
 
 std::string MakeNickname(std::wstring_view name) {
-    std::string out;
-    for (const wchar_t raw : name) {
-        const wchar_t c = Unmark(raw);
-        if (!IsNicknameChar(c)) continue;
-        if (c == L' ' && (out.empty() || out.back() == ' ')) continue;
-        out.push_back(static_cast<char>(c));
-        if (out.size() == MaxNicknameLength) break;
-    }
-    while (!out.empty() && out.back() == ' ') out.pop_back();
+    std::string out = Sanitize(name);
     if (out.empty()) return "Jadyx";
     for (char digit = '1'; out.size() < MinNicknameLength; ++digit) out.push_back(digit);
     return out;
+}
+
+std::string MakeRoomName(std::wstring_view name) {
+    std::string out = Sanitize(name);
+    if (out.empty()) return out;
+    while (out.size() < MinNicknameLength) out.push_back('_');
+    return out;
+}
+
+std::optional<std::uint32_t> ParseSlots(std::wstring_view text) {
+    if (text.empty() || text.size() > 2) return std::nullopt;
+    std::uint32_t value = 0;
+    for (const wchar_t c : text) {
+        if (c < L'0' || c > L'9') return std::nullopt;
+        value = value * 10 + static_cast<std::uint32_t>(c - L'0');
+    }
+    if (value < MinSlots || value > MaxSlots) return std::nullopt;
+    return value;
 }
 
 std::optional<std::uint16_t> ParsePort(std::wstring_view text) {
@@ -449,9 +569,21 @@ SavedFields LoadSavedFields() {
             const auto port = winrt::unbox_value<int32_t>(values.Lookup(PortKey));
             if (port > 0 && port <= 65535) fields.port = static_cast<std::uint16_t>(port);
         }
+        if (values.HasKey(RoomNameKey))
+            fields.room_name = winrt::unbox_value<winrt::hstring>(values.Lookup(RoomNameKey)).c_str();
+        if (values.HasKey(SlotsKey)) {
+            const auto slots = winrt::unbox_value<int32_t>(values.Lookup(SlotsKey));
+            if (slots >= static_cast<int32_t>(MinSlots) && slots <= static_cast<int32_t>(MaxSlots))
+                fields.slots = static_cast<std::uint32_t>(slots);
+        }
+        if (values.HasKey(HostPortKey)) {
+            const auto port = winrt::unbox_value<int32_t>(values.Lookup(HostPortKey));
+            if (port > 0 && port <= 65535) fields.host_port = static_cast<std::uint16_t>(port);
+        }
     } catch (...) { /* Missing or invalid values keep the defaults. */ }
     if (fields.nickname.size() > MaxNicknameLength) fields.nickname.resize(MaxNicknameLength);
     if (fields.address.size() > MaxAddressLength) fields.address.resize(MaxAddressLength);
+    if (fields.room_name.size() > MaxNicknameLength) fields.room_name.resize(MaxNicknameLength);
     return fields;
 }
 
@@ -462,6 +594,9 @@ bool SaveFields(const SavedFields& fields) {
         values.Insert(NicknameKey, winrt::box_value(winrt::hstring{fields.nickname}));
         values.Insert(AddressKey, winrt::box_value(winrt::hstring{fields.address}));
         values.Insert(PortKey, winrt::box_value(static_cast<int32_t>(fields.port)));
+        values.Insert(RoomNameKey, winrt::box_value(winrt::hstring{fields.room_name}));
+        values.Insert(SlotsKey, winrt::box_value(static_cast<int32_t>(fields.slots)));
+        values.Insert(HostPortKey, winrt::box_value(static_cast<int32_t>(fields.host_port)));
         return true;
     } catch (...) {
         return false;

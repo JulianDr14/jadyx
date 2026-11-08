@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-// Online play through Eden's multiplayer rooms, as a client. A room is a relay server (eden-room,
-// or an Eden PC hosting one) that forwards the local-wireless (LDN) and LAN packets of everyone in
-// it, so the games believe they share one network. The console joins rooms; it never hosts one.
+// Online play through Eden's multiplayer rooms. A room is a relay server (eden-room, an Eden PC,
+// or this console) that forwards the local-wireless (LDN) and LAN packets of everyone in it, so the
+// games believe they share one network. The console joins rooms, or hosts a private one (not
+// announced in the public lobby) and joins it as its first member.
 //
 // The membership lives in the network library's global RoomMember (network/network.h), so it
-// outlives the library screen: join in Settings > Online, then start the game. Joining blocks for
+// outlives the library screen: join in the Online tab, then start the game. Joining blocks for
 // up to five seconds on the connection, so it runs on a worker; everything here is safe to call
 // from the UI thread.
 
@@ -45,6 +46,8 @@ enum class Failure : std::uint8_t {
     Banned,
     BadNickname,
     BadAddress,
+    BadRoomName,  ///< Hosting: the name is not 4 to 20 of [ a-zA-Z0-9._-].
+    CouldNotHost, ///< Hosting: the port could not be opened (in use, or not allowed).
 };
 
 struct Member {
@@ -60,6 +63,10 @@ struct Status {
     std::uint16_t port{};
     std::uint32_t slots{};
     std::vector<Member> members;
+    /// This console hosts the room it is in (or is about to).
+    bool hosting{};
+    /// Hosting: the console's address on its local network, to share; empty when unknown.
+    std::string local_address;
     /// Changes whenever anything above does, so the screen redraws only then.
     std::uint64_t version{};
 };
@@ -72,13 +79,33 @@ bool InRoom();
 /// The nickname must already be valid (MakeNickname).
 void Join(const std::string& nickname, const std::string& address, std::uint16_t port,
           const std::string& password);
+/// Leaves the room; when hosting, closes it for everyone.
 void Leave();
+
+/// Room sizes a host can pick (Eden's host dialog allows the same).
+inline constexpr std::uint32_t MinSlots = 2;
+inline constexpr std::uint32_t MaxSlots = 16;
+inline constexpr std::uint32_t DefaultSlots = 8;
+
+struct HostOptions {
+    std::string name; ///< Already valid (MakeRoomName).
+    std::uint32_t slots{DefaultSlots};
+    std::uint16_t port{DefaultPort};
+    std::string password;
+};
+/// Opens a private room on this console and joins it (leaving the current room first). Ignored
+/// while another join or leave runs.
+void Host(const std::string& nickname, const HostOptions& options);
 /// Leaves and waits for the worker: the app is closing.
 void Shutdown();
 
 /// The user's name as a room nickname: unsupported characters dropped (accents lose the mark),
 /// at most 20, padded to 4 with digits. Empty input gives "Jadyx".
 std::string MakeNickname(std::wstring_view name);
+/// A room name with the nickname's rules (same characters and lengths); empty input stays empty.
+std::string MakeRoomName(std::wstring_view name);
+/// A player count typed by the user, or nullopt outside MinSlots..MaxSlots.
+std::optional<std::uint32_t> ParseSlots(std::wstring_view text);
 /// A port typed by the user, or nullopt when it is not 1..65535.
 std::optional<std::uint16_t> ParsePort(std::wstring_view text);
 
@@ -108,6 +135,9 @@ struct SavedFields {
     std::wstring nickname; ///< Empty: the system user name.
     std::wstring address;
     std::uint16_t port{DefaultPort};
+    std::wstring room_name; ///< Hosting; empty: named after the nickname.
+    std::uint32_t slots{DefaultSlots};
+    std::uint16_t host_port{DefaultPort};
 };
 SavedFields LoadSavedFields();
 bool SaveFields(const SavedFields& fields);
