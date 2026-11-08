@@ -70,6 +70,59 @@ struct PipelineResidencyPolicy {
     }
 };
 
+/// A small extra prewarm allowance when the release probe stopped ordinary eviction. The
+/// original plentiful-memory path is unchanged; this allowance never spends the whole quota
+/// and is bounded by successful Wake requests, not an assumed byte cost of driver objects.
+class AdaptivePrewarmBudget {
+public:
+    enum class Mode { Blocked, Plentiful, Adaptive };
+    enum class Candidate { TryWake, Skip, WaitForPlentiful };
+    static constexpr std::uint64_t APP_HEADROOM = 1024 * MemoryGuardPolicy::MiB;
+    static constexpr std::uint64_t GPU_HEADROOM = 512 * MemoryGuardPolicy::MiB;
+    static constexpr std::uint32_t MAX_QUEUED = 128;
+    static constexpr int MIN_REST = 7;
+
+    [[nodiscard]] static constexpr int MinimumRest(Mode next, bool previous_adaptive) noexcept {
+        return next == Mode::Adaptive || previous_adaptive ? MIN_REST : 0;
+    }
+
+    [[nodiscard]] static constexpr Candidate Inspect(bool known, bool evicted,
+                                                     bool loading_rebuild) noexcept {
+        if (evicted) {
+            // Ordinary prewarm skips these too. A loading-screen rebuild must stay queued
+            // for the original path, rather than being consumed by this smaller allowance.
+            return loading_rebuild ? Candidate::WaitForPlentiful : Candidate::Skip;
+        }
+        return known ? Candidate::TryWake : Candidate::WaitForPlentiful;
+    }
+
+    [[nodiscard]] Mode Select(std::uint64_t app_used, std::uint64_t app_limit,
+                              std::uint64_t gpu_used, std::uint64_t gpu_budget,
+                              bool retention_probe_stopped_eviction, bool saw_oom) const noexcept {
+        if (PipelineResidencyPolicy::MayPrewarm(app_used, app_limit)) {
+            return Mode::Plentiful;
+        }
+        if (!retention_probe_stopped_eviction || saw_oom || queued >= MAX_QUEUED ||
+            app_limit == 0 || app_used >= app_limit || app_limit - app_used < APP_HEADROOM ||
+            gpu_budget < GPU_HEADROOM || gpu_used > gpu_budget - GPU_HEADROOM) {
+            return Mode::Blocked;
+        }
+        return Mode::Adaptive;
+    }
+
+    /// GPU thread, only after Wake actually queued a build. Ready or in-flight skips cost no slot.
+    void Queued(Mode mode) noexcept {
+        if (mode == Mode::Adaptive && queued < MAX_QUEUED) {
+            ++queued;
+        }
+    }
+
+    [[nodiscard]] std::uint32_t Count() const noexcept { return queued; }
+
+private:
+    std::uint32_t queued{};
+};
+
 /// Whether releasing idle PSOs under memory pressure gives commit back, measured on the first
 /// releases: a few hundred are released, eviction pauses until their fences retire, and the drop
 /// in the commit the ledger does not track (DXIL and bookkeeping are tracked) is split among them.
@@ -277,6 +330,21 @@ private:
     std::uint32_t session{1};
     std::unordered_map<std::uint64_t, std::uint32_t> last_used; ///< hash -> last session drawn
     std::unordered_set<std::uint64_t> prewarm;                  ///< chosen at Load
+};
+
+/// Boot-only aliases recognized through folding must remain known when the GPU thread
+/// later visits the same prewarm queue. They are not persisted as newly drawn pipelines.
+class FoldedHotPipelineSet {
+public:
+    void Clear() { folded.clear(); }
+    void MarkKnown(std::uint64_t hash) { folded.insert(hash); }
+
+    [[nodiscard]] bool Known(const HotPipelineSet& hot, std::uint64_t hash) const {
+        return hot.Known(hash) || folded.contains(hash);
+    }
+
+private:
+    std::unordered_set<std::uint64_t> folded;
 };
 
 } // namespace D3D12

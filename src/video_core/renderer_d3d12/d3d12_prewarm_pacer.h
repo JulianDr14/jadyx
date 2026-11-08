@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 
 #include "common/common_types.h"
@@ -24,11 +25,11 @@ struct PrewarmPacer {
 
     /// Call once the last queued PSO is built. Seen built at a frame boundary, the build time is
     /// rounded up by up to a frame.
-    [[nodiscard]] bool Rested(Clock::time_point now) noexcept {
+    [[nodiscard]] bool Rested(Clock::time_point now, int minimum_rest = 0) noexcept {
         if (built_at < queued_at) {
             built_at = now;
         }
-        return now - built_at >= (built_at - queued_at) * rest;
+        return now - built_at >= (built_at - queued_at) * (std::max)(rest, minimum_rest);
     }
 
     Clock::time_point queued_at{};
