@@ -337,6 +337,7 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetIndirectSync(config.indirect_sync);
     D3D12::SetIndirectOnCpu(config.indirect_cpu);
     VideoCommon::ReadbackTrace::SetPreciseCpuWrites(config.precise_writes);
+    VideoCommon::ReadbackTrace::SetMergeDownloads(config.merge_downloads);
     VideoCommon::ReadbackTrace::SetComputeFresh(config.compute_fresh);
     VideoCommon::ReadbackTrace::SetFrameWait(config.frame_wait);
     D3D12::SetComputeWarpPerLane(config.warp_per_lane);
