@@ -1,0 +1,181 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Wave operation self-test (diagnostics/d3d12_wave_selftest.cpp). Guest shaders run 32-lane warps
+// inside wider host waves: emit_spirv_warp.cpp takes the warp's word of each ballot and mask
+// (subgroup id >> 5), the lane within the warp (id & 31), and offsets shuffle sources by the
+// warp's first lane (id & ~31). Each mode runs one piece of that emulation, the way the shader
+// recompiler emits it, through the same spirv_to_dxil path; the CPU checks every lane.
+//
+// The modes split "a warp-aggregated atomic hands out a slot twice" into its parts: a shuffle
+// whose source differs between the warps of one wave, one whose source differs on every lane,
+// the leader read inside a branch, the leaders' atomics alone, the whole pattern, and the same
+// with each shuffle read through indices the whole wave agrees on.
+
+#version 460 core
+
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+
+layout(local_size_x = 64) in;
+
+/// One per thread: x = lane | subgroup id << 8 | visible << 31,
+/// y = shuffle result or slot, z = the warp's ballot word, w = mode-specific.
+layout(std430, set = 0, binding = 0) buffer Records {
+    uvec4 records[];
+};
+
+layout(std430, set = 0, binding = 1) buffer Counter {
+    uint counter[];
+};
+
+/// Slot -> global thread id + 1, for the atomic modes.
+layout(std430, set = 0, binding = 2) buffer Slots {
+    uint slots[];
+};
+
+layout(push_constant) uniform Params {
+    uint mode;
+    uint percent; ///< share of threads that take the "visible" branch
+    uint seed;
+    uint pad;
+};
+
+const uint MODE_SHUFFLE_PER_WARP = 0u;
+const uint MODE_SHUFFLE_PER_LANE = 1u;
+const uint MODE_SHUFFLE_PER_WARP_UNIFORM = 2u;
+const uint MODE_LEADER_READ = 3u;
+const uint MODE_LEADER_READ_UNIFORM = 4u;
+const uint MODE_AGGREGATED_ATOMIC = 5u;
+const uint MODE_AGGREGATED_ATOMIC_UNIFORM = 6u;
+const uint MODE_LEADER_ATOMICS = 7u;
+const uint MODE_LANE_ATOMICS = 8u;
+
+uint Hash(uint x) {
+    x = (x ^ 61u) ^ (x >> 16);
+    x *= 9u;
+    x ^= x >> 4;
+    x *= 0x27d4eb2du;
+    return x ^ (x >> 15);
+}
+
+uint WarpBallot(bool pred) {
+    return subgroupBallot(pred)[gl_SubgroupInvocationID >> 5];
+}
+
+uint WarpLtMask() {
+    return gl_SubgroupLtMask[gl_SubgroupInvocationID >> 5];
+}
+
+uint WarpLane() {
+    return gl_SubgroupInvocationID & 31u;
+}
+
+uint WarpBase() {
+    return gl_SubgroupInvocationID & ~31u;
+}
+
+/// What the recompiler emits for a guest shuffle: one read at a per-lane index.
+uint Shuffle(uint value, uint index) {
+    return subgroupShuffle(value, index);
+}
+
+/// The same read through indices the wave agrees on: one pass per distinct index among the
+/// lanes still waiting, with every lane of the caller taking part in each read.
+uint ShuffleUniform(uint value, uint index) {
+    uint result = 0u;
+    bool waiting = true;
+    for (uint pass = 0u; pass < gl_SubgroupSize; ++pass) {
+        const uvec4 left = subgroupBallot(waiting);
+        if (left == uvec4(0u)) {
+            break;
+        }
+        const uint source = subgroupShuffle(index, subgroupBallotFindLSB(left));
+        const uint read = subgroupShuffle(value, source);
+        if (waiting && index == source) {
+            result = read;
+            waiting = false;
+        }
+    }
+    return result;
+}
+
+void main() {
+    const uint gid = gl_GlobalInvocationID.x;
+    const uint lane = gl_SubgroupInvocationID;
+    const bool visible = Hash(gid ^ seed) % 100u < percent;
+    // What each lane offers to a shuffle: its lane, its subgroup and its group.
+    const uint value = lane | (gl_SubgroupID << 8) | (gl_WorkGroupID.x << 12);
+    uvec4 record = uvec4(lane | (gl_SubgroupID << 8) | (visible ? 0x80000000u : 0u),
+                         0xFFFFFFFFu, 0u, 0u);
+    switch (mode) {
+    case MODE_SHUFFLE_PER_WARP:
+    case MODE_SHUFFLE_PER_WARP_UNIFORM: {
+        // Every lane of a warp reads the same lane, a different one in each warp of the wave.
+        const uint index = WarpBase() + 5u + (lane >> 5) * 4u;
+        record.w = index;
+        record.y = mode == MODE_SHUFFLE_PER_WARP ? Shuffle(value, index)
+                                                 : ShuffleUniform(value, index);
+        break;
+    }
+    case MODE_SHUFFLE_PER_LANE: {
+        // A butterfly across the warps of the wave.
+        const uint index = lane ^ (gl_SubgroupSize > 32u ? 33u : 1u);
+        record.w = index;
+        record.y = Shuffle(value, index);
+        break;
+    }
+    case MODE_LEADER_READ:
+    case MODE_LEADER_READ_UNIFORM:
+        if (visible) {
+            const uint ballot = WarpBallot(true);
+            const uint leader = uint(findMSB(ballot));
+            record.z = ballot;
+            record.w = WarpLtMask();
+            const uint index = leader + WarpBase();
+            record.y = mode == MODE_LEADER_READ ? Shuffle(value, index)
+                                                : ShuffleUniform(value, index);
+        }
+        break;
+    case MODE_AGGREGATED_ATOMIC:
+    case MODE_AGGREGATED_ATOMIC_UNIFORM:
+        // The guest's culling pattern: one atomic per warp, slots handed out by lane order.
+        if (visible) {
+            const uint ballot = WarpBallot(true);
+            const uint leader = uint(findMSB(ballot));
+            uint base = 0u;
+            if (WarpLane() == leader) {
+                base = atomicAdd(counter[0], uint(bitCount(ballot)));
+            }
+            const uint index = leader + WarpBase();
+            const uint first = mode == MODE_AGGREGATED_ATOMIC ? Shuffle(base, index)
+                                                              : ShuffleUniform(base, index);
+            const uint slot = first + uint(bitCount(WarpLtMask() & ballot));
+            record.z = ballot;
+            record.y = slot;
+            slots[slot] = gid + 1u;
+        }
+        break;
+    case MODE_LEADER_ATOMICS:
+        // The leaders' atomics alone: each warp's range must be its own.
+        if (visible) {
+            const uint ballot = WarpBallot(true);
+            record.z = ballot;
+            if (WarpLane() == uint(findMSB(ballot))) {
+                record.y = atomicAdd(counter[0], uint(bitCount(ballot)));
+            }
+        }
+        break;
+    case MODE_LANE_ATOMICS:
+        if (visible) {
+            const uint slot = atomicAdd(counter[0], 1u);
+            record.y = slot;
+            slots[slot] = gid + 1u;
+        }
+        break;
+    default:
+        break;
+    }
+    records[gid] = record;
+}
