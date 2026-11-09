@@ -797,6 +797,7 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     }
     DefineAttributeMemAccess(program.info);
     DefineWriteStorageCasLoopFunction(program.info);
+    DefineWaveUniformShuffleFunction(program.info);
     DefineGlobalMemoryFunctions(program.info);
     DefineRescalingInput(program.info);
     DefineRenderArea(program.info);
@@ -1506,6 +1507,68 @@ void EmitContext::DefineWriteStorageCasLoopFunction(const Info& info) {
     OpFunctionEnd();
 
     write_storage_cas_loop_func = func;
+}
+
+void EmitContext::DefineWaveUniformShuffleFunction(const Info& info) {
+    if (!info.uses_subgroup_shuffles || !profile.has_broken_divergent_shuffle_index ||
+        !profile.SupportsSubgroupStage(stage)) {
+        return;
+    }
+    AddCapability(spv::Capability::GroupNonUniform);
+    AddCapability(spv::Capability::GroupNonUniformVote);
+    AddCapability(spv::Capability::GroupNonUniformBallot);
+    AddCapability(spv::Capability::GroupNonUniformShuffle);
+    const Id scope{Const(static_cast<u32>(spv::Scope::Subgroup))};
+    const Id func_type{TypeFunction(U32[1], U32[1], U32[1], U1)};
+    const Id func{OpFunction(U32[1], spv::FunctionControlMask::MaskNone, func_type)};
+    Name(func, "wave_uniform_shuffle");
+    const Id value{OpFunctionParameter(U32[1])};
+    const Id source{OpFunctionParameter(U32[1])};
+    const Id wanted{OpFunctionParameter(U1)};
+
+    AddLabel();
+    const Id result_var{AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]),
+                                         spv::StorageClass::Function, u32_zero_value)};
+    const Id waiting_var{AddLocalVariable(TypePointer(spv::StorageClass::Function, U1),
+                                          spv::StorageClass::Function)};
+    OpStore(waiting_var, wanted);
+    const Id header_label{OpLabel()};
+    const Id body_label{OpLabel()};
+    const Id read_label{OpLabel()};
+    const Id continue_label{OpLabel()};
+    const Id merge_label{OpLabel()};
+    OpBranch(header_label);
+
+    // Every lane that called stays in the loop until no lane waits, so each pass's source lane
+    // is still active when it is read; the exit test is wave-uniform.
+    AddLabel(header_label);
+    OpLoopMerge(merge_label, continue_label, spv::LoopControlMask::MaskNone);
+    OpBranch(body_label);
+
+    AddLabel(body_label);
+    const Id waiting{OpLoad(U1, waiting_var)};
+    const Id any_waiting{OpGroupNonUniformAny(U1, scope, waiting)};
+    OpBranchConditional(any_waiting, read_label, merge_label);
+
+    AddLabel(read_label);
+    // The first waiting lane's source, read at a lane index every lane agrees on.
+    const Id left{OpGroupNonUniformBallot(U32[4], scope, waiting)};
+    const Id first{OpGroupNonUniformBallotFindLSB(U32[1], scope, left)};
+    const Id pass_source{OpGroupNonUniformShuffle(U32[1], scope, source, first)};
+    const Id read{OpGroupNonUniformShuffle(U32[1], scope, value, pass_source)};
+    const Id served{OpLogicalAnd(U1, waiting, OpIEqual(U1, source, pass_source))};
+    OpStore(result_var, OpSelect(U32[1], served, read, OpLoad(U32[1], result_var)));
+    OpStore(waiting_var, OpLogicalAnd(U1, waiting, OpLogicalNot(U1, served)));
+    OpBranch(continue_label);
+
+    AddLabel(continue_label);
+    OpBranch(header_label);
+
+    AddLabel(merge_label);
+    OpReturnValue(OpLoad(U32[1], result_var));
+    OpFunctionEnd();
+
+    wave_uniform_shuffle_func = func;
 }
 
 void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
