@@ -96,6 +96,7 @@ add_library(video_core STATIC
     fence_manager.h
     frame_trace.cpp
     cpu_write_queue.h
+    buffer_cache/download_shadow.h
     write_watch.cpp
     write_watch.h
     frame_pipeline.h

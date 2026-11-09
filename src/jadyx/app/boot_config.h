@@ -176,6 +176,9 @@ struct BootConfig {
     /// Off by default ("keep_cpu_writes=1" or the glitch hunt page turns it on): buffer downloads
     /// skip CPU writes not gathered yet, instead of landing over them in guest memory.
     bool keep_cpu_writes{};
+    /// On by default ("merge_downloads=0" or the glitch hunt page turns it off): buffer downloads
+    /// land only the words the GPU changed, so CPU writes meanwhile stay.
+    bool merge_downloads{true};
     /// Diagnostic ("compute_fresh=1", also on the glitch hunt page): dispatches upload their
     /// read-only inputs from guest memory every time.
     bool compute_fresh{};
