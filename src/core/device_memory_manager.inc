@@ -553,6 +553,40 @@ void DeviceMemoryManager<Traits>::UnregisterProcess(Asid asid) {
 }
 
 template <typename Traits>
+typename DeviceMemoryManager<Traits>::PageProbe DeviceMemoryManager<Traits>::ProbePage(
+    DAddr address) {
+    PageProbe probe{};
+    const size_t page = address >> page_bits;
+    const auto count_of = [&](size_t device_page) -> u32 {
+        return cached_pages->at(device_page >> subentries_shift)
+            .Count(device_page)
+            .load(std::memory_order_relaxed);
+    };
+    probe.cached_count = count_of(page);
+    const auto [asid, vaddress] = ExtractCPUBacking(page);
+    probe.asid = static_cast<u32>(asid.id);
+    probe.cpu_page = vaddress & ~static_cast<VAddr>(page_mask);
+    Memory::Memory* const process =
+        asid.id < registered_processes.size() ? registered_processes[asid.id] : nullptr;
+    if (process != nullptr && probe.cpu_page != 0) {
+        probe.cpu_cached = DeviceMethods::IsRegionCaching(process, probe.cpu_page);
+    }
+    const u32 physical = tracked_entries[page].compressed_physical_ptr;
+    if (physical == 0) {
+        return probe;
+    }
+    Common::ScratchBuffer<u32> device_pages;
+    InnerGatherDeviceAddresses(device_pages, PAddr(physical - 1) << page_bits);
+    for (const u32 device_page : device_pages) {
+        ++probe.aliases;
+        if (count_of(device_page) != 0) {
+            ++probe.alias_cached;
+        }
+    }
+    return probe;
+}
+
+template <typename Traits>
 void DeviceMemoryManager<Traits>::UpdatePagesCachedCountNoLock(DAddr addr, size_t size, s32 delta) {
     u64 uncache_begin = 0;
     u64 cache_begin = 0;

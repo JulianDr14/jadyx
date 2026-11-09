@@ -132,6 +132,18 @@ public:
     // New batch API to update multiple ranges with a single lock acquisition.
     void UpdatePagesCachedBatch(std::span<const std::pair<DAddr, size_t>> ranges, s32 delta);
 
+    /// Diagnostic (geo_hunt): how one device page is protected. The cached count is per device
+    /// page but the CPU page flag is one bit, so device pages sharing a CPU page are listed too.
+    struct PageProbe {
+        VAddr cpu_page{};       ///< CPU page backing the device page, 0 when none
+        u32 asid{};
+        u32 cached_count{};     ///< this device page's cached count
+        u32 aliases{};          ///< device pages backed by the same memory, this one included
+        u32 alias_cached{};     ///< how many of those have a cached count above 0
+        bool cpu_cached{};      ///< CPU page flag: writes to it reach the GPU caches
+    };
+    [[nodiscard]] PageProbe ProbePage(DAddr address);
+
 private:
     template <typename Copy>
     void ReadBlockUnsafeCopy(DAddr address, void* dest_pointer, size_t size, Copy&& copy);

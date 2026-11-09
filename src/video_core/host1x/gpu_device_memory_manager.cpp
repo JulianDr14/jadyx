@@ -23,6 +23,11 @@ struct MaxwellDeviceMethods {
                                             size_t size) {
         interface->RasterizerMarkRegionGpuWritten(address, size);
     }
+
+    /// Diagnostic (geo_hunt): whether the CPU page is marked rasterizer cached.
+    static inline bool IsRegionCaching(Core::Memory::Memory* interface, VAddr address) {
+        return interface->IsRasterizerCachedPage(address);
+    }
 };
 
 } // namespace Tegra

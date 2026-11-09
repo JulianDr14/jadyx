@@ -950,6 +950,15 @@ bool Memory::IsValidVirtualAddress(const Common::ProcessAddress vaddr) const {
            type == Common::PageType::DebugMemory;
 }
 
+bool Memory::IsRasterizerCachedPage(const Common::ProcessAddress vaddr) const {
+    const auto& page_table = *impl->current_page_table;
+    const size_t page = vaddr >> YUZU_PAGEBITS;
+    if (page >= page_table.entries.size()) {
+        return false;
+    }
+    return page_table.entries[page].Type() == Common::PageType::RasterizerCachedMemory;
+}
+
 bool Memory::IsValidVirtualAddressRange(Common::ProcessAddress base, u64 size) const {
     Common::ProcessAddress end = base + size;
     Common::ProcessAddress page = Common::AlignDown(GetInteger(base), YUZU_PAGESIZE);
