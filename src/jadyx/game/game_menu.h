@@ -91,7 +91,15 @@ private:
 
 /// The A/B switches of the geometry glitch hunt page, each a live renderer toggle.
 struct GlitchToggles {
-    bool warp_per_lane{}; ///< warp-aggregated compute atomics run one per lane
+    bool warp_per_lane{};  ///< warp-aggregated compute atomics run one per lane
+    bool a2c_shader{true}; ///< single-sample alpha-to-coverage dithered in the shader
+    bool frame_wait{};     ///< wait for the GPU every frame
+    bool compute_fresh{};  ///< dispatches upload their read-only inputs every time
+    bool indirect_sync{};  ///< GPU-indirect draws wait for every earlier write
+    bool indirect_cpu{};   ///< GPU-indirect draws read their arguments on the CPU
+    bool precise_writes{true}; ///< CPU writes beside GPU bytes apply at once
+    bool keep_cpu_writes{}; ///< buffer downloads skip CPU writes not gathered yet
+    bool merge_downloads{true}; ///< buffer downloads land only the words the GPU changed
 };
 
 struct GameMenuSettings {
@@ -173,7 +181,9 @@ public:
         GraphicsMenu, GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxExactGpuReads, GfxTextureMemory,
         GfxGpuAccuracy, GfxConsoleMode, Amiibo, MemoryEdit,
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
-        GlitchPage, GlitchCapture, GlitchWarpPerLane,
+        GlitchPage, GlitchCapture, GlitchWarpPerLane, GlitchA2cShader, GlitchFrameWait,
+        GlitchComputeFresh, GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites,
+        GlitchKeepCpuWrites, GlitchMergeDownloads,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
 
@@ -191,7 +201,9 @@ public:
         if (settings.performance_capture) quick.push_back(CapturePerformance);
         if (settings.glitch_hunt) quick.push_back(GlitchPage);
         quick.push_back(Library);
-        glitch = {GlitchCapture, GlitchWarpPerLane};
+        glitch = {GlitchCapture,      GlitchA2cShader,    GlitchFrameWait,     GlitchComputeFresh,
+                  GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites, GlitchKeepCpuWrites,
+                  GlitchMergeDownloads, GlitchWarpPerLane};
         controller = {Style, FaceButtons, Deadzone, RStickInvertX, RStickInvertY, RStickSensitivity,
                       RStickMouse, RStickMouseSensitivity};
         display = {PerformanceStats};
@@ -339,6 +351,30 @@ private:
             // Renderer switch name, the same in every language: the log and boot.cfg use it.
             return {L"warp_per_lane", Tr(settings.glitch.warp_per_lane ? Text::Yes : Text::No), Choice,
                     L"Compute atomics shared by a warp run once per lane"};
+        case GlitchA2cShader:
+            return {L"a2c_shader", Tr(settings.glitch.a2c_shader ? Text::Yes : Text::No), Choice,
+                    L"Alpha-to-coverage without MSAA dithered in the shader (off: 0.5 cut)"};
+        case GlitchFrameWait:
+            return {L"frame_wait", Tr(settings.glitch.frame_wait ? Text::Yes : Text::No), Choice,
+                    L"Wait for the GPU every frame"};
+        case GlitchComputeFresh:
+            return {L"compute_fresh", Tr(settings.glitch.compute_fresh ? Text::Yes : Text::No),
+                    Choice, L"Dispatches upload their read-only inputs every time"};
+        case GlitchIndirectSync:
+            return {L"indirect_sync", Tr(settings.glitch.indirect_sync ? Text::Yes : Text::No),
+                    Choice, L"GPU-indirect draws wait for every earlier write"};
+        case GlitchIndirectCpu:
+            return {L"indirect_cpu", Tr(settings.glitch.indirect_cpu ? Text::Yes : Text::No),
+                    Choice, L"GPU-indirect draws read their arguments on the CPU (slow)"};
+        case GlitchPreciseWrites:
+            return {L"precise_writes", Tr(settings.glitch.precise_writes ? Text::Yes : Text::No),
+                    Choice, L"CPU writes beside GPU-written bytes apply at once"};
+        case GlitchKeepCpuWrites:
+            return {L"keep_cpu_writes", Tr(settings.glitch.keep_cpu_writes ? Text::Yes : Text::No),
+                    Choice, L"Buffer downloads skip CPU writes not gathered yet"};
+        case GlitchMergeDownloads:
+            return {L"merge_downloads", Tr(settings.glitch.merge_downloads ? Text::Yes : Text::No),
+                    Choice, L"Buffer downloads land only the words the GPU changed"};
         case MemoryEdit:
             return {Tr(Text::MemoryEditTitle), {}, Page,
                     memory_edit_hits != 0
@@ -544,6 +580,30 @@ private:
             return confirm ? GameMenuResult::CaptureGlitches : GameMenuResult::None;
         case GlitchWarpPerLane:
             settings.glitch.warp_per_lane = !settings.glitch.warp_per_lane;
+            return GameMenuResult::GlitchTogglesChanged;
+        case GlitchA2cShader:
+            settings.glitch.a2c_shader = !settings.glitch.a2c_shader;
+            return GameMenuResult::GlitchTogglesChanged;
+        case GlitchFrameWait:
+            settings.glitch.frame_wait = !settings.glitch.frame_wait;
+            return GameMenuResult::GlitchTogglesChanged;
+        case GlitchComputeFresh:
+            settings.glitch.compute_fresh = !settings.glitch.compute_fresh;
+            return GameMenuResult::GlitchTogglesChanged;
+        case GlitchIndirectSync:
+            settings.glitch.indirect_sync = !settings.glitch.indirect_sync;
+            return GameMenuResult::GlitchTogglesChanged;
+        case GlitchIndirectCpu:
+            settings.glitch.indirect_cpu = !settings.glitch.indirect_cpu;
+            return GameMenuResult::GlitchTogglesChanged;
+        case GlitchPreciseWrites:
+            settings.glitch.precise_writes = !settings.glitch.precise_writes;
+            return GameMenuResult::GlitchTogglesChanged;
+        case GlitchKeepCpuWrites:
+            settings.glitch.keep_cpu_writes = !settings.glitch.keep_cpu_writes;
+            return GameMenuResult::GlitchTogglesChanged;
+        case GlitchMergeDownloads:
+            settings.glitch.merge_downloads = !settings.glitch.merge_downloads;
             return GameMenuResult::GlitchTogglesChanged;
         case OfflineMode: {
             // Steps through: as in Settings > System, on, off.
