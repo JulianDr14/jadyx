@@ -22,6 +22,7 @@
 #include "common/cityhash.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "common/stall_watch.h"
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/gpu_thread.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
@@ -534,6 +535,9 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
         bool compiled = false;
         try {
             FT::ScopedSpan dxil_span{FT::Event::PipelineDxilLong, trace_pipeline};
+            const Common::StallWatch::Scope stall_watch{Common::StallWatch::Work::PipelineDxil,
+                                                        key.unique_hashes[1],
+                                                        key.unique_hashes[5]};
             const u64 dxil_start = SteadyMicros();
             dxil = compile_dxil(trace_pipeline, false);
             GetPipelineStats().Record(PipelineStage::Dxil, SteadyMicros() - dxil_start);
@@ -758,6 +762,8 @@ D3D12_GPU_VIRTUAL_ADDRESS IntegerSamplerTable::Upload(BufferCache& buffer_cache)
 void GraphicsPipeline::WaitBuilt() {
     VideoCore::FrameTrace::ScopedSpan wait_span{
         VideoCore::FrameTrace::Event::PipelineWaitLong, reinterpret_cast<uintptr_t>(this)};
+    const Common::StallWatch::Scope stall_watch{Common::StallWatch::Work::PipelineWait,
+                                                key.unique_hashes[1], key.unique_hashes[5]};
     std::shared_ptr<PendingBuild> build;
     {
         std::scoped_lock lock{build_mutex};
@@ -1705,6 +1711,8 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
         VideoCore::Perf::Add(VideoCore::Perf::Counter::PsoCreates, 1);
         VideoCore::FrameTrace::ScopedSpan pso_span{
             VideoCore::FrameTrace::Event::PipelinePsoLong, reinterpret_cast<uintptr_t>(this)};
+        const Common::StallWatch::Scope stall_watch{Common::StallWatch::Work::DriverPso,
+                                                    key.unique_hashes[1], key.unique_hashes[5]};
         ResidentGraphicsPso result;
         result.root = desc.pRootSignature;
         result.index_charge = Common::MemoryCharge(Common::MemoryAccount::Pipelines, index_bytes, 0);

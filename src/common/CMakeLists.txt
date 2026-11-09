@@ -128,6 +128,8 @@ add_library(
     socket_types.h
     sparse_large_vector.cpp
     sparse_large_vector.h
+    stall_watch.cpp
+    stall_watch.h
     stb.cpp
     stb.h
     steady_clock.cpp
