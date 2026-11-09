@@ -570,7 +570,7 @@ private:
     Common::OverlapRangeSet<DAddr> async_downloads;
     std::deque<std::optional<Async_Buffer>> async_buffers;
     std::deque<boost::container::small_vector<BufferCopy, 4>> pending_downloads;
-    /// For each entry of pending_downloads, its group in download_shadow (0: lands whole).
+    /// For each entry of pending_downloads, its group in download_shadow.
     std::deque<u64> pending_records;
     DownloadShadow download_shadow;
     bool merge_shadow_full{};

@@ -98,7 +98,6 @@ struct GlitchToggles {
     bool indirect_sync{};  ///< GPU-indirect draws wait for every earlier write
     bool indirect_cpu{};   ///< GPU-indirect draws read their arguments on the CPU
     bool precise_writes{true}; ///< CPU writes beside GPU bytes apply at once
-    bool merge_downloads{true}; ///< buffer downloads land only the words the GPU changed
 };
 
 struct GameMenuSettings {
@@ -182,7 +181,6 @@ public:
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
         GlitchPage, GlitchCapture, GlitchWarpPerLane, GlitchA2cShader, GlitchFrameWait,
         GlitchComputeFresh, GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites,
-        GlitchMergeDownloads,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
 
@@ -201,8 +199,7 @@ public:
         if (settings.glitch_hunt) quick.push_back(GlitchPage);
         quick.push_back(Library);
         glitch = {GlitchCapture,      GlitchA2cShader,    GlitchFrameWait,     GlitchComputeFresh,
-                  GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites,
-                  GlitchMergeDownloads, GlitchWarpPerLane};
+                  GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites, GlitchWarpPerLane};
         controller = {Style, FaceButtons, Deadzone, RStickInvertX, RStickInvertY, RStickSensitivity,
                       RStickMouse, RStickMouseSensitivity};
         display = {PerformanceStats};
@@ -368,9 +365,6 @@ private:
         case GlitchPreciseWrites:
             return {L"precise_writes", Tr(settings.glitch.precise_writes ? Text::Yes : Text::No),
                     Choice, L"CPU writes beside GPU-written bytes apply at once"};
-        case GlitchMergeDownloads:
-            return {L"merge_downloads", Tr(settings.glitch.merge_downloads ? Text::Yes : Text::No),
-                    Choice, L"Buffer downloads land only the words the GPU changed"};
         case MemoryEdit:
             return {Tr(Text::MemoryEditTitle), {}, Page,
                     memory_edit_hits != 0
@@ -594,9 +588,6 @@ private:
             return GameMenuResult::GlitchTogglesChanged;
         case GlitchPreciseWrites:
             settings.glitch.precise_writes = !settings.glitch.precise_writes;
-            return GameMenuResult::GlitchTogglesChanged;
-        case GlitchMergeDownloads:
-            settings.glitch.merge_downloads = !settings.glitch.merge_downloads;
             return GameMenuResult::GlitchTogglesChanged;
         case OfflineMode: {
             // Steps through: as in Settings > System, on, off.

@@ -337,7 +337,6 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetIndirectSync(config.indirect_sync);
     D3D12::SetIndirectOnCpu(config.indirect_cpu);
     VideoCommon::ReadbackTrace::SetPreciseCpuWrites(config.precise_writes);
-    VideoCommon::ReadbackTrace::SetMergeDownloads(config.merge_downloads);
     VideoCommon::ReadbackTrace::SetComputeFresh(config.compute_fresh);
     VideoCommon::ReadbackTrace::SetFrameWait(config.frame_wait);
     D3D12::SetComputeWarpPerLane(config.warp_per_lane);
@@ -439,8 +438,7 @@ GlitchToggles GlitchTogglesOf(const BootConfig& config) {
             .compute_fresh = config.compute_fresh,
             .indirect_sync = config.indirect_sync,
             .indirect_cpu = config.indirect_cpu,
-            .precise_writes = config.precise_writes,
-            .merge_downloads = config.merge_downloads};
+            .precise_writes = config.precise_writes};
 }
 
 void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
@@ -456,7 +454,6 @@ void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
     log("indirect_sync", before.indirect_sync, now.indirect_sync);
     log("indirect_cpu", before.indirect_cpu, now.indirect_cpu);
     log("precise_writes", before.precise_writes, now.precise_writes);
-    log("merge_downloads", before.merge_downloads, now.merge_downloads);
     // Each is read at use: dispatches and draws after this take the new value, and pipelines
     // whose key depends on it (warp_per_lane, a2c_shader) are built on first use.
     D3D12::SetComputeWarpPerLane(now.warp_per_lane);
@@ -466,7 +463,6 @@ void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
     D3D12::SetIndirectSync(now.indirect_sync);
     D3D12::SetIndirectOnCpu(now.indirect_cpu);
     VideoCommon::ReadbackTrace::SetPreciseCpuWrites(now.precise_writes);
-    VideoCommon::ReadbackTrace::SetMergeDownloads(now.merge_downloads);
 }
 
 } // namespace Jadyx

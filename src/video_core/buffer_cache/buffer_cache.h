@@ -749,7 +749,7 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
     }
     auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes, true);
     boost::container::small_vector<BufferCopy, 4> normalized_copies;
-    const u64 merge_record = ReadbackTrace::MergeDownloads() ? download_shadow.BeginRecord() : 0;
+    const u64 merge_record = download_shadow.BeginRecord();
     runtime.PreCopyBarrier();
     for (auto& [copy, buffer_id] : downloads) {
         copy.dst_offset += download_staging.offset;
@@ -762,9 +762,7 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
         buffer.MarkUsage(copy.src_offset, copy.size);
         runtime.CopyBuffer(download_staging.buffer, buffer, copies, false);
         normalized_copies.push_back(second_copy);
-        if (merge_record != 0) {
-            TrackDownload(orig_device_addr, copy.size, merge_record);
-        }
+        TrackDownload(orig_device_addr, copy.size, merge_record);
     }
     runtime.PostCopyBarrier();
     pending_downloads.emplace_back(std::move(normalized_copies));
@@ -845,9 +843,7 @@ void BufferCache<P>::PopAsyncBuffers() {
     pending_downloads.pop_front();
     pending_records.pop_front();
     superseded_downloads.pop_front();
-    if (merge_record != 0) {
-        download_shadow.Retire(merge_record);
-    }
+    download_shadow.Retire(merge_record);
     ApplyKeptCpuWrites();
     if (timed) {
         merge_cost.pop += std::chrono::steady_clock::now() - pop_begin;
@@ -901,7 +897,7 @@ void BufferCache<P>::LandDownload(DAddr start, u64 size, const u8* incoming, u64
     const bool timed = WriteWatch::Enabled();
     const auto begin = timed ? std::chrono::steady_clock::now()
                              : std::chrono::steady_clock::time_point{};
-    if (record == 0 || ((start | size) & 3) != 0) {
+    if (((start | size) & 3) != 0) {
         WriteWatch::Note(WriteWatch::Kind::Download, start, size);
         device_memory.WriteBlockUnsafe(start, incoming, size);
         download_shadow.Landed(start, incoming, size);
@@ -2235,12 +2231,8 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
             // Undo the modified offset
             const u64 dst_offset = copy.dst_offset - download_staging.offset;
             const u8* copy_mapped_memory = mapped_memory + dst_offset;
-            const bool merge = ReadbackTrace::MergeDownloads();
-            if (merge) {
-                TrackDownload(copy_device_addr, copy.size, 0);
-            }
-            LandDownload(copy_device_addr, copy.size, copy_mapped_memory,
-                         merge ? DownloadShadow::LATEST : 0);
+            TrackDownload(copy_device_addr, copy.size, 0);
+            LandDownload(copy_device_addr, copy.size, copy_mapped_memory, DownloadShadow::LATEST);
             ReadbackTrace::Log("buffer sync", copy_device_addr, copy.size,
                                {copy_mapped_memory, copy.size});
         }

@@ -362,12 +362,6 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 WriteDiag(std::string{"boot.cfg: precise_writes "} + (config.precise_writes ? "on" : "off"));
                 continue;
             }
-            if (line == "merge_downloads=0" || line == "merge_downloads=1") {
-                config.merge_downloads = line.back() == '1';
-                WriteDiag(std::string{"boot.cfg: merge_downloads "} +
-                          (config.merge_downloads ? "on" : "off"));
-                continue;
-            }
             if (line == "indirect_cpu=0" || line == "indirect_cpu=1") {
                 config.indirect_cpu = line.back() == '1';
                 WriteDiag(std::string{"boot.cfg: indirect_cpu "} +

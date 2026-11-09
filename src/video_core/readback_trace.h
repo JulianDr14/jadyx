@@ -132,13 +132,6 @@ inline std::vector<GpuByteLoss> TakeGpuLosses() {
     return taken;
 }
 
-/// On by default ("merge_downloads=0" or the glitch hunt page turns it off): a buffer download
-/// lands only the words the GPU changed. A word the CPU changed meanwhile stays and goes up to
-/// the host. Without it the whole binding lands, so CPU writes not yet on the host are lost.
-inline std::atomic_bool merge_downloads{true};
-inline void SetMergeDownloads(bool enabled) { merge_downloads.store(enabled, std::memory_order_relaxed); }
-inline bool MergeDownloads() { return merge_downloads.load(std::memory_order_relaxed); }
-
 /// On by default ("precise_writes=0" or the glitch hunt page turns it off): a CPU write into a
 /// page the GPU wrote, but over none of the bytes the GPU wrote, is applied at once instead of
 /// waiting for the next cache invalidation. Without it, data the guest writes next to GPU output
