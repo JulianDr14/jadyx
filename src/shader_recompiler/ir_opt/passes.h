@@ -24,6 +24,10 @@ void LowerFp64ToFp32(IR::Program& program);
 void LowerFp16ToFp32(IR::Program& program);
 void LowerInt64ToInt32(IR::Program& program);
 void QuadShufflePass(Environment& env, IR::Program& program);
+/// Diagnostic: warp-aggregated atomics (ballot, FindUMsb32 leader, ShuffleIndex of the leader's
+/// result) run with every lane as its own leader, one atomic per lane. False, leaving the program
+/// unchanged, when a shuffle reads anything but a ballot leader or the program votes.
+bool WarpPerLanePass(IR::Program& program);
 void RescalingPass(IR::Program& program);
 void SsaRewritePass(IR::Program& program);
 void PositionPass(Environment& env, IR::Program& program);
