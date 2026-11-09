@@ -279,6 +279,16 @@ public:
         ++log_slots;
     }
 
+    /// Glitch hunt: the running slot ends and a new one begins (see IsolateOcclusion).
+    std::optional<Slot> Isolate() {
+        if (!running) {
+            return std::nullopt;
+        }
+        PauseCounter();
+        StartCounter();
+        return running;
+    }
+
     void ResetCounter() override {
         active = true;
         PauseCounter();
@@ -732,6 +742,22 @@ void QueryCacheRuntime::PrepareDraw(bool zpass_enabled) {
     if (impl->stream_output->Active()) {
         impl->stream_output->StartCounter();
     }
+}
+
+bool QueryCacheRuntime::CountsPrimitives() const noexcept {
+    return impl->primitives->Active();
+}
+
+auto QueryCacheRuntime::IsolateOcclusion() -> std::optional<IsolatedSlot> {
+    const std::optional<Slot> slot = impl->occlusion->Isolate();
+    if (!slot) {
+        return std::nullopt;
+    }
+    return IsolatedSlot{.heap = slot->bank->heap.Get(), .index = slot->index};
+}
+
+void QueryCacheRuntime::EndIsolatedOcclusion() {
+    impl->occlusion->PauseCounter();
 }
 
 void QueryCacheRuntime::PauseCounters() {

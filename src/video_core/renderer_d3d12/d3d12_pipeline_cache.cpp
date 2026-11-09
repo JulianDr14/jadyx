@@ -95,6 +95,9 @@ std::atomic_bool pipeline_prewarm{true};
 // results (particles, physics, culling) or hangs, try boot.cfg "cs_split=1" first.
 std::atomic<u32> compute_workgroup_split{16};
 
+std::atomic_bool compute_warp_per_lane{};
+std::atomic_bool shuffle_wave_uniform{true};
+
 /// Launches with more groups than this fill the GPU without splitting them further.
 constexpr u64 MAX_SPLIT_GROUPS = 256;
 
@@ -789,6 +792,14 @@ void SetComputeWorkgroupSplit(u32 factor) {
     compute_workgroup_split.store(factor, std::memory_order_relaxed);
 }
 
+void SetComputeWarpPerLane(bool enabled) {
+    compute_warp_per_lane.store(enabled, std::memory_order_relaxed);
+}
+
+void SetShuffleWaveUniform(bool enabled) {
+    shuffle_wave_uniform.store(enabled, std::memory_order_relaxed);
+}
+
 PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                              const Device& device_, const ShaderCompiler& compiler_,
                              const TextureCacheRuntime& texture_runtime_,
@@ -866,6 +877,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         // SM 6.4 on the Series: quad ops in a shader without derivatives read helper lanes that
         // never ran, so a quad leader outside the triangle gives garbage along its edges.
         .has_helperless_quad_shuffles = true,
+        // Measured by the wave self-test on Series: a shuffle whose source differs between lanes
+        // reads the first lane's source on all of them.
+        .has_broken_divergent_shuffle_index = shuffle_wave_uniform.load(std::memory_order_relaxed),
         .has_broken_robust = false,
         // D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT: raw views start on 16 bytes.
         .min_ssbo_alignment = 16,
@@ -908,9 +922,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
 
     LOG_INFO(Render,
              "D3D12: pipeline cache ready ({} workers, waves up to {} lanes, int64 {}, "
-             "VP/RT index outside GS {}, dependent draws preserved)",
+             "VP/RT index outside GS {}, wave-uniform shuffles {}, dependent draws preserved)",
              GetTotalPipelineWorkers(), caps.wave_lane_count_max, caps.int64,
-             caps.vp_and_rt_index_from_any_stage);
+             caps.vp_and_rt_index_from_any_stage, profile.has_broken_divergent_shuffle_index);
 }
 
 PipelineCache::~PipelineCache() {
@@ -1372,9 +1386,15 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
     // The two variants are independent: the emulation rewrites samples, the split ids and loops.
     const u32 workgroup_split =
         compute_not_split.contains(key.Hash()) ? 1 : WorkgroupSplitFor(*kepler_compute);
+    // The per-lane diagnostic variant replaces the plain and the split pipelines.
+    const bool warp_per_lane = !emulate_reduction &&
+                               compute_warp_per_lane.load(std::memory_order_relaxed) &&
+                               !compute_not_per_lane.contains(key.Hash());
     auto& cache = emulate_reduction
                       ? (workgroup_split > 1 ? compute_reduction_split_cache
                                              : compute_reduction_cache)
+                  : warp_per_lane ? (workgroup_split > 1 ? compute_per_lane_split_cache
+                                                         : compute_per_lane_cache)
                   : workgroup_split > 1 ? compute_split_cache
                                         : compute_cache;
     const auto [pair, is_new]{cache.try_emplace(key)};
@@ -1382,7 +1402,12 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
     if (is_new) {
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PipelineStallUs};
         VideoCore::Perf::ScopedTimer frontend{VideoCore::Perf::Counter::PipelineFrontendUs};
-        pipeline = CreateComputePipeline(key, shader, emulate_reduction, workgroup_split);
+        pipeline =
+            CreateComputePipeline(key, shader, emulate_reduction, workgroup_split, warp_per_lane);
+    }
+    if (is_new && !pipeline && warp_per_lane && compute_not_per_lane.contains(key.Hash())) {
+        cache.erase(pair);
+        return CurrentComputePipeline();
     }
     if (is_new && !pipeline && workgroup_split > 1 && compute_not_split.contains(key.Hash())) {
         cache.erase(pair);
@@ -2232,7 +2257,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
 
 std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     const ComputePipelineCacheKey& key, const VideoCommon::ShaderInfo* shader,
-    bool emulate_reduction, u32 workgroup_split) {
+    bool emulate_reduction, u32 workgroup_split, bool warp_per_lane) {
     const GPUVAddr program_base{kepler_compute->regs.code_loc.Address()};
     const auto& qmd{kepler_compute->launch_description};
     ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start};
@@ -2240,11 +2265,12 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
 
     main_pools.ReleaseContents();
     auto pipeline{
-        CreateComputePipeline(main_pools, key, env, true, emulate_reduction, workgroup_split)};
+        CreateComputePipeline(main_pools, key, env, true, emulate_reduction, workgroup_split,
+                              warp_per_lane)};
     // Variants are not stored: the disk cache rebuilds the plain pipeline, and the first dispatch
     // that needs a variant builds it again.
     if (!pipeline || pipeline_cache_filename.empty() || emulate_reduction ||
-        workgroup_split > 1) {
+        workgroup_split > 1 || warp_per_lane) {
         return pipeline;
     }
     serialization_thread.QueueWork([this, key, env_ = std::move(env)] {
@@ -2256,7 +2282,8 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
 
 std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     ShaderPools& pools, const ComputePipelineCacheKey& key, Shader::Environment& env,
-    bool build_in_parallel, bool emulate_reduction, u32 workgroup_split) try {
+    bool build_in_parallel, bool emulate_reduction, u32 workgroup_split,
+    bool warp_per_lane) try {
     Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
     if (Settings::values.dump_guest_shaders) {
         env.Dump(key.Hash(), key.unique_hash);
@@ -2286,6 +2313,14 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
             compute_not_split.insert(key.Hash());
             return nullptr;
         }
+    }
+    if (warp_per_lane) {
+        if (!Shader::Optimization::WarpPerLanePass(program)) {
+            compute_not_per_lane.insert(key.Hash());
+            return nullptr;
+        }
+        LOG_WARNING(Render, "D3D12: warp_per_lane: compute shader {:016x} built with one atomic "
+                    "per lane", key.unique_hash);
     }
     std::vector<u32> code{EmitSPIRV(profile, program)};
     const bool dumped{IsDumpedShader(key.unique_hash)};

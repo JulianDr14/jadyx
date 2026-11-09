@@ -41,6 +41,11 @@ public:
     [[nodiscard]] Range Upload(std::span<const u32> words);
     /// Moves the range's buffer to INDIRECT_ARGUMENT once its copies are recorded.
     void Ready(const Range& range);
+    /// Waits for every copy into the range's buffer recorded so far (a round trip through
+    /// COMMON); the buffer stays in COPY_DEST. Diagnostics (indirect_sync).
+    void Settle(const Range& range);
+    /// Moves the range's buffer to COPY_SOURCE, so diagnostics can copy the records back.
+    void ForReadback(const Range& range);
 
 private:
     struct Chunk {

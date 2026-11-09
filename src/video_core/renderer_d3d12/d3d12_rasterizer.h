@@ -27,6 +27,7 @@
 #include "video_core/renderer_d3d12/d3d12_tess_emulation.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_draw_hunt.h"
+#include "video_core/renderer_d3d12/diagnostics/d3d12_glitch_hunt.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_material_trace.h"
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
@@ -40,6 +41,13 @@ namespace D3D12 {
 void SetMaterialGpuProbeEnabled(bool enabled);
 /// Draws recorded before the command list is submitted (512 by default), for A/B tests.
 void SetSubmitDraws(u32 draws);
+/// Diagnostic ("indirect_sync=1", runtime): GPU-indirect draws wait for every earlier write
+/// (global UAV barrier and a round trip of the argument record) before their arguments are
+/// copied and again before ExecuteIndirect.
+void SetIndirectSync(bool enabled);
+/// Diagnostic ("indirect_cpu=1", runtime): GPU-indirect draws read their arguments on the CPU
+/// and record direct draws, as emulated topologies do. Slow: ReadBlock waits for the GPU.
+void SetIndirectOnCpu(bool enabled);
 
 class AccelerateDMA final : public Tegra::Engines::AccelerateDMAInterface {
 public:
@@ -119,6 +127,9 @@ public:
     [[nodiscard]] DrawHunt& BottleneckHunt() noexcept {
         return draw_hunt;
     }
+    /// After each presented frame: the glitch hunt, its per-frame log line and the runtime
+    /// diagnostic toggles the in-game menu may have switched.
+    void DiagnosticsFrameEnd(double interval_ms);
     bool AccelerateConditionalRendering() override;
     bool AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface&,
                                const Tegra::Engines::Fermi2D::Surface&,
@@ -179,6 +190,39 @@ private:
     u64 full_capture_operation{};
     StagingBufferRef full_capture_staging{};
     StagingBufferRef& FullCaptureStaging();
+    /// What the glitch hunt records of a draw; filled along DrawRun, written when it returns.
+    struct GlitchNote {
+        bool active{};
+        bool configured{}; ///< the buffer cache holds this draw's bindings
+        u8 kind{};         ///< 0 draw, 1 indexed, 2 indirect, 3 indexed indirect, 4 vertex texture split
+        Hunt::Outcome outcome{Hunt::Outcome::Skipped};
+        const void* pipeline{};
+        u64 vs{};
+        u64 ps{};
+        const void* framebuffer{};
+        u32 lost_slots{};
+        bool emulated{};
+        bool rewritten{};
+        bool has_params{};
+        u32 count{};
+        u32 instances{};
+        u32 first{};
+        u32 base_vertex{};
+        u32 base_instance{};
+    };
+    void GlitchDraw(const GlitchNote& note);
+    /// The views a captured draw sampled and their descriptors, for its S lines.
+    std::vector<VideoCommon::ImageViewId> glitch_views;
+    std::vector<std::string> glitch_filters;
+    void GlitchTextures(u32 frame, u32 call);
+    /// Transform feedback of a recorded draw: buffer registers, host bindings, what the pass
+    /// left in each buffer and, for D3D12 stream output, the filled-size counters after it.
+    void GlitchTransformFeedback(u32 frame, u32 call, const GraphicsPipeline& pipeline);
+    /// The bindings of the draw or dispatch the buffer cache configured last.
+    void GlitchBindings(u32 frame, u32 call, const GlitchNote* draw, bool compute);
+    /// Glitch hunt v12: a dispatch's storage buffers to the capture's .bin, host and guest
+    /// before it, the written ones' host bytes after it.
+    void GlitchComputeDump(u32 frame, u32 call, bool after);
     struct DrawParams {
         u32 num_vertices;
         u32 num_instances;
@@ -383,6 +427,56 @@ private:
     AccelerateDMA accelerate_dma;
     FenceManager fence_manager;
     DrawHunt draw_hunt;
+    GlitchHunt glitch_hunt;
+    /// RecordDraw wraps the draw in GlitchHunt probe queries (set around it while capturing).
+    bool glitch_probe{};
+    /// Draws whose vertex slots a mid-draw command list restart left unbound, at the last frame.
+    u64 glitch_lost_vertex_draws{};
+    /// Glitch hunt: the pass being recorded (consecutive draws and clears into one framebuffer).
+    /// Its color targets are read back (V lines) once the guest's target registers change,
+    /// before the next draw records anything, and at the end of the frame.
+    struct GlitchPass {
+        const Framebuffer* framebuffer{};
+        SlotVector<Image>* images{};
+        std::array<ImageId, NUM_RT> ids{};
+        /// Held so a resource the cache frees meanwhile cannot be mistaken for a new one.
+        std::array<ComPtr<ID3D12Resource>, NUM_RT> resources{};
+        std::array<DXGI_FORMAT, NUM_RT> formats{};
+        std::array<u32, NUM_RT> subresources{};
+        u64 signature{};
+        u32 first_call{};
+        u32 last_call{};
+        u32 draws{};
+        u32 clears{};
+        bool active{};
+    };
+    GlitchPass glitch_pass;
+    /// Hash of the guest registers that choose the render targets.
+    [[nodiscard]] u64 GlitchTargetSignature() const;
+    /// A draw or clear recorded into framebuffer as call.
+    void GlitchPassNote(const Framebuffer* framebuffer, u32 call, bool clear);
+    /// Ends the pass when the target registers changed, or always when force is set.
+    void GlitchPassCheck(std::string_view why, bool force = false);
+    void GlitchPassEnd(std::string_view why);
+    /// Cache state of an indirect draw's argument range before Configure synchronizes it.
+    struct GlitchIndirect {
+        bool mapped{};
+        bool cpu_modified{};
+        bool gpu_modified{};
+    };
+    [[nodiscard]] GlitchIndirect GlitchIndirectBefore(const IndirectParams& params);
+    /// "A" line (guest view of the arguments) and "T" lines (the words ExecuteIndirect reads),
+    /// recorded right before the draw's argument copies.
+    void GlitchIndirectArgs(const IndirectParams& params, const GlitchIndirect& before,
+                            Buffer* buffer, u32 offset);
+    /// Guest words of the last indirect draw's arguments, for its v13 instance-range dumps.
+    std::vector<u32> glitch_args_words;
+    u32 glitch_args_call{~0u};
+    u32 glitch_args_stride{}; ///< in words
+    u32 glitch_args_count{};  ///< words per draw
+    /// Glitch hunt v13: host bytes an indirect draw's vertex stage reads (the streamed uniforms
+    /// and the GPU-written storage range its instances reach), to the capture's .bin.
+    void GlitchDrawDump(u32 call);
     bool logged_integer_clear{};
     bool logged_indexed_transform_feedback{};
     bool logged_draw_texture{};

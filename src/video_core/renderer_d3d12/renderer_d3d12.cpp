@@ -14,6 +14,7 @@
 #include "common/logging.h"
 #include "common/fs/path_util.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_local_memory_matrix.h"
+#include "video_core/renderer_d3d12/diagnostics/d3d12_wave_selftest.h"
 #include "common/settings.h"
 #ifdef _WIN32
 #include "common/windows/sampling_profiler.h"
@@ -146,6 +147,9 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& emu_window,
                 Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) /
                     fmt::format("local_memory_matrix_{}.jsonl", stamp));
         }
+    }
+    if (TakeWaveSelfTest()) {
+        RunWaveSelfTest(dev, shader_compiler);
     }
     blit_ready = CreateBlitPipeline();
     if (VideoCommon::FullCapture::TakeSelfTest()) rasterizer.RunFullCaptureSelfTest();

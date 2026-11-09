@@ -29,6 +29,9 @@ void SetUniformUploadCopy(bool enabled);
 /// Opt-in rebinding of a streamed uniform buffer whose bytes did not change within a submission,
 /// for subsequently created runtimes.
 void SetUniformReuse(bool enabled);
+/// Draws recorded since boot with an enabled vertex slot the command list did not hold (a list
+/// restarted inside the draw).
+[[nodiscard]] u64 LostVertexSlotDraws() noexcept;
 
 class Buffer : public VideoCommon::BufferBase {
 public:
@@ -59,6 +62,8 @@ public:
     /// only holds within the list that set it.
     void Transition(D3D12_RESOURCE_STATES next, bool mark_written = true);
     [[nodiscard]] D3D12_RESOURCE_STATES State() const noexcept { return state; }
+    /// State as the current command list sees it: COMMON when it was set in an earlier list.
+    [[nodiscard]] D3D12_RESOURCE_STATES CurrentState() const noexcept;
     /// Whether a binding of this draw or dispatch (Scheduler::Work) made it a UAV.
     [[nodiscard]] bool WrittenByWork(u64 work) const noexcept {
         return work != 0 && uav_work == work;
@@ -213,8 +218,29 @@ public:
     /// buffer the list already has is not set again.
     void ApplyGeometry(CommandStream* cmd);
 
-    /// A new command list starts without an index buffer.
-    void InvalidateGeometry() noexcept { applied_index.reset(); }
+    /// A new command list starts without an index buffer or vertex buffers.
+    void InvalidateGeometry() noexcept;
+
+    /// Vertex slots set on the command list being recorded (ApplyGeometry), for diagnostics.
+    [[nodiscard]] u32 AppliedVertexMask() const noexcept { return applied_vertex_mask; }
+    /// Where the guest-uniform path last put a stage's cbuf on the host, for diagnostics.
+    struct StreamedHost {
+        ID3D12Resource* resource{};
+        u64 offset{};
+        DAddr device_addr{};
+        u64 tick{};
+        u32 size{};
+    };
+    [[nodiscard]] const StreamedHost& LastStreamedHost(size_t stage, u32 index) const noexcept {
+        return streamed_hosts[stage][index];
+    }
+    /// The view ApplyGeometry last set for a vertex slot (zero when none), for diagnostics.
+    [[nodiscard]] const D3D12_VERTEX_BUFFER_VIEW& LastVertexView(u32 slot) const noexcept {
+        return last_vertex[slot];
+    }
+    /// The slots of `enabled` the draw about to be recorded would run without: neither set on this
+    /// list nor pending. Counted for LostVertexSlotDraws and logged; GPU thread only.
+    u32 CheckVertexSlots(u32 enabled);
 
     /// The index buffer ApplyGeometry set on the command list, if any.
     [[nodiscard]] const std::optional<D3D12_INDEX_BUFFER_VIEW>& AppliedIndex() const noexcept {
@@ -251,6 +277,8 @@ private:
         DAddr device_addr{};
         u64 tick{};
         D3D12_GPU_VIRTUAL_ADDRESS address{};
+        ID3D12Resource* resource{};
+        u64 offset{};
         u32 size{};
         u32 reach{};
         std::vector<u8> bytes;
@@ -259,8 +287,16 @@ private:
                VideoCommon::NUM_STAGES>
         streamed_uniforms;
     D3D12_GPU_VIRTUAL_ADDRESS last_uniform_address{};
+    ID3D12Resource* last_uniform_resource{};
+    u64 last_uniform_offset{};
+    std::array<std::array<StreamedHost, VideoCommon::NUM_GRAPHICS_UNIFORM_BUFFERS>,
+               VideoCommon::NUM_STAGES>
+        streamed_hosts{};
     bool uniform_reuse{};
     u32 pending_vertex_mask{};
+    u32 applied_vertex_mask{}; ///< slots the command list being recorded holds
+    u32 known_vertex_mask{};   ///< slots last_vertex holds a view for
+    std::array<D3D12_VERTEX_BUFFER_VIEW, VideoCommon::NUM_VERTEX_BUFFERS> last_vertex{};
     std::optional<u32> rewritten_count;
     std::optional<u32> index_restart;
     std::array<TransformFeedbackBinding, 4> transform_feedback{};

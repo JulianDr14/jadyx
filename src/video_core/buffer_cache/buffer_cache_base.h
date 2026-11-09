@@ -83,6 +83,8 @@ enum class ObtainBufferOperation : u32 {
 
 static constexpr BufferId NULL_BUFFER_ID{0};
 static constexpr u32 DEFAULT_SKIP_CACHE_SIZE = static_cast<u32>(4_KiB);
+/// Read-only compute inputs ReadbackTrace::ComputeFresh re-uploads, up to this size.
+static constexpr u32 COMPUTE_FRESH_CAP = static_cast<u32>(256_KiB);
 
 struct Binding {
     DAddr device_addr{};
@@ -246,6 +248,10 @@ public:
 
     void WriteMemory(DAddr device_addr, u64 size);
 
+    /// WriteMemory for a CPU write gathered after it hit GPU-written pages: records the GPU
+    /// bytes it takes for the glitch hunt.
+    void GatheredCpuWrite(DAddr device_addr, u64 size);
+
     void CachedWriteMemory(DAddr device_addr, u64 size);
 
     bool OnCPUWrite(DAddr device_addr, u64 size);
@@ -337,6 +343,20 @@ public:
 
     /// Return true when a CPU region is modified from the CPU
     [[nodiscard]] bool IsRegionCpuModified(DAddr addr, size_t size);
+
+    /// Diagnostics (D3D12 glitch hunt), with the mutex held: the current channel's bindings, null
+    /// before a channel is bound.
+    [[nodiscard]] const BufferCacheChannelInfo* DiagChannel() const noexcept {
+        return channel_state;
+    }
+    /// The buffer of a binding, null for the null buffer.
+    [[nodiscard]] Buffer* DiagBuffer(BufferId id) noexcept {
+        return id == NULL_BUFFER_ID ? nullptr : &slot_buffers[id];
+    }
+    /// Vertex streams the current draw state enables.
+    [[nodiscard]] u32 DiagVertexMask() const noexcept {
+        return enabled_vertex_buffers_mask;
+    }
 
     void SetDrawIndirect(
         const Tegra::Engines::Maxwell3D::DrawManager::IndirectParams* current_draw_indirect_) {

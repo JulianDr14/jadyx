@@ -119,4 +119,17 @@ void IndirectArgumentRing::Ready(const Range& range) {
     }
 }
 
+void IndirectArgumentRing::Settle(const Range& range) {
+    if (Chunk* const chunk = ChunkOf(range.buffer)) {
+        Transition(*chunk, D3D12_RESOURCE_STATE_COMMON);
+        Transition(*chunk, D3D12_RESOURCE_STATE_COPY_DEST);
+    }
+}
+
+void IndirectArgumentRing::ForReadback(const Range& range) {
+    if (Chunk* const chunk = ChunkOf(range.buffer)) {
+        Transition(*chunk, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    }
+}
+
 } // namespace D3D12

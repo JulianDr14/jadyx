@@ -135,6 +135,21 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size) {
 }
 
 template <class P>
+void BufferCache<P>::GatheredCpuWrite(DAddr device_addr, u64 size) {
+    if (ReadbackTrace::GpuLossRecording() && IsRegionGpuModified(device_addr, size)) {
+        {
+            const DAddr end = device_addr + size;
+            u64 gpu_bytes = 0;
+            gpu_modified_ranges.ForEachInRange(device_addr, size, [&](DAddr lower, DAddr upper) {
+                gpu_bytes += std::min<DAddr>(upper, end) - std::max<DAddr>(lower, device_addr);
+            });
+            ReadbackTrace::RecordGpuLoss(device_addr, size, gpu_bytes, false);
+        }
+    }
+    WriteMemory(device_addr, size);
+}
+
+template <class P>
 void BufferCache<P>::CachedWriteMemory(DAddr device_addr, u64 size) {
     const bool is_dirty = IsRegionRegistered(device_addr, size);
     if (!is_dirty) {
@@ -160,6 +175,13 @@ bool BufferCache<P>::OnCPUWrite(DAddr device_addr, u64 size) {
         return false;
     }
     if (memory_tracker.IsRegionGpuModified(device_addr, size)) {
+        // The tracker is per 4 KiB page. A write over none of the bytes the GPU wrote there needs
+        // no gathering: uploads skip the GPU ranges, so it is applied now and the next dispatch
+        // that reads it sees it.
+        if (ReadbackTrace::PreciseCpuWrites() && !IsRegionGpuModified(device_addr, size)) {
+            memory_tracker.MarkRegionAsCpuModified(device_addr, size);
+            return false;
+        }
         if (ReadbackTrace::WriteOriginsEnabled()) {
             const u64 origin = write_origins.GetValueAt(static_cast<s64>(device_addr));
             ReadbackTrace::LogWriteConflict("cpu write into gpu range", device_addr, size,
@@ -1335,6 +1357,9 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
             }
         }
 
+        if (ReadbackTrace::ComputeFresh() && has_host_buffer && size <= COMPUTE_FRESH_CAP) {
+            memory_tracker.MarkRegionAsCpuModified(binding.device_addr, size);
+        }
         SynchronizeBuffer(buffer, binding.device_addr, size);
 
         buffer.MarkUsage(offset, size);
@@ -1360,6 +1385,10 @@ void BufferCache<P>::BindHostComputeStorageBuffers() {
         Buffer& buffer = slot_buffers[binding.buffer_id];
         TouchBuffer(buffer, binding.buffer_id);
         const u32 size = binding.size;
+        if (ReadbackTrace::ComputeFresh() && !is_written && binding.buffer_id != NULL_BUFFER_ID &&
+            size <= COMPUTE_FRESH_CAP) {
+            memory_tracker.MarkRegionAsCpuModified(binding.device_addr, size);
+        }
         SynchronizeBuffer(buffer, binding.device_addr, size);
 
         const u32 offset = buffer.Offset(binding.device_addr);

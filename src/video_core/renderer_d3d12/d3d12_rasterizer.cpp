@@ -120,7 +120,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
       conditional_rendering{device, scheduler_, compiler, query_cache, buffer_cache},
       accelerate_dma{buffer_cache, texture_cache, draw_hunt},
       fence_manager{*this, gpu_, texture_cache, buffer_cache, query_cache, scheduler_},
-      draw_hunt{device, scheduler_} {
+      draw_hunt{device, scheduler_}, glitch_hunt{device, scheduler_, staging} {
     buffer_runtime.SetDescriptorQueue(&descriptor_queue);
     scheduler.RegisterOnReset([this] { InvalidateCommandListState(); });
     LOG_INFO(Render, "D3D12: rasterizer active (draws, clears, caches, DMA and pipelines)");
@@ -356,6 +356,9 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
 void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
                               std::optional<u32> vertex_texture_handle) {
     DrainCpuWrites();
+    if (glitch_hunt.Capturing()) [[unlikely]] {
+        GlitchPassCheck("switch");
+    }
     const bool full = VideoCommon::FullCapture::Active();
     if (full) {
         ++full_capture_operation;
@@ -375,10 +378,16 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
             "{{\"op\":{},\"recorded\":{}}}", full_operation, full_draw_recorded));
     };
     HuntScope hunt{draw_hunt, is_indexed ? Hunt::Kind::DrawIndexed : Hunt::Kind::Draw};
+    GlitchNote glitch{.active = glitch_hunt.Capturing(),
+                      .kind = static_cast<u8>((draw_hunt.cpu_indirect ? 2 : 0) + (is_indexed ? 1 : 0))};
+    SCOPE_EXIT {
+        if (glitch.active) [[unlikely]] GlitchDraw(glitch);
+    };
     if (conditional_rendering.SkipsDraws()) {
         if (full) VideoCommon::FullCapture::Event("draw_conditional_skip");
         ++zpass_diag.conditional;
         hunt.Outcome(Hunt::Outcome::Conditional);
+        glitch.outcome = Hunt::Outcome::Conditional;
         return;
     }
     DrawMetrics::ScopedDrawTimer draw_timer;
@@ -393,6 +402,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
         if (full) VideoCommon::FullCapture::Event("draw_culled");
         ++zpass_diag.culled;
         hunt.Outcome(Hunt::Outcome::Culled);
+        glitch.outcome = Hunt::Outcome::Culled;
         if (trace_draws) {
             TraceDraw("draw skipped (both faces culled)", nullptr, nullptr, {}, 0, 0);
         }
@@ -407,13 +417,18 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
         if (full) VideoCommon::FullCapture::Event("draw_no_pipeline");
         ++zpass_diag.no_pipeline;
         hunt.Outcome(Hunt::Outcome::NoPipeline);
+        glitch.outcome = Hunt::Outcome::NoPipeline;
         if (trace_draws) {
             TraceDraw("draw skipped (no pipeline)", nullptr, nullptr, {}, 0, 0);
         }
         return;
     }
     hunt.Shaders(pipeline->Key().unique_hashes[1], pipeline->Key().unique_hashes[5]);
+    glitch.pipeline = pipeline;
+    glitch.vs = pipeline->Key().unique_hashes[1];
+    glitch.ps = pipeline->Key().unique_hashes[5];
     if (pipeline->GetVertexTextureHandle() && !vertex_texture_handle) [[unlikely]] {
+        glitch.outcome = Hunt::Outcome::Expanded;
         DrawVertexTextureRuns(*pipeline, is_indexed, instance_count);
         return;
     }
@@ -431,10 +446,13 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
     std::vector<TracedBuffer> traced_buffers;
     FullCaptureViews full_views;
     if (full) bindings.trace_all_views = &full_views;
-    if (trace_this_draw) {
+    if (trace_this_draw || glitch.active) {
+        // Glitch hunt: the sampled views and their descriptors go on S lines (GlitchDraw).
         bindings.trace_views = &traced_views;
         bindings.trace_filters = &traced_filters;
         bindings.trace_types = &traced_types;
+    }
+    if (trace_this_draw) {
         if (trace_dumps || material_trace.Active()) {
             buffer_runtime.SetTraceBuffers(&traced_buffers);
         }
@@ -479,6 +497,12 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
         }
     }
     buffer_runtime.SetTraceBuffers(nullptr);
+    if (glitch.active) [[unlikely]] {
+        glitch_views = traced_views;
+        glitch_filters = traced_filters;
+    }
+    glitch.configured = true;
+    glitch.pipeline = pipeline;
     if (!pipeline->IsBuilt()) [[unlikely]] {
         const auto& draw = maxwell3d->draw_manager.draw_state;
         if (!WaitPendingPipeline(pipeline,
@@ -486,6 +510,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
                                  instance_count, is_indexed)) {
             ++zpass_diag.pending;
             hunt.Outcome(Hunt::Outcome::NoPipeline);
+            glitch.outcome = Hunt::Outcome::NoPipeline;
             if (trace_this_draw) {
                 TraceDraw("draw skipped (pipeline building)", pipeline, nullptr, traced_views, 0,
                           0);
@@ -499,6 +524,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
                       pipeline->Key().unique_hashes[1], pipeline->Key().unique_hashes[5]);
         ++zpass_diag.rejected;
         hunt.Outcome(Hunt::Outcome::PsoRejected);
+        glitch.outcome = Hunt::Outcome::PsoRejected;
         if (trace_this_draw) {
             TraceDraw("draw skipped (PSO rejected)", pipeline, nullptr, traced_views, 0, 0);
         }
@@ -507,6 +533,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
     if (UsesSkippedShader(pipeline->Key().unique_hashes)) [[unlikely]] {
         ++zpass_diag.skipped_shader;
         hunt.Outcome(Hunt::Outcome::SkippedShader);
+        glitch.outcome = Hunt::Outcome::SkippedShader;
         return; // skip_shader
     }
     VideoCore::Perf::ScopedNsTimer record_timer{VideoCore::Perf::Counter::DrawRecordNs};
@@ -514,6 +541,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
     framebuffer->PrepareAttachments(scheduler, bindings.depth_sampled,
                                     pipeline->BoundColorTargets());
     hunt.Target(framebuffer);
+    glitch.framebuffer = framebuffer;
 
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     DrawParams params{
@@ -543,9 +571,18 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
         params.runtime_first_vertex = params.base_vertex;
         params.is_indexed = true;
     }
+    glitch.has_params = true;
+    glitch.emulated = emulated_topology;
+    glitch.rewritten = buffer_runtime.RewrittenIndexCount().has_value();
+    glitch.count = params.num_vertices;
+    glitch.instances = params.num_instances;
+    glitch.first = params.first_index;
+    glitch.base_vertex = params.base_vertex;
+    glitch.base_instance = params.base_instance;
     if (params.num_vertices == 0 || params.num_instances == 0) {
         ++zpass_diag.empty;
         hunt.Outcome(Hunt::Outcome::Empty);
+        glitch.outcome = Hunt::Outcome::Empty;
         buffer_runtime.ApplyGeometry(scheduler.CommandList());
         if (trace_this_draw) {
             TraceDraw("draw skipped (empty)", pipeline, framebuffer, traced_views,
@@ -570,7 +607,16 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
         CaptureFullBuffers(traced_buffers, false);
         CaptureFullImages(full_views, framebuffer, false);
     }
+    glitch.lost_slots = buffer_runtime.CheckVertexSlots(buffer_cache.DiagVertexMask());
+    glitch_probe = glitch.active;
     RecordDraw(*pipeline, bindings, *framebuffer, params, draw_state.topology);
+    glitch_probe = false;
+    glitch.outcome = Hunt::Outcome::Recorded;
+    if (glitch.active) [[unlikely]] {
+        // Under the cache lock and before the work ends: the bindings are still this draw's.
+        GlitchDraw(glitch);
+        glitch.active = false;
+    }
     full_draw_recorded = true;
     if (GetAsyncPipelines() == AsyncPipelines::Balanced) {
         MarkTargetsDrawn(*framebuffer);
@@ -650,6 +696,18 @@ void RasterizerD3D12::RecordDraw(GraphicsPipeline& pipeline,
     } else {
         query_runtime.PrepareDraw(maxwell3d->regs.zpass_pixel_count_enable);
         const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
+        // Glitch hunt: the queries the guest's own counters leave free, around this draw only.
+        // When the guest counts samples, its own slot is isolated around this draw instead.
+        const std::optional<QueryCacheRuntime::IsolatedSlot> guest_samples =
+            glitch_probe && maxwell3d->regs.zpass_pixel_count_enable != 0
+                ? query_runtime.IsolateOcclusion()
+                : std::nullopt;
+        const std::optional<GlitchHunt::Probe> probe =
+            glitch_probe ? glitch_hunt.BeginProbe(maxwell3d->regs.zpass_pixel_count_enable == 0,
+                                                  !query_runtime.CountsPrimitives(),
+                                                  guest_samples ? guest_samples->heap : nullptr,
+                                                  guest_samples ? guest_samples->index : 0)
+                         : std::nullopt;
         DrawStencilFaces(pipeline, topology, [&] {
             if (params.is_indexed) {
                 cmd->DrawIndexedInstanced(params.num_vertices, params.num_instances,
@@ -661,6 +719,13 @@ void RasterizerD3D12::RecordDraw(GraphicsPipeline& pipeline,
                                    params.base_instance);
             }
         });
+        if (guest_samples) [[unlikely]] {
+            query_runtime.EndIsolatedOcclusion();
+        }
+        if (probe) [[unlikely]] {
+            // GlitchDraw takes this call number right after the record.
+            glitch_hunt.EndProbe(glitch_hunt.PeekCall(), *probe);
+        }
     }
     texture_runtime.FinishCompatibleDrawTargets(framebuffer);
 }
@@ -830,6 +895,17 @@ void RasterizerD3D12::DispatchCompute() {
     const auto& qmd = kepler_compute->launch_description;
     const PipelineLayout& layout = pipeline->Layout();
     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
+    std::optional<u32> glitch_call;
+    if (glitch_hunt.Capturing()) [[unlikely]] {
+        const u32 call = glitch_hunt.NextCall();
+        glitch_call = call;
+        glitch_hunt.Line(fmt::format("C f={} n={} cs={:016x} groups={}x{}x{} block={}x{}x{}",
+                                     glitch_hunt.Frame(), call, pipeline->UniqueHash(), dim[0],
+                                     dim[1], dim[2], qmd.block_dim_x, qmd.block_dim_y,
+                                     qmd.block_dim_z));
+        GlitchBindings(glitch_hunt.Frame(), call, nullptr, true);
+        GlitchComputeDump(glitch_hunt.Frame(), call, false);
+    }
     if (dump_inputs) {
         DumpComputeInputs(scheduler, staging, full_buffers, pipeline->UniqueHash(),
                           dispatch_count, dim, false);
@@ -866,6 +942,9 @@ void RasterizerD3D12::DispatchCompute() {
     }
     bool dispatched = false;
     SCOPE_EXIT {
+        if (glitch_call && dispatched && glitch_hunt.Capturing()) [[unlikely]] {
+            GlitchComputeDump(glitch_hunt.Frame(), *glitch_call, true);
+        }
         if (dump_inputs && dispatched) {
             DumpComputeInputs(scheduler, staging, full_buffers, pipeline->UniqueHash(),
                               dispatch_count, dim, true);
@@ -1359,16 +1438,36 @@ bool RasterizerD3D12::OnCPUWrite(PAddr address, u64 size) {
 }
 
 void RasterizerD3D12::OnCacheInvalidation(PAddr address, u64 size) {
-    InvalidateRegion(address, size, VideoCommon::CacheType::TextureCache |
-                                        VideoCommon::CacheType::BufferCache);
+    if (!address || !size) return;
+    {
+        std::scoped_lock lock{texture_cache.mutex};
+        texture_cache.WriteMemory(address, size);
+    }
+    {
+        std::scoped_lock lock{buffer_cache.mutex};
+        buffer_cache.GatheredCpuWrite(address, size);
+    }
 }
 void RasterizerD3D12::InvalidateGPUCache() {
+    const bool capturing = glitch_hunt.Capturing();
+    if (capturing != VideoCommon::ReadbackTrace::GpuLossRecording()) {
+        VideoCommon::ReadbackTrace::SetGpuLossRecording(capturing);
+    }
     DrainCpuWrites();
     for (const auto& [address, size] : cpu_writes_after_gpu) {
         OnCacheInvalidation(address, size);
     }
     cpu_writes_after_gpu.clear();
     gpu.InvalidateGPUCache();
+    if (capturing) {
+        // "W": gathered CPU writes over GPU-written bytes, before the call they precede.
+        for (const auto& loss : VideoCommon::ReadbackTrace::TakeGpuLosses()) {
+            glitch_hunt.Line(fmt::format("W f={} n={} a={:x} len={} gpu={}{}",
+                                         glitch_hunt.Frame(), glitch_hunt.PeekCall(),
+                                         loss.address, loss.size, loss.gpu_bytes,
+                                         loss.kept ? " kept" : ""));
+        }
+    }
 }
 void RasterizerD3D12::UnmapMemory(DAddr address, u64 size) {
     { std::scoped_lock lock{texture_cache.mutex}; texture_cache.UnmapMemory(address, size); }

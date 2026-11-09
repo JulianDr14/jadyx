@@ -43,6 +43,7 @@ void RendererD3D12::RecordPacing(double wait_ms, double present_ms) {
         pacing.max_present_ms = std::max(pacing.max_present_ms, present_ms);
         ReportPerf(interval);
         rasterizer.BottleneckHunt().FrameEnd(interval);
+        rasterizer.DiagnosticsFrameEnd(interval);
     } else {
         perf_frame = VideoCore::Perf::Read();
         perf_window = perf_frame;

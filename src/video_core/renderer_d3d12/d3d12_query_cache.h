@@ -4,6 +4,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <span>
 
 #include "video_core/query_cache/query_cache_base.h"
@@ -69,6 +70,19 @@ public:
     /// Ends every running counter (before internal draws, and before each submission); the next
     /// guest draw starts them again.
     void PauseCounters();
+    /// Whether the guest's primitives counter (a pipeline statistics query) runs at draws.
+    [[nodiscard]] bool CountsPrimitives() const noexcept;
+
+    /// Glitch hunt: a slot of the guest's running occlusion counter that holds one draw only.
+    struct IsolatedSlot {
+        ID3D12QueryHeap* heap;
+        u32 index;
+    };
+    /// Ends the running occlusion slot and begins a new one for the next draw alone; the guest's
+    /// sums are unchanged (they add every slot). nullopt when occlusion is not running.
+    std::optional<IsolatedSlot> IsolateOcclusion();
+    /// Ends that slot; the next draw starts another. Its result can be resolved right after.
+    void EndIsolatedOcclusion();
 
     // VideoCommon::QueryCacheBase interface.
     VideoCommon::StreamerInterface* GetStreamerInterface(VideoCommon::QueryType type);

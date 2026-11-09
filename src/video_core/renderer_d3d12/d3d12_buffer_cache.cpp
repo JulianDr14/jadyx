@@ -26,6 +26,7 @@ namespace D3D12 {
 namespace {
 std::atomic_bool uniform_upload_copy_enabled{};
 std::atomic_bool uniform_reuse_enabled{};
+std::atomic<u64> lost_vertex_slot_draws{};
 // Buffer::Transition logs the first upload into a buffer between a work's bindings, and Copy the
 // first one it returns to UAV. The GPU thread alone records bindings.
 bool logged_upload_into_uav{};
@@ -36,6 +37,30 @@ void SetUniformUploadCopy(bool enabled) {
 }
 void SetUniformReuse(bool enabled) {
     uniform_reuse_enabled.store(enabled, std::memory_order_relaxed);
+}
+u64 LostVertexSlotDraws() noexcept {
+    return lost_vertex_slot_draws.load(std::memory_order_relaxed);
+}
+
+u32 BufferCacheRuntime::CheckVertexSlots(u32 enabled) {
+    const u32 missing = enabled & ~(applied_vertex_mask | pending_vertex_mask);
+    if (missing == 0) [[likely]] {
+        return 0;
+    }
+    const u64 count = lost_vertex_slot_draws.fetch_add(1, std::memory_order_relaxed) + 1;
+    // Powers of two: the first ones and then a trickle, never a flood.
+    if ((count & (count - 1)) == 0) {
+        LOG_WARNING(Render,
+                    "D3D12 glitch: draw #{} would run without vertex slots {:#x} (enabled {:#x}, "
+                    "on list {:#x}, known {:#x}): its command list started inside the draw",
+                    count, missing, enabled, applied_vertex_mask, known_vertex_mask);
+    }
+    return missing;
+}
+
+void BufferCacheRuntime::InvalidateGeometry() noexcept {
+    applied_index.reset();
+    applied_vertex_mask = 0;
 }
 
 
@@ -175,6 +200,11 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
         charge = std::move(other.charge);
     }
     return *this;
+}
+
+D3D12_RESOURCE_STATES Buffer::CurrentState() const noexcept {
+    return scheduler && state_tick == scheduler->CurrentTick() ? state
+                                                               : D3D12_RESOURCE_STATE_COMMON;
 }
 
 void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
@@ -581,6 +611,8 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, ID3D12Resource* buffer, u32
         .StrideInBytes = stride,
     };
     pending_vertex_mask |= 1u << index;
+    last_vertex[index] = pending_vertex[index];
+    known_vertex_mask |= 1u << index;
 }
 
 void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bindings) {
@@ -602,6 +634,7 @@ void BufferCacheRuntime::ApplyGeometry(CommandStream* cmd) {
         cmd->IASetIndexBuffer(&*pending_index);
         applied_index = pending_index;
     }
+    applied_vertex_mask |= pending_vertex_mask;
     // One call per run of consecutive slots (usually a single run from slot 0).
     for (u32 mask = pending_vertex_mask; mask != 0;) {
         const u32 first = static_cast<u32>(std::countr_zero(mask));
@@ -631,7 +664,8 @@ std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t, u32, u32 size)
     const UniformUpload upload = uniform_stream.Request(reach, scheduler.CurrentTick(),
         [this](size_t bytes) {
             const auto ref = staging.Request(bytes, MemoryUsage::Upload);
-            return UniformUpload{ref.mapped_span, ref.buffer->GetGPUVirtualAddress() + ref.offset};
+            return UniformUpload{ref.mapped_span, ref.buffer->GetGPUVirtualAddress() + ref.offset,
+                                 ref.buffer, ref.offset};
         });
     if (trace_buffers) {
         trace_buffers->push_back({.kind = TracedBuffer::Kind::StreamedUniform,
@@ -645,13 +679,16 @@ std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t, u32, u32 size)
         std::memset(upload.mapped.data() + size, 0, reach - size);
     }
     last_uniform_address = upload.address;
+    last_uniform_resource = static_cast<ID3D12Resource*>(upload.resource);
+    last_uniform_offset = upload.offset;
     return upload.mapped.first(size);
 }
 
 bool BufferCacheRuntime::BindGuestUniformBuffer(size_t stage, u32 index, DAddr device_addr,
                                                 u32 size) {
     // Traced uniforms keep their own copy per draw.
-    if (!uniform_reuse || trace_buffers || size == 0) {
+    // Read live: the glitch hunt page turns it off while the game runs.
+    if (!uniform_reuse_enabled.load(std::memory_order_relaxed) || trace_buffers || size == 0) {
         return false;
     }
     // Compared in place: a buffer split across separately mapped pages takes the copying path.
@@ -670,6 +707,8 @@ bool BufferCacheRuntime::BindGuestUniformBuffer(size_t stage, u32 index, DAddr d
         if (descriptor_queue) {
             descriptor_queue->AddConstantBuffer(streamed.address, size);
         }
+        streamed_hosts[stage][index] = {streamed.resource, streamed.offset, device_addr,
+                                        streamed.tick, size};
         return true;
     }
     // Guest memory is read once: into the cached copy, then from it to the stream.
@@ -684,8 +723,12 @@ bool BufferCacheRuntime::BindGuestUniformBuffer(size_t stage, u32 index, DAddr d
     streamed.device_addr = device_addr;
     streamed.tick = scheduler.CurrentTick();
     streamed.address = last_uniform_address;
+    streamed.resource = last_uniform_resource;
+    streamed.offset = last_uniform_offset;
     streamed.size = size;
     streamed.reach = reach;
+    streamed_hosts[stage][index] = {streamed.resource, streamed.offset, device_addr,
+                                    streamed.tick, size};
     return true;
 }
 
