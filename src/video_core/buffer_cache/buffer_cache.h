@@ -14,6 +14,7 @@
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/guest_memory.h"
+#include "video_core/write_watch.h"
 #include "video_core/gpu_written_pages.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/perf_counters.h"
@@ -293,6 +294,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     if (!cpu_src_address || !cpu_dest_address) {
         return false;
     }
+    WriteWatch::Note(WriteWatch::Kind::DmaCopy, *cpu_dest_address, amount);
     const bool source_dirty = IsRegionRegistered(*cpu_src_address, amount);
     const bool dest_dirty = IsRegionRegistered(*cpu_dest_address, amount);
     if (!source_dirty && !dest_dirty) {
@@ -359,6 +361,7 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
     if (!cpu_dst_address) {
         return false;
     }
+    WriteWatch::Note(WriteWatch::Kind::DmaClear, *cpu_dst_address, amount);
     const bool dest_dirty = IsRegionRegistered(*cpu_dst_address, amount);
     if (!dest_dirty) {
         return false;
@@ -1685,6 +1688,7 @@ void BufferCache<P>::UpdateComputeTextureBuffers() {
 template <class P>
 void BufferCache<P>::MarkWrittenBuffer(ReadbackTrace::WriteOrigin origin, BufferId buffer_id,
                                        DAddr device_addr, u32 size, bool needs_sync) {
+    WriteWatch::Note(WriteWatch::Kind::GpuWrite, device_addr, size);
     NoteWriteOrigin(origin, device_addr, size);
     if constexpr (!IS_OPENGL) {
         if (needs_sync) {
@@ -2020,6 +2024,7 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
 template <class P>
 bool BufferCache<P>::InlineMemory(DAddr dest_address, size_t copy_size,
                                   std::span<const u8> inlined_buffer) {
+    WriteWatch::Note(WriteWatch::Kind::Inline, dest_address, copy_size);
     const bool is_dirty = IsRegionRegistered(dest_address, copy_size);
     if (!is_dirty) {
         return false;
@@ -2123,6 +2128,7 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
         for (const BufferCopy& copy : copies) {
             buffer.ImmediateDownload(copy.src_offset, immediate_buffer.subspan(0, copy.size));
             const DAddr copy_device_addr = buffer.CpuAddr() + copy.src_offset;
+            WriteWatch::Note(WriteWatch::Kind::Download, copy_device_addr, copy.size);
             device_memory.WriteBlockUnsafe(copy_device_addr, immediate_buffer.data(), copy.size);
             ReadbackTrace::Log("buffer immediate", copy_device_addr, copy.size,
                                immediate_buffer.first(copy.size));

@@ -31,6 +31,7 @@
 #include "video_core/renderer_d3d12/d3d12_draw_metrics.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_tracking.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
+#include "video_core/write_watch.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_compute_inputs.h"
 
@@ -127,6 +128,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
 }
 
 RasterizerD3D12::~RasterizerD3D12() {
+    VideoCommon::WriteWatch::Stop();
     // Renderer drains the scheduler before destroying caches/staging. Export completed work
     // on a normal shutdown too; a removed device must never make destruction throw.
     try {
@@ -896,6 +898,18 @@ void RasterizerD3D12::DispatchCompute() {
     const PipelineLayout& layout = pipeline->Layout();
     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
     std::optional<u32> glitch_call;
+    // Write watch: the culling shader whose LOD limits hold different values per frame parity.
+    if (VideoCommon::WriteWatch::Enabled() && pipeline->UniqueHash() == 0xc5cccf7a103e5734ULL)
+        [[unlikely]] {
+        if (const auto* const watch_channel = buffer_cache.DiagChannel()) {
+            const auto& watched = watch_channel->compute_storage_buffers[1];
+            VideoCommon::WriteWatch::OnDispatch(
+                [this](u64 address, std::span<u8> out) {
+                    device_memory.ReadBlockUnsafe(address, out.data(), out.size());
+                },
+                watched.device_addr, watched.size);
+        }
+    }
     if (glitch_hunt.Capturing()) [[unlikely]] {
         const u32 call = glitch_hunt.NextCall();
         glitch_call = call;
