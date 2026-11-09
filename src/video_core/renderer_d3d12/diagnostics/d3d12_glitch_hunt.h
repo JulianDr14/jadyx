@@ -7,6 +7,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include "common/common_types.h"
@@ -83,6 +84,10 @@ public:
     /// Appends guest bytes to the .bin file now, with a "Y" line like Dump's.
     void DumpGuest(u32 call_index, std::string_view role, std::span<const u8> guest,
                    std::string_view extra);
+    /// True the first time key is seen in this capture: for what only needs saving once.
+    [[nodiscard]] bool FirstInCapture(u64 key) {
+        return seen_in_capture.insert(key).second;
+    }
     /// Bytes Dump may still reserve this frame (it keeps room for the compares).
     [[nodiscard]] u64 DumpRoom() const noexcept;
 
@@ -164,6 +169,7 @@ private:
     std::string path;
     std::string bin_path;
     u64 bin_size{};
+    std::unordered_set<u64> seen_in_capture;
     u64 dump_used{}; ///< Dump bytes reserved this frame
     u64 targets_read{};
     /// Readbacks of the frame being recorded, then of the frames waiting for the GPU.

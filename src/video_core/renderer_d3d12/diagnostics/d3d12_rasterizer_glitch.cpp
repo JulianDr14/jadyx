@@ -42,7 +42,11 @@ constexpr u64 BINDING_CAP = 1ULL << 20;
 /// Read-only compute storage buffers up to this size are compared with guest memory (v11).
 constexpr u64 COMPUTE_COMPARE_CAP = 256ULL << 10;
 /// Compute storage bindings dumped whole around a dispatch up to this size (v12).
-constexpr u64 COMPUTE_DUMP_CAP = 5ULL << 20;
+constexpr u64 COMPUTE_DUMP_CAP = 1ULL << 20;
+/// Read-only inputs above that cap, saved once per capture for a replay.
+constexpr u64 COMPUTE_FULL_DUMP_CAP = 32ULL << 20;
+/// v17: compute dumps only in the first frames; two of each parity are enough to diff.
+constexpr u32 COMPUTE_DUMP_FRAMES = 6;
 /// Indices read to find the vertex range an indexed draw touches.
 constexpr u64 INDEX_CAP = 4ULL << 20;
 /// Vertex bytes compared when the range is unknown (indirect draws, zero stride).
@@ -52,8 +56,9 @@ constexpr u64 INSPECT_CAP = 64ULL << 10;
 /// v13 draw dumps: streamed uniforms up to this size, storage ranges cut at this size.
 constexpr u32 DRAW_DUMP_UNIFORM_CAP = 4096;
 constexpr u64 DRAW_DUMP_STORAGE_CAP = 16ULL << 10;
-/// v13 spends the dump budget on draws only.
-constexpr bool DRAW_DUMPS_ONLY = true;
+/// v13 spent the dump budget on draws only; v17 dumps the culling dispatch's lists again to find
+/// what the guest's CPU-written instance list changes on alternate frames.
+constexpr bool DRAW_DUMPS_ONLY = false;
 constexpr u32 NUM_XFB_BUFFERS = Tegra::Engines::Maxwell3D::Regs::NumTransformFeedbackBuffers;
 
 constexpr std::array OUTCOME_NAMES{"recorded", "skipped",  "conditional", "culled",   "no_pipeline",
@@ -360,10 +365,32 @@ void RasterizerD3D12::GlitchDrawDump(u32 call) {
 void RasterizerD3D12::GlitchComputeDump(u32 frame, u32 call, bool after) {
     const VideoCommon::BufferCacheChannelInfo* const channel = buffer_cache.DiagChannel();
     // v13: the culling dispatches were ruled out in v12; the budget goes to the draws.
-    if (!channel || glitch_hunt.DumpRoom() == 0 || DRAW_DUMPS_ONLY) {
+    if (!channel || glitch_hunt.DumpRoom() == 0 || DRAW_DUMPS_ONLY ||
+        frame >= COMPUTE_DUMP_FRAMES) {
         return;
     }
     std::vector<u8> guest;
+    if (!after) {
+        // v18: the constants too, so a dispatch can be replayed off the console.
+        for (u32 index = 0; index < VideoCommon::NUM_COMPUTE_UNIFORM_BUFFERS; ++index) {
+            if (((channel->enabled_compute_uniform_buffer_mask >> index) & 1) == 0) {
+                continue;
+            }
+            const auto& ccb = channel->compute_uniform_buffers[index];
+            const u32 shader_size = channel->compute_uniform_buffer_sizes
+                                        ? (*channel->compute_uniform_buffer_sizes)[index]
+                                        : 0;
+            const u64 size = std::min<u64>(shader_size, ccb.size) & ~u64{3};
+            if (ccb.device_addr == 0 || size == 0) {
+                continue;
+            }
+            guest.resize(size);
+            device_memory.ReadBlockUnsafe(ccb.device_addr, guest.data(), size);
+            glitch_hunt.DumpGuest(call, fmt::format("ccb{}", index), guest,
+                                  fmt::format("ph=pre a={:x} ssize={}", ccb.device_addr,
+                                              shader_size));
+        }
+    }
     for (u32 index = 0; index < VideoCommon::NUM_STORAGE_BUFFERS; ++index) {
         if (((channel->enabled_compute_storage_buffers >> index) & 1) == 0) {
             continue;
@@ -379,6 +406,16 @@ void RasterizerD3D12::GlitchComputeDump(u32 frame, u32 call, bool after) {
             continue;
         }
         const std::string role = fmt::format("csb{}", index);
+        if (!after && !written && csb.size > COMPUTE_DUMP_CAP) {
+            // v19: a replay needs all of a read-only input. Guest bytes only: nothing writes it.
+            guest.resize(std::min<u64>(csb.size, COMPUTE_FULL_DUMP_CAP) & ~u64{3});
+            device_memory.ReadBlockUnsafe(csb.device_addr, guest.data(), guest.size());
+            if (glitch_hunt.FirstInCapture(Common::CityHash64(
+                    reinterpret_cast<const char*>(guest.data()), guest.size()))) {
+                glitch_hunt.DumpGuest(call, role + "_full", guest,
+                                      fmt::format("ph=pre a={:x}", csb.device_addr));
+            }
+        }
         const std::string extra = fmt::format("ph={} a={:x} buf={:x}+{:x} w={} gm={}",
                                               after ? "post" : "pre", csb.device_addr,
                                               buffer->Id(), buffer->Offset(csb.device_addr),

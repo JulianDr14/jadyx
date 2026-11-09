@@ -170,6 +170,7 @@ void GlitchHunt::Begin() {
     path = (dir / fmt::format("glitch_{}.txt", stamp)).string();
     bin_path = (dir / fmt::format("glitch_{}.bin", stamp)).string();
     bin_size = 0;
+    seen_in_capture.clear();
     dump_used = 0;
     ++captures;
     frame = 0;
@@ -182,9 +183,9 @@ void GlitchHunt::Begin() {
     skipped_budget = 0;
     compared.clear();
     text.clear();
-    Line(fmt::format("# jadyx glitch hunt v16, capture {}, {} frames", captures, frames_left));
+    Line(fmt::format("# jadyx glitch hunt v20, capture {}, {} frames", captures, frames_left));
     Line("# D=draw C=dispatch B=binding M=host differs from guest H=GPU-written bytes "
-         "X=transform feedback buffer T=GPU words (r=so counters, args, count, ring=ExecuteIndirect records) P=what a draw rasterized W=CPU write over GPU-written buffer bytes S=sampled texture G=depth/stencil state K=clear V=render target after a pass A=indirect draw arguments D=host bytes in the .bin (Y=guest bytes) "
+         "X=transform feedback buffer T=GPU words (r=so counters, args, count, ring=ExecuteIndirect records) P=what a draw rasterized W=CPU write over GPU-written buffer bytes O=buffer download over a CPU write not gathered yet S=sampled texture G=depth/stencil state K=clear V=render target after a pass A=indirect draw arguments D=host bytes in the .bin (Y=guest bytes) "
          "F=frame end R=compare totals");
     LOG_INFO(Render, "D3D12 glitch hunt: capturing {} frames into {}", frames_left, path);
 }

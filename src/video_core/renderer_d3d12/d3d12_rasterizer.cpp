@@ -905,6 +905,30 @@ void RasterizerD3D12::DispatchCompute() {
                                      qmd.block_dim_z));
         GlitchBindings(glitch_hunt.Frame(), call, nullptr, true);
         GlitchComputeDump(glitch_hunt.Frame(), call, false);
+        // v18: what a replay needs besides the buffers: push constants, root layout, the split,
+        // the storage buffer descriptors and, once per capture, the DXIL.
+        const auto& info = pipeline->Info();
+        std::string storage;
+        for (const auto& desc : info.storage_buffers_descriptors) {
+            storage += fmt::format("{}:{}:{}:{},", desc.cbuf_index, desc.cbuf_offset, desc.count,
+                                   desc.is_written ? 1 : 0);
+        }
+        std::string push;
+        for (const u32 word : bindings.push_constants) {
+            push += fmt::format("{:x},", word);
+        }
+        glitch_hunt.Line(fmt::format(
+            "R f={} n={} cs={:016x} split={} rtw={} rti={} sti={} isi={} nres={} nsmp={} "
+            "pci={} rdi={} ssbo={} pc={}",
+            glitch_hunt.Frame(), call, pipeline->UniqueHash(), pipeline->WorkgroupSplit(),
+            layout.RuntimeDataWords(), layout.ResourceTableIndex(), layout.SamplerTableIndex(),
+            layout.IntegerSamplerIndex(), layout.NumResourceDescriptors(),
+            layout.NumSamplerDescriptors(), PipelineLayout::PUSH_CONSTANTS_INDEX,
+            PipelineLayout::RUNTIME_DATA_INDEX, storage, push));
+        if (glitch_hunt.FirstInCapture(pipeline->UniqueHash())) {
+            glitch_hunt.DumpGuest(call, "dxil", pipeline->DiagnosticDxil(),
+                                  fmt::format("cs={:016x}", pipeline->UniqueHash()));
+        }
     }
     if (dump_inputs) {
         DumpComputeInputs(scheduler, staging, full_buffers, pipeline->UniqueHash(),
