@@ -159,6 +159,31 @@ struct BootConfig {
     /// Controller bottleneck capture ("hunt=1"): LocalState/jadyx/log/jadyx_hunt.txt, read by
     /// tools/xbox/hunt-report.py. Shown only in diagnostic packages (package-appx.ps1 -Hunt).
     bool hunt_menu{};
+    /// Geometry glitch hunt page in the in-game menu ("glitch_hunt_menu=1"): a capture of what
+    /// every draw read, for tools/xbox/glitch-report.py, and live A/B renderer switches.
+    bool glitch_hunt_menu{};
+    /// Frames one glitch capture takes ("glitch_frames=N", 1-240; 0 = 20).
+    u32 glitch_frames{};
+    /// Diagnostic ("indirect_sync=1", also on the glitch hunt page): GPU-indirect draws wait for
+    /// every earlier write before their arguments are copied and again before they run.
+    bool indirect_sync{};
+    /// Diagnostic ("indirect_cpu=1", also on the glitch hunt page): GPU-indirect draws read their
+    /// arguments on the CPU and record direct draws, as emulated topologies do. Slow.
+    bool indirect_cpu{};
+    /// On by default ("precise_writes=0" or the glitch hunt page turns it off): CPU writes into a
+    /// GPU-written page but over none of its GPU bytes apply at once instead of being gathered.
+    bool precise_writes{true};
+    /// Diagnostic ("compute_fresh=1", also on the glitch hunt page): dispatches upload their
+    /// read-only inputs from guest memory every time.
+    bool compute_fresh{};
+    /// Diagnostic ("warp_per_lane=1", also on the glitch hunt page): compute shaders whose only
+    /// cross-lane work is warp-aggregated atomics run them once per lane.
+    bool warp_per_lane{};
+    /// Guest shuffles read their source lanes through indices the wave agrees on (on unless
+    /// "shuffle_wave_uniform=0"): the Series driver reads the first lane's source on every lane.
+    bool shuffle_wave_uniform{true};
+    /// Diagnostic ("frame_wait=1", also on the glitch hunt page): wait for the GPU every frame.
+    bool frame_wait{};
     /// Fine per-draw D3D12 CPU timers ("gpu_profile=1"). Off because clock reads are measurable.
     bool gpu_profile{};
     /// Writes every translated guest shader to the dump folder ("dump_guest_shaders=1").

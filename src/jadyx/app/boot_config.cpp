@@ -313,6 +313,61 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 }
                 continue;
             }
+            if (line == "glitch_hunt_menu=1") {
+                config.glitch_hunt_menu = true;
+                WriteDiag("boot.cfg: geometry glitch hunt menu enabled");
+                continue;
+            }
+            if (line.starts_with("glitch_frames=")) {
+                try {
+                    config.glitch_frames = static_cast<u32>(std::stoul(line.substr(14)));
+                } catch (...) {
+                    config.glitch_frames = 0;
+                }
+                WriteDiag("boot.cfg: glitch capture frames " + std::to_string(config.glitch_frames));
+                continue;
+            }
+            if (line == "indirect_sync=0" || line == "indirect_sync=1") {
+                config.indirect_sync = line.back() == '1';
+                WriteDiag(std::string{"boot.cfg: indirect_sync "} +
+                          (config.indirect_sync ? "on" : "off"));
+                continue;
+            }
+            if (line == "frame_wait=0" || line == "frame_wait=1") {
+                config.frame_wait = line.back() == '1';
+                WriteDiag(std::string{"boot.cfg: frame_wait "} +
+                          (config.frame_wait ? "on" : "off"));
+                continue;
+            }
+            if (line == "warp_per_lane=0" || line == "warp_per_lane=1") {
+                config.warp_per_lane = line.back() == '1';
+                WriteDiag(std::string{"boot.cfg: warp_per_lane "} +
+                          (config.warp_per_lane ? "on" : "off"));
+                continue;
+            }
+            if (line == "shuffle_wave_uniform=0" || line == "shuffle_wave_uniform=1") {
+                config.shuffle_wave_uniform = line.back() == '1';
+                WriteDiag(std::string{"boot.cfg: shuffle_wave_uniform "} +
+                          (config.shuffle_wave_uniform ? "on" : "off"));
+                continue;
+            }
+            if (line == "compute_fresh=0" || line == "compute_fresh=1") {
+                config.compute_fresh = line.back() == '1';
+                WriteDiag(std::string{"boot.cfg: compute_fresh "} +
+                          (config.compute_fresh ? "on" : "off"));
+                continue;
+            }
+            if (line == "precise_writes=0" || line == "precise_writes=1") {
+                config.precise_writes = line.back() == '1';
+                WriteDiag(std::string{"boot.cfg: precise_writes "} + (config.precise_writes ? "on" : "off"));
+                continue;
+            }
+            if (line == "indirect_cpu=0" || line == "indirect_cpu=1") {
+                config.indirect_cpu = line.back() == '1';
+                WriteDiag(std::string{"boot.cfg: indirect_cpu "} +
+                          (config.indirect_cpu ? "on" : "off"));
+                continue;
+            }
             if (line == "exact_gpu_reads=0" || line == "exact_gpu_reads=1") {
                 config.exact_gpu_reads = line.back() == '1';
                 WriteDiag(std::string("boot.cfg: exact GPU reads ") + (*config.exact_gpu_reads ? "on" : "off"));

@@ -82,6 +82,8 @@ private:
 
     std::optional<GameMenu> menu;
     bool graphics_changed{}; ///< In the open menu: the output's size may have to follow.
+    /// The glitch hunt page's live renderer switches, kept across menu openings.
+    GlitchToggles glitch_toggles;
     std::optional<GameMenuSurface> menu_surface;
     // A keyboard the game opened (game_keyboard.h): drawn on the same surface as the menu, over
     // the running game. The menu opens on top of it and gives it back when it closes.

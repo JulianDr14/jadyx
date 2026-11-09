@@ -31,6 +31,7 @@
 #include "common/windows/sampling_profiler.h"
 #include "dynarmic/interface/code_memory.h"
 #include "dynarmic/interface/jit_profile.h"
+#include "jadyx/game/game_menu.h"
 #include "video_core/cpu_write_queue.h"
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/fence_manager.h"
@@ -331,6 +332,15 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     VideoCommon::force_occlusion_visible.store(config.occlusion_force_visible,
                                                std::memory_order_relaxed);
     D3D12::SetDiagUavSync(config.uav_sync);
+    D3D12::SetGlitchFrames(config.glitch_frames);
+    D3D12::SetIndirectSync(config.indirect_sync);
+    D3D12::SetIndirectOnCpu(config.indirect_cpu);
+    VideoCommon::ReadbackTrace::SetPreciseCpuWrites(config.precise_writes);
+    VideoCommon::ReadbackTrace::SetComputeFresh(config.compute_fresh);
+    VideoCommon::ReadbackTrace::SetFrameWait(config.frame_wait);
+    D3D12::SetComputeWarpPerLane(config.warp_per_lane);
+    D3D12::SetShuffleWaveUniform(config.shuffle_wave_uniform);
+    D3D12::SetWaveSelfTest(config.glitch_hunt_menu);
     VideoCommon::SetMipRenderTargets(config.mip_render_targets);
     VideoCommon::SetRenderTargetInheritance(config.render_target_inheritance);
     VideoCommon::SetReclaimSupersededImages(config.reclaim_superseded_images);
@@ -417,6 +427,18 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
                   ? "step: logging up, renderer Direct3D12 on a " + std::to_string(surface.width) +
                         "x" + std::to_string(surface.height) + " CoreWindow"
                   : std::string("step: logging up, renderer Null"));
+}
+
+GlitchToggles GlitchTogglesOf(const BootConfig& config) {
+    return {.warp_per_lane = config.warp_per_lane};
+}
+
+void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
+    if (before.warp_per_lane != now.warp_per_lane) {
+        WriteDiag(fmt::format("menu: glitch A/B warp_per_lane {}", now.warp_per_lane ? "on" : "off"));
+    }
+    // Read at each launch: the next dispatch takes (or builds) the matching pipeline variant.
+    D3D12::SetComputeWarpPerLane(now.warp_per_lane);
 }
 
 } // namespace Jadyx

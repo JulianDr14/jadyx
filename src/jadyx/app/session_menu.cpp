@@ -58,7 +58,9 @@ std::size_t CheatsOn(const Cheats::CheatCatalog& catalog) {
 
 SessionMenu::SessionMenu(const SessionMenuContext& context)
     : SessionMenuContext{context},
-      cheat_game{program_id, system.GetApplicationProcessBuildID()} {}
+      cheat_game{program_id, system.GetApplicationProcessBuildID()} {
+    glitch_toggles = GlitchTogglesOf(config);
+}
 
 void SessionMenu::CaptureFrame() {
     system.GPU().RunOnGpuThread([&] { game_frame = D3D12::CaptureGameFrame(system.Renderer()); });
@@ -161,7 +163,8 @@ void SessionMenu::Open() {
                                   LoadGameGraphics(program_id),
                                   program_id != 0 && !mii_editor && MemoryEdit::CanSearchGuest(system),
                                   options.right_stick, input.GameRightStickSettings(),
-                                  program_id != 0 && !mii_editor},
+                                  program_id != 0 && !mii_editor,
+                                  config.glitch_hunt_menu, glitch_toggles},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
     if (game_title.empty()) {
@@ -396,6 +399,11 @@ void SessionMenu::Close(GameMenuResult result) {
         D3D12::HuntNextFrames();
         WriteDiag("menu: bottleneck capture requested for next guest frames");
     }
+    if (result == GameMenuResult::CaptureGlitches) {
+        D3D12::HuntGlitchesNextFrames();
+        WriteDiag("menu: geometry glitch capture requested for next guest frames | " +
+                  MemoryReport());
+    }
     void(system.Run());
     WriteDiag("menu: closed, guest running");
     // With the guest running, as a tag signals the game's events.
@@ -437,6 +445,10 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
     }
     if (result == GameMenuResult::FullScreen) {
         g_fullscreen_request.store(menu->Settings().fullscreen ? 1 : 0);
+    }
+    if (result == GameMenuResult::GlitchTogglesChanged) {
+        ApplyGlitchToggles(glitch_toggles, menu->Settings().glitch);
+        glitch_toggles = menu->Settings().glitch;
     }
     if (result == GameMenuResult::GraphicsChanged) {
         const GameGraphics& game = menu->Settings().graphics;
@@ -518,7 +530,8 @@ SessionMenu::Outcome SessionMenu::Update() {
             memory_edit_open = true;
         }
         if (result == GameMenuResult::Resume || result == GameMenuResult::CaptureGraphics ||
-            result == GameMenuResult::CapturePerformance) {
+            result == GameMenuResult::CapturePerformance ||
+            result == GameMenuResult::CaptureGlitches) {
             Close(result);
             break;
         }

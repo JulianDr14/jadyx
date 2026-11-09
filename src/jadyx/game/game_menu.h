@@ -89,6 +89,11 @@ private:
     bool held_plus{}, held_minus{}, fired{};
 };
 
+/// The A/B switches of the geometry glitch hunt page, each a live renderer toggle.
+struct GlitchToggles {
+    bool warp_per_lane{}; ///< warp-aggregated compute atomics run one per lane
+};
+
 struct GameMenuSettings {
     ConsoleControllerStyle style{ConsoleControllerStyle::Auto};
     bool swap_face_buttons{};
@@ -119,6 +124,9 @@ struct GameMenuSettings {
     RightStickSettings right_stick_global{};
     GameRightStick right_stick{};
     bool right_stick_per_game{};
+    /// Opt-in diagnostic package ("glitch_hunt_menu=1"): the geometry glitch hunt page.
+    bool glitch_hunt{};
+    GlitchToggles glitch{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -128,6 +136,9 @@ enum class GameMenuResult : std::uint8_t {
     LibraryWithoutSession,
     CaptureGraphics,
     CapturePerformance,
+    /// Geometry glitch hunt: capture the next frames, or Settings().glitch changed.
+    CaptureGlitches,
+    GlitchTogglesChanged,
     Screenshot,
     OfflineModeChanged,
     GraphicsChanged,
@@ -162,8 +173,9 @@ public:
         GraphicsMenu, GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxExactGpuReads, GfxTextureMemory,
         GfxGpuAccuracy, GfxConsoleMode, Amiibo, MemoryEdit,
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
+        GlitchPage, GlitchCapture, GlitchWarpPerLane,
     };
-    enum class Page : std::uint8_t { Quick, Controller, Display, Graphics };
+    enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
 
     /// `cheats`: the game has a title id, so the menu offers its cheats, its own offline mode and
     /// its graphics that can change while it runs. The rest wait for a boot: the library has them.
@@ -177,7 +189,9 @@ public:
         if (cheats) quick.push_back(OfflineMode);
         if (settings.material_capture) quick.push_back(CaptureGraphics);
         if (settings.performance_capture) quick.push_back(CapturePerformance);
+        if (settings.glitch_hunt) quick.push_back(GlitchPage);
         quick.push_back(Library);
+        glitch = {GlitchCapture, GlitchWarpPerLane};
         controller = {Style, FaceButtons, Deadzone, RStickInvertX, RStickInvertY, RStickSensitivity,
                       RStickMouse, RStickMouseSensitivity};
         display = {PerformanceStats};
@@ -226,7 +240,10 @@ public:
             // Back on the page's own row.
             selected = static_cast<std::size_t>(
                 std::find(quick.begin(), quick.end(),
-                          page == Page::Controller ? ControllerPage : page == Page::Display ? DisplayPage : GraphicsMenu) -
+                          page == Page::Controller ? ControllerPage
+                          : page == Page::Display  ? DisplayPage
+                          : page == Page::Glitch   ? GlitchPage
+                                                   : GraphicsMenu) -
                 quick.begin());
             page = Page::Quick;
             return GameMenuResult::None;
@@ -264,6 +281,7 @@ public:
         return Tr(page == Page::Controller ? Text::MenuController
                   : page == Page::Display  ? Text::MenuDisplay
                   : page == Page::Graphics ? Text::Graphics
+                  : page == Page::Glitch   ? Text::MenuGlitchPage
                                            : Text::MenuQuick);
     }
     /// Row of the cursor, as drawn.
@@ -275,7 +293,7 @@ private:
     static std::wstring Tr(I18n::Text id) { return std::wstring{I18n::Tr(id)}; }
 
     [[nodiscard]] const std::vector<Item>& Items() const {
-        return page == Page::Controller ? controller : page == Page::Display ? display : page == Page::Graphics ? graphics : quick;
+        return page == Page::Controller ? controller : page == Page::Display ? display : page == Page::Graphics ? graphics : page == Page::Glitch ? glitch : quick;
     }
 
     /// The Handheld style forces the console's mode (uwp_input.cpp): there is nothing to choose.
@@ -313,6 +331,14 @@ private:
             return {Tr(Text::MenuCaptureGraphics), {}, Action, {}, UiIcon::Archive};
         case CapturePerformance:
             return {Tr(Text::MenuCapturePerformance), {}, Action, {}, UiIcon::Archive};
+        case GlitchPage:
+            return {Tr(Text::MenuGlitchPage), {}, Page, Tr(Text::MenuGlitchPageDetail), UiIcon::Archive};
+        case GlitchCapture:
+            return {Tr(Text::MenuCaptureGlitches), {}, Action, Tr(Text::MenuCaptureGlitchesDetail)};
+        case GlitchWarpPerLane:
+            // Renderer switch name, the same in every language: the log and boot.cfg use it.
+            return {L"warp_per_lane", Tr(settings.glitch.warp_per_lane ? Text::Yes : Text::No), Choice,
+                    L"Compute atomics shared by a warp run once per lane"};
         case MemoryEdit:
             return {Tr(Text::MemoryEditTitle), {}, Page,
                     memory_edit_hits != 0
@@ -455,10 +481,12 @@ private:
         case ControllerPage:
         case DisplayPage:
         case GraphicsMenu:
+        case GlitchPage:
             // A and Right open the page, as a row with ">" does elsewhere.
             if (back) return GameMenuResult::None;
             page = SelectedItem() == ControllerPage ? Page::Controller
                    : SelectedItem() == DisplayPage  ? Page::Display
+                   : SelectedItem() == GlitchPage   ? Page::Glitch
                                                     : Page::Graphics;
             selected = 0;
             return GameMenuResult::None;
@@ -512,6 +540,11 @@ private:
         case FullScreen:
             settings.fullscreen = !settings.fullscreen;
             return GameMenuResult::FullScreen;
+        case GlitchCapture:
+            return confirm ? GameMenuResult::CaptureGlitches : GameMenuResult::None;
+        case GlitchWarpPerLane:
+            settings.glitch.warp_per_lane = !settings.glitch.warp_per_lane;
+            return GameMenuResult::GlitchTogglesChanged;
         case OfflineMode: {
             // Steps through: as in Settings > System, on, off.
             auto& offline = settings.offline_mode;
@@ -560,7 +593,7 @@ private:
     }
 
     GameMenuSettings settings;
-    std::vector<Item> quick, controller, display, graphics;
+    std::vector<Item> quick, controller, display, graphics, glitch;
     Page page{Page::Quick};
     std::size_t selected{};
     std::size_t cheats_on{};
