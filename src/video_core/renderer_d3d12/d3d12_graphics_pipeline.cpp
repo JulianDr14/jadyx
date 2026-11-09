@@ -1623,6 +1623,43 @@ bool FirstFailure(u64 key_hash) {
     std::scoped_lock lock{mutex};
     return failed.insert(key_hash).second;
 }
+
+/// A driver PSO slower than this keeps its stages' DXIL on disk for offline study.
+constexpr u64 SLOW_PSO_US = 5'000'000;
+
+/// Writes the DXIL of a pipeline the driver took a long time to create, once per pipeline, to
+/// LogDir/slow_pso/<vs>_<ps>_<stage>.dxil, so it can be dumped and reduced on a PC.
+void DumpSlowPso(u64 key_hash, u64 vs, u64 ps, u64 elapsed_us,
+                 const std::array<std::vector<u8>, Maxwell::MaxShaderStage>& stages) {
+    static std::mutex mutex;
+    static std::unordered_set<u64> dumped;
+    {
+        std::scoped_lock lock{mutex};
+        if (!dumped.insert(key_hash).second) {
+            return;
+        }
+    }
+    static constexpr std::array<const char*, Maxwell::MaxShaderStage> names{"vs", "hs", "ds", "gs",
+                                                                            "ps"};
+    const auto dir = Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir) / "slow_pso";
+    std::error_code error;
+    std::filesystem::create_directories(dir, error);
+    size_t written = 0;
+    for (size_t stage = 0; stage < stages.size(); ++stage) {
+        if (stages[stage].empty()) {
+            continue;
+        }
+        std::ofstream out(dir / fmt::format("{:016x}_{:016x}_{}.dxil", vs, ps, names[stage]),
+                          std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(stages[stage].data()),
+                  static_cast<std::streamsize>(stages[stage].size()));
+        written += out ? 1 : 0;
+    }
+    LOG_WARNING(Render,
+                "D3D12: the driver took {:.1f} s to create the PSO of VS {:016x} PS {:016x}; "
+                "{} stages saved in slow_pso",
+                static_cast<double>(elapsed_us) / 1e6, vs, ps, written);
+}
 } // Anonymous namespace
 
 void GraphicsPipeline::LinkedDxil::PreparePsoHashes() {
@@ -1730,7 +1767,11 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
         } else {
             hr = create_pso(result.handle);
         }
-        GetPipelineStats().Record(PipelineStage::PsoCreate, SteadyMicros() - create_start);
+        const u64 create_us = SteadyMicros() - create_start;
+        GetPipelineStats().Record(PipelineStage::PsoCreate, create_us);
+        if (create_us >= SLOW_PSO_US) {
+            DumpSlowPso(key.Hash(), key.unique_hashes[1], key.unique_hashes[5], create_us, stages);
+        }
         // Failed entries must not poison the index. All current waiters receive the HRESULT.
         if (FAILED(hr)) {
             throw hr;
