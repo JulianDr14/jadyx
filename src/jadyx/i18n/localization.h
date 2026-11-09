@@ -183,6 +183,11 @@ enum class Text : std::uint16_t {
     MenuGlitchPageDetail,
     MenuCaptureGlitches,
     MenuCaptureGlitchesDetail,
+    MenuGeoMark,
+    MenuGeoMarkDetail,
+    MenuGeoMarked,
+    MenuGeoHeal,
+    MenuGeoHealDetail,
     MenuFullScreen,
     MenuBackToHome,
 

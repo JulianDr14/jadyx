@@ -21,6 +21,7 @@
 #include "core/loader/loader.h"
 #include "core/memory/cheat_engine.h"
 #include "input_common/drivers/virtual_amiibo.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/gpu.h"
 #include "video_core/performance_overlay.h"
 #include "video_core/renderer_base.h"
@@ -164,7 +165,9 @@ void SessionMenu::Open() {
                                   program_id != 0 && !mii_editor && MemoryEdit::CanSearchGuest(system),
                                   options.right_stick, input.GameRightStickSettings(),
                                   program_id != 0 && !mii_editor,
-                                  config.glitch_hunt_menu, glitch_toggles},
+                                  config.glitch_hunt_menu, glitch_toggles,
+                                  config.geo_hunt && VideoCommon::GeoHunt::Enabled(),
+                                  VideoCommon::GeoHunt::Healing()},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
     if (game_title.empty()) {
@@ -404,6 +407,11 @@ void SessionMenu::Close(GameMenuResult result) {
         WriteDiag("menu: geometry glitch capture requested for next guest frames | " +
                   MemoryReport());
     }
+    if (result == GameMenuResult::GeoMark) {
+        // The hunt's log gets the mark with the misses seen so far; play goes on.
+        VideoCommon::GeoHunt::Mark();
+        WriteDiag("menu: geometry hunt mark | " + MemoryReport());
+    }
     void(system.Run());
     WriteDiag("menu: closed, guest running");
     // With the guest running, as a tag signals the game's events.
@@ -449,6 +457,10 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
     if (result == GameMenuResult::GlitchTogglesChanged) {
         ApplyGlitchToggles(glitch_toggles, menu->Settings().glitch);
         glitch_toggles = menu->Settings().glitch;
+    }
+    if (result == GameMenuResult::GeoHealChanged) {
+        VideoCommon::GeoHunt::SetHeal(menu->Settings().geo_heal);
+        WriteDiag(std::string{"menu: geometry hunt heal "} + (menu->Settings().geo_heal ? "on" : "off"));
     }
     if (result == GameMenuResult::GraphicsChanged) {
         const GameGraphics& game = menu->Settings().graphics;
@@ -531,7 +543,7 @@ SessionMenu::Outcome SessionMenu::Update() {
         }
         if (result == GameMenuResult::Resume || result == GameMenuResult::CaptureGraphics ||
             result == GameMenuResult::CapturePerformance ||
-            result == GameMenuResult::CaptureGlitches) {
+            result == GameMenuResult::CaptureGlitches || result == GameMenuResult::GeoMark) {
             Close(result);
             break;
         }

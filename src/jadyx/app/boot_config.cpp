@@ -318,6 +318,29 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 WriteDiag("boot.cfg: geometry glitch hunt menu enabled");
                 continue;
             }
+            if (line == "geo_hunt=1") {
+                config.geo_hunt = true;
+                WriteDiag("boot.cfg: geometry hunt enabled");
+                continue;
+            }
+            if (line == "geo_hunt_heal=1") {
+                config.geo_hunt_heal = true;
+                WriteDiag("boot.cfg: geometry hunt heals missed writes");
+                continue;
+            }
+            if (line.starts_with("geo_hunt_check_kb=") || line.starts_with("geo_hunt_upload_kb=")) {
+                const bool check = line.starts_with("geo_hunt_check_kb=");
+                u32 value{};
+                try {
+                    value = static_cast<u32>(std::stoul(line.substr(line.find('=') + 1)));
+                } catch (...) {
+                    value = 0;
+                }
+                (check ? config.geo_hunt_check_kb : config.geo_hunt_upload_kb) = value;
+                WriteDiag(std::string{"boot.cfg: geometry hunt "} + (check ? "check" : "upload") +
+                          " budget KiB " + std::to_string(value));
+                continue;
+            }
             if (line.starts_with("glitch_frames=")) {
                 try {
                     config.glitch_frames = static_cast<u32>(std::stoul(line.substr(14)));

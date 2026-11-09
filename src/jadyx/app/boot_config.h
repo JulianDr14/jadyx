@@ -164,6 +164,14 @@ struct BootConfig {
     bool glitch_hunt_menu{};
     /// Frames one glitch capture takes ("glitch_frames=N", 1-240; 0 = 20).
     u32 glitch_frames{};
+    /// Geometry hunt ("geo_hunt=1"): re-hashes clean buffer pages at bind time and logs the
+    /// guest writes the tracker missed (LocalState/jadyx/log/geometry). "geo_hunt_heal=1" starts
+    /// with healing on; "geo_hunt_check_kb=N" / "geo_hunt_upload_kb=N" set the per-frame budgets
+    /// (0 = 4096 / 32768).
+    bool geo_hunt{};
+    bool geo_hunt_heal{};
+    u32 geo_hunt_check_kb{};
+    u32 geo_hunt_upload_kb{};
     /// Diagnostic ("indirect_sync=1", also on the glitch hunt page): GPU-indirect draws wait for
     /// every earlier write before their arguments are copied and again before they run.
     bool indirect_sync{};

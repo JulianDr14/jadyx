@@ -133,6 +133,10 @@ struct GameMenuSettings {
     /// Opt-in diagnostic package ("glitch_hunt_menu=1"): the geometry glitch hunt page.
     bool glitch_hunt{};
     GlitchToggles glitch{};
+    /// Opt-in diagnostic package ("geo_hunt=1"): missed-write hunt for deformed meshes. Rows to
+    /// mark the moment a deformation shows and to heal the misses it finds.
+    bool geo_hunt{};
+    bool geo_heal{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -152,6 +156,9 @@ enum class GameMenuResult : std::uint8_t {
     MemoryEdit,
     /// The right stick's rows: Settings() holds the new values (the game's own or Settings').
     RightStickChanged,
+    /// Geometry hunt: mark the moment in its log, or Settings().geo_heal changed.
+    GeoMark,
+    GeoHealChanged,
 };
 
 /// The console's tag reader as the game left it, for the Amiibo row.
@@ -181,6 +188,7 @@ public:
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
         GlitchPage, GlitchCapture, GlitchWarpPerLane, GlitchA2cShader, GlitchFrameWait,
         GlitchComputeFresh, GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites,
+        GeoMark, GeoHeal,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
 
@@ -197,6 +205,7 @@ public:
         if (settings.material_capture) quick.push_back(CaptureGraphics);
         if (settings.performance_capture) quick.push_back(CapturePerformance);
         if (settings.glitch_hunt) quick.push_back(GlitchPage);
+        if (settings.geo_hunt) quick.insert(quick.end(), {GeoMark, GeoHeal});
         quick.push_back(Library);
         glitch = {GlitchCapture,      GlitchA2cShader,    GlitchFrameWait,     GlitchComputeFresh,
                   GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites, GlitchWarpPerLane};
@@ -341,6 +350,14 @@ private:
             return {Tr(Text::MenuCapturePerformance), {}, Action, {}, UiIcon::Archive};
         case GlitchPage:
             return {Tr(Text::MenuGlitchPage), {}, Page, Tr(Text::MenuGlitchPageDetail), UiIcon::Archive};
+        case GeoMark:
+            return {Tr(Text::MenuGeoMark), {}, Action,
+                    geo_marks != 0 ? Tr(Text::MenuGeoMarked) + L" " + std::to_wstring(geo_marks)
+                                   : Tr(Text::MenuGeoMarkDetail),
+                    UiIcon::Archive};
+        case GeoHeal:
+            return {Tr(Text::MenuGeoHeal), Tr(settings.geo_heal ? Text::Yes : Text::No), Choice,
+                    Tr(Text::MenuGeoHealDetail), UiIcon::Settings};
         case GlitchCapture:
             return {Tr(Text::MenuCaptureGlitches), {}, Action, Tr(Text::MenuCaptureGlitchesDetail)};
         case GlitchWarpPerLane:
@@ -589,6 +606,13 @@ private:
         case GlitchPreciseWrites:
             settings.glitch.precise_writes = !settings.glitch.precise_writes;
             return GameMenuResult::GlitchTogglesChanged;
+        case GeoMark:
+            if (!confirm) return GameMenuResult::None;
+            ++geo_marks;
+            return GameMenuResult::GeoMark;
+        case GeoHeal:
+            settings.geo_heal = !settings.geo_heal;
+            return GameMenuResult::GeoHealChanged;
         case OfflineMode: {
             // Steps through: as in Settings > System, on, off.
             auto& offline = settings.offline_mode;
@@ -646,6 +670,7 @@ private:
     std::wstring amiibo_name;
     std::wstring screenshot_note;
     std::uint64_t memory_edit_hits{};
+    std::uint32_t geo_marks{};
     bool keep_session{true};
 };
 } // namespace Jadyx

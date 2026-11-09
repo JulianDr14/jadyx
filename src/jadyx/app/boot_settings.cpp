@@ -36,6 +36,7 @@
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/fence_manager.h"
 #include "video_core/frame_pipeline.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_written_pages.h"
 #include "video_core/macro.h"
@@ -343,6 +344,8 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetShuffleWaveUniform(config.shuffle_wave_uniform);
     D3D12::SetWaveSelfTest(config.glitch_hunt_menu);
     VideoCommon::WriteWatch::SetEnabled(config.glitch_hunt_menu);
+    VideoCommon::GeoHunt::Configure(config.geo_hunt, config.geo_hunt_check_kb, config.geo_hunt_upload_kb,
+                                    config.geo_hunt_heal);
     VideoCommon::SetMipRenderTargets(config.mip_render_targets);
     VideoCommon::SetRenderTargetInheritance(config.render_target_inheritance);
     VideoCommon::SetReclaimSupersededImages(config.reclaim_superseded_images);
