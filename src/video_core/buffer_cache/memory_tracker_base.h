@@ -63,6 +63,13 @@ public:
         });
     }
 
+    /// Returns true if a region holds CPU writes not flushed into the CPU state yet
+    [[nodiscard]] bool IsRegionCachedCpuModified(VAddr query_cpu_addr, u64 query_size) noexcept {
+        return IteratePages<false>(query_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
+            return manager->IsRegionModified(Type::CachedCPU, offset, size);
+        });
+    }
+
     /// Returns true if a region has been marked as Preflushable
     [[nodiscard]] bool IsRegionPreflushable(VAddr query_cpu_addr, u64 query_size) noexcept {
         return IteratePages<false>(query_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {

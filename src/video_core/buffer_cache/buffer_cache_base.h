@@ -41,6 +41,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/memory_manager.h"
 #include "video_core/readback_trace.h"
 #include "video_core/surface.h"
@@ -501,6 +502,11 @@ private:
 
     bool SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size);
 
+    /// geo_hunt: checks the clean pages of a bound range against their upload baselines.
+    void GeoHuntVerify(DAddr device_addr, u32 size);
+    /// geo_hunt: records what an upload copied from guest memory.
+    void GeoHuntBaseline(DAddr device_addr, u64 size);
+
     void UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
                       std::span<BufferCopy> copies);
 
@@ -609,6 +615,8 @@ private:
     std::vector<MultiRangeSegment> graphics_segments;
     std::vector<MultiRangeSegment> compute_segments;
     u64 frame_tick = 0;
+    /// geo_hunt: what the buffer cache is binding, for its log.
+    GeoHunt::Role geo_role = GeoHunt::Role::Other;
     u64 total_used_memory = 0;
     u64 minimum_memory = 0;
     u64 critical_memory = 0;

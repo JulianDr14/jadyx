@@ -15,6 +15,7 @@
 #include "video_core/gpu_thread.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "video_core/engines/kepler_compute.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
 #include "video_core/renderer_d3d12/d3d12_compute_pipeline.h"
@@ -200,6 +201,9 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
                                     is_image);
                             });
 
+    if (VideoCommon::GeoHunt::Enabled()) [[unlikely]] {
+        VideoCommon::GeoHunt::SetShaders(unique_hash, 0, true);
+    }
     buffer_cache.UpdateComputeBuffers();
 
     // The table is written in root-signature order: uniform, storage and texel buffers while the

@@ -113,6 +113,9 @@ void BufferCache<P>::TickFrame() {
         RunGarbageCollector();
     }
     ++frame_tick;
+    if (GeoHunt::Enabled()) [[unlikely]] {
+        GeoHunt::BeginFrame(frame_tick);
+    }
     delayed_destruction_ring.Tick();
 
     for (auto& buffer : async_buffers_death_ring) {
@@ -263,6 +266,9 @@ void BufferCache<P>::DownloadCheckpointMemory() requires HAS_CHECKPOINT_READBACK
                     runtime.ReadCheckpointBuffer(buffer, begin - buffer.CpuAddr(), block);
                     device_memory.WriteBlockUnsafe(begin, block.data(), block.size());
                     download_shadow.HostWritten(begin, block.data(), block.size());
+                    if (GeoHunt::Enabled()) [[unlikely]] {
+                        GeoHunt::Forget(begin, block.size());
+                    }
                     copied_bytes += count;
                     begin += count;
                 }
@@ -292,6 +298,7 @@ bool BufferCache<P>::HasCheckpointOverlap(
 
 template <class P>
 bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount) {
+    geo_role = GeoHunt::Role::Other;
     const std::optional<DAddr> cpu_src_address = gpu_memory->GpuToCpuAddress(src_address);
     const std::optional<DAddr> cpu_dest_address = gpu_memory->GpuToCpuAddress(dest_address);
     if (!cpu_src_address || !cpu_dest_address) {
@@ -360,6 +367,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
 
 template <class P>
 bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
+    geo_role = GeoHunt::Role::Other;
     const std::optional<DAddr> cpu_dst_address = gpu_memory->GpuToCpuAddress(dst_address);
     if (!cpu_dst_address) {
         return false;
@@ -396,6 +404,7 @@ std::pair<typename P::Buffer*, u32> BufferCache<P>::ObtainBuffer(GPUVAddr gpu_ad
 template <class P>
 std::pair<typename P::Buffer*, u32> BufferCache<P>::ObtainCPUBuffer(
     DAddr device_addr, u32 size, ObtainBufferSynchronize sync_info, ObtainBufferOperation post_op) {
+    geo_role = GeoHunt::Role::Other;
     const BufferId buffer_id = FindBuffer(device_addr, size, false);
     Buffer& buffer = slot_buffers[buffer_id];
 
@@ -897,6 +906,9 @@ void BufferCache<P>::LandDownload(DAddr start, u64 size, const u8* incoming, u64
     const bool timed = WriteWatch::Enabled();
     const auto begin = timed ? std::chrono::steady_clock::now()
                              : std::chrono::steady_clock::time_point{};
+    if (GeoHunt::Enabled()) [[unlikely]] {
+        GeoHunt::Forget(start, size);
+    }
     if (((start | size) & 3) != 0) {
         WriteWatch::Note(WriteWatch::Kind::Download, start, size);
         device_memory.WriteBlockUnsafe(start, incoming, size);
@@ -980,6 +992,7 @@ bool BufferCache<P>::IsRegionCpuModified(DAddr addr, size_t size) {
 
 template <class P>
 void BufferCache<P>::BindHostIndexBuffer() {
+    geo_role = GeoHunt::Role::Index;
     Buffer& buffer = slot_buffers[channel_state->index_buffer.buffer_id];
     TouchBuffer(buffer, channel_state->index_buffer.buffer_id);
     const u32 offset = buffer.Offset(channel_state->index_buffer.device_addr);
@@ -1047,6 +1060,7 @@ void BufferCache<P>::UpdateVertexBufferSlot(u32 index, const Binding& binding) {
 
 template <class P>
 void BufferCache<P>::BindHostVertexBuffers() {
+    geo_role = GeoHunt::Role::Vertex;
 
 #ifdef __ANDROID__
     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
@@ -1144,6 +1158,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
 
 template <class P>
 void BufferCache<P>::BindHostDrawIndirectBuffers() {
+    geo_role = GeoHunt::Role::Indirect;
     const auto bind_buffer = [this](const Binding& binding) {
         Buffer& buffer = slot_buffers[binding.buffer_id];
         TouchBuffer(buffer, binding.buffer_id);
@@ -1157,6 +1172,7 @@ void BufferCache<P>::BindHostDrawIndirectBuffers() {
 
 template <class P>
 void BufferCache<P>::BindHostGraphicsUniformBuffers(size_t stage) {
+    geo_role = GeoHunt::Role::Uniform;
     u32 dirty = ~0U;
     if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
         dirty = std::exchange(channel_state->dirty_uniform_buffers[stage], 0);
@@ -1343,6 +1359,7 @@ bool BufferCache<P>::BindMultiRangeStorage(const Binding& binding, bool is_writt
 
 template <class P>
 void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
+    geo_role = GeoHunt::Role::Storage;
     u32 binding_index = 0;
     ForEachEnabledBit(channel_state->enabled_storage_buffers[stage], [&](u32 index) {
         const Binding& binding = channel_state->storage_buffers[stage][index];
@@ -1374,6 +1391,7 @@ void BufferCache<P>::BindHostGraphicsStorageBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::BindHostGraphicsTextureBuffers(size_t stage) {
+    geo_role = GeoHunt::Role::Texel;
     ForEachEnabledBit(channel_state->enabled_texture_buffers[stage], [&](u32 index) {
         const TextureBufferBinding& binding = channel_state->texture_buffers[stage][index];
         Buffer& buffer = slot_buffers[binding.buffer_id];
@@ -1403,6 +1421,7 @@ void BufferCache<P>::BindHostGraphicsTextureBuffers(size_t stage) {
 
 template <class P>
 void BufferCache<P>::BindHostTransformFeedbackBuffers() {
+    geo_role = GeoHunt::Role::Feedback;
     if (maxwell3d->regs.transform_feedback_enabled == 0) {
         return;
     }
@@ -1437,6 +1456,7 @@ void BufferCache<P>::BindHostTransformFeedbackBuffers() {
 
 template <class P>
 void BufferCache<P>::BindHostComputeUniformBuffers() {
+    geo_role = GeoHunt::Role::ComputeUniform;
     if constexpr (HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS) {
         // Mark all uniform buffers as dirty
         channel_state->dirty_uniform_buffers.fill(~u32{0});
@@ -1488,6 +1508,7 @@ void BufferCache<P>::BindHostComputeUniformBuffers() {
 
 template <class P>
 void BufferCache<P>::BindHostComputeStorageBuffers() {
+    geo_role = GeoHunt::Role::ComputeStorage;
     u32 binding_index = 0;
     ForEachEnabledBit(channel_state->enabled_compute_storage_buffers, [&](u32 index) {
         const Binding& binding = channel_state->compute_storage_buffers[index];
@@ -1524,6 +1545,7 @@ void BufferCache<P>::BindHostComputeStorageBuffers() {
 
 template <class P>
 void BufferCache<P>::BindHostComputeTextureBuffers() {
+    geo_role = GeoHunt::Role::ComputeTexel;
     ForEachEnabledBit(channel_state->enabled_compute_texture_buffers, [&](u32 index) {
         const TextureBufferBinding& binding = channel_state->compute_texture_buffers[index];
         Buffer& buffer = slot_buffers[binding.buffer_id];
@@ -2040,6 +2062,10 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
 
 template <class P>
 bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size) {
+    if (GeoHunt::Enabled()) [[unlikely]] {
+        // Before the upload: a healed page goes up in this same call.
+        GeoHuntVerify(device_addr, size);
+    }
     upload_copies.clear();
     u64 total_size_bytes = 0;
     u64 largest_copy = 0;
@@ -2109,6 +2135,9 @@ void BufferCache<P>::ImmediateUploadMemory([[maybe_unused]] Buffer& buffer,
                 upload_span = immediate_buffer.subspan(0, copy.size);
             }
             buffer.ImmediateUpload(copy.dst_offset, upload_span);
+            if (GeoHunt::Enabled()) [[unlikely]] {
+                GeoHuntBaseline(device_addr, copy.size);
+            }
         }
     }
 }
@@ -2125,11 +2154,80 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
             device_memory.ReadBlockUnsafe(device_addr, src_pointer, copy.size);
             download_shadow.HostWritten(device_addr, src_pointer, copy.size);
+            if (GeoHunt::Enabled()) [[unlikely]] {
+                GeoHuntBaseline(device_addr, copy.size);
+            }
             // Apply the staging offset
             copy.src_offset += upload_staging.offset;
         }
         const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
         runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);
+    }
+}
+
+template <class P>
+void BufferCache<P>::GeoHuntBaseline(DAddr device_addr, u64 size) {
+    if (size == 0) {
+        return;
+    }
+    const DAddr end = device_addr + size;
+    auto lock = GeoHunt::Lock();
+    for (DAddr page = Common::AlignDown(device_addr, GeoHunt::PAGE_SIZE); page < end;
+         page += GeoHunt::PAGE_SIZE) {
+        const u8* const guest = device_memory.GetPointer<u8>(page);
+        if (page < device_addr || page + GeoHunt::PAGE_SIZE > end || guest == nullptr) {
+            GeoHunt::Drop(page);
+            continue;
+        }
+        GeoHunt::Baseline(page, guest, geo_role);
+    }
+}
+
+template <class P>
+void BufferCache<P>::GeoHuntVerify(DAddr device_addr, u32 size) {
+    if (size == 0 || !GeoHunt::CheckBudgetLeft()) {
+        return;
+    }
+    constexpr u64 page_size = GeoHunt::PAGE_SIZE;
+    auto lock = GeoHunt::Lock();
+    if (!GeoHunt::FirstThisFrame(device_addr, size)) {
+        return;
+    }
+    const DAddr end = device_addr + size;
+    for (DAddr page = Common::AlignDown(device_addr, page_size); page < end; page += page_size) {
+        if (!GeoHunt::Due(page)) {
+            continue;
+        }
+        if (memory_tracker.IsRegionCpuModified(page, page_size) ||
+            memory_tracker.IsRegionCachedCpuModified(page, page_size) ||
+            memory_tracker.IsRegionGpuModified(page, page_size) ||
+            IsRegionGpuModified(page, page_size)) {
+            GeoHunt::Dirty(page);
+            continue;
+        }
+        const u8* const guest = device_memory.GetPointer<u8>(page);
+        if (guest == nullptr) {
+            GeoHunt::Drop(page);
+            continue;
+        }
+        if (GeoHunt::Check(page, guest, geo_role) != GeoHunt::Result::Confirmed) {
+            continue;
+        }
+        const auto probe = device_memory.ProbePage(page);
+        const bool healed = GeoHunt::Healing();
+        if (healed) {
+            memory_tracker.MarkRegionAsCpuModified(page, page_size);
+        }
+        GeoHunt::Report(page, geo_role,
+                        GeoHunt::Protection{
+                            .cpu_page = probe.cpu_page,
+                            .asid = probe.asid,
+                            .cached_count = probe.cached_count,
+                            .aliases = probe.aliases,
+                            .alias_cached = probe.alias_cached,
+                            .cpu_cached = probe.cpu_cached,
+                        },
+                        healed);
     }
 }
 
@@ -2155,12 +2253,17 @@ bool BufferCache<P>::InlineMemory(DAddr dest_address, size_t copy_size,
 template <class P>
 void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_size,
                                                 std::span<const u8> inlined_buffer) {
+    geo_role = GeoHunt::Role::Other;
     ClearDownload(dest_address, copy_size);
     gpu_modified_ranges.Subtract(dest_address, copy_size);
 
     BufferId buffer_id = FindBuffer(dest_address, static_cast<u32>(copy_size), false);
     auto& buffer = slot_buffers[buffer_id];
     SynchronizeBuffer(buffer, dest_address, static_cast<u32>(copy_size));
+    if (GeoHunt::Enabled()) [[unlikely]] {
+        // The inline bytes reach the buffer without a guest read.
+        GeoHunt::Forget(dest_address, copy_size);
+    }
 
     if constexpr (USE_MEMORY_MAPS_FOR_UPLOADS) {
         auto upload_staging = runtime.UploadStagingBuffer(copy_size);

@@ -32,6 +32,7 @@
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_tracking.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
 #include "video_core/write_watch.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_compute_inputs.h"
 
@@ -129,6 +130,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
 
 RasterizerD3D12::~RasterizerD3D12() {
     VideoCommon::WriteWatch::Stop();
+    VideoCommon::GeoHunt::Stop();
     // Renderer drains the scheduler before destroying caches/staging. Export completed work
     // on a normal shutdown too; a removed device must never make destruction throw.
     try {

@@ -28,6 +28,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/ir_opt/passes.h"
 #include "video_core/frame_trace.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
@@ -955,6 +956,9 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
         texture_buffer_it += info.num_texture_views;
     }
 
+    if (VideoCommon::GeoHunt::Enabled()) [[unlikely]] {
+        VideoCommon::GeoHunt::SetShaders(key.unique_hashes[1], key.unique_hashes[5], false);
+    }
     buffer_cache.UpdateGraphicsBuffers(is_indexed);
     buffer_cache.BindHostGeometryBuffers(is_indexed);
     lap.Lap(VideoCore::Perf::Counter::DrawBuffersNs);

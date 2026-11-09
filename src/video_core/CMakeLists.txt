@@ -99,6 +99,8 @@ add_library(video_core STATIC
     buffer_cache/download_shadow.h
     write_watch.cpp
     write_watch.h
+    geometry_hunt.cpp
+    geometry_hunt.h
     frame_pipeline.h
     frame_trace.h
     gpu.cpp
