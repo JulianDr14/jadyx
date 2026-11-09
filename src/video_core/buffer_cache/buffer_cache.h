@@ -262,7 +262,7 @@ void BufferCache<P>::DownloadCheckpointMemory() requires HAS_CHECKPOINT_READBACK
                     auto block = std::span<u8>{bytes}.first(count);
                     runtime.ReadCheckpointBuffer(buffer, begin - buffer.CpuAddr(), block);
                     device_memory.WriteBlockUnsafe(begin, block.data(), block.size());
-                    download_shadow.Store(begin, block.data(), block.size());
+                    download_shadow.HostWritten(begin, block.data(), block.size());
                     copied_bytes += count;
                     begin += count;
                 }
@@ -749,7 +749,7 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
     }
     auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes, true);
     boost::container::small_vector<BufferCopy, 4> normalized_copies;
-    boost::container::small_vector<std::vector<u8>, 4> baselines;
+    const u64 merge_record = ReadbackTrace::MergeDownloads() ? download_shadow.BeginRecord() : 0;
     runtime.PreCopyBarrier();
     for (auto& [copy, buffer_id] : downloads) {
         copy.dst_offset += download_staging.offset;
@@ -762,11 +762,13 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
         buffer.MarkUsage(copy.src_offset, copy.size);
         runtime.CopyBuffer(download_staging.buffer, buffer, copies, false);
         normalized_copies.push_back(second_copy);
-        baselines.push_back(TakeBaseline(orig_device_addr, copy.size));
+        if (merge_record != 0) {
+            TrackDownload(orig_device_addr, copy.size, merge_record);
+        }
     }
     runtime.PostCopyBarrier();
     pending_downloads.emplace_back(std::move(normalized_copies));
-    pending_baselines.emplace_back(std::move(baselines));
+    pending_records.push_back(merge_record);
     superseded_downloads.emplace_back();
     async_buffers.emplace_back(download_staging);
 }
@@ -790,8 +792,12 @@ void BufferCache<P>::PopAsyncBuffers() {
         async_buffers.pop_front();
         return;
     }
+    const bool timed = WriteWatch::Enabled();
+    const auto pop_begin = timed ? std::chrono::steady_clock::now()
+                                 : std::chrono::steady_clock::time_point{};
     auto& downloads = pending_downloads.front();
     auto& async_buffer = async_buffers.front();
+    const u64 merge_record = pending_records.front();
     u8* base = async_buffer->mapped_span.data();
     const size_t base_offset = async_buffer->offset;
     const Common::RangeSet<DAddr>& superseded = superseded_downloads.front();
@@ -808,9 +814,7 @@ void BufferCache<P>::PopAsyncBuffers() {
             func(cursor, end);
         }
     };
-    size_t copy_index{};
     for (const auto& copy : downloads) {
-        const std::vector<u8>& baseline = pending_baselines.front()[copy_index++];
         const DAddr device_addr = static_cast<DAddr>(copy.src_offset);
         const u64 dst_offset = copy.dst_offset - base_offset;
         const u8* read_mapped_memory = base + dst_offset;
@@ -825,7 +829,7 @@ void BufferCache<P>::PopAsyncBuffers() {
                                                     write_origin_seq);
                 }
                 LandDownload(start, end - start, &read_mapped_memory[start - device_addr],
-                             baseline.empty() ? nullptr : baseline.data() + (start - device_addr));
+                             merge_record);
                 ReadbackTrace::Log("buffer async", start, end - start,
                                    {&read_mapped_memory[start - device_addr], end - start});
             });
@@ -839,41 +843,30 @@ void BufferCache<P>::PopAsyncBuffers() {
     async_buffers_death_ring.emplace_back(*async_buffer);
     async_buffers.pop_front();
     pending_downloads.pop_front();
-    for (std::vector<u8>& baseline : pending_baselines.front()) {
-        ReleaseBaseline(std::move(baseline));
-    }
-    pending_baselines.pop_front();
+    pending_records.pop_front();
     superseded_downloads.pop_front();
+    if (merge_record != 0) {
+        download_shadow.Retire(merge_record);
+    }
     ApplyKeptCpuWrites();
+    if (timed) {
+        merge_cost.pop += std::chrono::steady_clock::now() - pop_begin;
+        ++merge_cost.pops;
+    }
     ReportMergeCost();
 }
 
 template <class P>
-std::vector<u8> BufferCache<P>::TakeBaseline(DAddr address, u64 size) {
-    if (!ReadbackTrace::MergeDownloads()) {
-        return {};
+void BufferCache<P>::TrackDownload(DAddr address, u64 size, u64 record) {
+    const bool timed = WriteWatch::Enabled();
+    const auto begin = timed ? std::chrono::steady_clock::now()
+                             : std::chrono::steady_clock::time_point{};
+    if (!download_shadow.Track(address, size, record, device_memory) && !merge_shadow_full) {
+        merge_shadow_full = true;
+        LOG_WARNING(HW_GPU, "Download shadow full: some downloads land whole");
     }
-    const auto begin = std::chrono::steady_clock::now();
-    std::vector<u8> baseline;
-    if (!baseline_pool.empty()) {
-        baseline = std::move(baseline_pool.back());
-        baseline_pool.pop_back();
-    }
-    if (!download_shadow.Snapshot(address, size, device_memory, baseline)) {
-        baseline.clear();
-    }
-    merge_cost.snapshot += std::chrono::steady_clock::now() - begin;
-    merge_cost.snapshot_bytes += size;
-    return baseline;
-}
-
-template <class P>
-void BufferCache<P>::ReleaseBaseline(std::vector<u8>&& baseline) {
-    constexpr size_t MAX_POOLED = 16;
-    constexpr size_t MAX_POOLED_BYTES = 4 * 1024 * 1024;
-    if (baseline.capacity() != 0 && baseline.capacity() <= MAX_POOLED_BYTES &&
-        baseline_pool.size() < MAX_POOLED) {
-        baseline_pool.push_back(std::move(baseline));
+    if (timed) {
+        merge_cost.track += std::chrono::steady_clock::now() - begin;
     }
 }
 
@@ -890,104 +883,63 @@ void BufferCache<P>::ReportMergeCost() {
         return std::chrono::duration_cast<std::chrono::microseconds>(time).count();
     };
     LOG_INFO(HW_GPU,
-             "Download merge in {} ms: snapshot {} us for {} KiB, landing {} us for {} KiB, "
-             "{} kept runs {} us, shadow {} KiB",
+             "Download merge in {} ms: track {} us, merge {} us for {} ranges {} KiB, land runs {} "
+             "for {} KiB, whole {} us for {} KiB, kept runs {} {} us, pop {} us for {} pops, "
+             "shadow {} KiB, version pages {}",
              std::chrono::duration_cast<std::chrono::milliseconds>(now - merge_cost.since).count(),
-             us(merge_cost.snapshot), merge_cost.snapshot_bytes / 1024, us(merge_cost.landing),
-             merge_cost.landed_bytes / 1024, merge_cost.kept_runs, us(merge_cost.kept),
-             download_shadow.Bytes() / 1024);
+             us(merge_cost.track), us(merge_cost.merge), merge_cost.merge_ranges,
+             merge_cost.merge_bytes / 1024, merge_cost.land_runs, merge_cost.land_bytes / 1024,
+             us(merge_cost.whole), merge_cost.whole_bytes / 1024, merge_cost.kept_runs,
+             us(merge_cost.kept), us(merge_cost.pop), merge_cost.pops,
+             download_shadow.Bytes() / 1024, download_shadow.VersionPages());
     merge_cost = {};
     merge_cost.since = now;
 }
 
 template <class P>
-void BufferCache<P>::LandDownload(DAddr start, u64 size, const u8* incoming, const u8* baseline) {
-    if (!baseline || ((start | size) & 3) != 0) {
+void BufferCache<P>::LandDownload(DAddr start, u64 size, const u8* incoming, u64 record) {
+    const bool timed = WriteWatch::Enabled();
+    const auto begin = timed ? std::chrono::steady_clock::now()
+                             : std::chrono::steady_clock::time_point{};
+    if (record == 0 || ((start | size) & 3) != 0) {
         WriteWatch::Note(WriteWatch::Kind::Download, start, size);
         device_memory.WriteBlockUnsafe(start, incoming, size);
-        download_shadow.Store(start, incoming, size);
-        UpdatePendingBaselines(start, incoming, size);
+        download_shadow.Landed(start, incoming, size);
+        if (timed) {
+            merge_cost.whole += std::chrono::steady_clock::now() - begin;
+            merge_cost.whole_bytes += size;
+        }
         return;
     }
-    // Three values per word: the host before the download was recorded, the download, and guest
-    // memory now. The GPU changed what differs from the first; everything else in guest memory
-    // that differs from the download was written by the CPU and has not reached the host.
-    const auto begin = std::chrono::steady_clock::now();
-    merge_guest.resize(size);
-    device_memory.ReadBlockUnsafe(start, merge_guest.data(), size);
-    enum class Run { None, Land, Keep };
-    Run run = Run::None;
-    u64 run_start = 0;
-    const auto close_run = [&](u64 offset) {
-        const u64 length = offset - run_start;
-        const DAddr address = start + run_start;
-        if (run == Run::Land) {
+    download_shadow.Merge(
+        start, size, incoming, record, device_memory,
+        [&](DAddr address, u64 length) {
             WriteWatch::Note(WriteWatch::Kind::Download, address, length);
-            device_memory.WriteBlockUnsafe(address, incoming + run_start, length);
-            download_shadow.Store(address, incoming + run_start, length);
-            UpdatePendingBaselines(address, incoming + run_start, length);
-        } else if (run == Run::Keep) {
+            ++merge_cost.land_runs;
+            merge_cost.land_bytes += length;
+        },
+        [&](DAddr address, u64 length) {
             WriteWatch::Note(WriteWatch::Kind::Kept, address, length);
-            merge_kept.emplace_back(address, length);
-        }
-    };
-    // Nearly every word matches in all three, so whole blocks are skipped first.
-    constexpr u64 BLOCK = 64;
-    for (u64 offset = 0; offset < size;) {
-        if (offset % BLOCK == 0 && size - offset >= BLOCK &&
-            std::memcmp(incoming + offset, baseline + offset, BLOCK) == 0 &&
-            std::memcmp(incoming + offset, merge_guest.data() + offset, BLOCK) == 0) {
-            if (run != Run::None) {
-                close_run(offset);
-                run = Run::None;
+            if (!merge_kept.empty() &&
+                merge_kept.back().first + merge_kept.back().second == address) {
+                merge_kept.back().second += length;
+            } else {
+                merge_kept.emplace_back(address, length);
             }
-            offset += BLOCK;
-            continue;
-        }
-        u32 from_gpu;
-        u32 before;
-        u32 guest;
-        std::memcpy(&from_gpu, incoming + offset, sizeof(u32));
-        std::memcpy(&before, baseline + offset, sizeof(u32));
-        std::memcpy(&guest, merge_guest.data() + offset, sizeof(u32));
-        const Run word = from_gpu != before ? Run::Land : (from_gpu != guest ? Run::Keep : Run::None);
-        if (word != run) {
-            close_run(offset);
-            run = word;
-            run_start = offset;
-        }
-        offset += sizeof(u32);
-    }
-    close_run(size);
-    merge_cost.landing += std::chrono::steady_clock::now() - begin;
-    merge_cost.landed_bytes += size;
-}
-
-template <class P>
-void BufferCache<P>::UpdatePendingBaselines(DAddr address, const u8* data, u64 size) {
-    // Downloads recorded after this one saw the same GPU value once it landed: comparing them with
-    // the older contents would read it as a CPU write when the GPU changes it back.
-    for (size_t index = 0; index < pending_baselines.size(); ++index) {
-        const auto& copies = pending_downloads[index];
-        auto& baselines = pending_baselines[index];
-        for (size_t copy = 0; copy < copies.size(); ++copy) {
-            if (baselines[copy].empty()) {
-                continue;
-            }
-            const DAddr copy_start = static_cast<DAddr>(copies[copy].src_offset);
-            const DAddr lower = (std::max)(address, copy_start);
-            const DAddr upper = (std::min)(address + size, copy_start + copies[copy].size);
-            if (lower < upper) {
-                std::memcpy(baselines[copy].data() + (lower - copy_start), data + (lower - address),
-                            upper - lower);
-            }
-        }
+        });
+    if (timed) {
+        merge_cost.merge += std::chrono::steady_clock::now() - begin;
+        merge_cost.merge_bytes += size;
+        ++merge_cost.merge_ranges;
     }
 }
 
 template <class P>
 void BufferCache<P>::ApplyKeptCpuWrites() {
     // These may never reach the CPU hook, so nothing else would upload them.
+    if (merge_kept.empty()) {
+        return;
+    }
     const auto begin = std::chrono::steady_clock::now();
     for (const auto& [address, size] : merge_kept) {
         WriteMemory(address, size);
@@ -2176,7 +2128,7 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
             u8* const src_pointer = staging_pointer.data() + copy.src_offset;
             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
             device_memory.ReadBlockUnsafe(device_addr, src_pointer, copy.size);
-            download_shadow.Store(device_addr, src_pointer, copy.size);
+            download_shadow.HostWritten(device_addr, src_pointer, copy.size);
             // Apply the staging offset
             copy.src_offset += upload_staging.offset;
         }
@@ -2283,10 +2235,12 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
             // Undo the modified offset
             const u64 dst_offset = copy.dst_offset - download_staging.offset;
             const u8* copy_mapped_memory = mapped_memory + dst_offset;
-            std::vector<u8> baseline = TakeBaseline(copy_device_addr, copy.size);
+            const bool merge = ReadbackTrace::MergeDownloads();
+            if (merge) {
+                TrackDownload(copy_device_addr, copy.size, 0);
+            }
             LandDownload(copy_device_addr, copy.size, copy_mapped_memory,
-                         baseline.empty() ? nullptr : baseline.data());
-            ReleaseBaseline(std::move(baseline));
+                         merge ? DownloadShadow::LATEST : 0);
             ReadbackTrace::Log("buffer sync", copy_device_addr, copy.size,
                                {copy_mapped_memory, copy.size});
         }

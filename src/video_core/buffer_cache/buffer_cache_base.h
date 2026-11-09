@@ -334,11 +334,9 @@ public:
     void PopAsyncBuffers();
 
     /// Puts downloaded bytes in guest memory. With a baseline, only the words the GPU changed.
-    void LandDownload(DAddr start, u64 size, const u8* incoming, const u8* baseline);
-    void UpdatePendingBaselines(DAddr address, const u8* data, u64 size);
+    void LandDownload(DAddr start, u64 size, const u8* incoming, u64 record);
     void ApplyKeptCpuWrites();
-    [[nodiscard]] std::vector<u8> TakeBaseline(DAddr address, u64 size);
-    void ReleaseBaseline(std::vector<u8>&& baseline);
+    void TrackDownload(DAddr address, u64 size, u64 record);
     void ReportMergeCost();
 
     bool DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount);
@@ -572,20 +570,25 @@ private:
     Common::OverlapRangeSet<DAddr> async_downloads;
     std::deque<std::optional<Async_Buffer>> async_buffers;
     std::deque<boost::container::small_vector<BufferCopy, 4>> pending_downloads;
-    /// For each copy of pending_downloads, the host contents when it was recorded (empty: lands whole).
-    std::deque<boost::container::small_vector<std::vector<u8>, 4>> pending_baselines;
+    /// For each entry of pending_downloads, its group in download_shadow (0: lands whole).
+    std::deque<u64> pending_records;
     DownloadShadow download_shadow;
-    std::vector<u8> merge_guest;
+    bool merge_shadow_full{};
     boost::container::small_vector<std::pair<DAddr, u64>, 16> merge_kept;
-    std::vector<std::vector<u8>> baseline_pool;
     /// Time spent merging downloads, logged while the write watch is on.
     struct MergeCost {
-        std::chrono::steady_clock::duration snapshot{};
-        std::chrono::steady_clock::duration landing{};
+        std::chrono::steady_clock::duration track{};
+        std::chrono::steady_clock::duration merge{};
+        std::chrono::steady_clock::duration whole{};
         std::chrono::steady_clock::duration kept{};
-        u64 snapshot_bytes{};
-        u64 landed_bytes{};
+        std::chrono::steady_clock::duration pop{};
+        u64 merge_ranges{};
+        u64 merge_bytes{};
+        u64 land_runs{};
+        u64 land_bytes{};
+        u64 whole_bytes{};
         u64 kept_runs{};
+        u64 pops{};
         std::chrono::steady_clock::time_point since{std::chrono::steady_clock::now()};
     } merge_cost;
     /// Per pending download: ranges a GPU write rewrote after it was recorded, so it is stale there.
