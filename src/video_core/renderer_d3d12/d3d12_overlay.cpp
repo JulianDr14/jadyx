@@ -267,7 +267,9 @@ void RendererD3D12::DrawTraceIndicator(CommandStream* cmd,
 
 void RendererD3D12::DrawShaderIndicator(CommandStream* cmd,
                                         D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
-    const int building = gpu.ShaderNotify().ShadersBuilding();
+    // What is still compiling: the running total since the last idle moment kept climbing while
+    // a single slow pipeline was in the driver, as if nothing ever finished.
+    const int building = gpu.ShaderNotify().ShadersPending();
     if (building <= 0) {
         indicator_frames = 0;
         return;

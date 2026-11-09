@@ -11,6 +11,13 @@ class ShaderNotify {
 public:
     [[nodiscard]] int ShadersBuilding() noexcept;
 
+    /// Shaders started and not yet finished. Unlike ShadersBuilding(), which counts every shader
+    /// since the last idle moment, this goes down as each one completes.
+    [[nodiscard]] int ShadersPending() const noexcept {
+        return num_building.load(std::memory_order::relaxed) -
+               num_complete.load(std::memory_order::relaxed);
+    }
+
     void MarkShaderComplete() noexcept {
         ++num_complete;
     }
