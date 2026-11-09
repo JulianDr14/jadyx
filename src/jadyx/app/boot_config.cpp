@@ -362,6 +362,12 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 WriteDiag(std::string{"boot.cfg: precise_writes "} + (config.precise_writes ? "on" : "off"));
                 continue;
             }
+            if (line == "keep_cpu_writes=0" || line == "keep_cpu_writes=1") {
+                config.keep_cpu_writes = line.back() == '1';
+                WriteDiag(std::string{"boot.cfg: keep_cpu_writes "} +
+                          (config.keep_cpu_writes ? "on" : "off"));
+                continue;
+            }
             if (line == "indirect_cpu=0" || line == "indirect_cpu=1") {
                 config.indirect_cpu = line.back() == '1';
                 WriteDiag(std::string{"boot.cfg: indirect_cpu "} +

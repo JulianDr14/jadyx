@@ -132,6 +132,37 @@ inline std::vector<GpuByteLoss> TakeGpuLosses() {
     return taken;
 }
 
+/// Glitch hunt: a buffer download about to land over a CPU write that is still only in guest
+/// memory. Different words mean the download would undo the write.
+struct DownloadOverCpuWrite {
+    u64 address;
+    u64 size;
+    u32 different_words;
+    u32 first_different; ///< byte offset of the first different word
+    bool superseded;     ///< a later GPU write already keeps the download off these bytes
+    bool kept;           ///< keep_cpu_writes takes the write out of the download
+};
+inline std::vector<DownloadOverCpuWrite> download_overs;
+inline void RecordDownloadOverCpuWrite(const DownloadOverCpuWrite& record) {
+    std::scoped_lock lock{gpu_loss_mutex};
+    if (download_overs.size() < 8192) download_overs.push_back(record);
+}
+inline std::vector<DownloadOverCpuWrite> TakeDownloadOvers() {
+    std::vector<DownloadOverCpuWrite> taken;
+    std::scoped_lock lock{gpu_loss_mutex};
+    taken.swap(download_overs);
+    return taken;
+}
+
+/// Off by default ("keep_cpu_writes=1" or the glitch hunt page turns it on): a buffer download
+/// skips CPU writes collected but not yet gathered. Without it the download lands over them in
+/// guest memory, and the gather that follows uploads the old bytes, so the write is lost until
+/// the guest writes those bytes again. It releases whole 64-byte granules, so GPU bytes beside
+/// the write are dropped too.
+inline std::atomic_bool keep_cpu_writes{false};
+inline void SetKeepCpuWrites(bool enabled) { keep_cpu_writes.store(enabled, std::memory_order_relaxed); }
+inline bool KeepCpuWrites() { return keep_cpu_writes.load(std::memory_order_relaxed); }
+
 /// On by default ("precise_writes=0" or the glitch hunt page turns it off): a CPU write into a
 /// page the GPU wrote, but over none of the bytes the GPU wrote, is applied at once instead of
 /// waiting for the next cache invalidation. Without it, data the guest writes next to GPU output

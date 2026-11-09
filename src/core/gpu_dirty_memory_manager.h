@@ -56,22 +56,30 @@ public:
                 front_buffer.emplace_back(t);
             }
         }
-        for (auto& transform : front_buffer) {
-            size_t offset = 0;
-            u64 mask = transform.mask;
-            while (mask != 0) {
-                const size_t empty_bits = std::countr_zero(mask);
-                offset += empty_bits << align_bits;
-                mask = mask >> empty_bits;
+        for (const auto& transform : front_buffer) {
+            Visit(transform, callback);
+        }
+        std::scoped_lock lk(guard);
+        front_buffer.clear();
+    }
 
-                const size_t continuous_bits = std::countr_one(mask);
-                callback((static_cast<PAddr>(transform.address) << page_bits) + offset,
-                         continuous_bits << align_bits);
-                mask = continuous_bits < align_size ? (mask >> continuous_bits) : 0;
-                offset += continuous_bits << align_bits;
+    /// Visits the writes collected but not yet applied by Gather, without consuming them. Any
+    /// thread may call it, including while the thread that gathers runs Gather's callback.
+    void ForEachPending(const std::function<void(PAddr, size_t)>& callback) {
+        std::vector<TransformAddress> pending;
+        {
+            std::scoped_lock lk(guard);
+            pending.reserve(back_buffer.size() + front_buffer.size() + 1);
+            pending.insert(pending.end(), back_buffer.begin(), back_buffer.end());
+            pending.insert(pending.end(), front_buffer.begin(), front_buffer.end());
+            const TransformAddress t = current.load(std::memory_order_acquire);
+            if (IsValid(t.address)) {
+                pending.push_back(t);
             }
         }
-        front_buffer.clear();
+        for (const auto& transform : pending) {
+            Visit(transform, callback);
+        }
     }
 
 private:
@@ -88,6 +96,23 @@ private:
     constexpr static size_t align_size = 1U << align_bits;
     constexpr static size_t align_mask = align_size - 1;
     constexpr static TransformAddress default_transform = {.address = ~0U, .mask = 0U};
+
+    template <typename Callback>
+    static void Visit(const auto& transform, Callback& callback) {
+        size_t offset = 0;
+        u64 mask = transform.mask;
+        while (mask != 0) {
+            const size_t empty_bits = std::countr_zero(mask);
+            offset += empty_bits << align_bits;
+            mask = mask >> empty_bits;
+
+            const size_t continuous_bits = std::countr_one(mask);
+            callback((static_cast<PAddr>(transform.address) << page_bits) + offset,
+                     continuous_bits << align_bits);
+            mask = continuous_bits < align_size ? (mask >> continuous_bits) : 0;
+            offset += continuous_bits << align_bits;
+        }
+    }
 
     bool IsValid(PAddr address) {
         return address < (1ULL << 39);

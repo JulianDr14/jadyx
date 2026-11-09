@@ -152,6 +152,8 @@ public:
     void RequestFlushCommands();
     /// Synchronizes CPU writes with Host GPU memory.
     void InvalidateGPUCache();
+    /// Visits CPU writes InvalidateGPUCache has not applied yet. Any thread may call it.
+    void ForEachPendingCpuWrite(const std::function<void(DAddr, u64)>& callback);
     /// Signal the ending of command list.
     void OnCommandListEnd();
 

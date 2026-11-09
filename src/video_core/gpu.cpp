@@ -172,6 +172,11 @@ struct GPU::Impl {
         system.GatherGPUDirtyMemory(callback_writes);
     }
 
+    /// Visits CPU writes InvalidateGPUCache has not applied yet.
+    void ForEachPendingCpuWrite(const std::function<void(DAddr, u64)>& callback) {
+        system.ForEachPendingGPUDirtyMemory(callback);
+    }
+
     /// Signal the ending of command list.
     void OnCommandListEnd() {
         renderer->ReadRasterizer()->ReleaseFences(false);
@@ -591,6 +596,10 @@ void GPU::RequestFlushCommands() {
 
 void GPU::InvalidateGPUCache() {
     impl->InvalidateGPUCache();
+}
+
+void GPU::ForEachPendingCpuWrite(const std::function<void(DAddr, u64)>& callback) {
+    impl->ForEachPendingCpuWrite(callback);
 }
 
 void GPU::OnCommandListEnd() {

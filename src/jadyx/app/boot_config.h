@@ -173,6 +173,9 @@ struct BootConfig {
     /// On by default ("precise_writes=0" or the glitch hunt page turns it off): CPU writes into a
     /// GPU-written page but over none of its GPU bytes apply at once instead of being gathered.
     bool precise_writes{true};
+    /// Off by default ("keep_cpu_writes=1" or the glitch hunt page turns it on): buffer downloads
+    /// skip CPU writes not gathered yet, instead of landing over them in guest memory.
+    bool keep_cpu_writes{};
     /// Diagnostic ("compute_fresh=1", also on the glitch hunt page): dispatches upload their
     /// read-only inputs from guest memory every time.
     bool compute_fresh{};

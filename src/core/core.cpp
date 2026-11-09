@@ -668,6 +668,12 @@ void System::GatherGPUDirtyMemory(std::function<void(PAddr, size_t)>& callback) 
     }
 }
 
+void System::ForEachPendingGPUDirtyMemory(const std::function<void(PAddr, size_t)>& callback) {
+    for (auto& manager : impl->gpu_dirty_memory_managers) {
+        manager.ForEachPending(callback);
+    }
+}
+
 PerfStatsResults System::GetAndResetPerfStats() {
     return impl->GetAndResetPerfStats();
 }

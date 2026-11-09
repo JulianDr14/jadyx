@@ -24,6 +24,7 @@
 #include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/rasterizer_download_area.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/readback_trace.h"
 
 #include "video_core/frame_trace.h"
 #include "video_core/perf_counters.h"
@@ -334,6 +335,15 @@ private:
                 VideoCore::FrameTrace::Event::FenceFlushLockLong, trace_fence, trace_fence != 0};
             std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
             lock_span.Finish();
+            // A download holds what the buffer had when it was recorded. CPU writes collected
+            // since then are in guest memory only, so they leave the download before it lands.
+            if ((VideoCommon::ReadbackTrace::KeepCpuWrites() ||
+                 VideoCommon::ReadbackTrace::GpuLossRecording()) &&
+                buffer_cache.ShouldWaitAsyncFlushes()) {
+                gpu.ForEachPendingCpuWrite([this](DAddr address, u64 size) {
+                    buffer_cache.ApplyPendingCpuWrite(address, size);
+                });
+            }
             {
                 const VideoCore::FrameTrace::ScopedSpan span{
                     VideoCore::FrameTrace::Event::FenceTextureFlushLong, trace_fence, trace_fence != 0};

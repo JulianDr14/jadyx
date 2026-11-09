@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
@@ -148,6 +149,57 @@ void BufferCache<P>::GatheredCpuWrite(DAddr device_addr, u64 size) {
         }
     }
     WriteMemory(device_addr, size);
+}
+
+template <class P>
+void BufferCache<P>::ApplyPendingCpuWrite(DAddr device_addr, u64 size) {
+    // Every download lies inside the GPU-written ranges until it lands.
+    if (!device_addr || !size || !IsRegionGpuModified(device_addr, size)) {
+        return;
+    }
+    if (ReadbackTrace::GpuLossRecording()) {
+        RecordDownloadOverCpuWrite(device_addr, size);
+    }
+    if (ReadbackTrace::KeepCpuWrites()) {
+        GatheredCpuWrite(device_addr, size);
+    }
+}
+
+template <class P>
+void BufferCache<P>::RecordDownloadOverCpuWrite(DAddr device_addr, u64 size) {
+    if (!ShouldWaitAsyncFlushes()) {
+        return;
+    }
+    const auto& staging = *async_buffers.front();
+    const Common::RangeSet<DAddr>& superseded = superseded_downloads.front();
+    for (const auto& copy : pending_downloads.front()) {
+        const DAddr copy_start = static_cast<DAddr>(copy.src_offset);
+        const DAddr lower = (std::max)(device_addr, copy_start);
+        const DAddr upper = (std::min)(device_addr + size, copy_start + copy.size);
+        if (lower >= upper) {
+            continue;
+        }
+        const u8* const stored = staging.mapped_span.data() + (copy.dst_offset - staging.offset);
+        async_downloads.ForEachInRange(lower, upper - lower, [&](DAddr start, DAddr end, s32) {
+            std::vector<u8> guest(end - start);
+            device_memory.ReadBlockUnsafe(start, guest.data(), guest.size());
+            const u8* const incoming = stored + (start - copy_start);
+            u32 different{};
+            u32 first{};
+            for (size_t offset = 0; offset + 4 <= guest.size(); offset += 4) {
+                if (std::memcmp(guest.data() + offset, incoming + offset, 4) != 0) {
+                    first = different == 0 ? static_cast<u32>(offset) : first;
+                    ++different;
+                }
+            }
+            bool is_superseded{};
+            superseded.ForEachInRange(start, end - start,
+                                      [&](DAddr, DAddr) { is_superseded = true; });
+            ReadbackTrace::RecordDownloadOverCpuWrite({start, end - start, different, first,
+                                                       is_superseded,
+                                                       ReadbackTrace::KeepCpuWrites()});
+        });
+    }
 }
 
 template <class P>

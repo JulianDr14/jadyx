@@ -252,6 +252,10 @@ public:
     /// bytes it takes for the glitch hunt.
     void GatheredCpuWrite(DAddr device_addr, u64 size);
 
+    /// Takes a CPU write not gathered yet out of the downloads. The gather that follows repeats
+    /// this and also tells the other caches.
+    void ApplyPendingCpuWrite(DAddr device_addr, u64 size);
+
     void CachedWriteMemory(DAddr device_addr, u64 size);
 
     bool OnCPUWrite(DAddr device_addr, u64 size);
@@ -330,6 +334,7 @@ public:
     /// Pop asynchronous downloads
     void PopAsyncFlushes();
     void PopAsyncBuffers();
+    void RecordDownloadOverCpuWrite(DAddr device_addr, u64 size);
 
     bool DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount);
 

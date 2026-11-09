@@ -1348,6 +1348,13 @@ void RasterizerD3D12::FlushRegion(DAddr address, u64 size, VideoCommon::CacheTyp
     }
     if (True(which & VideoCommon::CacheType::BufferCache)) {
         std::scoped_lock lock{buffer_cache.mutex};
+        // The download below lands over guest memory, where these writes still are the only copy.
+        if (VideoCommon::ReadbackTrace::KeepCpuWrites() &&
+            buffer_cache.IsRegionGpuModified(address, size)) {
+            gpu.ForEachPendingCpuWrite([this](DAddr pending, u64 pending_size) {
+                buffer_cache.ApplyPendingCpuWrite(pending, pending_size);
+            });
+        }
         buffer_cache.DownloadMemory(address, size);
     }
     if (True(which & VideoCommon::CacheType::QueryCache)) query_cache.FlushRegion(address, size);
@@ -1504,6 +1511,13 @@ void RasterizerD3D12::InvalidateGPUCache() {
                                          glitch_hunt.Frame(), glitch_hunt.PeekCall(),
                                          loss.address, loss.size, loss.gpu_bytes,
                                          loss.kept ? " kept" : ""));
+        }
+        // "O": a download about to land over a CPU write not gathered yet.
+        for (const auto& over : VideoCommon::ReadbackTrace::TakeDownloadOvers()) {
+            glitch_hunt.Line(fmt::format("O f={} n={} a={:x} len={} diff={} first={} sup={} kept={}",
+                                         glitch_hunt.Frame(), glitch_hunt.PeekCall(), over.address,
+                                         over.size, over.different_words, over.first_different,
+                                         over.superseded ? 1 : 0, over.kept ? 1 : 0));
         }
     }
 }

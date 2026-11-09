@@ -228,6 +228,9 @@ public:
 
     void GatherGPUDirtyMemory(std::function<void(PAddr, size_t)>& callback);
 
+    /// Visits the CPU writes GatherGPUDirtyMemory has not applied yet, without consuming them.
+    void ForEachPendingGPUDirtyMemory(const std::function<void(PAddr, size_t)>& callback);
+
     [[nodiscard]] size_t GetCurrentHostThreadID() const;
 
     /// Gets and resets core performance statistics
