@@ -70,6 +70,7 @@
 #include "jadyx/app/boot_session.h"
 #include "jadyx/app/boot_settings.h"
 #include "jadyx/app/boot_state.h"
+#include "jadyx/app/freeze_watch.h"
 #include "jadyx/app/headless_emu_window.h"
 #include "jadyx/app/prewarm_budget.h"
 #include "jadyx/app/session_memory.h"
@@ -562,8 +563,10 @@ int GameSession::PlayLoop() {
     // Pulse: after a resume the presented frames are logged each second for 30 s, so a guest
     // that freezes shows when it stopped.
     u64 resume_frames = 0;
+    FreezeWatch freeze_watch;
     for (u32 tick = 1;; ++tick) {
         std::this_thread::sleep_for(TICK);
+        freeze_watch.Tick(menu.IsOpen() || system.IsPaused());
         if (play_session) play_session->Tick(!menu.IsOpen());
         memory->Tick(tick, menu.IsOpen());
         if (ConsumeStorageReadFailure()) {

@@ -18,6 +18,8 @@ add_executable(jadyx WIN32
     app/boot_settings.cpp
     app/boot_settings.h
     app/boot_state.h
+    app/freeze_watch.cpp
+    app/freeze_watch.h
     app/headless_emu_window.h
     app/session_memory.cpp
     app/session_memory.h
