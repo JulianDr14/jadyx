@@ -86,7 +86,8 @@ void RegisterNamedThread(const char* name, std::string where) {
     }
     HANDLE handle{};
     if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &handle,
-                         THREAD_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, 0)) {
+                         THREAD_QUERY_LIMITED_INFORMATION | THREAD_SET_LIMITED_INFORMATION | SYNCHRONIZE,
+                         FALSE, 0)) {
         return;
     }
     std::scoped_lock lk{g_named_mutex};
@@ -258,36 +259,34 @@ bool SetCpuPinMap(std::string_view map) {
 
 namespace {
 
-/// Places the calling thread; returns the CPU sets it now runs on, or "any".
-std::string PlaceCurrentThread(const char* name) {
-    const std::string any = "any";
+/// The CPU sets the thread called `name` goes on under the current CpuPin; empty, it floats.
+std::vector<ULONG> SetsFor(const char* name) {
     const CpuPin pin = g_pin.load(std::memory_order_relaxed);
     if (pin == CpuPin::Off) {
-        return any;
+        return {};
     }
     const Plan& plan = GetPlan();
     if (plan.cores.size() < 2) {
-        return any;
+        return {};
     }
     // Split needs a second logical processor on every core for the other threads.
     const bool split = pin == CpuPin::Split && plan.siblings.size() == plan.cores.size();
-    std::vector<ULONG> sets;
     if (pin == CpuPin::Map) {
         std::scoped_lock lk{g_placed_mutex};
-        sets = MapSets(plan, name);
-        if (sets.empty()) {
-            return any;
-        }
-    } else if (const int guest = GuestCore(name); guest >= 0) {
+        return MapSets(plan, name);
+    }
+    if (const int guest = GuestCore(name); guest >= 0) {
         const Core& core = plan.cores[static_cast<std::size_t>(guest) % plan.cores.size()];
-        if (split) {
-            sets.push_back(core.sets[0]);
-        } else {
-            sets = core.sets;
-        }
-    } else if (split) {
-        sets = plan.siblings;
-    } else {
+        return split ? std::vector<ULONG>{core.sets[0]} : core.sets;
+    }
+    return split ? plan.siblings : std::vector<ULONG>{};
+}
+
+/// Places the calling thread; returns the CPU sets it now runs on, or "any".
+std::string PlaceCurrentThread(const char* name) {
+    const std::string any = "any";
+    const std::vector<ULONG> sets = SetsFor(name);
+    if (sets.empty()) {
         return any;
     }
     const bool placed =
@@ -304,6 +303,36 @@ void PinCurrentThread(const char* name) {
         return;
     }
     RegisterNamedThread(name, PlaceCurrentThread(name));
+}
+
+std::size_t RepinNamedThreads() {
+    std::size_t moved = 0;
+    std::string placed;
+    {
+        std::scoped_lock lk{g_named_mutex};
+        for (NamedThread& thread : g_named) {
+            if (WaitForSingleObject(thread.handle, 0) != WAIT_TIMEOUT) {
+                continue; // Exited.
+            }
+            const std::vector<ULONG> sets = SetsFor(thread.name.c_str());
+            const std::string where = sets.empty() ? "any" : ListSets(sets);
+            if (where == thread.where) {
+                continue;
+            }
+            // No sets clears the thread's own choice: it floats again.
+            if (SetThreadSelectedCpuSets(thread.handle, sets.empty() ? nullptr : sets.data(),
+                                         static_cast<ULONG>(sets.size())) == 0) {
+                placed += " " + thread.name + "!=" + where;
+                continue;
+            }
+            thread.where = where;
+            placed += " " + thread.name + "=" + where;
+            ++moved;
+        }
+    }
+    std::scoped_lock lk{g_placed_mutex};
+    g_placed += " | moved:" + (placed.empty() ? std::string(" none") : placed);
+    return moved;
 }
 
 std::string NamedThreadCpuReport(std::size_t limit) {

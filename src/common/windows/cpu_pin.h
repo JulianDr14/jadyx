@@ -58,6 +58,11 @@ void SetCpuPin(CpuPin pin);
 /// SetCurrentThreadName.
 void PinCurrentThread(const char* name);
 
+/// Places again every named thread still running, under the current CpuPin and map, so a new
+/// map takes effect without restarting the game; threads the map no longer names float.
+/// Returns how many threads moved.
+std::size_t RepinNamedThreads();
+
 /// The physical cores and logical processors the plan uses, and the threads placed so far.
 [[nodiscard]] std::string CpuPinReport();
 
