@@ -191,6 +191,9 @@ private:
     void HandleOnlineHost(TimePoint now);
     void HostOnline(TimePoint now);
     void PollOnline();
+    void PollOnlineChat();
+    void HandleOnlineChat();
+    void SendOnlineChat(std::wstring_view text);
     bool HandleQuit();
     void HandlePageShortcuts();
     void HandleConfigurationPage();
@@ -302,6 +305,7 @@ private:
     TimePoint keyboard_notice_until{};
     TimePoint controller_notice_until{};
     TimePoint system_notice_until{};
+    TimePoint chat_toast_until{};
     TimePoint options_notice_until{};
     // Set by input handlers when the name editor closes: true keeps the name, false discards it.
     std::optional<bool> finish_name_editor;

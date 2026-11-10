@@ -554,8 +554,10 @@ void LibrarySession::PollOnline() {
     auto status = Online::Snapshot();
     if (status.version != online_page.status.version) {
         online_page.status = std::move(status);
+        if (!OnlineChatShows(online_page)) online_page.in_chat = false;
         dirty = true;
     }
+    PollOnlineChat();
     if (tab != LibraryTab::Online) return;
     auto lobby = Online::Lobby();
     if (lobby.version != online_page.lobby.version) {
@@ -578,6 +580,12 @@ void LibrarySession::HandleOnlinePage(TimePoint now) {
         return;
     }
     auto& page = online_page;
+    if (page.in_chat) {
+        HandleOnlineChat();
+        dirty = true;
+        actions &= Panel;
+        return;
+    }
     // Y switches the left card between joining and hosting.
     if (actions & Pin) {
         page.host = !page.host;
@@ -604,7 +612,14 @@ void LibrarySession::HandleOnlinePage(TimePoint now) {
         if (actions & Up && page.selected > 0) page.selected--;
         if (actions & Down && page.selected + 1 < OnlinePage::FixedRows) page.selected++;
         page.last_form = page.selected;
-        if (actions & Right && rooms) page.selected = OnlinePage::FixedRows + std::min(page.last_room, rooms - 1);
+        if (actions & Right && OnlineChatShows(page)) {
+            // In a room the right column is its chat.
+            page.in_chat = true;
+            page.chat = {};
+            Online::MarkChatRead();
+        } else if (actions & Right && rooms) {
+            page.selected = OnlinePage::FixedRows + std::min(page.last_room, rooms - 1);
+        }
     }
     if (actions & Refresh) Online::RefreshLobby();
     if (actions & Quit) {
@@ -727,6 +742,7 @@ void LibrarySession::OpenOnlineEditor(EditorPurpose purpose) {
         max_length = 5;
         break;
     case EditorPurpose::HostPassword: initial = online_page.host_password; break;
+    case EditorPurpose::ChatMessage: max_length = ChatMaxChars; break;
     default: break;
     }
     system_page.name_editor.emplace(std::move(initial), max_length);
@@ -801,6 +817,10 @@ void LibrarySession::FinishOnlineEditor(bool accept, TimePoint now) {
         page.host_password = std::move(value);
         save = false;
         break;
+    case EditorPurpose::ChatMessage:
+        save = false;
+        SendOnlineChat(value);
+        break;
     case EditorPurpose::UserName: break;
     }
     system_page.name_editor.reset();
@@ -809,6 +829,85 @@ void LibrarySession::FinishOnlineEditor(bool accept, TimePoint now) {
         system_page.notice = Tr(saved ? T::SettingsSaved : T::SystemSaveFailed);
         system_notice_until = now + std::chrono::seconds{3};
     }
+}
+
+// The room's chat: copied when it changes. Read while it shows; on the other tabs new messages
+// from others show a few seconds in a card.
+void LibrarySession::PollOnlineChat() {
+    auto& page = online_page;
+    const auto now = std::chrono::steady_clock::now();
+    if (!page.toast.empty() && (now >= chat_toast_until || tab == LibraryTab::Online)) {
+        page.toast.clear();
+        dirty = true;
+    }
+    const std::uint64_t version = Online::ChatVersion();
+    if (version == page.chat_version) return;
+    page.chat_version = version;
+    auto chat = Online::Chat();
+    const std::uint64_t last_id = std::exchange(page.chat_last_id, chat.lines.empty() ? 0 : chat.lines.back().id);
+    std::size_t added = 0;
+    bool incoming = false;
+    for (const auto& line : chat.lines) {
+        if (line.id <= last_id) continue;
+        ++added;
+        incoming |= line.kind == Online::ChatKind::Message && !line.own;
+    }
+    page.chat_lines.clear();
+    page.chat_lines.reserve(chat.lines.size());
+    for (const auto& line : chat.lines) page.chat_lines.push_back(ChatLineInWords(line));
+    if (tab == LibraryTab::Online && OnlineChatShows(page)) {
+        page.chat.Grew(added, page.chat_lines.size());
+        Online::MarkChatRead();
+        page.chat_version = Online::ChatVersion();
+    } else if (incoming && tab != LibraryTab::Online && Online::LoadChatNotices() != Online::ChatNotices::Off) {
+        constexpr std::size_t Shown = 2;
+        page.toast.clear();
+        for (auto it = chat.lines.rbegin(); it != chat.lines.rend() && page.toast.size() < Shown; ++it)
+            if (it->kind == Online::ChatKind::Message && !it->own) page.toast.push_back(ChatLineInWords(*it));
+        std::reverse(page.toast.begin(), page.toast.end());
+        page.toast_more = chat.unread > page.toast.size() ? chat.unread - page.toast.size() : 0;
+        chat_toast_until = now + std::chrono::seconds{5};
+    }
+    dirty = true;
+}
+
+void LibrarySession::HandleOnlineChat() {
+    auto& page = online_page;
+    if (actions & Left && !page.chat.picking) {
+        page.in_chat = false;
+        return;
+    }
+    // The library's buttons, as the menu's: A writes, X picks a quick phrase, B goes back.
+    std::optional<MenuAction> action;
+    if (actions & Up) action = MenuAction::Up;
+    else if (actions & Down) action = MenuAction::Down;
+    else if (actions & Play) action = MenuAction::Confirm;
+    else if (actions & Refresh) action = MenuAction::Refresh;
+    else if (actions & Quit) action = MenuAction::Back;
+    if (!action) return;
+    using Effect = Online::ChatPage::Effect;
+    switch (page.chat.Handle(*action, page.chat_lines.size())) {
+    case Effect::None:
+    case Effect::Redraw: break;
+    case Effect::Compose:
+        page.chat_notice.clear();
+        OpenOnlineEditor(EditorPurpose::ChatMessage);
+        break;
+    case Effect::Send:
+        SendOnlineChat(Tr(QuickPhraseText(Online::PhraseAt(page.chat.phrase))));
+        break;
+    case Effect::Back: page.in_chat = false; break;
+    }
+}
+
+void LibrarySession::SendOnlineChat(std::wstring_view text) {
+    auto& page = online_page;
+    page.chat.scroll = 0;
+    if (Online::SendChat(OnlineNarrow(text))) {
+        page.chat_notice.clear();
+        return;
+    }
+    if (!Online::InRoom()) page.chat_notice = Tr(T::ChatNotSent);
 }
 
 void LibrarySession::JoinOnline(const std::string& address, std::uint16_t port, const std::string& password,

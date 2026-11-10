@@ -21,7 +21,7 @@ namespace Jadyx {
 /// What the shared keyboard (SystemPage::name_editor) is typing. Settings > Online borrows it.
 enum class EditorPurpose : std::uint8_t {
     UserName, OnlineNickname, OnlineAddress, OnlinePort, OnlinePassword, RoomPassword,
-    HostName, HostSlots, HostPort, HostPassword,
+    HostName, HostSlots, HostPort, HostPassword, ChatMessage,
 };
 
 struct SystemPage {

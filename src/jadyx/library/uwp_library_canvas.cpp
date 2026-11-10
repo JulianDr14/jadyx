@@ -208,6 +208,10 @@ public:
             DrawFooter(view);
         }
         // On the Settings tab the controller's rows are its page; only the device list floats.
+        // New room messages on the other tabs: a card under the header, top right.
+        if (view.tab != LibraryTab::Online && !view.online.toast.empty() && !management)
+            ChatNotice(view.online.toast, view.online.toast_more, Tr(T::ChatAnswerOnline),
+                       1280 - LibraryLayout::Margin - ChatNoticeWidth, 104);
         if (view.controller_panel && view.tab != LibraryTab::Settings) DrawControllerPanel(view);
         else if (view.controller_panel && panel.expanded) DrawControllerChoices(view, true);
         if (panel.keyboard.open) {
@@ -1824,6 +1828,10 @@ private:
             button(!in_rooms && page.selected == OnlinePage::Connect, leave ? T::OnlineLeave : T::OnlineJoin, lx + 12,
                    y + 232, lw - 24, LibraryHit::OnlineRow, OnlinePage::Connect);
         }
+        if (OnlineChatShows(page)) {
+            DrawOnlineChat(view);
+            return;
+        }
         // The public rooms.
         const float rx = OnlineRightX, rw = OnlineRightWidth;
         const auto& lobby = page.lobby;
@@ -1911,6 +1919,42 @@ private:
     }
     /// Host mode's right column: before the room opens, what hosting means; once open, the
     /// addresses friends type (on the same network and over the internet) and who is in it.
+    /// In a room, Join mode's right column: the room's chat, its history or the quick phrases.
+    void DrawOnlineChat(const LibraryView& view) {
+        const auto& page = view.online;
+        const auto& status = page.status;
+        const float rx = OnlineRightX, rw = OnlineRightWidth;
+        Type(Tr(T::ChatTitle), TypeRole::HeadlineMedium, rx, OnlineTop - 2, rw, Palette::Text);
+        Type(I18n::Format(T::OnlinePlayers, {std::to_wstring(status.members.size()), std::to_wstring(status.slots)}),
+             TypeRole::Label, rx, OnlineTop + 36, rw, Palette::TextSecondary);
+        const float top = OnlineListTop, card_h = OnlineBottom - top;
+        Round(rx, top, rw, card_h, 18, Palette::Surface, 0.86f);
+        Outline(rx + 0.5f, top + 0.5f, rw - 1, card_h - 1, 18, 0xffffff, page.in_chat ? 0.5f : 0.06f);
+        const float x = rx + 20, w = rw - 40;
+        if (page.chat.picking) {
+            Type(Upper(Tr(T::ChatQuick)), TypeRole::Caps, x, top + 18, w, Palette::TextSecondary);
+            for (std::size_t i = 0; i < Online::QuickPhrases.size(); ++i) {
+                const float y = top + 46 + static_cast<float>(i) * 50;
+                const bool active = i == page.chat.phrase;
+                if (active) FocusGlow(x, y, w, 44, 12, 1);
+                Round(x, y, w, 44, 12, active ? 0x333537 : Palette::Canvas, active ? 1.0f : 0.55f);
+                Type(Tr(QuickPhraseText(Online::QuickPhrases[i])), TypeRole::Body, x + 18, y + 11, w - 36,
+                     Palette::Text);
+            }
+            return;
+        }
+        const float bottom = OnlineBottom - (page.chat_notice.empty() ? 24.0f : 52.0f);
+        if (page.chat_lines.empty()) {
+            const float middle = top + card_h / 2;
+            Icon(UiIcon::Globe, rx + rw / 2 - 20, middle - 72, Palette::TextSecondary, 40);
+            Type(Tr(T::ChatEmpty), TypeRole::BodyLarge, rx + 48, middle - 16, rw - 96, Palette::Text, 1,
+                 TextAlign::Center, 3);
+        } else {
+            ChatHistory(page.chat_lines, page.chat.scroll, x, top + 16, w, bottom);
+        }
+        if (!page.chat_notice.empty())
+            Type(page.chat_notice, TypeRole::Label, x, bottom + 14, w, Palette::Warning, 1, TextAlign::Center);
+    }
     void DrawOnlineShare(const LibraryView& view, std::wstring_view user) {
         const auto& page = view.online;
         const auto& status = page.status;
@@ -1964,6 +2008,13 @@ private:
     void DrawOnlineFooter(const LibraryView& view, float x, float y) {
         const auto& page = view.online;
         const auto phase = page.status.phase;
+        if (page.in_chat) {
+            const bool picking = page.chat.picking;
+            x += ControlPrompt(Navigation::Play, Tr(picking ? T::ChatSend : T::ChatWrite), x, y);
+            if (!picking) x += ControlPrompt(Navigation::Rescan, Tr(T::ChatQuick), x, y);
+            ControlPrompt(Navigation::Back, Tr(T::Back), x, y);
+            return;
+        }
         T play = T::Change;
         if (page.host) {
             if (page.host_selected == OnlinePage::HostCreate)
@@ -2177,6 +2228,7 @@ private:
         case EditorPurpose::HostSlots: title = T::OnlineSlots; hint = T::OnlineSlotsEditorHint; break;
         case EditorPurpose::HostPort: title = T::OnlinePort; hint = T::OnlinePortEditorHint; break;
         case EditorPurpose::HostPassword: title = T::OnlinePassword; hint = T::OnlinePasswordEditorHint; break;
+        case EditorPurpose::ChatMessage: title = T::ChatMessageTitle; hint = T::ChatEditorHint; break;
         case EditorPurpose::UserName: break;
         }
         DrawTextEntryPanel(*this, {*page.name_editor, Tr(title), Tr(hint), page.editor_notice},
