@@ -3,6 +3,7 @@
 
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 
+#include <algorithm>
 #include <atomic>
 
 namespace D3D12 {
@@ -12,6 +13,9 @@ std::atomic<AsyncPipelines> async_pipelines{AsyncPipelines::Off};
 std::atomic<u32> wait_small_draws{0};
 std::atomic<u32> pipeline_workers{0};
 std::atomic<u32> pipeline_boot_workers{0};
+std::atomic<u32> build_base_priority{0};
+std::atomic<u32> build_boost_priority{0};
+std::atomic_bool build_lend{true};
 std::atomic<VideoCore::FramePipeline::Mode> pso_budget{VideoCore::FramePipeline::Mode::Off};
 std::atomic<VideoCore::FramePipeline::Mode> pso_loading{VideoCore::FramePipeline::Mode::Off};
 u64 pending_wait_us{}; // GPU thread
@@ -84,6 +88,27 @@ void SetPipelineBootWorkers(u32 count) {
 
 u32 GetPipelineBootWorkers() noexcept {
     return pipeline_boot_workers.load(std::memory_order_relaxed);
+}
+
+void SetPipelineBuildPriority(u32 base, u32 boost) {
+    build_base_priority.store(std::min<u32>(base, 4), std::memory_order_relaxed);
+    build_boost_priority.store(std::min<u32>(boost, 4), std::memory_order_relaxed);
+}
+
+u32 GetPipelineBuildBase() noexcept {
+    return build_base_priority.load(std::memory_order_relaxed);
+}
+
+u32 GetPipelineBuildBoost() noexcept {
+    return build_boost_priority.load(std::memory_order_relaxed);
+}
+
+void SetPipelineBuildLend(bool lend) {
+    build_lend.store(lend, std::memory_order_relaxed);
+}
+
+bool GetPipelineBuildLend() noexcept {
+    return build_lend.load(std::memory_order_relaxed);
 }
 
 PendingDrawAction DecidePendingDraw(AsyncPipelines mode, u32 small_draws,

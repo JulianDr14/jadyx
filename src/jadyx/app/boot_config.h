@@ -94,6 +94,13 @@ struct BootConfig {
     /// Workers that build the disk cache on the loading screen, 1-12 ("pso_boot_workers="); 0
     /// keeps the default of one per logical CPU.
     u32 pso_boot_workers{};
+    /// Build priority levels (D3D12::SetPipelineBuildPriority): 0 below normal ... 4 time
+    /// critical. Base of every build ("pso_priority=", default 0); a build some thread waits for
+    /// ("pso_boost=", default 0, off).
+    u32 pso_priority{0};
+    u32 pso_boost{0};
+    /// A thread blocked on a pipeline lends its CPUs to the build ("pso_lend=0" turns it off).
+    bool pso_lend{true};
     /// The driver's compiled PSOs kept on disk and handed back to it ("pso_blobs=1"); off by
     /// default, as the console's driver may not take them.
     bool pso_blobs{};
@@ -169,6 +176,8 @@ struct BootConfig {
     /// with healing on; "geo_hunt_check_kb=N" / "geo_hunt_upload_kb=N" set the per-frame budgets
     /// (0 = 4096 / 32768).
     bool geo_hunt{};
+    /// "pso_menu=1": the quick menu row that changes pso_boost at run time.
+    bool pso_menu{};
     bool geo_hunt_heal{};
     u32 geo_hunt_check_kb{};
     u32 geo_hunt_upload_kb{};

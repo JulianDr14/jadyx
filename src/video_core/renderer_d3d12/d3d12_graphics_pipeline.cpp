@@ -23,6 +23,7 @@
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/stall_watch.h"
+#include "common/thread_cpu_time.h"
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/gpu_thread.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
@@ -31,6 +32,7 @@
 #include "video_core/geometry_hunt.h"
 #include "video_core/memory_manager.h"
 #include "video_core/perf_counters.h"
+#include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 #include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_render_corrections.h"
@@ -74,6 +76,63 @@ std::atomic<u64> dxil_released{};
 std::atomic<u64> dxil_released_bytes{};
 std::atomic<u64> dxil_reloaded{};
 std::atomic<u64> dxil_reload_failed{};
+
+/// Driver PSO creations running now, for the slow PSO line.
+std::atomic<u32> pso_creates_in_flight{};
+std::atomic<u64> builder_boosts{};
+std::atomic<u64> builder_lends{};
+
+/// Windows priority of a build priority level (SetPipelineBuildPriority).
+int OsBuildPriority(u32 level) {
+    switch (level) {
+    case 0:
+        return THREAD_PRIORITY_BELOW_NORMAL;
+    case 1:
+        return THREAD_PRIORITY_NORMAL;
+    case 2:
+        return THREAD_PRIORITY_ABOVE_NORMAL;
+    case 3:
+        return THREAD_PRIORITY_HIGHEST;
+    default:
+        return THREAD_PRIORITY_TIME_CRITICAL;
+    }
+}
+
+/// A real handle to the calling thread that other threads can raise, made once per thread and
+/// never closed: build threads live as long as the pipelines that hold it.
+HANDLE BuildThreadHandle() {
+    thread_local HANDLE handle = [] {
+        HANDLE dup = nullptr;
+        if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &dup,
+                             THREAD_SET_LIMITED_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION,
+                             FALSE, 0)) {
+            return static_cast<HANDLE>(nullptr);
+        }
+        return dup;
+    }();
+    return handle;
+}
+
+/// The CPU sets a thread was placed on (cpu_pin), empty when it may run anywhere.
+std::vector<ULONG> ThreadCpuSets(HANDLE thread) {
+    std::vector<ULONG> sets(64);
+    ULONG count{};
+    if (!GetThreadSelectedCpuSets(thread, sets.data(), static_cast<ULONG>(sets.size()), &count)) {
+        return {};
+    }
+    sets.resize(count);
+    return sets;
+}
+
+/// Puts the calling build thread back on its own CPU sets after a waiter lent it its own.
+void RestoreBuildCpuSets() {
+    thread_local const std::vector<ULONG> home = ThreadCpuSets(GetCurrentThread());
+    const HANDLE self = GetCurrentThread();
+    if (ThreadCpuSets(self) != home) {
+        SetThreadSelectedCpuSets(self, home.empty() ? nullptr : home.data(),
+                                 static_cast<ULONG>(home.size()));
+    }
+}
 
 /// DXIL read back from disk, charged like the linked shader cache's entries.
 struct ReloadedDxil {
@@ -627,9 +686,67 @@ void GraphicsPipeline::RunClaimed(PendingBuild& build) {
             pending.reset();
         }
     }
+    // The thread's own priority, kept from its first build: a boost of an earlier build may still
+    // be on it, and is undone here as well.
+    thread_local const int home_priority = GetThreadPriority(GetCurrentThread());
+    const HANDLE self = GetCurrentThread();
+    const int base = std::max(home_priority, OsBuildPriority(GetPipelineBuildBase()));
+    if (home_priority != THREAD_PRIORITY_ERROR_RETURN && GetThreadPriority(self) != base) {
+        SetThreadPriority(self, base);
+    }
+    // CPUs lent for an earlier build too late to be given back by it go back here.
+    RestoreBuildCpuSets();
+    builder_boosted.store(false, std::memory_order_relaxed);
+    builder_lent.store(false, std::memory_order_relaxed);
+    builder_thread.store(BuildThreadHandle(), std::memory_order_release);
     // Moved out, so the job's captures are gone once it ran, whoever still holds the entry.
     const Common::UniqueFunction<void> job = std::move(build.run);
     job();
+    builder_thread.store(nullptr, std::memory_order_release);
+    if (builder_lent.load(std::memory_order_relaxed)) {
+        RestoreBuildCpuSets();
+    }
+    if (home_priority != THREAD_PRIORITY_ERROR_RETURN && GetThreadPriority(self) != home_priority) {
+        SetThreadPriority(self, home_priority);
+    }
+}
+
+void GraphicsPipeline::BoostBuilder() {
+    const HANDLE thread = static_cast<HANDLE>(builder_thread.load(std::memory_order_acquire));
+    if (!thread || thread == BuildThreadHandle()) {
+        return;
+    }
+    // The waiter sleeps until the build ends, so its logical processors are free meanwhile; the
+    // builder keeps its own as well. A waiter that may run anywhere has nothing to lend.
+    if (GetPipelineBuildLend() && !builder_lent.load(std::memory_order_relaxed)) {
+        std::vector<ULONG> sets = ThreadCpuSets(thread);
+        const std::vector<ULONG> mine = ThreadCpuSets(GetCurrentThread());
+        if (!sets.empty() && !mine.empty()) {
+            const std::size_t own = sets.size();
+            for (const ULONG id : mine) {
+                if (std::find(sets.begin(), sets.end(), id) == sets.end()) {
+                    sets.push_back(id);
+                }
+            }
+            if (sets.size() > own &&
+                SetThreadSelectedCpuSets(thread, sets.data(), static_cast<ULONG>(sets.size()))) {
+                builder_lent.store(true, std::memory_order_relaxed);
+                builder_lends.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+    const u32 level = GetPipelineBuildBoost();
+    if (level == 0 || builder_boosted.load(std::memory_order_relaxed)) {
+        return;
+    }
+    // Raised only, never lowered: the build may run on a thread that is already higher.
+    const int target = OsBuildPriority(level);
+    const int current = GetThreadPriority(thread);
+    if (current != THREAD_PRIORITY_ERROR_RETURN && current < target &&
+        SetThreadPriority(thread, target)) {
+        builder_boosted.store(true, std::memory_order_relaxed);
+        builder_boosts.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void GraphicsPipeline::Publish(State next) {
@@ -728,6 +845,11 @@ bool GraphicsPipeline::ReloadDxil() {
     return true;
 }
 
+GraphicsPipeline::BuilderHelpStats GraphicsPipeline::GetBuilderHelpStats() noexcept {
+    return {.boosts = builder_boosts.load(std::memory_order_relaxed),
+            .lends = builder_lends.load(std::memory_order_relaxed)};
+}
+
 GraphicsPipeline::DxilReleaseStats GraphicsPipeline::GetDxilReleaseStats() noexcept {
     return {.released = dxil_released.load(std::memory_order_relaxed),
             .released_bytes = dxil_released_bytes.load(std::memory_order_relaxed),
@@ -779,6 +901,7 @@ void GraphicsPipeline::WaitBuilt() {
         GetPipelineStats().inline_builds.fetch_add(1, std::memory_order_relaxed);
         RunClaimed(*build);
     }
+    BoostBuilder();
     std::unique_lock lock{build_mutex};
     // A build that ran out of memory ends dormant rather than ready.
     build_condvar.wait(lock, [this] {
@@ -787,6 +910,7 @@ void GraphicsPipeline::WaitBuilt() {
 }
 
 bool GraphicsPipeline::WaitBuiltFor(u64 microseconds) {
+    BoostBuilder();
     std::unique_lock lock{build_mutex};
     return build_condvar.wait_for(lock, std::chrono::microseconds{microseconds}, [this] {
         return build_state.load(std::memory_order::relaxed) != State::Building;
@@ -1629,7 +1753,8 @@ constexpr u64 SLOW_PSO_US = 5'000'000;
 
 /// Writes the DXIL of a pipeline the driver took a long time to create, once per pipeline, to
 /// LogDir/slow_pso/<vs>_<ps>_<stage>.dxil, so it can be dumped and reduced on a PC.
-void DumpSlowPso(u64 key_hash, u64 vs, u64 ps, u64 elapsed_us,
+void DumpSlowPso(u64 key_hash, u64 vs, u64 ps, u64 elapsed_us, std::optional<u64> cpu_ns,
+                 u32 others_at_start, u32 others_at_end, bool boosted, bool lent,
                  const std::array<std::vector<u8>, Maxwell::MaxShaderStage>& stages) {
     static std::mutex mutex;
     static std::unordered_set<u64> dumped;
@@ -1655,10 +1780,17 @@ void DumpSlowPso(u64 key_hash, u64 vs, u64 ps, u64 elapsed_us,
                   static_cast<std::streamsize>(stages[stage].size()));
         written += out ? 1 : 0;
     }
+    // CPU time far below the wall time: the thread was waiting for a core (or a lock), not
+    // compiling.
+    const std::string cpu =
+        cpu_ns ? fmt::format("{:.1f} s", static_cast<double>(*cpu_ns) / 1e9) : "unknown";
     LOG_WARNING(Render,
-                "D3D12: the driver took {:.1f} s to create the PSO of VS {:016x} PS {:016x}; "
+                "D3D12: the driver took {:.1f} s to create the PSO of VS {:016x} PS {:016x} "
+                "(thread CPU time {}, other PSOs in the driver {} at start and {} at end, {}, {}); "
                 "{} stages saved in slow_pso",
-                static_cast<double>(elapsed_us) / 1e6, vs, ps, written);
+                static_cast<double>(elapsed_us) / 1e6, vs, ps, cpu, others_at_start,
+                others_at_end, boosted ? "raised for a waiting thread" : "not raised",
+                lent ? "given the waiting thread's CPUs" : "no CPUs lent", written);
 }
 } // Anonymous namespace
 
@@ -1748,6 +1880,8 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
     };
     const auto create = [&] {
         const u64 create_start = SteadyMicros();
+        const std::optional<u64> cpu_start = Common::CurrentThreadCpuTimeNs();
+        const u32 others_at_start = pso_creates_in_flight.fetch_add(1, std::memory_order_relaxed);
         VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::PsoCreateUs};
         VideoCore::Perf::Add(VideoCore::Perf::Counter::PsoCreates, 1);
         VideoCore::FrameTrace::ScopedSpan pso_span{
@@ -1768,9 +1902,16 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
             hr = create_pso(result.handle);
         }
         const u64 create_us = SteadyMicros() - create_start;
+        const u32 others_at_end = pso_creates_in_flight.fetch_sub(1, std::memory_order_relaxed) - 1;
         GetPipelineStats().Record(PipelineStage::PsoCreate, create_us);
         if (create_us >= SLOW_PSO_US) {
-            DumpSlowPso(key.Hash(), key.unique_hashes[1], key.unique_hashes[5], create_us, stages);
+            const std::optional<u64> cpu_end = Common::CurrentThreadCpuTimeNs();
+            const std::optional<u64> cpu_ns =
+                cpu_start && cpu_end ? std::optional<u64>{*cpu_end - *cpu_start} : std::nullopt;
+            DumpSlowPso(key.Hash(), key.unique_hashes[1], key.unique_hashes[5], create_us, cpu_ns,
+                        others_at_start, others_at_end,
+                        builder_boosted.load(std::memory_order_relaxed),
+                        builder_lent.load(std::memory_order_relaxed), stages);
         }
         // Failed entries must not poison the index. All current waiters receive the HRESULT.
         if (FAILED(hr)) {

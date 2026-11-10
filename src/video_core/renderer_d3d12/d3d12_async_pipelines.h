@@ -55,6 +55,20 @@ void SetPipelineWorkers(u32 count);
 void SetPipelineBootWorkers(u32 count);
 [[nodiscard]] u32 GetPipelineBootWorkers() noexcept;
 
+/// OS priority of pipeline builds, as a level: 0 below normal, 1 normal, 2 above normal,
+/// 3 highest, 4 time critical. The base is what every build runs at least at ("pso_priority=",
+/// default 0, the workers' own). The boost is what a build some thread waits for gets
+/// ("pso_boost=", default 0, off): the builders share a logical processor with present, vsync
+/// and audio, next to a guest core, so a raised build takes time from the game.
+void SetPipelineBuildPriority(u32 base, u32 boost);
+[[nodiscard]] u32 GetPipelineBuildBase() noexcept;
+[[nodiscard]] u32 GetPipelineBuildBoost() noexcept;
+
+/// A thread that blocks on a pipeline lends its own logical processors to the thread building
+/// it until the build ends ("pso_lend=", default on): the waiter sleeps, so they are free.
+void SetPipelineBuildLend(bool lend);
+[[nodiscard]] bool GetPipelineBuildLend() noexcept;
+
 /// A draw whose pipeline is still being built.
 struct PendingDraw {
     u32 vertices;

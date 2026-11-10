@@ -302,6 +302,8 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetWaitSmallDraws(config.wait_small_draws);
     D3D12::SetPipelineWorkers(config.pso_workers);
     D3D12::SetPipelineBootWorkers(config.pso_boot_workers);
+    D3D12::SetPipelineBuildPriority(config.pso_priority, config.pso_boost);
+    D3D12::SetPipelineBuildLend(config.pso_lend);
     D3D12::SetPsoBlobs(config.pso_blobs);
     D3D12::SetCachedStaging(config.cached_staging);
     D3D12::SetCpuTextureWrites(config.cpu_texture_writes);

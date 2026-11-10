@@ -1189,11 +1189,14 @@ void PipelineCache::LogPipelineStats(std::string_view when) const {
                             name, summary.count, ms(summary.p50), ms(summary.p95),
                             ms(summary.p99), ms(summary.max), ms(summary.total));
     }
+    const auto help = GraphicsPipeline::GetBuilderHelpStats();
     LOG_INFO(Render,
-             "D3D12 pipeline stages ({}, ms): {} inline builds, {} prewarmed, {} of them drawn{}",
+             "D3D12 pipeline stages ({}, ms): {} inline builds, {} prewarmed, {} of them drawn; "
+             "waited builds raised {} (priority {}), given CPUs {}{}",
              when, stats.inline_builds.load(std::memory_order_relaxed),
              stats.prewarm_queued.load(std::memory_order_relaxed),
-             stats.prewarm_hits.load(std::memory_order_relaxed), line);
+             stats.prewarm_hits.load(std::memory_order_relaxed), help.boosts,
+             GetPipelineBuildBoost(), help.lends, line);
     if (PipelineKeyFold::GetMode() != PipelineKeyFold::Mode::Off) {
         LOG_INFO(Render,
                  "D3D12 pipeline key folding ({}): {} keys found a pipeline through it; checks: {} "

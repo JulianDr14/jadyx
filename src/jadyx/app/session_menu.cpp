@@ -25,6 +25,7 @@
 #include "video_core/gpu.h"
 #include "video_core/performance_overlay.h"
 #include "video_core/renderer_base.h"
+#include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 
 #include "jadyx/network/online_rooms.h"
 #include "jadyx/app/boot_diag.h"
@@ -167,7 +168,8 @@ void SessionMenu::Open() {
                                   program_id != 0 && !mii_editor,
                                   config.glitch_hunt_menu, glitch_toggles,
                                   config.geo_hunt && VideoCommon::GeoHunt::Enabled(),
-                                  VideoCommon::GeoHunt::Healing()},
+                                  VideoCommon::GeoHunt::Healing(), config.pso_menu,
+                                  D3D12::GetPipelineBuildBoost()},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
     if (game_title.empty()) {
@@ -461,6 +463,11 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
     if (result == GameMenuResult::GeoHealChanged) {
         VideoCommon::GeoHunt::SetHeal(menu->Settings().geo_heal);
         WriteDiag(std::string{"menu: geometry hunt heal "} + (menu->Settings().geo_heal ? "on" : "off"));
+    }
+    if (result == GameMenuResult::PsoBoostChanged) {
+        D3D12::SetPipelineBuildPriority(D3D12::GetPipelineBuildBase(), menu->Settings().pso_boost);
+        WriteDiag("menu: waited pipeline build priority " +
+                  std::to_string(menu->Settings().pso_boost));
     }
     if (result == GameMenuResult::GraphicsChanged) {
         const GameGraphics& game = menu->Settings().graphics;

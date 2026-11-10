@@ -137,6 +137,11 @@ struct GameMenuSettings {
     /// mark the moment a deformation shows and to heal the misses it finds.
     bool geo_hunt{};
     bool geo_heal{};
+    /// Opt-in diagnostic package ("pso_menu=1"): the priority a pipeline build gets while the
+    /// game waits for it (D3D12::SetPipelineBuildPriority's boost), 0 off, 2 above normal,
+    /// 3 highest; changed at run time to compare in one session.
+    bool pso_menu{};
+    std::uint32_t pso_boost{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -159,6 +164,8 @@ enum class GameMenuResult : std::uint8_t {
     /// Geometry hunt: mark the moment in its log, or Settings().geo_heal changed.
     GeoMark,
     GeoHealChanged,
+    /// Settings().pso_boost changed.
+    PsoBoostChanged,
 };
 
 /// The console's tag reader as the game left it, for the Amiibo row.
@@ -188,7 +195,7 @@ public:
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
         GlitchPage, GlitchCapture, GlitchWarpPerLane, GlitchA2cShader, GlitchFrameWait,
         GlitchComputeFresh, GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites,
-        GeoMark, GeoHeal,
+        GeoMark, GeoHeal, PsoBoost,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
 
@@ -206,6 +213,7 @@ public:
         if (settings.performance_capture) quick.push_back(CapturePerformance);
         if (settings.glitch_hunt) quick.push_back(GlitchPage);
         if (settings.geo_hunt) quick.insert(quick.end(), {GeoMark, GeoHeal});
+        if (settings.pso_menu) quick.push_back(PsoBoost);
         quick.push_back(Library);
         glitch = {GlitchCapture,      GlitchA2cShader,    GlitchFrameWait,     GlitchComputeFresh,
                   GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites, GlitchWarpPerLane};
@@ -358,6 +366,12 @@ private:
         case GeoHeal:
             return {Tr(Text::MenuGeoHeal), Tr(settings.geo_heal ? Text::Yes : Text::No), Choice,
                     Tr(Text::MenuGeoHealDetail), UiIcon::Settings};
+        case PsoBoost:
+            return {Tr(Text::MenuPsoBoost),
+                    Tr(settings.pso_boost == 0   ? Text::No
+                       : settings.pso_boost == 2 ? Text::MenuPsoBoostAbove
+                                                 : Text::MenuPsoBoostHighest),
+                    Choice, Tr(Text::MenuPsoBoostDetail), UiIcon::Settings};
         case GlitchCapture:
             return {Tr(Text::MenuCaptureGlitches), {}, Action, Tr(Text::MenuCaptureGlitchesDetail)};
         case GlitchWarpPerLane:
@@ -613,6 +627,10 @@ private:
         case GeoHeal:
             settings.geo_heal = !settings.geo_heal;
             return GameMenuResult::GeoHealChanged;
+        case PsoBoost:
+            // Steps through off, above normal, highest.
+            settings.pso_boost = settings.pso_boost == 0 ? 2 : settings.pso_boost == 2 ? 3 : 0;
+            return GameMenuResult::PsoBoostChanged;
         case OfflineMode: {
             // Steps through: as in Settings > System, on, off.
             auto& offline = settings.offline_mode;

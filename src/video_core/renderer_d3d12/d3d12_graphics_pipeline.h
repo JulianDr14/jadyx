@@ -403,6 +403,13 @@ public:
     };
     [[nodiscard]] static DxilReleaseStats GetDxilReleaseStats() noexcept;
 
+    /// Builds raised for a waiting thread ("pso_boost=") and given its CPUs ("pso_lend=") so far.
+    struct BuilderHelpStats {
+        u64 boosts;
+        u64 lends;
+    };
+    [[nodiscard]] static BuilderHelpStats GetBuilderHelpStats() noexcept;
+
     /// GPU thread: the frame this pipeline was last drawn in.
     void Touch(u64 frame) noexcept {
         last_used_frame = frame;
@@ -581,8 +588,13 @@ private:
     };
     /// Queues job on worker, claimable by WaitBuilt; without a worker, runs it here.
     void QueueBuild(Common::ThreadWorker* worker, Common::UniqueFunction<void> job);
-    /// Runs a claimed build, recording how long it sat in the queue.
+    /// Runs a claimed build, recording how long it sat in the queue. Its thread runs at least at
+    /// the base build priority ("pso_priority=") and goes back to its own priority afterwards.
     void RunClaimed(PendingBuild& build);
+    /// A thread waits for this build: the thread running it may also run on the waiter's logical
+    /// processors ("pso_lend=") and goes up to the boost priority ("pso_boost="). Workers share
+    /// one logical processor and starve while the game uses every core.
+    void BoostBuilder();
 
     const Device& device;
     const TextureCacheRuntime& texture_runtime;
@@ -629,6 +641,10 @@ private:
     std::condition_variable build_condvar;
     std::atomic<State> build_state{State::Building};
     std::shared_ptr<PendingBuild> pending; ///< build_mutex: the build in a queue, if any.
+    /// Thread handle (never closed) of the thread running the build, null when none runs it.
+    std::atomic<void*> builder_thread{};
+    std::atomic_bool builder_boosted{}; ///< BoostBuilder raised the thread of the running build.
+    std::atomic_bool builder_lent{};    ///< BoostBuilder lent CPUs to the thread of the build.
 
     const bool from_disk;
     u64 last_used_frame{}; ///< GPU thread only.

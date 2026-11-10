@@ -188,6 +188,20 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                     1U, 12U);
                 WriteDiag("boot.cfg: " + std::to_string(config.pso_boot_workers) +
                           " loading screen pipeline workers");
+            } else if (line.starts_with("pso_priority=")) {
+                config.pso_priority = std::min(
+                    static_cast<u32>(std::strtoul(line.c_str() + 13, nullptr, 10)), 4U);
+                WriteDiag("boot.cfg: pipeline build base priority level " +
+                          std::to_string(config.pso_priority));
+            } else if (line.starts_with("pso_boost=")) {
+                config.pso_boost = std::min(
+                    static_cast<u32>(std::strtoul(line.c_str() + 10, nullptr, 10)), 4U);
+                WriteDiag("boot.cfg: waited pipeline build priority level " +
+                          std::to_string(config.pso_boost));
+            } else if (line.starts_with("pso_lend=")) {
+                config.pso_lend = line != "pso_lend=0";
+                WriteDiag(config.pso_lend ? "boot.cfg: waiters lend their CPUs to pipeline builds"
+                                          : "boot.cfg: waiters keep their CPUs from pipeline builds");
             } else {
                 WriteDiag("boot.cfg: IGNORED unknown pipeline key " + line);
             }
@@ -316,6 +330,11 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
             if (line == "glitch_hunt_menu=1") {
                 config.glitch_hunt_menu = true;
                 WriteDiag("boot.cfg: geometry glitch hunt menu enabled");
+                continue;
+            }
+            if (line == "pso_menu=1") {
+                config.pso_menu = true;
+                WriteDiag("boot.cfg: waited pipeline build priority row in the quick menu");
                 continue;
             }
             if (line == "geo_hunt=1") {
@@ -522,6 +541,9 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 line.starts_with("wait_small_draws=") ||
                 line.starts_with("pso_workers=") ||
                 line.starts_with("pso_boot_workers=") ||
+                line.starts_with("pso_priority=") ||
+                line.starts_with("pso_boost=") ||
+                line.starts_with("pso_lend=") ||
                 line.starts_with("pso_blobs=")) {
                 parse_pipeline_key(line);
                 continue;
