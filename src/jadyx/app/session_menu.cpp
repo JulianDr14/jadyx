@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -40,6 +41,7 @@
 #include "jadyx/game/uwp_software_keyboard.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/mods/mod_settings.h"
+#include "jadyx/settings/online_page.h"
 #include "jadyx/settings/uwp_system_settings.h"
 #include "jadyx/storage/utf8.h"
 #include "jadyx/ui/text_entry_input.h"
@@ -47,6 +49,9 @@
 namespace Jadyx {
 
 namespace {
+
+/// How long a message's notice stays over the game.
+constexpr std::chrono::seconds ChatNoticeTime{5};
 
 std::size_t CheatsOn(const Cheats::CheatCatalog& catalog) {
     std::size_t count = 0;
@@ -69,6 +74,18 @@ void SessionMenu::CaptureFrame() {
     if (menu_surface) menu_surface->SetBackdrop(game_frame);
 }
 
+void SessionMenu::PauseGuest() {
+    if (guest_paused) return;
+    void(system.Pause());
+    guest_paused = true;
+}
+
+void SessionMenu::ResumeGuest() {
+    if (!guest_paused) return;
+    void(system.Run());
+    guest_paused = false;
+}
+
 void SessionMenu::DrawMenu() {
     pulse_screen.reset(); // The menu takes the screen.
     launch_screen.reset();
@@ -83,7 +100,9 @@ void SessionMenu::DrawMenu() {
             room = Common::UTF8ToUTF16W(online.room_name.empty() ? online.address : online.room_name);
         const bool dropped = online.phase == Online::Phase::Idle && (online.failure == Online::Failure::LostConnection ||
                                                                      online.failure == Online::Failure::Kicked);
-        const GameMenuScene scene{game_title, game_details, session_text, room, dropped};
+        // Memory Edit reads its numbers on the stopped game, so it keeps the whole screen.
+        const GameMenuScene scene{game_title, game_details, session_text, room, dropped,
+                                  live && !memory_edit_open};
         image = memory_edit_open ? menu_surface->DrawMemoryEdit(memory_edit->View(), scene, screen)
                 : cheats ? menu_surface->DrawCheats({*cheats, cheats_page, game_title, cheats_notice, true},
                                                   scene, screen)
@@ -91,6 +110,24 @@ void SessionMenu::DrawMenu() {
                                                             amiibo_screen->placed, amiibo_screen->has_key,
                                                             amiibo_screen->placed_name, amiibo_screen->placed_new},
                                                            scene, screen)
+                : chat_keyboard.IsOpen() ? menu_surface->DrawKeyboard(chat_keyboard.View(), true, screen)
+                : chat_screen ? [&] {
+                      const auto chat = Online::Chat();
+                      std::vector<ChatMenuLine> lines;
+                      lines.reserve(chat.lines.size());
+                      for (const auto& line : chat.lines) lines.push_back(ChatLineInWords(line));
+                      std::vector<std::wstring> phrases;
+                      for (const auto phrase : Online::QuickPhrases)
+                          phrases.emplace_back(I18n::Tr(QuickPhraseText(phrase)));
+                      std::wstring subtitle = room;
+                      if (online.phase == Online::Phase::Joined)
+                          subtitle += L" · " + I18n::Format(I18n::Text::OnlinePlayers,
+                                                            {std::to_wstring(online.members.size()),
+                                                             std::to_wstring(online.slots)});
+                      return menu_surface->DrawChat({lines, subtitle, chat_screen->page, phrases,
+                                                     chat_screen->notice},
+                                                    scene, screen);
+                  }()
                 : menu ? menu_surface->DrawMenu(*menu, scene, screen)
                        : menu_surface->DrawKeyboard(game_keyboard.View(), game_keyboard.CanCancel(), screen);
     } catch (const winrt::hresult_error& e) {
@@ -134,7 +171,8 @@ void SessionMenu::KeyboardPress(std::optional<KeyboardReply> reply) {
 }
 
 void SessionMenu::Open() {
-    void(system.Pause());
+    live = Online::InRoom();
+    if (!live) PauseGuest();
     input.SetMenuOpen(true);
     SetTextEntryActive(false); // The real keyboard drives the menu.
     const ControllerOptions options = input.Options();
@@ -153,14 +191,15 @@ void SessionMenu::Open() {
     } catch (const winrt::hresult_error& e) {
         WriteDiag("menu: no surface: " + winrt::to_string(e.message()));
     }
-    CaptureFrame();
+    // Live, the menu takes the right side and the game shows as it runs: nothing to capture.
+    if (!live) CaptureFrame();
     const SystemSettings system_settings = LoadSystemSettings();
     menu.emplace(GameMenuSettings{options.style, options.swap_face_buttons,
                                   options.deadzone, g_can_fullscreen.load(),
                                   g_fullscreen.load(), system_settings.show_performance_stats,
                                   pulse_identity.has_value(),
                                   config.material_capture_menu, config.hunt_menu,
-                                  !game_frame.pixels.empty(), LoadGameOfflineMode(program_id),
+                                  live || !game_frame.pixels.empty(), LoadGameOfflineMode(program_id),
                                   system_settings.offline_mode, LoadGraphicsSettings(),
                                   LoadGameGraphics(program_id),
                                   program_id != 0 && !mii_editor && MemoryEdit::CanSearchGuest(system),
@@ -172,6 +211,19 @@ void SessionMenu::Open() {
                                   D3D12::GetPipelineBuildBoost()},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
+    const bool from_notice = notice_shown;
+    HideChatNotice();
+    if (live) {
+        const auto chat = Online::Chat();
+        menu->SetChat(chat.unread);
+        chat_version = chat.version;
+        if (!chat.lines.empty()) chat_last_id = chat.lines.back().id;
+        if (from_notice) {
+            // Opened while a message showed: its chat, to answer.
+            menu->SelectChat();
+            OpenChat();
+        }
+    }
     if (game_title.empty()) {
         std::string title;
         void(system.GetAppLoader().ReadTitle(title));
@@ -198,7 +250,8 @@ void SessionMenu::Open() {
                             ? Utf8ToUtf16(AmiiboDisplayName(input.Amiibo().GetLastFilePath()))
                             : std::wstring{});
     }
-    WriteDiag("menu: opened, guest paused | " + MemoryReport());
+    WriteDiag(std::string{"menu: opened, "} + (live ? "guest running (online room)" : "guest paused") +
+              " | " + MemoryReport());
     if (menu_surface) DrawMenu();
 }
 
@@ -339,7 +392,123 @@ bool SessionMenu::HandleAmiiboAction(MenuAction action) {
     return false;
 }
 
+void SessionMenu::OpenChat() {
+    Online::MarkChatRead();
+    chat_screen.emplace();
+    if (menu) menu->SetChat(0);
+    WriteDiag("menu: chat page, " + std::to_string(Online::Chat().lines.size()) + " line(s)");
+}
+
+void SessionMenu::HandleChatAction(MenuAction action) {
+    using Effect = Online::ChatPage::Effect;
+    switch (chat_screen->page.Handle(action, Online::Chat().lines.size())) {
+    case Effect::None:
+        return;
+    case Effect::Redraw:
+        break;
+    case Effect::Compose:
+        chat_screen->notice.clear();
+        void(chat_keyboard.Apply(KeyboardOpen{std::wstring{I18n::Tr(I18n::Text::ChatMessageTitle)}, {}, {},
+                                              ChatMaxChars, 0, false, true, false}));
+        SetTextEntryActive(true);
+        break;
+    case Effect::Send:
+        SendChat(std::wstring{I18n::Tr(QuickPhraseText(Online::PhraseAt(chat_screen->page.phrase)))});
+        break;
+    case Effect::Back:
+        chat_screen.reset();
+        if (menu) menu->SetChat(Online::Chat().unread);
+        break;
+    }
+    if (menu_surface) DrawMenu();
+}
+
+void SessionMenu::ChatKeyboardPress(std::optional<KeyboardReply> reply) {
+    if (reply && reply->kind == KeyboardReply::Kind::Submit) SendChat(reply->text);
+    if (!chat_keyboard.IsOpen()) SetTextEntryActive(false);
+    if (menu_surface) DrawMenu();
+}
+
+void SessionMenu::SendChat(const std::wstring& text) {
+    if (!chat_screen) chat_screen.emplace();
+    chat_screen->page.scroll = 0;
+    if (Online::SendChat(Utf16ToUtf8(text))) {
+        chat_screen->notice.clear();
+        return;
+    }
+    // Empty after cleaning sends nothing and says nothing; out of the room it says why.
+    if (!Online::InRoom()) chat_screen->notice = std::wstring{I18n::Tr(I18n::Text::ChatNotSent)};
+}
+
+void SessionMenu::UpdateChat() {
+    if (notice_shown && std::chrono::steady_clock::now() >= notice_until) HideChatNotice();
+    const std::uint64_t version = Online::ChatVersion();
+    if (version == chat_version) return;
+    chat_version = version;
+    const auto chat = Online::Chat();
+    const std::uint64_t last_id = std::exchange(chat_last_id, chat.lines.empty() ? 0 : chat.lines.back().id);
+    if (chat_screen && menu) {
+        // On the page the new lines are read as they come; scrolled up, the view stays put.
+        std::size_t added = 0;
+        for (const auto& line : chat.lines) added += line.id > last_id;
+        Online::MarkChatRead();
+        chat_version = Online::ChatVersion();
+        chat_screen->page.Grew(added, chat.lines.size());
+        if (menu_surface && !chat_keyboard.IsOpen()) DrawMenu();
+        return;
+    }
+    if (menu) {
+        menu->SetChat(chat.unread);
+        if (menu_surface && !chat_keyboard.IsOpen()) DrawMenu();
+        return;
+    }
+    if (!Online::InRoom()) {
+        HideChatNotice();
+        return;
+    }
+    // Menu closed: a notice for messages from others that arrived since the last look.
+    bool incoming = false;
+    for (const auto& line : chat.lines)
+        incoming |= line.id > last_id && line.kind == Online::ChatKind::Message && !line.own;
+    if (incoming && !game_keyboard.IsOpen() && Online::LoadChatNotices() == Online::ChatNotices::Everywhere)
+        ShowChatNotice(chat);
+}
+
+void SessionMenu::ShowChatNotice(const Online::ChatSnapshot& chat) {
+    constexpr std::size_t Shown = 2;
+    std::vector<ChatMenuLine> lines;
+    for (auto it = chat.lines.rbegin(); it != chat.lines.rend() && lines.size() < Shown; ++it)
+        if (it->kind == Online::ChatKind::Message && !it->own) lines.push_back(ChatLineInWords(*it));
+    if (lines.empty()) return;
+    std::reverse(lines.begin(), lines.end());
+    const std::size_t more = chat.unread > lines.size() ? chat.unread - lines.size() : 0;
+    D3D12::MenuImage image;
+    try {
+        if (!notice_surface) notice_surface.emplace();
+        image = notice_surface->DrawChatNotice({lines, more}, D3D12::GameMenuScreenSize(system.Renderer()));
+    } catch (const winrt::hresult_error& e) {
+        WriteDiag("menu: chat notice not drawn: " + winrt::to_string(e.message()));
+        return;
+    }
+    if (image.width == 0) return;
+    system.GPU().RunOnGpuThread([&] { D3D12::ShowGameNotice(system.Renderer(), std::move(image)); });
+    notice_shown = true;
+    notice_until = std::chrono::steady_clock::now() + ChatNoticeTime;
+}
+
+void SessionMenu::HideChatNotice() {
+    if (!std::exchange(notice_shown, false)) return;
+    system.GPU().RunOnGpuThread([&] { D3D12::ShowGameNotice(system.Renderer(), std::nullopt); });
+    notice_surface.reset();
+}
+
 void SessionMenu::SaveMenuScreenshot() {
+    if (live) {
+        // The frame under the menu as it is now; the game stops for the capture only.
+        WithGuestPaused([&] {
+            system.GPU().RunOnGpuThread([&] { game_frame = D3D12::CaptureGameFrame(system.Renderer()); });
+        });
+    }
     try {
         const auto folder = std::filesystem::path{std::wstring{
                                 winrt::Windows::Storage::ApplicationData::Current().LocalFolder().Path()}} /
@@ -369,9 +538,11 @@ void SessionMenu::Close(GameMenuResult result) {
         const u32 height = screen ? surface.screen_height : surface.plain_height;
         if (width != 0 && std::pair{width, height} != D3D12::GameMenuScreenSize(system.Renderer())) {
             bool resized{};
-            system.GPU().RunOnGpuThread([&] {
-                resized = D3D12::ResizeGameOutput(system.Renderer(), width, height);
-                if (resized) emu_window.UpdateCurrentFramebufferLayout(width, height);
+            WithGuestPaused([&] {
+                system.GPU().RunOnGpuThread([&] {
+                    resized = D3D12::ResizeGameOutput(system.Renderer(), width, height);
+                    if (resized) emu_window.UpdateCurrentFramebufferLayout(width, height);
+                });
             });
             WriteDiag("menu: output " + std::to_string(width) + "x" + std::to_string(height) +
                       (resized ? "" : " failed, the size stays until the next boot") + " | " +
@@ -383,6 +554,11 @@ void SessionMenu::Close(GameMenuResult result) {
     menu.reset();
     cheats.reset();
     amiibo_screen.reset();
+    chat_screen.reset();
+    if (chat_keyboard.IsOpen()) {
+        void(chat_keyboard.Apply(KeyboardClose{}));
+        SetTextEntryActive(false);
+    }
     game_frame = {};
     if (game_keyboard.IsOpen() && menu_surface) {
         // The game's keyboard was under the menu: it comes back.
@@ -414,7 +590,8 @@ void SessionMenu::Close(GameMenuResult result) {
         VideoCommon::GeoHunt::Mark();
         WriteDiag("menu: geometry hunt mark | " + MemoryReport());
     }
-    void(system.Run());
+    ResumeGuest();
+    live = false;
     WriteDiag("menu: closed, guest running");
     // With the guest running, as a tag signals the game's events.
     if (const auto choice = std::exchange(amiibo_choice, std::nullopt)) {
@@ -473,8 +650,10 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         const GameGraphics& game = menu->Settings().graphics;
         const GameGraphics before = LoadGameGraphics(program_id);
         if (!SaveGameGraphics(program_id, game)) WriteDiag("menu: graphics could not be saved");
-        ApplyGameGraphics(system, config, game);
-        ApplyRunningAdvancedGraphics(system, before.advanced, game.advanced);
+        WithGuestPaused([&] {
+            ApplyGameGraphics(system, config, game);
+            ApplyRunningAdvancedGraphics(system, before.advanced, game.advanced);
+        });
         graphics_changed = true;
     }
     if (result == GameMenuResult::OfflineModeChanged) {
@@ -495,11 +674,14 @@ SessionMenu::Outcome SessionMenu::Update() {
         for (const KeyboardEvent& event : keyboard_applet->TakeEvents())
             changed |= game_keyboard.Apply(event);
         if (changed || game_keyboard.IsOpen() != keyboard_shown) SyncKeyboard();
-        for (const TextEntryKey& key : TakeTextEntryKeys()) {
-            if (menu || !game_keyboard.IsOpen()) break;
-            KeyboardPress(key.command ? game_keyboard.Handle(*key.command)
-                                       : game_keyboard.Type(key.character));
+    }
+    for (const TextEntryKey& key : TakeTextEntryKeys()) {
+        if (chat_keyboard.IsOpen()) {
+            ChatKeyboardPress(key.command ? chat_keyboard.Handle(*key.command) : chat_keyboard.Type(key.character));
+            continue;
         }
+        if (!keyboard_applet || menu || !game_keyboard.IsOpen()) break;
+        KeyboardPress(key.command ? game_keyboard.Handle(*key.command) : game_keyboard.Type(key.character));
     }
     for (const MenuAction action : input.TakeMenuActions()) {
         if (!menu && action != MenuAction::Toggle && game_keyboard.IsOpen()) {
@@ -520,11 +702,29 @@ SessionMenu::Outcome SessionMenu::Update() {
             if (HandleAmiiboAction(action)) break;
             continue;
         }
+        if (chat_keyboard.IsOpen() && action != MenuAction::Toggle) {
+            // Menu sends too, as the console's keyboard does with +.
+            const auto command = action == MenuAction::Menu ? std::optional{TextEntry::Command::Done}
+                                                            : TextEntryCommand(action);
+            if (command) ChatKeyboardPress(chat_keyboard.Handle(*command));
+            continue;
+        }
+        if (chat_screen && action != MenuAction::Toggle) {
+            HandleChatAction(action);
+            continue;
+        }
         if (memory_edit_open && action != MenuAction::Toggle) {
             const auto reply = memory_edit->Handle(action);
             if (reply == MemoryEdit::Screen::Reply::Leave) {
                 memory_edit_open = false;
                 menu->SetMemoryEditHits(memory_edit->Hits());
+                if (live) {
+                    // Back to the side menu over the running game.
+                    memory_edit->Stop();
+                    game_frame = {};
+                    if (menu_surface) menu_surface->SetBackdrop(game_frame);
+                    ResumeGuest();
+                }
             }
             if (reply != MemoryEdit::Screen::Reply::Stay && menu_surface) DrawMenu();
             continue;
@@ -542,8 +742,14 @@ SessionMenu::Outcome SessionMenu::Update() {
         }
         if (result == GameMenuResult::Cheats) OpenCheats();
         if (result == GameMenuResult::Amiibo) OpenAmiibo();
+        if (result == GameMenuResult::Chat) OpenChat();
         if (result == GameMenuResult::Screenshot) SaveMenuScreenshot();
         if (result == GameMenuResult::MemoryEdit) {
+            if (live) {
+                // It searches the stopped game and shows it whole: the room waits meanwhile.
+                PauseGuest();
+                CaptureFrame();
+            }
             if (!memory_edit) memory_edit.emplace(system);
             memory_edit->Open();
             memory_edit_open = true;
@@ -564,6 +770,7 @@ SessionMenu::Outcome SessionMenu::Update() {
         if (menu_surface) DrawMenu();
     }
     if (memory_edit_open && memory_edit->Tick() && menu_surface) DrawMenu();
+    UpdateChat();
     return Outcome::Stay;
 }
 

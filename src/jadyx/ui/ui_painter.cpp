@@ -5,12 +5,14 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cwctype>
 #include <utility>
 #include <dwrite_1.h>
 #include <winrt/base.h>
 
 #include "common/logging.h"
 #include "jadyx/i18n/localization.h"
+#include "jadyx/network/chat_page.h"
 #include "jadyx/ui/ui_fonts.h"
 
 namespace Jadyx {
@@ -522,6 +524,73 @@ float UiPainter::Prompt(std::wstring_view letters, unsigned color, std::wstring_
     const float width = MeasureType(label, TypeRole::LabelLarge);
     Type(label, TypeRole::LabelLarge, x + badge + 8, y + 6, width + 4, Palette::TextSecondary);
     return badge + 8 + width + 28;
+}
+
+void UiPainter::ChatHistory(std::span<const ChatMenuLine> lines, std::size_t scroll, float x, float top,
+                            float width, float bottom) {
+    if (lines.empty()) return;
+    // How tall a message lays out in its bubble: up to eight lines of 22.
+    const auto text_height = [&](std::wstring_view text, float inner) {
+        constexpr float Line = 22;
+        constexpr unsigned MaxLines = 8;
+        auto* layout = TypeLayout(text, TypeRole::Body, inner, TextAlign::Leading, MaxLines);
+        if (!layout) return Line;
+        DWRITE_TEXT_METRICS metrics{};
+        layout->GetMetrics(&metrics);
+        return std::clamp(metrics.height, Line, Line * MaxLines);
+    };
+    // From the newest (or the one scrolled to) upwards, until the space is full.
+    PushClip(x - 2, top, width + 4, bottom - top);
+    float y = bottom;
+    const std::size_t end = lines.size() - std::min(scroll, lines.size() - 1);
+    for (std::size_t i = end; i-- > 0 && y > top;) {
+        const ChatMenuLine& line = lines[i];
+        if (line.kind == ChatMenuLine::Kind::Status) {
+            y -= 22;
+            Type(line.text, TypeRole::Label, x, y + 3, width, Palette::TextHint, 1, TextAlign::Center);
+            y -= 8;
+            continue;
+        }
+        const bool own = line.kind == ChatMenuLine::Kind::Own;
+        const float inner_max = width * 0.8f - 24;
+        const float text_width = std::min(MeasureType(line.text, TypeRole::Body) + 2, inner_max);
+        const float name_width = own ? 0.0f : std::min(MeasureType(line.who, TypeRole::Label) + 2, inner_max);
+        const float inner = std::max(text_width, name_width);
+        const float name_height = own ? 0.0f : 18.0f;
+        const float height = 8 + name_height + text_height(line.text, inner) + 8;
+        y -= height;
+        const float bx = own ? x + width - inner - 24 : x;
+        Round(bx, y, inner + 24, height, 14, own ? Palette::Accent : Palette::Graphite);
+        if (!own) Type(line.who, TypeRole::Label, bx + 12, y + 8, inner, Palette::TextSecondary);
+        Type(line.text, TypeRole::Body, bx + 12, y + 8 + name_height, inner, own ? Palette::OnAccent : Palette::Text,
+             1, TextAlign::Leading, 8);
+        y -= 8;
+    }
+    PopClip();
+    if (scroll > 0) MoreBelow(x + width / 2, bottom + 12);
+}
+
+void UiPainter::ChatNotice(std::span<const ChatMenuLine> lines, std::size_t more, std::wstring_view hint, float x,
+                           float y) {
+    using I18n::Text;
+    const float width = ChatNoticeWidth, height = ChatNoticeHeight(lines.size());
+    Round(x, y, width, height, 0, Palette::Surface, 0.94f);
+    Outline(x + 0.5f, y + 0.5f, width - 1, height - 1, 0, 0xffffff, 0.12f);
+    Round(x, y, 4, height, 0, Palette::Accent);
+    Icon(UiIcon::Globe, x + 18, y + 14, Palette::Text, 20);
+    std::wstring title{I18n::Tr(Text::ChatTitle)};
+    for (auto& c : title) c = static_cast<wchar_t>(std::towupper(c));
+    Type(title, TypeRole::Caps, x + 46, y + 17, 200, Palette::Text);
+    if (more != 0)
+        Type(I18n::Format(Text::ChatMore, {std::to_wstring(more)}), TypeRole::LabelLarge, x + 200, y + 14,
+             width - 218, Palette::TextSecondary, 1, TextAlign::Trailing);
+    float line_y = y + 46;
+    for (const ChatMenuLine& line : lines) {
+        Type(line.who, TypeRole::Label, x + 18, line_y, width - 36, Palette::TextSecondary);
+        Type(line.text, TypeRole::Body, x + 18, line_y + 16, width - 36, Palette::Text);
+        line_y += 44;
+    }
+    Type(hint, TypeRole::Label, x + 18, line_y + 4, width - 36, Palette::TextHint);
 }
 
 } // namespace Jadyx

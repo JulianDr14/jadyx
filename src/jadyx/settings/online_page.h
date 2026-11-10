@@ -15,9 +15,12 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "common/string_util.h"
 #include "jadyx/i18n/localization.h"
+#include "jadyx/network/chat_page.h"
+#include "jadyx/network/online_chat.h"
 #include "jadyx/network/online_rooms.h"
 
 namespace Jadyx {
@@ -40,7 +43,23 @@ struct OnlinePage {
     Online::LobbySnapshot lobby; ///< Likewise.
     /// The public room whose password the keyboard is asking for (a copy: the list may refresh).
     std::optional<Online::LobbyRoom> pending_room;
+
+    /// In a room, Join mode's right column is the room's chat instead of the public list.
+    bool in_chat{};                       ///< The focus is in it.
+    Online::ChatPage chat;
+    std::uint64_t chat_version{};         ///< Of the copy below.
+    std::uint64_t chat_last_id{};         ///< The newest line seen, for the notice.
+    std::vector<ChatMenuLine> chat_lines; ///< The history in words, oldest first.
+    std::wstring chat_notice;             ///< A message that could not go out.
+    /// New messages, on the other tabs, for a few seconds.
+    std::vector<ChatMenuLine> toast;
+    std::size_t toast_more{};
 };
+
+/// The chat takes the right column: in a room, in Join mode.
+inline bool OnlineChatShows(const OnlinePage& page) {
+    return !page.host && page.status.phase == Online::Phase::Joined;
+}
 
 inline std::size_t OnlineRowCount(const OnlinePage& page) {
     return OnlinePage::FixedRows + page.lobby.rooms.size();
@@ -80,6 +99,42 @@ inline bool OnlineHosting(const Online::Status& status) {
 }
 
 inline std::wstring OnlineWiden(const std::string& text) { return Common::UTF8ToUTF16W(text); }
+
+/// A chat line as drawn: a bubble, or the status said in words.
+inline ChatMenuLine ChatLineInWords(const Online::ChatLine& line) {
+    using I18n::Text;
+    const std::wstring who = OnlineWiden(line.nickname);
+    const auto status = [&](Text text) {
+        return ChatMenuLine{ChatMenuLine::Kind::Status, who, I18n::Format(text, {who})};
+    };
+    switch (line.kind) {
+    case Online::ChatKind::Message: break;
+    case Online::ChatKind::Joined: return status(Text::ChatJoined);
+    case Online::ChatKind::Left: return status(Text::ChatLeft);
+    case Online::ChatKind::Kicked: return status(Text::ChatKicked);
+    case Online::ChatKind::Banned: return status(Text::ChatBanned);
+    }
+    return {line.own ? ChatMenuLine::Kind::Own : ChatMenuLine::Kind::Message, who, OnlineWiden(line.text)};
+}
+
+inline I18n::Text QuickPhraseText(Online::QuickPhrase phrase) {
+    using I18n::Text;
+    using Online::QuickPhrase;
+    switch (phrase) {
+    case QuickPhrase::GoodGame: return Text::ChatPhraseGoodGame;
+    case QuickPhrase::Again: return Text::ChatPhraseAgain;
+    case QuickPhrase::Ready: return Text::ChatPhraseReady;
+    case QuickPhrase::OnMyWay: return Text::ChatPhraseOnMyWay;
+    case QuickPhrase::Wait: return Text::ChatPhraseWait;
+    case QuickPhrase::Leaving: return Text::ChatPhraseLeaving;
+    case QuickPhrase::Laugh: return Text::ChatPhraseLaugh;
+    case QuickPhrase::WhoHosts: return Text::ChatPhraseWhoHosts;
+    }
+    return Text::ChatPhraseGoodGame;
+}
+
+/// A message's length on the keyboard: at three bytes a character it never meets the room's cut.
+inline constexpr std::size_t ChatMaxChars = 160;
 inline std::string OnlineNarrow(std::wstring_view text) { return Common::UTF16ToUTF8(text); }
 
 inline I18n::Text OnlineFailureText(Online::Failure failure) {

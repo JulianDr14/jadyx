@@ -166,6 +166,8 @@ enum class GameMenuResult : std::uint8_t {
     GeoHealChanged,
     /// Settings().pso_boost changed.
     PsoBoostChanged,
+    /// The room chat's page.
+    Chat,
 };
 
 /// The console's tag reader as the game left it, for the Amiibo row.
@@ -195,7 +197,7 @@ public:
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
         GlitchPage, GlitchCapture, GlitchWarpPerLane, GlitchA2cShader, GlitchFrameWait,
         GlitchComputeFresh, GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites,
-        GeoMark, GeoHeal, PsoBoost,
+        GeoMark, GeoHeal, PsoBoost, Chat,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
 
@@ -248,6 +250,19 @@ public:
         if (after == quick.end()) after = std::find(quick.begin(), quick.end(), Cheats);
         if (after == quick.end()) after = std::find(quick.begin(), quick.end(), ControllerPage) - 1;
         quick.insert(after + 1, Amiibo);
+    }
+
+    /// In an online room: the chat's row goes first after Continue, with the unread count.
+    void SetChat(std::size_t unread) {
+        chat_unread = unread;
+        if (std::find(quick.begin(), quick.end(), Chat) != quick.end()) return;
+        quick.insert(quick.begin() + 1, Chat);
+    }
+    /// Puts the cursor on the chat's row (the menu opened from a message's notice).
+    void SelectChat() {
+        page = Page::Quick;
+        const auto found = std::find(quick.begin(), quick.end(), Chat);
+        if (found != quick.end()) selected = static_cast<std::size_t>(found - quick.begin());
     }
 
     /// What the last screenshot did, under its row (empty: where they go).
@@ -349,6 +364,11 @@ private:
         switch (item) {
         case Continue:
             return {Tr(Text::MenuResume), {}, Action, {}, UiIcon::Play};
+        case Chat:
+            return {Tr(Text::ChatTitle), {}, Page,
+                    chat_unread != 0 ? I18n::Plural(Text::ChatUnreadOne, Text::ChatUnreadOther, chat_unread)
+                                     : std::wstring{},
+                    UiIcon::Globe};
         case Screenshot:
             return {Tr(Text::MenuScreenshot), {}, Action,
                     screenshot_note.empty() ? Tr(Text::MenuScreenshotWhere) : screenshot_note, UiIcon::Camera};
@@ -521,6 +541,8 @@ private:
         switch (SelectedItem()) {
         case Continue:
             return confirm ? GameMenuResult::Resume : GameMenuResult::None;
+        case Chat:
+            return confirm || action == MenuAction::Right ? GameMenuResult::Chat : GameMenuResult::None;
         case Screenshot:
             return confirm ? GameMenuResult::Screenshot : GameMenuResult::None;
         case CaptureGraphics:
@@ -688,6 +710,7 @@ private:
     std::wstring amiibo_name;
     std::wstring screenshot_note;
     std::uint64_t memory_edit_hits{};
+    std::size_t chat_unread{};
     std::uint32_t geo_marks{};
     bool keep_session{true};
 };

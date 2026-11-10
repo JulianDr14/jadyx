@@ -22,6 +22,7 @@
 #include "jadyx/game/game_menu.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/memory_edit/jme_page.h"
+#include "jadyx/network/chat_page.h"
 #include "jadyx/storage/utf8.h"
 #include "jadyx/ui/list_navigation.h"
 #include "jadyx/ui/text_entry_panel.h"
@@ -153,6 +154,41 @@ struct GameMenuSurface::Impl : UiPainter {
         // A text the system's fallback font cannot draw spoils the frame, not the game.
         (void)target->EndDraw();
         return Pixels();
+    }
+
+    /// The layout's left edge of the side the menu keeps over a live game: the status pill and
+    /// the panel fit right of it.
+    static constexpr float SideLeft = 700;
+
+    /// Only the right side of RenderScreen's layout, as an opaque strip placed at the screen's
+    /// right edge: the game runs and shows on the left.
+    template <typename Draw>
+    D3D12::MenuImage RenderSide(std::pair<u32, u32> screen, Draw&& draw) {
+        const auto [width, height] = screen;
+        if (width == 0 || height == 0) return {};
+        const auto w = static_cast<float>(width);
+        const auto h = static_cast<float>(height);
+        const float scale = std::min(w / 1280.0f, h / 720.0f);
+        const float offset_x = (w - 1280 * scale) / 2;
+        const u32 left = std::min(width - 1, static_cast<u32>(std::floor(offset_x + SideLeft * scale)));
+        Prepare(width - left, height);
+        SyncLanguage();
+        target->BeginDraw();
+        target->SetTransform(D2D1::Matrix3x2F::Identity());
+        target->Clear(D2D1::ColorF(Palette::Canvas));
+        // The strip's edge, so it reads as a side panel and not as a cut.
+        brush->SetColor(D2D1::ColorF(0xffffff, 0.08f));
+        target->FillRectangle(D2D1::RectF(0, 0, std::max(1.0f, scale), h), brush.Get());
+        target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) *
+                             D2D1::Matrix3x2F::Translation(offset_x - static_cast<float>(left),
+                                                           (h - 720 * scale) / 2));
+        draw();
+        (void)target->EndDraw();
+        auto image = Pixels();
+        image.placed = true;
+        image.x = left;
+        image.y = 0;
+        return image;
     }
 
     /// How the paused game shows behind the menu.
@@ -853,6 +889,46 @@ struct GameMenuSurface::Impl : UiPainter {
         }
     }
 
+    void DrawChat(const ChatMenuView& view, const GameMenuScene& scene) {
+        using S = Screen;
+        DrawScene(scene);
+        DrawPanel(UiIcon::Globe, I18n::Tr(Text::ChatTitle), view.subtitle, true);
+        const float x = S::InnerX;
+        const float width = S::InnerWidth - 10;
+        constexpr float Top = 168, Bottom = 596;
+        if (view.page.picking) {
+            Type(Upper(I18n::Tr(Text::ChatQuick)), TypeRole::Caps, x, Top, width, Palette::TextSecondary);
+            for (std::size_t i = 0; i < view.phrases.size(); ++i) {
+                const float top = Top + 26 + static_cast<float>(i) * 46;
+                const bool active = i == view.page.phrase;
+                Round(x, top, width, 40, 12, active ? Palette::Text : Palette::Row);
+                Type(view.phrases[i], TypeRole::Body, x + 16, top + 9, width - 32,
+                     active ? Palette::OnAccent : Palette::Text);
+            }
+            Prompts({{L"A", ButtonColor::A, I18n::Tr(Text::ChatSend)}, {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
+            return;
+        }
+        if (view.lines.empty()) {
+            Icon(UiIcon::Globe, x + width / 2 - 16, 260, Palette::TextSecondary);
+            Type(I18n::Tr(Text::ChatEmpty), TypeRole::Body, x + 10, 310, width - 20, Palette::TextHint, 1,
+                 TextAlign::Center, 4);
+        } else {
+            ChatHistory(view.lines, view.page.scroll, x, Top, width, Bottom);
+        }
+        if (!view.notice.empty())
+            Type(view.notice, TypeRole::Label, x, Bottom + 20, width, Palette::Warning, 1, TextAlign::Center);
+        Prompts({{L"A", ButtonColor::A, I18n::Tr(Text::ChatWrite)},
+                 {L"Y", ButtonColor::Y, I18n::Tr(Text::ChatQuick)},
+                 {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
+    }
+
+    static constexpr float NoticeWidth = ChatNoticeWidth;
+    static float NoticeHeight(std::size_t lines) { return ChatNoticeHeight(lines); }
+
+    void DrawChatNotice(const ChatNoticeView& view) {
+        ChatNotice(view.lines, view.more, I18n::Tr(Text::ChatReplyHint), 0, 0);
+    }
+
     void DrawKeyboard(const TextEntryPanelView& view, bool can_cancel) {
         using K = TextEntryPanelLayout;
         DrawTextEntryPanel(*this, view, 0, 0);
@@ -897,6 +973,7 @@ void GameMenuSurface::SetBackdrop(const D3D12::MenuImage& frame) { impl->SetBack
 D3D12::MenuImage GameMenuSurface::DrawMenu(const GameMenu& menu, const GameMenuScene& scene,
                                           std::pair<u32, u32> screen) {
     // The display page shows the game sharp: its settings change the very image behind it.
+    if (scene.live) return impl->RenderSide(screen, [&] { impl->DrawMenu(menu, scene); });
     const bool sharp = menu.CurrentPage() == GameMenu::Page::Display || menu.CurrentPage() == GameMenu::Page::Graphics;
     return impl->RenderScreen(screen, sharp ? Impl::Shade::Sharp : Impl::Shade::Soft,
                               [&] { impl->DrawMenu(menu, scene); });
@@ -904,11 +981,13 @@ D3D12::MenuImage GameMenuSurface::DrawMenu(const GameMenu& menu, const GameMenuS
 
 D3D12::MenuImage GameMenuSurface::DrawCheats(const Cheats::CheatsView& view, const GameMenuScene& scene,
                                             std::pair<u32, u32> screen) {
+    if (scene.live) return impl->RenderSide(screen, [&] { impl->DrawCheats(view, scene); });
     return impl->RenderScreen(screen, Impl::Shade::Soft, [&] { impl->DrawCheats(view, scene); });
 }
 
 D3D12::MenuImage GameMenuSurface::DrawAmiibo(const AmiiboMenuView& view, const GameMenuScene& scene,
                                             std::pair<u32, u32> screen) {
+    if (scene.live) return impl->RenderSide(screen, [&] { impl->DrawAmiibo(view, scene); });
     return impl->RenderScreen(screen, Impl::Shade::Soft, [&] { impl->DrawAmiibo(view, scene); });
 }
 
@@ -916,6 +995,26 @@ D3D12::MenuImage GameMenuSurface::DrawMemoryEdit(const MemoryEdit::MenuView& vie
                                                 std::pair<u32, u32> screen) {
     // The game as it is: the player reads on it the number to look for.
     return impl->RenderScreen(screen, Impl::Shade::Clear, [&] { impl->DrawMemoryEdit(view, scene); });
+}
+
+D3D12::MenuImage GameMenuSurface::DrawChat(const ChatMenuView& view, const GameMenuScene& scene,
+                                          std::pair<u32, u32> screen) {
+    if (scene.live) return impl->RenderSide(screen, [&] { impl->DrawChat(view, scene); });
+    return impl->RenderScreen(screen, Impl::Shade::Soft, [&] { impl->DrawChat(view, scene); });
+}
+
+D3D12::MenuImage GameMenuSurface::DrawChatNotice(const ChatNoticeView& view, std::pair<u32, u32> screen) {
+    const auto [width, height] = screen;
+    if (width == 0 || height == 0) return {};
+    auto image = impl->Render(Impl::NoticeWidth, Impl::NoticeHeight(view.lines.size()), screen,
+                              [&] { impl->DrawChatNotice(view); });
+    if (image.width == 0 || image.width > width || image.height > height) return {};
+    // The top right corner, clear of the performance overlay on the left.
+    const u32 margin = static_cast<u32>(24.0f * static_cast<float>(height) / 720.0f);
+    image.placed = true;
+    image.x = width - image.width > margin ? width - image.width - margin : 0;
+    image.y = std::min(margin, height - image.height);
+    return image;
 }
 
 D3D12::MenuImage GameMenuSurface::DrawKeyboard(const TextEntryPanelView& view, bool can_cancel,
