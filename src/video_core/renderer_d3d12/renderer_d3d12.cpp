@@ -254,7 +254,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
                 // while FSR is not upscaling them: FSR keeps the image, FG the rate, never both.
                 Present(std::move(frame),
                         PresentInfo{.vsync_index = framebuffer.vsync_index,
-                                    .frame_gen = !game_menu.has_value() && !last_composite_fsr,
+                                    .frame_gen = !HasOverlay() && !last_composite_fsr,
                                     .new_frame = framebuffer.new_frame,
                                     .queue_time =
                                         static_cast<double>(framebuffer.queue_time_ns) * 1e-9});

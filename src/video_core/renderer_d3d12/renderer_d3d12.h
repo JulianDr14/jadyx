@@ -100,8 +100,10 @@ public:
     void ShowLoadProgress(size_t done, size_t total, std::string_view phase = {});
 
     /// Shows (or with nullopt removes) the frontend menu and presents the last guest frame with
-    /// it. GPU thread only, while the guest is paused.
+    /// it. GPU thread only.
     void ShowGameMenu(std::optional<MenuImage> menu);
+    /// Shows (or removes) the notice over the game from the next present on. GPU thread only.
+    void ShowGameNotice(std::optional<MenuImage> notice);
     [[nodiscard]] std::pair<u32, u32> ScreenSize() const {
         return {swapchain.Width(), swapchain.Height()};
     }
@@ -119,8 +121,22 @@ public:
 private:
     /// Presents the boot screen from a thread of its own until EndBootScreen.
     void StartBootScreen(BootScreen draw);
-    /// Copies the frontend menu, centered, into frame (in RENDER_TARGET state, as it leaves it).
+    /// Copies the frontend menu and notice into frame (in RENDER_TARGET state, as it leaves it).
     void DrawGameMenu(CommandStream* cmd, PresentFrame& frame);
+    /// An image the frontend draws over the game, kept on the GPU: uploaded when it changes, only
+    /// copied on every present after that.
+    struct OverlayImage {
+        std::optional<MenuImage> image;
+        ComPtr<ID3D12Resource> texture;
+        u32 texture_width{};
+        u32 texture_height{};
+        bool dirty{};
+    };
+    void SetOverlay(OverlayImage& overlay, std::optional<MenuImage> image);
+    void CopyOverlay(CommandStream* cmd, PresentFrame& frame, OverlayImage& overlay);
+    [[nodiscard]] bool HasOverlay() const {
+        return game_menu.image.has_value() || game_notice.image.has_value();
+    }
     /// While pipelines build (VideoCore::ShaderNotify), a small panel in the bottom-right corner
     /// of back buffer rtv (in RENDER_TARGET state): three dots that cycle and the shader count.
     void DrawShaderIndicator(CommandStream* cmd, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
@@ -229,7 +245,9 @@ private:
     bool present_failed{};
     /// The frontend menu while open, and the layer stack last composited, to redraw it paused.
     /// More than one layer means an applet (the Mii editor, the software keyboard) over the game.
-    std::optional<MenuImage> game_menu;
+    OverlayImage game_menu;
+    /// A notice over the running game (a chat message), drawn over the menu.
+    OverlayImage game_notice;
     /// While CaptureFrame composites: the guest's image only, nothing drawn over it.
     bool bare_composite{};
     /// The last composite went through FSR: frame generation stays off while FSR upscales.
