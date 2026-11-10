@@ -961,6 +961,9 @@ bool Memory::IsRasterizerCachedPage(const Common::ProcessAddress vaddr) const {
 
 bool Memory::IsValidVirtualAddressRange(Common::ProcessAddress base, u64 size) const {
     Common::ProcessAddress end = base + size;
+    if (GetInteger(end) < GetInteger(base)) {
+        return false; // the range wraps past the top of the address space
+    }
     Common::ProcessAddress page = Common::AlignDown(GetInteger(base), YUZU_PAGESIZE);
 
     for (; page < end; page += YUZU_PAGESIZE) {
