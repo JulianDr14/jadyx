@@ -162,6 +162,8 @@ enum class Counter : size_t {
     SyncpointsAfterQueryFlushes,     ///< query results to flush with this fence
     SyncpointsAfterOperations,       ///< operations queued with this fence (query reports)
     SyncpointsAfterQueuedFences,     ///< an earlier fence still has downloads or operations
+    SemaphoreWritesSuperseded, ///< late semaphore writes dropped: a newer one reached the address
+    SemaphoreWritesHeldBack,   ///< fences held for an earlier operation (semaphore_order=strict)
     // The frame chain: game -> GPU thread -> composite -> vsync.
     Vsyncs,                ///< vsyncs processed by the VSyncThread (60 per second when on time)
     VsyncsLost,            ///< vsyncs skipped because the previous one ran late

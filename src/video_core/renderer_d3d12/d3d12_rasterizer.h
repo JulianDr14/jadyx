@@ -31,6 +31,7 @@
 #include "video_core/renderer_d3d12/diagnostics/d3d12_material_trace.h"
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
+#include "video_core/semaphore_order.h"
 
 namespace Tegra {
 struct FramebufferConfig;
@@ -422,6 +423,8 @@ private:
     // in its destructor. Keep it after the state captured by our reset callback, so it is destroyed
     // first, and before the cache built on it, which it outlives.
     QueryCacheRuntime query_runtime;
+    /// Before fence_manager: its release thread runs the semaphore writes that use it.
+    VideoCore::SemaphoreOrder::Tracker semaphore_order;
     QueryCache query_cache;
     ConditionalRendering conditional_rendering;
     AccelerateDMA accelerate_dma;

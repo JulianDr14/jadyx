@@ -24,6 +24,7 @@
 #include "video_core/host1x/syncpoint_manager.h"
 #include "video_core/rasterizer_download_area.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/semaphore_order.h"
 
 #include "video_core/frame_trace.h"
 #include "video_core/perf_counters.h"
@@ -193,6 +194,16 @@ private:
         if (flush_sources.query) {
             delay_fence = true;
         }
+        // Strict order: while an earlier operation still waits for its fence, this one waits too.
+        // The default (supersede) lets it run and the rasterizer drops the older write instead
+        // (VideoCore::SemaphoreOrder).
+        if (!delay_fence &&
+            VideoCore::SemaphoreOrder::GetMode() == VideoCore::SemaphoreOrder::Mode::Strict &&
+            (!uncommitted_operations.empty() ||
+             queued_operation_fences.load(std::memory_order_acquire) != 0)) {
+            delay_fence = true;
+            VideoCore::Perf::Add(VideoCore::Perf::Counter::SemaphoreWritesHeldBack, 1);
+        }
         if (delay_fence) {
             uncommitted_operations.emplace_back(std::move(func));
         }
@@ -200,6 +211,9 @@ private:
             guest_visible_fences.fetch_add(1, std::memory_order_relaxed);
         }
         pending_operations.emplace_back(std::move(uncommitted_operations));
+        if (!pending_operations.back().empty()) {
+            queued_operation_fences.fetch_add(1, std::memory_order_relaxed);
+        }
         VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::FenceQueued,
             reinterpret_cast<uintptr_t>(new_fence.get()), pending_operations.back().size());
         QueueFence(new_fence);
@@ -239,6 +253,9 @@ private:
             pending_operations.pop_front();
             for (auto& operation : operations) {
                 operation();
+            }
+            if (!operations.empty()) {
+                queued_operation_fences.fetch_sub(1, std::memory_order_release);
             }
             if (IsGuestVisible(current_fence, operations)) {
                 guest_visible_fences.fetch_sub(1, std::memory_order_release);
@@ -293,6 +310,9 @@ private:
                 for (auto& operation : current_operations) {
                     operation();
                 }
+            }
+            if (!current_operations.empty()) {
+                queued_operation_fences.fetch_sub(1, std::memory_order_release);
             }
             if (IsGuestVisible(current_fence, current_operations)) {
                 guest_visible_fences.fetch_sub(1, std::memory_order_release);
@@ -364,6 +384,8 @@ private:
     std::deque<std::deque<std::function<void()>>> pending_operations;
     /// Queued fences with downloads or operations the guest sees, not released yet.
     std::atomic<size_t> guest_visible_fences{};
+    /// Queued fences with operations that have not run yet.
+    std::atomic<size_t> queued_operation_fences{};
 
     std::mutex guard;
     std::mutex ring_guard;

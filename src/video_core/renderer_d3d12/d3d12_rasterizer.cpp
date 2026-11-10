@@ -15,6 +15,7 @@
 
 #include "common/alignment.h"
 #include "common/bug_tracker.h"
+#include "common/semaphore_trace.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -1253,13 +1254,26 @@ void RasterizerD3D12::QueryFallback(GPUVAddr address, VideoCommon::QueryType typ
                                     VideoCommon::QueryPropertiesFlags flags, u32 payload) {
     if (!gpu_memory) return;
     if (type != VideoCommon::QueryType::Payload) payload = 1;
-    auto operation = [this, address, flags, payload, memory = gpu_memory] {
-        if (True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout)) {
-            memory->Write<u64>(address + 8, gpu.GetTicks());
-            memory->Write<u64>(address, payload);
-        } else {
-            memory->Write<u32>(address, payload);
+    using Common::SemaphoreTrace::Stage;
+    Common::SemaphoreTrace::Record(Stage::Requested, address, gpu_memory->GetPointer(address),
+                                   payload, static_cast<u32>(type), static_cast<u32>(flags));
+    // A write that waited for its fence must not overwrite a newer one that ran at once.
+    const u64 ticket = semaphore_order.Request(address);
+    auto operation = [this, address, type, flags, payload, ticket, memory = gpu_memory] {
+        const bool written = semaphore_order.Write(address, ticket, [&] {
+            if (True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout)) {
+                memory->Write<u64>(address + 8, gpu.GetTicks());
+                memory->Write<u64>(address, payload);
+            } else {
+                memory->Write<u32>(address, payload);
+            }
+        });
+        if (!written) {
+            VideoCore::Perf::Add(VideoCore::Perf::Counter::SemaphoreWritesSuperseded, 1);
+            return;
         }
+        Common::SemaphoreTrace::Record(Stage::Written, address, memory->GetPointer(address),
+                                       payload, static_cast<u32>(type), static_cast<u32>(flags));
     };
     if (True(flags & VideoCommon::QueryPropertiesFlags::IsAFence)) {
         SignalFence(std::move(operation));

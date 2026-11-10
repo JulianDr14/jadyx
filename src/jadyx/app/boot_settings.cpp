@@ -45,6 +45,7 @@
 #include "video_core/query_cache.h"
 #include "video_core/rasterizer_download_area.h"
 #include "video_core/readback_trace.h"
+#include "video_core/semaphore_order.h"
 #include "video_core/write_watch.h"
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 #include "video_core/renderer_d3d12/d3d12_frame_gen_pacer.h"
@@ -135,6 +136,9 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
     system.CoreTiming().SetGuestClockPercent(clock_percent);
     const bool exact_gpu_reads = config.exact_gpu_reads.value_or(game.exact_gpu_reads);
     VideoCore::SetExactGpuReads(exact_gpu_reads);
+    VideoCore::SemaphoreOrder::SetMode(config.semaphore_order_strict
+                                           ? VideoCore::SemaphoreOrder::Mode::Strict
+                                           : VideoCore::SemaphoreOrder::Mode::Supersede);
     WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, exact GPU reads " +
               (exact_gpu_reads ? "on" : "off") + ", CPU write queue " +
               (config.cpu_write_defer == VideoCore::FramePipeline::Mode::Off ? "off" : "on") + ", upscaling " +

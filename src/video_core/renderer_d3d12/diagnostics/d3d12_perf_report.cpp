@@ -187,7 +187,8 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         "{:.1f} ms, copies {} / {:.1f} ms, other {} / {:.1f} ms, header flushes {} done, {} "
         "skipped | Maxwell dirty: {} changed, "
         "{} identical skipped | index rewrites: {} new, {} reused, {} rechecked, {:.1f} ms | "
-        "CB_DATA blocks: {} ({} words) | blit uploads skipped: {} ({} KiB, {} put back)",
+        "CB_DATA blocks: {} ({} words) | blit uploads skipped: {} ({} KiB, {} put back) | "
+        "semaphore writes: {} superseded, {} fences held back for order",
         draw_ms, per_draw(Counter::DrawNs), per_draw(Counter::DrawTexturesNs),
         per_draw(Counter::DrawBuffersNs), per_draw(Counter::DrawDescriptorsNs),
         per_draw(Counter::DrawTargetsNs), per_draw(Counter::DrawUpdateTargetsNs),
@@ -238,7 +239,8 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         get(Counter::IndexRewriteRechecks), ns_ms(Counter::IndexRewriteNs),
         get(Counter::ConstBufferRuns), get(Counter::ConstBufferRunWords),
         get(Counter::BlitUploadsSkipped), get(Counter::BlitUploadBytesSkipped) / 1024,
-        get(Counter::BlitDiscardsRestored));
+        get(Counter::BlitDiscardsRestored), get(Counter::SemaphoreWritesSuperseded),
+        get(Counter::SemaphoreWritesHeldBack));
 }
 
 std::string DescribeGuestWaitSites() {

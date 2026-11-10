@@ -313,6 +313,8 @@ struct BootConfig {
     std::optional<u32> guest_clock_percent;
     /// "exact_gpu_reads=0|1", over the game's own setting (VideoCore::SetExactGpuReads).
     std::optional<bool> exact_gpu_reads;
+    /// "semaphore_order=supersede|strict" (VideoCore::SemaphoreOrder); supersede by default.
+    bool semaphore_order_strict{};
     /// "swap_interval_hold=0|1|check".
     VideoCore::FramePipeline::Mode swap_interval_hold{VideoCore::FramePipeline::Mode::Off};
     /// "pso_budget=0|1|check" (D3D12::SetPsoBudget).

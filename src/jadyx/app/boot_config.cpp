@@ -391,6 +391,12 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                           (config.indirect_cpu ? "on" : "off"));
                 continue;
             }
+            if (line == "semaphore_order=strict" || line == "semaphore_order=supersede") {
+                config.semaphore_order_strict = line.ends_with("strict");
+                WriteDiag(std::string("boot.cfg: semaphore order ") +
+                          (config.semaphore_order_strict ? "strict" : "supersede"));
+                continue;
+            }
             if (line == "exact_gpu_reads=0" || line == "exact_gpu_reads=1") {
                 config.exact_gpu_reads = line.back() == '1';
                 WriteDiag(std::string("boot.cfg: exact GPU reads ") + (*config.exact_gpu_reads ? "on" : "off"));
