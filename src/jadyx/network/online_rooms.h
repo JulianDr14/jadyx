@@ -18,6 +18,8 @@
 #include <string_view>
 #include <vector>
 
+#include "jadyx/network/online_chat.h"
+
 namespace Jadyx::Online {
 
 /// The rooms' default UDP port (Network::DefaultRoomPort).
@@ -98,6 +100,27 @@ struct HostOptions {
 void Host(const std::string& nickname, const HostOptions& options);
 /// Leaves and waits for the worker: the app is closing.
 void Shutdown();
+
+/// The room chat (text only: Eden's rooms carry no voice). Lines arrive while joined and are
+/// cleared when the room is left.
+ChatSnapshot Chat();
+/// Changes whenever Chat() would: a cheap check before copying the history.
+std::uint64_t ChatVersion();
+/// Sends a message to the room and adds it to the history; false when not joined or when the
+/// text is empty once cleaned. Longer than MaxChatBytes is cut on a character boundary.
+bool SendChat(std::string_view utf8);
+/// The chat was seen: the unread count goes back to zero.
+void MarkChatRead();
+/// Hides a member's messages until the room is left.
+void MuteMember(const std::string& nickname, bool mute);
+bool IsMemberMuted(const std::string& nickname);
+/// This console's nickname in the room; empty when not joined.
+std::string OwnNickname();
+
+/// Where a message from the room shows a notice when the chat is closed.
+enum class ChatNotices : std::uint8_t { Everywhere, LibraryOnly, Off };
+ChatNotices LoadChatNotices();
+void SaveChatNotices(ChatNotices notices);
 
 /// The user's name as a room nickname: unsupported characters dropped (accents lose the mark),
 /// at most 20, padded to 4 with digits. Empty input gives "Jadyx".

@@ -35,6 +35,7 @@ constexpr auto PortKey = L"online_port";
 constexpr auto RoomNameKey = L"online_room_name";
 constexpr auto SlotsKey = L"online_slots";
 constexpr auto HostPortKey = L"online_host_port";
+constexpr auto ChatNoticesKey = L"online_chat_notices";
 
 // The room callbacks run on the RoomMember's loop thread and take this lock. Never hold it while
 // calling into RoomMember: Leave() joins that thread.
@@ -46,6 +47,10 @@ bool g_network_ready{};
 RoomMember::CallbackHandle<RoomMember::State> g_on_state;
 RoomMember::CallbackHandle<RoomMember::Error> g_on_error;
 RoomMember::CallbackHandle<Network::RoomInformation> g_on_room;
+RoomMember::CallbackHandle<Network::ChatEntry> g_on_chat;
+RoomMember::CallbackHandle<Network::StatusMessageEntry> g_on_status_message;
+// Under g_mutex, like g_status.
+ChatLog g_chat;
 
 std::mutex g_worker_mutex; // Guards g_worker itself; g_busy keeps a second request out.
 std::jthread g_worker;
@@ -152,6 +157,7 @@ std::shared_ptr<RoomMember> BoundMember() {
                 if (g_status.phase != Phase::Leaving) {
                     g_status.phase = Phase::Idle;
                     g_status.members.clear();
+                    g_chat.Clear();
                 }
                 break;
             }
@@ -177,6 +183,23 @@ std::shared_ptr<RoomMember> BoundMember() {
                 g_status.members = std::move(members);
                 Touch();
             });
+        g_on_chat = member->BindOnChatMessageReceived([](const Network::ChatEntry& entry) {
+            std::scoped_lock lock{g_mutex};
+            g_chat.AddMessage(entry.nickname, entry.message, false);
+        });
+        g_on_status_message =
+            member->BindOnStatusMessageReceived([](const Network::StatusMessageEntry& entry) {
+                ChatKind kind;
+                switch (entry.type) {
+                case Network::IdMemberJoin: kind = ChatKind::Joined; break;
+                case Network::IdMemberLeave: kind = ChatKind::Left; break;
+                case Network::IdMemberKicked: kind = ChatKind::Kicked; break;
+                case Network::IdMemberBanned: kind = ChatKind::Banned; break;
+                default: return;
+                }
+                std::scoped_lock lock{g_mutex};
+                g_chat.AddStatus(kind, entry.nickname);
+            });
     });
     return g_network_ready ? Network::GetRoomMember().lock() : nullptr;
 }
@@ -201,6 +224,7 @@ void SetFailed(Failure failure) {
     g_status.phase = Phase::Idle;
     g_status.failure = failure;
     g_status.members.clear();
+    g_chat.Clear();
     Touch();
 }
 
@@ -229,6 +253,7 @@ void LeaveNow(RoomMember& member) {
     g_status.room_name.clear();
     g_status.members.clear();
     g_status.slots = 0;
+    g_chat.Clear();
     Touch();
     LOG_INFO(Network, "Online: left the room");
 }
@@ -360,6 +385,49 @@ Status Snapshot() {
 bool InRoom() {
     std::scoped_lock lock{g_mutex};
     return g_status.phase == Phase::Joined;
+}
+
+ChatSnapshot Chat() {
+    std::scoped_lock lock{g_mutex};
+    return g_chat.Snapshot();
+}
+
+std::uint64_t ChatVersion() {
+    std::scoped_lock lock{g_mutex};
+    return g_chat.Version();
+}
+
+bool SendChat(std::string_view utf8) {
+    const std::string text = CleanChatText(utf8);
+    if (text.empty() || !InRoom() || !g_network_ready) return false;
+    const auto member = Network::GetRoomMember().lock();
+    if (!member || !member->IsConnected()) return false;
+    // The room forwards it to everyone else; this console only sees it through the history.
+    member->SendChatMessage(text);
+    std::scoped_lock lock{g_mutex};
+    g_chat.AddMessage(member->GetNickname(), text, true);
+    return true;
+}
+
+void MarkChatRead() {
+    std::scoped_lock lock{g_mutex};
+    g_chat.MarkRead();
+}
+
+void MuteMember(const std::string& nickname, bool mute) {
+    std::scoped_lock lock{g_mutex};
+    g_chat.Mute(nickname, mute);
+}
+
+bool IsMemberMuted(const std::string& nickname) {
+    std::scoped_lock lock{g_mutex};
+    return g_chat.IsMuted(nickname);
+}
+
+std::string OwnNickname() {
+    if (!g_network_ready || !InRoom()) return {};
+    const auto member = Network::GetRoomMember().lock();
+    return member ? member->GetNickname() : std::string{};
 }
 
 void Join(const std::string& nickname, const std::string& address, std::uint16_t port,
@@ -601,6 +669,27 @@ bool SaveFields(const SavedFields& fields) {
     } catch (...) {
         return false;
     }
+}
+
+ChatNotices LoadChatNotices() {
+    try {
+        const auto values =
+            winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        if (values.HasKey(ChatNoticesKey)) {
+            const auto value = winrt::unbox_value<int32_t>(values.Lookup(ChatNoticesKey));
+            if (value >= 0 && value <= static_cast<int32_t>(ChatNotices::Off))
+                return static_cast<ChatNotices>(value);
+        }
+    } catch (...) { /* Missing or invalid: the default. */ }
+    return ChatNotices::Everywhere;
+}
+
+void SaveChatNotices(ChatNotices notices) {
+    try {
+        const auto values =
+            winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        values.Insert(ChatNoticesKey, winrt::box_value(static_cast<int32_t>(notices)));
+    } catch (...) { /* Kept for this run only. */ }
 }
 
 } // namespace Jadyx::Online
