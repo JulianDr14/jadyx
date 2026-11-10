@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <fmt/format.h>
@@ -41,7 +42,39 @@ void WriteStacks() {
 
 } // namespace
 
-FreezeWatch::FreezeWatch() : created_ns{Common::SamplingProfiler::SteadyNs()} {}
+FreezeWatch::FreezeWatch(GuestProbe guest_probe_)
+    : guest_probe{std::move(guest_probe_)}, created_ns{Common::SamplingProfiler::SteadyNs()} {}
+
+FreezeWatch::~FreezeWatch() {
+    if (!probe_thread.joinable()) {
+        return;
+    }
+    // A probe stuck on a lock the frozen guest holds must not keep the session from closing.
+    if (probe_done->load()) {
+        probe_thread.join();
+    } else {
+        probe_thread.detach();
+    }
+}
+
+void FreezeWatch::StartGuestProbe(u64 stalled_s) {
+    if (!guest_probe) {
+        return;
+    }
+    if (probe_thread.joinable()) {
+        if (!probe_done->load()) {
+            WriteDiag("freeze guest probe: the previous one has not finished, skipped");
+            return;
+        }
+        probe_thread.join();
+    }
+    probe_done = std::make_shared<std::atomic<bool>>(false);
+    probe_thread = std::thread([probe = guest_probe, done = probe_done, stalled_s] {
+        const std::string report = probe();
+        WriteDiag(fmt::format("freeze guest probe at {} s:\n{}", stalled_s, report));
+        done->store(true);
+    });
+}
 
 void FreezeWatch::Tick(bool paused) {
     const u64 now_ms = Common::StallWatch::NowMs();
@@ -92,6 +125,7 @@ void FreezeWatch::Check(u64 now_ms, bool paused) {
                           work.empty() ? "nothing tracked" : work, MemoryReport()));
     if (std::ranges::find(STACK_REPORTS, reports) != std::end(STACK_REPORTS)) {
         WriteStacks();
+        StartGuestProbe(stalled_s);
     }
     ++reports;
 }

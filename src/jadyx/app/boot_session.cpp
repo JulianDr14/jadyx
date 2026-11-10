@@ -45,6 +45,7 @@
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
+#include "core/hle/kernel/guest_probe.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/memory.h"
 #include "core/hle/kernel/svc/svc_debug_string.h" // Kernel::Svc::SetDebugStringObserver
@@ -563,7 +564,10 @@ int GameSession::PlayLoop() {
     // Pulse: after a resume the presented frames are logged each second for 30 s, so a guest
     // that freezes shows when it stopped.
     u64 resume_frames = 0;
-    FreezeWatch freeze_watch;
+    // Report 0 and 2 of a freeze also list what each guest core runs and every guest thread.
+    FreezeWatch freeze_watch{[&system = system] {
+        return Kernel::GuestProbe::Report(system.Kernel(), 3, std::chrono::milliseconds{300});
+    }};
     for (u32 tick = 1;; ++tick) {
         std::this_thread::sleep_for(TICK);
         freeze_watch.Tick(menu.IsOpen() || system.IsPaused());

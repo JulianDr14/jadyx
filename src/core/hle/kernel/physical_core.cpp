@@ -12,6 +12,7 @@
 #include "core/arm/cpu_profile.h"
 #include "dynarmic/interface/jit_profile.h"
 #include "core/debugger/debugger.h"
+#include "core/hle/kernel/guest_probe.h"
 #include "core/hle/kernel/k_hardware_timer.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
@@ -157,6 +158,7 @@ void PhysicalCore::RunThread(KernelCore& kernel, Kernel::KThread* thread) {
                 VideoCore::FrameTrace::ScopedSpan trace_run{
                     VideoCore::FrameTrace::Event::GuestRunLong, trace_context};
                 hr = interface->RunThread(thread);
+                GuestProbe::OnGuestExit(m_core_index, *interface, *thread);
                 VideoCore::Perf::Add(VideoCore::Perf::Counter::GuestRunExits, 1);
                 if (True(hr & Core::HaltReason::SupervisorCall)) {
                     VideoCore::Perf::RecordGuestSvcExit(interface->GetSvcNumber());
