@@ -6,8 +6,9 @@
 #include "common/pulse_version.h"
 #include "hid_core/resources/npad/npad_pulse.h"
 
-static_assert(Common::Pulse::Compatible(Common::Pulse::Version{1, 1, 0},
-                                       Common::Pulse::CurrentVersion));
+// 1.2 drops every 1.1 session (they can hold a semaphore counter that went backwards).
+static_assert(!Common::Pulse::Compatible(Common::Pulse::Version{1, 1, 1},
+                                        Common::Pulse::CurrentVersion));
 
 namespace {
 using namespace Service;

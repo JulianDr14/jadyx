@@ -29,7 +29,9 @@ struct Version {
 
 // 1.1: blocks are stored with zstd, which a 1.0 build cannot read.
 // 1.1.1: restore Npad revisions accepted by live HID, without changing the state layout.
-inline constexpr Version CurrentVersion{1, 1, 1};
+// 1.2: sessions saved before the semaphore order fix can hold a GPU semaphore counter that went
+//      backwards, and a game resumed from one stays frozen. Older sessions are dropped.
+inline constexpr Version CurrentVersion{1, 2, 0};
 
 namespace Detail {
 // Marks Identity::revision as a version, not the build hash older sessions stored there.

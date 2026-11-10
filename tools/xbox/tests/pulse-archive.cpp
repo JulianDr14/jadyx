@@ -127,6 +127,7 @@ int main() {
     static_assert(!Compatible(Version{1, 0, 0}, Version{1, 1, 0}));
     static_assert(!Compatible(Version{1, 1, 0}, Version{1, 0, 0}));
     static_assert(!Compatible(Version{1, 0, 0}, Version{2, 0, 0}));
+    static_assert(!Compatible(Version{1, 1, 1}, CurrentVersion));
     Check(!VersionOf(identity.revision)); // a build hash, as sessions before the version stored
     {
         auto hashed = RevisionOf(Version{1, 0, 0});
