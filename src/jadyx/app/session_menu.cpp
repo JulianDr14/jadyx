@@ -650,9 +650,13 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         const GameGraphics& game = menu->Settings().graphics;
         const GameGraphics before = LoadGameGraphics(program_id);
         if (!SaveGameGraphics(program_id, game)) WriteDiag("menu: graphics could not be saved");
+        const GraphicsSettings global = LoadGraphicsSettings();
+        const bool fixed_core_map = ResolveGraphics(global, game).fixed_core_map;
+        const bool core_map_changed = fixed_core_map != ResolveGraphics(global, before).fixed_core_map;
         WithGuestPaused([&] {
             ApplyGameGraphics(system, config, game);
             ApplyRunningAdvancedGraphics(system, before.advanced, game.advanced);
+            if (core_map_changed) ApplyRunningCoreMap(config, fixed_core_map);
         });
         graphics_changed = true;
     }

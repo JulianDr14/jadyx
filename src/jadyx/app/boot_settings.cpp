@@ -154,6 +154,17 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
               (config.gpu_fence ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(GpuFenceText(graphics.gpu_fence)))));
 }
 
+void ApplyRunningCoreMap(const BootConfig& config, bool fixed) {
+    if (config.cpu_pin_from_boot_cfg) {
+        WriteDiag("menu: core map comes from boot.cfg, not changed");
+        return;
+    }
+    Common::Windows::SetCpuPinMap(fixed ? Common::Windows::CpuPinTopology : Common::Windows::CpuPinDefault);
+    const std::size_t moved = Common::Windows::RepinNamedThreads();
+    WriteDiag(std::string{"menu: "} + (fixed ? "fixed core map (topology)" : "core map GPU thread only") + ", " +
+              std::to_string(moved) + " threads moved | " + Common::Windows::CpuPinReport());
+}
+
 /// The advanced graphics that can change while the game runs, those that differ from `before`.
 /// With the guest paused (the in-game menu).
 void ApplyRunningAdvancedGraphics(Core::System& system, const GameAdvancedGraphics& before,

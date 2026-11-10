@@ -27,6 +27,10 @@ void ApplyGameLanguage(Core::System& system);
 void ApplyGameGraphics(Core::System& system, const BootConfig& config, const GameGraphics& game);
 
 /// The advanced graphics that can change while the game runs, those that differ from `before`.
+/// The fixed core map turned on or off while the game runs: the running threads move to the new
+/// map at once. A cpu_pin key in boot.cfg wins and leaves them where they are.
+void ApplyRunningCoreMap(const BootConfig& config, bool fixed);
+
 void ApplyRunningAdvancedGraphics(Core::System& system, const GameAdvancedGraphics& before,
                                   const GameAdvancedGraphics& now);
 

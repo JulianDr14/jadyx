@@ -197,7 +197,7 @@ public:
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
         GlitchPage, GlitchCapture, GlitchWarpPerLane, GlitchA2cShader, GlitchFrameWait,
         GlitchComputeFresh, GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites,
-        GeoMark, GeoHeal, PsoBoost, Chat,
+        GeoMark, GeoHeal, PsoBoost, Chat, GfxFixedCoreMap,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
 
@@ -338,7 +338,8 @@ private:
 
     /// The Handheld style forces the console's mode (uwp_input.cpp): there is nothing to choose.
     void UpdateGraphicsItems() {
-        graphics = {GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxExactGpuReads, GfxTextureMemory, GfxGpuAccuracy};
+        graphics = {GfxUpscaling,     GfxFrameGen,      GfxShaders,     GfxGpuFence,    GfxGuestClock,
+                    GfxExactGpuReads, GfxTextureMemory, GfxGpuAccuracy, GfxFixedCoreMap};
         if (settings.style != ConsoleControllerStyle::Handheld) graphics.push_back(GfxConsoleMode);
     }
 
@@ -352,6 +353,7 @@ private:
         case GfxTextureMemory: return GraphicsRow::TextureMemory;
         case GfxGpuAccuracy: return GraphicsRow::GpuAccuracy;
         case GfxConsoleMode: return GraphicsRow::ConsoleMode;
+        case GfxFixedCoreMap: return GraphicsRow::FixedCoreMap;
         default: return GraphicsRow::Upscaling;
         }
     }
@@ -455,7 +457,8 @@ private:
         case GfxUpscaling:
         case GfxFrameGen:
         case GfxShaders:
-        case GfxGpuFence: {
+        case GfxGpuFence:
+        case GfxFixedCoreMap: {
             // Whose value it is goes under the label: with the value it would not fit the row.
             const GraphicsRow row = RowOf(item);
             return {Tr(GraphicsRowTitle(row)),
@@ -577,7 +580,8 @@ private:
         case GfxExactGpuReads:
         case GfxTextureMemory:
         case GfxGpuAccuracy:
-        case GfxConsoleMode: {
+        case GfxConsoleMode:
+        case GfxFixedCoreMap: {
             auto row = static_cast<std::size_t>(RowOf(SelectedItem()));
             const bool changed = HandleGameGraphicsInput(
                 settings.graphics, row,
