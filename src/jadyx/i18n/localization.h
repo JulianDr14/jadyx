@@ -693,6 +693,8 @@ enum class Text : std::uint16_t {
     AsyncRecordHint,
     CpuWriteQueue,
     CpuWriteQueueHint,
+    FixedCoreMap,
+    FixedCoreMapHint,
     SlowGuestClock,
     SlowGuestClockHint,
     ExactGpuReads,

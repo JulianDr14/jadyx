@@ -364,6 +364,11 @@ struct BootConfig {
     /// rest the second ones, "cpu_pin=map:name=core.logical,..." or "cpu_pin=topology" each
     /// named thread where the map says, the default); off leaves them to the scheduler.
     Common::Windows::CpuPin cpu_pin{Common::Windows::CpuPin::Map};
+    /// A cpu_pin key in boot.cfg: it wins over the fixed core map setting.
+    bool cpu_pin_from_boot_cfg{};
+    /// Settings > Graphics "Fixed core map" (the game's own over the global one): the topology
+    /// map instead of the default, which pins only the GPU thread.
+    bool fixed_core_map{};
     bool cpu_probe{}; ///< Measures the app's logical processors before the guest (cpu_probe.h).
     bool timer_profile{}; ///< HostTiming waits only; opt-in, separate from draw profiling.
     /// File name of a game in LocalState\games to boot instead of boot.nro (package-appx.ps1 -Game).

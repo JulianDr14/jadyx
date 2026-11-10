@@ -1403,6 +1403,7 @@ private:
                 if (row == GraphicsRow::FrameGen) { item.kind = Kind::Toggle; item.on = settings.frame_gen; }
                 if (row == GraphicsRow::AsyncRecord) { item.kind = Kind::Toggle; item.on = settings.async_record; }
                 if (row == GraphicsRow::CpuWriteQueue) { item.kind = Kind::Toggle; item.on = settings.cpu_write_queue; }
+                if (row == GraphicsRow::FixedCoreMap) { item.kind = Kind::Toggle; item.on = settings.fixed_core_map; }
                 rows.push_back(std::move(item));
             }
         } else if (category == HomeControllers) {

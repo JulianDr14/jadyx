@@ -743,6 +743,8 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::AsyncRecordHint, L"Avanzado. Envía los comandos en un hilo aparte. Apagarlo puede bajar los fps. Se aplica al iniciar el juego"},
     {Text::CpuWriteQueue, L"Cola de escrituras de CPU"},
     {Text::CpuWriteQueueHint, L"Avanzado. Solo si un juego mejora con ella: en otros baja mucho los fps. Se aplica al iniciar el juego"},
+    {Text::FixedCoreMap, L"Mapa de núcleos fijo"},
+    {Text::FixedCoreMapHint, L"Avanzado. Pone cada hilo del emulador en un núcleo fijo, como antes. Solo si un juego va más lento sin él. Se aplica al iniciar el juego"},
     {Text::SlowGuestClock, L"Reloj del juego al 90 %"},
     {Text::SlowGuestClockHint, L"Para juegos que saltan entre 20 y 30 fps. Si se ve lento, apágalo"},
     {Text::ExactGpuReads, L"Lecturas exactas de GPU"},

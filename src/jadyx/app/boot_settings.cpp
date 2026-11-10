@@ -189,7 +189,14 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
               std::to_string(std::chrono::duration<double, std::milli>(timer_resolution).count()) +
               " ms");
     WriteDiag("step: CPU " + CpuSetReport());
-    // Read by each emulator thread when it is named.
+    // Read by each emulator thread when it is named. Set on every session: the library runs
+    // several games in one process, each with its own choice.
+    if (!config.cpu_pin_from_boot_cfg) {
+        Common::Windows::SetCpuPinMap(config.fixed_core_map ? Common::Windows::CpuPinTopology
+                                                            : Common::Windows::CpuPinDefault);
+        WriteDiag(config.fixed_core_map ? "step: fixed core map (topology)"
+                                        : "step: core map GPU thread only, the rest float");
+    }
     Common::Windows::SetCpuPin(config.cpu_pin);
     if (config.cpu_probe) Jadyx::RunCpuProbe(WriteDiag);
     ApplyHeadlessBootSettings(config.null_renderer ? BootSurface{} : surface);

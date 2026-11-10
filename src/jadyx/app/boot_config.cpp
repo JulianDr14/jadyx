@@ -28,6 +28,7 @@ void UseGameAdvancedGraphics(BootConfig& config, u64 program_id) {
     config.async_record = graphics.async_record;
     config.cpu_write_defer = graphics.cpu_write_queue ? VideoCore::FramePipeline::Mode::On
                                                       : VideoCore::FramePipeline::Mode::Off;
+    config.fixed_core_map = graphics.fixed_core_map;
     if (program_id == 0) return;
     const GameAdvancedGraphics& advanced = game.advanced;
     config.anisotropy = advanced.anisotropy;
@@ -447,6 +448,7 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 config.cpu_pin = value == "cores"   ? CpuPin::Cores
                                  : value == "split" ? CpuPin::Split
                                                     : CpuPin::Off;
+                config.cpu_pin_from_boot_cfg = true;
                 WriteDiag("boot.cfg: cpu_pin " + value);
                 continue;
             }
@@ -455,6 +457,7 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                     Common::Windows::CpuPinTopology : std::string_view{line}.substr(12);
                 if (Common::Windows::SetCpuPinMap(map)) {
                     config.cpu_pin = Common::Windows::CpuPin::Map;
+                    config.cpu_pin_from_boot_cfg = true;
                     WriteDiag("boot.cfg: cpu_pin map " + std::string(map));
                 } else {
                     WriteDiag("boot.cfg: cpu_pin map does not parse, ignored: " + line);
