@@ -13,6 +13,7 @@
 #include "common/host_stalls.h"
 #include "common/logging.h"
 #include "core/arm/cpu_profile.h"
+#include "common/windows/cpu_pin.h"
 #include "common/windows/timed_wait_profile.h"
 #include "dynarmic/interface/jit_profile.h"
 #include "video_core/cpu_write_queue.h"
@@ -585,6 +586,10 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
     LOG_INFO(Render, "D3D12 perf over {} frames ({:.0f} ms), mostly {} | {}", frames, total_ms,
              LikelyCause(delta, total_ms), DescribePerf(delta, total_ms));
     LOG_INFO(Render, "D3D12 GPU thread: {}", DescribeDrawCosts(delta, total_ms));
+    if (const std::string threads = Common::Windows::NamedThreadCpuReport(16); !threads.empty()) {
+        LOG_INFO(Render, "Thread CPU over the window (busiest first, name ms@CPU sets): {}",
+                 threads);
+    }
     if (const u64 checks = VideoCore::Perf::Get(delta, Counter::PipelineKeyChecks); checks != 0) {
         LOG_INFO(Render, "D3D12 pipeline key check: {} reusable draws verified, {} mismatched",
                  checks, VideoCore::Perf::Get(delta, Counter::PipelineKeyMismatches));

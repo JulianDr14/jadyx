@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <charconv>
@@ -31,16 +32,66 @@ struct Plan {
     std::vector<ULONG> siblings;
 };
 
-struct MapEntry {
-    std::string name;
+struct MapPlace {
     int core{};
     int logical{-1}; ///< -1: every logical processor of the core.
+};
+
+struct MapEntry {
+    std::string name;
+    std::vector<MapPlace> places; ///< "core.logical+core.logical": the thread may run on any.
+};
+
+struct NamedThread {
+    std::string name;
+    std::string where; ///< The CPU sets it was placed on, or "any".
+    DWORD id{};
+    HANDLE handle{};
+    std::uint64_t last_ns{};
 };
 
 std::atomic<CpuPin> g_pin{CpuPin::Off};
 std::mutex g_placed_mutex;
 std::string g_placed;
 std::vector<MapEntry> g_map; ///< Under g_placed_mutex.
+std::mutex g_named_mutex;
+std::vector<NamedThread> g_named; ///< Under g_named_mutex; handles stay open for the app's life.
+bool g_named_sampled{};          ///< Under g_named_mutex.
+
+std::uint64_t ThreadCpuNs(HANDLE thread) {
+    FILETIME creation, exit, kernel, user;
+    if (!GetThreadTimes(thread, &creation, &exit, &kernel, &user)) {
+        return 0;
+    }
+    const auto ticks = [](const FILETIME& time) {
+        return (static_cast<std::uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+    };
+    return (ticks(kernel) + ticks(user)) * 100;
+}
+
+/// Keeps a handle to the calling thread so NamedThreadCpuReport can read its CPU time.
+/// A thread named again keeps its entry with the new name.
+void RegisterNamedThread(const char* name, std::string where) {
+    const DWORD id = GetCurrentThreadId();
+    {
+        std::scoped_lock lk{g_named_mutex};
+        for (NamedThread& thread : g_named) {
+            // An exited thread's id can come back on a new thread.
+            if (thread.id == id && WaitForSingleObject(thread.handle, 0) == WAIT_TIMEOUT) {
+                thread.name = name;
+                thread.where = std::move(where);
+                return;
+            }
+        }
+    }
+    HANDLE handle{};
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &handle,
+                         THREAD_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, 0)) {
+        return;
+    }
+    std::scoped_lock lk{g_named_mutex};
+    g_named.push_back({name, std::move(where), id, handle, ThreadCpuNs(handle)});
+}
 
 bool ParseIndex(std::string_view text, int& value) {
     const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
@@ -129,17 +180,30 @@ std::vector<ULONG> MapSets(const Plan& plan, const char* name) {
             best = &entry;
         }
     }
-    if (!best || static_cast<std::size_t>(best->core) >= plan.cores.size()) {
+    if (!best) {
         return {};
     }
-    const Core& core = plan.cores[static_cast<std::size_t>(best->core)];
-    if (best->logical < 0) {
-        return core.sets;
+    // Places the app does not have are left out; none left leaves the thread floating.
+    std::vector<ULONG> sets;
+    const auto add = [&sets](ULONG id) {
+        if (std::find(sets.begin(), sets.end(), id) == sets.end()) {
+            sets.push_back(id);
+        }
+    };
+    for (const MapPlace& place : best->places) {
+        if (static_cast<std::size_t>(place.core) >= plan.cores.size()) {
+            continue;
+        }
+        const Core& core = plan.cores[static_cast<std::size_t>(place.core)];
+        if (place.logical < 0) {
+            for (const ULONG id : core.sets) {
+                add(id);
+            }
+        } else if (static_cast<std::size_t>(place.logical) < core.sets.size()) {
+            add(core.sets[static_cast<std::size_t>(place.logical)]);
+        }
     }
-    if (static_cast<std::size_t>(best->logical) >= core.sets.size()) {
-        return {};
-    }
-    return {core.sets[static_cast<std::size_t>(best->logical)]};
+    return sets;
 }
 
 } // namespace
@@ -152,7 +216,7 @@ void SetCpuPin(CpuPin pin) {
     }
     if (no_map) {
         // The default: no boot.cfg key gave a map.
-        SetCpuPinMap(CpuPinTopology);
+        SetCpuPinMap(CpuPinDefault);
     }
     g_pin.store(pin, std::memory_order_relaxed);
 }
@@ -160,20 +224,28 @@ void SetCpuPin(CpuPin pin) {
 bool SetCpuPinMap(std::string_view map) {
     std::vector<MapEntry> entries;
     while (!map.empty()) {
-        const auto comma = map.find(',');
+        const auto comma = map.find_first_of(",;");
         const std::string_view item = map.substr(0, comma);
         map = comma == std::string_view::npos ? std::string_view{} : map.substr(comma + 1);
         const auto equals = item.find('=');
         if (equals == 0 || equals == std::string_view::npos) {
             return false;
         }
-        MapEntry entry{std::string(item.substr(0, equals))};
-        const std::string_view place = item.substr(equals + 1);
-        const auto dot = place.find('.');
-        if (!ParseIndex(place.substr(0, dot), entry.core) ||
-            (dot != std::string_view::npos && !ParseIndex(place.substr(dot + 1), entry.logical))) {
-            return false;
-        }
+        MapEntry entry{std::string(item.substr(0, equals)), {}};
+        std::string_view places = item.substr(equals + 1);
+        do {
+            const auto plus = places.find('+');
+            const std::string_view text = places.substr(0, plus);
+            places = plus == std::string_view::npos ? std::string_view{} : places.substr(plus + 1);
+            MapPlace place;
+            const auto dot = text.find('.');
+            if (!ParseIndex(text.substr(0, dot), place.core) ||
+                (dot != std::string_view::npos &&
+                 !ParseIndex(text.substr(dot + 1), place.logical))) {
+                return false;
+            }
+            entry.places.push_back(place);
+        } while (!places.empty());
         entries.push_back(std::move(entry));
     }
     if (entries.empty()) {
@@ -184,14 +256,18 @@ bool SetCpuPinMap(std::string_view map) {
     return true;
 }
 
-void PinCurrentThread(const char* name) {
+namespace {
+
+/// Places the calling thread; returns the CPU sets it now runs on, or "any".
+std::string PlaceCurrentThread(const char* name) {
+    const std::string any = "any";
     const CpuPin pin = g_pin.load(std::memory_order_relaxed);
-    if (pin == CpuPin::Off || name == nullptr) {
-        return;
+    if (pin == CpuPin::Off) {
+        return any;
     }
     const Plan& plan = GetPlan();
     if (plan.cores.size() < 2) {
-        return;
+        return any;
     }
     // Split needs a second logical processor on every core for the other threads.
     const bool split = pin == CpuPin::Split && plan.siblings.size() == plan.cores.size();
@@ -200,7 +276,7 @@ void PinCurrentThread(const char* name) {
         std::scoped_lock lk{g_placed_mutex};
         sets = MapSets(plan, name);
         if (sets.empty()) {
-            return;
+            return any;
         }
     } else if (const int guest = GuestCore(name); guest >= 0) {
         const Core& core = plan.cores[static_cast<std::size_t>(guest) % plan.cores.size()];
@@ -212,12 +288,48 @@ void PinCurrentThread(const char* name) {
     } else if (split) {
         sets = plan.siblings;
     } else {
-        return;
+        return any;
     }
     const bool placed =
         SetThreadSelectedCpuSets(GetCurrentThread(), sets.data(), static_cast<ULONG>(sets.size())) != 0;
     std::scoped_lock lk{g_placed_mutex};
     g_placed += std::string(" ") + name + (placed ? "=" : "!=") + ListSets(sets);
+    return placed ? ListSets(sets) : any;
+}
+
+} // namespace
+
+void PinCurrentThread(const char* name) {
+    if (name == nullptr) {
+        return;
+    }
+    RegisterNamedThread(name, PlaceCurrentThread(name));
+}
+
+std::string NamedThreadCpuReport(std::size_t limit) {
+    struct Use {
+        std::uint64_t ns;
+        const NamedThread* thread;
+    };
+    std::scoped_lock lk{g_named_mutex};
+    std::vector<Use> uses;
+    for (NamedThread& thread : g_named) {
+        const std::uint64_t now = ThreadCpuNs(thread.handle);
+        uses.push_back({now >= thread.last_ns ? now - thread.last_ns : 0, &thread});
+        thread.last_ns = now;
+    }
+    const bool first = !g_named_sampled;
+    g_named_sampled = true;
+    if (first) {
+        return {};
+    }
+    std::sort(uses.begin(), uses.end(), [](const Use& a, const Use& b) { return a.ns > b.ns; });
+    std::string report;
+    for (std::size_t i = 0; i < uses.size() && i < limit; ++i) {
+        report += (report.empty() ? "" : ", ") + uses[i].thread->name + " " +
+                  std::to_string(uses[i].ns / 1'000'000) + " ms@" + uses[i].thread->where;
+    }
+    return report;
 }
 
 std::string CpuPinReport() {

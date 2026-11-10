@@ -36,9 +36,17 @@ inline constexpr std::string_view CpuPinTopology =
     "DSP_AudioRenderer_Main=2.1,AudioRenderSystemManager=2.1,XAudio2Output=2.1,"
     "D3D12PipelineBuilder=2.1";
 
-/// Sets the map CpuPin::Map uses: comma-separated "name=core" or "name=core.logical" entries.
+/// The map used when boot.cfg gives none: only the GPU thread (and the threads whose name starts
+/// with it) on the first logical processor of a core of its own; every other thread floats.
+/// With the topology map the pipeline builders starved on the one logical processor they
+/// shared, and a new area took twice the stall time to build its shaders at the same frame rate.
+inline constexpr std::string_view CpuPinDefault = "GPU=0.0";
+
+/// Sets the map CpuPin::Map uses: comma-separated "name=core" or "name=core.logical" entries
+/// (';' also separates them, for command lines that split on commas).
 /// core counts the app's physical cores from 0; logical picks one of its logical processors,
-/// both when left out. A name also matches threads whose name starts with it (worker pools).
+/// both when left out. Places joined by '+' ("1.1+2.1") let the thread run on any of them. A name
+/// also matches threads whose name starts with it (worker pools).
 /// Returns false, leaving the map unchanged, if the text does not parse.
 bool SetCpuPinMap(std::string_view map);
 
@@ -52,6 +60,10 @@ void PinCurrentThread(const char* name);
 
 /// The physical cores and logical processors the plan uses, and the threads placed so far.
 [[nodiscard]] std::string CpuPinReport();
+
+/// The CPU each named thread used since the previous call, busiest first, with the CPU sets it
+/// runs on: "name ms@sets". Lists the busiest `limit` threads; empty on the first call.
+[[nodiscard]] std::string NamedThreadCpuReport(std::size_t limit);
 
 /// The CPU set ids of the app's logical processors, one list per physical core, primary first.
 [[nodiscard]] std::vector<std::vector<unsigned long>> AppCoreCpuSets();
