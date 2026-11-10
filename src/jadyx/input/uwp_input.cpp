@@ -26,6 +26,7 @@
 #include "common/input.h"
 #include "common/logging.h"
 #include "common/settings.h"
+#include "common/thread.h"
 #include "jadyx/input/uwp_input.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/input/uwp_controllers.h"
@@ -749,6 +750,11 @@ void GamepadInput::Stop() {
 }
 
 void GamepadInput::Run(std::stop_token stop) {
+    // Each poll is a few microseconds, but a late one is felt as input lag: at a lower priority
+    // the guest cores and the GPU thread (time critical, floating on any core when no map pins
+    // them) can keep it waiting for tens of milliseconds.
+    Common::SetCurrentThreadName("PadInput");
+    Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     struct Apartment {
         Apartment() { winrt::init_apartment(winrt::apartment_type::multi_threaded); }
         ~Apartment() { winrt::uninit_apartment(); }
