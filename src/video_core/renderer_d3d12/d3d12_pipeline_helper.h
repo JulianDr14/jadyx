@@ -105,17 +105,29 @@ template <typename Descriptor, typename CbufAddress>
                                      u32 index, bool via_header_index,
                                      CbufAddress&& cbuf_address) {
     const u32 index_offset = index << desc.size_shift;
-    const u32 offset = desc.cbuf_offset + index_offset;
+    u32 offset = desc.cbuf_offset + index_offset;
+    if constexpr (std::is_same_v<Descriptor, Shader::TextureDescriptor>) {
+        // The array index is a constant buffer value, the same for the whole draw.
+        if (desc.has_index_cbuf) {
+            offset += gpu_memory.Read<u32>(cbuf_address(desc.index_cbuf_index) +
+                                           desc.index_cbuf_offset)
+                      << desc.index_shift;
+        }
+    }
     const GPUVAddr addr = cbuf_address(desc.cbuf_index) + offset;
     if constexpr (std::is_same_v<Descriptor, Shader::TextureDescriptor> ||
                   std::is_same_v<Descriptor, Shader::TextureBufferDescriptor>) {
         if (desc.has_secondary) {
-            const u32 second_offset = desc.secondary_cbuf_offset + index_offset;
-            const GPUVAddr separate_addr = cbuf_address(desc.secondary_cbuf_index) + second_offset;
-            const u32 lhs_raw = gpu_memory.Read<u32>(addr) << desc.shift_left;
-            const u32 rhs_raw = gpu_memory.Read<u32>(separate_addr) << desc.secondary_shift_left;
+            // Only the primary handle is indexed; the secondary one (a shared sampler) is not.
+            const GPUVAddr separate_addr =
+                cbuf_address(desc.secondary_cbuf_index) + desc.secondary_cbuf_offset;
+            const u32 lhs_raw = (gpu_memory.Read<u32>(addr) << desc.shift_left) & desc.mask;
+            const u32 rhs_raw = (gpu_memory.Read<u32>(separate_addr) << desc.secondary_shift_left) &
+                                desc.secondary_mask;
             return Tegra::Texture::TexturePair(lhs_raw | rhs_raw, via_header_index);
         }
+        return Tegra::Texture::TexturePair(gpu_memory.Read<u32>(addr) & desc.mask,
+                                           via_header_index);
     }
     return Tegra::Texture::TexturePair(gpu_memory.Read<u32>(addr), via_header_index);
 }
