@@ -100,6 +100,7 @@ add_library(video_core STATIC
     geometry_hunt.cpp
     geometry_hunt.h
     frame_pipeline.h
+    gpu_fast_paths.h
     frame_trace.h
     gpu.cpp
     gpu.h

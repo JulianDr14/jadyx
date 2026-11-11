@@ -24,6 +24,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/framebuffer_config.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_fast_paths.h"
 #include "video_core/memory_manager.h"
 #include "video_core/cpu_write_queue.h"
 #include "video_core/perf_counters.h"
@@ -1270,6 +1271,12 @@ void RasterizerD3D12::QueryFallback(GPUVAddr address, VideoCommon::QueryType typ
 
 void RasterizerD3D12::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr address,
                                                 u32 size) {
+    // Bindings are only read and written by the GPU thread (DisableGraphicsUniformBuffer below
+    // takes no lock either); the lock costs one acquisition per bind, thousands a frame.
+    if (VideoCore::FastPaths::Enabled()) [[likely]] {
+        buffer_cache.BindGraphicsUniformBuffer(stage, index, address, size);
+        return;
+    }
     std::scoped_lock lock{buffer_cache.mutex};
     buffer_cache.BindGraphicsUniformBuffer(stage, index, address, size);
 }
