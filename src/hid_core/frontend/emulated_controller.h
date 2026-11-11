@@ -383,6 +383,8 @@ public:
      * @return The last sent vibration
      */
     VibrationValue GetActualVibrationValue(DeviceIndex device_index) const;
+    VibrationValue GetRecentVibrationValue(DeviceIndex device_index,
+                                           std::chrono::milliseconds max_age) const;
 
     /**
      * Sends a small vibration to the output device
@@ -581,6 +583,8 @@ private:
     f32 motion_sensitivity{Core::HID::MotionInput::IsAtRestStandard};
     u32 turbo_button_state{0};
     std::size_t nfc_handles{0};
+    mutable std::mutex vibration_mutex;
+    std::array<std::chrono::steady_clock::time_point, 2> last_vibration_request{};
     std::array<VibrationValue, 2> last_vibration_value{DEFAULT_VIBRATION_VALUE,
                                                        DEFAULT_VIBRATION_VALUE};
     std::array<std::chrono::steady_clock::time_point, 2> last_vibration_timepoint{};

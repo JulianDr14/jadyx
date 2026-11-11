@@ -1250,12 +1250,15 @@ bool EmulatedController::SetVibration(DeviceIndex device_index, const VibrationV
         return false;
     }
 
-    // Skip duplicated vibrations
-    if (last_vibration_value[index] == vibration) {
-        return Settings::values.vibration_enabled.GetValue();
+    {
+        std::scoped_lock lock{vibration_mutex};
+        // Identical requests still renew the frontend's motor timeout.
+        last_vibration_request[index] = std::chrono::steady_clock::now();
+        if (last_vibration_value[index] == vibration) {
+            return Settings::values.vibration_enabled.GetValue();
+        }
+        last_vibration_value[index] = vibration;
     }
-
-    last_vibration_value[index] = vibration;
 
     if (!Settings::values.vibration_enabled) {
         return false;
@@ -1309,7 +1312,21 @@ VibrationValue EmulatedController::GetActualVibrationValue(DeviceIndex device_in
     if (device_index >= DeviceIndex::MaxDeviceIndex) {
         return Core::HID::DEFAULT_VIBRATION_VALUE;
     }
+    std::scoped_lock lock{vibration_mutex};
     return last_vibration_value[static_cast<std::size_t>(device_index)];
+}
+
+VibrationValue EmulatedController::GetRecentVibrationValue(
+    DeviceIndex device_index, std::chrono::milliseconds max_age) const {
+    if (device_index >= DeviceIndex::MaxDeviceIndex) {
+        return DEFAULT_VIBRATION_VALUE;
+    }
+    const auto index = static_cast<std::size_t>(device_index);
+    std::scoped_lock lock{vibration_mutex};
+    if (std::chrono::steady_clock::now() - last_vibration_request[index] >= max_age) {
+        return DEFAULT_VIBRATION_VALUE;
+    }
+    return last_vibration_value[index];
 }
 
 bool EmulatedController::IsVibrationEnabled(std::size_t device_index) {
