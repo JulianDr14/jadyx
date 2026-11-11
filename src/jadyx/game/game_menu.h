@@ -161,6 +161,9 @@ struct GameMenuSettings {
     /// "hunt=1" package: the GPU thread's cheaper bookkeeping (VideoCore::FastPaths), switched at
     /// run time to compare.
     bool gpu_fast_paths{true};
+    /// "hunt=1" package: with the CPU write queue on, every guest write is queued
+    /// (VideoCommon::CpuWriteQueue::SetAllWrites), switched at run time to compare.
+    bool cpu_write_all{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -190,6 +193,8 @@ enum class GameMenuResult : std::uint8_t {
     AudioIdlePacingChanged,
     /// Settings().gpu_fast_paths changed.
     GpuFastPathsChanged,
+    /// Settings().cpu_write_all changed.
+    CpuWriteAllChanged,
     /// The room chat's page.
     Chat,
     /// Settings().motion or motion_view changed.
@@ -227,7 +232,7 @@ public:
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
         GlitchPage, GlitchCapture, GlitchA2cShader, GlitchPreciseWrites,
         GeoMark, GeoOobFix, GeoVbResync, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
-        GyroStick, GyroShake, Rumble, RumbleStrength, AudioIdlePacing, GpuFastPaths,
+        GyroStick, GyroShake, Rumble, RumbleStrength, AudioIdlePacing, GpuFastPaths, CpuWriteAll,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
 
@@ -242,7 +247,7 @@ public:
         if (cheats) quick.push_back(GraphicsMenu);
         if (cheats) quick.push_back(OfflineMode);
         if (settings.material_capture) quick.push_back(CaptureGraphics);
-        if (settings.performance_capture) quick.insert(quick.end(), {CapturePerformance, AudioIdlePacing, GpuFastPaths});
+        if (settings.performance_capture) quick.insert(quick.end(), {CapturePerformance, AudioIdlePacing, GpuFastPaths, CpuWriteAll});
         if (settings.glitch_hunt) quick.push_back(GlitchPage);
         if (settings.geo_hunt) quick.insert(quick.end(), {GeoMark, GeoOobFix, GeoVbResync});
         if (settings.pso_menu) quick.push_back(PsoBoost);
@@ -435,6 +440,9 @@ private:
         case GpuFastPaths:
             return {Tr(Text::MenuGpuFastPaths), Tr(settings.gpu_fast_paths ? Text::Yes : Text::No),
                     Choice, Tr(Text::MenuGpuFastPathsDetail), UiIcon::Settings};
+        case CpuWriteAll:
+            return {Tr(Text::MenuCpuWriteAll), Tr(settings.cpu_write_all ? Text::Yes : Text::No),
+                    Choice, Tr(Text::MenuCpuWriteAllDetail), UiIcon::Settings};
         case GlitchCapture:
             return {Tr(Text::MenuCaptureGlitches), {}, Action, Tr(Text::MenuCaptureGlitchesDetail)};
         case GlitchA2cShader:
@@ -747,6 +755,9 @@ private:
         case GpuFastPaths:
             settings.gpu_fast_paths = !settings.gpu_fast_paths;
             return GameMenuResult::GpuFastPathsChanged;
+        case CpuWriteAll:
+            settings.cpu_write_all = !settings.cpu_write_all;
+            return GameMenuResult::CpuWriteAllChanged;
         case PsoBoost:
             // Steps through off, above normal, highest.
             settings.pso_boost = settings.pso_boost == 0 ? 2 : settings.pso_boost == 2 ? 3 : 0;

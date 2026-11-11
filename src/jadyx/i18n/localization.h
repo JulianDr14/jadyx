@@ -199,6 +199,8 @@ enum class Text : std::uint16_t {
     MenuAudioIdlePacingDetail,
     MenuGpuFastPaths,
     MenuGpuFastPathsDetail,
+    MenuCpuWriteAll,
+    MenuCpuWriteAllDetail,
     MenuFullScreen,
     MenuBackToHome,
 
@@ -702,6 +704,8 @@ enum class Text : std::uint16_t {
     CpuWriteQueueHint,
     GpuFastPaths,
     GpuFastPathsHint,
+    CpuWriteAll,
+    CpuWriteAllHint,
     FixedCoreMap,
     FixedCoreMapHint,
     SlowGuestClock,

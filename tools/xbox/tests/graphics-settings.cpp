@@ -66,6 +66,10 @@ int main() {
     check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::GpuFastPaths));
     check(HandleGraphicsInput(page, GraphicsInput::Confirm) && !page.settings.gpu_fast_paths);
     check(GraphicsRowValue(page.settings, GraphicsRow::GpuFastPaths) == L"No");
+    check(defaults.cpu_write_all && GraphicsRowValue(page.settings, GraphicsRow::CpuWriteAll) == L"Sí");
+    check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::CpuWriteAll));
+    check(HandleGraphicsInput(page, GraphicsInput::Confirm) && !page.settings.cpu_write_all);
+    check(GraphicsRowValue(page.settings, GraphicsRow::CpuWriteAll) == L"No");
     // The fixed core map: off by default (only the GPU thread pinned), and the page's last row.
     check(!defaults.fixed_core_map && GraphicsRowValue(page.settings, GraphicsRow::FixedCoreMap) == L"No");
     check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::FixedCoreMap));
@@ -166,6 +170,14 @@ int main() {
     check(!ResolveGraphics(global, shaders).gpu_fast_paths);
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::GpuFastPaths) == L"No");
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.gpu_fast_paths);
+    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::CpuWriteAll));
+    check(ResolveGraphics(global, shaders).cpu_write_all);
+    check(GameGraphicsRowValue(global, shaders, GraphicsRow::CpuWriteAll) == L"Ajustes · Sí");
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.cpu_write_all == true);
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.cpu_write_all == false);
+    check(!ResolveGraphics(global, shaders).cpu_write_all);
+    check(GameGraphicsRowValue(global, shaders, GraphicsRow::CpuWriteAll) == L"No");
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.cpu_write_all);
     // The fixed core map: follows Settings > Graphics until the game has its own.
     check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::FixedCoreMap));
     check(!ResolveGraphics(global, shaders).fixed_core_map);

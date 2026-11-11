@@ -89,6 +89,9 @@ struct GraphicsSettings {
     bool async_record{true}; ///< D3D12 command list calls on a thread of their own.
     bool cpu_write_queue{};  ///< VideoCommon::CpuWriteQueue: lowered one game from ~59 to ~27 fps.
     bool gpu_fast_paths{true}; ///< VideoCore::FastPaths: cheaper bookkeeping on the GPU thread.
+    /// VideoCommon::CpuWriteQueue::SetAllWrites: with the queue on, no guest write waits for the
+    /// GPU thread.
+    bool cpu_write_all{true};
     /// The earlier thread map (Common::Windows::CpuPinTopology): each emulator thread on a fixed
     /// core. Off, only the GPU thread is pinned and the rest float (CpuPinDefault), which built
     /// shaders twice as fast in a new area.
@@ -157,6 +160,7 @@ struct GameGraphics {
     std::optional<bool> async_record;
     std::optional<bool> cpu_write_queue;
     std::optional<bool> gpu_fast_paths;
+    std::optional<bool> cpu_write_all;
     std::optional<bool> fixed_core_map;
     bool slow_guest_clock{}; ///< Only a game's own: there is no global setting to follow.
     bool exact_gpu_reads{};  ///< Only a game's own (VideoCore::SetExactGpuReads).
@@ -195,6 +199,7 @@ inline GraphicsSettings ResolveGraphics(const GraphicsSettings& global, const Ga
         .async_record = game.async_record.value_or(global.async_record),
         .cpu_write_queue = game.cpu_write_queue.value_or(global.cpu_write_queue),
         .gpu_fast_paths = game.gpu_fast_paths.value_or(global.gpu_fast_paths),
+        .cpu_write_all = game.cpu_write_all.value_or(global.cpu_write_all),
         .fixed_core_map = game.fixed_core_map.value_or(global.fixed_core_map),
     };
     if (resolved.frame_gen && IsFsr(resolved.upscaling)) {
@@ -247,6 +252,11 @@ inline void StepGameCpuWriteQueue(GameGraphics& game, bool back) {
 inline void StepGameGpuFastPaths(GameGraphics& game, bool back) {
     static constexpr std::array values{true, false};
     game.gpu_fast_paths = StepChoice<bool>(game.gpu_fast_paths, values, back);
+}
+
+inline void StepGameCpuWriteAll(GameGraphics& game, bool back) {
+    static constexpr std::array values{true, false};
+    game.cpu_write_all = StepChoice<bool>(game.cpu_write_all, values, back);
 }
 
 inline void StepGameFixedCoreMap(GameGraphics& game, bool back) {

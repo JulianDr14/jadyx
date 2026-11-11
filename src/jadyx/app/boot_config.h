@@ -361,6 +361,8 @@ struct BootConfig {
     bool fixed_core_map{};
     /// VideoCore::FastPaths, from Settings > Graphics and the game's own Graphics.
     bool gpu_fast_paths{true};
+    /// VideoCommon::CpuWriteQueue::SetAllWrites, from Settings > Graphics and the game's own Graphics.
+    bool cpu_write_all{true};
     bool cpu_probe{}; ///< Measures the app's logical processors before the guest (cpu_probe.h).
     bool timer_profile{}; ///< HostTiming waits only; opt-in, separate from draw profiling.
     /// File name of a game in LocalState\games to boot instead of boot.nro (package-appx.ps1 -Game).
