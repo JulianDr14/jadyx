@@ -88,6 +88,19 @@ constexpr NamedCounter REPORTED[] = {
     {Counter::GuestCoreIdleUs, "GuestCoreIdleUs"},
     {Counter::GuestFramesQueued, "GuestFramesQueued"},
     {Counter::Composites, "Composites"},
+    {Counter::QueryBlockingWaits, "QueryBlockingWaits"},
+    {Counter::QueryBlockingWaitUs, "QueryBlockingWaitUs"},
+    {Counter::QueriesHost, "QueriesHost"},
+    {Counter::QueriesPayload, "QueriesPayload"},
+    {Counter::QueriesFallback, "QueriesFallback"},
+    {Counter::QueriesFenced, "QueriesFenced"},
+    {Counter::QueryHostNs, "QueryHostNs"},
+    {Counter::QueryFallbackNs, "QueryFallbackNs"},
+    {Counter::QueryInvalidationsSkipped, "QueryInvalidationsSkipped"},
+    {Counter::IndexRangeKeeps, "IndexRangeKeeps"},
+    {Counter::GpuPageMapMisses, "GpuPageMapMisses"},
+    {Counter::GpuPageMapRebuilds, "GpuPageMapRebuilds"},
+    {Counter::DmaMacroCalls, "DmaMacroCalls"},
 };
 
 /// Who waits for whom, over the CPU profile's seconds: eight frames are too few to average vsyncs.
@@ -182,6 +195,7 @@ void DrawHunt::Begin() {
     // The per-stage draw counters only run with the detailed profile; the capture wants them.
     detailed_before = VideoCore::Perf::DetailedGpuProfileEnabled();
     VideoCore::Perf::SetDetailedGpuProfile(true);
+    (void)VideoCore::Perf::TakeHuntMacroProfiles(); // what a report profiled before the capture
     perf_start = VideoCore::Perf::Read();
     started = std::chrono::steady_clock::now();
     if (!Common::SamplingProfiler::Running()) {
@@ -287,6 +301,17 @@ void DrawHunt::Write() {
         extra += fmt::format("perf {} {}\n", named.name,
                              VideoCore::Perf::Get(perf_end, named.counter) -
                                  VideoCore::Perf::Get(perf_start, named.counter));
+    }
+    // Every macro the capture ran: calls, time in it, and the part spent in draws, clears and
+    // dispatches it started.
+    auto macros = VideoCore::Perf::TakeHuntMacroProfiles();
+    std::ranges::sort(macros, [](const auto& left, const auto& right) {
+        return left.total_ns > right.total_ns;
+    });
+    for (const auto& macro : macros) {
+        extra += fmt::format("macro {:#x} hash {:016x} calls {} total_ns {} nested_ns {}\n",
+                             macro.method, macro.hash, macro.count, macro.total_ns,
+                             macro.nested_ns);
     }
     const u64* values = nullptr;
     const D3D12_RANGE range{0, resolved * sizeof(u64)};

@@ -244,6 +244,16 @@ enum class Counter : size_t {
     DepthFeedbackCopies,      ///< depth images copied so a draw can sample its own target
     QueryBlockingWaits,       ///< guest query reads that waited on the GPU fence
     QueryBlockingWaitUs,
+    QueriesHost,              ///< guest queries answered by a host counter
+    QueriesPayload,           ///< guest queries that write a payload the CPU knows
+    QueriesFallback,          ///< guest queries of a type with no host counter (written as 1)
+    QueriesFenced,            ///< payload/fallback queries that wait for a fence
+    QueryHostNs,              ///< detailed profile: time in the host counter reports
+    QueryFallbackNs,          ///< detailed profile: time in the payload/fallback writes
+    QueryInvalidationsSkipped, ///< no cached query, the invalidation did not run
+    IndexRangeKeeps,          ///< index ranges kept across a write elsewhere
+    GpuPageMapMisses,         ///< "GPU modified" answered no by the page bitmap
+    GpuPageMapRebuilds,
     Count,
 };
 
@@ -286,6 +296,8 @@ struct MacroProfileSnapshot {
 };
 inline std::mutex macro_profiles_mutex;
 inline std::unordered_map<u32, MacroProfileSnapshot> macro_profiles;
+/// The same profiles for a hunt capture: the periodic report empties macro_profiles on its own.
+inline std::unordered_map<u32, MacroProfileSnapshot> hunt_macro_profiles;
 
 inline void SetDetailedGpuProfile(bool enabled) {
     detailed_gpu_profile.store(enabled, std::memory_order_relaxed);
@@ -324,13 +336,26 @@ inline void RecordMacroProfile(u32 method, u64 hash, u64 total_ns, u64 nested_ns
     Add(Counter::DmaMacroCalls, 1);
     Add(Counter::DmaMacroNs, total_ns);
     std::scoped_lock lock{macro_profiles_mutex};
-    auto& profile = macro_profiles[method];
-    profile.method = method;
-    profile.hash = hash;
-    ++profile.count;
-    profile.total_ns += total_ns;
-    profile.nested_ns += nested_ns;
-    profile.max_ns = std::max(profile.max_ns, total_ns);
+    for (auto* const profiles : {&macro_profiles, &hunt_macro_profiles}) {
+        auto& profile = (*profiles)[method];
+        profile.method = method;
+        profile.hash = hash;
+        ++profile.count;
+        profile.total_ns += total_ns;
+        profile.nested_ns += nested_ns;
+        profile.max_ns = std::max(profile.max_ns, total_ns);
+    }
+}
+
+inline std::vector<MacroProfileSnapshot> TakeHuntMacroProfiles() {
+    std::scoped_lock lock{macro_profiles_mutex};
+    std::vector<MacroProfileSnapshot> result;
+    result.reserve(hunt_macro_profiles.size());
+    for (const auto& [method, profile] : hunt_macro_profiles) {
+        result.push_back(profile);
+    }
+    hunt_macro_profiles.clear();
+    return result;
 }
 
 inline std::vector<MacroProfileSnapshot> TakeMacroProfiles() {
