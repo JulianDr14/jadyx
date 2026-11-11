@@ -437,6 +437,9 @@ struct System::Impl {
         kernel.CloseServices();
         LOG_INFO(Core, "Shutdown: kernel cores");
         kernel.ShutdownCores();
+        // The cheat engine's frame event reads input through the service manager; drop it
+        // first, or a tick between the resets below dereferences a freed manager.
+        cheat_engine.reset();
         LOG_INFO(Core, "Shutdown: services reset");
         services.reset();
         service_manager.reset();
@@ -450,7 +453,6 @@ struct System::Impl {
             general_channel_context.reset();
         }
         fs_controller.Reset();
-        cheat_engine.reset();
         core_timing.ClearPendingEvents();
         app_loader.reset();
         audio_core.reset();
