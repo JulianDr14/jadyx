@@ -10,6 +10,8 @@
 #include "hid_core/hid_result.h"
 #include "hid_core/hid_util.h"
 #include "hid_core/resource_manager.h"
+#include "hid_core/resources/npad/npad.h"
+#include "hid_core/resources/vibration/vibration_base.h"
 #include "hid_core/resources/vibration/vibration_device.h"
 
 namespace Service::HID {
@@ -51,6 +53,18 @@ Result IActiveVibrationDeviceList::ActivateVibrationDevice(
 
     vibration_device_list[list_size++] = vibration_device_handle;
     R_SUCCEED();
+}
+
+void IActiveVibrationDeviceList::ActivateAllAfterPulse() {
+    std::scoped_lock lock{mutex};
+    u32 activated = 0;
+    for (auto* const device : resource_manager->GetNpad()->GetAllVibrationDevices()) {
+        // The list holds the GC device twice (for the N64 one): IsActive skips the second.
+        if (!device->IsActive() && device->Activate().IsSuccess()) {
+            ++activated;
+        }
+    }
+    LOG_INFO(Service_HID, "Pulse: activated {} vibration devices", activated);
 }
 
 } // namespace Service::HID
