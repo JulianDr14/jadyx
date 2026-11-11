@@ -5,18 +5,33 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
+#include <atomic>
 #include <chrono>
 
 #include "audio_core/adsp/apps/audio_renderer/audio_renderer.h"
 #include "audio_core/audio_core.h"
 #include "audio_core/common/common.h"
+#include "audio_core/sink/realtime_pacer.h"
 #include "audio_core/sink/sink.h"
+#include "audio_core/sink/sink_stream.h"
 #include "common/logging.h"
 #include "common/thread.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 
 namespace AudioCore::ADSP::AudioRenderer {
+
+namespace {
+std::atomic<bool> idle_pacing{true};
+} // Anonymous namespace
+
+void SetIdlePacing(const bool enabled) noexcept {
+    idle_pacing.store(enabled, std::memory_order_relaxed);
+}
+
+bool IdlePacing() noexcept {
+    return idle_pacing.load(std::memory_order_relaxed);
+}
 
 AudioRenderer::AudioRenderer(Core::System& system_, Sink::Sink& sink_)
     : system{system_}, sink{sink_} {}
@@ -146,6 +161,19 @@ void AudioRenderer::Main(std::stop_token stop_token) {
     // 0.12 seconds (2,304,000 / 19,200,000)
     constexpr u64 max_process_time{2'304'000ULL};
 
+    // The only thing that holds this loop back is a sink queue that is full (WaitFreeSpace). A
+    // game whose renderer has no device sink, or none yet, never fills one: the loop and the
+    // thread that feeds it then ran nonstop, most of two host cores. Such passes wait on a clock.
+    Sink::RealtimePacer idle_pacer;
+    bool idle_pacing_logged{};
+    const auto appended_buffers = [this] {
+        u64 total{};
+        for (const auto* stream : streams) {
+            total += stream->GetAppendedBufferCount();
+        }
+        return total;
+    };
+
     while (!stop_token.stop_requested()) {
         auto msg{mailbox.Receive(Direction::DSP)};
         switch (msg) {
@@ -162,6 +190,7 @@ void AudioRenderer::Main(std::stop_token stop_token) {
             std::array<bool, MaxRendererSessions> buffers_reset{};
             std::array<u64, MaxRendererSessions> render_times_taken{};
             const auto start_time{system.CoreTiming().GetGlobalTimeUs().count()};
+            const u64 appended_before{appended_buffers()};
 
             for (u32 index = 0; index < MaxRendererSessions; index++) {
                 auto& command_buffer{command_buffers[index]};
@@ -210,6 +239,15 @@ void AudioRenderer::Main(std::stop_token stop_token) {
                         command_list_processor.GetRemainingCommandCount();
                     command_buffer.render_time_taken_us = end_time - start_time;
                 }
+            }
+            if (appended_buffers() != appended_before) {
+                idle_pacer.Reset();
+            } else if (IdlePacing()) {
+                if (!idle_pacing_logged) {
+                    idle_pacing_logged = true;
+                    LOG_INFO(Service_Audio, "Audio renderer queued no sink buffer: pacing by clock");
+                }
+                idle_pacer.Wait(TargetSampleCount);
             }
             mailbox.Send(Direction::Host, Message::RenderResponse);
         } break;

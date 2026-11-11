@@ -165,6 +165,14 @@ public:
     }
 
     /**
+     * Get how many buffers this stream was ever given to play. One that stays still while the
+     * audio renderer renders has no queue to hold the renderer back.
+     */
+    u64 GetAppendedBufferCount() const {
+        return appended_buffers.load(std::memory_order_relaxed);
+    }
+
+    /**
      * Set the maximum buffer queue size.
      */
     void SetRingSize(u32 ring_size) {
@@ -251,6 +259,8 @@ private:
     std::array<s16, MaxChannels> last_frame{};
     /// Number of buffers waiting to be played
     std::atomic<u32> queued_buffers{};
+    /// Buffers ever appended (see GetAppendedBufferCount)
+    std::atomic<u64> appended_buffers{};
     /// The ring size for audio out buffers (usually 4, rarely 2 or 8)
     u32 max_queue_size{};
     /// Locks access to sample count tracking info

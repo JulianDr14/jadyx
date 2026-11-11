@@ -78,6 +78,7 @@ void SinkStream::AppendBuffer(SinkBuffer& buffer, std::span<s16> samples) {
     }
 
     ++queued_buffers;
+    appended_buffers.fetch_add(1, std::memory_order_relaxed);
 }
 
 std::vector<s16> SinkStream::ReleaseBuffer(u64 num_samples) {
