@@ -195,6 +195,10 @@ enum class Text : std::uint16_t {
     MenuPsoBoostDetail,
     MenuPsoBoostAbove,
     MenuPsoBoostHighest,
+    MenuAudioIdlePacing,
+    MenuAudioIdlePacingDetail,
+    MenuGpuFastPaths,
+    MenuGpuFastPathsDetail,
     MenuFullScreen,
     MenuBackToHome,
 

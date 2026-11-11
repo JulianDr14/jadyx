@@ -155,6 +155,12 @@ struct GameMenuSettings {
     /// Vertex resync: vertex bytes an older frame's transform feedback left are uploaded again
     /// from guest memory.
     bool geo_vb_resync{};
+    /// "hunt=1" package: the audio renderer waits on a clock while it queues nothing
+    /// (AudioCore::ADSP::AudioRenderer::SetIdlePacing), switched at run time to compare.
+    bool audio_idle_pacing{true};
+    /// "hunt=1" package: the GPU thread's cheaper bookkeeping (VideoCore::FastPaths), switched at
+    /// run time to compare.
+    bool gpu_fast_paths{true};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -180,6 +186,10 @@ enum class GameMenuResult : std::uint8_t {
     GeoVbResyncChanged,
     /// Settings().pso_boost changed.
     PsoBoostChanged,
+    /// Settings().audio_idle_pacing changed.
+    AudioIdlePacingChanged,
+    /// Settings().gpu_fast_paths changed.
+    GpuFastPathsChanged,
     /// The room chat's page.
     Chat,
     /// Settings().motion or motion_view changed.
@@ -217,7 +227,7 @@ public:
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
         GlitchPage, GlitchCapture, GlitchA2cShader, GlitchPreciseWrites,
         GeoMark, GeoOobFix, GeoVbResync, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
-        GyroStick, GyroShake, Rumble, RumbleStrength,
+        GyroStick, GyroShake, Rumble, RumbleStrength, AudioIdlePacing, GpuFastPaths,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
 
@@ -232,7 +242,7 @@ public:
         if (cheats) quick.push_back(GraphicsMenu);
         if (cheats) quick.push_back(OfflineMode);
         if (settings.material_capture) quick.push_back(CaptureGraphics);
-        if (settings.performance_capture) quick.push_back(CapturePerformance);
+        if (settings.performance_capture) quick.insert(quick.end(), {CapturePerformance, AudioIdlePacing, GpuFastPaths});
         if (settings.glitch_hunt) quick.push_back(GlitchPage);
         if (settings.geo_hunt) quick.insert(quick.end(), {GeoMark, GeoOobFix, GeoVbResync});
         if (settings.pso_menu) quick.push_back(PsoBoost);
@@ -419,6 +429,12 @@ private:
                        : settings.pso_boost == 2 ? Text::MenuPsoBoostAbove
                                                  : Text::MenuPsoBoostHighest),
                     Choice, Tr(Text::MenuPsoBoostDetail), UiIcon::Settings};
+        case AudioIdlePacing:
+            return {Tr(Text::MenuAudioIdlePacing), Tr(settings.audio_idle_pacing ? Text::Yes : Text::No),
+                    Choice, Tr(Text::MenuAudioIdlePacingDetail), UiIcon::Settings};
+        case GpuFastPaths:
+            return {Tr(Text::MenuGpuFastPaths), Tr(settings.gpu_fast_paths ? Text::Yes : Text::No),
+                    Choice, Tr(Text::MenuGpuFastPathsDetail), UiIcon::Settings};
         case GlitchCapture:
             return {Tr(Text::MenuCaptureGlitches), {}, Action, Tr(Text::MenuCaptureGlitchesDetail)};
         case GlitchA2cShader:
@@ -725,6 +741,12 @@ private:
         case GeoVbResync:
             settings.geo_vb_resync = !settings.geo_vb_resync;
             return GameMenuResult::GeoVbResyncChanged;
+        case AudioIdlePacing:
+            settings.audio_idle_pacing = !settings.audio_idle_pacing;
+            return GameMenuResult::AudioIdlePacingChanged;
+        case GpuFastPaths:
+            settings.gpu_fast_paths = !settings.gpu_fast_paths;
+            return GameMenuResult::GpuFastPathsChanged;
         case PsoBoost:
             // Steps through off, above normal, highest.
             settings.pso_boost = settings.pso_boost == 0 ? 2 : settings.pso_boost == 2 ? 3 : 0;
