@@ -202,6 +202,7 @@ void ChannelState::PulseLoad(std::span<const u8> state) {
         m3d.replace_table[key] = in.Get<Engines::Maxwell3D::HLEReplacementAttributeType>();
     }
     m3d.macro_engine.macro_cache.clear();
+    m3d.macro_engine.fast_slots = {};
     m3d.macro_engine.uploaded_macro_code.clear();
     const auto macros = in.Count(2 * sizeof(u32));
     for (u32 i = 0; i < macros; ++i) {
