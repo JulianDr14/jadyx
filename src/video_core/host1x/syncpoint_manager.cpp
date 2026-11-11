@@ -115,8 +115,14 @@ void SyncpointManager::Increment(std::atomic<u32>& syncpoint, std::condition_var
                                  std::list<RegisteredAction>& action_storage) {
     auto new_value{syncpoint.fetch_add(1, std::memory_order_acq_rel) + 1};
 
-    std::list<RegisteredAction> ready;
     std::unique_lock lk(guard);
+    // The actions are sorted by value: when the first one is not due, none is. An empty list
+    // still allocates its head node, on every increment.
+    if (action_storage.empty() || action_storage.front().expected_value > new_value) {
+        wait_cv.notify_all();
+        return;
+    }
+    std::list<RegisteredAction> ready;
     TakeReady(action_storage, new_value, ready);
     wait_cv.notify_all();
     RunReady(lk, ready);
