@@ -15,6 +15,7 @@
 #include "common/write_combined_copy.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/geometry_hunt.h"
+#include "video_core/gpu_fast_paths.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
@@ -227,12 +228,13 @@ void DropOutOfRange(PrimitiveTopology topology, std::vector<u32>& out, u32 limit
 } // Anonymous namespace
 
 Buffer::Buffer(BufferCacheRuntime& runtime, VideoCommon::NullBufferParams params)
-    : VideoCommon::BufferBase(params), scheduler{&runtime.scheduler},
+    : VideoCommon::BufferBase(params), runtime{&runtime}, scheduler{&runtime.scheduler},
       id{runtime.next_buffer_id++}, buffer{runtime.CreateDefaultBuffer(4)}, address{buffer ? buffer->GetGPUVirtualAddress() : 0},
       charge{Common::MemoryAccount::BufferCache, 4} {}
 
 Buffer::Buffer(BufferCacheRuntime& runtime, VAddr cpu_addr, u64 size_bytes, bool)
-    : VideoCommon::BufferBase(cpu_addr, size_bytes), scheduler{&runtime.scheduler},
+    : VideoCommon::BufferBase(cpu_addr, size_bytes), runtime{&runtime},
+      scheduler{&runtime.scheduler},
       id{runtime.next_buffer_id++},
       // Whole 256-byte blocks: a guest cbuf ending with the buffer still fits a CBV.
       buffer{runtime.CreateDefaultBuffer(
@@ -242,17 +244,26 @@ Buffer::Buffer(BufferCacheRuntime& runtime, VAddr cpu_addr, u64 size_bytes, bool
              Common::AlignUp(size_bytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT)} {}
 
 Buffer::~Buffer() {
-    if (scheduler && buffer) {
+    ReleaseBuffer();
+}
+
+void Buffer::ReleaseBuffer() {
+    if (!scheduler || !buffer) {
+        return;
+    }
+    if (runtime) {
+        const u64 width = buffer->GetDesc().Width;
+        runtime->RecycleBuffer(std::move(buffer), width);
+    } else {
         scheduler->DeferRelease(std::move(buffer));
     }
 }
 
 Buffer& Buffer::operator=(Buffer&& other) noexcept {
     if (this != &other) {
-        if (scheduler && buffer) {
-            scheduler->DeferRelease(std::move(buffer));
-        }
+        ReleaseBuffer();
         static_cast<VideoCommon::BufferBase&>(*this) = std::move(other);
+        runtime = other.runtime;
         scheduler = other.scheduler;
         id = other.id;
         generation = other.generation;
@@ -363,7 +374,46 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, Scheduler& schedul
 
 }
 
+namespace {
+/// Recycled buffers are not charged to any cache, so the pool stays small.
+constexpr u64 MAX_RECYCLED_SIZE = 4ULL * 1024 * 1024;
+constexpr u64 MAX_RECYCLED_BYTES = 24ULL * 1024 * 1024;
+constexpr u64 RECYCLED_FRAMES = 30;
+} // namespace
+
+BufferCacheRuntime::~BufferCacheRuntime() {
+    for (RecycledBuffer& entry : recycled) {
+        scheduler.DeferRelease(std::move(entry.resource));
+    }
+}
+
+void BufferCacheRuntime::RecycleBuffer(ComPtr<ID3D12Resource> resource, u64 size) {
+    if (!VideoCore::FastPaths::Enabled() || size > MAX_RECYCLED_SIZE ||
+        recycled_bytes + size > MAX_RECYCLED_BYTES) {
+        scheduler.DeferRelease(std::move(resource));
+        return;
+    }
+    recycled_bytes += size;
+    recycled.push_back({.resource = std::move(resource), .size = size,
+                        .tick = scheduler.CurrentTick(), .frame = recycle_frame});
+}
+
 ComPtr<ID3D12Resource> BufferCacheRuntime::CreateDefaultBuffer(u64 size) {
+    if (!recycled.empty()) {
+        const u64 tick = scheduler.CurrentTick();
+        for (RecycledBuffer& entry : recycled) {
+            if (entry.size != size || entry.tick >= tick) {
+                continue;
+            }
+            ComPtr<ID3D12Resource> reused = std::move(entry.resource);
+            recycled_bytes -= entry.size;
+            entry = std::move(recycled.back());
+            recycled.pop_back();
+            ++recycle_hits;
+            return reused;
+        }
+        ++recycle_misses;
+    }
     // Storage buffers and image buffers are UAVs.
     HRESULT hr = S_OK;
     const auto create = [&] {
@@ -386,7 +436,25 @@ ComPtr<ID3D12Resource> BufferCacheRuntime::CreateDefaultBuffer(u64 size) {
     return buffer;
 }
 
-void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>&) noexcept {}
+void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>&) noexcept {
+    ++recycle_frame;
+    for (size_t i = 0; i < recycled.size();) {
+        if (recycle_frame - recycled[i].frame < RECYCLED_FRAMES) {
+            ++i;
+            continue;
+        }
+        recycled_bytes -= recycled[i].size;
+        scheduler.DeferRelease(std::move(recycled[i].resource));
+        recycled[i] = std::move(recycled.back());
+        recycled.pop_back();
+    }
+    if (recycle_frame % 1800 == 0 && recycle_hits + recycle_misses != 0) {
+        LOG_INFO(Render, "D3D12: recycled cache buffers: {} reused, {} not found, {} kept ({} KiB)",
+                 recycle_hits, recycle_misses, recycled.size(), recycled_bytes / 1024);
+        recycle_hits = 0;
+        recycle_misses = 0;
+    }
+}
 void BufferCacheRuntime::Finish() { scheduler.Finish(); }
 u64 BufferCacheRuntime::CurrentTick() { return scheduler.CurrentTick(); }
 bool BufferCacheRuntime::IsFree(u64 tick) { return scheduler.IsFree(tick); }

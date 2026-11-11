@@ -76,6 +76,10 @@ public:
     [[nodiscard]] u64 Generation() const noexcept { return generation; }
 
 private:
+    /// Hands the host buffer back to the runtime (BufferCacheRuntime::RecycleBuffer).
+    void ReleaseBuffer();
+
+    BufferCacheRuntime* runtime{};
     Scheduler* scheduler{};
     u64 id{};
     u64 generation{};
@@ -112,6 +116,7 @@ public:
     BufferCacheRuntime(const Device& device, Scheduler& scheduler, StagingBufferPool& staging,
                        TransferBufferPool& transfer_buffers,
                        Tegra::MaxwellDeviceMemoryManager& device_memory);
+    ~BufferCacheRuntime();
 
     /// Where guest uniform, storage and texel buffer views go (set by the rasterizer).
     void SetDescriptorQueue(GuestDescriptorQueue* queue) noexcept { descriptor_queue = queue; }
@@ -270,6 +275,12 @@ private:
     void ReportIndexRange(PrimitiveTopology topology, Buffer& buffer, u64 byte_offset,
                           u32 num_indices, u32 index_size, u32 max_index, u32 limit);
     ComPtr<ID3D12Resource> CreateDefaultBuffer(u64 size);
+    /// Keeps the host buffer of a deleted cache buffer for the next one of its size
+    /// (VideoCore::FastPaths): some games make the cache delete and create a few buffers every
+    /// frame, and each pair is a kernel call to commit memory and another to free it. A buffer
+    /// is handed out again only after the command list that last used it was submitted, when
+    /// it is back in the COMMON state a new one starts in.
+    void RecycleBuffer(ComPtr<ID3D12Resource> resource, u64 size);
     void Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src, ID3D12Resource* src_raw,
               std::span<const VideoCommon::BufferCopy> copies);
 
@@ -319,6 +330,17 @@ private:
     std::vector<u32> rewrite_scratch;
     IndexRewriteCache rewrite_cache;
     u64 next_buffer_id{1};
+    struct RecycledBuffer {
+        ComPtr<ID3D12Resource> resource;
+        u64 size{};
+        u64 tick{};  ///< scheduler tick it was last used in
+        u64 frame{}; ///< recycle_frame it was handed back at
+    };
+    std::vector<RecycledBuffer> recycled;
+    u64 recycled_bytes{};
+    u64 recycle_frame{};
+    u64 recycle_hits{};
+    u64 recycle_misses{};
     std::vector<u8> guest_indices;
     std::span<const u8> inline_indices;
     u32 vertex_limit{};
