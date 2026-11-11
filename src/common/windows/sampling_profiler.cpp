@@ -98,11 +98,21 @@ std::mutex jit_blocks_mutex;
 std::vector<JitBlock> jit_blocks;
 std::vector<std::pair<u64, u64>> jit_thunks; // start, end; one per JIT
 
-bool InJitThunks(u64 pc) {
+/// The first JIT's thunks, to name the instruction of a sample: every JIT lays them out alike.
+std::vector<u8> jit_thunk_code;
+
+/// offset: how far into its JIT's thunks pc is.
+bool InJitThunks(u64 pc, u64* offset = nullptr) {
     std::scoped_lock lock{jit_blocks_mutex};
-    return std::ranges::any_of(jit_thunks, [pc](const std::pair<u64, u64>& range) {
-        return pc >= range.first && pc < range.second;
-    });
+    for (const std::pair<u64, u64>& range : jit_thunks) {
+        if (pc >= range.first && pc < range.second) {
+            if (offset) {
+                *offset = pc - range.first;
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 std::mutex guest_reader_mutex;
@@ -364,6 +374,7 @@ private:
         stack_index.clear();
         frame_pool.clear();
         thunk_samples.clear();
+        thunk_rips.clear();
         for (ThreadEntry* entry : threads) {
             entry->window_cpu_start = CpuTime100ns(entry->handle);
             entry->running_samples = 0;
@@ -446,10 +457,13 @@ private:
         }
         // A thunk keeps the return address on top of the stack, or under the register it saved.
         // The thread runs again by now, but these are the copy's words.
-        if (!waiting && !stalled && copied >= 2 * sizeof(u64) && InJitThunks(context.Rip)) {
+        u64 thunk_offset{};
+        if (!waiting && !stalled && copied >= 2 * sizeof(u64) &&
+            InJitThunks(context.Rip, &thunk_offset)) {
             u64 top[2];
             std::memcpy(top, stack_copy, sizeof(top));
             thunk_samples[{thread_index, top[0], top[1]}] += weight;
+            thunk_rips[thunk_offset] += weight;
         }
         DWORD64 frames[MAX_FRAMES];
         const size_t depth = Unwind(context, copied, origin, frames);
@@ -660,6 +674,24 @@ private:
                 total.second = entry.end;
             }
         }
+        // Where in the thunks the samples fell, and the thunks' code to disassemble them with.
+        for (const auto& [offset, samples] : thunk_rips) {
+            std::fputs(fmt::format("thunkrip 0x{:x} {}\n", offset, samples).c_str(), file);
+        }
+        if (!thunk_rips.empty()) {
+            std::string hex;
+            {
+                std::scoped_lock lock{jit_blocks_mutex};
+                hex.reserve(jit_thunk_code.size() * 2);
+                for (const u8 byte : jit_thunk_code) {
+                    hex.push_back("0123456789abcdef"[byte >> 4]);
+                    hex.push_back("0123456789abcdef"[byte & 15]);
+                }
+            }
+            std::fputs("thunkcode ", file);
+            std::fputs(hex.c_str(), file);
+            std::fputs("\n", file);
+        }
         std::map<std::pair<u32, u64>, std::pair<u64, u64>> thunk_hits; // caller: samples, end
         for (const auto& [key, samples] : thunk_samples) {
             const auto& [thread_index, first, second] = key;
@@ -734,6 +766,7 @@ private:
     std::unordered_map<u64, size_t> stack_index;
     std::vector<DWORD64> frame_pool;
     std::map<std::tuple<u32, u64, u64>, u64> thunk_samples; // thread, top two stack words
+    std::map<u64, u64> thunk_rips; // offset into the thunks: samples
     std::unordered_map<DWORD64, std::string> module_names;
 };
 
@@ -806,12 +839,17 @@ void NoteJitThunks(const void* host, size_t host_size) {
     const u64 start = reinterpret_cast<u64>(host);
     std::scoped_lock lock{jit_blocks_mutex};
     jit_thunks.emplace_back(start, start + host_size);
+    if (jit_thunk_code.empty()) {
+        const u8* const bytes = static_cast<const u8*>(host);
+        jit_thunk_code.assign(bytes, bytes + host_size);
+    }
 }
 
 void ClearJitBlocks() {
     std::scoped_lock lock{jit_blocks_mutex};
     jit_blocks = {};
     jit_thunks = {};
+    jit_thunk_code = {};
 }
 
 void SetGuestCodeReader(GuestCodeReader reader, u64 code_base) {
