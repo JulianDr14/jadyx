@@ -14,6 +14,7 @@
 #include "common/logging.h"
 #include "common/write_combined_copy.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
@@ -158,6 +159,69 @@ u32 IndexSize(IndexFormat format) {
         return 4;
     }
     return 4;
+}
+
+/// Out-of-range fix: vertex numbers at or above limit would fetch zeros (a spike to the model
+/// origin). In lists the whole primitive collapses onto one of its good vertices, so nothing is
+/// rasterized; in strips the bad vertex restarts the strip (or repeats the previous good one).
+void DropOutOfRange(PrimitiveTopology topology, std::vector<u32>& out, u32 limit, u32 cut,
+                    bool has_cut) {
+    u32 group = 0;
+    switch (topology) {
+    case PrimitiveTopology::Points:
+        group = 1;
+        break;
+    case PrimitiveTopology::Lines:
+    case PrimitiveTopology::LineLoop:
+        group = 2;
+        break;
+    case PrimitiveTopology::Triangles:
+    case PrimitiveTopology::Quads:
+    case PrimitiveTopology::QuadStrip:
+    case PrimitiveTopology::TriangleFan:
+    case PrimitiveTopology::Polygon:
+        group = 3;
+        break;
+    case PrimitiveTopology::LinesAdjacency:
+        group = 4;
+        break;
+    case PrimitiveTopology::TrianglesAdjacency:
+        group = 6;
+        break;
+    default:
+        break;
+    }
+    if (group == 0) {
+        u32 last_good = 0;
+        for (u32& value : out) {
+            if (has_cut && value == cut) {
+                continue;
+            }
+            if (value >= limit) {
+                value = has_cut ? cut : last_good;
+            } else {
+                last_good = value;
+            }
+        }
+        return;
+    }
+    for (size_t first = 0; first + group <= out.size(); first += group) {
+        bool bad = false;
+        u32 good = 0;
+        bool found = false;
+        for (u32 i = 0; i < group; ++i) {
+            const u32 value = out[first + i];
+            if (value >= limit) {
+                bad = true;
+            } else if (!found) {
+                good = value;
+                found = true;
+            }
+        }
+        if (bad) {
+            std::fill_n(out.begin() + first, group, good);
+        }
+    }
 }
 
 } // Anonymous namespace
@@ -485,7 +549,10 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
                                   .stride = IndexSize(format),
                                   .device_addr = buffer.CpuAddr() + offset});
     }
-    if (!IsEmulatedTopology(topology) && format != IndexFormat::UnsignedByte &&
+    const u32 index_size = IndexSize(format);
+    const u64 byte_offset = offset + static_cast<u64>(first) * index_size;
+    const u32 index_limit = CheckIndexRange(topology, buffer, byte_offset, num_indices, index_size);
+    if (index_limit == 0 && !IsEmulatedTopology(topology) && format != IndexFormat::UnsignedByte &&
         !NeedsRestartRewrite(format)) {
         buffer.Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
         pending_index = D3D12_INDEX_BUFFER_VIEW{
@@ -505,13 +572,12 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
                  static_cast<u32>(topology), static_cast<u32>(format));
         logged_rewrite = true;
     }
-    const u32 index_size = IndexSize(format);
-    const u64 byte_offset = offset + static_cast<u64>(first) * index_size;
     const IndexRewriteCache::Key key{.buffer_id = buffer.Id(), .offset = byte_offset,
                                      .count = num_indices, .format = static_cast<u8>(index_size),
                                      .topology = static_cast<u8>(topology),
                                      .restart = index_restart.value_or(0),
-                                     .has_restart = index_restart.has_value()};
+                                     .has_restart = index_restart.has_value(),
+                                     .index_limit = index_limit};
     IndexRewriteCache::Entry* entry = rewrite_cache.Find(key);
     // The inline buffer's generation says nothing: each draw brings its own indices.
     const bool is_inline = !inline_indices.empty();
@@ -562,6 +628,9 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
             return value == index_restart ? cut : value;
         };
         AssembleTopology(topology, num_indices, read, rewrite_scratch);
+        if (index_limit != 0) {
+            DropOutOfRange(topology, rewrite_scratch, index_limit, cut, index_restart.has_value());
+        }
         entry = &rewrite_cache.Obtain(key);
         entry->generation = buffer.Generation();
         entry->source.assign(guest_indices.begin(), guest_indices.end());
@@ -574,6 +643,90 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
                                               std::chrono::steady_clock::now() - start)
                                               .count()));
     BindRewrittenIndices(*entry);
+}
+
+u32 BufferCacheRuntime::CheckIndexRange(PrimitiveTopology topology, Buffer& buffer,
+                                        u64 byte_offset, u32 num_indices, u32 index_size) {
+    namespace GeoHunt = VideoCommon::GeoHunt;
+    if (vertex_limit == 0 || num_indices == 0 || !inline_indices.empty() || !GeoHunt::OobCheck()) {
+        return 0;
+    }
+    const s64 limit = s64{vertex_limit} - vertex_base;
+    if (limit <= 0 || limit > s64{0xFFFFFFFF}) {
+        return 0;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const IndexRewriteCache::Key key{.buffer_id = buffer.Id(), .offset = byte_offset,
+                                     .count = num_indices, .format = static_cast<u8>(index_size),
+                                     .restart = index_restart.value_or(0),
+                                     .has_restart = index_restart.has_value()};
+    if (index_ranges.size() > 65536) {
+        index_ranges.clear();
+    }
+    auto [it, inserted] = index_ranges.try_emplace(key);
+    IndexRange& range = it->second;
+    const u32 mask = index_size == 1 ? 0xFFu : index_size == 2 ? 0xFFFFu : 0xFFFFFFFFu;
+    const std::optional<u32> skip =
+        index_restart ? std::optional<u32>{*index_restart & mask} : std::nullopt;
+    const auto value_at = [&](u32 i) -> u32 {
+        const u8* const data = guest_indices.data() + static_cast<size_t>(i) * index_size;
+        u32 value = 0;
+        std::memcpy(&value, data, index_size);
+        return value;
+    };
+    const auto read_guest = [&] {
+        guest_indices.resize(static_cast<size_t>(num_indices) * index_size);
+        device_memory.ReadBlockUnsafe(buffer.CpuAddr() + byte_offset, guest_indices.data(),
+                                      guest_indices.size());
+    };
+    if (inserted || range.generation != buffer.Generation()) {
+        read_guest();
+        u32 max_index = 0;
+        for (u32 i = 0; i < num_indices; ++i) {
+            const u32 value = value_at(i);
+            if (value != skip) {
+                max_index = std::max(max_index, value);
+            }
+        }
+        range.generation = buffer.Generation();
+        range.max_index = max_index;
+        range.scanned_limit = 0;
+    }
+    u32 result = 0;
+    if (range.max_index >= static_cast<u64>(limit)) {
+        if (range.scanned_limit != static_cast<u32>(limit)) {
+            // First time with this limit: count the bad indices for the report.
+            read_guest();
+            range.scanned_limit = static_cast<u32>(limit);
+            range.bad = 0;
+            for (u32 i = 0; i < num_indices; ++i) {
+                const u32 value = value_at(i);
+                if (value != skip && value >= static_cast<u64>(limit)) {
+                    if (range.bad++ == 0) {
+                        range.first_bad = i;
+                        range.first_bad_value = value;
+                    }
+                }
+            }
+            GeoHunt::ReportOob({.index_address = buffer.CpuAddr() + byte_offset,
+                                .count = num_indices,
+                                .index_size = index_size,
+                                .max_index = range.max_index,
+                                .bad = range.bad,
+                                .first_bad = range.first_bad,
+                                .first_bad_value = range.first_bad_value,
+                                .base_vertex = vertex_base,
+                                .vertex_limit = vertex_limit,
+                                .topology = static_cast<u32>(topology),
+                                .fixed = GeoHunt::OobFix()});
+        }
+        result = GeoHunt::OobFix() ? static_cast<u32>(limit) : 0;
+    }
+    VideoCore::Perf::Add(VideoCore::Perf::Counter::IndexRewriteNs,
+                         static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::steady_clock::now() - start)
+                                              .count()));
+    return result;
 }
 
 bool BufferCacheRuntime::NeedsRestartRewrite(IndexFormat format) const noexcept {

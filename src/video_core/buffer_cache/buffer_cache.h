@@ -959,6 +959,26 @@ void BufferCache<P>::BindHostIndexBuffer() {
         runtime.BindIndexBuffer(buffer, new_offset, size);
     } else {
         buffer.MarkUsage(offset, size);
+        if constexpr (requires { runtime.SetVertexLimit(u32{}, s64{}); }) {
+            // Vertices the largest per-vertex stream holds: indices past it fetch zeros.
+            u32 limit = 0;
+            // Indirect draws take their counts from GPU memory: they cannot be rewritten.
+            if (GeoHunt::OobCheck() && !current_draw_indirect &&
+                draw_state.inline_index_draw_indexes.empty()) {
+                const auto& regs = maxwell3d->regs;
+                u32 mask = enabled_vertex_buffers_mask;
+                while (mask != 0) {
+                    const u32 index = std::countr_zero(mask);
+                    mask &= mask - 1;
+                    const u32 stride = regs.vertex_streams[index].stride;
+                    if (stride == 0 || regs.vertex_stream_instances.IsInstancingEnabled(index)) {
+                        continue;
+                    }
+                    limit = (std::max)(limit, VertexBufferSlot(index).size / stride);
+                }
+            }
+            runtime.SetVertexLimit(limit, static_cast<s64>(static_cast<s32>(draw_state.base_index)));
+        }
         runtime.BindIndexBuffer(draw_state.topology, draw_state.index_buffer.format, draw_state.index_buffer.first, draw_state.index_buffer.count, buffer, offset, size);
     }
 }

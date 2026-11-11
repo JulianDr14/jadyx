@@ -160,6 +160,12 @@ public:
     /// cannot leave the new command list without them.
     /// The restart index of the next indexed draws, empty when restart is off.
     void SetIndexRestart(std::optional<u32> value) noexcept { index_restart = value; }
+    /// Vertices the largest per-vertex stream of the next indexed draw holds (0: unknown) and
+    /// its base vertex: indices past them fetch zeros (out-of-range check and fix).
+    void SetVertexLimit(u32 limit, s64 base) noexcept {
+        vertex_limit = limit;
+        vertex_base = base;
+    }
     /// The draw's inline indices, which live in no guest memory; empty for any other draw.
     void SetInlineIndices(std::span<const u8> indices) noexcept {
         inline_indices = indices;
@@ -253,6 +259,10 @@ private:
     /// Uploads indices to staging memory and binds them as a 32-bit or 16-bit index buffer.
     void BindRewrittenIndices(IndexRewriteCache::Entry& entry);
     [[nodiscard]] bool NeedsRestartRewrite(IndexFormat format) const noexcept;
+    /// The out-of-range limit (exclusive, before the base vertex) the draw's indices must be
+    /// rewritten with, 0 when they are all in range or the check is off. Reports bad ranges.
+    [[nodiscard]] u32 CheckIndexRange(PrimitiveTopology topology, Buffer& buffer, u64 byte_offset,
+                                      u32 num_indices, u32 index_size);
     ComPtr<ID3D12Resource> CreateDefaultBuffer(u64 size);
     void Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src, ID3D12Resource* src_raw,
               std::span<const VideoCommon::BufferCopy> copies);
@@ -305,6 +315,20 @@ private:
     u64 next_buffer_id{1};
     std::vector<u8> guest_indices;
     std::span<const u8> inline_indices;
+    u32 vertex_limit{};
+    s64 vertex_base{};
+    /// Largest index (and how many are out of range for max_limit) per guest index range, valid
+    /// for the buffer generation it was scanned at.
+    struct IndexRange {
+        u64 generation{};
+        u32 max_index{};
+        u32 scanned_limit{};
+        u32 bad{};
+        u32 first_bad{};
+        u32 first_bad_value{};
+    };
+    std::unordered_map<IndexRewriteCache::Key, IndexRange, IndexRewriteCache::KeyHash>
+        index_ranges;
     bool logged_rewrite{};
     bool logged_inline_rewrite{};
 };
