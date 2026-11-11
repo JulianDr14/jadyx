@@ -5,7 +5,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
-#include <atomic>
 #include <chrono>
 
 #include "audio_core/adsp/apps/audio_renderer/audio_renderer.h"
@@ -20,18 +19,6 @@
 #include "core/core_timing.h"
 
 namespace AudioCore::ADSP::AudioRenderer {
-
-namespace {
-std::atomic<bool> idle_pacing{true};
-} // Anonymous namespace
-
-void SetIdlePacing(const bool enabled) noexcept {
-    idle_pacing.store(enabled, std::memory_order_relaxed);
-}
-
-bool IdlePacing() noexcept {
-    return idle_pacing.load(std::memory_order_relaxed);
-}
 
 AudioRenderer::AudioRenderer(Core::System& system_, Sink::Sink& sink_)
     : system{system_}, sink{sink_} {}
@@ -242,7 +229,9 @@ void AudioRenderer::Main(std::stop_token stop_token) {
             }
             if (appended_buffers() != appended_before) {
                 idle_pacer.Reset();
-            } else if (IdlePacing()) {
+            } else {
+                // No full queue to wait on: hold the pass to real time, one audio frame each
+                // 5 ms as the console's DSP does, instead of rendering nonstop.
                 if (!idle_pacing_logged) {
                     idle_pacing_logged = true;
                     LOG_INFO(Service_Audio, "Audio renderer queued no sink buffer: pacing by clock");

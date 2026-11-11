@@ -113,10 +113,6 @@ void Configure(std::uint64_t bytes); // d3d12_memory_reserve.h
 namespace AudioCore::Sink {
 void SetXAudio2ProfileEnabled(bool enabled) noexcept; // audio_core/sink/xaudio2_sink.h
 }
-namespace AudioCore::ADSP::AudioRenderer {
-void SetIdlePacing(bool enabled) noexcept; // audio_core/adsp/apps/audio_renderer/audio_renderer.h
-bool IdlePacing() noexcept;
-} // namespace AudioCore::ADSP::AudioRenderer
 
 namespace VideoCommon {
 void SetAstcArrayRecompression(bool enabled) noexcept; // texture_cache/util.h

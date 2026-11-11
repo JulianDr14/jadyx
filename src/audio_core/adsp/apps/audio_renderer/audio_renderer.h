@@ -48,12 +48,6 @@ enum Message : u32 {
     Shutdown = 52,
 };
 
-/// A render that hands its sink no buffer has no full queue to wait on: such a pass is held to
-/// real time, one audio frame each 5 ms as the console's DSP does, instead of rendering nonstop.
-/// On by default; the switch is there to compare (in-game menu of the "hunt=1" package).
-void SetIdlePacing(bool enabled) noexcept;
-bool IdlePacing() noexcept;
-
 /**
  * The AudioRenderer application running on the ADSP.
  */
