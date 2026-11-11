@@ -32,6 +32,7 @@ BufferCache<P>::BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, R
     // Ensure the first slot is used for the null buffer
     void(slot_buffers.insert(runtime, NullBufferParams{}));
     gpu_modified_ranges.Clear();
+    gpu_page_map.Reset();
     inline_buffer_id = NULL_BUFFER_ID;
 #ifdef YUZU_LEGACY
     immediately_free = (Settings::values.vram_usage_mode.GetValue() == Settings::VramUsageMode::Aggressive);
@@ -175,7 +176,7 @@ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size) {
     }
     if (IsRegionGpuModified(device_addr, size)) {
         ClearDownload(device_addr, size);
-        gpu_modified_ranges.Subtract(device_addr, size);
+        SubtractGpuModified(device_addr, size);
     }
     // Not MarkRegionAsCpuModified: pages that keep GPU bytes must stay tracked (see MarkCpuWritten).
     MarkCpuWritten(device_addr, size);
@@ -378,6 +379,7 @@ void BufferCache<P>::DownloadCheckpointMemory() requires HAS_CHECKPOINT_READBACK
         ClearDownload(begin, end - begin);
     });
     gpu_modified_ranges.Clear();
+    gpu_page_map.Reset();
 }
 
 template <class P>
@@ -434,10 +436,11 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     };
     gpu_modified_ranges.ForEachInRange(*cpu_src_address, amount, mirror);
     // This subtraction in this order is important for overlapping copies.
-    gpu_modified_ranges.Subtract(*cpu_dest_address, amount);
+    SubtractGpuModified(*cpu_dest_address, amount);
     const bool has_new_downloads = tmp_intervals.size() != 0;
     for (const auto& pair : tmp_intervals) {
         gpu_modified_ranges.Add(pair.first, pair.second);
+        gpu_page_map.Mark(pair.first, pair.second);
     }
     const auto& copy = copies[0];
     src_buffer.MarkUsage(copy.src_offset, copy.size);
@@ -472,7 +475,7 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
 
     const size_t size = amount * sizeof(u32);
     ClearDownload(*cpu_dst_address, size);
-    gpu_modified_ranges.Subtract(*cpu_dst_address, size);
+    SubtractGpuModified(*cpu_dst_address, size);
 
     const BufferId buffer = FindBuffer(*cpu_dst_address, static_cast<u32>(size), false);
     Buffer& dest_buffer = slot_buffers[buffer];
@@ -515,7 +518,7 @@ std::pair<typename P::Buffer*, u32> BufferCache<P>::ObtainCPUBuffer(
         break;
     case ObtainBufferOperation::DiscardWrite: {
         ClearDownload(device_addr, size);
-        gpu_modified_ranges.Subtract(device_addr, size);
+        SubtractGpuModified(device_addr, size);
         break;
     }
     default:
@@ -932,7 +935,7 @@ void BufferCache<P>::PopAsyncBuffers() {
         });
         async_downloads.Subtract(device_addr, copy.size, [&](DAddr range_start, DAddr range_end) {
             for_each_current(range_start, range_end, [&](DAddr start, DAddr end) {
-                gpu_modified_ranges.Subtract(start, end - start);
+                SubtractGpuModified(start, end - start);
             });
         });
     }
@@ -998,7 +1001,19 @@ void BufferCache<P>::ApplyKeptCpuWrites() {
 
 template <class P>
 bool BufferCache<P>::IsRegionGpuModified(DAddr addr, size_t size) {
-    return gpu_modified_ranges.Intersects(addr, size);
+    if (!gpu_page_map.MayIntersect(addr, size)) {
+        VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::GpuPageMapMisses, 1);
+        return false;
+    }
+    const bool modified = gpu_modified_ranges.Intersects(addr, size);
+    if (!modified && gpu_page_map.NoteDenied()) {
+        // Enough stale pages: set again only the ones the ranges still cover.
+        gpu_page_map.Reset();
+        gpu_modified_ranges.ForEach(
+            [this](DAddr begin, DAddr end) { gpu_page_map.Mark(begin, end - begin); });
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::GpuPageMapRebuilds, 1);
+    }
+    return modified;
 }
 
 template <class P>
@@ -1925,6 +1940,7 @@ void BufferCache<P>::MarkWrittenBuffer(ReadbackTrace::WriteOrigin origin, Buffer
     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
     VideoCommon::GpuWrittenPages::Mark(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
+    gpu_page_map.Mark(device_addr, size);
     uncommitted_gpu_modified_ranges.Add(device_addr, size);
 }
 
@@ -2582,7 +2598,7 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
                                                 std::span<const u8> inlined_buffer) {
     geo_role = GeoHunt::Role::Other;
     ClearDownload(dest_address, copy_size);
-    gpu_modified_ranges.Subtract(dest_address, copy_size);
+    SubtractGpuModified(dest_address, copy_size);
 
     BufferId buffer_id = FindBuffer(dest_address, static_cast<u32>(copy_size), false);
     auto& buffer = slot_buffers[buffer_id];
@@ -2638,7 +2654,7 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
 
             gpu_modified_ranges.ForEachInRange(device_addr_out, range_size, add_download);
             ClearDownload(device_addr_out, range_size);
-            gpu_modified_ranges.Subtract(device_addr_out, range_size);
+            SubtractGpuModified(device_addr_out, range_size);
         });
     if (total_size_bytes == 0) {
         return;

@@ -35,6 +35,7 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
+#include "video_core/buffer_cache/gpu_page_map.h"
 #include "video_core/buffer_cache/buffer_base.h"
 #include "video_core/buffer_cache/download_shadow.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
@@ -600,6 +601,13 @@ private:
     MemoryTracker memory_tracker;
     Common::RangeSet<DAddr> uncommitted_gpu_modified_ranges;
     Common::RangeSet<DAddr> gpu_modified_ranges;
+    /// Superset of gpu_modified_ranges by page, kept by every Add and Clear of the set;
+    /// SubtractGpuModified marks it stale.
+    GpuPageMap gpu_page_map;
+    void SubtractGpuModified(DAddr device_addr, size_t size) {
+        gpu_modified_ranges.Subtract(device_addr, size);
+        gpu_page_map.NoteSubtract();
+    }
     /// Ranges bound as transform feedback outputs (geo_hunt on).
     Common::RangeSet<DAddr> feedback_ranges;
     // Diagnostic (buffer_write_origins=1): which path last marked each range as GPU-written.
