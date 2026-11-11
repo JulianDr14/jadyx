@@ -244,6 +244,8 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::MenuGeoMarked, L"Marcas en el log:"},
     {Text::MenuGeoHeal, L"Curar escrituras perdidas"},
     {Text::MenuGeoHealDetail, L"Vuelve a subir los búferes que la caza encuentra viejos: si la malla se arregla, era eso"},
+    {Text::MenuGeoOobFix, L"Quitar triángulos fuera de rango"},
+    {Text::MenuGeoOobFixDetail, L"No dibuja los triángulos cuyos índices apuntan fuera de la malla, en vez de estirarlos hasta un punto"},
     {Text::MenuPsoBoost, L"Prioridad de shaders esperados"},
     {Text::MenuPsoBoostDetail, L"Sube la prioridad de un shader mientras el juego lo espera: compara los tirones con y sin ella"},
     {Text::MenuPsoBoostAbove, L"Alta"},

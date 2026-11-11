@@ -343,6 +343,16 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 WriteDiag("boot.cfg: geometry hunt enabled");
                 continue;
             }
+            if (line == "geo_oob=0") {
+                config.geo_oob = false;
+                WriteDiag("boot.cfg: out-of-range index check off");
+                continue;
+            }
+            if (line == "geo_oob_fix=0") {
+                config.geo_oob_fix = false;
+                WriteDiag("boot.cfg: out-of-range triangles drawn as they are");
+                continue;
+            }
             if (line == "geo_hunt_heal=1") {
                 config.geo_hunt_heal = true;
                 WriteDiag("boot.cfg: geometry hunt heals missed writes");

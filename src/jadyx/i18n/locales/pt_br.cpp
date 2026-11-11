@@ -244,6 +244,8 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::MenuGeoMarked, L"Marcas no log:"},
     {Text::MenuGeoHeal, L"Curar escritas perdidas"},
     {Text::MenuGeoHealDetail, L"Reenvia os buffers que a caça encontra velhos: se a malha se corrigir, era isso"},
+    {Text::MenuGeoOobFix, L"Remover triângulos fora do intervalo"},
+    {Text::MenuGeoOobFixDetail, L"Não desenha os triângulos cujos índices apontam para fora da malha, em vez de esticá-los até um ponto"},
     {Text::MenuPsoBoost, L"Prioridade de shaders esperados"},
     {Text::MenuPsoBoostDetail, L"Aumenta a prioridade de um shader enquanto o jogo o espera: compare os travamentos com e sem ela"},
     {Text::MenuPsoBoostAbove, L"Alta"},

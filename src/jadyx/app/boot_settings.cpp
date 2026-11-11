@@ -46,7 +46,6 @@
 #include "video_core/rasterizer_download_area.h"
 #include "video_core/readback_trace.h"
 #include "video_core/semaphore_order.h"
-#include "video_core/write_watch.h"
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 #include "video_core/renderer_d3d12/d3d12_frame_gen_pacer.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_mode.h"
@@ -367,9 +366,9 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetComputeWarpPerLane(config.warp_per_lane);
     D3D12::SetShuffleWaveUniform(config.shuffle_wave_uniform);
     D3D12::SetWaveSelfTest(config.glitch_hunt_menu);
-    VideoCommon::WriteWatch::SetEnabled(config.glitch_hunt_menu);
     VideoCommon::GeoHunt::Configure(config.geo_hunt, config.geo_hunt_check_kb, config.geo_hunt_upload_kb,
                                     config.geo_hunt_heal);
+    VideoCommon::GeoHunt::ConfigureOob(config.geo_oob, config.geo_oob && config.geo_oob_fix);
     VideoCommon::SetMipRenderTargets(config.mip_render_targets);
     VideoCommon::SetRenderTargetInheritance(config.render_target_inheritance);
     VideoCommon::SetReclaimSupersededImages(config.reclaim_superseded_images);

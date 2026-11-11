@@ -155,6 +155,9 @@ struct GameMenuSettings {
     /// (`right_stick_per_game` says whether there is a game).
     RumbleSettings rumble_global{};
     GameRumble rumble{};
+    /// Geometry hunt package: drop the triangles whose indices point past the vertex buffers
+    /// (they would stretch to the model origin). Shown with the geo_hunt rows.
+    bool geo_oob_fix{true};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -177,6 +180,7 @@ enum class GameMenuResult : std::uint8_t {
     /// Geometry hunt: mark the moment in its log, or Settings().geo_heal changed.
     GeoMark,
     GeoHealChanged,
+    GeoOobFixChanged,
     /// Settings().pso_boost changed.
     PsoBoostChanged,
     /// The room chat's page.
@@ -216,7 +220,7 @@ public:
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
         GlitchPage, GlitchCapture, GlitchWarpPerLane, GlitchA2cShader, GlitchFrameWait,
         GlitchComputeFresh, GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites,
-        GeoMark, GeoHeal, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
+        GeoMark, GeoHeal, GeoOobFix, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
         GyroStick, GyroShake, Rumble, RumbleStrength,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
@@ -234,7 +238,7 @@ public:
         if (settings.material_capture) quick.push_back(CaptureGraphics);
         if (settings.performance_capture) quick.push_back(CapturePerformance);
         if (settings.glitch_hunt) quick.push_back(GlitchPage);
-        if (settings.geo_hunt) quick.insert(quick.end(), {GeoMark, GeoHeal});
+        if (settings.geo_hunt) quick.insert(quick.end(), {GeoMark, GeoHeal, GeoOobFix});
         if (settings.pso_menu) quick.push_back(PsoBoost);
         quick.push_back(Library);
         glitch = {GlitchCapture,      GlitchA2cShader,    GlitchFrameWait,     GlitchComputeFresh,
@@ -410,6 +414,9 @@ private:
         case GeoHeal:
             return {Tr(Text::MenuGeoHeal), Tr(settings.geo_heal ? Text::Yes : Text::No), Choice,
                     Tr(Text::MenuGeoHealDetail), UiIcon::Settings};
+        case GeoOobFix:
+            return {Tr(Text::MenuGeoOobFix), Tr(settings.geo_oob_fix ? Text::Yes : Text::No),
+                    Choice, Tr(Text::MenuGeoOobFixDetail), UiIcon::Settings};
         case PsoBoost:
             return {Tr(Text::MenuPsoBoost),
                     Tr(settings.pso_boost == 0   ? Text::No
@@ -749,6 +756,9 @@ private:
         case GeoHeal:
             settings.geo_heal = !settings.geo_heal;
             return GameMenuResult::GeoHealChanged;
+        case GeoOobFix:
+            settings.geo_oob_fix = !settings.geo_oob_fix;
+            return GameMenuResult::GeoOobFixChanged;
         case PsoBoost:
             // Steps through off, above normal, highest.
             settings.pso_boost = settings.pso_boost == 0 ? 2 : settings.pso_boost == 2 ? 3 : 0;

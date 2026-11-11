@@ -179,6 +179,10 @@ struct BootConfig {
     /// "pso_menu=1": the quick menu row that changes pso_boost at run time.
     bool pso_menu{};
     bool geo_hunt_heal{};
+    /// Out-of-range index check and fix (on by default): "geo_oob=0" turns both off,
+    /// "geo_oob_fix=0" keeps the check and its log but draws the triangles as they are.
+    bool geo_oob{true};
+    bool geo_oob_fix{true};
     u32 geo_hunt_check_kb{};
     u32 geo_hunt_upload_kb{};
     /// Diagnostic ("indirect_sync=1", also on the glitch hunt page): GPU-indirect draws wait for

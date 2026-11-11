@@ -210,7 +210,8 @@ void SessionMenu::Open() {
                                   config.geo_hunt && VideoCommon::GeoHunt::Enabled(),
                                   VideoCommon::GeoHunt::Healing(), config.pso_menu,
                                   D3D12::GetPipelineBuildBoost(), options.motion_stick, options.motion_shake,
-                                  options.rumble, input.GameRumbleSettings()},
+                                  options.rumble, input.GameRumbleSettings(),
+                                  VideoCommon::GeoHunt::OobFix()},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
     const bool from_notice = notice_shown;
@@ -590,7 +591,10 @@ void SessionMenu::Close(GameMenuResult result) {
     if (result == GameMenuResult::GeoMark) {
         // The hunt's log gets the mark with the misses seen so far; play goes on.
         VideoCommon::GeoHunt::Mark();
-        WriteDiag("menu: geometry hunt mark | " + MemoryReport());
+        // The draws of the next frames, with what each vertex and index buffer holds: the
+        // deformed mesh is still on screen, so its draw is in the capture.
+        D3D12::HuntGlitchesNextFrames();
+        WriteDiag("menu: geometry hunt mark + draw capture | " + MemoryReport());
     }
     ResumeGuest();
     live = false;
@@ -662,6 +666,11 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
     if (result == GameMenuResult::GlitchTogglesChanged) {
         ApplyGlitchToggles(glitch_toggles, menu->Settings().glitch);
         glitch_toggles = menu->Settings().glitch;
+    }
+    if (result == GameMenuResult::GeoOobFixChanged) {
+        VideoCommon::GeoHunt::SetOobFix(menu->Settings().geo_oob_fix);
+        WriteDiag(std::string{"menu: out-of-range triangle fix "} +
+                  (menu->Settings().geo_oob_fix ? "on" : "off"));
     }
     if (result == GameMenuResult::GeoHealChanged) {
         VideoCommon::GeoHunt::SetHeal(menu->Settings().geo_heal);

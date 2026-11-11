@@ -244,6 +244,8 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::MenuGeoMarked, L"Marks in the log:"},
     {Text::MenuGeoHeal, L"Heal missed writes"},
     {Text::MenuGeoHealDetail, L"Re-uploads the buffers the hunt finds stale: if the mesh is fixed, that was the cause"},
+    {Text::MenuGeoOobFix, L"Drop out-of-range triangles"},
+    {Text::MenuGeoOobFixDetail, L"Triangles whose indices point past the mesh are not drawn instead of stretching to one point"},
     {Text::MenuPsoBoost, L"Waited shader priority"},
     {Text::MenuPsoBoostDetail, L"Raises a shader build while the game waits for it: compare stutters with it on and off"},
     {Text::MenuPsoBoostAbove, L"High"},

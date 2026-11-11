@@ -187,6 +187,8 @@ enum class Text : std::uint16_t {
     MenuGeoMarkDetail,
     MenuGeoMarked,
     MenuGeoHeal,
+    MenuGeoOobFix,
+    MenuGeoOobFixDetail,
     MenuGeoHealDetail,
     MenuPsoBoost,
     MenuPsoBoostDetail,
