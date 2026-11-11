@@ -1013,6 +1013,19 @@ enum class Text : std::uint16_t {
     ChatPhraseWhoHosts,
     ChatEditorHint,
     ChatAnswerOnline,
+    MotionRow,
+    MotionOff,
+    MotionTilt,
+    MotionAim,
+    MotionShake,
+    MotionOffHint,
+    MotionTiltHint,
+    MotionAimHint,
+    MotionShakeHint,
+    MotionViewRow,
+    MotionViewAlways,
+    MotionViewMoving,
+    MotionViewHint,
     Count
 };
 inline constexpr std::size_t TextCount = static_cast<std::size_t>(Text::Count);

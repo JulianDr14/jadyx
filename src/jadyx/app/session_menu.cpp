@@ -194,6 +194,7 @@ void SessionMenu::Open() {
     // Live, the menu takes the right side and the game shows as it runs: nothing to capture.
     if (!live) CaptureFrame();
     const SystemSettings system_settings = LoadSystemSettings();
+    const GameMotion game_motion = input.Motion();
     menu.emplace(GameMenuSettings{options.style, options.swap_face_buttons,
                                   options.deadzone, g_can_fullscreen.load(),
                                   g_fullscreen.load(), system_settings.show_performance_stats,
@@ -204,7 +205,7 @@ void SessionMenu::Open() {
                                   LoadGameGraphics(program_id),
                                   program_id != 0 && !mii_editor && MemoryEdit::CanSearchGuest(system),
                                   options.right_stick, input.GameRightStickSettings(),
-                                  program_id != 0 && !mii_editor,
+                                  program_id != 0 && !mii_editor, game_motion.mode, game_motion.view,
                                   config.glitch_hunt_menu, glitch_toggles,
                                   config.geo_hunt && VideoCommon::GeoHunt::Enabled(),
                                   VideoCommon::GeoHunt::Healing(), config.pso_menu,
@@ -623,6 +624,13 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
             options.right_stick = settings.right_stick_global;
             input.SetOptions(options);
         }
+    }
+    if (result == GameMenuResult::MotionChanged) {
+        const GameMotion motion{menu->Settings().motion, menu->Settings().motion_view};
+        if (!SaveGameMotion(program_id, motion)) WriteDiag("menu: motion settings could not be saved");
+        input.SetMotion(motion);
+        WriteDiag("menu: motion mode " + std::to_string(static_cast<int>(motion.mode)) + ", view " +
+                  std::to_string(static_cast<int>(motion.view)));
     }
     if (result == GameMenuResult::PerformanceStatsChanged) {
         auto settings = LoadSystemSettings();

@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "jadyx/input/controller_style.h"
+#include "jadyx/input/motion_emu.h"
 #include "jadyx/input/right_stick_settings.h"
 #include "jadyx/settings/graphics_page.h"
 #include "jadyx/ui/ui_actions.h"
@@ -130,6 +131,10 @@ struct GameMenuSettings {
     RightStickSettings right_stick_global{};
     GameRightStick right_stick{};
     bool right_stick_per_game{};
+    /// This game's emulated gyro and when its controller shows on screen (only with
+    /// `right_stick_per_game`: they are always a game's own).
+    MotionMode motion{MotionMode::Off};
+    MotionViewMode motion_view{MotionViewMode::Always};
     /// Opt-in diagnostic package ("glitch_hunt_menu=1"): the geometry glitch hunt page.
     bool glitch_hunt{};
     GlitchToggles glitch{};
@@ -168,6 +173,8 @@ enum class GameMenuResult : std::uint8_t {
     PsoBoostChanged,
     /// The room chat's page.
     Chat,
+    /// Settings().motion or motion_view changed.
+    MotionChanged,
 };
 
 /// The console's tag reader as the game left it, for the Amiibo row.
@@ -197,7 +204,7 @@ public:
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
         GlitchPage, GlitchCapture, GlitchWarpPerLane, GlitchA2cShader, GlitchFrameWait,
         GlitchComputeFresh, GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites,
-        GeoMark, GeoHeal, PsoBoost, Chat, GfxFixedCoreMap,
+        GeoMark, GeoHeal, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
 
@@ -221,6 +228,7 @@ public:
                   GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites, GlitchWarpPerLane};
         controller = {Style, FaceButtons, Deadzone, RStickInvertX, RStickInvertY, RStickSensitivity,
                       RStickMouse, RStickMouseSensitivity};
+        if (settings.right_stick_per_game) controller.insert(controller.end(), {Motion, MotionView});
         display = {PerformanceStats};
         if (settings.can_fullscreen) display.push_back(FullScreen);
         UpdateGraphicsItems();
@@ -515,6 +523,18 @@ private:
                 detail = Tr(own ? Text::MenuGraphicsOwn : Text::MenuGraphicsFollowsSettings);
             return {Tr(label), value, Choice, detail};
         }
+        case Motion: {
+            static constexpr Text values[]{Text::MotionOff, Text::MotionTilt, Text::MotionAim, Text::MotionShake};
+            static constexpr Text details[]{Text::MotionOffHint, Text::MotionTiltHint, Text::MotionAimHint,
+                                            Text::MotionShakeHint};
+            const auto index = static_cast<std::size_t>(settings.motion);
+            return {Tr(Text::MotionRow), Tr(values[index]), Choice, Tr(details[index])};
+        }
+        case MotionView: {
+            static constexpr Text values[]{Text::MotionViewAlways, Text::MotionViewMoving, Text::No};
+            return {Tr(Text::MotionViewRow), Tr(values[static_cast<std::size_t>(settings.motion_view)]), Choice,
+                    Tr(Text::MotionViewHint)};
+        }
         case PerformanceStats:
             return {Tr(Text::PerformanceStats), Tr(settings.show_performance_stats ? Text::Yes : Text::No), Choice};
         case FullScreen:
@@ -617,6 +637,19 @@ private:
         case RStickMouseSensitivity:
             ChangeRightStick(SelectedItem(), back);
             return GameMenuResult::RightStickChanged;
+        case Motion: {
+            const auto count = MotionModeCount;
+            const auto index = static_cast<std::uint8_t>(settings.motion);
+            settings.motion = static_cast<MotionMode>(back ? (index + count - 1) % count : (index + 1) % count);
+            return GameMenuResult::MotionChanged;
+        }
+        case MotionView: {
+            const auto count = MotionViewModeCount;
+            const auto index = static_cast<std::uint8_t>(settings.motion_view);
+            settings.motion_view =
+                static_cast<MotionViewMode>(back ? (index + count - 1) % count : (index + 1) % count);
+            return GameMenuResult::MotionChanged;
+        }
         case PerformanceStats:
             settings.show_performance_stats = !settings.show_performance_stats;
             return GameMenuResult::PerformanceStatsChanged;

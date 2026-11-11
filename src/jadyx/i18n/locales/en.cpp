@@ -987,5 +987,18 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::ChatPhraseWhoHosts, L"Who hosts?"},
     {Text::ChatEditorHint, L"Everyone in the room reads it."},
     {Text::ChatAnswerOnline, L"Answer from the Online tab"},
+    {Text::MotionRow, L"Motion (gyro)"},
+    {Text::MotionOff, L"Off"},
+    {Text::MotionTilt, L"Tilt"},
+    {Text::MotionAim, L"Aim"},
+    {Text::MotionShake, L"Shake"},
+    {Text::MotionOffHint, L"The controller lies still. The right stick works as always"},
+    {Text::MotionTiltHint, L"The right stick tilts the controller; let go and it levels out"},
+    {Text::MotionAimHint, L"The right stick turns the controller, like aiming with it"},
+    {Text::MotionShakeHint, L"Hold R3 to shake the controller"},
+    {Text::MotionViewRow, L"Controller on screen"},
+    {Text::MotionViewAlways, L"Always"},
+    {Text::MotionViewMoving, L"While moving"},
+    {Text::MotionViewHint, L"A 3D controller in the corner shows the motion and the rumble"},
 });
 } // namespace Jadyx::I18n

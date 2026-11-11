@@ -154,6 +154,31 @@ int main() {
         check(row(GameMenu::RStickMouseSensitivity).value == L"100%");
         game.Apply(MenuAction::Right);
         check(game.Settings().right_stick.mouse_sensitivity == 125);
+        // The emulated gyro is the game's own: off, tilt, aim, shake and round again; the
+        // on-screen controller always, while moving or not at all.
+        check(row(GameMenu::Motion).value == L"Apagado" && !row(GameMenu::Motion).detail.empty());
+        check(game.Apply(MenuAction::Right) == GameMenuResult::MotionChanged &&
+              game.Settings().motion == MotionMode::Tilt);
+        check(row(GameMenu::Motion).value == L"Inclinar");
+        check(game.Apply(MenuAction::Left) == GameMenuResult::MotionChanged &&
+              game.Settings().motion == MotionMode::Off);
+        check(game.Apply(MenuAction::Left) == GameMenuResult::MotionChanged &&
+              game.Settings().motion == MotionMode::Shake);
+        check(row(GameMenu::MotionView).value == L"Siempre");
+        check(game.Apply(MenuAction::Right) == GameMenuResult::MotionChanged &&
+              game.Settings().motion_view == MotionViewMode::Moving);
+        check(game.Apply(MenuAction::Right) == GameMenuResult::MotionChanged &&
+              game.Settings().motion_view == MotionViewMode::Hidden && row(GameMenu::MotionView).value == L"No");
+    }
+    // Without a title id there is no game to keep a gyro for: no rows.
+    {
+        GameMenu global{GameMenuSettings{}};
+        while (global.SelectedItem() != GameMenu::ControllerPage) global.Apply(MenuAction::Down);
+        global.Apply(MenuAction::Confirm);
+        for (std::size_t i = 0; i < 40; ++i) {
+            check(global.SelectedItem() != GameMenu::Motion && global.SelectedItem() != GameMenu::MotionView);
+            global.Apply(MenuAction::Down);
+        }
     }
 
     // A game with a title id offers its cheats after the screenshot, with how many are on.

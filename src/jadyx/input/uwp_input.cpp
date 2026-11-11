@@ -699,6 +699,45 @@ void GamepadInput::SetMenuOpen(bool open) {
     menu_open.store(open, std::memory_order_relaxed);
 }
 
+namespace {
+std::wstring GameMotionKey(std::wstring_view field, u64 program_id) {
+    wchar_t id[17];
+    swprintf(id, std::size(id), L"%016llx", static_cast<unsigned long long>(program_id));
+    return L"game_motion_" + std::wstring{field} + L"_" + id;
+}
+} // namespace
+
+GameMotion LoadGameMotion(u64 program_id) {
+    GameMotion motion;
+    if (program_id == 0) return motion;
+    try {
+        const auto values = winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        const winrt::hstring mode_key{GameMotionKey(L"mode", program_id)};
+        if (values.HasKey(mode_key)) {
+            const auto value = winrt::unbox_value<int32_t>(values.Lookup(mode_key));
+            if (value >= 0 && value < MotionModeCount) motion.mode = static_cast<MotionMode>(value);
+        }
+        const winrt::hstring view_key{GameMotionKey(L"view", program_id)};
+        if (values.HasKey(view_key)) {
+            const auto value = winrt::unbox_value<int32_t>(values.Lookup(view_key));
+            if (value >= 0 && value < MotionViewModeCount) motion.view = static_cast<MotionViewMode>(value);
+        }
+    } catch (...) { /* A missing or invalid value is off. */ }
+    return motion;
+}
+
+bool SaveGameMotion(u64 program_id, const GameMotion& motion) {
+    if (program_id == 0) return false;
+    try {
+        const auto values = winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        values.Insert(winrt::hstring{GameMotionKey(L"mode", program_id)},
+                      winrt::box_value(static_cast<int32_t>(motion.mode)));
+        values.Insert(winrt::hstring{GameMotionKey(L"view", program_id)},
+                      winrt::box_value(static_cast<int32_t>(motion.view)));
+        return true;
+    } catch (...) { return false; }
+}
+
 ControllerOptions GamepadInput::Options() {
     std::scoped_lock lock{options_mutex};
     return options;
@@ -727,6 +766,21 @@ void GamepadInput::SetGameRightStick(const GameRightStick& game) {
 GameRightStick GamepadInput::GameRightStickSettings() {
     std::scoped_lock lock{options_mutex};
     return game_right_stick;
+}
+
+void GamepadInput::SetMotion(const GameMotion& motion) {
+    std::scoped_lock lock{options_mutex};
+    game_motion = motion;
+}
+
+GameMotion GamepadInput::Motion() {
+    std::scoped_lock lock{options_mutex};
+    return game_motion;
+}
+
+MotionViewState GamepadInput::MotionView() {
+    std::scoped_lock lock{motion_mutex};
+    return motion_view;
 }
 
 void GamepadInput::Start(Core::HID::HIDCore& hid_) {
@@ -776,6 +830,10 @@ void GamepadInput::Run(std::stop_token stop) {
     u32 menu_held = 0; // Navigation bits held last poll, for press edges.
     MenuInputCapture menu_capture;
     MouseStick mouse;
+    MotionEmu motion;
+    // Since the emulated controller last moved, and since its last resting sample.
+    float motion_still_ms = 1e6f;
+    float motion_rest_ms = 0.0f;
     auto last_poll = std::chrono::steady_clock::now();
     ControllerCatalog<ControllerDevice> controllers;
     std::vector<bool> announced(script.size());
@@ -991,6 +1049,74 @@ void GamepadInput::Run(std::stop_token stop) {
                 for (std::size_t i = 0; i < NAV.size(); ++i)
                     if (pressed & (1U << i)) menu_actions.push_back(NAV[i]);
             }
+        }
+        // The emulated gyro: the right stick (or R3) moves the virtual controller instead of
+        // reaching the game, and the game reads its IMU. Frozen while the menu pauses the game.
+        {
+            const GameMotion game_motion_now = Motion();
+            const float raw_right_x = state.right_x, raw_right_y = state.right_y;
+            const u32 raw_buttons = state.buttons;
+            motion.SetMode(game_motion_now.mode);
+            const bool motion_on = game_motion_now.mode != MotionMode::Off;
+            const bool takes_stick =
+                game_motion_now.mode == MotionMode::Tilt || game_motion_now.mode == MotionMode::Aim;
+            const bool shaking = game_motion_now.mode == MotionMode::Shake &&
+                                 (state.buttons & Bit(VirtualButton::StickR)) != 0;
+            if (takes_stick) state.right_x = state.right_y = 0.0f;
+            if (game_motion_now.mode == MotionMode::Shake) state.buttons &= ~Bit(VirtualButton::StickR);
+            std::optional<MotionSample> sample;
+            if (motion_on && !in_menu) {
+                sample = motion.Step(poll_ms / 1000.0f, raw_right_x, raw_right_y, shaking);
+            } else if (!motion_on) {
+                motion_rest_ms += poll_ms;
+                // A pad lying still on a table, now and then, so a game that reads it sees one.
+                if (motion_rest_ms >= 500.0f) sample = MotionSample{{}, {0.0f, 0.0f, -1.0f}, {}, {}};
+            }
+            if (sample) {
+                const float sample_ms = motion_on ? poll_ms : motion_rest_ms;
+                const auto delta_us = static_cast<u64>(std::max(sample_ms, 1.0f) * 1000.0f);
+                motion_rest_ms = 0.0f;
+                for (const std::size_t port : {PLAYER, HANDHELD_PORT}) {
+                    gamepad->SetMotionState(port, delta_us, sample->gyro.x, sample->gyro.y, sample->gyro.z,
+                                            sample->accel.x, sample->accel.y, sample->accel.z);
+                }
+                const float turn = std::abs(sample->gyro.x) + std::abs(sample->gyro.y) + std::abs(sample->gyro.z);
+                const bool moving = turn > 0.02f || sample->shake.x != 0.0f || sample->shake.z != 0.0f ||
+                                    (takes_stick && (std::abs(raw_right_x) > 0.05f || std::abs(raw_right_y) > 0.05f));
+                motion_still_ms = moving ? 0.0f : std::min(motion_still_ms + poll_ms, 1e6f);
+            }
+            // The game's rumble: the strongest motor of player 1 or the handheld controller.
+            float rumble = 0.0f;
+            if (motion_on) {
+                for (const std::size_t port : {PLAYER, HANDHELD_PORT}) {
+                    const auto* controller = hid->GetEmulatedControllerByIndex(port);
+                    if (!controller || !controller->IsConnected()) continue;
+                    for (const auto device : {Core::HID::DeviceIndex::Left, Core::HID::DeviceIndex::Right}) {
+                        const auto value = controller->GetActualVibrationValue(device);
+                        rumble = std::max({rumble, value.low_amplitude, value.high_amplitude});
+                    }
+                }
+            }
+            const bool by_position = pad && SwapControllerFaceButtons(*pad, current_options.swap_face_buttons);
+            std::scoped_lock lock{motion_mutex};
+            motion_view.mode = game_motion_now.mode;
+            motion_view.view = game_motion_now.view;
+            if (sample && motion_on) {
+                motion_view.orientation = sample->orientation;
+                motion_view.shake = sample->shake;
+            } else if (!motion_on) {
+                motion_view.orientation = {};
+                motion_view.shake = {};
+            }
+            motion_view.left_x = state.left_x;
+            motion_view.left_y = state.left_y;
+            motion_view.right_x = raw_right_x;
+            motion_view.right_y = raw_right_y;
+            motion_view.buttons = raw_buttons;
+            motion_view.by_position = by_position;
+            motion_view.rumble = in_menu ? 0.0f : std::clamp(rumble, 0.0f, 1.0f);
+            motion_view.still_ms = static_cast<u32>(motion_still_ms);
+            motion_view.in_menu = in_menu;
         }
         menu_capture.Filter(state, in_menu);
         const StylePad styled = MapPadToStyle(

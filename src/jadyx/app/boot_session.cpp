@@ -443,6 +443,7 @@ void GameSession::PrepareGame() {
     program_id = system.GetApplicationProcessProgramID();
     ApplyGameGraphics(system, config, LoadGameGraphics(program_id));
     input.SetGameRightStick(LoadGameRightStick(program_id));
+    input.SetMotion(LoadGameMotion(program_id));
     // The game's own offline mode over Settings > System's, before any guest code runs; boot.cfg's
     // airplane=1 wins over both.
     if (const auto offline = LoadGameOfflineMode(program_id); offline && !config.airplane_mode)

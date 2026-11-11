@@ -21,6 +21,7 @@
 
 #include "common/common_types.h"
 #include "jadyx/input/controller_style.h"
+#include "jadyx/input/motion_emu.h"
 #include "jadyx/input/right_stick_settings.h"
 #include "jadyx/ui/ui_actions.h"
 #include "jadyx/ui/text_entry.h"
@@ -86,6 +87,13 @@ bool SaveControllerOptions(const ControllerOptions& options);
 /// A game's own right stick settings (an unset field follows Settings > Controller).
 GameRightStick LoadGameRightStick(u64 program_id);
 bool SaveGameRightStick(u64 program_id, const GameRightStick& game);
+/// A game's emulated gyro (motion_emu.h) and when its controller shows on screen.
+struct GameMotion {
+    MotionMode mode{MotionMode::Off};
+    MotionViewMode view{MotionViewMode::Always};
+};
+GameMotion LoadGameMotion(u64 program_id);
+bool SaveGameMotion(u64 program_id, const GameMotion& motion);
 
 /// Player 1 / handheld settings for `style` (before HIDCore().ReloadInputDevices()). Handheld
 /// connects Eden's handheld controller instead of player 1 and undocks the console, like Eden's
@@ -124,6 +132,12 @@ public:
     /// The running game's own right stick settings, over the options' (not saved here).
     void SetGameRightStick(const GameRightStick& game);
     [[nodiscard]] GameRightStick GameRightStickSettings();
+    /// The running game's emulated gyro (not saved here). Tilt and Aim take the right stick from
+    /// the game, Shake takes R3.
+    void SetMotion(const GameMotion& motion);
+    [[nodiscard]] GameMotion Motion();
+    /// What the on-screen controller shows now. Any thread.
+    [[nodiscard]] MotionViewState MotionView();
 
 private:
     void Run(std::stop_token stop);
@@ -136,6 +150,9 @@ private:
     std::mutex options_mutex;
     ControllerOptions options;
     GameRightStick game_right_stick; // Guarded by options_mutex.
+    GameMotion game_motion;          // Guarded by options_mutex.
+    std::mutex motion_mutex;
+    MotionViewState motion_view; // Guarded by motion_mutex.
     std::atomic<bool> style_changed{};
     bool extra_players{true}; // Settings > System; read once per game, before the input thread.
     std::atomic<bool> menu_open{};

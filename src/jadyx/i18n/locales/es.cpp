@@ -987,5 +987,18 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::ChatPhraseWhoHosts, L"¿Quién crea?"},
     {Text::ChatEditorHint, L"Lo lee todo el que está en la sala."},
     {Text::ChatAnswerOnline, L"Responde desde la pestaña Online"},
+    {Text::MotionRow, L"Movimiento (giroscopio)"},
+    {Text::MotionOff, L"Apagado"},
+    {Text::MotionTilt, L"Inclinar"},
+    {Text::MotionAim, L"Apuntar"},
+    {Text::MotionShake, L"Agitar"},
+    {Text::MotionOffHint, L"El mando queda quieto. El stick derecho funciona como siempre"},
+    {Text::MotionTiltHint, L"El stick derecho inclina el mando; al soltarlo vuelve a quedar plano"},
+    {Text::MotionAimHint, L"El stick derecho gira el mando, como apuntar con él"},
+    {Text::MotionShakeHint, L"Mantén R3 para agitar el mando"},
+    {Text::MotionViewRow, L"Mando en pantalla"},
+    {Text::MotionViewAlways, L"Siempre"},
+    {Text::MotionViewMoving, L"Al moverlo"},
+    {Text::MotionViewHint, L"Un mando 3D en la esquina muestra el movimiento y la vibración"},
 });
 } // namespace Jadyx::I18n
