@@ -375,9 +375,10 @@ void LibrarySession::HandleControllerPanel() {
         actions &= ~(Swap | Zone);
     } else {
         // Rows: device, controller type, A/B/X/Y, deadzone, keyboard, controller mapping, then the
-        // right stick's (invert X, invert Y, sensitivity, mouse, mouse sensitivity). The floating
-        // panel outside the Settings tab draws only the first six.
-        const unsigned rows = tab == LibraryTab::Settings ? 11 : 6;
+        // right stick's (invert X, invert Y, sensitivity, mouse, mouse sensitivity), the rumble
+        // (on, strength) and the gyro's controls (stick, shake button). The floating panel
+        // outside the Settings tab draws only the first six.
+        const unsigned rows = tab == LibraryTab::Settings ? 15 : 6;
         if (setting_row >= rows) setting_row = 0;
         if (actions & Up) setting_row = (setting_row + rows - 1) % rows;
         if (actions & Down) setting_row = (setting_row + 1) % rows;
@@ -386,7 +387,25 @@ void LibrarySession::HandleControllerPanel() {
         if (opens && actions & Left && !(actions & (Play | Right))) {
             if (configuration.open) { settings = return_to_configuration = false; dirty = true; }
         } else if (actions & (Play | Left | Right)) {
-            if (setting_row >= 6) {
+            if (setting_row >= 11) {
+                const bool back = (actions & Left) && !(actions & (Play | Right));
+                switch (setting_row) {
+                case 11: options.rumble.on = !options.rumble.on; break;
+                case 12: options.rumble.strength = StepSensitivity(RumbleStrengthSteps, options.rumble.strength, back); break;
+                case 13:
+                    options.motion_stick =
+                        options.motion_stick == MotionStick::Right ? MotionStick::Left : MotionStick::Right;
+                    break;
+                default: {
+                    const auto count = MotionShakeButtonCount;
+                    const auto index = static_cast<u8>(options.motion_shake);
+                    options.motion_shake =
+                        static_cast<MotionShakeButton>(back ? (index + count - 1) % count : (index + 1) % count);
+                    break;
+                }
+                }
+                device_changed = true; dirty = true;
+            } else if (setting_row >= 6) {
                 auto& stick = options.right_stick;
                 const bool back = (actions & Left) && !(actions & (Play | Right));
                 switch (setting_row) {

@@ -14,6 +14,7 @@
 
 #include "jadyx/game/motion_view.h"
 #include "jadyx/input/motion_emu.h"
+#include "jadyx/input/rumble_settings.h"
 
 namespace {
 
@@ -96,7 +97,7 @@ int main(int argc, char** argv) {
     // about X) adds up to the angle.
     {
         MotionEmu emu;
-        emu.SetMode(MotionMode::Tilt);
+        emu.SetMode(MotionMode::On);
         float turned_x = 0.0f;
         MotionSample s;
         for (int i = 0; i < 500; ++i) {
@@ -116,35 +117,17 @@ int main(int argc, char** argv) {
     // Tilt right: the right side dips.
     {
         MotionEmu emu;
-        emu.SetMode(MotionMode::Tilt);
+        emu.SetMode(MotionMode::On);
         MotionSample s;
         for (int i = 0; i < 500; ++i) s = emu.Step(Dt, 1.0f, 0.0f, false);
         CHECK(s.orientation.Rotate({1, 0, 0}).z < -0.7f);
         CHECK(s.accel.x > 0.7f);
     }
 
-    // Aim: right turns the nose right at a steady rate, a negative turn about Z.
+    // Shake: the shake button swings the accelerometer past 1 g; it dies out after the release.
     {
         MotionEmu emu;
-        emu.SetMode(MotionMode::Aim);
-        MotionSample s;
-        for (int i = 0; i < 25; ++i) s = emu.Step(Dt, 1.0f, 0.0f, false);
-        CHECK(s.orientation.Rotate({0, 1, 0}).x > 0.0f);
-        CHECK(Near(s.gyro.z * 2.0f * Pi, -MotionEmu::AimRadiansPerSecond, 0.05f));
-        CHECK(Near(s.accel.z, -1.0f, 1e-3f)); // Turning flat leaves gravity where it was.
-        // Up raises the nose, never past the limit.
-        for (int i = 0; i < 2000; ++i) s = emu.Step(Dt, 0.0f, 1.0f, false);
-        CHECK(Near(std::asin(s.orientation.Rotate({0, 1, 0}).z), MotionEmu::MaxAimPitchRadians, 0.01f));
-        // Left alone it stays where it points.
-        const Quat held = s.orientation;
-        s = emu.Step(Dt, 0.0f, 0.0f, false);
-        CHECK(Near(s.orientation.w, held.w, 1e-5f) && Length(s.gyro) < 1e-3f);
-    }
-
-    // Shake: R3 swings the accelerometer past 1 g; it dies out after the release.
-    {
-        MotionEmu emu;
-        emu.SetMode(MotionMode::Shake);
+        emu.SetMode(MotionMode::On);
         float peak = 0.0f;
         for (int i = 0; i < 250; ++i) peak = std::max(peak, Length(emu.Step(Dt, 0.0f, 0.0f, true).accel));
         CHECK(peak > 2.0f);
@@ -152,9 +135,26 @@ int main(int argc, char** argv) {
         for (int i = 0; i < 100; ++i) s = emu.Step(Dt, 0.0f, 0.0f, false);
         CHECK(Near(Length(s.accel), 1.0f, 1e-4f) && Length(s.gyro) < 1e-4f);
         CHECK(s.shake.x == 0.0f && s.shake.z == 0.0f);
-        // A new mode starts from rest.
-        emu.SetMode(MotionMode::Tilt);
+        // Turned off and on again, it starts from rest.
+        for (int i = 0; i < 500; ++i) emu.Step(Dt, 1.0f, 0.0f, false);
+        emu.SetMode(MotionMode::Off);
+        emu.SetMode(MotionMode::On);
         CHECK(Near(emu.Step(Dt, 0.0f, 0.0f, false).accel.z, -1.0f, 1e-5f));
+        // Older saved modes (tilt, aim, shake) all read as on.
+        CHECK(MotionModeFromStored(0) == MotionMode::Off && MotionModeFromStored(1) == MotionMode::On &&
+              MotionModeFromStored(3) == MotionMode::On);
+    }
+
+    // Rumble: off or no amplitude is still; strength scales it, capped at full.
+    {
+        CHECK(RumbleMotor({true, 100}, 0.5f) == 0.5f);
+        CHECK(RumbleMotor({false, 100}, 0.5f) == 0.0f);
+        CHECK(RumbleMotor({true, 50}, 0.5f) == 0.25f);
+        CHECK(RumbleMotor({true, 200}, 0.8f) == 1.0f);
+        CHECK(RumbleMotor({true, 100}, 0.0f) == 0.0f);
+        const RumbleSettings global{true, 75};
+        CHECK(ResolveRumble(global, {}) == global);
+        CHECK(ResolveRumble(global, GameRumble{false, std::nullopt}) == (RumbleSettings{false, 75}));
     }
 
     // The picture: in the bottom-left corner, a controller floating on its shadow (premultiplied
@@ -162,7 +162,7 @@ int main(int argc, char** argv) {
     {
         const std::pair<unsigned, unsigned> screen{1920, 1080};
         MotionViewState state;
-        state.mode = MotionMode::Tilt;
+        state.mode = MotionMode::On;
         const D3D12::MenuImage flat = DrawMotionView(state, screen, 0.0f);
         CHECK(flat.width > 0 && flat.height > 0);
         CHECK(flat.pixels.size() == static_cast<std::size_t>(flat.width) * flat.height * 4);
@@ -179,7 +179,7 @@ int main(int argc, char** argv) {
         CHECK(drawn > flat.pixels.size() / 4 / 8); // The controller covers a good part of it.
 
         MotionEmu emu;
-        emu.SetMode(MotionMode::Tilt);
+        emu.SetMode(MotionMode::On);
         MotionSample s;
         for (int i = 0; i < 500; ++i) s = emu.Step(Dt, 0.7f, 0.7f, false);
         state.orientation = s.orientation;

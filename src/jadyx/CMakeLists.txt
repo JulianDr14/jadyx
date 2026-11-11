@@ -137,6 +137,7 @@ add_executable(jadyx WIN32
     game/motion_view.cpp
     game/motion_view.h
     input/motion_emu.h
+    input/rumble_settings.h
     game/game_menu_surface.cpp
     game/game_menu_surface.h
     game/game_screenshot.cpp

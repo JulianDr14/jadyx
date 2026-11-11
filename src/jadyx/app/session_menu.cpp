@@ -209,7 +209,8 @@ void SessionMenu::Open() {
                                   config.glitch_hunt_menu, glitch_toggles,
                                   config.geo_hunt && VideoCommon::GeoHunt::Enabled(),
                                   VideoCommon::GeoHunt::Healing(), config.pso_menu,
-                                  D3D12::GetPipelineBuildBoost()},
+                                  D3D12::GetPipelineBuildBoost(), options.motion_stick, options.motion_shake,
+                                  options.rumble, input.GameRumbleSettings()},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
     const bool from_notice = notice_shown;
@@ -631,6 +632,23 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         input.SetMotion(motion);
         WriteDiag("menu: motion mode " + std::to_string(static_cast<int>(motion.mode)) + ", view " +
                   std::to_string(static_cast<int>(motion.view)));
+    }
+    if (result == GameMenuResult::GyroControlsChanged) {
+        ControllerOptions options = input.Options();
+        options.motion_stick = menu->Settings().motion_stick;
+        options.motion_shake = menu->Settings().motion_shake;
+        input.SetOptions(options);
+    }
+    if (result == GameMenuResult::RumbleChanged) {
+        const GameMenuSettings& settings = menu->Settings();
+        if (settings.right_stick_per_game) {
+            if (!SaveGameRumble(program_id, settings.rumble)) WriteDiag("menu: rumble settings could not be saved");
+            input.SetGameRumble(settings.rumble);
+        } else {
+            ControllerOptions options = input.Options();
+            options.rumble = settings.rumble_global;
+            input.SetOptions(options);
+        }
     }
     if (result == GameMenuResult::PerformanceStatsChanged) {
         auto settings = LoadSystemSettings();

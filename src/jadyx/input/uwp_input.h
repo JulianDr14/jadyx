@@ -23,6 +23,7 @@
 #include "jadyx/input/controller_style.h"
 #include "jadyx/input/motion_emu.h"
 #include "jadyx/input/right_stick_settings.h"
+#include "jadyx/input/rumble_settings.h"
 #include "jadyx/ui/ui_actions.h"
 #include "jadyx/ui/text_entry.h"
 
@@ -81,12 +82,20 @@ struct ControllerOptions {
     ConsoleControllerStyle style{ConsoleControllerStyle::Auto}; // What the guest sees.
     /// Settings > Controller's; a game can keep its own (GameRightStick).
     RightStickSettings right_stick;
+    /// The emulated gyro's controls, for every game that turns it on.
+    MotionStick motion_stick{MotionStick::Right};
+    MotionShakeButton motion_shake{MotionShakeButton::StickClick};
+    /// The game's rumble on the pad; a game can keep its own (GameRumble).
+    RumbleSettings rumble;
 };
 ControllerOptions LoadControllerOptions();
 bool SaveControllerOptions(const ControllerOptions& options);
 /// A game's own right stick settings (an unset field follows Settings > Controller).
 GameRightStick LoadGameRightStick(u64 program_id);
 bool SaveGameRightStick(u64 program_id, const GameRightStick& game);
+/// A game's own rumble settings (an unset field follows Settings > Controller).
+GameRumble LoadGameRumble(u64 program_id);
+bool SaveGameRumble(u64 program_id, const GameRumble& game);
 /// A game's emulated gyro (motion_emu.h) and when its controller shows on screen.
 struct GameMotion {
     MotionMode mode{MotionMode::Off};
@@ -132,8 +141,11 @@ public:
     /// The running game's own right stick settings, over the options' (not saved here).
     void SetGameRightStick(const GameRightStick& game);
     [[nodiscard]] GameRightStick GameRightStickSettings();
-    /// The running game's emulated gyro (not saved here). Tilt and Aim take the right stick from
-    /// the game, Shake takes R3.
+    /// The running game's own rumble settings, over the options' (not saved here).
+    void SetGameRumble(const GameRumble& game);
+    [[nodiscard]] GameRumble GameRumbleSettings();
+    /// The running game's emulated gyro (not saved here). While on, the gyro stick and the shake
+    /// button (ControllerOptions) no longer reach the game.
     void SetMotion(const GameMotion& motion);
     [[nodiscard]] GameMotion Motion();
     /// What the on-screen controller shows now. Any thread.
@@ -151,6 +163,7 @@ private:
     ControllerOptions options;
     GameRightStick game_right_stick; // Guarded by options_mutex.
     GameMotion game_motion;          // Guarded by options_mutex.
+    GameRumble game_rumble;          // Guarded by options_mutex.
     std::mutex motion_mutex;
     MotionViewState motion_view; // Guarded by motion_mutex.
     std::atomic<bool> style_changed{};

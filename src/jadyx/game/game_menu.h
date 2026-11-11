@@ -10,6 +10,7 @@
 #include "jadyx/input/controller_style.h"
 #include "jadyx/input/motion_emu.h"
 #include "jadyx/input/right_stick_settings.h"
+#include "jadyx/input/rumble_settings.h"
 #include "jadyx/settings/graphics_page.h"
 #include "jadyx/ui/ui_actions.h"
 #include "jadyx/ui/ui_icon.h"
@@ -147,6 +148,13 @@ struct GameMenuSettings {
     /// 3 highest; changed at run time to compare in one session.
     bool pso_menu{};
     std::uint32_t pso_boost{};
+    /// Settings > Controller's gyro controls (every game's).
+    MotionStick motion_stick{MotionStick::Right};
+    MotionShakeButton motion_shake{MotionShakeButton::StickClick};
+    /// Settings > Controller's rumble and this game's own, as the right stick's
+    /// (`right_stick_per_game` says whether there is a game).
+    RumbleSettings rumble_global{};
+    GameRumble rumble{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -175,6 +183,10 @@ enum class GameMenuResult : std::uint8_t {
     Chat,
     /// Settings().motion or motion_view changed.
     MotionChanged,
+    /// Settings().motion_stick or motion_shake changed (Settings > Controller's).
+    GyroControlsChanged,
+    /// The rumble rows: Settings() holds the new values (the game's own or Settings').
+    RumbleChanged,
 };
 
 /// The console's tag reader as the game left it, for the Amiibo row.
@@ -205,6 +217,7 @@ public:
         GlitchPage, GlitchCapture, GlitchWarpPerLane, GlitchA2cShader, GlitchFrameWait,
         GlitchComputeFresh, GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites,
         GeoMark, GeoHeal, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
+        GyroStick, GyroShake, Rumble, RumbleStrength,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
 
@@ -227,8 +240,9 @@ public:
         glitch = {GlitchCapture,      GlitchA2cShader,    GlitchFrameWait,     GlitchComputeFresh,
                   GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites, GlitchWarpPerLane};
         controller = {Style, FaceButtons, Deadzone, RStickInvertX, RStickInvertY, RStickSensitivity,
-                      RStickMouse, RStickMouseSensitivity};
-        if (settings.right_stick_per_game) controller.insert(controller.end(), {Motion, MotionView});
+                      RStickMouse, RStickMouseSensitivity, Rumble, RumbleStrength};
+        if (settings.right_stick_per_game)
+            controller.insert(controller.end(), {Motion, GyroStick, GyroShake, MotionView});
         display = {PerformanceStats};
         if (settings.can_fullscreen) display.push_back(FullScreen);
         UpdateGraphicsItems();
@@ -524,11 +538,25 @@ private:
             return {Tr(label), value, Choice, detail};
         }
         case Motion: {
-            static constexpr Text values[]{Text::MotionOff, Text::MotionTilt, Text::MotionAim, Text::MotionShake};
-            static constexpr Text details[]{Text::MotionOffHint, Text::MotionTiltHint, Text::MotionAimHint,
-                                            Text::MotionShakeHint};
-            const auto index = static_cast<std::size_t>(settings.motion);
-            return {Tr(Text::MotionRow), Tr(values[index]), Choice, Tr(details[index])};
+            const bool on = settings.motion != MotionMode::Off;
+            return {Tr(Text::MotionRow), Tr(on ? Text::Yes : Text::No), Choice,
+                    Tr(on ? Text::MotionOnHint : Text::MotionOffHint)};
+        }
+        case GyroStick:
+            return {Tr(Text::GyroStickRow),
+                    Tr(settings.motion_stick == MotionStick::Left ? Text::GyroStickLeft : Text::GyroStickRight),
+                    Choice, Tr(Text::GyroStickHint)};
+        case GyroShake:
+            return {Tr(Text::GyroShakeRow), GyroShakeText(settings.motion_shake), Choice, Tr(Text::GyroShakeHint)};
+        case Rumble:
+        case RumbleStrength: {
+            const RumbleSettings resolved = ResolveRumble(settings.rumble_global, settings.rumble);
+            const bool own = item == Rumble ? settings.rumble.on.has_value() : settings.rumble.strength.has_value();
+            std::wstring detail = item == Rumble ? Tr(Text::RumbleHint) : std::wstring{};
+            if (settings.right_stick_per_game)
+                detail = Tr(own ? Text::MenuGraphicsOwn : Text::MenuGraphicsFollowsSettings);
+            if (item == Rumble) return {Tr(Text::RumbleRow), Tr(resolved.on ? Text::Yes : Text::No), Choice, detail};
+            return {Tr(Text::RumbleStrengthRow), std::to_wstring(resolved.strength) + L"%", Choice, detail};
         }
         case MotionView: {
             static constexpr Text values[]{Text::MotionViewAlways, Text::MotionViewMoving, Text::No};
@@ -552,6 +580,19 @@ private:
                     Tr(keep_session ? Text::MenuKeepSession : Text::MenuSkipSession), UiIcon::Exit};
         }
         return {};
+    }
+
+    /// The shake button's name: the Xbox pad's, which every controller page uses.
+    static std::wstring GyroShakeText(MotionShakeButton button) {
+        using I18n::Text;
+        switch (button) {
+        case MotionShakeButton::LB: return L"LB";
+        case MotionShakeButton::RB: return L"RB";
+        case MotionShakeButton::LT: return L"LT";
+        case MotionShakeButton::RT: return L"RT";
+        case MotionShakeButton::StickClick: break;
+        }
+        return Tr(Text::GyroShakeStickClick);
     }
 
     std::wstring DeadzoneText() const {
@@ -637,11 +678,33 @@ private:
         case RStickMouseSensitivity:
             ChangeRightStick(SelectedItem(), back);
             return GameMenuResult::RightStickChanged;
-        case Motion: {
-            const auto count = MotionModeCount;
-            const auto index = static_cast<std::uint8_t>(settings.motion);
-            settings.motion = static_cast<MotionMode>(back ? (index + count - 1) % count : (index + 1) % count);
+        case Motion:
+            settings.motion = settings.motion == MotionMode::Off ? MotionMode::On : MotionMode::Off;
             return GameMenuResult::MotionChanged;
+        case GyroStick:
+            settings.motion_stick = settings.motion_stick == MotionStick::Right ? MotionStick::Left : MotionStick::Right;
+            return GameMenuResult::GyroControlsChanged;
+        case GyroShake: {
+            const auto count = MotionShakeButtonCount;
+            const auto index = static_cast<std::uint8_t>(settings.motion_shake);
+            settings.motion_shake =
+                static_cast<MotionShakeButton>(back ? (index + count - 1) % count : (index + 1) % count);
+            return GameMenuResult::GyroControlsChanged;
+        }
+        case Rumble:
+        case RumbleStrength: {
+            const RumbleSettings& global = settings.rumble_global;
+            RumbleSettings stepped = ResolveRumble(global, settings.rumble);
+            if (SelectedItem() == Rumble) stepped.on = !stepped.on;
+            else stepped.strength = StepSensitivity(RumbleStrengthSteps, stepped.strength, back);
+            if (!settings.right_stick_per_game) {
+                settings.rumble_global = stepped;
+            } else if (SelectedItem() == Rumble) {
+                settings.rumble.on = GameOverride(stepped.on, global.on);
+            } else {
+                settings.rumble.strength = GameOverride(stepped.strength, global.strength);
+            }
+            return GameMenuResult::RumbleChanged;
         }
         case MotionView: {
             const auto count = MotionViewModeCount;

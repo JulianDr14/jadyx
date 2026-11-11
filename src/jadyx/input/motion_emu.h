@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// An emulated gyro and accelerometer for a pad that has neither. The right stick (or R3) moves a
-// virtual controller; this turns its orientation into the samples a Switch pad's IMU reports:
+// An emulated gyro and accelerometer for a pad that has neither. A stick tilts a virtual
+// controller and a button shakes it; this turns its orientation into the samples a Switch pad's
+// IMU reports:
 // - gyro: angular velocity in the pad's frame, in revolutions per second;
 // - accel: gravity in the pad's frame, in g (a pad lying flat reads (0, 0, -1)).
 // The pad's frame is X right, Y forward (away from the player), Z up out of its face, as Eden's
@@ -18,14 +19,32 @@
 
 namespace Jadyx {
 
-/// What the right stick or R3 does to the emulated controller, per game.
+/// The emulated gyro, per game.
 enum class MotionMode : std::uint8_t {
-    Off,   ///< The pad lies still on a table: gravity only, no turn.
-    Tilt,  ///< The right stick tilts the controller: where it points is how far it leans.
-    Aim,   ///< The right stick turns the controller: how far it points is how fast it turns.
-    Shake, ///< R3 shakes the controller while held.
+    Off, ///< The pad lies still on a table: gravity only, no turn.
+    On,  ///< The gyro stick tilts the controller (where it points is how far it leans) and the
+         ///< shake button shakes it while held.
 };
-inline constexpr std::uint8_t MotionModeCount = 4;
+inline constexpr std::uint8_t MotionModeCount = 2;
+/// Saved modes before Off/On (Tilt, Aim, Shake) all read as On.
+[[nodiscard]] inline MotionMode MotionModeFromStored(int value) {
+    return value > 0 ? MotionMode::On : MotionMode::Off;
+}
+
+/// Which stick tilts the emulated controller (Settings > Controller); the game no longer sees it
+/// while the gyro is on.
+enum class MotionStick : std::uint8_t { Right, Left };
+inline constexpr std::uint8_t MotionStickCount = 2;
+
+/// The button that shakes it, by the Xbox pad's names; the game no longer sees it either.
+enum class MotionShakeButton : std::uint8_t {
+    StickClick, ///< Pressing the gyro stick itself.
+    LB,
+    RB,
+    LT,
+    RT,
+};
+inline constexpr std::uint8_t MotionShakeButtonCount = 5;
 
 /// When the picture of the emulated controller shows, while a MotionMode is on.
 enum class MotionViewMode : std::uint8_t {
@@ -95,13 +114,9 @@ struct MotionSample {
 /// The virtual controller. Step it at the input rate with the stick in [-1, 1] (x right, y up).
 class MotionEmu {
 public:
-    /// How far Tilt leans the controller at full stick.
+    /// How far the stick leans the controller at full tilt.
     static constexpr float MaxTiltRadians = 50.0f * std::numbers::pi_v<float> / 180.0f;
-    /// How fast Aim turns it at full stick.
-    static constexpr float AimRadiansPerSecond = 2.5f * std::numbers::pi_v<float>;
-    /// Aim keeps the controller from pointing straight up or down, where yaw and roll meet.
-    static constexpr float MaxAimPitchRadians = 75.0f * std::numbers::pi_v<float> / 180.0f;
-    /// How hard and how fast Shake moves it.
+    /// How hard and how fast the shake moves it.
     static constexpr float ShakeG = 2.5f;
     static constexpr float ShakeHz = 6.0f;
 
@@ -117,31 +132,21 @@ public:
     /// Back to lying flat and still.
     void Reset() {
         orientation = {};
-        aim_yaw = aim_pitch = 0.0f;
         shake_phase = 0.0f;
         shake_amount = 0.0f;
     }
 
-    /// Advances `dt` seconds. `shaking` is R3 for Shake; Off and Shake ignore the stick.
+    /// Advances `dt` seconds. `shaking` is the shake button; Off ignores the stick and it.
     MotionSample Step(float dt, float stick_x, float stick_y, bool shaking) {
         dt = std::clamp(dt, 0.0005f, 0.1f);
         const Quat before = orientation;
-        if (mode == MotionMode::Tilt) {
+        if (mode == MotionMode::On) {
             // Stick forward dips the front edge (a turn about X), right dips the right side (about
             // Y), with the stick's springy return eased so the gyro never spikes.
             const Quat pitch = Quat::AxisAngle({1, 0, 0}, -stick_y * MaxTiltRadians);
             const Quat roll = Quat::AxisAngle({0, 1, 0}, stick_x * MaxTiltRadians);
             const Quat target = (pitch * roll).Normalized();
             orientation = Slerp(orientation, target, 1.0f - std::exp(-dt * 18.0f));
-        } else if (mode == MotionMode::Aim) {
-            // Right turns the nose right (a negative turn about the world's Z), up raises it.
-            aim_yaw -= stick_x * AimRadiansPerSecond * dt;
-            aim_yaw = std::remainder(aim_yaw, 2.0f * std::numbers::pi_v<float>);
-            aim_pitch = std::clamp(aim_pitch + stick_y * AimRadiansPerSecond * dt,
-                                   -MaxAimPitchRadians, MaxAimPitchRadians);
-            orientation = (Quat::AxisAngle({0, 0, 1}, aim_yaw) *
-                           Quat::AxisAngle({1, 0, 0}, aim_pitch))
-                              .Normalized();
         } else {
             orientation = {};
         }
@@ -164,7 +169,7 @@ public:
         sample.accel = orientation.Conjugate().Rotate({0.0f, 0.0f, -1.0f});
 
         // The shake swells in and dies out, so a short press is still a clear jolt.
-        const bool shake_on = mode == MotionMode::Shake && shaking;
+        const bool shake_on = mode == MotionMode::On && shaking;
         shake_amount = std::clamp(shake_amount + (shake_on ? dt * 12.0f : -dt * 8.0f), 0.0f, 1.0f);
         if (shake_amount > 0.0f) {
             shake_phase = std::fmod(shake_phase + dt * ShakeHz, 1.0f);
@@ -186,8 +191,6 @@ public:
 private:
     MotionMode mode{MotionMode::Off};
     Quat orientation;
-    float aim_yaw{};
-    float aim_pitch{};
     float shake_phase{};
     float shake_amount{};
 };

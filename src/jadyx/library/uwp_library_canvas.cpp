@@ -51,6 +51,17 @@ std::wstring FirmwareValue(const FileSetupStatus& status) {
     return status.versions.firmware.empty() ? I18n::Format(T::FirmwareFiles, {std::to_wstring(status.firmware_files)}) :
         I18n::Format(T::FirmwareVersion, {std::wstring{winrt::to_hstring(status.versions.firmware)}});
 }
+/// The gyro's shake button by the Xbox pad's names, as the in-game menu shows it.
+std::wstring ShakeButtonName(MotionShakeButton button) {
+    switch (button) {
+    case MotionShakeButton::LB: return L"LB";
+    case MotionShakeButton::RB: return L"RB";
+    case MotionShakeButton::LT: return L"LT";
+    case MotionShakeButton::RT: return L"RT";
+    case MotionShakeButton::StickClick: break;
+    }
+    return std::wstring{Tr(T::GyroShakeStickClick)};
+}
 } // namespace
 // The launcher owns a small D3D11/Direct2D surface only while selecting a game.
 // Release every reference (including the swapchain) before D3D12 starts.
@@ -1454,6 +1465,18 @@ private:
             toggle(T::RightStickMouse, stick.mouse);
             rows.push_back({Kind::Choice, std::wstring{Tr(T::MouseSensitivity)}, {},
                             std::to_wstring(stick.mouse_sensitivity) + L"%"});
+            // The game's rumble on the pad, and the emulated gyro's controls (a game turns the gyro
+            // on from its in-game menu).
+            toggle(T::RumbleRow, options.rumble.on);
+            rows.back().hint = std::wstring{Tr(T::RumbleHint)};
+            rows.push_back({Kind::Choice, std::wstring{Tr(T::RumbleStrengthRow)}, {},
+                            std::to_wstring(options.rumble.strength) + L"%"});
+            SettingsRow gyro_stick{Kind::Segments, std::wstring{Tr(T::GyroStickRow)}, std::wstring{Tr(T::GyroStickHint)}};
+            gyro_stick.segments = {std::wstring{Tr(T::GyroStickRight)}, std::wstring{Tr(T::GyroStickLeft)}};
+            gyro_stick.on_segment = options.motion_stick == MotionStick::Left ? 1 : 0;
+            rows.push_back(std::move(gyro_stick));
+            rows.push_back({Kind::Choice, std::wstring{Tr(T::GyroShakeRow)}, std::wstring{Tr(T::GyroShakeHint)},
+                            ShakeButtonName(options.motion_shake)});
         } else {
             const auto& status = view.configuration.status;
             rows.push_back({Kind::Open, std::wstring{Tr(T::AddGamesFolder)}});
