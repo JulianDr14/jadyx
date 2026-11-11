@@ -24,8 +24,6 @@
 #include "input_common/drivers/virtual_amiibo.h"
 #include "video_core/geometry_hunt.h"
 #include "video_core/gpu.h"
-#include "video_core/cpu_write_queue.h"
-#include "video_core/gpu_fast_paths.h"
 #include "video_core/performance_overlay.h"
 #include "video_core/renderer_base.h"
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
@@ -214,10 +212,7 @@ void SessionMenu::Open() {
                                   D3D12::GetPipelineBuildBoost(), options.motion_stick, options.motion_shake,
                                   options.rumble, input.GameRumbleSettings(),
                                   VideoCommon::GeoHunt::OobFix(),
-                                  VideoCommon::GeoHunt::VbResync(),
-                                  AudioCore::ADSP::AudioRenderer::IdlePacing(),
-                                  VideoCore::FastPaths::Enabled(),
-                                  VideoCommon::CpuWriteQueue::AllWrites()},
+                                  VideoCommon::GeoHunt::VbResync()},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
     const bool from_notice = notice_shown;
@@ -682,21 +677,6 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         VideoCommon::GeoHunt::SetOobFix(menu->Settings().geo_oob_fix);
         WriteDiag(std::string{"menu: out-of-range triangle fix "} +
                   (menu->Settings().geo_oob_fix ? "on" : "off"));
-    }
-    if (result == GameMenuResult::AudioIdlePacingChanged) {
-        const bool on = menu->Settings().audio_idle_pacing;
-        AudioCore::ADSP::AudioRenderer::SetIdlePacing(on);
-        WriteDiag(std::string{"menu: idle audio pacing "} + (on ? "on" : "off"));
-    }
-    if (result == GameMenuResult::GpuFastPathsChanged) {
-        const bool on = menu->Settings().gpu_fast_paths;
-        VideoCore::FastPaths::SetEnabled(on);
-        WriteDiag(std::string{"menu: GPU thread fast paths "} + (on ? "on" : "off"));
-    }
-    if (result == GameMenuResult::CpuWriteAllChanged) {
-        const bool on = menu->Settings().cpu_write_all;
-        VideoCommon::CpuWriteQueue::SetAllWrites(on);
-        WriteDiag(std::string{"menu: queue every CPU write "} + (on ? "on" : "off"));
     }
     if (result == GameMenuResult::PsoBoostChanged) {
         D3D12::SetPipelineBuildPriority(D3D12::GetPipelineBuildBase(), menu->Settings().pso_boost);

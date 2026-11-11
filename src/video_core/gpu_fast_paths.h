@@ -6,7 +6,7 @@
 #include <atomic>
 
 /// Cheaper ways through the GPU thread's bookkeeping that give the same result as the plain ones,
-/// behind one switch so a "hunt=1" package can compare them at run time (game menu):
+/// behind one switch (Settings > Graphics and each game's own, read at boot):
 ///  - queued guest CPU writes that touch are applied as one range (VideoCommon::CpuWriteQueue);
 ///  - a uniform buffer bind does not take the buffer cache lock (only the GPU thread reads or
 ///    writes the bindings).
