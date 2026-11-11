@@ -120,6 +120,13 @@ Id SelectValue(EmitContext& ctx, Id in_range, Id value, Id src_thread_id) {
     if (!StageSupportsSubgroups(ctx)) {
         return value;
     }
+    if (Sirit::ValidId(ctx.wave_uniform_shuffle_func)) {
+        // Lanes out of range keep their value and take no pass of their own.
+        return ctx.OpSelect(ctx.U32[1], in_range,
+                            ctx.OpFunctionCall(ctx.U32[1], ctx.wave_uniform_shuffle_func, value,
+                                               src_thread_id, in_range),
+                            value);
+    }
     return ctx.OpSelect(
         ctx.U32[1], in_range,
         ctx.OpGroupNonUniformShuffle(ctx.U32[1], SubgroupScope(ctx), value, src_thread_id), value);

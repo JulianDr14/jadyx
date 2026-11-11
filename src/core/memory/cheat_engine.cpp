@@ -190,6 +190,10 @@ void CheatEngine::Reload(std::vector<CheatEntry> reload_cheats) {
 }
 
 void CheatEngine::FrameCallback(std::chrono::nanoseconds ns_late) {
+    // Shutdown resumes core timing while it tears services down; the VM must not run then.
+    if (system.IsShuttingDown()) {
+        return;
+    }
     if (is_pending_reload.exchange(false)) {
         std::scoped_lock lock{cheats_mutex};
         if (!vm.LoadProgram(cheats)) {

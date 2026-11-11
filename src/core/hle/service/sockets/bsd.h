@@ -6,6 +6,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <span>
 #include <vector>
 #include <variant>
@@ -187,6 +188,9 @@ private:
     void BuildErrnoResponse(HLERequestContext& ctx, Errno bsd_errno) const noexcept;
 
     static inline std::array<std::optional<FileDescriptor>, MAX_FD> file_descriptors{};
+    /// Guards changes to file_descriptors against the room's network thread, which reads them
+    /// in OnProxyPacketReceived. Only that thread's reads and the service's writes take it.
+    static inline std::mutex file_descriptors_mutex;
 
     /// Callback to parse and handle a received wifi packet.
     void OnProxyPacketReceived(const Network::ProxyPacket& packet);

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 
 #include "common/bug_tracker.h"
 #include "common/logging.h"
@@ -12,6 +13,7 @@
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_draw_metrics.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
+#include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 
 // Indirect draws: ExecuteIndirect records built on the GPU, or read on the CPU for the
@@ -21,6 +23,9 @@ namespace D3D12 {
 
 void RasterizerD3D12::DrawIndirect() {
     DrainCpuWrites();
+    if (glitch_hunt.Capturing()) [[unlikely]] {
+        GlitchPassCheck("switch");
+    }
     const bool full = VideoCommon::FullCapture::Active();
     if (full) {
         ++full_capture_operation;
@@ -95,6 +100,9 @@ void RasterizerD3D12::DrawIndirect() {
     const DrawMetrics::CacheLockTimer lock_timer;
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     lock_timer.Locked();
+    const bool glitch_capture = glitch_hunt.Capturing();
+    const GlitchIndirect glitch_args =
+        glitch_capture ? GlitchIndirectBefore(params) : GlitchIndirect{};
     // With the indirect state set, Configure also synchronizes the argument and count buffers.
     PipelineBindings bindings;
     FullCaptureViews full_views;
@@ -202,6 +210,9 @@ void RasterizerD3D12::DrawIndirect() {
     const IndirectArgumentRing::Range range = indirect_args.Upload(indirect_words);
     CommandStream* const cmd = scheduler.CommandList();
     buffer->Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
+    if (glitch_capture) [[unlikely]] {
+        GlitchIndirectArgs(params, glitch_args, buffer, offset);
+    }
     for (u32 draw = 0; draw < draw_count; ++draw) {
         const u64 src = offset + draw * guest_stride;
         const u64 dst = range.offset + draw * record_size;
@@ -232,19 +243,61 @@ void RasterizerD3D12::DrawIndirect() {
     };
     const auto compatible = texture_runtime.PrepareCompatibleDrawTargets(
         *framebuffer, pipeline->BoundColorTargets());
+    const u32 lost_slots = buffer_runtime.CheckVertexSlots(buffer_cache.DiagVertexMask());
     BindDrawState(*pipeline, bindings, *framebuffer, draw_params,
                   maxwell3d->draw_manager.draw_state.topology, compatible);
     {
         query_runtime.PrepareDraw(maxwell3d->regs.zpass_pixel_count_enable);
         const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
+        // Glitch hunt: what the indirect draws rasterized, as DrawRun probes direct ones.
+        const bool counts_samples = maxwell3d->regs.zpass_pixel_count_enable != 0;
+        const std::optional<QueryCacheRuntime::IsolatedSlot> guest_samples =
+            glitch_capture && counts_samples ? query_runtime.IsolateOcclusion() : std::nullopt;
+        const std::optional<GlitchHunt::Probe> probe =
+            glitch_capture ? glitch_hunt.BeginProbe(!counts_samples,
+                                                    !query_runtime.CountsPrimitives(),
+                                                    guest_samples ? guest_samples->heap : nullptr,
+                                                    guest_samples ? guest_samples->index : 0)
+                           : std::nullopt;
         DrawStencilFaces(*pipeline, maxwell3d->draw_manager.draw_state.topology, [&] {
             cmd->ExecuteIndirect(signature, draw_count, range.buffer, range.offset,
                                  params.include_count ? range.buffer : nullptr,
                                  params.include_count ? count_offset : 0);
         });
+        if (guest_samples) [[unlikely]] {
+            query_runtime.EndIsolatedOcclusion();
+        }
+        if (probe) [[unlikely]] {
+            // GlitchDraw takes this call number right after the record.
+            glitch_hunt.EndProbe(glitch_hunt.PeekCall(), *probe);
+        }
+    }
+    if (glitch_capture) [[unlikely]] {
+        // The records ExecuteIndirect read (runtime data first vertex and base instance, the CPU
+        // words, then the guest's arguments), after it ran.
+        const u64 ring_size = draw_count * record_size + (params.include_count ? sizeof(u32) : 0);
+        indirect_args.ForReadback(range);
+        glitch_hunt.InspectWords(glitch_hunt.PeekCall(), "ring", ring_size, sizeof(u32),
+                                 fmt::format("record_words={}", record_words),
+                                 [&](ID3D12Resource* dst, u64 at) {
+                                     cmd->CopyBufferRegion(dst, at, range.buffer, range.offset,
+                                                           ring_size);
+                                 });
     }
     texture_runtime.FinishCompatibleDrawTargets(*framebuffer);
     hunt.Recorded();
+    if (glitch_hunt.Capturing()) [[unlikely]] {
+        GlitchDraw({.active = true,
+                    .configured = true,
+                    .kind = static_cast<u8>(params.is_indexed ? 3 : 2),
+                    .outcome = Hunt::Outcome::Recorded,
+                    .pipeline = pipeline,
+                    .vs = pipeline->Key().unique_hashes[1],
+                    .ps = pipeline->Key().unique_hashes[5],
+                    .framebuffer = framebuffer,
+                    .lost_slots = lost_slots,
+                    .count = static_cast<u32>(params.max_draw_counts)});
+    }
     // The command signature wrote the runtime data constants: the next draw sets them again.
     command_state.root_args.valid = false;
     if (full) {

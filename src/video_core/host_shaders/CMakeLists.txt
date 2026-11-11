@@ -62,6 +62,7 @@ set(SHADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_draw_auto.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_render_condition.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_query_sum.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_wave_selftest.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_tessellate.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_bc3_encoder.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_bcn_decoder.comp

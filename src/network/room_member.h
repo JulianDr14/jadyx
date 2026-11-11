@@ -152,6 +152,19 @@ public:
      */
     RoomInformation GetRoomInformation() const;
 
+    /// The connection to the room as ENet measures it, and the game traffic through it since
+    /// the last join. Safe from any thread; zero while not connected.
+    struct ConnectionStats {
+        u32 round_trip_ms{};          ///< Mean round trip of reliable packets.
+        u32 round_trip_variance_ms{}; ///< How much it varies (jitter).
+        u32 packet_loss{};            ///< Mean loss of reliable packets, out of 65536.
+        u64 bytes_sent{};             ///< UDP payload, protocol included.
+        u64 bytes_received{};
+        u64 game_packets_sent{};      ///< Local-wireless and proxied socket packets.
+        u64 game_packets_received{};
+    };
+    ConnectionStats GetConnectionStats() const;
+
     /**
      * Returns whether we're connected to a server or not.
      */

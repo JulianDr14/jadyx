@@ -21,6 +21,9 @@ void SetTracedFrame(u32 frame, u32 count);
 void TraceNextFrames(u32 count);
 void TraceNextMaterialFrame(u64 pixel_shader = 0);
 void HuntNextFrames(u32 frames = 8);     // diagnostics/d3d12_draw_hunt.h
+void HuntGlitchesNextFrames(u32 frames = 0); // diagnostics/d3d12_glitch_hunt.h
+void SetGlitchFrames(u32 frames);            // diagnostics/d3d12_glitch_hunt.h
+void SetIndirectOnCpu(bool enabled);         // d3d12_rasterizer.h
 void HuntOnCompute(u64 hash);            // diagnostics/d3d12_draw_hunt.h
 void SetComputeInputsShader(u64 hash);   // diagnostics/d3d12_compute_inputs.h
 void SetMaterialProbe(s32 x, s32 y);
@@ -81,6 +84,8 @@ void SetMemoryImportProbe(bool enabled);     // d3d12_memory_import_probe.h
 void SetPipelineEviction(bool enabled);      // d3d12_pipeline_cache.h
 void SetPipelinePrewarm(bool enabled);       // d3d12_pipeline_cache.h
 void SetComputeWorkgroupSplit(u32 factor);   // d3d12_pipeline_cache.h
+void SetShuffleWaveUniform(bool enabled);    // d3d12_pipeline_cache.h
+void SetWaveSelfTest(bool enabled);          // diagnostics/d3d12_wave_selftest.h
 void SetTransformFeedbackStorage(bool enabled); // d3d12_pipeline_cache.h
 void SetDescriptorRemovalChecks(bool enabled); // d3d12_device.h
 void SetUniformUploadCopy(bool enabled);

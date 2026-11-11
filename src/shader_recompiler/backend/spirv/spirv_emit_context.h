@@ -439,6 +439,9 @@ public:
     Id f32x2_max_cas{};
 
     Id write_storage_cas_loop_func{};
+    /// u32 (value, source lane, wanted) -> value of the source lane, read through sources the
+    /// wave agrees on (Profile::has_broken_divergent_shuffle_index); 0 when not defined.
+    Id wave_uniform_shuffle_func{};
 
     Id load_global_func_u32{};
     Id load_global_func_u32x2{};
@@ -512,6 +515,7 @@ private:
     void DefineImages(const Info& info, u32& binding, u32& scaling_index);
     void DefineAttributeMemAccess(const Info& info);
     void DefineWriteStorageCasLoopFunction(const Info& info);
+    void DefineWaveUniformShuffleFunction(const Info& info);
     void DefineGlobalMemoryFunctions(const Info& info);
     void DefineRescalingInput(const Info& info);
     void DefineRescalingInputPushConstant();

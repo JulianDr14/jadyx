@@ -30,6 +30,8 @@ public:
         std::uint8_t topology{};
         std::uint32_t restart{};    ///< guest restart index, when has_restart
         bool has_restart{};
+        /// Indices at or above this are dropped with their primitive (out-of-range fix); 0: none
+        std::uint32_t index_limit{};
         bool operator==(const Key&) const = default;
     };
 
@@ -110,20 +112,21 @@ public:
 
     static constexpr std::size_t MAX_ENTRIES = 8192;
 
-private:
-    struct Node {
-        Key key;
-        Entry entry;
-    };
     struct KeyHash {
         std::size_t operator()(const Key& key) const noexcept {
             // Offsets are what usually differ: mix them with a multiply, then fold in the rest.
             std::uint64_t h = key.buffer_id * 0x9E3779B97F4A7C15ull ^ key.offset;
             h ^= (std::uint64_t{key.count} << 16) ^ (std::uint64_t{key.format} << 8) ^ key.topology ^
-                 (std::uint64_t{key.restart} << 32);
+                 (std::uint64_t{key.restart} << 32) ^ (std::uint64_t{key.index_limit} << 24);
             h *= 0xBF58476D1CE4E5B9ull;
             return static_cast<std::size_t>(h ^ (h >> 31));
         }
+    };
+
+private:
+    struct Node {
+        Key key;
+        Entry entry;
     };
 
     std::size_t budget;

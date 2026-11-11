@@ -155,17 +155,27 @@ void RendererD3D12::DrawPerformanceOverlay(CommandStream* cmd,
         }
         // The latest hitch for ten seconds, by the short name of its likely cause (the log has
         // the numbers). Indexed by HitchCause.
-        static constexpr std::array<const char*, 11> HITCH_CAUSES{
+        static constexpr std::array<const char*, 14> HITCH_CAUSES{
             "PSO", "JIT", "DISCO", "LIMPIEZA", "RECURSOS", "TEXTURAS", "LECTURA GPU", "GPU",
-            "CPU JUEGO", "MEMORIA", "RENDER"};
+            "CPU JUEGO", "MEMORIA", "RENDER", "JUEGO: INTERCAMBIO", "JUEGO: ESPERA GPU",
+            "JUEGO: SERVICIO"};
         std::string hitch_line = "TIRON --";
         if (hitch.last_time != std::chrono::steady_clock::time_point{} &&
             now - hitch.last_time < std::chrono::seconds{10}) {
             hitch_line = fmt::format("TIRON {:.0f} MS {}", hitch.last_ms,
                                      HITCH_CAUSES[static_cast<size_t>(hitch.last_cause)]);
         }
-        std::array<std::string, 6> lines{
+        std::vector<std::string> lines{
             "FPS --", "FRAME -- MS MAX --", "CPU --", "GPUQ --", hud.memory_line, hitch_line};
+        // The frontend's lines under ours (online play), amber when they say something is wrong.
+        const std::size_t own_lines = lines.size();
+        std::vector<bool> warning(own_lines, false);
+        if (const auto source = VideoCore::overlay_extra_lines.load(std::memory_order_relaxed)) {
+            for (auto& line : source()) {
+                lines.push_back(std::move(line.text));
+                warning.push_back(line.warning);
+            }
+        }
         if (!first && hud.frames != 0) {
             const double frames = static_cast<double>(hud.frames);
             lines[0] = fmt::format("FPS {:.1f}", frames * 1000.0 / elapsed_ms);
@@ -192,13 +202,15 @@ void RendererD3D12::DrawPerformanceOverlay(CommandStream* cmd,
             chars = std::max(chars, line.size());
         }
         const LONG left = right - TextWidth(chars, cell) - 2 * pad;
-        hud.panel = {left, top, right,
-                     top + 2 * pad + static_cast<LONG>(lines.size()) * 7 * cell - 2 * cell};
+        const size_t rows = lines.size() + (lines.size() > own_lines ? 1 : 0);
+        hud.panel = {left, top, right, top + 2 * pad + static_cast<LONG>(rows) * 7 * cell - 2 * cell};
         hud.text.clear();
         hud.text.reserve(1536);
+        hud.warning_text.clear();
         for (size_t row = 0; row < lines.size(); ++row) {
-            AppendText(hud.text, lines[row], left + pad,
-                       top + pad + static_cast<LONG>(row) * 7 * cell, cell);
+            // A gap of one line between ours and the frontend's.
+            const LONG line_top = top + pad + static_cast<LONG>(row + (row >= own_lines ? 1 : 0)) * 7 * cell;
+            AppendText(warning[row] ? hud.warning_text : hud.text, lines[row], left + pad, line_top, cell);
         }
         hud.sample_time = now;
         hud.cpu_ticks = cpu_ticks;
@@ -209,6 +221,7 @@ void RendererD3D12::DrawPerformanceOverlay(CommandStream* cmd,
     }
     ClearRects(cmd, rtv, OVERLAY_PANEL, {&hud.panel, 1});
     ClearRects(cmd, rtv, OVERLAY_TEXT, hud.text);
+    ClearRects(cmd, rtv, OVERLAY_ACCENT, hud.warning_text);
     DrawTraceIndicator(cmd, rtv);
 }
 
@@ -255,7 +268,9 @@ void RendererD3D12::DrawTraceIndicator(CommandStream* cmd,
 
 void RendererD3D12::DrawShaderIndicator(CommandStream* cmd,
                                         D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
-    const int building = gpu.ShaderNotify().ShadersBuilding();
+    // What is still compiling: the running total since the last idle moment kept climbing while
+    // a single slow pipeline was in the driver, as if nothing ever finished.
+    const int building = gpu.ShaderNotify().ShadersPending();
     if (building <= 0) {
         indicator_frames = 0;
         return;
@@ -318,6 +333,18 @@ void HideGameMenu(VideoCore::RendererBase& renderer) {
     }
 }
 
+void ShowGameNotice(VideoCore::RendererBase& renderer, std::optional<MenuImage> image) {
+    if (Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Direct3D12) {
+        static_cast<RendererD3D12&>(renderer).ShowGameNotice(std::move(image));
+    }
+}
+
+void PostGameMotionView(VideoCore::RendererBase& renderer, std::optional<MenuImage> image) {
+    if (Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Direct3D12) {
+        static_cast<RendererD3D12&>(renderer).PostMotionView(std::move(image));
+    }
+}
+
 MenuImage CaptureGameFrame(VideoCore::RendererBase& renderer) {
     if (Settings::values.renderer_backend.GetValue() != Settings::RendererBackend::Direct3D12) {
         return {};
@@ -374,7 +401,7 @@ void RendererD3D12::EndBootScreen() {
     if (!boot_screen.joinable()) return;
     boot_screen.request_stop();
     boot_screen.join();
-    game_menu.reset();
+    SetOverlay(game_menu, std::nullopt);
 }
 
 void ShowCpuLoadProgress(VideoCore::RendererBase& renderer, size_t done, size_t total) {
@@ -427,8 +454,43 @@ void RendererD3D12::ShowLoadProgress(size_t done, size_t total, std::string_view
     }
 }
 
+void RendererD3D12::SetOverlay(OverlayImage& overlay, std::optional<MenuImage> image) {
+    if (image && (image->width == 0 || image->height == 0 ||
+                  image->pixels.size() < static_cast<size_t>(image->width) * image->height * 4)) {
+        image.reset();
+    }
+    overlay.image = std::move(image);
+    overlay.dirty = overlay.image.has_value();
+    if (!overlay.image) {
+        // Frames in flight may still copy from it: the scheduler keeps it alive until they end.
+        scheduler.DeferRelease(std::move(overlay.texture));
+        overlay.texture_width = 0;
+        overlay.texture_height = 0;
+    }
+}
+
+void RendererD3D12::ShowGameNotice(std::optional<MenuImage> notice) {
+    SetOverlay(game_notice, std::move(notice));
+}
+
+void RendererD3D12::PostMotionView(std::optional<MenuImage> view) {
+    std::scoped_lock lock{motion_mutex};
+    pending_motion = std::move(view);
+}
+
+void RendererD3D12::TakeMotionView() {
+    std::optional<std::optional<MenuImage>> view;
+    {
+        std::scoped_lock lock{motion_mutex};
+        view.swap(pending_motion);
+    }
+    if (view) {
+        SetOverlay(game_motion, std::move(*view));
+    }
+}
+
 void RendererD3D12::ShowGameMenu(std::optional<MenuImage> menu) {
-    game_menu = std::move(menu);
+    SetOverlay(game_menu, std::move(menu));
     if (present_failed) {
         return;
     }
@@ -436,7 +498,7 @@ void RendererD3D12::ShowGameMenu(std::optional<MenuImage> menu) {
         FrameLease frame = present_manager.AcquireFrame();
         // The guest is paused: blit its last frame again (the menu is drawn with it), or show the
         // menu on black when that frame is not a GPU image. A screen of its own hides that frame.
-        const bool own_screen = game_menu && game_menu->fill_screen;
+        const bool own_screen = game_menu.image && game_menu.image->fill_screen;
         if (own_screen || !blit_ready || last_framebuffers.empty() ||
             !CompositeLayers(last_framebuffers, *frame)) {
             CommandStream* const cmd = scheduler.CommandList();
@@ -485,48 +547,194 @@ MenuImage RendererD3D12::CaptureFrame() {
 }
 
 void RendererD3D12::DrawGameMenu(CommandStream* cmd, PresentFrame& frame) {
-    if (!game_menu || game_menu->width == 0 || game_menu->height == 0) {
-        return;
-    }
-    if (game_menu->fill_screen) {
+    if (game_menu.image && game_menu.image->fill_screen) {
         // Over the guest frame too, when the guest presents while the screen is up.
         frame.Transition(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        const u32 rgb = game_menu->fill;
+        const u32 rgb = game_menu.image->fill;
         const float color[4] = {static_cast<float>((rgb >> 16) & 0xFF) / 255.0f,
                                 static_cast<float>((rgb >> 8) & 0xFF) / 255.0f,
                                 static_cast<float>(rgb & 0xFF) / 255.0f, 1.0f};
         cmd->ClearRenderTargetView(frame.rtv, color, 0, nullptr);
     }
-    // Clipped to the screen; the frontend sizes the image to fit, this only guards a resize.
-    const u32 width = std::min(game_menu->width, swapchain.Width());
-    const u32 height = std::min(game_menu->height, swapchain.Height());
-    const u32 row_pitch = Common::AlignUp(width * 4, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
-    // The pool's memory is reused frame after frame: the menu allocates nothing of its own.
-    const StagingBufferRef upload =
-        staging_pool.Request(static_cast<size_t>(row_pitch) * height, MemoryUsage::Upload);
-    for (u32 y = 0; y < height; ++y) {
-        std::memcpy(upload.mapped_span.data() + static_cast<size_t>(y) * row_pitch,
-                    game_menu->pixels.data() + static_cast<size_t>(y) * game_menu->width * 4,
-                    static_cast<size_t>(width) * 4);
+    // The motion view belongs to the game being played: any frontend image (the menu, Pulse
+    // saving or resuming, the boot screen) hides it.
+    if (!game_menu.image) {
+        BlendOverlay(cmd, frame, game_motion);
     }
-    const D3D12_PLACED_SUBRESOURCE_FOOTPRINT placed{
-        .Offset = upload.offset,
-        .Footprint = {Swapchain::FORMAT, width, height, 1, row_pitch},
+    CopyOverlay(cmd, frame, game_menu);
+    CopyOverlay(cmd, frame, game_notice);
+}
+
+bool RendererD3D12::UploadOverlay(CommandStream* cmd, OverlayImage& overlay) {
+    if (!overlay.image) {
+        return false;
+    }
+    const MenuImage& image = *overlay.image;
+    const D3D12_RESOURCE_STATES ready = overlay.blended
+                                            ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                                            : D3D12_RESOURCE_STATE_COPY_SOURCE;
+    if (overlay.dirty) {
+        // A new image goes into a texture of its own once, so a present over the running game is
+        // a GPU copy and never a CPU upload.
+        if (!overlay.texture || overlay.texture_width != image.width ||
+            overlay.texture_height != image.height) {
+            scheduler.DeferRelease(std::move(overlay.texture));
+            const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+            const D3D12_RESOURCE_DESC desc{
+                .Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                .Width = image.width,
+                .Height = image.height,
+                .DepthOrArraySize = 1,
+                .MipLevels = 1,
+                .Format = Swapchain::FORMAT,
+                .SampleDesc = {1, 0},
+                .Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            };
+            ThrowIfFailed(device.Get()->CreateCommittedResource(
+                              &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+                              nullptr, IID_PPV_ARGS(&overlay.texture)),
+                          "CreateCommittedResource (menu overlay)");
+            overlay.texture_width = image.width;
+            overlay.texture_height = image.height;
+            if (overlay.blended) {
+                if (overlay.srv.ptr == 0) {
+                    overlay.srv = view_descriptors.Allocate();
+                }
+                device.Get()->CreateShaderResourceView(overlay.texture.Get(), nullptr, overlay.srv);
+            }
+        } else {
+            D3D12_RESOURCE_BARRIER to_dest{};
+            to_dest.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            to_dest.Transition = {overlay.texture.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                  ready, D3D12_RESOURCE_STATE_COPY_DEST};
+            cmd->ResourceBarrier(1, &to_dest);
+        }
+        const u32 row_pitch = Common::AlignUp(image.width * 4, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+        const StagingBufferRef upload = staging_pool.Request(
+            static_cast<size_t>(row_pitch) * image.height, MemoryUsage::Upload);
+        for (u32 y = 0; y < image.height; ++y) {
+            std::memcpy(upload.mapped_span.data() + static_cast<size_t>(y) * row_pitch,
+                        image.pixels.data() + static_cast<size_t>(y) * image.width * 4,
+                        static_cast<size_t>(image.width) * 4);
+        }
+        const D3D12_PLACED_SUBRESOURCE_FOOTPRINT placed{
+            .Offset = upload.offset,
+            .Footprint = {Swapchain::FORMAT, image.width, image.height, 1, row_pitch},
+        };
+        const D3D12_TEXTURE_COPY_LOCATION from_upload{
+            .pResource = upload.buffer,
+            .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+            .PlacedFootprint = placed,
+        };
+        const D3D12_TEXTURE_COPY_LOCATION into_texture{
+            .pResource = overlay.texture.Get(),
+            .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+            .SubresourceIndex = 0,
+        };
+        cmd->CopyTextureRegion(&into_texture, 0, 0, 0, &from_upload, nullptr);
+        D3D12_RESOURCE_BARRIER to_source{};
+        to_source.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        to_source.Transition = {overlay.texture.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                D3D12_RESOURCE_STATE_COPY_DEST, ready};
+        cmd->ResourceBarrier(1, &to_source);
+        overlay.dirty = false;
+    }
+    return true;
+}
+
+void RendererD3D12::BlendOverlay(CommandStream* cmd, PresentFrame& frame, OverlayImage& overlay) {
+    const auto& pipeline = blit_pipelines[static_cast<size_t>(Tegra::BlendMode::Premultiplied)];
+    if (!pipeline || !overlay.blended) {
+        CopyOverlay(cmd, frame, overlay);
+        return;
+    }
+    if (!UploadOverlay(cmd, overlay)) {
+        return;
+    }
+    const MenuImage& image = *overlay.image;
+    const u32 screen_width = swapchain.Width();
+    const u32 screen_height = swapchain.Height();
+    const u32 width = std::min(image.width, screen_width);
+    const u32 height = std::min(image.height, screen_height);
+    const u32 x =
+        image.placed ? std::min(image.x, screen_width - width) : (screen_width - width) / 2;
+    const u32 y =
+        image.placed ? std::min(image.y, screen_height - height) : (screen_height - height) / 2;
+    // Descriptors first: taking them may flush the list, so the state is set after.
+    constexpr u64 LINEAR_SAMPLER_KEY = 0;
+    const D3D12_GPU_DESCRIPTOR_HANDLE sampler_table =
+        sampler_heap.GetTable({&LINEAR_SAMPLER_KEY, 1}, {&linear_sampler, 1});
+    const D3D12_GPU_DESCRIPTOR_HANDLE source_table = descriptor_ring.Upload({&overlay.srv, 1});
+    ID3D12DescriptorHeap* const heaps[] = {descriptor_ring.Heap(), sampler_heap.Heap()};
+    cmd->SetDescriptorHeaps(2, heaps);
+    frame.Transition(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = frame.rtv;
+    cmd->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    // One texel per pixel: the viewport is the image's own rectangle.
+    const D3D12_VIEWPORT viewport{
+        .TopLeftX = static_cast<float>(x),
+        .TopLeftY = static_cast<float>(y),
+        .Width = static_cast<float>(image.width),
+        .Height = static_cast<float>(image.height),
+        .MinDepth = 0.0f,
+        .MaxDepth = 1.0f,
     };
+    const D3D12_RECT scissor{static_cast<LONG>(x), static_cast<LONG>(y),
+                             static_cast<LONG>(x + width), static_cast<LONG>(y + height)};
+    cmd->RSSetViewports(1, &viewport);
+    cmd->RSSetScissorRects(1, &scissor);
+    // As RecordBlit: the bottom of the quad samples tex_offset, the top tex_offset + tex_scale.
+    const std::array<float, 4> tex_scale_offset{1.0f, -1.0f, 0.0f, 1.0f};
+    cmd->SetGraphicsRootSignature(blit_root_signature.Get());
+    scheduler.SetPipelineState(pipeline.Get());
+    cmd->SetGraphicsRoot32BitConstants(0, 4, tex_scale_offset.data(), 0);
+    const u32 runtime_data[12]{};
+    cmd->SetGraphicsRoot32BitConstants(1, 12, runtime_data, 0);
+    cmd->SetGraphicsRootDescriptorTable(2, source_table);
+    cmd->SetGraphicsRootDescriptorTable(3, sampler_table);
+    cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cmd->DrawInstanced(3, 1, 0, 0);
+}
+
+void RendererD3D12::CopyOverlay(CommandStream* cmd, PresentFrame& frame, OverlayImage& overlay) {
+    if (!UploadOverlay(cmd, overlay)) {
+        return;
+    }
+    const MenuImage& image = *overlay.image;
+    // Clipped to the screen; the frontend sizes the image to fit, this only guards a resize.
+    const u32 screen_width = swapchain.Width();
+    const u32 screen_height = swapchain.Height();
+    const u32 width = std::min(image.width, screen_width);
+    const u32 height = std::min(image.height, screen_height);
+    const u32 x =
+        image.placed ? std::min(image.x, screen_width - width) : (screen_width - width) / 2;
+    const u32 y =
+        image.placed ? std::min(image.y, screen_height - height) : (screen_height - height) / 2;
     const D3D12_TEXTURE_COPY_LOCATION src{
-        .pResource = upload.buffer,
-        .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-        .PlacedFootprint = placed,
+        .pResource = overlay.texture.Get(),
+        .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+        .SubresourceIndex = 0,
     };
     const D3D12_TEXTURE_COPY_LOCATION dst{
         .pResource = frame.image.Get(),
         .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
         .SubresourceIndex = 0,
     };
+    const D3D12_BOX box{0, 0, 0, width, height, 1};
+    // A blended overlay copied (no present pipeline) rests as a shader resource.
+    D3D12_RESOURCE_BARRIER to_copy{};
+    to_copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    to_copy.Transition = {overlay.texture.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                          D3D12_RESOURCE_STATE_COPY_SOURCE};
+    if (overlay.blended) cmd->ResourceBarrier(1, &to_copy);
     frame.Transition(cmd, D3D12_RESOURCE_STATE_COPY_DEST);
-    cmd->CopyTextureRegion(&dst, (swapchain.Width() - width) / 2, (swapchain.Height() - height) / 2,
-                           0, &src, nullptr);
+    cmd->CopyTextureRegion(&dst, x, y, 0, &src, &box);
     frame.Transition(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (overlay.blended) {
+        std::swap(to_copy.Transition.StateBefore, to_copy.Transition.StateAfter);
+        cmd->ResourceBarrier(1, &to_copy);
+    }
 }
 
 } // namespace D3D12

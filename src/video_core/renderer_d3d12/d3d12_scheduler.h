@@ -194,6 +194,8 @@ public:
         }
         work = 0;
     }
+    /// Rereads SetDiagUavSync, so the menu can switch it while a game runs; once per frame.
+    void RefreshDiagToggles();
     /// The draw or dispatch binding resources now; 0 between them.
     [[nodiscard]] u64 Work() const noexcept {
         return work;

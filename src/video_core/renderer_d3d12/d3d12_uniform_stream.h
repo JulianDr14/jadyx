@@ -12,6 +12,8 @@ namespace D3D12 {
 struct UniformUpload {
     std::span<u8> mapped;
     u64 address;
+    void* resource{}; ///< ID3D12Resource holding the bytes, for diagnostics
+    u64 offset{};     ///< where they start in it
 };
 
 /// Suballocate CBV uploads from a small staging reservation, only within its submission.
@@ -32,7 +34,8 @@ public:
             tick = current_tick;
             used = 0;
         }
-        const UniformUpload result{block.mapped.subspan(used, size), block.address + used};
+        const UniformUpload result{block.mapped.subspan(used, size), block.address + used,
+                                   block.resource, block.offset + used};
         used += aligned;
         return result;
     }

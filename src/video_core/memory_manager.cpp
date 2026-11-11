@@ -14,6 +14,7 @@
 #include "core/hle/kernel/k_process.h"
 #include "memory_manager.h"
 #include "video_core/guest_memory.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/gpu_written_pages.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/invalidation_accumulator.h"
@@ -230,6 +231,23 @@ std::optional<DAddr> MemoryManager::GpuToCpuAddress(GPUVAddr addr, std::size_t s
     return std::nullopt;
 }
 
+namespace {
+/// An unmapped GPU read/write used to ASSERT on every access; a garbage command stream turned
+/// that into a log storm of millions of lines. Logs the first 16, then every 65536th, and tells
+/// GeoHunt so it dumps the command segment.
+void ReportUnmapped(bool write, GPUVAddr addr) {
+    static std::atomic<u64> count{};
+    const u64 n = count.fetch_add(1, std::memory_order_relaxed);
+    if (n >= 16 && (n & 0xffff) != 0) {
+        return;
+    }
+    LOG_CRITICAL(HW_GPU, "GPU {} of unmapped address {:#x} (#{} so far)",
+                 write ? "write" : "read", addr, n + 1);
+    VideoCommon::GeoHunt::CommandGarbage(write ? "gpu-unmapped-write" : "gpu-unmapped-read",
+                                         static_cast<u32>(addr >> 32), static_cast<u32>(addr));
+}
+} // Anonymous namespace
+
 template <typename T>
 T MemoryManager::Read(GPUVAddr addr) const {
     if (auto page_pointer{GetPointer(addr)}; page_pointer) {
@@ -239,7 +257,7 @@ T MemoryManager::Read(GPUVAddr addr) const {
         return value;
     }
 
-    ASSERT(false);
+    ReportUnmapped(false, addr);
 
     return {};
 }
@@ -252,7 +270,7 @@ void MemoryManager::Write(GPUVAddr addr, T data) {
         return;
     }
 
-    ASSERT(false);
+    ReportUnmapped(true, addr);
 }
 
 template u8 MemoryManager::Read<u8>(GPUVAddr addr) const;
@@ -429,6 +447,7 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
         }
         u8* physical = memory.GetPointer<u8>(dev_addr_base);
         std::memcpy(physical, src_buffer, copy_amount);
+        VideoCommon::GeoHunt::Journal(dev_addr_base, copy_amount);
         src_buffer = static_cast<const u8*>(src_buffer) + copy_amount;
     };
     auto mapped_big = [&](std::size_t page_index, std::size_t offset, std::size_t copy_amount) {
@@ -442,6 +461,7 @@ void MemoryManager::WriteBlockImpl(GPUVAddr gpu_dest_addr, const void* src_buffe
             u8* physical = memory.GetPointer<u8>(dev_addr_base);
             std::memcpy(physical, src_buffer, copy_amount);
         }
+        VideoCommon::GeoHunt::Journal(dev_addr_base, copy_amount);
         src_buffer = static_cast<const u8*>(src_buffer) + copy_amount;
     };
     auto write_short_pages = [&](std::size_t page_index, std::size_t offset, std::size_t copy_amount) {

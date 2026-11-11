@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cstring>
@@ -13,6 +14,8 @@
 #include "common/logging.h"
 #include "common/write_combined_copy.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/geometry_hunt.h"
+#include "video_core/gpu_fast_paths.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
@@ -26,6 +29,7 @@ namespace D3D12 {
 namespace {
 std::atomic_bool uniform_upload_copy_enabled{};
 std::atomic_bool uniform_reuse_enabled{};
+std::atomic<u64> lost_vertex_slot_draws{};
 // Buffer::Transition logs the first upload into a buffer between a work's bindings, and Copy the
 // first one it returns to UAV. The GPU thread alone records bindings.
 bool logged_upload_into_uav{};
@@ -36,6 +40,30 @@ void SetUniformUploadCopy(bool enabled) {
 }
 void SetUniformReuse(bool enabled) {
     uniform_reuse_enabled.store(enabled, std::memory_order_relaxed);
+}
+u64 LostVertexSlotDraws() noexcept {
+    return lost_vertex_slot_draws.load(std::memory_order_relaxed);
+}
+
+u32 BufferCacheRuntime::CheckVertexSlots(u32 enabled) {
+    const u32 missing = enabled & ~(applied_vertex_mask | pending_vertex_mask);
+    if (missing == 0) [[likely]] {
+        return 0;
+    }
+    const u64 count = lost_vertex_slot_draws.fetch_add(1, std::memory_order_relaxed) + 1;
+    // Powers of two: the first ones and then a trickle, never a flood.
+    if ((count & (count - 1)) == 0) {
+        LOG_WARNING(Render,
+                    "D3D12 glitch: draw #{} would run without vertex slots {:#x} (enabled {:#x}, "
+                    "on list {:#x}, known {:#x}): its command list started inside the draw",
+                    count, missing, enabled, applied_vertex_mask, known_vertex_mask);
+    }
+    return missing;
+}
+
+void BufferCacheRuntime::InvalidateGeometry() noexcept {
+    applied_index.reset();
+    applied_vertex_mask = 0;
 }
 
 
@@ -134,15 +162,79 @@ u32 IndexSize(IndexFormat format) {
     return 4;
 }
 
+/// Out-of-range fix: vertex numbers at or above limit would fetch zeros (a spike to the model
+/// origin). In lists the whole primitive collapses onto one of its good vertices, so nothing is
+/// rasterized; in strips the bad vertex restarts the strip (or repeats the previous good one).
+void DropOutOfRange(PrimitiveTopology topology, std::vector<u32>& out, u32 limit, u32 cut,
+                    bool has_cut) {
+    u32 group = 0;
+    switch (topology) {
+    case PrimitiveTopology::Points:
+        group = 1;
+        break;
+    case PrimitiveTopology::Lines:
+    case PrimitiveTopology::LineLoop:
+        group = 2;
+        break;
+    case PrimitiveTopology::Triangles:
+    case PrimitiveTopology::Quads:
+    case PrimitiveTopology::QuadStrip:
+    case PrimitiveTopology::TriangleFan:
+    case PrimitiveTopology::Polygon:
+        group = 3;
+        break;
+    case PrimitiveTopology::LinesAdjacency:
+        group = 4;
+        break;
+    case PrimitiveTopology::TrianglesAdjacency:
+        group = 6;
+        break;
+    default:
+        break;
+    }
+    if (group == 0) {
+        u32 last_good = 0;
+        for (u32& value : out) {
+            if (has_cut && value == cut) {
+                continue;
+            }
+            if (value >= limit) {
+                value = has_cut ? cut : last_good;
+            } else {
+                last_good = value;
+            }
+        }
+        return;
+    }
+    for (size_t first = 0; first + group <= out.size(); first += group) {
+        bool bad = false;
+        u32 good = 0;
+        bool found = false;
+        for (u32 i = 0; i < group; ++i) {
+            const u32 value = out[first + i];
+            if (value >= limit) {
+                bad = true;
+            } else if (!found) {
+                good = value;
+                found = true;
+            }
+        }
+        if (bad) {
+            std::fill_n(out.begin() + first, group, good);
+        }
+    }
+}
+
 } // Anonymous namespace
 
 Buffer::Buffer(BufferCacheRuntime& runtime, VideoCommon::NullBufferParams params)
-    : VideoCommon::BufferBase(params), scheduler{&runtime.scheduler},
+    : VideoCommon::BufferBase(params), runtime{&runtime}, scheduler{&runtime.scheduler},
       id{runtime.next_buffer_id++}, buffer{runtime.CreateDefaultBuffer(4)}, address{buffer ? buffer->GetGPUVirtualAddress() : 0},
       charge{Common::MemoryAccount::BufferCache, 4} {}
 
 Buffer::Buffer(BufferCacheRuntime& runtime, VAddr cpu_addr, u64 size_bytes, bool)
-    : VideoCommon::BufferBase(cpu_addr, size_bytes), scheduler{&runtime.scheduler},
+    : VideoCommon::BufferBase(cpu_addr, size_bytes), runtime{&runtime},
+      scheduler{&runtime.scheduler},
       id{runtime.next_buffer_id++},
       // Whole 256-byte blocks: a guest cbuf ending with the buffer still fits a CBV.
       buffer{runtime.CreateDefaultBuffer(
@@ -152,20 +244,32 @@ Buffer::Buffer(BufferCacheRuntime& runtime, VAddr cpu_addr, u64 size_bytes, bool
              Common::AlignUp(size_bytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT)} {}
 
 Buffer::~Buffer() {
-    if (scheduler && buffer) {
+    ReleaseBuffer();
+}
+
+void Buffer::ReleaseBuffer() {
+    if (!scheduler || !buffer) {
+        return;
+    }
+    if (runtime) {
+        const u64 width = buffer->GetDesc().Width;
+        runtime->RecycleBuffer(std::move(buffer), width);
+    } else {
         scheduler->DeferRelease(std::move(buffer));
     }
 }
 
 Buffer& Buffer::operator=(Buffer&& other) noexcept {
     if (this != &other) {
-        if (scheduler && buffer) {
-            scheduler->DeferRelease(std::move(buffer));
-        }
+        ReleaseBuffer();
         static_cast<VideoCommon::BufferBase&>(*this) = std::move(other);
+        runtime = other.runtime;
         scheduler = other.scheduler;
         id = other.id;
         generation = other.generation;
+        writes = other.writes;
+        pending_begin = 0;
+        pending_end = 0;
         buffer = std::move(other.buffer);
         address = std::exchange(other.address, 0);
         state = other.state;
@@ -177,6 +281,11 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
     return *this;
 }
 
+D3D12_RESOURCE_STATES Buffer::CurrentState() const noexcept {
+    return scheduler && state_tick == scheduler->CurrentTick() ? state
+                                                               : D3D12_RESOURCE_STATE_COMMON;
+}
+
 void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
     if (!scheduler || !buffer) {
         return;
@@ -185,7 +294,11 @@ void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
                          next == D3D12_RESOURCE_STATE_COPY_DEST ||
                          next == D3D12_RESOURCE_STATE_STREAM_OUT)) {
         ++generation;
+        writes[generation % NUM_WRITES] = pending_end != 0
+            ? Write{generation, pending_begin, pending_end}
+            : Write{generation, 0, ~0ULL};
     }
+    pending_end = 0;
     const u64 tick = scheduler->CurrentTick();
     const D3D12_RESOURCE_STATES current = state_tick == tick ? state : D3D12_RESOURCE_STATE_COMMON;
     const u64 work = scheduler->Work();
@@ -268,7 +381,46 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, Scheduler& schedul
 
 }
 
+namespace {
+/// Recycled buffers are not charged to any cache, so the pool stays small.
+constexpr u64 MAX_RECYCLED_SIZE = 4ULL * 1024 * 1024;
+constexpr u64 MAX_RECYCLED_BYTES = 24ULL * 1024 * 1024;
+constexpr u64 RECYCLED_FRAMES = 30;
+} // namespace
+
+BufferCacheRuntime::~BufferCacheRuntime() {
+    for (RecycledBuffer& entry : recycled) {
+        scheduler.DeferRelease(std::move(entry.resource));
+    }
+}
+
+void BufferCacheRuntime::RecycleBuffer(ComPtr<ID3D12Resource> resource, u64 size) {
+    if (!VideoCore::FastPaths::Enabled() || size > MAX_RECYCLED_SIZE ||
+        recycled_bytes + size > MAX_RECYCLED_BYTES) {
+        scheduler.DeferRelease(std::move(resource));
+        return;
+    }
+    recycled_bytes += size;
+    recycled.push_back({.resource = std::move(resource), .size = size,
+                        .tick = scheduler.CurrentTick(), .frame = recycle_frame});
+}
+
 ComPtr<ID3D12Resource> BufferCacheRuntime::CreateDefaultBuffer(u64 size) {
+    if (!recycled.empty()) {
+        const u64 tick = scheduler.CurrentTick();
+        for (RecycledBuffer& entry : recycled) {
+            if (entry.size != size || entry.tick >= tick) {
+                continue;
+            }
+            ComPtr<ID3D12Resource> reused = std::move(entry.resource);
+            recycled_bytes -= entry.size;
+            entry = std::move(recycled.back());
+            recycled.pop_back();
+            ++recycle_hits;
+            return reused;
+        }
+        ++recycle_misses;
+    }
     // Storage buffers and image buffers are UAVs.
     HRESULT hr = S_OK;
     const auto create = [&] {
@@ -291,7 +443,25 @@ ComPtr<ID3D12Resource> BufferCacheRuntime::CreateDefaultBuffer(u64 size) {
     return buffer;
 }
 
-void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>&) noexcept {}
+void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>&) noexcept {
+    ++recycle_frame;
+    for (size_t i = 0; i < recycled.size();) {
+        if (recycle_frame - recycled[i].frame < RECYCLED_FRAMES) {
+            ++i;
+            continue;
+        }
+        recycled_bytes -= recycled[i].size;
+        scheduler.DeferRelease(std::move(recycled[i].resource));
+        recycled[i] = std::move(recycled.back());
+        recycled.pop_back();
+    }
+    if (recycle_frame % 1800 == 0 && recycle_hits + recycle_misses != 0) {
+        LOG_INFO(Render, "D3D12: recycled cache buffers: {} reused, {} not found, {} kept ({} KiB)",
+                 recycle_hits, recycle_misses, recycled.size(), recycled_bytes / 1024);
+        recycle_hits = 0;
+        recycle_misses = 0;
+    }
+}
 void BufferCacheRuntime::Finish() { scheduler.Finish(); }
 u64 BufferCacheRuntime::CurrentTick() { return scheduler.CurrentTick(); }
 bool BufferCacheRuntime::IsFree(u64 tick) { return scheduler.IsFree(tick); }
@@ -306,6 +476,37 @@ u64 BufferCacheRuntime::GetDeviceMemoryUsage() const {
 StagingBufferRef BufferCacheRuntime::UploadStagingBuffer(size_t size) { return staging.Request(size, MemoryUsage::Upload); }
 StagingBufferRef BufferCacheRuntime::DownloadStagingBuffer(size_t size, bool deferred) { return staging.Request(size, MemoryUsage::Download, deferred); }
 void BufferCacheRuntime::FreeDeferredStagingBuffer(StagingBufferRef& ref) { staging.FreeDeferred(ref); }
+
+namespace {
+/// A copy past either resource is dropped by command validation; this names the cache buffers
+/// behind it (guest address, size the cache believes, resource width), first 32 only.
+void ReportCopyOutOfRange(const Buffer* dst, ID3D12Resource* dst_raw, const Buffer* src,
+                          ID3D12Resource* src_raw, const VideoCommon::BufferCopy& copy) {
+    if (!dst_raw || !src_raw) {
+        return;
+    }
+    const u64 dst_width = dst_raw->GetDesc().Width;
+    const u64 src_width = src_raw->GetDesc().Width;
+    if (copy.dst_offset + copy.size <= dst_width && copy.src_offset + copy.size <= src_width) {
+        return;
+    }
+    static std::atomic<u32> reported{};
+    if (reported.fetch_add(1, std::memory_order_relaxed) >= 32) {
+        return;
+    }
+    const auto describe = [](const Buffer* buffer, u64 width) {
+        if (!buffer) {
+            return fmt::format("raw width {}", width);
+        }
+        return fmt::format("buffer id {} gva {:#x} cache size {} width {}", buffer->Id(),
+                           buffer->CpuAddr(), buffer->SizeBytes(), width);
+    };
+    LOG_ERROR(Render,
+              "D3D12: buffer copy out of range: {} bytes, src offset {} ({}), dst offset {} ({})",
+              copy.size, copy.src_offset, describe(src, src_width), copy.dst_offset,
+              describe(dst, dst_width));
+}
+} // namespace
 
 void BufferCacheRuntime::Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src,
                               ID3D12Resource* src_raw,
@@ -353,9 +554,21 @@ void BufferCacheRuntime::Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src,
     // Buffer::Transition's own case only covers a later read binding of the same work.
     const bool restore_uav = dst && dst->State() == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
                              dst->WrittenByWork(scheduler.Work());
-    if (dst) dst->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
+    if (dst) {
+        u64 begin = ~0ULL;
+        u64 end = 0;
+        for (const auto& copy : copies) {
+            if (copy.size != 0) {
+                begin = (std::min<u64>)(begin, copy.dst_offset);
+                end = (std::max<u64>)(end, copy.dst_offset + copy.size);
+            }
+        }
+        if (end != 0) dst->ExpectWrite(begin, end);
+        dst->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
+    }
     if (src) src->Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
     for (const auto& copy : copies) {
+        ReportCopyOutOfRange(dst, dst_raw, src, src_raw, copy);
         if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Event("buffer_copy",
             fmt::format("{{\"src_address\":{},\"dst_address\":{},\"src_offset\":{},\"dst_offset\":{},\"size\":{}}}",
                 src ? src->CpuAddr() : 0, dst ? dst->CpuAddr() : 0,
@@ -422,7 +635,10 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
                                   .stride = IndexSize(format),
                                   .device_addr = buffer.CpuAddr() + offset});
     }
-    if (!IsEmulatedTopology(topology) && format != IndexFormat::UnsignedByte &&
+    const u32 index_size = IndexSize(format);
+    const u64 byte_offset = offset + static_cast<u64>(first) * index_size;
+    const u32 index_limit = CheckIndexRange(topology, buffer, byte_offset, num_indices, index_size);
+    if (index_limit == 0 && !IsEmulatedTopology(topology) && format != IndexFormat::UnsignedByte &&
         !NeedsRestartRewrite(format)) {
         buffer.Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
         pending_index = D3D12_INDEX_BUFFER_VIEW{
@@ -442,13 +658,12 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
                  static_cast<u32>(topology), static_cast<u32>(format));
         logged_rewrite = true;
     }
-    const u32 index_size = IndexSize(format);
-    const u64 byte_offset = offset + static_cast<u64>(first) * index_size;
     const IndexRewriteCache::Key key{.buffer_id = buffer.Id(), .offset = byte_offset,
                                      .count = num_indices, .format = static_cast<u8>(index_size),
                                      .topology = static_cast<u8>(topology),
                                      .restart = index_restart.value_or(0),
-                                     .has_restart = index_restart.has_value()};
+                                     .has_restart = index_restart.has_value(),
+                                     .index_limit = index_limit};
     IndexRewriteCache::Entry* entry = rewrite_cache.Find(key);
     // The inline buffer's generation says nothing: each draw brings its own indices.
     const bool is_inline = !inline_indices.empty();
@@ -499,6 +714,9 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
             return value == index_restart ? cut : value;
         };
         AssembleTopology(topology, num_indices, read, rewrite_scratch);
+        if (index_limit != 0) {
+            DropOutOfRange(topology, rewrite_scratch, index_limit, cut, index_restart.has_value());
+        }
         entry = &rewrite_cache.Obtain(key);
         entry->generation = buffer.Generation();
         entry->source.assign(guest_indices.begin(), guest_indices.end());
@@ -511,6 +729,137 @@ void BufferCacheRuntime::BindIndexBuffer(PrimitiveTopology topology, IndexFormat
                                               std::chrono::steady_clock::now() - start)
                                               .count()));
     BindRewrittenIndices(*entry);
+}
+
+u32 BufferCacheRuntime::CheckIndexRange(PrimitiveTopology topology, Buffer& buffer,
+                                        u64 byte_offset, u32 num_indices, u32 index_size) {
+    namespace GeoHunt = VideoCommon::GeoHunt;
+    if (vertex_limit == 0 || num_indices == 0 || !inline_indices.empty() || !GeoHunt::OobCheck()) {
+        return 0;
+    }
+    const s64 limit = s64{vertex_limit} - vertex_base;
+    if (limit <= 0 || limit > s64{0xFFFFFFFF}) {
+        return 0;
+    }
+    // Indices this narrow cannot reach the limit: most draws end here without reading anything.
+    if ((index_size == 1 && limit > 0xFF) || (index_size == 2 && limit > 0xFFFF)) {
+        return 0;
+    }
+    const u64 buffer_id = buffer.Id();
+    const u32 restart = index_restart.value_or(0);
+    const bool has_restart = index_restart.has_value();
+    u64 hash = buffer_id * 0x9E3779B97F4A7C15ull ^ byte_offset ^ (u64{num_indices} << 20);
+    hash *= 0xBF58476D1CE4E5B9ull;
+    IndexRange& range = index_ranges[(hash >> 40) & (INDEX_RANGE_SLOTS - 1)];
+    const u64 generation = buffer.Generation();
+    const bool same_range = range.buffer_id == buffer_id && range.offset == byte_offset &&
+                            range.count == num_indices && range.index_size == index_size &&
+                            range.restart == restart && range.has_restart == has_restart;
+    // The buffer was written, but nowhere in these indices (it also holds vertices and uniforms
+    // that change every frame): the scan still stands.
+    if (same_range && range.generation != generation &&
+        !buffer.WrittenSince(range.generation, byte_offset,
+                             byte_offset + u64{num_indices} * index_size)) {
+        VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::IndexRangeKeeps, 1);
+        range.generation = generation;
+    }
+    if (!same_range || range.generation != generation) [[unlikely]] {
+        const bool timed = VideoCore::Perf::DetailedGpuProfileEnabled();
+        const auto start = timed ? std::chrono::steady_clock::now()
+                                 : std::chrono::steady_clock::time_point{};
+        guest_indices.resize(static_cast<size_t>(num_indices) * index_size);
+        device_memory.ReadBlockUnsafe(buffer.CpuAddr() + byte_offset, guest_indices.data(),
+                                      guest_indices.size());
+        const u32 max_index = MaxIndex(guest_indices.data(), num_indices, index_size,
+                                       index_restart);
+        range = IndexRange{.buffer_id = buffer_id, .offset = byte_offset,
+                           .generation = generation, .count = num_indices, .restart = restart,
+                           .max_index = max_index,
+                           .index_size = static_cast<u8>(index_size),
+                           .has_restart = has_restart};
+        if (timed) {
+            VideoCore::Perf::Add(
+                VideoCore::Perf::Counter::IndexRewriteNs,
+                static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now() - start)
+                                     .count()));
+        }
+    }
+    if (range.max_index < static_cast<u64>(limit)) [[likely]] {
+        return 0;
+    }
+    if (range.reported_limit != static_cast<u32>(limit)) {
+        range.reported_limit = static_cast<u32>(limit);
+        ReportIndexRange(topology, buffer, byte_offset, num_indices, index_size, range.max_index,
+                         static_cast<u32>(limit));
+    }
+    return GeoHunt::OobFix() ? static_cast<u32>(limit) : 0;
+}
+
+u32 BufferCacheRuntime::MaxIndex(const u8* data, u32 count, u32 index_size,
+                                 std::optional<u32> restart) noexcept {
+    // Branch-free loops the compiler vectorizes; the restart value counts as 0.
+    const auto scan = [&]<typename T>(T) -> u32 {
+        const T* const values = reinterpret_cast<const T*>(data);
+        const T skip = static_cast<T>(restart.value_or(0));
+        const bool use_skip = restart.has_value();
+        T max_value = 0;
+        if (use_skip) {
+            for (u32 i = 0; i < count; ++i) {
+                const T value = values[i];
+                max_value = (std::max)(max_value, static_cast<T>(value == skip ? 0 : value));
+            }
+        } else {
+            for (u32 i = 0; i < count; ++i) {
+                max_value = (std::max)(max_value, values[i]);
+            }
+        }
+        return max_value;
+    };
+    switch (index_size) {
+    case 1:
+        return scan(u8{});
+    case 2:
+        return scan(u16{});
+    default:
+        return scan(u32{});
+    }
+}
+
+void BufferCacheRuntime::ReportIndexRange(PrimitiveTopology topology, Buffer& buffer,
+                                          u64 byte_offset, u32 num_indices, u32 index_size,
+                                          u32 max_index, u32 limit) {
+    // Rare (once per range and limit): count the bad indices for the log.
+    namespace GeoHunt = VideoCommon::GeoHunt;
+    guest_indices.resize(static_cast<size_t>(num_indices) * index_size);
+    device_memory.ReadBlockUnsafe(buffer.CpuAddr() + byte_offset, guest_indices.data(),
+                                  guest_indices.size());
+    const u32 mask = index_size == 1 ? 0xFFu : index_size == 2 ? 0xFFFFu : 0xFFFFFFFFu;
+    const std::optional<u32> skip =
+        index_restart ? std::optional<u32>{*index_restart & mask} : std::nullopt;
+    u32 bad = 0;
+    u32 first_bad = 0;
+    u32 first_bad_value = 0;
+    for (u32 i = 0; i < num_indices; ++i) {
+        u32 value = 0;
+        std::memcpy(&value, guest_indices.data() + static_cast<size_t>(i) * index_size,
+                    index_size);
+        if (value != skip && value >= limit && bad++ == 0) {
+            first_bad = i;
+            first_bad_value = value;
+        }
+    }
+    GeoHunt::ReportOob({.index_address = buffer.CpuAddr() + byte_offset,
+                        .count = num_indices,
+                        .index_size = index_size,
+                        .max_index = max_index,
+                        .bad = bad,
+                        .first_bad = first_bad,
+                        .first_bad_value = first_bad_value,
+                        .base_vertex = vertex_base,
+                        .vertex_limit = vertex_limit,
+                        .topology = static_cast<u32>(topology),
+                        .fixed = GeoHunt::OobFix()});
 }
 
 bool BufferCacheRuntime::NeedsRestartRewrite(IndexFormat format) const noexcept {
@@ -581,6 +930,8 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, ID3D12Resource* buffer, u32
         .StrideInBytes = stride,
     };
     pending_vertex_mask |= 1u << index;
+    last_vertex[index] = pending_vertex[index];
+    known_vertex_mask |= 1u << index;
 }
 
 void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bindings) {
@@ -602,6 +953,7 @@ void BufferCacheRuntime::ApplyGeometry(CommandStream* cmd) {
         cmd->IASetIndexBuffer(&*pending_index);
         applied_index = pending_index;
     }
+    applied_vertex_mask |= pending_vertex_mask;
     // One call per run of consecutive slots (usually a single run from slot 0).
     for (u32 mask = pending_vertex_mask; mask != 0;) {
         const u32 first = static_cast<u32>(std::countr_zero(mask));
@@ -631,7 +983,8 @@ std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t, u32, u32 size)
     const UniformUpload upload = uniform_stream.Request(reach, scheduler.CurrentTick(),
         [this](size_t bytes) {
             const auto ref = staging.Request(bytes, MemoryUsage::Upload);
-            return UniformUpload{ref.mapped_span, ref.buffer->GetGPUVirtualAddress() + ref.offset};
+            return UniformUpload{ref.mapped_span, ref.buffer->GetGPUVirtualAddress() + ref.offset,
+                                 ref.buffer, ref.offset};
         });
     if (trace_buffers) {
         trace_buffers->push_back({.kind = TracedBuffer::Kind::StreamedUniform,
@@ -645,13 +998,16 @@ std::span<u8> BufferCacheRuntime::BindMappedUniformBuffer(size_t, u32, u32 size)
         std::memset(upload.mapped.data() + size, 0, reach - size);
     }
     last_uniform_address = upload.address;
+    last_uniform_resource = static_cast<ID3D12Resource*>(upload.resource);
+    last_uniform_offset = upload.offset;
     return upload.mapped.first(size);
 }
 
 bool BufferCacheRuntime::BindGuestUniformBuffer(size_t stage, u32 index, DAddr device_addr,
                                                 u32 size) {
     // Traced uniforms keep their own copy per draw.
-    if (!uniform_reuse || trace_buffers || size == 0) {
+    // Read live: the glitch hunt page turns it off while the game runs.
+    if (!uniform_reuse_enabled.load(std::memory_order_relaxed) || trace_buffers || size == 0) {
         return false;
     }
     // Compared in place: a buffer split across separately mapped pages takes the copying path.
@@ -670,6 +1026,8 @@ bool BufferCacheRuntime::BindGuestUniformBuffer(size_t stage, u32 index, DAddr d
         if (descriptor_queue) {
             descriptor_queue->AddConstantBuffer(streamed.address, size);
         }
+        streamed_hosts[stage][index] = {streamed.resource, streamed.offset, device_addr,
+                                        streamed.tick, size};
         return true;
     }
     // Guest memory is read once: into the cached copy, then from it to the stream.
@@ -684,8 +1042,12 @@ bool BufferCacheRuntime::BindGuestUniformBuffer(size_t stage, u32 index, DAddr d
     streamed.device_addr = device_addr;
     streamed.tick = scheduler.CurrentTick();
     streamed.address = last_uniform_address;
+    streamed.resource = last_uniform_resource;
+    streamed.offset = last_uniform_offset;
     streamed.size = size;
     streamed.reach = reach;
+    streamed_hosts[stage][index] = {streamed.resource, streamed.offset, device_addr,
+                                    streamed.tick, size};
     return true;
 }
 

@@ -25,6 +25,10 @@ public:
     };
     ~RangeMap() = default;
 
+    [[nodiscard]] size_t Size() const {
+        return container.size();
+    }
+
     void Map(KeyTBase address, KeyTBase address_end, ValueT value) {
         KeyT new_address = static_cast<KeyT>(address);
         KeyT new_address_end = static_cast<KeyT>(address_end);

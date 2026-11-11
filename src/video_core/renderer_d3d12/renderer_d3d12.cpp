@@ -14,6 +14,7 @@
 #include "common/logging.h"
 #include "common/fs/path_util.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_local_memory_matrix.h"
+#include "video_core/renderer_d3d12/diagnostics/d3d12_wave_selftest.h"
 #include "common/settings.h"
 #ifdef _WIN32
 #include "common/windows/sampling_profiler.h"
@@ -147,6 +148,9 @@ RendererD3D12::RendererD3D12(Core::Frontend::EmuWindow& emu_window,
                     fmt::format("local_memory_matrix_{}.jsonl", stamp));
         }
     }
+    if (TakeWaveSelfTest()) {
+        RunWaveSelfTest(dev, shader_compiler);
+    }
     blit_ready = CreateBlitPipeline();
     if (VideoCommon::FullCapture::TakeSelfTest()) rasterizer.RunFullCaptureSelfTest();
 
@@ -230,6 +234,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
             const auto wait_start = std::chrono::steady_clock::now();
             FrameLease frame = present_manager.AcquireFrame();
             const auto wait_end = std::chrono::steady_clock::now();
+            TakeMotionView();
             if (blit_ready && CompositeLayers(framebuffers, *frame)) {
                 // frame.bmp once the guest has had two seconds to settle, then frame_<n>.bmp
                 // every ten seconds or so, to follow a game's progress in a headless run.
@@ -250,7 +255,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
                 // while FSR is not upscaling them: FSR keeps the image, FG the rate, never both.
                 Present(std::move(frame),
                         PresentInfo{.vsync_index = framebuffer.vsync_index,
-                                    .frame_gen = !game_menu.has_value() && !last_composite_fsr,
+                                    .frame_gen = !HasOverlay() && !last_composite_fsr,
                                     .new_frame = framebuffer.new_frame,
                                     .queue_time =
                                         static_cast<double>(framebuffer.queue_time_ns) * 1e-9});

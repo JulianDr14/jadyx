@@ -45,6 +45,7 @@
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
+#include "core/hle/kernel/guest_probe.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/memory.h"
 #include "core/hle/kernel/svc/svc_debug_string.h" // Kernel::Svc::SetDebugStringObserver
@@ -70,11 +71,13 @@
 #include "jadyx/app/boot_session.h"
 #include "jadyx/app/boot_settings.h"
 #include "jadyx/app/boot_state.h"
+#include "jadyx/app/freeze_watch.h"
 #include "jadyx/app/headless_emu_window.h"
 #include "jadyx/app/prewarm_budget.h"
 #include "jadyx/app/session_memory.h"
 #include "jadyx/app/session_menu.h"
 #include "jadyx/content/content_service.h"
+#include "jadyx/game/motion_view.h"
 #include "jadyx/game/uwp_software_keyboard.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/input/uwp_input.h"
@@ -86,6 +89,7 @@
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/pulse/pulse_store_gate.h"
 #include "jadyx/settings/uwp_system_settings.h"
+#include "jadyx/network/online_rooms.h"
 #include "jadyx/storage/network_import_gate.h"
 #include "jadyx/storage/utf8.h"
 #include "jadyx/storage/uwp_file_manager.h"
@@ -299,7 +303,8 @@ std::optional<int> GameSession::LoadGuest() {
     if (mii_editor)
         system.RegisterExecuteProgramCallback([this](std::size_t) { guest_exited.store(true); });
     // Pulse: the identity this boot would save under, and the session it resumes if one matches.
-    if (config.pulse_sessions && PulseSessions::Enabled() && !mii_editor) {
+    // Not in a multiplayer room: a resumed snapshot would bring back a session the room never saw.
+    if (config.pulse_sessions && PulseSessions::Enabled() && !mii_editor && !Online::InRoom()) {
         try {
             const auto file = system.GetFilesystem()->OpenFile(nro_path, FileSys::OpenMode::Read);
             const auto user = system.GetProfileManager().GetUser(0);
@@ -311,6 +316,8 @@ std::optional<int> GameSession::LoadGuest() {
         } catch (const std::exception& e) {
             WritePulseLog(std::string("no identity: ") + e.what());
         }
+    } else if (config.pulse_sessions && Online::InRoom()) {
+        WritePulseLog("in a multiplayer room: no resume and no save this boot");
     }
     if (boot_screen) {
         D3D12::SetWindowHandoff(ReleaseLaunchSplash);
@@ -437,10 +444,17 @@ void GameSession::PrepareGame() {
     program_id = system.GetApplicationProcessProgramID();
     ApplyGameGraphics(system, config, LoadGameGraphics(program_id));
     input.SetGameRightStick(LoadGameRightStick(program_id));
+    input.SetMotion(LoadGameMotion(program_id));
+    input.SetGameRumble(LoadGameRumble(program_id));
     // The game's own offline mode over Settings > System's, before any guest code runs; boot.cfg's
     // airplane=1 wins over both.
     if (const auto offline = LoadGameOfflineMode(program_id); offline && !config.airplane_mode)
         Settings::values.airplane_mode.SetValue(*offline);
+    // In a multiplayer room the game must see a network: the room is how it reaches the others.
+    if (Online::InRoom() && !config.airplane_mode && Settings::values.airplane_mode.GetValue()) {
+        Settings::values.airplane_mode.SetValue(false);
+        WriteDiag("network: in a multiplayer room, offline mode is off for this game");
+    }
     WriteDiag(Settings::values.airplane_mode.GetValue() ? "network: offline mode, the game sees no internet"
                                                         : "network: the game sees the internet");
     prewarm_budget = PrewarmBudget{LoadPrewarmStep(program_id)};
@@ -553,8 +567,33 @@ int GameSession::PlayLoop() {
     // Pulse: after a resume the presented frames are logged each second for 30 s, so a guest
     // that freezes shows when it stopped.
     u64 resume_frames = 0;
+    // Report 0 and 2 of a freeze also list what each guest core runs and every guest thread.
+    FreezeWatch freeze_watch{[&system = system] {
+        return Kernel::GuestProbe::Report(system.Kernel(), 3, std::chrono::milliseconds{300});
+    }};
+    // The motion view (motion_view.h): redrawn every other tick while the emulated gyro is on,
+    // removed once when it turns off or hides. Posted from here only, so never after Shutdown.
+    bool motion_view_shown = false;
+    const auto play_start = std::chrono::steady_clock::now();
     for (u32 tick = 1;; ++tick) {
         std::this_thread::sleep_for(TICK);
+        if (tick % 2 == 0) {
+            const MotionViewState view = input.MotionView();
+            constexpr u32 MovingLingerMs = 2500;
+            const bool visible = view.mode != MotionMode::Off && view.view != MotionViewMode::Hidden &&
+                                 (view.view != MotionViewMode::Moving || view.still_ms < MovingLingerMs);
+            if (visible) {
+                const float seconds =
+                    std::chrono::duration<float>(std::chrono::steady_clock::now() - play_start).count();
+                D3D12::PostGameMotionView(system.Renderer(),
+                                          DrawMotionView(view, D3D12::GameMenuScreenSize(system.Renderer()), seconds));
+                motion_view_shown = true;
+            } else if (motion_view_shown) {
+                D3D12::PostGameMotionView(system.Renderer(), std::nullopt);
+                motion_view_shown = false;
+            }
+        }
+        freeze_watch.Tick(menu.IsOpen() || system.IsPaused());
         if (play_session) play_session->Tick(!menu.IsOpen());
         memory->Tick(tick, menu.IsOpen());
         if (ConsumeStorageReadFailure()) {

@@ -11,9 +11,11 @@
 #include "common/bug_tracker.h"
 #include "common/cityhash.h"
 #include "common/logging.h"
+#include "common/stall_watch.h"
 #include "video_core/gpu_thread.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "video_core/engines/kepler_compute.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
 #include "video_core/renderer_d3d12/d3d12_compute_pipeline.h"
@@ -54,6 +56,8 @@ ComputePipeline::ComputePipeline(const Device& device_, VideoCore::ShaderNotify*
     auto func{[this, shader_notify, compile_dxil = std::move(compile_dxil)] {
         bool compiled = false;
         try {
+            const Common::StallWatch::Scope stall_watch{Common::StallWatch::Work::ComputeDxil,
+                                                        unique_hash};
             dxil = compile_dxil();
             dxil_charge = Common::MemoryCharge(Common::MemoryAccount::ShaderBytecode,
                                                dxil.capacity());
@@ -143,6 +147,8 @@ void ComputePipeline::WaitBuilt() {
 ID3D12PipelineState* ComputePipeline::WaitHandle() {
     if (!IsBuilt()) {
         const u64 wait_start = SteadyMicros();
+        const Common::StallWatch::Scope stall_watch{Common::StallWatch::Work::ComputeWait,
+                                                    unique_hash};
         WaitBuilt();
         GetPipelineStats().Record(PipelineStage::WaitCompute, SteadyMicros() - wait_start);
     }
@@ -195,6 +201,9 @@ void ComputePipeline::Configure(const ComputeBindContext& context, PipelineBindi
                                     is_image);
                             });
 
+    if (VideoCommon::GeoHunt::Enabled()) [[unlikely]] {
+        VideoCommon::GeoHunt::SetShaders(unique_hash, 0, true);
+    }
     buffer_cache.UpdateComputeBuffers();
 
     // The table is written in root-signature order: uniform, storage and texel buffers while the
@@ -277,6 +286,8 @@ void ComputePipeline::Build() {
     // (WaitHandle) while the GPU thread retries a build that ran out of memory.
     ComPtr<ID3D12PipelineState> built;
     const auto create = [&] {
+        const Common::StallWatch::Scope stall_watch{Common::StallWatch::Work::ComputePso,
+                                                    unique_hash};
         std::shared_lock build_lock{PipelineBuildMutex()};
         return CallDriverGuarded(
             [&] { return raw->CreateComputePipelineState(&desc, IID_PPV_ARGS(&built)); }, fault);

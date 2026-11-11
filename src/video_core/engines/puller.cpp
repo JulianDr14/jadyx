@@ -16,6 +16,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/engines/puller.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
@@ -112,6 +113,8 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                 }
             } else {
                 LOG_ERROR(HW_GPU, "Invalid semaphore operation");
+                VideoCommon::GeoHunt::CommandGarbage("puller-semaphore",
+                                                     static_cast<u32>(op), 0);
             }
         } while (false);
     }
@@ -200,6 +203,8 @@ void Puller::CallPullerMethod(DmaPusher& dma_pusher, const MethodCall& method_ca
     }
     default:
         LOG_ERROR(HW_GPU, "Special puller engine method {:X} not implemented", method);
+        VideoCommon::GeoHunt::CommandGarbage("puller", method_call.method,
+                                             method_call.argument);
         break;
     }
 }

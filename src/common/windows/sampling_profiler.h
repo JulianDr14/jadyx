@@ -5,7 +5,9 @@
 
 #include <filesystem>
 #include <functional>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "common/common_types.h"
 
@@ -47,6 +49,21 @@ void Stop();
 /// A frame was finished. While the next one is more than 120 ms late, every thread is sampled, with
 /// state S, whether it runs or not. Cheap; safe before Start.
 void NoteFrame();
+
+/// Steady-clock time of the last NoteFrame, in ns; 0 before the first frame.
+[[nodiscard]] u64 LastFrameNs();
+/// The steady clock LastFrameNs uses, in ns.
+[[nodiscard]] u64 SteadyNs();
+
+struct ThreadStack {
+    std::string name;
+    u32 id;
+    std::vector<u64> frames; ///< Return addresses, innermost first.
+};
+
+/// The stack of every named thread but the caller's, each paused for some 20-30 us while its
+/// registers and stack are copied. Works without Start. For rare reports (a freeze), not sampling.
+[[nodiscard]] std::vector<ThreadStack> CaptureStacks();
 
 /// A JIT block was compiled: the host code at `host` runs the guest code [guest_pc, guest_end).
 /// With blocks known, each window also says which guest code the samples in JIT code ran ("guest"

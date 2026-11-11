@@ -54,6 +54,29 @@ public:
         return mode == Mode::Skip;
     }
 
+    /// How the last render condition was decided, for the glitch hunt.
+    struct Decision {
+        enum class Path : u8 {
+            None,     ///< no condition evaluated yet
+            Fixed,    ///< override or always/never mode: Maxwell3D decides on the CPU
+            Forced,   ///< occlusion_force_visible
+            Cpu,      ///< reports the CPU holds, compared here
+            Snapshot, ///< GPU-written reports decided from an earlier copy of them
+            Gpu,      ///< predicated on the GPU
+            Fallback, ///< the buffer cache could not provide them: Maxwell3D reads them back
+        };
+        Path path{};
+        u8 guest_mode{};
+        bool render{true}; ///< the CPU's verdict (Cpu, Snapshot); true otherwise
+        GPUVAddr address{};
+        u64 lhs{};
+        u64 rhs{};
+        u64 serial{}; ///< counts conditions since boot
+    };
+    [[nodiscard]] const Decision& LastDecision() const noexcept {
+        return decision;
+    }
+
     /// Predicates the guest draw or clear recorded while it lives.
     class [[nodiscard]] Scope {
     public:
@@ -131,6 +154,7 @@ private:
     };
     SnapshotMisses snapshot_misses{};
     bool logged_gpu_reports{};
+    Decision decision{};
 };
 
 } // namespace D3D12

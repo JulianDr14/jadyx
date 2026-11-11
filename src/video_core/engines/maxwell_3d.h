@@ -3145,6 +3145,12 @@ public:
     /// shadow RAM and memory end as CallMethod word by word would leave them, in every shadow mode.
     void StoreConstBufferRun(u32 method, const u32* words, u32 amount, bool increment_once);
 
+    /// Writes amount registers in a row from method, none of them executable (execution_mask).
+    /// Registers, shadow RAM and dirty flags end as the sink would leave them: the words
+    /// already in the sink are applied first, and shadow_ram_control only changes through an
+    /// executable method, which consumes the sink before it runs.
+    void StoreRegisterRun(Core::System& system, u32 method, const u32* words, u32 amount);
+
     bool ShouldExecute() const {
         return execute_on;
     }

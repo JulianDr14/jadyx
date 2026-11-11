@@ -53,6 +53,7 @@
 #include "jadyx/library/library_cache.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/settings/graphics_page.h"
+#include "jadyx/settings/online_page.h"
 #include "jadyx/settings/system_page.h"
 #include "jadyx/updates/update_ui.h"
 #include "jadyx/input/uwp_input.h"
@@ -144,6 +145,7 @@ private:
     bool PressGameOptions(float x, float y);
     bool PressUpdatePage(float x, float y);
     bool PressHeader(float x, float y);
+    bool PressOnline(float x, float y);
     bool PressConfiguration(float x, float y);
     bool PressKeyboardEditor(float x, float y);
     bool PressPadPicker(float x, float y);
@@ -182,6 +184,16 @@ private:
     void HandleTabBumpers(bool top_level);
     bool HandleSystemPage(TimePoint now);
     void HandleGraphicsPage(TimePoint now);
+    void HandleOnlinePage(TimePoint now);
+    void OpenOnlineEditor(EditorPurpose purpose);
+    void FinishOnlineEditor(bool accept, TimePoint now);
+    void JoinOnline(const std::string& address, std::uint16_t port, const std::string& password, TimePoint now);
+    void HandleOnlineHost(TimePoint now);
+    void HostOnline(TimePoint now);
+    void PollOnline();
+    void PollOnlineChat();
+    void HandleOnlineChat();
+    void SendOnlineChat(std::wstring_view text);
     bool HandleQuit();
     void HandlePageShortcuts();
     void HandleConfigurationPage();
@@ -262,6 +274,7 @@ private:
     Mods::ModsPage mods_page;
     std::wstring options_notice;
     GraphicsPage graphics_page;
+    OnlinePage online_page;
     // The selected game's own graphics, for its Graphics pane; loaded for `game_graphics_id`.
     GameGraphics game_graphics;
     std::size_t game_graphics_row{};
@@ -292,6 +305,7 @@ private:
     TimePoint keyboard_notice_until{};
     TimePoint controller_notice_until{};
     TimePoint system_notice_until{};
+    TimePoint chat_toast_until{};
     TimePoint options_notice_until{};
     // Set by input handlers when the name editor closes: true keeps the name, false discards it.
     std::optional<bool> finish_name_editor;

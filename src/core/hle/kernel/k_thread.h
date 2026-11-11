@@ -368,6 +368,11 @@ public:
         return m_physical_affinity_mask;
     }
 
+    /// Lock-free read for diagnostics (the freeze probe); may be momentarily stale.
+    s32 GetPhysicalIdealCoreForDebugging() const {
+        return m_physical_ideal_core_id;
+    }
+
     Result GetCoreMask(KernelCore& kernel, s32* out_ideal_core, u64* out_affinity_mask);
 
     Result GetPhysicalCoreMask(KernelCore& kernel, s32* out_ideal_core, u64* out_affinity_mask);

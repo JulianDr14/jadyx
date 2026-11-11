@@ -280,7 +280,7 @@ void LibrarySession::OnPointerPressed(PointerEventArgs const& e) {
     const float x = static_cast<float>((p.X * dpi - (width - 1280 * scale) / 2) / scale);
     const float y = static_cast<float>((p.Y * dpi - (height - 720 * scale) / 2) / scale);
     const bool handled = PressDialog(x, y) || PressGameOptions(x, y) || PressUpdatePage(x, y) || PressHeader(x, y) ||
-                         PressConfiguration(x, y) || PressKeyboardEditor(x, y) || PressPadPicker(x, y);
+                         PressOnline(x, y) || PressConfiguration(x, y) || PressKeyboardEditor(x, y) || PressPadPicker(x, y);
     if (!handled) {
         if (settings) PressControllerPanel(x, y);
         else if (!loading) PressLibrary(x, y);
@@ -392,6 +392,38 @@ bool LibrarySession::PressHeader(float x, float y) {
             actions |= Panel;
             return true;
         }
+    }
+    return false;
+}
+
+// The Online tab: a press on a row focuses it and does what A does; the list's button refreshes it.
+bool LibrarySession::PressOnline(float x, float y) {
+    if (tab != LibraryTab::Online || settings || game_options.open || panel.BindingEditorOpen() || panel.expanded)
+        return false;
+    const auto target = canvas->HitAt(x, y);
+    if (target.hit == LibraryHit::OnlineRow && target.index < OnlineRowCount(online_page)) {
+        online_page.selected = target.index;
+        if (OnlineInRooms(online_page)) online_page.last_room = target.index - OnlinePage::FixedRows;
+        else online_page.last_form = target.index;
+        actions |= Play;
+        dirty = true;
+        return true;
+    }
+    if (target.hit == LibraryHit::OnlineRefresh) {
+        actions |= Refresh;
+        dirty = true;
+        return true;
+    }
+    if (target.hit == LibraryHit::OnlineHostRow && target.index < OnlinePage::HostRows) {
+        online_page.host_selected = target.index;
+        actions |= Play;
+        dirty = true;
+        return true;
+    }
+    if (target.hit == LibraryHit::OnlineMode) {
+        if (online_page.host != (target.index == 1)) actions |= Pin;
+        dirty = true;
+        return true;
     }
     return false;
 }
@@ -625,7 +657,7 @@ void LibrarySession::UpdateControllers(TimePoint now) {
     }
     if (catalog_changed && panel.pad_picker.open) BuildPadPicker();
     const unsigned context = configuration.confirm_import ? 1001 : configuration.network_screen ? 1000 : game_options.open ? (7 + static_cast<unsigned>(game_options.selected) * 3 + static_cast<unsigned>(game_options.focus)) :
-        graphics_page.open ? 1002 : system_page.name_editor ? 6 : system_page.open ? 5 :
+        graphics_page.open ? 1002 : system_page.name_editor ? 6 : online_page.open ? 1003 : system_page.open ? 5 :
         panel.BindingEditorOpen() ? 3 : panel.expanded ? 2 : settings ? 1 : configuration.open ? 4 : 0;
     if (context != navigation_context) {
         stick_navigation.Reset(); manager_dpad.Reset(); trigger_tabs.Reset(); navigation_context = context;

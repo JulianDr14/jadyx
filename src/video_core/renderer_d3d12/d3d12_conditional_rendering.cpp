@@ -73,6 +73,9 @@ ConditionalRendering::ConditionalRendering(const Device& device_, Scheduler& sch
 bool ConditionalRendering::Accelerate(const Tegra::Engines::Maxwell3D::Regs& regs,
                                       Tegra::MemoryManager& gpu_memory) {
     mode = Mode::Render;
+    decision = {.path = Decision::Path::Fixed,
+                .guest_mode = static_cast<u8>(regs.render_enable.mode),
+                .serial = decision.serial + 1};
     // The fixed modes do not read memory: the CPU evaluates them without waiting.
     if (regs.render_enable_override != RenderEnable::Override::UseRenderEnable) {
         return false;
@@ -82,8 +85,10 @@ bool ConditionalRendering::Accelerate(const Tegra::Engines::Maxwell3D::Regs& reg
         guest_mode != RenderEnable::Mode::IfEqual && guest_mode != RenderEnable::Mode::IfNotEqual) {
         return false;
     }
+    decision.address = regs.render_enable.Address();
     // Diagnostic ("occlusion_force_visible=1"): every conditional draw renders.
     if (VideoCommon::force_occlusion_visible.load(std::memory_order_relaxed)) {
+        decision.path = Decision::Path::Forced;
         return true;
     }
     const GPUVAddr address = regs.render_enable.Address();
@@ -97,6 +102,10 @@ bool ConditionalRendering::Accelerate(const Tegra::Engines::Maxwell3D::Regs& reg
         compare_second ? CpuReport(address + 16, gpu_memory, pending_counter) : u64{0};
     if (lhs && rhs) {
         mode = (*lhs == *rhs) == render_if_equal ? Mode::Render : Mode::Skip;
+        decision.path = Decision::Path::Cpu;
+        decision.lhs = *lhs;
+        decision.rhs = *rhs;
+        decision.render = mode == Mode::Render;
         return true;
     }
     // The GPU writes a report: counters still pending are summed into the buffer cache first,
@@ -104,7 +113,11 @@ bool ConditionalRendering::Accelerate(const Tegra::Engines::Maxwell3D::Regs& reg
     if (pending_counter) {
         query_cache.NotifyWFI();
     }
-    return PredicateOnGpuReports(address, compare_second, render_if_equal);
+    if (!PredicateOnGpuReports(address, compare_second, render_if_equal)) {
+        decision.path = Decision::Path::Fallback;
+        return false;
+    }
+    return true;
 }
 
 std::optional<u64> ConditionalRendering::CpuReport(GPUVAddr address,
@@ -151,6 +164,10 @@ bool ConditionalRendering::PredicateOnGpuReports(GPUVAddr address, bool compare_
         const bool differ = reports[0] != (compare_second ? reports[4] : 0) ||
                             reports[1] != (compare_second ? reports[5] : 0);
         mode = differ != render_if_equal ? Mode::Render : Mode::Skip;
+        decision.path = Decision::Path::Snapshot;
+        decision.lhs = u64{reports[0]} | (u64{reports[1]} << 32);
+        decision.rhs = compare_second ? (u64{reports[4]} | (u64{reports[5]} << 32)) : 0;
+        decision.render = mode == Mode::Render;
         CountGpuReportCondition(++read_back_conditions, predicated_conditions, snapshot_misses);
         return true;
     }
@@ -199,6 +216,7 @@ bool ConditionalRendering::PredicateOnGpuReports(GPUVAddr address, bool compare_
     // the value that skips the draws.
     op = render_if_equal ? D3D12_PREDICATION_OP_NOT_EQUAL_ZERO : D3D12_PREDICATION_OP_EQUAL_ZERO;
     mode = Mode::Predicated;
+    decision.path = Decision::Path::Gpu;
     if (!logged_gpu_reports) {
         LOG_INFO(Render, "D3D12: render conditions on GPU-written reports compared on the GPU ({})",
                  compare_second ? (render_if_equal ? "if equal" : "if not equal") : "if not zero");

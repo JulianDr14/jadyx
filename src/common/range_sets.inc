@@ -224,6 +224,20 @@ bool RangeSet<AddressType>::Empty() const {
 }
 
 template <typename AddressType>
+bool RangeSet<AddressType>::Intersects(AddressType base_address, size_t size) const {
+    const auto& set = m_impl->m_ranges_set;
+    if (size == 0 || set.empty()) {
+        return false;
+    }
+    // The first range that does not end before the query starts: it overlaps unless it starts
+    // after the query ends.
+    const AddressType end_address = base_address + static_cast<AddressType>(size);
+    const typename RangeSetImpl::IntervalType search_interval{base_address, end_address};
+    const auto it = set.lower_bound(search_interval);
+    return it != set.end() && it->lower() < end_address;
+}
+
+template <typename AddressType>
 template <typename Func>
 void RangeSet<AddressType>::ForEach(Func&& func) const {
     m_impl->ForEach(std::move(func));

@@ -20,6 +20,7 @@
 #include "common/bug_tracker.h"
 #include "common/cityhash.h"
 #include "common/logging.h"
+#include "common/stall_watch.h"
 #include "video_core/renderer_d3d12/d3d12_dxil_disk_cache.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/frame_trace.h"
@@ -449,6 +450,8 @@ std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
     VideoCore::FrameTrace::ScopedSpan translate_span{
         VideoCore::FrameTrace::Event::PipelineTranslateLong, trace_pipeline, trace_pipeline != 0};
     const u64 translate_start = SteadyMicros();
+    std::optional<Common::StallWatch::Scope> stall_watch;
+    stall_watch.emplace(Common::StallWatch::Work::MesaTranslate);
     if (options.emulate_reduction && !emulates_reduction) {
         throw std::runtime_error("D3D12: spirv_to_dxil.dll cannot emulate sampler reduction");
     }
@@ -491,6 +494,7 @@ std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
     }
 
     translate_span.Finish();
+    stall_watch.reset();
     GetPipelineStats().Record(D3D12::PipelineStage::Translate, SteadyMicros() - translate_start);
     std::vector<CompiledStage> result(stages.size());
     for (size_t i = 0; i < stages.size(); ++i) {
@@ -583,7 +587,11 @@ void ShaderCompiler::Sign(std::vector<u8>& dxil, u64 trace_pipeline) const {
     VideoCore::FrameTrace::ScopedSpan lock_span{
         VideoCore::FrameTrace::Event::PipelineValidatorLockLong, trace_pipeline, trace_pipeline != 0};
     const u64 lock_start = SteadyMicros();
+    std::optional<Common::StallWatch::Scope> stall_watch;
+    stall_watch.emplace(Common::StallWatch::Work::ValidatorLock);
     std::scoped_lock lock{validator_mutex};
+    stall_watch.reset();
+    stall_watch.emplace(Common::StallWatch::Work::ValidatorSign);
     const u64 sign_start = SteadyMicros();
     GetPipelineStats().Record(D3D12::PipelineStage::SignLock, sign_start - lock_start);
     lock_span.Finish();

@@ -838,7 +838,9 @@ struct Memory::Impl {
                 const bool deferrable = defer != Mode::Off && address != 0 && size != 0 &&
                                         VideoCommon::GpuWrittenPages::Enabled() &&
                                         !VideoCommon::GpuWrittenPages::AnyMarked(address, size);
-                if (deferrable && defer == Mode::On) {
+                const bool queued = defer == Mode::On && address != 0 && size != 0 &&
+                                    (deferrable || VideoCommon::CpuWriteQueue::AllWrites());
+                if (queued) {
                     if (VideoCommon::CpuWriteQueue::Push(core, address, size)) {
                         VideoCore::Perf::Add(VideoCore::Perf::Counter::CpuWritesDeferred, 1);
                         return;
@@ -948,8 +950,20 @@ bool Memory::IsValidVirtualAddress(const Common::ProcessAddress vaddr) const {
            type == Common::PageType::DebugMemory;
 }
 
+bool Memory::IsRasterizerCachedPage(const Common::ProcessAddress vaddr) const {
+    const auto& page_table = *impl->current_page_table;
+    const size_t page = vaddr >> YUZU_PAGEBITS;
+    if (page >= page_table.entries.size()) {
+        return false;
+    }
+    return page_table.entries[page].Type() == Common::PageType::RasterizerCachedMemory;
+}
+
 bool Memory::IsValidVirtualAddressRange(Common::ProcessAddress base, u64 size) const {
     Common::ProcessAddress end = base + size;
+    if (GetInteger(end) < GetInteger(base)) {
+        return false; // the range wraps past the top of the address space
+    }
     Common::ProcessAddress page = Common::AlignDown(GetInteger(base), YUZU_PAGESIZE);
 
     for (; page < end; page += YUZU_PAGESIZE) {

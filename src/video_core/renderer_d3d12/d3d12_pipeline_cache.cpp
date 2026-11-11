@@ -95,6 +95,8 @@ std::atomic_bool pipeline_prewarm{true};
 // results (particles, physics, culling) or hangs, try boot.cfg "cs_split=1" first.
 std::atomic<u32> compute_workgroup_split{16};
 
+std::atomic_bool shuffle_wave_uniform{true};
+
 /// Launches with more groups than this fill the GPU without splitting them further.
 constexpr u64 MAX_SPLIT_GROUPS = 256;
 
@@ -789,6 +791,10 @@ void SetComputeWorkgroupSplit(u32 factor) {
     compute_workgroup_split.store(factor, std::memory_order_relaxed);
 }
 
+void SetShuffleWaveUniform(bool enabled) {
+    shuffle_wave_uniform.store(enabled, std::memory_order_relaxed);
+}
+
 PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                              const Device& device_, const ShaderCompiler& compiler_,
                              const TextureCacheRuntime& texture_runtime_,
@@ -866,6 +872,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         // SM 6.4 on the Series: quad ops in a shader without derivatives read helper lanes that
         // never ran, so a quad leader outside the triangle gives garbage along its edges.
         .has_helperless_quad_shuffles = true,
+        // Measured by the wave self-test on Series: a shuffle whose source differs between lanes
+        // reads the first lane's source on all of them.
+        .has_broken_divergent_shuffle_index = shuffle_wave_uniform.load(std::memory_order_relaxed),
         .has_broken_robust = false,
         // D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT: raw views start on 16 bytes.
         .min_ssbo_alignment = 16,
@@ -908,9 +917,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
 
     LOG_INFO(Render,
              "D3D12: pipeline cache ready ({} workers, waves up to {} lanes, int64 {}, "
-             "VP/RT index outside GS {}, dependent draws preserved)",
+             "VP/RT index outside GS {}, wave-uniform shuffles {}, dependent draws preserved)",
              GetTotalPipelineWorkers(), caps.wave_lane_count_max, caps.int64,
-             caps.vp_and_rt_index_from_any_stage);
+             caps.vp_and_rt_index_from_any_stage, profile.has_broken_divergent_shuffle_index);
 }
 
 PipelineCache::~PipelineCache() {
@@ -1175,11 +1184,14 @@ void PipelineCache::LogPipelineStats(std::string_view when) const {
                             name, summary.count, ms(summary.p50), ms(summary.p95),
                             ms(summary.p99), ms(summary.max), ms(summary.total));
     }
+    const auto help = GraphicsPipeline::GetBuilderHelpStats();
     LOG_INFO(Render,
-             "D3D12 pipeline stages ({}, ms): {} inline builds, {} prewarmed, {} of them drawn{}",
+             "D3D12 pipeline stages ({}, ms): {} inline builds, {} prewarmed, {} of them drawn; "
+             "waited builds raised {} (priority {}), given CPUs {}{}",
              when, stats.inline_builds.load(std::memory_order_relaxed),
              stats.prewarm_queued.load(std::memory_order_relaxed),
-             stats.prewarm_hits.load(std::memory_order_relaxed), line);
+             stats.prewarm_hits.load(std::memory_order_relaxed), help.boosts,
+             GetPipelineBuildBoost(), help.lends, line);
     if (PipelineKeyFold::GetMode() != PipelineKeyFold::Mode::Off) {
         LOG_INFO(Render,
                  "D3D12 pipeline key folding ({}): {} keys found a pipeline through it; checks: {} "

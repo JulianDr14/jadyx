@@ -59,6 +59,15 @@ void SetDiagUavSync(bool enabled) {
     diag_uav_sync_enabled.store(enabled, std::memory_order_relaxed);
 }
 
+void Scheduler::RefreshDiagToggles() {
+    const bool uav_sync = diag_uav_sync_enabled.load(std::memory_order_relaxed);
+    if (uav_sync != diag_uav_sync) {
+        LOG_WARNING(Render, "D3D12 toggles: UAV barrier after every draw and dispatch {}",
+                    uav_sync ? "on" : "off");
+        diag_uav_sync = uav_sync;
+    }
+}
+
 Scheduler::Scheduler(Device& device_) : device{device_} {
     diag_uav_sync = diag_uav_sync_enabled.load(std::memory_order_relaxed);
     if (diag_uav_sync) {

@@ -10,6 +10,7 @@
 #include <ranges>
 #include "common/settings.h"
 #include "core/core.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/guest_memory.h"
@@ -42,6 +43,9 @@ void MaxwellDMA::ConsumeSinkImpl(Core::System& system) {
 }
 
 void MaxwellDMA::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
+    if (method >= NUM_REGS) [[unlikely]] {
+        VideoCommon::GeoHunt::CommandGarbage("maxwell-dma", method, method_argument);
+    }
     ASSERT_MSG(method < NUM_REGS, "Invalid MaxwellDMA register");
 
     regs.reg_array[method] = method_argument;

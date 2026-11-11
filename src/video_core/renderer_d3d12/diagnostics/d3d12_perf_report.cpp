@@ -7,12 +7,16 @@
 #include <utility>
 
 #include <fmt/format.h>
+#include <intrin.h>
 #include <windows.h>
 #include <psapi.h>
 
 #include "common/host_stalls.h"
 #include "common/logging.h"
+#include "common/permafrost.h"
+#include "common/thread_cpu_time.h"
 #include "core/arm/cpu_profile.h"
+#include "common/windows/cpu_pin.h"
 #include "common/windows/timed_wait_profile.h"
 #include "dynarmic/interface/jit_profile.h"
 #include "video_core/cpu_write_queue.h"
@@ -43,6 +47,7 @@ void RendererD3D12::RecordPacing(double wait_ms, double present_ms) {
         pacing.max_present_ms = std::max(pacing.max_present_ms, present_ms);
         ReportPerf(interval);
         rasterizer.BottleneckHunt().FrameEnd(interval);
+        rasterizer.DiagnosticsFrameEnd(interval);
     } else {
         perf_frame = VideoCore::Perf::Read();
         perf_window = perf_frame;
@@ -186,7 +191,8 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         "{:.1f} ms, copies {} / {:.1f} ms, other {} / {:.1f} ms, header flushes {} done, {} "
         "skipped | Maxwell dirty: {} changed, "
         "{} identical skipped | index rewrites: {} new, {} reused, {} rechecked, {:.1f} ms | "
-        "CB_DATA blocks: {} ({} words) | blit uploads skipped: {} ({} KiB, {} put back)",
+        "CB_DATA blocks: {} ({} words) | blit uploads skipped: {} ({} KiB, {} put back) | "
+        "semaphore writes: {} superseded, {} fences held back for order",
         draw_ms, per_draw(Counter::DrawNs), per_draw(Counter::DrawTexturesNs),
         per_draw(Counter::DrawBuffersNs), per_draw(Counter::DrawDescriptorsNs),
         per_draw(Counter::DrawTargetsNs), per_draw(Counter::DrawUpdateTargetsNs),
@@ -237,7 +243,8 @@ std::string DescribeDrawCosts(const VideoCore::Perf::Snapshot& d, double interva
         get(Counter::IndexRewriteRechecks), ns_ms(Counter::IndexRewriteNs),
         get(Counter::ConstBufferRuns), get(Counter::ConstBufferRunWords),
         get(Counter::BlitUploadsSkipped), get(Counter::BlitUploadBytesSkipped) / 1024,
-        get(Counter::BlitDiscardsRestored));
+        get(Counter::BlitDiscardsRestored), get(Counter::SemaphoreWritesSuperseded),
+        get(Counter::SemaphoreWritesHeldBack));
 }
 
 std::string DescribeGuestWaitSites() {
@@ -374,7 +381,7 @@ const char* LikelyCause(const VideoCore::Perf::Snapshot& d, double interval_ms) 
 }
 
 /// Indexed by RendererD3D12::HitchCause.
-constexpr std::array<const char*, 11> HITCH_CAUSE_NAMES{
+constexpr std::array<const char*, 14> HITCH_CAUSE_NAMES{
     "pipeline builds",
     "JIT compilation (new guest code)",
     "game file reads",
@@ -386,6 +393,9 @@ constexpr std::array<const char*, 11> HITCH_CAUSE_NAMES{
     "game CPU work (the GPU thread waited for the game)",
     "memory page faults",
     "GPU thread recording and caches",
+    "game waiting for swapped memory",
+    "game waiting for the GPU or a free framebuffer",
+    "game inside one long system call or service request",
 };
 
 const char* HitchCauseName(size_t cause) {
@@ -401,6 +411,15 @@ RendererD3D12::HitchProbe::HostTotals RendererD3D12::ReadHostTotals() const {
     PROCESS_MEMORY_COUNTERS memory{};
     memory.cb = sizeof(memory);
     const bool have_memory = K32GetProcessMemoryInfo(GetCurrentProcess(), &memory, sizeof(memory));
+    const Common::Permafrost::Stats swap = Common::Permafrost::GetStats();
+    std::array<u64, 4> core_idle_us{};
+    std::array<u64, 4> core_cycles{};
+    for (size_t core = 0; core < core_idle_us.size(); ++core) {
+        core_idle_us[core] =
+            Common::HostStalls::core_idle_us[core].load(std::memory_order_relaxed);
+        core_cycles[core] = Common::ThreadCycles(
+            Common::HostStalls::core_threads[core].load(std::memory_order_relaxed));
+    }
     return {
         .jit_compiles = compile.calls,
         .jit_compile_ns = compile.ns,
@@ -409,11 +428,32 @@ RendererD3D12::HitchProbe::HostTotals RendererD3D12::ReadHostTotals() const {
         .file_read_bytes = Common::HostStalls::Read(Counter::FileReadBytes),
         .file_read_us = Common::HostStalls::Read(Counter::FileReadUs),
         .page_faults = have_memory ? memory.PageFaultCount : hitch.host.page_faults,
+        .time_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        std::chrono::steady_clock::now().time_since_epoch())
+                                        .count()),
+        .tsc = __rdtsc(),
+        .core_idle_us = core_idle_us,
+        .core_cycles = core_cycles,
+        .swap_stall_us = swap.fault_stall_us,
+        .swap_ins = swap.swap_ins,
+        .swap_read_bytes = swap.read_bytes,
+        .guest_call_us = Common::HostStalls::Read(Counter::GuestCallUs),
+        .guest_requests = Common::HostStalls::Read(Counter::GuestRequests),
+        .guest_request_us = Common::HostStalls::Read(Counter::GuestRequestUs),
     };
 }
 
 RendererD3D12::HitchProbe::HostTotals RendererD3D12::HostDelta(const HitchProbe::HostTotals& now,
                                                                const HitchProbe::HostTotals& before) {
+    std::array<u64, 4> core_idle_us{};
+    std::array<u64, 4> core_cycles{};
+    for (size_t core = 0; core < core_idle_us.size(); ++core) {
+        core_idle_us[core] = now.core_idle_us[core] - before.core_idle_us[core];
+        // A new game's core threads start from zero.
+        core_cycles[core] = now.core_cycles[core] >= before.core_cycles[core]
+                                ? now.core_cycles[core] - before.core_cycles[core]
+                                : 0;
+    }
     return {
         .jit_compiles = now.jit_compiles - before.jit_compiles,
         .jit_compile_ns = now.jit_compile_ns - before.jit_compile_ns,
@@ -422,6 +462,16 @@ RendererD3D12::HitchProbe::HostTotals RendererD3D12::HostDelta(const HitchProbe:
         .file_read_bytes = now.file_read_bytes - before.file_read_bytes,
         .file_read_us = now.file_read_us - before.file_read_us,
         .page_faults = now.page_faults - before.page_faults,
+        .time_ns = now.time_ns - before.time_ns,
+        .tsc = now.tsc - before.tsc,
+        .core_idle_us = core_idle_us,
+        .core_cycles = core_cycles,
+        .swap_stall_us = now.swap_stall_us - before.swap_stall_us,
+        .swap_ins = now.swap_ins - before.swap_ins,
+        .swap_read_bytes = now.swap_read_bytes - before.swap_read_bytes,
+        .guest_call_us = now.guest_call_us - before.guest_call_us,
+        .guest_requests = now.guest_requests - before.guest_requests,
+        .guest_request_us = now.guest_request_us - before.guest_request_us,
     };
 }
 
@@ -435,6 +485,10 @@ void RendererD3D12::ReportPerf(double interval_ms) {
     hitch.host = host;
     // Every frame, so a hitch names only its own submissions.
     const double longest_submit_ms = static_cast<double>(scheduler.TakeLongestSubmitUs()) / 1000.0;
+    const u64 longest_call =
+        Common::HostStalls::longest_guest_call.exchange(0, std::memory_order_relaxed);
+    const u64 longest_request =
+        Common::HostStalls::longest_guest_request.exchange(0, std::memory_order_relaxed);
 
     // A second without a present is a pause (menus, loading screens), not a hitch.
     constexpr double PAUSE_MS = 1000.0;
@@ -463,9 +517,19 @@ void RendererD3D12::ReportPerf(double interval_ms) {
     set(HitchCause::Gpu, Ms(delta, Counter::FenceWaitUs));
     set(HitchCause::GameCpu, Ms(delta, Counter::GpuThreadIdleUs));
 
+    // The game's own waits, summed over its threads.
+    const double swap_ms = static_cast<double>(host_delta.swap_stall_us) / 1000.0;
+    const double gpu_wait_ms = Ms(delta, Counter::GuestGpuWaitUs);
+    const double dequeue_wait_ms = Ms(delta, Counter::GuestDequeueWaitUs);
+    const double guest_wait_ms = gpu_wait_ms + dequeue_wait_ms;
+    const double longest_call_ms = static_cast<double>(longest_call >> 8) / 1000.0;
+    const double longest_request_ms = static_cast<double>(longest_request >> 8) / 1000.0;
+
     // A dropped frame at 60 FPS (33 ms against 17) or at 30 FPS (50 ms against 33) counts.
     const double excess = interval_ms - normal;
     if (interval_ms < normal * 1.5 || excess < 12.0) {
+        hitch.usual_swap_ms += (swap_ms - hitch.usual_swap_ms) / 16.0;
+        hitch.usual_guest_wait_ms += (guest_wait_ms - hitch.usual_guest_wait_ms) / 16.0;
         for (size_t i = 0; i < ms.size(); ++i) {
             hitch.usual_ms[i] += (ms[i] - hitch.usual_ms[i]) / 16.0;
         }
@@ -492,6 +556,16 @@ void RendererD3D12::ReportPerf(double interval_ms) {
             cause = HitchCause::GameCpu;
         } else {
             cause = HitchCause::Render;
+        }
+    }
+    if (cause == HitchCause::GameCpu) {
+        // The GPU thread waited for the game: say what held the game, if something did.
+        if (swap_ms - hitch.usual_swap_ms >= excess * 0.25) {
+            cause = HitchCause::GameSwap;
+        } else if (guest_wait_ms - hitch.usual_guest_wait_ms >= excess * 0.5) {
+            cause = HitchCause::GameGpuWait;
+        } else if (std::max(longest_call_ms, longest_request_ms) >= std::max(excess * 0.5, 8.0)) {
+            cause = HitchCause::GameService;
         }
     }
 
@@ -534,6 +608,37 @@ void RendererD3D12::ReportPerf(double interval_ms) {
              get(Counter::GpuThreadFlushes), at(HitchCause::NewResources),
              get(Counter::ResourcesCreated), at(HitchCause::TextureDecode),
              get(Counter::GuestFramesQueued), Ms(delta, Counter::GpuBusyUs));
+    // What the game's side did in the frame. Per core: CPU time its host thread really ran,
+    // time with no guest thread to run, and the rest (held in the host: locks, page faults,
+    // waits inside the emulator, or the thread not getting a processor).
+    {
+        const double wall_ms = static_cast<double>(host_delta.time_ns) / 1e6;
+        const double cycles_per_ms =
+            wall_ms > 0.0 ? static_cast<double>(host_delta.tsc) / wall_ms : 0.0;
+        std::string cores;
+        for (size_t core = 0; core < host_delta.core_idle_us.size(); ++core) {
+            const double idle = static_cast<double>(host_delta.core_idle_us[core]) / 1000.0;
+            const double ran = cycles_per_ms > 0.0
+                                   ? static_cast<double>(host_delta.core_cycles[core]) /
+                                         cycles_per_ms
+                                   : 0.0;
+            cores += fmt::format("{}core {} ran {:.1f} idle {:.1f} held {:.1f}",
+                                 core == 0 ? "" : ", ", core, ran, idle,
+                                 std::max(wall_ms - ran - idle, 0.0));
+        }
+        LOG_INFO(Render,
+                 "Hitch game: over {:.1f} ms, {} | swap waits {:.1f} ms ({} reads, {:.2f} MiB) | "
+                 "waited for the GPU {:.1f} ms ({}), for a free framebuffer {:.1f} ms ({}) | "
+                 "longest system call {:#x} {:.1f} ms (all calls {:.1f} ms), longest service "
+                 "request {:#x} {:.1f} ms ({} requests, {:.1f} ms)",
+                 wall_ms, cores, swap_ms, host_delta.swap_ins,
+                 static_cast<double>(host_delta.swap_read_bytes) / (1024.0 * 1024.0),
+                 gpu_wait_ms, get(Counter::GuestGpuWaits), dequeue_wait_ms,
+                 get(Counter::GuestDequeueWaits), longest_call & 0xff, longest_call_ms,
+                 static_cast<double>(host_delta.guest_call_us) / 1000.0,
+                 longest_request & 0xff, longest_request_ms, host_delta.guest_requests,
+                 static_cast<double>(host_delta.guest_request_us) / 1000.0);
+    }
     // What the GPU ran in the frame, to tell heavy work from a submission held up by paging
     // (one long submission with ordinary counts, local memory at its budget).
     const DXGI_QUERY_VIDEO_MEMORY_INFO memory = device.QueryVideoMemory();
@@ -582,6 +687,10 @@ void RendererD3D12::ReportPerfWindow(u32 frames, double total_ms) {
     LOG_INFO(Render, "D3D12 perf over {} frames ({:.0f} ms), mostly {} | {}", frames, total_ms,
              LikelyCause(delta, total_ms), DescribePerf(delta, total_ms));
     LOG_INFO(Render, "D3D12 GPU thread: {}", DescribeDrawCosts(delta, total_ms));
+    if (const std::string threads = Common::Windows::NamedThreadCpuReport(16); !threads.empty()) {
+        LOG_INFO(Render, "Thread CPU over the window (busiest first, name ms@CPU sets): {}",
+                 threads);
+    }
     if (const u64 checks = VideoCore::Perf::Get(delta, Counter::PipelineKeyChecks); checks != 0) {
         LOG_INFO(Render, "D3D12 pipeline key check: {} reusable draws verified, {} mismatched",
                  checks, VideoCore::Perf::Get(delta, Counter::PipelineKeyMismatches));

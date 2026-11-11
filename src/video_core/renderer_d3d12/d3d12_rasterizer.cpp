@@ -23,6 +23,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/framebuffer_config.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_fast_paths.h"
 #include "video_core/memory_manager.h"
 #include "video_core/cpu_write_queue.h"
 #include "video_core/perf_counters.h"
@@ -31,6 +32,7 @@
 #include "video_core/renderer_d3d12/d3d12_draw_metrics.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_tracking.h"
 #include "video_core/renderer_d3d12/d3d12_rasterizer.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/renderer_d3d12/d3d12_scheduler.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_compute_inputs.h"
 
@@ -120,13 +122,14 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
       conditional_rendering{device, scheduler_, compiler, query_cache, buffer_cache},
       accelerate_dma{buffer_cache, texture_cache, draw_hunt},
       fence_manager{*this, gpu_, texture_cache, buffer_cache, query_cache, scheduler_},
-      draw_hunt{device, scheduler_} {
+      draw_hunt{device, scheduler_}, glitch_hunt{device, scheduler_, staging} {
     buffer_runtime.SetDescriptorQueue(&descriptor_queue);
     scheduler.RegisterOnReset([this] { InvalidateCommandListState(); });
     LOG_INFO(Render, "D3D12: rasterizer active (draws, clears, caches, DMA and pipelines)");
 }
 
 RasterizerD3D12::~RasterizerD3D12() {
+    VideoCommon::GeoHunt::Stop();
     // Renderer drains the scheduler before destroying caches/staging. Export completed work
     // on a normal shutdown too; a removed device must never make destruction throw.
     try {
@@ -356,6 +359,9 @@ void RasterizerD3D12::Draw(bool is_indexed, u32 instance_count) {
 void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
                               std::optional<u32> vertex_texture_handle) {
     DrainCpuWrites();
+    if (glitch_hunt.Capturing()) [[unlikely]] {
+        GlitchPassCheck("switch");
+    }
     const bool full = VideoCommon::FullCapture::Active();
     if (full) {
         ++full_capture_operation;
@@ -375,10 +381,16 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
             "{{\"op\":{},\"recorded\":{}}}", full_operation, full_draw_recorded));
     };
     HuntScope hunt{draw_hunt, is_indexed ? Hunt::Kind::DrawIndexed : Hunt::Kind::Draw};
+    GlitchNote glitch{.active = glitch_hunt.Capturing(),
+                      .kind = static_cast<u8>((draw_hunt.cpu_indirect ? 2 : 0) + (is_indexed ? 1 : 0))};
+    SCOPE_EXIT {
+        if (glitch.active) [[unlikely]] GlitchDraw(glitch);
+    };
     if (conditional_rendering.SkipsDraws()) {
         if (full) VideoCommon::FullCapture::Event("draw_conditional_skip");
         ++zpass_diag.conditional;
         hunt.Outcome(Hunt::Outcome::Conditional);
+        glitch.outcome = Hunt::Outcome::Conditional;
         return;
     }
     DrawMetrics::ScopedDrawTimer draw_timer;
@@ -393,6 +405,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
         if (full) VideoCommon::FullCapture::Event("draw_culled");
         ++zpass_diag.culled;
         hunt.Outcome(Hunt::Outcome::Culled);
+        glitch.outcome = Hunt::Outcome::Culled;
         if (trace_draws) {
             TraceDraw("draw skipped (both faces culled)", nullptr, nullptr, {}, 0, 0);
         }
@@ -407,13 +420,18 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
         if (full) VideoCommon::FullCapture::Event("draw_no_pipeline");
         ++zpass_diag.no_pipeline;
         hunt.Outcome(Hunt::Outcome::NoPipeline);
+        glitch.outcome = Hunt::Outcome::NoPipeline;
         if (trace_draws) {
             TraceDraw("draw skipped (no pipeline)", nullptr, nullptr, {}, 0, 0);
         }
         return;
     }
     hunt.Shaders(pipeline->Key().unique_hashes[1], pipeline->Key().unique_hashes[5]);
+    glitch.pipeline = pipeline;
+    glitch.vs = pipeline->Key().unique_hashes[1];
+    glitch.ps = pipeline->Key().unique_hashes[5];
     if (pipeline->GetVertexTextureHandle() && !vertex_texture_handle) [[unlikely]] {
+        glitch.outcome = Hunt::Outcome::Expanded;
         DrawVertexTextureRuns(*pipeline, is_indexed, instance_count);
         return;
     }
@@ -431,10 +449,13 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
     std::vector<TracedBuffer> traced_buffers;
     FullCaptureViews full_views;
     if (full) bindings.trace_all_views = &full_views;
-    if (trace_this_draw) {
+    if (trace_this_draw || glitch.active) {
+        // Glitch hunt: the sampled views and their descriptors go on S lines (GlitchDraw).
         bindings.trace_views = &traced_views;
         bindings.trace_filters = &traced_filters;
         bindings.trace_types = &traced_types;
+    }
+    if (trace_this_draw) {
         if (trace_dumps || material_trace.Active()) {
             buffer_runtime.SetTraceBuffers(&traced_buffers);
         }
@@ -479,6 +500,12 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
         }
     }
     buffer_runtime.SetTraceBuffers(nullptr);
+    if (glitch.active) [[unlikely]] {
+        glitch_views = traced_views;
+        glitch_filters = traced_filters;
+    }
+    glitch.configured = true;
+    glitch.pipeline = pipeline;
     if (!pipeline->IsBuilt()) [[unlikely]] {
         const auto& draw = maxwell3d->draw_manager.draw_state;
         if (!WaitPendingPipeline(pipeline,
@@ -486,6 +513,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
                                  instance_count, is_indexed)) {
             ++zpass_diag.pending;
             hunt.Outcome(Hunt::Outcome::NoPipeline);
+            glitch.outcome = Hunt::Outcome::NoPipeline;
             if (trace_this_draw) {
                 TraceDraw("draw skipped (pipeline building)", pipeline, nullptr, traced_views, 0,
                           0);
@@ -499,6 +527,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
                       pipeline->Key().unique_hashes[1], pipeline->Key().unique_hashes[5]);
         ++zpass_diag.rejected;
         hunt.Outcome(Hunt::Outcome::PsoRejected);
+        glitch.outcome = Hunt::Outcome::PsoRejected;
         if (trace_this_draw) {
             TraceDraw("draw skipped (PSO rejected)", pipeline, nullptr, traced_views, 0, 0);
         }
@@ -507,6 +536,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
     if (UsesSkippedShader(pipeline->Key().unique_hashes)) [[unlikely]] {
         ++zpass_diag.skipped_shader;
         hunt.Outcome(Hunt::Outcome::SkippedShader);
+        glitch.outcome = Hunt::Outcome::SkippedShader;
         return; // skip_shader
     }
     VideoCore::Perf::ScopedNsTimer record_timer{VideoCore::Perf::Counter::DrawRecordNs};
@@ -514,6 +544,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
     framebuffer->PrepareAttachments(scheduler, bindings.depth_sampled,
                                     pipeline->BoundColorTargets());
     hunt.Target(framebuffer);
+    glitch.framebuffer = framebuffer;
 
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     DrawParams params{
@@ -543,9 +574,18 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
         params.runtime_first_vertex = params.base_vertex;
         params.is_indexed = true;
     }
+    glitch.has_params = true;
+    glitch.emulated = emulated_topology;
+    glitch.rewritten = buffer_runtime.RewrittenIndexCount().has_value();
+    glitch.count = params.num_vertices;
+    glitch.instances = params.num_instances;
+    glitch.first = params.first_index;
+    glitch.base_vertex = params.base_vertex;
+    glitch.base_instance = params.base_instance;
     if (params.num_vertices == 0 || params.num_instances == 0) {
         ++zpass_diag.empty;
         hunt.Outcome(Hunt::Outcome::Empty);
+        glitch.outcome = Hunt::Outcome::Empty;
         buffer_runtime.ApplyGeometry(scheduler.CommandList());
         if (trace_this_draw) {
             TraceDraw("draw skipped (empty)", pipeline, framebuffer, traced_views,
@@ -570,7 +610,16 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
         CaptureFullBuffers(traced_buffers, false);
         CaptureFullImages(full_views, framebuffer, false);
     }
+    glitch.lost_slots = buffer_runtime.CheckVertexSlots(buffer_cache.DiagVertexMask());
+    glitch_probe = glitch.active;
     RecordDraw(*pipeline, bindings, *framebuffer, params, draw_state.topology);
+    glitch_probe = false;
+    glitch.outcome = Hunt::Outcome::Recorded;
+    if (glitch.active) [[unlikely]] {
+        // Under the cache lock and before the work ends: the bindings are still this draw's.
+        GlitchDraw(glitch);
+        glitch.active = false;
+    }
     full_draw_recorded = true;
     if (GetAsyncPipelines() == AsyncPipelines::Balanced) {
         MarkTargetsDrawn(*framebuffer);
@@ -650,6 +699,18 @@ void RasterizerD3D12::RecordDraw(GraphicsPipeline& pipeline,
     } else {
         query_runtime.PrepareDraw(maxwell3d->regs.zpass_pixel_count_enable);
         const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
+        // Glitch hunt: the queries the guest's own counters leave free, around this draw only.
+        // When the guest counts samples, its own slot is isolated around this draw instead.
+        const std::optional<QueryCacheRuntime::IsolatedSlot> guest_samples =
+            glitch_probe && maxwell3d->regs.zpass_pixel_count_enable != 0
+                ? query_runtime.IsolateOcclusion()
+                : std::nullopt;
+        const std::optional<GlitchHunt::Probe> probe =
+            glitch_probe ? glitch_hunt.BeginProbe(maxwell3d->regs.zpass_pixel_count_enable == 0,
+                                                  !query_runtime.CountsPrimitives(),
+                                                  guest_samples ? guest_samples->heap : nullptr,
+                                                  guest_samples ? guest_samples->index : 0)
+                         : std::nullopt;
         DrawStencilFaces(pipeline, topology, [&] {
             if (params.is_indexed) {
                 cmd->DrawIndexedInstanced(params.num_vertices, params.num_instances,
@@ -661,6 +722,13 @@ void RasterizerD3D12::RecordDraw(GraphicsPipeline& pipeline,
                                    params.base_instance);
             }
         });
+        if (guest_samples) [[unlikely]] {
+            query_runtime.EndIsolatedOcclusion();
+        }
+        if (probe) [[unlikely]] {
+            // GlitchDraw takes this call number right after the record.
+            glitch_hunt.EndProbe(glitch_hunt.PeekCall(), *probe);
+        }
     }
     texture_runtime.FinishCompatibleDrawTargets(framebuffer);
 }
@@ -830,6 +898,41 @@ void RasterizerD3D12::DispatchCompute() {
     const auto& qmd = kepler_compute->launch_description;
     const PipelineLayout& layout = pipeline->Layout();
     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
+    std::optional<u32> glitch_call;
+    if (glitch_hunt.Capturing()) [[unlikely]] {
+        const u32 call = glitch_hunt.NextCall();
+        glitch_call = call;
+        glitch_hunt.Line(fmt::format("C f={} n={} cs={:016x} groups={}x{}x{} block={}x{}x{}",
+                                     glitch_hunt.Frame(), call, pipeline->UniqueHash(), dim[0],
+                                     dim[1], dim[2], qmd.block_dim_x, qmd.block_dim_y,
+                                     qmd.block_dim_z));
+        GlitchBindings(glitch_hunt.Frame(), call, nullptr, true);
+        GlitchComputeDump(glitch_hunt.Frame(), call, false);
+        // v18: what a replay needs besides the buffers: push constants, root layout, the split,
+        // the storage buffer descriptors and, once per capture, the DXIL.
+        const auto& info = pipeline->Info();
+        std::string storage;
+        for (const auto& desc : info.storage_buffers_descriptors) {
+            storage += fmt::format("{}:{}:{}:{},", desc.cbuf_index, desc.cbuf_offset, desc.count,
+                                   desc.is_written ? 1 : 0);
+        }
+        std::string push;
+        for (const u32 word : bindings.push_constants) {
+            push += fmt::format("{:x},", word);
+        }
+        glitch_hunt.Line(fmt::format(
+            "R f={} n={} cs={:016x} split={} rtw={} rti={} sti={} isi={} nres={} nsmp={} "
+            "pci={} rdi={} ssbo={} pc={}",
+            glitch_hunt.Frame(), call, pipeline->UniqueHash(), pipeline->WorkgroupSplit(),
+            layout.RuntimeDataWords(), layout.ResourceTableIndex(), layout.SamplerTableIndex(),
+            layout.IntegerSamplerIndex(), layout.NumResourceDescriptors(),
+            layout.NumSamplerDescriptors(), PipelineLayout::PUSH_CONSTANTS_INDEX,
+            PipelineLayout::RUNTIME_DATA_INDEX, storage, push));
+        if (glitch_hunt.FirstInCapture(pipeline->UniqueHash())) {
+            glitch_hunt.DumpGuest(call, "dxil", pipeline->DiagnosticDxil(),
+                                  fmt::format("cs={:016x}", pipeline->UniqueHash()));
+        }
+    }
     if (dump_inputs) {
         DumpComputeInputs(scheduler, staging, full_buffers, pipeline->UniqueHash(),
                           dispatch_count, dim, false);
@@ -866,6 +969,9 @@ void RasterizerD3D12::DispatchCompute() {
     }
     bool dispatched = false;
     SCOPE_EXIT {
+        if (glitch_call && dispatched && glitch_hunt.Capturing()) [[unlikely]] {
+            GlitchComputeDump(glitch_hunt.Frame(), *glitch_call, true);
+        }
         if (dump_inputs && dispatched) {
             DumpComputeInputs(scheduler, staging, full_buffers, pipeline->UniqueHash(),
                               dispatch_count, dim, true);
@@ -1052,44 +1158,39 @@ void RasterizerD3D12::Query(GPUVAddr address, VideoCommon::QueryType type,
                             VideoCommon::QueryPropertiesFlags flags, u32 payload,
                             u32 subreport) {
     const bool host_type = QueryCacheRuntime::IsHostCounted(type);
-    {
-        // Diagnostic: every guest query by raw type, logged at 1, 2, 4, 8... requests.
-        static std::array<std::atomic<u64>, 32> query_counts{};
-        const u32 slot = static_cast<u32>(type) & 31;
-        const u64 count = ++query_counts[slot];
-        if ((count & (count - 1)) == 0 || (host_type && count <= 80)) {
-            LOG_WARNING(Render,
-                        "D3D12: guest query type {} flags {:#x} payload {:#x} addr {:#x} "
-                        "({}), request #{}",
-                        static_cast<u32>(type), static_cast<u32>(flags), payload, address,
-                        host_type ? "host counter" : "fallback", count);
-        }
-    }
-    if (type == VideoCommon::QueryType::ZPassPixelCount64) {
-        static u32 diag_logged{};
-        if (diag_logged++ < 40) {
-            const ZPassDiag& d = zpass_diag;
-            LOG_WARNING(Render,
-                        "D3D12: ZPass report since reset: {} draws ({} recorded, {} conditional, "
-                        "{} culled, {} no pipeline, {} pipeline building, {} rejected, {} skipped "
-                        "shader, {} empty); first recorded VS/PS/depth: {:016x}/{:016x}/{} "
-                        "{:016x}/{:016x}/{} {:016x}/{:016x}/{}",
-                        d.attempted, d.recorded, d.conditional, d.culled, d.no_pipeline,
-                        d.pending, d.rejected, d.skipped_shader, d.empty, d.vs[0], d.ps[0], d.depth_test[0],
-                        d.vs[1], d.ps[1], d.depth_test[1], d.vs[2], d.ps[2], d.depth_test[2]);
-        }
-    }
+    using VideoCore::Perf::Counter;
     if (type == VideoCommon::QueryType::StreamingByteCount && HasDrawTransformFeedback()) {
         return QueryByteCount(address, flags, subreport);
     }
+    const bool timed = VideoCore::Perf::DetailedGpuProfileEnabled();
+    const auto start = timed ? std::chrono::steady_clock::now()
+                             : std::chrono::steady_clock::time_point{};
+    const auto finish = [&](Counter ns_counter) {
+        if (timed) {
+            VideoCore::Perf::Add(ns_counter,
+                                 static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                      std::chrono::steady_clock::now() - start)
+                                                      .count()));
+        }
+    };
     if (!host_type) {
-        // A report the CPU writes ends any counter report pending at the address.
-        if (const std::optional<DAddr> cpu_address = gpu_memory->GpuToCpuAddress(address)) {
+        VideoCore::Perf::Add(type == VideoCommon::QueryType::Payload ? Counter::QueriesPayload
+                                                                     : Counter::QueriesFallback,
+                             1);
+        // A report the CPU writes ends any counter report pending at the address. With no
+        // report cached there is none to end (the count only grows on this thread).
+        if (query_cache.CachedQueries() == 0) {
+            VideoCore::Perf::Add(Counter::QueryInvalidationsSkipped, 1);
+        } else if (const std::optional<DAddr> cpu_address =
+                       gpu_memory->GpuToCpuAddress(address)) {
             query_cache.InvalidateRegion(*cpu_address, sizeof(u64));
         }
-        return QueryFallback(address, type, flags, payload);
+        QueryFallback(address, type, flags, payload);
+        return finish(Counter::QueryFallbackNs);
     }
+    VideoCore::Perf::Add(Counter::QueriesHost, 1);
     query_cache.CounterReport(address, type, flags, payload, subreport);
+    finish(Counter::QueryHostNs);
 }
 
 bool RasterizerD3D12::HasDrawTransformFeedback() {
@@ -1134,15 +1235,23 @@ void RasterizerD3D12::QueryFallback(GPUVAddr address, VideoCommon::QueryType typ
                                     VideoCommon::QueryPropertiesFlags flags, u32 payload) {
     if (!gpu_memory) return;
     if (type != VideoCommon::QueryType::Payload) payload = 1;
-    auto operation = [this, address, flags, payload, memory = gpu_memory] {
-        if (True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout)) {
-            memory->Write<u64>(address + 8, gpu.GetTicks());
-            memory->Write<u64>(address, payload);
-        } else {
-            memory->Write<u32>(address, payload);
+    // A write that waited for its fence must not overwrite a newer one that ran at once.
+    const u64 ticket = semaphore_order.Request(address);
+    auto operation = [this, address, flags, payload, ticket, memory = gpu_memory] {
+        const bool written = semaphore_order.Write(address, ticket, [&] {
+            if (True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout)) {
+                memory->Write<u64>(address + 8, gpu.GetTicks());
+                memory->Write<u64>(address, payload);
+            } else {
+                memory->Write<u32>(address, payload);
+            }
+        });
+        if (!written) {
+            VideoCore::Perf::Add(VideoCore::Perf::Counter::SemaphoreWritesSuperseded, 1);
         }
     };
     if (True(flags & VideoCommon::QueryPropertiesFlags::IsAFence)) {
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::QueriesFenced, 1);
         SignalFence(std::move(operation));
     } else {
         operation();
@@ -1151,6 +1260,12 @@ void RasterizerD3D12::QueryFallback(GPUVAddr address, VideoCommon::QueryType typ
 
 void RasterizerD3D12::BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr address,
                                                 u32 size) {
+    // Bindings are only read and written by the GPU thread (DisableGraphicsUniformBuffer below
+    // takes no lock either); the lock costs one acquisition per bind, thousands a frame.
+    if (VideoCore::FastPaths::Enabled()) [[likely]] {
+        buffer_cache.BindGraphicsUniformBuffer(stage, index, address, size);
+        return;
+    }
     std::scoped_lock lock{buffer_cache.mutex};
     buffer_cache.BindGraphicsUniformBuffer(stage, index, address, size);
 }
@@ -1359,16 +1474,36 @@ bool RasterizerD3D12::OnCPUWrite(PAddr address, u64 size) {
 }
 
 void RasterizerD3D12::OnCacheInvalidation(PAddr address, u64 size) {
-    InvalidateRegion(address, size, VideoCommon::CacheType::TextureCache |
-                                        VideoCommon::CacheType::BufferCache);
+    if (!address || !size) return;
+    {
+        std::scoped_lock lock{texture_cache.mutex};
+        texture_cache.WriteMemory(address, size);
+    }
+    {
+        std::scoped_lock lock{buffer_cache.mutex};
+        buffer_cache.GatheredCpuWrite(address, size);
+    }
 }
 void RasterizerD3D12::InvalidateGPUCache() {
+    const bool capturing = glitch_hunt.Capturing();
+    if (capturing != VideoCommon::ReadbackTrace::GpuLossRecording()) {
+        VideoCommon::ReadbackTrace::SetGpuLossRecording(capturing);
+    }
     DrainCpuWrites();
     for (const auto& [address, size] : cpu_writes_after_gpu) {
         OnCacheInvalidation(address, size);
     }
     cpu_writes_after_gpu.clear();
     gpu.InvalidateGPUCache();
+    if (capturing) {
+        // "W": gathered CPU writes over GPU-written bytes, before the call they precede.
+        for (const auto& loss : VideoCommon::ReadbackTrace::TakeGpuLosses()) {
+            glitch_hunt.Line(fmt::format("W f={} n={} a={:x} len={} gpu={}{}",
+                                         glitch_hunt.Frame(), glitch_hunt.PeekCall(),
+                                         loss.address, loss.size, loss.gpu_bytes,
+                                         loss.kept ? " kept" : ""));
+        }
+    }
 }
 void RasterizerD3D12::UnmapMemory(DAddr address, u64 size) {
     { std::scoped_lock lock{texture_cache.mutex}; texture_cache.UnmapMemory(address, size); }

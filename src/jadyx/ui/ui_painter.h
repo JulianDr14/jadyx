@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -59,6 +60,8 @@ enum class TypeRole : unsigned {
 };
 
 enum class TextAlign : unsigned { Leading, Center, Trailing };
+
+struct ChatMenuLine;
 
 /// Semantic targets emitted at the same place and size that a manager draws its controls.
 enum class UiTarget : unsigned { ManagerTab, ManagerRow, ManagerCard };
@@ -130,6 +133,18 @@ public:
     void ButtonGlyph(std::wstring_view letters, float x, float y, unsigned color);
     /// A button glyph and its label; returns the width it took.
     float Prompt(std::wstring_view letters, unsigned color, std::wstring_view label, float x, float y);
+    /// The room chat's history between `top` and `bottom`, the newest (or the one `scroll` lines up)
+    /// at the bottom: bubbles, the player's own at the right, and status lines in between.
+    void ChatHistory(std::span<const ChatMenuLine> lines, std::size_t scroll, float x, float top, float width,
+                     float bottom);
+    /// The card that tells of new messages: the newest at (x, y), `more` besides them, and a hint
+    /// of where to answer. ChatNoticeWidth wide, ChatNoticeHeight(lines) tall.
+    void ChatNotice(std::span<const ChatMenuLine> lines, std::size_t more, std::wstring_view hint, float x,
+                    float y);
+    static constexpr float ChatNoticeWidth = 380;
+    static constexpr float ChatNoticeHeight(std::size_t lines) {
+        return 46 + static_cast<float>(lines) * 44 + 26;
+    }
     /// The picture in `file`, cropped to fill the rectangle, with rounded corners. False when this
     /// surface draws no pictures or the file cannot be decoded: the caller draws a placeholder.
     virtual bool Picture(const std::filesystem::path& file, float x, float y, float w, float h) {

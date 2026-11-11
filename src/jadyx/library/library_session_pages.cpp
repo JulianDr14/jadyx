@@ -92,6 +92,12 @@ void LibrarySession::HandlePicker() {
     // Switching tabs: the bumpers (Q/E) at the top level, or a press on the header.
 void LibrarySession::SwitchTab(LibraryTab to) {
     if (to == tab) return;
+    if (tab == LibraryTab::Online) {
+        online_page.open = false;
+        if (system_page.editor_purpose != EditorPurpose::UserName) system_page.name_editor.reset();
+        online_page.pending_room.reset();
+        system_page.notice.clear();
+    }
     if (tab == LibraryTab::Settings) {
         system_page.open = graphics_page.open = false;
         configuration.open = configuration.files = false;
@@ -100,6 +106,17 @@ void LibrarySession::SwitchTab(LibraryTab to) {
         panel.CloseBindingEditors();
     }
     tab = to;
+    if (to == LibraryTab::Online) {
+        online_page.open = true;
+        system_page.notice.clear();
+        PollOnline();
+        // While this console hosts a room, the tab opens on it.
+        if (OnlineHosting(online_page.status)) online_page.host = true;
+        // The public list downloads when the tab first opens, and again after a failure; the
+        // refresh button downloads it whenever asked.
+        if (online_page.lobby.state == Online::LobbyState::Empty || online_page.lobby.state == Online::LobbyState::Failed)
+            Online::RefreshLobby();
+    }
     if (to == LibraryTab::Settings) {
         configuration.open = true; configuration.files = false; configuration.selected = HomeSystem;
         configuration.notice.clear(); RefreshSetup();
@@ -358,9 +375,10 @@ void LibrarySession::HandleControllerPanel() {
         actions &= ~(Swap | Zone);
     } else {
         // Rows: device, controller type, A/B/X/Y, deadzone, keyboard, controller mapping, then the
-        // right stick's (invert X, invert Y, sensitivity, mouse, mouse sensitivity). The floating
-        // panel outside the Settings tab draws only the first six.
-        const unsigned rows = tab == LibraryTab::Settings ? 11 : 6;
+        // right stick's (invert X, invert Y, sensitivity, mouse, mouse sensitivity), the rumble
+        // (on, strength) and the gyro's controls (stick, shake button). The floating panel
+        // outside the Settings tab draws only the first six.
+        const unsigned rows = tab == LibraryTab::Settings ? 15 : 6;
         if (setting_row >= rows) setting_row = 0;
         if (actions & Up) setting_row = (setting_row + rows - 1) % rows;
         if (actions & Down) setting_row = (setting_row + 1) % rows;
@@ -369,7 +387,25 @@ void LibrarySession::HandleControllerPanel() {
         if (opens && actions & Left && !(actions & (Play | Right))) {
             if (configuration.open) { settings = return_to_configuration = false; dirty = true; }
         } else if (actions & (Play | Left | Right)) {
-            if (setting_row >= 6) {
+            if (setting_row >= 11) {
+                const bool back = (actions & Left) && !(actions & (Play | Right));
+                switch (setting_row) {
+                case 11: options.rumble.on = !options.rumble.on; break;
+                case 12: options.rumble.strength = StepSensitivity(RumbleStrengthSteps, options.rumble.strength, back); break;
+                case 13:
+                    options.motion_stick =
+                        options.motion_stick == MotionStick::Right ? MotionStick::Left : MotionStick::Right;
+                    break;
+                default: {
+                    const auto count = MotionShakeButtonCount;
+                    const auto index = static_cast<u8>(options.motion_shake);
+                    options.motion_shake =
+                        static_cast<MotionShakeButton>(back ? (index + count - 1) % count : (index + 1) % count);
+                    break;
+                }
+                }
+                device_changed = true; dirty = true;
+            } else if (setting_row >= 6) {
                 auto& stick = options.right_stick;
                 const bool back = (actions & Left) && !(actions & (Play | Right));
                 switch (setting_row) {
@@ -515,6 +551,7 @@ void LibrarySession::Draw() {
                   .configuration = configuration,
                   .system = system_page,
                   .graphics = graphics_page,
+                  .online = online_page,
                   .game_options = options_view,
                   .missing_content = missing_content,
                   .rail = rail,
@@ -527,6 +564,378 @@ void LibrarySession::Draw() {
                   .app_mode = app_mode,
                   .app_memory_mib = app_memory_limit >> 20});
     dirty = false;
+}
+
+// The Online tab. The room and the public list live in Jadyx::Online; the tab copies them while
+// it shows, so a join answered on the network thread redraws the screen.
+void LibrarySession::PollOnline() {
+    // The connection on every tab: the header marks the Online tab while in a room.
+    auto status = Online::Snapshot();
+    if (status.version != online_page.status.version) {
+        online_page.status = std::move(status);
+        if (!OnlineChatShows(online_page)) online_page.in_chat = false;
+        dirty = true;
+    }
+    PollOnlineChat();
+    if (tab != LibraryTab::Online) return;
+    auto lobby = Online::Lobby();
+    if (lobby.version != online_page.lobby.version) {
+        online_page.lobby = std::move(lobby);
+        auto& page = online_page;
+        const std::size_t rooms = page.lobby.rooms.size();
+        page.last_room = rooms ? std::min(page.last_room, rooms - 1) : 0;
+        // A list that shrank under the focus hands it to its last room, or back to the form.
+        if (OnlineInRooms(page) && page.selected >= OnlineRowCount(page))
+            page.selected = rooms ? OnlinePage::FixedRows + rooms - 1 : page.last_form;
+        dirty = true;
+    }
+}
+
+void LibrarySession::HandleOnlinePage(TimePoint now) {
+    if (tab != LibraryTab::Online || settings || game_options.open) return;
+    // The keyboard takes its input in the handlers above; the page waits behind it.
+    if (system_page.name_editor || !actions) {
+        actions &= ~(Up | Down | Left | Right | Play | Refresh | Pin | Swap | AddFolder | Options);
+        return;
+    }
+    auto& page = online_page;
+    if (page.in_chat) {
+        HandleOnlineChat();
+        dirty = true;
+        actions &= Panel;
+        return;
+    }
+    // Y switches the left card between joining and hosting.
+    if (actions & Pin) {
+        page.host = !page.host;
+        system_page.notice.clear();
+        system_notice_until = now;
+        dirty = true;
+        actions &= Panel;
+        return;
+    }
+    if (page.host) {
+        HandleOnlineHost(now);
+        dirty = true;
+        actions &= Panel;
+        return;
+    }
+    const std::size_t rooms = page.lobby.rooms.size();
+    if (OnlineInRooms(page)) {
+        const std::size_t room = page.selected - OnlinePage::FixedRows;
+        if (actions & Up && room > 0) page.selected--;
+        if (actions & Down && room + 1 < rooms) page.selected++;
+        page.last_room = page.selected - OnlinePage::FixedRows;
+        if (actions & Left) page.selected = page.last_form;
+    } else {
+        if (actions & Up && page.selected > 0) page.selected--;
+        if (actions & Down && page.selected + 1 < OnlinePage::FixedRows) page.selected++;
+        page.last_form = page.selected;
+        if (actions & Right && OnlineChatShows(page)) {
+            // In a room the right column is its chat.
+            page.in_chat = true;
+            page.chat = {};
+            Online::MarkChatRead();
+        } else if (actions & Right && rooms) {
+            page.selected = OnlinePage::FixedRows + std::min(page.last_room, rooms - 1);
+        }
+    }
+    if (actions & Refresh) Online::RefreshLobby();
+    if (actions & Quit) {
+        SwitchTab(LibraryTab::Home);
+    } else if (actions & Play) {
+        switch (page.selected) {
+        case OnlinePage::Nickname: OpenOnlineEditor(EditorPurpose::OnlineNickname); break;
+        case OnlinePage::Address: OpenOnlineEditor(EditorPurpose::OnlineAddress); break;
+        case OnlinePage::Port: OpenOnlineEditor(EditorPurpose::OnlinePort); break;
+        case OnlinePage::Password: OpenOnlineEditor(EditorPurpose::OnlinePassword); break;
+        case OnlinePage::Connect:
+            if (page.status.phase == Online::Phase::Joined || page.status.phase == Online::Phase::Joining) {
+                Online::Leave();
+            } else if (page.fields.address.empty()) {
+                system_page.notice = Tr(T::OnlineNoAddress);
+                system_notice_until = now + std::chrono::seconds{3};
+            } else {
+                JoinOnline(OnlineNarrow(page.fields.address), page.fields.port, OnlineNarrow(page.password), now);
+            }
+            break;
+        default:
+            if (const auto* room = OnlineRoomAt(page, page.selected)) {
+                if (room->password) {
+                    page.pending_room = *room;
+                    OpenOnlineEditor(EditorPurpose::RoomPassword);
+                } else {
+                    JoinOnline(room->address, room->port, {}, now);
+                }
+            }
+            break;
+        }
+    }
+    dirty = true;
+    // View still opens the controller panel, as on the other tabs; the rest belongs to this one.
+    actions &= Panel;
+}
+
+// Host mode: the rows stack, except players and port, which share a line.
+void LibrarySession::HandleOnlineHost(TimePoint now) {
+    auto& page = online_page;
+    auto& row = page.host_selected;
+    if (actions & Up) {
+        if (row == OnlinePage::HostPort) row = OnlinePage::HostName;
+        else if (row == OnlinePage::HostPassword) row = OnlinePage::HostSlots;
+        else if (row > OnlinePage::HostNickname) row--;
+    }
+    if (actions & Down) {
+        if (row == OnlinePage::HostSlots) row = OnlinePage::HostPassword;
+        else if (row + 1 < OnlinePage::HostRows) row++;
+    }
+    if (actions & Left && row == OnlinePage::HostPort) row = OnlinePage::HostSlots;
+    if (actions & Right && row == OnlinePage::HostSlots) row = OnlinePage::HostPort;
+    if (actions & Quit) {
+        SwitchTab(LibraryTab::Home);
+        return;
+    }
+    if (!(actions & Play)) return;
+    switch (row) {
+    case OnlinePage::HostNickname: OpenOnlineEditor(EditorPurpose::OnlineNickname); break;
+    case OnlinePage::HostName: OpenOnlineEditor(EditorPurpose::HostName); break;
+    case OnlinePage::HostSlots: OpenOnlineEditor(EditorPurpose::HostSlots); break;
+    case OnlinePage::HostPort: OpenOnlineEditor(EditorPurpose::HostPort); break;
+    case OnlinePage::HostPassword: OpenOnlineEditor(EditorPurpose::HostPassword); break;
+    case OnlinePage::HostCreate: {
+        const auto phase = page.status.phase;
+        if (phase == Online::Phase::Joined || phase == Online::Phase::Joining) {
+            // In a room: the button closes the hosted one, or leaves the joined one first.
+            if (OnlineHosting(page.status)) {
+                Online::Leave();
+                break;
+            }
+        }
+        HostOnline(now);
+        break;
+    }
+    default: break;
+    }
+}
+
+void LibrarySession::HostOnline(TimePoint now) {
+    const auto& user = system_page.settings.user_name;
+    const std::wstring_view name = user.empty() ? std::wstring_view{DefaultUserName} : std::wstring_view{user};
+    const auto& page = online_page;
+    Online::Host(OnlineNickname(page, name), {.name = OnlineRoomName(page, name),
+                                             .slots = page.fields.slots,
+                                             .port = page.fields.host_port,
+                                             .password = OnlineNarrow(page.host_password)});
+    system_page.notice.clear();
+    system_notice_until = now;
+}
+
+void LibrarySession::OpenOnlineEditor(EditorPurpose purpose) {
+    const auto& fields = online_page.fields;
+    std::wstring initial;
+    std::size_t max_length = Online::MaxPasswordLength;
+    switch (purpose) {
+    case EditorPurpose::OnlineNickname:
+        initial = fields.nickname;
+        max_length = Online::MaxNicknameLength;
+        break;
+    case EditorPurpose::OnlineAddress:
+        initial = fields.address;
+        max_length = Online::MaxAddressLength;
+        break;
+    case EditorPurpose::OnlinePort:
+        initial = std::to_wstring(fields.port);
+        max_length = 5;
+        break;
+    case EditorPurpose::OnlinePassword: initial = online_page.password; break;
+    case EditorPurpose::HostName:
+        initial = fields.room_name;
+        max_length = Online::MaxNicknameLength;
+        break;
+    case EditorPurpose::HostSlots:
+        initial = std::to_wstring(fields.slots);
+        max_length = 2;
+        break;
+    case EditorPurpose::HostPort:
+        initial = std::to_wstring(fields.host_port);
+        max_length = 5;
+        break;
+    case EditorPurpose::HostPassword: initial = online_page.host_password; break;
+    case EditorPurpose::ChatMessage: max_length = ChatMaxChars; break;
+    default: break;
+    }
+    system_page.name_editor.emplace(std::move(initial), max_length);
+    system_page.editor_purpose = purpose;
+    system_page.editor_notice.clear();
+}
+
+void LibrarySession::FinishOnlineEditor(bool accept, TimePoint now) {
+    if (!system_page.name_editor) return;
+    auto& page = online_page;
+    if (!accept) {
+        system_page.name_editor.reset();
+        page.pending_room.reset();
+        return;
+    }
+    std::wstring value = system_page.name_editor->Value();
+    bool save = true;
+    switch (system_page.editor_purpose) {
+    case EditorPurpose::OnlineNickname: {
+        while (!value.empty() && value.back() == L' ') value.pop_back();
+        // Empty follows the user name; anything else is made acceptable to the rooms.
+        page.fields.nickname = value.empty() ? std::wstring{} : OnlineWiden(Online::MakeNickname(value));
+        break;
+    }
+    case EditorPurpose::OnlineAddress:
+        SplitAddress(value, page.fields.port);
+        page.fields.address = std::move(value);
+        break;
+    case EditorPurpose::OnlinePort: {
+        const auto port = Online::ParsePort(value);
+        if (!port) {
+            system_page.editor_notice = Tr(T::OnlineBadPort);
+            return;
+        }
+        page.fields.port = *port;
+        break;
+    }
+    case EditorPurpose::OnlinePassword:
+        page.password = std::move(value);
+        save = false;
+        break;
+    case EditorPurpose::RoomPassword:
+        save = false;
+        if (const auto room = std::exchange(page.pending_room, std::nullopt))
+            JoinOnline(room->address, room->port, OnlineNarrow(value), now);
+        break;
+    case EditorPurpose::HostName: {
+        while (!value.empty() && value.back() == L' ') value.pop_back();
+        // Empty follows the nickname; anything else is made acceptable to the room.
+        page.fields.room_name = value.empty() ? std::wstring{} : OnlineWiden(Online::MakeRoomName(value));
+        break;
+    }
+    case EditorPurpose::HostSlots: {
+        const auto slots = Online::ParseSlots(value);
+        if (!slots) {
+            system_page.editor_notice = Tr(T::OnlineBadSlots);
+            return;
+        }
+        page.fields.slots = *slots;
+        break;
+    }
+    case EditorPurpose::HostPort: {
+        const auto port = Online::ParsePort(value);
+        if (!port) {
+            system_page.editor_notice = Tr(T::OnlineBadPort);
+            return;
+        }
+        page.fields.host_port = *port;
+        break;
+    }
+    case EditorPurpose::HostPassword:
+        page.host_password = std::move(value);
+        save = false;
+        break;
+    case EditorPurpose::ChatMessage:
+        save = false;
+        SendOnlineChat(value);
+        break;
+    case EditorPurpose::UserName: break;
+    }
+    system_page.name_editor.reset();
+    if (save) {
+        const bool saved = Online::SaveFields(page.fields);
+        system_page.notice = Tr(saved ? T::SettingsSaved : T::SystemSaveFailed);
+        system_notice_until = now + std::chrono::seconds{3};
+    }
+}
+
+// The room's chat: copied when it changes. Read while it shows; on the other tabs new messages
+// from others show a few seconds in a card.
+void LibrarySession::PollOnlineChat() {
+    auto& page = online_page;
+    const auto now = std::chrono::steady_clock::now();
+    if (!page.toast.empty() && (now >= chat_toast_until || tab == LibraryTab::Online)) {
+        page.toast.clear();
+        dirty = true;
+    }
+    const std::uint64_t version = Online::ChatVersion();
+    if (version == page.chat_version) return;
+    page.chat_version = version;
+    auto chat = Online::Chat();
+    const std::uint64_t last_id = std::exchange(page.chat_last_id, chat.lines.empty() ? 0 : chat.lines.back().id);
+    std::size_t added = 0;
+    bool incoming = false;
+    for (const auto& line : chat.lines) {
+        if (line.id <= last_id) continue;
+        ++added;
+        incoming |= line.kind == Online::ChatKind::Message && !line.own;
+    }
+    page.chat_lines.clear();
+    page.chat_lines.reserve(chat.lines.size());
+    for (const auto& line : chat.lines) page.chat_lines.push_back(ChatLineInWords(line));
+    if (tab == LibraryTab::Online && OnlineChatShows(page)) {
+        page.chat.Grew(added, page.chat_lines.size());
+        Online::MarkChatRead();
+        page.chat_version = Online::ChatVersion();
+    } else if (incoming && tab != LibraryTab::Online && Online::LoadChatNotices() != Online::ChatNotices::Off) {
+        constexpr std::size_t Shown = 2;
+        page.toast.clear();
+        for (auto it = chat.lines.rbegin(); it != chat.lines.rend() && page.toast.size() < Shown; ++it)
+            if (it->kind == Online::ChatKind::Message && !it->own) page.toast.push_back(ChatLineInWords(*it));
+        std::reverse(page.toast.begin(), page.toast.end());
+        page.toast_more = chat.unread > page.toast.size() ? chat.unread - page.toast.size() : 0;
+        chat_toast_until = now + std::chrono::seconds{5};
+    }
+    dirty = true;
+}
+
+void LibrarySession::HandleOnlineChat() {
+    auto& page = online_page;
+    if (actions & Left && !page.chat.picking) {
+        page.in_chat = false;
+        return;
+    }
+    // The library's buttons, as the menu's: A writes, X picks a quick phrase, B goes back.
+    std::optional<MenuAction> action;
+    if (actions & Up) action = MenuAction::Up;
+    else if (actions & Down) action = MenuAction::Down;
+    else if (actions & Play) action = MenuAction::Confirm;
+    else if (actions & Refresh) action = MenuAction::Refresh;
+    else if (actions & Quit) action = MenuAction::Back;
+    if (!action) return;
+    using Effect = Online::ChatPage::Effect;
+    switch (page.chat.Handle(*action, page.chat_lines.size())) {
+    case Effect::None:
+    case Effect::Redraw: break;
+    case Effect::Compose:
+        page.chat_notice.clear();
+        OpenOnlineEditor(EditorPurpose::ChatMessage);
+        break;
+    case Effect::Send:
+        SendOnlineChat(Tr(QuickPhraseText(Online::PhraseAt(page.chat.phrase))));
+        break;
+    case Effect::Back: page.in_chat = false; break;
+    }
+}
+
+void LibrarySession::SendOnlineChat(std::wstring_view text) {
+    auto& page = online_page;
+    page.chat.scroll = 0;
+    if (Online::SendChat(OnlineNarrow(text))) {
+        page.chat_notice.clear();
+        return;
+    }
+    if (!Online::InRoom()) page.chat_notice = Tr(T::ChatNotSent);
+}
+
+void LibrarySession::JoinOnline(const std::string& address, std::uint16_t port, const std::string& password,
+                                TimePoint now) {
+    const auto& user = system_page.settings.user_name;
+    Online::Join(OnlineNickname(online_page, user.empty() ? std::wstring_view{DefaultUserName} : std::wstring_view{user}),
+                 address, port, password);
+    system_page.notice.clear();
+    system_notice_until = now;
 }
 
 } // namespace Jadyx

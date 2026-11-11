@@ -8,7 +8,9 @@
 #include <string>
 #include <vector>
 #include "jadyx/input/controller_style.h"
+#include "jadyx/input/motion_emu.h"
 #include "jadyx/input/right_stick_settings.h"
+#include "jadyx/input/rumble_settings.h"
 #include "jadyx/settings/graphics_page.h"
 #include "jadyx/ui/ui_actions.h"
 #include "jadyx/ui/ui_icon.h"
@@ -89,6 +91,12 @@ private:
     bool held_plus{}, held_minus{}, fired{};
 };
 
+/// The A/B switches of the geometry glitch hunt page, each a live renderer toggle.
+struct GlitchToggles {
+    bool a2c_shader{true}; ///< single-sample alpha-to-coverage dithered in the shader
+    bool precise_writes{true}; ///< CPU writes beside GPU bytes apply at once
+};
+
 struct GameMenuSettings {
     ConsoleControllerStyle style{ConsoleControllerStyle::Auto};
     bool swap_face_buttons{};
@@ -119,6 +127,31 @@ struct GameMenuSettings {
     RightStickSettings right_stick_global{};
     GameRightStick right_stick{};
     bool right_stick_per_game{};
+    /// This game's emulated gyro and when its controller shows on screen (only with
+    /// `right_stick_per_game`: they are always a game's own).
+    MotionMode motion{MotionMode::Off};
+    MotionViewMode motion_view{MotionViewMode::Always};
+    /// Opt-in diagnostic package ("glitch_hunt_menu=1"): the geometry glitch hunt page.
+    bool glitch_hunt{};
+    GlitchToggles glitch{};
+    /// Opt-in diagnostic package ("geo_hunt=1"): missed-write hunt for deformed meshes. A row
+    /// marks the moment a deformation shows.
+    bool geo_hunt{};
+    /// Opt-in diagnostic package ("pso_menu=1"): the priority a pipeline build gets while the
+    /// game waits for it (D3D12::SetPipelineBuildPriority's boost), 0 off, 2 above normal,
+    /// 3 highest; changed at run time to compare in one session.
+    bool pso_menu{};
+    std::uint32_t pso_boost{};
+    /// Settings > Controller's gyro controls (every game's).
+    MotionStick motion_stick{MotionStick::Right};
+    MotionShakeButton motion_shake{MotionShakeButton::StickClick};
+    /// Settings > Controller's rumble and this game's own, as the right stick's
+    /// (`right_stick_per_game` says whether there is a game).
+    RumbleSettings rumble_global{};
+    GameRumble rumble{};
+    /// Geometry hunt package: drop the triangles whose indices point past the vertex buffers
+    /// (they would stretch to the model origin). Shown with the geo_hunt rows.
+    bool geo_oob_fix{true};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -128,6 +161,9 @@ enum class GameMenuResult : std::uint8_t {
     LibraryWithoutSession,
     CaptureGraphics,
     CapturePerformance,
+    /// Geometry glitch hunt: capture the next frames, or Settings().glitch changed.
+    CaptureGlitches,
+    GlitchTogglesChanged,
     Screenshot,
     OfflineModeChanged,
     GraphicsChanged,
@@ -135,6 +171,19 @@ enum class GameMenuResult : std::uint8_t {
     MemoryEdit,
     /// The right stick's rows: Settings() holds the new values (the game's own or Settings').
     RightStickChanged,
+    /// Geometry hunt: mark the moment in its log, or one of its fixes changed.
+    GeoMark,
+    GeoOobFixChanged,
+    /// Settings().pso_boost changed.
+    PsoBoostChanged,
+    /// The room chat's page.
+    Chat,
+    /// Settings().motion or motion_view changed.
+    MotionChanged,
+    /// Settings().motion_stick or motion_shake changed (Settings > Controller's).
+    GyroControlsChanged,
+    /// The rumble rows: Settings() holds the new values (the game's own or Settings').
+    RumbleChanged,
 };
 
 /// The console's tag reader as the game left it, for the Amiibo row.
@@ -162,8 +211,11 @@ public:
         GraphicsMenu, GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxExactGpuReads, GfxTextureMemory,
         GfxGpuAccuracy, GfxConsoleMode, Amiibo, MemoryEdit,
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
+        GlitchPage, GlitchCapture, GlitchA2cShader, GlitchPreciseWrites,
+        GeoMark, GeoOobFix, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
+        GyroStick, GyroShake, Rumble, RumbleStrength,
     };
-    enum class Page : std::uint8_t { Quick, Controller, Display, Graphics };
+    enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
 
     /// `cheats`: the game has a title id, so the menu offers its cheats, its own offline mode and
     /// its graphics that can change while it runs. The rest wait for a boot: the library has them.
@@ -177,9 +229,15 @@ public:
         if (cheats) quick.push_back(OfflineMode);
         if (settings.material_capture) quick.push_back(CaptureGraphics);
         if (settings.performance_capture) quick.push_back(CapturePerformance);
+        if (settings.glitch_hunt) quick.push_back(GlitchPage);
+        if (settings.geo_hunt) quick.insert(quick.end(), {GeoMark, GeoOobFix});
+        if (settings.pso_menu) quick.push_back(PsoBoost);
         quick.push_back(Library);
+        glitch = {GlitchCapture, GlitchA2cShader, GlitchPreciseWrites};
         controller = {Style, FaceButtons, Deadzone, RStickInvertX, RStickInvertY, RStickSensitivity,
-                      RStickMouse, RStickMouseSensitivity};
+                      RStickMouse, RStickMouseSensitivity, Rumble, RumbleStrength};
+        if (settings.right_stick_per_game)
+            controller.insert(controller.end(), {Motion, GyroStick, GyroShake, MotionView});
         display = {PerformanceStats};
         if (settings.can_fullscreen) display.push_back(FullScreen);
         UpdateGraphicsItems();
@@ -211,6 +269,19 @@ public:
         quick.insert(after + 1, Amiibo);
     }
 
+    /// In an online room: the chat's row goes first after Continue, with the unread count.
+    void SetChat(std::size_t unread) {
+        chat_unread = unread;
+        if (std::find(quick.begin(), quick.end(), Chat) != quick.end()) return;
+        quick.insert(quick.begin() + 1, Chat);
+    }
+    /// Puts the cursor on the chat's row (the menu opened from a message's notice).
+    void SelectChat() {
+        page = Page::Quick;
+        const auto found = std::find(quick.begin(), quick.end(), Chat);
+        if (found != quick.end()) selected = static_cast<std::size_t>(found - quick.begin());
+    }
+
     /// What the last screenshot did, under its row (empty: where they go).
     void SetScreenshotNote(std::wstring note) { screenshot_note = std::move(note); }
     /// The results of the search Memory Edit keeps, on its row.
@@ -226,7 +297,10 @@ public:
             // Back on the page's own row.
             selected = static_cast<std::size_t>(
                 std::find(quick.begin(), quick.end(),
-                          page == Page::Controller ? ControllerPage : page == Page::Display ? DisplayPage : GraphicsMenu) -
+                          page == Page::Controller ? ControllerPage
+                          : page == Page::Display  ? DisplayPage
+                          : page == Page::Glitch   ? GlitchPage
+                                                   : GraphicsMenu) -
                 quick.begin());
             page = Page::Quick;
             return GameMenuResult::None;
@@ -264,6 +338,7 @@ public:
         return Tr(page == Page::Controller ? Text::MenuController
                   : page == Page::Display  ? Text::MenuDisplay
                   : page == Page::Graphics ? Text::Graphics
+                  : page == Page::Glitch   ? Text::MenuGlitchPage
                                            : Text::MenuQuick);
     }
     /// Row of the cursor, as drawn.
@@ -275,12 +350,13 @@ private:
     static std::wstring Tr(I18n::Text id) { return std::wstring{I18n::Tr(id)}; }
 
     [[nodiscard]] const std::vector<Item>& Items() const {
-        return page == Page::Controller ? controller : page == Page::Display ? display : page == Page::Graphics ? graphics : quick;
+        return page == Page::Controller ? controller : page == Page::Display ? display : page == Page::Graphics ? graphics : page == Page::Glitch ? glitch : quick;
     }
 
     /// The Handheld style forces the console's mode (uwp_input.cpp): there is nothing to choose.
     void UpdateGraphicsItems() {
-        graphics = {GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxExactGpuReads, GfxTextureMemory, GfxGpuAccuracy};
+        graphics = {GfxUpscaling,     GfxFrameGen,      GfxShaders,     GfxGpuFence,    GfxGuestClock,
+                    GfxExactGpuReads, GfxTextureMemory, GfxGpuAccuracy, GfxFixedCoreMap};
         if (settings.style != ConsoleControllerStyle::Handheld) graphics.push_back(GfxConsoleMode);
     }
 
@@ -294,6 +370,7 @@ private:
         case GfxTextureMemory: return GraphicsRow::TextureMemory;
         case GfxGpuAccuracy: return GraphicsRow::GpuAccuracy;
         case GfxConsoleMode: return GraphicsRow::ConsoleMode;
+        case GfxFixedCoreMap: return GraphicsRow::FixedCoreMap;
         default: return GraphicsRow::Upscaling;
         }
     }
@@ -306,6 +383,11 @@ private:
         switch (item) {
         case Continue:
             return {Tr(Text::MenuResume), {}, Action, {}, UiIcon::Play};
+        case Chat:
+            return {Tr(Text::ChatTitle), {}, Page,
+                    chat_unread != 0 ? I18n::Plural(Text::ChatUnreadOne, Text::ChatUnreadOther, chat_unread)
+                                     : std::wstring{},
+                    UiIcon::Globe};
         case Screenshot:
             return {Tr(Text::MenuScreenshot), {}, Action,
                     screenshot_note.empty() ? Tr(Text::MenuScreenshotWhere) : screenshot_note, UiIcon::Camera};
@@ -313,6 +395,31 @@ private:
             return {Tr(Text::MenuCaptureGraphics), {}, Action, {}, UiIcon::Archive};
         case CapturePerformance:
             return {Tr(Text::MenuCapturePerformance), {}, Action, {}, UiIcon::Archive};
+        case GlitchPage:
+            return {Tr(Text::MenuGlitchPage), {}, Page, Tr(Text::MenuGlitchPageDetail), UiIcon::Archive};
+        case GeoMark:
+            return {Tr(Text::MenuGeoMark), {}, Action,
+                    geo_marks != 0 ? Tr(Text::MenuGeoMarked) + L" " + std::to_wstring(geo_marks)
+                                   : Tr(Text::MenuGeoMarkDetail),
+                    UiIcon::Archive};
+        case GeoOobFix:
+            return {Tr(Text::MenuGeoOobFix), Tr(settings.geo_oob_fix ? Text::Yes : Text::No),
+                    Choice, Tr(Text::MenuGeoOobFixDetail), UiIcon::Settings};
+        case PsoBoost:
+            return {Tr(Text::MenuPsoBoost),
+                    Tr(settings.pso_boost == 0   ? Text::No
+                       : settings.pso_boost == 2 ? Text::MenuPsoBoostAbove
+                                                 : Text::MenuPsoBoostHighest),
+                    Choice, Tr(Text::MenuPsoBoostDetail), UiIcon::Settings};
+        case GlitchCapture:
+            return {Tr(Text::MenuCaptureGlitches), {}, Action, Tr(Text::MenuCaptureGlitchesDetail)};
+        case GlitchA2cShader:
+            // Renderer switch names, the same in every language: the log and boot.cfg use them.
+            return {L"a2c_shader", Tr(settings.glitch.a2c_shader ? Text::Yes : Text::No), Choice,
+                    L"Alpha-to-coverage without MSAA dithered in the shader (off: 0.5 cut)"};
+        case GlitchPreciseWrites:
+            return {L"precise_writes", Tr(settings.glitch.precise_writes ? Text::Yes : Text::No),
+                    Choice, L"CPU writes beside GPU-written bytes apply at once"};
         case MemoryEdit:
             return {Tr(Text::MemoryEditTitle), {}, Page,
                     memory_edit_hits != 0
@@ -352,7 +459,8 @@ private:
         case GfxUpscaling:
         case GfxFrameGen:
         case GfxShaders:
-        case GfxGpuFence: {
+        case GfxGpuFence:
+        case GfxFixedCoreMap: {
             // Whose value it is goes under the label: with the value it would not fit the row.
             const GraphicsRow row = RowOf(item);
             return {Tr(GraphicsRowTitle(row)),
@@ -409,6 +517,32 @@ private:
                 detail = Tr(own ? Text::MenuGraphicsOwn : Text::MenuGraphicsFollowsSettings);
             return {Tr(label), value, Choice, detail};
         }
+        case Motion: {
+            const bool on = settings.motion != MotionMode::Off;
+            return {Tr(Text::MotionRow), Tr(on ? Text::Yes : Text::No), Choice,
+                    Tr(on ? Text::MotionOnHint : Text::MotionOffHint)};
+        }
+        case GyroStick:
+            return {Tr(Text::GyroStickRow),
+                    Tr(settings.motion_stick == MotionStick::Left ? Text::GyroStickLeft : Text::GyroStickRight),
+                    Choice, Tr(Text::GyroStickHint)};
+        case GyroShake:
+            return {Tr(Text::GyroShakeRow), GyroShakeText(settings.motion_shake), Choice, Tr(Text::GyroShakeHint)};
+        case Rumble:
+        case RumbleStrength: {
+            const RumbleSettings resolved = ResolveRumble(settings.rumble_global, settings.rumble);
+            const bool own = item == Rumble ? settings.rumble.on.has_value() : settings.rumble.strength.has_value();
+            std::wstring detail = item == Rumble ? Tr(Text::RumbleHint) : std::wstring{};
+            if (settings.right_stick_per_game)
+                detail = Tr(own ? Text::MenuGraphicsOwn : Text::MenuGraphicsFollowsSettings);
+            if (item == Rumble) return {Tr(Text::RumbleRow), Tr(resolved.on ? Text::Yes : Text::No), Choice, detail};
+            return {Tr(Text::RumbleStrengthRow), std::to_wstring(resolved.strength) + L"%", Choice, detail};
+        }
+        case MotionView: {
+            static constexpr Text values[]{Text::MotionViewAlways, Text::MotionViewMoving, Text::No};
+            return {Tr(Text::MotionViewRow), Tr(values[static_cast<std::size_t>(settings.motion_view)]), Choice,
+                    Tr(Text::MotionViewHint)};
+        }
         case PerformanceStats:
             return {Tr(Text::PerformanceStats), Tr(settings.show_performance_stats ? Text::Yes : Text::No), Choice};
         case FullScreen:
@@ -428,6 +562,19 @@ private:
         return {};
     }
 
+    /// The shake button's name: the Xbox pad's, which every controller page uses.
+    static std::wstring GyroShakeText(MotionShakeButton button) {
+        using I18n::Text;
+        switch (button) {
+        case MotionShakeButton::LB: return L"LB";
+        case MotionShakeButton::RB: return L"RB";
+        case MotionShakeButton::LT: return L"LT";
+        case MotionShakeButton::RT: return L"RT";
+        case MotionShakeButton::StickClick: break;
+        }
+        return Tr(Text::GyroShakeStickClick);
+    }
+
     std::wstring DeadzoneText() const {
         return std::to_wstring(static_cast<int>(settings.deadzone * 100 + 0.5f)) + L"%";
     }
@@ -438,6 +585,8 @@ private:
         switch (SelectedItem()) {
         case Continue:
             return confirm ? GameMenuResult::Resume : GameMenuResult::None;
+        case Chat:
+            return confirm || action == MenuAction::Right ? GameMenuResult::Chat : GameMenuResult::None;
         case Screenshot:
             return confirm ? GameMenuResult::Screenshot : GameMenuResult::None;
         case CaptureGraphics:
@@ -455,10 +604,12 @@ private:
         case ControllerPage:
         case DisplayPage:
         case GraphicsMenu:
+        case GlitchPage:
             // A and Right open the page, as a row with ">" does elsewhere.
             if (back) return GameMenuResult::None;
             page = SelectedItem() == ControllerPage ? Page::Controller
                    : SelectedItem() == DisplayPage  ? Page::Display
+                   : SelectedItem() == GlitchPage   ? Page::Glitch
                                                     : Page::Graphics;
             selected = 0;
             return GameMenuResult::None;
@@ -470,7 +621,8 @@ private:
         case GfxExactGpuReads:
         case GfxTextureMemory:
         case GfxGpuAccuracy:
-        case GfxConsoleMode: {
+        case GfxConsoleMode:
+        case GfxFixedCoreMap: {
             auto row = static_cast<std::size_t>(RowOf(SelectedItem()));
             const bool changed = HandleGameGraphicsInput(
                 settings.graphics, row,
@@ -506,12 +658,66 @@ private:
         case RStickMouseSensitivity:
             ChangeRightStick(SelectedItem(), back);
             return GameMenuResult::RightStickChanged;
+        case Motion:
+            settings.motion = settings.motion == MotionMode::Off ? MotionMode::On : MotionMode::Off;
+            return GameMenuResult::MotionChanged;
+        case GyroStick:
+            settings.motion_stick = settings.motion_stick == MotionStick::Right ? MotionStick::Left : MotionStick::Right;
+            return GameMenuResult::GyroControlsChanged;
+        case GyroShake: {
+            const auto count = MotionShakeButtonCount;
+            const auto index = static_cast<std::uint8_t>(settings.motion_shake);
+            settings.motion_shake =
+                static_cast<MotionShakeButton>(back ? (index + count - 1) % count : (index + 1) % count);
+            return GameMenuResult::GyroControlsChanged;
+        }
+        case Rumble:
+        case RumbleStrength: {
+            const RumbleSettings& global = settings.rumble_global;
+            RumbleSettings stepped = ResolveRumble(global, settings.rumble);
+            if (SelectedItem() == Rumble) stepped.on = !stepped.on;
+            else stepped.strength = StepSensitivity(RumbleStrengthSteps, stepped.strength, back);
+            if (!settings.right_stick_per_game) {
+                settings.rumble_global = stepped;
+            } else if (SelectedItem() == Rumble) {
+                settings.rumble.on = GameOverride(stepped.on, global.on);
+            } else {
+                settings.rumble.strength = GameOverride(stepped.strength, global.strength);
+            }
+            return GameMenuResult::RumbleChanged;
+        }
+        case MotionView: {
+            const auto count = MotionViewModeCount;
+            const auto index = static_cast<std::uint8_t>(settings.motion_view);
+            settings.motion_view =
+                static_cast<MotionViewMode>(back ? (index + count - 1) % count : (index + 1) % count);
+            return GameMenuResult::MotionChanged;
+        }
         case PerformanceStats:
             settings.show_performance_stats = !settings.show_performance_stats;
             return GameMenuResult::PerformanceStatsChanged;
         case FullScreen:
             settings.fullscreen = !settings.fullscreen;
             return GameMenuResult::FullScreen;
+        case GlitchCapture:
+            return confirm ? GameMenuResult::CaptureGlitches : GameMenuResult::None;
+        case GlitchA2cShader:
+            settings.glitch.a2c_shader = !settings.glitch.a2c_shader;
+            return GameMenuResult::GlitchTogglesChanged;
+        case GlitchPreciseWrites:
+            settings.glitch.precise_writes = !settings.glitch.precise_writes;
+            return GameMenuResult::GlitchTogglesChanged;
+        case GeoMark:
+            if (!confirm) return GameMenuResult::None;
+            ++geo_marks;
+            return GameMenuResult::GeoMark;
+        case GeoOobFix:
+            settings.geo_oob_fix = !settings.geo_oob_fix;
+            return GameMenuResult::GeoOobFixChanged;
+        case PsoBoost:
+            // Steps through off, above normal, highest.
+            settings.pso_boost = settings.pso_boost == 0 ? 2 : settings.pso_boost == 2 ? 3 : 0;
+            return GameMenuResult::PsoBoostChanged;
         case OfflineMode: {
             // Steps through: as in Settings > System, on, off.
             auto& offline = settings.offline_mode;
@@ -560,7 +766,7 @@ private:
     }
 
     GameMenuSettings settings;
-    std::vector<Item> quick, controller, display, graphics;
+    std::vector<Item> quick, controller, display, graphics, glitch;
     Page page{Page::Quick};
     std::size_t selected{};
     std::size_t cheats_on{};
@@ -569,6 +775,8 @@ private:
     std::wstring amiibo_name;
     std::wstring screenshot_note;
     std::uint64_t memory_edit_hits{};
+    std::size_t chat_unread{};
+    std::uint32_t geo_marks{};
     bool keep_session{true};
 };
 } // namespace Jadyx

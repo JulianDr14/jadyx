@@ -7,7 +7,9 @@
 // DO NOT MODIFY IT MANUALLY
 
 #include <type_traits>
+#include <chrono>
 
+#include "common/host_stalls.h"
 #include "core/arm/arm_interface.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_process.h"
@@ -2497,7 +2499,39 @@ static void Call64(Core::System& system, u32 imm, std::span<uint64_t, 8> args) {
     default: UNREACHABLE_MSG("Unhandled SVC {:#x}!", imm);
     }
 }
+namespace {
+enum class CallKind { Work, Request, Wait };
+
+/// For the hitch report: a call whose job is to wait says nothing about the emulator, a
+/// request to a service takes as long as the service does, and the rest is kernel work.
+CallKind KindOfCall(u32 imm) {
+    switch (static_cast<SvcId>(imm)) {
+    case SvcId::SendSyncRequestLight:
+    case SvcId::SendSyncRequest:
+    case SvcId::SendSyncRequestWithUserBuffer:
+    case SvcId::SendAsyncRequestWithUserBuffer:
+        return CallKind::Request;
+    case SvcId::ExitProcess:
+    case SvcId::ExitThread:
+    case SvcId::SleepThread:
+    case SvcId::WaitSynchronization:
+    case SvcId::ArbitrateLock:
+    case SvcId::WaitProcessWideKeyAtomic:
+    case SvcId::Break:
+    case SvcId::WaitForAddress:
+    case SvcId::ReplyAndReceiveLight:
+    case SvcId::ReplyAndReceive:
+    case SvcId::ReplyAndReceiveWithUserBuffer:
+        return CallKind::Wait;
+    default:
+        return CallKind::Work;
+    }
+}
+} // Anonymous namespace
+
 void Call(Core::System& system, u32 imm) {
+    const CallKind call_kind = KindOfCall(imm);
+    const auto call_start = std::chrono::steady_clock::now();
     auto& kernel = system.Kernel();
     auto& process = GetCurrentProcess(kernel);
     auto& stack_parameters = GetCurrentThread(kernel).GetStackParameters();
@@ -2519,6 +2553,14 @@ void Call(Core::System& system, u32 imm) {
     //kernel.ExitSVCProfile();
     kernel.CurrentPhysicalCore().LoadSvcArguments(process, args);
     GetCurrentThread(kernel).GetStackParameters().is_calling_svc = false;
+    if (call_kind != CallKind::Wait) {
+        Common::HostStalls::RecordGuestCall(
+            imm,
+            static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                 std::chrono::steady_clock::now() - call_start)
+                                 .count()),
+            call_kind == CallKind::Request);
+    }
 }
 
 } // namespace Kernel::Svc

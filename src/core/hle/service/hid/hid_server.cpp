@@ -1512,7 +1512,9 @@ SessionRequestHandlerPtr IHidServer::PulseRestore(std::string_view kind,
     }
     if (kind == "IActiveVibrationDeviceList") {
         in.End();
-        return std::make_shared<IActiveVibrationDeviceList>(system, resource);
+        auto list = std::make_shared<IActiveVibrationDeviceList>(system, resource);
+        list->ActivateAllAfterPulse();
+        return list;
     }
     if (kind != PulseKind()) return SessionRequestHandler::PulseRestore(kind, restore);
     const u64 aruid = in.U64();

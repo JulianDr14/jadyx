@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -57,9 +58,20 @@ public:
 
     ~QueryCacheBase();
 
-    void InvalidateRegion(VAddr addr, std::size_t size) {
-        IterateCache<true>(addr, size,
-                           [this](QueryLocation location) { InvalidateQuery(location); });
+    /// Returns how many cached queries the region held.
+    std::size_t InvalidateRegion(VAddr addr, std::size_t size) {
+        std::size_t hits = 0;
+        IterateCache<true>(addr, size, [this, &hits](QueryLocation location) {
+            ++hits;
+            InvalidateQuery(location);
+        });
+        return hits;
+    }
+
+    /// Cached queries at any address. Zero means InvalidateRegion has nothing to find; read
+    /// without the lock by the thread that also registers them.
+    [[nodiscard]] std::size_t CachedQueries() const noexcept {
+        return cached_entries.load(std::memory_order_relaxed);
     }
 
     void FlushRegion(VAddr addr, std::size_t size) {
@@ -155,7 +167,8 @@ protected:
                 const auto in_range2 = [&](const std::pair<u32, QueryLocation>& pair) {
                     return in_range(pair.first);
                 };
-                erase_if(contents, in_range2);
+                cached_entries.fetch_sub(erase_if(contents, in_range2),
+                                         std::memory_order_relaxed);
             }
         }
     }
@@ -170,6 +183,8 @@ protected:
 
     ::Common::unordered_map<u64, ::Common::unordered_map<u32, QueryLocation>> cached_queries;
     std::mutex cache_mutex;
+    /// Elements in cached_queries' inner maps, kept at every insertion and erase.
+    std::atomic<std::size_t> cached_entries{};
 
     struct QueryCacheBaseImpl;
     friend struct QueryCacheBaseImpl;

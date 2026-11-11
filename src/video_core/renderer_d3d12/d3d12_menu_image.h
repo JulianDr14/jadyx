@@ -4,6 +4,7 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -28,6 +29,11 @@ struct MenuImage {
     /// showing the guest's frame: a screen of its own, not a menu over the game.
     bool fill_screen{};
     u32 fill{};
+    /// Where the image's top-left corner goes on the screen; centered without it. Clipped to the
+    /// screen.
+    bool placed{};
+    u32 x{};
+    u32 y{};
 };
 
 /// The screen the menu is shown on (the back buffer's size), {0, 0} unless the renderer is the
@@ -44,6 +50,16 @@ void ShowGameMenu(VideoCore::RendererBase& renderer, MenuImage image);
 
 /// Removes the menu and presents the guest frame again. GPU thread only.
 void HideGameMenu(VideoCore::RendererBase& renderer);
+
+/// Shows (or with nullopt removes) a small image over the running game, on top of the menu:
+/// a notice that never pauses. Seen from the guest's next present, which this does not force.
+/// Uploaded once; each present only copies it. GPU thread only.
+void ShowGameNotice(VideoCore::RendererBase& renderer, std::optional<MenuImage> image);
+
+/// Posts (or with nullopt removes) the motion view, the small picture of the controller the
+/// emulated gyro moves: drawn under the menu, from the guest's next present on. Any thread; the
+/// newest image posted before a present wins.
+void PostGameMotionView(VideoCore::RendererBase& renderer, std::optional<MenuImage> image);
 
 /// The paused game's last frame as the screen shows it (upscaling included) but without the HUD
 /// or the menu: RGBA at the back buffer's size. Empty unless the renderer is the D3D12 one and

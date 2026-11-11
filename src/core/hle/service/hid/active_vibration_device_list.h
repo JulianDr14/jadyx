@@ -29,6 +29,10 @@ public:
         return "IActiveVibrationDeviceList";
     }
 
+    /// Pulse: the game activated its vibration devices in the session the snapshot came from
+    /// and will not ask again. Activate every pad's devices, or each rumble is dropped.
+    void ActivateAllAfterPulse();
+
 private:
     static constexpr std::size_t MaxVibrationDevicesHandles{0x100};
 

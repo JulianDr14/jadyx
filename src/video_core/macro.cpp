@@ -11,6 +11,7 @@
 #include <fstream>
 #include <optional>
 #include <span>
+#include <type_traits>
 
 #include <fstream>
 #include <variant>
@@ -1430,39 +1431,32 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
             Settings::values.disable_macro_hle) {
             maxwell3d.RefreshParameters();
         }
-
-        if (auto program = std::get_if<HLE_DrawArraysIndirect>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_DrawIndexedIndirect>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_MultiDrawIndexedIndirectCount>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_MultiLayerClear>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_C713C83D8F63CCF3>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_D7333D26E0A93EDE>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_BindShader>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_SetRasterBoundingBox>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_ClearConstBuffer>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_ClearMemory>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_TransformFeedbackSetup>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<HLE_DrawIndirectByteCount>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<MacroInterpreterImpl>(&cached))
-            return program->Execute(system, maxwell3d, parameters, method);
-        if (auto program = std::get_if<std::unique_ptr<DynamicCachedMacro>>(&cached))
-            return program->get()->Execute(system, maxwell3d, parameters, method);
-
-        UNREACHABLE();
+        // One jump on the alternative instead of a test per program type.
+        std::visit(
+            [&](auto& program) {
+                using Program = std::decay_t<decltype(program)>;
+                if constexpr (std::is_same_v<Program, std::monostate> ||
+                              std::is_same_v<Program, HLEMacro>) {
+                    UNREACHABLE();
+                } else if constexpr (std::is_same_v<Program,
+                                                    std::unique_ptr<DynamicCachedMacro>>) {
+                    program->Execute(system, maxwell3d, parameters, method);
+                } else {
+                    program.Execute(system, maxwell3d, parameters, method);
+                }
+            },
+            cached);
     };
+    FastSlot& slot = fast_slots[FastSlotIndex(method)];
+    if (slot.info && slot.method == method) {
+        // A nested macro may grow the cache and move this entry: keep the hash first.
+        const u64 hash = slot.info->hash;
+        execute_variant(slot.info->program);
+        finish_profile(hash);
+        return;
+    }
     if (auto const it = macro_cache.find(method); it != macro_cache.end()) {
+        slot = {.method = method, .info = &it->second};
         execute_variant(it->second.program);
         finish_profile(it->second.hash);
         return;
@@ -1496,6 +1490,8 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
         code = macro_code->second;
     }
 
+    // The insertion may move every cached macro.
+    fast_slots = {};
     auto& ci = macro_cache[method];
     ci.hash = Common::HashRange(code.begin(), code.end());
     if (!Settings::values.disable_macro_hle) {

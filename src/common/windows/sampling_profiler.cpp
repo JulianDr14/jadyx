@@ -98,11 +98,21 @@ std::mutex jit_blocks_mutex;
 std::vector<JitBlock> jit_blocks;
 std::vector<std::pair<u64, u64>> jit_thunks; // start, end; one per JIT
 
-bool InJitThunks(u64 pc) {
+/// The first JIT's thunks, to name the instruction of a sample: every JIT lays them out alike.
+std::vector<u8> jit_thunk_code;
+
+/// offset: how far into its JIT's thunks pc is.
+bool InJitThunks(u64 pc, u64* offset = nullptr) {
     std::scoped_lock lock{jit_blocks_mutex};
-    return std::ranges::any_of(jit_thunks, [pc](const std::pair<u64, u64>& range) {
-        return pc >= range.first && pc < range.second;
-    });
+    for (const std::pair<u64, u64>& range : jit_thunks) {
+        if (pc >= range.first && pc < range.second) {
+            if (offset) {
+                *offset = pc - range.first;
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 std::mutex guest_reader_mutex;
@@ -148,6 +158,92 @@ bool VirtualUnwindGuarded(DWORD64 image_base, DWORD64 pc, PRUNTIME_FUNCTION func
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+/// Suspends the thread only to read its registers and copy its stack into `copy`
+/// (MAX_STACK_COPY + COPY_SLACK bytes, or null for registers only): no allocation, lock or
+/// logging may happen in between, since the thread may hold the heap lock or any other. A thread
+/// that cannot be suspended is marked dead.
+bool CaptureThread(ThreadEntry& entry, u8* copy, CONTEXT& context, size_t& copied,
+                   ULONG_PTR& origin) {
+    copied = 0;
+    if (SuspendThread(entry.handle) == static_cast<DWORD>(-1)) {
+        entry.dead = true;
+        return false;
+    }
+    // GetThreadContext also waits for the suspension to take effect.
+    context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+    const bool ok = GetThreadContext(entry.handle, &context) != 0;
+    if (ok && copy) {
+        const ULONG_PTR sp = static_cast<ULONG_PTR>(context.Rsp);
+        ULONG_PTR top{};
+        // A thread caught probing its stack has its pointer at or below the guard page, and
+        // reading that page raises STATUS_GUARD_PAGE_VIOLATION here. Only copy from a plainly
+        // committed region. A fiber's stack (the emulated cores) ends with its region too.
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQuery(reinterpret_cast<void*>(sp), &info, sizeof(info)) &&
+            info.State == MEM_COMMIT && (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0) {
+            top = reinterpret_cast<ULONG_PTR>(info.BaseAddress) + info.RegionSize;
+            if (sp >= entry.stack_low && sp < entry.stack_high) {
+                top = std::min(top, entry.stack_high);
+            }
+        }
+        if (top > sp) {
+            copied = std::min<size_t>(top - sp, MAX_STACK_COPY);
+            std::memcpy(copy, reinterpret_cast<const void*>(sp), copied);
+            origin = sp;
+        }
+    }
+    ResumeThread(entry.handle);
+    return ok;
+}
+
+/// Runs after the thread was resumed, on the copy only.
+size_t UnwindCopy(CONTEXT context, const u8* copy, size_t copied, ULONG_PTR origin,
+                  DWORD64* frames) {
+    if (copied == 0) {
+        frames[0] = context.Rip;
+        return 1;
+    }
+    const ULONG_PTR copy_base = reinterpret_cast<ULONG_PTR>(copy);
+    const ULONG_PTR copy_end = copy_base + copied;
+    // Registers that point into the stack are moved to the copy before every step: the stack
+    // pointer, and a frame pointer restored from the stack by the previous step. Only those
+    // steer the unwind, so the copy itself is never rewritten.
+    const auto relocate_registers = [&] {
+        for (DWORD64* reg : {&context.Rsp, &context.Rbp, &context.Rbx, &context.Rsi, &context.Rdi,
+                             &context.R12, &context.R13, &context.R14, &context.R15}) {
+            if (*reg >= origin && *reg < origin + copied) {
+                *reg = *reg - origin + copy_base;
+            }
+        }
+    };
+    size_t depth = 0;
+    while (depth < MAX_FRAMES) {
+        relocate_registers();
+        const DWORD64 pc = context.Rip;
+        if (pc == 0) {
+            break;
+        }
+        frames[depth++] = pc;
+        const DWORD64 sp = context.Rsp;
+        if (sp < copy_base || sp + sizeof(DWORD64) > copy_end) {
+            break;
+        }
+        DWORD64 image_base{};
+        PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(pc, &image_base, nullptr);
+        if (function == nullptr) {
+            // A leaf function without unwind data: the return address is on top.
+            std::memcpy(&context.Rip, reinterpret_cast<const void*>(sp), sizeof(DWORD64));
+            context.Rsp = sp + sizeof(DWORD64);
+        } else if (!VirtualUnwindGuarded(image_base, pc, function, &context)) {
+            break;
+        }
+        if (context.Rsp <= sp) {
+            break;
+        }
+    }
+    return depth;
 }
 
 class Sampler {
@@ -278,6 +374,7 @@ private:
         stack_index.clear();
         frame_pool.clear();
         thunk_samples.clear();
+        thunk_rips.clear();
         for (ThreadEntry* entry : threads) {
             entry->window_cpu_start = CpuTime100ns(entry->handle);
             entry->running_samples = 0;
@@ -327,41 +424,13 @@ private:
         }
     }
 
-    /// Suspends the thread only to read its registers and copy its stack: no allocation, lock or
-    /// logging may happen in between, since the thread may hold the heap lock or any other.
     bool Capture(ThreadEntry& entry, CONTEXT& context, size_t& copied, ULONG_PTR& origin) {
         LARGE_INTEGER start{}, end{};
         QueryPerformanceCounter(&start);
-        if (SuspendThread(entry.handle) == static_cast<DWORD>(-1)) {
-            entry.dead = true;
+        const bool ok = CaptureThread(entry, stack_copy, context, copied, origin);
+        if (entry.dead) {
             return false;
         }
-        // GetThreadContext also waits for the suspension to take effect.
-        context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
-        const bool ok = GetThreadContext(entry.handle, &context) != 0;
-        copied = 0;
-        if (ok && stack_copy) {
-            const ULONG_PTR sp = static_cast<ULONG_PTR>(context.Rsp);
-            ULONG_PTR top{};
-            // A thread caught probing its stack has its pointer at or below the guard page, and
-            // reading that page raises STATUS_GUARD_PAGE_VIOLATION here. Only copy from a plainly
-            // committed region. A fiber's stack (the emulated cores) ends with its region too.
-            MEMORY_BASIC_INFORMATION info{};
-            if (VirtualQuery(reinterpret_cast<void*>(sp), &info, sizeof(info)) &&
-                info.State == MEM_COMMIT &&
-                (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0) {
-                top = reinterpret_cast<ULONG_PTR>(info.BaseAddress) + info.RegionSize;
-                if (sp >= entry.stack_low && sp < entry.stack_high) {
-                    top = std::min(top, entry.stack_high);
-                }
-            }
-            if (top > sp) {
-                copied = std::min<size_t>(top - sp, MAX_STACK_COPY);
-                std::memcpy(stack_copy, reinterpret_cast<const void*>(sp), copied);
-                origin = sp;
-            }
-        }
-        ResumeThread(entry.handle);
         QueryPerformanceCounter(&end);
         const u64 elapsed = static_cast<u64>(end.QuadPart - start.QuadPart) * 1'000'000'000ULL /
                             static_cast<u64>(qpc_frequency.QuadPart);
@@ -371,52 +440,8 @@ private:
         return ok;
     }
 
-    /// Runs after the thread was resumed, on the copy only.
     size_t Unwind(CONTEXT context, size_t copied, ULONG_PTR origin, DWORD64* frames) {
-        if (copied == 0) {
-            frames[0] = context.Rip;
-            return 1;
-        }
-        const ULONG_PTR copy_base = reinterpret_cast<ULONG_PTR>(stack_copy);
-        const ULONG_PTR copy_end = copy_base + copied;
-        // Registers that point into the stack are moved to the copy before every step: the stack
-        // pointer, and a frame pointer restored from the stack by the previous step. Only those
-        // steer the unwind, so the copy itself is never rewritten.
-        const auto relocate_registers = [&] {
-            for (DWORD64* reg : {&context.Rsp, &context.Rbp, &context.Rbx, &context.Rsi,
-                                 &context.Rdi, &context.R12, &context.R13, &context.R14,
-                                 &context.R15}) {
-                if (*reg >= origin && *reg < origin + copied) {
-                    *reg = *reg - origin + copy_base;
-                }
-            }
-        };
-        size_t depth = 0;
-        while (depth < MAX_FRAMES) {
-            relocate_registers();
-            const DWORD64 pc = context.Rip;
-            if (pc == 0) {
-                break;
-            }
-            frames[depth++] = pc;
-            const DWORD64 sp = context.Rsp;
-            if (sp < copy_base || sp + sizeof(DWORD64) > copy_end) {
-                break;
-            }
-            DWORD64 image_base{};
-            PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(pc, &image_base, nullptr);
-            if (function == nullptr) {
-                // A leaf function without unwind data: the return address is on top.
-                std::memcpy(&context.Rip, reinterpret_cast<const void*>(sp), sizeof(DWORD64));
-                context.Rsp = sp + sizeof(DWORD64);
-            } else if (!VirtualUnwindGuarded(image_base, pc, function, &context)) {
-                break;
-            }
-            if (context.Rsp <= sp) {
-                break;
-            }
-        }
-        return depth;
+        return UnwindCopy(context, stack_copy, copied, origin, frames);
     }
 
     void Sample(u32 thread_index, ThreadEntry& entry, bool waiting, u32 weight, bool stalled) {
@@ -432,10 +457,13 @@ private:
         }
         // A thunk keeps the return address on top of the stack, or under the register it saved.
         // The thread runs again by now, but these are the copy's words.
-        if (!waiting && !stalled && copied >= 2 * sizeof(u64) && InJitThunks(context.Rip)) {
+        u64 thunk_offset{};
+        if (!waiting && !stalled && copied >= 2 * sizeof(u64) &&
+            InJitThunks(context.Rip, &thunk_offset)) {
             u64 top[2];
             std::memcpy(top, stack_copy, sizeof(top));
             thunk_samples[{thread_index, top[0], top[1]}] += weight;
+            thunk_rips[thunk_offset] += weight;
         }
         DWORD64 frames[MAX_FRAMES];
         const size_t depth = Unwind(context, copied, origin, frames);
@@ -646,6 +674,24 @@ private:
                 total.second = entry.end;
             }
         }
+        // Where in the thunks the samples fell, and the thunks' code to disassemble them with.
+        for (const auto& [offset, samples] : thunk_rips) {
+            std::fputs(fmt::format("thunkrip 0x{:x} {}\n", offset, samples).c_str(), file);
+        }
+        if (!thunk_rips.empty()) {
+            std::string hex;
+            {
+                std::scoped_lock lock{jit_blocks_mutex};
+                hex.reserve(jit_thunk_code.size() * 2);
+                for (const u8 byte : jit_thunk_code) {
+                    hex.push_back("0123456789abcdef"[byte >> 4]);
+                    hex.push_back("0123456789abcdef"[byte & 15]);
+                }
+            }
+            std::fputs("thunkcode ", file);
+            std::fputs(hex.c_str(), file);
+            std::fputs("\n", file);
+        }
         std::map<std::pair<u32, u64>, std::pair<u64, u64>> thunk_hits; // caller: samples, end
         for (const auto& [key, samples] : thunk_samples) {
             const auto& [thread_index, first, second] = key;
@@ -720,6 +766,7 @@ private:
     std::unordered_map<u64, size_t> stack_index;
     std::vector<DWORD64> frame_pool;
     std::map<std::tuple<u32, u64, u64>, u64> thunk_samples; // thread, top two stack words
+    std::map<u64, u64> thunk_rips; // offset into the thunks: samples
     std::unordered_map<DWORD64, std::string> module_names;
 };
 
@@ -792,12 +839,17 @@ void NoteJitThunks(const void* host, size_t host_size) {
     const u64 start = reinterpret_cast<u64>(host);
     std::scoped_lock lock{jit_blocks_mutex};
     jit_thunks.emplace_back(start, start + host_size);
+    if (jit_thunk_code.empty()) {
+        const u8* const bytes = static_cast<const u8*>(host);
+        jit_thunk_code.assign(bytes, bytes + host_size);
+    }
 }
 
 void ClearJitBlocks() {
     std::scoped_lock lock{jit_blocks_mutex};
     jit_blocks = {};
     jit_thunks = {};
+    jit_thunk_code = {};
 }
 
 void SetGuestCodeReader(GuestCodeReader reader, u64 code_base) {
@@ -808,6 +860,41 @@ void SetGuestCodeReader(GuestCodeReader reader, u64 code_base) {
 
 void NoteFrame() {
     g_last_frame_ns.store(NowNs(), std::memory_order_relaxed);
+}
+
+u64 LastFrameNs() {
+    return g_last_frame_ns.load(std::memory_order_relaxed);
+}
+
+u64 SteadyNs() {
+    return NowNs();
+}
+
+std::vector<ThreadStack> CaptureStacks() {
+    // One copy buffer for the process, taken once: a freeze report is rare. The registry lock is
+    // held throughout so no entry goes away; nothing allocates while a thread is suspended, only
+    // after it was resumed.
+    static u8* const copy = static_cast<u8*>(
+        VirtualAlloc(nullptr, MAX_STACK_COPY + COPY_SLACK, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    std::vector<ThreadStack> stacks;
+    std::scoped_lock lock{registry_mutex};
+    stacks.reserve(registry.size());
+    DWORD64 frames[MAX_FRAMES];
+    for (const auto& entry : registry) {
+        // Suspending the calling thread would never return.
+        if (entry->id == GetCurrentThreadId() || entry->dead || Exited(entry->handle)) {
+            continue;
+        }
+        CONTEXT context{};
+        size_t copied{};
+        ULONG_PTR origin{};
+        if (!CaptureThread(*entry, copy, context, copied, origin)) {
+            continue;
+        }
+        const size_t depth = UnwindCopy(context, copy, copied, origin, frames);
+        stacks.push_back({entry->name, entry->id, {frames, frames + depth}});
+    }
+    return stacks;
 }
 
 } // namespace Common::SamplingProfiler

@@ -18,6 +18,7 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/core_timing.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -215,7 +216,12 @@ void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_s
         executing_macro = method;
     }
 
-    macro_params.insert(macro_params.end(), base_start, base_start + amount);
+    if (amount == 1) {
+        // The usual call, one argument at a time: the range insert costs several times this.
+        macro_params.push_back(*base_start);
+    } else {
+        macro_params.insert(macro_params.end(), base_start, base_start + amount);
+    }
     macro_segments.emplace_back(current_dma_segment, amount);
     current_macro_dirty |= current_dirty;
     current_dirty = false;
@@ -326,6 +332,23 @@ void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
             ProcessDirtyRegisters(method, value);
     }
     method_sink.clear();
+}
+
+void Maxwell3D::StoreRegisterRun(Core::System& system, u32 method, const u32* words, u32 amount) {
+    ConsumeSink(system);
+    const auto control = shadow_state.shadow_ram_control;
+    if (control == Regs::ShadowRamControl::Track || control == Regs::ShadowRamControl::TrackWithFilter) {
+        for (u32 i = 0; i < amount; ++i) {
+            shadow_state.reg_array[method + i] = words[i];
+            ProcessDirtyRegisters(method + i, words[i]);
+        }
+    } else if (control == Regs::ShadowRamControl::Replay) {
+        for (u32 i = 0; i < amount; ++i)
+            ProcessDirtyRegisters(method + i, shadow_state.reg_array[method + i]);
+    } else {
+        for (u32 i = 0; i < amount; ++i)
+            ProcessDirtyRegisters(method + i, words[i]);
+    }
 }
 
 void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
@@ -443,6 +466,9 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
         return;
     }
 
+    if (method >= Regs::NUM_REGS) [[unlikely]] {
+        VideoCommon::GeoHunt::CommandGarbage("maxwell3d", method, method_argument);
+    }
     ASSERT(method < Regs::NUM_REGS && "Invalid Maxwell3D register, increase the size of the Regs structure");
     const u32 argument = ProcessShadowRam(method, method_argument);
     ProcessDirtyRegisters(method, argument);

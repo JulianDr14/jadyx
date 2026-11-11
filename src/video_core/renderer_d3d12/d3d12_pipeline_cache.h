@@ -85,6 +85,11 @@ void SetPipelinePrewarm(bool enabled);
 /// "cs_split=").
 void SetComputeWorkgroupSplit(u32 factor);
 
+/// Guest shuffles read their source lanes through indices the whole wave agrees on (on by default,
+/// "shuffle_wave_uniform=0" turns it off): the Series driver lowers WaveReadLaneAt as if its index
+/// were uniform, so a per-lane source reads the first lane's on every lane. Set before boot.
+void SetShuffleWaveUniform(bool enabled);
+
 class ShaderCompiler;
 class TextureCacheRuntime;
 

@@ -94,6 +94,13 @@ struct BootConfig {
     /// Workers that build the disk cache on the loading screen, 1-12 ("pso_boot_workers="); 0
     /// keeps the default of one per logical CPU.
     u32 pso_boot_workers{};
+    /// Build priority levels (D3D12::SetPipelineBuildPriority): 0 below normal ... 4 time
+    /// critical. Base of every build ("pso_priority=", default 0); a build some thread waits for
+    /// ("pso_boost=", default 0, off).
+    u32 pso_priority{0};
+    u32 pso_boost{0};
+    /// A thread blocked on a pipeline lends its CPUs to the build ("pso_lend=0" turns it off).
+    bool pso_lend{true};
     /// The driver's compiled PSOs kept on disk and handed back to it ("pso_blobs=1"); off by
     /// default, as the console's driver may not take them.
     bool pso_blobs{};
@@ -159,6 +166,29 @@ struct BootConfig {
     /// Controller bottleneck capture ("hunt=1"): LocalState/jadyx/log/jadyx_hunt.txt, read by
     /// tools/xbox/hunt-report.py. Shown only in diagnostic packages (package-appx.ps1 -Hunt).
     bool hunt_menu{};
+    /// Geometry glitch hunt page in the in-game menu ("glitch_hunt_menu=1"): a capture of what
+    /// every draw read, for tools/xbox/glitch-report.py, and live A/B renderer switches.
+    bool glitch_hunt_menu{};
+    /// Frames one glitch capture takes ("glitch_frames=N", 1-240; 0 = 20).
+    u32 glitch_frames{};
+    /// Geometry hunt ("geo_hunt=1"): re-hashes clean buffer pages at bind time and logs the
+    /// guest writes the tracker missed (LocalState/jadyx/log/geometry). "geo_hunt_check_kb=N" /
+    /// "geo_hunt_upload_kb=N" set the per-frame budgets (0 = 4096 / 32768).
+    bool geo_hunt{};
+    /// "pso_menu=1": the quick menu row that changes pso_boost at run time.
+    bool pso_menu{};
+    /// Out-of-range index check and fix (on by default): "geo_oob=0" turns both off,
+    /// "geo_oob_fix=0" keeps the check and its log but draws the triangles as they are.
+    bool geo_oob{true};
+    bool geo_oob_fix{true};
+    u32 geo_hunt_check_kb{};
+    u32 geo_hunt_upload_kb{};
+    /// On by default ("precise_writes=0" or the glitch hunt page turns it off): CPU writes into a
+    /// GPU-written page but over none of its GPU bytes apply at once instead of being gathered.
+    bool precise_writes{true};
+    /// Guest shuffles read their source lanes through indices the wave agrees on (on unless
+    /// "shuffle_wave_uniform=0"): the Series driver reads the first lane's source on every lane.
+    bool shuffle_wave_uniform{true};
     /// Fine per-draw D3D12 CPU timers ("gpu_profile=1"). Off because clock reads are measurable.
     bool gpu_profile{};
     /// Writes every translated guest shader to the dump folder ("dump_guest_shaders=1").
@@ -280,6 +310,8 @@ struct BootConfig {
     std::optional<u32> guest_clock_percent;
     /// "exact_gpu_reads=0|1", over the game's own setting (VideoCore::SetExactGpuReads).
     std::optional<bool> exact_gpu_reads;
+    /// "semaphore_order=supersede|strict" (VideoCore::SemaphoreOrder); supersede by default.
+    bool semaphore_order_strict{};
     /// "swap_interval_hold=0|1|check".
     VideoCore::FramePipeline::Mode swap_interval_hold{VideoCore::FramePipeline::Mode::Off};
     /// "pso_budget=0|1|check" (D3D12::SetPsoBudget).
@@ -320,6 +352,15 @@ struct BootConfig {
     /// rest the second ones, "cpu_pin=map:name=core.logical,..." or "cpu_pin=topology" each
     /// named thread where the map says, the default); off leaves them to the scheduler.
     Common::Windows::CpuPin cpu_pin{Common::Windows::CpuPin::Map};
+    /// A cpu_pin key in boot.cfg: it wins over the fixed core map setting.
+    bool cpu_pin_from_boot_cfg{};
+    /// Settings > Graphics "Fixed core map" (the game's own over the global one): the topology
+    /// map instead of the default, which pins only the GPU thread.
+    bool fixed_core_map{};
+    /// VideoCore::FastPaths, from Settings > Graphics and the game's own Graphics.
+    bool gpu_fast_paths{true};
+    /// VideoCommon::CpuWriteQueue::SetAllWrites, from Settings > Graphics and the game's own Graphics.
+    bool cpu_write_all{true};
     bool cpu_probe{}; ///< Measures the app's logical processors before the guest (cpu_probe.h).
     bool timer_profile{}; ///< HostTiming waits only; opt-in, separate from draw profiling.
     /// File name of a game in LocalState\games to boot instead of boot.nro (package-appx.ps1 -Game).

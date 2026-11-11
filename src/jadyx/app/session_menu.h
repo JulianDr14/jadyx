@@ -24,6 +24,8 @@
 #include "jadyx/game/game_menu_surface.h"
 #include "jadyx/input/uwp_input.h"
 #include "jadyx/memory_edit/jme_screen.h"
+#include "jadyx/network/chat_page.h"
+#include "jadyx/network/online_chat.h"
 #include "jadyx/pulse/pulse_screen.h"
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/ui/launch_splash.h"
@@ -66,6 +68,18 @@ public:
 
 private:
     void CaptureFrame();
+    /// Stops the guest for what needs it still (a capture, Memory Edit, a resize), when the menu
+    /// left it running. Resume undoes only a pause of this.
+    void PauseGuest();
+    void ResumeGuest();
+    /// Runs `work` with the guest stopped, and lets it run again after when the menu is live.
+    template <typename Work>
+    void WithGuestPaused(Work&& work) {
+        const bool was_paused = guest_paused;
+        PauseGuest();
+        work();
+        if (!was_paused) ResumeGuest();
+    }
     void DrawMenu();
     void SyncKeyboard();
     void KeyboardPress(std::optional<KeyboardReply> reply);
@@ -79,9 +93,24 @@ private:
     void SaveMenuScreenshot();
     void Close(GameMenuResult result);
     void ApplyChoice(GameMenuResult result);
+    /// The room chat: its page in the menu, the keyboard that writes to it and the notice over
+    /// the game when a message arrives with the menu closed.
+    void OpenChat();
+    void HandleChatAction(MenuAction action);
+    void ChatKeyboardPress(std::optional<KeyboardReply> reply);
+    void SendChat(const std::wstring& text);
+    void UpdateChat();
+    void ShowChatNotice(const Online::ChatSnapshot& chat);
+    void HideChatNotice();
 
     std::optional<GameMenu> menu;
+    /// The menu was opened in an online room: the game keeps running behind it (a pause would
+    /// freeze the player for the whole room and can drop the session), shown as it is.
+    bool live{};
+    bool guest_paused{};
     bool graphics_changed{}; ///< In the open menu: the output's size may have to follow.
+    /// The glitch hunt page's live renderer switches, kept across menu openings.
+    GlitchToggles glitch_toggles;
     std::optional<GameMenuSurface> menu_surface;
     // A keyboard the game opened (game_keyboard.h): drawn on the same surface as the menu, over
     // the running game. The menu opens on top of it and gives it back when it closes.
@@ -125,6 +154,21 @@ private:
     // The paused frame while the menu is open: behind it, and what a screenshot saves.
     D3D12::MenuImage game_frame;
     const Cheats::CheatGame cheat_game;
+
+    struct ChatScreen {
+        Online::ChatPage page;
+        std::wstring notice; ///< A message that could not go out.
+    };
+    std::optional<ChatScreen> chat_screen;
+    /// Writing a message: the keyboard takes the menu's place until it sends or cancels.
+    GameKeyboard chat_keyboard;
+    /// The chat as last seen: its version, and the newest line's id.
+    std::uint64_t chat_version{};
+    std::uint64_t chat_last_id{};
+    /// The notice over the game, with a surface of its own while it shows.
+    std::optional<GameMenuSurface> notice_surface;
+    std::chrono::steady_clock::time_point notice_until{};
+    bool notice_shown{};
 };
 
 } // namespace Jadyx

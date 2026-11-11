@@ -1229,6 +1229,16 @@ bool EmulatedController::SetVibration(u32 slot, Core::HID::VibrationGcErmCommand
 }
 
 bool EmulatedController::SetVibration(DeviceIndex device_index, const VibrationValue& vibration) {
+    // Jadyx: the first calls and then one in 500, to see where a game's rumble stops.
+    static std::atomic<u32> vibration_calls{0};
+    const u32 call = vibration_calls.fetch_add(1, std::memory_order_relaxed);
+    if (call < 40 || call % 500 == 0) {
+        LOG_INFO(Input, "rumble set #{}: npad={} device={} initialized={} output={} low={:.2f} high={:.2f}",
+                 call, static_cast<u32>(npad_id_type), static_cast<u32>(device_index), is_initialized.load(),
+                 device_index < DeviceIndex::MaxDeviceIndex &&
+                     output_devices[static_cast<std::size_t>(device_index)] != nullptr,
+                 vibration.low_amplitude, vibration.high_amplitude);
+    }
     if (!is_initialized) {
         return false;
     }
@@ -1240,12 +1250,15 @@ bool EmulatedController::SetVibration(DeviceIndex device_index, const VibrationV
         return false;
     }
 
-    // Skip duplicated vibrations
-    if (last_vibration_value[index] == vibration) {
-        return Settings::values.vibration_enabled.GetValue();
+    {
+        std::scoped_lock lock{vibration_mutex};
+        // Identical requests still renew the frontend's motor timeout.
+        last_vibration_request[index] = std::chrono::steady_clock::now();
+        if (last_vibration_value[index] == vibration) {
+            return Settings::values.vibration_enabled.GetValue();
+        }
+        last_vibration_value[index] = vibration;
     }
-
-    last_vibration_value[index] = vibration;
 
     if (!Settings::values.vibration_enabled) {
         return false;
@@ -1299,7 +1312,21 @@ VibrationValue EmulatedController::GetActualVibrationValue(DeviceIndex device_in
     if (device_index >= DeviceIndex::MaxDeviceIndex) {
         return Core::HID::DEFAULT_VIBRATION_VALUE;
     }
+    std::scoped_lock lock{vibration_mutex};
     return last_vibration_value[static_cast<std::size_t>(device_index)];
+}
+
+VibrationValue EmulatedController::GetRecentVibrationValue(
+    DeviceIndex device_index, std::chrono::milliseconds max_age) const {
+    if (device_index >= DeviceIndex::MaxDeviceIndex) {
+        return DEFAULT_VIBRATION_VALUE;
+    }
+    const auto index = static_cast<std::size_t>(device_index);
+    std::scoped_lock lock{vibration_mutex};
+    if (std::chrono::steady_clock::now() - last_vibration_request[index] >= max_age) {
+        return DEFAULT_VIBRATION_VALUE;
+    }
+    return last_vibration_value[index];
 }
 
 bool EmulatedController::IsVibrationEnabled(std::size_t device_index) {

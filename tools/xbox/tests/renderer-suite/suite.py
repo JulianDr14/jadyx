@@ -36,7 +36,7 @@ VSWHERE_DIR = os.path.join(os.environ.get("ProgramFiles(x86)", ""), "Microsoft V
 # (multipass-position, noperspective-clip: both take a capture file as input).
 GATES = [
     "async-download-supersede", "async-pipelines", "bc-block-copy", "bc-npot", "cached-staging",
-    "compute-pipeline-claim", "cpu-texture-writes", "demote-helper", "depth-region-copy",
+    "compute-pipeline-claim", "cpu-texture-writes", "demote-helper", "depth-region-copy", "download-shadow",
     "draw-preparation", "draw-sampler-cache", "draw-targets", "etc2-decode", "frame-gen",
     "frame-gen-suite", "full-capture", "geometry-passthrough", "gpu-unswizzle", "heap-compaction",
     "heap-growth", "index-rewrite-cache", "memory-edit", "memory-import-probe",

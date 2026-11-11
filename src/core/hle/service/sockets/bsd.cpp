@@ -550,8 +550,9 @@ std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol pro
         return {-1, Errno::MFILE};
     }
 
-    file_descriptors[fd] = FileDescriptor{};
-    FileDescriptor& descriptor = *file_descriptors[fd];
+    // Built whole before it is published: the room's network thread walks the descriptors and
+    // must never see one without its socket.
+    FileDescriptor descriptor{};
     // ENONMEM might be thrown here
 
     LOG_INFO(Service, "New socket fd={}", fd);
@@ -565,8 +566,13 @@ std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol pro
 
     descriptor.socket->Initialize(Translate(domain), Translate(type), Translate(protocol));
     descriptor.is_connection_based = IsConnectionBased(type);
+    const bool is_connection_based = descriptor.is_connection_based;
+    {
+        std::scoped_lock lk{file_descriptors_mutex};
+        file_descriptors[fd] = std::move(descriptor);
+    }
 
-    if (Settings::values.airplane_mode.GetValue() && descriptor.is_connection_based) {
+    if (Settings::values.airplane_mode.GetValue() && is_connection_based) {
         LOG_ERROR(Service, "Airplane mode is enabled, cannot create socket");
         return {-1, Errno::NOTCONN};
     }
@@ -658,10 +664,13 @@ std::pair<s32, Errno> BSD_USA::AcceptImpl(s32 fd, std::vector<u8>& write_buffer)
         return {-1, Translate(bsd_errno)};
     }
 
-    file_descriptors[new_fd] = FileDescriptor{};
-    FileDescriptor& new_descriptor = *file_descriptors[new_fd];
-    new_descriptor.socket = std::move(result.socket);
-    new_descriptor.is_connection_based = descriptor.is_connection_based;
+    {
+        std::scoped_lock lk{file_descriptors_mutex};
+        file_descriptors[new_fd] = FileDescriptor{
+            .socket = std::move(result.socket),
+            .is_connection_based = descriptor.is_connection_based,
+        };
+    }
 
     const SockAddrIn guest_addr_in = Translate(result.sockaddr_in);
     PutValue(write_buffer, guest_addr_in);
@@ -1016,6 +1025,7 @@ Errno BSD_USA::CloseImpl(s32 fd) {
 
     LOG_INFO(Service, "Close socket fd={}", fd);
 
+    std::scoped_lock lk{file_descriptors_mutex};
     file_descriptors[fd].reset();
     return bsd_errno;
 }
@@ -1031,6 +1041,7 @@ std::variant<s32, Errno> BSD_USA::DuplicateSocketImpl(s32 fd) {
         return Errno::MFILE;
     }
 
+    std::scoped_lock lk{file_descriptors_mutex};
     file_descriptors[new_fd] = FileDescriptor{
         .socket = file_descriptors[fd]->socket,
         .flags = file_descriptors[fd]->flags,
@@ -1080,12 +1091,19 @@ void BSD_USA::BuildErrnoResponse(HLERequestContext& ctx, Errno bsd_errno) const 
 }
 
 void BSD_USA::OnProxyPacketReceived(const Network::ProxyPacket& packet) {
-    for (auto& optional_descriptor : file_descriptors) {
-        if (!optional_descriptor.has_value()) {
-            continue;
+    // Runs on the room's network thread while the guest opens and closes sockets: take the
+    // sockets under the lock and keep them alive while the packet is handed over.
+    std::vector<std::shared_ptr<Network::SocketBase>> sockets;
+    {
+        std::scoped_lock lk{file_descriptors_mutex};
+        for (const auto& optional_descriptor : file_descriptors) {
+            if (optional_descriptor.has_value() && optional_descriptor->socket) {
+                sockets.push_back(optional_descriptor->socket);
+            }
         }
-        FileDescriptor& descriptor = *optional_descriptor;
-        descriptor.socket.get()->HandleProxyPacket(packet);
+    }
+    for (const auto& socket : sockets) {
+        socket->HandleProxyPacket(packet);
     }
 }
 

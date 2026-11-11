@@ -18,6 +18,8 @@ add_executable(jadyx WIN32
     app/boot_settings.cpp
     app/boot_settings.h
     app/boot_state.h
+    app/freeze_watch.cpp
+    app/freeze_watch.h
     app/headless_emu_window.h
     app/session_memory.cpp
     app/session_memory.h
@@ -109,6 +111,7 @@ add_executable(jadyx WIN32
     # Settings > Graphics and each game's own.
     settings/graphics_settings.h
     settings/graphics_page.h
+    settings/online_page.h
     ui/text_entry.h
     ui/text_entry_panel.cpp
     ui/text_entry_panel.h
@@ -131,6 +134,10 @@ add_executable(jadyx WIN32
     ui/ui_painter.cpp
     ui/ui_painter.h
     ui/tween.h
+    game/motion_view.cpp
+    game/motion_view.h
+    input/motion_emu.h
+    input/rumble_settings.h
     game/game_menu_surface.cpp
     game/game_menu_surface.h
     game/game_screenshot.cpp
@@ -209,6 +216,8 @@ add_executable(jadyx WIN32
     mods/mod_thumbnails.cpp
     mods/mod_thumbnails.h
     network/http.cpp
+    network/online_rooms.cpp
+    network/online_rooms.h
     updates/package_validation.cpp
     updates/package_deployment.cpp
     updates/update_storage.cpp
@@ -231,7 +240,7 @@ endif()
 # directly so the dependency graph is explicit. frontend_common provides PlayTimeManager (pulled by
 # core's NS query service); input_common the virtual_gamepad engine that uwp_input.cpp feeds;
 # dynarmic the JIT's committed code size for the diag's memory split.
-target_link_libraries(jadyx PRIVATE common core video_core audio_core frontend_common hid_core
+target_link_libraries(jadyx PRIVATE common core network video_core audio_core frontend_common hid_core
                                         input_common SDL3::SDL3 dynarmic::dynarmic LibArchive::Read
                                         OpenSSL::Crypto zstd::zstd)
 

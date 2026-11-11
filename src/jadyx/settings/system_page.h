@@ -6,6 +6,7 @@
 // loop routes input here and acts on the returned effect (save, clear the cache, ...); the canvas
 // draws from the same state and the layout below, which pointer hit tests share.
 
+#include <cstdint>
 #include <optional>
 #include "jadyx/updates/updater.h"
 #include <string>
@@ -16,6 +17,12 @@
 #include "jadyx/ui/text_entry_panel.h"
 
 namespace Jadyx {
+
+/// What the shared keyboard (SystemPage::name_editor) is typing. Settings > Online borrows it.
+enum class EditorPurpose : std::uint8_t {
+    UserName, OnlineNickname, OnlineAddress, OnlinePort, OnlinePassword, RoomPassword,
+    HostName, HostSlots, HostPort, HostPassword, ChatMessage,
+};
 
 struct SystemPage {
     enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, AdultMods, PerformanceStats, PulseSessions, PlayTime, MultipleControllers, OfflineMode, MiiEditor, ClearCache, Updates, RowCount };
@@ -30,6 +37,7 @@ struct SystemPage {
     SystemLocale locale;     ///< As Windows reports it, for the "Automatic (...)" values.
     std::wstring notice;
     std::optional<TextEntry> name_editor;
+    EditorPurpose editor_purpose{EditorPurpose::UserName};
     std::wstring editor_notice;
 };
 
@@ -81,6 +89,7 @@ inline SystemPageEffect HandleSystemInput(SystemPage& page, SystemInput input) {
     case Row::UserName:
         if (input != SystemInput::Confirm) return SystemPageEffect::None;
         page.name_editor.emplace(settings.user_name, MaxUserNameLength);
+        page.editor_purpose = EditorPurpose::UserName;
         page.editor_notice.clear();
         return SystemPageEffect::EditName;
     case Row::InterfaceLanguage:

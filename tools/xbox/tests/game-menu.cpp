@@ -85,7 +85,7 @@ int main() {
     check(menu.Apply(MenuAction::Left) == GameMenuResult::None && menu.CurrentPage() == GameMenu::Page::Quick);
     check(menu.Apply(MenuAction::Confirm) == GameMenuResult::None);
     check(menu.CurrentPage() == GameMenu::Page::Controller && menu.PageTitle() == L"Mando");
-    check(menu.Rows().size() == 8 && menu.SelectedItem() == GameMenu::Style && !menu.Rows()[0].icon);
+    check(menu.Rows().size() == 10 && menu.SelectedItem() == GameMenu::Style && !menu.Rows()[0].icon);
     check(menu.Apply(MenuAction::Right) == GameMenuResult::SettingsChanged);
     check(menu.Settings().style == ConsoleControllerStyle::Pro);
     check(menu.Apply(MenuAction::Left) == GameMenuResult::SettingsChanged);
@@ -115,6 +115,13 @@ int main() {
     menu.Apply(MenuAction::Down);
     check(menu.SelectedItem() == GameMenu::RStickMouseSensitivity);
     check(menu.Rows()[7].label == L"Sensibilidad del mouse");
+    // Without a game the rumble's rows change Settings' too.
+    check(menu.Apply(MenuAction::Down) == GameMenuResult::None && menu.SelectedItem() == GameMenu::Rumble);
+    check(menu.Rows()[8].label == L"Vibración" && menu.Rows()[8].value == L"Sí");
+    check(menu.Apply(MenuAction::Confirm) == GameMenuResult::RumbleChanged && !menu.Settings().rumble_global.on &&
+          !menu.Settings().rumble.on);
+    menu.Apply(MenuAction::Down);
+    check(menu.Apply(MenuAction::Left) == GameMenuResult::RumbleChanged && menu.Settings().rumble_global.strength == 75);
     check(menu.Apply(MenuAction::Down) == GameMenuResult::None && menu.SelectedItem() == GameMenu::Style);
     check(menu.Apply(MenuAction::Back) == GameMenuResult::None);
     check(menu.CurrentPage() == GameMenu::Page::Quick && menu.SelectedItem() == GameMenu::ControllerPage);
@@ -154,6 +161,49 @@ int main() {
         check(row(GameMenu::RStickMouseSensitivity).value == L"100%");
         game.Apply(MenuAction::Right);
         check(game.Settings().right_stick.mouse_sensitivity == 125);
+        // The rumble: Settings' unless the game keeps its own, as the right stick.
+        check(row(GameMenu::Rumble).value == L"Sí" && row(GameMenu::Rumble).detail == L"Como en Ajustes");
+        check(game.Apply(MenuAction::Confirm) == GameMenuResult::RumbleChanged);
+        check(game.Settings().rumble.on == false && game.Settings().rumble_global.on);
+        check(row(GameMenu::Rumble).value == L"No" && row(GameMenu::Rumble).detail == L"Solo este juego");
+        check(row(GameMenu::RumbleStrength).value == L"100%");
+        check(game.Apply(MenuAction::Right) == GameMenuResult::RumbleChanged);
+        check(game.Settings().rumble.strength == 125 && game.Settings().rumble_global.strength == 100);
+        game.Apply(MenuAction::Left);
+        check(!game.Settings().rumble.strength);
+        // The emulated gyro is the game's own, yes or no; its stick and shake button are
+        // Settings'; the on-screen controller always, while moving or not at all.
+        check(row(GameMenu::Motion).value == L"No" && !row(GameMenu::Motion).detail.empty());
+        check(game.Apply(MenuAction::Right) == GameMenuResult::MotionChanged &&
+              game.Settings().motion == MotionMode::On);
+        check(row(GameMenu::Motion).value == L"Sí");
+        check(game.Apply(MenuAction::Left) == GameMenuResult::MotionChanged &&
+              game.Settings().motion == MotionMode::Off);
+        game.Apply(MenuAction::Confirm);
+        check(row(GameMenu::GyroStick).value == L"Stick derecho");
+        check(game.Apply(MenuAction::Right) == GameMenuResult::GyroControlsChanged &&
+              game.Settings().motion_stick == MotionStick::Left && row(GameMenu::GyroStick).value == L"Stick izquierdo");
+        check(row(GameMenu::GyroShake).value == L"Pulsar el stick del giroscopio");
+        check(game.Apply(MenuAction::Right) == GameMenuResult::GyroControlsChanged &&
+              game.Settings().motion_shake == MotionShakeButton::LB && row(GameMenu::GyroShake).value == L"LB");
+        check(game.Apply(MenuAction::Left) == GameMenuResult::GyroControlsChanged);
+        check(game.Apply(MenuAction::Left) == GameMenuResult::GyroControlsChanged &&
+              game.Settings().motion_shake == MotionShakeButton::RT);
+        check(row(GameMenu::MotionView).value == L"Siempre");
+        check(game.Apply(MenuAction::Right) == GameMenuResult::MotionChanged &&
+              game.Settings().motion_view == MotionViewMode::Moving);
+        check(game.Apply(MenuAction::Right) == GameMenuResult::MotionChanged &&
+              game.Settings().motion_view == MotionViewMode::Hidden && row(GameMenu::MotionView).value == L"No");
+    }
+    // Without a title id there is no game to keep a gyro for: no rows.
+    {
+        GameMenu global{GameMenuSettings{}};
+        while (global.SelectedItem() != GameMenu::ControllerPage) global.Apply(MenuAction::Down);
+        global.Apply(MenuAction::Confirm);
+        for (std::size_t i = 0; i < 40; ++i) {
+            check(global.SelectedItem() != GameMenu::Motion && global.SelectedItem() != GameMenu::MotionView);
+            global.Apply(MenuAction::Down);
+        }
     }
 
     // A game with a title id offers its cheats after the screenshot, with how many are on.
@@ -211,7 +261,7 @@ int main() {
         while (graphics.SelectedItem() != GameMenu::GraphicsMenu) graphics.Apply(MenuAction::Down);
         check(graphics.Apply(MenuAction::Confirm) == GameMenuResult::None);
         check(graphics.CurrentPage() == GameMenu::Page::Graphics && graphics.PageTitle() == L"Gráficos");
-        check(graphics.Rows().size() == 9);
+        check(graphics.Rows().size() == 10);
         for (const auto& row : graphics.Rows()) {
             check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedAnisotropy)});
             check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedTextureQuality)});
@@ -236,6 +286,13 @@ int main() {
         // Up and Down stay in the menu's cursor: they change nothing.
         check(graphics.Apply(MenuAction::Down) == GameMenuResult::None &&
               graphics.Settings().graphics.advanced.texture_cap_mib == 512);
+        // The fixed core map follows Settings until the game picks its own; it applies at once.
+        while (graphics.SelectedItem() != GameMenu::GfxFixedCoreMap) graphics.Apply(MenuAction::Down);
+        check(!graphics.Settings().graphics.fixed_core_map.has_value());
+        check(graphics.Rows()[graphics.Selected()].detail == L"Como en Ajustes");
+        check(graphics.Apply(MenuAction::Right) == GameMenuResult::GraphicsChanged &&
+              graphics.Settings().graphics.fixed_core_map == true);
+        check(graphics.Rows()[graphics.Selected()].detail == L"Solo este juego");
         check(graphics.Apply(MenuAction::Back) == GameMenuResult::None);
         check(graphics.CurrentPage() == GameMenu::Page::Quick && graphics.SelectedItem() == GameMenu::GraphicsMenu);
 
@@ -245,7 +302,7 @@ int main() {
         GameMenu handheld_menu{handheld, true};
         while (handheld_menu.SelectedItem() != GameMenu::GraphicsMenu) handheld_menu.Apply(MenuAction::Down);
         handheld_menu.Apply(MenuAction::Confirm);
-        check(handheld_menu.Rows().size() == 8);
+        check(handheld_menu.Rows().size() == 9);
 
         // Without a title id there is nothing to keep it under.
         GameMenu no_title{{}};

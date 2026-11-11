@@ -51,6 +51,17 @@ std::wstring FirmwareValue(const FileSetupStatus& status) {
     return status.versions.firmware.empty() ? I18n::Format(T::FirmwareFiles, {std::to_wstring(status.firmware_files)}) :
         I18n::Format(T::FirmwareVersion, {std::wstring{winrt::to_hstring(status.versions.firmware)}});
 }
+/// The gyro's shake button by the Xbox pad's names, as the in-game menu shows it.
+std::wstring ShakeButtonName(MotionShakeButton button) {
+    switch (button) {
+    case MotionShakeButton::LB: return L"LB";
+    case MotionShakeButton::RB: return L"RB";
+    case MotionShakeButton::LT: return L"LT";
+    case MotionShakeButton::RT: return L"RT";
+    case MotionShakeButton::StickClick: break;
+    }
+    return std::wstring{Tr(T::GyroShakeStickClick)};
+}
 } // namespace
 // The launcher owns a small D3D11/Direct2D surface only while selecting a game.
 // Release every reference (including the swapchain) before D3D12 starts.
@@ -156,6 +167,7 @@ public:
         // The backdrop moves on its own while it shows (AmbientDue).
         ambient = !management && !configuration.network_screen && !backdrop_now.empty();
         last_frame = now;
+        online_pulse = false; // The header sets it again while it marks the room.
         if(configuration.confirm_import){
             rows_shown=false;
             Type(Tr(T::SystemImportReview),TypeRole::HeadlineLarge,80,80,1120,Palette::Text);
@@ -175,6 +187,11 @@ public:
             DrawNetworkConnection(configuration);
         } else if (management) {
             rows_shown = false;
+        } else if (view.tab == LibraryTab::Online) {
+            rows_shown = false;
+            // Like Settings: its own page over the dimmed art.
+            Round(0, 0, 1280, 720, 0, Palette::Canvas, 0.62f);
+            DrawOnline(view, now);
         } else if (view.tab == LibraryTab::Settings) {
             rows_shown = false;
             // Settings dims the art further: its own page, not a dialog over the library.
@@ -202,6 +219,10 @@ public:
             DrawFooter(view);
         }
         // On the Settings tab the controller's rows are its page; only the device list floats.
+        // New room messages on the other tabs: a card under the header, top right.
+        if (view.tab != LibraryTab::Online && !view.online.toast.empty() && !management)
+            ChatNotice(view.online.toast, view.online.toast_more, Tr(T::ChatAnswerOnline),
+                       1280 - LibraryLayout::Margin - ChatNoticeWidth, 104);
         if (view.controller_panel && view.tab != LibraryTab::Settings) DrawControllerPanel(view);
         else if (view.controller_panel && panel.expanded) DrawControllerChoices(view, true);
         if (panel.keyboard.open) {
@@ -223,7 +244,8 @@ public:
         } else if (panel.pad_picker.open) {
             DrawPadPicker(panel.pad_picker, panel.notice);
         }
-        if (configuration.open && view.system.open && view.system.name_editor) DrawNameEditor(view.system);
+        if (view.system.name_editor && ((configuration.open && view.system.open) || view.tab == LibraryTab::Online))
+            DrawNameEditor(view.system);
         if (management) {
             DrawGameOptions(view.game_options);
             // The library owns the header. Pages replace its content, never its chrome.
@@ -231,7 +253,8 @@ public:
             DrawHeader(view, now);
         }
         if (!view.system.updates_open && !management && !configuration.network_screen && !configuration.open &&
-            view.tab != LibraryTab::Settings && !view.controller_panel && !view.missing_content && !panel.BindingEditorOpen()) {
+            view.tab != LibraryTab::Settings && view.tab != LibraryTab::Online && !view.controller_panel &&
+            !view.missing_content && !panel.BindingEditorOpen()) {
             if (view.system.updated) DrawUpdatedNotice(view.system.update.installed);
             else if (view.system.update.notice && view.system.update.release) DrawUpdateNotice(*view.system.update.release);
         }
@@ -433,7 +456,8 @@ public:
     }
     void InvalidateCovers() { covers.clear(); pictures.clear(); backdrops.clear(); backdrop_now.clear(); backdrop_before.clear(); }
     bool Animating() const {
-        return animating || (ambient && Tween::Clock::now() - last_frame >= AmbientFrame);
+        const auto since = Tween::Clock::now() - last_frame;
+        return animating || (ambient && since >= AmbientFrame) || (online_pulse && since >= PulseFrame);
     }
     LibraryTarget HitAt(float x, float y) const {
         // Drawn last is on top: the header over the rows scrolling under it.
@@ -505,6 +529,39 @@ private:
             AddHit(places[i].x, y, places[i].width, height, hit, i);
         }
     }
+    /// The Online tab's mark, so the room is not forgotten on the other tabs: a green dot that
+    /// breathes beside its label while the console is in a room, white and blinking while it joins,
+    /// amber when the room dropped it.
+    void DrawOnlineMark(const LibraryView& view, const std::vector<std::wstring_view>& tabs, float left,
+                        Tween::Clock::time_point now) {
+        constexpr unsigned Live = 0x5ad08a;
+        const auto& status = view.online.status;
+        const bool joined = status.phase == Online::Phase::Joined;
+        const bool joining = status.phase == Online::Phase::Joining;
+        const bool dropped = status.phase == Online::Phase::Idle && (status.failure == Online::Failure::LostConnection ||
+                                                                     status.failure == Online::Failure::Kicked);
+        online_pulse = joined || joining;
+        if (!joined && !joining && !dropped) return;
+        const auto index = static_cast<std::size_t>(LibraryLayout::LibraryTab::Online);
+        float x = left + SegmentInset;
+        for (std::size_t i = 0; i < index; ++i) x += MeasureType(tabs[i], TypeRole::LabelLarge) + 2 * SegmentPad;
+        const float label = MeasureType(tabs[index], TypeRole::LabelLarge);
+        const float cx = x + SegmentPad + label + 8, cy = LibraryLayout::HeaderTop + LibraryLayout::HeaderButtonHeight / 2;
+        const float seconds = std::chrono::duration<float>(now - ambient_epoch).count();
+        constexpr float r = 3.5f;
+        if (joined) {
+            // A halo that grows and fades every 2.4 s, under a steady dot.
+            const float t = std::fmod(seconds, 2.4f) / 2.4f;
+            const float halo = r + 5 * t;
+            Round(cx - halo, cy - halo, 2 * halo, 2 * halo, halo, Live, 0.45f * (1 - t));
+            Round(cx - r, cy - r, 2 * r, 2 * r, r, Live);
+        } else if (joining) {
+            const float t = 0.5f + 0.5f * std::sin(6.2831853f * seconds);
+            Round(cx - r, cy - r, 2 * r, 2 * r, r, Palette::Text, 0.3f + 0.7f * t);
+        } else {
+            Round(cx - r, cy - r, 2 * r, 2 * r, r, Palette::Warning);
+        }
+    }
     /// The wordmark; the tabs in the middle; the controller, the time and the user at the right.
     void DrawHeader(const LibraryView& view, Tween::Clock::time_point now) {
         using namespace LibraryLayout;
@@ -512,7 +569,7 @@ private:
         const float mark = Margin + MeasureType(L"J A D Y X", TypeRole::HeadlineSmall) + 14;
         Type(view.panel.xbox ? L"SERIES X|S" : L"PC", TypeRole::Caps, mark, HeaderTop + 13, 160, Palette::TextSecondary);
         // The tabs, with the bumpers that switch them at their ends.
-        const std::vector<std::wstring_view> tabs{Tr(T::TabHome), Tr(T::TabLibrary), Tr(T::TabSettings)};
+        const std::vector<std::wstring_view> tabs{Tr(T::TabHome), Tr(T::TabLibrary), Tr(T::Online), Tr(T::TabSettings)};
         const auto active = static_cast<std::size_t>(view.tab);
         if (header_shown) tab_slide.Set(static_cast<float>(active), now);
         else tab_slide.Snap(static_cast<float>(active));
@@ -520,6 +577,7 @@ private:
         const float width = SegmentedWidth(tabs);
         const float left = (1280 - width) / 2;
         Segmented(tabs, left, HeaderTop, HeaderButtonHeight, tab_slide.Value(now), active, false, LibraryHit::Tab);
+        DrawOnlineMark(view, tabs, left, now);
         const float middle = HeaderTop + HeaderButtonHeight / 2;
         const bool keyboard = prompt_family == PromptFamily::Keyboard;
         const bool nintendo = prompt_family == PromptFamily::Nintendo;
@@ -902,6 +960,10 @@ private:
         const bool game = !view.loading && view.selected < entries.size();
         // Only what a press does here: moving with the d-pad and the tabs' bumpers (shown on
         // the header) go without saying.
+        if (view.tab == LibraryTab::Online) {
+            DrawOnlineFooter(view, x, y);
+            return;
+        }
         if (view.tab == LibraryTab::Settings) {
             const auto& configuration = view.configuration;
             const bool change = view.system.open || view.graphics.open || view.controller_panel;
@@ -1356,6 +1418,9 @@ private:
                 if (row == GraphicsRow::FrameGen) { item.kind = Kind::Toggle; item.on = settings.frame_gen; }
                 if (row == GraphicsRow::AsyncRecord) { item.kind = Kind::Toggle; item.on = settings.async_record; }
                 if (row == GraphicsRow::CpuWriteQueue) { item.kind = Kind::Toggle; item.on = settings.cpu_write_queue; }
+                if (row == GraphicsRow::GpuFastPaths) { item.kind = Kind::Toggle; item.on = settings.gpu_fast_paths; }
+                if (row == GraphicsRow::CpuWriteAll) { item.kind = Kind::Toggle; item.on = settings.cpu_write_all; }
+                if (row == GraphicsRow::FixedCoreMap) { item.kind = Kind::Toggle; item.on = settings.fixed_core_map; }
                 rows.push_back(std::move(item));
             }
         } else if (category == HomeControllers) {
@@ -1402,6 +1467,18 @@ private:
             toggle(T::RightStickMouse, stick.mouse);
             rows.push_back({Kind::Choice, std::wstring{Tr(T::MouseSensitivity)}, {},
                             std::to_wstring(stick.mouse_sensitivity) + L"%"});
+            // The game's rumble on the pad, and the emulated gyro's controls (a game turns the gyro
+            // on from its in-game menu).
+            toggle(T::RumbleRow, options.rumble.on);
+            rows.back().hint = std::wstring{Tr(T::RumbleHint)};
+            rows.push_back({Kind::Choice, std::wstring{Tr(T::RumbleStrengthRow)}, {},
+                            std::to_wstring(options.rumble.strength) + L"%"});
+            SettingsRow gyro_stick{Kind::Segments, std::wstring{Tr(T::GyroStickRow)}, std::wstring{Tr(T::GyroStickHint)}};
+            gyro_stick.segments = {std::wstring{Tr(T::GyroStickRight)}, std::wstring{Tr(T::GyroStickLeft)}};
+            gyro_stick.on_segment = options.motion_stick == MotionStick::Left ? 1 : 0;
+            rows.push_back(std::move(gyro_stick));
+            rows.push_back({Kind::Choice, std::wstring{Tr(T::GyroShakeRow)}, std::wstring{Tr(T::GyroShakeHint)},
+                            ShakeButtonName(options.motion_shake)});
         } else {
             const auto& status = view.configuration.status;
             rows.push_back({Kind::Open, std::wstring{Tr(T::AddGamesFolder)}});
@@ -1610,6 +1687,376 @@ private:
         ControlPrompt(Navigation::Play, Tr(T::Select), 80, 676);
         ControlPrompt(Navigation::Back, Tr(T::Back), 400, 676);
     }
+    /// The Online tab, in two columns. At the left, what concerns this console: the connection
+    /// (its state, the room's people and the nickname they see) over a card with two modes (Y, or a
+    /// press on its switch): the direct join (address, port, password and the join/leave button) or
+    /// the hosted room (name, players and port, password and the create/close button). At the
+    /// right, the public rooms to pick from, or how friends reach the hosted room.
+    static constexpr float OnlineLeftX = LibraryLayout::Margin, OnlineLeftWidth = 500;
+    static constexpr float OnlineRightX = OnlineLeftX + OnlineLeftWidth + 28;
+    static constexpr float OnlineRightWidth = 1280 - LibraryLayout::Margin - OnlineRightX;
+    static constexpr float OnlineTop = 104, OnlineBottom = 644;
+    static constexpr float OnlineListTop = 168, OnlineRoomStride = 66, OnlineRoomHeight = 60;
+    static constexpr std::size_t OnlineVisibleRooms = 7;
+    void DrawOnline(const LibraryView& view, Tween::Clock::time_point now) {
+        (void)now;
+        const auto& page = view.online;
+        const auto& status = page.status;
+        const bool in_rooms = OnlineInRooms(page);
+        const auto user = view.system.settings.user_name.empty() ? std::wstring_view{DefaultUserName}
+                                                                  : std::wstring_view{view.system.settings.user_name};
+        // A row of the left column: its icon, a small label over the value, and the chevron that
+        // says A edits it.
+        const auto field = [&](std::size_t row, UiIcon icon, T label, const std::wstring& value, bool placeholder,
+                               float x, float y, float w) {
+            constexpr float h = 52;
+            const bool focused = page.host ? page.host_selected == row : !in_rooms && page.selected == row;
+            if (focused) {
+                FocusGlow(x, y, w, h, 12, 1);
+                Round(x, y, w, h, 12, 0x333537);
+            } else {
+                Round(x, y, w, h, 12, Palette::Canvas, 0.55f);
+            }
+            Icon(icon, x + 16, y + 15, focused ? Palette::Text : Palette::TextSecondary, 22);
+            Type(Tr(label), TypeRole::Label, x + 54, y + 8, w - 100, Palette::TextSecondary);
+            Type(value, TypeRole::LabelLarge, x + 54, y + 25, w - 100,
+                 placeholder ? Palette::TextSecondary : Palette::Text, placeholder ? 0.8f : 1.0f);
+            Chevron(x + w - 22, y + h / 2, focused ? Palette::Text : Palette::TextSecondary);
+            AddHit(x, y, w, h, page.host ? LibraryHit::OnlineHostRow : LibraryHit::OnlineRow, row);
+        };
+        // The card's main button: white when focused, as the primary action of the column.
+        const auto button = [&](bool focused, T label, float bx, float by, float bw, LibraryHit hit, std::size_t row) {
+            constexpr float bh = 52;
+            if (focused) {
+                FocusGlow(bx, by, bw, bh, bh / 2, 1);
+                Round(bx, by, bw, bh, bh / 2, Palette::Accent);
+            } else {
+                Round(bx, by, bw, bh, bh / 2, 0xffffff, 0.10f);
+                Outline(bx + 0.5f, by + 0.5f, bw - 1, bh - 1, bh / 2 - 0.5f, 0xffffff, 0.08f);
+            }
+            Type(Tr(label), TypeRole::BodyLarge, bx, by + 13, bw, focused ? Palette::OnAccent : Palette::Text, 1,
+                 TextAlign::Center);
+            AddHit(bx, by, bw, bh, hit, row);
+        };
+        const bool hosting = OnlineHosting(status);
+        const float lx = OnlineLeftX, lw = OnlineLeftWidth;
+        // The connection.
+        {
+            const float y = OnlineTop, h = 212;
+            Round(lx, y, lw, h, 18, Palette::Surface, 0.86f);
+            Outline(lx + 0.5f, y + 0.5f, lw - 1, h - 1, 18, 0xffffff, 0.06f);
+            Type(Upper(Tr(T::OnlineYou)), TypeRole::Caps, lx + 24, y + 22, 240, Palette::TextSecondary);
+            // The state as a lit dot and a word, top right: white inside a room, amber when the
+            // last attempt failed, grey otherwise.
+            const bool joined = status.phase == Online::Phase::Joined;
+            const bool failed = status.phase == Online::Phase::Idle && status.failure != Online::Failure::None;
+            const bool busy = status.phase == Online::Phase::Joining || status.phase == Online::Phase::Leaving;
+            const unsigned state_color = joined ? Palette::Text : failed ? Palette::Warning : Palette::TextSecondary;
+            const std::wstring state{Tr(joined ? (hosting ? T::OnlineHosting : T::OnlineConnected) : busy ? (status.phase == Online::Phase::Joining
+                                                                                  ? T::OnlineConnecting : T::OnlineLeaving)
+                                                                    : T::OnlineNotConnected)};
+            const float state_w = MeasureType(state, TypeRole::Label) + 2;
+            const float state_x = lx + lw - 24 - state_w;
+            Type(state, TypeRole::Label, state_x, y + 22, state_w, state_color);
+            Round(state_x - 16, y + 26, 8, 8, 4, state_color, joined || failed ? 1.0f : 0.6f);
+            // The headline: where the console is, or is going.
+            std::wstring headline;
+            if (joined || status.phase == Online::Phase::Leaving)
+                headline = OnlineWiden(status.room_name.empty() ? status.address : status.room_name);
+            else if (status.phase == Online::Phase::Joining && hosting)
+                headline = OnlineWiden(OnlineRoomName(page, user));
+            else if (status.phase == Online::Phase::Joining)
+                headline = OnlineWiden(status.address) + L":" + std::to_wstring(status.port);
+            else
+                headline = std::wstring{Tr(T::OnlineNotConnected)};
+            Type(headline, TypeRole::HeadlineMedium, lx + 24, y + 46, lw - 48, Palette::Text);
+            // Under it, who is there; or why the last attempt failed; or what this tab is for.
+            if (joined) {
+                std::wstring people = I18n::Format(T::OnlinePlayers, {std::to_wstring(status.members.size()),
+                                                                      status.slots ? std::to_wstring(status.slots)
+                                                                                   : std::wstring{L"—"}});
+                std::wstring names;
+                for (const auto& member : status.members) {
+                    if (!names.empty()) names += L", ";
+                    names += OnlineWiden(member.nickname);
+                }
+                if (!names.empty()) people += L"  ·  " + names;
+                Type(people, TypeRole::Body, lx + 24, y + 88, lw - 48, Palette::TextHint, 1, TextAlign::Leading, 2);
+            } else if (failed) {
+                Type(Tr(OnlineFailureText(status.failure)), TypeRole::Body, lx + 24, y + 88, lw - 48, Palette::Warning,
+                     1, TextAlign::Leading, 2);
+            } else {
+                Type(Tr(T::OnlineSubtitle), TypeRole::Body, lx + 24, y + 88, lw - 48, Palette::TextSecondary, 1,
+                     TextAlign::Leading, 2);
+            }
+            const bool own = !page.fields.nickname.empty();
+            field(page.host ? OnlinePage::HostNickname : OnlinePage::Nickname, UiIcon::User, T::OnlineNickname,
+                  OnlineWiden(OnlineNickname(page, user)), !own, lx + 12, y + h - 64, lw - 24);
+        }
+        // The second card: its caption, and at its right the switch between joining and hosting.
+        const float card_y = OnlineTop + 212 + 16;
+        {
+            const float y = card_y, h = OnlineBottom - y;
+            Round(lx, y, lw, h, 18, Palette::Surface, 0.86f);
+            Outline(lx + 0.5f, y + 0.5f, lw - 1, h - 1, 18, 0xffffff, 0.06f);
+            Type(Upper(Tr(page.host ? T::OnlineHostCaption : T::OnlineDirect)), TypeRole::Caps, lx + 24, y + 22, 260,
+                 Palette::TextSecondary);
+            const auto join_label = Tr(T::OnlineModeJoin), host_label = Tr(T::OnlineModeHost);
+            const float join_w = MeasureType(join_label, TypeRole::Label) + 24;
+            const float host_w = MeasureType(host_label, TypeRole::Label) + 24;
+            const float sh = 30, sy = y + 14, sx = lx + lw - 16 - join_w - host_w - 8;
+            Round(sx, sy, join_w + host_w + 8, sh, sh / 2, Palette::Canvas, 0.7f);
+            const auto segment = [&](std::wstring_view label, float x, float w, bool active, std::size_t index) {
+                if (active) Round(x, sy + 3, w, sh - 6, (sh - 6) / 2, 0xffffff, 0.16f);
+                Type(std::wstring{label}, TypeRole::Label, x, sy + 6, w, active ? Palette::Text : Palette::TextSecondary,
+                     1, TextAlign::Center);
+                AddHit(x, sy, w, sh, LibraryHit::OnlineMode, index);
+            };
+            segment(join_label, sx + 4, join_w, !page.host, 0);
+            segment(host_label, sx + 4 + join_w, host_w, page.host, 1);
+        }
+        if (page.host) {
+            // The hosted room: its name, the players and the port side by side, the password.
+            const float y = card_y;
+            const auto& fields = page.fields;
+            field(OnlinePage::HostName, UiIcon::Game, T::OnlineRoomName, OnlineWiden(OnlineRoomName(page, user)),
+                  fields.room_name.empty(), lx + 12, y + 50, lw - 24);
+            const float half = (lw - 24 - 8) / 2;
+            field(OnlinePage::HostSlots, UiIcon::User, T::OnlineSlots, std::to_wstring(fields.slots), false, lx + 12,
+                  y + 108, half);
+            field(OnlinePage::HostPort, UiIcon::Settings, T::OnlinePort, std::to_wstring(fields.host_port), false,
+                  lx + 12 + half + 8, y + 108, half);
+            const bool no_password = page.host_password.empty();
+            field(OnlinePage::HostPassword, UiIcon::Key, T::OnlinePassword,
+                  no_password ? std::wstring{Tr(T::OnlinePasswordNone)} : std::wstring(page.host_password.size(), L'•'),
+                  no_password, lx + 12, y + 166, lw - 24);
+            button(page.host_selected == OnlinePage::HostCreate, hosting ? T::OnlineClose : T::OnlineCreate, lx + 12,
+                   y + 232, lw - 24, LibraryHit::OnlineHostRow, OnlinePage::HostCreate);
+            DrawOnlineShare(view, user);
+            return;
+        }
+        // The direct join.
+        {
+            const float y = card_y;
+            const auto& fields = page.fields;
+            const bool no_address = fields.address.empty();
+            field(OnlinePage::Address, UiIcon::Globe, T::OnlineAddress,
+                  no_address ? std::wstring{Tr(T::OnlineAddressNone)} : fields.address, no_address, lx + 12, y + 50, lw - 24);
+            // The port and the password side by side would ask for left and right; they stack.
+            field(OnlinePage::Port, UiIcon::Settings, T::OnlinePort, std::to_wstring(fields.port), false, lx + 12,
+                  y + 108, lw - 24);
+            const bool no_password = page.password.empty();
+            field(OnlinePage::Password, UiIcon::Key, T::OnlinePassword,
+                  no_password ? std::wstring{Tr(T::OnlinePasswordNone)} : std::wstring(page.password.size(), L'•'),
+                  no_password, lx + 12, y + 166, lw - 24);
+            const bool leave = status.phase == Online::Phase::Joined || status.phase == Online::Phase::Joining;
+            button(!in_rooms && page.selected == OnlinePage::Connect, leave ? T::OnlineLeave : T::OnlineJoin, lx + 12,
+                   y + 232, lw - 24, LibraryHit::OnlineRow, OnlinePage::Connect);
+        }
+        if (OnlineChatShows(page)) {
+            DrawOnlineChat(view);
+            return;
+        }
+        // The public rooms.
+        const float rx = OnlineRightX, rw = OnlineRightWidth;
+        const auto& lobby = page.lobby;
+        Type(Tr(T::OnlinePublicRooms), TypeRole::HeadlineMedium, rx, OnlineTop - 2, rw - 260, Palette::Text);
+        std::wstring count;
+        if (lobby.state == Online::LobbyState::Loading) count = Tr(T::OnlineLoading);
+        else if (lobby.state == Online::LobbyState::Failed) count = Tr(T::OnlineListFailed);
+        else if (lobby.state == Online::LobbyState::Ready) count = I18n::Format(T::OnlineRoomCount, {std::to_wstring(lobby.rooms.size())});
+        if (lobby.state != Online::LobbyState::Loading && lobby.other_versions)
+            count += (count.empty() ? L"" : L"  ·  ") +
+                     I18n::Format(T::OnlineOtherVersions, {std::to_wstring(lobby.other_versions)});
+        Type(count, TypeRole::Label, rx, OnlineTop + 36, rw - 260,
+             lobby.state == Online::LobbyState::Failed ? Palette::Warning : Palette::TextSecondary);
+        {
+            // The refresh button, with the button that presses it.
+            const auto label = Tr(T::OnlineRefresh);
+            const auto key = PromptKey(Navigation::Rescan);
+            const float bw = PillWidth(label, key.letters), bh = 40;
+            const float bx = rx + rw - bw, by = OnlineTop + 2;
+            PillButton(label, key.letters, key.color, bx, by, false, bh);
+            AddHit(bx, by, bw, bh, LibraryHit::OnlineRefresh);
+        }
+        const float top = OnlineListTop, card_h = OnlineBottom - top;
+        Round(rx, top, rw, card_h, 18, Palette::Surface, 0.86f);
+        Outline(rx + 0.5f, top + 0.5f, rw - 1, card_h - 1, 18, 0xffffff, 0.06f);
+        if (lobby.rooms.empty()) {
+            // Nothing to list: one centered message, amber when the download failed.
+            const bool loading = lobby.state == Online::LobbyState::Loading || lobby.state == Online::LobbyState::Empty;
+            const bool failed = lobby.state == Online::LobbyState::Failed;
+            const float middle = top + card_h / 2;
+            Icon(UiIcon::Globe, rx + rw / 2 - 20, middle - 72, failed ? Palette::Warning : Palette::TextSecondary, 40);
+            Type(Tr(loading ? T::OnlineLoading : failed ? T::OnlineListFailed : T::OnlineNoRooms), TypeRole::BodyLarge,
+                 rx + 40, middle - 16, rw - 80, failed ? Palette::Warning : Palette::Text, 1, TextAlign::Center);
+            if (failed)
+                Type(Tr(T::OnlineRetry), TypeRole::Body, rx + 40, middle + 16, rw - 80, Palette::TextSecondary, 1,
+                     TextAlign::Center, 2);
+            return;
+        }
+        const std::size_t rooms = lobby.rooms.size();
+        const std::size_t visible = std::min(rooms, OnlineVisibleRooms);
+        // The list scrolls only when the focus would leave it.
+        const std::size_t focus = in_rooms ? page.selected - OnlinePage::FixedRows : page.last_room;
+        if (focus < online_first) online_first = focus;
+        if (focus >= online_first + visible) online_first = focus - visible + 1;
+        online_first = std::min(online_first, rooms - visible);
+        for (std::size_t i = online_first; i < online_first + visible; ++i) {
+            const auto& room = lobby.rooms[i];
+            const float x = rx + 12, y = top + 12 + static_cast<float>(i - online_first) * OnlineRoomStride;
+            const float w = rw - 24, h = OnlineRoomHeight;
+            const bool focused = in_rooms && i == focus;
+            const bool here = OnlineIsCurrentRoom(status, room);
+            const bool full = room.max_players && room.players >= room.max_players;
+            if (focused) {
+                FocusGlow(x, y, w, h, 12, 1);
+                Round(x, y, w, h, 12, 0x333537);
+            } else {
+                Round(x, y, w, h, 12, Palette::Canvas, here ? 0.85f : 0.55f);
+            }
+            if (here) Round(x, y + 14, 3, h - 28, 1.5f, Palette::Accent);
+            const float alpha = in_rooms || here ? 1.0f : 0.8f;
+            // The right side first: how full the room is, or that the console is in it.
+            float right = x + w - 16;
+            const std::wstring players = std::to_wstring(room.players) + L"/" + std::to_wstring(room.max_players);
+            const std::wstring badge = here ? std::wstring{Tr(T::OnlineHere)}
+                                     : full ? std::wstring{Tr(T::OnlineFull)} + L"  " + players
+                                            : players;
+            const float chip = MeasureType(badge, TypeRole::Label) + 24;
+            right -= chip;
+            Chip(badge, right, y + (h - 26) / 2, here ? Palette::Text : full ? Palette::Warning : Palette::TextHint, alpha);
+            Icon(UiIcon::User, right - 26, y + (h - 18) / 2, Palette::TextSecondary, 18);
+            right -= 40;
+            Icon(room.password ? UiIcon::Key : UiIcon::Game, x + 16, y + (h - 22) / 2,
+                 focused ? Palette::Text : Palette::TextSecondary, 22);
+            const float text_x = x + 54, text_w = right - text_x - 8;
+            std::wstring name = OnlineWiden(room.name);
+            Type(name, TypeRole::LabelLarge, text_x, y + 10, text_w, Palette::Text, alpha);
+            std::wstring detail = OnlineWiden(room.game.empty() ? room.description : room.game);
+            if (!room.owner.empty()) detail += (detail.empty() ? L"" : L"  ·  ") + OnlineWiden(room.owner);
+            if (room.password) detail = std::wstring{Tr(T::OnlineRoomLocked)} + (detail.empty() ? L"" : L"  ·  ") + detail;
+            Type(detail, TypeRole::Label, text_x, y + 33, text_w, focused ? Palette::TextHint : Palette::TextSecondary,
+                 alpha);
+            AddHit(x, y, w, h, LibraryHit::OnlineRow, OnlinePage::FixedRows + i);
+        }
+        ScrollIndicator(rx + rw + 8, top + 12, card_h - 24, online_first, visible, rooms);
+    }
+    /// Host mode's right column: before the room opens, what hosting means; once open, the
+    /// addresses friends type (on the same network and over the internet) and who is in it.
+    /// In a room, Join mode's right column: the room's chat, its history or the quick phrases.
+    void DrawOnlineChat(const LibraryView& view) {
+        const auto& page = view.online;
+        const auto& status = page.status;
+        const float rx = OnlineRightX, rw = OnlineRightWidth;
+        Type(Tr(T::ChatTitle), TypeRole::HeadlineMedium, rx, OnlineTop - 2, rw, Palette::Text);
+        Type(I18n::Format(T::OnlinePlayers, {std::to_wstring(status.members.size()), std::to_wstring(status.slots)}),
+             TypeRole::Label, rx, OnlineTop + 36, rw, Palette::TextSecondary);
+        const float top = OnlineListTop, card_h = OnlineBottom - top;
+        Round(rx, top, rw, card_h, 18, Palette::Surface, 0.86f);
+        Outline(rx + 0.5f, top + 0.5f, rw - 1, card_h - 1, 18, 0xffffff, page.in_chat ? 0.5f : 0.06f);
+        const float x = rx + 20, w = rw - 40;
+        if (page.chat.picking) {
+            Type(Upper(Tr(T::ChatQuick)), TypeRole::Caps, x, top + 18, w, Palette::TextSecondary);
+            for (std::size_t i = 0; i < Online::QuickPhrases.size(); ++i) {
+                const float y = top + 46 + static_cast<float>(i) * 50;
+                const bool active = i == page.chat.phrase;
+                if (active) FocusGlow(x, y, w, 44, 12, 1);
+                Round(x, y, w, 44, 12, active ? 0x333537 : Palette::Canvas, active ? 1.0f : 0.55f);
+                Type(Tr(QuickPhraseText(Online::QuickPhrases[i])), TypeRole::Body, x + 18, y + 11, w - 36,
+                     Palette::Text);
+            }
+            return;
+        }
+        const float bottom = OnlineBottom - (page.chat_notice.empty() ? 24.0f : 52.0f);
+        if (page.chat_lines.empty()) {
+            const float middle = top + card_h / 2;
+            Icon(UiIcon::Globe, rx + rw / 2 - 20, middle - 72, Palette::TextSecondary, 40);
+            Type(Tr(T::ChatEmpty), TypeRole::BodyLarge, rx + 48, middle - 16, rw - 96, Palette::Text, 1,
+                 TextAlign::Center, 3);
+        } else {
+            ChatHistory(page.chat_lines, page.chat.scroll, x, top + 16, w, bottom);
+        }
+        if (!page.chat_notice.empty())
+            Type(page.chat_notice, TypeRole::Label, x, bottom + 14, w, Palette::Warning, 1, TextAlign::Center);
+    }
+    void DrawOnlineShare(const LibraryView& view, std::wstring_view user) {
+        const auto& page = view.online;
+        const auto& status = page.status;
+        const float rx = OnlineRightX, rw = OnlineRightWidth;
+        Type(Tr(T::OnlineShareTitle), TypeRole::HeadlineMedium, rx, OnlineTop - 2, rw, Palette::Text);
+        Type(Tr(T::OnlineNotListed), TypeRole::Label, rx, OnlineTop + 36, rw, Palette::TextSecondary);
+        const float top = OnlineListTop, card_h = OnlineBottom - top;
+        Round(rx, top, rw, card_h, 18, Palette::Surface, 0.86f);
+        Outline(rx + 0.5f, top + 0.5f, rw - 1, card_h - 1, 18, 0xffffff, 0.06f);
+        if (!OnlineHosting(status)) {
+            const float middle = top + card_h / 2;
+            Icon(UiIcon::Globe, rx + rw / 2 - 20, middle - 72, Palette::TextSecondary, 40);
+            Type(Tr(T::OnlineHostIntro), TypeRole::BodyLarge, rx + 48, middle - 16, rw - 96, Palette::Text, 1,
+                 TextAlign::Center, 3);
+            return;
+        }
+        const float x = rx + 28, w = rw - 56;
+        const std::wstring port = std::to_wstring(status.port);
+        const std::wstring local = status.local_address.empty() ? std::wstring{} : OnlineWiden(status.local_address);
+        float y = top + 24;
+        // On the same network: the console's own address.
+        Type(Upper(Tr(T::OnlineShareLocal)), TypeRole::Caps, x, y, w, Palette::TextSecondary);
+        Type(local.empty() ? std::wstring{Tr(T::OnlineThisConsole)} + L" : " + port : local + L" : " + port,
+             TypeRole::HeadlineMedium, x, y + 22, w, Palette::Text);
+        Type(Tr(T::OnlineShareLocalHow), TypeRole::Body, x, y + 62, w, Palette::TextHint);
+        // Over the internet: the router has to send the port to this console.
+        y += 112;
+        Type(Upper(Tr(T::OnlineShareInternet)), TypeRole::Caps, x, y, w, Palette::TextSecondary);
+        Type(I18n::Format(T::OnlineShareInternetHow,
+                          {port, local.empty() ? std::wstring{Tr(T::OnlineThisConsole)} : local}),
+             TypeRole::Body, x, y + 24, w, Palette::TextHint, 1, TextAlign::Leading, 3);
+        // Who is in the room.
+        y += 120;
+        Round(x, y - 12, w, 1, 0.5f, 0xffffff, 0.08f);
+        Type(Upper(I18n::Format(T::OnlinePlayers, {std::to_wstring(status.members.size()),
+                                                    std::to_wstring(status.slots ? status.slots : page.fields.slots)})),
+             TypeRole::Caps, x, y + 4, w, Palette::TextSecondary);
+        const std::string own = OnlineNickname(page, user);
+        y += 30;
+        for (const auto& member : status.members) {
+            if (y + 28 > OnlineBottom - 12) break;
+            std::wstring name = OnlineWiden(member.nickname);
+            if (member.nickname == own) name += L"  (" + std::wstring{Tr(T::OnlineYouHost)} + L")";
+            Icon(UiIcon::User, x, y + 3, Palette::TextSecondary, 18);
+            Type(name, TypeRole::LabelLarge, x + 28, y, w - 28, Palette::Text);
+            y += 30;
+        }
+    }
+    /// The Online tab's prompts: what A does on the focused row, the mode switch, the list's
+    /// refresh and Back; the page's notice at the right.
+    void DrawOnlineFooter(const LibraryView& view, float x, float y) {
+        const auto& page = view.online;
+        const auto phase = page.status.phase;
+        if (page.in_chat) {
+            const bool picking = page.chat.picking;
+            x += ControlPrompt(Navigation::Play, Tr(picking ? T::ChatSend : T::ChatWrite), x, y);
+            if (!picking) x += ControlPrompt(Navigation::Rescan, Tr(T::ChatQuick), x, y);
+            ControlPrompt(Navigation::Back, Tr(T::Back), x, y);
+            return;
+        }
+        T play = T::Change;
+        if (page.host) {
+            if (page.host_selected == OnlinePage::HostCreate)
+                play = OnlineHosting(page.status) ? T::OnlineClose : T::OnlineCreate;
+        } else if (OnlineInRooms(page)) {
+            play = T::OnlineJoin;
+        } else if (page.selected == OnlinePage::Connect) {
+            play = phase == Online::Phase::Joined || phase == Online::Phase::Joining ? T::OnlineLeave : T::OnlineJoin;
+        }
+        x += ControlPrompt(Navigation::Play, Tr(play), x, y);
+        x += ControlPrompt(Navigation::Pin, Tr(page.host ? T::OnlineModeJoin : T::OnlineModeHost), x, y);
+        if (!page.host) x += ControlPrompt(Navigation::Rescan, Tr(T::OnlineRefresh), x, y);
+        ControlPrompt(Navigation::Back, Tr(T::Back), x, y);
+        if (!view.system.notice.empty())
+            Type(view.system.notice, TypeRole::Label, 1280 - LibraryLayout::Margin - 600, y + 8, 600, Palette::TextHint, 1,
+                 TextAlign::Trailing);
+    }
     /// The Settings tab: the categories at the left with the emulator's data under them, and the
     /// rows of the focused category at the right, live while the list has the focus.
     void DrawSettings(const LibraryView& view) {
@@ -1795,7 +2242,21 @@ private:
         brush->SetColor(D2D1::ColorF(0, 0, 0, 0.86f));
         target->FillRectangle(D2D1::RectF(0, 0, 1280, 720), brush.Get());
         Round(L::EditorX, L::EditorY, K::Width, K::Height, 22, Palette::Surface);
-        DrawTextEntryPanel(*this, {*page.name_editor, Tr(T::UserName), Tr(T::NameEditorHint), page.editor_notice},
+        T title = T::UserName, hint = T::NameEditorHint;
+        switch (page.editor_purpose) {
+        case EditorPurpose::OnlineNickname: title = T::OnlineNickname; hint = T::OnlineNicknameEditorHint; break;
+        case EditorPurpose::OnlineAddress: title = T::OnlineAddress; hint = T::OnlineAddressEditorHint; break;
+        case EditorPurpose::OnlinePort: title = T::OnlinePort; hint = T::OnlinePortEditorHint; break;
+        case EditorPurpose::OnlinePassword: title = T::OnlinePassword; hint = T::OnlinePasswordEditorHint; break;
+        case EditorPurpose::RoomPassword: title = T::OnlineRoomPassword; hint = T::OnlinePasswordEditorHint; break;
+        case EditorPurpose::HostName: title = T::OnlineRoomName; hint = T::OnlineRoomNameEditorHint; break;
+        case EditorPurpose::HostSlots: title = T::OnlineSlots; hint = T::OnlineSlotsEditorHint; break;
+        case EditorPurpose::HostPort: title = T::OnlinePort; hint = T::OnlinePortEditorHint; break;
+        case EditorPurpose::HostPassword: title = T::OnlinePassword; hint = T::OnlinePasswordEditorHint; break;
+        case EditorPurpose::ChatMessage: title = T::ChatMessageTitle; hint = T::ChatEditorHint; break;
+        case EditorPurpose::UserName: break;
+        }
+        DrawTextEntryPanel(*this, {*page.name_editor, Tr(title), Tr(hint), page.editor_notice},
                            L::EditorX, L::EditorY);
         const float left = L::EditorX + K::Left;
         const float footer = L::EditorY + K::Footer;
@@ -2412,6 +2873,9 @@ private:
     /// The backdrop's drift moves a pixel or so a frame over blurred art: 30 frames a second show
     /// it as smooth as 60, at half the redraws of an idle library. Presses still draw at once.
     static constexpr auto AmbientFrame = std::chrono::milliseconds{30};
+    /// The online mark breathes slowly: 20 frames a second are enough.
+    static constexpr auto PulseFrame = std::chrono::milliseconds{50};
+    bool online_pulse{};
     /// Two screens of the grid and a mod's gallery: 640 px wide at most, ~0.6 MiB each.
     static constexpr size_t MaxPictures = 48;
     ComPtr<ID3D11DeviceContext> context;
@@ -2437,6 +2901,7 @@ private:
     bool header_shown{};
     TileKey focused_tile, left_tile;
     bool rows_shown{};
+    std::size_t online_first{}; ///< The first public room the Online tab shows.
     bool animating{};
     bool ambient{}; ///< The backdrop shows, so it drifts.
     Tween::Clock::time_point ambient_epoch{Tween::Clock::now()}, last_frame{};

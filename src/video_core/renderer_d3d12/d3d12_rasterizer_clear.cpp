@@ -20,6 +20,9 @@ namespace D3D12 {
 
 void RasterizerD3D12::DrawTexture() {
     DrainCpuWrites();
+    if (glitch_hunt.Capturing()) [[unlikely]] {
+        GlitchPassCheck("switch");
+    }
     ++draw_counter;
     HuntScope hunt{draw_hunt, Hunt::Kind::DrawTexture};
     SCOPE_EXIT {
@@ -90,6 +93,9 @@ void RasterizerD3D12::DrawTexture() {
 
 void RasterizerD3D12::Clear(u32 layer_count) {
     DrainCpuWrites();
+    if (glitch_hunt.Capturing()) [[unlikely]] {
+        GlitchPassCheck("switch");
+    }
     ++draw_counter;
     HuntScope hunt{draw_hunt, Hunt::Kind::Clear};
     VideoCore::Perf::ScopedNsTimer clear_timer{VideoCore::Perf::Counter::ClearNs};
@@ -178,6 +184,25 @@ void RasterizerD3D12::Clear(u32 layer_count) {
                               regs.clear_color[0], regs.clear_color[1], regs.clear_color[2],
                               regs.clear_color[3]),
                   nullptr, framebuffer, {}, 0, 0);
+    }
+    if (glitch_hunt.Capturing()) [[unlikely]] {
+        // Glitch hunt: what each pass starts from (a depth not cleared keeps the last frame's).
+        const u32 glitch_call = glitch_hunt.PeekCall();
+        glitch_hunt.Line(fmt::format(
+            "K f={} n={} fb={:x}:{}x{}:c{}:d{} rt={} mask={}{}{}{} z={} zv={:.6g} s={} sv={} "
+            "smask={:x} rect={},{}-{},{} layers={}+{} dsv={} rtv={}",
+            glitch_hunt.Frame(), glitch_hunt.NextCall(),
+            reinterpret_cast<std::uintptr_t>(framebuffer) & 0xffffff, extent.width,
+            extent.height, framebuffer->ColorTargets().size(),
+            static_cast<int>(framebuffer->DepthFormat()), regs.clear_surface.RT.Value(),
+            regs.clear_surface.R.Value(), regs.clear_surface.G.Value(),
+            regs.clear_surface.B.Value(), regs.clear_surface.A.Value(), use_depth ? 1 : 0,
+            regs.clear_depth, use_stencil ? 1 : 0, regs.clear_stencil, regs.stencil_front_mask,
+            rect.left, rect.top, rect.right, rect.bottom, first_layer, layer_count,
+            depth_target.ptr != 0 ? 1 : 0, color_target.ptr != 0 ? 1 : 0));
+        if (use_color) {
+            GlitchPassNote(framebuffer, glitch_call, true);
+        }
     }
     if (rect.right <= rect.left || rect.bottom <= rect.top) {
         hunt.Outcome(Hunt::Outcome::Empty);

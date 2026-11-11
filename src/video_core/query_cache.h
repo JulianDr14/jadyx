@@ -26,6 +26,7 @@
 #include "common/settings.h"
 #include "common/slot_vector.h"
 #include "video_core/control/channel_state_cache.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/gpu_written_pages.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
@@ -386,11 +387,15 @@ private:
                 device_memory.WriteBlockUnsafe(address + sizeof(u64), &timestamp_value,
                                                sizeof(u64));
                 device_memory.WriteBlockUnsafe(address, &value, sizeof(u64));
+                VideoCommon::GeoHunt::Journal(VideoCommon::GeoHunt::Writer::Query, address,
+                                              sizeof(u64) * 2);
                 rasterizer.InvalidateRegion(address, sizeof(u64) * 2,
                                             VideoCommon::CacheType::NoQueryCache);
             } else {
                 u32 small_value = static_cast<u32>(value);
                 device_memory.WriteBlockUnsafe(address, &small_value, sizeof(u32));
+                VideoCommon::GeoHunt::Journal(VideoCommon::GeoHunt::Writer::Query, address,
+                                              sizeof(u32));
                 rasterizer.InvalidateRegion(address, sizeof(u32),
                                             VideoCommon::CacheType::NoQueryCache);
             }

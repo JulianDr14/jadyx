@@ -16,6 +16,7 @@
 #include "common/alignment.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/gpu_written_pages.h"
 #include <fmt/format.h>
 #include "video_core/control/channel_state.h"
@@ -239,6 +240,7 @@ void TextureCache<P>::RunGarbageCollector() {
                 {
                     const VideoCore::FrameTrace::ScopedSpan trace_swizzle{
                         VideoCore::FrameTrace::Event::TextureGcSwizzle, image.gpu_addr};
+                    const VideoCommon::GeoHunt::WriterScope geo_writer{VideoCommon::GeoHunt::Writer::TextureDownload};
                     SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span,
                                  swizzle_data_buffer);
                 }
@@ -247,6 +249,7 @@ void TextureCache<P>::RunGarbageCollector() {
                 auto map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes);
                 image.DownloadMemory(map, copies);
                 runtime.Finish();
+                const VideoCommon::GeoHunt::WriterScope geo_writer{VideoCommon::GeoHunt::Writer::TextureDownload};
                 SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span,
                              swizzle_data_buffer);
             }
@@ -880,6 +883,7 @@ void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size, bool modified_
                 const auto copies = FixSmallVectorADL(FullDownloadCopies(image.info));
                 image.DownloadMemory(map, copies);
                 runtime.Finish();
+                const VideoCommon::GeoHunt::WriterScope geo_writer{VideoCommon::GeoHunt::Writer::TextureDownload};
                 SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies,
                              map.mapped_span.first(image.unswizzled_size_bytes), swizzle_data_buffer);
                 checkpoint_downloads.pooled =
@@ -896,6 +900,7 @@ void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size, bool modified_
         const auto copies = FixSmallVectorADL(FullDownloadCopies(image.info));
         image.DownloadMemory(map, copies);
         runtime.Finish();
+        const VideoCommon::GeoHunt::WriterScope geo_writer{VideoCommon::GeoHunt::Writer::TextureDownload};
         SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span,
                      swizzle_data_buffer);
         ReadbackTrace::Log("image sync", image.cpu_addr, image.unswizzled_size_bytes,
@@ -964,6 +969,7 @@ void TextureCache<P>::DownloadCheckpointMemory() requires HAS_CHECKPOINT_READBAC
         auto& image = slot_images[id];
         const auto copies = FixSmallVectorADL(FullDownloadCopies(image.info));
         const auto bytes = runtime.ReadCheckpointImage(image, copies);
+        const VideoCommon::GeoHunt::WriterScope geo_writer{VideoCommon::GeoHunt::Writer::TextureCheckpoint};
         SwizzleImage(CheckpointMemoryForImage(image), image.gpu_addr, image.info, copies, bytes,
                      scratch);
         // Mark clean only after both the fence and the guest write succeeded. A failed operation
@@ -1293,6 +1299,7 @@ void TextureCache<P>::PopAsyncFlushes() {
                 download_buffer.offset -= Common::AlignUp(image.unswizzled_size_bytes, 64);
                 std::span<u8> download_span =
                     download_buffer.mapped_span.subspan(download_buffer.offset);
+                const VideoCommon::GeoHunt::WriterScope geo_writer{VideoCommon::GeoHunt::Writer::TextureDownload};
                 SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span, swizzle_data_buffer);
                 ReadbackTrace::Log("image async", image.cpu_addr, image.unswizzled_size_bytes,
                                    download_span.first((std::min<size_t>)(
@@ -1303,6 +1310,7 @@ void TextureCache<P>::PopAsyncFlushes() {
                 const BufferDownload& buffer_info = slot_buffer_downloads[download_info.object_id];
                 std::span<u8> download_span =
                     download_buffer.mapped_span.subspan(download_buffer.offset);
+                const VideoCommon::GeoHunt::WriterScope geo_writer{VideoCommon::GeoHunt::Writer::TextureDownload};
                 gpu_memory->WriteBlockUnsafe(buffer_info.address, download_span.data(),
                                              buffer_info.size);
                 ReadbackTrace::Log("image->buffer async", buffer_info.address, buffer_info.size,
@@ -1349,6 +1357,7 @@ void TextureCache<P>::PopAsyncFlushes() {
             }
             const ImageBase& image = slot_images[download_info.object_id];
             const auto copies = FixSmallVectorADL(FullDownloadCopies(image.info));
+            const VideoCommon::GeoHunt::WriterScope geo_writer{VideoCommon::GeoHunt::Writer::TextureDownload};
             SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span, swizzle_data_buffer);
             download_map.offset += image.unswizzled_size_bytes;
             download_span = download_span.subspan(image.unswizzled_size_bytes);

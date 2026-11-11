@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <span>
+#include <array>
 #include <variant>
 #include <vector>
 #include "common/container/unordered_map.h"
@@ -233,6 +234,7 @@ struct MacroEngine {
     inline void ClearCode(u32 method) noexcept {
         macro_cache.erase(method);
         uploaded_macro_code.erase(method);
+        fast_slots = {};
     }
     // Compiles the macro if its not in the cache, and executes the compiled macro
     void Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u32 method, std::span<const u32> parameters);
@@ -242,6 +244,17 @@ struct MacroEngine {
         u64 hash{};
     };
     ::Common::unordered_map<u32, CacheInfo> macro_cache;
+    /// Direct table in front of macro_cache. The map moves its elements when it grows or
+    /// erases: every slot is dropped on either.
+    struct FastSlot {
+        u32 method{};
+        CacheInfo* info{};
+    };
+    static constexpr size_t NUM_FAST_SLOTS = 64;
+    [[nodiscard]] static constexpr size_t FastSlotIndex(u32 method) noexcept {
+        return (method ^ (method >> 6)) & (NUM_FAST_SLOTS - 1);
+    }
+    std::array<FastSlot, NUM_FAST_SLOTS> fast_slots{};
     ::Common::unordered_map<u32, std::vector<u32>> uploaded_macro_code;
     bool is_interpreted;
 };

@@ -71,6 +71,8 @@
     <Capability Name="codeGeneration" />
     <!-- core/network_interface + the NS services touch sockets on startup. -->
     <Capability Name="internetClient" />
+    <!-- Hosted multiplayer rooms: receive players over the internet (a forwarded UDP port). -->
+    <Capability Name="internetClientServer" />
     <!-- User-started library portal: receive HTTP connections from the local network. -->
     <Capability Name="privateNetworkClientServer" />
     <!-- Native self-update of the installed Jadyx package in Xbox Developer Mode. -->

@@ -116,6 +116,11 @@ struct Profile {
     /// Quad operations may skip helper lanes (D3D12 before SM 6.7 leaves it to the driver), so
     /// fragment quad shuffles travel through fine derivatives, which always include them
     bool has_helperless_quad_shuffles{};
+    /// A subgroup shuffle whose source lane differs between lanes reads, on every lane, the
+    /// source of the first active lane (the Xbox Series D3D12 driver lowers WaveReadLaneAt as if
+    /// its lane index were uniform). Shuffles then read one source the whole wave agrees on per
+    /// pass, a pass per distinct source.
+    bool has_broken_divergent_shuffle_index{};
 
     u32 gl_max_compute_smem_size{};
 

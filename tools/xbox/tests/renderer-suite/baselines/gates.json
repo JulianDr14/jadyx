@@ -8,6 +8,7 @@
  "cpu-texture-writes": "pass",
  "demote-helper": "pass",
  "depth-region-copy": "pass",
+ "download-shadow": "pass",
  "draw-preparation": "pass",
  "draw-sampler-cache": "pass",
  "draw-targets": "pass",

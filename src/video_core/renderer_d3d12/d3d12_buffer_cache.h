@@ -29,6 +29,9 @@ void SetUniformUploadCopy(bool enabled);
 /// Opt-in rebinding of a streamed uniform buffer whose bytes did not change within a submission,
 /// for subsequently created runtimes.
 void SetUniformReuse(bool enabled);
+/// Draws recorded since boot with an enabled vertex slot the command list did not hold (a list
+/// restarted inside the draw).
+[[nodiscard]] u64 LostVertexSlotDraws() noexcept;
 
 class Buffer : public VideoCommon::BufferBase {
 public:
@@ -59,6 +62,8 @@ public:
     /// only holds within the list that set it.
     void Transition(D3D12_RESOURCE_STATES next, bool mark_written = true);
     [[nodiscard]] D3D12_RESOURCE_STATES State() const noexcept { return state; }
+    /// State as the current command list sees it: COMMON when it was set in an earlier list.
+    [[nodiscard]] D3D12_RESOURCE_STATES CurrentState() const noexcept;
     /// Whether a binding of this draw or dispatch (Scheduler::Work) made it a UAV.
     [[nodiscard]] bool WrittenByWork(u64 work) const noexcept {
         return work != 0 && uav_work == work;
@@ -69,11 +74,45 @@ public:
     /// Bumped by every write to the buffer: uploads, copies and UAV use (Transition to a write
     /// state), so an unchanged generation means unchanged contents.
     [[nodiscard]] u64 Generation() const noexcept { return generation; }
+    /// Bytes the next write (Transition to a write state) covers. Without it a write counts as
+    /// the whole buffer: a UAV or stream output binding says nothing about its range.
+    void ExpectWrite(u64 begin, u64 end) noexcept {
+        pending_begin = begin;
+        pending_end = end;
+    }
+    /// Whether a write after `since` may have touched [begin, end). True when the writes since
+    /// then are more than the buffer remembers.
+    [[nodiscard]] bool WrittenSince(u64 since, u64 begin, u64 end) const noexcept {
+        if (generation - since > NUM_WRITES) {
+            return true;
+        }
+        for (u64 at = since + 1; at <= generation; ++at) {
+            const Write& write = writes[at % NUM_WRITES];
+            if (write.generation != at || (write.begin < end && begin < write.end)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
 private:
+    /// Hands the host buffer back to the runtime (BufferCacheRuntime::RecycleBuffer).
+    void ReleaseBuffer();
+
+    BufferCacheRuntime* runtime{};
     Scheduler* scheduler{};
     u64 id{};
     u64 generation{};
+    /// The last writes by generation, for CheckIndexRange.
+    struct Write {
+        u64 generation{};
+        u64 begin{};
+        u64 end{};
+    };
+    static constexpr u64 NUM_WRITES = 16;
+    std::array<Write, NUM_WRITES> writes{};
+    u64 pending_begin{};
+    u64 pending_end{}; ///< 0: the next write has no known range
     ComPtr<ID3D12Resource> buffer;
     D3D12_GPU_VIRTUAL_ADDRESS address{};
     D3D12_RESOURCE_STATES state{D3D12_RESOURCE_STATE_COMMON};
@@ -107,6 +146,7 @@ public:
     BufferCacheRuntime(const Device& device, Scheduler& scheduler, StagingBufferPool& staging,
                        TransferBufferPool& transfer_buffers,
                        Tegra::MaxwellDeviceMemoryManager& device_memory);
+    ~BufferCacheRuntime();
 
     /// Where guest uniform, storage and texel buffer views go (set by the rasterizer).
     void SetDescriptorQueue(GuestDescriptorQueue* queue) noexcept { descriptor_queue = queue; }
@@ -155,6 +195,12 @@ public:
     /// cannot leave the new command list without them.
     /// The restart index of the next indexed draws, empty when restart is off.
     void SetIndexRestart(std::optional<u32> value) noexcept { index_restart = value; }
+    /// Vertices the largest per-vertex stream of the next indexed draw holds (0: unknown) and
+    /// its base vertex: indices past them fetch zeros (out-of-range check and fix).
+    void SetVertexLimit(u32 limit, s64 base) noexcept {
+        vertex_limit = limit;
+        vertex_base = base;
+    }
     /// The draw's inline indices, which live in no guest memory; empty for any other draw.
     void SetInlineIndices(std::span<const u8> indices) noexcept {
         inline_indices = indices;
@@ -213,8 +259,29 @@ public:
     /// buffer the list already has is not set again.
     void ApplyGeometry(CommandStream* cmd);
 
-    /// A new command list starts without an index buffer.
-    void InvalidateGeometry() noexcept { applied_index.reset(); }
+    /// A new command list starts without an index buffer or vertex buffers.
+    void InvalidateGeometry() noexcept;
+
+    /// Vertex slots set on the command list being recorded (ApplyGeometry), for diagnostics.
+    [[nodiscard]] u32 AppliedVertexMask() const noexcept { return applied_vertex_mask; }
+    /// Where the guest-uniform path last put a stage's cbuf on the host, for diagnostics.
+    struct StreamedHost {
+        ID3D12Resource* resource{};
+        u64 offset{};
+        DAddr device_addr{};
+        u64 tick{};
+        u32 size{};
+    };
+    [[nodiscard]] const StreamedHost& LastStreamedHost(size_t stage, u32 index) const noexcept {
+        return streamed_hosts[stage][index];
+    }
+    /// The view ApplyGeometry last set for a vertex slot (zero when none), for diagnostics.
+    [[nodiscard]] const D3D12_VERTEX_BUFFER_VIEW& LastVertexView(u32 slot) const noexcept {
+        return last_vertex[slot];
+    }
+    /// The slots of `enabled` the draw about to be recorded would run without: neither set on this
+    /// list nor pending. Counted for LostVertexSlotDraws and logged; GPU thread only.
+    u32 CheckVertexSlots(u32 enabled);
 
     /// The index buffer ApplyGeometry set on the command list, if any.
     [[nodiscard]] const std::optional<D3D12_INDEX_BUFFER_VIEW>& AppliedIndex() const noexcept {
@@ -227,7 +294,23 @@ private:
     /// Uploads indices to staging memory and binds them as a 32-bit or 16-bit index buffer.
     void BindRewrittenIndices(IndexRewriteCache::Entry& entry);
     [[nodiscard]] bool NeedsRestartRewrite(IndexFormat format) const noexcept;
+    /// The out-of-range limit (exclusive, before the base vertex) the draw's indices must be
+    /// rewritten with, 0 when they are all in range or the check is off. Reports bad ranges.
+    [[nodiscard]] u32 CheckIndexRange(PrimitiveTopology topology, Buffer& buffer, u64 byte_offset,
+                                      u32 num_indices, u32 index_size);
+    /// Largest index of count indices of index_size bytes; the restart value counts as 0.
+    [[nodiscard]] static u32 MaxIndex(const u8* data, u32 count, u32 index_size,
+                                      std::optional<u32> restart) noexcept;
+    /// Logs an out-of-range index range with its bad index count.
+    void ReportIndexRange(PrimitiveTopology topology, Buffer& buffer, u64 byte_offset,
+                          u32 num_indices, u32 index_size, u32 max_index, u32 limit);
     ComPtr<ID3D12Resource> CreateDefaultBuffer(u64 size);
+    /// Keeps the host buffer of a deleted cache buffer for the next one of its size
+    /// (VideoCore::FastPaths): some games make the cache delete and create a few buffers every
+    /// frame, and each pair is a kernel call to commit memory and another to free it. A buffer
+    /// is handed out again only after the command list that last used it was submitted, when
+    /// it is back in the COMMON state a new one starts in.
+    void RecycleBuffer(ComPtr<ID3D12Resource> resource, u64 size);
     void Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src, ID3D12Resource* src_raw,
               std::span<const VideoCommon::BufferCopy> copies);
 
@@ -251,6 +334,8 @@ private:
         DAddr device_addr{};
         u64 tick{};
         D3D12_GPU_VIRTUAL_ADDRESS address{};
+        ID3D12Resource* resource{};
+        u64 offset{};
         u32 size{};
         u32 reach{};
         std::vector<u8> bytes;
@@ -259,16 +344,52 @@ private:
                VideoCommon::NUM_STAGES>
         streamed_uniforms;
     D3D12_GPU_VIRTUAL_ADDRESS last_uniform_address{};
+    ID3D12Resource* last_uniform_resource{};
+    u64 last_uniform_offset{};
+    std::array<std::array<StreamedHost, VideoCommon::NUM_GRAPHICS_UNIFORM_BUFFERS>,
+               VideoCommon::NUM_STAGES>
+        streamed_hosts{};
     bool uniform_reuse{};
     u32 pending_vertex_mask{};
+    u32 applied_vertex_mask{}; ///< slots the command list being recorded holds
+    u32 known_vertex_mask{};   ///< slots last_vertex holds a view for
+    std::array<D3D12_VERTEX_BUFFER_VIEW, VideoCommon::NUM_VERTEX_BUFFERS> last_vertex{};
     std::optional<u32> rewritten_count;
     std::optional<u32> index_restart;
     std::array<TransformFeedbackBinding, 4> transform_feedback{};
     std::vector<u32> rewrite_scratch;
     IndexRewriteCache rewrite_cache;
     u64 next_buffer_id{1};
+    struct RecycledBuffer {
+        ComPtr<ID3D12Resource> resource;
+        u64 size{};
+        u64 tick{};  ///< scheduler tick it was last used in
+        u64 frame{}; ///< recycle_frame it was handed back at
+    };
+    std::vector<RecycledBuffer> recycled;
+    u64 recycled_bytes{};
+    u64 recycle_frame{};
+    u64 recycle_hits{};
+    u64 recycle_misses{};
     std::vector<u8> guest_indices;
     std::span<const u8> inline_indices;
+    u32 vertex_limit{};
+    s64 vertex_base{};
+    /// Largest index per guest index range, valid for the buffer generation it was scanned at.
+    /// Direct mapped: one probe and no allocation per draw; a collision only costs a rescan.
+    struct IndexRange {
+        u64 buffer_id{};
+        u64 offset{};
+        u64 generation{};
+        u32 count{};
+        u32 restart{};
+        u32 max_index{};
+        u32 reported_limit{};
+        u8 index_size{};
+        bool has_restart{};
+    };
+    static constexpr size_t INDEX_RANGE_SLOTS = 4096;
+    std::vector<IndexRange> index_ranges = std::vector<IndexRange>(INDEX_RANGE_SLOTS);
     bool logged_rewrite{};
     bool logged_inline_rewrite{};
 };

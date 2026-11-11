@@ -126,6 +126,10 @@ public:
      */
     [[nodiscard]] bool IsValidVirtualAddress(Common::ProcessAddress vaddr) const;
 
+    /// Diagnostic (geo_hunt): whether the page holding vaddr is marked rasterizer cached, so a
+    /// CPU write to it reaches the GPU caches.
+    [[nodiscard]] bool IsRasterizerCachedPage(Common::ProcessAddress vaddr) const;
+
     /**
      * Checks whether or not the supplied range of addresses are all valid
      * virtual addresses for the current process.

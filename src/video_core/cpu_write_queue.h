@@ -10,6 +10,7 @@
 
 #include "common/common_types.h"
 #include "video_core/frame_pipeline.h"
+#include "video_core/gpu_fast_paths.h"
 
 /// "cpu_write_defer=0|1|check": guest CPU writes into rasterizer-cached memory no cache holds GPU
 /// data for (VideoCommon::GpuWrittenPages clear) skip RasterizerInterface::OnCPUWrite and its two
@@ -48,6 +49,21 @@ struct Queue {
 
 inline std::atomic<Mode> mode{Mode::Off};
 inline std::array<Queue, QUEUES> queues{};
+
+/// Settings > Graphics and the game's own Graphics (on by default): with the queue on, writes into granules a cache may hold
+/// GPU data for (GpuWrittenPages set, never cleared) are queued too. The drain runs the whole
+/// OnCPUWrite on them, and those it defers are invalidated at the next InvalidateGPUCache, as
+/// the ones a guest core gathers are. Without it each such write waits for the buffer cache
+/// lock, which the GPU thread holds through every draw.
+inline std::atomic<bool> all_writes{false};
+
+inline void SetAllWrites(bool value) noexcept {
+    all_writes.store(value, std::memory_order_relaxed);
+}
+
+[[nodiscard]] inline bool AllWrites() noexcept {
+    return all_writes.load(std::memory_order_relaxed);
+}
 
 inline void SetMode(Mode value) noexcept {
     mode.store(value, std::memory_order_relaxed);
@@ -123,12 +139,15 @@ struct DrainResult {
     u64 pages{};  ///< cpu_write_test: runs of writes inside one 4 KiB page, gaps included
 };
 
-/// Consumer: calls func(address, size) for each queued write, oldest first per queue.
+/// Consumer: calls func(address, size) for each queued write, oldest first per queue. Writes that
+/// touch or overlap the run before them reach func as one range (VideoCore::FastPaths): a game
+/// fills a page in many small stores, and each call costs lookups in both caches.
 template <typename Func>
 inline DrainResult Drain(Func&& func) {
     DrainResult result{};
     const bool testing = Testing();
-    const bool merging = testing && CurrentTestPhase() == TestPhase::Merged;
+    const bool merging = testing ? CurrentTestPhase() == TestPhase::Merged
+                                 : VideoCore::FastPaths::Enabled();
     for (Queue& q : queues) {
         const u64 tail = q.tail.load(std::memory_order_acquire);
         u64 head = q.head.load(std::memory_order_relaxed);
@@ -138,12 +157,12 @@ inline DrainResult Drain(Func&& func) {
         u64 page = ~u64{0};
         for (; head != tail; ++head) {
             const Write write = q.writes[head & (CAPACITY - 1)];
-            if (!testing) {
+            if (!merging && !testing) {
                 func(write.address, write.size);
                 continue;
             }
             const u64 write_end = write.address + write.size;
-            if ((write.address >> 12) != page || ((write_end - 1) >> 12) != page) {
+            if (testing && ((write.address >> 12) != page || ((write_end - 1) >> 12) != page)) {
                 ++result.pages;
                 page = write.address >> 12;
             }

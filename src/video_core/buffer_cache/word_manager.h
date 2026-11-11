@@ -143,6 +143,49 @@ struct WordManager {
         }
     }
 
+    /// @brief Mark pages as CPU modified but keep them write-tracked.
+    /// For pages that still hold GPU-written bytes: untracking them would let later CPU writes
+    /// into those bytes go unseen, and uploads skip GPU bytes, so the host would keep stale data.
+    /// ROOT FIX for stale GPU marks (see BufferCache::MarkCpuWritten). This must NOT touch the
+    /// Untracked words or call UpdatePagesCachedCount. "CPU-dirty but still tracked" is a valid
+    /// state on purpose: an upload's clear only re-tracks pages marked Untracked, so the
+    /// protection counts stay balanced. Folding this into ChangeRegionState(CPU) brings the bug
+    /// back: stale host index/vertex data, seen as giant stretched triangles.
+    void MarkCpuModifiedTracked(u64 dirty_addr, u64 size) noexcept {
+        std::span<u64> cpu_words = Span(Type::CPU);
+        std::span<u64> cached_words = Span(Type::CachedCPU);
+        IterateWords(dirty_addr - cpu_addr, size, [&](size_t index, u64 mask) {
+            cpu_words[index] |= mask;
+            cached_words[index] &= ~mask;
+        });
+    }
+
+    /// @brief Write-track again the untracked pages of a range, keeping their pending CPU bits.
+    /// Used when the GPU writes into pages whose CPU upload is still pending (ROOT FIX, see
+    /// BufferCache::MarkCpuWritten). The Untracked bit is cleared together with the +1
+    /// protection count; changing one without the other unbalances the protection counts, so a
+    /// page ends up never protected (writes missed) or never released.
+    void RetrackKeepCpu(u64 dirty_addr, u64 size) noexcept {
+        std::span<u64> untracked_words = Span(Type::Untracked);
+        std::span<u64> cpu_words = Span(Type::CPU);
+        std::span<u64> cached_words = Span(Type::CachedCPU);
+        std::vector<std::pair<VAddr, u64>> ranges;
+        IterateWords(dirty_addr - cpu_addr, size, [&](size_t index, u64 mask) {
+            const u64 untracked = untracked_words[index] & mask;
+            if (untracked == 0) {
+                return;
+            }
+            CollectChangedRanges(true, index, untracked_words[index], mask, ranges);
+            // Cached CPU writes become plain pending CPU writes, now seen by the tracker.
+            cpu_words[index] |= cached_words[index] & untracked;
+            cached_words[index] &= ~untracked;
+            untracked_words[index] &= ~mask;
+        });
+        if (!ranges.empty()) {
+            ApplyCollectedRanges(ranges, 1);
+        }
+    }
+
     /// @brief Loop over each page in the given range.
     /// Turn off those bits and notify the tracker if needed. Call the given function on each turned off range.
     /// @param type            Type of the address

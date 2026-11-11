@@ -9,6 +9,7 @@
 #include <mutex>
 #include <span>
 #include <unordered_set>
+#include <vector>
 
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -99,5 +100,44 @@ inline void LogWriteConflict(const char* kind, u64 address, u64 size, u64 origin
     LOG_WARNING(Render, "Buffer write conflict, {}: addr {:#x} size {} | last GPU write by {} "
                 "(mark #{} of {})", kind, address, size, name, origin_seq, current_seq);
 }
+
+/// Glitch hunt: a gathered CPU write that took bytes the GPU had written out of the buffer
+/// cache's GPU ranges, so the next upload sends the guest's bytes over them.
+struct GpuByteLoss {
+    u64 address;
+    u64 size;
+    u64 gpu_bytes; ///< bytes of the write the GPU had written
+    bool kept;     ///< precise_writes left them in the GPU ranges
+};
+inline std::atomic_bool gpu_loss_recording{};
+inline std::mutex gpu_loss_mutex;
+inline std::vector<GpuByteLoss> gpu_losses;
+/// Recorded only while a glitch capture runs (GPU thread sets it).
+inline void SetGpuLossRecording(bool enabled) {
+    gpu_loss_recording.store(enabled, std::memory_order_relaxed);
+    if (!enabled) {
+        std::scoped_lock lock{gpu_loss_mutex};
+        gpu_losses.clear();
+    }
+}
+inline bool GpuLossRecording() { return gpu_loss_recording.load(std::memory_order_relaxed); }
+inline void RecordGpuLoss(u64 address, u64 size, u64 gpu_bytes, bool kept) {
+    std::scoped_lock lock{gpu_loss_mutex};
+    if (gpu_losses.size() < 8192) gpu_losses.push_back({address, size, gpu_bytes, kept});
+}
+inline std::vector<GpuByteLoss> TakeGpuLosses() {
+    std::vector<GpuByteLoss> taken;
+    std::scoped_lock lock{gpu_loss_mutex};
+    taken.swap(gpu_losses);
+    return taken;
+}
+
+/// On by default ("precise_writes=0" or the glitch hunt page turns it off): a CPU write into a
+/// page the GPU wrote, but over none of the bytes the GPU wrote, is applied at once instead of
+/// waiting for the next cache invalidation. Without it, data the guest writes next to GPU output
+/// reaches a dispatch stale.
+inline std::atomic_bool precise_cpu_writes{true};
+inline void SetPreciseCpuWrites(bool enabled) { precise_cpu_writes.store(enabled, std::memory_order_relaxed); }
+inline bool PreciseCpuWrites() { return precise_cpu_writes.load(std::memory_order_relaxed); }
 
 } // namespace VideoCommon::ReadbackTrace

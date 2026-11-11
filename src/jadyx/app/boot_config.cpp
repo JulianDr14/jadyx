@@ -28,6 +28,9 @@ void UseGameAdvancedGraphics(BootConfig& config, u64 program_id) {
     config.async_record = graphics.async_record;
     config.cpu_write_defer = graphics.cpu_write_queue ? VideoCore::FramePipeline::Mode::On
                                                       : VideoCore::FramePipeline::Mode::Off;
+    config.gpu_fast_paths = graphics.gpu_fast_paths;
+    config.cpu_write_all = graphics.cpu_write_all;
+    config.fixed_core_map = graphics.fixed_core_map;
     if (program_id == 0) return;
     const GameAdvancedGraphics& advanced = game.advanced;
     config.anisotropy = advanced.anisotropy;
@@ -188,6 +191,20 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                     1U, 12U);
                 WriteDiag("boot.cfg: " + std::to_string(config.pso_boot_workers) +
                           " loading screen pipeline workers");
+            } else if (line.starts_with("pso_priority=")) {
+                config.pso_priority = std::min(
+                    static_cast<u32>(std::strtoul(line.c_str() + 13, nullptr, 10)), 4U);
+                WriteDiag("boot.cfg: pipeline build base priority level " +
+                          std::to_string(config.pso_priority));
+            } else if (line.starts_with("pso_boost=")) {
+                config.pso_boost = std::min(
+                    static_cast<u32>(std::strtoul(line.c_str() + 10, nullptr, 10)), 4U);
+                WriteDiag("boot.cfg: waited pipeline build priority level " +
+                          std::to_string(config.pso_boost));
+            } else if (line.starts_with("pso_lend=")) {
+                config.pso_lend = line != "pso_lend=0";
+                WriteDiag(config.pso_lend ? "boot.cfg: waiters lend their CPUs to pipeline builds"
+                                          : "boot.cfg: waiters keep their CPUs from pipeline builds");
             } else {
                 WriteDiag("boot.cfg: IGNORED unknown pipeline key " + line);
             }
@@ -313,6 +330,70 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 }
                 continue;
             }
+            if (line == "glitch_hunt_menu=1") {
+                config.glitch_hunt_menu = true;
+                WriteDiag("boot.cfg: geometry glitch hunt menu enabled");
+                continue;
+            }
+            if (line == "pso_menu=1") {
+                config.pso_menu = true;
+                WriteDiag("boot.cfg: waited pipeline build priority row in the quick menu");
+                continue;
+            }
+            if (line == "geo_hunt=1") {
+                config.geo_hunt = true;
+                WriteDiag("boot.cfg: geometry hunt enabled");
+                continue;
+            }
+            if (line == "geo_oob=0") {
+                config.geo_oob = false;
+                WriteDiag("boot.cfg: out-of-range index check off");
+                continue;
+            }
+            if (line == "geo_oob_fix=0") {
+                config.geo_oob_fix = false;
+                WriteDiag("boot.cfg: out-of-range triangles drawn as they are");
+                continue;
+            }
+            if (line.starts_with("geo_hunt_check_kb=") || line.starts_with("geo_hunt_upload_kb=")) {
+                const bool check = line.starts_with("geo_hunt_check_kb=");
+                u32 value{};
+                try {
+                    value = static_cast<u32>(std::stoul(line.substr(line.find('=') + 1)));
+                } catch (...) {
+                    value = 0;
+                }
+                (check ? config.geo_hunt_check_kb : config.geo_hunt_upload_kb) = value;
+                WriteDiag(std::string{"boot.cfg: geometry hunt "} + (check ? "check" : "upload") +
+                          " budget KiB " + std::to_string(value));
+                continue;
+            }
+            if (line.starts_with("glitch_frames=")) {
+                try {
+                    config.glitch_frames = static_cast<u32>(std::stoul(line.substr(14)));
+                } catch (...) {
+                    config.glitch_frames = 0;
+                }
+                WriteDiag("boot.cfg: glitch capture frames " + std::to_string(config.glitch_frames));
+                continue;
+            }
+            if (line == "shuffle_wave_uniform=0" || line == "shuffle_wave_uniform=1") {
+                config.shuffle_wave_uniform = line.back() == '1';
+                WriteDiag(std::string{"boot.cfg: shuffle_wave_uniform "} +
+                          (config.shuffle_wave_uniform ? "on" : "off"));
+                continue;
+            }
+            if (line == "precise_writes=0" || line == "precise_writes=1") {
+                config.precise_writes = line.back() == '1';
+                WriteDiag(std::string{"boot.cfg: precise_writes "} + (config.precise_writes ? "on" : "off"));
+                continue;
+            }
+            if (line == "semaphore_order=strict" || line == "semaphore_order=supersede") {
+                config.semaphore_order_strict = line.ends_with("strict");
+                WriteDiag(std::string("boot.cfg: semaphore order ") +
+                          (config.semaphore_order_strict ? "strict" : "supersede"));
+                continue;
+            }
             if (line == "exact_gpu_reads=0" || line == "exact_gpu_reads=1") {
                 config.exact_gpu_reads = line.back() == '1';
                 WriteDiag(std::string("boot.cfg: exact GPU reads ") + (*config.exact_gpu_reads ? "on" : "off"));
@@ -344,6 +425,7 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 config.cpu_pin = value == "cores"   ? CpuPin::Cores
                                  : value == "split" ? CpuPin::Split
                                                     : CpuPin::Off;
+                config.cpu_pin_from_boot_cfg = true;
                 WriteDiag("boot.cfg: cpu_pin " + value);
                 continue;
             }
@@ -352,6 +434,7 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                     Common::Windows::CpuPinTopology : std::string_view{line}.substr(12);
                 if (Common::Windows::SetCpuPinMap(map)) {
                     config.cpu_pin = Common::Windows::CpuPin::Map;
+                    config.cpu_pin_from_boot_cfg = true;
                     WriteDiag("boot.cfg: cpu_pin map " + std::string(map));
                 } else {
                     WriteDiag("boot.cfg: cpu_pin map does not parse, ignored: " + line);
@@ -438,6 +521,9 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 line.starts_with("wait_small_draws=") ||
                 line.starts_with("pso_workers=") ||
                 line.starts_with("pso_boot_workers=") ||
+                line.starts_with("pso_priority=") ||
+                line.starts_with("pso_boost=") ||
+                line.starts_with("pso_lend=") ||
                 line.starts_with("pso_blobs=")) {
                 parse_pipeline_key(line);
                 continue;

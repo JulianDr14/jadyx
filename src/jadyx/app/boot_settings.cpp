@@ -31,10 +31,13 @@
 #include "common/windows/sampling_profiler.h"
 #include "dynarmic/interface/code_memory.h"
 #include "dynarmic/interface/jit_profile.h"
+#include "jadyx/game/game_menu.h"
 #include "video_core/cpu_write_queue.h"
+#include "video_core/gpu_fast_paths.h"
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/fence_manager.h"
 #include "video_core/frame_pipeline.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_written_pages.h"
 #include "video_core/macro.h"
@@ -43,6 +46,7 @@
 #include "video_core/query_cache.h"
 #include "video_core/rasterizer_download_area.h"
 #include "video_core/readback_trace.h"
+#include "video_core/semaphore_order.h"
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 #include "video_core/renderer_d3d12/d3d12_frame_gen_pacer.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_key_mode.h"
@@ -132,9 +136,14 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
     system.CoreTiming().SetGuestClockPercent(clock_percent);
     const bool exact_gpu_reads = config.exact_gpu_reads.value_or(game.exact_gpu_reads);
     VideoCore::SetExactGpuReads(exact_gpu_reads);
+    VideoCore::SemaphoreOrder::SetMode(config.semaphore_order_strict
+                                           ? VideoCore::SemaphoreOrder::Mode::Strict
+                                           : VideoCore::SemaphoreOrder::Mode::Supersede);
     WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, exact GPU reads " +
               (exact_gpu_reads ? "on" : "off") + ", CPU write queue " +
-              (config.cpu_write_defer == VideoCore::FramePipeline::Mode::Off ? "off" : "on") + ", upscaling " +
+              (config.cpu_write_defer == VideoCore::FramePipeline::Mode::Off ? "off" : "on") +
+              ", GPU thread fast paths " + (config.gpu_fast_paths ? "on" : "off") +
+              ", queue every CPU write " + (config.cpu_write_all ? "on" : "off") + ", upscaling " +
               (config.upscaling ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(UpscalingText(graphics.upscaling)))) +
               ", frame generation " +
               (config.frame_gen ? std::string{"from boot.cfg"} : std::string{graphics.frame_gen ? "auto" : "off"}) +
@@ -145,6 +154,17 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
                                                                                                 : "wait"}) +
               ", GPU fence " +
               (config.gpu_fence ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(GpuFenceText(graphics.gpu_fence)))));
+}
+
+void ApplyRunningCoreMap(const BootConfig& config, bool fixed) {
+    if (config.cpu_pin_from_boot_cfg) {
+        WriteDiag("menu: core map comes from boot.cfg, not changed");
+        return;
+    }
+    Common::Windows::SetCpuPinMap(fixed ? Common::Windows::CpuPinTopology : Common::Windows::CpuPinDefault);
+    const std::size_t moved = Common::Windows::RepinNamedThreads();
+    WriteDiag(std::string{"menu: "} + (fixed ? "fixed core map (topology)" : "core map GPU thread only") + ", " +
+              std::to_string(moved) + " threads moved | " + Common::Windows::CpuPinReport());
 }
 
 /// The advanced graphics that can change while the game runs, those that differ from `before`.
@@ -182,7 +202,14 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
               std::to_string(std::chrono::duration<double, std::milli>(timer_resolution).count()) +
               " ms");
     WriteDiag("step: CPU " + CpuSetReport());
-    // Read by each emulator thread when it is named.
+    // Read by each emulator thread when it is named. Set on every session: the library runs
+    // several games in one process, each with its own choice.
+    if (!config.cpu_pin_from_boot_cfg) {
+        Common::Windows::SetCpuPinMap(config.fixed_core_map ? Common::Windows::CpuPinTopology
+                                                            : Common::Windows::CpuPinDefault);
+        WriteDiag(config.fixed_core_map ? "step: fixed core map (topology)"
+                                        : "step: core map GPU thread only, the rest float");
+    }
     Common::Windows::SetCpuPin(config.cpu_pin);
     if (config.cpu_probe) Jadyx::RunCpuProbe(WriteDiag);
     ApplyHeadlessBootSettings(config.null_renderer ? BootSurface{} : surface);
@@ -295,6 +322,8 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetWaitSmallDraws(config.wait_small_draws);
     D3D12::SetPipelineWorkers(config.pso_workers);
     D3D12::SetPipelineBootWorkers(config.pso_boot_workers);
+    D3D12::SetPipelineBuildPriority(config.pso_priority, config.pso_boost);
+    D3D12::SetPipelineBuildLend(config.pso_lend);
     D3D12::SetPsoBlobs(config.pso_blobs);
     D3D12::SetCachedStaging(config.cached_staging);
     D3D12::SetCpuTextureWrites(config.cpu_texture_writes);
@@ -331,6 +360,15 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     VideoCommon::force_occlusion_visible.store(config.occlusion_force_visible,
                                                std::memory_order_relaxed);
     D3D12::SetDiagUavSync(config.uav_sync);
+    D3D12::SetGlitchFrames(config.glitch_frames);
+    VideoCommon::ReadbackTrace::SetPreciseCpuWrites(config.precise_writes);
+    D3D12::SetShuffleWaveUniform(config.shuffle_wave_uniform);
+    D3D12::SetWaveSelfTest(config.glitch_hunt_menu);
+    VideoCommon::GeoHunt::Configure(config.geo_hunt, config.geo_hunt_check_kb, config.geo_hunt_upload_kb);
+    if (config.geo_hunt) {
+        VideoCommon::GeoHunt::ConfigureAudit(0);
+    }
+    VideoCommon::GeoHunt::ConfigureOob(config.geo_oob, config.geo_oob && config.geo_oob_fix);
     VideoCommon::SetMipRenderTargets(config.mip_render_targets);
     VideoCommon::SetRenderTargetInheritance(config.render_target_inheritance);
     VideoCommon::SetReclaimSupersededImages(config.reclaim_superseded_images);
@@ -391,6 +429,8 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetPsoBudget(config.pso_budget);
     D3D12::SetPsoLoading(config.pso_loading);
     VideoCommon::CpuWriteQueue::SetMode(config.cpu_write_defer);
+    VideoCore::FastPaths::SetEnabled(config.gpu_fast_paths);
+    VideoCommon::CpuWriteQueue::SetAllWrites(config.cpu_write_all);
     VideoCommon::CpuWriteQueue::EnableTest(config.cpu_write_test);
     // The JIT load table and the write queue trust the bitmap, so it is kept for them too.
     VideoCommon::GpuWrittenPages::SetEnabled(
@@ -417,6 +457,24 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
                   ? "step: logging up, renderer Direct3D12 on a " + std::to_string(surface.width) +
                         "x" + std::to_string(surface.height) + " CoreWindow"
                   : std::string("step: logging up, renderer Null"));
+}
+
+GlitchToggles GlitchTogglesOf(const BootConfig& config) {
+    return {.a2c_shader = config.a2c_shader, .precise_writes = config.precise_writes};
+}
+
+void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
+    const auto log = [](const char* name, bool was, bool is) {
+        if (was != is) {
+            WriteDiag(fmt::format("menu: glitch A/B {} {}", name, is ? "on" : "off"));
+        }
+    };
+    log("a2c_shader", before.a2c_shader, now.a2c_shader);
+    log("precise_writes", before.precise_writes, now.precise_writes);
+    // Each is read at use: draws after this take the new value, and pipelines whose key depends
+    // on it (a2c_shader) are built on first use.
+    D3D12::SetShaderAlphaToCoverage(now.a2c_shader);
+    VideoCommon::ReadbackTrace::SetPreciseCpuWrites(now.precise_writes);
 }
 
 } // namespace Jadyx
