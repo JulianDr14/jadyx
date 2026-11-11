@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cstring>
@@ -337,6 +338,37 @@ StagingBufferRef BufferCacheRuntime::UploadStagingBuffer(size_t size) { return s
 StagingBufferRef BufferCacheRuntime::DownloadStagingBuffer(size_t size, bool deferred) { return staging.Request(size, MemoryUsage::Download, deferred); }
 void BufferCacheRuntime::FreeDeferredStagingBuffer(StagingBufferRef& ref) { staging.FreeDeferred(ref); }
 
+namespace {
+/// A copy past either resource is dropped by command validation; this names the cache buffers
+/// behind it (guest address, size the cache believes, resource width), first 32 only.
+void ReportCopyOutOfRange(const Buffer* dst, ID3D12Resource* dst_raw, const Buffer* src,
+                          ID3D12Resource* src_raw, const VideoCommon::BufferCopy& copy) {
+    if (!dst_raw || !src_raw) {
+        return;
+    }
+    const u64 dst_width = dst_raw->GetDesc().Width;
+    const u64 src_width = src_raw->GetDesc().Width;
+    if (copy.dst_offset + copy.size <= dst_width && copy.src_offset + copy.size <= src_width) {
+        return;
+    }
+    static std::atomic<u32> reported{};
+    if (reported.fetch_add(1, std::memory_order_relaxed) >= 32) {
+        return;
+    }
+    const auto describe = [](const Buffer* buffer, u64 width) {
+        if (!buffer) {
+            return fmt::format("raw width {}", width);
+        }
+        return fmt::format("buffer id {} gva {:#x} cache size {} width {}", buffer->Id(),
+                           buffer->CpuAddr(), buffer->SizeBytes(), width);
+    };
+    LOG_ERROR(Render,
+              "D3D12: buffer copy out of range: {} bytes, src offset {} ({}), dst offset {} ({})",
+              copy.size, copy.src_offset, describe(src, src_width), copy.dst_offset,
+              describe(dst, dst_width));
+}
+} // namespace
+
 void BufferCacheRuntime::Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src,
                               ID3D12Resource* src_raw,
                               std::span<const VideoCommon::BufferCopy> copies) {
@@ -386,6 +418,7 @@ void BufferCacheRuntime::Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src,
     if (dst) dst->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
     if (src) src->Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
     for (const auto& copy : copies) {
+        ReportCopyOutOfRange(dst, dst_raw, src, src_raw, copy);
         if (VideoCommon::FullCapture::Active()) VideoCommon::FullCapture::Event("buffer_copy",
             fmt::format("{{\"src_address\":{},\"dst_address\":{},\"src_offset\":{},\"dst_offset\":{},\"size\":{}}}",
                 src ? src->CpuAddr() : 0, dst ? dst->CpuAddr() : 0,

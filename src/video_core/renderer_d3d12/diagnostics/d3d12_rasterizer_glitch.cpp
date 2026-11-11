@@ -550,6 +550,14 @@ void RasterizerD3D12::GlitchBindings(u32 frame, u32 call, const GlitchNote* note
         } else if (!indirect && index_size != 0) {
             const u64 begin = u64{draw.index_buffer.first} * index_size;
             const u64 length = u64{draw.index_buffer.count} * index_size;
+            if (begin + length > ib.size) {
+                // D3D12 reads index 0 past the view: the draw folds triangles onto vertex 0.
+                glitch_hunt.Line(fmt::format("OOB f={} n={} r=ib need={} size={} first={} "
+                                             "count={} isz={}",
+                                             frame, call, begin + length, ib.size,
+                                             draw.index_buffer.first, draw.index_buffer.count,
+                                             index_size));
+            }
             std::vector<u8> indices(std::min<u64>(
                 {length, INDEX_CAP, ib.size > begin ? ib.size - begin : 0}));
             if (!indices.empty() && ib.device_addr != 0) {
@@ -616,6 +624,21 @@ void RasterizerD3D12::GlitchBindings(u32 frame, u32 call, const GlitchNote* note
         const D3D12_VERTEX_BUFFER_VIEW& view = buffer_runtime.LastVertexView(index);
         std::string host = fmt::format("view={:x}:{}:{}", view.BufferLocation, view.SizeInBytes,
                                        view.StrideInBytes);
+        if (length != UNKNOWN_RANGE && stride != 0 && vb.device_addr != 0) {
+            // Past the view D3D12 fetches zeros: those vertices land on the model's origin
+            // (flat triangles stretched to one point). The guest would read real memory.
+            const u64 need = begin + length;
+            const bool past_guest = need > vb.size;
+            const bool past_view = need > view.SizeInBytes;
+            if (past_guest || past_view) {
+                glitch_hunt.Line(fmt::format(
+                    "OOB f={} n={} r=vb{} need={} guest_size={} view_size={} stride={} inst={} "
+                    "lo={} hi={} past_guest={} past_view={}",
+                    frame, call, index, need, vb.size, view.SizeInBytes, stride,
+                    instanced ? 1 : 0, vertex_lo, vertex_hi, past_guest ? 1 : 0,
+                    past_view ? 1 : 0));
+            }
+        }
         if (Buffer* const buffer = buffer_cache.DiagBuffer(vb.buffer_id);
             buffer && buffer->Handle() && vb.device_addr != 0) {
             // The view should start at the binding's place in its buffer.
