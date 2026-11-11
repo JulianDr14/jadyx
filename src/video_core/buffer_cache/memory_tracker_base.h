@@ -84,6 +84,13 @@ public:
         });
     }
 
+    /// Mark region as CPU modified while its pages stay write-tracked (see WordManager)
+    void MarkRegionAsCpuModifiedTracked(VAddr dirty_cpu_addr, u64 query_size) {
+        IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
+            manager->MarkCpuModifiedTracked(manager->cpu_addr + offset, size);
+        });
+    }
+
     /// Unmark region as CPU modified, notifying the device_tracker about this change
     void UnmarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
         IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
@@ -91,9 +98,16 @@ public:
         });
     }
 
-    /// Mark region as modified from the host GPU
+    /// Mark region as modified from the host GPU. Pages waiting for a CPU upload are write-tracked
+    /// again (keeping their pending CPU bits): a guest write into the new GPU bytes must be seen,
+    /// or the upload would skip it and the host would keep the GPU data.
+    /// ROOT FIX, do not drop the RetrackKeepCpu call as an optimization. Without it, a GPU write
+    /// into a page already untracked by a CPU write leaves GPU marks that no guest write can clear,
+    /// and draws read stale host buffers (giant stretched triangles, deformed skinned meshes).
+    /// See BufferCache::MarkCpuWritten.
     void MarkRegionAsGpuModified(VAddr dirty_cpu_addr, u64 query_size) noexcept {
         IteratePages<true>(dirty_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
+            manager->RetrackKeepCpu(manager->cpu_addr + offset, size);
             manager->ChangeRegionState(Type::GPU, true, manager->cpu_addr + offset, size);
         });
     }

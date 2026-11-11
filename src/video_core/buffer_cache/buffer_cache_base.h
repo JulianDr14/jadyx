@@ -12,11 +12,14 @@
 #include <array>
 #include <bit>
 #include <functional>
+#include <fmt/format.h>
 #include <memory>
 #include <mutex>
 #include <numeric>
 #include <span>
 #include <chrono>
+#include <deque>
+#include <unordered_map>
 #include <vector>
 
 #include "common/container/unordered_map.h"
@@ -86,8 +89,6 @@ enum class ObtainBufferOperation : u32 {
 
 static constexpr BufferId NULL_BUFFER_ID{0};
 static constexpr u32 DEFAULT_SKIP_CACHE_SIZE = static_cast<u32>(4_KiB);
-/// Read-only compute inputs ReadbackTrace::ComputeFresh re-uploads, up to this size.
-static constexpr u32 COMPUTE_FRESH_CAP = static_cast<u32>(256_KiB);
 
 struct Binding {
     DAddr device_addr{};
@@ -255,6 +256,9 @@ public:
     /// bytes it takes for the glitch hunt.
     void GatheredCpuWrite(DAddr device_addr, u64 size);
 
+    /// Marks a CPU write for upload; pages that keep GPU-written bytes stay write-tracked.
+    void MarkCpuWritten(DAddr device_addr, u64 size);
+
     void CachedWriteMemory(DAddr device_addr, u64 size);
 
     bool OnCPUWrite(DAddr device_addr, u64 size);
@@ -336,6 +340,7 @@ public:
 
     /// Puts downloaded bytes in guest memory. With a baseline, only the words the GPU changed.
     void LandDownload(DAddr start, u64 size, const u8* incoming, u64 record);
+    void LandDownloadPart(DAddr start, u64 size, const u8* incoming, u64 record);
     void ApplyKeptCpuWrites();
     void TrackDownload(DAddr address, u64 size, u64 record);
 
@@ -364,6 +369,23 @@ public:
     /// Vertex streams the current draw state enables.
     [[nodiscard]] u32 DiagVertexMask() const noexcept {
         return enabled_vertex_buffers_mask;
+    }
+    /// Bytes of a range the cache holds as GPU-written, and the write origin record at the first
+    /// of them (seq << 8 | origin, 0 without buffer_write_origins=1).
+    [[nodiscard]] std::pair<u64, u64> DiagGpuBytes(DAddr addr, u64 size) {
+        u64 bytes = 0;
+        u64 origin = 0;
+        bool first = true;
+        const DAddr end = addr + size;
+        gpu_modified_ranges.ForEachInRange(addr, size, [&](DAddr lower, DAddr upper) {
+            const DAddr begin = (std::max)(lower, addr);
+            bytes += (std::min)(upper, end) - begin;
+            if (first && ReadbackTrace::WriteOriginsEnabled()) {
+                origin = write_origins.GetValueAt(static_cast<s64>(begin));
+            }
+            first = false;
+        });
+        return {bytes, origin};
     }
 
     void SetDrawIndirect(
@@ -479,6 +501,15 @@ private:
 
     void NoteWriteOrigin(ReadbackTrace::WriteOrigin origin, DAddr device_addr, u64 size);
 
+    /// geo_hunt: logs container sizes every 600 frames and after a command garbage report.
+    void GeoCensus();
+    /// geo_hunt or vertex resync: GPU-written bytes of a vertex stream that an older
+    /// frame's transform feedback left. Logged; with the resync dropped and uploaded from the guest.
+    void GeoStaleFeedbackRange(DAddr device_addr, u64 size);
+    /// Vertex resync: GPU-marked index bytes last written in an older frame (any origin, needs
+    /// buffer_write_origins=1). Dropped and uploaded from the guest, which holds the real indices.
+    void GeoStaleIndexRange(DAddr device_addr, u64 size);
+
     [[nodiscard]] BufferId FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible);
 
     void SynchronizeBufferWrites(Buffer& buffer);
@@ -505,6 +536,12 @@ private:
     void GeoHuntVerify(DAddr device_addr, u32 size);
     /// geo_hunt: records what an upload copied from guest memory.
     void GeoHuntBaseline(DAddr device_addr, u64 size);
+    /// geo_hunt host audit: reads back what the GPU buffer holds for a range just synchronized
+    /// for a draw, to compare with guest memory once the copy is done (GeoHunt::ReportHostStale).
+    void GeoAuditRange(Buffer& buffer, BufferId buffer_id, DAddr device_addr, u64 size);
+    void GeoAuditPart(Buffer& buffer, BufferId buffer_id, DAddr device_addr, u64 size);
+    /// Compares the audits the GPU finished copying.
+    void GeoAuditPoll();
 
     void UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
                       std::span<BufferCopy> copies);
@@ -566,9 +603,15 @@ private:
     MemoryTracker memory_tracker;
     Common::RangeSet<DAddr> uncommitted_gpu_modified_ranges;
     Common::RangeSet<DAddr> gpu_modified_ranges;
+    /// Ranges bound as transform feedback outputs (geo_hunt or vertex resync on).
+    Common::RangeSet<DAddr> feedback_ranges;
     // Diagnostic (buffer_write_origins=1): which path last marked each range as GPU-written.
     Common::RangeMap<DAddr, u64> write_origins{0};
     u64 write_origin_seq{};
+    /// write_origin_seq when the current frame began: older marks come from earlier frames.
+    u64 frame_origin_seq{};
+    /// Index resyncs logged so far (first 64 only).
+    u32 stale_index_logs{};
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
 
     // Async Buffers
@@ -600,6 +643,25 @@ private:
     u64 frame_tick = 0;
     /// geo_hunt: what the buffer cache is binding, for its log.
     GeoHunt::Role geo_role = GeoHunt::Role::Other;
+    struct GeoAudit {
+        Async_Buffer staging;
+        u64 tick;
+        GeoHunt::AuditReport report;
+        /// Audited parts: src_offset = device address, dst_offset = offset in guest and staging.
+        boost::container::small_vector<BufferCopy, 8> parts;
+        std::vector<u8> guest;
+    };
+    std::deque<GeoAudit> geo_audits;
+    /// Frame each cache buffer was created (geo_hunt), by slot index.
+    std::unordered_map<u32, u64> geo_buffer_frames;
+    /// Last transform feedback binding that covered each 4 KiB page (geo_hunt or vb_resync).
+    struct GeoFeedbackPage {
+        u64 frame;
+        u64 shader;
+        DAddr address;
+        u64 size;
+    };
+    std::unordered_map<u64, GeoFeedbackPage> geo_feedback_pages;
     u64 total_used_memory = 0;
     u64 minimum_memory = 0;
     u64 critical_memory = 0;
