@@ -251,7 +251,10 @@ struct RumbleOutput {
             Stop(); // A pad that stopped playing this player must not keep shaking.
             pad = next;
         }
-        if (!pad || (std::abs(next_low - low) < 0.01f && std::abs(next_high - high) < 0.01f)) return;
+        const auto unchanged = [](float previous, float requested) {
+            return previous == requested || (requested != 0.0f && std::abs(requested - previous) < 0.01f);
+        };
+        if (!pad || (unchanged(low, next_low) && unchanged(high, next_high))) return;
         Write(next_low, next_high);
     }
     void Stop() {
@@ -271,23 +274,25 @@ private:
             vibration.LeftMotor = next_low;   // The heavy motor: the Switch's low band.
             vibration.RightMotor = next_high; // The light one: its high band.
             pad.Vibration(vibration);
+            low = next_low;
+            high = next_high;
             if (log_write) LOG_INFO(Input, "rumble pad #{}: low={:.2f} high={:.2f}", write, next_low, next_high);
         } catch (const winrt::hresult_error& e) {
-            // Gone; the next catalog check drops it.
+            // Keep the last successful state so the next poll can retry.
             if (log_write) LOG_WARNING(Input, "rumble pad #{}: failed {:08x}", write, static_cast<u32>(e.code()));
         } catch (...) {}
-        low = next_low;
-        high = next_high;
     }
 };
 
 /// The game's rumble for `port`, strongest of each band over both of its motors.
 std::pair<float, float> GameRumbleOf(Core::HID::HIDCore& hid, std::size_t port) {
+    // WinRT sets persistent motor levels. Match SDL's maximum duration for an unrenewed request.
+    constexpr auto rumble_timeout = std::chrono::seconds(2);
     const auto* controller = hid.GetEmulatedControllerByIndex(port);
     if (!controller || !controller->IsConnected()) return {};
     float low = 0.0f, high = 0.0f;
     for (const auto device : {Core::HID::DeviceIndex::Left, Core::HID::DeviceIndex::Right}) {
-        const auto value = controller->GetActualVibrationValue(device);
+        const auto value = controller->GetRecentVibrationValue(device, rumble_timeout);
         low = std::max(low, value.low_amplitude);
         high = std::max(high, value.high_amplitude);
     }
