@@ -163,6 +163,17 @@ void BufferCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size
 
 template <class P>
 void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size) {
+    if (size == 0) {
+        return;
+    }
+    // One lookup settles the usual write: with no GPU range in its pages, neither the write nor
+    // its first or last page holds GPU bytes (the three lookups below).
+    const DAddr span_start = Common::AlignDown(device_addr, DEVICE_PAGESIZE);
+    const DAddr span_end = Common::AlignUp(device_addr + size, DEVICE_PAGESIZE);
+    if (!IsRegionGpuModified(span_start, span_end - span_start)) {
+        memory_tracker.MarkRegionAsCpuModified(device_addr, size);
+        return;
+    }
     if (IsRegionGpuModified(device_addr, size)) {
         ClearDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);
@@ -988,9 +999,7 @@ void BufferCache<P>::ApplyKeptCpuWrites() {
 
 template <class P>
 bool BufferCache<P>::IsRegionGpuModified(DAddr addr, size_t size) {
-    bool is_dirty = false;
-    gpu_modified_ranges.ForEachInRange(addr, size, [&](DAddr, DAddr) { is_dirty = true; });
-    return is_dirty;
+    return gpu_modified_ranges.Intersects(addr, size);
 }
 
 template <class P>

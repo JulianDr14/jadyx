@@ -25,6 +25,8 @@ public:
     void Subtract(AddressType base_address, size_t size);
     void Clear();
     bool Empty() const;
+    /// Whether any range overlaps [device_addr, device_addr + size).
+    bool Intersects(AddressType device_addr, size_t size) const;
 
     template <typename Func>
     void ForEach(Func&& func) const;
