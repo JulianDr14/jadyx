@@ -655,78 +655,111 @@ u32 BufferCacheRuntime::CheckIndexRange(PrimitiveTopology topology, Buffer& buff
     if (limit <= 0 || limit > s64{0xFFFFFFFF}) {
         return 0;
     }
-    const auto start = std::chrono::steady_clock::now();
-    const IndexRewriteCache::Key key{.buffer_id = buffer.Id(), .offset = byte_offset,
-                                     .count = num_indices, .format = static_cast<u8>(index_size),
-                                     .restart = index_restart.value_or(0),
-                                     .has_restart = index_restart.has_value()};
-    if (index_ranges.size() > 65536) {
-        index_ranges.clear();
+    // Indices this narrow cannot reach the limit: most draws end here without reading anything.
+    if ((index_size == 1 && limit > 0xFF) || (index_size == 2 && limit > 0xFFFF)) {
+        return 0;
     }
-    auto [it, inserted] = index_ranges.try_emplace(key);
-    IndexRange& range = it->second;
-    const u32 mask = index_size == 1 ? 0xFFu : index_size == 2 ? 0xFFFFu : 0xFFFFFFFFu;
-    const std::optional<u32> skip =
-        index_restart ? std::optional<u32>{*index_restart & mask} : std::nullopt;
-    const auto value_at = [&](u32 i) -> u32 {
-        const u8* const data = guest_indices.data() + static_cast<size_t>(i) * index_size;
-        u32 value = 0;
-        std::memcpy(&value, data, index_size);
-        return value;
-    };
-    const auto read_guest = [&] {
+    const u64 buffer_id = buffer.Id();
+    const u32 restart = index_restart.value_or(0);
+    const bool has_restart = index_restart.has_value();
+    u64 hash = buffer_id * 0x9E3779B97F4A7C15ull ^ byte_offset ^ (u64{num_indices} << 20);
+    hash *= 0xBF58476D1CE4E5B9ull;
+    IndexRange& range = index_ranges[(hash >> 40) & (INDEX_RANGE_SLOTS - 1)];
+    const u64 generation = buffer.Generation();
+    if (range.buffer_id != buffer_id || range.offset != byte_offset ||
+        range.count != num_indices || range.index_size != index_size ||
+        range.restart != restart || range.has_restart != has_restart ||
+        range.generation != generation) [[unlikely]] {
+        const auto start = std::chrono::steady_clock::now();
         guest_indices.resize(static_cast<size_t>(num_indices) * index_size);
         device_memory.ReadBlockUnsafe(buffer.CpuAddr() + byte_offset, guest_indices.data(),
                                       guest_indices.size());
+        range = IndexRange{.buffer_id = buffer_id, .offset = byte_offset,
+                           .generation = generation, .count = num_indices, .restart = restart,
+                           .max_index = MaxIndex(guest_indices.data(), num_indices, index_size,
+                                                 index_restart),
+                           .index_size = static_cast<u8>(index_size),
+                           .has_restart = has_restart};
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::IndexRewriteNs,
+                             static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                  std::chrono::steady_clock::now() - start)
+                                                  .count()));
+    }
+    if (range.max_index < static_cast<u64>(limit)) [[likely]] {
+        return 0;
+    }
+    if (range.reported_limit != static_cast<u32>(limit)) {
+        range.reported_limit = static_cast<u32>(limit);
+        ReportIndexRange(topology, buffer, byte_offset, num_indices, index_size, range.max_index,
+                         static_cast<u32>(limit));
+    }
+    return GeoHunt::OobFix() ? static_cast<u32>(limit) : 0;
+}
+
+u32 BufferCacheRuntime::MaxIndex(const u8* data, u32 count, u32 index_size,
+                                 std::optional<u32> restart) noexcept {
+    // Branch-free loops the compiler vectorizes; the restart value counts as 0.
+    const auto scan = [&]<typename T>(T) -> u32 {
+        const T* const values = reinterpret_cast<const T*>(data);
+        const T skip = static_cast<T>(restart.value_or(0));
+        const bool use_skip = restart.has_value();
+        T max_value = 0;
+        if (use_skip) {
+            for (u32 i = 0; i < count; ++i) {
+                const T value = values[i];
+                max_value = (std::max)(max_value, static_cast<T>(value == skip ? 0 : value));
+            }
+        } else {
+            for (u32 i = 0; i < count; ++i) {
+                max_value = (std::max)(max_value, values[i]);
+            }
+        }
+        return max_value;
     };
-    if (inserted || range.generation != buffer.Generation()) {
-        read_guest();
-        u32 max_index = 0;
-        for (u32 i = 0; i < num_indices; ++i) {
-            const u32 value = value_at(i);
-            if (value != skip) {
-                max_index = std::max(max_index, value);
-            }
-        }
-        range.generation = buffer.Generation();
-        range.max_index = max_index;
-        range.scanned_limit = 0;
+    switch (index_size) {
+    case 1:
+        return scan(u8{});
+    case 2:
+        return scan(u16{});
+    default:
+        return scan(u32{});
     }
-    u32 result = 0;
-    if (range.max_index >= static_cast<u64>(limit)) {
-        if (range.scanned_limit != static_cast<u32>(limit)) {
-            // First time with this limit: count the bad indices for the report.
-            read_guest();
-            range.scanned_limit = static_cast<u32>(limit);
-            range.bad = 0;
-            for (u32 i = 0; i < num_indices; ++i) {
-                const u32 value = value_at(i);
-                if (value != skip && value >= static_cast<u64>(limit)) {
-                    if (range.bad++ == 0) {
-                        range.first_bad = i;
-                        range.first_bad_value = value;
-                    }
-                }
-            }
-            GeoHunt::ReportOob({.index_address = buffer.CpuAddr() + byte_offset,
-                                .count = num_indices,
-                                .index_size = index_size,
-                                .max_index = range.max_index,
-                                .bad = range.bad,
-                                .first_bad = range.first_bad,
-                                .first_bad_value = range.first_bad_value,
-                                .base_vertex = vertex_base,
-                                .vertex_limit = vertex_limit,
-                                .topology = static_cast<u32>(topology),
-                                .fixed = GeoHunt::OobFix()});
+}
+
+void BufferCacheRuntime::ReportIndexRange(PrimitiveTopology topology, Buffer& buffer,
+                                          u64 byte_offset, u32 num_indices, u32 index_size,
+                                          u32 max_index, u32 limit) {
+    // Rare (once per range and limit): count the bad indices for the log.
+    namespace GeoHunt = VideoCommon::GeoHunt;
+    guest_indices.resize(static_cast<size_t>(num_indices) * index_size);
+    device_memory.ReadBlockUnsafe(buffer.CpuAddr() + byte_offset, guest_indices.data(),
+                                  guest_indices.size());
+    const u32 mask = index_size == 1 ? 0xFFu : index_size == 2 ? 0xFFFFu : 0xFFFFFFFFu;
+    const std::optional<u32> skip =
+        index_restart ? std::optional<u32>{*index_restart & mask} : std::nullopt;
+    u32 bad = 0;
+    u32 first_bad = 0;
+    u32 first_bad_value = 0;
+    for (u32 i = 0; i < num_indices; ++i) {
+        u32 value = 0;
+        std::memcpy(&value, guest_indices.data() + static_cast<size_t>(i) * index_size,
+                    index_size);
+        if (value != skip && value >= limit && bad++ == 0) {
+            first_bad = i;
+            first_bad_value = value;
         }
-        result = GeoHunt::OobFix() ? static_cast<u32>(limit) : 0;
     }
-    VideoCore::Perf::Add(VideoCore::Perf::Counter::IndexRewriteNs,
-                         static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                              std::chrono::steady_clock::now() - start)
-                                              .count()));
-    return result;
+    GeoHunt::ReportOob({.index_address = buffer.CpuAddr() + byte_offset,
+                        .count = num_indices,
+                        .index_size = index_size,
+                        .max_index = max_index,
+                        .bad = bad,
+                        .first_bad = first_bad,
+                        .first_bad_value = first_bad_value,
+                        .base_vertex = vertex_base,
+                        .vertex_limit = vertex_limit,
+                        .topology = static_cast<u32>(topology),
+                        .fixed = GeoHunt::OobFix()});
 }
 
 bool BufferCacheRuntime::NeedsRestartRewrite(IndexFormat format) const noexcept {

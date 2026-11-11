@@ -263,6 +263,12 @@ private:
     /// rewritten with, 0 when they are all in range or the check is off. Reports bad ranges.
     [[nodiscard]] u32 CheckIndexRange(PrimitiveTopology topology, Buffer& buffer, u64 byte_offset,
                                       u32 num_indices, u32 index_size);
+    /// Largest index of count indices of index_size bytes; the restart value counts as 0.
+    [[nodiscard]] static u32 MaxIndex(const u8* data, u32 count, u32 index_size,
+                                      std::optional<u32> restart) noexcept;
+    /// Logs an out-of-range index range with its bad index count.
+    void ReportIndexRange(PrimitiveTopology topology, Buffer& buffer, u64 byte_offset,
+                          u32 num_indices, u32 index_size, u32 max_index, u32 limit);
     ComPtr<ID3D12Resource> CreateDefaultBuffer(u64 size);
     void Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src, ID3D12Resource* src_raw,
               std::span<const VideoCommon::BufferCopy> copies);
@@ -317,18 +323,21 @@ private:
     std::span<const u8> inline_indices;
     u32 vertex_limit{};
     s64 vertex_base{};
-    /// Largest index (and how many are out of range for max_limit) per guest index range, valid
-    /// for the buffer generation it was scanned at.
+    /// Largest index per guest index range, valid for the buffer generation it was scanned at.
+    /// Direct mapped: one probe and no allocation per draw; a collision only costs a rescan.
     struct IndexRange {
+        u64 buffer_id{};
+        u64 offset{};
         u64 generation{};
+        u32 count{};
+        u32 restart{};
         u32 max_index{};
-        u32 scanned_limit{};
-        u32 bad{};
-        u32 first_bad{};
-        u32 first_bad_value{};
+        u32 reported_limit{};
+        u8 index_size{};
+        bool has_restart{};
     };
-    std::unordered_map<IndexRewriteCache::Key, IndexRange, IndexRewriteCache::KeyHash>
-        index_ranges;
+    static constexpr size_t INDEX_RANGE_SLOTS = 4096;
+    std::vector<IndexRange> index_ranges = std::vector<IndexRange>(INDEX_RANGE_SLOTS);
     bool logged_rewrite{};
     bool logged_inline_rewrite{};
 };
