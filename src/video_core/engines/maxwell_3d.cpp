@@ -216,7 +216,12 @@ void Maxwell3D::ProcessMacro(Core::System& system, u32 method, const u32* base_s
         executing_macro = method;
     }
 
-    macro_params.insert(macro_params.end(), base_start, base_start + amount);
+    if (amount == 1) {
+        // The usual call, one argument at a time: the range insert costs several times this.
+        macro_params.push_back(*base_start);
+    } else {
+        macro_params.insert(macro_params.end(), base_start, base_start + amount);
+    }
     macro_segments.emplace_back(current_dma_segment, amount);
     current_macro_dirty |= current_dirty;
     current_dirty = false;
