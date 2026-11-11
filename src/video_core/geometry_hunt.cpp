@@ -558,12 +558,12 @@ WriterScope::~WriterScope() {
     current_writer = previous;
 }
 
-void Journal(u64 address, u64 size) {
-    Journal(current_writer, address, size);
+void RecordWrite(u64 address, u64 size) {
+    RecordWrite(current_writer, address, size);
 }
 
-void Journal(Writer writer, u64 address, u64 size) {
-    if (size == 0 || !OobCheck()) {
+void RecordWrite(Writer writer, u64 address, u64 size) {
+    if (size == 0) {
         return;
     }
     const u64 now = NowMs();
@@ -606,7 +606,10 @@ void ReportOob(const OobDraw& draw) {
         const u64 bytes = u64{draw.count} * draw.index_size;
         const u64 first = draw.index_address >> PAGE_BITS;
         const u64 last = (draw.index_address + std::max<u64>(bytes, 1) - 1) >> PAGE_BITS;
-        for (u64 page = first; page <= last && page < first + 16; ++page) {
+        if (!Enabled()) {
+            lines.push_back("    (journal off: it runs only with geo_hunt=1)");
+        }
+        for (u64 page = first; page <= last && page < first + 16 && Enabled(); ++page) {
             const auto it = journal.find(page);
             if (it == journal.end() || it->second[0].size == 0) {
                 lines.push_back(fmt::format("    page {:#x}: no emulator write recorded", page

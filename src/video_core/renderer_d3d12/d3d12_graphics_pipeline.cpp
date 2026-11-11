@@ -1080,7 +1080,7 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
         texture_buffer_it += info.num_texture_views;
     }
 
-    if (VideoCommon::GeoHunt::Enabled() || VideoCommon::GeoHunt::OobCheck()) [[unlikely]] {
+    if (VideoCommon::GeoHunt::Enabled()) [[unlikely]] {
         VideoCommon::GeoHunt::SetShaders(key.unique_hashes[1], key.unique_hashes[5], false);
     }
     buffer_cache.UpdateGraphicsBuffers(is_indexed);

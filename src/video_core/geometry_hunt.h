@@ -146,9 +146,20 @@ private:
     Writer previous;
 };
 
-/// Records an emulator write to guest memory (device address). Cheap no-op when the check is off.
-void Journal(u64 address, u64 size);
-void Journal(Writer writer, u64 address, u64 size);
+void RecordWrite(u64 address, u64 size);
+void RecordWrite(Writer writer, u64 address, u64 size);
+/// Records an emulator write to guest memory (device address). Diagnostic: only with geo_hunt,
+/// an inline flag test otherwise (the out-of-range fix does not need it).
+inline void Journal(u64 address, u64 size) {
+    if (Enabled()) [[unlikely]] {
+        RecordWrite(address, size);
+    }
+}
+inline void Journal(Writer writer, u64 address, u64 size) {
+    if (Enabled()) [[unlikely]] {
+        RecordWrite(writer, address, size);
+    }
+}
 
 struct OobDraw {
     u64 index_address;   ///< device address of the first index of the draw
