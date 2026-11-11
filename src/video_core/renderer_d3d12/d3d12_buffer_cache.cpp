@@ -267,6 +267,9 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
         scheduler = other.scheduler;
         id = other.id;
         generation = other.generation;
+        writes = other.writes;
+        pending_begin = 0;
+        pending_end = 0;
         buffer = std::move(other.buffer);
         address = std::exchange(other.address, 0);
         state = other.state;
@@ -291,7 +294,11 @@ void Buffer::Transition(D3D12_RESOURCE_STATES next, bool mark_written) {
                          next == D3D12_RESOURCE_STATE_COPY_DEST ||
                          next == D3D12_RESOURCE_STATE_STREAM_OUT)) {
         ++generation;
+        writes[generation % NUM_WRITES] = pending_end != 0
+            ? Write{generation, pending_begin, pending_end}
+            : Write{generation, 0, ~0ULL};
     }
+    pending_end = 0;
     const u64 tick = scheduler->CurrentTick();
     const D3D12_RESOURCE_STATES current = state_tick == tick ? state : D3D12_RESOURCE_STATE_COMMON;
     const u64 work = scheduler->Work();
@@ -547,7 +554,18 @@ void BufferCacheRuntime::Copy(Buffer* dst, ID3D12Resource* dst_raw, Buffer* src,
     // Buffer::Transition's own case only covers a later read binding of the same work.
     const bool restore_uav = dst && dst->State() == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
                              dst->WrittenByWork(scheduler.Work());
-    if (dst) dst->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
+    if (dst) {
+        u64 begin = ~0ULL;
+        u64 end = 0;
+        for (const auto& copy : copies) {
+            if (copy.size != 0) {
+                begin = (std::min<u64>)(begin, copy.dst_offset);
+                end = (std::max<u64>)(end, copy.dst_offset + copy.size);
+            }
+        }
+        if (end != 0) dst->ExpectWrite(begin, end);
+        dst->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
+    }
     if (src) src->Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
     for (const auto& copy : copies) {
         ReportCopyOutOfRange(dst, dst_raw, src, src_raw, copy);
@@ -734,24 +752,38 @@ u32 BufferCacheRuntime::CheckIndexRange(PrimitiveTopology topology, Buffer& buff
     hash *= 0xBF58476D1CE4E5B9ull;
     IndexRange& range = index_ranges[(hash >> 40) & (INDEX_RANGE_SLOTS - 1)];
     const u64 generation = buffer.Generation();
-    if (range.buffer_id != buffer_id || range.offset != byte_offset ||
-        range.count != num_indices || range.index_size != index_size ||
-        range.restart != restart || range.has_restart != has_restart ||
-        range.generation != generation) [[unlikely]] {
-        const auto start = std::chrono::steady_clock::now();
+    const bool same_range = range.buffer_id == buffer_id && range.offset == byte_offset &&
+                            range.count == num_indices && range.index_size == index_size &&
+                            range.restart == restart && range.has_restart == has_restart;
+    // The buffer was written, but nowhere in these indices (it also holds vertices and uniforms
+    // that change every frame): the scan still stands.
+    if (same_range && range.generation != generation &&
+        !buffer.WrittenSince(range.generation, byte_offset,
+                             byte_offset + u64{num_indices} * index_size)) {
+        VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::IndexRangeKeeps, 1);
+        range.generation = generation;
+    }
+    if (!same_range || range.generation != generation) [[unlikely]] {
+        const bool timed = VideoCore::Perf::DetailedGpuProfileEnabled();
+        const auto start = timed ? std::chrono::steady_clock::now()
+                                 : std::chrono::steady_clock::time_point{};
         guest_indices.resize(static_cast<size_t>(num_indices) * index_size);
         device_memory.ReadBlockUnsafe(buffer.CpuAddr() + byte_offset, guest_indices.data(),
                                       guest_indices.size());
+        const u32 max_index = MaxIndex(guest_indices.data(), num_indices, index_size,
+                                       index_restart);
         range = IndexRange{.buffer_id = buffer_id, .offset = byte_offset,
                            .generation = generation, .count = num_indices, .restart = restart,
-                           .max_index = MaxIndex(guest_indices.data(), num_indices, index_size,
-                                                 index_restart),
+                           .max_index = max_index,
                            .index_size = static_cast<u8>(index_size),
                            .has_restart = has_restart};
-        VideoCore::Perf::Add(VideoCore::Perf::Counter::IndexRewriteNs,
-                             static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                                  std::chrono::steady_clock::now() - start)
-                                                  .count()));
+        if (timed) {
+            VideoCore::Perf::Add(
+                VideoCore::Perf::Counter::IndexRewriteNs,
+                static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now() - start)
+                                     .count()));
+        }
     }
     if (range.max_index < static_cast<u64>(limit)) [[likely]] {
         return 0;

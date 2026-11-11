@@ -74,6 +74,26 @@ public:
     /// Bumped by every write to the buffer: uploads, copies and UAV use (Transition to a write
     /// state), so an unchanged generation means unchanged contents.
     [[nodiscard]] u64 Generation() const noexcept { return generation; }
+    /// Bytes the next write (Transition to a write state) covers. Without it a write counts as
+    /// the whole buffer: a UAV or stream output binding says nothing about its range.
+    void ExpectWrite(u64 begin, u64 end) noexcept {
+        pending_begin = begin;
+        pending_end = end;
+    }
+    /// Whether a write after `since` may have touched [begin, end). True when the writes since
+    /// then are more than the buffer remembers.
+    [[nodiscard]] bool WrittenSince(u64 since, u64 begin, u64 end) const noexcept {
+        if (generation - since > NUM_WRITES) {
+            return true;
+        }
+        for (u64 at = since + 1; at <= generation; ++at) {
+            const Write& write = writes[at % NUM_WRITES];
+            if (write.generation != at || (write.begin < end && begin < write.end)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
 private:
     /// Hands the host buffer back to the runtime (BufferCacheRuntime::RecycleBuffer).
@@ -83,6 +103,16 @@ private:
     Scheduler* scheduler{};
     u64 id{};
     u64 generation{};
+    /// The last writes by generation, for CheckIndexRange.
+    struct Write {
+        u64 generation{};
+        u64 begin{};
+        u64 end{};
+    };
+    static constexpr u64 NUM_WRITES = 16;
+    std::array<Write, NUM_WRITES> writes{};
+    u64 pending_begin{};
+    u64 pending_end{}; ///< 0: the next write has no known range
     ComPtr<ID3D12Resource> buffer;
     D3D12_GPU_VIRTUAL_ADDRESS address{};
     D3D12_RESOURCE_STATES state{D3D12_RESOURCE_STATE_COMMON};
