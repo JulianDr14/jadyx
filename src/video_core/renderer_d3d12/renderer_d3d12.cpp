@@ -234,6 +234,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
             const auto wait_start = std::chrono::steady_clock::now();
             FrameLease frame = present_manager.AcquireFrame();
             const auto wait_end = std::chrono::steady_clock::now();
+            TakeMotionView();
             if (blit_ready && CompositeLayers(framebuffers, *frame)) {
                 // frame.bmp once the guest has had two seconds to settle, then frame_<n>.bmp
                 // every ten seconds or so, to follow a game's progress in a headless run.

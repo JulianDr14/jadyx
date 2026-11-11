@@ -338,6 +338,12 @@ void ShowGameNotice(VideoCore::RendererBase& renderer, std::optional<MenuImage> 
     }
 }
 
+void PostGameMotionView(VideoCore::RendererBase& renderer, std::optional<MenuImage> image) {
+    if (Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Direct3D12) {
+        static_cast<RendererD3D12&>(renderer).PostMotionView(std::move(image));
+    }
+}
+
 MenuImage CaptureGameFrame(VideoCore::RendererBase& renderer) {
     if (Settings::values.renderer_backend.GetValue() != Settings::RendererBackend::Direct3D12) {
         return {};
@@ -466,6 +472,22 @@ void RendererD3D12::ShowGameNotice(std::optional<MenuImage> notice) {
     SetOverlay(game_notice, std::move(notice));
 }
 
+void RendererD3D12::PostMotionView(std::optional<MenuImage> view) {
+    std::scoped_lock lock{motion_mutex};
+    pending_motion = std::move(view);
+}
+
+void RendererD3D12::TakeMotionView() {
+    std::optional<std::optional<MenuImage>> view;
+    {
+        std::scoped_lock lock{motion_mutex};
+        view.swap(pending_motion);
+    }
+    if (view) {
+        SetOverlay(game_motion, std::move(*view));
+    }
+}
+
 void RendererD3D12::ShowGameMenu(std::optional<MenuImage> menu) {
     SetOverlay(game_menu, std::move(menu));
     if (present_failed) {
@@ -533,15 +555,23 @@ void RendererD3D12::DrawGameMenu(CommandStream* cmd, PresentFrame& frame) {
                                 static_cast<float>(rgb & 0xFF) / 255.0f, 1.0f};
         cmd->ClearRenderTargetView(frame.rtv, color, 0, nullptr);
     }
+    // The motion view belongs to the game being played: any frontend image (the menu, Pulse
+    // saving or resuming, the boot screen) hides it.
+    if (!game_menu.image) {
+        BlendOverlay(cmd, frame, game_motion);
+    }
     CopyOverlay(cmd, frame, game_menu);
     CopyOverlay(cmd, frame, game_notice);
 }
 
-void RendererD3D12::CopyOverlay(CommandStream* cmd, PresentFrame& frame, OverlayImage& overlay) {
+bool RendererD3D12::UploadOverlay(CommandStream* cmd, OverlayImage& overlay) {
     if (!overlay.image) {
-        return;
+        return false;
     }
     const MenuImage& image = *overlay.image;
+    const D3D12_RESOURCE_STATES ready = overlay.blended
+                                            ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                                            : D3D12_RESOURCE_STATE_COPY_SOURCE;
     if (overlay.dirty) {
         // A new image goes into a texture of its own once, so a present over the running game is
         // a GPU copy and never a CPU upload.
@@ -565,11 +595,17 @@ void RendererD3D12::CopyOverlay(CommandStream* cmd, PresentFrame& frame, Overlay
                           "CreateCommittedResource (menu overlay)");
             overlay.texture_width = image.width;
             overlay.texture_height = image.height;
+            if (overlay.blended) {
+                if (overlay.srv.ptr == 0) {
+                    overlay.srv = view_descriptors.Allocate();
+                }
+                device.Get()->CreateShaderResourceView(overlay.texture.Get(), nullptr, overlay.srv);
+            }
         } else {
             D3D12_RESOURCE_BARRIER to_dest{};
             to_dest.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
             to_dest.Transition = {overlay.texture.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                                  D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST};
+                                  ready, D3D12_RESOURCE_STATE_COPY_DEST};
             cmd->ResourceBarrier(1, &to_dest);
         }
         const u32 row_pitch = Common::AlignUp(image.width * 4, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
@@ -598,10 +634,72 @@ void RendererD3D12::CopyOverlay(CommandStream* cmd, PresentFrame& frame, Overlay
         D3D12_RESOURCE_BARRIER to_source{};
         to_source.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         to_source.Transition = {overlay.texture.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE};
+                                D3D12_RESOURCE_STATE_COPY_DEST, ready};
         cmd->ResourceBarrier(1, &to_source);
         overlay.dirty = false;
     }
+    return true;
+}
+
+void RendererD3D12::BlendOverlay(CommandStream* cmd, PresentFrame& frame, OverlayImage& overlay) {
+    const auto& pipeline = blit_pipelines[static_cast<size_t>(Tegra::BlendMode::Premultiplied)];
+    if (!pipeline || !overlay.blended) {
+        CopyOverlay(cmd, frame, overlay);
+        return;
+    }
+    if (!UploadOverlay(cmd, overlay)) {
+        return;
+    }
+    const MenuImage& image = *overlay.image;
+    const u32 screen_width = swapchain.Width();
+    const u32 screen_height = swapchain.Height();
+    const u32 width = std::min(image.width, screen_width);
+    const u32 height = std::min(image.height, screen_height);
+    const u32 x =
+        image.placed ? std::min(image.x, screen_width - width) : (screen_width - width) / 2;
+    const u32 y =
+        image.placed ? std::min(image.y, screen_height - height) : (screen_height - height) / 2;
+    // Descriptors first: taking them may flush the list, so the state is set after.
+    constexpr u64 LINEAR_SAMPLER_KEY = 0;
+    const D3D12_GPU_DESCRIPTOR_HANDLE sampler_table =
+        sampler_heap.GetTable({&LINEAR_SAMPLER_KEY, 1}, {&linear_sampler, 1});
+    const D3D12_GPU_DESCRIPTOR_HANDLE source_table = descriptor_ring.Upload({&overlay.srv, 1});
+    ID3D12DescriptorHeap* const heaps[] = {descriptor_ring.Heap(), sampler_heap.Heap()};
+    cmd->SetDescriptorHeaps(2, heaps);
+    frame.Transition(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = frame.rtv;
+    cmd->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    // One texel per pixel: the viewport is the image's own rectangle.
+    const D3D12_VIEWPORT viewport{
+        .TopLeftX = static_cast<float>(x),
+        .TopLeftY = static_cast<float>(y),
+        .Width = static_cast<float>(image.width),
+        .Height = static_cast<float>(image.height),
+        .MinDepth = 0.0f,
+        .MaxDepth = 1.0f,
+    };
+    const D3D12_RECT scissor{static_cast<LONG>(x), static_cast<LONG>(y),
+                             static_cast<LONG>(x + width), static_cast<LONG>(y + height)};
+    cmd->RSSetViewports(1, &viewport);
+    cmd->RSSetScissorRects(1, &scissor);
+    // As RecordBlit: the bottom of the quad samples tex_offset, the top tex_offset + tex_scale.
+    const std::array<float, 4> tex_scale_offset{1.0f, -1.0f, 0.0f, 1.0f};
+    cmd->SetGraphicsRootSignature(blit_root_signature.Get());
+    scheduler.SetPipelineState(pipeline.Get());
+    cmd->SetGraphicsRoot32BitConstants(0, 4, tex_scale_offset.data(), 0);
+    const u32 runtime_data[12]{};
+    cmd->SetGraphicsRoot32BitConstants(1, 12, runtime_data, 0);
+    cmd->SetGraphicsRootDescriptorTable(2, source_table);
+    cmd->SetGraphicsRootDescriptorTable(3, sampler_table);
+    cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cmd->DrawInstanced(3, 1, 0, 0);
+}
+
+void RendererD3D12::CopyOverlay(CommandStream* cmd, PresentFrame& frame, OverlayImage& overlay) {
+    if (!UploadOverlay(cmd, overlay)) {
+        return;
+    }
+    const MenuImage& image = *overlay.image;
     // Clipped to the screen; the frontend sizes the image to fit, this only guards a resize.
     const u32 screen_width = swapchain.Width();
     const u32 screen_height = swapchain.Height();
@@ -622,9 +720,20 @@ void RendererD3D12::CopyOverlay(CommandStream* cmd, PresentFrame& frame, Overlay
         .SubresourceIndex = 0,
     };
     const D3D12_BOX box{0, 0, 0, width, height, 1};
+    // A blended overlay copied (no present pipeline) rests as a shader resource.
+    D3D12_RESOURCE_BARRIER to_copy{};
+    to_copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    to_copy.Transition = {overlay.texture.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                          D3D12_RESOURCE_STATE_COPY_SOURCE};
+    if (overlay.blended) cmd->ResourceBarrier(1, &to_copy);
     frame.Transition(cmd, D3D12_RESOURCE_STATE_COPY_DEST);
     cmd->CopyTextureRegion(&dst, x, y, 0, &src, &box);
     frame.Transition(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (overlay.blended) {
+        std::swap(to_copy.Transition.StateBefore, to_copy.Transition.StateAfter);
+        cmd->ResourceBarrier(1, &to_copy);
+    }
 }
 
 } // namespace D3D12

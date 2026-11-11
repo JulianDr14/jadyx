@@ -56,6 +56,11 @@ void HideGameMenu(VideoCore::RendererBase& renderer);
 /// Uploaded once; each present only copies it. GPU thread only.
 void ShowGameNotice(VideoCore::RendererBase& renderer, std::optional<MenuImage> image);
 
+/// Posts (or with nullopt removes) the motion view, the small picture of the controller the
+/// emulated gyro moves: drawn under the menu, from the guest's next present on. Any thread; the
+/// newest image posted before a present wins.
+void PostGameMotionView(VideoCore::RendererBase& renderer, std::optional<MenuImage> image);
+
 /// The paused game's last frame as the screen shows it (upscaling included) but without the HUD
 /// or the menu: RGBA at the back buffer's size. Empty unless the renderer is the D3D12 one and
 /// that frame is a GPU image. GPU thread only, with the guest paused.

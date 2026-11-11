@@ -6,6 +6,7 @@
 #include <array>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -104,6 +105,8 @@ public:
     void ShowGameMenu(std::optional<MenuImage> menu);
     /// Shows (or removes) the notice over the game from the next present on. GPU thread only.
     void ShowGameNotice(std::optional<MenuImage> notice);
+    /// Queues the motion view for the next present. Any thread.
+    void PostMotionView(std::optional<MenuImage> view);
     [[nodiscard]] std::pair<u32, u32> ScreenSize() const {
         return {swapchain.Width(), swapchain.Height()};
     }
@@ -124,16 +127,27 @@ private:
     /// Copies the frontend menu and notice into frame (in RENDER_TARGET state, as it leaves it).
     void DrawGameMenu(CommandStream* cmd, PresentFrame& frame);
     /// An image the frontend draws over the game, kept on the GPU: uploaded when it changes, only
-    /// copied on every present after that.
+    /// copied (or blended) on every present after that.
     struct OverlayImage {
         std::optional<MenuImage> image;
         ComPtr<ID3D12Resource> texture;
         u32 texture_width{};
         u32 texture_height{};
         bool dirty{};
+        /// Drawn with premultiplied alpha over the frame instead of copied: the texture then
+        /// rests as a shader resource, read through srv.
+        bool blended{};
+        D3D12_CPU_DESCRIPTOR_HANDLE srv{};
     };
     void SetOverlay(OverlayImage& overlay, std::optional<MenuImage> image);
+    /// Uploads a changed image into the overlay's texture. False when there is nothing to show.
+    bool UploadOverlay(CommandStream* cmd, OverlayImage& overlay);
     void CopyOverlay(CommandStream* cmd, PresentFrame& frame, OverlayImage& overlay);
+    /// Blends a blended overlay over frame through the premultiplied present pipeline; copies it
+    /// when that pipeline is missing (the CPU present path).
+    void BlendOverlay(CommandStream* cmd, PresentFrame& frame, OverlayImage& overlay);
+    /// Takes the motion view posted since the last present, if any. GPU thread.
+    void TakeMotionView();
     [[nodiscard]] bool HasOverlay() const {
         return game_menu.image.has_value() || game_notice.image.has_value();
     }
@@ -248,6 +262,12 @@ private:
     OverlayImage game_menu;
     /// A notice over the running game (a chat message), drawn over the menu.
     OverlayImage game_notice;
+    /// The controller the emulated gyro moves, under the menu. Not counted by HasOverlay: frame
+    /// generation stays on while it shows, the game keeps playing under it.
+    OverlayImage game_motion{.blended = true};
+    std::mutex motion_mutex;
+    /// Posted by the frontend's thread, taken at the next present: unset when nothing new.
+    std::optional<std::optional<MenuImage>> pending_motion;
     /// While CaptureFrame composites: the guest's image only, nothing drawn over it.
     bool bare_composite{};
     /// The last composite went through FSR: frame generation stays off while FSR upscales.
