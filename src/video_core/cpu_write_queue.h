@@ -50,6 +50,21 @@ struct Queue {
 inline std::atomic<Mode> mode{Mode::Off};
 inline std::array<Queue, QUEUES> queues{};
 
+/// Settings > Graphics and the game's own Graphics (on by default): with the queue on, writes into granules a cache may hold
+/// GPU data for (GpuWrittenPages set, never cleared) are queued too. The drain runs the whole
+/// OnCPUWrite on them, and those it defers are invalidated at the next InvalidateGPUCache, as
+/// the ones a guest core gathers are. Without it each such write waits for the buffer cache
+/// lock, which the GPU thread holds through every draw.
+inline std::atomic<bool> all_writes{false};
+
+inline void SetAllWrites(bool value) noexcept {
+    all_writes.store(value, std::memory_order_relaxed);
+}
+
+[[nodiscard]] inline bool AllWrites() noexcept {
+    return all_writes.load(std::memory_order_relaxed);
+}
+
 inline void SetMode(Mode value) noexcept {
     mode.store(value, std::memory_order_relaxed);
 }

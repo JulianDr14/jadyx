@@ -838,7 +838,9 @@ struct Memory::Impl {
                 const bool deferrable = defer != Mode::Off && address != 0 && size != 0 &&
                                         VideoCommon::GpuWrittenPages::Enabled() &&
                                         !VideoCommon::GpuWrittenPages::AnyMarked(address, size);
-                if (deferrable && defer == Mode::On) {
+                const bool queued = defer == Mode::On && address != 0 && size != 0 &&
+                                    (deferrable || VideoCommon::CpuWriteQueue::AllWrites());
+                if (queued) {
                     if (VideoCommon::CpuWriteQueue::Push(core, address, size)) {
                         VideoCore::Perf::Add(VideoCore::Perf::Counter::CpuWritesDeferred, 1);
                         return;
