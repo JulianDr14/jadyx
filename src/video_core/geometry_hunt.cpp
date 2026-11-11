@@ -66,10 +66,12 @@ struct Stats {
     u64 suspects;
     u64 suspects_cleared;
     u64 confirmed;
-    u64 healed;
     u64 budget_frames;
     u64 geometry_checks;
     u64 geometry_budget_frames;
+    u64 audits;
+    u64 audit_kib;
+    u64 audit_stale;
 };
 
 struct Recent {
@@ -92,6 +94,19 @@ u64 last_stats_frame{};
 u64 check_budget{u64{DEFAULT_CHECK_KIB} * 1024};
 u64 upload_budget{u64{DEFAULT_UPLOAD_KIB} * 1024};
 u64 upload_left{};
+constexpr u32 DEFAULT_AUDIT_KIB = 2 * 1024;
+/// A range audited clean rests this many frames before its next audit.
+constexpr u64 AUDIT_REST_FRAMES = 30;
+u64 audit_budget{u64{DEFAULT_AUDIT_KIB} * 1024};
+u64 audit_left{u64{DEFAULT_AUDIT_KIB} * 1024};
+std::unordered_map<u64, u64> audited_ranges;
+struct UploadNote {
+    u32 frame;
+    u32 count;
+    u32 first_frame;
+};
+/// Every upload into a page (whole or part), for the audit report.
+std::unordered_map<u64, UploadNote> uploads;
 std::atomic<u64> check_left{};
 std::atomic<u64> geometry_left{};
 bool budget_hit{};
@@ -162,11 +177,11 @@ std::FILE* Log() {
     fopen_s(&file, path.c_str(), "wb");
     if (file) {
         fmt::print(file,
-                   "geo_hunt: check budget {} KiB/frame, upload budget {} KiB/frame, heal {}\n"
+                   "geo_hunt: check budget {} KiB/frame, upload budget {} KiB/frame\n"
                    "MISS lines: page = device address, chunks = 256-byte pieces that changed "
                    "(bit 0 = first), cached = this device page's cached count, cpu_cached = CPU "
                    "page flag, aliases = device pages on the same memory (cached ones)\n",
-                   check_budget / 1024, upload_budget / 1024, Healing() ? 1 : 0);
+                   check_budget / 1024, upload_budget / 1024);
         LOG_INFO(HW_GPU, "geo_hunt: log at {}", path);
     }
     return file;
@@ -181,12 +196,12 @@ void WriteStats(const char* label, const Stats& s) {
     fmt::print(out,
                "{} f{} t{} ms: tracked {} pages, baselines {} ({} KiB), dropped full {} budget {}, "
                "checks {} ({} KiB), dirty skips {}, suspects {} (cleared by tracker {}), "
-               "confirmed {}, healed {}, frames out of budget {} (index/vertex checks {}, "
-               "frames out of their budget {})\n",
+               "confirmed {}, frames out of budget {} (index/vertex checks {}, "
+               "frames out of their budget {}), host audits {} ({} KiB) stale {}\n",
                label, frame, NowMs(), pages.size(), s.baselines, s.baseline_kib, s.dropped_full,
                s.dropped_budget, s.checks, s.checks * PAGE_SIZE / 1024, s.dirty_skips, s.suspects,
-               s.suspects_cleared, s.confirmed, s.healed, s.budget_frames, s.geometry_checks,
-               s.geometry_budget_frames);
+               s.suspects_cleared, s.confirmed, s.budget_frames, s.geometry_checks,
+               s.geometry_budget_frames, s.audits, s.audit_kib, s.audit_stale);
     std::fflush(out);
 }
 
@@ -200,41 +215,32 @@ void Add(Stats& total, const Stats& part) {
     total.suspects += part.suspects;
     total.suspects_cleared += part.suspects_cleared;
     total.confirmed += part.confirmed;
-    total.healed += part.healed;
     total.budget_frames += part.budget_frames;
     total.geometry_checks += part.geometry_checks;
     total.geometry_budget_frames += part.geometry_budget_frames;
+    total.audits += part.audits;
+    total.audit_kib += part.audit_kib;
+    total.audit_stale += part.audit_stale;
 }
 
 } // Anonymous namespace
 
-void Configure(bool on, u32 check_budget_kib, u32 upload_budget_kib, bool heal_on) {
+void Configure(bool on, u32 check_budget_kib, u32 upload_budget_kib) {
     std::scoped_lock lock{mutex};
     check_budget = u64{check_budget_kib != 0 ? check_budget_kib : DEFAULT_CHECK_KIB} * 1024;
     upload_budget = u64{upload_budget_kib != 0 ? upload_budget_kib : DEFAULT_UPLOAD_KIB} * 1024;
     check_left.store(check_budget, std::memory_order_relaxed);
     geometry_left.store(check_budget * GEOMETRY_BUDGET_SCALE, std::memory_order_relaxed);
     upload_left = upload_budget;
-    heal.store(heal_on, std::memory_order_relaxed);
     if (on) {
         pages.reserve(MAX_PAGES / 4);
         LOG_INFO(HW_GPU,
                  "geo_hunt on: check {} KiB/frame (+{} KiB for index/vertex), upload {} "
-                 "KiB/frame, recheck every {} frames, heal {}",
+                 "KiB/frame, recheck every {} frames",
                  check_budget / 1024, check_budget * GEOMETRY_BUDGET_SCALE / 1024,
-                 upload_budget / 1024, RECHECK_FRAMES, heal_on);
+                 upload_budget / 1024, RECHECK_FRAMES);
     }
     enabled.store(on, std::memory_order_relaxed);
-}
-
-void SetHeal(bool on) {
-    std::scoped_lock lock{mutex};
-    heal.store(on, std::memory_order_relaxed);
-    if (std::FILE* const out = Log()) {
-        fmt::print(out, "f{} t{} ms: heal {}\n", frame, NowMs(), on ? "on" : "off");
-        std::fflush(out);
-    }
-    LOG_INFO(HW_GPU, "geo_hunt: heal {}", on ? "on" : "off");
 }
 
 void Mark() {
@@ -244,8 +250,8 @@ void Mark() {
     Add(total, window);
     std::FILE* const out = Log();
     if (out) {
-        fmt::print(out, "\n==== MARK {} f{} t{} ms (user saw a deformation) heal {} ====\n",
-                   marks, frame, NowMs(), Healing() ? "on" : "off");
+        fmt::print(out, "\n==== MARK {} f{} t{} ms (user saw a deformation) ====\n", marks,
+                   frame, NowMs());
     }
     WriteStats("since start", total);
     if (out) {
@@ -286,6 +292,10 @@ void SetShaders(u64 vertex_or_compute, u64 fragment, bool compute) {
     shader_compute = compute;
 }
 
+u64 CurrentShader() {
+    return shader_a;
+}
+
 void BeginFrame(u64 new_frame) {
     std::scoped_lock lock{mutex};
     frame = new_frame;
@@ -300,6 +310,7 @@ void BeginFrame(u64 new_frame) {
     check_left.store(check_budget, std::memory_order_relaxed);
     geometry_left.store(check_budget * GEOMETRY_BUDGET_SCALE, std::memory_order_relaxed);
     upload_left = upload_budget;
+    audit_left = audit_budget;
     ranges_this_frame.clear();
     if (frame - last_stats_frame >= STATS_FRAMES) {
         WriteStats("window", window);
@@ -432,24 +443,19 @@ Result Check(u64 page, const u8* guest, Role role) {
     entry.flags &= ~FLAG_SUSPECT;
     ++entry.events;
     ++window.confirmed;
-    if (!Healing()) {
-        // Without a heal the GPU copy stays behind; the new bytes become the baseline so a
-        // later missed write shows as its own event.
-        entry.chunks = now;
-        entry.flags |= FLAG_STALE;
-    }
+    // The GPU copy stays behind; the new bytes become the baseline so a later missed write
+    // shows as its own event.
+    entry.chunks = now;
+    entry.flags |= FLAG_STALE;
     return Result::Confirmed;
 }
 
-void Report(u64 page, Role role, const Protection& protection, bool healed) {
+void Report(u64 page, Role role, const Protection& protection) {
     const auto it = pages.find(page >> PAGE_BITS);
     if (it == pages.end()) {
         return;
     }
     Entry& entry = it->second;
-    if (healed) {
-        ++window.healed;
-    }
     const u64 now = NowMs();
     if (recent.size() == RECENT) {
         recent.erase(recent.begin());
@@ -464,12 +470,12 @@ void Report(u64 page, Role role, const Protection& protection, bool healed) {
         fmt::print(out,
                    "f{} t{} ms MISS page {:#x} role {} (uploaded as {} at f{}, suspect f{}) "
                    "chunks {:016b} event {} {} {:016x} {:016x} | cpu {:#x} asid {} cached {} "
-                   "cpu_cached {} aliases {} ({} cached) | {}\n",
+                   "cpu_cached {} aliases {} ({} cached)\n",
                    frame, now, page, RoleName(role), RoleName(entry.upload_role),
                    entry.upload_frame, entry.suspect_frame, entry.mask, entry.events,
                    shader_compute ? "cs" : "vs/fs", shader_a, shader_b, protection.cpu_page,
                    protection.asid, protection.cached_count, protection.cpu_cached ? 1 : 0,
-                   protection.aliases, protection.alias_cached, healed ? "healed" : "left stale");
+                   protection.aliases, protection.alias_cached);
         std::fflush(out);
     }
     if (main_log_reports < MAIN_LOG_REPORTS) {
@@ -550,6 +556,84 @@ void SetOobFix(bool on) {
     LOG_INFO(HW_GPU, "geo_oob: fix {}", on ? "on" : "off");
 }
 
+void SetVbResync(bool on) {
+    vb_resync.store(on, std::memory_order_relaxed);
+    const char* const name = on ? "old feedback" : "off";
+    {
+        std::scoped_lock lock{mutex};
+        if (std::FILE* const out = Log()) {
+            fmt::print(out, "t{} ms: vertex resync {}\n", NowMs(), name);
+            std::fflush(out);
+        }
+    }
+    LOG_INFO(HW_GPU, "vb_resync: {}", name);
+}
+
+void NoteFeedbackWrite(u64 address, u64 size, u32 index, u32 stride, u32 varyings, u64 shader,
+                       u64 frame_now) {
+    static std::unordered_map<u64, u64> seen;
+    static u32 lines{};
+    const u64 key = address ^ (size << 40) ^ (shader * 0x9E3779B97F4A7C15ULL);
+    std::scoped_lock lock{mutex};
+    if (lines >= 4096) {
+        return;
+    }
+    if (seen.size() > 64 * 1024) {
+        seen.clear();
+    }
+    auto [it, inserted] = seen.try_emplace(key, frame_now);
+    if (!inserted) {
+        if (frame_now - it->second < 600) {
+            return;
+        }
+        it->second = frame_now;
+    }
+    ++lines;
+    if (std::FILE* const out = Log()) {
+        fmt::print(out,
+                   "f{} t{} ms XFB-WRITE #{} {:#x}+{:#x} (end {:#x}) stride {} varyings {} "
+                   "vs {:016x}\n",
+                   frame_now, NowMs(), index, address, size, address + size, stride, varyings,
+                   shader);
+        std::fflush(out);
+    }
+}
+
+void NoteStaleFeedback(const StaleFeedback& stale) {
+    static constexpr std::array<const char*, 9> names{
+        "none", "multi_range", "graphics_storage", "graphics_texture", "transform_feedback",
+        "compute_storage", "compute_texture", "dma_image", "dma_copy"};
+    static std::unordered_map<u64, u64> seen;
+    static u32 lines{};
+    const u64 key = stale.vertex_address ^ (stale.lo << 20) ^ (u64{stale.resynced} << 63);
+    std::scoped_lock lock{mutex};
+    if (lines >= 1024) {
+        return;
+    }
+    auto [it, inserted] = seen.try_emplace(key, stale.frame);
+    if (!inserted) {
+        if (stale.frame - it->second < 600) {
+            return;
+        }
+        it->second = stale.frame;
+    }
+    ++lines;
+    const u64 kind = stale.origin & 0xff;
+    if (std::FILE* const out = Log()) {
+        fmt::print(out,
+                   "f{} t{} ms XFB-STALE-VB vertex {:#x}+{:#x} vs {:016x} reads {:#x}..{:#x} "
+                   "({} bytes) written by xfb {:#x}+{:#x} vs {:016x} f{} ({} frames ago) | last "
+                   "gpu writer {} (mark #{}){}\n",
+                   stale.frame, NowMs(), stale.vertex_address, stale.vertex_size,
+                   stale.vertex_shader, stale.lo, stale.hi, stale.hi - stale.lo,
+                   stale.feedback_address, stale.feedback_size, stale.feedback_shader,
+                   stale.feedback_frame, stale.frame - stale.feedback_frame,
+                   kind < names.size() ? names[kind] : "unknown", stale.origin >> 8,
+                   stale.resynced ? " | RESYNCED from guest" : "");
+        std::fflush(out);
+    }
+}
+
 WriterScope::WriterScope(Writer writer) : previous{current_writer} {
     current_writer = writer;
 }
@@ -557,6 +641,11 @@ WriterScope::WriterScope(Writer writer) : previous{current_writer} {
 WriterScope::~WriterScope() {
     current_writer = previous;
 }
+
+namespace {
+std::string CheckCommandWrite(Writer writer, u64 address, u64 size, u32 now_frame);
+} // Anonymous namespace
+void LogCommandWrite(const std::string& line);
 
 void RecordWrite(u64 address, u64 size) {
     RecordWrite(current_writer, address, size);
@@ -570,6 +659,14 @@ void RecordWrite(Writer writer, u64 address, u64 size) {
     const u32 now_frame = static_cast<u32>(journal_frame.load(std::memory_order_relaxed));
     const u64 first = address >> PAGE_BITS;
     const u64 last = (address + size - 1) >> PAGE_BITS;
+    std::string command_line;
+    {
+        std::scoped_lock lock{journal_mutex};
+        command_line = CheckCommandWrite(writer, address, size, now_frame);
+    }
+    if (!command_line.empty()) {
+        LogCommandWrite(command_line);
+    }
     std::scoped_lock lock{journal_mutex};
     if (journal.size() > JOURNAL_PAGES) {
         journal.clear();
@@ -653,6 +750,303 @@ void ReportOob(const OobDraw& draw) {
                 "geo_oob: ib {:#x} count {} max index {} + base {} >= {} vertices ({} bad), {}",
                 draw.index_address, draw.count, draw.max_index, draw.base_vertex,
                 draw.vertex_limit, draw.bad, draw.fixed ? "dropped" : "drawn");
+}
+
+namespace {
+
+struct CommandSegment {
+    u64 gpu_va;
+    u64 device_addr;
+    u64 size;
+    u64 frame;
+};
+/// Device pages parsed as commands, with the frame they were last parsed.
+std::unordered_map<u64, u32> command_pages;
+CommandSegment last_segment{};
+bool garbage_in_segment{};
+u32 garbage_reports{};
+u32 command_write_reports{};
+u32 stale_reports{};
+std::unordered_map<u64, u64> stale_reported;
+constexpr u32 GARBAGE_REPORTS = 8;
+std::atomic<bool> census_request{};
+constexpr u32 COMMAND_WRITE_REPORTS = 1024;
+constexpr u32 STALE_REPORTS = 256;
+/// A page parsed as commands this recently still counts as a command page.
+constexpr u32 COMMAND_PAGE_FRAMES = 600;
+
+/// Needs journal_mutex.
+void JournalLines(u64 page, u64 lo, u64 hi, std::vector<std::string>& lines, const char* hit) {
+    const auto it = journal.find(page >> PAGE_BITS);
+    if (it == journal.end() || it->second[0].size == 0) {
+        lines.push_back(fmt::format("    page {:#x}: no emulator write recorded", page));
+        return;
+    }
+    for (const JournalWrite& write : it->second) {
+        if (write.size == 0) {
+            continue;
+        }
+        const bool overlaps = write.address < hi && lo < write.address + write.size;
+        lines.push_back(fmt::format("    page {:#x}: {} {:#x}+{:#x} f{} t{} ms{}", page,
+                                    WriterName(write.writer), write.address, write.size,
+                                    write.frame, write.time_ms, overlaps ? hit : ""));
+    }
+}
+
+/// Needs journal_mutex. An emulator write landing on memory parsed as commands lately: the
+/// line to log once the lock is released, empty when none.
+std::string CheckCommandWrite(Writer writer, u64 address, u64 size, u32 now_frame) {
+    if (command_pages.empty() || command_write_reports >= COMMAND_WRITE_REPORTS) {
+        return {};
+    }
+    for (u64 page = address >> PAGE_BITS; page <= (address + size - 1) >> PAGE_BITS; ++page) {
+        const auto it = command_pages.find(page);
+        if (it == command_pages.end() || now_frame - it->second > COMMAND_PAGE_FRAMES) {
+            continue;
+        }
+        ++command_write_reports;
+        return fmt::format("f{} t{} ms WRITE-INTO-COMMANDS {} {:#x}+{:#x} on page {:#x} parsed "
+                           "as commands f{} (last segment gpu {:#x} device {:#x}+{:#x})\n",
+                           now_frame, NowMs(), WriterName(writer), address, size,
+                           page << PAGE_BITS, it->second, last_segment.gpu_va,
+                           last_segment.device_addr, last_segment.size);
+    }
+    return {};
+}
+
+} // Anonymous namespace
+
+void LogCommandWrite(const std::string& line) {
+    std::scoped_lock lock{mutex};
+    if (std::FILE* const out = Log()) {
+        fmt::print(out, "{}", line);
+        std::fflush(out);
+    }
+}
+
+namespace {
+
+} // Anonymous namespace
+
+void NoteUpload(u64 address, u64 size) {
+    if (size == 0) {
+        return;
+    }
+    if (uploads.size() > 256 * 1024) {
+        uploads.clear();
+    }
+    const u32 now = static_cast<u32>(frame);
+    for (u64 page = address >> PAGE_BITS; page <= (address + size - 1) >> PAGE_BITS; ++page) {
+        auto [it, inserted] = uploads.try_emplace(page, UploadNote{now, 0, now});
+        it->second.frame = now;
+        ++it->second.count;
+    }
+}
+
+void ConfigureAudit(u32 budget_kib) {
+    std::scoped_lock lock{mutex};
+    audit_budget = u64{budget_kib != 0 ? budget_kib : DEFAULT_AUDIT_KIB} * 1024;
+    audit_left = audit_budget;
+    LOG_INFO(HW_GPU, "geo_hunt: host audit {} KiB/frame, a clean range rests {} frames",
+             audit_budget / 1024, AUDIT_REST_FRAMES);
+}
+
+bool AuditTake(u64 address, u64 size) {
+    std::scoped_lock lock{mutex};
+    if (audit_left < size) {
+        return false;
+    }
+    const u64 key = address ^ (size << 40) ^ (size >> 24);
+    if (audited_ranges.size() > 64 * 1024) {
+        audited_ranges.clear();
+    }
+    auto [it, inserted] = audited_ranges.try_emplace(key, frame);
+    if (!inserted) {
+        if (frame - it->second < AUDIT_REST_FRAMES) {
+            return false;
+        }
+        it->second = frame;
+    }
+    audit_left -= size;
+    ++window.audits;
+    window.audit_kib += (size + 1023) / 1024;
+    return true;
+}
+
+void ReportHostStale(const AuditReport& report, const std::vector<AuditPage>& stale_pages,
+                     const u8* host, const u8* guest, u64 bytes) {
+    std::vector<std::string> lines;
+    {
+        std::scoped_lock lock{journal_mutex};
+        for (const AuditPage& page : stale_pages) {
+            JournalLines(page.page, page.page, page.page + PAGE_SIZE, lines, "");
+        }
+    }
+    std::scoped_lock lock{mutex};
+    ++window.audit_stale;
+    // The same range keeps failing every audit: report it again only after a while.
+    const u64 key = report.address ^ (report.size << 40);
+    auto [it, inserted] = stale_reported.try_emplace(key, frame);
+    if (!inserted && frame - it->second < 600) {
+        return;
+    }
+    it->second = frame;
+    if (stale_reports >= STALE_REPORTS) {
+        return;
+    }
+    ++stale_reports;
+    std::FILE* const out = Log();
+    if (!out) {
+        return;
+    }
+    fmt::print(out,
+               "f{} t{} ms HOST-STALE {} range {:#x}+{:#x} bound f{} | buffer #{} {:#x}+{:#x} "
+               "created f{} | left out gpu {} cpu {} | vs {:016x}\n",
+               frame, NowMs(), RoleName(report.role), report.address, report.size,
+               report.bind_frame, report.buffer_id, report.buffer_address, report.buffer_size,
+               report.buffer_frame, report.excluded_gpu, report.excluded_cpu,
+               report.vertex_shader);
+    for (const AuditPage& page : stale_pages) {
+        const auto up = uploads.find(page.page >> PAGE_BITS);
+        const std::string upload =
+            up == uploads.end()
+                ? std::string{"never uploaded"}
+                : fmt::format("last upload f{} ({} uploads since f{})", up->second.frame,
+                              up->second.count, up->second.first_frame);
+        fmt::print(out, "  page {:#x}: {} of {} bytes differ, first at +{:#x}{}{}{}{} | {}\n",
+                   page.page, page.diff_bytes, page.audited_bytes, page.first_diff,
+                   page.host_zero ? ", host holds zeros there" : "",
+                   page.guest_moved ? ", guest changed after the bind" : "",
+                   page.cpu_now ? ", cpu-modified now" : "",
+                   page.gpu_now ? ", gpu-modified now" : "", upload);
+    }
+    fmt::print(out, "  emulator writes to those pages (newest first):\n");
+    for (const std::string& line : lines) {
+        fmt::print(out, "{}\n", line);
+    }
+    if (bytes != 0 && !stale_pages.empty()) {
+        // Up to 32 bytes from the first difference, host then guest.
+        const u64 count = std::min<u64>(32, bytes);
+        std::string h;
+        std::string g;
+        for (u64 i = 0; i < count; ++i) {
+            h += fmt::format("{:02x}", host[i]);
+            g += fmt::format("{:02x}", guest[i]);
+        }
+        fmt::print(out, "  at {:#x}:\n    host  {}\n    guest {}\n",
+                   stale_pages.front().page + stale_pages.front().first_diff, h, g);
+    }
+    std::fflush(out);
+}
+
+void NoteCommandSegment(u64 gpu_va, u64 device_addr, u64 size) {
+    const u32 now = static_cast<u32>(journal_frame.load(std::memory_order_relaxed));
+    std::scoped_lock lock{journal_mutex};
+    last_segment = CommandSegment{gpu_va, device_addr, size, now};
+    garbage_in_segment = false;
+    if (device_addr == 0 || size == 0) {
+        return;
+    }
+    if (command_pages.size() > 256 * 1024) {
+        command_pages.clear();
+    }
+    for (u64 page = device_addr >> PAGE_BITS; page <= (device_addr + size - 1) >> PAGE_BITS;
+         ++page) {
+        command_pages[page] = now;
+    }
+}
+
+void CommandGarbage(const char* engine, u32 method, u32 argument) {
+    if (!Enabled()) {
+        return;
+    }
+    census_request.store(true, std::memory_order_relaxed);
+    std::vector<std::string> lines;
+    CommandSegment segment;
+    {
+        std::scoped_lock lock{journal_mutex};
+        if (garbage_in_segment || garbage_reports >= GARBAGE_REPORTS) {
+            return;
+        }
+        garbage_in_segment = true;
+        ++garbage_reports;
+        segment = last_segment;
+        if (segment.device_addr != 0) {
+            const u64 first = segment.device_addr & ~(PAGE_SIZE - 1);
+            for (u64 page = first;
+                 page < segment.device_addr + segment.size && page < first + 16 * PAGE_SIZE;
+                 page += PAGE_SIZE) {
+                JournalLines(page, segment.device_addr, segment.device_addr + segment.size, lines,
+                             " INSIDE THE SEGMENT");
+            }
+        }
+    }
+    std::scoped_lock lock{mutex};
+    if (std::FILE* const out = Log()) {
+        fmt::print(out,
+                   "f{} t{} ms COMMAND-GARBAGE {} method {:#x} arg {:#x} | segment gpu {:#x} "
+                   "device {:#x} {} bytes (parsed f{})\n",
+                   frame, NowMs(), engine, method, argument, segment.gpu_va, segment.device_addr,
+                   segment.size, segment.frame);
+        fmt::print(out, "  emulator writes to the segment pages (newest first):\n");
+        for (const std::string& line : lines) {
+            fmt::print(out, "{}\n", line);
+        }
+        std::fflush(out);
+    }
+    LOG_ERROR(HW_GPU, "geo_hunt: garbage command ({} method {:#x}) in segment gpu {:#x}", engine,
+              method, segment.gpu_va);
+}
+
+bool TakeGarbageDump() {
+    std::scoped_lock lock{journal_mutex};
+    const bool dump = garbage_in_segment;
+    garbage_in_segment = false;
+    return dump;
+}
+
+void DumpCommandWords(const u32* words, size_t count) {
+    std::scoped_lock lock{mutex};
+    std::FILE* const out = Log();
+    if (!out) {
+        return;
+    }
+    count = std::min<size_t>(count, 512);
+    fmt::print(out, "  segment words ({} shown):\n", count);
+    for (size_t i = 0; i < count; i += 8) {
+        std::string line;
+        for (size_t j = i; j < std::min(count, i + 8); ++j) {
+            line += fmt::format(" {:08x}", words[j]);
+        }
+        fmt::print(out, "   +{:04x}:{}\n", i * 4, line);
+    }
+    std::fflush(out);
+}
+
+bool TakeCensusRequest() {
+    return census_request.exchange(false, std::memory_order_relaxed);
+}
+
+void NoteCensus(u64 census_frame, const std::string& counts) {
+    size_t n_journal{}, n_command{}, n_stale{}, n_oob{};
+    {
+        std::scoped_lock lock{journal_mutex};
+        n_journal = journal.size();
+        n_command = command_pages.size();
+        n_stale = stale_reported.size();
+        n_oob = oob_reported.size();
+    }
+    std::scoped_lock lock{mutex};
+    if (std::FILE* const out = Log()) {
+        fmt::print(out,
+                   "f{} t{} ms CENSUS {} | geo pages {} ranges_this_frame {} recent {} uploads {} "
+                   "audited {} journal {} (clears {}) command_pages {} stale_reported {} "
+                   "oob_reported {}\n",
+                   census_frame, NowMs(), counts, pages.size(), ranges_this_frame.size(),
+                   recent.size(), uploads.size(), audited_ranges.size(), n_journal,
+                   journal_clears, n_command, n_stale, n_oob);
+        std::fflush(out);
+    }
 }
 
 } // namespace VideoCommon::GeoHunt

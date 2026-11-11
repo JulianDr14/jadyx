@@ -137,11 +137,12 @@ private:
         u64 tick{};
         StagingBufferRef ref{};
         u64 used{};
+        u64 probe_used{};
         std::vector<Pending> pending;
     };
 
     /// Readback room of the frame being recorded: its offset in current.ref, or nullopt.
-    std::optional<u64> Reserve(u64 size);
+    std::optional<u64> Reserve(u64 size, bool probe = false);
     void ResolveInspect(const Pending& pending, const u8* host);
     void Begin();
     void Resolve(bool all_done);

@@ -42,13 +42,6 @@ namespace D3D12 {
 void SetMaterialGpuProbeEnabled(bool enabled);
 /// Draws recorded before the command list is submitted (512 by default), for A/B tests.
 void SetSubmitDraws(u32 draws);
-/// Diagnostic ("indirect_sync=1", runtime): GPU-indirect draws wait for every earlier write
-/// (global UAV barrier and a round trip of the argument record) before their arguments are
-/// copied and again before ExecuteIndirect.
-void SetIndirectSync(bool enabled);
-/// Diagnostic ("indirect_cpu=1", runtime): GPU-indirect draws read their arguments on the CPU
-/// and record direct draws, as emulated topologies do. Slow: ReadBlock waits for the GPU.
-void SetIndirectOnCpu(bool enabled);
 
 class AccelerateDMA final : public Tegra::Engines::AccelerateDMAInterface {
 public:
@@ -219,6 +212,9 @@ private:
     /// Transform feedback of a recorded draw: buffer registers, host bindings, what the pass
     /// left in each buffer and, for D3D12 stream output, the filled-size counters after it.
     void GlitchTransformFeedback(u32 frame, u32 call, const GraphicsPipeline& pipeline);
+    /// Glitch hunt v21: a transform feedback (skinning) pass's attribute formats, whole vertex
+    /// streams and uniform buffers up to the shader's size, guest and host, to replay it offline.
+    void GlitchSkinDump(u32 frame, u32 call);
     /// The bindings of the draw or dispatch the buffer cache configured last.
     void GlitchBindings(u32 frame, u32 call, const GlitchNote* draw, bool compute);
     /// Glitch hunt v12: a dispatch's storage buffers to the capture's .bin, host and guest

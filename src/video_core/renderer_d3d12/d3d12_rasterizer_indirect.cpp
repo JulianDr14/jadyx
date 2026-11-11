@@ -20,22 +20,6 @@
 // topologies D3D12 cannot draw directly.
 
 namespace D3D12 {
-namespace {
-std::atomic_bool indirect_sync_enabled{};
-std::atomic_bool indirect_cpu_enabled{};
-
-void GlobalUavBarrier(CommandStream* cmd) {
-    const D3D12_RESOURCE_BARRIER barrier = UavBarrier(nullptr);
-    cmd->ResourceBarrier(1, &barrier);
-}
-} // namespace
-
-void SetIndirectSync(bool enabled) {
-    indirect_sync_enabled.store(enabled, std::memory_order_relaxed);
-}
-void SetIndirectOnCpu(bool enabled) {
-    indirect_cpu_enabled.store(enabled, std::memory_order_relaxed);
-}
 
 void RasterizerD3D12::DrawIndirect() {
     DrainCpuWrites();
@@ -88,11 +72,6 @@ void RasterizerD3D12::DrawIndirect() {
         DrawIndirectOnCpu(params);
         return;
     }
-    if (indirect_cpu_enabled.load(std::memory_order_relaxed)) [[unlikely]] {
-        DrawIndirectOnCpu(params);
-        return;
-    }
-    const bool indirect_sync = indirect_sync_enabled.load(std::memory_order_relaxed);
     DrawMetrics::ScopedDrawTimer draw_timer;
     SCOPE_EXIT {
         scheduler.EndWork();
@@ -234,9 +213,6 @@ void RasterizerD3D12::DrawIndirect() {
     if (glitch_capture) [[unlikely]] {
         GlitchIndirectArgs(params, glitch_args, buffer, offset);
     }
-    if (indirect_sync) [[unlikely]] {
-        GlobalUavBarrier(cmd);
-    }
     for (u32 draw = 0; draw < draw_count; ++draw) {
         const u64 src = offset + draw * guest_stride;
         const u64 dst = range.offset + draw * record_size;
@@ -253,9 +229,6 @@ void RasterizerD3D12::DrawIndirect() {
             cmd->CopyBufferRegion(range.buffer, count_offset, count_buffer->Handle(), count_src,
                                   sizeof(u32));
         }
-    }
-    if (indirect_sync) [[unlikely]] {
-        indirect_args.Settle(range);
     }
     indirect_args.Ready(range);
 
@@ -286,9 +259,6 @@ void RasterizerD3D12::DrawIndirect() {
                                                     guest_samples ? guest_samples->heap : nullptr,
                                                     guest_samples ? guest_samples->index : 0)
                            : std::nullopt;
-        if (indirect_sync) [[unlikely]] {
-            GlobalUavBarrier(cmd);
-        }
         DrawStencilFaces(*pipeline, maxwell3d->draw_manager.draw_state.topology, [&] {
             cmd->ExecuteIndirect(signature, draw_count, range.buffer, range.offset,
                                  params.include_count ? range.buffer : nullptr,
@@ -308,8 +278,7 @@ void RasterizerD3D12::DrawIndirect() {
         const u64 ring_size = draw_count * record_size + (params.include_count ? sizeof(u32) : 0);
         indirect_args.ForReadback(range);
         glitch_hunt.InspectWords(glitch_hunt.PeekCall(), "ring", ring_size, sizeof(u32),
-                                 fmt::format("record_words={} sync={}", record_words,
-                                             indirect_sync ? 1 : 0),
+                                 fmt::format("record_words={}", record_words),
                                  [&](ID3D12Resource* dst, u64 at) {
                                      cmd->CopyBufferRegion(dst, at, range.buffer, range.offset,
                                                            ring_size);

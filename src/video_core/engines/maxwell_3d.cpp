@@ -18,6 +18,7 @@
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/core_timing.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -443,6 +444,9 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
         return;
     }
 
+    if (method >= Regs::NUM_REGS) [[unlikely]] {
+        VideoCommon::GeoHunt::CommandGarbage("maxwell3d", method, method_argument);
+    }
     ASSERT(method < Regs::NUM_REGS && "Invalid Maxwell3D register, increase the size of the Regs structure");
     const u32 argument = ProcessShadowRam(method, method_argument);
     ProcessDirtyRegisters(method, argument);

@@ -58,6 +58,8 @@ constexpr u32 PROBE_SLOTS = 8192;
 /// Readback bytes of one probe: the occlusion count, then the pipeline statistics.
 constexpr u64 PROBE_STATS_OFFSET = sizeof(u64);
 constexpr u64 PROBE_BYTES = PROBE_STATS_OFFSET + sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS);
+/// Tail of FRAME_BUDGET kept for probes: 96 bytes each, room for ~10k draws a frame.
+constexpr u64 PROBE_RESERVE = 1ULL << 20;
 } // namespace
 
 GlitchHunt::GlitchHunt(const Device& device_, Scheduler& scheduler_, StagingBufferPool& staging_)
@@ -113,7 +115,7 @@ void GlitchHunt::EndProbe(u32 call_index, const Probe& probe) {
     if (probe.stats) {
         cmd->EndQuery(stats_heap.Get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, probe.slot);
     }
-    const std::optional<u64> at = Reserve(PROBE_BYTES);
+    const std::optional<u64> at = Reserve(PROBE_BYTES, true);
     if (!at) {
         return;
     }
@@ -183,7 +185,7 @@ void GlitchHunt::Begin() {
     skipped_budget = 0;
     compared.clear();
     text.clear();
-    Line(fmt::format("# jadyx glitch hunt v20, capture {}, {} frames", captures, frames_left));
+    Line(fmt::format("# jadyx glitch hunt v23, capture {}, {} frames", captures, frames_left));
     Line("# D=draw C=dispatch B=binding M=host differs from guest H=GPU-written bytes "
          "X=transform feedback buffer T=GPU words (r=so counters, args, count, ring=ExecuteIndirect records) P=what a draw rasterized W=CPU write over GPU-written buffer bytes O=buffer download over a CPU write not gathered yet S=sampled texture G=depth/stencil state K=clear V=render target after a pass A=indirect draw arguments D=host bytes in the .bin (Y=guest bytes) "
          "F=frame end R=compare totals");
@@ -288,11 +290,12 @@ u64 GlitchHunt::AppendBin(const u8* data, u64 size) {
     return at;
 }
 
-std::optional<u64> GlitchHunt::Reserve(u64 size) {
+std::optional<u64> GlitchHunt::Reserve(u64 size, bool probe) {
     const u64 aligned = (size + 15) & ~u64{15};
     if (!current.ref.buffer) {
         current.ref = staging.Request(FRAME_BUDGET, MemoryUsage::Download, true);
         current.used = 0;
+        current.probe_used = 0;
         if (!current.ref.buffer || current.ref.mapped_span.size() < FRAME_BUDGET) {
             if (current.ref.buffer) {
                 staging.FreeDeferred(current.ref);
@@ -302,7 +305,19 @@ std::optional<u64> GlitchHunt::Reserve(u64 size) {
             return std::nullopt;
         }
     }
-    if (current.used + aligned > FRAME_BUDGET) {
+    // Draw probes are tiny and say which draw covered the screen, so the tail of the budget is
+    // theirs alone: buffer compares and dumps used to eat it before the main pass was reached.
+    if (probe) {
+        if (current.probe_used + aligned > PROBE_RESERVE) {
+            ++skipped_budget;
+            return std::nullopt;
+        }
+        const u64 at = FRAME_BUDGET - PROBE_RESERVE + current.probe_used;
+        current.probe_used += aligned;
+        current.tick = scheduler.CurrentTick();
+        return at;
+    }
+    if (current.used + aligned > FRAME_BUDGET - PROBE_RESERVE) {
         ++skipped_budget;
         return std::nullopt;
     }

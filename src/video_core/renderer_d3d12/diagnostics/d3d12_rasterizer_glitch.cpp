@@ -56,6 +56,12 @@ constexpr u64 INSPECT_CAP = 64ULL << 10;
 /// v13 draw dumps: streamed uniforms up to this size, storage ranges cut at this size.
 constexpr u32 DRAW_DUMP_UNIFORM_CAP = 4096;
 constexpr u64 DRAW_DUMP_STORAGE_CAP = 16ULL << 10;
+/// v21 skinning dumps: transform feedback passes in the first frames get their vertex streams,
+/// whole uniform buffers up to what the shader reads, and the stream output, so the skinning
+/// can be replayed off the console.
+constexpr u32 SKIN_DUMP_FRAMES = 4;
+constexpr u64 SKIN_VERTEX_CAP = 1ULL << 20;
+constexpr u64 SKIN_UNIFORM_CAP = 64ULL << 10;
 /// v13 spent the dump budget on draws only; v17 dumps the culling dispatch's lists again to find
 /// what the guest's CPU-written instance list changes on alternate frames.
 constexpr bool DRAW_DUMPS_ONLY = false;
@@ -184,6 +190,7 @@ void RasterizerD3D12::GlitchDraw(const GlitchNote& note) {
         }
         GlitchTextures(frame, call);
         if (regs.transform_feedback_enabled != 0 && note.pipeline) {
+            GlitchSkinDump(frame, call);
             GlitchTransformFeedback(frame, call,
                                     *static_cast<const GraphicsPipeline*>(note.pipeline));
         }
@@ -252,6 +259,14 @@ void RasterizerD3D12::GlitchTransformFeedback(u32 frame, u32 call,
         glitch_hunt.Inspect(call, fmt::format("xfb{}", index), binding.buffer->Handle(),
                             host_offset, std::min<u64>(binding.size, INSPECT_CAP),
                             control.stride, fmt::format("gva={:x} mode={}", buffer.Address(), mode));
+        // v21: the skinned output itself, to diff against a replay of the pass.
+        if (frame < SKIN_DUMP_FRAMES) {
+            glitch_hunt.Dump(call, fmt::format("xfb{}", index), binding.buffer->Handle(),
+                             host_offset, std::min<u64>(binding.size, INSPECT_CAP),
+                             D3D12_RESOURCE_STATE_GENERIC_READ,
+                             fmt::format("ph=post gva={:x} stride={} mode={}", buffer.Address(),
+                                         control.stride, mode));
+        }
     }
     if (native) {
         // Filled sizes after this pass: bytes written past each binding, appended across passes.
@@ -269,6 +284,131 @@ void RasterizerD3D12::GlitchTransformFeedback(u32 frame, u32 call,
                                      stream_output.CopyCounters(scheduler.CommandList(), dst,
                                                                 offset);
                                  });
+    }
+}
+
+void RasterizerD3D12::GlitchSkinDump(u32 frame, u32 call) {
+    const VideoCommon::BufferCacheChannelInfo* const channel = buffer_cache.DiagChannel();
+    if (!channel || frame >= SKIN_DUMP_FRAMES) {
+        return;
+    }
+    const auto& regs = maxwell3d->regs;
+    // How the vertex shader's inputs are decoded: bone indices and weights among them.
+    std::string attribs;
+    for (u32 index = 0; index < regs.vertex_attrib_format.size(); ++index) {
+        const auto& attrib = regs.vertex_attrib_format[index];
+        if (attrib.hex == 0) {
+            continue;
+        }
+        attribs += fmt::format(" {}:b{}:o{}:s{}:t{}:c{}:r{}", index, attrib.buffer.Value(),
+                               attrib.offset.Value(), static_cast<u32>(attrib.size.Value()),
+                               static_cast<u32>(attrib.type.Value()), attrib.constant.Value(),
+                               attrib.bgra.Value());
+    }
+    glitch_hunt.Line(fmt::format("VA f={} n={}{}", frame, call, attribs));
+    std::vector<u8> guest;
+    const auto save_guest = [&](const std::string& role, DAddr addr, u64 size,
+                                const std::string& extra) {
+        guest.resize(size);
+        device_memory.ReadBlockUnsafe(addr, guest.data(), size);
+        const u64 hash = Hash(guest);
+        if (glitch_hunt.FirstInCapture(hash ^ (addr * 0x9E3779B97F4A7C15ULL) ^ size)) {
+            glitch_hunt.DumpGuest(call, role, guest, extra);
+        } else {
+            glitch_hunt.Line(fmt::format("YS f={} n={} r={} a={:x} size={} h={:016x} same", frame,
+                                         call, role, addr, size, hash));
+        }
+    };
+    // Whole vertex streams (a points pass reads all of them).
+    const u32 enabled = buffer_cache.DiagVertexMask();
+    for (u32 index = 0; index < VideoCommon::NUM_VERTEX_BUFFERS; ++index) {
+        const VideoCommon::Binding& vb = channel->vertex_buffers[index];
+        if (((enabled >> index) & 1) == 0 || vb.device_addr == 0 || vb.size == 0) {
+            continue;
+        }
+        save_guest(fmt::format("skin_vb{}", index), vb.device_addr,
+                   std::min<u64>(vb.size, SKIN_VERTEX_CAP),
+                   fmt::format("ph=pre a={:x} bsize={} stride={}", vb.device_addr, vb.size,
+                               regs.vertex_streams[index].stride));
+        // A stream held as GPU-written skips its upload: which pages, their last GPU writer, and
+        // the host bytes the shader reads (v22).
+        const auto [gpu_bytes, gpu_origin] = buffer_cache.DiagGpuBytes(vb.device_addr, vb.size);
+        if (gpu_bytes == 0) {
+            continue;
+        }
+        std::string pages;
+        const DAddr end = vb.device_addr + vb.size;
+        u32 count = 0;
+        for (DAddr page = vb.device_addr & ~DAddr{0xfff}; page < end && count < 64;
+             page += 0x1000, ++count) {
+            const DAddr lower = std::max<DAddr>(page, vb.device_addr);
+            const u64 length = std::min<DAddr>(page + 0x1000, end) - lower;
+            const auto [page_bytes, page_origin] = buffer_cache.DiagGpuBytes(lower, length);
+            pages += fmt::format(" {:x}:g{}:c{}:o{}.{}", page, page_bytes,
+                                 buffer_cache.IsRegionCpuModified(lower, length) ? 1 : 0,
+                                 page_origin & 0xff, page_origin >> 8);
+        }
+        glitch_hunt.Line(fmt::format("VP f={} n={} r=vb{} a={:x} size={} gpu_bytes={} origin={}.{}{}",
+                                     frame, call, index, vb.device_addr, vb.size, gpu_bytes,
+                                     gpu_origin & 0xff, gpu_origin >> 8, pages));
+        Buffer* const buffer = buffer_cache.DiagBuffer(vb.buffer_id);
+        if (!buffer || !buffer->Handle() || glitch_hunt.DumpRoom() == 0 ||
+            buffer->State() == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+            continue;
+        }
+        const u64 offset = buffer->Offset(vb.device_addr);
+        const u64 room = buffer->SizeBytes() > offset ? buffer->SizeBytes() - offset : 0;
+        const u64 host_size = std::min<u64>({vb.size, SKIN_VERTEX_CAP, room}) & ~u64{3};
+        if (host_size == 0) {
+            continue;
+        }
+        buffer->Transition(D3D12_RESOURCE_STATE_GENERIC_READ, false);
+        glitch_hunt.Dump(call, fmt::format("skin_vb{}_host", index), buffer->Handle(), offset,
+                         host_size, D3D12_RESOURCE_STATE_GENERIC_READ,
+                         fmt::format("ph=pre a={:x} bsize={} buf={:x}+{:x}", vb.device_addr,
+                                     vb.size, buffer->Id(), offset));
+    }
+    // Uniform buffers up to what the shader reads, past the guest's bound size when it reads
+    // more (a dynamically indexed bone palette): the guest bytes there, and the host bytes a root
+    // CBV on the cached buffer would read.
+    for (size_t stage = 0; stage < VideoCommon::NUM_STAGES; ++stage) {
+        const u32 mask = channel->enabled_uniform_buffer_masks[stage];
+        for (u32 index = 0; index < VideoCommon::NUM_GRAPHICS_UNIFORM_BUFFERS; ++index) {
+            if (((mask >> index) & 1) == 0) {
+                continue;
+            }
+            const VideoCommon::Binding& cb = channel->uniform_buffers[stage][index];
+            const u32 shader_size =
+                channel->uniform_buffer_sizes ? (*channel->uniform_buffer_sizes)[stage][index] : 0;
+            const u64 size =
+                std::min<u64>(std::max<u64>(shader_size, cb.size), SKIN_UNIFORM_CAP) & ~u64{3};
+            if (cb.device_addr == 0 || size == 0) {
+                continue;
+            }
+            const std::string role = fmt::format("skin_cb{}.{}", stage, index);
+            const std::string extra = fmt::format("ph=pre a={:x} bsize={} ssize={}", cb.device_addr,
+                                                  cb.size, shader_size);
+            save_guest(role, cb.device_addr, size, extra);
+            Buffer* const buffer = buffer_cache.DiagBuffer(cb.buffer_id);
+            if (!buffer || !buffer->Handle() || glitch_hunt.DumpRoom() == 0 ||
+                buffer->State() == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+                continue;
+            }
+            const u64 offset = buffer->Offset(cb.device_addr);
+            const u64 room = buffer->SizeBytes() > offset ? buffer->SizeBytes() - offset : 0;
+            const u64 host_size = std::min<u64>(size, room) & ~u64{3};
+            if (host_size == 0) {
+                continue;
+            }
+            buffer->Transition(D3D12_RESOURCE_STATE_GENERIC_READ, false);
+            glitch_hunt.Dump(call, role + "_host", buffer->Handle(), offset, host_size,
+                             D3D12_RESOURCE_STATE_GENERIC_READ,
+                             fmt::format("{} buf={:x}+{:x} bufsize={} gm={}", extra, buffer->Id(),
+                                         offset, buffer->SizeBytes(),
+                                         buffer_cache.IsRegionGpuModified(cb.device_addr, cb.size)
+                                             ? 1
+                                             : 0));
+        }
     }
 }
 
@@ -590,6 +730,24 @@ void RasterizerD3D12::GlitchBindings(u32 frame, u32 call, const GlitchNote* note
                          fmt::format("isz={} restart={}", index_size,
                                      regs.primitive_restart.enabled),
                          true, false);
+            // GPU-marked indices skip the upload: save what the host holds so its hash can be
+            // checked against the guest one on the B line above.
+            // Same length as the guest read so the two hashes compare directly.
+            const u64 guest_len =
+                std::min<u64>({length, BINDING_CAP, ib.size > begin ? ib.size - begin : 0});
+            const u64 host_len = (guest_len & 3) == 0 ? guest_len : 0;
+            Buffer* const ib_buffer = buffer_cache.DiagBuffer(ib.buffer_id);
+            if (host_len != 0 && ib.device_addr != 0 &&
+                buffer_cache.IsRegionGpuModified(ib.device_addr + begin, host_len) && ib_buffer &&
+                ib_buffer->Handle() && glitch_hunt.DumpRoom() != 0 &&
+                ib_buffer->State() != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+                const u64 ib_offset = ib_buffer->Offset(ib.device_addr + begin);
+                ib_buffer->Transition(D3D12_RESOURCE_STATE_GENERIC_READ, false);
+                glitch_hunt.Dump(call, "ib_host", ib_buffer->Handle(), ib_offset, host_len,
+                                 D3D12_RESOURCE_STATE_GENERIC_READ,
+                                 fmt::format("ph=pre a={:x} at={} buf={:x}+{:x}", ib.device_addr,
+                                             begin, ib_buffer->Id(), ib_offset));
+            }
         } else {
             binding_line("ib", ib, 0, UNKNOWN_RANGE, fmt::format("isz={}", index_size), true,
                          false);
@@ -873,9 +1031,6 @@ void RasterizerD3D12::GlitchPassEnd(std::string_view why) {
 
 void RasterizerD3D12::DiagnosticsFrameEnd(double interval_ms) {
     scheduler.RefreshDiagToggles();
-    if (VideoCommon::ReadbackTrace::FrameWait()) [[unlikely]] {
-        scheduler.Finish();
-    }
     const u64 lost_total = LostVertexSlotDraws();
     const u64 lost = lost_total - glitch_lost_vertex_draws;
     glitch_lost_vertex_draws = lost_total;

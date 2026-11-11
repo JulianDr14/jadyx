@@ -8,6 +8,7 @@
 #include "common/assert.h"
 #include "common/logging.h"
 #include "core/core.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
@@ -41,6 +42,9 @@ void KeplerCompute::ConsumeSinkImpl(Core::System& system) {
 }
 
 void KeplerCompute::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
+    if (method >= Regs::NUM_REGS) [[unlikely]] {
+        VideoCommon::GeoHunt::CommandGarbage("kepler-compute", method, method_argument);
+    }
     ASSERT_MSG(method < Regs::NUM_REGS, "Invalid KeplerCompute register, increase the size of the Regs structure");
 
     regs.reg_array[method] = method_argument;

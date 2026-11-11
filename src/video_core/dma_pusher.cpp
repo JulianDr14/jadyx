@@ -11,6 +11,7 @@
 #include "video_core/dma_pusher.h"
 #include "video_core/engines/const_buffer_run.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_written_pages.h"
 #include "video_core/guest_memory.h"
@@ -107,6 +108,11 @@ bool DmaPusher::Step() {
             macro_arguments_only = macro_payload && dma_state.non_incrementing &&
                                    dma_state.method_count >= header.size;
         }
+        if (VideoCommon::GeoHunt::Enabled()) [[unlikely]] {
+            VideoCommon::GeoHunt::NoteCommandSegment(
+                dma_state.dma_get, memory_manager.GpuToCpuAddress(dma_state.dma_get).value_or(0),
+                header.size * sizeof(u32));
+        }
         bool use_safe = Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe();
         if (use_safe && (filter || macro_arguments_only)) {
             use_safe = !macro_arguments_only && gpu_written();
@@ -117,9 +123,15 @@ bool DmaPusher::Step() {
         if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             ProcessCommands(headers);
+            if (VideoCommon::GeoHunt::Enabled() && VideoCommon::GeoHunt::TakeGarbageDump()) [[unlikely]] {
+                VideoCommon::GeoHunt::DumpCommandWords(reinterpret_cast<const u32*>(headers.data()), headers.size());
+            }
         } else {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             ProcessCommands(headers);
+            if (VideoCommon::GeoHunt::Enabled() && VideoCommon::GeoHunt::TakeGarbageDump()) [[unlikely]] {
+                VideoCommon::GeoHunt::DumpCommandWords(reinterpret_cast<const u32*>(headers.data()), headers.size());
+            }
         }
     }
 

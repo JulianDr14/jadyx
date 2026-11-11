@@ -140,15 +140,4 @@ inline std::atomic_bool precise_cpu_writes{true};
 inline void SetPreciseCpuWrites(bool enabled) { precise_cpu_writes.store(enabled, std::memory_order_relaxed); }
 inline bool PreciseCpuWrites() { return precise_cpu_writes.load(std::memory_order_relaxed); }
 
-/// Diagnostic ("compute_fresh=1", also on the glitch hunt page): every dispatch uploads its
-/// read-only inputs of up to 256 KiB from guest memory, modified or not. Slow.
-inline std::atomic_bool compute_fresh{};
-inline void SetComputeFresh(bool enabled) { compute_fresh.store(enabled, std::memory_order_relaxed); }
-inline bool ComputeFresh() { return compute_fresh.load(std::memory_order_relaxed); }
-/// Diagnostic ("frame_wait=1", also on the glitch hunt page): the GPU thread waits for the GPU
-/// to finish each presented frame, to tell a CPU/GPU race from a wrong result at full speed.
-inline std::atomic_bool frame_wait{};
-inline void SetFrameWait(bool enabled) { frame_wait.store(enabled, std::memory_order_relaxed); }
-inline bool FrameWait() { return frame_wait.load(std::memory_order_relaxed); }
-
 } // namespace VideoCommon::ReadbackTrace

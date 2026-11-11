@@ -9,6 +9,7 @@
 #include <utility>
 #include "common/assert.h"
 #include "common/logging.h"
+#include "video_core/geometry_hunt.h"
 #include "video_core/engines/fermi_2d.h"
 #include "video_core/engines/sw_blitter/blitter.h"
 #include "video_core/memory_manager.h"
@@ -45,6 +46,9 @@ void Fermi2D::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
 }
 
 void Fermi2D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
+    if (method >= Regs::NUM_REGS) [[unlikely]] {
+        VideoCommon::GeoHunt::CommandGarbage("fermi2d", method, method_argument);
+    }
     ASSERT_MSG(method < Regs::NUM_REGS, "Invalid Fermi2D register, increase the size of the Regs structure");
     regs.reg_array[method] = method_argument;
     if (method == FERMI2D_REG_INDEX(operation)) {

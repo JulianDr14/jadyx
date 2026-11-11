@@ -85,11 +85,6 @@ void SetPipelinePrewarm(bool enabled);
 /// "cs_split=").
 void SetComputeWorkgroupSplit(u32 factor);
 
-/// Diagnostic ("warp_per_lane=1", also on the glitch hunt page, live): compute shaders whose only
-/// cross-lane work is warp-aggregated atomics (Shader::Optimization::WarpPerLanePass) take a
-/// variant where every lane is its own leader. The variants are built on first use.
-void SetComputeWarpPerLane(bool enabled);
-
 /// Guest shuffles read their source lanes through indices the whole wave agrees on (on by default,
 /// "shuffle_wave_uniform=0" turns it off): the Series driver lowers WaveReadLaneAt as if its index
 /// were uniform, so a per-lane source reads the first lane's on every lane. Set before boot.
@@ -224,16 +219,14 @@ private:
     std::unique_ptr<ComputePipeline> CreateComputePipeline(const ComputePipelineCacheKey& key,
                                                            const VideoCommon::ShaderInfo* shader,
                                                            bool emulate_reduction = false,
-                                                           u32 workgroup_split = 1,
-                                                           bool warp_per_lane = false);
+                                                           u32 workgroup_split = 1);
 
     std::unique_ptr<ComputePipeline> CreateComputePipeline(ShaderPools& pools,
                                                            const ComputePipelineCacheKey& key,
                                                            Shader::Environment& env,
                                                            bool build_in_parallel,
                                                            bool emulate_reduction = false,
-                                                           u32 workgroup_split = 1,
-                                                           bool warp_per_lane = false);
+                                                           u32 workgroup_split = 1);
 
     /// Whether a stage of the key uses a shader in reduction_shaders.
     [[nodiscard]] bool UsesReductionShader(const std::array<u64, 6>& unique_hashes) const;
@@ -266,14 +259,6 @@ private:
     /// Keys WorkgroupSplitPass rejected: the pass leaves them as written, so their launches use
     /// the plain pipeline, which the disk cache has already built. GPU thread only.
     std::unordered_set<u64> compute_not_split;
-    /// SetComputeWarpPerLane variants of compute_cache's pipelines, built on demand (not on disk).
-    ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
-        compute_per_lane_cache;
-    /// Per-lane variants of compute_split_cache's pipelines.
-    ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>>
-        compute_per_lane_split_cache;
-    /// Keys WarpPerLanePass left unchanged: their launches use the plain pipeline. GPU thread.
-    std::unordered_set<u64> compute_not_per_lane;
     /// Shaders (unique hashes) that sample with an emulated MIN/MAX reduction. GPU thread only.
     std::unordered_set<u64> reduction_shaders;
     /// Fragment shaders that sample with a mirror-once-to-border sampler. GPU thread only.
