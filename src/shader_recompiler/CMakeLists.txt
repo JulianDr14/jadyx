@@ -187,7 +187,6 @@ add_library(shader_recompiler STATIC
     ir_opt/position_pass.cpp
     ir_opt/vertex_fetch_pass.cpp
     ir_opt/quad_shuffle_pass.cpp
-    ir_opt/warp_per_lane_pass.cpp
     ir_opt/rescaling_pass.cpp
     ir_opt/ssa_rewrite_pass.cpp
     ir_opt/texture_pass.cpp

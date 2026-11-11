@@ -358,17 +358,15 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
                                                std::memory_order_relaxed);
     D3D12::SetDiagUavSync(config.uav_sync);
     D3D12::SetGlitchFrames(config.glitch_frames);
-    D3D12::SetIndirectSync(config.indirect_sync);
-    D3D12::SetIndirectOnCpu(config.indirect_cpu);
     VideoCommon::ReadbackTrace::SetPreciseCpuWrites(config.precise_writes);
-    VideoCommon::ReadbackTrace::SetComputeFresh(config.compute_fresh);
-    VideoCommon::ReadbackTrace::SetFrameWait(config.frame_wait);
-    D3D12::SetComputeWarpPerLane(config.warp_per_lane);
     D3D12::SetShuffleWaveUniform(config.shuffle_wave_uniform);
     D3D12::SetWaveSelfTest(config.glitch_hunt_menu);
-    VideoCommon::GeoHunt::Configure(config.geo_hunt, config.geo_hunt_check_kb, config.geo_hunt_upload_kb,
-                                    config.geo_hunt_heal);
+    VideoCommon::GeoHunt::Configure(config.geo_hunt, config.geo_hunt_check_kb, config.geo_hunt_upload_kb);
+    if (config.geo_hunt) {
+        VideoCommon::GeoHunt::ConfigureAudit(0);
+    }
     VideoCommon::GeoHunt::ConfigureOob(config.geo_oob, config.geo_oob && config.geo_oob_fix);
+    VideoCommon::GeoHunt::SetVbResync(config.vb_resync);
     VideoCommon::SetMipRenderTargets(config.mip_render_targets);
     VideoCommon::SetRenderTargetInheritance(config.render_target_inheritance);
     VideoCommon::SetReclaimSupersededImages(config.reclaim_superseded_images);
@@ -458,13 +456,7 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
 }
 
 GlitchToggles GlitchTogglesOf(const BootConfig& config) {
-    return {.warp_per_lane = config.warp_per_lane,
-            .a2c_shader = config.a2c_shader,
-            .frame_wait = config.frame_wait,
-            .compute_fresh = config.compute_fresh,
-            .indirect_sync = config.indirect_sync,
-            .indirect_cpu = config.indirect_cpu,
-            .precise_writes = config.precise_writes};
+    return {.a2c_shader = config.a2c_shader, .precise_writes = config.precise_writes};
 }
 
 void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
@@ -473,21 +465,11 @@ void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
             WriteDiag(fmt::format("menu: glitch A/B {} {}", name, is ? "on" : "off"));
         }
     };
-    log("warp_per_lane", before.warp_per_lane, now.warp_per_lane);
     log("a2c_shader", before.a2c_shader, now.a2c_shader);
-    log("frame_wait", before.frame_wait, now.frame_wait);
-    log("compute_fresh", before.compute_fresh, now.compute_fresh);
-    log("indirect_sync", before.indirect_sync, now.indirect_sync);
-    log("indirect_cpu", before.indirect_cpu, now.indirect_cpu);
     log("precise_writes", before.precise_writes, now.precise_writes);
-    // Each is read at use: dispatches and draws after this take the new value, and pipelines
-    // whose key depends on it (warp_per_lane, a2c_shader) are built on first use.
-    D3D12::SetComputeWarpPerLane(now.warp_per_lane);
+    // Each is read at use: draws after this take the new value, and pipelines whose key depends
+    // on it (a2c_shader) are built on first use.
     D3D12::SetShaderAlphaToCoverage(now.a2c_shader);
-    VideoCommon::ReadbackTrace::SetFrameWait(now.frame_wait);
-    VideoCommon::ReadbackTrace::SetComputeFresh(now.compute_fresh);
-    D3D12::SetIndirectSync(now.indirect_sync);
-    D3D12::SetIndirectOnCpu(now.indirect_cpu);
     VideoCommon::ReadbackTrace::SetPreciseCpuWrites(now.precise_writes);
 }
 

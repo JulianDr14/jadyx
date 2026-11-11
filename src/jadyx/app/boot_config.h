@@ -172,39 +172,25 @@ struct BootConfig {
     /// Frames one glitch capture takes ("glitch_frames=N", 1-240; 0 = 20).
     u32 glitch_frames{};
     /// Geometry hunt ("geo_hunt=1"): re-hashes clean buffer pages at bind time and logs the
-    /// guest writes the tracker missed (LocalState/jadyx/log/geometry). "geo_hunt_heal=1" starts
-    /// with healing on; "geo_hunt_check_kb=N" / "geo_hunt_upload_kb=N" set the per-frame budgets
-    /// (0 = 4096 / 32768).
+    /// guest writes the tracker missed (LocalState/jadyx/log/geometry). "geo_hunt_check_kb=N" /
+    /// "geo_hunt_upload_kb=N" set the per-frame budgets (0 = 4096 / 32768).
     bool geo_hunt{};
     /// "pso_menu=1": the quick menu row that changes pso_boost at run time.
     bool pso_menu{};
-    bool geo_hunt_heal{};
     /// Out-of-range index check and fix (on by default): "geo_oob=0" turns both off,
     /// "geo_oob_fix=0" keeps the check and its log but draws the triangles as they are.
     bool geo_oob{true};
     bool geo_oob_fix{true};
+    /// Vertex resync ("vb_resync=1"): see VideoCommon::GeoHunt::VbResync.
+    bool vb_resync{};
     u32 geo_hunt_check_kb{};
     u32 geo_hunt_upload_kb{};
-    /// Diagnostic ("indirect_sync=1", also on the glitch hunt page): GPU-indirect draws wait for
-    /// every earlier write before their arguments are copied and again before they run.
-    bool indirect_sync{};
-    /// Diagnostic ("indirect_cpu=1", also on the glitch hunt page): GPU-indirect draws read their
-    /// arguments on the CPU and record direct draws, as emulated topologies do. Slow.
-    bool indirect_cpu{};
     /// On by default ("precise_writes=0" or the glitch hunt page turns it off): CPU writes into a
     /// GPU-written page but over none of its GPU bytes apply at once instead of being gathered.
     bool precise_writes{true};
-    /// Diagnostic ("compute_fresh=1", also on the glitch hunt page): dispatches upload their
-    /// read-only inputs from guest memory every time.
-    bool compute_fresh{};
-    /// Diagnostic ("warp_per_lane=1", also on the glitch hunt page): compute shaders whose only
-    /// cross-lane work is warp-aggregated atomics run them once per lane.
-    bool warp_per_lane{};
     /// Guest shuffles read their source lanes through indices the wave agrees on (on unless
     /// "shuffle_wave_uniform=0"): the Series driver reads the first lane's source on every lane.
     bool shuffle_wave_uniform{true};
-    /// Diagnostic ("frame_wait=1", also on the glitch hunt page): wait for the GPU every frame.
-    bool frame_wait{};
     /// Fine per-draw D3D12 CPU timers ("gpu_profile=1"). Off because clock reads are measurable.
     bool gpu_profile{};
     /// Writes every translated guest shader to the dump folder ("dump_guest_shaders=1").

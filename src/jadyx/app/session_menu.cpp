@@ -208,10 +208,11 @@ void SessionMenu::Open() {
                                   program_id != 0 && !mii_editor, game_motion.mode, game_motion.view,
                                   config.glitch_hunt_menu, glitch_toggles,
                                   config.geo_hunt && VideoCommon::GeoHunt::Enabled(),
-                                  VideoCommon::GeoHunt::Healing(), config.pso_menu,
+                                  config.pso_menu,
                                   D3D12::GetPipelineBuildBoost(), options.motion_stick, options.motion_shake,
                                   options.rumble, input.GameRumbleSettings(),
-                                  VideoCommon::GeoHunt::OobFix()},
+                                  VideoCommon::GeoHunt::OobFix(),
+                                  VideoCommon::GeoHunt::VbResync()},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
     const bool from_notice = notice_shown;
@@ -667,14 +668,15 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         ApplyGlitchToggles(glitch_toggles, menu->Settings().glitch);
         glitch_toggles = menu->Settings().glitch;
     }
+    if (result == GameMenuResult::GeoVbResyncChanged) {
+        const bool on = menu->Settings().geo_vb_resync;
+        VideoCommon::GeoHunt::SetVbResync(on);
+        WriteDiag(std::string{"menu: vertex resync of old feedback "} + (on ? "on" : "off"));
+    }
     if (result == GameMenuResult::GeoOobFixChanged) {
         VideoCommon::GeoHunt::SetOobFix(menu->Settings().geo_oob_fix);
         WriteDiag(std::string{"menu: out-of-range triangle fix "} +
                   (menu->Settings().geo_oob_fix ? "on" : "off"));
-    }
-    if (result == GameMenuResult::GeoHealChanged) {
-        VideoCommon::GeoHunt::SetHeal(menu->Settings().geo_heal);
-        WriteDiag(std::string{"menu: geometry hunt heal "} + (menu->Settings().geo_heal ? "on" : "off"));
     }
     if (result == GameMenuResult::PsoBoostChanged) {
         D3D12::SetPipelineBuildPriority(D3D12::GetPipelineBuildBase(), menu->Settings().pso_boost);

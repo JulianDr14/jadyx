@@ -93,12 +93,7 @@ private:
 
 /// The A/B switches of the geometry glitch hunt page, each a live renderer toggle.
 struct GlitchToggles {
-    bool warp_per_lane{};  ///< warp-aggregated compute atomics run one per lane
     bool a2c_shader{true}; ///< single-sample alpha-to-coverage dithered in the shader
-    bool frame_wait{};     ///< wait for the GPU every frame
-    bool compute_fresh{};  ///< dispatches upload their read-only inputs every time
-    bool indirect_sync{};  ///< GPU-indirect draws wait for every earlier write
-    bool indirect_cpu{};   ///< GPU-indirect draws read their arguments on the CPU
     bool precise_writes{true}; ///< CPU writes beside GPU bytes apply at once
 };
 
@@ -139,10 +134,9 @@ struct GameMenuSettings {
     /// Opt-in diagnostic package ("glitch_hunt_menu=1"): the geometry glitch hunt page.
     bool glitch_hunt{};
     GlitchToggles glitch{};
-    /// Opt-in diagnostic package ("geo_hunt=1"): missed-write hunt for deformed meshes. Rows to
-    /// mark the moment a deformation shows and to heal the misses it finds.
+    /// Opt-in diagnostic package ("geo_hunt=1"): missed-write hunt for deformed meshes. A row
+    /// marks the moment a deformation shows.
     bool geo_hunt{};
-    bool geo_heal{};
     /// Opt-in diagnostic package ("pso_menu=1"): the priority a pipeline build gets while the
     /// game waits for it (D3D12::SetPipelineBuildPriority's boost), 0 off, 2 above normal,
     /// 3 highest; changed at run time to compare in one session.
@@ -158,6 +152,9 @@ struct GameMenuSettings {
     /// Geometry hunt package: drop the triangles whose indices point past the vertex buffers
     /// (they would stretch to the model origin). Shown with the geo_hunt rows.
     bool geo_oob_fix{true};
+    /// Vertex resync: vertex bytes an older frame's transform feedback left are uploaded again
+    /// from guest memory.
+    bool geo_vb_resync{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -177,10 +174,10 @@ enum class GameMenuResult : std::uint8_t {
     MemoryEdit,
     /// The right stick's rows: Settings() holds the new values (the game's own or Settings').
     RightStickChanged,
-    /// Geometry hunt: mark the moment in its log, or Settings().geo_heal changed.
+    /// Geometry hunt: mark the moment in its log, or one of its fixes changed.
     GeoMark,
-    GeoHealChanged,
     GeoOobFixChanged,
+    GeoVbResyncChanged,
     /// Settings().pso_boost changed.
     PsoBoostChanged,
     /// The room chat's page.
@@ -218,9 +215,8 @@ public:
         GraphicsMenu, GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxExactGpuReads, GfxTextureMemory,
         GfxGpuAccuracy, GfxConsoleMode, Amiibo, MemoryEdit,
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
-        GlitchPage, GlitchCapture, GlitchWarpPerLane, GlitchA2cShader, GlitchFrameWait,
-        GlitchComputeFresh, GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites,
-        GeoMark, GeoHeal, GeoOobFix, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
+        GlitchPage, GlitchCapture, GlitchA2cShader, GlitchPreciseWrites,
+        GeoMark, GeoOobFix, GeoVbResync, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
         GyroStick, GyroShake, Rumble, RumbleStrength,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
@@ -238,11 +234,10 @@ public:
         if (settings.material_capture) quick.push_back(CaptureGraphics);
         if (settings.performance_capture) quick.push_back(CapturePerformance);
         if (settings.glitch_hunt) quick.push_back(GlitchPage);
-        if (settings.geo_hunt) quick.insert(quick.end(), {GeoMark, GeoHeal, GeoOobFix});
+        if (settings.geo_hunt) quick.insert(quick.end(), {GeoMark, GeoOobFix, GeoVbResync});
         if (settings.pso_menu) quick.push_back(PsoBoost);
         quick.push_back(Library);
-        glitch = {GlitchCapture,      GlitchA2cShader,    GlitchFrameWait,     GlitchComputeFresh,
-                  GlitchIndirectSync, GlitchIndirectCpu, GlitchPreciseWrites, GlitchWarpPerLane};
+        glitch = {GlitchCapture, GlitchA2cShader, GlitchPreciseWrites};
         controller = {Style, FaceButtons, Deadzone, RStickInvertX, RStickInvertY, RStickSensitivity,
                       RStickMouse, RStickMouseSensitivity, Rumble, RumbleStrength};
         if (settings.right_stick_per_game)
@@ -411,12 +406,13 @@ private:
                     geo_marks != 0 ? Tr(Text::MenuGeoMarked) + L" " + std::to_wstring(geo_marks)
                                    : Tr(Text::MenuGeoMarkDetail),
                     UiIcon::Archive};
-        case GeoHeal:
-            return {Tr(Text::MenuGeoHeal), Tr(settings.geo_heal ? Text::Yes : Text::No), Choice,
-                    Tr(Text::MenuGeoHealDetail), UiIcon::Settings};
         case GeoOobFix:
             return {Tr(Text::MenuGeoOobFix), Tr(settings.geo_oob_fix ? Text::Yes : Text::No),
                     Choice, Tr(Text::MenuGeoOobFixDetail), UiIcon::Settings};
+        case GeoVbResync:
+            return {Tr(Text::MenuGeoVbResync),
+                    Tr(settings.geo_vb_resync ? Text::MenuGeoVbResyncOldFeedback : Text::No),
+                    Choice, Tr(Text::MenuGeoVbResyncDetail), UiIcon::Settings};
         case PsoBoost:
             return {Tr(Text::MenuPsoBoost),
                     Tr(settings.pso_boost == 0   ? Text::No
@@ -425,25 +421,10 @@ private:
                     Choice, Tr(Text::MenuPsoBoostDetail), UiIcon::Settings};
         case GlitchCapture:
             return {Tr(Text::MenuCaptureGlitches), {}, Action, Tr(Text::MenuCaptureGlitchesDetail)};
-        case GlitchWarpPerLane:
-            // Renderer switch name, the same in every language: the log and boot.cfg use it.
-            return {L"warp_per_lane", Tr(settings.glitch.warp_per_lane ? Text::Yes : Text::No), Choice,
-                    L"Compute atomics shared by a warp run once per lane"};
         case GlitchA2cShader:
+            // Renderer switch names, the same in every language: the log and boot.cfg use them.
             return {L"a2c_shader", Tr(settings.glitch.a2c_shader ? Text::Yes : Text::No), Choice,
                     L"Alpha-to-coverage without MSAA dithered in the shader (off: 0.5 cut)"};
-        case GlitchFrameWait:
-            return {L"frame_wait", Tr(settings.glitch.frame_wait ? Text::Yes : Text::No), Choice,
-                    L"Wait for the GPU every frame"};
-        case GlitchComputeFresh:
-            return {L"compute_fresh", Tr(settings.glitch.compute_fresh ? Text::Yes : Text::No),
-                    Choice, L"Dispatches upload their read-only inputs every time"};
-        case GlitchIndirectSync:
-            return {L"indirect_sync", Tr(settings.glitch.indirect_sync ? Text::Yes : Text::No),
-                    Choice, L"GPU-indirect draws wait for every earlier write"};
-        case GlitchIndirectCpu:
-            return {L"indirect_cpu", Tr(settings.glitch.indirect_cpu ? Text::Yes : Text::No),
-                    Choice, L"GPU-indirect draws read their arguments on the CPU (slow)"};
         case GlitchPreciseWrites:
             return {L"precise_writes", Tr(settings.glitch.precise_writes ? Text::Yes : Text::No),
                     Choice, L"CPU writes beside GPU-written bytes apply at once"};
@@ -728,23 +709,8 @@ private:
             return GameMenuResult::FullScreen;
         case GlitchCapture:
             return confirm ? GameMenuResult::CaptureGlitches : GameMenuResult::None;
-        case GlitchWarpPerLane:
-            settings.glitch.warp_per_lane = !settings.glitch.warp_per_lane;
-            return GameMenuResult::GlitchTogglesChanged;
         case GlitchA2cShader:
             settings.glitch.a2c_shader = !settings.glitch.a2c_shader;
-            return GameMenuResult::GlitchTogglesChanged;
-        case GlitchFrameWait:
-            settings.glitch.frame_wait = !settings.glitch.frame_wait;
-            return GameMenuResult::GlitchTogglesChanged;
-        case GlitchComputeFresh:
-            settings.glitch.compute_fresh = !settings.glitch.compute_fresh;
-            return GameMenuResult::GlitchTogglesChanged;
-        case GlitchIndirectSync:
-            settings.glitch.indirect_sync = !settings.glitch.indirect_sync;
-            return GameMenuResult::GlitchTogglesChanged;
-        case GlitchIndirectCpu:
-            settings.glitch.indirect_cpu = !settings.glitch.indirect_cpu;
             return GameMenuResult::GlitchTogglesChanged;
         case GlitchPreciseWrites:
             settings.glitch.precise_writes = !settings.glitch.precise_writes;
@@ -753,12 +719,12 @@ private:
             if (!confirm) return GameMenuResult::None;
             ++geo_marks;
             return GameMenuResult::GeoMark;
-        case GeoHeal:
-            settings.geo_heal = !settings.geo_heal;
-            return GameMenuResult::GeoHealChanged;
         case GeoOobFix:
             settings.geo_oob_fix = !settings.geo_oob_fix;
             return GameMenuResult::GeoOobFixChanged;
+        case GeoVbResync:
+            settings.geo_vb_resync = !settings.geo_vb_resync;
+            return GameMenuResult::GeoVbResyncChanged;
         case PsoBoost:
             // Steps through off, above normal, highest.
             settings.pso_boost = settings.pso_boost == 0 ? 2 : settings.pso_boost == 2 ? 3 : 0;
