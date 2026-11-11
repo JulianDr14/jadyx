@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/logging.h"
+#include "common/host_stalls.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread_cpu_time.h"
@@ -399,6 +400,17 @@ void PhysicalCore::LogBacktrace(KernelCore& kernel) {
 void PhysicalCore::Idle() {
     // Frame chain counters: an emulated core with no guest thread to run.
     VideoCore::Perf::ScopedTimer timer{VideoCore::Perf::Counter::GuestCoreIdleUs};
+    // Always on and per core, for the hitch report.
+    const auto idle_start = std::chrono::steady_clock::now();
+    SCOPE_EXIT {
+        if (m_core_index < Common::HostStalls::NUM_CORES) {
+            Common::HostStalls::core_idle_us[m_core_index].fetch_add(
+                static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                     std::chrono::steady_clock::now() - idle_start)
+                                     .count()),
+                std::memory_order_relaxed);
+        }
+    };
     switch (m_interrupt.Wait()) {
     case Common::WakeFlag::WaitResult::Spun:
         VideoCore::Perf::Add(VideoCore::Perf::Counter::GuestCoreWakesSpun, 1);

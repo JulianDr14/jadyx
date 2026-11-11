@@ -155,9 +155,10 @@ void RendererD3D12::DrawPerformanceOverlay(CommandStream* cmd,
         }
         // The latest hitch for ten seconds, by the short name of its likely cause (the log has
         // the numbers). Indexed by HitchCause.
-        static constexpr std::array<const char*, 11> HITCH_CAUSES{
+        static constexpr std::array<const char*, 14> HITCH_CAUSES{
             "PSO", "JIT", "DISCO", "LIMPIEZA", "RECURSOS", "TEXTURAS", "LECTURA GPU", "GPU",
-            "CPU JUEGO", "MEMORIA", "RENDER"};
+            "CPU JUEGO", "MEMORIA", "RENDER", "JUEGO: INTERCAMBIO", "JUEGO: ESPERA GPU",
+            "JUEGO: SERVICIO"};
         std::string hitch_line = "TIRON --";
         if (hitch.last_time != std::chrono::steady_clock::time_point{} &&
             now - hitch.last_time < std::chrono::seconds{10}) {

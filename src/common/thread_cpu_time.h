@@ -24,4 +24,38 @@ inline std::optional<u64> CurrentThreadCpuTimeNs() {
     return std::nullopt;
 #endif
 }
+
+/// A handle to the calling thread that other threads can pass to ThreadCycles. Null on failure.
+inline void* DuplicateCurrentThreadHandle() {
+#ifdef _WIN32
+    HANDLE handle{};
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &handle,
+                         THREAD_QUERY_LIMITED_INFORMATION, FALSE, 0)) {
+        return nullptr;
+    }
+    return handle;
+#else
+    return nullptr;
+#endif
+}
+
+inline void CloseThreadHandle(void* handle) {
+#ifdef _WIN32
+    if (handle != nullptr) {
+        CloseHandle(static_cast<HANDLE>(handle));
+    }
+#endif
+}
+
+/// Processor cycles the thread has run, in the units of the time stamp counter: exact per
+/// frame, unlike GetThreadTimes. Zero when unknown.
+inline u64 ThreadCycles(void* handle) {
+#ifdef _WIN32
+    ULONG64 cycles{};
+    if (handle != nullptr && QueryThreadCycleTime(static_cast<HANDLE>(handle), &cycles)) {
+        return cycles;
+    }
+#endif
+    return 0;
+}
 } // namespace Common

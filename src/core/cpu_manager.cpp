@@ -5,9 +5,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/fiber.h"
+#include "common/host_stalls.h"
 #include "common/permafrost.h"
 #include "common/scope_exit.h"
 #include "common/thread.h"
+#include "common/thread_cpu_time.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/core_timing.h"
@@ -180,6 +182,12 @@ void CpuManager::RunThread(std::stop_token token, std::size_t core) {
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();
     Common::Permafrost::RegisterGuestThread();
+    if (core < Common::HostStalls::NUM_CORES) {
+        // For the per core CPU time of a hitch. The previous game's handle goes here: its
+        // renderer no longer reads it.
+        Common::CloseThreadHandle(Common::HostStalls::core_threads[core].exchange(
+            Common::DuplicateCurrentThreadHandle()));
+    }
     auto& data = core_data[core];
     data.host_context = Common::Fiber::ThreadToFiber();
 

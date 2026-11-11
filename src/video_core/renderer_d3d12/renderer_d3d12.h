@@ -336,7 +336,10 @@ private:
     /// compared with their usual share; PageFaults and Render are what is left when none stands out.
     enum class HitchCause : u8 {
         Pipelines, JitCompile, FileReads, CacheGc, NewResources, TextureDecode, GuestReadback,
-        Gpu, GameCpu, PageFaults, Render, Count,
+        Gpu, GameCpu, PageFaults, Render,
+        // GameCpu told apart by what held the game: memory coming back from the swap file, a
+        // wait for the GPU or a free framebuffer, one long system call or service request.
+        GameSwap, GameGpuWait, GameService, Count,
     };
     static constexpr size_t NUM_TIMED_HITCH_CAUSES = static_cast<size_t>(HitchCause::GameCpu) + 1;
     /// Always-on hitch detection (d3d12_perf_report.cpp): each presented interval is compared with
@@ -351,10 +354,23 @@ private:
             u64 file_read_bytes{};
             u64 file_read_us{};
             u64 page_faults{};
+            // What the game's side did (Common::HostStalls, Common::Permafrost).
+            u64 time_ns{};
+            u64 tsc{};
+            std::array<u64, 4> core_idle_us{};
+            std::array<u64, 4> core_cycles{};
+            u64 swap_stall_us{};
+            u64 swap_ins{};
+            u64 swap_read_bytes{};
+            u64 guest_call_us{};
+            u64 guest_requests{};
+            u64 guest_request_us{};
         };
         HostTotals host{};                ///< totals at the previous present
         double normal_ms{};               ///< moving average of the presented interval
         std::array<double, NUM_TIMED_HITCH_CAUSES> usual_ms{}; ///< moving average of each cause
+        double usual_swap_ms{};       ///< moving average of the game's waits for swapped memory
+        double usual_guest_wait_ms{}; ///< and for the GPU and free framebuffers
         std::chrono::steady_clock::time_point log_second{};
         u32 logged_this_second{};
         // Over the pacing window.

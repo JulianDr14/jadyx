@@ -20,6 +20,9 @@ enum class Counter : size_t {
     FileReads,     ///< reads of game files (local or external storage)
     FileReadBytes,
     FileReadUs,
+    GuestCallUs,    ///< guest system calls that neither wait nor ask a service
+    GuestRequests,  ///< guest requests to a service (SendSyncRequest and its variants)
+    GuestRequestUs, ///< from the request to its reply, the wait for the service included
     Count,
 };
 
@@ -31,6 +34,39 @@ inline void Add(Counter counter, u64 value) {
 
 [[nodiscard]] inline u64 Read(Counter counter) {
     return counters[static_cast<size_t>(counter)].load(std::memory_order_relaxed);
+}
+
+/// What each emulated core did, for the per core split of a hitch.
+inline constexpr size_t NUM_CORES = 4;
+/// Time each core spent with no guest thread to run.
+inline std::array<std::atomic<u64>, NUM_CORES> core_idle_us{};
+/// Handle of each core's host thread (Common::DuplicateCurrentThreadHandle), for its CPU time.
+inline std::array<std::atomic<void*>, NUM_CORES> core_threads{};
+
+/// The longest guest system call and service request since the reader last took them, packed
+/// as (microseconds << 8) | system call number.
+inline std::atomic<u64> longest_guest_call{};
+inline std::atomic<u64> longest_guest_request{};
+
+inline void RaiseLongest(std::atomic<u64>& longest, u32 number, u64 us) {
+    const u64 packed = (us << 8) | (number & 0xff);
+    u64 previous = longest.load(std::memory_order_relaxed);
+    while (previous < packed &&
+           !longest.compare_exchange_weak(previous, packed, std::memory_order_relaxed)) {
+    }
+}
+
+/// A guest system call that returned after us microseconds of wall time. Calls whose job is to
+/// wait (sleeps, locks, waits on objects) are not passed here.
+inline void RecordGuestCall(u32 number, u64 us, bool request) {
+    if (request) {
+        Add(Counter::GuestRequests, 1);
+        Add(Counter::GuestRequestUs, us);
+        RaiseLongest(longest_guest_request, number, us);
+    } else {
+        Add(Counter::GuestCallUs, us);
+        RaiseLongest(longest_guest_call, number, us);
+    }
 }
 
 /// Times one file read; Done passes the bytes it returned.
