@@ -262,12 +262,20 @@ struct RumbleOutput {
 
 private:
     void Write(float next_low, float next_high) {
+        // The first writes and then one in 200, to see the rumble reach the pad.
+        static std::atomic<u32> writes{0};
+        const u32 write = writes.fetch_add(1, std::memory_order_relaxed);
+        const bool log_write = write < 40 || write % 200 == 0;
         try {
             winrt::Windows::Gaming::Input::GamepadVibration vibration{};
             vibration.LeftMotor = next_low;   // The heavy motor: the Switch's low band.
             vibration.RightMotor = next_high; // The light one: its high band.
             pad.Vibration(vibration);
-        } catch (...) {} // Gone; the next catalog check drops it.
+            if (log_write) LOG_INFO(Input, "rumble pad #{}: low={:.2f} high={:.2f}", write, next_low, next_high);
+        } catch (const winrt::hresult_error& e) {
+            // Gone; the next catalog check drops it.
+            if (log_write) LOG_WARNING(Input, "rumble pad #{}: failed {:08x}", write, static_cast<u32>(e.code()));
+        } catch (...) {}
         low = next_low;
         high = next_high;
     }
@@ -1225,6 +1233,19 @@ void GamepadInput::Run(std::stop_token stop) {
             const auto [handheld_low, handheld_high] = GameRumbleOf(*hid, HANDHELD_PORT);
             const float rumble_low = in_menu ? 0.0f : std::max(player_low, handheld_low);
             const float rumble_high = in_menu ? 0.0f : std::max(player_high, handheld_high);
+            {
+                // Each start of the game's rumble, the first ones: what the pump saw and did with it.
+                static bool was_rumbling = false;
+                static u32 starts = 0;
+                const bool rumbling = rumble_low > 0.0f || rumble_high > 0.0f;
+                if (rumbling && !was_rumbling && starts++ < 40) {
+                    LOG_INFO(Input, "rumble pump #{}: player={:.2f}/{:.2f} handheld={:.2f}/{:.2f} pad={} on={} strength={}",
+                             starts, player_low, player_high, handheld_low, handheld_high,
+                             pad && pad->pad ? "gamepad" : (pad ? "hid" : "none"), rumble_settings.on,
+                             rumble_settings.strength);
+                }
+                was_rumbling = rumbling;
+            }
             player1_rumble.Send(pad, RumbleMotor(rumble_settings, rumble_low),
                                 RumbleMotor(rumble_settings, rumble_high));
             const float rumble = std::max(rumble_low, rumble_high);
