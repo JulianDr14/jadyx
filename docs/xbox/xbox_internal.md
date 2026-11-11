@@ -4289,3 +4289,18 @@ en gameplay en 0.3.8.0. Cuphead DLC tiene reporte de finalización, no certifica
 general de ausencia de fallos. Odyssey conserva clasificación y resultado previo;
 el informe separado del crash se enlaza como limitación. No se cambian etiquetas
 de Discord, código ni paquetes. Validación documental: enlaces locales y diff.
+### Vibración UWP que no se detiene (11 de noviembre de 2026)
+
+La [API de vibración UWP](https://learn.microsoft.com/en-us/windows/uwp/gaming/gamepad-and-vibration)
+recibe niveles de motor; cero apaga el motor. El filtro de cambios menores de
+0,01 podía omitir ese cero. Ahora cada motor cruza a cero sin pasar por ese
+filtro, y una escritura fallida no se registra como aplicada.
+
+El frontend descarta órdenes sin renovar tras 2 s, igual que el límite de SDL
+en el proyecto. El plazo se mide por dispositivo emulado y se renueva incluso
+si la orden repite la intensidad anterior. La lectura de HID que usa el juego
+conserva el último valor. Al montar un dispositivo HD se limpia el motor que
+corresponde, incluido el derecho.
+
+Gate en Series pendiente: comprobar que un pulso termina, que una secuencia
+renovada dura más de 2 s, y que se apaga al abrir el menú o salir a la biblioteca.
