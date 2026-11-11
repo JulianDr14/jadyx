@@ -77,8 +77,13 @@ void SetShaders(u64 vertex_or_compute, u64 fragment, bool compute);
 void BeginFrame(u64 frame);
 /// Buffer cache: guest memory in the range was written from host data (download landing).
 void Forget(u64 address, u64 size);
-/// Budget left for checks this frame; a cheap early out without the lock.
-[[nodiscard]] bool CheckBudgetLeft();
+/// Index and vertex pages: checked from their own budget, so uniform and storage rebinds
+/// cannot use it all up before the meshes are bound.
+[[nodiscard]] constexpr bool IsGeometry(Role role) {
+    return role == Role::Index || role == Role::Vertex;
+}
+/// Budget left for checks of this role this frame; a cheap early out without the lock.
+[[nodiscard]] bool CheckBudgetLeft(Role role);
 
 /// The calls below need this lock held; the buffer cache takes it once per buffer range.
 [[nodiscard]] std::unique_lock<std::mutex> Lock();
@@ -88,8 +93,9 @@ void Forget(u64 address, u64 size);
 void Baseline(u64 page, const u8* guest, Role role);
 /// The page is only partly uploaded or its bytes are not readable: no baseline.
 void Drop(u64 page);
-/// True when the page has a baseline, was not checked this frame and budget remains.
-[[nodiscard]] bool Due(u64 page);
+/// True when the page has a baseline, was not checked in the last few frames (so the budget
+/// reaches the draws bound late in a frame) and budget remains for the role.
+[[nodiscard]] bool Due(u64 page, Role role);
 /// The tracker marks the page modified: it will be uploaded again, any suspicion is void.
 void Dirty(u64 page);
 /// Compares the page's guest bytes against its baseline.

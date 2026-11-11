@@ -28,6 +28,11 @@ constexpr size_t CHUNK_SIZE = PAGE_SIZE / CHUNKS;
 constexpr size_t MAX_PAGES = 128 * 1024;
 constexpr u32 DEFAULT_CHECK_KIB = 4 * 1024;
 constexpr u32 DEFAULT_UPLOAD_KIB = 32 * 1024;
+/// Index and vertex pages get this many times the check budget, on their own.
+constexpr u64 GEOMETRY_BUDGET_SCALE = 2;
+/// A checked page rests this many frames: the same early ranges no longer take the whole
+/// budget every frame.
+constexpr u32 RECHECK_FRAMES = 4;
 constexpr u64 STATS_FRAMES = 600;
 constexpr u32 MAIN_LOG_REPORTS = 64;
 constexpr size_t RECENT = 48;
@@ -62,6 +67,8 @@ struct Stats {
     u64 confirmed;
     u64 healed;
     u64 budget_frames;
+    u64 geometry_checks;
+    u64 geometry_budget_frames;
 };
 
 struct Recent {
@@ -85,7 +92,9 @@ u64 check_budget{u64{DEFAULT_CHECK_KIB} * 1024};
 u64 upload_budget{u64{DEFAULT_UPLOAD_KIB} * 1024};
 u64 upload_left{};
 std::atomic<u64> check_left{};
+std::atomic<u64> geometry_left{};
 bool budget_hit{};
+bool geometry_budget_hit{};
 u32 marks{};
 u32 main_log_reports{};
 const auto start_time = std::chrono::steady_clock::now();
@@ -171,10 +180,12 @@ void WriteStats(const char* label, const Stats& s) {
     fmt::print(out,
                "{} f{} t{} ms: tracked {} pages, baselines {} ({} KiB), dropped full {} budget {}, "
                "checks {} ({} KiB), dirty skips {}, suspects {} (cleared by tracker {}), "
-               "confirmed {}, healed {}, frames out of budget {}\n",
+               "confirmed {}, healed {}, frames out of budget {} (index/vertex checks {}, "
+               "frames out of their budget {})\n",
                label, frame, NowMs(), pages.size(), s.baselines, s.baseline_kib, s.dropped_full,
                s.dropped_budget, s.checks, s.checks * PAGE_SIZE / 1024, s.dirty_skips, s.suspects,
-               s.suspects_cleared, s.confirmed, s.healed, s.budget_frames);
+               s.suspects_cleared, s.confirmed, s.healed, s.budget_frames, s.geometry_checks,
+               s.geometry_budget_frames);
     std::fflush(out);
 }
 
@@ -190,6 +201,8 @@ void Add(Stats& total, const Stats& part) {
     total.confirmed += part.confirmed;
     total.healed += part.healed;
     total.budget_frames += part.budget_frames;
+    total.geometry_checks += part.geometry_checks;
+    total.geometry_budget_frames += part.geometry_budget_frames;
 }
 
 } // Anonymous namespace
@@ -199,12 +212,16 @@ void Configure(bool on, u32 check_budget_kib, u32 upload_budget_kib, bool heal_o
     check_budget = u64{check_budget_kib != 0 ? check_budget_kib : DEFAULT_CHECK_KIB} * 1024;
     upload_budget = u64{upload_budget_kib != 0 ? upload_budget_kib : DEFAULT_UPLOAD_KIB} * 1024;
     check_left.store(check_budget, std::memory_order_relaxed);
+    geometry_left.store(check_budget * GEOMETRY_BUDGET_SCALE, std::memory_order_relaxed);
     upload_left = upload_budget;
     heal.store(heal_on, std::memory_order_relaxed);
     if (on) {
         pages.reserve(MAX_PAGES / 4);
-        LOG_INFO(HW_GPU, "geo_hunt on: check {} KiB/frame, upload {} KiB/frame, heal {}",
-                 check_budget / 1024, upload_budget / 1024, heal_on);
+        LOG_INFO(HW_GPU,
+                 "geo_hunt on: check {} KiB/frame (+{} KiB for index/vertex), upload {} "
+                 "KiB/frame, recheck every {} frames, heal {}",
+                 check_budget / 1024, check_budget * GEOMETRY_BUDGET_SCALE / 1024,
+                 upload_budget / 1024, RECHECK_FRAMES, heal_on);
     }
     enabled.store(on, std::memory_order_relaxed);
 }
@@ -275,7 +292,12 @@ void BeginFrame(u64 new_frame) {
         ++window.budget_frames;
         budget_hit = false;
     }
+    if (geometry_budget_hit) {
+        ++window.geometry_budget_frames;
+        geometry_budget_hit = false;
+    }
     check_left.store(check_budget, std::memory_order_relaxed);
+    geometry_left.store(check_budget * GEOMETRY_BUDGET_SCALE, std::memory_order_relaxed);
     upload_left = upload_budget;
     ranges_this_frame.clear();
     if (frame - last_stats_frame >= STATS_FRAMES) {
@@ -298,8 +320,9 @@ void Forget(u64 address, u64 size) {
     }
 }
 
-bool CheckBudgetLeft() {
-    return check_left.load(std::memory_order_relaxed) >= PAGE_SIZE;
+bool CheckBudgetLeft(Role role) {
+    const auto& left = IsGeometry(role) ? geometry_left : check_left;
+    return left.load(std::memory_order_relaxed) >= PAGE_SIZE;
 }
 
 std::unique_lock<std::mutex> Lock() {
@@ -342,13 +365,20 @@ void Drop(u64 page) {
     pages.erase(page >> PAGE_BITS);
 }
 
-bool Due(u64 page) {
+bool Due(u64 page, Role role) {
     const auto it = pages.find(page >> PAGE_BITS);
-    if (it == pages.end() || it->second.checked_frame == static_cast<u32>(frame)) {
+    if (it == pages.end()) {
         return false;
     }
-    if (check_left.load(std::memory_order_relaxed) < PAGE_SIZE) {
-        budget_hit = true;
+    const Entry& entry = it->second;
+    // A suspect waits for the next frame only; a clean page rests a few frames.
+    const u32 rest = (entry.flags & FLAG_SUSPECT) != 0 ? 1 : RECHECK_FRAMES;
+    if (static_cast<u32>(frame) - entry.checked_frame < rest) {
+        return false;
+    }
+    const bool geometry = IsGeometry(role);
+    if ((geometry ? geometry_left : check_left).load(std::memory_order_relaxed) < PAGE_SIZE) {
+        (geometry ? geometry_budget_hit : budget_hit) = true;
         return false;
     }
     return true;
@@ -370,7 +400,12 @@ void Dirty(u64 page) {
 
 Result Check(u64 page, const u8* guest, Role role) {
     Entry& entry = pages.find(page >> PAGE_BITS)->second;
-    check_left.fetch_sub(PAGE_SIZE, std::memory_order_relaxed);
+    if (IsGeometry(role)) {
+        geometry_left.fetch_sub(PAGE_SIZE, std::memory_order_relaxed);
+        ++window.geometry_checks;
+    } else {
+        check_left.fetch_sub(PAGE_SIZE, std::memory_order_relaxed);
+    }
     entry.checked_frame = static_cast<u32>(frame);
     ++window.checks;
     Chunks now;
@@ -402,7 +437,6 @@ Result Check(u64 page, const u8* guest, Role role) {
         entry.chunks = now;
         entry.flags |= FLAG_STALE;
     }
-    (void)role;
     return Result::Confirmed;
 }
 

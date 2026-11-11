@@ -2185,7 +2185,7 @@ void BufferCache<P>::GeoHuntBaseline(DAddr device_addr, u64 size) {
 
 template <class P>
 void BufferCache<P>::GeoHuntVerify(DAddr device_addr, u32 size) {
-    if (size == 0 || !GeoHunt::CheckBudgetLeft()) {
+    if (size == 0 || !GeoHunt::CheckBudgetLeft(geo_role)) {
         return;
     }
     constexpr u64 page_size = GeoHunt::PAGE_SIZE;
@@ -2195,7 +2195,7 @@ void BufferCache<P>::GeoHuntVerify(DAddr device_addr, u32 size) {
     }
     const DAddr end = device_addr + size;
     for (DAddr page = Common::AlignDown(device_addr, page_size); page < end; page += page_size) {
-        if (!GeoHunt::Due(page)) {
+        if (!GeoHunt::Due(page, geo_role)) {
             continue;
         }
         if (memory_tracker.IsRegionCpuModified(page, page_size) ||
