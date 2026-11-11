@@ -122,16 +122,6 @@ void ConfigureOob(bool check, bool fix);
 void NoteFrame(u64 frame);
 void SetOobFix(bool on);
 
-// ---- Vertex resync (diagnostic: "vb_resync=1" and the geo_hunt menu) ----
-// A vertex stream the buffer cache holds as GPU-written skips the upload of the guest's bytes.
-// When on, the GPU-written bytes a transform feedback of an earlier frame (none this frame) left
-// there are dropped and uploaded from guest memory.
-inline std::atomic_bool vb_resync{false};
-
-[[nodiscard]] inline bool VbResync() {
-    return vb_resync.load(std::memory_order_relaxed);
-}
-void SetVbResync(bool on);
 /// geo_hunt: a transform feedback output bound for a draw. Logged once per range and shader
 /// (again after a while), so the log tells which shader wrote which range in which frame.
 void NoteFeedbackWrite(u64 address, u64 size, u32 index, u32 stride, u32 varyings, u64 shader,
@@ -148,7 +138,6 @@ struct StaleFeedback {
     u64 frame;            ///< now
     u64 vertex_shader;
     u64 origin;           ///< last GPU writer of [lo, hi) (seq << 8 | WriteOrigin), 0 unknown
-    bool resynced;        ///< VbResync: dropped and uploaded from guest memory
 };
 /// Logs a vertex stream reading bytes an older frame's transform feedback wrote, once per range.
 void NoteStaleFeedback(const StaleFeedback& stale);

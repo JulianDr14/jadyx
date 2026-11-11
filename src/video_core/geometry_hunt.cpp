@@ -556,19 +556,6 @@ void SetOobFix(bool on) {
     LOG_INFO(HW_GPU, "geo_oob: fix {}", on ? "on" : "off");
 }
 
-void SetVbResync(bool on) {
-    vb_resync.store(on, std::memory_order_relaxed);
-    const char* const name = on ? "old feedback" : "off";
-    {
-        std::scoped_lock lock{mutex};
-        if (std::FILE* const out = Log()) {
-            fmt::print(out, "t{} ms: vertex resync {}\n", NowMs(), name);
-            std::fflush(out);
-        }
-    }
-    LOG_INFO(HW_GPU, "vb_resync: {}", name);
-}
-
 void NoteFeedbackWrite(u64 address, u64 size, u32 index, u32 stride, u32 varyings, u64 shader,
                        u64 frame_now) {
     static std::unordered_map<u64, u64> seen;
@@ -605,7 +592,7 @@ void NoteStaleFeedback(const StaleFeedback& stale) {
         "compute_storage", "compute_texture", "dma_image", "dma_copy"};
     static std::unordered_map<u64, u64> seen;
     static u32 lines{};
-    const u64 key = stale.vertex_address ^ (stale.lo << 20) ^ (u64{stale.resynced} << 63);
+    const u64 key = stale.vertex_address ^ (stale.lo << 20);
     std::scoped_lock lock{mutex};
     if (lines >= 1024) {
         return;
@@ -623,13 +610,12 @@ void NoteStaleFeedback(const StaleFeedback& stale) {
         fmt::print(out,
                    "f{} t{} ms XFB-STALE-VB vertex {:#x}+{:#x} vs {:016x} reads {:#x}..{:#x} "
                    "({} bytes) written by xfb {:#x}+{:#x} vs {:016x} f{} ({} frames ago) | last "
-                   "gpu writer {} (mark #{}){}\n",
+                   "gpu writer {} (mark #{})\n",
                    stale.frame, NowMs(), stale.vertex_address, stale.vertex_size,
                    stale.vertex_shader, stale.lo, stale.hi, stale.hi - stale.lo,
                    stale.feedback_address, stale.feedback_size, stale.feedback_shader,
                    stale.feedback_frame, stale.frame - stale.feedback_frame,
-                   kind < names.size() ? names[kind] : "unknown", stale.origin >> 8,
-                   stale.resynced ? " | RESYNCED from guest" : "");
+                   kind < names.size() ? names[kind] : "unknown", stale.origin >> 8);
         std::fflush(out);
     }
 }

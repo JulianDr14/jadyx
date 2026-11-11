@@ -137,7 +137,6 @@ void BufferCache<P>::TickFrame() {
         RunGarbageCollector();
     }
     ++frame_tick;
-    frame_origin_seq = write_origin_seq;
     GeoHunt::NoteFrame(frame_tick);
     if (GeoHunt::Enabled()) [[unlikely]] {
         GeoHunt::BeginFrame(frame_tick);
@@ -1037,11 +1036,8 @@ void BufferCache<P>::BindHostIndexBuffer() {
     const u32 size = channel_state->index_buffer.size;
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     if (draw_state.inline_index_draw_indexes.empty()) {
-        if (GeoHunt::Enabled() || GeoHunt::VbResync()) [[unlikely]] {
+        if (GeoHunt::Enabled()) [[unlikely]] {
             GeoStaleFeedbackRange(channel_state->index_buffer.device_addr, size);
-            if (GeoHunt::VbResync()) {
-                GeoStaleIndexRange(channel_state->index_buffer.device_addr, size);
-            }
         }
         SynchronizeBuffer(buffer, channel_state->index_buffer.device_addr, size);
         if (GeoHunt::Enabled()) [[unlikely]] {
@@ -1156,7 +1152,7 @@ void BufferCache<P>::BindHostVertexBuffers() {
             const Binding& binding = VertexBufferSlot(index);
             Buffer& buffer = slot_buffers[binding.buffer_id];
             TouchBuffer(buffer, binding.buffer_id);
-            if (GeoHunt::Enabled() || GeoHunt::VbResync()) [[unlikely]] {
+            if (GeoHunt::Enabled()) [[unlikely]] {
                 GeoStaleFeedbackRange(binding.device_addr, binding.size);
             }
             SynchronizeBuffer(buffer, binding.device_addr, binding.size);
@@ -1520,7 +1516,7 @@ void BufferCache<P>::BindHostTransformFeedbackBuffers() {
             SynchronizeBuffer(buffer, binding.device_addr, size);
             MarkWrittenBuffer(ReadbackTrace::WriteOrigin::TransformFeedback, binding.buffer_id,
                               binding.device_addr, size);
-            if (GeoHunt::Enabled() || GeoHunt::VbResync()) [[unlikely]] {
+            if (GeoHunt::Enabled()) [[unlikely]] {
                 feedback_ranges.Add(binding.device_addr, size);
                 const u64 shader = GeoHunt::CurrentShader();
                 if (geo_feedback_pages.size() > 256 * 1024) {
@@ -1972,61 +1968,20 @@ void BufferCache<P>::GeoStaleFeedbackRange(DAddr device_addr, u64 size) {
     if (stale.empty()) {
         return;
     }
-    const bool resync = GeoHunt::VbResync();
     for (const Stale& range : stale) {
-        if (GeoHunt::Enabled()) {
-            GeoHunt::NoteStaleFeedback(GeoHunt::StaleFeedback{
-                .vertex_address = device_addr,
-                .vertex_size = size,
-                .lo = range.lo,
-                .hi = range.hi,
-                .feedback_address = range.writer.address,
-                .feedback_size = range.writer.size,
-                .feedback_frame = range.writer.frame,
-                .feedback_shader = range.writer.shader,
-                .frame = frame_tick,
-                .vertex_shader = GeoHunt::CurrentShader(),
-                .origin = DiagGpuBytes(range.lo, range.hi - range.lo).second,
-                .resynced = resync,
-            });
-        }
-        if (resync) {
-            WriteMemory(range.lo, range.hi - range.lo);
-        }
-    }
-}
-
-template <class P>
-void BufferCache<P>::GeoStaleIndexRange(DAddr device_addr, u64 size) {
-    if (device_addr == 0 || size == 0 || !ReadbackTrace::WriteOriginsEnabled()) {
-        return;
-    }
-    const DAddr end = device_addr + size;
-    boost::container::small_vector<std::pair<DAddr, DAddr>, 4> stale;
-    gpu_modified_ranges.ForEachInRange(device_addr, size, [&](DAddr lo, DAddr hi) {
-        lo = (std::max)(lo, device_addr);
-        hi = (std::min)(hi, end);
-        if (hi <= lo) {
-            return;
-        }
-        // Written by the GPU this frame: may be indices the game built on purpose.
-        const u64 origin = write_origins.GetValueAt(static_cast<s64>(lo));
-        if ((origin >> 8) > frame_origin_seq) {
-            return;
-        }
-        stale.emplace_back(lo, hi);
-    });
-    for (const auto& [lo, hi] : stale) {
-        if (stale_index_logs < 64) {
-            ++stale_index_logs;
-            const u64 origin = write_origins.GetValueAt(static_cast<s64>(lo));
-            LOG_WARNING(HW_GPU,
-                        "index resync: {:x}+{:x} of ib {:x}+{:x}, origin {} mark #{} (now #{}) "
-                        "frame {}",
-                        lo, hi - lo, device_addr, size, origin & 0xff, origin >> 8,
-                        write_origin_seq, frame_tick);
-        }
-        WriteMemory(lo, hi - lo);
+        GeoHunt::NoteStaleFeedback(GeoHunt::StaleFeedback{
+            .vertex_address = device_addr,
+            .vertex_size = size,
+            .lo = range.lo,
+            .hi = range.hi,
+            .feedback_address = range.writer.address,
+            .feedback_size = range.writer.size,
+            .feedback_frame = range.writer.frame,
+            .feedback_shader = range.writer.shader,
+            .frame = frame_tick,
+            .vertex_shader = GeoHunt::CurrentShader(),
+            .origin = DiagGpuBytes(range.lo, range.hi - range.lo).second,
+        });
     }
 }
 

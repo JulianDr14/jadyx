@@ -503,12 +503,9 @@ private:
 
     /// geo_hunt: logs container sizes every 600 frames and after a command garbage report.
     void GeoCensus();
-    /// geo_hunt or vertex resync: GPU-written bytes of a vertex stream that an older
-    /// frame's transform feedback left. Logged; with the resync dropped and uploaded from the guest.
+    /// geo_hunt: logs the GPU-written bytes of a vertex stream that an older frame's transform
+    /// feedback left.
     void GeoStaleFeedbackRange(DAddr device_addr, u64 size);
-    /// Vertex resync: GPU-marked index bytes last written in an older frame (any origin, needs
-    /// buffer_write_origins=1). Dropped and uploaded from the guest, which holds the real indices.
-    void GeoStaleIndexRange(DAddr device_addr, u64 size);
 
     [[nodiscard]] BufferId FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible);
 
@@ -603,15 +600,11 @@ private:
     MemoryTracker memory_tracker;
     Common::RangeSet<DAddr> uncommitted_gpu_modified_ranges;
     Common::RangeSet<DAddr> gpu_modified_ranges;
-    /// Ranges bound as transform feedback outputs (geo_hunt or vertex resync on).
+    /// Ranges bound as transform feedback outputs (geo_hunt on).
     Common::RangeSet<DAddr> feedback_ranges;
     // Diagnostic (buffer_write_origins=1): which path last marked each range as GPU-written.
     Common::RangeMap<DAddr, u64> write_origins{0};
     u64 write_origin_seq{};
-    /// write_origin_seq when the current frame began: older marks come from earlier frames.
-    u64 frame_origin_seq{};
-    /// Index resyncs logged so far (first 64 only).
-    u32 stale_index_logs{};
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
 
     // Async Buffers
@@ -654,7 +647,7 @@ private:
     std::deque<GeoAudit> geo_audits;
     /// Frame each cache buffer was created (geo_hunt), by slot index.
     std::unordered_map<u32, u64> geo_buffer_frames;
-    /// Last transform feedback binding that covered each 4 KiB page (geo_hunt or vb_resync).
+    /// Last transform feedback binding that covered each 4 KiB page (geo_hunt).
     struct GeoFeedbackPage {
         u64 frame;
         u64 shader;
