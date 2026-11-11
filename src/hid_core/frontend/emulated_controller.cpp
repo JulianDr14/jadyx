@@ -1229,6 +1229,16 @@ bool EmulatedController::SetVibration(u32 slot, Core::HID::VibrationGcErmCommand
 }
 
 bool EmulatedController::SetVibration(DeviceIndex device_index, const VibrationValue& vibration) {
+    // Jadyx: the first calls and then one in 500, to see where a game's rumble stops.
+    static std::atomic<u32> vibration_calls{0};
+    const u32 call = vibration_calls.fetch_add(1, std::memory_order_relaxed);
+    if (call < 40 || call % 500 == 0) {
+        LOG_INFO(Input, "rumble set #{}: npad={} device={} initialized={} output={} low={:.2f} high={:.2f}",
+                 call, static_cast<u32>(npad_id_type), static_cast<u32>(device_index), is_initialized.load(),
+                 device_index < DeviceIndex::MaxDeviceIndex &&
+                     output_devices[static_cast<std::size_t>(device_index)] != nullptr,
+                 vibration.low_amplitude, vibration.high_amplitude);
+    }
     if (!is_initialized) {
         return false;
     }

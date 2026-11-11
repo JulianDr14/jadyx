@@ -478,13 +478,28 @@ Result ResourceManager::SendVibrationValue(u64 aruid,
     if (result.IsSuccess() && has_active_aruid) {
         device = GetNSVibrationDevice(handle);
     }
+    // Jadyx: the first calls and then one in 500, to see where a game's rumble stops.
+    static std::atomic<u32> vibration_calls{0};
+    const u32 call = vibration_calls.fetch_add(1, std::memory_order_relaxed);
+    const bool log_call = call < 40 || call % 500 == 0;
     if (device != nullptr) {
         // Prevent sending vibrations to an inactive vibration handle
         if (!device->IsActive()) {
+            if (log_call)
+                LOG_INFO(Service_HID, "rumble #{}: npad_id={} device={} inactive", call,
+                         static_cast<u32>(handle.npad_id), static_cast<u32>(handle.device_index));
             return ResultSuccess;
         }
         result = device->SendVibrationValue(value);
     }
+    if (log_call)
+        LOG_INFO(Service_HID,
+                 "rumble #{}: aruid={:x} active_aruid={} npad_type={} npad_id={} device={} found={} "
+                 "mounted={} low={:.2f} high={:.2f} result={:x}",
+                 call, aruid, has_active_aruid, static_cast<u32>(handle.npad_type),
+                 static_cast<u32>(handle.npad_id), static_cast<u32>(handle.device_index),
+                 device != nullptr, device != nullptr && device->IsVibrationMounted(),
+                 value.low_amplitude, value.high_amplitude, result.raw);
     return result;
 }
 
