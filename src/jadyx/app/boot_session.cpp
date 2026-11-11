@@ -77,6 +77,7 @@
 #include "jadyx/app/session_memory.h"
 #include "jadyx/app/session_menu.h"
 #include "jadyx/content/content_service.h"
+#include "jadyx/game/motion_view.h"
 #include "jadyx/game/uwp_software_keyboard.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/input/uwp_input.h"
@@ -569,8 +570,28 @@ int GameSession::PlayLoop() {
     FreezeWatch freeze_watch{[&system = system] {
         return Kernel::GuestProbe::Report(system.Kernel(), 3, std::chrono::milliseconds{300});
     }};
+    // The motion view (motion_view.h): redrawn every other tick while the emulated gyro is on,
+    // removed once when it turns off or hides. Posted from here only, so never after Shutdown.
+    bool motion_view_shown = false;
+    const auto play_start = std::chrono::steady_clock::now();
     for (u32 tick = 1;; ++tick) {
         std::this_thread::sleep_for(TICK);
+        if (tick % 2 == 0) {
+            const MotionViewState view = input.MotionView();
+            constexpr u32 MovingLingerMs = 2500;
+            const bool visible = view.mode != MotionMode::Off && view.view != MotionViewMode::Hidden &&
+                                 (view.view != MotionViewMode::Moving || view.still_ms < MovingLingerMs);
+            if (visible) {
+                const float seconds =
+                    std::chrono::duration<float>(std::chrono::steady_clock::now() - play_start).count();
+                D3D12::PostGameMotionView(system.Renderer(),
+                                          DrawMotionView(view, D3D12::GameMenuScreenSize(system.Renderer()), seconds));
+                motion_view_shown = true;
+            } else if (motion_view_shown) {
+                D3D12::PostGameMotionView(system.Renderer(), std::nullopt);
+                motion_view_shown = false;
+            }
+        }
         freeze_watch.Tick(menu.IsOpen() || system.IsPaused());
         if (play_session) play_session->Tick(!menu.IsOpen());
         memory->Tick(tick, menu.IsOpen());

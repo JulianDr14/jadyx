@@ -134,6 +134,8 @@ add_executable(jadyx WIN32
     ui/ui_painter.cpp
     ui/ui_painter.h
     ui/tween.h
+    game/motion_view.cpp
+    game/motion_view.h
     input/motion_emu.h
     game/game_menu_surface.cpp
     game/game_menu_surface.h
