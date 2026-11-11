@@ -338,7 +338,6 @@ public:
     void LandDownload(DAddr start, u64 size, const u8* incoming, u64 record);
     void ApplyKeptCpuWrites();
     void TrackDownload(DAddr address, u64 size, u64 record);
-    void ReportMergeCost();
 
     bool DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount);
 
@@ -581,22 +580,6 @@ private:
     DownloadShadow download_shadow;
     bool merge_shadow_full{};
     boost::container::small_vector<std::pair<DAddr, u64>, 16> merge_kept;
-    /// Time spent merging downloads, logged while the write watch is on.
-    struct MergeCost {
-        std::chrono::steady_clock::duration track{};
-        std::chrono::steady_clock::duration merge{};
-        std::chrono::steady_clock::duration whole{};
-        std::chrono::steady_clock::duration kept{};
-        std::chrono::steady_clock::duration pop{};
-        u64 merge_ranges{};
-        u64 merge_bytes{};
-        u64 land_runs{};
-        u64 land_bytes{};
-        u64 whole_bytes{};
-        u64 kept_runs{};
-        u64 pops{};
-        std::chrono::steady_clock::time_point since{std::chrono::steady_clock::now()};
-    } merge_cost;
     /// Per pending download: ranges a GPU write rewrote after it was recorded, so it is stale there.
     std::deque<Common::RangeSet<DAddr>> superseded_downloads;
     std::optional<Async_Buffer> current_buffer;

@@ -16,7 +16,6 @@
 #include "video_core/buffer_cache/buffer_cache_base.h"
 #include "video_core/buffer_cache/download_shadow.h"
 #include "video_core/guest_memory.h"
-#include "video_core/write_watch.h"
 #include "video_core/gpu_written_pages.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/perf_counters.h"
@@ -113,6 +112,7 @@ void BufferCache<P>::TickFrame() {
         RunGarbageCollector();
     }
     ++frame_tick;
+    GeoHunt::NoteFrame(frame_tick);
     if (GeoHunt::Enabled()) [[unlikely]] {
         GeoHunt::BeginFrame(frame_tick);
     }
@@ -265,6 +265,7 @@ void BufferCache<P>::DownloadCheckpointMemory() requires HAS_CHECKPOINT_READBACK
                     auto block = std::span<u8>{bytes}.first(count);
                     runtime.ReadCheckpointBuffer(buffer, begin - buffer.CpuAddr(), block);
                     device_memory.WriteBlockUnsafe(begin, block.data(), block.size());
+                    GeoHunt::Journal(GeoHunt::Writer::BufferCheckpoint, begin, block.size());
                     download_shadow.HostWritten(begin, block.data(), block.size());
                     if (GeoHunt::Enabled()) [[unlikely]] {
                         GeoHunt::Forget(begin, block.size());
@@ -304,7 +305,6 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     if (!cpu_src_address || !cpu_dest_address) {
         return false;
     }
-    WriteWatch::Note(WriteWatch::Kind::DmaCopy, *cpu_dest_address, amount);
     const bool source_dirty = IsRegionRegistered(*cpu_src_address, amount);
     const bool dest_dirty = IsRegionRegistered(*cpu_dest_address, amount);
     if (!source_dirty && !dest_dirty) {
@@ -372,7 +372,6 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
     if (!cpu_dst_address) {
         return false;
     }
-    WriteWatch::Note(WriteWatch::Kind::DmaClear, *cpu_dst_address, amount);
     const bool dest_dirty = IsRegionRegistered(*cpu_dst_address, amount);
     if (!dest_dirty) {
         return false;
@@ -799,9 +798,6 @@ void BufferCache<P>::PopAsyncBuffers() {
         async_buffers.pop_front();
         return;
     }
-    const bool timed = WriteWatch::Enabled();
-    const auto pop_begin = timed ? std::chrono::steady_clock::now()
-                                 : std::chrono::steady_clock::time_point{};
     auto& downloads = pending_downloads.front();
     auto& async_buffer = async_buffers.front();
     const u64 merge_record = pending_records.front();
@@ -854,80 +850,33 @@ void BufferCache<P>::PopAsyncBuffers() {
     superseded_downloads.pop_front();
     download_shadow.Retire(merge_record);
     ApplyKeptCpuWrites();
-    if (timed) {
-        merge_cost.pop += std::chrono::steady_clock::now() - pop_begin;
-        ++merge_cost.pops;
-    }
-    ReportMergeCost();
 }
 
 template <class P>
 void BufferCache<P>::TrackDownload(DAddr address, u64 size, u64 record) {
-    const bool timed = WriteWatch::Enabled();
-    const auto begin = timed ? std::chrono::steady_clock::now()
-                             : std::chrono::steady_clock::time_point{};
     if (!download_shadow.Track(address, size, record, device_memory) && !merge_shadow_full) {
         merge_shadow_full = true;
         LOG_WARNING(HW_GPU, "Download shadow full: some downloads land whole");
     }
-    if (timed) {
-        merge_cost.track += std::chrono::steady_clock::now() - begin;
-    }
-}
-
-template <class P>
-void BufferCache<P>::ReportMergeCost() {
-    if (!WriteWatch::Enabled()) {
-        return;
-    }
-    const auto now = std::chrono::steady_clock::now();
-    if (now - merge_cost.since < std::chrono::seconds{10}) {
-        return;
-    }
-    const auto us = [](std::chrono::steady_clock::duration time) {
-        return std::chrono::duration_cast<std::chrono::microseconds>(time).count();
-    };
-    LOG_INFO(HW_GPU,
-             "Download merge in {} ms: track {} us, merge {} us for {} ranges {} KiB, land runs {} "
-             "for {} KiB, whole {} us for {} KiB, kept runs {} {} us, pop {} us for {} pops, "
-             "shadow {} KiB, version pages {}",
-             std::chrono::duration_cast<std::chrono::milliseconds>(now - merge_cost.since).count(),
-             us(merge_cost.track), us(merge_cost.merge), merge_cost.merge_ranges,
-             merge_cost.merge_bytes / 1024, merge_cost.land_runs, merge_cost.land_bytes / 1024,
-             us(merge_cost.whole), merge_cost.whole_bytes / 1024, merge_cost.kept_runs,
-             us(merge_cost.kept), us(merge_cost.pop), merge_cost.pops,
-             download_shadow.Bytes() / 1024, download_shadow.VersionPages());
-    merge_cost = {};
-    merge_cost.since = now;
 }
 
 template <class P>
 void BufferCache<P>::LandDownload(DAddr start, u64 size, const u8* incoming, u64 record) {
-    const bool timed = WriteWatch::Enabled();
-    const auto begin = timed ? std::chrono::steady_clock::now()
-                             : std::chrono::steady_clock::time_point{};
     if (GeoHunt::Enabled()) [[unlikely]] {
         GeoHunt::Forget(start, size);
     }
     if (((start | size) & 3) != 0) {
-        WriteWatch::Note(WriteWatch::Kind::Download, start, size);
         device_memory.WriteBlockUnsafe(start, incoming, size);
+        GeoHunt::Journal(GeoHunt::Writer::BufferDownload, start, size);
         download_shadow.Landed(start, incoming, size);
-        if (timed) {
-            merge_cost.whole += std::chrono::steady_clock::now() - begin;
-            merge_cost.whole_bytes += size;
-        }
         return;
     }
     download_shadow.Merge(
         start, size, incoming, record, device_memory,
-        [&](DAddr address, u64 length) {
-            WriteWatch::Note(WriteWatch::Kind::Download, address, length);
-            ++merge_cost.land_runs;
-            merge_cost.land_bytes += length;
+        [](DAddr address, u64 length) {
+            GeoHunt::Journal(GeoHunt::Writer::BufferDownload, address, length);
         },
         [&](DAddr address, u64 length) {
-            WriteWatch::Note(WriteWatch::Kind::Kept, address, length);
             if (!merge_kept.empty() &&
                 merge_kept.back().first + merge_kept.back().second == address) {
                 merge_kept.back().second += length;
@@ -935,11 +884,6 @@ void BufferCache<P>::LandDownload(DAddr start, u64 size, const u8* incoming, u64
                 merge_kept.emplace_back(address, length);
             }
         });
-    if (timed) {
-        merge_cost.merge += std::chrono::steady_clock::now() - begin;
-        merge_cost.merge_bytes += size;
-        ++merge_cost.merge_ranges;
-    }
 }
 
 template <class P>
@@ -948,13 +892,10 @@ void BufferCache<P>::ApplyKeptCpuWrites() {
     if (merge_kept.empty()) {
         return;
     }
-    const auto begin = std::chrono::steady_clock::now();
     for (const auto& [address, size] : merge_kept) {
         WriteMemory(address, size);
     }
-    merge_cost.kept_runs += merge_kept.size();
     merge_kept.clear();
-    merge_cost.kept += std::chrono::steady_clock::now() - begin;
 }
 
 template <class P>
@@ -1821,7 +1762,6 @@ void BufferCache<P>::UpdateComputeTextureBuffers() {
 template <class P>
 void BufferCache<P>::MarkWrittenBuffer(ReadbackTrace::WriteOrigin origin, BufferId buffer_id,
                                        DAddr device_addr, u32 size, bool needs_sync) {
-    WriteWatch::Note(WriteWatch::Kind::GpuWrite, device_addr, size);
     NoteWriteOrigin(origin, device_addr, size);
     if constexpr (!IS_OPENGL) {
         if (needs_sync) {
@@ -2234,7 +2174,6 @@ void BufferCache<P>::GeoHuntVerify(DAddr device_addr, u32 size) {
 template <class P>
 bool BufferCache<P>::InlineMemory(DAddr dest_address, size_t copy_size,
                                   std::span<const u8> inlined_buffer) {
-    WriteWatch::Note(WriteWatch::Kind::Inline, dest_address, copy_size);
     const bool is_dirty = IsRegionRegistered(dest_address, copy_size);
     if (!is_dirty) {
         return false;
@@ -2345,8 +2284,8 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
         for (const BufferCopy& copy : copies) {
             buffer.ImmediateDownload(copy.src_offset, immediate_buffer.subspan(0, copy.size));
             const DAddr copy_device_addr = buffer.CpuAddr() + copy.src_offset;
-            WriteWatch::Note(WriteWatch::Kind::Download, copy_device_addr, copy.size);
             device_memory.WriteBlockUnsafe(copy_device_addr, immediate_buffer.data(), copy.size);
+            GeoHunt::Journal(GeoHunt::Writer::BufferImmediate, copy_device_addr, copy.size);
             ReadbackTrace::Log("buffer immediate", copy_device_addr, copy.size,
                                immediate_buffer.first(copy.size));
         }

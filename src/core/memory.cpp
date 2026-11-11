@@ -35,7 +35,6 @@
 #include "video_core/cpu_write_queue.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_written_pages.h"
-#include "video_core/write_watch.h"
 #include "video_core/perf_counters.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/host1x/host1x.h"
@@ -825,7 +824,6 @@ struct Memory::Impl {
             }
         };
         gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
-            VideoCommon::WriteWatch::Note(VideoCommon::WriteWatch::Kind::Cpu, address, size);
             auto& current_area = rasterizer_write_areas[core];
             PAddr subaddress = address >> YUZU_PAGEBITS;
             // Performance note:

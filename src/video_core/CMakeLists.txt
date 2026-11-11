@@ -97,8 +97,6 @@ add_library(video_core STATIC
     frame_trace.cpp
     cpu_write_queue.h
     buffer_cache/download_shadow.h
-    write_watch.cpp
-    write_watch.h
     geometry_hunt.cpp
     geometry_hunt.h
     frame_pipeline.h

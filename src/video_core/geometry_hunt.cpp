@@ -3,6 +3,7 @@
 
 #include "video_core/geometry_hunt.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -480,6 +481,175 @@ void Report(u64 page, Role role, const Protection& protection, bool healed) {
                     protection.cpu_cached ? 1 : 0, protection.alias_cached, protection.aliases);
     }
     entry.mask = 0;
+}
+
+namespace {
+
+struct JournalWrite {
+    u64 address;
+    u64 time_ms;
+    u32 size;
+    u32 frame;
+    Writer writer;
+};
+/// The two newest emulator writes of each page, newest first.
+using JournalPage = std::array<JournalWrite, 2>;
+/// About 64 bytes each; cleared whole past this many pages.
+constexpr size_t JOURNAL_PAGES = 512 * 1024;
+constexpr u32 OOB_REPORTS = 64;
+
+std::mutex journal_mutex;
+std::unordered_map<u64, JournalPage> journal;
+std::unordered_set<u64> oob_reported;
+u64 journal_clears{};
+u32 oob_reports{};
+thread_local Writer current_writer = Writer::GpuMemory;
+std::atomic<u64> journal_frame{};
+
+const char* WriterName(Writer writer) {
+    switch (writer) {
+    case Writer::GpuMemory:
+        return "gpu-memory(i2m/dma/cbuf)";
+    case Writer::BufferDownload:
+        return "buffer-download";
+    case Writer::BufferImmediate:
+        return "buffer-immediate";
+    case Writer::BufferCheckpoint:
+        return "pulse-buffer-checkpoint";
+    case Writer::TextureDownload:
+        return "texture-download";
+    case Writer::TextureCheckpoint:
+        return "pulse-texture-checkpoint";
+    case Writer::Query:
+        return "query";
+    }
+    return "?";
+}
+
+} // Anonymous namespace
+
+void NoteFrame(u64 new_frame) {
+    journal_frame.store(new_frame, std::memory_order_relaxed);
+}
+
+void ConfigureOob(bool check, bool fix) {
+    oob_check.store(check, std::memory_order_relaxed);
+    oob_fix.store(fix, std::memory_order_relaxed);
+    LOG_INFO(HW_GPU, "geo_oob: check {}, fix {}", check, fix);
+}
+
+void SetOobFix(bool on) {
+    oob_fix.store(on, std::memory_order_relaxed);
+    {
+        std::scoped_lock lock{mutex};
+        if (std::FILE* const out = Log()) {
+            fmt::print(out, "t{} ms: out-of-range triangle fix {}\n", NowMs(), on ? "on" : "off");
+            std::fflush(out);
+        }
+    }
+    LOG_INFO(HW_GPU, "geo_oob: fix {}", on ? "on" : "off");
+}
+
+WriterScope::WriterScope(Writer writer) : previous{current_writer} {
+    current_writer = writer;
+}
+
+WriterScope::~WriterScope() {
+    current_writer = previous;
+}
+
+void Journal(u64 address, u64 size) {
+    Journal(current_writer, address, size);
+}
+
+void Journal(Writer writer, u64 address, u64 size) {
+    if (size == 0 || !OobCheck()) {
+        return;
+    }
+    const u64 now = NowMs();
+    const u32 now_frame = static_cast<u32>(journal_frame.load(std::memory_order_relaxed));
+    const u64 first = address >> PAGE_BITS;
+    const u64 last = (address + size - 1) >> PAGE_BITS;
+    std::scoped_lock lock{journal_mutex};
+    if (journal.size() > JOURNAL_PAGES) {
+        journal.clear();
+        ++journal_clears;
+    }
+    for (u64 page = first; page <= last; ++page) {
+        JournalPage& slots = journal[page];
+        const u64 page_start = page << PAGE_BITS;
+        const u64 begin = std::max(address, page_start);
+        const u64 end = std::min(address + size, page_start + PAGE_SIZE);
+        const JournalWrite write{begin, now, static_cast<u32>(end - begin), now_frame, writer};
+        // Back-to-back writes of the same kind (a download in pieces) keep one slot.
+        if (slots[0].size != 0 && slots[0].writer == writer && slots[0].time_ms == now) {
+            const u64 lo = std::min(slots[0].address, begin);
+            const u64 hi = std::max(slots[0].address + slots[0].size, end);
+            slots[0].address = lo;
+            slots[0].size = static_cast<u32>(hi - lo);
+            continue;
+        }
+        slots[1] = slots[0];
+        slots[0] = write;
+    }
+}
+
+void ReportOob(const OobDraw& draw) {
+    const u64 key = draw.index_address ^ (u64{draw.count} << 40) ^ (u64{draw.index_size} << 60);
+    std::vector<std::string> lines;
+    {
+        std::scoped_lock lock{journal_mutex};
+        if (oob_reports >= OOB_REPORTS || !oob_reported.insert(key).second) {
+            return;
+        }
+        ++oob_reports;
+        const u64 bytes = u64{draw.count} * draw.index_size;
+        const u64 first = draw.index_address >> PAGE_BITS;
+        const u64 last = (draw.index_address + std::max<u64>(bytes, 1) - 1) >> PAGE_BITS;
+        for (u64 page = first; page <= last && page < first + 16; ++page) {
+            const auto it = journal.find(page);
+            if (it == journal.end() || it->second[0].size == 0) {
+                lines.push_back(fmt::format("    page {:#x}: no emulator write recorded", page
+                                                                                       << PAGE_BITS));
+                continue;
+            }
+            for (const JournalWrite& write : it->second) {
+                if (write.size == 0) {
+                    continue;
+                }
+                const bool overlaps = write.address < draw.index_address + bytes &&
+                                      draw.index_address < write.address + write.size;
+                lines.push_back(fmt::format(
+                    "    page {:#x}: {} {:#x}+{:#x} f{} t{} ms{}", page << PAGE_BITS,
+                    WriterName(write.writer), write.address, write.size, write.frame,
+                    write.time_ms, overlaps ? " OVERLAPS THE INDICES" : ""));
+            }
+        }
+        if (journal_clears != 0) {
+            lines.push_back(fmt::format("    (journal was cleared {} times: older writes lost)",
+                                        journal_clears));
+        }
+    }
+    const u64 vs = draw.vertex_shader != 0 ? draw.vertex_shader : shader_a;
+    std::scoped_lock lock{mutex};
+    if (std::FILE* const out = Log()) {
+        fmt::print(out,
+                   "f{} t{} ms OOB-INDEX ib {:#x} count {} isz {} topo {} max {} base {} "
+                   "limit {} bad {} first bad #{}={} vs {:016x} -> {}\n",
+                   frame, NowMs(), draw.index_address, draw.count, draw.index_size,
+                   draw.topology, draw.max_index, draw.base_vertex, draw.vertex_limit, draw.bad,
+                   draw.first_bad, draw.first_bad_value, vs,
+                   draw.fixed ? "bad triangles dropped" : "drawn as is (fix off)");
+        fmt::print(out, "  emulator writes to the index pages (newest first):\n");
+        for (const std::string& line : lines) {
+            fmt::print(out, "{}\n", line);
+        }
+        std::fflush(out);
+    }
+    LOG_WARNING(HW_GPU,
+                "geo_oob: ib {:#x} count {} max index {} + base {} >= {} vertices ({} bad), {}",
+                draw.index_address, draw.count, draw.max_index, draw.base_vertex,
+                draw.vertex_limit, draw.bad, draw.fixed ? "dropped" : "drawn");
 }
 
 } // namespace VideoCommon::GeoHunt

@@ -103,4 +103,68 @@ void Dirty(u64 page);
 /// Logs the confirmed missed write Check just returned. healed: marked CPU modified.
 void Report(u64 page, Role role, const Protection& protection, bool healed);
 
+// ---- Out-of-range indices (on in every build, not only with geo_hunt) ----
+// An index that points past the vertex buffers makes D3D12 fetch zeros: the triangle stretches
+// to the model origin (big flat spikes). The buffer cache checks each index range against the
+// draw's vertex streams; with the fix on, triangles using such indices are dropped.
+
+inline std::atomic_bool oob_check{true};
+inline std::atomic_bool oob_fix{true};
+
+[[nodiscard]] inline bool OobCheck() {
+    return oob_check.load(std::memory_order_relaxed);
+}
+[[nodiscard]] inline bool OobFix() {
+    return oob_fix.load(std::memory_order_relaxed);
+}
+/// Boot and menu: check / drop out-of-range triangles.
+void ConfigureOob(bool check, bool fix);
+/// Buffer cache, every frame: the frame number the journal and the reports carry.
+void NoteFrame(u64 frame);
+void SetOobFix(bool on);
+
+/// Who wrote guest memory from the emulator side, for the journal.
+enum class Writer : u8 {
+    GpuMemory,        ///< MemoryManager writes: inline-to-memory, DMA, const buffer updates
+    BufferDownload,   ///< buffer cache download landing (GPU-written bytes)
+    BufferImmediate,  ///< buffer cache immediate download
+    BufferCheckpoint, ///< Pulse checkpoint of GPU-modified buffer ranges
+    TextureDownload,  ///< texture cache flush of a GPU-written image
+    TextureCheckpoint,///< Pulse checkpoint of GPU-modified images
+    Query,            ///< query/semaphore results
+};
+
+/// Tags the MemoryManager writes of this thread while alive.
+class WriterScope {
+public:
+    explicit WriterScope(Writer writer);
+    ~WriterScope();
+    WriterScope(const WriterScope&) = delete;
+    WriterScope& operator=(const WriterScope&) = delete;
+
+private:
+    Writer previous;
+};
+
+/// Records an emulator write to guest memory (device address). Cheap no-op when the check is off.
+void Journal(u64 address, u64 size);
+void Journal(Writer writer, u64 address, u64 size);
+
+struct OobDraw {
+    u64 index_address;   ///< device address of the first index of the draw
+    u64 vertex_shader;
+    u32 count;           ///< indices
+    u32 index_size;      ///< bytes
+    u32 max_index;       ///< largest index (restart excluded)
+    u32 bad;             ///< indices at or above limit
+    u32 first_bad;       ///< position of the first one
+    u32 first_bad_value;
+    s64 base_vertex;
+    u32 vertex_limit;    ///< vertices the largest per-vertex stream holds
+    u32 topology;
+    bool fixed;
+};
+/// Logs the first out-of-range draw of an index range, with the journal of its pages.
+void ReportOob(const OobDraw& draw);
+
 } // namespace VideoCommon::GeoHunt
