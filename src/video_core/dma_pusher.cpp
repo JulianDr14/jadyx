@@ -13,6 +13,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/geometry_hunt.h"
 #include "video_core/gpu.h"
+#include "video_core/gpu_fast_paths.h"
 #include "video_core/gpu_written_pages.h"
 #include "video_core/guest_memory.h"
 #include "video_core/memory_manager.h"
@@ -165,6 +166,10 @@ void DmaPusher::ProcessCommands(std::span<const CommandHeader> commands) {
             dma_state.is_last_call = true;
             index += max_write;
         } else if (dma_state.method_count) {
+            if (const u32 words = StoreRegisterRun(commands.subspan(index), index); words != 0) {
+                index += words;
+                continue;
+            }
             if (const u32 words = CallConstBufferRun(commands.subspan(index), index); words != 0) {
                 index += words;
                 continue;
@@ -274,6 +279,35 @@ void DmaPusher::CallMethod(u32 argument) {
             subchannel->CallMethod(system, dma_state.method, argument, dma_state.is_last_call);
         }
     }
+}
+
+u32 DmaPusher::StoreRegisterRun(std::span<const CommandHeader> pending, size_t index) {
+    if (dma_increment_once || dma_state.method < non_puller_methods ||
+        subchannel_type[dma_state.subchannel] != Engines::EngineTypes::Maxwell3D ||
+        !VideoCore::FastPaths::Enabled()) {
+        return 0;
+    }
+    auto* const maxwell = static_cast<Engines::Maxwell3D*>(subchannels[dma_state.subchannel]);
+    if (!maxwell) {
+        return 0;
+    }
+    // Most words of a frame only set a register: word by word, each one goes through
+    // CallConstBufferRun, CallMethod and the engine's sink before it reaches the register.
+    const u32 limit = static_cast<u32>(std::min<size_t>(dma_state.method_count, pending.size()));
+    u32 words = 0;
+    while (words < limit && !maxwell->execution_mask[dma_state.method + words]) {
+        ++words;
+    }
+    if (words == 0) {
+        return 0;
+    }
+    maxwell->StoreRegisterRun(system, dma_state.method, &pending[0].argument, words);
+    // What the last of those CallMethod calls would have left.
+    dma_state.dma_word_offset = u32((index + words - 1) * sizeof(u32));
+    dma_state.method += words;
+    dma_state.method_count -= words;
+    dma_state.is_last_call = dma_state.method_count == 0;
+    return words;
 }
 
 u32 DmaPusher::CallConstBufferRun(std::span<const CommandHeader> pending, size_t index) {

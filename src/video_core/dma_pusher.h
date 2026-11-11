@@ -152,6 +152,10 @@ private:
     /// Writes the leading CB_DATA words of the current packet as one block; returns how many it
     /// took, 0 to leave them to CallMethod.
     u32 CallConstBufferRun(std::span<const CommandHeader> pending, size_t index);
+    /// Stores the leading words of the current incrementing packet that only set Maxwell3D
+    /// registers (no method that acts at once) in one call; returns how many it took, 0 to
+    /// leave them to CallMethod (VideoCore::FastPaths).
+    u32 StoreRegisterRun(std::span<const CommandHeader> pending, size_t index);
 
 public:
     Common::ScratchBuffer<CommandHeader> command_headers; ///< Buffer for list of commands fetched at once

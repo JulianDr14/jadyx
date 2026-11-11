@@ -329,6 +329,23 @@ void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
     method_sink.clear();
 }
 
+void Maxwell3D::StoreRegisterRun(Core::System& system, u32 method, const u32* words, u32 amount) {
+    ConsumeSink(system);
+    const auto control = shadow_state.shadow_ram_control;
+    if (control == Regs::ShadowRamControl::Track || control == Regs::ShadowRamControl::TrackWithFilter) {
+        for (u32 i = 0; i < amount; ++i) {
+            shadow_state.reg_array[method + i] = words[i];
+            ProcessDirtyRegisters(method + i, words[i]);
+        }
+    } else if (control == Regs::ShadowRamControl::Replay) {
+        for (u32 i = 0; i < amount; ++i)
+            ProcessDirtyRegisters(method + i, shadow_state.reg_array[method + i]);
+    } else {
+        for (u32 i = 0; i < amount; ++i)
+            ProcessDirtyRegisters(method + i, words[i]);
+    }
+}
+
 void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
     if (regs.reg_array[method] == argument) {
         VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::MaxwellDirtyUnchanged, 1);
