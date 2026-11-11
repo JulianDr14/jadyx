@@ -181,8 +181,6 @@ struct BootConfig {
     /// "geo_oob_fix=0" keeps the check and its log but draws the triangles as they are.
     bool geo_oob{true};
     bool geo_oob_fix{true};
-    /// Vertex resync ("vb_resync=1"): see VideoCommon::GeoHunt::VbResync.
-    bool vb_resync{};
     u32 geo_hunt_check_kb{};
     u32 geo_hunt_upload_kb{};
     /// On by default ("precise_writes=0" or the glitch hunt page turns it off): CPU writes into a

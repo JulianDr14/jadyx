@@ -369,7 +369,6 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
         VideoCommon::GeoHunt::ConfigureAudit(0);
     }
     VideoCommon::GeoHunt::ConfigureOob(config.geo_oob, config.geo_oob && config.geo_oob_fix);
-    VideoCommon::GeoHunt::SetVbResync(config.vb_resync);
     VideoCommon::SetMipRenderTargets(config.mip_render_targets);
     VideoCommon::SetRenderTargetInheritance(config.render_target_inheritance);
     VideoCommon::SetReclaimSupersededImages(config.reclaim_superseded_images);

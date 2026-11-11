@@ -211,8 +211,7 @@ void SessionMenu::Open() {
                                   config.pso_menu,
                                   D3D12::GetPipelineBuildBoost(), options.motion_stick, options.motion_shake,
                                   options.rumble, input.GameRumbleSettings(),
-                                  VideoCommon::GeoHunt::OobFix(),
-                                  VideoCommon::GeoHunt::VbResync()},
+                                  VideoCommon::GeoHunt::OobFix()},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
     const bool from_notice = notice_shown;
@@ -667,11 +666,6 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
     if (result == GameMenuResult::GlitchTogglesChanged) {
         ApplyGlitchToggles(glitch_toggles, menu->Settings().glitch);
         glitch_toggles = menu->Settings().glitch;
-    }
-    if (result == GameMenuResult::GeoVbResyncChanged) {
-        const bool on = menu->Settings().geo_vb_resync;
-        VideoCommon::GeoHunt::SetVbResync(on);
-        WriteDiag(std::string{"menu: vertex resync of old feedback "} + (on ? "on" : "off"));
     }
     if (result == GameMenuResult::GeoOobFixChanged) {
         VideoCommon::GeoHunt::SetOobFix(menu->Settings().geo_oob_fix);

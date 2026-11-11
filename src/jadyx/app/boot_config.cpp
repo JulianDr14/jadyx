@@ -350,11 +350,6 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 WriteDiag("boot.cfg: out-of-range index check off");
                 continue;
             }
-            if (line == "vb_resync=1") {
-                config.vb_resync = true;
-                WriteDiag("boot.cfg: vertex resync of old feedback");
-                continue;
-            }
             if (line == "geo_oob_fix=0") {
                 config.geo_oob_fix = false;
                 WriteDiag("boot.cfg: out-of-range triangles drawn as they are");

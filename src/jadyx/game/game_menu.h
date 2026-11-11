@@ -152,9 +152,6 @@ struct GameMenuSettings {
     /// Geometry hunt package: drop the triangles whose indices point past the vertex buffers
     /// (they would stretch to the model origin). Shown with the geo_hunt rows.
     bool geo_oob_fix{true};
-    /// Vertex resync: vertex bytes an older frame's transform feedback left are uploaded again
-    /// from guest memory.
-    bool geo_vb_resync{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -177,7 +174,6 @@ enum class GameMenuResult : std::uint8_t {
     /// Geometry hunt: mark the moment in its log, or one of its fixes changed.
     GeoMark,
     GeoOobFixChanged,
-    GeoVbResyncChanged,
     /// Settings().pso_boost changed.
     PsoBoostChanged,
     /// The room chat's page.
@@ -216,7 +212,7 @@ public:
         GfxGpuAccuracy, GfxConsoleMode, Amiibo, MemoryEdit,
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
         GlitchPage, GlitchCapture, GlitchA2cShader, GlitchPreciseWrites,
-        GeoMark, GeoOobFix, GeoVbResync, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
+        GeoMark, GeoOobFix, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
         GyroStick, GyroShake, Rumble, RumbleStrength,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
@@ -234,7 +230,7 @@ public:
         if (settings.material_capture) quick.push_back(CaptureGraphics);
         if (settings.performance_capture) quick.push_back(CapturePerformance);
         if (settings.glitch_hunt) quick.push_back(GlitchPage);
-        if (settings.geo_hunt) quick.insert(quick.end(), {GeoMark, GeoOobFix, GeoVbResync});
+        if (settings.geo_hunt) quick.insert(quick.end(), {GeoMark, GeoOobFix});
         if (settings.pso_menu) quick.push_back(PsoBoost);
         quick.push_back(Library);
         glitch = {GlitchCapture, GlitchA2cShader, GlitchPreciseWrites};
@@ -409,10 +405,6 @@ private:
         case GeoOobFix:
             return {Tr(Text::MenuGeoOobFix), Tr(settings.geo_oob_fix ? Text::Yes : Text::No),
                     Choice, Tr(Text::MenuGeoOobFixDetail), UiIcon::Settings};
-        case GeoVbResync:
-            return {Tr(Text::MenuGeoVbResync),
-                    Tr(settings.geo_vb_resync ? Text::MenuGeoVbResyncOldFeedback : Text::No),
-                    Choice, Tr(Text::MenuGeoVbResyncDetail), UiIcon::Settings};
         case PsoBoost:
             return {Tr(Text::MenuPsoBoost),
                     Tr(settings.pso_boost == 0   ? Text::No
@@ -722,9 +714,6 @@ private:
         case GeoOobFix:
             settings.geo_oob_fix = !settings.geo_oob_fix;
             return GameMenuResult::GeoOobFixChanged;
-        case GeoVbResync:
-            settings.geo_vb_resync = !settings.geo_vb_resync;
-            return GameMenuResult::GeoVbResyncChanged;
         case PsoBoost:
             // Steps through off, above normal, highest.
             settings.pso_boost = settings.pso_boost == 0 ? 2 : settings.pso_boost == 2 ? 3 : 0;
