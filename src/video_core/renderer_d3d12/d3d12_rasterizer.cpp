@@ -15,7 +15,6 @@
 
 #include "common/alignment.h"
 #include "common/bug_tracker.h"
-#include "common/semaphore_trace.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -1159,44 +1158,39 @@ void RasterizerD3D12::Query(GPUVAddr address, VideoCommon::QueryType type,
                             VideoCommon::QueryPropertiesFlags flags, u32 payload,
                             u32 subreport) {
     const bool host_type = QueryCacheRuntime::IsHostCounted(type);
-    {
-        // Diagnostic: every guest query by raw type, logged at 1, 2, 4, 8... requests.
-        static std::array<std::atomic<u64>, 32> query_counts{};
-        const u32 slot = static_cast<u32>(type) & 31;
-        const u64 count = ++query_counts[slot];
-        if ((count & (count - 1)) == 0 || (host_type && count <= 80)) {
-            LOG_WARNING(Render,
-                        "D3D12: guest query type {} flags {:#x} payload {:#x} addr {:#x} "
-                        "({}), request #{}",
-                        static_cast<u32>(type), static_cast<u32>(flags), payload, address,
-                        host_type ? "host counter" : "fallback", count);
-        }
-    }
-    if (type == VideoCommon::QueryType::ZPassPixelCount64) {
-        static u32 diag_logged{};
-        if (diag_logged++ < 40) {
-            const ZPassDiag& d = zpass_diag;
-            LOG_WARNING(Render,
-                        "D3D12: ZPass report since reset: {} draws ({} recorded, {} conditional, "
-                        "{} culled, {} no pipeline, {} pipeline building, {} rejected, {} skipped "
-                        "shader, {} empty); first recorded VS/PS/depth: {:016x}/{:016x}/{} "
-                        "{:016x}/{:016x}/{} {:016x}/{:016x}/{}",
-                        d.attempted, d.recorded, d.conditional, d.culled, d.no_pipeline,
-                        d.pending, d.rejected, d.skipped_shader, d.empty, d.vs[0], d.ps[0], d.depth_test[0],
-                        d.vs[1], d.ps[1], d.depth_test[1], d.vs[2], d.ps[2], d.depth_test[2]);
-        }
-    }
+    using VideoCore::Perf::Counter;
     if (type == VideoCommon::QueryType::StreamingByteCount && HasDrawTransformFeedback()) {
         return QueryByteCount(address, flags, subreport);
     }
+    const bool timed = VideoCore::Perf::DetailedGpuProfileEnabled();
+    const auto start = timed ? std::chrono::steady_clock::now()
+                             : std::chrono::steady_clock::time_point{};
+    const auto finish = [&](Counter ns_counter) {
+        if (timed) {
+            VideoCore::Perf::Add(ns_counter,
+                                 static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                      std::chrono::steady_clock::now() - start)
+                                                      .count()));
+        }
+    };
     if (!host_type) {
-        // A report the CPU writes ends any counter report pending at the address.
-        if (const std::optional<DAddr> cpu_address = gpu_memory->GpuToCpuAddress(address)) {
+        VideoCore::Perf::Add(type == VideoCommon::QueryType::Payload ? Counter::QueriesPayload
+                                                                     : Counter::QueriesFallback,
+                             1);
+        // A report the CPU writes ends any counter report pending at the address. With no
+        // report cached there is none to end (the count only grows on this thread).
+        if (query_cache.CachedQueries() == 0) {
+            VideoCore::Perf::Add(Counter::QueryInvalidationsSkipped, 1);
+        } else if (const std::optional<DAddr> cpu_address =
+                       gpu_memory->GpuToCpuAddress(address)) {
             query_cache.InvalidateRegion(*cpu_address, sizeof(u64));
         }
-        return QueryFallback(address, type, flags, payload);
+        QueryFallback(address, type, flags, payload);
+        return finish(Counter::QueryFallbackNs);
     }
+    VideoCore::Perf::Add(Counter::QueriesHost, 1);
     query_cache.CounterReport(address, type, flags, payload, subreport);
+    finish(Counter::QueryHostNs);
 }
 
 bool RasterizerD3D12::HasDrawTransformFeedback() {
@@ -1241,12 +1235,9 @@ void RasterizerD3D12::QueryFallback(GPUVAddr address, VideoCommon::QueryType typ
                                     VideoCommon::QueryPropertiesFlags flags, u32 payload) {
     if (!gpu_memory) return;
     if (type != VideoCommon::QueryType::Payload) payload = 1;
-    using Common::SemaphoreTrace::Stage;
-    Common::SemaphoreTrace::Record(Stage::Requested, address, gpu_memory->GetPointer(address),
-                                   payload, static_cast<u32>(type), static_cast<u32>(flags));
     // A write that waited for its fence must not overwrite a newer one that ran at once.
     const u64 ticket = semaphore_order.Request(address);
-    auto operation = [this, address, type, flags, payload, ticket, memory = gpu_memory] {
+    auto operation = [this, address, flags, payload, ticket, memory = gpu_memory] {
         const bool written = semaphore_order.Write(address, ticket, [&] {
             if (True(flags & VideoCommon::QueryPropertiesFlags::HasTimeout)) {
                 memory->Write<u64>(address + 8, gpu.GetTicks());
@@ -1257,12 +1248,10 @@ void RasterizerD3D12::QueryFallback(GPUVAddr address, VideoCommon::QueryType typ
         });
         if (!written) {
             VideoCore::Perf::Add(VideoCore::Perf::Counter::SemaphoreWritesSuperseded, 1);
-            return;
         }
-        Common::SemaphoreTrace::Record(Stage::Written, address, memory->GetPointer(address),
-                                       payload, static_cast<u32>(type), static_cast<u32>(flags));
     };
     if (True(flags & VideoCommon::QueryPropertiesFlags::IsAFence)) {
+        VideoCore::Perf::Add(VideoCore::Perf::Counter::QueriesFenced, 1);
         SignalFence(std::move(operation));
     } else {
         operation();

@@ -320,6 +320,7 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         auto it_current = sub_container.find(base);
         if (it_current == sub_container.end()) {
             sub_container.insert_or_assign(base, query_location);
+            cached_entries.fetch_add(1, std::memory_order_relaxed);
             return;
         }
         auto* old_query = impl->ObtainQuery(it_current->second);
@@ -349,6 +350,7 @@ void QueryCacheBase<Traits>::UnregisterPending() {
             if (it2 != it1->second.end()) {
                 if (it2->second.raw == loc.raw) {
                     it1->second.erase(it2);
+                    cached_entries.fetch_sub(1, std::memory_order_relaxed);
                 }
             }
         }
