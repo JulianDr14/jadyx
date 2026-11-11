@@ -59,7 +59,7 @@ Result NpadVibrationDevice::Mount(IAbstractedPad& abstracted_pad, Core::HID::Dev
     f32 volume{1.0f};
     const auto result = vibration_handler->GetVibrationVolume(volume);
     if (result.IsSuccess()) {
-        xcd_handle->SetVibration(false);
+        xcd_handle->SetVibration(device_index, Core::HID::DEFAULT_VIBRATION_VALUE);
     }
 
     return ResultSuccess;
