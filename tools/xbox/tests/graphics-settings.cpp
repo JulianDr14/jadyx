@@ -61,6 +61,11 @@ int main() {
     check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::CpuWriteQueue));
     check(HandleGraphicsInput(page, GraphicsInput::Confirm) && page.settings.cpu_write_queue);
     check(GraphicsRowValue(page.settings, GraphicsRow::CpuWriteQueue) == L"Sí");
+    // The GPU thread's fast paths: on by default.
+    check(defaults.gpu_fast_paths && GraphicsRowValue(page.settings, GraphicsRow::GpuFastPaths) == L"Sí");
+    check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::GpuFastPaths));
+    check(HandleGraphicsInput(page, GraphicsInput::Confirm) && !page.settings.gpu_fast_paths);
+    check(GraphicsRowValue(page.settings, GraphicsRow::GpuFastPaths) == L"No");
     // The fixed core map: off by default (only the GPU thread pinned), and the page's last row.
     check(!defaults.fixed_core_map && GraphicsRowValue(page.settings, GraphicsRow::FixedCoreMap) == L"No");
     check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::FixedCoreMap));
@@ -152,6 +157,15 @@ int main() {
     check(!ResolveGraphics(queue_global, shaders).cpu_write_queue);
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.cpu_write_queue);
     check(ResolveGraphics(queue_global, shaders).cpu_write_queue);
+    // The GPU thread's fast paths: on for a game that follows the default, off where the game asks.
+    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::GpuFastPaths));
+    check(ResolveGraphics(global, shaders).gpu_fast_paths);
+    check(GameGraphicsRowValue(global, shaders, GraphicsRow::GpuFastPaths) == L"Ajustes · Sí");
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.gpu_fast_paths == true);
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.gpu_fast_paths == false);
+    check(!ResolveGraphics(global, shaders).gpu_fast_paths);
+    check(GameGraphicsRowValue(global, shaders, GraphicsRow::GpuFastPaths) == L"No");
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.gpu_fast_paths);
     // The fixed core map: follows Settings > Graphics until the game has its own.
     check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::FixedCoreMap));
     check(!ResolveGraphics(global, shaders).fixed_core_map);

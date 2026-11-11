@@ -750,6 +750,8 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::AsyncRecordHint, L"Avançado. Envia os comandos em uma thread separada. Desligar pode baixar os fps. Vale ao iniciar o jogo"},
     {Text::CpuWriteQueue, L"Fila de escritas da CPU"},
     {Text::CpuWriteQueueHint, L"Avançado. Só se um jogo melhorar com ela: em outros baixa muito os fps. Vale ao iniciar o jogo"},
+    {Text::GpuFastPaths, L"Rotas rápidas da thread de GPU"},
+    {Text::GpuFastPathsHint, L"Avançado. Poupa trabalho na thread de GPU. Desligue só se um jogo mostrar falhas gráficas com elas. Vale ao iniciar o jogo"},
     {Text::FixedCoreMap, L"Mapa de núcleos fixo"},
     {Text::FixedCoreMapHint, L"Avançado. Coloca cada thread do emulador em um núcleo fixo, como antes. Só se um jogo ficar mais lento sem ele. Também no menu do jogo, sem reiniciar"},
     {Text::SlowGuestClock, L"Relógio do jogo a 90%"},

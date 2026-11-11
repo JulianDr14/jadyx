@@ -750,6 +750,8 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::AsyncRecordHint, L"Advanced. Sends commands on a separate thread. Turning it off can lower the fps. Applied when the game starts"},
     {Text::CpuWriteQueue, L"CPU write queue"},
     {Text::CpuWriteQueueHint, L"Advanced. Only if a game improves with it: in others it lowers the fps a lot. Applied when the game starts"},
+    {Text::GpuFastPaths, L"Fast GPU thread paths"},
+    {Text::GpuFastPathsHint, L"Advanced. Saves work on the GPU thread. Turn it off only if a game shows graphics glitches with it. Applied when the game starts"},
     {Text::FixedCoreMap, L"Fixed core map"},
     {Text::FixedCoreMapHint, L"Advanced. Puts each emulator thread on a fixed core, as before. Only if a game runs slower without it. Also in the in-game menu, without restarting"},
     {Text::SlowGuestClock, L"Game clock at 90%"},

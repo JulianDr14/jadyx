@@ -33,6 +33,7 @@
 #include "dynarmic/interface/jit_profile.h"
 #include "jadyx/game/game_menu.h"
 #include "video_core/cpu_write_queue.h"
+#include "video_core/gpu_fast_paths.h"
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/fence_manager.h"
 #include "video_core/frame_pipeline.h"
@@ -140,7 +141,8 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
                                            : VideoCore::SemaphoreOrder::Mode::Supersede);
     WriteDiag("graphics: guest clock " + std::to_string(clock_percent) + " %, exact GPU reads " +
               (exact_gpu_reads ? "on" : "off") + ", CPU write queue " +
-              (config.cpu_write_defer == VideoCore::FramePipeline::Mode::Off ? "off" : "on") + ", upscaling " +
+              (config.cpu_write_defer == VideoCore::FramePipeline::Mode::Off ? "off" : "on") +
+              ", GPU thread fast paths " + (config.gpu_fast_paths ? "on" : "off") + ", upscaling " +
               (config.upscaling ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(UpscalingText(graphics.upscaling)))) +
               ", frame generation " +
               (config.frame_gen ? std::string{"from boot.cfg"} : std::string{graphics.frame_gen ? "auto" : "off"}) +
@@ -427,6 +429,7 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetPsoBudget(config.pso_budget);
     D3D12::SetPsoLoading(config.pso_loading);
     VideoCommon::CpuWriteQueue::SetMode(config.cpu_write_defer);
+    VideoCore::FastPaths::SetEnabled(config.gpu_fast_paths);
     VideoCommon::CpuWriteQueue::EnableTest(config.cpu_write_test);
     // The JIT load table and the write queue trust the bitmap, so it is kept for them too.
     VideoCommon::GpuWrittenPages::SetEnabled(

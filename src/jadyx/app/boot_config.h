@@ -359,6 +359,8 @@ struct BootConfig {
     /// Settings > Graphics "Fixed core map" (the game's own over the global one): the topology
     /// map instead of the default, which pins only the GPU thread.
     bool fixed_core_map{};
+    /// VideoCore::FastPaths, from Settings > Graphics and the game's own Graphics.
+    bool gpu_fast_paths{true};
     bool cpu_probe{}; ///< Measures the app's logical processors before the guest (cpu_probe.h).
     bool timer_profile{}; ///< HostTiming waits only; opt-in, separate from draw profiling.
     /// File name of a game in LocalState\games to boot instead of boot.nro (package-appx.ps1 -Game).

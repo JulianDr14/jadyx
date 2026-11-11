@@ -28,6 +28,7 @@ void UseGameAdvancedGraphics(BootConfig& config, u64 program_id) {
     config.async_record = graphics.async_record;
     config.cpu_write_defer = graphics.cpu_write_queue ? VideoCore::FramePipeline::Mode::On
                                                       : VideoCore::FramePipeline::Mode::Off;
+    config.gpu_fast_paths = graphics.gpu_fast_paths;
     config.fixed_core_map = graphics.fixed_core_map;
     if (program_id == 0) return;
     const GameAdvancedGraphics& advanced = game.advanced;

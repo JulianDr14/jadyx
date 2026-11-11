@@ -700,6 +700,8 @@ enum class Text : std::uint16_t {
     AsyncRecordHint,
     CpuWriteQueue,
     CpuWriteQueueHint,
+    GpuFastPaths,
+    GpuFastPathsHint,
     FixedCoreMap,
     FixedCoreMapHint,
     SlowGuestClock,
