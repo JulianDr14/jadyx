@@ -80,4 +80,8 @@ void SetBootScreen(BootScreen draw);
 /// presents (the GPU thread's first work, the disk shader cache's progress).
 void EndBootScreen(VideoCore::RendererBase& renderer);
 
+/// Driver pipeline objects (graphics and compute) the renderer has built so far in this process;
+/// it only grows. Any thread.
+[[nodiscard]] u64 PipelinesBuilt();
+
 } // namespace D3D12
