@@ -1,0 +1,57 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#version 450
+
+// Reads back, through the texture unit, the marker blocks the copy engine just wrote into a
+// block-compressed 2D array (TextureCacheRuntime::ProbeAstcArrayLayers). One invocation per
+// marker: per layer, three blocks of level 0 (first, middle, last) and the first block of every
+// other level. A layer the texture unit looks for somewhere else returns another texel.
+
+#ifdef VULKAN
+#define BEGIN_PUSH_CONSTANTS layout(push_constant) uniform PushConstants {
+#define END_PUSH_CONSTANTS };
+#define UNIFORM(n)
+#else
+#define BEGIN_PUSH_CONSTANTS
+#define END_PUSH_CONSTANTS
+#define UNIFORM(n) layout(location = n) uniform
+#endif
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+BEGIN_PUSH_CONSTANTS
+UNIFORM(0) uint image_width;
+UNIFORM(1) uint image_height;
+UNIFORM(2) uint layers;
+UNIFORM(3) uint levels;
+UNIFORM(4) uint per_layer; // levels + 2
+UNIFORM(5) uint total;
+END_PUSH_CONSTANTS
+
+layout(binding = 0) uniform sampler2DArray probe_image;
+layout(binding = 1, std430) writeonly restrict buffer OutputBuffer {
+    uint output_words[];
+};
+
+void main() {
+    const uint index = gl_GlobalInvocationID.x;
+    if (index >= total) {
+        return;
+    }
+    const uint layer = index / per_layer;
+    const uint slot = index % per_layer;
+    const uint level = slot < 3u ? 0u : slot - 2u;
+    const uint width = max(image_width >> level, 1u);
+    const uint height = max(image_height >> level, 1u);
+    const uvec2 blocks = uvec2((width + 3u) / 4u, (height + 3u) / 4u);
+    uvec2 block = uvec2(0u);
+    if (slot == 1u) {
+        block = blocks / 2u;
+    } else if (slot == 2u) {
+        block = blocks - 1u;
+    }
+    const uvec2 texel = min(block * 4u + 1u, uvec2(width, height) - 1u);
+    const vec4 color = texelFetch(probe_image, ivec3(ivec2(texel), int(layer)), int(level));
+    output_words[index] = packUnorm4x8(color);
+}

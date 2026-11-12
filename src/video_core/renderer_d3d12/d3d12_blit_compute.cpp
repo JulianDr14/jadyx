@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "common/div_ceil.h"
+#include "video_core/host_shaders/d3d12_array_layer_probe_comp_spv.h"
 #include "video_core/host_shaders/d3d12_astc_decoder_comp_spv.h"
 #include "video_core/host_shaders/d3d12_bc3_encoder_comp_spv.h"
 #include "video_core/host_shaders/d3d12_bcn_decoder_comp_spv.h"
@@ -355,6 +356,41 @@ void BlitImageHelper::EncodeBc(const BcEncode& encode) {
     cmd->SetComputeRootUnorderedAccessView(BC3_DESTINATION_PARAM, encode.destination);
     const std::array<u32, 3> groups{Common::DivCeil(encode.width, 4U * BC3_GROUP_SIZE),
                                     Common::DivCeil(encode.band_height, 4U * BC3_GROUP_SIZE), 1U};
+    SetComputeRuntimeData(cmd, 3, groups);
+    cmd->Dispatch(groups[0], groups[1], groups[2]);
+}
+
+void BlitImageHelper::CreateArrayProbePipeline(const ShaderCompiler& compiler) {
+    const std::array<ShaderCompiler::PipelineStage, 1> stages{{
+        {D3D12_ARRAY_LAYER_PROBE_COMP_SPV, DXIL_SPIRV_SHADER_COMPUTE},
+    }};
+    auto compiled = compiler.CompilePipeline(stages, {});
+    const auto& dxil = compiled[0].dxil;
+    const D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline_desc{
+        .pRootSignature = bc3_root_signature.Get(), .CS = {dxil.data(), dxil.size()}};
+    ThrowIfFailed(device.Get()->CreateComputePipelineState(&pipeline_desc,
+                                                           IID_PPV_ARGS(&array_probe_pipeline)),
+                  "CreateComputePipelineState (array layer probe)");
+}
+
+void BlitImageHelper::ProbeArrayLayers(const ArrayLayerProbe& probe) {
+    const u32 per_layer = probe.levels + 2;
+    const u32 total = per_layer * probe.layers;
+    if (!array_probe_available || total == 0) {
+        return;
+    }
+    const D3D12_GPU_DESCRIPTOR_HANDLE table = descriptor_ring.Upload({&probe.source, 1});
+    CommandStream* const cmd = scheduler.CommandList();
+    ID3D12DescriptorHeap* const heaps[] = {descriptor_ring.Heap(), sampler_heap.Heap()};
+    cmd->SetDescriptorHeaps(2, heaps);
+    cmd->SetComputeRootSignature(bc3_root_signature.Get());
+    scheduler.SetPipelineState(array_probe_pipeline.Get());
+    const std::array<u32, BC3_CONSTANT_WORDS> constants{
+        probe.width, probe.height, probe.layers, probe.levels, per_layer, total};
+    cmd->SetComputeRoot32BitConstants(BC3_CONSTANTS_PARAM, BC3_CONSTANT_WORDS, constants.data(), 0);
+    cmd->SetComputeRootDescriptorTable(BC3_SOURCE_PARAM, table);
+    cmd->SetComputeRootUnorderedAccessView(BC3_DESTINATION_PARAM, probe.destination);
+    const std::array<u32, 3> groups{Common::DivCeil(total, 64U), 1U, 1U};
     SetComputeRuntimeData(cmd, 3, groups);
     cmd->Dispatch(groups[0], groups[1], groups[2]);
 }
