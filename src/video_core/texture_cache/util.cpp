@@ -666,7 +666,6 @@ u32 CalculateHostUnswizzledSizeBytes(const ImageInfo& info, const HostRowLayout&
 namespace {
 std::atomic<int> astc_array_mode{static_cast<int>(AstcArrayMode::Auto)};
 std::atomic<bool> opaque_astc_to_bc1{false};
-std::atomic<int> astc_array_mode_request{-1};
 
 /// The ASTC array shapes the layer probe caught misread as BC, and those waiting for the texture
 /// cache to drop their images. Read on every format decision, so empty lists skip the lock.
@@ -682,16 +681,14 @@ std::mutex misread_mutex;
 std::vector<AstcArrayShape> misread_shapes;
 std::vector<AstcArrayShape> pending_misread_shapes;
 std::atomic<bool> any_misread_shape{false};
-std::atomic<bool> any_pending_misread{false};
+std::atomic<bool> any_pending_change{false};
+std::atomic<u64> rgba_cap{DEFAULT_ASTC_ARRAY_RGBA_CAP};
+u64 requested_rgba_cap{}; ///< 0: none. Under misread_mutex.
 
 AstcArrayShape ShapeOf(const ImageInfo& info) noexcept {
     return {info.format, info.size.width, info.size.height,
             static_cast<u32>(info.resources.layers), info.resources.levels};
 }
-
-/// RGBA8 for a misread array is four times BC3: above this it keeps BC and the glitch, rather
-/// than risk the memory limit (one 121-layer array once took 650 MiB as RGBA8).
-constexpr u64 MISREAD_RGBA_CAP = 160ULL << 20;
 
 u64 RgbaBytes(const AstcArrayShape& shape) noexcept {
     u64 bytes = 0;
@@ -706,9 +703,17 @@ bool IsMisreadShape(const ImageInfo& info) noexcept {
     if (!any_misread_shape.load(std::memory_order_acquire)) {
         return false;
     }
+    // RGBA8 is four times BC3: one 121-layer array once took 650 MiB that way.
     const AstcArrayShape shape = ShapeOf(info);
+    if (RgbaBytes(shape) > rgba_cap.load(std::memory_order_relaxed)) {
+        return false;
+    }
     std::scoped_lock lock{misread_mutex};
     return std::ranges::find(misread_shapes, shape) != misread_shapes.end();
+}
+
+bool Contains(const std::vector<AstcArrayShape>& shapes, const AstcArrayShape& shape) {
+    return std::ranges::find(shapes, shape) != shapes.end();
 }
 } // Anonymous namespace
 
@@ -720,55 +725,72 @@ AstcArrayMode GetAstcArrayMode() noexcept {
     return static_cast<AstcArrayMode>(astc_array_mode.load(std::memory_order_relaxed));
 }
 
-void RequestAstcArrayMode(AstcArrayMode mode) noexcept {
-    astc_array_mode_request.store(static_cast<int>(mode), std::memory_order_relaxed);
+void SetAstcArrayRgbaCap(u64 bytes) noexcept {
+    rgba_cap.store(bytes, std::memory_order_relaxed);
 }
 
-int PendingAstcArrayMode() noexcept {
-    return astc_array_mode_request.load(std::memory_order_relaxed);
-}
-
-bool ClearAstcArrayMode(int request) noexcept {
-    return astc_array_mode_request.compare_exchange_strong(request, -1,
-                                                           std::memory_order_relaxed);
+void RequestAstcArrayRgbaCap(u64 bytes) noexcept {
+    std::scoped_lock lock{misread_mutex};
+    if (bytes == rgba_cap.load(std::memory_order_relaxed)) {
+        // Back to the cap in use (or never left it): nothing to reload.
+        requested_rgba_cap = 0;
+        any_pending_change.store(!pending_misread_shapes.empty(), std::memory_order_release);
+        return;
+    }
+    requested_rgba_cap = bytes;
+    any_pending_change.store(true, std::memory_order_release);
 }
 
 bool ReportAstcArrayMisread(const ImageInfo& info) noexcept {
     const AstcArrayShape shape = ShapeOf(info);
-    if (RgbaBytes(shape) > MISREAD_RGBA_CAP) {
-        return false;
-    }
     std::scoped_lock lock{misread_mutex};
-    if (std::ranges::find(misread_shapes, shape) == misread_shapes.end() &&
-        std::ranges::find(pending_misread_shapes, shape) == pending_misread_shapes.end()) {
+    if (!Contains(misread_shapes, shape) && !Contains(pending_misread_shapes, shape)) {
         pending_misread_shapes.push_back(shape);
-        any_pending_misread.store(true, std::memory_order_release);
+        any_pending_change.store(true, std::memory_order_release);
     }
-    return true;
+    const u64 cap = requested_rgba_cap != 0 ? requested_rgba_cap
+                                            : rgba_cap.load(std::memory_order_relaxed);
+    return RgbaBytes(shape) <= cap;
 }
 
-bool HasPendingAstcArrayMisreads() noexcept {
-    return any_pending_misread.load(std::memory_order_acquire);
+bool HasPendingAstcArrayChange() noexcept {
+    return any_pending_change.load(std::memory_order_acquire);
 }
 
-bool IsPendingAstcArrayMisread(const ImageInfo& info) noexcept {
-    if (!HasPendingAstcArrayMisreads()) {
+u64 PendingAstcArrayRgbaCap() noexcept {
+    std::scoped_lock lock{misread_mutex};
+    return requested_rgba_cap != 0 ? requested_rgba_cap : rgba_cap.load(std::memory_order_relaxed);
+}
+
+bool AstcArrayChangesWith(const ImageInfo& info, u64 cap) noexcept {
+    if (!HasPendingAstcArrayChange()) {
         return false;
     }
     const AstcArrayShape shape = ShapeOf(info);
+    const u64 bytes = RgbaBytes(shape);
     std::scoped_lock lock{misread_mutex};
-    return std::ranges::find(pending_misread_shapes, shape) != pending_misread_shapes.end();
+    if (Contains(pending_misread_shapes, shape)) {
+        return bytes <= cap; // BC now, RGBA8 once committed
+    }
+    if (Contains(misread_shapes, shape)) {
+        return (bytes <= rgba_cap.load(std::memory_order_relaxed)) != (bytes <= cap);
+    }
+    return false;
 }
 
-size_t CommitAstcArrayMisreads() noexcept {
+size_t CommitAstcArrayChange(u64 cap) noexcept {
     std::scoped_lock lock{misread_mutex};
-    const size_t count = pending_misread_shapes.size();
     misread_shapes.insert(misread_shapes.end(), pending_misread_shapes.begin(),
                           pending_misread_shapes.end());
     pending_misread_shapes.clear();
-    any_pending_misread.store(false, std::memory_order_release);
+    rgba_cap.store(cap, std::memory_order_relaxed);
+    if (requested_rgba_cap == cap) {
+        requested_rgba_cap = 0;
+    }
+    any_pending_change.store(requested_rgba_cap != 0, std::memory_order_release);
     any_misread_shape.store(!misread_shapes.empty(), std::memory_order_release);
-    return count;
+    return static_cast<size_t>(std::ranges::count_if(
+        misread_shapes, [cap](const AstcArrayShape& shape) { return RgbaBytes(shape) <= cap; }));
 }
 
 bool WantsAstcArrayProbe(const ImageInfo& info) noexcept {

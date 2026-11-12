@@ -295,7 +295,7 @@ void TextureCacheRuntime::PollAstcArrayProbes() {
                     probe.width, probe.height, probe.layers, probe.levels,
                     KIND_NAMES[probe.kind], probe.gpu_addr, bad_layers.size(), probe.layers,
                     list, first_read, first_expected,
-                    rgba ? "this shape goes RGBA8" : "too large for RGBA8, stays BC");
+                    rgba ? "this shape goes RGBA8" : "over the RGBA8 cap, stays BC (raise the ASTC array limit)");
         return true;
     });
 }

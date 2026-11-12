@@ -119,7 +119,8 @@ void SetXAudio2ProfileEnabled(bool enabled) noexcept; // audio_core/sink/xaudio2
 namespace VideoCommon {
 enum class AstcArrayMode : int;                          // texture_cache/util.h
 void SetAstcArrayMode(AstcArrayMode mode) noexcept;     // texture_cache/util.h
-void RequestAstcArrayMode(AstcArrayMode mode) noexcept; // texture_cache/util.h
+void SetAstcArrayRgbaCap(u64 bytes) noexcept;           // texture_cache/util.h
+void RequestAstcArrayRgbaCap(u64 bytes) noexcept;       // texture_cache/util.h
 void SetOpaqueAstcToBc1(bool enabled) noexcept;        // texture_cache/util.h
 void SetMipRenderTargets(bool enabled) noexcept;       // texture_cache/texture_cache_base.h
 void SetRenderTargetInheritance(bool enabled) noexcept; // texture_cache/texture_cache_base.h

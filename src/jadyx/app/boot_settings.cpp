@@ -461,8 +461,7 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
 
 GlitchToggles GlitchTogglesOf(const BootConfig& config) {
     return {.a2c_shader = config.a2c_shader,
-            .precise_writes = config.precise_writes,
-            .astc_arrays = config.astc_arrays};
+            .precise_writes = config.precise_writes};
 }
 
 void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
@@ -481,11 +480,6 @@ void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
     VideoCommon::ReadbackTrace::SetPreciseCpuWrites(now.precise_writes);
     D3D12::SetArrayOwnMemory(now.array_own_memory);
     D3D12::SetArrayRewrite(now.array_rewrite);
-    if (before.astc_arrays != now.astc_arrays) {
-        static constexpr const char* names[] = {"auto", "rgba", "bc"};
-        WriteDiag(fmt::format("menu: glitch A/B astc_arrays {}", names[now.astc_arrays % 3]));
-        VideoCommon::RequestAstcArrayMode(static_cast<VideoCommon::AstcArrayMode>(now.astc_arrays));
-    }
 }
 
 } // namespace Jadyx

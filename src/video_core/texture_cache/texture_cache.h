@@ -370,28 +370,17 @@ void TextureCache<P>::TickFrame() {
         }
         return std::optional<size_t>{arrays.size()};
     };
-    if (const int request = PendingAstcArrayMode(); request >= 0) {
-        const auto dropped = drop_astc_arrays([](const ImageInfo&) { return true; }, [&] {
-            if (!ClearAstcArrayMode(request)) return false;
-            SetAstcArrayMode(static_cast<AstcArrayMode>(request));
-            return true;
-        });
-        if (dropped) {
-            static constexpr const char* names[] = {"auto (probed BC)", "RGBA8", "BC"};
-            LOG_INFO(HW_GPU, "ASTC arrays: {} from now on, {} arrays dropped to reload",
-                     names[std::clamp(request, 0, 2)], *dropped);
-        }
-    }
-    if (HasPendingAstcArrayMisreads()) {
-        size_t shapes = 0;
+    if (HasPendingAstcArrayChange()) {
+        const u64 cap = PendingAstcArrayRgbaCap();
+        size_t rgba_shapes = 0;
         const auto dropped = drop_astc_arrays(
-            [](const ImageInfo& info) { return IsPendingAstcArrayMisread(info); }, [&] {
-                shapes = CommitAstcArrayMisreads();
+            [cap](const ImageInfo& info) { return AstcArrayChangesWith(info, cap); }, [&] {
+                rgba_shapes = CommitAstcArrayChange(cap);
                 return true;
             });
         if (dropped) {
-            LOG_INFO(HW_GPU, "ASTC arrays: {} misread shapes now RGBA8, {} arrays dropped to "
-                     "reload", shapes, *dropped);
+            LOG_INFO(HW_GPU, "ASTC arrays: RGBA8 cap {} MiB, {} misread shapes as RGBA8, {} arrays "
+                     "dropped to reload", cap >> 20, rgba_shapes, *dropped);
         }
     }
     if constexpr (requires(Image& image) { runtime.ArrayExperiment(image); }) {
