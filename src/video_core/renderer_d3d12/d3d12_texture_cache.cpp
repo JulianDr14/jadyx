@@ -622,7 +622,7 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
     }
     if (VideoCore::Surface::IsPixelFormatASTC(info_.format)) {
         // Per image: arrays may stay RGBA8 when the rest is recompressed (see
-        // VideoCommon::SetAstcArrayRecompression).
+        // VideoCommon::AstcArrayMode).
         format = AstcFormatFor(info_);
         // How much the opaque images re-encoded as BC1 and the alpha masks as BC4 save
         // (VideoCommon::SetOpaqueAstcToBc1).

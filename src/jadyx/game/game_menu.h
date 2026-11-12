@@ -97,7 +97,7 @@ struct GlitchToggles {
     bool precise_writes{true}; ///< CPU writes beside GPU bytes apply at once
     bool array_own_memory{}; ///< large compressed arrays moved to memory of their own
     bool array_rewrite{}; ///< large compressed arrays copied out and back in place
-    bool astc_arrays_rgba{}; ///< ASTC arrays kept as RGBA8 instead of recompressed to BC
+    int astc_arrays{}; ///< ASTC arrays: 0 auto (probed BC), 1 RGBA8, 2 BC (AstcArrayMode)
 };
 
 struct GameMenuSettings {
@@ -432,8 +432,11 @@ private:
             return {L"array_rewrite", Tr(settings.glitch.array_rewrite ? Text::Yes : Text::No),
                     Choice, L"Large compressed texture arrays are copied out and back in place"};
         case GlitchAstcArraysRgba:
-            return {L"astc_arrays_rgba", Tr(settings.glitch.astc_arrays_rgba ? Text::Yes : Text::No),
-                    Choice, L"ASTC texture arrays stay RGBA8 instead of BC (reloads them)"};
+            return {L"astc_arrays",
+                    settings.glitch.astc_arrays == 1   ? L"RGBA8"
+                    : settings.glitch.astc_arrays == 2 ? L"BC"
+                                                       : L"Auto",
+                    Choice, L"ASTC texture arrays: Auto probes each as BC, or all RGBA8, or all BC (reloads them)"};
         case MemoryEdit:
             return {Tr(Text::MemoryEditTitle), {}, Page,
                     memory_edit_hits != 0
@@ -728,7 +731,7 @@ private:
             settings.glitch.array_rewrite = !settings.glitch.array_rewrite;
             return GameMenuResult::GlitchTogglesChanged;
         case GlitchAstcArraysRgba:
-            settings.glitch.astc_arrays_rgba = !settings.glitch.astc_arrays_rgba;
+            settings.glitch.astc_arrays = (settings.glitch.astc_arrays + 1) % 3;
             return GameMenuResult::GlitchTogglesChanged;
         case GeoMark:
             if (!confirm) return GameMenuResult::None;

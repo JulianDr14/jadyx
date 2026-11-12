@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <span>
@@ -663,29 +664,117 @@ u32 CalculateHostUnswizzledSizeBytes(const ImageInfo& info, const HostRowLayout&
 }
 
 namespace {
-std::atomic<bool> recompress_astc_arrays{true};
+std::atomic<int> astc_array_mode{static_cast<int>(AstcArrayMode::Auto)};
 std::atomic<bool> opaque_astc_to_bc1{false};
+std::atomic<int> astc_array_mode_request{-1};
+
+/// The ASTC array shapes the layer probe caught misread as BC, and those waiting for the texture
+/// cache to drop their images. Read on every format decision, so empty lists skip the lock.
+struct AstcArrayShape {
+    PixelFormat format;
+    u32 width;
+    u32 height;
+    u32 layers;
+    s32 levels;
+    bool operator==(const AstcArrayShape&) const = default;
+};
+std::mutex misread_mutex;
+std::vector<AstcArrayShape> misread_shapes;
+std::vector<AstcArrayShape> pending_misread_shapes;
+std::atomic<bool> any_misread_shape{false};
+std::atomic<bool> any_pending_misread{false};
+
+AstcArrayShape ShapeOf(const ImageInfo& info) noexcept {
+    return {info.format, info.size.width, info.size.height,
+            static_cast<u32>(info.resources.layers), info.resources.levels};
+}
+
+/// RGBA8 for a misread array is four times BC3: above this it keeps BC and the glitch, rather
+/// than risk the memory limit (one 121-layer array once took 650 MiB as RGBA8).
+constexpr u64 MISREAD_RGBA_CAP = 160ULL << 20;
+
+u64 RgbaBytes(const AstcArrayShape& shape) noexcept {
+    u64 bytes = 0;
+    for (s32 level = 0; level < shape.levels; ++level) {
+        bytes += static_cast<u64>(std::max(1U, shape.width >> level)) *
+                 std::max(1U, shape.height >> level) * 4;
+    }
+    return bytes * shape.layers;
+}
+
+bool IsMisreadShape(const ImageInfo& info) noexcept {
+    if (!any_misread_shape.load(std::memory_order_acquire)) {
+        return false;
+    }
+    const AstcArrayShape shape = ShapeOf(info);
+    std::scoped_lock lock{misread_mutex};
+    return std::ranges::find(misread_shapes, shape) != misread_shapes.end();
+}
 } // Anonymous namespace
 
-void SetAstcArrayRecompression(bool enabled) noexcept {
-    recompress_astc_arrays.store(enabled, std::memory_order_relaxed);
+void SetAstcArrayMode(AstcArrayMode mode) noexcept {
+    astc_array_mode.store(static_cast<int>(mode), std::memory_order_relaxed);
 }
 
-namespace {
-std::atomic<int> astc_arrays_rgba_request{-1};
-} // Anonymous namespace
-
-void RequestAstcArraysRgba(bool rgba) noexcept {
-    astc_arrays_rgba_request.store(rgba ? 1 : 0, std::memory_order_relaxed);
+AstcArrayMode GetAstcArrayMode() noexcept {
+    return static_cast<AstcArrayMode>(astc_array_mode.load(std::memory_order_relaxed));
 }
 
-int PendingAstcArraysRgba() noexcept {
-    return astc_arrays_rgba_request.load(std::memory_order_relaxed);
+void RequestAstcArrayMode(AstcArrayMode mode) noexcept {
+    astc_array_mode_request.store(static_cast<int>(mode), std::memory_order_relaxed);
 }
 
-bool ClearAstcArraysRgba(int request) noexcept {
-    return astc_arrays_rgba_request.compare_exchange_strong(request, -1,
-                                                            std::memory_order_relaxed);
+int PendingAstcArrayMode() noexcept {
+    return astc_array_mode_request.load(std::memory_order_relaxed);
+}
+
+bool ClearAstcArrayMode(int request) noexcept {
+    return astc_array_mode_request.compare_exchange_strong(request, -1,
+                                                           std::memory_order_relaxed);
+}
+
+bool ReportAstcArrayMisread(const ImageInfo& info) noexcept {
+    const AstcArrayShape shape = ShapeOf(info);
+    if (RgbaBytes(shape) > MISREAD_RGBA_CAP) {
+        return false;
+    }
+    std::scoped_lock lock{misread_mutex};
+    if (std::ranges::find(misread_shapes, shape) == misread_shapes.end() &&
+        std::ranges::find(pending_misread_shapes, shape) == pending_misread_shapes.end()) {
+        pending_misread_shapes.push_back(shape);
+        any_pending_misread.store(true, std::memory_order_release);
+    }
+    return true;
+}
+
+bool HasPendingAstcArrayMisreads() noexcept {
+    return any_pending_misread.load(std::memory_order_acquire);
+}
+
+bool IsPendingAstcArrayMisread(const ImageInfo& info) noexcept {
+    if (!HasPendingAstcArrayMisreads()) {
+        return false;
+    }
+    const AstcArrayShape shape = ShapeOf(info);
+    std::scoped_lock lock{misread_mutex};
+    return std::ranges::find(pending_misread_shapes, shape) != pending_misread_shapes.end();
+}
+
+size_t CommitAstcArrayMisreads() noexcept {
+    std::scoped_lock lock{misread_mutex};
+    const size_t count = pending_misread_shapes.size();
+    misread_shapes.insert(misread_shapes.end(), pending_misread_shapes.begin(),
+                          pending_misread_shapes.end());
+    pending_misread_shapes.clear();
+    any_pending_misread.store(false, std::memory_order_release);
+    any_misread_shape.store(!misread_shapes.empty(), std::memory_order_release);
+    return count;
+}
+
+bool WantsAstcArrayProbe(const ImageInfo& info) noexcept {
+    return GetAstcArrayMode() == AstcArrayMode::Auto && IsPixelFormatASTC(info.format) &&
+           info.type == ImageType::e2D && info.resources.layers > 1 &&
+           AstcRecompressionFor(info) != Settings::AstcRecompression::Uncompressed;
 }
 
 void SetOpaqueAstcToBc1(bool enabled) noexcept {
@@ -716,8 +805,11 @@ AstcMask AstcAlphaMaskFor(const ImageInfo& info) noexcept {
 
 Settings::AstcRecompression AstcRecompressionFor(const ImageInfo& info) noexcept {
     const bool is_array = info.resources.layers > 1 || info.size.depth > 1;
-    if (is_array && !recompress_astc_arrays.load(std::memory_order_relaxed)) {
-        return Settings::AstcRecompression::Uncompressed;
+    if (is_array) {
+        const AstcArrayMode mode = GetAstcArrayMode();
+        if (mode == AstcArrayMode::Rgba || (mode == AstcArrayMode::Auto && IsMisreadShape(info))) {
+            return Settings::AstcRecompression::Uncompressed;
+        }
     }
     const Settings::AstcRecompression recompression = Settings::values.astc_recompression.GetValue();
     if (recompression == Settings::AstcRecompression::Bc3 && info.astc_opaque) {

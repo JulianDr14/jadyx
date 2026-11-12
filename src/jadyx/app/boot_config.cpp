@@ -971,8 +971,11 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                               : line == "astc=cpu"      ? Astc::Cpu
                                                        : Astc::Bc3;
                 WriteDiag("boot.cfg: ASTC " + line.substr(5));
-            } else if (line == "astc_arrays=bc3" || line == "astc_arrays=rgba") {
-                config.astc_arrays_rgba = line == "astc_arrays=rgba";
+            } else if (line == "astc_arrays=auto" || line == "astc_arrays=rgba" ||
+                       line == "astc_arrays=bc3") {
+                config.astc_arrays = line == "astc_arrays=rgba" ? 1
+                                     : line == "astc_arrays=bc3" ? 2
+                                                                 : 0;
                 WriteDiag("boot.cfg: ASTC arrays " + line.substr(12));
             } else if (line == "astc_opaque=bc1" || line == "astc_opaque=bc3") {
                 config.astc_opaque_bc3 = line == "astc_opaque=bc3";

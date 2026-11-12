@@ -50,18 +50,35 @@ struct HostRowLayout {
 
 [[nodiscard]] u32 CalculateConvertedSizeBytes(const ImageInfo& info) noexcept;
 
-/// Keeps ASTC 2D arrays and 3D images decoded to RGBA8 even when astc_recompression asks for BC1
-/// or BC3 (the default is to recompress them too). The Xbox Series samples some layers of
-/// block-compressed 2D arrays from the wrong place (see renderer_d3d12's DecodedBcFormat).
-void SetAstcArrayRecompression(bool enabled) noexcept;
+/// How ASTC 2D arrays are stored on D3D12. Recompressed BC arrays can be read from the wrong
+/// place in some layers on the Series (the texture unit and the copy engine disagree), so:
+///  - Auto: BC, and the backend probes each new array's layers once (WantsAstcArrayProbe); the
+///    shapes it catches misread are then kept as RGBA8, only those, up to a size cap.
+///  - Rgba: every ASTC array as RGBA8 (four times the memory).
+///  - Bc: every ASTC array as BC, no probe.
+enum class AstcArrayMode : int { Auto = 0, Rgba = 1, Bc = 2 };
+void SetAstcArrayMode(AstcArrayMode mode) noexcept;
+[[nodiscard]] AstcArrayMode GetAstcArrayMode() noexcept;
 
-/// Diagnostic: asks the texture cache to switch ASTC arrays to RGBA8 (true) or back to the
-/// recompressed format (false) at its next frame, dropping the arrays it holds so they reload.
-void RequestAstcArraysRgba(bool rgba) noexcept;
-/// The pending RequestAstcArraysRgba: -1 none, 0 recompress, 1 RGBA8.
-[[nodiscard]] int PendingAstcArraysRgba() noexcept;
+/// Glitch page: asks the texture cache to switch the mode at its next frame, dropping the ASTC
+/// arrays it holds so they reload.
+void RequestAstcArrayMode(AstcArrayMode mode) noexcept;
+/// The pending RequestAstcArrayMode as an int, -1 when none.
+[[nodiscard]] int PendingAstcArrayMode() noexcept;
 /// Clears the pending request if it is still `request`; false when another one replaced it.
-bool ClearAstcArraysRgba(int request) noexcept;
+bool ClearAstcArrayMode(int request) noexcept;
+
+/// Whether the backend should probe this new image's layers (Auto mode, an ASTC 2D array kept as
+/// BC).
+[[nodiscard]] bool WantsAstcArrayProbe(const ImageInfo& info) noexcept;
+/// The probe found layers of an array of this shape misread: queues the shape for RGBA8. False
+/// when RGBA8 would be too large, and the shape stays BC.
+bool ReportAstcArrayMisread(const ImageInfo& info) noexcept;
+[[nodiscard]] bool HasPendingAstcArrayMisreads() noexcept;
+[[nodiscard]] bool IsPendingAstcArrayMisread(const ImageInfo& info) noexcept;
+/// Makes the queued shapes RGBA8 from now on; the texture cache calls it when it drops the
+/// images of those shapes, so no image changes format while it lives. Returns how many.
+size_t CommitAstcArrayMisreads() noexcept;
 
 /// Re-encodes the ASTC images that have no alpha to BC1 instead of BC3 when astc_recompression
 /// asks for BC3: half the memory. Only for backends whose image formats follow

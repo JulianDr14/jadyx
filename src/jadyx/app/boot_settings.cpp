@@ -329,13 +329,13 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetCpuTextureWrites(config.cpu_texture_writes);
     // RGBA8 ASTC made loading frames upload 150-260 MiB at once and the console run out of memory
     // (0.2.50): textures become BC3 (a quarter of the memory), 2D arrays too unless
-    // astc_arrays=rgba (BootConfig::astc_arrays_rgba), all decoded and encoded on the GPU.
+    // they turn out misread (BootConfig::astc_arrays), all decoded and encoded on the GPU.
     const bool astc_rgba = config.astc == BootConfig::Astc::Cpu ||
                            config.astc == BootConfig::Astc::GpuRgba;
     Settings::values.astc_recompression.SetValue(astc_rgba
                                                      ? Settings::AstcRecompression::Uncompressed
                                                      : Settings::AstcRecompression::Bc3);
-    VideoCommon::SetAstcArrayRecompression(!config.astc_arrays_rgba);
+    VideoCommon::SetAstcArrayMode(static_cast<VideoCommon::AstcArrayMode>(config.astc_arrays));
     VideoCommon::SetOpaqueAstcToBc1(!config.astc_opaque_bc3);
     D3D12::SetAstcDropTopLevel(config.astc_drop_mip0);
     // The compute decoder was opt-in until its dispatches set spirv_to_dxil's compute runtime data
@@ -460,7 +460,9 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
 }
 
 GlitchToggles GlitchTogglesOf(const BootConfig& config) {
-    return {.a2c_shader = config.a2c_shader, .precise_writes = config.precise_writes};
+    return {.a2c_shader = config.a2c_shader,
+            .precise_writes = config.precise_writes,
+            .astc_arrays = config.astc_arrays};
 }
 
 void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
@@ -473,15 +475,16 @@ void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
     log("precise_writes", before.precise_writes, now.precise_writes);
     log("array_own_memory", before.array_own_memory, now.array_own_memory);
     log("array_rewrite", before.array_rewrite, now.array_rewrite);
-    log("astc_arrays_rgba", before.astc_arrays_rgba, now.astc_arrays_rgba);
     // Each is read at use: draws after this take the new value, and pipelines whose key depends
     // on it (a2c_shader) are built on first use.
     D3D12::SetShaderAlphaToCoverage(now.a2c_shader);
     VideoCommon::ReadbackTrace::SetPreciseCpuWrites(now.precise_writes);
     D3D12::SetArrayOwnMemory(now.array_own_memory);
     D3D12::SetArrayRewrite(now.array_rewrite);
-    if (before.astc_arrays_rgba != now.astc_arrays_rgba) {
-        VideoCommon::RequestAstcArraysRgba(now.astc_arrays_rgba);
+    if (before.astc_arrays != now.astc_arrays) {
+        static constexpr const char* names[] = {"auto", "rgba", "bc"};
+        WriteDiag(fmt::format("menu: glitch A/B astc_arrays {}", names[now.astc_arrays % 3]));
+        VideoCommon::RequestAstcArrayMode(static_cast<VideoCommon::AstcArrayMode>(now.astc_arrays));
     }
 }
 

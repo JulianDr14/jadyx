@@ -334,15 +334,19 @@ void TextureCache<P>::TickFrame() {
     if (total_used_memory > minimum_memory) {
         RunGarbageCollector();
     }
-    if (const int request = PendingAstcArraysRgba(); request >= 0) {
-        // The CPU upload reads the setting per upload, so it changes here, under the cache lock,
-        // together with dropping every ASTC array made with the old one. Wait for decodes.
+    if constexpr (requires { runtime.PollAstcArrayProbes(); }) {
+        runtime.PollAstcArrayProbes();
+    }
+    // The ASTC array format is read per upload, so it only changes here, under the cache lock,
+    // together with dropping the arrays made with the old one. Waits while any of them decodes.
+    const auto drop_astc_arrays = [&](auto&& matches, auto&& commit) {
         std::vector<ImageId> arrays;
         bool decoding = false;
         lru_cache.ForEachItemBelow(frame_tick + 1, [&](ImageId image_id) {
             Image& image = slot_images[image_id];
             if (!IsPixelFormatASTC(image.info.format) ||
-                (image.info.resources.layers <= 1 && image.info.size.depth <= 1)) {
+                (image.info.resources.layers <= 1 && image.info.size.depth <= 1) ||
+                !matches(image.info)) {
                 return false;
             }
             if (True(image.flags & ImageFlagBits::IsDecoding)) {
@@ -352,19 +356,42 @@ void TextureCache<P>::TickFrame() {
             arrays.push_back(image_id);
             return false;
         });
-        if (!decoding && ClearAstcArraysRgba(request)) {
-            SetAstcArrayRecompression(request == 0);
-            for (const ImageId image_id : arrays) {
-                Image& image = slot_images[image_id];
-                if (True(image.flags & ImageFlagBits::Tracked)) {
-                    UntrackImage(image, image_id);
-                }
-                NoteImageDeleted(image, ImageDeleteReason::Evicted);
-                UnregisterImage(image_id);
-                DeleteImage(image_id);
+        if (decoding || !commit()) {
+            return std::optional<size_t>{};
+        }
+        for (const ImageId image_id : arrays) {
+            Image& image = slot_images[image_id];
+            if (True(image.flags & ImageFlagBits::Tracked)) {
+                UntrackImage(image, image_id);
             }
-            LOG_INFO(HW_GPU, "ASTC arrays A/B: {} from now on, {} arrays dropped to reload",
-                     request ? "RGBA8" : "recompressed", arrays.size());
+            NoteImageDeleted(image, ImageDeleteReason::Evicted);
+            UnregisterImage(image_id);
+            DeleteImage(image_id);
+        }
+        return std::optional<size_t>{arrays.size()};
+    };
+    if (const int request = PendingAstcArrayMode(); request >= 0) {
+        const auto dropped = drop_astc_arrays([](const ImageInfo&) { return true; }, [&] {
+            if (!ClearAstcArrayMode(request)) return false;
+            SetAstcArrayMode(static_cast<AstcArrayMode>(request));
+            return true;
+        });
+        if (dropped) {
+            static constexpr const char* names[] = {"auto (probed BC)", "RGBA8", "BC"};
+            LOG_INFO(HW_GPU, "ASTC arrays: {} from now on, {} arrays dropped to reload",
+                     names[std::clamp(request, 0, 2)], *dropped);
+        }
+    }
+    if (HasPendingAstcArrayMisreads()) {
+        size_t shapes = 0;
+        const auto dropped = drop_astc_arrays(
+            [](const ImageInfo& info) { return IsPendingAstcArrayMisread(info); }, [&] {
+                shapes = CommitAstcArrayMisreads();
+                return true;
+            });
+        if (dropped) {
+            LOG_INFO(HW_GPU, "ASTC arrays: {} misread shapes now RGBA8, {} arrays dropped to "
+                     "reload", shapes, *dropped);
         }
     }
     if constexpr (requires(Image& image) { runtime.ArrayExperiment(image); }) {
