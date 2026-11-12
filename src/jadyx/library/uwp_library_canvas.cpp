@@ -1403,7 +1403,6 @@ private:
                 case SystemPage::PerformanceStats: item.kind = Kind::Toggle; item.on = settings.show_performance_stats; break;
                 case SystemPage::PulseSessions: item.kind = Kind::Toggle; item.on = settings.pulse_sessions; break;
                 case SystemPage::PlayTime: item.kind = Kind::Toggle; item.on = settings.track_play_time; break;
-                case SystemPage::MultipleControllers: item.kind = Kind::Toggle; item.on = settings.multiple_controllers; break;
                 case SystemPage::OfflineMode: item.kind = Kind::Toggle; item.on = settings.offline_mode; break;
                 default: break;
                 }

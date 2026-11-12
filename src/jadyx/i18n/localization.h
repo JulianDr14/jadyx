@@ -675,8 +675,6 @@ enum class Text : std::uint16_t {
     LastPlayed,
     PlayTimeSorted,
     LastPlayedSorted,
-    MultipleControllers,
-    MultipleControllersHint,
     OfflineMode,
     OfflineModeHint,
     MenuOfflineSystem,

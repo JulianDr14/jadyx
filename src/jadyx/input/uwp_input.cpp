@@ -926,8 +926,6 @@ void GamepadInput::Start(Core::HID::HIDCore& hid_) {
     // A focus lost while the game was still loading does not pause it once it starts.
     game_menu_open_requested.store(false, std::memory_order_relaxed);
     if (!thread.joinable()) {
-        extra_players = LoadSystemSettings().multiple_controllers;
-        LOG_INFO(Input, "UWP input: multiple controllers {}", extra_players ? "on" : "off");
         thread = std::jthread([this](std::stop_token stop) { Run(stop); });
     }
 }
@@ -1064,7 +1062,7 @@ void GamepadInput::Run(std::stop_token stop) {
                     // Every other pad plays players 2-8, unless Settings > System turned them off.
                     std::vector<std::wstring> ids;
                     for (const auto& device : devices) {
-                        if (extra_players && device && device.id != player1_id) ids.push_back(device.id);
+                        if (device && device.id != player1_id) ids.push_back(device.id);
                     }
                     const auto changed = slots.Assign(ids);
                     for (std::size_t player = 1; player < MaxPlayers; ++player) {

@@ -725,8 +725,6 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::LastPlayed, L"Jogado por último {0}"},
     {Text::PlayTimeSorted, L"Mais jogados"},
     {Text::LastPlayedSorted, L"Jogados recentemente"},
-    {Text::MultipleControllers, L"Vários controles"},
-    {Text::MultipleControllersHint, L"Cada controle extra joga como jogador 2 a 8. Vale ao iniciar um jogo"},
     {Text::OfflineMode, L"Modo offline"},
     {Text::OfflineModeHint, L"Os jogos não veem a internet, como no modo avião, e não pedem login online. Vale ao iniciar um jogo"},
     {Text::MenuOfflineSystem, L"Sistema · {0}"},

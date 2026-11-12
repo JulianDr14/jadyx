@@ -22,7 +22,6 @@ constexpr auto PerformanceStatsKey = L"system_show_performance_stats";
 constexpr auto AdultModsKey = L"system_show_adult_mods";
 constexpr auto PulseSessionsKey = L"system_pulse_sessions";
 constexpr auto PlayTimeKey = L"system_track_play_time";
-constexpr auto MultipleControllersKey = L"system_multiple_controllers";
 constexpr auto OfflineModeKey = L"system_offline_mode";
 constexpr auto MemoryEditWarnedKey = L"system_memory_edit_warned";
 constexpr auto GraphicsUpscalingKey = L"graphics_upscaling";
@@ -70,8 +69,6 @@ SystemSettings LoadSystemSettings() {
         if (values.HasKey(AdultModsKey)) settings.show_adult_mods = winrt::unbox_value<bool>(values.Lookup(AdultModsKey));
         if (values.HasKey(PulseSessionsKey)) settings.pulse_sessions = winrt::unbox_value<bool>(values.Lookup(PulseSessionsKey));
         if (values.HasKey(PlayTimeKey)) settings.track_play_time = winrt::unbox_value<bool>(values.Lookup(PlayTimeKey));
-        if (values.HasKey(MultipleControllersKey))
-            settings.multiple_controllers = winrt::unbox_value<bool>(values.Lookup(MultipleControllersKey));
         if (values.HasKey(OfflineModeKey)) settings.offline_mode = winrt::unbox_value<bool>(values.Lookup(OfflineModeKey));
         if (values.HasKey(MemoryEditWarnedKey)) settings.memory_edit_warned = winrt::unbox_value<bool>(values.Lookup(MemoryEditWarnedKey));
     } catch (...) { /* Missing or invalid values keep following the system. */ }
@@ -89,7 +86,6 @@ bool SaveSystemSettings(const SystemSettings& settings) {
         values.Insert(AdultModsKey, winrt::box_value(settings.show_adult_mods));
         values.Insert(PulseSessionsKey, winrt::box_value(settings.pulse_sessions));
         values.Insert(PlayTimeKey, winrt::box_value(settings.track_play_time));
-        values.Insert(MultipleControllersKey, winrt::box_value(settings.multiple_controllers));
         values.Insert(OfflineModeKey, winrt::box_value(settings.offline_mode));
         values.Insert(MemoryEditWarnedKey, winrt::box_value(settings.memory_edit_warned));
         return true;

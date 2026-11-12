@@ -167,7 +167,6 @@ private:
     std::mutex motion_mutex;
     MotionViewState motion_view; // Guarded by motion_mutex.
     std::atomic<bool> style_changed{};
-    bool extra_players{true}; // Settings > System; read once per game, before the input thread.
     std::atomic<bool> menu_open{};
     std::atomic<u8> menu_prompt_mapping{};
     std::mutex menu_mutex;

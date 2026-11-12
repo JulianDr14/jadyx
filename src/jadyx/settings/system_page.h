@@ -25,7 +25,7 @@ enum class EditorPurpose : std::uint8_t {
 };
 
 struct SystemPage {
-    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, AdultMods, PerformanceStats, PulseSessions, PlayTime, MultipleControllers, OfflineMode, MiiEditor, ClearCache, Updates, RowCount };
+    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, AdultMods, PerformanceStats, PulseSessions, PlayTime, OfflineMode, MiiEditor, ClearCache, Updates, RowCount };
 
     bool updates_open{};
     std::size_t update_row{}, update_detail{}, update_scroll{};
@@ -113,9 +113,6 @@ inline SystemPageEffect HandleSystemInput(SystemPage& page, SystemInput input) {
     case Row::PlayTime:
         settings.track_play_time = !settings.track_play_time;
         return SystemPageEffect::Changed;
-    case Row::MultipleControllers:
-        settings.multiple_controllers = !settings.multiple_controllers;
-        return SystemPageEffect::Changed;
     case Row::OfflineMode:
         settings.offline_mode = !settings.offline_mode;
         return SystemPageEffect::Changed;
@@ -161,7 +158,6 @@ inline I18n::Text SystemRowTitle(SystemPage::Row row) {
     case SystemPage::AdultMods:         return Text::ModsAdult;
     case SystemPage::PulseSessions:     return Text::PulseSessions;
     case SystemPage::PlayTime:          return Text::PlayTimeTracking;
-    case SystemPage::MultipleControllers: return Text::MultipleControllers;
     case SystemPage::OfflineMode:       return Text::OfflineMode;
     case SystemPage::MiiEditor:         return Text::MiiEditor;
     default:                            return Text::ClearLibraryCache;
@@ -180,7 +176,6 @@ inline I18n::Text SystemRowHint(SystemPage::Row row) {
     case SystemPage::AdultMods:         return Text::ModsAdultHint;
     case SystemPage::PulseSessions:     return Text::PulseSessionsHint;
     case SystemPage::PlayTime:          return Text::PlayTimeTrackingHint;
-    case SystemPage::MultipleControllers: return Text::MultipleControllersHint;
     case SystemPage::OfflineMode:       return Text::OfflineModeHint;
     case SystemPage::MiiEditor:         return Text::MiiEditorHint;
     default:                            return Text::ClearLibraryCacheHint;
@@ -215,8 +210,6 @@ inline std::wstring SystemRowValue(const SystemPage& page, SystemPage::Row row) 
         return std::wstring{I18n::Tr(settings.pulse_sessions ? Text::Yes : Text::No)};
     case SystemPage::PlayTime:
         return std::wstring{I18n::Tr(settings.track_play_time ? Text::Yes : Text::No)};
-    case SystemPage::MultipleControllers:
-        return std::wstring{I18n::Tr(settings.multiple_controllers ? Text::Yes : Text::No)};
     case SystemPage::OfflineMode:
         return std::wstring{I18n::Tr(settings.offline_mode ? Text::Yes : Text::No)};
     default:

@@ -725,8 +725,6 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::LastPlayed, L"Jugado: {0}"},
     {Text::PlayTimeSorted, L"Más jugados"},
     {Text::LastPlayedSorted, L"Jugados recientemente"},
-    {Text::MultipleControllers, L"Varios mandos"},
-    {Text::MultipleControllersHint, L"Cada mando extra juega como jugador 2 a 8. Se aplica al iniciar un juego"},
     {Text::OfflineMode, L"Modo sin conexión"},
     {Text::OfflineModeHint, L"Los juegos no ven internet, como en el modo avión, y no piden iniciar sesión en línea. Se aplica al iniciar un juego"},
     {Text::MenuOfflineSystem, L"Sistema · {0}"},
