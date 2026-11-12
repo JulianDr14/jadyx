@@ -216,7 +216,7 @@ public:
         GlitchPage, GlitchCapture, GlitchA2cShader, GlitchPreciseWrites, GlitchArrayOwnMemory,
         GlitchArrayRewrite,
         GeoMark, GeoOobFix, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
-        GyroStick, GyroShake, Rumble, RumbleStrength,
+        GyroStick, GyroShake, Rumble, RumbleStrength, GfxAstcArrayCap,
     };
     enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch };
 
@@ -360,7 +360,8 @@ private:
     /// The Handheld style forces the console's mode (uwp_input.cpp): there is nothing to choose.
     void UpdateGraphicsItems() {
         graphics = {GfxUpscaling,     GfxFrameGen,      GfxShaders,     GfxGpuFence,    GfxGuestClock,
-                    GfxExactGpuReads, GfxTextureMemory, GfxGpuAccuracy, GfxFixedCoreMap};
+                    GfxExactGpuReads, GfxTextureMemory, GfxGpuAccuracy, GfxFixedCoreMap,
+                    GfxAstcArrayCap};
         if (settings.style != ConsoleControllerStyle::Handheld) graphics.push_back(GfxConsoleMode);
     }
 
@@ -375,6 +376,7 @@ private:
         case GfxGpuAccuracy: return GraphicsRow::GpuAccuracy;
         case GfxConsoleMode: return GraphicsRow::ConsoleMode;
         case GfxFixedCoreMap: return GraphicsRow::FixedCoreMap;
+        case GfxAstcArrayCap: return GraphicsRow::AstcArrayCap;
         default: return GraphicsRow::Upscaling;
         }
     }
@@ -470,7 +472,8 @@ private:
         case GfxFrameGen:
         case GfxShaders:
         case GfxGpuFence:
-        case GfxFixedCoreMap: {
+        case GfxFixedCoreMap:
+        case GfxAstcArrayCap: {
             // Whose value it is goes under the label: with the value it would not fit the row.
             const GraphicsRow row = RowOf(item);
             return {Tr(GraphicsRowTitle(row)),
@@ -632,7 +635,8 @@ private:
         case GfxTextureMemory:
         case GfxGpuAccuracy:
         case GfxConsoleMode:
-        case GfxFixedCoreMap: {
+        case GfxFixedCoreMap:
+        case GfxAstcArrayCap: {
             auto row = static_cast<std::size_t>(RowOf(SelectedItem()));
             const bool changed = HandleGameGraphicsInput(
                 settings.graphics, row,

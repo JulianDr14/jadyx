@@ -136,6 +136,9 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
     system.CoreTiming().SetGuestClockPercent(clock_percent);
     const bool exact_gpu_reads = config.exact_gpu_reads.value_or(game.exact_gpu_reads);
     VideoCore::SetExactGpuReads(exact_gpu_reads);
+    // Read by the texture cache at its next frame: in game it reloads the misread arrays the new
+    // cap moves between BC and RGBA8.
+    VideoCommon::RequestAstcArrayRgbaCap(u64{graphics.astc_array_cap_mib} << 20);
     VideoCore::SemaphoreOrder::SetMode(config.semaphore_order_strict
                                            ? VideoCore::SemaphoreOrder::Mode::Strict
                                            : VideoCore::SemaphoreOrder::Mode::Supersede);
@@ -153,7 +156,8 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
                                                     : graphics.shaders == ShaderBuild::Balanced ? "balanced"
                                                                                                 : "wait"}) +
               ", GPU fence " +
-              (config.gpu_fence ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(GpuFenceText(graphics.gpu_fence)))));
+              (config.gpu_fence ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(GpuFenceText(graphics.gpu_fence)))) +
+              ", ASTC array RGBA8 cap " + std::to_string(graphics.astc_array_cap_mib) + " MiB");
 }
 
 void ApplyRunningCoreMap(const BootConfig& config, bool fixed) {

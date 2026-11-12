@@ -96,6 +96,9 @@ struct GraphicsSettings {
     /// core. Off, only the GPU thread is pinned and the rest float (CpuPinDefault), which built
     /// shaders twice as fast in a new area.
     bool fixed_core_map{};
+    /// VideoCommon::SetAstcArrayRgbaCap: the most one ASTC array the Series misreads as BC may take
+    /// as RGBA8 to fix it. Bigger misread arrays keep BC and the glitch.
+    std::uint32_t astc_array_cap_mib{160};
 
     bool operator==(const GraphicsSettings&) const = default;
 };
@@ -123,6 +126,11 @@ inline std::span<const Settings::AnisotropyMode> SelectableAnisotropy() {
 
 inline std::span<const std::uint32_t> SelectableTextureCaps() {
     static constexpr std::array<std::uint32_t, 4> values{0, 512, 640, 1024};
+    return values;
+}
+
+inline std::span<const std::uint32_t> SelectableAstcArrayCaps() {
+    static constexpr std::array<std::uint32_t, 8> values{64, 128, 160, 256, 384, 512, 768, 1024};
     return values;
 }
 
@@ -162,6 +170,7 @@ struct GameGraphics {
     std::optional<bool> gpu_fast_paths;
     std::optional<bool> cpu_write_all;
     std::optional<bool> fixed_core_map;
+    std::optional<std::uint32_t> astc_array_cap_mib;
     bool slow_guest_clock{}; ///< Only a game's own: there is no global setting to follow.
     bool exact_gpu_reads{};  ///< Only a game's own (VideoCore::SetExactGpuReads).
     GameAdvancedGraphics advanced;
@@ -201,6 +210,7 @@ inline GraphicsSettings ResolveGraphics(const GraphicsSettings& global, const Ga
         .gpu_fast_paths = game.gpu_fast_paths.value_or(global.gpu_fast_paths),
         .cpu_write_all = game.cpu_write_all.value_or(global.cpu_write_all),
         .fixed_core_map = game.fixed_core_map.value_or(global.fixed_core_map),
+        .astc_array_cap_mib = game.astc_array_cap_mib.value_or(global.astc_array_cap_mib),
     };
     if (resolved.frame_gen && IsFsr(resolved.upscaling)) {
         if (game.frame_gen && !game.upscaling) resolved.upscaling = Upscaling::Bilinear;
@@ -262,6 +272,10 @@ inline void StepGameCpuWriteAll(GameGraphics& game, bool back) {
 inline void StepGameFixedCoreMap(GameGraphics& game, bool back) {
     static constexpr std::array values{true, false};
     game.fixed_core_map = StepChoice<bool>(game.fixed_core_map, values, back);
+}
+
+inline void StepGameAstcArrayCap(GameGraphics& game, bool back) {
+    game.astc_array_cap_mib = StepChoice(game.astc_array_cap_mib, SelectableAstcArrayCaps(), back);
 }
 
 inline std::wstring OnOffText(bool on) {

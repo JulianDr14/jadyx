@@ -186,6 +186,15 @@ int main() {
     check(ResolveGraphics(global, shaders).fixed_core_map);
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.fixed_core_map == false);
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.fixed_core_map);
+    // The ASTC array RGBA8 cap: follows Settings > Graphics (160 MiB) until the game has its own.
+    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::AstcArrayCap));
+    check(ResolveGraphics(global, shaders).astc_array_cap_mib == 160);
+    check(GameGraphicsRowValue(global, shaders, GraphicsRow::AstcArrayCap) == L"Ajustes · 160 MiB");
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.astc_array_cap_mib == 64u);
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Left) && !shaders.astc_array_cap_mib);
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Left) && shaders.astc_array_cap_mib == 1024u);
+    check(ResolveGraphics(global, shaders).astc_array_cap_mib == 1024);
+    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.astc_array_cap_mib);
     // The guest clock is the game's own: a row only in its pane, off until the player turns it on.
     check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::GuestClock));
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::GuestClock) == L"No");
@@ -202,7 +211,7 @@ int main() {
     // The advanced rows: only the game's, default until changed, and reset only with A.
     GameGraphics tuned;
     const auto go = [&](GraphicsRow target) { row = static_cast<std::size_t>(target); };
-    check(IsAdvancedRow(GraphicsRow::Anisotropy) && !IsAdvancedRow(GraphicsRow::GuestClock) && GraphicsRowCount == 7);
+    check(IsAdvancedRow(GraphicsRow::Anisotropy) && !IsAdvancedRow(GraphicsRow::GuestClock) && GraphicsRowCount == 10);
     go(GraphicsRow::Anisotropy);
     check(GameGraphicsRowValue(global, tuned, GraphicsRow::Anisotropy) == L"Lo que pida el juego");
     check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && tuned.advanced.anisotropy == Settings::AnisotropyMode::X2);

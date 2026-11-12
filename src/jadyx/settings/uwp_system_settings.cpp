@@ -34,6 +34,7 @@ constexpr auto GraphicsCpuWriteQueueKey = L"graphics_cpu_write_queue";
 constexpr auto GraphicsGpuFastPathsKey = L"graphics_gpu_fast_paths";
 constexpr auto GraphicsCpuWriteAllKey = L"graphics_cpu_write_all";
 constexpr auto GraphicsFixedCoreMapKey = L"graphics_fixed_core_map";
+constexpr auto GraphicsAstcArrayCapKey = L"graphics_astc_array_cap";
 
 /// Saved as the enum's value, or -1 for "follow the system". A value that is not a selectable
 /// option (an older or newer build's) also falls back to the system.
@@ -117,6 +118,8 @@ GraphicsSettings LoadGraphicsSettings() {
             settings.cpu_write_all = winrt::unbox_value<bool>(values.Lookup(GraphicsCpuWriteAllKey));
         if (values.HasKey(GraphicsFixedCoreMapKey))
             settings.fixed_core_map = winrt::unbox_value<bool>(values.Lookup(GraphicsFixedCoreMapKey));
+        if (const auto cap = LoadChoice(values, GraphicsAstcArrayCapKey, SelectableAstcArrayCaps()))
+            settings.astc_array_cap_mib = *cap;
     } catch (...) { /* Missing or invalid values keep the defaults. */ }
     // Saved by hand or by an older build with both on: FSR wins, as on a first install.
     if (IsFsr(settings.upscaling)) settings.frame_gen = false;
@@ -135,6 +138,7 @@ bool SaveGraphicsSettings(const GraphicsSettings& settings) {
         values.Insert(GraphicsGpuFastPathsKey, winrt::box_value(settings.gpu_fast_paths));
         values.Insert(GraphicsCpuWriteAllKey, winrt::box_value(settings.cpu_write_all));
         values.Insert(GraphicsFixedCoreMapKey, winrt::box_value(settings.fixed_core_map));
+        values.Insert(GraphicsAstcArrayCapKey, winrt::box_value(static_cast<int32_t>(settings.astc_array_cap_mib)));
         return true;
     } catch (...) { return false; }
 }
@@ -200,6 +204,8 @@ GameGraphics LoadGameGraphics(std::uint64_t program_id) {
         if (values.HasKey(cpu_write_all)) graphics.cpu_write_all = winrt::unbox_value<bool>(values.Lookup(cpu_write_all));
         const auto fixed_core_map = GameGraphicsKey(L"fixed_core_map", program_id);
         if (values.HasKey(fixed_core_map)) graphics.fixed_core_map = winrt::unbox_value<bool>(values.Lookup(fixed_core_map));
+        const auto astc_array_cap = GameGraphicsKey(L"astc_array_cap", program_id);
+        graphics.astc_array_cap_mib = LoadChoice(values, astc_array_cap.c_str(), SelectableAstcArrayCaps());
         const auto slow_clock = GameGraphicsKey(L"slow_clock", program_id);
         if (values.HasKey(slow_clock)) graphics.slow_guest_clock = winrt::unbox_value<bool>(values.Lookup(slow_clock));
         const auto exact_reads = GameGraphicsKey(L"exact_gpu_reads", program_id);
@@ -232,6 +238,7 @@ bool SaveGameGraphics(std::uint64_t program_id, const GameGraphics& graphics) {
         SaveOverride(values, GameGraphicsKey(L"gpu_fast_paths", program_id), graphics.gpu_fast_paths);
         SaveOverride(values, GameGraphicsKey(L"cpu_write_all", program_id), graphics.cpu_write_all);
         SaveOverride(values, GameGraphicsKey(L"fixed_core_map", program_id), graphics.fixed_core_map);
+        SaveOverride(values, GameGraphicsKey(L"astc_array_cap", program_id), graphics.astc_array_cap_mib);
         SaveOverride(values, GameGraphicsKey(L"slow_clock", program_id),
                      graphics.slow_guest_clock ? std::optional<bool>{true} : std::nullopt);
         SaveOverride(values, GameGraphicsKey(L"exact_gpu_reads", program_id),
