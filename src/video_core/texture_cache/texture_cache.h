@@ -812,9 +812,14 @@ FramebufferId TextureCache<P>::GetFramebufferId(const RenderTargets& key) {
 
 template <class P>
 void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
-    ForEachImageInRegion(cpu_addr, size, [this](ImageId image_id, Image& image) {
+    ForEachImageInRegion(cpu_addr, size, [this, cpu_addr, size](ImageId image_id, Image& image) {
         if (True(image.flags & ImageFlagBits::CpuModified)) {
             return;
+        }
+        if (FullCapture::Active()) {
+            FullCapture::Event("tc_cpu_write", fmt::format(
+                "{{\"gpu\":{},\"image_cpu\":{},\"write_cpu\":{},\"size\":{},\"flags\":{}}}",
+                image.gpu_addr, image.cpu_addr, cpu_addr, size, static_cast<u32>(image.flags)));
         }
         image.flags |= ImageFlagBits::CpuModified;
         ++binding_epoch;
@@ -1028,6 +1033,11 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
                             [&](ImageId id, Image&) { deleted_images.push_back(id); });
     for (const ImageId id : deleted_images) {
         Image& image = slot_images[id];
+        if (FullCapture::Active()) {
+            FullCapture::Event("tc_gpu_unmap", fmt::format(
+                "{{\"gpu\":{},\"unmap_gpu\":{},\"size\":{},\"flags\":{}}}", image.gpu_addr,
+                gpu_addr, size, static_cast<u32>(image.flags)));
+        }
         if (False(image.flags & ImageFlagBits::CpuModified)) {
             image.flags |= ImageFlagBits::CpuModified;
             ++binding_epoch;
@@ -1505,6 +1515,15 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
                                 image.guest_size_bytes, image.gpu_addr);
     VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::TextureUploadFormat,
                                 static_cast<u64>(image.info.format), image.gpu_addr);
+    if (FullCapture::Active()) {
+        // A refresh replaces the whole image with guest memory, GPU-written texels included.
+        FullCapture::Event("tc_refresh", fmt::format(
+            "{{\"gpu\":{},\"cpu\":{},\"size\":{},\"layers\":{},\"levels\":{},\"format\":{},"
+            "\"flags\":{}}}",
+            image.gpu_addr, image.cpu_addr, image.guest_size_bytes, image.info.resources.layers,
+            image.info.resources.levels, static_cast<u32>(image.info.format),
+            static_cast<u32>(image.flags)));
+    }
     image.flags &= ~ImageFlagBits::CpuModified;
 
     TrackImage(image, image_id);

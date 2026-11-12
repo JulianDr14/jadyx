@@ -559,6 +559,10 @@ public:
     ComPtr<ID3D12PipelineState> CreatePickProbePipeline(std::span<const u8> ps,
                                                        bool float_outputs) const;
 
+    /// Full-capture control: this pipeline with its pixel shader replaced, one float32 target,
+    /// no blending and no depth or stencil writes. Never used for guest draws.
+    ComPtr<ID3D12PipelineState> CreateShaderProbePipeline(std::span<const u8> ps) const;
+
     /// Port of Vulkan's ConfigureImpl: synchronizes and binds the guest's buffers and textures,
     /// writes the descriptor tables and transitions sampled and storage images. The render
     /// targets are updated last (UpdateRenderTargets) but not transitioned. Records no

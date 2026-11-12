@@ -434,7 +434,14 @@ void RasterizerD3D12::CaptureFullImages(const FullCaptureViews& views,
                 static_cast<const void*>(resource), image->DiagnosticWriteVersion(),
                 base_mip, mip_count, base_layer, layer_count) : std::string{};
             if (reusable) {
-                if (const auto it = full_capture_images.find(key); it != full_capture_images.end()) {
+                // Large texture arrays are read again every 50 operations: a write that skips
+                // the state tracking (the write_version in the key) then shows as changed bytes.
+                const auto it = full_capture_images.find(key);
+                if (it != full_capture_images.end() && layer_count >= 8 &&
+                    (full_capture_fresh_arrays ||
+                     full_capture_operation >= it->second.operation + 50)) {
+                    full_capture_images.erase(it);
+                } else if (it != full_capture_images.end()) {
                     FC::Event("image_view_reference", fmt::format(
                         "{{\"view\":{},\"source_op\":{},\"source_binding\":{},\"subresources\":{}}}",
                         meta, it->second.operation, it->second.binding, it->second.subresources));
@@ -573,6 +580,167 @@ void RasterizerD3D12::CapturePickProbes(
         command_state.valid = false;
         FC::Omit("pick_probe_exception");
         LOG_ERROR(Render, "D3D12 pick capture probe: {}", error.what());
+    }
+}
+
+namespace {
+// probe.cfg, one draw per line: <vs hex> <ps hex> <vertices> <x> <y> <width> <height> <passes>
+// The window is in target rows as stored (row 0 first). Pass 0 is the original shader,
+// pass N > 0 reads <N>.dxil. Vertices 0 matches any draw of the pair.
+struct ShaderProbeConfig {
+    u64 vs{}, ps{};
+    u32 vertices{}, x{}, y{}, width{}, height{}, passes{};
+};
+const std::vector<ShaderProbeConfig>& ShaderProbeConfigs() {
+    static const std::vector<ShaderProbeConfig> configs = [] {
+        std::vector<ShaderProbeConfig> out;
+        std::ifstream file(Common::FS::GetExeDirectory() / "shader_probes" / "probe.cfg");
+        ShaderProbeConfig c;
+        while (file >> std::hex >> c.vs >> c.ps >> std::dec >> c.vertices >> c.x >> c.y >>
+               c.width >> c.height >> c.passes) {
+            if (c.passes != 0 && c.passes <= 64) out.push_back(c);
+        }
+        return out;
+    }();
+    return configs;
+}
+const ShaderProbeConfig* FindShaderProbe(const GraphicsPipeline& pipeline, u32 num_vertices) {
+    const auto& configs = ShaderProbeConfigs();
+    const auto match = std::ranges::find_if(configs, [&](const ShaderProbeConfig& c) {
+        return pipeline.Key().unique_hashes[1] == c.vs && pipeline.Key().unique_hashes[5] == c.ps &&
+               (c.vertices == 0 || num_vertices == c.vertices);
+    });
+    return match == configs.end() ? nullptr : &*match;
+}
+} // namespace
+
+bool RasterizerD3D12::TakeShaderProbe(const GraphicsPipeline& pipeline, const DrawParams& params) {
+    if (!FC::Active() || !FindShaderProbe(pipeline, params.num_vertices)) return false;
+    static u32 probed{};
+    static u64 last_operation{};
+    if (full_capture_operation < last_operation) probed = 0; // a new capture
+    last_operation = full_capture_operation;
+    if (probed >= 2) return false;
+    ++probed;
+    return true;
+}
+
+void RasterizerD3D12::CaptureShaderProbes(
+    const GraphicsPipeline& pipeline, const PipelineBindings& bindings,
+    std::span<const TracedBuffer> geometry, const Framebuffer& framebuffer,
+    const DrawParams& params, Maxwell::PrimitiveTopology topology) {
+    if (!FC::Active()) return;
+    const auto directory = Common::FS::GetExeDirectory() / "shader_probes";
+    const ShaderProbeConfig* const config = FindShaderProbe(pipeline, params.num_vertices);
+    if (!config) return;
+    try {
+        if (!params.is_indexed || !framebuffer.ColorImage(0))
+            throw std::runtime_error("shader probe: unsupported draw");
+        std::optional<D3D12_INDEX_BUFFER_VIEW> index;
+        std::vector<std::pair<u32, D3D12_VERTEX_BUFFER_VIEW>> vertices;
+        for (const auto& source : geometry) {
+            if (!source.buffer) continue;
+            if (source.kind == TracedBuffer::Kind::Index && (source.stride == 2 || source.stride == 4)) {
+                index = {source.buffer->Address() + source.offset, source.size,
+                         source.stride == 2 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT};
+            } else if (source.kind == TracedBuffer::Kind::Vertex) {
+                vertices.emplace_back(source.slot, D3D12_VERTEX_BUFFER_VIEW{
+                    source.buffer->Address() + source.offset, source.size, source.stride});
+            }
+        }
+        if (!index || vertices.empty())
+            throw std::runtime_error("shader probe: missing or rewritten captured geometry");
+        const auto extent = framebuffer.Extent();
+        const u32 x0 = std::min(config->x, extent.width), y0 = std::min(config->y, extent.height);
+        const u32 width = std::min(config->width, extent.width - x0);
+        const u32 height = std::min(config->height, extent.height - y0);
+        if (!width || !height) throw std::runtime_error("shader probe: empty window");
+        const u32 band = std::max<u32>(1, std::min<u32>(height,
+            static_cast<u32>((MAX_STAGING - (1u << 20)) / (u64{width} * 16))));
+        VideoCommon::ImageInfo info{};
+        info.type = VideoCommon::ImageType::e2D;
+        info.format = VideoCore::Surface::PixelFormat::R32G32B32A32_FLOAT;
+        info.resources = {1, 1};
+        info.num_samples = 1;
+        info.size = {extent.width, extent.height, 1};
+        auto target = std::make_unique<Image>(texture_runtime, info, 0, 0);
+        info.size = {width, band, 1};
+        auto window = std::make_unique<Image>(texture_runtime, info, 0, 0);
+        D3D12_DESCRIPTOR_HEAP_DESC heap_desc{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1};
+        ComPtr<ID3D12DescriptorHeap> heap;
+        ThrowIfFailed(device.Get()->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap)),
+                      "shader probe RTV heap");
+        scheduler.DeferRelease(heap);
+        const auto handle = heap->GetCPUDescriptorHandleForHeapStart();
+        D3D12_RENDER_TARGET_VIEW_DESC view{};
+        view.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        view.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
+        view.Texture2DArray = {0, 0, 1, 0};
+        device.Get()->CreateRenderTargetView(target->Handle(), &view, handle);
+        query_runtime.PauseCounters();
+        SCOPE_EXIT {
+            command_state.valid = false;
+        };
+        for (u32 pass = 0; pass < config->passes; ++pass) {
+            std::vector<u8> code;
+            if (pass == 0) {
+                const auto original = pipeline.DiagnosticDxil(4);
+                code.assign(original.begin(), original.end());
+            } else {
+                std::ifstream file(directory / fmt::format("{}.dxil", pass),
+                                   std::ios::binary | std::ios::ate);
+                if (!file || file.tellg() < 32 || file.tellg() > (1 << 20))
+                    throw std::runtime_error("shader probe: missing or oversized shader");
+                code.resize(static_cast<size_t>(file.tellg())); file.seekg(0);
+                file.read(reinterpret_cast<char*>(code.data()), code.size());
+                if (!file || std::memcmp(code.data(), "DXBC", 4))
+                    throw std::runtime_error("shader probe: invalid shader container");
+            }
+            ComPtr<ID3D12PipelineState> probe;
+            try {
+                probe = pipeline.CreateShaderProbePipeline(code);
+            } catch (const std::exception& error) {
+                FC::Event("shader_probe_failed", fmt::format(
+                    "{{\"op\":{},\"pass\":{}}}", full_capture_operation, pass));
+                LOG_ERROR(Render, "D3D12 shader capture probe pass {}: {}", pass, error.what());
+                continue;
+            }
+            scheduler.DeferRelease(probe);
+            target->Transition(D3D12_RESOURCE_STATE_RENDER_TARGET);
+            command_state.valid = false;
+            const std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 1> targets{handle};
+            BindDrawState(pipeline, bindings, framebuffer, params, topology, targets);
+            auto* cmd = scheduler.CommandList();
+            // Capture readbacks reset the list: rebind IA explicitly, as CapturePickProbes does.
+            cmd->IASetIndexBuffer(&*index);
+            for (const auto& [slot, vertex_view] : vertices)
+                cmd->IASetVertexBuffers(slot, 1, &vertex_view);
+            const float sentinel[4]{-99999, -99999, -99999, -99999};
+            cmd->ClearRenderTargetView(handle, sentinel, 0, nullptr);
+            scheduler.SetPipelineState(probe.Get());
+            cmd->DrawIndexedInstanced(params.num_vertices, params.num_instances, params.first_index,
+                                      static_cast<INT>(params.base_vertex), params.base_instance);
+            FC::Event("shader_probe", fmt::format(
+                "{{\"op\":{},\"pass\":{},\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}",
+                full_capture_operation, pass, x0, y0, width, height));
+            for (u32 row = 0; row < height; row += band) {
+                const u32 rows = std::min(band, height - row);
+                target->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
+                window->Transition(D3D12_RESOURCE_STATE_COPY_DEST);
+                const D3D12_TEXTURE_COPY_LOCATION src{target->Handle(),
+                    D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {.SubresourceIndex = 0}};
+                const D3D12_TEXTURE_COPY_LOCATION dst{window->Handle(),
+                    D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {.SubresourceIndex = 0}};
+                const D3D12_BOX box{x0, y0 + row, 0, x0 + width, y0 + row + rows, 1};
+                scheduler.CommandList()->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+                CaptureFullImage(*window, 0, fmt::format("shader_probe_{}_y{}", pass, y0 + row),
+                                 true);
+            }
+        }
+    } catch (const std::exception& error) {
+        command_state.valid = false;
+        FC::Omit("shader_probe_exception");
+        LOG_ERROR(Render, "D3D12 shader capture probe: {}", error.what());
     }
 }
 
