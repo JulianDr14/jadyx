@@ -55,6 +55,14 @@ struct HostRowLayout {
 /// block-compressed 2D arrays from the wrong place (see renderer_d3d12's DecodedBcFormat).
 void SetAstcArrayRecompression(bool enabled) noexcept;
 
+/// Diagnostic: asks the texture cache to switch ASTC arrays to RGBA8 (true) or back to the
+/// recompressed format (false) at its next frame, dropping the arrays it holds so they reload.
+void RequestAstcArraysRgba(bool rgba) noexcept;
+/// The pending RequestAstcArraysRgba: -1 none, 0 recompress, 1 RGBA8.
+[[nodiscard]] int PendingAstcArraysRgba() noexcept;
+/// Clears the pending request if it is still `request`; false when another one replaced it.
+bool ClearAstcArraysRgba(int request) noexcept;
+
 /// Re-encodes the ASTC images that have no alpha to BC1 instead of BC3 when astc_recompression
 /// asks for BC3: half the memory. Only for backends whose image formats follow
 /// AstcRecompressionFor (D3D12); off by default.

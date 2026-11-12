@@ -334,6 +334,39 @@ void TextureCache<P>::TickFrame() {
     if (total_used_memory > minimum_memory) {
         RunGarbageCollector();
     }
+    if (const int request = PendingAstcArraysRgba(); request >= 0) {
+        // The CPU upload reads the setting per upload, so it changes here, under the cache lock,
+        // together with dropping every ASTC array made with the old one. Wait for decodes.
+        std::vector<ImageId> arrays;
+        bool decoding = false;
+        lru_cache.ForEachItemBelow(frame_tick + 1, [&](ImageId image_id) {
+            Image& image = slot_images[image_id];
+            if (!IsPixelFormatASTC(image.info.format) ||
+                (image.info.resources.layers <= 1 && image.info.size.depth <= 1)) {
+                return false;
+            }
+            if (True(image.flags & ImageFlagBits::IsDecoding)) {
+                decoding = true;
+                return true;
+            }
+            arrays.push_back(image_id);
+            return false;
+        });
+        if (!decoding && ClearAstcArraysRgba(request)) {
+            SetAstcArrayRecompression(request == 0);
+            for (const ImageId image_id : arrays) {
+                Image& image = slot_images[image_id];
+                if (True(image.flags & ImageFlagBits::Tracked)) {
+                    UntrackImage(image, image_id);
+                }
+                NoteImageDeleted(image, ImageDeleteReason::Evicted);
+                UnregisterImage(image_id);
+                DeleteImage(image_id);
+            }
+            LOG_INFO(HW_GPU, "ASTC arrays A/B: {} from now on, {} arrays dropped to reload",
+                     request ? "RGBA8" : "recompressed", arrays.size());
+        }
+    }
     if constexpr (requires(Image& image) { runtime.ArrayExperiment(image); }) {
         if (runtime.ArrayExperimentsOn()) {
             lru_cache.ForEachItemBelow(frame_tick + 1, [&](ImageId image_id) {

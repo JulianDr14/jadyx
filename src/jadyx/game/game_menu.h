@@ -97,6 +97,7 @@ struct GlitchToggles {
     bool precise_writes{true}; ///< CPU writes beside GPU bytes apply at once
     bool array_own_memory{}; ///< large compressed arrays moved to memory of their own
     bool array_rewrite{}; ///< large compressed arrays copied out and back in place
+    bool astc_arrays_rgba{}; ///< ASTC arrays kept as RGBA8 instead of recompressed to BC
 };
 
 struct GameMenuSettings {
@@ -214,7 +215,7 @@ public:
         GfxGpuAccuracy, GfxConsoleMode, Amiibo, MemoryEdit,
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
         GlitchPage, GlitchCapture, GlitchA2cShader, GlitchPreciseWrites, GlitchArrayOwnMemory,
-        GlitchArrayRewrite,
+        GlitchArrayRewrite, GlitchAstcArraysRgba,
         GeoMark, GeoOobFix, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
         GyroStick, GyroShake, Rumble, RumbleStrength,
     };
@@ -237,7 +238,7 @@ public:
         if (settings.pso_menu) quick.push_back(PsoBoost);
         quick.push_back(Library);
         glitch = {GlitchCapture, GlitchA2cShader, GlitchPreciseWrites, GlitchArrayOwnMemory,
-                  GlitchArrayRewrite};
+                  GlitchArrayRewrite, GlitchAstcArraysRgba};
         controller = {Style, FaceButtons, Deadzone, RStickInvertX, RStickInvertY, RStickSensitivity,
                       RStickMouse, RStickMouseSensitivity, Rumble, RumbleStrength};
         if (settings.right_stick_per_game)
@@ -430,6 +431,9 @@ private:
         case GlitchArrayRewrite:
             return {L"array_rewrite", Tr(settings.glitch.array_rewrite ? Text::Yes : Text::No),
                     Choice, L"Large compressed texture arrays are copied out and back in place"};
+        case GlitchAstcArraysRgba:
+            return {L"astc_arrays_rgba", Tr(settings.glitch.astc_arrays_rgba ? Text::Yes : Text::No),
+                    Choice, L"ASTC texture arrays stay RGBA8 instead of BC (reloads them)"};
         case MemoryEdit:
             return {Tr(Text::MemoryEditTitle), {}, Page,
                     memory_edit_hits != 0
@@ -722,6 +726,9 @@ private:
             return GameMenuResult::GlitchTogglesChanged;
         case GlitchArrayRewrite:
             settings.glitch.array_rewrite = !settings.glitch.array_rewrite;
+            return GameMenuResult::GlitchTogglesChanged;
+        case GlitchAstcArraysRgba:
+            settings.glitch.astc_arrays_rgba = !settings.glitch.astc_arrays_rgba;
             return GameMenuResult::GlitchTogglesChanged;
         case GeoMark:
             if (!confirm) return GameMenuResult::None;

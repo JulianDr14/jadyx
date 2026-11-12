@@ -671,6 +671,23 @@ void SetAstcArrayRecompression(bool enabled) noexcept {
     recompress_astc_arrays.store(enabled, std::memory_order_relaxed);
 }
 
+namespace {
+std::atomic<int> astc_arrays_rgba_request{-1};
+} // Anonymous namespace
+
+void RequestAstcArraysRgba(bool rgba) noexcept {
+    astc_arrays_rgba_request.store(rgba ? 1 : 0, std::memory_order_relaxed);
+}
+
+int PendingAstcArraysRgba() noexcept {
+    return astc_arrays_rgba_request.load(std::memory_order_relaxed);
+}
+
+bool ClearAstcArraysRgba(int request) noexcept {
+    return astc_arrays_rgba_request.compare_exchange_strong(request, -1,
+                                                            std::memory_order_relaxed);
+}
+
 void SetOpaqueAstcToBc1(bool enabled) noexcept {
     opaque_astc_to_bc1.store(enabled, std::memory_order_relaxed);
 }
