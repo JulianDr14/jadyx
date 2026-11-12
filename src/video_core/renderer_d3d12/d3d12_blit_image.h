@@ -105,6 +105,18 @@ struct BcEncode {
     bool bc4_alpha = false;
 };
 
+/// The texture-unit side of TextureCacheRuntime::ProbeAstcArrayLayers: reads one texel of each
+/// marker block of a block-compressed 2D array (d3d12_array_layer_probe.comp) into a raw buffer,
+/// one packed RGBA8 word per marker.
+struct ArrayLayerProbe {
+    D3D12_CPU_DESCRIPTOR_HANDLE source;    ///< UNORM Texture2DArray SRV of every level and layer
+    D3D12_GPU_VIRTUAL_ADDRESS destination; ///< raw buffer UAV, 4 bytes per marker
+    u32 width;  ///< level 0
+    u32 height;
+    u32 layers;
+    u32 levels;
+};
+
 /// One band of a block-linear 2D level (one layer) unswizzled into a copy footprint. The shader
 /// bounds its reads with source_bytes: the root SRV has no bounds of its own.
 struct BlockLinearUnswizzle {
@@ -258,6 +270,11 @@ public:
     /// Records the decode of one level; the caller puts the image in UNORDERED_ACCESS.
     void DecodeBcn(const BcnDecode& decode);
     void EncodeBc(const BcEncode& encode);
+    [[nodiscard]] bool CanProbeArrayLayers() const noexcept {
+        return array_probe_available;
+    }
+    /// The caller puts the image in NON_PIXEL_SHADER_RESOURCE and the buffer in UNORDERED_ACCESS.
+    void ProbeArrayLayers(const ArrayLayerProbe& probe);
 
     /// False when the unswizzle shader failed to translate or build (logged): uploads are then
     /// unswizzled on the CPU.
@@ -352,6 +369,8 @@ private:
     /// Builds the ASTC decoder's root signature and pipeline; throws on failure.
     void CreateAstcPipeline(const ShaderCompiler& compiler);
     void CreateBc3Pipeline(const ShaderCompiler& compiler);
+    /// Builds the array layer probe on the BC3 encoder's root signature; throws on failure.
+    void CreateArrayProbePipeline(const ShaderCompiler& compiler);
     /// Builds the BCn decoder's pipeline on the ASTC root signature; throws on failure.
     void CreateBcnPipeline(const ShaderCompiler& compiler);
     /// Builds the block-linear unswizzle pipeline on the pack root signature; throws on failure.
@@ -384,6 +403,9 @@ private:
     ComPtr<ID3D12RootSignature> bc3_root_signature;
     ComPtr<ID3D12PipelineState> bc3_pipeline;
     bool bc3_available{};
+
+    ComPtr<ID3D12PipelineState> array_probe_pipeline;
+    bool array_probe_available{};
 
     ComPtr<ID3D12PipelineState> bcn_pipeline;
     bool bcn_available{};

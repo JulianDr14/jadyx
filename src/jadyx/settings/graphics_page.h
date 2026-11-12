@@ -16,7 +16,7 @@
 namespace Jadyx {
 
 enum class GraphicsRow : std::size_t {
-    Upscaling, FrameGen, Shaders, GpuFence, AsyncRecord, CpuWriteQueue, GpuFastPaths, CpuWriteAll, FixedCoreMap, GuestClock, ExactGpuReads,
+    Upscaling, FrameGen, Shaders, GpuFence, AsyncRecord, CpuWriteQueue, GpuFastPaths, CpuWriteAll, FixedCoreMap, AstcArrayCap, GuestClock, ExactGpuReads,
     Anisotropy, TextureQuality, TextureMemory, GpuAccuracy, ShaderWorkers, ConsoleMode, ResetAdvanced,
     Count,
 };
@@ -82,6 +82,9 @@ inline bool HandleGraphicsInput(GraphicsPage& page, GraphicsInput input) {
     case GraphicsRow::FixedCoreMap:
         settings.fixed_core_map = !settings.fixed_core_map;
         return true;
+    case GraphicsRow::AstcArrayCap:
+        settings.astc_array_cap_mib = StepAdvanced(settings.astc_array_cap_mib, SelectableAstcArrayCaps(), back);
+        return true;
     default:
         break;
     }
@@ -104,6 +107,7 @@ inline bool HandleGameGraphicsInput(GameGraphics& game, std::size_t& selected, G
     case GraphicsRow::GpuFastPaths: StepGameGpuFastPaths(game, back); return true;
     case GraphicsRow::CpuWriteAll: StepGameCpuWriteAll(game, back); return true;
     case GraphicsRow::FixedCoreMap: StepGameFixedCoreMap(game, back); return true;
+    case GraphicsRow::AstcArrayCap: StepGameAstcArrayCap(game, back); return true;
     case GraphicsRow::GuestClock: game.slow_guest_clock = !game.slow_guest_clock; return true;
     case GraphicsRow::ExactGpuReads: game.exact_gpu_reads = !game.exact_gpu_reads; return true;
     case GraphicsRow::Anisotropy: advanced.anisotropy = StepAdvanced(advanced.anisotropy, SelectableAnisotropy(), back); return true;
@@ -133,6 +137,7 @@ inline I18n::Text GraphicsRowTitle(GraphicsRow row) {
     case GraphicsRow::GpuFastPaths: return Text::GpuFastPaths;
     case GraphicsRow::CpuWriteAll: return Text::CpuWriteAll;
     case GraphicsRow::FixedCoreMap: return Text::FixedCoreMap;
+    case GraphicsRow::AstcArrayCap: return Text::AstcArrayCap;
     case GraphicsRow::GuestClock: return Text::SlowGuestClock;
     case GraphicsRow::ExactGpuReads: return Text::ExactGpuReads;
     case GraphicsRow::Anisotropy: return Text::AdvancedAnisotropy;
@@ -157,6 +162,7 @@ inline I18n::Text GraphicsRowHint(GraphicsRow row) {
     case GraphicsRow::GpuFastPaths: return Text::GpuFastPathsHint;
     case GraphicsRow::CpuWriteAll: return Text::CpuWriteAllHint;
     case GraphicsRow::FixedCoreMap: return Text::FixedCoreMapHint;
+    case GraphicsRow::AstcArrayCap: return Text::AstcArrayCapHint;
     case GraphicsRow::GuestClock: return Text::SlowGuestClockHint;
     case GraphicsRow::ExactGpuReads: return Text::ExactGpuReadsHint;
     case GraphicsRow::Anisotropy: return Text::AdvancedAnisotropyHint;
@@ -181,6 +187,7 @@ inline std::wstring GraphicsRowValue(const GraphicsSettings& settings, GraphicsR
     case GraphicsRow::GpuFastPaths: return OnOffText(settings.gpu_fast_paths);
     case GraphicsRow::CpuWriteAll: return OnOffText(settings.cpu_write_all);
     case GraphicsRow::FixedCoreMap: return OnOffText(settings.fixed_core_map);
+    case GraphicsRow::AstcArrayCap: return std::to_wstring(settings.astc_array_cap_mib) + L" MiB";
     default: return std::wstring{I18n::Tr(UpscalingText(settings.upscaling))};
     }
 }
@@ -224,6 +231,7 @@ inline bool HasGameOverride(const GameGraphics& game, GraphicsRow row) {
     case GraphicsRow::GpuFastPaths: return game.gpu_fast_paths.has_value();
     case GraphicsRow::CpuWriteAll: return game.cpu_write_all.has_value();
     case GraphicsRow::FixedCoreMap: return game.fixed_core_map.has_value();
+    case GraphicsRow::AstcArrayCap: return game.astc_array_cap_mib.has_value();
     default: return game.upscaling.has_value();
     }
 }

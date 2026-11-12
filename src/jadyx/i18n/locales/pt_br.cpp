@@ -750,6 +750,8 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::CpuWriteAllHint, L"Avançado. Só age com a fila de escritas de CPU ligada: nenhuma escrita do jogo espera a thread de GPU. Desligue só se um jogo mostrar falhas gráficas com isso. Vale ao iniciar o jogo"},
     {Text::FixedCoreMap, L"Mapa de núcleos fixo"},
     {Text::FixedCoreMapHint, L"Avançado. Coloca cada thread do emulador em um núcleo fixo, como antes. Só se um jogo ficar mais lento sem ele. Também no menu do jogo, sem reiniciar"},
+    {Text::AstcArrayCap, L"Limite RGBA8 de arrays ASTC"},
+    {Text::AstcArrayCapHint, L"O máximo que um array de texturas que o console lê errado pode ocupar em RGBA8 para corrigi-lo. Aumente se uma textura ainda aparecer errada; mais alto usa mais memória. Também no menu do jogo, sem reiniciar"},
     {Text::SlowGuestClock, L"Relógio do jogo a 90%"},
     {Text::SlowGuestClockHint, L"Para jogos que oscilam entre 20 e 30 fps. Se ficar lento, desligue"},
     {Text::ExactGpuReads, L"Leituras exatas da GPU"},

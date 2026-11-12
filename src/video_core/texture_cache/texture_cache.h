@@ -334,6 +334,67 @@ void TextureCache<P>::TickFrame() {
     if (total_used_memory > minimum_memory) {
         RunGarbageCollector();
     }
+    if constexpr (requires { runtime.PollAstcArrayProbes(); }) {
+        runtime.PollAstcArrayProbes();
+    }
+    // The ASTC array format is read per upload, so it only changes here, under the cache lock,
+    // together with dropping the arrays made with the old one. Waits while any of them decodes.
+    const auto drop_astc_arrays = [&](auto&& matches, auto&& commit) {
+        std::vector<ImageId> arrays;
+        bool decoding = false;
+        lru_cache.ForEachItemBelow(frame_tick + 1, [&](ImageId image_id) {
+            Image& image = slot_images[image_id];
+            if (!IsPixelFormatASTC(image.info.format) ||
+                (image.info.resources.layers <= 1 && image.info.size.depth <= 1) ||
+                !matches(image.info)) {
+                return false;
+            }
+            if (True(image.flags & ImageFlagBits::IsDecoding)) {
+                decoding = true;
+                return true;
+            }
+            arrays.push_back(image_id);
+            return false;
+        });
+        if (decoding || !commit()) {
+            return std::optional<size_t>{};
+        }
+        for (const ImageId image_id : arrays) {
+            Image& image = slot_images[image_id];
+            if (True(image.flags & ImageFlagBits::Tracked)) {
+                UntrackImage(image, image_id);
+            }
+            NoteImageDeleted(image, ImageDeleteReason::Evicted);
+            UnregisterImage(image_id);
+            DeleteImage(image_id);
+        }
+        return std::optional<size_t>{arrays.size()};
+    };
+    if (HasPendingAstcArrayChange()) {
+        const u64 cap = PendingAstcArrayRgbaCap();
+        size_t rgba_shapes = 0;
+        const auto dropped = drop_astc_arrays(
+            [cap](const ImageInfo& info) { return AstcArrayChangesWith(info, cap); }, [&] {
+                rgba_shapes = CommitAstcArrayChange(cap);
+                return true;
+            });
+        if (dropped) {
+            LOG_INFO(HW_GPU, "ASTC arrays: RGBA8 cap {} MiB, {} misread shapes as RGBA8, {} arrays "
+                     "dropped to reload", cap >> 20, rgba_shapes, *dropped);
+        }
+    }
+    if constexpr (requires(Image& image) { runtime.ArrayExperiment(image); }) {
+        if (runtime.ArrayExperimentsOn()) {
+            lru_cache.ForEachItemBelow(frame_tick + 1, [&](ImageId image_id) {
+                Image& image = slot_images[image_id];
+                if (True(image.flags & (ImageFlagBits::IsDecoding | ImageFlagBits::Rescaled))) {
+                    return false;
+                }
+                if (runtime.ArrayExperiment(image)) ReleaseImageViews(image);
+                return false;
+            });
+        }
+    }
     sentenced_images.Tick();
     sentenced_framebuffers.Tick();
     sentenced_image_view.Tick();
@@ -812,9 +873,14 @@ FramebufferId TextureCache<P>::GetFramebufferId(const RenderTargets& key) {
 
 template <class P>
 void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
-    ForEachImageInRegion(cpu_addr, size, [this](ImageId image_id, Image& image) {
+    ForEachImageInRegion(cpu_addr, size, [this, cpu_addr, size](ImageId image_id, Image& image) {
         if (True(image.flags & ImageFlagBits::CpuModified)) {
             return;
+        }
+        if (FullCapture::Active()) {
+            FullCapture::Event("tc_cpu_write", fmt::format(
+                "{{\"gpu\":{},\"image_cpu\":{},\"write_cpu\":{},\"size\":{},\"flags\":{}}}",
+                image.gpu_addr, image.cpu_addr, cpu_addr, size, static_cast<u32>(image.flags)));
         }
         image.flags |= ImageFlagBits::CpuModified;
         ++binding_epoch;
@@ -1028,6 +1094,11 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
                             [&](ImageId id, Image&) { deleted_images.push_back(id); });
     for (const ImageId id : deleted_images) {
         Image& image = slot_images[id];
+        if (FullCapture::Active()) {
+            FullCapture::Event("tc_gpu_unmap", fmt::format(
+                "{{\"gpu\":{},\"unmap_gpu\":{},\"size\":{},\"flags\":{}}}", image.gpu_addr,
+                gpu_addr, size, static_cast<u32>(image.flags)));
+        }
         if (False(image.flags & ImageFlagBits::CpuModified)) {
             image.flags |= ImageFlagBits::CpuModified;
             ++binding_epoch;
@@ -1505,6 +1576,15 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
                                 image.guest_size_bytes, image.gpu_addr);
     VideoCore::FrameTrace::Mark(VideoCore::FrameTrace::Event::TextureUploadFormat,
                                 static_cast<u64>(image.info.format), image.gpu_addr);
+    if (FullCapture::Active()) {
+        // A refresh replaces the whole image with guest memory, GPU-written texels included.
+        FullCapture::Event("tc_refresh", fmt::format(
+            "{{\"gpu\":{},\"cpu\":{},\"size\":{},\"layers\":{},\"levels\":{},\"format\":{},"
+            "\"flags\":{}}}",
+            image.gpu_addr, image.cpu_addr, image.guest_size_bytes, image.info.resources.layers,
+            image.info.resources.levels, static_cast<u32>(image.info.format),
+            static_cast<u32>(image.flags)));
+    }
     image.flags &= ~ImageFlagBits::CpuModified;
 
     TrackImage(image, image_id);

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <span>
@@ -663,12 +664,139 @@ u32 CalculateHostUnswizzledSizeBytes(const ImageInfo& info, const HostRowLayout&
 }
 
 namespace {
-std::atomic<bool> recompress_astc_arrays{true};
+std::atomic<int> astc_array_mode{static_cast<int>(AstcArrayMode::Auto)};
 std::atomic<bool> opaque_astc_to_bc1{false};
+
+/// The ASTC array shapes the layer probe caught misread as BC, and those waiting for the texture
+/// cache to drop their images. Read on every format decision, so empty lists skip the lock.
+struct AstcArrayShape {
+    PixelFormat format;
+    u32 width;
+    u32 height;
+    u32 layers;
+    s32 levels;
+    bool operator==(const AstcArrayShape&) const = default;
+};
+std::mutex misread_mutex;
+std::vector<AstcArrayShape> misread_shapes;
+std::vector<AstcArrayShape> pending_misread_shapes;
+std::atomic<bool> any_misread_shape{false};
+std::atomic<bool> any_pending_change{false};
+std::atomic<u64> rgba_cap{DEFAULT_ASTC_ARRAY_RGBA_CAP};
+u64 requested_rgba_cap{}; ///< 0: none. Under misread_mutex.
+
+AstcArrayShape ShapeOf(const ImageInfo& info) noexcept {
+    return {info.format, info.size.width, info.size.height,
+            static_cast<u32>(info.resources.layers), info.resources.levels};
+}
+
+u64 RgbaBytes(const AstcArrayShape& shape) noexcept {
+    u64 bytes = 0;
+    for (s32 level = 0; level < shape.levels; ++level) {
+        bytes += static_cast<u64>(std::max(1U, shape.width >> level)) *
+                 std::max(1U, shape.height >> level) * 4;
+    }
+    return bytes * shape.layers;
+}
+
+bool IsMisreadShape(const ImageInfo& info) noexcept {
+    if (!any_misread_shape.load(std::memory_order_acquire)) {
+        return false;
+    }
+    // RGBA8 is four times BC3: one 121-layer array once took 650 MiB that way.
+    const AstcArrayShape shape = ShapeOf(info);
+    if (RgbaBytes(shape) > rgba_cap.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    std::scoped_lock lock{misread_mutex};
+    return std::ranges::find(misread_shapes, shape) != misread_shapes.end();
+}
+
+bool Contains(const std::vector<AstcArrayShape>& shapes, const AstcArrayShape& shape) {
+    return std::ranges::find(shapes, shape) != shapes.end();
+}
 } // Anonymous namespace
 
-void SetAstcArrayRecompression(bool enabled) noexcept {
-    recompress_astc_arrays.store(enabled, std::memory_order_relaxed);
+void SetAstcArrayMode(AstcArrayMode mode) noexcept {
+    astc_array_mode.store(static_cast<int>(mode), std::memory_order_relaxed);
+}
+
+AstcArrayMode GetAstcArrayMode() noexcept {
+    return static_cast<AstcArrayMode>(astc_array_mode.load(std::memory_order_relaxed));
+}
+
+void SetAstcArrayRgbaCap(u64 bytes) noexcept {
+    rgba_cap.store(bytes, std::memory_order_relaxed);
+}
+
+void RequestAstcArrayRgbaCap(u64 bytes) noexcept {
+    std::scoped_lock lock{misread_mutex};
+    if (bytes == rgba_cap.load(std::memory_order_relaxed)) {
+        // Back to the cap in use (or never left it): nothing to reload.
+        requested_rgba_cap = 0;
+        any_pending_change.store(!pending_misread_shapes.empty(), std::memory_order_release);
+        return;
+    }
+    requested_rgba_cap = bytes;
+    any_pending_change.store(true, std::memory_order_release);
+}
+
+bool ReportAstcArrayMisread(const ImageInfo& info) noexcept {
+    const AstcArrayShape shape = ShapeOf(info);
+    std::scoped_lock lock{misread_mutex};
+    if (!Contains(misread_shapes, shape) && !Contains(pending_misread_shapes, shape)) {
+        pending_misread_shapes.push_back(shape);
+        any_pending_change.store(true, std::memory_order_release);
+    }
+    const u64 cap = requested_rgba_cap != 0 ? requested_rgba_cap
+                                            : rgba_cap.load(std::memory_order_relaxed);
+    return RgbaBytes(shape) <= cap;
+}
+
+bool HasPendingAstcArrayChange() noexcept {
+    return any_pending_change.load(std::memory_order_acquire);
+}
+
+u64 PendingAstcArrayRgbaCap() noexcept {
+    std::scoped_lock lock{misread_mutex};
+    return requested_rgba_cap != 0 ? requested_rgba_cap : rgba_cap.load(std::memory_order_relaxed);
+}
+
+bool AstcArrayChangesWith(const ImageInfo& info, u64 cap) noexcept {
+    if (!HasPendingAstcArrayChange()) {
+        return false;
+    }
+    const AstcArrayShape shape = ShapeOf(info);
+    const u64 bytes = RgbaBytes(shape);
+    std::scoped_lock lock{misread_mutex};
+    if (Contains(pending_misread_shapes, shape)) {
+        return bytes <= cap; // BC now, RGBA8 once committed
+    }
+    if (Contains(misread_shapes, shape)) {
+        return (bytes <= rgba_cap.load(std::memory_order_relaxed)) != (bytes <= cap);
+    }
+    return false;
+}
+
+size_t CommitAstcArrayChange(u64 cap) noexcept {
+    std::scoped_lock lock{misread_mutex};
+    misread_shapes.insert(misread_shapes.end(), pending_misread_shapes.begin(),
+                          pending_misread_shapes.end());
+    pending_misread_shapes.clear();
+    rgba_cap.store(cap, std::memory_order_relaxed);
+    if (requested_rgba_cap == cap) {
+        requested_rgba_cap = 0;
+    }
+    any_pending_change.store(requested_rgba_cap != 0, std::memory_order_release);
+    any_misread_shape.store(!misread_shapes.empty(), std::memory_order_release);
+    return static_cast<size_t>(std::ranges::count_if(
+        misread_shapes, [cap](const AstcArrayShape& shape) { return RgbaBytes(shape) <= cap; }));
+}
+
+bool WantsAstcArrayProbe(const ImageInfo& info) noexcept {
+    return GetAstcArrayMode() == AstcArrayMode::Auto && IsPixelFormatASTC(info.format) &&
+           info.type == ImageType::e2D && info.resources.layers > 1 &&
+           AstcRecompressionFor(info) != Settings::AstcRecompression::Uncompressed;
 }
 
 void SetOpaqueAstcToBc1(bool enabled) noexcept {
@@ -699,8 +827,11 @@ AstcMask AstcAlphaMaskFor(const ImageInfo& info) noexcept {
 
 Settings::AstcRecompression AstcRecompressionFor(const ImageInfo& info) noexcept {
     const bool is_array = info.resources.layers > 1 || info.size.depth > 1;
-    if (is_array && !recompress_astc_arrays.load(std::memory_order_relaxed)) {
-        return Settings::AstcRecompression::Uncompressed;
+    if (is_array) {
+        const AstcArrayMode mode = GetAstcArrayMode();
+        if (mode == AstcArrayMode::Rgba || (mode == AstcArrayMode::Auto && IsMisreadShape(info))) {
+            return Settings::AstcRecompression::Uncompressed;
+        }
     }
     const Settings::AstcRecompression recompression = Settings::values.astc_recompression.GetValue();
     if (recompression == Settings::AstcRecompression::Bc3 && info.astc_opaque) {

@@ -750,6 +750,8 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::CpuWriteAllHint, L"Advanced. Only acts with the CPU write queue on: no write of the game waits for the GPU thread. Turn it off only if a game shows graphics glitches with it. Applied when the game starts"},
     {Text::FixedCoreMap, L"Fixed core map"},
     {Text::FixedCoreMapHint, L"Advanced. Puts each emulator thread on a fixed core, as before. Only if a game runs slower without it. Also in the in-game menu, without restarting"},
+    {Text::AstcArrayCap, L"ASTC array RGBA8 limit"},
+    {Text::AstcArrayCapHint, L"Most one texture array the console reads wrong may use as RGBA8 to fix it. Raise it if a texture still looks wrong; higher uses more memory. Also in the in-game menu, without restarting"},
     {Text::SlowGuestClock, L"Game clock at 90%"},
     {Text::SlowGuestClockHint, L"For games that jump between 20 and 30 fps. If it looks slow, turn it off"},
     {Text::ExactGpuReads, L"Exact GPU reads"},

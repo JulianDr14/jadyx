@@ -1588,6 +1588,45 @@ ComPtr<ID3D12PipelineState> GraphicsPipeline::CreatePickProbePipeline(
     return result;
 }
 
+ComPtr<ID3D12PipelineState> GraphicsPipeline::CreateShaderProbePipeline(
+    std::span<const u8> ps) const {
+    if (!dxil || has_stage[1] || has_stage[2] || has_stage[3])
+        throw std::runtime_error("shader probe: unsupported stages");
+    for (const auto& info : stage_infos) {
+        if (info && (!info->storage_buffers_descriptors.empty() ||
+                     !info->image_descriptors.empty() || !info->image_buffer_descriptors.empty()))
+            throw std::runtime_error("shader probe: side effects rejected");
+    }
+    std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
+    auto desc = Describe(elements);
+    if (desc.SampleDesc.Count != 1 || desc.NumRenderTargets != 1 || desc.StreamOutput.NumEntries)
+        throw std::runtime_error("shader probe: unsupported framebuffer");
+    desc.PS = {ps.data(), ps.size()};
+    desc.RTVFormats[0] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    desc.BlendState.AlphaToCoverageEnable = FALSE;
+    desc.BlendState.IndependentBlendEnable = FALSE;
+    desc.BlendState.RenderTarget[0] = {};
+    desc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+    desc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_ZERO;
+    desc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    desc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    desc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+    desc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    desc.BlendState.RenderTarget[0].LogicOp = D3D12_LOGIC_OP_NOOP;
+    desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    auto& depth = desc.DepthStencilState;
+    // The guest depth already holds this draw's winners: replay against it, never write it.
+    depth.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    depth.StencilWriteMask = 0;
+    if (depth.DepthFunc == D3D12_COMPARISON_FUNC_LESS) depth.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    if (depth.DepthFunc == D3D12_COMPARISON_FUNC_GREATER)
+        depth.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    ComPtr<ID3D12PipelineState> result;
+    ThrowIfFailed(device.Get()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&result)),
+                  "shader capture probe pipeline");
+    return result;
+}
+
 ComPtr<ID3D12PipelineState> GraphicsPipeline::CreateMaterialProbePipeline(
     std::span<const u8> pixel_shader, std::span<const u8> geometry_shader,
     bool reflection_probe, DXGI_FORMAT output_format) const {

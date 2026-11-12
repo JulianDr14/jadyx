@@ -66,6 +66,7 @@ set(SHADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_tessellate.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_bc3_encoder.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_bcn_decoder.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_array_layer_probe.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_scratch_probe.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_scratch_probe.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_scratch_probe_copy.frag

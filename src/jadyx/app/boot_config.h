@@ -387,11 +387,12 @@ struct BootConfig {
     /// default since 0.2.59) performs both decode and BC3 encode on the GPU; "bc3" keeps the CPU
     /// reference path and "cpu" expands every image to RGBA8.
     enum class Astc { Bc3, Gpu, GpuRgba, Cpu } astc{Astc::Gpu};
-    /// ASTC 2D arrays as BC3 too ("astc_arrays=bc3", the default) or RGBA8 ("astc_arrays=rgba").
-    /// RGBA8 is four times the memory: one array of 121 layers took 650 MiB and closed a game at
-    /// the 5 GiB limit. BC arrays read some layers wrong on the Series (0.2.44), seen with BC4
-    /// arrays uploaded by copy; "rgba" stays as the way back if ASTC arrays show it too.
-    bool astc_arrays_rgba{};
+    /// ASTC 2D arrays: 0 "astc_arrays=auto" (the default) keeps them BC and probes each new one,
+    /// the shapes whose layers the Series reads from the wrong place (0.2.44, 0.4.0.13) become
+    /// RGBA8; 1 "astc_arrays=rgba" makes all RGBA8 (four times the memory: one array of 121
+    /// layers took 650 MiB and closed a game at the 5 GiB limit); 2 "astc_arrays=bc3" all BC,
+    /// unprobed. Same values as VideoCommon::AstcArrayMode.
+    int astc_arrays{};
     /// ASTC without alpha as BC1, half of BC3 ("astc_opaque=bc1", the default), or as BC3 like
     /// the rest ("astc_opaque=bc3").
     bool astc_opaque_bc3{};

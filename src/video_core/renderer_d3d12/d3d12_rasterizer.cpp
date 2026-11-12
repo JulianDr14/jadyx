@@ -608,7 +608,10 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
             full_capture_operation, params.num_vertices, params.num_instances, params.first_index,
             params.base_vertex, params.base_instance, params.is_indexed, params.runtime_first_vertex));
         CaptureFullBuffers(traced_buffers, false);
+        full_capture_probe_taken = TakeShaderProbe(*pipeline, params);
+        full_capture_fresh_arrays = full_capture_probe_taken;
         CaptureFullImages(full_views, framebuffer, false);
+        full_capture_fresh_arrays = false;
     }
     glitch.lost_slots = buffer_runtime.CheckVertexSlots(buffer_cache.DiagVertexMask());
     glitch_probe = glitch.active;
@@ -636,6 +639,11 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
         CaptureFullBuffers(traced_buffers, true);
         CaptureFullImages(full_views, framebuffer, true);
         CapturePickProbes(*pipeline, bindings, traced_buffers, *framebuffer, params, draw_state.topology);
+        if (full_capture_probe_taken) {
+            CaptureShaderProbes(*pipeline, bindings, traced_buffers, *framebuffer, params,
+                                draw_state.topology);
+        }
+        full_capture_probe_taken = false;
         VideoCommon::FullCapture::Event("draw_end", fmt::format("{{\"op\":{}}}", full_capture_operation));
     }
     hunt.Recorded();

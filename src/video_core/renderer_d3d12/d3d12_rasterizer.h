@@ -236,6 +236,18 @@ private:
                            std::span<const TracedBuffer> geometry,
                            const Framebuffer& framebuffer, const DrawParams& params,
                            Maxwell::PrimitiveTopology topology);
+    /// Full capture: replays one configured draw with replacement pixel shaders
+    /// (exe dir shader_probes/) into a float32 target and records a window of it.
+    void CaptureShaderProbes(const GraphicsPipeline& pipeline, const PipelineBindings& bindings,
+                             std::span<const TracedBuffer> geometry,
+                             const Framebuffer& framebuffer, const DrawParams& params,
+                             Maxwell::PrimitiveTopology topology);
+    /// Whether CaptureShaderProbes will replay this draw (counts it: at most two per capture).
+    bool TakeShaderProbe(const GraphicsPipeline& pipeline, const DrawParams& params);
+    /// Set for a probed draw: its large texture arrays are read back again before it, so the
+    /// probes and the copy see the same moment.
+    bool full_capture_fresh_arrays{};
+    bool full_capture_probe_taken{};
     struct ViewportState {
         u32 yz_flip_mask;
         float width;

@@ -50,10 +50,41 @@ struct HostRowLayout {
 
 [[nodiscard]] u32 CalculateConvertedSizeBytes(const ImageInfo& info) noexcept;
 
-/// Keeps ASTC 2D arrays and 3D images decoded to RGBA8 even when astc_recompression asks for BC1
-/// or BC3 (the default is to recompress them too). The Xbox Series samples some layers of
-/// block-compressed 2D arrays from the wrong place (see renderer_d3d12's DecodedBcFormat).
-void SetAstcArrayRecompression(bool enabled) noexcept;
+/// How ASTC 2D arrays are stored on D3D12. Recompressed BC arrays can be read from the wrong
+/// place in some layers on the Series (the texture unit and the copy engine disagree), so:
+///  - Auto (the default): BC, and the backend probes each new array's layers once
+///    (WantsAstcArrayProbe); the shapes it catches misread are then kept as RGBA8, only those,
+///    each up to the RGBA8 cap below.
+///  - Rgba: every ASTC array as RGBA8 (four times the memory). boot.cfg only, for diagnosis.
+///  - Bc: every ASTC array as BC, no probe. boot.cfg only, for diagnosis.
+enum class AstcArrayMode : int { Auto = 0, Rgba = 1, Bc = 2 };
+void SetAstcArrayMode(AstcArrayMode mode) noexcept;
+[[nodiscard]] AstcArrayMode GetAstcArrayMode() noexcept;
+
+/// The most one misread array may take as RGBA8 (per array, not a total): above it the array
+/// stays BC, glitch included, rather than risk the memory limit. Set at boot.
+inline constexpr u64 DEFAULT_ASTC_ARRAY_RGBA_CAP = 160ULL << 20;
+void SetAstcArrayRgbaCap(u64 bytes) noexcept;
+/// In game: the texture cache applies the new cap at its next frame and reloads the misread
+/// arrays it moves between BC and RGBA8.
+void RequestAstcArrayRgbaCap(u64 bytes) noexcept;
+
+/// Whether the backend should probe this new image's layers (Auto mode, an ASTC 2D array kept as
+/// BC).
+[[nodiscard]] bool WantsAstcArrayProbe(const ImageInfo& info) noexcept;
+/// The probe found layers of an array of this shape misread: queues the shape. Returns whether it
+/// fits the cap (goes RGBA8); a shape over it is remembered, so a higher cap later moves it.
+bool ReportAstcArrayMisread(const ImageInfo& info) noexcept;
+/// Whether misread shapes or a new cap wait for the texture cache.
+[[nodiscard]] bool HasPendingAstcArrayChange() noexcept;
+/// The cap the pending change applies: the requested one, else the current.
+[[nodiscard]] u64 PendingAstcArrayRgbaCap() noexcept;
+/// Whether images of this shape change format once the pending change applies with `cap`.
+[[nodiscard]] bool AstcArrayChangesWith(const ImageInfo& info, u64 cap) noexcept;
+/// Applies the pending change with `cap`; the texture cache calls it once it dropped the images
+/// AstcArrayChangesWith names, so no image changes format while it lives. Returns how many misread
+/// shapes are RGBA8 from now on.
+size_t CommitAstcArrayChange(u64 cap) noexcept;
 
 /// Re-encodes the ASTC images that have no alpha to BC1 instead of BC3 when astc_recompression
 /// asks for BC3: half the memory. Only for backends whose image formats follow

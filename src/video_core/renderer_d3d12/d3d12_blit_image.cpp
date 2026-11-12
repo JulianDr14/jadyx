@@ -190,6 +190,13 @@ BlitImageHelper::BlitImageHelper(const Device& device_, Scheduler& scheduler_,
         CreateBc3Pipeline(compiler);
         bc3_available = true;
         LOG_INFO(Render, "D3D12: BC3 GPU encoder shader ready");
+        try {
+            CreateArrayProbePipeline(compiler);
+            array_probe_available = true;
+        } catch (const std::exception& exception) {
+            LOG_ERROR(Render, "D3D12: array layer probe unavailable, ASTC arrays stay BC "
+                      "unchecked: {}", exception.what());
+        }
     } catch (const std::exception& exception) {
         LOG_ERROR(Render, "D3D12: BC3 GPU encoder unavailable, recompressed ASTC uses the CPU: {}",
                   exception.what());

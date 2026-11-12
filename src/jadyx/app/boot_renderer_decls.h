@@ -51,6 +51,8 @@ void SetTextureMemoryLine(u64 bytes); // d3d12_texture_cache.h
 void SetTextureYield(bool yield); // d3d12_texture_cache.h
 void GetTextureMemoryUse(u64& heap_bytes, u64& cap); // d3d12_texture_cache.h
 void SetHeapCompaction(u64 bytes_per_frame); // d3d12_texture_cache.h
+void SetArrayOwnMemory(bool enabled); // d3d12_texture_cache.h
+void SetArrayRewrite(bool enabled); // d3d12_texture_cache.h
 void SetSmallTextureAlignment(bool enabled); // d3d12_resource_allocator.h
 void SetSpareHeaps(bool enabled); // d3d12_resource_allocator.h
 void SetPsoBlobs(bool enabled); // d3d12_pso_blob_cache.h
@@ -115,7 +117,10 @@ void SetXAudio2ProfileEnabled(bool enabled) noexcept; // audio_core/sink/xaudio2
 }
 
 namespace VideoCommon {
-void SetAstcArrayRecompression(bool enabled) noexcept; // texture_cache/util.h
+enum class AstcArrayMode : int;                          // texture_cache/util.h
+void SetAstcArrayMode(AstcArrayMode mode) noexcept;     // texture_cache/util.h
+void SetAstcArrayRgbaCap(u64 bytes) noexcept;           // texture_cache/util.h
+void RequestAstcArrayRgbaCap(u64 bytes) noexcept;       // texture_cache/util.h
 void SetOpaqueAstcToBc1(bool enabled) noexcept;        // texture_cache/util.h
 void SetMipRenderTargets(bool enabled) noexcept;       // texture_cache/texture_cache_base.h
 void SetRenderTargetInheritance(bool enabled) noexcept; // texture_cache/texture_cache_base.h

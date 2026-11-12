@@ -13,6 +13,7 @@
 #include "common/bug_tracker.h"
 #include "common/div_ceil.h"
 #include "common/logging.h"
+#include "video_core/diagnostics/full_capture.h"
 #include "video_core/frame_trace.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_blit_image.h"
@@ -202,6 +203,21 @@ void Image::UploadMemoryImpl(ID3D12Resource* buffer, size_t base_offset, u8* map
     }
     VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureUploads, 1);
     VideoCore::Perf::Add(VideoCore::Perf::Counter::TextureUploadBytes, TransferBytes(copies));
+    if (VideoCommon::FullCapture::Active()) {
+        // Every write into a texture during a capture: which subresources, from what source.
+        std::string list;
+        for (const auto& copy : copies) {
+            list += fmt::format("{}[{},{},{},{}]", list.empty() ? "" : ",",
+                                copy.image_subresource.base_level,
+                                copy.image_subresource.base_layer,
+                                copy.image_subresource.num_layers, copy.buffer_offset);
+        }
+        VideoCommon::FullCapture::Event("image_upload", fmt::format(
+            "{{\"gpu\":{},\"resource\":\"{}\",\"write_version\":{},\"untouched\":{},"
+            "\"cpu_writable\":{},\"mapped\":{},\"copies\":[{}]}}",
+            gpu_addr, static_cast<const void*>(resource.Get()), write_version, untouched,
+            cpu_writable, mapped_at_base != nullptr, list));
+    }
     if (IsDepthStencilPlanar()) {
         UploadDepthStencil(buffer, base_offset, copies);
         return;

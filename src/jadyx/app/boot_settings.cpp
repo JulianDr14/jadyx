@@ -136,6 +136,9 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
     system.CoreTiming().SetGuestClockPercent(clock_percent);
     const bool exact_gpu_reads = config.exact_gpu_reads.value_or(game.exact_gpu_reads);
     VideoCore::SetExactGpuReads(exact_gpu_reads);
+    // Read by the texture cache at its next frame: in game it reloads the misread arrays the new
+    // cap moves between BC and RGBA8.
+    VideoCommon::RequestAstcArrayRgbaCap(u64{graphics.astc_array_cap_mib} << 20);
     VideoCore::SemaphoreOrder::SetMode(config.semaphore_order_strict
                                            ? VideoCore::SemaphoreOrder::Mode::Strict
                                            : VideoCore::SemaphoreOrder::Mode::Supersede);
@@ -153,7 +156,8 @@ void ApplyGameGraphics(Core::System& system, const BootConfig& config, const Gam
                                                     : graphics.shaders == ShaderBuild::Balanced ? "balanced"
                                                                                                 : "wait"}) +
               ", GPU fence " +
-              (config.gpu_fence ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(GpuFenceText(graphics.gpu_fence)))));
+              (config.gpu_fence ? std::string{"from boot.cfg"} : I18n::ToUtf8(I18n::Tr(GpuFenceText(graphics.gpu_fence)))) +
+              ", ASTC array RGBA8 cap " + std::to_string(graphics.astc_array_cap_mib) + " MiB");
 }
 
 void ApplyRunningCoreMap(const BootConfig& config, bool fixed) {
@@ -329,13 +333,13 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetCpuTextureWrites(config.cpu_texture_writes);
     // RGBA8 ASTC made loading frames upload 150-260 MiB at once and the console run out of memory
     // (0.2.50): textures become BC3 (a quarter of the memory), 2D arrays too unless
-    // astc_arrays=rgba (BootConfig::astc_arrays_rgba), all decoded and encoded on the GPU.
+    // they turn out misread (BootConfig::astc_arrays), all decoded and encoded on the GPU.
     const bool astc_rgba = config.astc == BootConfig::Astc::Cpu ||
                            config.astc == BootConfig::Astc::GpuRgba;
     Settings::values.astc_recompression.SetValue(astc_rgba
                                                      ? Settings::AstcRecompression::Uncompressed
                                                      : Settings::AstcRecompression::Bc3);
-    VideoCommon::SetAstcArrayRecompression(!config.astc_arrays_rgba);
+    VideoCommon::SetAstcArrayMode(static_cast<VideoCommon::AstcArrayMode>(config.astc_arrays));
     VideoCommon::SetOpaqueAstcToBc1(!config.astc_opaque_bc3);
     D3D12::SetAstcDropTopLevel(config.astc_drop_mip0);
     // The compute decoder was opt-in until its dispatches set spirv_to_dxil's compute runtime data
@@ -460,7 +464,8 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
 }
 
 GlitchToggles GlitchTogglesOf(const BootConfig& config) {
-    return {.a2c_shader = config.a2c_shader, .precise_writes = config.precise_writes};
+    return {.a2c_shader = config.a2c_shader,
+            .precise_writes = config.precise_writes};
 }
 
 void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
@@ -471,10 +476,14 @@ void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
     };
     log("a2c_shader", before.a2c_shader, now.a2c_shader);
     log("precise_writes", before.precise_writes, now.precise_writes);
+    log("array_own_memory", before.array_own_memory, now.array_own_memory);
+    log("array_rewrite", before.array_rewrite, now.array_rewrite);
     // Each is read at use: draws after this take the new value, and pipelines whose key depends
     // on it (a2c_shader) are built on first use.
     D3D12::SetShaderAlphaToCoverage(now.a2c_shader);
     VideoCommon::ReadbackTrace::SetPreciseCpuWrites(now.precise_writes);
+    D3D12::SetArrayOwnMemory(now.array_own_memory);
+    D3D12::SetArrayRewrite(now.array_rewrite);
 }
 
 } // namespace Jadyx
