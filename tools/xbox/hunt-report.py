@@ -188,6 +188,67 @@ def describe_block(pc, data):
                 text=[f"{i.address:x}: {i.mnemonic} {i.op_str}" for i in insns])
 
 
+def parse_thunk_blocks(path):
+    """(load|store, class) -> [samples, waiting for the entry, pages, blocks], over the windows.
+    Pages and blocks of several windows add up, so they count a page once per window."""
+    rows = collections.defaultdict(lambda: [0, 0, 0, 0])
+    if not path or not os.path.exists(path):
+        return rows
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            p = line.split()
+            if len(p) == 7 and p[0] == "thunkblock":
+                row = rows[(p[1], p[2])]
+                for index in range(4):
+                    row[index] += int(p[3 + index])
+    return rows
+
+
+THUNK_BLOCK_CLASSES = (
+    ("uniform", "one entry for the whole block"),
+    ("holes", "one entry, some pages empty"),
+    ("deltas", "pages with different entries"),
+    ("slow", "the page's own entry is empty (callbacks)"),
+    ("outside", "not a guest address"),
+)
+
+
+def thunk_block_section(profile, out):
+    """Whether a page table with one entry per 2 MiB block could serve the thunks' accesses."""
+    rows = parse_thunk_blocks(profile)
+    if not rows:
+        return
+    out.append("# Memory thunks by 2 MiB block\n")
+    out.append("Where the thunk samples of every core were reading or writing, by what the JIT's "
+               "page table holds over the 2 MiB block of the address at the end of the window. "
+               "Only a uniform block could be served by a table with one entry per block; the "
+               "entry wait is the samples stopped right after the page table entry load, the part "
+               "such a table would shorten.\n")
+    for kind in ("load", "store"):
+        total = sum(row[0] for (k, _), row in rows.items() if k == kind)
+        waits = sum(row[1] for (k, _), row in rows.items() if k == kind)
+        if not total:
+            continue
+        uniform = rows.get((kind, "uniform"), [0, 0, 0, 0])
+        out.append(f"- **{kind}s: {100 * uniform[0] / total:.0f}% of {total} samples in uniform "
+                   f"blocks**; {100 * waits / total:.0f}% of the samples wait for the entry, "
+                   f"{100 * uniform[1] / max(1, waits):.0f}% of those in uniform blocks.")
+    table_rows = []
+    for kind in ("load", "store"):
+        total = sum(row[0] for (k, _), row in rows.items() if k == kind)
+        for name, meaning in THUNK_BLOCK_CLASSES:
+            row = rows.get((kind, name))
+            if not row:
+                continue
+            table_rows.append([kind, f"{name}: {meaning}", f"{100 * row[0] / max(1, total):.1f}%",
+                               row[0], row[1], row[2], row[3],
+                               f"{row[2] / max(1, row[3]):.1f}"])
+    out.append("")
+    out.append(table(["access", "block", "share", "samples", "entry wait", "pages", "blocks",
+                      "pages per block"], table_rows))
+    out.append("")
+
+
 def guest_section(profile, threads, top, out):
     samples, calls, thunks, code, base = parse_guest_code(profile)
     cores = [name for name in samples if name.startswith("CPUCore_")]
@@ -692,6 +753,7 @@ def main():
     chain_section(capture, threads, out)
     if not args.no_profile:
         guest_section(profile, threads, args.top, out)
+        thunk_block_section(profile, out)
     report(capture, args.top, out)
 
     if not args.no_profile and os.path.exists(profile):

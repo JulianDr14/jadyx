@@ -106,6 +106,33 @@ def guest_code_failures(folder):
     return failures
 
 
+def thunk_block_failures(folder):
+    """The thunk samples are shared out by block class, windows added up, loads apart from stores."""
+    path = os.path.join(folder, "blocks.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("thunkblock load uniform 500 100 40 4\n"
+                "thunkblock load slow 100 0 10 5\n"
+                "thunkblock store deltas 50 50 5 5\n"
+                "window 2 seconds 5.000 hz 500 ticks 2500\n"
+                "thunkblock load uniform 300 100 20 2\n"
+                "thunkblock load holes 100 50 10 1\n")
+    out = []
+    hunt_report.thunk_block_section(path, out)
+    text = "\n".join(out)
+    failures = []
+    for expected in ("**loads: 80% of 1000 samples in uniform blocks**; 25% of the samples wait "
+                     "for the entry, 80% of those in uniform blocks.",
+                     "**stores: 0% of 50 samples in uniform blocks**",
+                     "| 80.0% | 800 | 200 | 60 | 6 | 10.0 |", "| load | slow: "):
+        if expected not in text:
+            failures.append(f"thunk block section lacks '{expected}':\n{text}")
+    out = []
+    hunt_report.thunk_block_section(os.path.join(folder, "none.txt"), out)
+    if out:
+        failures.append(f"a thunk block section without thunkblock lines: {out}")
+    return failures
+
+
 def main():
     failed = 0
     for expected, window, threads in CASES:
@@ -120,6 +147,9 @@ def main():
             for failure in guest_code_failures(folder):
                 print(f"FAIL: {failure}")
                 failed += 1
+        for failure in thunk_block_failures(folder):
+            print(f"FAIL: {failure}")
+            failed += 1
         hunt = os.path.join(folder, "jadyx_hunt.txt")
         write_hunt(hunt)
         write_profile(os.path.join(folder, "jadyx_hunt_profile_1.txt"), "CPUCore_1", 4800)
