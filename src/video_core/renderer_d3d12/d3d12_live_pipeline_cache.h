@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <exception>
@@ -23,11 +24,16 @@ public:
     enum class Outcome { Created, Hit, SharedInFlight, Bypassed };
     struct Entry {
         explicit Entry(Key key_) : key{std::move(key_)} {}
+        ~Entry() {
+            // The shared token may outlive the cache. Bypassed entries never own it.
+            if (retirement) retirement->store(true, std::memory_order_release);
+        }
         const Key key;
         std::optional<Value> value;
 
     private:
         friend class LivePipelineCache;
+        std::shared_ptr<std::atomic_bool> retirement;
         std::mutex mutex;
         std::condition_variable ready_condition;
         bool ready{};
@@ -48,10 +54,10 @@ public:
         bool indexed = false;
         {
             std::scoped_lock lock{mutex};
-            // Bound dead weak control blocks too. Full sweep is amortized over requests and
-            // only occurs on compilation, never on the per-draw ready fast path.
-            if (++requests % 128 == 0 || entries.size() >= max_entries) {
-                std::erase_if(entries, [](const auto& item) { return item.second.expired(); });
+            // Indexed weak slots can only expire after an indexed Entry retires.
+            // Exchange before sweeping so a concurrent retirement requests another pass.
+            if (++requests % 128 == 0 && retired->exchange(false, std::memory_order_acq_rel)) {
+                SweepExpired();
             }
             const auto [first, last] = entries.equal_range(hash);
             for (auto it = first; it != last; ++it) {
@@ -61,11 +67,17 @@ public:
                 }
             }
             if (!entry) {
+                // Full hits need no scan. A miss reclaims promptly after an owner retires.
+                if (entries.size() >= max_entries &&
+                    retired->exchange(false, std::memory_order_acq_rel)) {
+                    SweepExpired();
+                }
                 entry = std::make_shared<Entry>(std::move(key));
                 owner = true;
                 indexed = entries.size() < max_entries;
                 if (indexed) {
                     entries.emplace(hash, entry);
+                    entry->retirement = retired;
                 }
             }
         }
@@ -110,6 +122,11 @@ public:
     }
 
 private:
+    // Caller holds mutex; no live object or key is retained by the retirement token.
+    void SweepExpired() {
+        std::erase_if(entries, [](const auto& item) { return item.second.expired(); });
+    }
+    std::shared_ptr<std::atomic_bool> retired = std::make_shared<std::atomic_bool>(false);
     std::mutex mutex;
     std::unordered_multimap<size_t, std::weak_ptr<Entry>> entries;
     size_t requests{};
