@@ -215,6 +215,7 @@ private:
     /// Glitch hunt v21: a transform feedback (skinning) pass's attribute formats, whole vertex
     /// streams and uniform buffers up to the shader's size, guest and host, to replay it offline.
     void GlitchSkinDump(u32 frame, u32 call);
+    bool GlitchReadsGpuVertices();
     /// The bindings of the draw or dispatch the buffer cache configured last.
     void GlitchBindings(u32 frame, u32 call, const GlitchNote* draw, bool compute);
     /// Glitch hunt v12: a dispatch's storage buffers to the capture's .bin, host and guest
