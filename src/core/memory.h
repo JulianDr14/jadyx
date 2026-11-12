@@ -23,6 +23,10 @@ enum class MemoryPermission : u32;
 struct PageTable;
 } // namespace Common
 
+namespace Common::SamplingProfiler {
+enum class GuestBlockClass : u32;
+}
+
 namespace Core {
 class System;
 class GPUDirtyMemoryManager;
@@ -129,6 +133,11 @@ public:
     /// Diagnostic (geo_hunt): whether the page holding vaddr is marked rasterizer cached, so a
     /// CPU write to it reaches the GPU caches.
     [[nodiscard]] bool IsRasterizerCachedPage(Common::ProcessAddress vaddr) const;
+
+    /// Diagnostic (sampling profiler): what the JIT's page table holds over the 2 MiB block of
+    /// vaddr, in the table its stores or its loads go through. Any thread; a snapshot.
+    [[nodiscard]] Common::SamplingProfiler::GuestBlockClass JitBlockClass(u64 vaddr,
+                                                                          bool write) const;
 
     /**
      * Checks whether or not the supplied range of addresses are all valid

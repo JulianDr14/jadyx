@@ -196,6 +196,7 @@ void GameSession::Shutdown() {
     launch_screen.reset();
     Common::SamplingProfiler::Stop(); // writes the window in progress, if it runs
     Common::SamplingProfiler::SetGuestCodeReader({}, 0);
+    Common::SamplingProfiler::SetGuestBlockClassifier({});
     if (config.gpu_failure_probe) WriteDiag("GPU recovery shutdown: input.Stop");
     input.Stop();
     Kernel::Svc::SetDebugStringObserver(nullptr); // detach before teardown
@@ -495,6 +496,10 @@ void GameSession::StartGuest() {
                 return guest.ReadBlock(address, out, size);
             },
             GetInteger(process->GetPageTable().GetCodeRegionStart()));
+        Common::SamplingProfiler::SetGuestBlockClassifier(
+            [&guest = process->GetMemory()](u64 address, bool write) {
+                return guest.JitBlockClass(address, write);
+            });
     }
     if (config.profile) {
         const auto output =

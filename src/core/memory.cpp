@@ -24,6 +24,7 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/swap.h"
+#include "common/windows/sampling_profiler.h"
 #include "core/core.h"
 #include "core/arm/cpu_profile.h"
 #include "core/device_memory.h"
@@ -957,6 +958,37 @@ bool Memory::IsRasterizerCachedPage(const Common::ProcessAddress vaddr) const {
         return false;
     }
     return page_table.entries[page].Type() == Common::PageType::RasterizerCachedMemory;
+}
+
+Common::SamplingProfiler::GuestBlockClass Memory::JitBlockClass(u64 vaddr, bool write) const {
+    using Common::SamplingProfiler::GuestBlockClass;
+    static constexpr size_t BLOCK_PAGES = 512; // 2 MiB
+    const auto* const page_table = impl->current_page_table;
+    const size_t page = vaddr >> YUZU_PAGEBITS;
+    if (!page_table || page >= page_table->entries.size()) {
+        return GuestBlockClass::Outside;
+    }
+    // Loads go through the load table only with jit_read_table on; check keeps them on the other.
+    const bool read_table =
+        !write && page_table->HasJitReadTable() &&
+        Common::PageTable::GetJitReadTable() == Common::PageTable::JitReadTable::On;
+    const size_t base = read_table ? page_table->jit_read_base : 0;
+    const uintptr_t own = page_table->jit_entries[base + page].Load();
+    if (own == 0) {
+        return GuestBlockClass::Slow;
+    }
+    const size_t first = page & ~(BLOCK_PAGES - 1);
+    bool holes = false;
+    for (size_t index = first; index < first + BLOCK_PAGES; ++index) {
+        const uintptr_t entry =
+            index < page_table->entries.size() ? page_table->jit_entries[base + index].Load() : 0;
+        if (entry == 0) {
+            holes = true;
+        } else if (entry != own) {
+            return GuestBlockClass::Deltas;
+        }
+    }
+    return holes ? GuestBlockClass::Holes : GuestBlockClass::Uniform;
 }
 
 bool Memory::IsValidVirtualAddressRange(Common::ProcessAddress base, u64 size) const {
