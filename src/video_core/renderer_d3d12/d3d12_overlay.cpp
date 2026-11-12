@@ -26,6 +26,7 @@
 #include "video_core/performance_overlay.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
 #include "video_core/renderer_d3d12/d3d12_overlay_memory.h"
+#include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
 #include "video_core/renderer_d3d12/renderer_d3d12.h"
 #include "video_core/renderer_d3d12/renderer_d3d12_internal.h"
 #include "video_core/shader_notify.h"
@@ -371,6 +372,10 @@ void EndBootScreen(VideoCore::RendererBase& renderer) {
     if (Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Direct3D12) {
         static_cast<RendererD3D12&>(renderer).EndBootScreen();
     }
+}
+
+u64 PipelinesBuilt() {
+    return PipelineObjectsBuilt().load(std::memory_order_relaxed);
 }
 
 void RendererD3D12::StartBootScreen(BootScreen draw) {

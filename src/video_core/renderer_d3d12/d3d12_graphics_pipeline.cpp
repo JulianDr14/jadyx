@@ -2002,6 +2002,7 @@ void GraphicsPipeline::Build(bool flatten_on_fault) try {
             key.unique_hashes[2], key.unique_hashes[3], key.unique_hashes[4], key.unique_hashes[5],
             num_attachments, static_cast<u32>(desc.RTVFormats[0]), static_cast<u32>(desc.DSVFormat));
     }
+    PipelineObjectsBuilt().fetch_add(1, std::memory_order_relaxed);
     LOG_INFO(Render,
              "D3D12: pipeline built for VS {:016x} PS {:016x} ({} attributes, {} RTs, RT0 {}, "
              "DSV {}, {} + {} descriptors, features VS {:x} PS {:x})",

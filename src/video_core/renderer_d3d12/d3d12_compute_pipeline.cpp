@@ -328,6 +328,7 @@ void ComputePipeline::Build() {
         pipeline_state = std::move(built);
     }
     pso_charge = Common::MemoryCharge(Common::MemoryAccount::PipelineStates, 0);
+    PipelineObjectsBuilt().fetch_add(1, std::memory_order_relaxed);
     LOG_INFO(Render, "D3D12: compute pipeline built for {:016x} ({} + {} descriptors)",
              unique_hash, layout.NumResourceDescriptors(), layout.NumSamplerDescriptors());
 }
