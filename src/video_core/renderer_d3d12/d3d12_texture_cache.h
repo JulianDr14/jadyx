@@ -177,6 +177,9 @@ public:
     /// shader decodes (ASTC) or unswizzles (Image::IsGpuUnswizzled).
     void AccelerateImageUpload(Image& image, const StagingBufferRef& map,
                                std::span<const VideoCommon::SwizzleParameters> swizzles, u32, u32);
+    /// Reads back the finished ASTC array layer probes (ProbeAstcArrayLayers) and reports the
+    /// shapes with misread layers to VideoCommon::ReportAstcArrayMisread. Each frame.
+    void PollAstcArrayProbes();
     void InsertUploadMemoryBarrier() {}
     /// Clears are recorded immediately; nothing is deferred.
     void FlushDeferredClear() {}
@@ -237,6 +240,26 @@ private:
                            u32 src_subresource, const Region2D& dst_region,
                            const Region2D& src_region);
     void EnsureAstcBcScratch(u64 size);
+    /// Before the first upload of an ASTC array recompressed to BC (Auto mode): writes a marker
+    /// block into each layer and level with the copy engine, reads them through the texture unit
+    /// and keeps the result for PollAstcArrayProbes. The upload then overwrites the markers.
+    void ProbeAstcArrayLayers(Image& image);
+    struct AstcArrayProbe {
+        u64 tick;
+        ComPtr<ID3D12Resource> markers;  ///< upload heap, one block per 512 bytes
+        ComPtr<ID3D12Resource> results;  ///< UAV the shader writes
+        ComPtr<ID3D12Resource> readback; ///< results copied for the CPU
+        VideoCommon::ImageInfo info;
+        GPUVAddr gpu_addr;
+        u8 kind; ///< 0 BC1, 1 BC3, 2 BC4
+        u32 salt;
+        u32 width;
+        u32 height;
+        u32 layers;
+        u32 levels;
+    };
+    std::vector<AstcArrayProbe> astc_array_probes;
+    u32 astc_array_probe_count{};
     /// AccelerateImageUpload of a block-linear color image: each band of each level and layer is
     /// unswizzled into a scratch footprint and copied into the image.
     void UnswizzleImageUpload(Image& image, const StagingBufferRef& map,
@@ -391,6 +414,8 @@ public:
     bool MoveToOwnMemory();
     /// Diagnostic: copies the resource into a scratch resource and back, in place.
     void RewriteThroughCopy();
+    /// ProbeAstcArrayLayers ran (or was not wanted) for this image.
+    bool layers_probed{};
     u64 rewritten_version{~u64{}};
     u32 rewritten_generation{};
     /// An ASTC image the compute shader decodes into RGBA8 (see AccelerateImageUpload).

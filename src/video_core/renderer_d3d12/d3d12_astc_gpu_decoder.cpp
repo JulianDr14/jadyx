@@ -105,6 +105,9 @@ void TextureCacheRuntime::AccelerateImageUpload(
     const bool encode_bc1 = copy_format == PixelFormat::BC1_RGBA_UNORM;
     const bool encode_bc4 = copy_format == PixelFormat::BC4_UNORM;
     const bool encode_bc = encode_bc1 || encode_bc4 || copy_format == PixelFormat::BC3_UNORM;
+    if (encode_bc && !image.layers_probed) {
+        ProbeAstcArrayLayers(image); // ASTC arrays kept as BC: check the Series reads every layer
+    }
     if (!encode_bc) {
         image.Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
