@@ -116,7 +116,17 @@ u32 WorkgroupSplitFor(const Tegra::Engines::KeplerCompute& kepler_compute) {
     }
     return factor;
 }
-std::atomic_bool transform_feedback_storage{false};
+
+/// Transform feedback is written by the vertex shader to storage buffers, never through native
+/// stream output. Do not switch this back without testing on the console: the Xbox Series
+/// driver's stream output fails for a vertex-only capture (a skinning pass: point list, no pixel
+/// shader). Its filled-size counter advances by every vertex, yet the buffer contents never
+/// change, so the meshes drawn from it keep stale vertices and stretch into long triangles.
+/// It is the driver, not our bindings: counters were reset correctly, and capturing into a
+/// private scratch buffer copied to the guest's after the draw failed the same way. Emulated
+/// tessellation still captures through stream output (tessellation_emulation.h), which the
+/// driver does write.
+constexpr bool TRANSFORM_FEEDBACK_STORAGE = true;
 
 /// Writes a translated stage's IR and SPIR-V next to the log (SetDumpedShader).
 void DumpShader(u64 unique_hash, size_t stage, const Shader::IR::Program& program,
@@ -774,13 +784,8 @@ void SetPipelineEviction(bool enabled) {
     pipeline_eviction.store(enabled, std::memory_order_relaxed);
 }
 
-void SetTransformFeedbackStorage(bool enabled) {
-    transform_feedback_storage.store(enabled, std::memory_order_relaxed);
-}
-
 bool PipelineCache::NativeStreamOutput() const {
-    return compiler.SupportsStreamOutput() &&
-           !transform_feedback_storage.load(std::memory_order_relaxed);
+    return compiler.SupportsStreamOutput() && !TRANSFORM_FEEDBACK_STORAGE;
 }
 
 void SetPipelinePrewarm(bool enabled) {
@@ -1868,10 +1873,10 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     std::array<std::vector<u32>, Maxwell::MaxShaderStage> spirv;
     boost::container::static_vector<size_t, Maxwell::MaxShaderStage> stage_indices;
 
-    // Transform feedback is captured where Maxwell captures it, after the last pre-rasterization
-    // stage: through stream output, in primitive order, with the counters carrying the buffer
-    // offsets across draws. Storage buffer writes from the vertex shader are the fallback, for an
-    // older spirv_to_dxil.dll or boot.cfg "xfb=storage"; they cover the vertex shader alone.
+    // Transform feedback goes to storage buffers written by the vertex shader
+    // (TRANSFORM_FEEDBACK_STORAGE), which cover the vertex shader alone. Stream output, which
+    // captures after the last pre-rasterization stage in primitive order, is kept for emulated
+    // tessellation and for hosts where it writes what it counts.
     const bool has_geometry_stage{(key.unique_hashes[4] != 0 || layer_source_program != nullptr) &&
                                   !drops_geometry};
     const size_t xfb_program = has_geometry_stage          ? 4
@@ -1885,7 +1890,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         throw std::runtime_error("emulated tessellation needs stream output");
     }
     const bool native_xfb{captures_xfb && !emulates_tess && compiler.SupportsStreamOutput() &&
-                          !transform_feedback_storage.load(std::memory_order_relaxed)};
+                          !TRANSFORM_FEEDBACK_STORAGE};
     VideoCommon::TransformFeedbackVaryings xfb_varyings;
     if (captures_xfb) {
         xfb_varyings = VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);

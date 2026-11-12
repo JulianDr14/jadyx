@@ -88,7 +88,6 @@ void SetPipelinePrewarm(bool enabled);       // d3d12_pipeline_cache.h
 void SetComputeWorkgroupSplit(u32 factor);   // d3d12_pipeline_cache.h
 void SetShuffleWaveUniform(bool enabled);    // d3d12_pipeline_cache.h
 void SetWaveSelfTest(bool enabled);          // diagnostics/d3d12_wave_selftest.h
-void SetTransformFeedbackStorage(bool enabled); // d3d12_pipeline_cache.h
 void SetDescriptorRemovalChecks(bool enabled); // d3d12_device.h
 void SetUniformUploadCopy(bool enabled);
 void SetUniformReuse(bool enabled);

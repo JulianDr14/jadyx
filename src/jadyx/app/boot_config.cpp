@@ -596,9 +596,6 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
             } else if (line == "pso_eviction=0") {
                 config.pso_eviction = false;
                 WriteDiag("boot.cfg: idle pipelines keep their PSOs");
-            } else if (line == "xfb=storage") {
-                config.xfb_storage = true;
-                WriteDiag("boot.cfg: transform feedback through storage buffers");
             } else if (line == "indirect_macro_cpu=1") {
                 config.indirect_macro_cpu = true;
                 WriteDiag("boot.cfg: indirect draw macros read GPU-written arguments on the CPU");

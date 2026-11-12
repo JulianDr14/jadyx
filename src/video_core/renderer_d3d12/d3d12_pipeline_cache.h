@@ -69,11 +69,6 @@ void SetGeometryDroppedShader(u64 unique_hash);
 /// "pso_eviction=0").
 void SetPipelineEviction(bool enabled);
 
-/// true writes transform feedback from the vertex shader to storage buffers instead of stream
-/// output: the fallback for a spirv_to_dxil.dll without it, for A/B comparison. Covers the vertex
-/// shader alone. Set before boot (boot.cfg "xfb=storage").
-void SetTransformFeedbackStorage(bool enabled);
-
 /// Diagnostics: false never builds dormant PSOs ahead of their first draw, for A/B timing of the
 /// background prewarm. Set before boot (boot.cfg "pso_prewarm=0").
 void SetPipelinePrewarm(bool enabled);
