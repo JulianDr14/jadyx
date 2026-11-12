@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
+#include <ctime>
 #include <optional>
 #include <span>
 #include <string>
@@ -24,6 +26,84 @@ namespace Jadyx {
 inline constexpr std::size_t MaxUserNameLength = 10;
 inline constexpr std::wstring_view DefaultUserName = L"Jadyx";
 
+/// A calendar date the games see instead of the Xbox's (Settings > System > Game date).
+struct GameDate {
+    int year{2000}, month{1}, day{1};
+    bool operator==(const GameDate&) const = default;
+};
+inline constexpr int MinGameYear = 2000, MaxGameYear = 2099;
+
+inline bool IsLeapYear(int year) {
+    return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+}
+inline int DaysInMonth(int year, int month) {
+    static constexpr std::array<int, 12> days{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    return month == 2 && IsLeapYear(year) ? 29 : days[static_cast<std::size_t>(month - 1)];
+}
+/// Days since 1970-01-01 of a Gregorian date (H. Hinnant's days_from_civil).
+inline std::int64_t DaysFromCivil(const GameDate& date) {
+    const std::int64_t y = date.year - (date.month <= 2 ? 1 : 0);
+    const std::int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const std::int64_t yoe = y - era * 400;
+    const std::int64_t mp = (date.month + 9) % 12;
+    const std::int64_t doy = (153 * mp + 2) / 5 + date.day - 1;
+    const std::int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+/// A date kept inside the selectable years, with its day inside its month.
+inline GameDate ClampGameDate(GameDate date) {
+    date.year = std::clamp(date.year, MinGameYear, MaxGameYear);
+    date.month = std::clamp(date.month, 1, 12);
+    date.day = std::clamp(date.day, 1, DaysInMonth(date.year, date.month));
+    return date;
+}
+/// Today on the Xbox's own clock and time zone.
+inline GameDate TodayLocal() {
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+    if (localtime_s(&local, &now) != 0) return {};
+    return ClampGameDate({local.tm_year + 1900, local.tm_mon + 1, local.tm_mday});
+}
+enum class GameDateField : std::uint8_t { Year, Month, Day };
+/// One step of a field, wrapping around its range; the day is clamped to the new month.
+inline GameDate StepGameDate(GameDate date, GameDateField field, bool back) {
+    const int delta = back ? -1 : 1;
+    const auto wrap = [delta](int value, int low, int high) {
+        value += delta;
+        return value < low ? high : value > high ? low : value;
+    };
+    date = ClampGameDate(date);
+    switch (field) {
+    case GameDateField::Year:  date.year = wrap(date.year, MinGameYear, MaxGameYear); break;
+    case GameDateField::Month: date.month = wrap(date.month, 1, 12); break;
+    case GameDateField::Day:   date.day = wrap(date.day, 1, DaysInMonth(date.year, date.month)); break;
+    }
+    return ClampGameDate(date);
+}
+/// Seconds to add to the Xbox clock so the games see `date` at the Xbox's time of day.
+inline std::int64_t GameDateOffsetSeconds(const GameDate& date, const GameDate& today) {
+    return (DaysFromCivil(ClampGameDate(date)) - DaysFromCivil(today)) * 86400;
+}
+/// "21:07" or "9:07 p. m.".
+inline std::wstring FormatClock(unsigned hour, unsigned minute, bool clock_24h) {
+    wchar_t text[16]{};
+    if (clock_24h) {
+        std::swprintf(text, std::size(text), L"%02u:%02u", hour % 24, minute % 60);
+        return text;
+    }
+    const unsigned twelve = hour % 12 == 0 ? 12 : hour % 12;
+    std::swprintf(text, std::size(text), L"%u:%02u ", twelve, minute % 60);
+    return text + std::wstring{I18n::Tr(hour % 24 < 12 ? I18n::Text::ClockAm : I18n::Text::ClockPm)};
+}
+/// The date as the interface language writes it ("12/11/2026" in Spanish).
+inline std::wstring FormatGameDate(const GameDate& date) {
+    wchar_t day[8]{}, month[8]{}, year[8]{};
+    std::swprintf(day, std::size(day), L"%02d", date.day);
+    std::swprintf(month, std::size(month), L"%02d", date.month);
+    std::swprintf(year, std::size(year), L"%d", date.year);
+    return I18n::Format(I18n::Text::GameDateValue, {year, month, day});
+}
+
 struct SystemSettings {
     std::wstring ui_language;                         ///< BCP 47 tag; empty follows the system.
     std::optional<Settings::Language> game_language;  ///< nullopt follows the system.
@@ -35,6 +115,8 @@ struct SystemSettings {
     bool track_play_time{true}; ///< Counts play time per game and orders the library by it (play_history.h).
     bool offline_mode{true}; ///< Games see no internet, as in airplane mode, so none waits on an online login.
     bool memory_edit_warned{}; ///< The player took Memory Edit's warning: it does not come up again.
+    bool clock_24h{};          ///< Clocks in the library and Jadyx Hub; 12 hours by default.
+    std::optional<GameDate> game_date; ///< nullopt: games see the Xbox's date.
 
     bool operator==(const SystemSettings&) const = default;
 };

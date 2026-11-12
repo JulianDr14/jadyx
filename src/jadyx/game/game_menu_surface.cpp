@@ -23,6 +23,7 @@
 #include "jadyx/i18n/localization.h"
 #include "jadyx/memory_edit/jme_page.h"
 #include "jadyx/network/chat_page.h"
+#include "jadyx/settings/uwp_system_settings.h"
 #include "jadyx/storage/utf8.h"
 #include "jadyx/ui/list_navigation.h"
 #include "jadyx/ui/text_entry_panel.h"
@@ -388,8 +389,7 @@ struct GameMenuSurface::Impl : UiPainter {
         // The status pill: the time of day and what draws the game.
         SYSTEMTIME now{};
         GetLocalTime(&now);
-        wchar_t clock[8]{};
-        std::swprintf(clock, std::size(clock), L"%02u:%02u", now.wHour, now.wMinute);
+        const auto clock = FormatClock(now.wHour, now.wMinute, ClockIs24h());
         std::wstring renderer = L"Direct3D 12";
         if (frame_size.first)
             renderer += L" · " + std::to_wstring(frame_size.first) + L"×" + std::to_wstring(frame_size.second);

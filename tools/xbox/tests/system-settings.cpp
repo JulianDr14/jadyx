@@ -88,6 +88,37 @@ int main() {
     check(page.settings.ui_language.empty());
     page.selected = SystemPage::Region;
     check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::Changed && page.settings.region);
+    // Clock: 12 hours by default, toggled to 24.
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
+          page.selected == SystemPage::ClockFormat && !page.settings.clock_24h);
+    check(SystemRowValue(page, SystemPage::ClockFormat) == L"12 horas");
+    check(FormatClock(0, 5, false) == L"12:05 a. m." && FormatClock(13, 7, false) == L"1:07 p. m." &&
+          FormatClock(12, 0, false) == L"12:00 p. m." && FormatClock(9, 3, true) == L"09:03");
+    check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::Changed && page.settings.clock_24h);
+    check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::Changed && !page.settings.clock_24h);
+    // Game date: the Xbox's until one is picked; a field change starts a custom date from today.
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
+          page.selected == SystemPage::GameDate && !page.settings.game_date);
+    check(SystemRowValue(page, SystemPage::GameDate).starts_with(L"Automático · "));
+    check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::Changed &&
+          page.settings.game_date == TodayLocal());
+    check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::Changed && !page.settings.game_date);
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None && page.selected == SystemPage::DateYear);
+    check(HandleSystemInput(page, SystemInput::Left) == SystemPageEffect::Changed &&
+          page.settings.game_date && page.settings.game_date->year == TodayLocal().year - 1);
+    page.settings.game_date = GameDate{2024, 3, 31};
+    check(SystemRowValue(page, SystemPage::GameDate) == L"Personalizada · 31/03/2024");
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None && page.selected == SystemPage::DateMonth);
+    check(HandleSystemInput(page, SystemInput::Left) == SystemPageEffect::Changed &&
+          (page.settings.game_date == GameDate{2024, 2, 29}));
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None && page.selected == SystemPage::DateDay);
+    check(HandleSystemInput(page, SystemInput::Right) == SystemPageEffect::Changed &&
+          (page.settings.game_date == GameDate{2024, 2, 1}));
+    check(StepGameDate({2099, 12, 31}, GameDateField::Year, false).year == 2000);
+    check(DaysFromCivil({2000, 1, 1}) == 10957 && DaysFromCivil({2024, 3, 1}) - DaysFromCivil({2024, 2, 28}) == 2);
+    check(GameDateOffsetSeconds({2026, 11, 13}, {2026, 11, 12}) == 86400);
+    check(GameDateOffsetSeconds({2025, 11, 12}, {2026, 11, 12}) == -365 * 86400);
+    page.settings.game_date.reset();
     check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
           page.selected == SystemPage::AdultMods);
     check(SystemRowValue(page, SystemPage::AdultMods) == L"Ocultos");
