@@ -701,6 +701,7 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::LaunchStepShaders, L"Preparando shaders {0}/{1}"},
     {Text::LaunchStepCpu, L"Preparando a CPU {0}/{1}"},
     {Text::LaunchStepStarting, L"Iniciando o jogo"},
+    {Text::LaunchStepGameShaders, L"Compilando shaders do jogo, aguarde um momento · {0}"},
     {Text::PulseSavedTitle, L"Sessão salva"},
     {Text::PulseNotSavedTitle, L"Sessão não salva"},
     {Text::PulseRestoredTitle, L"De volta ao jogo"},

@@ -31,6 +31,7 @@
 #include "jadyx/i18n/localization.h"
 #include "jadyx/ui/ui_fonts.h"
 #include "video_core/gpu.h"
+#include "video_core/perf_counters.h"
 
 namespace Jadyx {
 namespace {
@@ -38,8 +39,12 @@ using Microsoft::WRL::ComPtr;
 using Clock = std::chrono::steady_clock;
 
 constexpr auto FramePeriod = std::chrono::milliseconds{33};
-/// The splash leaves once the game has presented this many frames, or after the timeout.
-constexpr unsigned long long GameFramesToClose = 3;
+/// The splash leaves once the game has presented this many frames that drew something and has
+/// stopped building pipelines for PipelinesQuietSeconds (an engine warming its shaders presents
+/// empty frames meanwhile), PipelinesQuietCapSeconds after the first such frame at the latest, or
+/// once nothing has happened for the timeout (no frame that drew and no new pipeline).
+constexpr unsigned GameFramesToClose = 3;
+constexpr float PipelinesQuietSeconds = 2, PipelinesQuietCapSeconds = 30;
 constexpr float StartingTimeoutSeconds = 20;
 
 /// The launch card, in its own units, laid out by the screen's height: a dark diagonal gradient
@@ -93,6 +98,9 @@ std::wstring StepText() {
         break;
     case LaunchStep::Starting:
         return std::wstring{I18n::Tr(T::LaunchStepStarting)};
+    case LaunchStep::GameShaders:
+        return I18n::Format(T::LaunchStepGameShaders,
+                            {std::to_wstring(progress_done.load(std::memory_order_relaxed))});
     case LaunchStep::Loading:
         break;
     }
@@ -695,12 +703,48 @@ struct LaunchScreen::Impl {
     void Run(std::stop_token stop) {
         try {
             const auto started = Clock::now();
+            const u64 start_pipelines = D3D12::PipelinesBuilt();
+            u64 seen_pipelines = start_pipelines;
+            // The timeout counts from the last pipeline built or frame drawn: a game warming thousands of
+            // shaders before its first frame keeps the screen (and says so) however long it takes.
+            auto last_activity = started, last_pipeline = started;
+            // A frame counts once it drew: the empty frames presented during a warmup show black.
+            unsigned long long seen_frames = start_frames;
+            u64 seen_draws = VideoCore::Perf::ReadCounter(VideoCore::Perf::Counter::Draws);
+            unsigned drawn_frames = 0;
+            std::optional<Clock::time_point> first_drawn;
             std::mutex mutex;
             std::condition_variable_any wake;
             auto next = started;
             while (!stop.stop_requested()) {
-                if (system.GetPerfStats().TotalGameFrames() >= start_frames + GameFramesToClose ||
-                    std::chrono::duration<float>(Clock::now() - started).count() > StartingTimeoutSeconds) {
+                const auto now = Clock::now();
+                if (const u64 built = D3D12::PipelinesBuilt(); built != seen_pipelines) {
+                    if (seen_pipelines == start_pipelines) {
+                        LOG_INFO(Frontend, "Launch screen: the game is building pipelines before its first frame");
+                    }
+                    seen_pipelines = built;
+                    last_activity = last_pipeline = now;
+                    SetLaunchStep(LaunchStep::GameShaders, static_cast<std::size_t>(built - start_pipelines));
+                }
+                const unsigned long long frames = system.GetPerfStats().TotalGameFrames();
+                const u64 draws = VideoCore::Perf::ReadCounter(VideoCore::Perf::Counter::Draws);
+                if (frames != seen_frames && draws != seen_draws) {
+                    ++drawn_frames;
+                    if (!first_drawn) first_drawn = now;
+                    last_activity = now;
+                }
+                seen_frames = frames;
+                seen_draws = draws;
+                const auto since = [now](Clock::time_point then) {
+                    return std::chrono::duration<float>(now - then).count();
+                };
+                const bool game_shown =
+                    drawn_frames >= GameFramesToClose &&
+                    (seen_pipelines == start_pipelines || since(last_pipeline) >= PipelinesQuietSeconds ||
+                     since(*first_drawn) >= PipelinesQuietCapSeconds);
+                if (game_shown || since(last_activity) > StartingTimeoutSeconds) {
+                    LOG_INFO(Frontend, "Launch screen closed: {} frames drew, {} pipelines built, {:.1f} s",
+                             drawn_frames, seen_pipelines - start_pipelines, since(started));
                     system.GPU().RunOnGpuThread([this] { D3D12::HideGameMenu(system.Renderer()); });
                     hidden = true;
                     return;
@@ -711,7 +755,7 @@ struct LaunchScreen::Impl {
                     shown_any = true;
                 }
                 next += FramePeriod;
-                if (const auto now = Clock::now(); next < now) next = now;
+                if (const auto drawn = Clock::now(); next < drawn) next = drawn;
                 std::unique_lock lock{mutex};
                 wake.wait_until(lock, stop, next, [] { return false; });
             }

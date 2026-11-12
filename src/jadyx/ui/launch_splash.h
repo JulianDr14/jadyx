@@ -35,7 +35,9 @@ void ReleaseLaunchSplash();
 [[nodiscard]] D3D12::MenuImage DrawLaunchSplash(std::pair<u32, u32> screen);
 
 /// What the boot is doing, written under the indicator.
-enum class LaunchStep { Loading, Shaders, Cpu, Starting };
+/// GameShaders: the game runs but has presented nothing yet while the renderer keeps building
+/// pipelines (an engine warming its shaders before its first frame); `done` counts them, no total.
+enum class LaunchStep { Loading, Shaders, Cpu, Starting, GameShaders };
 
 /// The step under the indicator, with its bar when `total` is known (a LoadDiskResources or JIT
 /// prewarm callback passes its count). Any thread.
