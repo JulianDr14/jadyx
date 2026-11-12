@@ -602,8 +602,10 @@ private:
              TextAlign::Center);
         right -= 16;
         Round(right, middle - 11, 1, 22, 0, 0xffffff, 0.18f);
-        wchar_t clock[32]{};
-        if (GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, TIME_NOSECONDS, nullptr, nullptr, clock, 32) > 0) {
+        SYSTEMTIME time_of_day{};
+        GetLocalTime(&time_of_day);
+        const auto clock = FormatClock(time_of_day.wHour, time_of_day.wMinute, view.system.settings.clock_24h);
+        {
             const float clock_width = MeasureType(clock, TypeRole::LabelLarge) + 2;
             right -= 16 + clock_width;
             Type(clock, TypeRole::LabelLarge, right, middle - 10, clock_width, Palette::Text);
@@ -1403,7 +1405,6 @@ private:
                 case SystemPage::PerformanceStats: item.kind = Kind::Toggle; item.on = settings.show_performance_stats; break;
                 case SystemPage::PulseSessions: item.kind = Kind::Toggle; item.on = settings.pulse_sessions; break;
                 case SystemPage::PlayTime: item.kind = Kind::Toggle; item.on = settings.track_play_time; break;
-                case SystemPage::MultipleControllers: item.kind = Kind::Toggle; item.on = settings.multiple_controllers; break;
                 case SystemPage::OfflineMode: item.kind = Kind::Toggle; item.on = settings.offline_mode; break;
                 default: break;
                 }

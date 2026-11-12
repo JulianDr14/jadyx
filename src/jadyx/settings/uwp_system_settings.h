@@ -37,6 +37,9 @@ SystemLocale DetectSystemLocale();
 /// of Settings > Graphics (a game's own is applied once its title id is known).
 ResolvedSystem ApplySystemSettings();
 
+/// The clock format of the last applied settings, for the in-game menu (any thread).
+bool ClockIs24h();
+
 /// Makes upscaling Eden's scaling settings, which the D3D12 present reads every frame. On the GPU
 /// thread while a game runs (GPU::RunOnGpuThread), the thread that reads them.
 void ApplyUpscaling(Upscaling upscaling);

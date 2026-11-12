@@ -25,7 +25,7 @@ enum class EditorPurpose : std::uint8_t {
 };
 
 struct SystemPage {
-    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, AdultMods, PerformanceStats, PulseSessions, PlayTime, MultipleControllers, OfflineMode, MiiEditor, ClearCache, Updates, RowCount };
+    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, ClockFormat, GameDate, DateYear, DateMonth, DateDay, AdultMods, PerformanceStats, PulseSessions, PlayTime, OfflineMode, MiiEditor, ClearCache, Updates, RowCount };
 
     bool updates_open{};
     std::size_t update_row{}, update_detail{}, update_scroll{};
@@ -101,6 +101,22 @@ inline SystemPageEffect HandleSystemInput(SystemPage& page, SystemInput input) {
     case Row::Region:
         settings.region = StepChoice(settings.region, SelectableRegions(), back);
         return SystemPageEffect::Changed;
+    case Row::ClockFormat:
+        settings.clock_24h = !settings.clock_24h;
+        return SystemPageEffect::Changed;
+    case Row::GameDate:
+        // Automatic <-> custom; a new custom date starts at today's.
+        settings.game_date = settings.game_date ? std::nullopt : std::optional<GameDate>{TodayLocal()};
+        return SystemPageEffect::Changed;
+    case Row::DateYear:
+    case Row::DateMonth:
+    case Row::DateDay: {
+        const auto field = page.selected == Row::DateYear    ? GameDateField::Year
+                           : page.selected == Row::DateMonth ? GameDateField::Month
+                                                             : GameDateField::Day;
+        settings.game_date = StepGameDate(settings.game_date.value_or(TodayLocal()), field, back);
+        return SystemPageEffect::Changed;
+    }
     case Row::AdultMods:
         settings.show_adult_mods = !settings.show_adult_mods;
         return SystemPageEffect::Changed;
@@ -112,9 +128,6 @@ inline SystemPageEffect HandleSystemInput(SystemPage& page, SystemInput input) {
         return SystemPageEffect::Changed;
     case Row::PlayTime:
         settings.track_play_time = !settings.track_play_time;
-        return SystemPageEffect::Changed;
-    case Row::MultipleControllers:
-        settings.multiple_controllers = !settings.multiple_controllers;
         return SystemPageEffect::Changed;
     case Row::OfflineMode:
         settings.offline_mode = !settings.offline_mode;
@@ -157,11 +170,15 @@ inline I18n::Text SystemRowTitle(SystemPage::Row row) {
     case SystemPage::InterfaceLanguage: return Text::InterfaceLanguage;
     case SystemPage::GameLanguage:      return Text::GameLanguage;
     case SystemPage::Region:            return Text::ConsoleRegion;
+    case SystemPage::ClockFormat:       return Text::ClockFormat;
+    case SystemPage::GameDate:          return Text::GameDate;
+    case SystemPage::DateYear:          return Text::DateYear;
+    case SystemPage::DateMonth:         return Text::DateMonth;
+    case SystemPage::DateDay:           return Text::DateDay;
     case SystemPage::PerformanceStats:  return Text::PerformanceStats;
     case SystemPage::AdultMods:         return Text::ModsAdult;
     case SystemPage::PulseSessions:     return Text::PulseSessions;
     case SystemPage::PlayTime:          return Text::PlayTimeTracking;
-    case SystemPage::MultipleControllers: return Text::MultipleControllers;
     case SystemPage::OfflineMode:       return Text::OfflineMode;
     case SystemPage::MiiEditor:         return Text::MiiEditor;
     default:                            return Text::ClearLibraryCache;
@@ -176,11 +193,15 @@ inline I18n::Text SystemRowHint(SystemPage::Row row) {
     case SystemPage::InterfaceLanguage: return Text::InterfaceLanguageHint;
     case SystemPage::GameLanguage:      return Text::GameLanguageHint;
     case SystemPage::Region:            return Text::ConsoleRegionHint;
+    case SystemPage::ClockFormat:       return Text::ClockFormatHint;
+    case SystemPage::GameDate:          return Text::GameDateHint;
+    case SystemPage::DateYear:
+    case SystemPage::DateMonth:
+    case SystemPage::DateDay:           return Text::DateFieldHint;
     case SystemPage::PerformanceStats:  return Text::PerformanceStatsHint;
     case SystemPage::AdultMods:         return Text::ModsAdultHint;
     case SystemPage::PulseSessions:     return Text::PulseSessionsHint;
     case SystemPage::PlayTime:          return Text::PlayTimeTrackingHint;
-    case SystemPage::MultipleControllers: return Text::MultipleControllersHint;
     case SystemPage::OfflineMode:       return Text::OfflineModeHint;
     case SystemPage::MiiEditor:         return Text::MiiEditorHint;
     default:                            return Text::ClearLibraryCacheHint;
@@ -207,6 +228,19 @@ inline std::wstring SystemRowValue(const SystemPage& page, SystemPage::Row row) 
     case SystemPage::Region:
         if (settings.region) return std::wstring{I18n::Tr(RegionText(*settings.region))};
         return automatic(I18n::Tr(RegionText(RegionForLocale(page.locale))));
+    case SystemPage::ClockFormat:
+        return std::wstring{I18n::Tr(settings.clock_24h ? Text::Clock24h : Text::Clock12h)};
+    case SystemPage::GameDate:
+        if (settings.game_date) return I18n::Format(Text::GameDateCustom, {FormatGameDate(*settings.game_date)});
+        return automatic(FormatGameDate(TodayLocal()));
+    case SystemPage::DateYear:
+    case SystemPage::DateMonth:
+    case SystemPage::DateDay: {
+        // Automatic shows today's, which the first change starts from.
+        const auto date = ClampGameDate(settings.game_date.value_or(TodayLocal()));
+        const int value = row == SystemPage::DateYear ? date.year : row == SystemPage::DateMonth ? date.month : date.day;
+        return std::to_wstring(value);
+    }
     case SystemPage::PerformanceStats:
         return std::wstring{I18n::Tr(settings.show_performance_stats ? Text::Yes : Text::No)};
     case SystemPage::AdultMods:
@@ -215,8 +249,6 @@ inline std::wstring SystemRowValue(const SystemPage& page, SystemPage::Row row) 
         return std::wstring{I18n::Tr(settings.pulse_sessions ? Text::Yes : Text::No)};
     case SystemPage::PlayTime:
         return std::wstring{I18n::Tr(settings.track_play_time ? Text::Yes : Text::No)};
-    case SystemPage::MultipleControllers:
-        return std::wstring{I18n::Tr(settings.multiple_controllers ? Text::Yes : Text::No)};
     case SystemPage::OfflineMode:
         return std::wstring{I18n::Tr(settings.offline_mode ? Text::Yes : Text::No)};
     default:
