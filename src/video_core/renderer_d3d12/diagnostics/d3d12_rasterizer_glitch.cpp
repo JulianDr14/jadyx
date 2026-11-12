@@ -193,6 +193,10 @@ void RasterizerD3D12::GlitchDraw(const GlitchNote& note) {
             GlitchSkinDump(frame, call);
             GlitchTransformFeedback(frame, call,
                                     *static_cast<const GraphicsPipeline*>(note.pipeline));
+        } else if (note.pipeline && GlitchReadsGpuVertices()) {
+            // v23: a draw that consumes a pass's output (fur over a simulated skin) gets the same
+            // guest dump, so its own uniform buffers can be replayed against the captured mesh.
+            GlitchSkinDump(frame, call);
         }
     }
     glitch_views.clear();
@@ -285,6 +289,24 @@ void RasterizerD3D12::GlitchTransformFeedback(u32 frame, u32 call,
                                                                 offset);
                                  });
     }
+}
+
+bool RasterizerD3D12::GlitchReadsGpuVertices() {
+    const VideoCommon::BufferCacheChannelInfo* const channel = buffer_cache.DiagChannel();
+    if (!channel) {
+        return false;
+    }
+    const u32 enabled = buffer_cache.DiagVertexMask();
+    for (u32 index = 0; index < VideoCommon::NUM_VERTEX_BUFFERS; ++index) {
+        const VideoCommon::Binding& vb = channel->vertex_buffers[index];
+        if (((enabled >> index) & 1) == 0 || vb.device_addr == 0 || vb.size == 0) {
+            continue;
+        }
+        if (buffer_cache.DiagGpuBytes(vb.device_addr, vb.size).first != 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void RasterizerD3D12::GlitchSkinDump(u32 frame, u32 call) {

@@ -359,7 +359,6 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetCloseProbeEnabled(config.close_probe);
     D3D12::SetPipelineEviction(config.pso_eviction);
     D3D12::SetPipelinePrewarm(config.pso_prewarm);
-    D3D12::SetTransformFeedbackStorage(config.xfb_storage);
     Tegra::SetIndirectMacroCpuRead(config.indirect_macro_cpu);
     VideoCommon::force_occlusion_visible.store(config.occlusion_force_visible,
                                                std::memory_order_relaxed);

@@ -130,9 +130,6 @@ struct BootConfig {
     /// Build dormant PSOs in the background while memory is plentiful ("pso_prewarm=0" leaves
     /// them to their first draw).
     bool pso_prewarm{true};
-    /// Transform feedback through vertex shader storage writes instead of stream output
-    /// ("xfb=storage"): the fallback, for A/B comparison.
-    bool xfb_storage{};
     /// Indirect draw macros read GPU-written arguments back on the CPU ("indirect_macro_cpu=1"):
     /// A/B against drawing from the GPU-side arguments.
     bool indirect_macro_cpu{};
