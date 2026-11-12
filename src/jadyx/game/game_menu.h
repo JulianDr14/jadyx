@@ -95,6 +95,8 @@ private:
 struct GlitchToggles {
     bool a2c_shader{true}; ///< single-sample alpha-to-coverage dithered in the shader
     bool precise_writes{true}; ///< CPU writes beside GPU bytes apply at once
+    bool array_own_memory{}; ///< large compressed arrays moved to memory of their own
+    bool array_rewrite{}; ///< large compressed arrays copied out and back in place
 };
 
 struct GameMenuSettings {
@@ -211,7 +213,8 @@ public:
         GraphicsMenu, GfxUpscaling, GfxFrameGen, GfxShaders, GfxGpuFence, GfxGuestClock, GfxExactGpuReads, GfxTextureMemory,
         GfxGpuAccuracy, GfxConsoleMode, Amiibo, MemoryEdit,
         RStickInvertX, RStickInvertY, RStickSensitivity, RStickMouse, RStickMouseSensitivity,
-        GlitchPage, GlitchCapture, GlitchA2cShader, GlitchPreciseWrites,
+        GlitchPage, GlitchCapture, GlitchA2cShader, GlitchPreciseWrites, GlitchArrayOwnMemory,
+        GlitchArrayRewrite,
         GeoMark, GeoOobFix, PsoBoost, Chat, GfxFixedCoreMap, Motion, MotionView,
         GyroStick, GyroShake, Rumble, RumbleStrength,
     };
@@ -233,7 +236,8 @@ public:
         if (settings.geo_hunt) quick.insert(quick.end(), {GeoMark, GeoOobFix});
         if (settings.pso_menu) quick.push_back(PsoBoost);
         quick.push_back(Library);
-        glitch = {GlitchCapture, GlitchA2cShader, GlitchPreciseWrites};
+        glitch = {GlitchCapture, GlitchA2cShader, GlitchPreciseWrites, GlitchArrayOwnMemory,
+                  GlitchArrayRewrite};
         controller = {Style, FaceButtons, Deadzone, RStickInvertX, RStickInvertY, RStickSensitivity,
                       RStickMouse, RStickMouseSensitivity, Rumble, RumbleStrength};
         if (settings.right_stick_per_game)
@@ -420,6 +424,12 @@ private:
         case GlitchPreciseWrites:
             return {L"precise_writes", Tr(settings.glitch.precise_writes ? Text::Yes : Text::No),
                     Choice, L"CPU writes beside GPU-written bytes apply at once"};
+        case GlitchArrayOwnMemory:
+            return {L"array_own_memory", Tr(settings.glitch.array_own_memory ? Text::Yes : Text::No),
+                    Choice, L"Large compressed texture arrays move to memory of their own"};
+        case GlitchArrayRewrite:
+            return {L"array_rewrite", Tr(settings.glitch.array_rewrite ? Text::Yes : Text::No),
+                    Choice, L"Large compressed texture arrays are copied out and back in place"};
         case MemoryEdit:
             return {Tr(Text::MemoryEditTitle), {}, Page,
                     memory_edit_hits != 0
@@ -706,6 +716,12 @@ private:
             return GameMenuResult::GlitchTogglesChanged;
         case GlitchPreciseWrites:
             settings.glitch.precise_writes = !settings.glitch.precise_writes;
+            return GameMenuResult::GlitchTogglesChanged;
+        case GlitchArrayOwnMemory:
+            settings.glitch.array_own_memory = !settings.glitch.array_own_memory;
+            return GameMenuResult::GlitchTogglesChanged;
+        case GlitchArrayRewrite:
+            settings.glitch.array_rewrite = !settings.glitch.array_rewrite;
             return GameMenuResult::GlitchTogglesChanged;
         case GeoMark:
             if (!confirm) return GameMenuResult::None;

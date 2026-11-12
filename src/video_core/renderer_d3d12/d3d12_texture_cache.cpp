@@ -17,6 +17,7 @@
 #include "common/literals.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
+#include "video_core/diagnostics/full_capture.h"
 #include "video_core/frame_trace.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
@@ -142,6 +143,17 @@ void SetHeapCompaction(u64 bytes_per_frame) {
 HeapCompactionStats GetHeapCompactionStats() noexcept {
     return {heap_compaction_moved.load(std::memory_order_relaxed),
             heap_compaction_bytes.load(std::memory_order_relaxed)};
+}
+
+void SetArrayOwnMemory(bool enabled) {
+    array_own_memory.store(enabled, std::memory_order_relaxed);
+}
+
+void SetArrayRewrite(bool enabled) {
+    if (enabled && !array_rewrite.exchange(true, std::memory_order_relaxed)) {
+        array_rewrite_generation.fetch_add(1, std::memory_order_relaxed);
+    }
+    array_rewrite.store(enabled, std::memory_order_relaxed);
 }
 
 
@@ -1212,6 +1224,105 @@ bool Image::Relocate(const std::vector<bool>& avoid) {
                  total / 1_MiB);
     }
     return true;
+}
+
+bool Image::MoveToOwnMemory() {
+    if (!resource || !resource_allocation || gc_readback) return false;
+    D3D12_RESOURCE_DESC desc = resource->GetDesc();
+    desc.Alignment = 0;
+    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+    ComPtr<ID3D12Resource> moved;
+    if (FAILED(runtime->device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&moved)))) {
+        return false;
+    }
+    Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
+    runtime->scheduler.CommandList()->CopyResource(moved.Get(), resource.Get());
+    runtime->texture_allocator.DeferRelease(
+        {std::move(resource), std::move(resource_allocation), true});
+    resource = std::move(moved);
+    cpu_writable = false;
+    untouched = false;
+    needs_placed_init = false;
+    state = D3D12_RESOURCE_STATE_COPY_DEST;
+    uav_work = 0;
+    left_uav_in_work = 0;
+    ++write_version;
+    return true;
+}
+
+void Image::RewriteThroughCopy() {
+    if (!resource || gc_readback) return;
+    D3D12_RESOURCE_DESC desc = resource->GetDesc();
+    desc.Alignment = 0;
+    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+    ComPtr<ID3D12Resource> scratch;
+    if (FAILED(runtime->device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&scratch)))) {
+        return;
+    }
+    Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
+    auto* const commands = runtime->scheduler.CommandList();
+    commands->CopyResource(scratch.Get(), resource.Get());
+    const D3D12_RESOURCE_BARRIER to_source{
+        .Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+        .Transition = {.pResource = scratch.Get(),
+                       .Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                       .StateBefore = D3D12_RESOURCE_STATE_COPY_DEST,
+                       .StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE}};
+    commands->ResourceBarrier(1, &to_source);
+    Transition(D3D12_RESOURCE_STATE_COPY_DEST);
+    commands->CopyResource(resource.Get(), scratch.Get());
+    runtime->scheduler.DeferRelease(std::move(scratch));
+    ++write_version;
+}
+
+bool TextureCacheRuntime::ArrayExperimentsOn() const noexcept {
+    return array_own_memory.load(std::memory_order_relaxed) ||
+           array_rewrite.load(std::memory_order_relaxed);
+}
+
+bool TextureCacheRuntime::ArrayExperiment(Image& image) {
+    using namespace VideoCore::Surface;
+    if (image.info.type != VideoCommon::ImageType::e2D || image.info.resources.layers < 8 ||
+        !image.Handle()) {
+        return false;
+    }
+    // The resource's own format: ASTC arrays are recompressed to BC1/BC3/BC4 on the host.
+    const DXGI_FORMAT resource_format = image.Handle()->GetDesc().Format;
+    const bool host_bc = (resource_format >= DXGI_FORMAT_BC1_TYPELESS &&
+                          resource_format <= DXGI_FORMAT_BC5_SNORM) ||
+                         (resource_format >= DXGI_FORMAT_BC6H_TYPELESS &&
+                          resource_format <= DXGI_FORMAT_BC7_UNORM_SRGB);
+    if (!host_bc) {
+        return false;
+    }
+    static std::atomic<u32> moved_count{}, rewritten_count{};
+    bool moved = false;
+    if (array_own_memory.load(std::memory_order_relaxed) && image.MoveToOwnMemory()) {
+        moved = true;
+        const u32 count = moved_count.fetch_add(1, std::memory_order_relaxed) + 1;
+        LOG_INFO(Render, "D3D12 array A/B: moved array @{:x} ({} layers) to its own memory ({})",
+                 image.gpu_addr, image.info.resources.layers, count);
+        VideoCommon::FullCapture::Event("array_own_memory", fmt::format(
+            "{{\"gpu\":{},\"layers\":{}}}", image.gpu_addr, image.info.resources.layers));
+    }
+    const u32 generation = array_rewrite_generation.load(std::memory_order_relaxed);
+    if (array_rewrite.load(std::memory_order_relaxed) &&
+        (image.rewritten_version != image.DiagnosticWriteVersion() ||
+         image.rewritten_generation != generation)) {
+        image.RewriteThroughCopy();
+        image.rewritten_version = image.DiagnosticWriteVersion();
+        image.rewritten_generation = generation;
+        const u32 count = rewritten_count.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count <= 64 || count % 256 == 0) {
+            LOG_INFO(Render, "D3D12 array A/B: rewrote array @{:x} ({} layers) in place ({})",
+                     image.gpu_addr, image.info.resources.layers, count);
+        }
+        VideoCommon::FullCapture::Event("array_rewrite", fmt::format(
+            "{{\"gpu\":{},\"layers\":{}}}", image.gpu_addr, image.info.resources.layers));
+    }
+    return moved;
 }
 
 ID3D12Resource* Image::SliceArray() {

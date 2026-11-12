@@ -133,6 +133,10 @@ public:
     /// Moves the image out of its sparse heap into free space of a fuller one. The caller drops
     /// the image's views: their descriptors name the old resource.
     bool RelocateImage(Image& image);
+    /// The glitch page's array A/B (SetArrayOwnMemory, SetArrayRewrite) on one image, each
+    /// frame while either is on. True when the image moved: the caller drops its views.
+    bool ArrayExperiment(Image& image);
+    [[nodiscard]] bool ArrayExperimentsOn() const noexcept;
     [[nodiscard]] u64 DepthFeedbackCopies() const noexcept { return depth_feedback_copies; }
     bool CanReportMemoryUsage() const { return true; }
     std::optional<size_t> GetSamplerHeapBudget() const { return SamplerHeap::CAPACITY; }
@@ -382,6 +386,13 @@ public:
     /// mark (by heap index) and keeps the copy; the old one goes once the GPU is done with it.
     /// False when nothing fits. Views made before the move still name the old resource.
     bool Relocate(const std::vector<bool>& avoid);
+    /// Diagnostic: copies a placed resource into a committed one of its own (false when it
+    /// already is one). Views made before the move still name the old resource.
+    bool MoveToOwnMemory();
+    /// Diagnostic: copies the resource into a scratch resource and back, in place.
+    void RewriteThroughCopy();
+    u64 rewritten_version{~u64{}};
+    u32 rewritten_generation{};
     /// An ASTC image the compute shader decodes into RGBA8 (see AccelerateImageUpload).
     [[nodiscard]] bool IsGpuDecoded() const noexcept {
         return gpu_decoded;
@@ -782,6 +793,11 @@ struct HeapCompactionStats {
     u64 bytes;
 };
 [[nodiscard]] HeapCompactionStats GetHeapCompactionStats() noexcept;
+/// Diagnostic A/B for large compressed texture arrays (8+ layers), glitch hunt page:
+/// own_memory moves each into a committed resource of its own; rewrite copies each out and back
+/// in place once per content version.
+void SetArrayOwnMemory(bool enabled);
+void SetArrayRewrite(bool enabled);
 /// Texture memory above which clean textures are evicted before the app runs short (0: none).
 void SetTextureMemoryCap(u64 bytes);
 /// Free app memory the textures leave alone; the cap grows into the headroom above it (0: off).

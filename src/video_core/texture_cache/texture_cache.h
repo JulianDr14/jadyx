@@ -334,6 +334,18 @@ void TextureCache<P>::TickFrame() {
     if (total_used_memory > minimum_memory) {
         RunGarbageCollector();
     }
+    if constexpr (requires(Image& image) { runtime.ArrayExperiment(image); }) {
+        if (runtime.ArrayExperimentsOn()) {
+            lru_cache.ForEachItemBelow(frame_tick + 1, [&](ImageId image_id) {
+                Image& image = slot_images[image_id];
+                if (True(image.flags & (ImageFlagBits::IsDecoding | ImageFlagBits::Rescaled))) {
+                    return false;
+                }
+                if (runtime.ArrayExperiment(image)) ReleaseImageViews(image);
+                return false;
+            });
+        }
+    }
     sentenced_images.Tick();
     sentenced_framebuffers.Tick();
     sentenced_image_view.Tick();

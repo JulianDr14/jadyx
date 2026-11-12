@@ -141,6 +141,9 @@ inline std::atomic<bool> gpu_unswizzle{true};
 inline std::atomic<u64> heap_compaction_budget{0};
 inline std::atomic<u64> heap_compaction_moved{0};
 inline std::atomic<u64> heap_compaction_bytes{0};
+inline std::atomic<bool> array_own_memory{false};
+inline std::atomic<bool> array_rewrite{false};
+inline std::atomic<u32> array_rewrite_generation{0}; ///< bumped when rewrite turns on
 inline std::atomic<bool> astc_drop_top_level{false};
 inline std::atomic<int> gpu_astc_verify{0}; ///< GPU ASTC uploads left to check against the CPU
 inline std::atomic<bool> gpu_astc_sync{false};

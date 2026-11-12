@@ -471,10 +471,14 @@ void ApplyGlitchToggles(const GlitchToggles& before, const GlitchToggles& now) {
     };
     log("a2c_shader", before.a2c_shader, now.a2c_shader);
     log("precise_writes", before.precise_writes, now.precise_writes);
+    log("array_own_memory", before.array_own_memory, now.array_own_memory);
+    log("array_rewrite", before.array_rewrite, now.array_rewrite);
     // Each is read at use: draws after this take the new value, and pipelines whose key depends
     // on it (a2c_shader) are built on first use.
     D3D12::SetShaderAlphaToCoverage(now.a2c_shader);
     VideoCommon::ReadbackTrace::SetPreciseCpuWrites(now.precise_writes);
+    D3D12::SetArrayOwnMemory(now.array_own_memory);
+    D3D12::SetArrayRewrite(now.array_rewrite);
 }
 
 } // namespace Jadyx
