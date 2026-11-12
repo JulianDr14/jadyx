@@ -39,8 +39,17 @@ inline std::atomic_bool enabled{};
 using BlockObserver = void (*)(const void* host, std::size_t host_size, std::uint64_t guest_pc,
                                std::uint64_t guest_end);
 inline std::atomic<BlockObserver> block_observer{};
-/// Told where a JIT's page table thunks are, when it is created.
-using ThunksObserver = void (*)(const void* host, std::size_t host_size);
+/// One page table thunk, so a sample inside it can be read: both offsets count from the thunks'
+/// start, and the guest address stays in its register for the whole thunk.
+struct ThunkInfo {
+    std::uint32_t offset;      ///< Where the thunk starts.
+    std::uint32_t after_entry; ///< The instruction after the page table entry load.
+    std::uint8_t vaddr_reg;    ///< x64 register number holding the guest address.
+    bool write;
+};
+/// Told where a JIT's page table thunks are, when it is created, in emission order.
+using ThunksObserver = void (*)(const void* host, std::size_t host_size, const ThunkInfo* thunks,
+                                std::size_t count);
 inline std::atomic<ThunksObserver> thunks_observer{};
 /// Code caches emptied because they filled up, all their blocks dropped with them. Always counted.
 inline std::atomic<std::uint64_t> full_cache_clears{};

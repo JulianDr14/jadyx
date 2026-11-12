@@ -4,6 +4,7 @@
 #include <chrono>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include <fmt/format.h>
 #include <winrt/base.h>
@@ -248,7 +249,20 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
         name_guest_code ? &Common::SamplingProfiler::NoteJitBlock : nullptr,
         std::memory_order_relaxed);
     Dynarmic::JitProfile::thunks_observer.store(
-        name_guest_code ? &Common::SamplingProfiler::NoteJitThunks : nullptr,
+        name_guest_code
+            ? +[](const void* host, std::size_t host_size,
+                  const Dynarmic::JitProfile::ThunkInfo* thunks, std::size_t count) {
+                  std::vector<Common::SamplingProfiler::JitThunk> layout;
+                  layout.reserve(count);
+                  for (std::size_t index = 0; index < count; ++index) {
+                      const auto& thunk = thunks[index];
+                      layout.push_back(
+                          {thunk.offset, thunk.after_entry, thunk.vaddr_reg, thunk.write});
+                  }
+                  Common::SamplingProfiler::NoteJitThunks(host, host_size, layout.data(),
+                                                          layout.size());
+              }
+            : nullptr,
         std::memory_order_relaxed);
     // Read when Core::System builds the kernel's cores.
     Kernel::PhysicalCore::SetIdleSpinPolicy(config.idle_spin);

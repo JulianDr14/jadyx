@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -17,6 +18,7 @@
 #include <thread>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -104,6 +106,19 @@ std::vector<std::pair<u64, u64>> jit_thunks; // start, end; one per JIT
 
 /// The first JIT's thunks, to name the instruction of a sample: every JIT lays them out alike.
 std::vector<u8> jit_thunk_code;
+/// And their layout, by offset.
+std::vector<JitThunk> jit_thunk_layout;
+
+/// The thunk that holds `offset` into the thunks.
+bool FindJitThunk(u64 offset, JitThunk& thunk) {
+    std::scoped_lock lock{jit_blocks_mutex};
+    const auto next = std::ranges::upper_bound(jit_thunk_layout, offset, {}, &JitThunk::offset);
+    if (next == jit_thunk_layout.begin()) {
+        return false;
+    }
+    thunk = *std::prev(next);
+    return true;
+}
 
 /// offset: how far into its JIT's thunks pc is.
 bool InJitThunks(u64 pc, u64* offset = nullptr) {
@@ -122,6 +137,10 @@ bool InJitThunks(u64 pc, u64* offset = nullptr) {
 std::mutex guest_reader_mutex;
 GuestCodeReader guest_reader;
 u64 guest_code_base{};
+GuestBlockClassifier guest_classifier;
+
+constexpr u64 GUEST_PAGE_BITS = 12;
+constexpr u64 GUEST_BLOCK_PAGE_BITS = 9; // 2 MiB blocks
 
 u64 CpuTime100ns(HANDLE thread) {
     FILETIME creation{}, exit{}, kernel{}, user{};
@@ -380,6 +399,7 @@ private:
         frame_pool.clear();
         thunk_samples.clear();
         thunk_rips.clear();
+        thunk_pages.clear();
         for (ThreadEntry* entry : threads) {
             entry->window_cpu_start = CpuTime100ns(entry->handle);
             entry->running_samples = 0;
@@ -484,6 +504,21 @@ private:
             std::memcpy(top, stack_copy, sizeof(top));
             thunk_samples[{thread_index, top[0], top[1]}] += weight;
             thunk_rips[thunk_offset] += weight;
+            // The guest address is still in its register anywhere in the thunk.
+            JitThunk thunk{};
+            if (FindJitThunk(thunk_offset, thunk)) {
+                const DWORD64 registers[16] = {
+                    context.Rax, context.Rcx, context.Rdx, context.Rbx, context.Rsp, context.Rbp,
+                    context.Rsi, context.Rdi, context.R8,  context.R9,  context.R10, context.R11,
+                    context.R12, context.R13, context.R14, context.R15};
+                const u64 page = registers[thunk.vaddr_reg & 15] >> GUEST_PAGE_BITS;
+                auto& counts = thunk_pages[(page << 1) | (thunk.write ? 1 : 0)];
+                counts[0] += weight;
+                // Stopped on the instruction after the entry load: it was waiting for the entry.
+                if (thunk_offset == thunk.after_entry) {
+                    counts[1] += weight;
+                }
+            }
         }
         DWORD64 frames[MAX_FRAMES];
         const size_t depth = Unwind(context, copied, origin, frames);
@@ -644,6 +679,48 @@ private:
         std::fclose(file);
     }
 
+    /// How the thunk samples spread over the guest's 2 MiB blocks, by what the page table holds
+    /// for the block now: "thunkblock load|store class samples waiting-for-entry pages blocks".
+    void WriteThunkBlocks(std::FILE* file) {
+        std::scoped_lock lock{guest_reader_mutex};
+        if (!guest_classifier || thunk_pages.empty()) {
+            return;
+        }
+        struct Row {
+            u64 samples{};
+            u64 at_entry{};
+            u64 pages{};
+            std::unordered_set<u64> blocks;
+        };
+        static constexpr std::array<const char*, static_cast<size_t>(GuestBlockClass::Count)>
+            class_names{"slow", "uniform", "holes", "deltas", "outside"};
+        std::array<std::array<Row, class_names.size()>, 2> rows;
+        for (const auto& [key, counts] : thunk_pages) {
+            const bool write = (key & 1) != 0;
+            const u64 page = key >> 1;
+            const auto block_class = guest_classifier(page << GUEST_PAGE_BITS, write);
+            Row& row = rows[write ? 1 : 0][std::min(static_cast<size_t>(block_class),
+                                                    class_names.size() - 1)];
+            row.samples += counts[0];
+            row.at_entry += counts[1];
+            ++row.pages;
+            row.blocks.insert(page >> GUEST_BLOCK_PAGE_BITS);
+        }
+        for (size_t write = 0; write < rows.size(); ++write) {
+            for (size_t index = 0; index < class_names.size(); ++index) {
+                const Row& row = rows[write][index];
+                if (row.samples == 0) {
+                    continue;
+                }
+                std::fputs(fmt::format("thunkblock {} {} {} {} {} {}\n", write ? "store" : "load",
+                                       class_names[index], row.samples, row.at_entry, row.pages,
+                                       row.blocks.size())
+                               .c_str(),
+                           file);
+            }
+        }
+    }
+
     /// Which guest code the running samples in JIT code ran: "self" with the leaf in the block,
     /// "calls" inside a callback it made into the emulator.
     void WriteGuestCode(std::FILE* file, const std::vector<std::string>& names) {
@@ -722,6 +799,7 @@ private:
             std::fputs(hex.c_str(), file);
             std::fputs("\n", file);
         }
+        WriteThunkBlocks(file);
         std::map<std::pair<u32, u64>, std::pair<u64, u64>> thunk_hits; // caller: samples, end
         for (const auto& [key, samples] : thunk_samples) {
             const auto& [thread_index, first, second] = key;
@@ -797,6 +875,8 @@ private:
     std::vector<DWORD64> frame_pool;
     std::map<std::tuple<u32, u64, u64>, u64> thunk_samples; // thread, top two stack words
     std::map<u64, u64> thunk_rips; // offset into the thunks: samples
+    /// Guest page and load/store bit: samples, and those waiting for the page table entry.
+    std::unordered_map<u64, std::array<u64, 2>> thunk_pages;
     std::unordered_map<DWORD64, std::string> module_names;
 };
 
@@ -865,13 +945,15 @@ void NoteJitBlock(const void* host, size_t host_size, u64 guest_pc, u64 guest_en
     jit_blocks.push_back({reinterpret_cast<u64>(host), host_size, guest_pc, guest_end});
 }
 
-void NoteJitThunks(const void* host, size_t host_size) {
+void NoteJitThunks(const void* host, size_t host_size, const JitThunk* thunks, size_t count) {
     const u64 start = reinterpret_cast<u64>(host);
     std::scoped_lock lock{jit_blocks_mutex};
     jit_thunks.emplace_back(start, start + host_size);
     if (jit_thunk_code.empty()) {
         const u8* const bytes = static_cast<const u8*>(host);
         jit_thunk_code.assign(bytes, bytes + host_size);
+        jit_thunk_layout.assign(thunks, thunks + count);
+        std::ranges::sort(jit_thunk_layout, {}, &JitThunk::offset);
     }
 }
 
@@ -880,12 +962,18 @@ void ClearJitBlocks() {
     jit_blocks = {};
     jit_thunks = {};
     jit_thunk_code = {};
+    jit_thunk_layout = {};
 }
 
 void SetGuestCodeReader(GuestCodeReader reader, u64 code_base) {
     std::scoped_lock lock{guest_reader_mutex};
     guest_reader = std::move(reader);
     guest_code_base = code_base;
+}
+
+void SetGuestBlockClassifier(GuestBlockClassifier classifier) {
+    std::scoped_lock lock{guest_reader_mutex};
+    guest_classifier = std::move(classifier);
 }
 
 void NoteFrame() {

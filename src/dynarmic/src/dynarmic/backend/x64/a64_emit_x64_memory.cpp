@@ -11,6 +11,7 @@
 #include <initializer_list>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include <fmt/format.h>
 #include <fmt/ostream.h>
@@ -301,6 +302,8 @@ void A64EmitX64::GenPageTableThunks() {
     }
     const auto unusable = [](int idx) { return idx == 4 || idx == 14 || idx == 15; };
     const auto* const thunks_begin = code.getCurr();
+    const auto observer = JitProfile::thunks_observer.load(std::memory_order_relaxed);
+    std::vector<JitProfile::ThunkInfo> layout;
     for (const bool write : {false, true}) {
         for (size_t size_log2 = 0; size_log2 < 5; ++size_log2) {
             const size_t bitsize = 8u << size_log2;
@@ -345,6 +348,12 @@ void A64EmitX64::GenPageTableThunks() {
                         code.jnz(slow, code.T_NEAR);
                     }
                     code.mov(scratch, qword[r14 + scratch * 8 + (write ? 0 : int(conf.page_table_read_offset))]);
+                    if (observer) {
+                        const auto* const thunk = static_cast<const u8*>(
+                            page_table_thunks[((write * 5 + size_log2) * 16 + vaddr_idx) * 16 + value_idx]);
+                        layout.push_back({u32(thunk - thunks_begin), u32(code.getCurr() - thunks_begin),
+                                          u8(vaddr_idx), write});
+                    }
                     code.test(scratch, scratch);
                     code.jz(slow, code.T_NEAR);
                     const auto addr = scratch + vaddr;
@@ -379,8 +388,8 @@ void A64EmitX64::GenPageTableThunks() {
             }
         }
     }
-    if (const auto observer = JitProfile::thunks_observer.load(std::memory_order_relaxed)) {
-        observer(thunks_begin, size_t(code.getCurr() - thunks_begin));
+    if (observer) {
+        observer(thunks_begin, size_t(code.getCurr() - thunks_begin), layout.data(), layout.size());
     }
 }
 

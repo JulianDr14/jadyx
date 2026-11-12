@@ -72,7 +72,15 @@ void NoteJitBlock(const void* host, size_t host_size, u64 guest_pc, u64 guest_en
 
 /// A JIT's shared memory access thunks are here. A sample in them goes to the block that called
 /// them ("guestthunk" lines), through the return address on top of the stack. Any thread.
-void NoteJitThunks(const void* host, size_t host_size);
+/// With the layout, a sample in a thunk also yields the guest address it was accessing, and each
+/// window says how its thunk samples spread over the guest's 2 MiB blocks ("thunkblock" lines).
+struct JitThunk {
+    u32 offset;      ///< Where the thunk starts, from the thunks' start.
+    u32 after_entry; ///< The instruction after the page table entry load, from the thunks' start.
+    u8 vaddr_reg;    ///< x64 register number holding the guest address throughout the thunk.
+    bool write;
+};
+void NoteJitThunks(const void* host, size_t host_size, const JitThunk* thunks, size_t count);
 
 /// Forgets the blocks and thunks, before a new session compiles its own.
 void ClearJitBlocks();
@@ -81,5 +89,20 @@ void ClearJitBlocks();
 /// game's code region starts. Clear it (empty reader) after Stop and before the guest goes away.
 using GuestCodeReader = std::function<bool(u64 address, void* out, size_t size)>;
 void SetGuestCodeReader(GuestCodeReader reader, u64 code_base);
+
+/// How the JIT's page table looks over the 2 MiB block of a guest address, for loads or stores:
+/// what a table with one entry per block could serve.
+enum class GuestBlockClass : u32 {
+    Slow,    ///< The page's own entry is empty: the access takes the memory callbacks anyway.
+    Uniform, ///< Every page of the block has the same entry.
+    Holes,   ///< The filled entries are all the same, but some pages of the block are empty.
+    Deltas,  ///< Pages of the block have different entries.
+    Outside, ///< Not an address of the guest's address space.
+    Count,
+};
+/// Classifies the "thunkblock" lines, on the sampler's thread at the end of a window. Clear it
+/// (empty) after Stop and before the guest goes away.
+using GuestBlockClassifier = std::function<GuestBlockClass(u64 address, bool write)>;
+void SetGuestBlockClassifier(GuestBlockClassifier classifier);
 
 } // namespace Common::SamplingProfiler
