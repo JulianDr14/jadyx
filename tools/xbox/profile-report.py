@@ -102,6 +102,9 @@ def parse(path):
                 tokens = line.split()
                 window = Window(dict(zip(tokens[0::2], tokens[1::2])))
                 profile.windows.append(window)
+            elif line.startswith("capture_coverage ") and window is not None:
+                tokens = line.split()[1:]
+                window.meta.update(dict(zip(tokens[0::2], tokens[1::2])))
             elif line.startswith("thread ") and window is not None:
                 tokens = line.split()
                 stats = window.threads.setdefault(tokens[1], [0.0, 0, 0, 0])
@@ -265,12 +268,25 @@ def main():
     emit(f"# Sampling profile: windows {first.number}-{last.number}, {seconds:.1f} s at {hz} Hz")
     emit()
     overhead_ms = sum(float(w.meta.get("sampler_cpu_ms", 0)) for w in windows)
-    suspended = [float(w.meta.get("suspended_us_avg", 0)) for w in windows]
+    # Legacy field names describe the whole Capture call, not exact target-held time.
+    captures = sum(int(w.meta.get("suspensions", 0)) for w in windows)
+    capture_us = sum(float(w.meta.get("suspended_us_avg", 0)) *
+                     int(w.meta.get("suspensions", 0)) for w in windows)
+    average_capture_us = capture_us / captures if captures else 0.0
+    slow = sum(int(w.meta.get("slow_captures", 0)) for w in windows)
+    skips = sum(int(w.meta.get("cooldown_skips", 0)) for w in windows)
     dropped = sum(int(w.meta.get("dropped_samples", 0)) for w in windows)
     emit(f"Profiler cost: its thread used {pct(overhead_ms / 1000.0, seconds):.1f}% of a core; "
-         f"each sample paused its thread {sum(suspended) / len(suspended):.1f} us on average"
+         f"context capture elapsed {average_capture_us:.1f} us on average "
+         f"(weighted by {captures} captures; not exact target suspension time)"
          + (f"; {dropped} samples past the stack limit were not kept" if dropped else "") + ".")
     emit()
+
+    if slow or skips:
+        emit(f"> Sampling coverage: {slow} slow captures; {skips} capture attempts skipped "
+             "during per-thread cooldown. CPU totals still span the full windows; stack "
+             "proportions can be biased toward the remaining samples.")
+        emit()
 
     # Verdict.
     emit("## Verdict")

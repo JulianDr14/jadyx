@@ -24,6 +24,7 @@
 
 #include "common/logging.h"
 #include "common/windows/sampling_profiler.h"
+#include "common/windows/sampling_capture_backoff.h"
 
 namespace Common::SamplingProfiler {
 namespace {
@@ -32,8 +33,8 @@ constexpr size_t MAX_FRAMES = 96;
 /// How late a frame has to be for every thread to be sampled, and every how many ticks.
 constexpr u64 STALL_NS = 120'000'000;
 constexpr u32 STALL_STRIDE = 8;
-/// Pausing a thread takes microseconds; more than this and it is stuck in the kernel.
-constexpr u64 SLOW_CAPTURE_NS = 50'000'000;
+/// Elapsed context capture, including time waiting for suspension to take effect.
+constexpr u64 SLOW_CAPTURE_NS = CaptureBackoff::SLOW_NS;
 
 std::atomic<u64> g_last_frame_ns{};
 
@@ -71,6 +72,9 @@ struct ThreadEntry {
     u64 running_samples{};
     u64 waiting_samples{};
     u32 waiting_ticks{};
+    CaptureBackoff capture_backoff;
+    u64 capture_skips{};
+    u64 slow_captures{};
     std::atomic<bool> dead{};
 };
 
@@ -352,6 +356,7 @@ private:
         seen_generation = registry_generation;
         for (size_t index = threads.size(); index < registry.size(); ++index) {
             ThreadEntry& entry = *registry[index];
+            entry.capture_backoff = {};
             entry.window_cpu_start = CpuTime100ns(entry.handle);
             QueryThreadCycleTime(entry.handle, &entry.last_cycles);
         }
@@ -379,6 +384,8 @@ private:
             entry->window_cpu_start = CpuTime100ns(entry->handle);
             entry->running_samples = 0;
             entry->waiting_samples = 0;
+            entry->capture_skips = 0;
+            entry->slow_captures = 0;
         }
     }
 
@@ -417,7 +424,6 @@ private:
                 weight = WAITING_STRIDE;
             }
             entry.waiting_ticks = 0;
-            (ran ? entry.running_samples : entry.waiting_samples) += weight;
             Sample(index, entry, !ran, weight, false);
             // Without the suspension's own cycles, or a blocked thread would look running.
             QueryThreadCycleTime(entry.handle, &entry.last_cycles);
@@ -449,11 +455,25 @@ private:
         size_t copied{};
         ULONG_PTR origin{};
         const u64 capture_start = NowNs();
-        if (!Capture(entry, context, copied, origin)) {
+        if (!entry.capture_backoff.Ready(capture_start)) {
+            ++entry.capture_skips;
             return;
         }
-        if (const u64 took = NowNs() - capture_start; took > SLOW_CAPTURE_NS) {
-            LOG_WARNING(Common, "profiler: pausing {} took {} ms", entry.name, took / 1'000'000);
+        const bool captured = Capture(entry, context, copied, origin);
+        // All policy, counters and logging run after Capture has resumed the target.
+        const u64 capture_end = NowNs();
+        const u64 took = capture_end - capture_start;
+        entry.capture_backoff.Observe(capture_end, took);
+        if (took > SLOW_CAPTURE_NS) {
+            ++entry.slow_captures;
+            LOG_WARNING(Common, "profiler: context capture for {} took {} ms; sampling backs off",
+                        entry.name, took / 1'000'000);
+        }
+        if (!captured) {
+            return;
+        }
+        if (!stalled) {
+            (waiting ? entry.waiting_samples : entry.running_samples) += weight;
         }
         // A thunk keeps the return address on top of the stack, or under the register it saved.
         // The thread runs again by now, but these are the copy's words.
@@ -554,6 +574,13 @@ private:
                         dropped_samples)
                 .c_str(),
             file);
+        u64 skipped = 0, slow = 0;
+        for (const ThreadEntry* entry : threads) {
+            skipped += entry->capture_skips;
+            slow += entry->slow_captures;
+        }
+        std::fputs(fmt::format("capture_coverage cooldown_skips {} slow_captures {}\n",
+                               skipped, slow).c_str(), file);
         // Names can change while a thread lives (RegisterCurrentThread again).
         std::vector<std::string> names;
         {
@@ -569,13 +596,16 @@ private:
             if (Exited(entry->handle)) {
                 entry->dead = true;
             }
-            if (used == 0 && entry->running_samples == 0 && entry->waiting_samples == 0) {
+            if (used == 0 && entry->running_samples == 0 && entry->waiting_samples == 0 &&
+                entry->capture_skips == 0 && entry->slow_captures == 0) {
                 continue;
             }
-            std::fputs(fmt::format("thread {} id {} cpu_ms {:.1f} running {} waiting {}{}\n",
+            std::fputs(fmt::format("thread {} id {} cpu_ms {:.1f} running {} waiting {}{} "
+                                   "capture_skips {} slow_captures {}\n",
                                    names[index], entry->id, static_cast<double>(used) / 1e4,
                                    entry->running_samples, entry->waiting_samples,
-                                   entry->dead ? " exited" : "")
+                                   entry->dead ? " exited" : "",
+                                   entry->capture_skips, entry->slow_captures)
                            .c_str(),
                        file);
         }
