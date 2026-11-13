@@ -119,6 +119,13 @@ int main() {
     check(GameDateOffsetSeconds({2026, 11, 13}, {2026, 11, 12}) == 86400);
     check(GameDateOffsetSeconds({2025, 11, 12}, {2026, 11, 12}) == -365 * 86400);
     page.settings.game_date.reset();
+    // Surround sound is on by default (5.1 only reaches games when the Xbox outputs surround).
+    check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
+          page.selected == SystemPage::SurroundSound && page.settings.surround_sound);
+    check(SystemRowValue(page, SystemPage::SurroundSound) == L"Sí");
+    check(HandleSystemInput(page, SystemInput::Confirm) == SystemPageEffect::Changed && !page.settings.surround_sound);
+    check(SystemRowValue(page, SystemPage::SurroundSound) == L"No");
+    check(HandleSystemInput(page, SystemInput::Left) == SystemPageEffect::Changed && page.settings.surround_sound);
     check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
           page.selected == SystemPage::AdultMods);
     check(SystemRowValue(page, SystemPage::AdultMods) == L"Ocultos");

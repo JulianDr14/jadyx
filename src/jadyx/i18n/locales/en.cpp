@@ -406,6 +406,8 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::DateMonth, L"Month"},
     {Text::DateDay, L"Day"},
     {Text::DateFieldHint, L"Changing it sets a custom game date; the time of day stays the Xbox one"},
+    {Text::SurroundSound, L"Surround sound"},
+    {Text::SurroundSoundHint, L"Games that support it play in 5.1 when the Xbox outputs surround: 5.1, 7.1, Dolby Atmos or Windows Sonic. Off plays in stereo. Applies when a game starts"},
     {Text::ClearLibraryCache, L"Clear library cache"},
     {Text::ClearLibraryCacheHint, L"Titles and covers are read again; mod pictures and unfinished downloads are deleted"},
     {Text::MiiEditor, L"Mii editor"},
