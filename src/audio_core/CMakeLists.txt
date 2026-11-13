@@ -211,6 +211,8 @@ add_library(audio_core STATIC
     sink/sink_details.h
     sink/sink_stream.cpp
     sink/sink_stream.h
+    sink/surround_layout.h
+    sink/surround_mix.h
 )
 
 if (MSVC)
@@ -232,9 +234,11 @@ target_link_libraries(audio_core PUBLIC common core Opus::opus)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
     target_sources(audio_core PRIVATE
+        sink/spatial_sink.cpp
+        sink/spatial_sink.h
         sink/xaudio2_sink.cpp
         sink/xaudio2_sink.h)
-    target_link_libraries(audio_core PRIVATE xaudio2.lib)
+    target_link_libraries(audio_core PRIVATE xaudio2.lib mmdevapi.lib)
     target_compile_definitions(audio_core PRIVATE HAVE_XAUDIO2=1)
 endif()
 
