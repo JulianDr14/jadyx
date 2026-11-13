@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Header-only: how the games' 5.1 reaches each console layout (audio_core/sink/surround_layout.h).
+// Header-only: how the games' 5.1 reaches each console layout (audio_core/sink/surround_layout.h)
+// and how the spatial output mixes streams into its speaker objects (surround_mix.h).
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <utility>
+#include <vector>
 #include "audio_core/sink/surround_layout.h"
+#include "audio_core/sink/surround_mix.h"
 
 namespace {
 using namespace AudioCore::Sink::Surround;
@@ -101,6 +104,35 @@ int main() {
         const auto m = MapGameSurround(channels, mask);
         for (std::uint32_t src = 0; src < 6; ++src)
             Check(SourceTotal(m, src) == 1.0F, "surround layouts keep every source");
+    }
+
+    // Spatial bed: streams add up per channel, a stereo stream only reaches the fronts.
+    {
+        constexpr std::size_t frames = 4;
+        constexpr std::size_t stride = 5; // Planes wider than one period, as the sink sizes them.
+        std::vector<float> planes(GameChannels * stride, 0.0F);
+        std::vector<std::int16_t> surround(frames * GameChannels);
+        for (std::size_t f = 0; f < frames; ++f)
+            for (std::uint32_t c = 0; c < GameChannels; ++c)
+                surround[f * GameChannels + c] = static_cast<std::int16_t>(1024 * (c + 1));
+        AccumulateInterleaved(surround, GameChannels, frames, planes, stride);
+        const std::vector<std::int16_t> stereo(frames * 2, 16384);
+        AccumulateInterleaved(stereo, 2, frames, planes, stride);
+        Check(Near(planes[0], (1024.0F + 16384.0F) / 32768.0F), "bed front left sums streams");
+        Check(Near(planes[stride + 3], (2048.0F + 16384.0F) / 32768.0F), "bed front right");
+        Check(Near(planes[4 * stride], 5120.0F / 32768.0F), "bed left surround untouched by stereo");
+        Check(planes[frames] == 0.0F, "bed writes only the period");
+        Check(Near(planes[3 * stride + 2], 4096.0F / 32768.0F), "bed LFE");
+    }
+    // Spatial bed: summed streams are clipped at full scale on the way out.
+    {
+        const float plane[]{1.5F, -2.0F, 0.25F};
+        float out[3]{};
+        WritePlane(plane, out);
+        Check(out[0] == 1.0F && out[1] == -1.0F && out[2] == 0.25F, "bed clipping");
+        float short_out[2]{};
+        WritePlane(plane, short_out); // Object buffer shorter than the period: no overrun.
+        Check(short_out[1] == -1.0F, "bed short buffer");
     }
 
     if (failures != 0) {
