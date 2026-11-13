@@ -374,8 +374,11 @@ void EndBootScreen(VideoCore::RendererBase& renderer) {
     }
 }
 
-u64 PipelinesBuilt() {
-    return PipelineObjectsBuilt().load(std::memory_order_relaxed);
+u64 GamePipelinesBuilt() {
+    // Prewarmed first: each is counted after its build, so the difference never goes negative.
+    const u64 prewarmed = PipelineObjectsPrewarmed().load(std::memory_order_acquire);
+    const u64 built = PipelineObjectsBuilt().load(std::memory_order_acquire);
+    return built - std::min(prewarmed, built);
 }
 
 void RendererD3D12::StartBootScreen(BootScreen draw) {

@@ -162,10 +162,17 @@ inline PipelineStats& GetPipelineStats() noexcept {
 
 /// Driver pipeline objects built so far in this process, graphics and compute. Never reset: a
 /// reader keeps its own starting count (the launch screen sees a game still warming its shaders
-/// through D3D12::PipelinesBuilt, d3d12_menu_image.h).
+/// through D3D12::GamePipelinesBuilt, d3d12_menu_image.h).
 inline std::atomic<std::uint64_t>& PipelineObjectsBuilt() noexcept {
     static std::atomic<std::uint64_t> built{};
     return built;
+}
+
+/// The part of PipelineObjectsBuilt the background prewarm built ahead of any draw: the renderer's
+/// own work, not the game's. Counted after the build it belongs to.
+inline std::atomic<std::uint64_t>& PipelineObjectsPrewarmed() noexcept {
+    static std::atomic<std::uint64_t> prewarmed{};
+    return prewarmed;
 }
 
 } // namespace D3D12
