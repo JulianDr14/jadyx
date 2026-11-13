@@ -758,17 +758,21 @@ void GraphicsPipeline::Publish(State next) {
     build_condvar.notify_all();
 }
 
-bool GraphicsPipeline::Wake(Common::ThreadWorker& worker) {
+bool GraphicsPipeline::Wake(Common::ThreadWorker& worker, bool for_draw) {
     State expected = State::Dormant;
     if (!build_state.compare_exchange_strong(expected, State::Building, std::memory_order::acq_rel)) {
         return false;
     }
-    QueueBuild(&worker, [this] {
+    QueueBuild(&worker, [this, for_draw] {
         // Without its DXIL the pipeline stays ready with no PSO: its draws are skipped. Out of
         // memory, it keeps the DXIL and stays dormant to be woken again.
         out_of_memory = false;
         if (dxil || ReloadDxil()) {
             Build();
+            if (!for_draw && pipeline_state) {
+                // Release: a reader that sees this count sees the build's own count too.
+                PipelineObjectsPrewarmed().fetch_add(1, std::memory_order_release);
+            }
         }
         Publish(out_of_memory ? State::Dormant : State::Ready);
     });

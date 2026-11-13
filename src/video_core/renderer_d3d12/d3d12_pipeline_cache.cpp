@@ -1096,7 +1096,7 @@ void PipelineCache::TickPrewarm(const CacheMemorySnapshot& snapshot) {
         // released while idle since is left to its next draw, unless a loading screen queued it
         // to be built again.
         const bool rebuild = prewarm_cursor > prewarm_rebuild_from;
-        if ((rebuild || !pipeline->WasEvicted()) && pipeline->Wake(prewarm_thread)) {
+        if ((rebuild || !pipeline->WasEvicted()) && pipeline->Wake(prewarm_thread, false)) {
             // Counted as used now, so eviction does not take it back before its first draw.
             pipeline->Touch(residency_frame);
             pipeline->MarkPrewarmed();

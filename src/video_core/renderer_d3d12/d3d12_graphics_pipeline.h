@@ -369,7 +369,8 @@ public:
 
     /// GPU thread: a dormant pipeline queues the build of its PSO from the kept DXIL. False if it
     /// was not dormant.
-    bool Wake(Common::ThreadWorker& worker);
+    /// `for_draw` is false for the background prewarm, whose PSOs the game has not asked for yet.
+    bool Wake(Common::ThreadWorker& worker, bool for_draw = true);
 
     /// True for the disk cache's pipelines, made at boot; false for those first drawn this session.
     [[nodiscard]] bool FromDisk() const noexcept {
