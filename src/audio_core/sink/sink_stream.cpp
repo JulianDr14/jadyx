@@ -60,13 +60,14 @@ void SinkStream::AppendBuffer(SinkBuffer& buffer, std::span<s16> samples) {
         queue.EmplaceWait(buffer);
         samples_buffer.Push(samples.subspan(0, samples.size() / system_channels * device_channels));
     } else if (system_channels < device_channels) {
-        std::vector<s16> new_samples(samples.size() / system_channels * device_channels);
+        // Channels the source lacks stay silent: no invented surround from a stereo mix.
+        upmix_scratch.assign(samples.size() / system_channels * device_channels, 0);
         for (u32 r_offs = 0, w_offs = 0; r_offs < samples.size(); r_offs += system_channels, w_offs += device_channels)
             for (u32 channel = 0; channel < system_channels; ++channel)
-                new_samples[w_offs + channel] = s16(std::clamp(s32(f32(samples[r_offs + channel]) * volume), min, max));
+                upmix_scratch[w_offs + channel] = s16(std::clamp(s32(f32(samples[r_offs + channel]) * volume), min, max));
 
         queue.EmplaceWait(buffer);
-        samples_buffer.Push(new_samples);
+        samples_buffer.Push(upmix_scratch);
     } else {
         if (volume != 1.0f) {
             for (u32 i = 0; i < samples.size(); ++i)

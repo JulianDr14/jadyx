@@ -14,13 +14,16 @@
 #include <stdexcept>
 #include <thread>
 
+#include <mmreg.h>
 #include <objbase.h>
 
 #include "audio_core/common/common.h"
 #include "audio_core/sink/null_sink.h"
 #include "audio_core/sink/realtime_pacer.h"
 #include "audio_core/sink/sink_stream.h"
+#include "audio_core/sink/surround_layout.h"
 #include "common/logging.h"
+#include "common/settings.h"
 #include "common/thread.h"
 
 namespace AudioCore::Sink {
@@ -28,7 +31,47 @@ namespace {
 
 constexpr u32 SlotCount = 3;
 constexpr u32 SlotFrames = TargetSampleCount * 4;
-constexpr u32 OutputChannels = 2;
+constexpr u32 MaxStreamChannels = Surround::GameChannels;
+/// KSDATAFORMAT_SUBTYPE_PCM, spelled out so the sink needs no ksmedia.h.
+constexpr GUID PcmSubFormat{0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+
+/// The console's output layout, asked once per process with a throwaway engine: the games must be
+/// told their channel count before the first output stream (and the real engine) exists.
+struct ConsoleOutput {
+    u32 channels{Surround::StereoChannels};
+    u32 mask{};
+};
+
+ConsoleOutput ProbeConsoleOutput() {
+    static const ConsoleOutput output = [] {
+        const HRESULT com_result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        ConsoleOutput result;
+        {
+            Microsoft::WRL::ComPtr<IXAudio2> probe;
+            IXAudio2MasteringVoice* voice{};
+            if (SUCCEEDED(XAudio2Create(probe.GetAddressOf(), 0, XAUDIO2_DEFAULT_PROCESSOR)) &&
+                SUCCEEDED(probe->CreateMasteringVoice(&voice, XAUDIO2_DEFAULT_CHANNELS,
+                                                      TargetSampleRate, 0, nullptr, nullptr,
+                                                      AudioCategory_GameMedia))) {
+                XAUDIO2_VOICE_DETAILS details{};
+                voice->GetVoiceDetails(&details);
+                DWORD mask{};
+                static_cast<void>(voice->GetChannelMask(&mask));
+                result = {details.InputChannels, static_cast<u32>(mask)};
+                voice->DestroyVoice();
+            } else {
+                LOG_WARNING(Service_Audio, "XAudio2: console output probe failed; games get stereo");
+            }
+        }
+        if (SUCCEEDED(com_result)) {
+            CoUninitialize();
+        }
+        LOG_INFO(Service_Audio, "XAudio2: console output {} channels, mask {:#x}", result.channels,
+                 result.mask);
+        return result;
+    }();
+    return output;
+}
 constexpr u32 AllSlotsMask = (1U << SlotCount) - 1;
 constexpr auto ProfilePeriod = std::chrono::seconds{5};
 
@@ -48,21 +91,33 @@ public:
         : SinkStream{system_, type_}, sink{sink_}, callback{*this} {
         name = std::move(name_);
         system_channels = system_channels_;
-        device_channels = OutputChannels;
+        device_channels = sink.GetDeviceChannels();
 
         if (sink.IsAvailable()) {
-            WAVEFORMATEX format{
-                .wFormatTag = WAVE_FORMAT_PCM,
-                .nChannels = static_cast<WORD>(OutputChannels),
-                .nSamplesPerSec = TargetSampleRate,
-                .nAvgBytesPerSec = TargetSampleRate * OutputChannels * sizeof(s16),
-                .nBlockAlign = static_cast<WORD>(OutputChannels * sizeof(s16)),
-                .wBitsPerSample = 16,
-                .cbSize = 0,
-            };
-            const HRESULT result = sink.Engine()->CreateSourceVoice(
-                &source_voice, &format, XAUDIO2_VOICE_NOSRC | XAUDIO2_VOICE_NOPITCH, 1.0F,
+            // Switch order (FL FR FC LFE BL BR) is the WAVE order, so samples go out untouched;
+            // the engine's output matrix (mixed in XAudio2, no per-sample work here) places them.
+            const bool surround = device_channels == Surround::GameChannels;
+            WAVEFORMATEXTENSIBLE format{};
+            format.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+            format.Format.nChannels = static_cast<WORD>(device_channels);
+            format.Format.nSamplesPerSec = TargetSampleRate;
+            format.Format.nBlockAlign = static_cast<WORD>(device_channels * sizeof(s16));
+            format.Format.nAvgBytesPerSec = TargetSampleRate * format.Format.nBlockAlign;
+            format.Format.wBitsPerSample = 16;
+            format.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+            format.Samples.wValidBitsPerSample = 16;
+            format.dwChannelMask = surround ? Surround::Mask5Point1 : Surround::MaskStereo;
+            format.SubFormat = PcmSubFormat;
+            HRESULT result = sink.Engine()->CreateSourceVoice(
+                &source_voice, &format.Format, XAUDIO2_VOICE_NOSRC | XAUDIO2_VOICE_NOPITCH, 1.0F,
                 &callback);
+            if (SUCCEEDED(result) && surround) {
+                result = sink.RouteGameSurround(*source_voice);
+                if (FAILED(result)) {
+                    source_voice->DestroyVoice();
+                    source_voice = nullptr;
+                }
+            }
             if (FAILED(result)) {
                 failure_result = result;
                 failure_reported = true;
@@ -197,6 +252,11 @@ private:
         XAudio2SinkStream& owner;
     };
 
+    /// Samples of one slot in use: slots are sized for 5.1 so no stream ever allocates.
+    std::size_t SlotSamples() const {
+        return std::size_t{SlotFrames} * device_channels;
+    }
+
     bool TakeFreeSlot(u32& slot) {
         u32 available = free_slots.load(std::memory_order_acquire);
         while (available != 0) {
@@ -212,8 +272,7 @@ private:
     }
 
     void FillSlot(const u32 slot) {
-        ProcessAudioOutAndRender(std::span<s16>{slots[slot].data(), slots[slot].size()},
-                                 SlotFrames);
+        ProcessAudioOutAndRender(std::span<s16>{slots[slot].data(), SlotSamples()}, SlotFrames);
     }
 
     void Fail(const HRESULT result, std::string_view operation) {
@@ -346,7 +405,7 @@ private:
             for (u32 slot{}; TakeFreeSlot(slot);) {
                 FillSlot(slot);
                 XAUDIO2_BUFFER buffer{};
-                buffer.AudioBytes = static_cast<UINT32>(slots[slot].size() * sizeof(s16));
+                buffer.AudioBytes = static_cast<UINT32>(SlotSamples() * sizeof(s16));
                 buffer.pAudioData = reinterpret_cast<const BYTE*>(slots[slot].data());
                 buffer.pContext = reinterpret_cast<void*>(static_cast<std::uintptr_t>(slot + 1));
                 HRESULT result{};
@@ -400,7 +459,7 @@ private:
     XAudio2Sink& sink;
     VoiceCallback callback;
     IXAudio2SourceVoice* source_voice{};
-    std::array<std::array<s16, SlotFrames * OutputChannels>, SlotCount> slots{};
+    std::array<std::array<s16, SlotFrames * MaxStreamChannels>, SlotCount> slots{};
     std::atomic<u32> free_slots{AllSlotsMask};
     std::atomic<StreamState> state{StreamState::Stopped};
     bool voice_started{};
@@ -484,7 +543,19 @@ void XAudio2Sink::EngineCallback::OnCriticalError(const HRESULT error) {
     failed.store(true, std::memory_order_release);
 }
 
-XAudio2Sink::XAudio2Sink(std::string_view) {}
+XAudio2Sink::XAudio2Sink(std::string_view) {
+    // Settings > System > Surround sound (sound_index Surround): off keeps stereo without probing.
+    const bool surround_allowed =
+        Settings::values.sound_index.GetValue() == Settings::AudioMode::Surround;
+    device_channels = surround_allowed
+                          ? Surround::GameChannelCount(true, ProbeConsoleOutput().channels)
+                          : Surround::StereoChannels;
+}
+
+HRESULT XAudio2Sink::RouteGameSurround(IXAudio2SourceVoice& voice) const {
+    return voice.SetOutputMatrix(mastering_voice, Surround::GameChannels, output_layout.outputs,
+                                 output_layout.levels.data());
+}
 
 XAudio2Sink::~XAudio2Sink() {
     Shutdown();
@@ -524,8 +595,11 @@ bool XAudio2Sink::Initialize() {
         return false;
     }
     callback_registered = true;
-    result = engine->CreateMasteringVoice(&mastering_voice, OutputChannels, TargetSampleRate, 0,
-                                          nullptr, nullptr, AudioCategory_GameMedia);
+    // Stereo keeps the two-channel master it always had; 5.1 mixes into the console's own layout.
+    const bool surround = device_channels == Surround::GameChannels;
+    result = engine->CreateMasteringVoice(
+        &mastering_voice, surround ? XAUDIO2_DEFAULT_CHANNELS : Surround::StereoChannels,
+        TargetSampleRate, 0, nullptr, nullptr, AudioCategory_GameMedia);
     if (FAILED(result)) {
         failed = true;
         LOG_ERROR(Audio_Sink,
@@ -535,9 +609,26 @@ bool XAudio2Sink::Initialize() {
         return false;
     }
 
+    XAUDIO2_VOICE_DETAILS details{};
+    mastering_voice->GetVoiceDetails(&details);
+    DWORD mask{};
+    if (FAILED(mastering_voice->GetChannelMask(&mask))) {
+        mask = 0;
+    }
+    if (surround && details.InputChannels > Surround::MaxOutputChannels) {
+        // No matrix that wide: stereo streams (the guest downmixes) instead of silent ones.
+        device_channels = Surround::StereoChannels;
+    } else if (surround) {
+        // The layout is fixed for the engine's life, so every stream reuses this matrix.
+        output_layout = Surround::MapGameSurround(details.InputChannels, static_cast<u32>(mask));
+    }
+
     LOG_INFO(Service_Audio,
-             "XAudio2 output ready (PCM16, {} Hz, stereo, {} x {} frames = {} ms queued)",
-             TargetSampleRate, SlotCount, SlotFrames,
+             "XAudio2 output ready (PCM16, {} Hz, games {}, console {} ch mask {:#x}, {} x {} "
+             "frames = {} ms queued)",
+             TargetSampleRate,
+             device_channels == Surround::GameChannels ? "5.1" : "stereo", details.InputChannels,
+             static_cast<u32>(mask), SlotCount, SlotFrames,
              SlotCount * SlotFrames * 1000 / TargetSampleRate);
     return true;
 }
