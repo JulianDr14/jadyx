@@ -25,7 +25,7 @@ enum class EditorPurpose : std::uint8_t {
 };
 
 struct SystemPage {
-    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, ClockFormat, GameDate, DateYear, DateMonth, DateDay, AdultMods, PerformanceStats, PulseSessions, PlayTime, OfflineMode, MiiEditor, ClearCache, Updates, RowCount };
+    enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, ClockFormat, GameDate, DateYear, DateMonth, DateDay, SurroundSound, AdultMods, PerformanceStats, PulseSessions, PlayTime, OfflineMode, MiiEditor, ClearCache, Updates, RowCount };
 
     bool updates_open{};
     std::size_t update_row{}, update_detail{}, update_scroll{};
@@ -117,6 +117,9 @@ inline SystemPageEffect HandleSystemInput(SystemPage& page, SystemInput input) {
         settings.game_date = StepGameDate(settings.game_date.value_or(TodayLocal()), field, back);
         return SystemPageEffect::Changed;
     }
+    case Row::SurroundSound:
+        settings.surround_sound = !settings.surround_sound;
+        return SystemPageEffect::Changed;
     case Row::AdultMods:
         settings.show_adult_mods = !settings.show_adult_mods;
         return SystemPageEffect::Changed;
@@ -175,6 +178,7 @@ inline I18n::Text SystemRowTitle(SystemPage::Row row) {
     case SystemPage::DateYear:          return Text::DateYear;
     case SystemPage::DateMonth:         return Text::DateMonth;
     case SystemPage::DateDay:           return Text::DateDay;
+    case SystemPage::SurroundSound:     return Text::SurroundSound;
     case SystemPage::PerformanceStats:  return Text::PerformanceStats;
     case SystemPage::AdultMods:         return Text::ModsAdult;
     case SystemPage::PulseSessions:     return Text::PulseSessions;
@@ -198,6 +202,7 @@ inline I18n::Text SystemRowHint(SystemPage::Row row) {
     case SystemPage::DateYear:
     case SystemPage::DateMonth:
     case SystemPage::DateDay:           return Text::DateFieldHint;
+    case SystemPage::SurroundSound:     return Text::SurroundSoundHint;
     case SystemPage::PerformanceStats:  return Text::PerformanceStatsHint;
     case SystemPage::AdultMods:         return Text::ModsAdultHint;
     case SystemPage::PulseSessions:     return Text::PulseSessionsHint;
@@ -241,6 +246,8 @@ inline std::wstring SystemRowValue(const SystemPage& page, SystemPage::Row row) 
         const int value = row == SystemPage::DateYear ? date.year : row == SystemPage::DateMonth ? date.month : date.day;
         return std::to_wstring(value);
     }
+    case SystemPage::SurroundSound:
+        return std::wstring{I18n::Tr(settings.surround_sound ? Text::Yes : Text::No)};
     case SystemPage::PerformanceStats:
         return std::wstring{I18n::Tr(settings.show_performance_stats ? Text::Yes : Text::No)};
     case SystemPage::AdultMods:

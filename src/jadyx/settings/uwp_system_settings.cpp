@@ -26,6 +26,7 @@ constexpr auto PlayTimeKey = L"system_track_play_time";
 constexpr auto OfflineModeKey = L"system_offline_mode";
 constexpr auto MemoryEditWarnedKey = L"system_memory_edit_warned";
 constexpr auto Clock24hKey = L"system_clock_24h";
+constexpr auto SurroundSoundKey = L"system_surround_sound";
 constexpr auto GameDateKey = L"system_game_date"; ///< yyyymmdd, or -1 for the Xbox's date.
 std::atomic<bool> clock_24h_now{};
 constexpr auto GraphicsUpscalingKey = L"graphics_upscaling";
@@ -76,6 +77,7 @@ SystemSettings LoadSystemSettings() {
         if (values.HasKey(OfflineModeKey)) settings.offline_mode = winrt::unbox_value<bool>(values.Lookup(OfflineModeKey));
         if (values.HasKey(MemoryEditWarnedKey)) settings.memory_edit_warned = winrt::unbox_value<bool>(values.Lookup(MemoryEditWarnedKey));
         if (values.HasKey(Clock24hKey)) settings.clock_24h = winrt::unbox_value<bool>(values.Lookup(Clock24hKey));
+        if (values.HasKey(SurroundSoundKey)) settings.surround_sound = winrt::unbox_value<bool>(values.Lookup(SurroundSoundKey));
         if (values.HasKey(GameDateKey)) {
             const auto raw = winrt::unbox_value<int32_t>(values.Lookup(GameDateKey));
             if (raw > 0) settings.game_date = ClampGameDate({raw / 10000, raw / 100 % 100, raw % 100});
@@ -98,6 +100,7 @@ bool SaveSystemSettings(const SystemSettings& settings) {
         values.Insert(OfflineModeKey, winrt::box_value(settings.offline_mode));
         values.Insert(MemoryEditWarnedKey, winrt::box_value(settings.memory_edit_warned));
         values.Insert(Clock24hKey, winrt::box_value(settings.clock_24h));
+        values.Insert(SurroundSoundKey, winrt::box_value(settings.surround_sound));
         int32_t date = -1;
         if (settings.game_date) {
             const auto d = ClampGameDate(*settings.game_date);
@@ -303,6 +306,9 @@ ResolvedSystem ApplySystemSettings() {
     Settings::values.device_name.SetValue("Jadyx");
     Settings::values.airplane_mode.SetValue(settings.offline_mode);
     clock_24h_now.store(settings.clock_24h, std::memory_order_relaxed);
+    // Surround lets the audio sink offer 5.1 when the Xbox outputs it (audio_core surround_layout.h).
+    Settings::values.sound_index.SetValue(settings.surround_sound ? Settings::AudioMode::Surround
+                                                                  : Settings::AudioMode::Stereo);
     // The games' date: Eden adds custom_rtc_offset to the Xbox clock when the system starts. The
     // offset moves whole days only, so the time of day stays the Xbox's.
     const s64 rtc_offset = settings.game_date ? GameDateOffsetSeconds(*settings.game_date, TodayLocal()) : 0;
@@ -311,6 +317,7 @@ ResolvedSystem ApplySystemSettings() {
     LOG_INFO(Frontend, "System: game date {} (offset {} s), clock {} h",
              settings.game_date ? I18n::ToUtf8(FormatGameDate(*settings.game_date)) : std::string{"Xbox"},
              rtc_offset, settings.clock_24h ? 24 : 12);
+    LOG_INFO(Frontend, "System: surround sound {}", settings.surround_sound ? "on" : "off");
     LOG_INFO(Frontend, "System: Windows language {}, region {}; interface {}, game language {}, region {}",
              locale.languages.empty() ? std::string{"(none)"} : I18n::ToUtf8(locale.languages.front()),
              locale.region.empty() ? std::string{"(none)"} : I18n::ToUtf8(locale.region),

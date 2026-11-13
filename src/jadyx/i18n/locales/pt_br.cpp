@@ -406,6 +406,8 @@ const Catalog PortugueseBrazilCatalog = MakeCatalog({
     {Text::DateMonth, L"Mês"},
     {Text::DateDay, L"Dia"},
     {Text::DateFieldHint, L"Ao mudar, a data passa a ser personalizada; a hora continua a do Xbox"},
+    {Text::SurroundSound, L"Som surround"},
+    {Text::SurroundSoundHint, L"Os jogos compatíveis tocam em 5.1 quando o Xbox emite som surround: 5.1, 7.1, Dolby Atmos ou Windows Sonic. Desativado toca em estéreo. Vale ao iniciar um jogo"},
     {Text::ClearLibraryCache, L"Limpar cache da biblioteca"},
     {Text::ClearLibraryCacheHint, L"Títulos e capas são lidos de novo; imagens de mods e downloads incompletos são apagados"},
     {Text::MiiEditor, L"Editor de Mii"},

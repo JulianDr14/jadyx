@@ -257,6 +257,8 @@ private:
     SinkBuffer playing_buffer{};
     /// The last played (or received) frame of audio, used when the callback underruns
     std::array<s16, MaxChannels> last_frame{};
+    /// Widened samples of a buffer with fewer channels than the device; grows once, then reused.
+    std::vector<s16> upmix_scratch;
     /// Number of buffers waiting to be played
     std::atomic<u32> queued_buffers{};
     /// Buffers ever appended (see GetAppendedBufferCount)

@@ -117,6 +117,7 @@ struct SystemSettings {
     bool memory_edit_warned{}; ///< The player took Memory Edit's warning: it does not come up again.
     bool clock_24h{};          ///< Clocks in the library and Jadyx Hub; 12 hours by default.
     std::optional<GameDate> game_date; ///< nullopt: games see the Xbox's date.
+    bool surround_sound{true}; ///< Games get 5.1 when the Xbox outputs surround; off forces stereo.
 
     bool operator==(const SystemSettings&) const = default;
 };

@@ -17,10 +17,12 @@
 #include "audio_core/sink/sdl3_sink.h"
 #endif
 #ifdef HAVE_XAUDIO2
+#include "audio_core/sink/spatial_sink.h"
 #include "audio_core/sink/xaudio2_sink.h"
 #endif
 #include "audio_core/sink/null_sink.h"
 #include "common/logging.h"
+#include "common/settings.h"
 #include "common/settings_enums.h"
 
 namespace AudioCore::Sink {
@@ -49,6 +51,13 @@ constexpr SinkDetails sink_details[] = {
     SinkDetails{
         Settings::AudioEngine::XAudio2,
         [](std::string_view device_id) -> std::unique_ptr<Sink> {
+            // Dolby Atmos, Windows Sonic and DTS keep the plain endpoint in stereo: with surround
+            // allowed, their spatial stream carries the games' 5.1; otherwise XAudio2.
+            if (Settings::values.sound_index.GetValue() == Settings::AudioMode::Surround) {
+                if (auto spatial = SpatialSink::TryCreate()) {
+                    return spatial;
+                }
+            }
             return std::make_unique<XAudio2Sink>(device_id);
         },
         &ListXAudio2SinkDevices,

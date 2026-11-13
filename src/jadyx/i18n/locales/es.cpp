@@ -406,6 +406,8 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::DateMonth, L"Mes"},
     {Text::DateDay, L"Día"},
     {Text::DateFieldHint, L"Al cambiarlo, la fecha pasa a ser personalizada; la hora sigue siendo la de la Xbox"},
+    {Text::SurroundSound, L"Sonido envolvente"},
+    {Text::SurroundSoundHint, L"Los juegos que lo admiten suenan en 5.1 cuando la Xbox emite sonido envolvente: 5.1, 7.1, Dolby Atmos o Windows Sonic. Desactivado suena en estéreo. Se aplica al iniciar un juego"},
     {Text::ClearLibraryCache, L"Limpiar caché de la biblioteca"},
     {Text::ClearLibraryCacheHint, L"Los títulos y carátulas se vuelven a leer; se borran las imágenes y descargas de mods"},
     {Text::MiiEditor, L"Editor de Mii"},

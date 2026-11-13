@@ -147,8 +147,10 @@ Result IAudioDevice::QueryAudioDeviceOutputEvent(OutCopyHandle<Kernel::KReadable
 }
 
 Result IAudioDevice::GetActiveChannelCount(Out<u32> out_active_channel_count) {
-    *out_active_channel_count = system.AudioCore().GetOutputSink().GetSystemChannels();
-    LOG_DEBUG(Service_Audio, "(STUBBED) called. Channels={}", *out_active_channel_count);
+    // The output's channels (2 or 6), as the console reports them: the last stream's request
+    // (GetSystemChannels) would let a stereo audout session hide 5.1 from the game.
+    *out_active_channel_count = system.AudioCore().GetOutputSink().GetDeviceChannels();
+    LOG_DEBUG(Service_Audio, "called. Channels={}", *out_active_channel_count);
     R_SUCCEED();
 }
 

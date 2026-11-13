@@ -13,6 +13,7 @@
 #include <xaudio2.h>
 
 #include "audio_core/sink/sink.h"
+#include "audio_core/sink/surround_layout.h"
 
 namespace AudioCore::Sink {
 
@@ -40,6 +41,8 @@ public:
     void EndCheckpoint() noexcept;
     HRESULT FailureResult() const noexcept;
     IXAudio2* Engine() const noexcept;
+    /// Sends a 5.1 source voice to the console's speakers (Surround::MapGameSurround).
+    HRESULT RouteGameSurround(IXAudio2SourceVoice& voice) const;
     void LogPerformance(std::string_view stream_name, u64 submitted, u64 completed,
                         u64 submit_failures, u64 starvations, u32 min_depth, u32 max_depth);
 
@@ -64,6 +67,7 @@ private:
     std::vector<SinkStreamPtr> sink_streams;
     Microsoft::WRL::ComPtr<IXAudio2> engine;
     IXAudio2MasteringVoice* mastering_voice{};
+    Surround::Matrix output_layout; ///< Set once by Initialize when the games get 5.1.
     std::atomic<bool> failed{};
     EngineCallback engine_callback{failed};
     bool initialization_attempted{};

@@ -352,6 +352,8 @@ enum class Text : std::uint16_t {
     DateMonth,
     DateDay,
     DateFieldHint,
+    SurroundSound,
+    SurroundSoundHint,
     ClearLibraryCache,
     ClearLibraryCacheHint,
     MiiEditor,
