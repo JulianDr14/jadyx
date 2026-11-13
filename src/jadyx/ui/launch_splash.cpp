@@ -703,7 +703,7 @@ struct LaunchScreen::Impl {
     void Run(std::stop_token stop) {
         try {
             const auto started = Clock::now();
-            const u64 start_pipelines = D3D12::PipelinesBuilt();
+            const u64 start_pipelines = D3D12::GamePipelinesBuilt();
             u64 seen_pipelines = start_pipelines;
             // The timeout counts from the last pipeline built or frame drawn: a game warming thousands of
             // shaders before its first frame keeps the screen (and says so) however long it takes.
@@ -718,7 +718,7 @@ struct LaunchScreen::Impl {
             auto next = started;
             while (!stop.stop_requested()) {
                 const auto now = Clock::now();
-                if (const u64 built = D3D12::PipelinesBuilt(); built != seen_pipelines) {
+                if (const u64 built = D3D12::GamePipelinesBuilt(); built != seen_pipelines) {
                     if (seen_pipelines == start_pipelines) {
                         LOG_INFO(Frontend, "Launch screen: the game is building pipelines before its first frame");
                     }
