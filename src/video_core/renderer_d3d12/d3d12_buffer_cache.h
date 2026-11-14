@@ -293,6 +293,10 @@ public:
 private:
     /// Uploads indices to staging memory and binds them as a 32-bit or 16-bit index buffer.
     void BindRewrittenIndices(IndexRewriteCache::Entry& entry);
+    /// Binds a vertex stream whose offset or stride is not a multiple of 4 as a copy with the
+    /// stride rounded up to 4. The input assembler fetches 32-bit components at unaligned
+    /// addresses wrongly on some GPUs (giant triangles); every attribute offset stays the same.
+    void BindRealignedVertices(u32 index, Buffer& buffer, u32 offset, u32 size, u32 stride);
     [[nodiscard]] bool NeedsRestartRewrite(IndexFormat format) const noexcept;
     /// The out-of-range limit (exclusive, before the base vertex) the draw's indices must be
     /// rewritten with, 0 when they are all in range or the check is off. Reports bad ranges.
@@ -372,6 +376,19 @@ private:
     u64 recycle_hits{};
     u64 recycle_misses{};
     std::vector<u8> guest_indices;
+    /// Realigned vertex streams (BindRealignedVertices), valid for the tick they were uploaded in.
+    struct RealignedVertices {
+        u64 buffer_id{};
+        u64 generation{};
+        u64 tick{};
+        u32 offset{};
+        u32 size{};
+        u32 stride{};
+        D3D12_GPU_VIRTUAL_ADDRESS address{};
+    };
+    std::array<RealignedVertices, 64> realigned_vertices{};
+    std::vector<u8> guest_vertices;
+    bool logged_realign{};
     std::span<const u8> inline_indices;
     u32 vertex_limit{};
     s64 vertex_base{};

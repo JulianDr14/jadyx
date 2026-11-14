@@ -915,8 +915,66 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, Buffer& buffer, u32 offset,
                                   .buffer = &buffer, .offset = offset, .size = size,
                                   .stride = stride, .device_addr = buffer.CpuAddr() + offset});
     }
+    if (((offset | stride) & 3) != 0 && stride != 0 && size != 0 &&
+        index < VideoCommon::NUM_VERTEX_BUFFERS) [[unlikely]] {
+        BindRealignedVertices(index, buffer, offset, size, stride);
+        return;
+    }
     buffer.Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
     BindVertexBuffer(index, buffer.Handle(), offset, size, stride);
+}
+
+void BufferCacheRuntime::BindRealignedVertices(u32 index, Buffer& buffer, u32 offset, u32 size,
+                                               u32 stride) {
+    const u32 count = (size + stride - 1) / stride;
+    const u32 aligned_stride = Common::AlignUp(stride, 4U);
+    const u32 aligned_size = count * aligned_stride;
+    const u64 tick = scheduler.CurrentTick();
+    const u64 buffer_id = buffer.Id();
+    const u64 generation = buffer.Generation();
+    u64 hash = buffer_id * 0x9E3779B97F4A7C15ull ^ offset ^ (u64{size} << 24) ^ stride;
+    hash *= 0xBF58476D1CE4E5B9ull;
+    RealignedVertices& entry = realigned_vertices[(hash >> 40) % realigned_vertices.size()];
+    if (entry.tick != tick || entry.buffer_id != buffer_id || entry.generation != generation ||
+        entry.offset != offset || entry.size != size || entry.stride != stride) {
+        // Staging memory of an earlier list may be recycled by now. Within one list, every draw
+        // of this stream shares one copy.
+        guest_vertices.resize(size);
+        device_memory.ReadBlockUnsafe(buffer.CpuAddr() + offset, guest_vertices.data(), size);
+        const StagingBufferRef upload = staging.Request(aligned_size, MemoryUsage::Upload);
+        u8* const dst = upload.mapped_span.data();
+        for (u32 vertex = 0; vertex < count; ++vertex) {
+            const u32 src_offset = vertex * stride;
+            const u32 bytes = std::min(stride, size - src_offset);
+            u8* const out = dst + static_cast<size_t>(vertex) * aligned_stride;
+            std::memcpy(out, guest_vertices.data() + src_offset, bytes);
+            std::memset(out + bytes, 0, aligned_stride - bytes);
+        }
+        entry = RealignedVertices{
+            .buffer_id = buffer_id,
+            .generation = generation,
+            .tick = tick,
+            .offset = offset,
+            .size = size,
+            .stride = stride,
+            .address = upload.buffer->GetGPUVirtualAddress() + upload.offset,
+        };
+        if (!logged_realign) {
+            logged_realign = true;
+            LOG_INFO(Render,
+                     "D3D12: vertex stream with offset {:#x} stride {} realigned to stride {} "
+                     "({} vertices)",
+                     offset, stride, aligned_stride, count);
+        }
+    }
+    pending_vertex[index] = D3D12_VERTEX_BUFFER_VIEW{
+        .BufferLocation = entry.address,
+        .SizeInBytes = aligned_size,
+        .StrideInBytes = aligned_stride,
+    };
+    pending_vertex_mask |= 1u << index;
+    last_vertex[index] = pending_vertex[index];
+    known_vertex_mask |= 1u << index;
 }
 
 void BufferCacheRuntime::BindVertexBuffer(u32 index, ID3D12Resource* buffer, u32 offset,
