@@ -16,12 +16,14 @@
 #include "video_core/renderer_d3d12/d3d12_staging_buffer_pool.h"
 #include "video_core/renderer_d3d12/d3d12_transfer_buffer_pool.h"
 #include "video_core/renderer_d3d12/d3d12_uniform_stream.h"
+#include "video_core/renderer_d3d12/d3d12_vertex_layout.h"
 
 namespace D3D12 {
 
 class CommandStream;
 class Scheduler;
 class BufferCacheRuntime;
+class VertexRealigner;
 class GuestDescriptorQueue;
 
 /// Opt-in regular SSE2 stores for short uploads, for subsequently created runtimes.
@@ -150,6 +152,15 @@ public:
 
     /// Where guest uniform, storage and texel buffer views go (set by the rasterizer).
     void SetDescriptorQueue(GuestDescriptorQueue* queue) noexcept { descriptor_queue = queue; }
+    /// Repacks the vertex streams the input assembler cannot fetch in place (set by the
+    /// rasterizer); without it they are bound in place.
+    void SetVertexRealigner(VertexRealigner* realigner) noexcept { vertex_realigner = realigner; }
+    /// Host placement of the vertex attributes of the pipeline whose streams are bound next; null
+    /// when every slot is fetched in place (GraphicsPipeline::Configure).
+    void SetVertexLayout(const VertexLayout* layout) noexcept { vertex_layout = layout; }
+    /// Slots bound to a repacked copy: the generic cache must offer them again on every draw,
+    /// for the copy to follow writes to its source.
+    [[nodiscard]] u32 RepackedVertexSlots() const noexcept { return repacked_vertex_slots; }
     /// The next constant buffer is a root CBV the shader reads past size (see
     /// GuestDescriptorQueue::ConstantBufferReach): streaming it pads the rest with zeros.
     [[nodiscard]] bool UniformNeedsPadding(u32 size) const;
@@ -293,10 +304,10 @@ public:
 private:
     /// Uploads indices to staging memory and binds them as a 32-bit or 16-bit index buffer.
     void BindRewrittenIndices(IndexRewriteCache::Entry& entry);
-    /// Binds a vertex stream whose offset or stride is not a multiple of 4 as a copy with the
-    /// stride rounded up to 4. The input assembler fetches 32-bit components at unaligned
-    /// addresses wrongly on some GPUs (giant triangles); every attribute offset stays the same.
-    void BindRealignedVertices(u32 index, Buffer& buffer, u32 offset, u32 size, u32 stride);
+    /// Binds the copy VertexRealigner makes of a stream the input assembler cannot fetch where
+    /// the guest put it; false when there is none (the stream is bound in place).
+    bool BindRepackedVertices(u32 index, Buffer& buffer, u32 offset, u32 size, u32 stride);
+    void SetVertexView(u32 index, const D3D12_VERTEX_BUFFER_VIEW& view) noexcept;
     [[nodiscard]] bool NeedsRestartRewrite(IndexFormat format) const noexcept;
     /// The out-of-range limit (exclusive, before the base vertex) the draw's indices must be
     /// rewritten with, 0 when they are all in range or the check is off. Reports bad ranges.
@@ -376,19 +387,10 @@ private:
     u64 recycle_hits{};
     u64 recycle_misses{};
     std::vector<u8> guest_indices;
-    /// Realigned vertex streams (BindRealignedVertices), valid for the tick they were uploaded in.
-    struct RealignedVertices {
-        u64 buffer_id{};
-        u64 generation{};
-        u64 tick{};
-        u32 offset{};
-        u32 size{};
-        u32 stride{};
-        D3D12_GPU_VIRTUAL_ADDRESS address{};
-    };
-    std::array<RealignedVertices, 64> realigned_vertices{};
-    std::vector<u8> guest_vertices;
-    bool logged_realign{};
+    VertexRealigner* vertex_realigner{};
+    const VertexLayout* vertex_layout{};
+    u32 repacked_vertex_slots{};
+    bool logged_unrepacked{};
     std::span<const u8> inline_indices;
     u32 vertex_limit{};
     s64 vertex_base{};

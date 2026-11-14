@@ -24,6 +24,7 @@
 #include "video_core/renderer_d3d12/d3d12_conditional_rendering.h"
 #include "video_core/renderer_d3d12/d3d12_query_cache.h"
 #include "video_core/renderer_d3d12/d3d12_stream_output.h"
+#include "video_core/renderer_d3d12/d3d12_vertex_realign.h"
 #include "video_core/renderer_d3d12/d3d12_tess_emulation.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_draw_hunt.h"
@@ -393,6 +394,7 @@ private:
     BlitImageHelper& blit_helper;
     IndirectArgumentRing indirect_args;
     StreamOutput stream_output;
+    VertexRealigner vertex_realigner;
     TessEmulation tess_emulation;
     std::vector<u32> indirect_words; ///< CPU part of the ExecuteIndirect records
     GuestDescriptorQueue descriptor_queue;

@@ -78,10 +78,15 @@ void FoldDepthBias(Key& key) {
 }
 
 /// Strides go in the vertex buffer views: the pipeline only sees them through how an attribute is
-/// fetched. A slot keeps its stride if dropping it would fetch one of its attributes differently.
+/// fetched. A slot keeps its stride if dropping it would fetch one of its attributes differently,
+/// or if its streams are repacked (VertexLayout plans from the stride).
 void FoldVertexStrides(Key& key) {
     auto& state = key.state;
     std::array<bool, Maxwell::NumVertexArrays> keep{};
+    const u32 repacked = MaxwellToD3D12::BuildVertexLayout(state).RepackMask();
+    for (size_t slot = 0; slot < keep.size(); ++slot) {
+        keep[slot] = ((repacked >> slot) & 1U) != 0;
+    }
     for (const auto& attribute : state.attributes) {
         if (attribute.enabled == 0) {
             continue;
