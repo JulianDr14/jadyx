@@ -20,6 +20,7 @@
 #include <winrt/Windows.Gaming.Input.h>
 #include <winrt/Windows.ApplicationModel.h>
 #include <winrt/Windows.Storage.h>
+#include <winrt/Windows.UI.Core.h>
 #include "common/logging.h"
 #include "jadyx/cheats/cheats_view.h"
 #include "jadyx/library/game_library.h"
@@ -86,8 +87,26 @@ public:
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         desc.BufferCount = 2;
         desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
-        winrt::check_hresult(factory->CreateSwapChainForCoreWindow(device.Get(),
-            static_cast<IUnknown*>(window), &desc, nullptr, &swapchain));
+        // The window may still be bound to the launch splash's swapchain: when a game fails to
+        // load at once, the splash is released just before this and DXGI lets the window go on
+        // this (the UI) thread's event pump. Pump and retry for up to a second.
+        HRESULT created = E_FAIL;
+        for (int attempt = 0; attempt < 40; ++attempt) {
+            created = factory->CreateSwapChainForCoreWindow(device.Get(),
+                static_cast<IUnknown*>(window), &desc, nullptr, &swapchain);
+            if (SUCCEEDED(created)) {
+                if (attempt > 0) {
+                    LOG_INFO(Frontend, "Library: window free after {} retries", attempt);
+                }
+                break;
+            }
+            winrt::Windows::UI::Core::CoreWindow core{nullptr};
+            winrt::copy_from_abi(core, window);
+            core.Dispatcher().ProcessEvents(
+                winrt::Windows::UI::Core::CoreProcessEventsOption::ProcessAllIfPresent);
+            ::Sleep(25);
+        }
+        winrt::check_hresult(created);
         ComPtr<ID2D1Factory1> d2d;
         winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
                                               IID_PPV_ARGS(&d2d)));
