@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "common/common_types.h"
+#include "jadyx/input/controller_basics.h"
 #include "jadyx/input/controller_style.h"
 #include "jadyx/input/motion_emu.h"
 #include "jadyx/input/right_stick_settings.h"
@@ -90,6 +91,13 @@ struct ControllerOptions {
 };
 ControllerOptions LoadControllerOptions();
 bool SaveControllerOptions(const ControllerOptions& options);
+/// Settings > Controller's style, A/B/X/Y and dead zone.
+[[nodiscard]] inline ControllerBasics ControllerBasicsOf(const ControllerOptions& options) {
+    return {options.style, options.swap_face_buttons, options.deadzone};
+}
+/// A game's own style, A/B/X/Y and dead zone (an unset field follows Settings > Controller).
+GameControllerBasics LoadGameControllerBasics(u64 program_id);
+bool SaveGameControllerBasics(u64 program_id, const GameControllerBasics& game);
 /// A game's own right stick settings (an unset field follows Settings > Controller).
 GameRightStick LoadGameRightStick(u64 program_id);
 bool SaveGameRightStick(u64 program_id, const GameRightStick& game);
@@ -140,6 +148,10 @@ public:
     void SetOptions(const ControllerOptions& options);
     /// The running game's own right stick settings, over the options' (not saved here).
     void SetGameRightStick(const GameRightStick& game);
+    /// This game's own style, A/B/X/Y and dead zone over Options(). A new style reconnects
+    /// player 1 at once, unless `reconnect` is false (at boot, where the settings already hold it).
+    void SetGameControllerBasics(const GameControllerBasics& game, bool reconnect = true);
+    [[nodiscard]] GameControllerBasics GameControllerBasicsSettings();
     [[nodiscard]] GameRightStick GameRightStickSettings();
     /// The running game's own rumble settings, over the options' (not saved here).
     void SetGameRumble(const GameRumble& game);
@@ -155,6 +167,8 @@ private:
     void Run(std::stop_token stop);
     /// The style the guest currently sees; in Auto, switches to one the game supports first.
     ConsoleControllerStyle SyncControllerStyle();
+    /// Options() with this game's own style, A/B/X/Y and dead zone: what the game plays with.
+    [[nodiscard]] ControllerOptions PlayedOptions();
 
     std::shared_ptr<InputCommon::VirtualGamepad> gamepad;
     std::shared_ptr<InputCommon::VirtualAmiibo> amiibo;
@@ -162,6 +176,7 @@ private:
     std::mutex options_mutex;
     ControllerOptions options;
     GameRightStick game_right_stick; // Guarded by options_mutex.
+    GameControllerBasics game_basics; // Guarded by options_mutex.
     GameMotion game_motion;          // Guarded by options_mutex.
     GameRumble game_rumble;          // Guarded by options_mutex.
     std::mutex motion_mutex;
