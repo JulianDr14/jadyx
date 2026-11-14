@@ -566,6 +566,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
             worker.join();
             // Still up when the boot ended before its renderer took the window; the library needs it.
             Jadyx::ReleaseLaunchSplash();
+            // DXGI unbinds the splash's swapchain from the window through this thread's events.
+            window.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
             if (choice.show_library) {
                 if (auto notice = LibraryNotice(boot_status.load())) {
                     library_error = std::move(*notice);
