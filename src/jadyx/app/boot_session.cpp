@@ -443,6 +443,13 @@ void GameSession::StartGpu() {
 void GameSession::PrepareGame() {
     program_id = system.GetApplicationProcessProgramID();
     ApplyGameGraphics(system, config, LoadGameGraphics(program_id));
+    // The game's own controller style replaces Settings' one boot applied, before any guest code.
+    const GameControllerBasics basics = LoadGameControllerBasics(program_id);
+    input.SetGameControllerBasics(basics, false);
+    if (basics.style && *basics.style != input.Options().style) {
+        ApplyControllerStyleSettings(*basics.style);
+        system.HIDCore().ReloadInputDevices();
+    }
     input.SetGameRightStick(LoadGameRightStick(program_id));
     input.SetMotion(LoadGameMotion(program_id));
     input.SetGameRumble(LoadGameRumble(program_id));

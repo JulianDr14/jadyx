@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include "jadyx/input/controller_basics.h"
 #include "jadyx/input/controller_style.h"
 #include "jadyx/input/motion_emu.h"
 #include "jadyx/input/right_stick_settings.h"
@@ -154,6 +155,11 @@ struct GameMenuSettings {
     /// Geometry hunt package: drop the triangles whose indices point past the vertex buffers
     /// (they would stretch to the model origin). Shown with the geo_hunt rows.
     bool geo_oob_fix{true};
+    /// Settings > Controller's style, A/B/X/Y and dead zone and this game's own, as the right
+    /// stick's (`right_stick_per_game` says whether there is a game). `style`,
+    /// `swap_face_buttons` and `deadzone` above are what they resolve to.
+    ControllerBasics controller_global{};
+    GameControllerBasics controller{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -488,12 +494,14 @@ private:
             return {Tr(GraphicsRowTitle(RowOf(item))),
                     GameGraphicsRowValue(settings.graphics_global, settings.graphics, RowOf(item)), Choice};
         case Style:
-            return {Tr(Text::ControllerSeenAs), Tr(ControllerStyleText(settings.style)), Choice};
+            return {Tr(Text::ControllerSeenAs), Tr(ControllerStyleText(settings.style)), Choice,
+                    BasicsDetail(settings.controller.style.has_value())};
         case FaceButtons:
             return {Tr(Text::FaceButtons), Tr(settings.swap_face_buttons ? Text::ByPosition : Text::ByLetter),
-                    Choice};
+                    Choice, BasicsDetail(settings.controller.swap_face_buttons.has_value())};
         case Deadzone:
-            return {Tr(Text::DeadZone), DeadzoneText(), Choice};
+            return {Tr(Text::DeadZone), DeadzoneText(), Choice,
+                    BasicsDetail(settings.controller.deadzone.has_value())};
         case RStickInvertX:
         case RStickInvertY:
         case RStickSensitivity:
@@ -651,20 +659,18 @@ private:
             return !settings.pulse_sessions || keep_session ? GameMenuResult::Library
                                                             : GameMenuResult::LibraryWithoutSession;
         case Style:
-            settings.style = StepConsoleControllerStyle(settings.style, back);
+            ChangeBasics(&ControllerBasics::style, &GameControllerBasics::style,
+                         StepConsoleControllerStyle(settings.style, back));
             UpdateGraphicsItems();
             return GameMenuResult::SettingsChanged;
         case FaceButtons:
-            settings.swap_face_buttons = !settings.swap_face_buttons;
+            ChangeBasics(&ControllerBasics::swap_face_buttons, &GameControllerBasics::swap_face_buttons,
+                         !settings.swap_face_buttons);
             return GameMenuResult::SettingsChanged;
-        case Deadzone: {
-            // Same three steps as the library panel.
-            constexpr float steps[] = {0.08f, 0.12f, 0.18f};
-            std::size_t i = settings.deadzone < 0.10f ? 0 : settings.deadzone < 0.15f ? 1 : 2;
-            i = back ? (i + 2) % 3 : (i + 1) % 3;
-            settings.deadzone = steps[i];
+        case Deadzone:
+            ChangeBasics(&ControllerBasics::deadzone, &GameControllerBasics::deadzone,
+                         StepDeadzone(settings.deadzone, back));
             return GameMenuResult::SettingsChanged;
-        }
         case RStickInvertX:
         case RStickInvertY:
         case RStickSensitivity:
@@ -783,6 +789,25 @@ private:
             game.mouse_sensitivity = GameOverride(stepped.mouse_sensitivity, global.mouse_sensitivity);
             break;
         }
+    }
+
+    /// Style, A/B/X/Y or dead zone set to `value`, as ChangeRightStick does: a game's own unless
+    /// it lands on Settings' value; without a game, Settings' value itself.
+    template <typename T>
+    void ChangeBasics(T ControllerBasics::*global_field, std::optional<T> GameControllerBasics::*game_field, T value) {
+        if (settings.right_stick_per_game)
+            settings.controller.*game_field = GameOverride(value, settings.controller_global.*global_field);
+        else
+            settings.controller_global.*global_field = value;
+        const ControllerBasics resolved = ResolveControllerBasics(settings.controller_global, settings.controller);
+        settings.style = resolved.style;
+        settings.swap_face_buttons = resolved.swap_face_buttons;
+        settings.deadzone = resolved.deadzone;
+    }
+
+    [[nodiscard]] std::wstring BasicsDetail(bool own) const {
+        if (!settings.right_stick_per_game) return {};
+        return Tr(own ? I18n::Text::MenuGraphicsOwn : I18n::Text::MenuGraphicsFollowsSettings);
     }
 
     GameMenuSettings settings;

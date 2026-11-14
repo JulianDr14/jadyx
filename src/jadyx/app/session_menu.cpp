@@ -176,6 +176,9 @@ void SessionMenu::Open() {
     input.SetMenuOpen(true);
     SetTextEntryActive(false); // The real keyboard drives the menu.
     const ControllerOptions options = input.Options();
+    const ControllerBasics basics_global = ControllerBasicsOf(options);
+    const GameControllerBasics basics_game = input.GameControllerBasicsSettings();
+    const ControllerBasics basics = ResolveControllerBasics(basics_global, basics_game);
     {
         const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
                                  std::chrono::steady_clock::now() - session_start)
@@ -195,8 +198,8 @@ void SessionMenu::Open() {
     if (!live) CaptureFrame();
     const SystemSettings system_settings = LoadSystemSettings();
     const GameMotion game_motion = input.Motion();
-    menu.emplace(GameMenuSettings{options.style, options.swap_face_buttons,
-                                  options.deadzone, g_can_fullscreen.load(),
+    menu.emplace(GameMenuSettings{basics.style, basics.swap_face_buttons,
+                                  basics.deadzone, g_can_fullscreen.load(),
                                   g_fullscreen.load(), system_settings.show_performance_stats,
                                   pulse_identity.has_value(),
                                   config.material_capture_menu, config.hunt_menu,
@@ -211,7 +214,7 @@ void SessionMenu::Open() {
                                   config.pso_menu,
                                   D3D12::GetPipelineBuildBoost(), options.motion_stick, options.motion_shake,
                                   options.rumble, input.GameRumbleSettings(),
-                                  VideoCommon::GeoHunt::OobFix()},
+                                  VideoCommon::GeoHunt::OobFix(), basics_global, basics_game},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
     const bool from_notice = notice_shown;
@@ -612,11 +615,18 @@ void SessionMenu::Close(GameMenuResult result) {
 
 void SessionMenu::ApplyChoice(GameMenuResult result) {
     if (result == GameMenuResult::SettingsChanged) {
-        ControllerOptions options = input.Options();
-        options.style = menu->Settings().style;
-        options.swap_face_buttons = menu->Settings().swap_face_buttons;
-        options.deadzone = menu->Settings().deadzone;
-        input.SetOptions(options);
+        const GameMenuSettings& settings = menu->Settings();
+        if (settings.right_stick_per_game) {
+            if (!SaveGameControllerBasics(program_id, settings.controller))
+                WriteDiag("menu: controller settings could not be saved");
+            input.SetGameControllerBasics(settings.controller);
+        } else {
+            ControllerOptions options = input.Options();
+            options.style = settings.controller_global.style;
+            options.swap_face_buttons = settings.controller_global.swap_face_buttons;
+            options.deadzone = settings.controller_global.deadzone;
+            input.SetOptions(options);
+        }
     }
     if (result == GameMenuResult::RightStickChanged) {
         const GameMenuSettings& settings = menu->Settings();
