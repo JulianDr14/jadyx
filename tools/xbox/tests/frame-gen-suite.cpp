@@ -24,6 +24,7 @@
 #undef main
 
 #include <cstdarg>
+#include <thread>
 
 namespace {
 
@@ -851,6 +852,473 @@ void GpuSuite(const Device& device, Scheduler& scheduler, const ShaderCompiler& 
 }
 
 // ---------------------------------------------------------------------------------------------
+// GPU: a game-like scene under camera motion
+// ---------------------------------------------------------------------------------------------
+
+/// The camera of a third-person game: on a tiled ground among pillars and thin poles, a skyline
+/// far away. The character and the HUD are drawn in screen space and stay put.
+struct Pose {
+    double x{};     ///< metres
+    double z{};
+    double yaw{};   ///< degrees
+    double pitch{};
+};
+
+Pose Mix(const Pose& a, const Pose& b, double t) {
+    return {a.x + t * (b.x - a.x), a.z + t * (b.z - a.z), a.yaw + t * (b.yaw - a.yaw),
+            a.pitch + t * (b.pitch - a.pitch)};
+}
+
+struct Rgb {
+    double r{};
+    double g{};
+    double b{};
+};
+
+Rgb Mix(const Rgb& a, const Rgb& b, double t) {
+    return {a.r + t * (b.r - a.r), a.g + t * (b.g - a.g), a.b + t * (b.b - a.b)};
+}
+
+double Hash2(s64 x, s64 y) {
+    return Noise(static_cast<u64>(x) * 0x1F123BB5ULL ^
+                 (static_cast<u64>(y) * 0x9E3779B1ULL + 0x7F4A7C15ULL));
+}
+
+double Frac(double x) {
+    return x - std::floor(x);
+}
+
+double ValueNoise(double x, double y) {
+    const double ix = std::floor(x);
+    const double iy = std::floor(y);
+    double fx = x - ix;
+    double fy = y - iy;
+    fx = fx * fx * (3.0 - 2.0 * fx);
+    fy = fy * fy * (3.0 - 2.0 * fy);
+    const s64 cx = static_cast<s64>(ix);
+    const s64 cy = static_cast<s64>(iy);
+    const double top = Hash2(cx, cy) + fx * (Hash2(cx + 1, cy) - Hash2(cx, cy));
+    const double bottom = Hash2(cx, cy + 1) + fx * (Hash2(cx + 1, cy + 1) - Hash2(cx, cy + 1));
+    return top + fy * (bottom - top);
+}
+
+struct Pillar {
+    double x;
+    double z;
+    double radius;
+    double height;
+    double tone;
+};
+
+std::vector<Pillar> Pillars() {
+    std::vector<Pillar> pillars;
+    for (u64 i = 0; i < 44; ++i) {
+        const double angle = 6.283185307179586 * Noise(i * 7 + 1);
+        const double distance = 4.0 + 28.0 * Noise(i * 7 + 2);
+        const bool pole = i % 4 == 0;
+        pillars.push_back({distance * std::sin(angle), distance * std::cos(angle),
+                           pole ? 0.05 : 0.15 + 0.4 * Noise(i * 7 + 3),
+                           pole ? 4.5 : 1.5 + 4.0 * Noise(i * 7 + 4), 60.0 + 150.0 * Noise(i * 7 + 5)});
+    }
+    return pillars;
+}
+
+constexpr double FOCAL = 1108.5; ///< 60 degrees across 1280 units
+constexpr double EYE = 1.6;
+constexpr double PI = 3.141592653589793;
+
+struct View {
+    double x;
+    double z;
+    double cy;
+    double sy;
+    double cp;
+    double sp;
+};
+
+/// The world along the ray through (u, v), units from the screen's centre, v up.
+Rgb World(const std::vector<Pillar>& pillars, const View& c, double u, double v) {
+    const double y1 = v * c.cp + FOCAL * c.sp;
+    const double z1 = FOCAL * c.cp - v * c.sp;
+    double wx = u * c.cy + z1 * c.sy;
+    double wz = z1 * c.cy - u * c.sy;
+    double wy = y1;
+    const double norm = 1.0 / std::sqrt(wx * wx + wy * wy + wz * wz);
+    wx *= norm;
+    wy *= norm;
+    wz *= norm;
+    double best = 1e30;
+    int hit = -1;
+    if (wy < -1e-4) {
+        best = EYE / -wy;
+        hit = -2;
+    }
+    const double a = wx * wx + wz * wz;
+    for (size_t i = 0; i < pillars.size(); ++i) {
+        const Pillar& p = pillars[i];
+        const double ox = c.x - p.x;
+        const double oz = c.z - p.z;
+        const double b = ox * wx + oz * wz;
+        const double disc = b * b - a * (ox * ox + oz * oz - p.radius * p.radius);
+        if (disc <= 0.0) continue;
+        const double t = (-b - std::sqrt(disc)) / a;
+        if (t <= 0.0 || t >= best) continue;
+        const double y = EYE + t * wy;
+        if (y < 0.0 || y > p.height) continue;
+        best = t;
+        hit = static_cast<int>(i);
+    }
+    const Rgb haze{178.0, 190.0, 205.0};
+    Rgb color;
+    if (hit == -1) {
+        const double az = std::atan2(wx, wz);
+        const double el = wy / std::sqrt(a);
+        const s64 cell = static_cast<s64>(std::floor(az / 0.04));
+        if (el < 0.03 + 0.13 * Hash2(cell, 17)) {
+            const double tone = 60.0 + 70.0 * Hash2(cell, 3);
+            const double wa = Frac(az / 0.01);
+            const double we = Frac(el / 0.012);
+            const bool window = wa > 0.25 && wa < 0.75 && we > 0.3 && we < 0.7;
+            const bool lit = Hash2(static_cast<s64>(std::floor(az / 0.01)),
+                                   static_cast<s64>(std::floor(el / 0.012))) > 0.6;
+            const double value = window ? (lit ? 215.0 : tone * 0.5) : tone;
+            color = {value, value * 0.95, value * 0.85};
+        } else {
+            const double value = 150.0 + 50.0 * el + 45.0 * ValueNoise(az * 5.0, el * 12.0);
+            color = {value * 0.85, value * 0.93, std::min(255.0, value * 1.08)};
+        }
+        return color;
+    }
+    if (hit == -2) {
+        const double gx = c.x + best * wx;
+        const double gz = c.z + best * wz;
+        const double tx = std::floor(gx);
+        const double tz = std::floor(gz);
+        double tone = 95.0 + 55.0 * Hash2(static_cast<s64>(tx), static_cast<s64>(tz));
+        if (gx - tx < 0.05 || gz - tz < 0.05) tone = 45.0;
+        tone += 14.0 * (ValueNoise(gx * 9.0, gz * 9.0) - 0.5);
+        // Far tiles are a few units deep: their detail fades as a mip chain would.
+        const double fade = std::clamp(FOCAL * EYE / (best * best) / 3.0, 0.0, 1.0);
+        tone = 110.0 + (tone - 110.0) * fade;
+        color = {tone * 0.95, tone, tone * 0.8};
+    } else {
+        const Pillar& p = pillars[hit];
+        const double th = std::atan2(c.x + best * wx - p.x, c.z + best * wz - p.z);
+        const double y = EYE + best * wy;
+        double tone = p.tone * (0.55 + 0.45 * std::cos(th - 0.8));
+        if (Frac(th * 4.0 / PI) >= 0.5) tone *= 0.72;
+        if (Frac(y * 1.2) < 0.12) tone *= 0.4;
+        color = {tone, tone * 0.92, tone * 0.85};
+    }
+    return Mix(color, haze, 1.0 - std::exp(-best / 70.0));
+}
+
+/// The character: seen from behind, screen centre. x, y in 1280x720 units, y down.
+bool Character(double x, double y, Rgb* color, double grow = 0.0) {
+    const auto ellipse = [&](double rx, double ry) {
+        const double ex = (x - 640.0) / rx;
+        const double ey = (y - 520.0) / ry;
+        return ex * ex + ey * ey <= 1.0;
+    };
+    const auto head = [&](double r) {
+        return (x - 640.0) * (x - 640.0) + (y - 352.0) * (y - 352.0) <= r * r;
+    };
+    if (!ellipse(62.0 + grow, 135.0 + grow) && !head(36.0 + grow)) return false;
+    if (color == nullptr) return true;
+    const bool body = ellipse(57.0, 130.0);
+    if (!body && !head(31.0)) {
+        *color = {20.0, 20.0, 24.0};
+    } else if (!body) {
+        *color = {215.0, 170.0, 140.0};
+    } else if (std::abs(x - 640.0) < 3.0) {
+        *color = {30.0, 30.0, 30.0};
+    } else {
+        *color = Frac(y / 18.0) < 0.5 ? Rgb{180.0, 40.0, 40.0} : Rgb{230.0, 220.0, 210.0};
+    }
+    return true;
+}
+
+bool Glyph(double x, double y, double x0, double y0, double x1, double y1, s64 salt) {
+    if (x < x0 || x >= x1 || y < y0 || y >= y1) return false;
+    const s64 column = static_cast<s64>(std::floor((x - x0) / 2.5));
+    // A blank column between the letters.
+    return column % 5 != 4 &&
+           Hash2(column, static_cast<s64>(std::floor((y - y0) / 2.5)) + salt * 131) > 0.45;
+}
+
+/// The HUD: a health bar, a line of text over the game, a translucent minimap and a translucent
+/// panel with text. Returns its opacity.
+double Hud(double x, double y, Rgb* color) {
+    if (x >= 40.0 && x < 300.0 && y >= 30.0 && y < 54.0) {
+        const bool border = x < 43.0 || x >= 297.0 || y < 33.0 || y >= 51.0;
+        *color = border || Frac((x - 43.0) / 26.0) >= 0.85 ? Rgb{15.0, 15.0, 15.0}
+                                                          : Rgb{60.0, 220.0, 90.0};
+        return 1.0;
+    }
+    if (Glyph(x, y, 980.0, 30.0, 1240.0, 45.0, 1)) {
+        *color = {240.0, 240.0, 240.0};
+        return 1.0;
+    }
+    const double map = std::hypot(x - 1170.0, y - 610.0);
+    if (map <= 72.0) {
+        if (map > 67.0) {
+            *color = {235.0, 235.0, 235.0};
+            return 1.0;
+        }
+        if (map < 6.0) {
+            *color = {250.0, 220.0, 40.0};
+            return 1.0;
+        }
+        *color = Frac(x / 18.0) < 0.08 || Frac(y / 18.0) < 0.08 ? Rgb{90.0, 130.0, 190.0}
+                                                                : Rgb{20.0, 35.0, 70.0};
+        return 0.6;
+    }
+    if (x >= 30.0 && x < 330.0 && y >= 590.0 && y < 690.0) {
+        for (s64 row = 0; row < 3; ++row) {
+            if (Glyph(x, y, 44.0, 604.0 + 24.0 * row, 300.0, 616.5 + 24.0 * row, 2 + row)) {
+                *color = {240.0, 240.0, 240.0};
+                return 1.0;
+            }
+        }
+        *color = {0.0, 0.0, 0.0};
+        return 0.5;
+    }
+    return 0.0;
+}
+
+/// Where a pixel is, for the error split: 2 the HUD and the 12 units around it, 1 the 55 units
+/// around the character (where the scenery passes behind it), 3 the character, 0 the scenery.
+int Zone(double x, double y) {
+    const bool hud = (x >= 28.0 && x < 312.0 && y >= 18.0 && y < 66.0) ||
+                     (x >= 968.0 && x < 1252.0 && y >= 18.0 && y < 57.0) ||
+                     std::hypot(x - 1170.0, y - 610.0) <= 84.0 ||
+                     (x >= 18.0 && x < 342.0 && y >= 578.0 && y < 702.0);
+    if (hud) return 2;
+    if (Character(x, y, nullptr)) return 3;
+    return Character(x, y, nullptr, 55.0) ? 1 : 0;
+}
+
+void ParallelRows(u32 height, const std::function<void(u32, u32)>& rows) {
+    const u32 count = std::max(1U, std::thread::hardware_concurrency());
+    std::vector<std::thread> pool;
+    for (u32 t = 0; t < count; ++t) {
+        pool.emplace_back(rows, height * t / count, height * (t + 1) / count);
+    }
+    for (std::thread& thread : pool) thread.join();
+}
+
+/// The game's frame from pose: four samples per pixel.
+Picture RenderGame(const std::vector<Pillar>& pillars, const Pose& pose, u32 width, u32 height) {
+    Picture image{width, height, std::vector<u8>(static_cast<size_t>(width) * height * 4)};
+    const double s = width / BASE_WIDTH;
+    const double yaw = pose.yaw * PI / 180.0;
+    const double pitch = pose.pitch * PI / 180.0;
+    const View view{pose.x, pose.z, std::cos(yaw), std::sin(yaw), std::cos(pitch), std::sin(pitch)};
+    ParallelRows(height, [&](u32 from, u32 to) {
+        for (u32 y = from; y < to; ++y) {
+            for (u32 x = 0; x < width; ++x) {
+                Rgb sum;
+                for (u32 i = 0; i < 4; ++i) {
+                    const double px = (x + 0.25 + 0.5 * (i % 2)) / s;
+                    const double py = (y + 0.25 + 0.5 * (i / 2)) / s;
+                    Rgb color;
+                    if (!Character(px, py, &color)) {
+                        color = World(pillars, view, px - 640.0, 360.0 - py);
+                    }
+                    Rgb hud;
+                    const double alpha = Hud(px, py, &hud);
+                    if (alpha > 0.0) color = Mix(color, hud, alpha);
+                    sum.r += color.r;
+                    sum.g += color.g;
+                    sum.b += color.b;
+                }
+                u8* p = &image.rgba[(static_cast<size_t>(y) * width + x) * 4];
+                p[0] = static_cast<u8>(std::clamp(sum.r * 0.25, 0.0, 255.0));
+                p[1] = static_cast<u8>(std::clamp(sum.g * 0.25, 0.0, 255.0));
+                p[2] = static_cast<u8>(std::clamp(sum.b * 0.25, 0.0, 255.0));
+                p[3] = 255;
+            }
+        }
+    });
+    return image;
+}
+
+struct ZoneError {
+    double error{}; ///< mean absolute luma difference
+    double bad{};   ///< share of the pixels off by more than 40 luma
+    double halo{};  ///< mean difference around the character
+    double hud{};   ///< mean difference on and around the HUD
+};
+
+ZoneError Compare(const Picture& out, const Picture& truth) {
+    const double s = out.width / BASE_WIDTH;
+    double sum = 0.0;
+    double bad = 0.0;
+    std::array<double, 4> zone_sum{};
+    std::array<double, 4> zone_count{};
+    for (u32 y = 0; y < out.height; ++y) {
+        for (u32 x = 0; x < out.width; ++x) {
+            const size_t i = (static_cast<size_t>(y) * out.width + x) * 4;
+            const double d = std::abs(Luma(&out.rgba[i]) - Luma(&truth.rgba[i]));
+            const int zone = Zone((x + 0.5) / s, (y + 0.5) / s);
+            sum += d;
+            bad += d > 40.0 ? 1.0 : 0.0;
+            zone_sum[zone] += d;
+            zone_count[zone] += 1.0;
+        }
+    }
+    const double pixels = static_cast<double>(out.width) * out.height;
+    return {sum / pixels, bad / pixels, zone_sum[1] / zone_count[1], zone_sum[2] / zone_count[2]};
+}
+
+void WriteBmp(const std::string& path, const Picture& image) {
+    const u32 row = (image.width * 3 + 3) & ~3U;
+    const u32 size = 54 + row * image.height;
+    std::vector<u8> file(size);
+    const auto put = [&](u32 at, u32 value, u32 bytes) {
+        for (u32 i = 0; i < bytes; ++i) file[at + i] = static_cast<u8>(value >> (8 * i));
+    };
+    file[0] = 'B';
+    file[1] = 'M';
+    put(2, size, 4);
+    put(10, 54, 4);
+    put(14, 40, 4);
+    put(18, image.width, 4);
+    put(22, image.height, 4);
+    put(26, 1, 2);
+    put(28, 24, 2);
+    put(34, row * image.height, 4);
+    for (u32 y = 0; y < image.height; ++y) {
+        u8* line = &file[54 + static_cast<size_t>(image.height - 1 - y) * row];
+        for (u32 x = 0; x < image.width; ++x) {
+            const u8* p = &image.rgba[(static_cast<size_t>(y) * image.width + x) * 4];
+            line[x * 3] = p[2];
+            line[x * 3 + 1] = p[1];
+            line[x * 3 + 2] = p[0];
+        }
+    }
+    if (FILE* const out = std::fopen(path.c_str(), "wb")) {
+        std::fwrite(file.data(), 1, file.size(), out);
+        std::fclose(out);
+    }
+}
+
+struct CameraCase {
+    const char* name;
+    const char* tag; ///< dump file prefix
+    u32 width;
+    u32 height;
+    Pose step;       ///< the camera's move per game frame
+    bool starts{};   ///< the move begins on this pair: the frame before it is still
+    std::vector<float> phases;
+};
+
+/// Pass: under 1% of the pixels off by more than 40 luma (a crossfade of these pairs has 5-25%),
+/// and the mean error, the error around the character and the error on the HUD each under a third
+/// of the crossfade's (the HUD: under 1.0, a crossfade leaves it almost whole).
+void CameraRun(const Device& device, Scheduler& scheduler, const ShaderCompiler& compiler,
+               DescriptorRing& ring, SamplerHeap& samplers, Runner& runner,
+               const std::vector<Pillar>& pillars, const CameraCase& c, const char* dump,
+               ZoneError& total, u32& total_count, Tally& tally) {
+    FrameGen fg{device, scheduler, compiler, ring, samplers, runner.Fence(), c.width, c.height};
+    Harness harness{device, scheduler, runner, c.width, c.height};
+    u64 vsync = 600;
+    double time = 50.0;
+    Activate(fg, vsync, time);
+    const Pose pose_a{0.3, -0.4, 20.0, -2.0};
+    const Pose pose_b = Mix(pose_a, {pose_a.x + c.step.x, pose_a.z + c.step.z,
+                                     pose_a.yaw + c.step.yaw, pose_a.pitch + c.step.pitch}, 1.0);
+    const Pose before = c.starts ? pose_a : Mix(pose_a, pose_b, -1.0);
+    const Picture a = RenderGame(pillars, pose_a, c.width, c.height);
+    const Picture b = RenderGame(pillars, pose_b, c.width, c.height);
+    harness.Ingest(fg, harness.Upload(RenderGame(pillars, before, c.width, c.height)), vsync);
+    const u32 slot_a = harness.Ingest(fg, harness.Upload(a), vsync + 3);
+    const u32 slot_b = harness.Ingest(fg, harness.Upload(b), vsync + 6);
+    std::vector<std::string> fails;
+    for (const float phase : c.phases) {
+        const Picture out = harness.Output(fg, Blend(slot_a, slot_b, phase));
+        const Picture truth = RenderGame(pillars, Mix(pose_a, pose_b, phase), c.width, c.height);
+        const ZoneError e = Compare(out, truth);
+        const ZoneError fade = Compare(Crossfade(a, b, phase), truth);
+        std::vector<std::string> here;
+        if (e.bad > 0.01) here.push_back("ghosts/tears");
+        if (e.error > fade.error / 3.0) here.push_back("image error");
+        if (e.halo > fade.halo / 3.0) here.push_back("character halo");
+        if (e.hud > 1.0) here.push_back("HUD");
+        std::printf("  %-34s %4ux%-4u phase %.2f: error %5.2f (fade %5.2f), bad px %6.3f%% (fade "
+                    "%6.3f%%), halo %5.2f (fade %5.2f), HUD %5.2f (fade %5.2f)  %s\n",
+                    c.name, c.width, c.height, phase, e.error, fade.error, 100.0 * e.bad,
+                    100.0 * fade.bad, e.halo, fade.halo, e.hud, fade.hud,
+                    here.empty() ? "PASS" : "FAIL");
+        for (const std::string& h : here) fails.push_back(Format("phase %.2f ", phase) + h);
+        total.error += e.error;
+        total.bad += e.bad;
+        total.halo += e.halo;
+        total.hud += e.hud;
+        ++total_count;
+        if (dump != nullptr) {
+            const std::string base =
+                Format("%s/%s_%02d", dump, c.tag, static_cast<int>(phase * 100.0f + 0.5f));
+            WriteBmp(base + "_out.bmp", out);
+            WriteBmp(base + "_truth.bmp", truth);
+            for (u32 view = 1; view <= 4; ++view) {
+                SetFrameGenDebugView(view);
+                WriteBmp(base + (view == 1   ? "_vec.bmp"
+                                : view == 2 ? "_field.bmp"
+                                : view == 3 ? "_still.bmp"
+                                            : "_cost.bmp"),
+                         harness.Output(fg, Blend(slot_a, slot_b, phase)));
+            }
+            SetFrameGenDebugView(0);
+        }
+    }
+    scheduler.Finish();
+    tally.Add(std::string{"GPU camera "} + c.name, fails);
+}
+
+void CameraSuite(const Device& device, Scheduler& scheduler, const ShaderCompiler& compiler,
+                 DescriptorRing& ring, SamplerHeap& samplers, Runner& runner, const char* dump,
+                 Tally& tally) {
+    const float third = 1.0f / 3.0f;
+    const float two_thirds = 2.0f / 3.0f;
+    // Per game frame: metres sideways (x) and forward (z), degrees of yaw and pitch.
+    const std::vector<CameraCase> cases{
+        {"20->30 look 2 deg", "look2", 1920, 1080, {0.0, 0.0, 2.0, 0.0}, false, {third, two_thirds}},
+        {"20->30 turn 5 deg", "turn5", 1920, 1080, {0.0, 0.0, 5.0, 0.0}, false, {third, two_thirds}},
+        {"20->30 turn 9 deg (fast)", "turn9", 1920, 1080, {0.0, 0.0, 9.0, 0.0}, false,
+         {third, two_thirds}},
+        {"20->30 turn 5 deg, pitch 2", "diag", 1920, 1080, {0.0, 0.0, 5.0, 2.0}, false,
+         {third, two_thirds}},
+        {"20->30 turn 5 deg begins", "begin", 1920, 1080, {0.0, 0.0, 5.0, 0.0}, true,
+         {third, two_thirds}},
+        {"20->30 walk 0.25 m", "walk", 1920, 1080, {0.0, 0.25, 0.0, 0.0}, false,
+         {third, two_thirds}},
+        {"20->30 strafe 0.2 m", "strafe", 1920, 1080, {0.2, 0.0, 0.0, 0.0}, false,
+         {third, two_thirds}},
+        {"20->30 walk 0.2 m, turn 3 deg", "walkturn", 1920, 1080, {0.0, 0.2, 3.0, 0.0}, false,
+         {third, two_thirds}},
+        {"15->30 turn 6.7 deg", "turn15", 1920, 1080, {0.0, 0.0, 6.7, 0.0}, false, {0.5f}},
+        {"15->30 walk 0.27 m, turn 4 deg", "walkturn15", 1920, 1080, {0.0, 0.27, 4.0, 0.0}, false,
+         {0.5f}},
+        {"4K 20->30 walk 0.2 m, turn 3 deg", "walkturn4k", 3840, 2160, {0.0, 0.2, 3.0, 0.0}, false,
+         {third, two_thirds}},
+    };
+    std::printf("\nGPU CAMERA (a third-person scene: tiled ground, pillars and poles, a skyline; "
+                "the character and the HUD stay put; error in luma, 0-255)\n");
+    SetFrameGenMode(FrameGenMode::Target30);
+    const std::vector<Pillar> pillars = Pillars();
+    ZoneError total;
+    u32 count = 0;
+    for (const CameraCase& c : cases) {
+        CameraRun(device, scheduler, compiler, ring, samplers, runner, pillars, c, dump, total,
+                  count, tally);
+    }
+    std::printf("  CAMERA MEAN: error %.3f, bad px %.3f%%, halo %.3f, HUD %.3f\n",
+                total.error / count, 100.0 * total.bad / count, total.halo / count,
+                total.hud / count);
+}
+
+// ---------------------------------------------------------------------------------------------
 // GPU timing
 // ---------------------------------------------------------------------------------------------
 
@@ -949,10 +1417,14 @@ int main(int argc, char** argv) try {
     const bool perf = argc > 1 && std::string{argv[1]} == "perf";
     // "gpu": the GPU cases alone.
     const bool gpu_only = argc > 1 && std::string{argv[1]} == "gpu";
+    // "camera [folder]": the camera cases alone; with a folder, every output and the frame it
+    // should be are written there (BMP).
+    const bool camera_only = argc > 1 && std::string{argv[1]} == "camera";
+    const char* const dump = camera_only && argc > 2 ? argv[2] : nullptr;
     Common::Log::Initialize();
     Tally tally;
     if (!perf) {
-        if (!gpu_only) {
+        if (!gpu_only && !camera_only) {
             PacerSuite(tally);
             CpuPerf();
         }
@@ -976,7 +1448,10 @@ int main(int argc, char** argv) try {
         scheduler.Finish();
         return 0;
     }
-    GpuSuite(device, scheduler, compiler, ring, samplers, runner, tally);
+    if (!camera_only) {
+        GpuSuite(device, scheduler, compiler, ring, samplers, runner, tally);
+    }
+    CameraSuite(device, scheduler, compiler, ring, samplers, runner, dump, tally);
     scheduler.Finish();
     tally.Add("debug layer", DebugErrors(messages.Get())
                                  ? std::vector<std::string>{"debug layer errors"}
