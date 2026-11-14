@@ -784,6 +784,8 @@ void RasterizerD3D12::RecordTessellatedDraw(GraphicsPipeline& pipeline,
         command_state.root_args.valid = false;
         buffer_runtime.InvalidateGeometry();
     }
+    // The emulation's topologies are tracked in command_state.topology: not another pass's writes.
+    command_state.writes_seen = cmd->GraphicsWrites();
 }
 
 u32 RasterizerD3D12::TessIndexSlots() const {

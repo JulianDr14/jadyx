@@ -404,6 +404,9 @@ private:
     struct CommandListState {
         bool valid{};
         bool heaps_bound{};
+        /// CommandStream::GraphicsWrites() after the rasterizer's last own writes: a different
+        /// count means another pass changed the root signature, targets, viewport or topology.
+        u64 writes_seen{};
         ID3D12RootSignature* graphics_root{};
         std::array<SIZE_T, VideoCommon::NUM_RT> color_targets{};
         u32 num_color_targets{};
