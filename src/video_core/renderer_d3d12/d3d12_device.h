@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 
 #include <d3d12.h>
@@ -244,6 +245,8 @@ private:
     bool unaligned_block_textures{};
     ComPtr<ID3D12InfoQueue> info_queue; ///< debug layer only
     u32 debug_messages_logged{};
+    /// Debug layer messages seen per ID: one repeated message must not use up the limit.
+    std::unordered_map<u32, u64> debug_message_counts;
     u64 null_rtv_format_reports{};
     std::atomic_flag removal_reported;
     ComPtr<ID3D12CommandQueue> queue;

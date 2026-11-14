@@ -112,6 +112,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
       sampler_heap{sampler_heap_}, blit_helper{blit_helper_},
       indirect_args{device, scheduler_, staging},
       stream_output{device, scheduler_, compiler},
+      vertex_realigner{device, scheduler_, compiler, staging},
       tess_emulation{device, scheduler_, compiler},
       descriptor_queue{device.Get(), descriptor_ring_},
       buffer_cache{device_memory_, buffer_runtime_}, texture_cache{texture_runtime, device_memory_},
@@ -124,6 +125,7 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
       fence_manager{*this, gpu_, texture_cache, buffer_cache, query_cache, scheduler_},
       draw_hunt{device, scheduler_}, glitch_hunt{device, scheduler_, staging} {
     buffer_runtime.SetDescriptorQueue(&descriptor_queue);
+    buffer_runtime.SetVertexRealigner(&vertex_realigner);
     scheduler.RegisterOnReset([this] { InvalidateCommandListState(); });
     LOG_INFO(Render, "D3D12: rasterizer active (draws, clears, caches, DMA and pipelines)");
 }
@@ -142,6 +144,8 @@ RasterizerD3D12::~RasterizerD3D12() {
     } catch (...) {
     }
     buffer_runtime.SetDescriptorQueue(nullptr);
+    buffer_runtime.SetVertexRealigner(nullptr);
+    buffer_runtime.SetVertexLayout(nullptr);
 }
 
 bool RasterizerD3D12::WaitPendingPipeline(GraphicsPipeline* pipeline, u32 vertices,
@@ -784,6 +788,8 @@ void RasterizerD3D12::RecordTessellatedDraw(GraphicsPipeline& pipeline,
         command_state.root_args.valid = false;
         buffer_runtime.InvalidateGeometry();
     }
+    // The emulation's topologies are tracked in command_state.topology: not another pass's writes.
+    command_state.writes_seen = cmd->GraphicsWrites();
 }
 
 u32 RasterizerD3D12::TessIndexSlots() const {
@@ -1615,6 +1621,7 @@ void RasterizerD3D12::TickFrame() {
         pipeline_cache.TickResidency(snapshot, scheduler);
         texture_cache.TickFrame();
         buffer_cache.TickFrame();
+        vertex_realigner.TickFrame();
     }
 }
 bool RasterizerD3D12::AccelerateSurfaceCopy(const Tegra::Engines::Fermi2D::Surface& src,

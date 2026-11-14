@@ -1909,16 +1909,20 @@ void RasterizerD3D12::TraceDraw(std::string_view what, const GraphicsPipeline* p
                                 static_cast<u32>(attrib.size.Value()),
                                 static_cast<u32>(attrib.type.Value()),
                                 attrib.constant ? " const" : "");
-            const u32 stride = key.state.vertex_strides[baked.buffer];
+            const VertexLayout* const vertex_layout = pipeline->VertexInputLayout();
+            const u32 stride = vertex_layout ? vertex_layout->HostStride(baked.buffer)
+                                             : key.state.vertex_strides[baked.buffer];
+            const u32 offset = vertex_layout ? vertex_layout->HostOffset(static_cast<u32>(i))
+                                             : static_cast<u32>(baked.offset);
             const auto fetch = MaxwellToD3D12::SplitAttributeFetch(
-                baked.Type(), baked.Size(), baked.offset, stride);
+                baked.Type(), baked.Size(), offset, stride);
             const auto requested_format = fetch.parts > 1 ? fetch.part_format
                 : MaxwellToD3D12::VertexFormat(baked.Type(), baked.Size());
             const auto format = requested_format == DXGI_FORMAT_UNKNOWN
                 ? DXGI_FORMAT_R32G32B32A32_FLOAT : requested_format;
             line += fmt::format(" fetch{}[dxgi={} fallback={} offset={} stride={} divisor={} parts={} bytes={}]",
                                 i, static_cast<u32>(format), requested_format == DXGI_FORMAT_UNKNOWN,
-                                baked.offset, stride,
+                                offset, stride,
                                 key.state.binding_divisors[baked.buffer], fetch.parts, fetch.part_bytes);
         }
         const auto& ps_info = pipeline->StageInfo(4);

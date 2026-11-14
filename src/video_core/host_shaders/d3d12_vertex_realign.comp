@@ -1,0 +1,67 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Vertex stream repack for the D3D12 renderer (VertexRealigner): copies a guest vertex stream into
+// memory the input assembler can fetch. Maxwell fetches attributes at any byte; D3D12 needs them
+// aligned to min(4, size). One invocation writes one destination dword: dword w of vertex v holds
+// the 4 source bytes at shift + v * src_stride + map[w] (4 * w without a map, zero for a map entry
+// of ~0), counted from the 4-aligned base the source is bound at.
+
+#version 460 core
+
+layout(local_size_x = 64) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Source {
+    uint src[];
+};
+
+layout(std430, set = 0, binding = 1) writeonly buffer Destination {
+    uint dst[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer Map {
+    uint map[];
+};
+
+layout(push_constant) uniform Params {
+    uint shift;            // bound offset & 3
+    uint src_words;        // source dwords readable from the base
+    uint src_stride;       // guest stride, 0 for one vertex
+    uint words_per_vertex; // destination dwords per vertex
+    uint total_words;      // destination dwords
+    uint map_words;        // 0: dword w reads source bytes 4w..4w+3
+    uint row_words;        // invocations per row of groups (more than 65535 groups)
+};
+
+uint LoadWord(uint index) {
+    return index < src_words ? src[index] : 0u;
+}
+
+// Four bytes from any byte address of the source, little endian.
+uint LoadBytes(uint byte_address) {
+    const uint index = byte_address >> 2;
+    const uint bit = (byte_address & 3u) * 8u;
+    const uint low = LoadWord(index);
+    if (bit == 0u) {
+        return low;
+    }
+    return (low >> bit) | (LoadWord(index + 1u) << (32u - bit));
+}
+
+void main() {
+    const uint index = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * row_words;
+    if (index >= total_words) {
+        return;
+    }
+    const uint vertex = index / words_per_vertex;
+    const uint word = index - vertex * words_per_vertex;
+    uint source = word * 4u;
+    if (map_words != 0u) {
+        source = map[word];
+        if (source == 0xFFFFFFFFu) {
+            dst[index] = 0u;
+            return;
+        }
+    }
+    dst[index] = LoadBytes(shift + vertex * src_stride + source);
+}

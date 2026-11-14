@@ -18,9 +18,9 @@ layout(push_constant) uniform PushConstants {
 };
 
 layout(binding = 0) uniform sampler2D source;
-layout(binding = 5, r8) uniform writeonly restrict image2D dest;
+layout(binding = 6, r8) uniform writeonly restrict image2D dest;
 
-layout(std430, binding = 6) buffer Stats {
+layout(std430, binding = 7) buffer Stats {
     uint stats[];
 };
 

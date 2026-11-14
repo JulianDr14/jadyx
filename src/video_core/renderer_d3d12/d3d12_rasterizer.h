@@ -24,6 +24,7 @@
 #include "video_core/renderer_d3d12/d3d12_conditional_rendering.h"
 #include "video_core/renderer_d3d12/d3d12_query_cache.h"
 #include "video_core/renderer_d3d12/d3d12_stream_output.h"
+#include "video_core/renderer_d3d12/d3d12_vertex_realign.h"
 #include "video_core/renderer_d3d12/d3d12_tess_emulation.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_draw_hunt.h"
@@ -393,6 +394,7 @@ private:
     BlitImageHelper& blit_helper;
     IndirectArgumentRing indirect_args;
     StreamOutput stream_output;
+    VertexRealigner vertex_realigner;
     TessEmulation tess_emulation;
     std::vector<u32> indirect_words; ///< CPU part of the ExecuteIndirect records
     GuestDescriptorQueue descriptor_queue;
@@ -404,6 +406,9 @@ private:
     struct CommandListState {
         bool valid{};
         bool heaps_bound{};
+        /// CommandStream::GraphicsWrites() after the rasterizer's last own writes: a different
+        /// count means another pass changed the root signature, targets, viewport or topology.
+        u64 writes_seen{};
         ID3D12RootSignature* graphics_root{};
         std::array<SIZE_T, VideoCommon::NUM_RT> color_targets{};
         u32 num_color_targets{};

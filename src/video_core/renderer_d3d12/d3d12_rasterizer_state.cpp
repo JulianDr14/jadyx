@@ -74,6 +74,11 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
     const PipelineLayout& layout = pipeline.Layout();
     CommandStream* const cmd = scheduler.CommandList();
 
+    // Another pass (texture blit, present, overlay...) bound its own root signature, targets,
+    // viewport or topology since the last draw: rebind those. The heaps are the shared ones.
+    if (command_state.writes_seen != cmd->GraphicsWrites()) {
+        InvalidateGraphicsState();
+    }
     if (!command_state.heaps_bound) {
         ID3D12DescriptorHeap* const heaps[] = {descriptor_ring.Heap(), sampler_heap.Heap()};
         cmd->SetDescriptorHeaps(2, heaps);
@@ -227,6 +232,7 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
         stream_output.Bind(cmd, regs, buffer_runtime.TransformFeedbackBindings());
     }
     command_state.valid = true;
+    command_state.writes_seen = cmd->GraphicsWrites();
 }
 
 bool RasterizerD3D12::BeginStencilFaces(GraphicsPipeline& pipeline,

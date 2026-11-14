@@ -5,6 +5,9 @@
 #include <array>
 #include <exception>
 #include <span>
+#include <string_view>
+
+#include <fmt/format.h>
 
 #include "common/logging.h"
 #include "video_core/host_shaders/blit_color_float_frag_spv.h"
@@ -58,6 +61,18 @@ constexpr u32 SAMPLE_COUNT_WORD = 5;
 /// The multisample copies' stencil bit, after their three ivec2.
 constexpr u32 MSAA_COPY_BIT_WORD = 6;
 constexpr u32 ROOT_CONSTANT_WORDS = 8;
+
+/// dred=1 only: names the helper draw that follows in the GPU trace.
+void TraceHelperDraw(const char* what, u32 kind, DXGI_FORMAT format, u32 samples, u64 view,
+                     const D3D12_RECT& rect, std::string_view extra = {}) {
+    if (!GpuDiagnosticsEnabled()) {
+        return;
+    }
+    TraceGpuDetail(fmt::format("blit helper {} kind={} dst_format={} dst_samples={} view={:x} "
+                               "rect=({},{})-({},{}) {}",
+                               what, kind, static_cast<u32>(format), samples, view, rect.left,
+                               rect.top, rect.right, rect.bottom, extra));
+}
 constexpr u32 RUNTIME_DATA_WORDS = 12;
 
 /// Keys of the helper's samplers in SamplerHeap: guest samplers count up from 1 and the
@@ -443,6 +458,15 @@ bool BlitImageHelper::Blit(Kind kind, const Target& dst, D3D12_CPU_DESCRIPTOR_HA
         // A linear blit averages a multisampled depth source; integers always average.
         SetSampleCounts(src_samples, dst.samples, &sampler == &linear_sampler);
     }
+    if (GpuDiagnosticsEnabled()) {
+        TraceHelperDraw("blit", static_cast<u32>(kind), dst.format, dst.samples, dst.view.ptr,
+                        rect,
+                        fmt::format("src_srv={:x} src_size={}x{} src_samples={} "
+                                    "src_region=({},{})-({},{}) linear={}",
+                                    src_srv.ptr, src_size.width, src_size.height, src_samples,
+                                    src_region.start.x, src_region.start.y, src_region.end.x,
+                                    src_region.end.y, &sampler == &linear_sampler));
+    }
     scheduler.CommandList()->DrawInstanced(3, 1, 0, 0);
     return true;
 }
@@ -491,6 +515,14 @@ bool BlitImageHelper::BlitDepthStencil(const Target& dst, D3D12_CPU_DESCRIPTOR_H
         SetSampleCounts(src_samples, dst.samples, linear);
     }
     cmd->OMSetStencilRef(0);
+    if (GpuDiagnosticsEnabled()) {
+        TraceHelperDraw("depth-stencil blit", src_multisampled ? 1U : 0U, dst.format, dst.samples,
+                        dst.view.ptr, rect,
+                        fmt::format("depth_srv={:x} stencil_srv={:x} src_size={}x{} "
+                                    "src_samples={}",
+                                    depth_srv.ptr, stencil_srv.ptr, src_size.width,
+                                    src_size.height, src_samples));
+    }
     cmd->DrawInstanced(3, 1, 0, 0);
     // Same target, viewport and mapping: only the PSO (its write mask) and the bit change.
     cmd->SetGraphicsRootDescriptorTable(SRV_TABLE_PARAM, stencil_table);
@@ -572,6 +604,14 @@ bool BlitImageHelper::CopyMultisample(const Target& dst, bool to_flat, MsaaCopy 
     cmd->SetGraphicsRootDescriptorTable(SAMPLER_TABLE_PARAM, sampler_table);
     if (stencil) {
         cmd->OMSetStencilRef(0);
+    }
+    if (GpuDiagnosticsEnabled()) {
+        TraceHelperDraw("msaa copy", static_cast<u32>(kind), dst.format, dst.samples,
+                        dst.view.ptr, dst_rect,
+                        fmt::format("src_srv={:x} stencil_srv={:x} src_offset=({},{}) "
+                                    "scale=({},{})",
+                                    src_srv.ptr, stencil_srv.ptr, src_offset_x, src_offset_y,
+                                    scale_x, scale_y));
     }
     cmd->DrawInstanced(3, 1, 0, 0);
     if (!stencil) {
@@ -671,6 +711,8 @@ void BlitImageHelper::ClearColor(const Target& dst, u8 color_mask, const std::ar
         return;
     }
     Begin(pipeline, dst, false, rect);
+    TraceHelperDraw("clear color", static_cast<u32>(Kind::ClearColor), dst.format, dst.samples,
+                    dst.view.ptr, rect);
     scheduler.CommandList()->SetGraphicsRoot32BitConstants(PUSH_CONSTANTS_PARAM,
                                                            PUSH_CONSTANT_WORDS, color.data(), 0);
     scheduler.CommandList()->DrawInstanced(3, 1, 0, 0);
@@ -692,6 +734,8 @@ bool BlitImageHelper::ClearColorInteger(const Target& dst, u8 color_mask,
         return false;
     }
     Begin(pipeline, dst, false, rect);
+    TraceHelperDraw("clear integer", is_signed ? 1U : 0U, dst.format, dst.samples, dst.view.ptr,
+                    rect);
     scheduler.CommandList()->SetGraphicsRoot32BitConstants(PUSH_CONSTANTS_PARAM,
                                                            PUSH_CONSTANT_WORDS, bits.data(), 0);
     scheduler.CommandList()->DrawInstanced(3, 1, 0, 0);
@@ -710,6 +754,8 @@ void BlitImageHelper::ClearDepthStencil(const Target& dst, bool clear_depth, f32
         return;
     }
     Begin(pipeline, dst, true, rect);
+    TraceHelperDraw("clear depth-stencil", clear_depth ? 1U : 0U, dst.format, dst.samples,
+                    dst.view.ptr, rect);
     CommandStream* const cmd = scheduler.CommandList();
     const std::array<f32, PUSH_CONSTANT_WORDS> push{depth, 0.0f, 0.0f, 0.0f};
     cmd->SetGraphicsRoot32BitConstants(PUSH_CONSTANTS_PARAM, PUSH_CONSTANT_WORDS, push.data(), 0);
