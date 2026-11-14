@@ -131,6 +131,42 @@ int main() {
                               MenuAction::NextTab})
         check(menu.Apply(action) == GameMenuResult::None);
 
+    // Without a game the style, A/B/X/Y and dead zone rows changed Settings' values.
+    check(menu.Settings().controller_global.style == ConsoleControllerStyle::RightJoycon &&
+          menu.Settings().controller_global.swap_face_buttons && menu.Settings().controller_global.deadzone < 0.10f &&
+          menu.Settings().controller == GameControllerBasics{});
+
+    // A game's style, A/B/X/Y and dead zone: its own, Settings' untouched, as the right stick.
+    {
+        GameMenuSettings basics_settings{};
+        basics_settings.controller_global = {ConsoleControllerStyle::Pro, false, 0.12f};
+        basics_settings.style = ConsoleControllerStyle::Pro;
+        basics_settings.right_stick_per_game = true;
+        GameMenu game{basics_settings, true};
+        while (game.SelectedItem() != GameMenu::ControllerPage) game.Apply(MenuAction::Down);
+        game.Apply(MenuAction::Confirm);
+        const auto row = [&](GameMenu::Item item) {
+            while (game.SelectedItem() != item) game.Apply(MenuAction::Down);
+            return game.Rows()[game.Selected()];
+        };
+        check(row(GameMenu::Style).detail == L"Como en Ajustes");
+        check(game.Apply(MenuAction::Right) == GameMenuResult::SettingsChanged);
+        check(game.Settings().controller.style == ConsoleControllerStyle::DualJoycon &&
+              game.Settings().style == ConsoleControllerStyle::DualJoycon &&
+              game.Settings().controller_global.style == ConsoleControllerStyle::Pro);
+        check(row(GameMenu::Style).detail == L"Solo este juego");
+        check(game.Apply(MenuAction::Left) == GameMenuResult::SettingsChanged && !game.Settings().controller.style);
+        check(row(GameMenu::FaceButtons).detail == L"Como en Ajustes");
+        check(game.Apply(MenuAction::Confirm) == GameMenuResult::SettingsChanged);
+        check(game.Settings().controller.swap_face_buttons == true && game.Settings().swap_face_buttons &&
+              !game.Settings().controller_global.swap_face_buttons);
+        check(row(GameMenu::FaceButtons).detail == L"Solo este juego");
+        check(row(GameMenu::Deadzone).value == L"12%" && row(GameMenu::Deadzone).detail == L"Como en Ajustes");
+        check(game.Apply(MenuAction::Right) == GameMenuResult::SettingsChanged);
+        check(game.Settings().controller.deadzone.value_or(0.0f) > 0.15f && game.Settings().controller_global.deadzone == 0.12f);
+        check(row(GameMenu::Deadzone).value == L"18%" && row(GameMenu::Deadzone).detail == L"Solo este juego");
+    }
+
     // A game's right stick: a step from what the row shows is the game's own, and landing back on
     // Settings' value follows Settings again.
     {
