@@ -6,6 +6,7 @@
 #include "common/bug_tracker.h"
 #include "common/logging.h"
 #include "video_core/renderer_d3d12/d3d12_maxwell_to_d3d12.h"
+#include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 
 namespace D3D12::MaxwellToD3D12 {
 
@@ -355,6 +356,71 @@ u32 Vertex32BitComponents(Size size) {
     default:
         return 0;
     }
+}
+
+VertexAttributeDesc DescribeVertexAttribute(Type type, Size size, u32 slot, u32 offset) {
+    u32 bytes = 16;
+    u32 component_bytes = 4;
+    switch (size) {
+    case Size::Size_R32_G32_B32_A32:
+        break;
+    case Size::Size_R32_G32_B32:
+        bytes = 12;
+        break;
+    case Size::Size_R32_G32:
+        bytes = 8;
+        break;
+    case Size::Size_R32:
+    case Size::Size_A2_B10_G10_R10:
+    case Size::Size_B10_G11_R11:
+        bytes = 4;
+        break;
+    case Size::Size_R16_G16_B16_A16:
+    case Size::Size_R16_G16_B16: // widened to four components
+        bytes = 8, component_bytes = 2;
+        break;
+    case Size::Size_R16_G16:
+        bytes = 4, component_bytes = 2;
+        break;
+    case Size::Size_R16:
+        bytes = 2, component_bytes = 2;
+        break;
+    case Size::Size_R8_G8_B8_A8:
+    case Size::Size_R8_G8_B8: // widened to four components
+    case Size::Size_X8_B8_G8_R8:
+        bytes = 4, component_bytes = 1;
+        break;
+    case Size::Size_R8_G8:
+    case Size::Size_G8_R8:
+        bytes = 2, component_bytes = 1;
+        break;
+    case Size::Size_R8:
+    case Size::Size_A8:
+        bytes = 1, component_bytes = 1;
+        break;
+    default:
+        break;
+    }
+    if (VertexFormat(type, size) == DXGI_FORMAT_UNKNOWN) {
+        bytes = 16, component_bytes = 4;
+    }
+    return {.enabled = true,
+            .slot = static_cast<u8>(slot),
+            .bytes = static_cast<u8>(bytes),
+            .component_bytes = static_cast<u8>(component_bytes),
+            .offset = static_cast<u16>(offset)};
+}
+
+VertexLayout BuildVertexLayout(const Vulkan::FixedPipelineState& state) {
+    std::array<VertexAttributeDesc, Maxwell::NumVertexAttributes> attributes{};
+    for (size_t index = 0; index < attributes.size(); ++index) {
+        const auto& attribute = state.attributes[index];
+        if (attribute.enabled != 0) {
+            attributes[index] = DescribeVertexAttribute(attribute.Type(), attribute.Size(),
+                                                        attribute.buffer, attribute.offset);
+        }
+    }
+    return VertexLayout::Build(attributes, state.vertex_strides);
 }
 
 bool FetchesBgraInShader(Type type, Size size, u32 offset, u32 stride) {

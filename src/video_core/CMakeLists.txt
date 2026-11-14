@@ -610,6 +610,8 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_stream_output.h
         renderer_d3d12/d3d12_tess_emulation.cpp
         renderer_d3d12/d3d12_tess_emulation.h
+        renderer_d3d12/d3d12_vertex_layout.cpp
+        renderer_d3d12/d3d12_vertex_layout.h
         renderer_d3d12/d3d12_memory_guard.h
         renderer_d3d12/d3d12_swapchain.cpp
         renderer_d3d12/d3d12_swapchain.h
