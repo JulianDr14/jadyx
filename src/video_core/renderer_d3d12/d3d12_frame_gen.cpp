@@ -17,6 +17,7 @@
 #include "video_core/host_shaders/d3d12_fg_compose_comp_spv.h"
 #include "video_core/host_shaders/d3d12_fg_luma_comp_spv.h"
 #include "video_core/host_shaders/d3d12_fg_motion_comp_spv.h"
+#include "video_core/host_shaders/d3d12_fg_still_comp_spv.h"
 #include "video_core/renderer_d3d12/d3d12_command_stream.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_frame_gen.h"
@@ -29,16 +30,17 @@ namespace D3D12 {
 namespace {
 
 std::atomic<FrameGenMode> frame_gen_mode{FrameGenMode::Off};
+std::atomic<u32> frame_gen_debug_view{0};
 
-// Root signature shared by the three shaders: push constants, a table of five sampled textures
-// (t0-t4, bindings 0-4) and one storage image (u5, binding 5), the statistics buffer as a root
-// UAV (u6, binding 6) and spirv_to_dxil's runtime data. s0-s4 are static bilinear samplers.
+// Root signature shared by the four shaders: push constants, a table of six sampled textures
+// (t0-t5, bindings 0-5) and one storage image (u6, binding 6), the statistics buffer as a root
+// UAV (u7, binding 7) and spirv_to_dxil's runtime data. s0-s5 are static bilinear samplers.
 constexpr u32 CONSTANTS_PARAM = 0;
 constexpr u32 TABLE_PARAM = 1;
 constexpr u32 STATS_PARAM = 2;
 constexpr u32 RUNTIME_DATA_PARAM = 3;
 constexpr u32 CONSTANT_WORDS = 8;
-constexpr u32 NUM_SOURCES = 5;
+constexpr u32 NUM_SOURCES = 6;
 constexpr u32 TABLE_SIZE = NUM_SOURCES + 1;
 
 constexpr u32 GROUP_SIZE = 8;
@@ -86,6 +88,10 @@ u32 TableIndex(u32 a, u32 b) {
 
 void SetFrameGenMode(FrameGenMode mode) {
     frame_gen_mode.store(mode, std::memory_order_relaxed);
+}
+
+void SetFrameGenDebugView(u32 view) {
+    frame_gen_debug_view.store(view, std::memory_order_relaxed);
 }
 
 FrameGenMode GetFrameGenMode() noexcept {
@@ -198,6 +204,7 @@ void FrameGen::CreatePipelines() {
     luma_pipeline = build(D3D12_FG_LUMA_COMP_SPV, "CreateComputePipelineState (frame gen luma)");
     motion_pipeline =
         build(D3D12_FG_MOTION_COMP_SPV, "CreateComputePipelineState (frame gen motion)");
+    still_pipeline = build(D3D12_FG_STILL_COMP_SPV, "CreateComputePipelineState (frame gen still)");
     compose_pipeline =
         build(D3D12_FG_COMPOSE_COMP_SPV, "CreateComputePipelineState (frame gen compose)");
 }
@@ -328,6 +335,8 @@ void FrameGen::CreateResources() {
         const auto [blocks_x, blocks_y] = blocks(0);
         slot.motion = CreateTexture(blocks_x, blocks_y, DXGI_FORMAT_R16G16B16A16_FLOAT, true,
                                     READ_STATE, L"Frame gen motion");
+        slot.still = CreateTexture(level_sizes[0].first, level_sizes[0].second,
+                                   DXGI_FORMAT_R8_UNORM, true, READ_STATE, L"Frame gen still");
     }
     for (u32 level = 1; level < NUM_LEVELS; ++level) {
         const auto [blocks_x, blocks_y] = blocks(level);
@@ -341,14 +350,15 @@ void FrameGen::CreateResources() {
                                   D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                                   "CreateCommittedResource (frame generation statistics)");
 
-    // One compose table per ordered slot pair: A and B's color, level 0 luma, B's motion, the
-    // output.
+    // One compose table per ordered slot pair: A and B's color, level 0 luma, B's motion and
+    // still mask, the output.
     const D3D12_CPU_DESCRIPTOR_HANDLE table_base = table_heap->GetCPUDescriptorHandleForHeapStart();
     for (u32 a = 0; a < NUM_SLOTS; ++a) {
         for (u32 b = 0; b < NUM_SLOTS; ++b) {
             const std::array<D3D12_CPU_DESCRIPTOR_HANDLE, TABLE_SIZE> entries{
-                slots[a].color.srv, slots[b].color.srv,  slots[a].luma[0].srv,
-                slots[b].luma[0].srv, slots[b].motion.srv, output.uav,
+                slots[a].color.srv,   slots[b].color.srv,  slots[a].luma[0].srv,
+                slots[b].luma[0].srv, slots[b].motion.srv, slots[b].still.srv,
+                output.uav,
             };
             for (u32 i = 0; i < TABLE_SIZE; ++i) {
                 D3D12_CPU_DESCRIPTOR_HANDLE dest = table_base;
@@ -496,9 +506,9 @@ std::optional<u32> FrameGen::RecordIngest(ID3D12Resource* image) {
             dest.width, dest.height, level == 0 ? 1U : 0U, index,
             level == 0 && luma_scale == 4 ? 1U : 0U, 0, 0, 0,
         };
-        Dispatch(cmd, luma_pipeline.Get(), constants, {source, nullptr, nullptr, nullptr, nullptr},
-                 dest, Common::DivCeil(dest.width, GROUP_SIZE),
-                 Common::DivCeil(dest.height, GROUP_SIZE));
+        Dispatch(cmd, luma_pipeline.Get(), constants,
+                 {source, nullptr, nullptr, nullptr, nullptr, nullptr}, dest,
+                 Common::DivCeil(dest.width, GROUP_SIZE), Common::DivCeil(dest.height, GROUP_SIZE));
     }
 
     if (prev) {
@@ -530,7 +540,7 @@ std::optional<u32> FrameGen::RecordIngest(ID3D12Resource* image) {
             };
             const std::array<const Texture*, NUM_SOURCES> sources{
                 &previous.luma[level], &slot.luma[level], coarse,
-                temporal ? &previous.motion : nullptr, nullptr};
+                temporal ? &previous.motion : nullptr, nullptr, nullptr};
             if (!coarse) {
                 // The wide search runs a workgroup per block and adds to the global motion words
                 // the luma pass cleared; one workgroup then picks the frame's vector.
@@ -548,6 +558,16 @@ std::optional<u32> FrameGen::RecordIngest(ID3D12Resource* image) {
                      Common::DivCeil(dest.width, GROUP_SIZE),
                      Common::DivCeil(dest.height, GROUP_SIZE));
         }
+        // What stayed in place; the marks of the pair before carry over.
+        stats_barrier();
+        const std::array<u32, CONSTANT_WORDS> constants{
+            slot.still.width, slot.still.height, index, temporal ? 1U : 0U, 0, 0, 0, 0,
+        };
+        Dispatch(cmd, still_pipeline.Get(), constants,
+                 {&previous.luma[0], &slot.luma[0], &slot.motion,
+                  temporal ? &previous.still : nullptr, nullptr, nullptr},
+                 slot.still, Common::DivCeil(slot.still.width, GROUP_SIZE),
+                 Common::DivCeil(slot.still.height, GROUP_SIZE));
     }
     return index;
 }
@@ -670,7 +690,7 @@ void FrameGen::RecordOutput(ID3D12GraphicsCommandList* list, const Output& out,
         luma.width,
         luma.height,
         FloatBits(out.phase),
-        out.b,
+        out.b | frame_gen_debug_view.load(std::memory_order_relaxed) << 8,
         FloatBits(CUT_THRESHOLD),
         motion.width * motion.height,
     };

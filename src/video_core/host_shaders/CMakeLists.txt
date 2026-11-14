@@ -74,6 +74,7 @@ set(SHADER_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_fg_luma.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_fg_motion.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_fg_compose.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12_fg_still.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/full_screen_triangle.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/fxaa.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/fxaa.vert
