@@ -72,6 +72,9 @@ struct LaunchConfig {
     bool output_1080p = false;
     std::optional<Jadyx::Upscaling> upscaling;
     std::optional<bool> frame_gen;
+    /// debug_layer=1 or dred=1: the renderer turns D3D12 diagnostics on when it creates its
+    /// device, and doing that while the splash's device is alive removes both devices.
+    bool d3d12_diagnostics = false;
 };
 
 /// What one session runs and where it presents.
@@ -183,6 +186,7 @@ LaunchConfig ReadLaunchConfig(const std::filesystem::path& install) {
         else if (line == "frame_gen=off") cfg.frame_gen = false;
         else if (line == "frame_gen=auto" || line == "frame_gen=30" || line == "frame_gen=60")
             cfg.frame_gen = true;
+        else if (line == "debug_layer=1" || line == "dred=1") cfg.d3d12_diagnostics = true;
     }
     return cfg;
 }
@@ -280,8 +284,13 @@ bool ChooseLaunch(const Jadyx::BootSurface& surface, u32 session, std::string& l
             }
             WriteDiag("library: selected " + *choice.library_game);
             library_error.clear();
-            // The window is never left blank while the game loads.
-            Jadyx::ShowLaunchSplash(surface.core_window, surface.width, surface.height);
+            // The window is never left blank while the game loads. Diagnostic sessions skip it:
+            // enabling the debug layer or DRED with its device alive gets every device removed.
+            if (cfg.d3d12_diagnostics) {
+                WriteDiag("launch splash skipped: D3D12 diagnostics in boot.cfg");
+            } else {
+                Jadyx::ShowLaunchSplash(surface.core_window, surface.width, surface.height);
+            }
         }
 
         choice.game_surface = ChooseGameSurface(surface, library_surface, cfg, choice.library_program_id, session);
