@@ -403,6 +403,56 @@ std::wstring GameRightStickKey(std::wstring_view field, u64 program_id) {
 }
 } // namespace
 
+namespace {
+std::wstring GameControllerKey(std::wstring_view field, u64 program_id) {
+    wchar_t id[17];
+    swprintf(id, std::size(id), L"%016llx", static_cast<unsigned long long>(program_id));
+    return L"game_controller_" + std::wstring{field} + L"_" + id;
+}
+} // namespace
+
+GameControllerBasics LoadGameControllerBasics(u64 program_id) {
+    GameControllerBasics game;
+    if (program_id == 0) return game;
+    try {
+        const auto values = winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        const winrt::hstring style_key{GameControllerKey(L"style", program_id)};
+        if (values.HasKey(style_key)) {
+            const auto style = winrt::unbox_value<int32_t>(values.Lookup(style_key));
+            if (style >= 0 && style < static_cast<int32_t>(ConsoleControllerStyleCount))
+                game.style = static_cast<ConsoleControllerStyle>(style);
+        }
+        const winrt::hstring swap_key{GameControllerKey(L"swap_face", program_id)};
+        if (values.HasKey(swap_key)) game.swap_face_buttons = winrt::unbox_value<bool>(values.Lookup(swap_key));
+        const winrt::hstring zone_key{GameControllerKey(L"deadzone", program_id)};
+        if (values.HasKey(zone_key)) {
+            const auto zone = static_cast<float>(winrt::unbox_value<double>(values.Lookup(zone_key)));
+            if (std::isfinite(zone) && zone >= 0.01f && zone <= 0.5f) game.deadzone = zone;
+        }
+    } catch (...) { /* A missing or invalid value follows Settings > Controller. */ }
+    return game;
+}
+
+bool SaveGameControllerBasics(u64 program_id, const GameControllerBasics& game) {
+    if (program_id == 0) return false;
+    try {
+        const auto values = winrt::Windows::Storage::ApplicationData::Current().LocalSettings().Values();
+        const auto save = [&](std::wstring_view field, const std::optional<winrt::Windows::Foundation::IInspectable>& value) {
+            const winrt::hstring key{GameControllerKey(field, program_id)};
+            if (value) values.Insert(key, *value);
+            else if (values.HasKey(key)) values.Remove(key);
+        };
+        using winrt::Windows::Foundation::IInspectable;
+        save(L"style", game.style ? std::optional<IInspectable>{winrt::box_value(static_cast<int32_t>(*game.style))}
+                                  : std::nullopt);
+        save(L"swap_face", game.swap_face_buttons ? std::optional<IInspectable>{winrt::box_value(*game.swap_face_buttons)}
+                                                  : std::nullopt);
+        save(L"deadzone", game.deadzone ? std::optional<IInspectable>{winrt::box_value(static_cast<double>(*game.deadzone))}
+                                        : std::nullopt);
+        return true;
+    } catch (...) { return false; }
+}
+
 GameRightStick LoadGameRightStick(u64 program_id) {
     GameRightStick game;
     if (program_id == 0) return game;
@@ -784,7 +834,7 @@ ConsoleControllerStyle GamepadInput::SyncControllerStyle() {
         return FromNpadStyle(player->GetNpadStyleIndex());
     };
     const auto current = seen();
-    const auto chosen = Options().style;
+    const auto chosen = PlayedOptions().style;
     // A style picked in the in-game menu applies at once; otherwise an explicit one is left to
     // Eden, which already reconnects it as it did at boot.
     const bool forced = style_changed.exchange(false);
@@ -871,11 +921,21 @@ ControllerOptions GamepadInput::Options() {
     return options;
 }
 
+ControllerOptions GamepadInput::PlayedOptions() {
+    std::scoped_lock lock{options_mutex};
+    ControllerOptions played = options;
+    const ControllerBasics basics = ResolveControllerBasics(ControllerBasicsOf(options), game_basics);
+    played.style = basics.style;
+    played.swap_face_buttons = basics.swap_face_buttons;
+    played.deadzone = basics.deadzone;
+    return played;
+}
+
 void GamepadInput::SetOptions(const ControllerOptions& next) {
     bool new_style;
     {
         std::scoped_lock lock{options_mutex};
-        new_style = options.style != next.style;
+        new_style = game_basics.style.value_or(options.style) != game_basics.style.value_or(next.style);
         options = next;
     }
     if (!SaveControllerOptions(next)) {
@@ -884,6 +944,23 @@ void GamepadInput::SetOptions(const ControllerOptions& next) {
     if (new_style) {
         style_changed.store(true);
     }
+}
+
+void GamepadInput::SetGameControllerBasics(const GameControllerBasics& game, bool reconnect) {
+    bool new_style;
+    {
+        std::scoped_lock lock{options_mutex};
+        new_style = game_basics.style.value_or(options.style) != game.style.value_or(options.style);
+        game_basics = game;
+    }
+    if (new_style && reconnect) {
+        style_changed.store(true);
+    }
+}
+
+GameControllerBasics GamepadInput::GameControllerBasicsSettings() {
+    std::scoped_lock lock{options_mutex};
+    return game_basics;
 }
 
 void GamepadInput::SetGameRightStick(const GameRightStick& game) {
@@ -1024,7 +1101,7 @@ void GamepadInput::Run(std::stop_token stop) {
             }
         }
         // The gamepad list is cheap to query but changes rarely: look again twice a second.
-        const ControllerOptions current_options = Options();
+        const ControllerOptions current_options = PlayedOptions();
         const RightStickSettings right_stick = ResolveRightStick(current_options.right_stick, GameRightStickSettings());
         const RumbleSettings rumble_settings = ResolveRumble(current_options.rumble, GameRumbleSettings());
         if (controller_api_ready) {
