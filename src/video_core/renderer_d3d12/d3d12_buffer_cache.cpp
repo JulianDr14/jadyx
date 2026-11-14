@@ -18,6 +18,7 @@
 #include "video_core/gpu_fast_paths.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_buffer_cache.h"
+#include "video_core/renderer_d3d12/d3d12_vertex_realign.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_draw_metrics.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
@@ -915,8 +916,49 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, Buffer& buffer, u32 offset,
                                   .buffer = &buffer, .offset = offset, .size = size,
                                   .stride = stride, .device_addr = buffer.CpuAddr() + offset});
     }
+    const u32 bit = index < VideoCommon::NUM_VERTEX_BUFFERS ? 1U << index : 0U;
+    if (bit != 0 && BindRepackedVertices(index, buffer, offset, size, stride)) [[unlikely]] {
+        repacked_vertex_slots |= bit;
+        return;
+    }
+    repacked_vertex_slots &= ~bit;
     buffer.Transition(D3D12_RESOURCE_STATE_GENERIC_READ);
     BindVertexBuffer(index, buffer.Handle(), offset, size, stride);
+}
+
+bool BufferCacheRuntime::BindRepackedVertices(u32 index, Buffer& buffer, u32 offset, u32 size,
+                                              u32 stride) {
+    // Most draws: every slot in place and a 4-aligned stream, no plan to make.
+    if (!vertex_layout && (offset & 3) == 0) [[likely]] {
+        return false;
+    }
+    const std::optional<VertexRepack> plan =
+        vertex_layout ? vertex_layout->PlanBind(index, offset, size, stride)
+                      : VertexLayout::PlanDirectBind(offset, size, stride);
+    if (!plan) {
+        return false;
+    }
+    const std::optional<D3D12_VERTEX_BUFFER_VIEW> view =
+        vertex_realigner ? vertex_realigner->Repack(buffer, offset, size, *plan) : std::nullopt;
+    if (!view) {
+        if (!logged_unrepacked) {
+            logged_unrepacked = true;
+            LOG_WARNING(Render,
+                        "D3D12: vertex stream at offset {:#x} size {} stride {} bound in place: "
+                        "too large to repack, its attributes may be fetched wrongly",
+                        offset, size, stride);
+        }
+        return false;
+    }
+    SetVertexView(index, *view);
+    return true;
+}
+
+void BufferCacheRuntime::SetVertexView(u32 index, const D3D12_VERTEX_BUFFER_VIEW& view) noexcept {
+    pending_vertex[index] = view;
+    pending_vertex_mask |= 1u << index;
+    last_vertex[index] = view;
+    known_vertex_mask |= 1u << index;
 }
 
 void BufferCacheRuntime::BindVertexBuffer(u32 index, ID3D12Resource* buffer, u32 offset,
@@ -924,14 +966,11 @@ void BufferCacheRuntime::BindVertexBuffer(u32 index, ID3D12Resource* buffer, u32
     if (index >= VideoCommon::NUM_VERTEX_BUFFERS || !buffer) {
         return;
     }
-    pending_vertex[index] = D3D12_VERTEX_BUFFER_VIEW{
-        .BufferLocation = buffer->GetGPUVirtualAddress() + offset,
-        .SizeInBytes = size,
-        .StrideInBytes = stride,
-    };
-    pending_vertex_mask |= 1u << index;
-    last_vertex[index] = pending_vertex[index];
-    known_vertex_mask |= 1u << index;
+    SetVertexView(index, D3D12_VERTEX_BUFFER_VIEW{
+                             .BufferLocation = buffer->GetGPUVirtualAddress() + offset,
+                             .SizeInBytes = size,
+                             .StrideInBytes = stride,
+                         });
 }
 
 void BufferCacheRuntime::BindVertexBuffers(VideoCommon::HostBindings<Buffer>& bindings) {

@@ -3,20 +3,24 @@
 # Frame generation gate (pacer, interpolation at 720p and 4K, hardware GPU + debug layer: the
 # shaders are SM 6.4 and the Windows 10 WARP stops at 6.2) using the production UWP libraries,
 # then a timed run on the desktop GPU. Run after the incremental build.
+param([string]$BuildDir = 'build-uwp')
 $ErrorActionPreference = 'Stop'
 $testVs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (!$testVs) { throw 'MSVC not found' }
-$testNinja = Get-Content build-uwp/build.ninja
+$testNinja = Get-Content "$BuildDir/build.ninja"
 $testObject = ($testNinja | Select-String -SimpleMatch 'build src\video_core\CMakeFiles\video_core.dir\renderer_d3d12\d3d12_image_copy_blit.cpp.obj:').LineNumber
 if (!$testObject) { throw 'Configured D3D12 object missing' }
 $testIncludes = ($testNinja[$testObject..($testObject+6)] | Where-Object { $_ -match '^  INCLUDES =' }) -replace '^  INCLUDES = ', ''
 $testLibs = ($testNinja | Where-Object { $_ -match '^  LINK_LIBRARIES = .*video_core.lib' } | Select-Object -Last 1) -replace '^  LINK_LIBRARIES = ', ''
 if (!$testIncludes -or !$testLibs) { throw 'Configured includes or libraries missing' }
-$testDir = New-Item -ItemType Directory -Force build-uwp/frame-gen-gate
+$testDir = New-Item -ItemType Directory -Force "$BuildDir/frame-gen-gate"
 $testSource = Join-Path (Get-Location) 'tools/xbox/tests/frame-gen.cpp'
+# The allocator object exists only when the Vulkan renderer is built.
+$testVma = 'src\jadyx\CMakeFiles\jadyx.dir\app\vma_impl.cpp.obj'
+if (!(Test-Path (Join-Path $BuildDir $testVma))) { $testVma = '' }
 $testCommands = @('@echo off', ('call "' + $testVs + '\VC\Auxiliary\Build\vcvarsall.bat" x64'),
-    'if errorlevel 1 exit /b 1', ('cd /d "' + (Join-Path (Get-Location) 'build-uwp') + '"'),
-    ('cl /nologo /O2 /MD /Gy /std:c++20 /Zc:preprocessor /EHsc /utf-8 /DNOMINMAX /DBOOST_CONTAINER_NO_LIB /DBOOST_CONTAINER_STATIC_LINK ' + $testIncludes + ' "' + $testSource + '" src\jadyx\CMakeFiles\jadyx.dir\app\vma_impl.cpp.obj /Fo:frame-gen-gate\ /Fe:frame-gen-gate\frame-gen.exe /link /OPT:REF /NODEFAULTLIB:libcmt ' + $testLibs))
+    'if errorlevel 1 exit /b 1', ('cd /d "' + (Join-Path (Get-Location) $BuildDir) + '"'),
+    ('cl /nologo /O2 /MD /Gy /std:c++20 /Zc:preprocessor /EHsc /utf-8 /DNOMINMAX /DBOOST_CONTAINER_NO_LIB /DBOOST_CONTAINER_STATIC_LINK ' + $testIncludes + ' "' + $testSource + '" ' + $testVma + ' /Fo:frame-gen-gate\ /Fe:frame-gen-gate\frame-gen.exe /link /OPT:REF /NODEFAULTLIB:libcmt ' + $testLibs))
 Set-Content "$($testDir.FullName)/build.cmd" $testCommands -Encoding ascii
 & "$env:SystemRoot\System32\cmd.exe" /d /c "$($testDir.FullName)\build.cmd"
 if ($LASTEXITCODE -ne 0) { throw 'Frame generation gate build failed' }

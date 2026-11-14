@@ -426,6 +426,17 @@ void Device::LogDebugMessages() {
             }
             continue;
         }
+        // Each ID logs its first few, then every 1024th as a count, so one repeated message
+        // cannot fill the limit before the error that matters.
+        constexpr u64 MAX_PER_ID = 8;
+        const u64 seen = ++debug_message_counts[static_cast<u32>(message->ID)];
+        if (seen > MAX_PER_ID) {
+            if (seen % 1024 == 0) {
+                LOG_INFO(Render, "D3D12 debug layer [{}]: seen {} times", static_cast<u32>(message->ID),
+                         seen);
+            }
+            continue;
+        }
         switch (message->Severity) {
         case D3D12_MESSAGE_SEVERITY_CORRUPTION:
         case D3D12_MESSAGE_SEVERITY_ERROR:

@@ -45,6 +45,12 @@ public:
     [[nodiscard]] bool IsThreaded() const noexcept {
         return recorder.IsThreaded();
     }
+    /// Counts the calls that replace graphics state a draw relies on: root signature, render
+    /// targets, viewports, scissors, topology. The rasterizer caches what it bound; a count that
+    /// moved since its last bind means another pass (blit, present, overlay...) changed the list.
+    [[nodiscard]] u64 GraphicsWrites() const noexcept {
+        return graphics_writes;
+    }
 
     // --- Barriers and pipeline state -------------------------------------------------------
 
@@ -146,6 +152,7 @@ public:
     // --- Root arguments ----------------------------------------------------------------------
 
     void SetGraphicsRootSignature(ID3D12RootSignature* signature) {
+        ++graphics_writes;
         Probed("SetGraphicsRootSignature",
                [signature](List* list) { list->SetGraphicsRootSignature(signature); },
                [signature] { return fmt::format("signature={}", static_cast<void*>(signature)); });
@@ -213,6 +220,7 @@ public:
     // --- Input assembler, rasterizer and output merger -------------------------------------
 
     void IASetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY topology) {
+        ++graphics_writes;
         Probed("IASetPrimitiveTopology",
                [topology](List* list) { list->IASetPrimitiveTopology(topology); },
                [topology] { return fmt::format("topology={}", static_cast<u32>(topology)); });
@@ -272,6 +280,7 @@ public:
               });
     }
     void RSSetViewports(UINT count, const D3D12_VIEWPORT* viewports) {
+        ++graphics_writes;
         Array("RSSetViewports", viewports, count,
               [count](List* list, const D3D12_VIEWPORT* copy) { list->RSSetViewports(count, copy); },
               [count](const D3D12_VIEWPORT* copy) {
@@ -285,6 +294,7 @@ public:
               });
     }
     void RSSetScissorRects(UINT count, const D3D12_RECT* rects) {
+        ++graphics_writes;
         Array("RSSetScissorRects", rects, count,
               [count](List* list, const D3D12_RECT* copy) { list->RSSetScissorRects(count, copy); },
               [count](const D3D12_RECT* copy) {
@@ -297,6 +307,7 @@ public:
     }
     void OMSetRenderTargets(UINT count, const D3D12_CPU_DESCRIPTOR_HANDLE* targets,
                             BOOL single_range, const D3D12_CPU_DESCRIPTOR_HANDLE* depth) {
+        ++graphics_writes;
         if (!ValidRenderTargets(count, targets)) {
             return;
         }
@@ -699,6 +710,7 @@ private:
     }
 
     ListRecorder& recorder;
+    u64 graphics_writes{};
 };
 
 } // namespace D3D12

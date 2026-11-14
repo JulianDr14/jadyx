@@ -21,6 +21,9 @@ enum class FrameGenMode : u32 {
 /// boot.cfg "frame_gen": off, auto, 30 or 60. Read on every frame, so it may change at run time.
 /// Declared here, free of D3D12 headers, for the frontend.
 void SetFrameGenMode(FrameGenMode mode);
+/// Tests: generated frames show a view of the decision in place of the image (1: the vector each
+/// texel took, 2: its block's, 3: still mask and moving choice, 4: costs); 0 for the image.
+void SetFrameGenDebugView(u32 view);
 [[nodiscard]] FrameGenMode GetFrameGenMode() noexcept;
 
 /// When frame generation shows which frame: pure timing logic, no GPU.

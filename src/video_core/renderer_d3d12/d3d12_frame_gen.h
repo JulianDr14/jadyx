@@ -101,6 +101,7 @@ private:
         Texture color;
         std::array<Texture, NUM_LEVELS> luma;
         Texture motion; ///< level 0 field from the previous serial to this one
+        Texture still;  ///< what stayed in place between them (d3d12_fg_still.comp)
         double content{};
         u64 serial{};
         u64 vsync{};
@@ -119,7 +120,7 @@ private:
     void Transition(CommandStream* cmd, Texture& texture, D3D12_RESOURCE_STATES next);
     void Dispatch(CommandStream* cmd, ID3D12PipelineState* pipeline,
                   const std::array<u32, 8>& constants,
-                  const std::array<const Texture*, 5>& sources, Texture& dest, u32 groups_x,
+                  const std::array<const Texture*, 6>& sources, Texture& dest, u32 groups_x,
                   u32 groups_y);
     void WaitForPresentFence(u64 value);
 
@@ -138,6 +139,7 @@ private:
     ComPtr<ID3D12RootSignature> root_signature;
     ComPtr<ID3D12PipelineState> luma_pipeline;
     ComPtr<ID3D12PipelineState> motion_pipeline;
+    ComPtr<ID3D12PipelineState> still_pipeline;
     ComPtr<ID3D12PipelineState> compose_pipeline;
 
     ComPtr<ID3D12DescriptorHeap> cpu_heap;   ///< offline views, uploaded into the ring by ingest

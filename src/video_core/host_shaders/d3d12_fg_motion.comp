@@ -72,9 +72,9 @@ layout(binding = 0) uniform sampler2D luma_a;
 layout(binding = 1) uniform sampler2D luma_b;
 layout(binding = 2) uniform sampler2D coarse_field;
 layout(binding = 3) uniform sampler2D temporal_field;
-layout(binding = 5, rgba16f) uniform writeonly restrict image2D field;
+layout(binding = 6, rgba16f) uniform writeonly restrict image2D field;
 
-layout(std430, binding = 6) buffer Stats {
+layout(std430, binding = 7) buffer Stats {
     uint stats[];
 };
 

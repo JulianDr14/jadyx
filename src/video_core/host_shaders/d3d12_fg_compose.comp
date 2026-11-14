@@ -5,15 +5,19 @@
 //
 // One invocation handles one texel of the luma: a 2x2 quad of output pixels (a 4x4 block on 4K
 // outputs, where the luma is at a quarter resolution).
-// It picks its vector among zero, its own block's and the nine around the block that vector crosses
-// on the halfway frame, by how well A at -t*v matches B at +(1-t)*v on a small cross of luma
-// texels, plus a penalty for vectors whose block the trajectory does not cross; ties go to the
-// block it does cross. Matching pixels blend
-// A and B; a pixel that matches in neither (an area one frame covers and the other reveals) leans
-// on the nearer frame. Content entering at the frame's edge (a pan) exists in one frame only: the
-// match counts as good with the frame's global vector (d3d12_fg_motion.comp), fair with others, and
-// the pixel takes that frame. A scene cut (the whole frame's motion error
-// is high) shows the nearer frame as it is.
+// Its candidates are zero, its own block's vector, the nine around the block that vector crosses
+// on the halfway frame and the frame's global vector (d3d12_fg_motion.comp), each scored by how
+// well A at -t*v matches B at +(1-t)*v on a small cross of luma texels, plus a penalty for vectors
+// whose block the trajectory does not cross; ties go to the block it does cross.
+// Still against moving: zero competes with the best moving vector, which pays when what the texel
+// shows did not go along it and when both its ends stayed as they were (a HUD over the scene). A
+// texel the still mask marks (d3d12_fg_still.comp) stays in place.
+// Matching pixels blend A and B; a pixel that matches in neither (an area one frame covers and the
+// other reveals) leans on the nearer frame, or takes the end of the scene's trajectory that is not
+// a still mark (what a HUD or a followed character covers). Content entering at the frame's edge
+// (a pan) exists in one frame only: the match counts as good with the global vector, fair with
+// others, and the pixel takes that frame. A scene cut (the whole frame's motion error is high)
+// shows the nearer frame as it is.
 
 #version 450
 
@@ -23,7 +27,7 @@ layout(push_constant) uniform PushConstants {
     uvec2 out_size;
     uvec2 luma_size;
     float phase;
-    uint stats_index;
+    uint stats_index;    // B's slot; from bit 8 the debug view (0: none, see main)
     float cut_threshold; // mean motion error (0-255) above which the frames are unrelated
     uint field_blocks;   // blocks of the level 0 field, for the mean
 };
@@ -35,9 +39,10 @@ layout(binding = 1) uniform sampler2D color_b;
 layout(binding = 2) uniform sampler2D luma_a;
 layout(binding = 3) uniform sampler2D luma_b;
 layout(binding = 4) uniform sampler2D motion;
-layout(binding = 5, rgba8) uniform writeonly restrict image2D dest;
+layout(binding = 5) uniform sampler2D still; // d3d12_fg_still.comp, of the pair
+layout(binding = 6, rgba8) uniform writeonly restrict image2D dest;
 
-layout(std430, binding = 6) buffer Stats {
+layout(std430, binding = 7) buffer Stats {
     uint stats[];
 };
 
@@ -48,7 +53,16 @@ vec2 global_v;
 /// along others.
 const float EDGE_COST = 6.0;
 const float GLOBAL_EDGE_COST = 1.0;
-
+/// ... and poor when that end is still (a HUD is not what the camera brings in).
+const float STILL_EDGE_COST = 20.0;
+/// Still mask value from which a texel is still.
+const float STILL_MARK = 0.45;
+/// Luma difference (0-255) under which a texel is the same in both frames.
+const float STILL_LIMIT = 4.0;
+/// Weight of MovedCost against the match of a moving vector, and what the vector pays when both
+/// its ends stayed as they were (the gaps of a still bar match along the camera's motion too).
+const float MOVED_WEIGHT = 0.5;
+const float STILL_ENDS_COST = 3.0;
 // d3d12_fg_motion.comp's statistics words: each slot's global vector, level 0 (luma) texels.
 const uint GLOBAL_VECTOR = 8u;
 
@@ -56,13 +70,32 @@ bool Inside(vec2 p, vec2 size) {
     return all(greaterThanEqual(p, vec2(0.0))) && all(lessThanEqual(p, size));
 }
 
+float LumaA(vec2 p) {
+    return 255.0 * textureLod(luma_a, p * luma_inv, 0.0).r;
+}
+
+float LumaB(vec2 p) {
+    return 255.0 * textureLod(luma_b, p * luma_inv, 0.0).r;
+}
+
+bool Still(vec2 p) {
+    return textureLod(still, p * luma_inv, 0.0).r >= STILL_MARK;
+}
+
 float MatchCost(vec2 p, vec2 v) {
     const vec2 a = p - phase * v;
     const vec2 b = p + (1.0 - phase) * v;
     const vec2 size = vec2(luma_size);
-    if (!Inside(a, size) || !Inside(b, size)) {
-        if (!Inside(a, size) && !Inside(b, size)) {
+    const bool a_inside = Inside(a, size);
+    const bool b_inside = Inside(b, size);
+    if (!a_inside || !b_inside) {
+        if (!a_inside && !b_inside) {
             return 1e3;
+        }
+        // The end in the frame must be moving.
+        const vec2 end = a_inside ? a : b;
+        if (Still(end) || abs(LumaA(end) - LumaB(end)) < STILL_LIMIT) {
+            return STILL_EDGE_COST;
         }
         const vec2 d = abs(v - global_v);
         return max(d.x, d.y) <= 1.0 ? GLOBAL_EDGE_COST : EDGE_COST;
@@ -77,6 +110,32 @@ float MatchCost(vec2 p, vec2 v) {
     return sum * (255.0 / 5.0);
 }
 
+/// Whether the content the frames show at p moved by v: the one in A at p is in B at p + v, or the
+/// one in B came from p - v (one of the two may be covered). Low when it did. A HUD or a character
+/// that stays put over a moving scene fails both, however well the scene around it matches along v.
+float MovedCost(vec2 p, vec2 v) {
+    const vec2 offsets[5] = vec2[5](vec2(0.0), vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0),
+                                    vec2(0.0, -1.0));
+    const vec2 size = vec2(luma_size);
+    const bool forward = Inside(p + v, size);
+    const bool backward = Inside(p - v, size);
+    if (!forward && !backward) {
+        return 0.0;
+    }
+    const float a = LumaA(p);
+    const float b = LumaB(p);
+    float least = 1e3;
+    for (int i = 0; i < 5; ++i) {
+        if (forward) {
+            least = min(least, abs(a - LumaB(p + v + offsets[i])));
+        }
+        if (backward) {
+            least = min(least, abs(b - LumaA(p - v + offsets[i])));
+        }
+    }
+    return least;
+}
+
 void main() {
     const uvec2 texel = gl_GlobalInvocationID.xy;
     if (any(greaterThanEqual(texel, luma_size))) {
@@ -85,13 +144,15 @@ void main() {
     // Output pixels per luma texel: 2 or 4.
     const uint scale = out_size.x >= luma_size.x * 3u ? 4u : 2u;
     luma_inv = 1.0 / vec2(luma_size);
-    global_v = vec2(uintBitsToFloat(stats[GLOBAL_VECTOR + 2u * stats_index]),
-                    uintBitsToFloat(stats[GLOBAL_VECTOR + 2u * stats_index + 1u]));
+    const uint slot = stats_index & 0xFFu;
+    const uint view = stats_index >> 8;
+    global_v = vec2(uintBitsToFloat(stats[GLOBAL_VECTOR + 2u * slot]),
+                    uintBitsToFloat(stats[GLOBAL_VECTOR + 2u * slot + 1u]));
     const vec2 out_inv = 1.0 / vec2(out_size);
     const bool nearer_a = phase < 0.5;
 
     const float mean_error =
-        float(stats[stats_index]) / (16.0 * float(max(field_blocks, 1u)));
+        float(stats[slot]) / (16.0 * float(max(field_blocks, 1u)));
     if (mean_error > cut_threshold) {
         for (uint y = 0; y < scale; ++y) {
             for (uint x = 0; x < scale; ++x) {
@@ -108,46 +169,126 @@ void main() {
     }
 
     const vec2 p = vec2(texel) + 0.5;
+    const vec2 size = vec2(luma_size);
     const ivec2 field_size = textureSize(motion, 0);
     // The field lives on the halfway frame: away from phase 0.5 a fast trajectory crosses it blocks
     // away from p. Search around the block the home block's vector crosses, which then holds the
     // right vector without a distance penalty.
     const ivec2 own = clamp(ivec2(texel) / BLOCK, ivec2(0), field_size - 1);
-    const vec2 own_mid = p + (0.5 - phase) * texelFetch(motion, own, 0).xy;
+    const vec2 own_v = texelFetch(motion, own, 0).xy;
+    const vec2 own_mid = p + (0.5 - phase) * own_v;
     const ivec2 home = clamp(ivec2(floor(own_mid / float(BLOCK))), ivec2(0), field_size - 1);
 
-    // Zero first: a HUD over a moving scene matches only with it, by far. It gets no bonus: in a
-    // flat area (inside a moving object) zero matches as well as the motion does and would show
-    // the object's details where they were, not where they are.
-    vec2 best_v = vec2(0.0);
-    float best_cost = MatchCost(p, vec2(0.0));
-    float best_block_error = 0.0;
-    // The nine blocks around home, then p's own block when home is not it.
-    const int candidates = home == own ? 9 : 10;
-    for (int i = 0; i < candidates; ++i) {
+    // Still (zero, a HUD over a moving scene matches only with it) against the best moving vector.
+    vec2 still_v = vec2(0.0);
+    float still_cost = MatchCost(p, vec2(0.0));
+    float still_block_error = 0.0;
+    vec2 move_v = vec2(0.0);
+    float move_cost = 1e30;
+    float move_block_error = 0.0;
+    // The nine blocks around home, the own block of p when home is not it, and the vector of the
+    // frame (the field next to a HUD or a still object is unreliable).
+    for (int i = 0; i < 11; ++i) {
+        if (i == 9 && home == own) {
+            continue;
+        }
         const ivec2 block =
             i < 9 ? clamp(home + ivec2(i % 3 - 1, i / 3 - 1), ivec2(0), field_size - 1) : own;
-        const vec4 sample_v = texelFetch(motion, block, 0);
+        const vec4 sample_v = i < 10 ? texelFetch(motion, block, 0) : vec4(global_v, 0.0, 0.0);
         const vec2 v = sample_v.xy;
-        // The trajectory through p crosses the field at mid.
-        const vec2 mid = p + (0.5 - phase) * v;
-        const vec2 block_center = (vec2(block) + 0.5) * float(BLOCK);
-        const vec2 distance = max(abs(mid - block_center) - 0.5 * float(BLOCK), vec2(0.0));
-        // Ties go to the field: the block the trajectory crosses (still areas have a zero field,
-        // so they keep zero).
-        const float coherence = distance.x + distance.y == 0.0 ? -1.5 : 0.0;
-        const float cost = MatchCost(p, v) + 0.5 * (distance.x + distance.y) + coherence;
-        if (cost < best_cost) {
-            best_cost = cost;
-            best_v = v;
-            best_block_error = sample_v.z;
+        float cost = MatchCost(p, v);
+        if (i < 10) {
+            // The trajectory through p crosses the field at mid.
+            const vec2 mid = p + (0.5 - phase) * v;
+            const vec2 block_center = (vec2(block) + 0.5) * float(BLOCK);
+            const vec2 distance = max(abs(mid - block_center) - 0.5 * float(BLOCK), vec2(0.0));
+            // Ties go to the field: the block the trajectory crosses (still areas have a zero
+            // field, so they keep zero).
+            const float coherence = distance.x + distance.y == 0.0 ? -1.5 : 0.0;
+            cost += 0.5 * (distance.x + distance.y) + coherence;
+        }
+        if (max(abs(v.x), abs(v.y)) < 1.0) {
+            if (cost < still_cost) {
+                still_cost = cost;
+                still_v = v;
+                still_block_error = sample_v.z;
+            }
+        } else if (cost < move_cost) {
+            move_cost = cost;
+            move_v = v;
+            move_block_error = sample_v.z;
+        }
+    }
+    const bool has_move = move_cost < 1e30;
+    const bool pinned = Still(p);
+    bool moving = false;
+    float moved = 0.0;
+    if (has_move && !pinned) {
+        const vec2 a = p - phase * move_v;
+        const vec2 b = p + (1.0 - phase) * move_v;
+        const bool still_ends = abs(LumaA(a) - LumaB(a)) < STILL_LIMIT &&
+                                abs(LumaB(b) - LumaA(b)) < STILL_LIMIT;
+        moved = MovedCost(p, move_v);
+        moving = move_cost + MOVED_WEIGHT * moved +
+                     (still_ends ? STILL_ENDS_COST : 0.0) < still_cost;
+    }
+    vec2 best_v = moving ? move_v : still_v;
+    const float best_cost = moving ? move_cost : still_cost;
+    const float best_block_error = moving ? move_block_error : still_block_error;
+
+    // Unmatched: covered in one frame and revealed in the other.
+    const float error = max(best_cost, 0.0);
+    float occlusion = smoothstep(12.0, 40.0, max(error, 0.5 * best_block_error));
+    // Lean on the nearer frame, unless the frame that holds the content can be told.
+    float weight_b = mix(phase, nearer_a ? 0.0 : 1.0, occlusion);
+    if (pinned) {
+        best_v = vec2(0.0);
+    } else if (error > 12.0) {
+        // What shows through is the scene behind: it moves with the camera or as the field says
+        // here. Where one end of such a trajectory is still for sure, that end covers the scene
+        // and the other end is shown.
+        const vec2 motions[3] = vec2[3](global_v, has_move ? move_v : global_v, own_v);
+        bool resolved = false;
+        for (int h = 0; h < 3 && !resolved; ++h) {
+            const vec2 v = motions[h];
+            const vec2 a = p - phase * v;
+            const vec2 b = p + (1.0 - phase) * v;
+            if (max(abs(v.x), abs(v.y)) < 2.0 || !Inside(a, size) || !Inside(b, size)) {
+                continue;
+            }
+            const bool a_still = Still(a);
+            const bool b_still = Still(b);
+            if (a_still || b_still) {
+                resolved = true;
+                occlusion = 1.0;
+                // Both: the scene between two still marks, lost; the nearer frame in place.
+                best_v = a_still && b_still ? vec2(0.0) : v;
+                weight_b = a_still && b_still ? (nearer_a ? 0.0 : 1.0) : (a_still ? 1.0 : 0.0);
+            }
         }
     }
 
-    // Unmatched: covered in one frame and revealed in the other. Lean on the nearer frame.
-    const float error = max(best_cost, 0.0);
-    const float occlusion = smoothstep(12.0, 40.0, max(error, 0.5 * best_block_error));
-    const float weight_b = mix(phase, nearer_a ? 0.0 : 1.0, occlusion);
+    if (view != 0u) {
+        // Debug: the vector (1: the texel's, 2: its block's) as red and green, the occlusion as
+        // blue; 3: the still mask as red, a moving vector as green, the frame shown as blue; 4: the
+        // costs of zero, of the moving vector and of MovedCost.
+        const vec4 block_v = texelFetch(motion, own, 0);
+        const vec2 shown = view == 1u ? best_v : block_v.xy;
+        const vec3 color =
+            view == 4u ? vec3(still_cost, min(move_cost, 1e3), moved) / 32.0 :
+            view == 3u ? vec3(textureLod(still, p * luma_inv, 0.0).r, moving ? 1.0 : 0.0, weight_b)
+                       : vec3(0.5 + shown.x / 256.0, 0.5 + shown.y / 64.0,
+                              view == 1u ? occlusion : block_v.z / 64.0);
+        for (uint y = 0; y < scale; ++y) {
+            for (uint x = 0; x < scale; ++x) {
+                const uvec2 pixel = texel * scale + uvec2(x, y);
+                if (all(lessThan(pixel, out_size))) {
+                    imageStore(dest, ivec2(pixel), vec4(color, 1.0));
+                }
+            }
+        }
+        return;
+    }
 
     // Output pixels: luma texels are scale pixels wide.
     const vec2 v_out = float(scale) * best_v;

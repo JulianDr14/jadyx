@@ -226,6 +226,7 @@ void ApplyVertexFetchFixups(Shader::IR::Program& program, const GraphicsPipeline
     using Shader::Optimization::VertexFetchFixup;
     std::array<VertexFetchFixup, 32> fixups{};
     bool any = false;
+    const VertexLayout vertex_layout = MaxwellToD3D12::BuildVertexLayout(key.state);
     for (size_t index = 0; index < key.state.attributes.size(); ++index) {
         const auto& attr = key.state.attributes[index];
         if (attr.enabled == 0) {
@@ -234,8 +235,9 @@ void ApplyVertexFetchFixups(Shader::IR::Program& program, const GraphicsPipeline
         VertexFetchFixup& fixup = fixups[index];
         fixup.swap_red_blue =
             attr.bgra != 0 &&
-            MaxwellToD3D12::FetchesBgraInShader(attr.Type(), attr.Size(), attr.offset,
-                                                key.state.vertex_strides[attr.buffer]);
+            MaxwellToD3D12::FetchesBgraInShader(attr.Type(), attr.Size(),
+                                                vertex_layout.HostOffset(static_cast<u32>(index)),
+                                                vertex_layout.HostStride(attr.buffer));
         const u32 components = MaxwellToD3D12::Vertex32BitComponents(attr.Size());
         if (components != 0 && attr.Type() == Maxwell::VertexAttribute::Type::UNorm) {
             fixup.normalize = VertexFetchFixup::Normalize::Unsigned;
@@ -577,7 +579,7 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
     const bool gl_ndc{key.state.ndc_minus_one_to_one != 0};
     const float point_size{std::bit_cast<float>(key.state.point_size)};
     switch (stage) {
-    case Shader::Stage::VertexB:
+    case Shader::Stage::VertexB: {
         if (!has_geometry) {
             if (key.state.topology == Maxwell::PrimitiveTopology::Points) {
                 info.fixed_state_point_size = point_size;
@@ -586,11 +588,14 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
         }
         std::ranges::transform(key.state.attributes, info.generic_input_types.begin(),
                                &CastAttributeType);
+        // Fetched where the pipeline's input layout puts them (GraphicsPipeline::Describe).
+        const VertexLayout vertex_layout = MaxwellToD3D12::BuildVertexLayout(key.state);
         for (size_t index = 0; index < key.state.attributes.size(); ++index) {
             const auto& attr = key.state.attributes[index];
             if (attr.enabled != 0) {
                 const MaxwellToD3D12::AttributeFetch fetch = MaxwellToD3D12::SplitAttributeFetch(
-                    attr.Type(), attr.Size(), attr.offset, key.state.vertex_strides[attr.buffer]);
+                    attr.Type(), attr.Size(), vertex_layout.HostOffset(static_cast<u32>(index)),
+                    vertex_layout.HostStride(attr.buffer));
                 info.generic_input_parts[index] = static_cast<u8>(fetch.parts);
                 info.generic_input_part_components[index] =
                     static_cast<u8>(fetch.part_components);
@@ -599,6 +604,7 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
             }
         }
         break;
+    }
     case Shader::Stage::TessellationControl:
         info.patch_vertices = key.state.patch_control_points_minus_one + 1;
         break;

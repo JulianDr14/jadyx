@@ -1,0 +1,112 @@
+// SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Frame generation: the still mask of a pair of frames, what stays in place while the scene moves
+// (a HUD, a character the camera follows). One invocation writes one level 0 luma texel.
+//
+// A texel is still for sure when both frames show the same there and neither the frame's motion
+// nor its block's explains it: what A shows did not go along the vector and what B shows did not
+// come along it (a texel off either way is tolerated; a flat area a vector maps onto itself tells
+// nothing). Only a moving frame tells: with the camera still the scene stays in place as well. The
+// mark stays, fading, while the texel keeps its value: the flat inside of a wide element is marked
+// on the frames whose motion carries it past the element's edge.
+// d3d12_fg_compose.comp keeps marked texels in place and does not take them for the scene.
+
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    uvec2 size;
+    uint stats_index;  // the pair's slot (B's)
+    uint has_previous; // 1: binding 3 is the mask of the pair before
+};
+
+const int BLOCK = 8;
+
+layout(binding = 0) uniform sampler2D luma_a;
+layout(binding = 1) uniform sampler2D luma_b;
+layout(binding = 2) uniform sampler2D motion;
+layout(binding = 3) uniform sampler2D previous;
+layout(binding = 6, r8) uniform writeonly restrict image2D dest;
+
+layout(std430, binding = 7) buffer Stats {
+    uint stats[];
+};
+
+const uint GLOBAL_VECTOR = 8u;
+
+/// Luma difference (0-255) under which a texel is the same in both frames.
+const float SAME_LIMIT = 4.0;
+/// ... and over which a vector does not explain it.
+const float UNEXPLAINED = 12.0;
+/// Vectors shorter than this tell still from moving no better than zero.
+const float MIN_MOTION = 2.0;
+/// What a mark keeps per pair that neither confirms nor denies it.
+const float FADE = 0.85;
+
+vec2 inv_size;
+
+bool Inside(vec2 p) {
+    return all(greaterThanEqual(p, vec2(0.0))) && all(lessThanEqual(p, vec2(size)));
+}
+
+/// How far the texel is from having moved by v: A's value from B along v, B's from A against it,
+/// the least over a texel around.
+float Explained(vec2 p, float a, float b, vec2 v) {
+    const vec2 offsets[5] = vec2[5](vec2(0.0), vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0),
+                                    vec2(0.0, -1.0));
+    const bool forward = Inside(p + v);
+    const bool backward = Inside(p - v);
+    if (!forward && !backward) {
+        return 0.0;
+    }
+    float least = 1e3;
+    for (int i = 0; i < 5; ++i) {
+        if (forward) {
+            least = min(least, abs(a - 255.0 * textureLod(luma_b, (p + v + offsets[i]) * inv_size,
+                                                          0.0).r));
+        }
+        if (backward) {
+            least = min(least, abs(b - 255.0 * textureLod(luma_a, (p - v + offsets[i]) * inv_size,
+                                                          0.0).r));
+        }
+    }
+    return least;
+}
+
+void main() {
+    const ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(texel, ivec2(size)))) {
+        return;
+    }
+    inv_size = 1.0 / vec2(size);
+    const float a = 255.0 * texelFetch(luma_a, texel, 0).r;
+    const float b = 255.0 * texelFetch(luma_b, texel, 0).r;
+    float mark = 0.0;
+    if (abs(a - b) < SAME_LIMIT) {
+        const vec2 p = vec2(texel) + 0.5;
+        const vec2 global_v = vec2(uintBitsToFloat(stats[GLOBAL_VECTOR + 2u * stats_index]),
+                                   uintBitsToFloat(stats[GLOBAL_VECTOR + 2u * stats_index + 1u]));
+        const vec2 block_v =
+            texelFetch(motion, min(texel / BLOCK, textureSize(motion, 0) - 1), 0).xy;
+        const bool by_global = max(abs(global_v.x), abs(global_v.y)) >= MIN_MOTION;
+        const vec2 d = abs(block_v - global_v);
+        const bool by_block =
+            max(abs(block_v.x), abs(block_v.y)) >= MIN_MOTION && max(d.x, d.y) >= 1.0;
+        const float kept = has_previous != 0u ? texelFetch(previous, texel, 0).r : 0.0;
+        mark = kept * FADE;
+        // With the camera still the scene stays in place too, and what a moving object is about
+        // to cross must not be held.
+        if (by_global) {
+            float explained = Explained(p, a, b, global_v);
+            if (by_block) {
+                explained = min(explained, Explained(p, a, b, block_v));
+            }
+            if (explained >= UNEXPLAINED) {
+                mark = 1.0;
+            }
+        }
+    }
+    imageStore(dest, texel, vec4(mark));
+}

@@ -542,6 +542,10 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
     depth_bounds = device.SupportsDepthBounds() && key.state.depth_enabled != 0 &&
                    key.state.dynamic_state.depth_bounds_enable != 0;
     blend_constants = PlanBlendConstants(key.state);
+    if (VertexLayout vertex_plan = MaxwellToD3D12::BuildVertexLayout(key.state);
+        vertex_plan.RepackMask() != 0) {
+        vertex_layout = std::make_unique<const VertexLayout>(vertex_plan);
+    }
     if (key.state.xfb_enabled != 0) {
         for (size_t index = 0; index < stream_output_strides.size(); ++index) {
             stream_output_strides[index] = key.state.xfb_state.layouts[index].stride;
@@ -1087,6 +1091,19 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     if (VideoCommon::GeoHunt::Enabled()) [[unlikely]] {
         VideoCommon::GeoHunt::SetShaders(key.unique_hashes[1], key.unique_hashes[5], false);
     }
+    // The generic cache only rebinds the vertex slots it marked dirty. A repacked stream is
+    // revalidated by every draw (a cache hit while its source is unchanged), and a slot this
+    // pipeline places differently than the last one must be bound again.
+    BufferCacheRuntime& buffer_runtime = buffer_cache.runtime;
+    buffer_runtime.SetVertexLayout(vertex_layout.get());
+    if (const u32 rebind = buffer_runtime.RepackedVertexSlots() |
+                           (vertex_layout ? vertex_layout->RepackMask() : 0U);
+        rebind != 0) [[unlikely]] {
+        auto& flags = context.maxwell3d.dirty.flags;
+        for (u32 mask = rebind; mask != 0; mask &= mask - 1) {
+            flags[VideoCommon::Dirty::VertexBuffer0 + std::countr_zero(mask)] = true;
+        }
+    }
     buffer_cache.UpdateGraphicsBuffers(is_indexed);
     buffer_cache.BindHostGeometryBuffers(is_indexed);
     lap.Lap(VideoCore::Perf::Counter::DrawBuffersNs);
@@ -1421,9 +1438,14 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
         }
         const u32 slot = attribute.buffer;
         const u32 divisor = state.binding_divisors[slot];
+        // Repacked slots move the attribute (VertexLayout); the others keep the guest's place.
+        const u32 offset = vertex_layout ? vertex_layout->HostOffset(index)
+                                         : static_cast<u32>(attribute.offset);
+        const u32 stride =
+            vertex_layout ? vertex_layout->HostStride(slot) : state.vertex_strides[slot];
         // Part k of an attribute fetched in parts is generic N + 32k (MakeRuntimeInfo).
         const MaxwellToD3D12::AttributeFetch fetch = MaxwellToD3D12::SplitAttributeFetch(
-            attribute.Type(), attribute.Size(), attribute.offset, state.vertex_strides[slot]);
+            attribute.Type(), attribute.Size(), offset, stride);
         if (fetch.parts > 1) {
             format = fetch.part_format;
         }
@@ -1439,7 +1461,7 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsPipeline::Describe(
                 .SemanticIndex = static_cast<UINT>(index + part * Shader::IR::NUM_GENERICS),
                 .Format = format,
                 .InputSlot = slot,
-                .AlignedByteOffset = attribute.offset + part * fetch.part_bytes,
+                .AlignedByteOffset = offset + part * fetch.part_bytes,
                 .InputSlotClass = divisor != 0 ? D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA
                                                : D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
                 .InstanceDataStepRate = divisor,

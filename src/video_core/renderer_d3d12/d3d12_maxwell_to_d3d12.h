@@ -6,6 +6,11 @@
 #include <d3d12.h>
 
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/renderer_d3d12/d3d12_vertex_layout.h"
+
+namespace Vulkan {
+struct FixedPipelineState;
+}
 
 /// Maxwell fixed-function state -> D3D12, the counterpart of renderer_vulkan/maxwell_to_vk.
 /// Values D3D12 lacks fall back to the closest one and are reported by the caller.
@@ -62,6 +67,17 @@ struct AttributeFetch {
 };
 AttributeFetch SplitAttributeFetch(Maxwell::VertexAttribute::Type type,
                                    Maxwell::VertexAttribute::Size size, u32 offset, u32 stride);
+
+/// What the host fetches of a guest attribute format at slot and offset (VertexLayout). A
+/// format without a DXGI equivalent is read as RGBA32F (GraphicsPipeline::Describe).
+VertexAttributeDesc DescribeVertexAttribute(Maxwell::VertexAttribute::Type type,
+                                            Maxwell::VertexAttribute::Size size, u32 slot,
+                                            u32 offset);
+
+/// Host placement of a pipeline's vertex attributes. Every place that fetches or describes
+/// them (input layout, shader runtime info, fetch fixups, buffer binding) reads offsets and
+/// strides from it, so they agree.
+VertexLayout BuildVertexLayout(const Vulkan::FixedPipelineState& state);
 
 /// Components of a 32-bit vertex format, 0 for the others.
 u32 Vertex32BitComponents(Maxwell::VertexAttribute::Size size);

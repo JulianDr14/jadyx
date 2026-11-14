@@ -35,6 +35,7 @@
 #include "video_core/renderer_d3d12/d3d12_root_signature.h"
 #include "video_core/renderer_d3d12/d3d12_stage_bindings.h"
 #include "video_core/renderer_d3d12/d3d12_texture_cache.h"
+#include "video_core/renderer_d3d12/d3d12_vertex_layout.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 
 namespace VideoCore {
@@ -438,6 +439,12 @@ public:
         return layout;
     }
 
+    /// Slots the bound streams are repacked into (VertexLayout); null when every attribute is
+    /// fetched where the guest put it.
+    [[nodiscard]] const VertexLayout* VertexInputLayout() const noexcept {
+        return vertex_layout.get();
+    }
+
     [[nodiscard]] const TessEmulationPlan& TessPlan() const noexcept {
         return tess_plan;
     }
@@ -608,6 +615,8 @@ private:
     const PipelineLayout& layout;
     const u32 lower_noperspective_mask;
     const TessEmulationPlan tess_plan;
+    /// Host placement of the vertex attributes; null when every slot is fetched in place.
+    std::unique_ptr<const VertexLayout> vertex_layout;
     FragmentHelpers fragment_helpers{};
     std::optional<VertexTextureHandle> vertex_texture_handle;
     bool generates_geometry{};

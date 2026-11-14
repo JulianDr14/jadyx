@@ -65,6 +65,26 @@ void CaptureCopySkip(const Image& dst, const Image& src, std::string_view reason
                     "\"dst_format\":{}}}", reason, src.gpu_addr, dst.gpu_addr,
                     static_cast<u32>(src.info.format), static_cast<u32>(dst.info.format)));
 }
+
+/// dred=1 only: the images behind the helper draw (or copy) that follows in the GPU trace.
+void TraceBlitImages(std::string_view what, const Image& dst, const Image& src,
+                     PixelFormat dst_view, PixelFormat src_view, const Region2D& dst_region,
+                     const Region2D& src_region) {
+    if (!GpuDiagnosticsEnabled()) {
+        return;
+    }
+    TraceGpuDetail(fmt::format(
+        "{} dst={} gpu={:x} fmt={}/{} {}x{}x{} lv={} samples={} src={} gpu={:x} fmt={}/{} "
+        "{}x{}x{} lv={} samples={} dst_region=({},{})-({},{}) src_region=({},{})-({},{})",
+        what, static_cast<void*>(dst.Handle()), dst.gpu_addr, static_cast<u32>(dst.info.format),
+        static_cast<u32>(dst_view), dst.info.size.width, dst.info.size.height,
+        dst.info.size.depth, dst.info.resources.levels, dst.info.num_samples,
+        static_cast<void*>(src.Handle()), src.gpu_addr, static_cast<u32>(src.info.format),
+        static_cast<u32>(src_view), src.info.size.width, src.info.size.height,
+        src.info.size.depth, src.info.resources.levels, src.info.num_samples,
+        dst_region.start.x, dst_region.start.y, dst_region.end.x, dst_region.end.y,
+        src_region.start.x, src_region.start.y, src_region.end.x, src_region.end.y));
+}
 } // namespace
 
 void TextureCacheRuntime::CopyImage(Image& dst, Image& src, std::span<const ImageCopy> copies) {
@@ -694,6 +714,8 @@ bool TextureCacheRuntime::CopyBlocksIntoDecoded(Image& dst, Image& src,
                 .end = {static_cast<s32>(dst_x + width), static_cast<s32>(dst_y + height)}};
             const VideoCommon::Region2D src_region{
                 .start = {0, 0}, .end = {static_cast<s32>(width), static_cast<s32>(height)}};
+            TraceBlitImages("blocks into decoded", dst, src, dst.info.format, src.info.format,
+                            dst_region, src_region);
             blit_helper->BlitColor({rtv, dst.ViewFormat(), 1}, srv,
                                    blit_helper->NearestSampler(), dst_region, src_region,
                                    {blocks_x * block_w, blocks_y * block_h});
@@ -785,6 +807,7 @@ void TextureCacheRuntime::CopyImageMSAA(Image& dst, Image& src, std::span<const 
     const s32 scale_y = 1 << log_y;
     ID3D12Device* const device_handle = device.Get();
 
+    TraceBlitImages("msaa image copy", dst, src, dst.info.format, src.info.format, {}, {});
     src.Transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     dst.Transition(color ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_DEPTH_WRITE);
     for (const ImageCopy& copy : copies) {
@@ -977,6 +1000,8 @@ bool TextureCacheRuntime::BlitImage(Framebuffer*, ImageView& dst, ImageView& src
     if (!dst_image || !src_image || !dst_image->Handle() || !src_image->Handle()) {
         return false;
     }
+    TraceBlitImages(dst_image == src_image ? "2D blit within" : "2D blit", *dst_image, *src_image,
+                    dst.format, src.format, dst_region, src_region);
     if (dst_image == src_image) {
         BlitWithinImage(dst, src, dst_region, src_region, filter);
         return false;
