@@ -139,9 +139,10 @@ add_executable(jadyx WIN32
     game/motion_view.h
     input/motion_emu.h
     input/dsu_protocol.h
-    input/phone_gyro.cpp
-    input/phone_gyro.h
-    input/phone_gyro_text.h
+    input/dsu_client.cpp
+    input/dsu_client.h
+    input/dsu_status.h
+    input/dsu_text.h
     input/rumble_settings.h
     input/controller_basics.h
     game/game_menu_surface.cpp

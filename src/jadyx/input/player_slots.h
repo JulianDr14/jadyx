@@ -18,25 +18,37 @@ class PlayerSlots {
 public:
     /// `ids`: the connected pads other than player 1's, in discovery order. Returns the players
     /// (indices 1..7) whose pad changed: freed, taken, or both.
-    std::vector<std::size_t> Assign(const std::vector<std::wstring>& ids) {
-        std::vector<std::size_t> changed;
+    std::vector<std::size_t> Assign(const std::vector<std::wstring>& ids) { return Assign(ids, {}); }
+
+    /// The same, with players chosen by hand: `pinned[player]` names the pad that must play it
+    /// (a DSU pad set to "Player 3"), if it is among `ids`; it takes that player from whoever had
+    /// it, who moves to the lowest free one. Index 0 is ignored.
+    std::vector<std::size_t> Assign(const std::vector<std::wstring>& ids,
+                                    const std::array<std::wstring, MaxPlayers>& pinned) {
+        const auto present = [&](const std::wstring& id) {
+            return !id.empty() && std::find(ids.begin(), ids.end(), id) != ids.end();
+        };
+        const std::array<std::wstring, MaxPlayers> before = slots;
+        std::array<std::wstring, MaxPlayers> next{};
+        for (std::size_t player = 1; player < MaxPlayers; ++player)
+            if (present(pinned[player])) next[player] = pinned[player];
+        const auto placed = [&](const std::wstring& id) { return std::find(next.begin(), next.end(), id) != next.end(); };
+        // Everyone else keeps the player they had, if it is still free.
         for (std::size_t player = 1; player < MaxPlayers; ++player) {
-            auto& id = slots[player];
-            if (!id.empty() && std::find(ids.begin(), ids.end(), id) == ids.end()) {
-                id.clear();
-                changed.push_back(player);
-            }
+            const auto& id = before[player];
+            if (next[player].empty() && present(id) && !placed(id)) next[player] = id;
         }
         for (const auto& id : ids) {
-            if (id.empty() || std::find(slots.begin(), slots.end(), id) != slots.end()) continue;
-            const auto free = std::find_if(slots.begin() + 1, slots.end(),
+            if (id.empty() || placed(id)) continue;
+            const auto free = std::find_if(next.begin() + 1, next.end(),
                                            [](const std::wstring& slot) { return slot.empty(); });
-            if (free == slots.end()) break; // More pads than players: the extra ones wait.
+            if (free == next.end()) break; // More pads than players: the extra ones wait.
             *free = id;
-            const auto player = static_cast<std::size_t>(free - slots.begin());
-            if (std::find(changed.begin(), changed.end(), player) == changed.end())
-                changed.push_back(player);
         }
+        slots = next;
+        std::vector<std::size_t> changed;
+        for (std::size_t player = 1; player < MaxPlayers; ++player)
+            if (slots[player] != before[player]) changed.push_back(player);
         return changed;
     }
     /// The pad id playing `player` (0-based), empty when nobody does. Index 0 is never assigned.

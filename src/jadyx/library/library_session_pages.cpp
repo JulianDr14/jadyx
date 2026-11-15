@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/library_session.h"
 #include "jadyx/library/controller_sections.h"
-#include "jadyx/input/phone_gyro.h"
+#include "jadyx/input/dsu_client.h"
+#include "jadyx/input/dsu_text.h"
 
 namespace Jadyx {
 using I18n::Tr;
@@ -393,7 +394,8 @@ void LibrarySession::HandleControllerPanel() {
         // sections (ControllerSection). The floating panel outside the Settings tab draws only
         // the first six.
         if (tab != LibraryTab::Settings) controller_section = 0;
-        const unsigned rows = controller_section ? ControllerSectionRows(controller_section, options) :
+        const std::vector<DsuRowRef> dsu_rows = DsuRows(dsu_status);
+        const unsigned rows = controller_section ? ControllerSectionRows(controller_section, options, dsu_rows.size()) :
                               tab == LibraryTab::Settings ? ControllerSectionEntry + ControllerSectionCount : 6;
         if (setting_row >= rows) setting_row = 0;
         if (actions & Up) setting_row = (setting_row + rows - 1) % rows;
@@ -407,18 +409,37 @@ void LibrarySession::HandleControllerPanel() {
         } else if (entry && actions & (Play | Right)) {
             controller_section = setting_row - ControllerSectionEntry + 1;
             setting_row = 0; dirty = true;
-        } else if (controller_section && actions & (Play | Left | Right) &&
-                   (ControllerSectionRow(controller_section, setting_row, options) == ControllerSettingRow::GyroPhone ||
-                    ControllerSectionRow(controller_section, setting_row, options) ==
-                        ControllerSettingRow::GyroPhoneAddress)) {
-            // The phone's rows act on A only: look again, or type its address.
-            if (actions & Play) {
-                if (ControllerSectionRow(controller_section, setting_row, options) == ControllerSettingRow::GyroPhone)
-                    PhoneGyro::Search();
-                else
-                    OpenOnlineEditor(EditorPurpose::PhoneAddress);
+        } else if (controller_section == SectionDsu) {
+            // The DSU page: A searches or types an address; on a server X removes it; on a pad
+            // left, right and A step who it plays. X never reaches A/B/X/Y's swap from here.
+            const ControllerSettingRow row = ControllerSectionRow(controller_section, setting_row, options);
+            const std::optional<DsuRowRef> ref =
+                row == ControllerSettingRow::DsuEntry && setting_row - 2 < dsu_rows.size()
+                    ? std::optional{dsu_rows[setting_row - 2]} : std::nullopt;
+            if (row == ControllerSettingRow::DsuSearch && actions & Play) {
+                DsuClient::Search();
+                dsu_status = DsuClient::Status();
+                dirty = true;
+            } else if (row == ControllerSettingRow::DsuAdd && actions & Play) {
+                OpenOnlineEditor(EditorPurpose::DsuAddress);
+                dirty = true;
+            } else if (ref && !ref->pad && actions & Swap) {
+                DsuClient::Remove(ref->server);
+                dsu_status = DsuClient::Status();
+                dirty = true;
+            } else if (ref && ref->pad && actions & (Play | Left | Right)) {
+                const DsuPadStatus& dsu_pad = dsu_status.servers[ref->server].pads[*ref->pad];
+                DsuClient::SetAssign(dsu_pad.key, StepDsuAssign(dsu_pad.assign, back));
+                dsu_status = DsuClient::Status();
                 dirty = true;
             }
+            actions &= ~Swap;
+        } else if (controller_section && actions & (Play | Left | Right) &&
+                   ControllerSectionRow(controller_section, setting_row, options) == ControllerSettingRow::GyroDsuPad) {
+            // Which DSU pad moves the gyro: Automatic, then each pad that sends one.
+            DsuClient::SetGyroPad(StepGyroDsuPad(dsu_status, back));
+            dsu_status = DsuClient::Status();
+            dirty = true;
         } else if (controller_section && actions & (Play | Left | Right)) {
             auto& stick = options.right_stick;
             switch (ControllerSectionRow(controller_section, setting_row, options)) {
@@ -443,8 +464,10 @@ void LibrarySession::HandleControllerPanel() {
             }
             case ControllerSettingRow::GyroShake:
                 options.motion_shake = StepEnum(options.motion_shake, MotionShakeButtonCount, back); break;
-            case ControllerSettingRow::GyroPhone:
-            case ControllerSettingRow::GyroPhoneAddress: break;
+            case ControllerSettingRow::GyroDsuPad:
+            case ControllerSettingRow::DsuSearch:
+            case ControllerSettingRow::DsuAdd:
+            case ControllerSettingRow::DsuEntry: break;
             }
             device_changed = true; dirty = true;
         } else if (actions & (Play | Left | Right)) {
@@ -599,13 +622,15 @@ void LibrarySession::Draw() {
     dirty = false;
 }
 
-void LibrarySession::PollPhoneGyro() {
-    // Only while its page shows: the player sees the link come up as the app opens.
-    const bool shown = tab == LibraryTab::Settings && settings && controller_section == SectionGyro &&
-                       options.motion_source == MotionSource::Phone;
-    PhoneGyro::SetWanted(shown);
-    if (const auto version = PhoneGyro::StatusVersion(); version != phone_gyro_version) {
-        phone_gyro_version = version;
+void LibrarySession::PollDsu() {
+    // Only while a page that lists it shows: the player sees servers and pads come up live.
+    const bool shown = tab == LibraryTab::Settings && settings &&
+                       (controller_section == SectionDsu ||
+                        (controller_section == SectionGyro && options.motion_source == MotionSource::Phone));
+    DsuClient::SetWanted(DsuClient::Wanter::Library, shown);
+    if (const auto version = DsuClient::StatusVersion(); version != dsu_version) {
+        dsu_version = version;
+        dsu_status = DsuClient::Status();
         if (shown) dirty = true;
     }
 }
@@ -806,16 +831,13 @@ void LibrarySession::OpenOnlineEditor(EditorPurpose purpose) {
         break;
     case EditorPurpose::HostPassword: initial = online_page.host_password; break;
     case EditorPurpose::ChatMessage: max_length = ChatMaxChars; break;
-    case EditorPurpose::PhoneAddress: {
-        // "a.b.c.d:port" at most; it starts with the typed one to fix it.
-        const PhoneGyroStatus phone = PhoneGyro::Status();
-        if (phone.typed) initial = phone.address;
+    case EditorPurpose::DsuAddress:
+        // "a.b.c.d:port" at most.
         max_length = 21;
         break;
-    }
     default: break;
     }
-    system_page.name_editor.emplace(std::move(initial), max_length);
+    system_page.name_editor.emplace(std::move(initial), max_length, NumericEditor(purpose));
     system_page.editor_purpose = purpose;
     system_page.editor_notice.clear();
 }
@@ -891,15 +913,14 @@ void LibrarySession::FinishOnlineEditor(bool accept, TimePoint now) {
         save = false;
         SendOnlineChat(value);
         break;
-    case EditorPurpose::PhoneAddress:
+    case EditorPurpose::DsuAddress:
         save = false;
-        // Empty goes back to looking for it; anything else must be an address.
-        if (value.find_first_not_of(L' ') == std::wstring::npos) {
-            PhoneGyro::Search();
-        } else if (!PhoneGyro::ConnectTo(value)) {
-            system_page.editor_notice = Tr(T::PhoneAddressInvalid);
+        // Empty adds nothing; anything else must be an address.
+        if (value.find_first_not_of(L' ') != std::wstring::npos && !DsuClient::Add(value)) {
+            system_page.editor_notice = Tr(T::DsuAddInvalid);
             return;
         }
+        dsu_status = DsuClient::Status();
         break;
     case EditorPurpose::UserName: break;
     }

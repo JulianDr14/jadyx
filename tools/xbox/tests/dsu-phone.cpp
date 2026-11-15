@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// The phone gyro (dsu_protocol.h): the DSU packets the console sends and reads, the phone's
-// sample in the emulated pad's frame, the orientation the on-screen controller shows, and the
-// addresses a player types.
+// DSU controllers (dsu_protocol.h, dsu_status.h): the packets the console sends and reads, a
+// pad's buttons and sticks as a Switch controller's, its motion in the emulated pad's frame, the orientation the on-screen controller shows, and the
+// addresses a player types, and the pages' rows and assignments.
 
 #include <cmath>
 #include <cstdio>
@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "jadyx/input/dsu_protocol.h"
+#include "jadyx/input/dsu_status.h"
 
 namespace {
 
@@ -228,12 +229,67 @@ void Addresses() {
     CHECK(Dsu::FormatAddress(*b) == L"10.0.0.5:26761");
 }
 
+void Buttons() {
+    auto pad = ServerPad(1, 0, 0, -1, 0, 0, 0, 0);
+    std::uint8_t* p = pad.data() + 20;
+    // Circle (east) is A, Cross B, Triangle X, Square Y; L1/R1 are L/R, L2/R2 ZL/ZR.
+    const std::uint16_t buttons = Dsu::Button::Circle | Dsu::Button::Square | Dsu::Button::L2 |
+                                  Dsu::Button::Options | Dsu::Button::Up | Dsu::Button::R3;
+    p[16] = static_cast<std::uint8_t>(buttons & 0xFF);
+    p[17] = static_cast<std::uint8_t>(buttons >> 8);
+    p[18] = 1; // Home.
+    p[20] = 255; // Left stick right.
+    p[21] = 0;   // Left stick down.
+    p[22] = 127;
+    p[23] = 127;
+    Put32(pad, 8, 0);
+    Put32(pad, 8, Dsu::Crc32(pad));
+    const auto parsed = Dsu::ParseResponse(pad);
+    CHECK(parsed && parsed->pad.buttons == buttons && parsed->pad.home);
+    if (parsed) {
+        const Dsu::PadInput in = Dsu::ToSwitch(parsed->pad);
+        CHECK(in.a && !in.b && !in.x && in.y && in.zl && !in.zr && !in.l && !in.r);
+        CHECK(in.plus && !in.minus && in.up && !in.down && in.rstick && !in.lstick && in.home);
+        CHECK(Near(in.lx, 1.0f, 1e-6f) && Near(in.ly, -1.0f, 1e-2f) && Near(in.rx, 0.0f, 1e-6f));
+        CHECK(in.AnyButton());
+    }
+    CHECK(!Dsu::ToSwitch(Dsu::PadSample{}).AnyButton());
+}
+
+void Status() {
+    // Auto, players 1..8, gyro only, off, and around.
+    CHECK(StepDsuAssign(DsuAssign::Auto, false) == DsuAssign::Player1);
+    CHECK(StepDsuAssign(DsuAssign::Auto, true) == DsuAssign::Off);
+    CHECK(StepDsuAssign(DsuAssign::Player8, false) == DsuAssign::GyroOnly);
+    CHECK(StepDsuAssign(DsuAssign::Off, false) == DsuAssign::Auto);
+    CHECK(DsuPinnedPlayer(DsuAssign::Player3) == 3 && DsuPinnedPlayer(DsuAssign::GyroOnly) == 0 &&
+          DsuPinnedPlayer(DsuAssign::Auto) == 0);
+    const std::uint64_t key = DsuPadKey(0xC0A80117u, 26760, 2);
+    CHECK(DsuPadSlot(key) == 2 && key != DsuPadKey(0xC0A80117u, 26761, 2) && key != DsuPadKey(0xC0A80118u, 26760, 2));
+
+    DsuStatus status{};
+    CHECK(DsuRows(status).empty() && status.PadCount() == 0 && status.MotionPads().empty());
+    status.servers.push_back({L"192.168.1.23", DsuServerState::Connected, 60,
+                              {DsuPadStatus{key, 2, DsuAssign::Auto, 0, true},
+                               DsuPadStatus{key + 1, 3, DsuAssign::Off, 0, false}}});
+    status.servers.push_back({L"192.168.1.40", DsuServerState::Connecting, 0, {}});
+    const auto rows = DsuRows(status);
+    CHECK(rows.size() == 4);
+    CHECK(rows.size() == 4 && rows[0].server == 0 && !rows[0].pad && rows[1].pad == 0u && rows[2].pad == 1u &&
+          rows[3].server == 1 && !rows[3].pad);
+    CHECK(status.PadCount() == 2 && status.MotionPads() == std::vector<std::uint64_t>{key});
+    const auto found = status.Find(key + 1);
+    CHECK(found && found->first == 0 && found->second == 1 && !status.Find(42));
+}
+
 } // namespace
 
 int main() {
     Packets();
     Filter();
     Addresses();
+    Buttons();
+    Status();
     if (failures) {
         std::printf("dsu-phone: %d failure(s)\n", failures);
         return 1;
