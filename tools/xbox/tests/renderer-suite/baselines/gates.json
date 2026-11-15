@@ -46,6 +46,7 @@
  "unit-pipeline-residency": "pass",
  "unit-prewarm-budget": "pass",
  "unit-spsc-wake-queue": "pass",
+ "unit-view-cast": "pass",
  "upload-copy": "pass",
  "xfb-stream-output": "pass"
 }
