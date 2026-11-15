@@ -3,12 +3,18 @@
 // Build with src/jadyx/i18n/localization.cpp and src/jadyx/i18n/locales/*.cpp.
 #include <cstdio>
 #include <cstdlib>
+#include <source_location>
 #include "jadyx/game/game_menu.h"
 #include "jadyx/settings/system_page.h"
 
 int main() {
     using namespace Jadyx;
-    auto check = [](bool ok) { if (!ok) std::abort(); };
+    auto check = [](bool ok, std::source_location where = std::source_location::current()) {
+        if (ok) return;
+        std::fprintf(stderr, "game-menu: check failed at line %u\n", static_cast<unsigned>(where.line()));
+        std::fflush(stderr);
+        std::abort();
+    };
 
     // Both pressed together: never reach the game, fire once after a second held.
     {
@@ -278,6 +284,28 @@ int main() {
         check(row(GameMenu::MousePage).detail.starts_with(L"Giroscopio · 125%"));
         open(GameMenu::GyroPage);
         check(row(GameMenu::GyroSource).value == L"Mouse");
+        // The phone: choosing it turns the game's gyro on; its link and address replace the shake
+        // button, A looks again or opens the keyboard.
+        check(game.Apply(MenuAction::Right) == GameMenuResult::MouseUseChanged &&
+              game.Settings().motion_source == MotionSource::Phone && game.Settings().motion == MotionMode::On);
+        check(row(GameMenu::GyroSource).value == L"Teléfono / servidor DSU" && game.Rows().size() == 5);
+        check(game.Rows()[2].label == L"Teléfono" && game.Rows()[2].value == L"Buscando…" &&
+              game.Rows()[3].label == L"Dirección del teléfono" && game.Rows()[3].value == L"Automática");
+        game.SetPhone({PhoneGyroState::Connected, L"192.168.1.23", false, 62, L"192.168.1.50"});
+        check(game.Rows()[2].value == L"Conectado" && game.Rows()[2].detail.starts_with(L"192.168.1.23 · 62") &&
+              game.Rows()[3].value == L"Automática · 192.168.1.23");
+        game.SetPhone({PhoneGyroState::NotFound, {}, false, 0, L"192.168.1.50"}, true);
+        check(game.Rows()[2].detail.find(L"192.168.1.50") != std::wstring::npos &&
+              game.Rows()[3].detail.starts_with(L"Esa no es una dirección IP"));
+        game.Apply(MenuAction::Down);
+        check(game.SelectedItem() == GameMenu::GyroPhone && game.Apply(MenuAction::Right) == GameMenuResult::None &&
+              game.Apply(MenuAction::Confirm) == GameMenuResult::PhoneSearch);
+        game.Apply(MenuAction::Down);
+        check(game.SelectedItem() == GameMenu::GyroPhoneAddress &&
+              game.Apply(MenuAction::Confirm) == GameMenuResult::PhoneAddress);
+        game.Apply(MenuAction::Up);
+        game.Apply(MenuAction::Up);
+        check(game.SelectedItem() == GameMenu::GyroSource);
         check(game.Apply(MenuAction::Right) == GameMenuResult::MouseUseChanged &&
               game.Settings().motion_source == MotionSource::RightStick && game.Rows().size() == 4);
         check(row(GameMenu::MotionView).value == L"Siempre");

@@ -40,6 +40,7 @@
 #include "jadyx/game/game_screenshot.h"
 #include "jadyx/game/uwp_software_keyboard.h"
 #include "jadyx/i18n/localization.h"
+#include "jadyx/input/phone_gyro.h"
 #include "jadyx/mods/mod_settings.h"
 #include "jadyx/settings/online_page.h"
 #include "jadyx/settings/uwp_system_settings.h"
@@ -217,6 +218,8 @@ void SessionMenu::Open() {
                                   VideoCommon::GeoHunt::OobFix(), basics_global, basics_game, MousePresent()},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
+    phone_version = PhoneGyro::StatusVersion();
+    menu->SetPhone(PhoneGyro::Status());
     const bool from_notice = notice_shown;
     HideChatNotice();
     if (live) {
@@ -430,8 +433,22 @@ void SessionMenu::HandleChatAction(MenuAction action) {
 }
 
 void SessionMenu::ChatKeyboardPress(std::optional<KeyboardReply> reply) {
-    if (reply && reply->kind == KeyboardReply::Kind::Submit) SendChat(reply->text);
-    if (!chat_keyboard.IsOpen()) SetTextEntryActive(false);
+    if (reply && reply->kind == KeyboardReply::Kind::Submit) {
+        if (!phone_keyboard) {
+            SendChat(reply->text);
+        } else if (menu) {
+            // Empty goes back to looking for it; anything else must be an address.
+            bool invalid = false;
+            if (reply->text.find_first_not_of(L' ') == std::wstring::npos) PhoneGyro::Search();
+            else invalid = !PhoneGyro::ConnectTo(reply->text);
+            WriteDiag(std::string{"menu: phone gyro address "} + (invalid ? "refused" : "set"));
+            menu->SetPhone(PhoneGyro::Status(), invalid);
+        }
+    }
+    if (!chat_keyboard.IsOpen()) {
+        SetTextEntryActive(false);
+        phone_keyboard = false;
+    }
     if (menu_surface) DrawMenu();
 }
 
@@ -565,6 +582,7 @@ void SessionMenu::Close(GameMenuResult result) {
         void(chat_keyboard.Apply(KeyboardClose{}));
         SetTextEntryActive(false);
     }
+    phone_keyboard = false;
     game_frame = {};
     if (game_keyboard.IsOpen() && menu_surface) {
         // The game's keyboard was under the menu: it comes back.
@@ -640,7 +658,8 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
             input.SetOptions(options);
         }
     }
-    if (result == GameMenuResult::MotionChanged) {
+    if (result == GameMenuResult::MotionChanged ||
+        (result == GameMenuResult::MouseUseChanged && menu->Settings().motion != input.Motion().mode)) {
         const GameMotion motion{menu->Settings().motion, menu->Settings().motion_view};
         if (!SaveGameMotion(program_id, motion)) WriteDiag("menu: motion settings could not be saved");
         input.SetMotion(motion);
@@ -652,6 +671,20 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         options.motion_source = menu->Settings().motion_source;
         options.motion_shake = menu->Settings().motion_shake;
         input.SetOptions(options);
+    }
+    if (result == GameMenuResult::MouseUseChanged) menu->SetPhone(PhoneGyro::Status());
+    if (result == GameMenuResult::PhoneSearch) {
+        PhoneGyro::Search();
+        menu->SetPhone(PhoneGyro::Status());
+        WriteDiag("menu: phone gyro, looking again");
+    }
+    if (result == GameMenuResult::PhoneAddress) {
+        const PhoneGyroStatus phone = PhoneGyro::Status();
+        phone_keyboard = true;
+        void(chat_keyboard.Apply(KeyboardOpen{std::wstring{I18n::Tr(I18n::Text::PhoneAddressTitle)}, {},
+                                              phone.typed ? phone.address : std::wstring{}, 21, 0, false, true,
+                                              false}));
+        SetTextEntryActive(true);
     }
     if (result == GameMenuResult::RumbleChanged) {
         const GameMenuSettings& settings = menu->Settings();
@@ -815,6 +848,12 @@ SessionMenu::Outcome SessionMenu::Update() {
         if (menu_surface) DrawMenu();
     }
     if (memory_edit_open && memory_edit->Tick() && menu_surface) DrawMenu();
+    if (menu && PhoneGyro::StatusVersion() != phone_version) {
+        phone_version = PhoneGyro::StatusVersion();
+        menu->SetPhone(PhoneGyro::Status(), menu->Settings().phone_address_invalid);
+        if (menu_surface && !chat_keyboard.IsOpen() && !cheats && !amiibo_screen && !chat_screen && !memory_edit_open)
+            DrawMenu();
+    }
     UpdateChat();
     return Outcome::Stay;
 }

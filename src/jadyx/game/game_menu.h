@@ -11,6 +11,7 @@
 #include "jadyx/input/controller_basics.h"
 #include "jadyx/input/controller_style.h"
 #include "jadyx/input/motion_emu.h"
+#include "jadyx/input/phone_gyro_text.h"
 #include "jadyx/input/right_stick_settings.h"
 #include "jadyx/input/rumble_settings.h"
 #include "jadyx/settings/graphics_page.h"
@@ -163,6 +164,10 @@ struct GameMenuSettings {
     GameControllerBasics controller{};
     /// A mouse is plugged in, for the Mouse page's rows.
     bool mouse_present{};
+    /// The phone's link while it moves the gyro (phone_gyro.h), and whether the last address
+    /// typed was not one.
+    PhoneGyroStatus phone{};
+    bool phone_address_invalid{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -198,6 +203,9 @@ enum class GameMenuResult : std::uint8_t {
     /// What the mouse drives or what moves the gyro: Settings().right_stick (the game's own or
     /// Settings') and Settings().motion_source (Settings > Controller's) both hold new values.
     MouseUseChanged,
+    /// The phone's rows: look for a phone again, or open the keyboard for its address.
+    PhoneSearch,
+    PhoneAddress,
 };
 
 /// The console's tag reader as the game left it, for the Amiibo row.
@@ -233,6 +241,8 @@ public:
         RightStickPage, MousePage, RumblePage, GyroPage, MouseUseRow,
         /// The Graphics page's entries into its sections (graphics_page.h).
         GfxImagePage, GfxPerformancePage, GfxFixesPage, GfxMemoryPage,
+        /// The gyro page's phone rows: its link (A looks again) and its address (A types it).
+        GyroPhone, GyroPhoneAddress,
     };
     /// RightStick, Mouse, Rumble and Gyro open from the Controller page and go back to it; the
     /// graphics sections open from the Graphics page and go back to it.
@@ -288,6 +298,11 @@ public:
 
     /// Adds the Amiibo row, after the game's cheats and mods. `name`: the tag placed, if any.
     /// While the game isn't reading tags the row only says so: placing one would do nothing.
+    /// The phone's link changed (or the address typed was not one): the gyro page shows it.
+    void SetPhone(PhoneGyroStatus status, bool address_invalid = false) {
+        settings.phone = std::move(status);
+        settings.phone_address_invalid = address_invalid;
+    }
     void SetAmiibo(AmiiboReader reader, std::wstring name = {}) {
         amiibo_reader = reader;
         amiibo_name = std::move(name);
@@ -476,7 +491,9 @@ private:
 
     /// The gyro's page: the mouse's sensitivity shows there too while the mouse moves it.
     void UpdateGyroItems() {
-        gyro_page = {Motion, GyroSource, GyroShake};
+        // The phone moves it by itself: no button shakes it; its link and address show instead.
+        if (settings.motion_source == MotionSource::Phone) gyro_page = {Motion, GyroSource, GyroPhone, GyroPhoneAddress};
+        else gyro_page = {Motion, GyroSource, GyroShake};
         if (settings.motion_source == MotionSource::Mouse) gyro_page.push_back(RStickMouseSensitivity);
         gyro_page.push_back(MotionView);
         if (page == Page::Gyro) selected = std::min(selected, gyro_page.size() - 1);
@@ -492,7 +509,8 @@ private:
     }
     [[nodiscard]] static std::wstring GyroSourceText(MotionSource source) {
         using I18n::Text;
-        return Tr(source == MotionSource::Mouse ? Text::MousePage
+        return Tr(source == MotionSource::Phone ? Text::GyroPhone
+                  : source == MotionSource::Mouse ? Text::MousePage
                   : source == MotionSource::LeftStick ? Text::GyroStickLeft : Text::GyroStickRight);
     }
     /// Sets what the mouse drives and the gyro's source together, the right stick's switch as
@@ -628,6 +646,9 @@ private:
         }
         case GyroPage: {
             if (settings.motion == MotionMode::Off) return {Tr(Text::GyroPage), {}, Page, Tr(Text::No)};
+            if (settings.motion_source == MotionSource::Phone)
+                return {Tr(Text::GyroPage), {}, Page,
+                        Tr(Text::Yes) + L" · " + Tr(Text::GyroPhone) + L" · " + PhoneStateText(settings.phone)};
             return {Tr(Text::GyroPage), {}, Page,
                     Tr(Text::Yes) + L" · " + GyroSourceText(settings.motion_source) + L" · " +
                         GyroShakeText(settings.motion_shake, settings.motion_source)};
@@ -737,8 +758,9 @@ private:
                     Tr(on ? Text::MotionOnHint : Text::MotionOffHint)};
         }
         case GyroSource: {
-            std::wstring detail = Tr(settings.motion_source == MotionSource::Mouse ? Text::GyroSourceMouseHint
-                                                                                    : Text::GyroStickHint);
+            std::wstring detail = Tr(settings.motion_source == MotionSource::Mouse   ? Text::GyroSourceMouseHint
+                                     : settings.motion_source == MotionSource::Phone ? Text::GyroSourcePhoneHint
+                                                                                     : Text::GyroStickHint);
             if (settings.motion_source == MotionSource::Mouse && !settings.mouse_present)
                 detail = Tr(Text::MouseNotConnected);
             return {Tr(Text::GyroStickRow), GyroSourceText(settings.motion_source), Choice, detail};
@@ -746,6 +768,11 @@ private:
         case GyroShake:
             return {Tr(Text::GyroShakeRow), GyroShakeText(settings.motion_shake, settings.motion_source), Choice,
                     Tr(Text::GyroShakeHint)};
+        case GyroPhone:
+            return {Tr(Text::PhoneRow), PhoneStateText(settings.phone), Action, PhoneHintText(settings.phone)};
+        case GyroPhoneAddress:
+            return {Tr(Text::PhoneAddressRow), PhoneAddressText(settings.phone), Action,
+                    Tr(PhoneAddressHint(settings.phone, settings.phone_address_invalid))};
         case Rumble:
         case RumbleStrength: {
             const RumbleSettings resolved = ResolveRumble(settings.rumble_global, settings.rumble);
@@ -911,8 +938,14 @@ private:
                 settings.motion_source = next;
                 UpdateGyroItems();
             }
+            // Choosing the phone means wanting it now: this game's gyro turns on with it.
+            if (next == MotionSource::Phone && settings.right_stick_per_game) settings.motion = MotionMode::On;
             return GameMenuResult::MouseUseChanged;
         }
+        case GyroPhone:
+            return confirm ? GameMenuResult::PhoneSearch : GameMenuResult::None;
+        case GyroPhoneAddress:
+            return confirm ? GameMenuResult::PhoneAddress : GameMenuResult::None;
         case GyroShake:
             settings.motion_shake = StepEnum(settings.motion_shake, MotionShakeButtonCount, back);
             return GameMenuResult::GyroControlsChanged;
