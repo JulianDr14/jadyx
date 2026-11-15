@@ -72,9 +72,12 @@ void SetTextEntryActive(bool active);
 void PushTextEntryKey(TextEntryKey key);
 [[nodiscard]] std::vector<TextEntryKey> TakeTextEntryKeys();
 
-/// Raw relative mouse motion in pixels (x right, y down), from the window's thread. It moves the
-/// right stick only while ControllerOptions::mouse_right_stick is on and a game is playing.
+/// Raw relative mouse motion in pixels (x right, y down), from the window's thread. While a game
+/// plays it turns the emulated gyro when the mouse is its source and the game's gyro is on, or
+/// else moves the right stick when RightStickSettings::mouse is on.
 void AddMouseMotion(int dx, int dy);
+/// A mouse is plugged in (Windows' MouseCapabilities, checked at most once a second). Any thread.
+[[nodiscard]] bool MousePresent();
 
 struct ControllerOptions {
     bool swap_face_buttons{}; // Xbox A/B/X/Y -> Switch B/A/Y/X (physical positions).
@@ -84,7 +87,7 @@ struct ControllerOptions {
     /// Settings > Controller's; a game can keep its own (GameRightStick).
     RightStickSettings right_stick;
     /// The emulated gyro's controls, for every game that turns it on.
-    MotionStick motion_stick{MotionStick::Right};
+    MotionSource motion_source{MotionSource::RightStick};
     MotionShakeButton motion_shake{MotionShakeButton::StickClick};
     /// The game's rumble on the pad; a game can keep its own (GameRumble).
     RumbleSettings rumble;
