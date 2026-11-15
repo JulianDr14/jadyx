@@ -35,6 +35,8 @@ struct KeyboardOpen {
     bool masked{};
     bool can_cancel{true};
     bool is_inline{};
+    /// Jadyx's own address fields: the numeric pad (digits, '.' and ':').
+    bool numeric{};
 };
 /// The game checked a submitted text: refused it (`confirm` false) or asks to confirm it.
 struct KeyboardTextCheck {
@@ -119,14 +121,14 @@ private:
         open = event;
         if (open.max_length == 0) open.max_length = DefaultMaxLength;
         if (open.min_length > open.max_length) open.min_length = 0;
-        entry.emplace(open.initial, open.max_length);
+        entry.emplace(open.initial, open.max_length, open.numeric);
         notice.clear();
         confirming = false;
         return true;
     }
     bool On(const KeyboardTextCheck& event) {
         // Back to the keyboard with the text the game checked and its message.
-        entry.emplace(submitted, open.max_length);
+        entry.emplace(submitted, open.max_length, open.numeric);
         notice = event.message;
         confirming = event.confirm;
         if (confirming) {

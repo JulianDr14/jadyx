@@ -31,9 +31,23 @@ struct TextEntryPanelLayout {
     static constexpr float KeyX(std::size_t column) { return Left + column * (KeyWidth + Gap); }
     static constexpr float KeyY(std::size_t row) { return Top + row * (KeyHeight + Gap); }
 
-    /// The key (row, column) under a point in panel units, if any; action keys report their
+    /// The numeric pad: four big keys a row, centered under the text box.
+    static constexpr float NumKeyWidth = 150, NumKeyHeight = 66;
+    static constexpr float NumWidth = TextEntry::NumericColumns * NumKeyWidth + (TextEntry::NumericColumns - 1) * Gap;
+    static constexpr float NumLeft = (Width - NumWidth) / 2;
+    static constexpr float NumKeyX(std::size_t column) { return NumLeft + column * (NumKeyWidth + Gap); }
+    static constexpr float NumKeyY(std::size_t row) { return Top + row * (NumKeyHeight + Gap); }
+
+    /// The key (row, column) under a point in panel units, if any; wide keys report their
     /// first column, which TextEntry::Focus snaps to anyway.
-    static std::optional<std::pair<std::size_t, std::size_t>> KeyAt(float x, float y) {
+    static std::optional<std::pair<std::size_t, std::size_t>> KeyAt(float x, float y, bool numeric = false) {
+        if (numeric) {
+            const float column = (x - NumLeft) / (NumKeyWidth + Gap);
+            const float row = (y - Top) / (NumKeyHeight + Gap);
+            if (column < 0 || row < 0 || column >= TextEntry::NumericColumns || row >= TextEntry::NumericRows)
+                return std::nullopt;
+            return std::pair{static_cast<std::size_t>(row), static_cast<std::size_t>(column)};
+        }
         const float column = (x - Left) / (KeyWidth + Gap);
         const float row = (y - Top) / (KeyHeight + Gap);
         if (column < 0 || row < 0 || column >= TextEntry::Columns || row >= TextEntry::Rows)

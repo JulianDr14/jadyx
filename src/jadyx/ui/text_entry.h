@@ -10,6 +10,10 @@
 //
 // Five rows of ten columns. The first four hold characters; the last holds five wide action keys
 // (Shift, symbols, Space, Delete, Done), two columns each, so moving up and down keeps the column.
+//
+// A numeric pad instead, for addresses and ports: four rows of four big keys,
+//   1 2 3 Delete / 4 5 6 . / 7 8 9 : / 0 (two wide) Done (two wide),
+// and a real keyboard types only digits, '.' and ':' into it.
 
 #include <array>
 #include <cstddef>
@@ -24,6 +28,9 @@ public:
     static constexpr std::size_t Columns = 10;
     static constexpr std::size_t CharacterRows = 4;
     static constexpr std::size_t Rows = CharacterRows + 1;
+    /// The numeric pad's grid.
+    static constexpr std::size_t NumericColumns = 4;
+    static constexpr std::size_t NumericRows = 4;
     enum class Action : std::uint8_t { Shift, Symbols, Space, Delete, Done };
     static constexpr std::size_t ActionCount = 5;
     enum class Result : std::uint8_t { None, Done, Cancel };
@@ -31,13 +38,25 @@ public:
     enum class Command : std::uint8_t { Up, Down, Left, Right, Press, Delete, Space, Shift, Done, Cancel };
 
     TextEntry() = default;
-    TextEntry(std::wstring initial, std::size_t max_length_)
-        : value{std::move(initial)}, max_length{max_length_} {
+    TextEntry(std::wstring initial, std::size_t max_length_, bool numeric_ = false)
+        : value{std::move(initial)}, max_length{max_length_}, numeric{numeric_} {
         if (value.size() > max_length) value.resize(max_length);
-        shift = value.empty(); // A new name starts with a capital.
+        shift = !numeric && value.empty(); // A new name starts with a capital.
+        if (numeric) row = 0;
     }
 
     void Move(int dx, int dy) {
+        if (numeric) {
+            if (dy != 0) {
+                row = (row + NumericRows + (dy > 0 ? 1 : NumericRows - 1)) % NumericRows;
+                if (row == NumericRows - 1) column = column / 2 * 2;
+            }
+            if (dx != 0) {
+                const std::size_t step = row == NumericRows - 1 ? 2 : 1;
+                column = (column + NumericColumns + (dx > 0 ? step : NumericColumns - step)) % NumericColumns;
+            }
+            return;
+        }
         if (dy != 0) {
             row = (row + Rows + (dy > 0 ? 1 : Rows - 1)) % Rows;
             // Entering the action row lands on the key under the current column.
@@ -49,12 +68,24 @@ public:
         }
     }
     void Focus(std::size_t row_, std::size_t column_) {
+        if (numeric) {
+            row = row_ % NumericRows;
+            column = row == NumericRows - 1 ? column_ % NumericColumns / 2 * 2 : column_ % NumericColumns;
+            return;
+        }
         row = row_ % Rows;
         column = row == CharacterRows ? column_ % Columns / 2 * 2 : column_ % Columns;
     }
 
     /// The highlighted key, as A on a pad or Enter would press it.
     Result Press() {
+        if (numeric) {
+            switch (NumericKey(row, column)) {
+            case L'\b': Backspace(); return Result::None;
+            case L'\n': return Result::Done;
+            default: Type(NumericKey(row, column)); return Result::None;
+            }
+        }
         if (row < CharacterRows) {
             Type(Character(row, column));
             return Result::None;
@@ -95,6 +126,7 @@ public:
 
     /// Typed on a real keyboard or produced by a key: printable characters only.
     void Type(wchar_t c) {
+        if (numeric && !((c >= L'0' && c <= L'9') || c == L'.' || c == L':')) return;
         if (c < 0x20 || c == 0x7F || value.size() >= max_length) return;
         if (c == L' ' && (value.empty() || value.back() == L' ')) return;
         value += c;
@@ -106,7 +138,15 @@ public:
         value.pop_back();
         if (!value.empty() && value.back() >= 0xD800 && value.back() <= 0xDBFF) value.pop_back();
     }
-    void ToggleShift() { shift = !shift; }
+    void ToggleShift() {
+        if (!numeric) shift = !shift;
+    }
+
+    /// The numeric pad's key: a character, '\b' for Delete or '\n' for Done.
+    [[nodiscard]] static constexpr wchar_t NumericKey(std::size_t r, std::size_t c) {
+        constexpr std::wstring_view keys[NumericRows]{L"123\b", L"456.", L"789:", L"00\n\n"};
+        return r < NumericRows && c < NumericColumns ? keys[r][c] : L'\0';
+    }
 
     [[nodiscard]] wchar_t Character(std::size_t r, std::size_t c) const {
         static constexpr std::array<std::wstring_view, CharacterRows> letters{
@@ -148,12 +188,14 @@ public:
     [[nodiscard]] std::size_t Column() const { return column; }
     [[nodiscard]] bool Shifted() const { return shift; }
     [[nodiscard]] bool ShowingSymbols() const { return symbols; }
+    [[nodiscard]] bool Numeric() const { return numeric; }
 
 private:
     std::wstring value;
     std::size_t max_length{10};
     std::size_t row{1}, column{0};
     bool shift{}, symbols{};
+    bool numeric{};
 };
 
 } // namespace Jadyx
