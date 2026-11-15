@@ -300,7 +300,7 @@ bool LibrarySession::PressDialog(float x, float y) {
     }
     if (system_page.name_editor) {
         using L = SystemPageLayout;
-        if (const auto key = TextEntryPanelLayout::KeyAt(x - L::EditorX, y - L::EditorY)) {
+        if (const auto key = TextEntryPanelLayout::KeyAt(x - L::EditorX, y - L::EditorY, system_page.name_editor->Numeric())) {
             auto& editor = *system_page.name_editor;
             editor.Focus(key->first, key->second);
             if (editor.Press() == TextEntry::Result::Done) finish_name_editor = true;
