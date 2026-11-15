@@ -1096,6 +1096,23 @@ enum class Text : std::uint16_t {
     MouseSensitivityShort,
     GyroTurnOnInGame,
     ControllerSectionSubtitle,
+    GyroPhone,
+    GyroSourcePhoneHint,
+    PhoneRow,
+    PhoneSearching,
+    PhoneNotFound,
+    PhoneConnecting,
+    PhoneConnected,
+    PhoneLost,
+    PhoneSearchHint,
+    PhoneConnectedHint,
+    PhoneLostHint,
+    PhoneAddressRow,
+    PhoneAddressAuto,
+    PhoneAddressHint,
+    PhoneAddressTypedHint,
+    PhoneAddressInvalid,
+    PhoneAddressTitle,
     Count
 };
 inline constexpr std::size_t TextCount = static_cast<std::size_t>(Text::Count);
