@@ -41,9 +41,10 @@ struct HandleKey {
     u32 sec_index, sec_offset, sec_shift_left;
     u32 count;
     bool has_secondary;
+    u32 mask, sec_mask;
     constexpr bool operator==(const HandleKey& o) const noexcept {
-        return std::tie(index, offset, shift_left, sec_index, sec_offset, sec_shift_left, count, has_secondary)
-            == std::tie(o.index, o.offset, o.shift_left, o.sec_index, o.sec_offset, o.sec_shift_left, o.count, o.has_secondary);
+        return std::tie(index, offset, shift_left, sec_index, sec_offset, sec_shift_left, count, has_secondary, mask, sec_mask)
+            == std::tie(o.index, o.offset, o.shift_left, o.sec_index, o.sec_offset, o.sec_shift_left, o.count, o.has_secondary, o.mask, o.sec_mask);
     }
 };
 struct HandleKeyHash {
@@ -53,6 +54,7 @@ struct HandleKeyHash {
         h ^= (size_t(k.sec_index) << 33) ^ (size_t(k.sec_offset) << 2);
         h ^= (size_t(k.sec_shift_left) << 3);
         h ^= (size_t(k.count) << 7);
+        h ^= (size_t(k.mask) << 11) ^ (size_t(k.sec_mask) << 13);
         return h ^ (k.has_secondary ? 0x9e3779b97f4a7c15ULL : 0ULL);
     }
 };
@@ -69,6 +71,14 @@ struct ConstBufferAddr {
     bool has_secondary;
     /// The handle is a fragment input instead of a constant buffer word; offset holds the attribute.
     bool varying_handle{};
+    /// The dynamic offset is a constant buffer value shifted left, the same for the whole draw
+    bool has_index_cbuf{};
+    u32 index_cbuf_index{};
+    u32 index_cbuf_offset{};
+    u32 index_shift{};
+    /// Applied after the shifts
+    u32 mask = 0xffffffff;
+    u32 secondary_mask = 0xffffffff;
 };
 
 class Environment {
