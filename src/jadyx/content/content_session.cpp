@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/content/content_session.h"
+#include <algorithm>
 #include <winrt/base.h>
 #include "jadyx/content/content_actions.h"
 #include "jadyx/storage/uwp_file_manager.h"
@@ -8,6 +9,35 @@
 #include "core/file_sys/common_funcs.h"
 
 namespace Jadyx::Content {
+namespace {
+/// True when the file name carries a 16-digit title id of this game's family: the base id,
+/// its update (…800) or one of its DLC (…1xxx), e.g. "Game [0123456789ABC800][v65536].nsp".
+bool NameMatchesGame(std::wstring_view name, std::uint64_t application) {
+    const auto hex = [](wchar_t c) { return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f') || (c >= L'A' && c <= L'F'); };
+    for (std::size_t i = 0; i + 16 <= name.size(); ++i) {
+        if (!hex(name[i]) || (i > 0 && hex(name[i - 1]))) continue;
+        std::size_t end = i;
+        while (end < name.size() && hex(name[end])) ++end;
+        if (end - i == 16) {
+            std::uint64_t id = 0;
+            for (std::size_t k = i; k < end; ++k) {
+                const auto c = name[k];
+                id = id << 4 | static_cast<std::uint64_t>(c <= L'9' ? c - L'0' : (c | 0x20) - L'a' + 10);
+            }
+            if (FileSys::GetBaseTitleID(id) == application) return true;
+        }
+        i = end - 1;
+    }
+    return false;
+}
+/// Files named with this game's id go to the top; the rest keep their folder-first order.
+void GameFilesFirst(std::vector<StorageBrowserEntry>& entries, std::uint64_t application) {
+    if (!application) return;
+    std::stable_partition(entries.begin(), entries.end(),
+        [&](const auto& e) { return !e.folder && NameMatchesGame(e.name, application); });
+}
+} // namespace
+
 ContentSession::ContentSession(std::uint64_t application_, std::string base_path_, Kind kind_,
         std::vector<std::uint64_t> known_bases_, std::jthread previous_metadata)
     : application(FileSys::GetBaseTitleID(application_)), base_path(std::move(base_path_)), kind(kind_),
@@ -79,17 +109,19 @@ void ContentSession::Sources() {
     });
 }
 void ContentSession::Browse(std::string folder) {
-    Start([folder = std::move(folder)](ContentSnapshot& state, std::stop_token stop) {
+    Start([this, folder = std::move(folder)](ContentSnapshot& state, std::stop_token stop) {
         state.browser = BrowseStorageFolder(folder, stop);
+        GameFilesFirst(state.browser, application);
         state.folder = folder; state.screen = Screen::Browser; state.selected = 0;
     });
 }
 void ContentSession::Authorized(std::string identity) { Browse(std::move(identity)); }
 void ContentSession::AuthorizeFolder(const winrt::Windows::Storage::StorageFolder& folder) {
-    Start([folder](auto& state, auto stop) {
+    Start([this, folder](auto& state, auto stop) {
         const auto token = RememberContentFolder(folder);
         state.folder = MakeStoragePath(token);
         state.browser = BrowseStorageFolder(state.folder, stop);
+        GameFilesFirst(state.browser, application);
         state.screen = Screen::Browser; state.selected = 0;
     });
 }

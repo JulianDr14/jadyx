@@ -160,9 +160,7 @@ Framebuffer::Framebuffer(TextureCacheRuntime& runtime, std::span<ImageView*, NUM
         colors[index] = view->RenderTarget();
         color_images[index] = view->image_id;
         color_views[index] = key.color_buffer_ids[index];
-        if (view->RenderTargetOnCopy()) {
-            copy_colors |= 1U << index;
-        }
+        color_copies[index] = view->RenderTargetCopy();
         color_formats[index] = runtime.Format(view->format).view;
         color_bases[index] = view->range.base;
         color_layers[index] = static_cast<u32>(view->range.extent.layers);
@@ -216,10 +214,10 @@ void Framebuffer::PrepareAttachments(Scheduler& scheduler, bool depth_sampled,
             continue;
         }
         Image& image = (*images)[color_images[index]];
-        if ((copy_colors >> index) & 1) {
+        if (ID3D12Resource* const copy = color_copies[index]) {
             // Records its own barrier on the image's copy: the batched ones go first.
             barriers.Flush();
-            image.RenderToReinterpreted();
+            image.RenderToReinterpreted(copy);
         } else {
             image.TransitionColorTarget(color_bases[index].level, &barriers);
         }

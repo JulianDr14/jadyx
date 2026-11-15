@@ -27,6 +27,7 @@ $units = @{
     'fsr-plan'            = @{ flags = '/Zc:preprocessor /I externals/FidelityFX-FSR/ffx-fsr'; sources = 'src/video_core/fsr.cpp'; link = '' }
     'command-recorder'    = @{ flags = $common; sources = ''; link = $commonLibs }
     'spsc-wake-queue'     = @{ flags = $common; sources = ''; link = $commonLibs }
+    'view-cast'           = @{ flags = ''; sources = ''; link = '' }
 }
 if (-not $units.ContainsKey($Name)) { throw "unknown unit '$Name'; known: $($units.Keys -join ', ')" }
 $unit = $units[$Name]

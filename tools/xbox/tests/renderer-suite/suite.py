@@ -48,7 +48,7 @@ GATES = [
 # Standalone unit tests of the renderer without a run script of their own: run-unit.ps1 builds them.
 UNITS = [
     "bc45-decode", "cache-pressure", "command-recorder", "descriptor-copy", "fsr-plan", "linked-shader-cache",
-    "memory-guard", "overlay-memory", "pipeline-residency", "prewarm-budget", "spsc-wake-queue",
+    "memory-guard", "overlay-memory", "pipeline-residency", "prewarm-budget", "spsc-wake-queue", "view-cast",
 ]
 
 

@@ -600,6 +600,7 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_rasterizer_clear.cpp
         renderer_d3d12/d3d12_rasterizer_indirect.cpp
         renderer_d3d12/d3d12_rasterizer_state.cpp
+        renderer_d3d12/d3d12_reinterpreted_copies.h
         renderer_d3d12/d3d12_root_signature.cpp
         renderer_d3d12/d3d12_root_signature.h
         renderer_d3d12/d3d12_shader_compiler.cpp
@@ -614,6 +615,7 @@ if (ENABLE_D3D12)
         renderer_d3d12/d3d12_vertex_layout.h
         renderer_d3d12/d3d12_vertex_realign.cpp
         renderer_d3d12/d3d12_vertex_realign.h
+        renderer_d3d12/d3d12_view_cast.h
         renderer_d3d12/d3d12_memory_guard.h
         renderer_d3d12/d3d12_swapchain.cpp
         renderer_d3d12/d3d12_swapchain.h

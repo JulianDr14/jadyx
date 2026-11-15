@@ -21,6 +21,7 @@
 #include "video_core/renderer_d3d12/d3d12_border_color.h"
 #include "video_core/renderer_d3d12/d3d12_descriptor_heap.h"
 #include "video_core/renderer_d3d12/d3d12_gc_readback.h"
+#include "video_core/renderer_d3d12/d3d12_reinterpreted_copies.h"
 #include "video_core/renderer_d3d12/d3d12_resource_allocator.h"
 #include "video_core/renderer_d3d12/d3d12_transfer_buffer_pool.h"
 #include "video_core/renderer_d3d12/d3d12_staging_buffer_pool.h"
@@ -367,7 +368,7 @@ public:
     void PreserveGuestBlocks(std::span<const u8> data,
                              std::span<const VideoCommon::BufferImageCopy> copies);
     [[nodiscard]] Image* GuestBlocks() const noexcept {
-        return guest_blocks && !guest_blocks_upload_pending && !reinterpreted_ahead &&
+        return guest_blocks && !guest_blocks_upload_pending && !ReinterpretedAhead() &&
                        guest_blocks_version == write_version
                    ? guest_blocks.get() : nullptr;
     }
@@ -464,7 +465,6 @@ public:
     ID3D12Resource* DiagnosticSliceArray() const noexcept { return slice_array.Get(); }
     ID3D12Resource* DiagnosticVolume() const noexcept { return volume.Get(); }
     ID3D12Resource* DiagnosticCube() const noexcept { return cube.Get(); }
-    ID3D12Resource* DiagnosticReinterpreted() const noexcept { return reinterpreted.Get(); }
     bool IsRescaled() const noexcept { return false; }
     bool ScaleUp(bool = false) { return false; }
     bool ScaleDown(bool = false) { return false; }
@@ -501,30 +501,37 @@ public:
     enum class SnapshotCopy : u8 { Failed, Reused, Partial, Full };
     /// A copy of a render target as a view of levels [first_level, first_level + num_levels)
     /// reads it now, read through ImageView::DepthFeedbackHandle: the shared snapshot with those
-    /// levels brought up to date, or for a view of the reinterpreted copy a copy of that, whose
-    /// format the view's SRV takes. Leaves the image in RENDER_TARGET.
-    [[nodiscard]] SnapshotCopy PrepareColorSnapshot(bool reinterpreted_view, s32 first_level,
+    /// levels brought up to date, or for a view of a reinterpreted copy (copy not null) a copy
+    /// of that, whose format the view's SRV takes. Leaves the image in RENDER_TARGET.
+    [[nodiscard]] SnapshotCopy PrepareColorSnapshot(ID3D12Resource* copy, s32 first_level,
                                                     s32 num_levels);
     /// Transition for binding level as a color target: the snapshot of the other levels stays
     /// valid.
     void TransitionColorTarget(s32 level, BarrierBatch* batch);
-    /// The copy PrepareColorSnapshot(true) takes; null before the first.
-    [[nodiscard]] ID3D12Resource* ReinterpretedSnapshot() const noexcept {
-        return reinterpreted_snapshot.Get();
-    }
+    /// The snapshot PrepareColorSnapshot(copy) takes; null before the first.
+    [[nodiscard]] ID3D12Resource* ReinterpretedSnapshot(ID3D12Resource* copy) const noexcept;
     [[nodiscard]] Image* DepthFeedback() const noexcept { return depth_feedback.get(); }
 
     /// This image's texels in another typeless family of the same texel size, for views D3D12
     /// cannot cast to (the guest reads and renders an R32 image as R16G16, Game C's world
-    /// map). A copy through a buffer, created on first use; null when it cannot be made
-    /// (multisampled, or the image already has one in another family).
+    /// map). One copy per family, through a buffer, created on first use and kept in sync
+    /// (ReinterpretSync); null when it cannot be made (multisampled, or
+    /// ReinterpretSync::MAX_COPIES families already).
     [[nodiscard]] ID3D12Resource* Reinterpreted(DXGI_FORMAT family);
+    /// Families the image has copies in, for ViewCast::Request::copies.
+    [[nodiscard]] std::span<const DXGI_FORMAT> ReinterpretedFamilies() const noexcept {
+        return std::span{reinterpreted_families.data(), reinterpreted_sync.Count()};
+    }
     /// Brings the copy up to date and makes it readable; call before a draw or dispatch that
-    /// samples Reinterpreted().
-    void ReadReinterpreted();
+    /// samples it.
+    void ReadReinterpreted(ID3D12Resource* copy);
     /// Brings the copy up to date and makes it a render target. The copy then holds the newest
-    /// texels until the image itself is used again (any Transition copies them back).
-    void RenderToReinterpreted();
+    /// texels until the image or another copy is used (that copies them back first).
+    void RenderToReinterpreted(ID3D12Resource* copy);
+    /// A copy holds texels the image does not have yet.
+    [[nodiscard]] bool ReinterpretedAhead() const noexcept {
+        return reinterpreted_sync.Ahead().has_value();
+    }
 
     u64 allocation_tick{};
 
@@ -563,15 +570,17 @@ private:
                                      std::vector<GcCopy>& plan) const;
     void RecordGcDownload(const StagingBufferRef& map, std::span<const GcCopy> plan);
     /// Copies the texels between the image and its reinterpreted copy through a buffer.
-    void RefreshReinterpreted();
+    void RefreshReinterpreted(std::size_t index);
     void WriteBackReinterpreted();
+    /// Index of a copy in reinterpreted_*; Count() for a resource that is none.
+    [[nodiscard]] std::size_t ReinterpretedIndex(const ID3D12Resource* copy) const noexcept;
     /// Aliasing barrier, transition to the writable state and discard (see needs_placed_init).
     void InitializePlacedResource();
     void CopyThroughBuffer(ID3D12Resource* src, ID3D12Resource* dst);
     Image* EnsureGuestBlocks();
     bool HasGuestBlocks(const VideoCommon::ImageCopy& copy) const;
     void IncludeGuestBlocks(const VideoCommon::ImageCopy& copy);
-    void TransitionReinterpreted(D3D12_RESOURCE_STATES next);
+    void TransitionReinterpreted(std::size_t index, D3D12_RESOURCE_STATES next);
     /// Hash and transparency of a CPU-decoded upload (first ones only), to compare machines.
     void LogConvertedUpload(const u8* data, const CopyLayout& layout,
                             const VideoCommon::BufferImageCopy& copy) const;
@@ -640,14 +649,15 @@ private:
     ComPtr<ID3D12Resource> cube;
     D3D12_RESOURCE_STATES cube_state{D3D12_RESOURCE_STATE_COMMON};
     u64 cube_version{};
-    ComPtr<ID3D12Resource> reinterpreted;
-    D3D12_RESOURCE_STATES reinterpreted_state{D3D12_RESOURCE_STATE_COMMON};
-    u64 reinterpreted_version{};
-    /// The copy was rendered to and the image does not have those texels yet.
-    bool reinterpreted_ahead{};
-    /// PrepareColorSnapshot of the reinterpreted copy, in its format; kept in a shader resource
-    /// state between snapshots.
-    ComPtr<ID3D12Resource> reinterpreted_snapshot;
+    /// Copies in other typeless families (Reinterpreted), indexed as reinterpreted_sync's.
+    using ReinterpretedArray = std::array<ComPtr<ID3D12Resource>, ReinterpretSync::MAX_COPIES>;
+    ReinterpretedArray reinterpreted;
+    std::array<DXGI_FORMAT, ReinterpretSync::MAX_COPIES> reinterpreted_families{};
+    std::array<D3D12_RESOURCE_STATES, ReinterpretSync::MAX_COPIES> reinterpreted_states{};
+    /// PrepareColorSnapshot of each copy, in its format; kept in a shader resource state
+    /// between snapshots.
+    ReinterpretedArray reinterpreted_snapshots;
+    ReinterpretSync reinterpreted_sync;
 };
 
 class ImageView : public VideoCommon::ImageViewBase {
@@ -679,8 +689,9 @@ public:
         return uav;
     }
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE RenderTarget() const noexcept { return rtv; }
-    /// The RTV is on the image's reinterpreted copy (Image::RenderToReinterpreted before drawing).
-    [[nodiscard]] bool RenderTargetOnCopy() const noexcept { return rtv_on_copy; }
+    /// The image's reinterpreted copy the RTV is on (Image::RenderToReinterpreted before
+    /// drawing); null when it is on the image.
+    [[nodiscard]] ID3D12Resource* RenderTargetCopy() const noexcept { return rtv_copy; }
     /// Readies the image for RenderTarget(): the copy or the image itself as a render target.
     void PrepareRender() const;
     [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE DepthStencil() const noexcept { return dsv; }
@@ -709,6 +720,10 @@ public:
     /// image (Image::ReadReinterpreted).
     [[nodiscard]] bool ReadsReinterpretedCopy() const noexcept {
         return srv_resource && srv_resource != image;
+    }
+    /// The image's reinterpreted copy its SRVs read; null when they read the image.
+    [[nodiscard]] ID3D12Resource* ReinterpretedCopy() const noexcept {
+        return ReadsReinterpretedCopy() ? srv_resource : nullptr;
     }
 
     /// Records what reading Handle(texture_type) needs first (a 3D image read as a 2D array
@@ -762,7 +777,7 @@ private:
     TextureCacheRuntime* runtime{};
     SlotVector<Image>* slot_images{};
     ID3D12Resource* image{};
-    /// The resource the SRVs read: image, or the image's reinterpreted copy.
+    /// The resource the SRVs read: image, or one of the image's reinterpreted copies.
     ID3D12Resource* srv_resource{};
     SrvParams srv_params{};
     Shader::TextureType natural_type{Shader::TextureType::Color2D};
@@ -773,7 +788,7 @@ private:
     mutable D3D12_CPU_DESCRIPTOR_HANDLE multisample_srv{};
     D3D12_CPU_DESCRIPTOR_HANDLE uav{};
     D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
-    bool rtv_on_copy{};
+    ID3D12Resource* rtv_copy{};
     D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
     D3D12_CPU_DESCRIPTOR_HANDLE dsv_read_only{};
     u32 buffer_size{};
@@ -934,9 +949,13 @@ public:
     [[nodiscard]] u32 ColorLayers(size_t index) const noexcept {
         return index < NUM_RT ? color_layers[index] : 0;
     }
-    /// Whether a render target's RTV is on the image's reinterpreted copy.
+    /// Whether a render target's RTV is on one of the image's reinterpreted copies.
     [[nodiscard]] bool ColorOnCopy(size_t index) const noexcept {
-        return index < NUM_RT && (copy_colors >> index & 1U) != 0;
+        return ColorCopy(index) != nullptr;
+    }
+    /// The reinterpreted copy a render target's RTV is on; null when it is on the image.
+    [[nodiscard]] ID3D12Resource* ColorCopy(size_t index) const noexcept {
+        return index < NUM_RT ? color_copies[index] : nullptr;
     }
     [[nodiscard]] VideoCommon::SubresourceBase DepthBase() const noexcept { return depth_base; }
     [[nodiscard]] u32 DepthLayers() const noexcept { return depth_layers; }
@@ -975,7 +994,8 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE depth_read_only{};
     u32 num_colors{};
     u32 missing_colors{};
-    u32 copy_colors{}; ///< render targets whose RTV is on the image's reinterpreted copy
+    /// Per render target, the reinterpreted copy its RTV is on (null: the image).
+    std::array<ID3D12Resource*, NUM_RT> color_copies{};
     VideoCommon::Extent2D extent{};
     bool has_stencil{};
     bool is_rescaled{};

@@ -40,7 +40,10 @@ bool logged_copy_left_after_uav_work{};
 std::optional<D3D12_RESOURCE_STATES> Image::DiagnosticState(ID3D12Resource* tracked_resource) const {
     if (!tracked_resource) return std::nullopt;
     if (tracked_resource == Handle()) return state;
-    if (tracked_resource == reinterpreted.Get()) return reinterpreted_state;
+    if (const size_t index = ReinterpretedIndex(tracked_resource);
+        index < reinterpreted_sync.Count()) {
+        return reinterpreted_states[index];
+    }
     if (tracked_resource == slice_array.Get()) return slice_array_state;
     if (tracked_resource == volume.Get()) return volume_state;
     if (tracked_resource == cube.Get()) return cube_state;
@@ -51,8 +54,9 @@ std::optional<D3D12_RESOURCE_STATES> Image::DiagnosticState(ID3D12Resource* trac
 void Image::DiagnosticTransition(ID3D12Resource* tracked_resource, D3D12_RESOURCE_STATES next) {
     if (!tracked_resource) throw std::runtime_error("null diagnostic resource");
     untouched = false;
-    auto* tracked = tracked_resource == Handle() ? &state : tracked_resource == reinterpreted.Get()
-        ? &reinterpreted_state : tracked_resource == slice_array.Get() ? &slice_array_state
+    const size_t copy = ReinterpretedIndex(tracked_resource);
+    auto* tracked = tracked_resource == Handle() ? &state : copy < reinterpreted_sync.Count()
+        ? &reinterpreted_states[copy] : tracked_resource == slice_array.Get() ? &slice_array_state
         : tracked_resource == volume.Get() ? &volume_state
         : tracked_resource == cube.Get() ? &cube_state : nullptr;
     if (tracked) {
@@ -812,12 +816,15 @@ void Image::ReleaseResources() {
     if (runtime && cube) {
         runtime->scheduler.DeferRelease(std::move(cube));
     }
-    if (runtime && reinterpreted) {
-        runtime->scheduler.DeferRelease(std::move(reinterpreted));
+    for (size_t index = 0; index < reinterpreted_sync.Count(); ++index) {
+        if (runtime && reinterpreted[index]) {
+            runtime->scheduler.DeferRelease(std::move(reinterpreted[index]));
+        }
+        if (runtime && reinterpreted_snapshots[index]) {
+            runtime->scheduler.DeferRelease(std::move(reinterpreted_snapshots[index]));
+        }
     }
-    if (runtime && reinterpreted_snapshot) {
-        runtime->scheduler.DeferRelease(std::move(reinterpreted_snapshot));
-    }
+    reinterpreted_sync = {};
     guest_blocks.reset();
     depth_feedback.reset();
 }
@@ -862,17 +869,17 @@ Image& Image::operator=(Image&& other) noexcept {
         cube_state = other.cube_state;
         cube_version = other.cube_version;
         reinterpreted = std::move(other.reinterpreted);
-        reinterpreted_state = other.reinterpreted_state;
-        reinterpreted_version = other.reinterpreted_version;
-        reinterpreted_ahead = other.reinterpreted_ahead;
-        reinterpreted_snapshot = std::move(other.reinterpreted_snapshot);
+        reinterpreted_families = other.reinterpreted_families;
+        reinterpreted_states = other.reinterpreted_states;
+        reinterpreted_snapshots = std::move(other.reinterpreted_snapshots);
+        reinterpreted_sync = std::exchange(other.reinterpreted_sync, {});
     }
     return *this;
 }
 
-Image::SnapshotCopy Image::PrepareColorSnapshot(bool reinterpreted_view, s32 first_level,
-                                                s32 num_levels) {
-    if (!reinterpreted_view) {
+Image::SnapshotCopy Image::PrepareColorSnapshot(ID3D12Resource* reinterpreted_copy,
+                                                s32 first_level, s32 num_levels) {
+    if (!reinterpreted_copy) {
         const s32 begin = std::clamp(first_level, 0, 63);
         const s32 end = std::clamp(first_level + std::max(num_levels, 1), begin + 1, 64);
         const u64 below_end = end >= 64 ? ~u64{} : (u64{1} << end) - 1;
@@ -900,30 +907,31 @@ Image::SnapshotCopy Image::PrepareColorSnapshot(bool reinterpreted_view, s32 fir
     }
     // The view's SRV is in the reinterpreted copy's family, which a copy of the image (in the
     // image's own) does not take: the snapshot is of the copy instead.
-    if (!runtime || !reinterpreted) {
+    const size_t index = ReinterpretedIndex(reinterpreted_copy);
+    if (!runtime || index == reinterpreted_sync.Count()) {
         return SnapshotCopy::Failed;
     }
     constexpr D3D12_RESOURCE_STATES READ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     auto* const commands = runtime->scheduler.CommandList();
-    if (reinterpreted_snapshot) {
-        TransitionBuffer(commands, reinterpreted_snapshot.Get(), READ,
-                         D3D12_RESOURCE_STATE_COPY_DEST);
+    ComPtr<ID3D12Resource>& snapshot = reinterpreted_snapshots[index];
+    if (snapshot) {
+        TransitionBuffer(commands, snapshot.Get(), READ, D3D12_RESOURCE_STATE_COPY_DEST);
     } else {
-        D3D12_RESOURCE_DESC desc = reinterpreted->GetDesc();
+        D3D12_RESOURCE_DESC desc = reinterpreted_copy->GetDesc();
         desc.Flags = D3D12_RESOURCE_FLAG_NONE;
         const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
         if (FAILED(runtime->device.Get()->CreateCommittedResource(
                 &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                IID_PPV_ARGS(&reinterpreted_snapshot)))) {
-            reinterpreted_snapshot.Reset();
+                IID_PPV_ARGS(&snapshot)))) {
+            snapshot.Reset();
             return SnapshotCopy::Failed;
         }
     }
-    RefreshReinterpreted();
-    TransitionReinterpreted(D3D12_RESOURCE_STATE_COPY_SOURCE);
-    commands->CopyResource(reinterpreted_snapshot.Get(), reinterpreted.Get());
-    TransitionBuffer(commands, reinterpreted_snapshot.Get(), D3D12_RESOURCE_STATE_COPY_DEST, READ);
+    RefreshReinterpreted(index);
+    TransitionReinterpreted(index, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    commands->CopyResource(snapshot.Get(), reinterpreted_copy);
+    TransitionBuffer(commands, snapshot.Get(), D3D12_RESOURCE_STATE_COPY_DEST, READ);
     Transition(D3D12_RESOURCE_STATE_RENDER_TARGET);
     return SnapshotCopy::Full;
 }
@@ -943,7 +951,7 @@ Image* Image::RefreshSnapshot(u64 wanted, SnapshotCopy* copy) {
         // A new allocation holds nothing of the image yet.
         depth_feedback_stale = ~u64{};
     }
-    if (reinterpreted_ahead || needs_placed_init) {
+    if (ReinterpretedAhead() || needs_placed_init) {
         // The transition to COPY_SOURCE rewrites the whole image before the copy.
         depth_feedback_stale = ~u64{};
     }
@@ -1023,7 +1031,7 @@ Image* Image::PrepareDepthFeedback() {
 void Image::TransitionTarget(s32 level, D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
     const u64 stale = depth_feedback_stale;
     // Writing back the reinterpreted copy or initializing a placed resource rewrites every level.
-    const bool rewrites = reinterpreted_ahead || needs_placed_init;
+    const bool rewrites = ReinterpretedAhead() || needs_placed_init;
     Transition(next, batch);
     if (rewrites) {
         return;
@@ -1063,16 +1071,17 @@ void Image::Transition(D3D12_RESOURCE_STATES next, BarrierBatch* batch) {
         D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
         D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_COPY_DEST |
         D3D12_RESOURCE_STATE_RESOLVE_DEST;
-    if ((next & WRITE_STATES) != 0 || reinterpreted_ahead || needs_placed_init) {
+    const bool ahead = ReinterpretedAhead();
+    if ((next & WRITE_STATES) != 0 || ahead || needs_placed_init) {
         // Any write but a target's (TransitionTarget) outdates the whole snapshot.
         depth_feedback_stale = ~u64{};
     }
-    if (reinterpreted_ahead || needs_placed_init) {
+    if (ahead || needs_placed_init) {
         // Both record commands on the image: its pending barriers must come first.
         if (batch) {
             batch->Flush();
         }
-        if (reinterpreted_ahead) {
+        if (ahead) {
             WriteBackReinterpreted();
         }
         if (needs_placed_init) {
@@ -1448,10 +1457,12 @@ void Image::RefreshCube() {
 }
 
 ID3D12Resource* Image::Reinterpreted(DXGI_FORMAT family) {
-    if (reinterpreted) {
-        return reinterpreted->GetDesc().Format == family ? reinterpreted.Get() : nullptr;
+    for (size_t index = 0; index < reinterpreted_sync.Count(); ++index) {
+        if (reinterpreted_families[index] == family) {
+            return reinterpreted[index].Get();
+        }
     }
-    if (!resource) {
+    if (!resource || reinterpreted_sync.Full()) {
         return nullptr;
     }
     D3D12_RESOURCE_DESC desc = resource->GetDesc();
@@ -1461,64 +1472,89 @@ ID3D12Resource* Image::Reinterpreted(DXGI_FORMAT family) {
     desc.Format = family;
     desc.Flags &= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+    ComPtr<ID3D12Resource> copy;
     ThrowIfFailed(runtime->device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                  D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&reinterpreted)),
+                  D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&copy)),
                   "Create reinterpreted image");
     CheckRemovedAfter(runtime->device.Get(), [&] {
         return fmt::format("creating the DXGI {} copy of image {}", static_cast<u32>(family),
                            info.format);
     });
-    reinterpreted_state = D3D12_RESOURCE_STATE_COMMON;
-    reinterpreted_version = 0;
-    reinterpreted_ahead = false;
-    LOG_INFO(Render, "D3D12: image {} {}x{} @{:x} viewed as DXGI {} through a copy", info.format,
-             desc.Width, desc.Height, gpu_addr, static_cast<u32>(family));
-    return reinterpreted.Get();
+    const size_t index = reinterpreted_sync.Add();
+    reinterpreted[index] = std::move(copy);
+    reinterpreted_families[index] = family;
+    reinterpreted_states[index] = D3D12_RESOURCE_STATE_COMMON;
+    LOG_INFO(Render, "D3D12: image {} {}x{} @{:x} viewed as DXGI {} through copy {}",
+             info.format, desc.Width, desc.Height, gpu_addr, static_cast<u32>(family), index);
+    return reinterpreted[index].Get();
 }
 
-void Image::RefreshReinterpreted() {
-    if (!reinterpreted || reinterpreted_ahead || reinterpreted_version == write_version ||
-        !CanTransfer()) {
+ID3D12Resource* Image::ReinterpretedSnapshot(ID3D12Resource* copy) const noexcept {
+    const size_t index = ReinterpretedIndex(copy);
+    return index < reinterpreted_sync.Count() ? reinterpreted_snapshots[index].Get() : nullptr;
+}
+
+size_t Image::ReinterpretedIndex(const ID3D12Resource* copy) const noexcept {
+    size_t index = 0;
+    while (index < reinterpreted_sync.Count() && (!copy || reinterpreted[index].Get() != copy)) {
+        ++index;
+    }
+    return index;
+}
+
+void Image::RefreshReinterpreted(size_t index) {
+    if (reinterpreted_sync.WriteBackBefore(index)) {
+        // Another copy's draws reach this one through the image.
+        WriteBackReinterpreted();
+    }
+    if (!reinterpreted_sync.Stale(index, write_version) || !CanTransfer()) {
         return;
     }
     Transition(D3D12_RESOURCE_STATE_COPY_SOURCE);
-    TransitionReinterpreted(D3D12_RESOURCE_STATE_COPY_DEST);
-    CopyThroughBuffer(resource.Get(), reinterpreted.Get());
-    reinterpreted_version = write_version;
+    TransitionReinterpreted(index, D3D12_RESOURCE_STATE_COPY_DEST);
+    CopyThroughBuffer(resource.Get(), reinterpreted[index].Get());
+    reinterpreted_sync.Refreshed(index, write_version);
 }
 
 void Image::WriteBackReinterpreted() {
-    // Cleared first: the Transition below comes back here otherwise.
-    reinterpreted_ahead = false;
-    TransitionReinterpreted(D3D12_RESOURCE_STATE_COPY_SOURCE);
+    // Taken first: the Transition below comes back here otherwise.
+    const std::optional<size_t> index = reinterpreted_sync.TakeAhead();
+    if (!index) {
+        return;
+    }
+    TransitionReinterpreted(*index, D3D12_RESOURCE_STATE_COPY_SOURCE);
     Transition(D3D12_RESOURCE_STATE_COPY_DEST);
-    CopyThroughBuffer(reinterpreted.Get(), resource.Get());
-    reinterpreted_version = write_version;
+    CopyThroughBuffer(reinterpreted[*index].Get(), resource.Get());
+    // The image's new version: this copy matches it, every other copy is stale.
+    reinterpreted_sync.Refreshed(*index, write_version);
 }
 
-void Image::ReadReinterpreted() {
-    if (!reinterpreted) {
+void Image::ReadReinterpreted(ID3D12Resource* copy) {
+    const size_t index = ReinterpretedIndex(copy);
+    if (index == reinterpreted_sync.Count()) {
         return;
     }
-    RefreshReinterpreted();
-    TransitionReinterpreted(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
-                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    RefreshReinterpreted(index);
+    TransitionReinterpreted(index, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 }
 
-void Image::RenderToReinterpreted() {
-    if (!reinterpreted) {
+void Image::RenderToReinterpreted(ID3D12Resource* copy) {
+    const size_t index = ReinterpretedIndex(copy);
+    if (index == reinterpreted_sync.Count()) {
         return;
     }
-    RefreshReinterpreted();
-    TransitionReinterpreted(D3D12_RESOURCE_STATE_RENDER_TARGET);
-    reinterpreted_ahead = true;
+    RefreshReinterpreted(index);
+    TransitionReinterpreted(index, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    reinterpreted_sync.Rendered(index);
 }
 
-void Image::TransitionReinterpreted(D3D12_RESOURCE_STATES next) {
-    if (reinterpreted_state != next) {
-        TransitionBuffer(runtime->scheduler.CommandList(), reinterpreted.Get(),
-                         reinterpreted_state, next);
-        reinterpreted_state = next;
+void Image::TransitionReinterpreted(size_t index, D3D12_RESOURCE_STATES next) {
+    D3D12_RESOURCE_STATES& current = reinterpreted_states[index];
+    if (current != next) {
+        TransitionBuffer(runtime->scheduler.CommandList(), reinterpreted[index].Get(), current,
+                         next);
+        current = next;
     }
 }
 

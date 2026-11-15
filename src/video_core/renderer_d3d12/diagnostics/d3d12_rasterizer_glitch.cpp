@@ -997,7 +997,7 @@ void RasterizerD3D12::GlitchPassNote(const Framebuffer* framebuffer, u32 call, b
             const auto base = framebuffer->ColorBase(index);
             glitch_pass.ids[index] = framebuffer->ColorImageId(index);
             glitch_pass.resources[index] = framebuffer->ColorOnCopy(index)
-                                               ? image->DiagnosticReinterpreted()
+                                               ? framebuffer->ColorCopy(index)
                                                : image->Handle();
             glitch_pass.formats[index] = framebuffer->ColorFormat(index);
             glitch_pass.subresources[index] = image->Subresource(base.level, base.layer);
