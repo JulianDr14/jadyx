@@ -23,6 +23,11 @@ void RequestSelfTest(bool value) noexcept;
 void SetTargetsAfterOnly(bool value) noexcept;
 bool TargetsAfterOnly() noexcept;
 bool TakeSelfTest() noexcept;
+// Optional pixel shader selection: with any hash set, only draws using one of them are
+// recorded in full; other draws, clears and dispatches leave a one-line event. Empty = all.
+void SetShaderFilter(std::span<const std::uint64_t> pixel_shaders) noexcept;
+bool Filtered() noexcept;
+bool SelectsShader(std::uint64_t pixel_shader) noexcept;
 bool Begin(const std::filesystem::path& directory) noexcept;
 void End(bool intervals_complete) noexcept;
 // detail is a JSON object assembled by the caller (not untrusted free text).

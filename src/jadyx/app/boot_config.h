@@ -194,6 +194,7 @@ struct BootConfig {
     bool full_gpu_capture_self_test{};
     /// Render targets are read back only after each operation ("gpu_capture_targets=after").
     bool full_gpu_capture_targets_after{};
+    std::vector<u64> full_gpu_capture_ps; // gpu_capture_ps=: only these pixel shaders, in full
     /// Logs CPU buffer writes lost to GPU-written ranges ("buffer_write_origins=1").
     bool buffer_write_origins{};
     /// Per-core JIT elapsed time and slow callback counts ("cpu_profile=1"). Diagnostic only.
@@ -374,6 +375,7 @@ struct BootConfig {
     /// Presented frames the trace spans from traced_frame on (boot.cfg "trace_frames=").
     u32 traced_frames{1};
     s32 material_probe_x{-1}, material_probe_y{-1};
+    u32 material_capture_frames{2}; // gpu_capture_frames=: new guest frames per menu capture
     u32 material_capture_frame{}; // Opt-in deterministic homebrew diagnostic gate; zero in Series package.
     bool material_gpu_probe{};
     std::array<u64, 2> material_snapshot_ps{};

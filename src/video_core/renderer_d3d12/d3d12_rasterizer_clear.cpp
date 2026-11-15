@@ -59,7 +59,7 @@ void RasterizerD3D12::DrawTexture() {
     framebuffer->PrepareAttachments(scheduler);
     hunt.Target(framebuffer);
     hunt.Geometry(4, 1, 0);
-    const bool full = VideoCommon::FullCapture::Active();
+    const bool full = VideoCommon::FullCapture::Active() && !VideoCommon::FullCapture::Filtered();
     if (full) {
         ++full_capture_operation;
         VideoCommon::FullCapture::Event("draw_texture", fmt::format("{{\"op\":{}}}", full_capture_operation));
@@ -117,7 +117,7 @@ void RasterizerD3D12::Clear(u32 layer_count) {
     texture_cache.UpdateRenderTargets(true);
     const Framebuffer* const framebuffer = texture_cache.GetFramebuffer();
     framebuffer->PrepareAttachments(scheduler);
-    const bool full = VideoCommon::FullCapture::Active();
+    const bool full = VideoCommon::FullCapture::Active() && !VideoCommon::FullCapture::Filtered();
     if (full) {
         ++full_capture_operation;
         VideoCommon::FullCapture::Event("clear", fmt::format(

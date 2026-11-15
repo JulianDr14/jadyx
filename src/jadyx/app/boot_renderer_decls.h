@@ -28,6 +28,7 @@ void HuntOnCompute(u64 hash);            // diagnostics/d3d12_draw_hunt.h
 void SetComputeInputsShader(u64 hash);   // diagnostics/d3d12_compute_inputs.h
 void SetMaterialProbe(s32 x, s32 y);
 void SetMaterialCaptureFrame(u32 frame);
+void SetMaterialCaptureFrames(u32 frames);
 void SetMaterialSnapshotShaders(u64 first, u64 second);
 void SetMaterialSnapshotVertexCounts(u32 first, u32 second);
 void SetDumpedShader(u64 unique_hash);
