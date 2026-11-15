@@ -461,6 +461,8 @@ IR::Program GenerateGeometryPassthrough(ObjectPool<IR::Inst>& inst_pool,
 
 namespace {
 // Generics and position the vertex program writes, minus an attribute that is not to be forwarded.
+// A generic goes whole: the components the guest leaves unwritten still read (0, 0, 0, 1) in the
+// next stage, and the vertex output holds them, so a partial copy would leave them undefined.
 std::vector<IR::Attribute> ForwardedAttributes(const IR::Program& vertex_program,
                                                std::optional<IR::Attribute> except) {
     std::vector<IR::Attribute> attributes;
@@ -468,9 +470,12 @@ std::vector<IR::Attribute> ForwardedAttributes(const IR::Program& vertex_program
         attributes.push_back(IR::Attribute::PositionX + component);
     }
     for (u32 index = 0; index < IR::NUM_GENERICS; ++index) {
+        if (!vertex_program.info.stores.Generic(index)) {
+            continue;
+        }
         for (u32 component = 0; component < 4; ++component) {
             const IR::Attribute attr{IR::Attribute::Generic0X + index * 4 + component};
-            if (vertex_program.info.stores[attr] && attr != except) {
+            if (attr != except) {
                 attributes.push_back(attr);
             }
         }
