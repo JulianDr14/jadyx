@@ -167,12 +167,7 @@ void ApplyRunningCoreMap(const BootConfig& config, bool fixed) {
     }
     Common::Windows::SetCpuPinMap(fixed ? Common::Windows::CpuPinTopology : Common::Windows::CpuPinDefault);
     const std::size_t moved = Common::Windows::RepinNamedThreads();
-    // The CPU write queue goes with the map. Safe with the guest paused: the GPU thread drains
-    // whatever is queued in any mode, and with GpuWrittenPages off since boot every queued write
-    // gets the whole OnCPUWrite.
-    VideoCommon::CpuWriteQueue::SetAllWrites(true);
-    VideoCommon::CpuWriteQueue::SetMode(fixed ? VideoCore::FramePipeline::Mode::On : VideoCore::FramePipeline::Mode::Off);
-    WriteDiag(std::string{"menu: "} + (fixed ? "fixed core map (topology), CPU write queue on" : "core map GPU thread only, CPU write queue off") + ", " +
+    WriteDiag(std::string{"menu: "} + (fixed ? "fixed core map (topology)" : "core map GPU thread only") + ", " +
               std::to_string(moved) + " threads moved | " + Common::Windows::CpuPinReport());
 }
 

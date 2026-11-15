@@ -26,11 +26,10 @@ void UseGameAdvancedGraphics(BootConfig& config, u64 program_id) {
     const GameGraphics game = program_id != 0 ? LoadGameGraphics(program_id) : GameGraphics{};
     const GraphicsSettings graphics = ResolveGraphics(LoadGraphicsSettings(), game);
     config.async_record = graphics.async_record;
-    // The fixed core map brings the CPU write queue with it, every write queued.
-    config.cpu_write_defer = graphics.fixed_core_map ? VideoCore::FramePipeline::Mode::On
-                                                     : VideoCore::FramePipeline::Mode::Off;
+    config.cpu_write_defer = graphics.cpu_write_queue ? VideoCore::FramePipeline::Mode::On
+                                                      : VideoCore::FramePipeline::Mode::Off;
     config.gpu_fast_paths = graphics.gpu_fast_paths;
-    config.cpu_write_all = true;
+    config.cpu_write_all = true; // The queue's row queues every write: one switch.
     config.fixed_core_map = graphics.fixed_core_map;
     if (program_id == 0) return;
     const GameAdvancedGraphics& advanced = game.advanced;

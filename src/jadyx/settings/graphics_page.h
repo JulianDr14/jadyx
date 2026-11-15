@@ -16,7 +16,7 @@
 namespace Jadyx {
 
 enum class GraphicsRow : std::size_t {
-    Upscaling, FrameGen, Shaders, GpuFence, AsyncRecord, GpuFastPaths, FixedCoreMap, AstcArrayCap, GuestClock, ExactGpuReads,
+    Upscaling, FrameGen, Shaders, GpuFence, AsyncRecord, CpuWriteQueue, GpuFastPaths, FixedCoreMap, AstcArrayCap, GuestClock, ExactGpuReads,
     Anisotropy, TextureQuality, TextureMemory, GpuAccuracy, ShaderWorkers, ConsoleMode, ResetAdvanced,
     Count,
 };
@@ -70,6 +70,9 @@ inline bool HandleGraphicsInput(GraphicsPage& page, GraphicsInput input) {
     case GraphicsRow::AsyncRecord:
         settings.async_record = !settings.async_record;
         return true;
+    case GraphicsRow::CpuWriteQueue:
+        settings.cpu_write_queue = !settings.cpu_write_queue;
+        return true;
     case GraphicsRow::GpuFastPaths:
         settings.gpu_fast_paths = !settings.gpu_fast_paths;
         return true;
@@ -97,6 +100,7 @@ inline bool HandleGameGraphicsInput(GameGraphics& game, std::size_t& selected, G
     case GraphicsRow::Shaders: StepGameShaders(game, back); return true;
     case GraphicsRow::GpuFence: StepGameGpuFence(game, back); return true;
     case GraphicsRow::AsyncRecord: StepGameAsyncRecord(game, back); return true;
+    case GraphicsRow::CpuWriteQueue: StepGameCpuWriteQueue(game, back); return true;
     case GraphicsRow::GpuFastPaths: StepGameGpuFastPaths(game, back); return true;
     case GraphicsRow::FixedCoreMap: StepGameFixedCoreMap(game, back); return true;
     case GraphicsRow::AstcArrayCap: StepGameAstcArrayCap(game, back); return true;
@@ -125,6 +129,7 @@ inline I18n::Text GraphicsRowTitle(GraphicsRow row) {
     case GraphicsRow::Shaders: return Text::ShaderBuild;
     case GraphicsRow::GpuFence: return Text::GpuFence;
     case GraphicsRow::AsyncRecord: return Text::AsyncRecord;
+    case GraphicsRow::CpuWriteQueue: return Text::CpuWriteQueue;
     case GraphicsRow::GpuFastPaths: return Text::GpuFastPaths;
     case GraphicsRow::FixedCoreMap: return Text::FixedCoreMap;
     case GraphicsRow::AstcArrayCap: return Text::AstcArrayCap;
@@ -148,6 +153,7 @@ inline I18n::Text GraphicsRowHint(GraphicsRow row) {
     case GraphicsRow::Shaders: return Text::ShaderBuildHint;
     case GraphicsRow::GpuFence: return Text::GpuFenceHint;
     case GraphicsRow::AsyncRecord: return Text::AsyncRecordHint;
+    case GraphicsRow::CpuWriteQueue: return Text::CpuWriteQueueHint;
     case GraphicsRow::GpuFastPaths: return Text::GpuFastPathsHint;
     case GraphicsRow::FixedCoreMap: return Text::FixedCoreMapHint;
     case GraphicsRow::AstcArrayCap: return Text::AstcArrayCapHint;
@@ -171,6 +177,7 @@ inline std::wstring GraphicsRowValue(const GraphicsSettings& settings, GraphicsR
     case GraphicsRow::Shaders: return std::wstring{I18n::Tr(ShaderBuildText(settings.shaders))};
     case GraphicsRow::GpuFence: return std::wstring{I18n::Tr(GpuFenceText(settings.gpu_fence))};
     case GraphicsRow::AsyncRecord: return OnOffText(settings.async_record);
+    case GraphicsRow::CpuWriteQueue: return OnOffText(settings.cpu_write_queue);
     case GraphicsRow::GpuFastPaths: return OnOffText(settings.gpu_fast_paths);
     case GraphicsRow::FixedCoreMap: return OnOffText(settings.fixed_core_map);
     case GraphicsRow::AstcArrayCap: return std::to_wstring(settings.astc_array_cap_mib) + L" MiB";
@@ -213,6 +220,7 @@ inline bool HasGameOverride(const GameGraphics& game, GraphicsRow row) {
     case GraphicsRow::Shaders: return game.shaders.has_value();
     case GraphicsRow::GpuFence: return game.gpu_fence.has_value();
     case GraphicsRow::AsyncRecord: return game.async_record.has_value();
+    case GraphicsRow::CpuWriteQueue: return game.cpu_write_queue.has_value();
     case GraphicsRow::GpuFastPaths: return game.gpu_fast_paths.has_value();
     case GraphicsRow::FixedCoreMap: return game.fixed_core_map.has_value();
     case GraphicsRow::AstcArrayCap: return game.astc_array_cap_mib.has_value();
