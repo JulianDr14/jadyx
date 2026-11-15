@@ -5,6 +5,7 @@
 // The library screen while it is up: its state and one method per screen. ShowGameLibrary
 // (uwp_library.cpp) builds one and runs it. Private to the library_session*.cpp files.
 
+#include "jadyx/input/dsu_status.h"
 #include "jadyx/input/stick_navigation.h"
 #include "jadyx/input/controller_catalog.h"
 #include "jadyx/ui/text_entry_input.h"
@@ -192,6 +193,9 @@ private:
     void HostOnline(TimePoint now);
     void PollOnline();
     void PollOnlineChat();
+    /// Settings > Controller's DSU pages: keeps the client running while they show and copies
+    /// its state for the rows.
+    void PollDsu();
     void HandleOnlineChat();
     void SendOnlineChat(std::wstring_view text);
     bool HandleQuit();
@@ -300,6 +304,9 @@ private:
     unsigned setting_row = 0;
     /// Settings > Controller's page: 0 the main one, else ControllerSection's.
     unsigned controller_section = 0;
+    /// The DSU client's state as the rows show it, and its version (~0: never read).
+    DsuStatus dsu_status;
+    std::uint32_t dsu_version = ~0U;
     ControllerPanel panel;
     ControllerOptions options = LoadControllerOptions();
     TimePoint capture_until{};

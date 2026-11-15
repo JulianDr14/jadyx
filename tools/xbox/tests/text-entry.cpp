@@ -72,5 +72,41 @@ int main() {
     commands.SetValue(L"ABCDEF");
     check(commands.Value() == L"ABCD");
 
-    std::puts("text entry: typing, shift, symbols, navigation, actions and limits PASS");
+    // The numeric pad: digits, '.' and ':' only, wide keys on the last row.
+    TextEntry pad{L"", 21, true};
+    check(pad.Numeric() && !pad.Shifted() && pad.Row() == 0 && pad.Column() == 0);
+    pad.Press(); // 1
+    pad.Move(1, 0);
+    pad.Press(); // 2
+    check(pad.Value() == L"12");
+    pad.Focus(1, 3); // .
+    pad.Press();
+    pad.Focus(2, 3); // :
+    pad.Press();
+    check(pad.Value() == L"12.:");
+    pad.Focus(0, 3); // Delete
+    pad.Press();
+    check(pad.Value() == L"12.");
+    pad.Type(L'a');
+    pad.Type(L' ');
+    pad.Type(L'7');
+    check(pad.Apply(Command::Space) == TextEntry::Result::None && pad.Value() == L"12.7");
+    pad.Apply(Command::Shift);
+    check(!pad.Shifted());
+    pad.Focus(3, 1); // The zero's right half snaps to its start.
+    check(pad.Row() == 3 && pad.Column() == 0);
+    pad.Press();
+    check(pad.Value() == L"12.70");
+    pad.Move(1, 0); // Done, two columns wide.
+    check(pad.Column() == 2 && pad.Press() == TextEntry::Result::Done);
+    pad.Move(1, 0); // Wraps back to the zero.
+    check(pad.Column() == 0);
+    pad.Focus(2, 3);
+    pad.Move(0, 1); // Down from ':' lands on Done.
+    check(pad.Row() == 3 && pad.Column() == 2);
+    pad.Move(0, 1); // And wraps to the top row.
+    check(pad.Row() == 0);
+    check(TextEntry::NumericKey(3, 3) == L'\n' && TextEntry::NumericKey(4, 0) == L'\0');
+
+    std::puts("text entry: typing, shift, symbols, navigation, actions, numeric pad and limits PASS");
 }

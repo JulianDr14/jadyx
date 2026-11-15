@@ -34,6 +34,7 @@
 #include "jadyx/input/menu_input_capture.h"
 #include "jadyx/input/mouse_stick.h"
 #include "jadyx/input/player_slots.h"
+#include "jadyx/input/dsu_client.h"
 #include "jadyx/settings/uwp_system_settings.h"
 #include "jadyx/game/game_menu.h"
 #include "hid_core/frontend/emulated_controller.h"
@@ -218,10 +219,61 @@ void ApplyPadState(InputCommon::VirtualGamepad& gamepad, std::size_t port, const
     }
 }
 
+/// A DSU pad (dsu_client.h) as a Switch pad: its buttons already by position, the sticks with the
+/// player's deadzone.
+PadState PadStateFromDsu(const Dsu::PadInput& in, const ControllerOptions& options) {
+    PadState state{};
+    const auto set = [&](bool down, VirtualButton button) {
+        if (down) state.buttons |= Bit(button);
+    };
+    set(in.a, VirtualButton::ButtonA);
+    set(in.b, VirtualButton::ButtonB);
+    set(in.x, VirtualButton::ButtonX);
+    set(in.y, VirtualButton::ButtonY);
+    set(in.l, VirtualButton::TriggerL);
+    set(in.r, VirtualButton::TriggerR);
+    set(in.zl, VirtualButton::TriggerZL);
+    set(in.zr, VirtualButton::TriggerZR);
+    set(in.plus, VirtualButton::ButtonPlus);
+    set(in.minus, VirtualButton::ButtonMinus);
+    set(in.lstick, VirtualButton::StickL);
+    set(in.rstick, VirtualButton::StickR);
+    set(in.up, VirtualButton::ButtonUp);
+    set(in.down, VirtualButton::ButtonDown);
+    set(in.left, VirtualButton::ButtonLeft);
+    set(in.right, VirtualButton::ButtonRight);
+    set(in.home, VirtualButton::ButtonHome);
+    ApplyDeadzone(in.lx, in.ly, options.deadzone, state.left_x, state.left_y);
+    ApplyDeadzone(in.rx, in.ry, options.deadzone, state.right_x, state.right_y);
+    return state;
+}
+
+/// Adds a second pad playing the same player: buttons from either, each stick from the one
+/// pushed further.
+void MergePadState(PadState& into, const PadState& other) {
+    into.buttons |= other.buttons;
+    const auto further = [](float& x, float& y, float ox, float oy) {
+        if (ox * ox + oy * oy > x * x + y * y) {
+            x = ox;
+            y = oy;
+        }
+    };
+    further(into.left_x, into.left_y, other.left_x, other.left_y);
+    further(into.right_x, into.right_y, other.right_x, other.right_y);
+}
+
+/// The PlayerSlots id of a DSU pad.
+std::wstring DsuPlayerId(u64 key) {
+    wchar_t text[24]{};
+    std::swprintf(text, std::size(text), L"dsu:%llx", static_cast<unsigned long long>(key));
+    return text;
+}
+
 /// A pad playing one of players 2-8: it only reaches the game; the keyboard, the boot.cfg script
-/// and the in-game menu stay player 1's.
+/// and the in-game menu stay player 1's. A Windows pad, or a DSU pad (`dsu`, its key).
 struct ExtraPlayer {
     std::optional<ControllerDevice> pad;
+    u64 dsu{};
     ConsoleControllerStyle style{ConsoleControllerStyle::Pro}; // As last connected.
     PadState applied;
     u32 held{}; // Buttons down last poll, to reconnect on a press.
@@ -1074,6 +1126,13 @@ void GamepadInput::Run(std::stop_token stop) {
     // Player 1's pad, kept while a read fails so it is not handed to another player meanwhile.
     std::wstring player1_id;
     SupportedControllerStyles supported{};
+    // DSU pads (dsu_client.h): the automatic ones that pressed a button and play, the one playing
+    // player 1 while no Windows pad does, and what the slots last saw of them.
+    std::vector<DsuClient::PadFrame> dsu_pads;
+    std::vector<u64> dsu_joined;
+    u64 dsu_player1{};
+    std::wstring dsu_signature;
+    const auto playing = [&](std::size_t player) { return extras[player].pad || extras[player].dsu != 0; };
     // Eden binds player N to virtual_gamepad port N; connecting it is all the game needs to see
     // a new controller, as when a pad is paired on a Switch.
     const auto connect_extra = [&](std::size_t player) {
@@ -1091,7 +1150,8 @@ void GamepadInput::Run(std::stop_token stop) {
         controller->Connect();
         extra.style = wanted;
         LOG_INFO(Input, "UWP input: player {} is {} as {}", player + 1,
-                 winrt::to_string(extra.pad->name), ConsoleControllerStyleLogName(wanted));
+                 extra.pad ? winrt::to_string(extra.pad->name) : winrt::to_string(DsuPlayerId(extra.dsu)),
+                 ConsoleControllerStyleLogName(wanted));
     };
     const auto release_extra = [&](std::size_t player) {
         auto& extra = extras[player];
@@ -1111,7 +1171,7 @@ void GamepadInput::Run(std::stop_token stop) {
             // the game accepts it; one the game dropped stays out until its pad presses a button.
             for (std::size_t player = 1; player < MaxPlayers; ++player) {
                 auto* controller = hid->GetEmulatedControllerByIndex(player);
-                if (!extras[player].pad || !controller->IsConnected()) continue;
+                if (!playing(player) || !controller->IsConnected()) continue;
                 const auto current = FromNpadStyle(controller->GetNpadStyleIndex());
                 if (IsStyleSupported(current, supported)) extras[player].style = current;
                 else connect_extra(player);
@@ -1121,6 +1181,25 @@ void GamepadInput::Run(std::stop_token stop) {
         const ControllerOptions current_options = PlayedOptions();
         const RightStickSettings right_stick = ResolveRightStick(current_options.right_stick, GameRightStickSettings());
         const RumbleSettings rumble_settings = ResolveRumble(current_options.rumble, GameRumbleSettings());
+        // DSU pads: the client runs while it has servers or moves the gyro. An automatic pad
+        // plays once it presses a button, and stops when it goes away.
+        {
+            const bool want_dsu = current_options.motion_source == MotionSource::Phone || DsuClient::HasServers();
+            DsuClient::SetWanted(DsuClient::Wanter::Input, want_dsu);
+            dsu_pads = want_dsu ? DsuClient::Pads(std::chrono::milliseconds{500}) : std::vector<DsuClient::PadFrame>{};
+            std::erase_if(dsu_joined, [&](u64 key) {
+                return std::ranges::none_of(dsu_pads, [&](const auto& frame) {
+                    return frame.key == key && frame.assign == DsuAssign::Auto;
+                });
+            });
+            for (const auto& frame : dsu_pads) {
+                if (frame.assign == DsuAssign::Auto && frame.input.AnyButton() &&
+                    std::ranges::find(dsu_joined, frame.key) == dsu_joined.end()) {
+                    dsu_joined.push_back(frame.key);
+                    LOG_INFO(Input, "UWP input: DSU pad {} joined", winrt::to_string(DsuPlayerId(frame.key)));
+                }
+            }
+        }
         if (controller_api_ready) {
             try {
                 const bool catalog_changed = controllers.Update(std::chrono::steady_clock::now(),
@@ -1152,20 +1231,51 @@ void GamepadInput::Run(std::stop_token stop) {
                                  devices.size());
                     }
                 }
-                if (catalog_changed || selection_changed) {
+                // A joined automatic DSU pad plays player 1 while no Windows pad does; the first
+                // one keeps it.
+                const auto auto_joined = [&](u64 key) {
+                    return std::ranges::find(dsu_joined, key) != dsu_joined.end();
+                };
+                if (pad || !auto_joined(dsu_player1)) dsu_player1 = 0;
+                if (!pad && dsu_player1 == 0 && !dsu_joined.empty()) dsu_player1 = dsu_joined.front();
+                // DSU pads for players 2-8: the joined automatic ones, and those set to a player.
+                std::vector<std::wstring> dsu_ids;
+                std::array<std::wstring, MaxPlayers> pinned{};
+                for (const auto& frame : dsu_pads) {
+                    const u8 chosen = DsuPinnedPlayer(frame.assign);
+                    if (chosen >= 2) {
+                        if (pinned[chosen - 1].empty()) pinned[chosen - 1] = DsuPlayerId(frame.key);
+                        dsu_ids.push_back(DsuPlayerId(frame.key));
+                    } else if (frame.assign == DsuAssign::Auto && auto_joined(frame.key) && frame.key != dsu_player1) {
+                        dsu_ids.push_back(DsuPlayerId(frame.key));
+                    }
+                }
+                std::wstring signature;
+                for (std::size_t player = 1; player < MaxPlayers; ++player) signature += pinned[player] + L"|";
+                for (const auto& id : dsu_ids) signature += id + L";";
+                const bool dsu_changed = signature != dsu_signature;
+                dsu_signature = std::move(signature);
+                if (catalog_changed || selection_changed || dsu_changed) {
                     // Every other pad plays players 2-8, unless Settings > System turned them off.
                     std::vector<std::wstring> ids;
                     for (const auto& device : devices) {
                         if (device && device.id != player1_id) ids.push_back(device.id);
                     }
-                    const auto changed = slots.Assign(ids);
+                    ids.insert(ids.end(), dsu_ids.begin(), dsu_ids.end());
+                    const auto changed = slots.Assign(ids, pinned);
                     for (std::size_t player = 1; player < MaxPlayers; ++player) {
                         const auto& id = slots.Id(player);
                         const bool moved = std::ranges::find(changed, player) != changed.end();
-                        if (moved && extras[player].pad) release_extra(player);
+                        if (moved && playing(player)) release_extra(player);
                         if (id.empty()) continue;
-                        // Refresh the device too: a catalog change can bring a new WinRT object.
-                        extras[player].pad = *std::ranges::find(devices, id, &ControllerDevice::id);
+                        if (id.starts_with(L"dsu:")) {
+                            extras[player].pad.reset();
+                            extras[player].dsu = std::wcstoull(id.c_str() + 4, nullptr, 16);
+                        } else {
+                            // Refresh the device too: a catalog change can bring a new WinRT object.
+                            extras[player].pad = *std::ranges::find(devices, id, &ControllerDevice::id);
+                            extras[player].dsu = 0;
+                        }
                         if (moved) connect_extra(player);
                     }
                 }
@@ -1198,6 +1308,16 @@ void GamepadInput::Run(std::stop_token stop) {
             static_cast<u8>((SwapControllerFaceButtons(*pad, current_options.swap_face_buttons) ? 1 : 0) |
                            (pad->pro ? 2 : 0)) : 0);
         ApplyKeyboard(state);
+        // DSU pads playing player 1 add to it like a second pad in the same hands; each pad says
+        // whom it plays, for the menus.
+        for (const auto& frame : dsu_pads) {
+            const bool player1 = frame.assign == DsuAssign::Player1 || (frame.key == dsu_player1 && dsu_player1 != 0);
+            if (player1) MergePadState(state, PadStateFromDsu(frame.input, current_options));
+            u8 player = player1 ? 1 : 0;
+            for (std::size_t p = 1; p < MaxPlayers && player == 0; ++p)
+                if (extras[p].dsu == frame.key) player = static_cast<u8>(p + 1);
+            DsuClient::SetResolved(frame.key, player);
+        }
         // The right stick: sensitivity on the pad's or the keyboard's, the mouse over both while
         // it moves, then the inversion over whichever it was. While the mouse moves the gyro it
         // never reaches the stick.
@@ -1292,18 +1412,22 @@ void GamepadInput::Run(std::stop_token stop) {
         // Frozen while the menu pauses the game.
         {
             const MotionSource source = current_options.motion_source;
+            // A DSU pad sends its own motion: the client runs while it is the source (above), even
+            // with the gyro off, so it is ready when the player turns it on.
+            const bool phone_gyro = source == MotionSource::Phone;
+            const bool stick_gyro = !mouse_gyro && !phone_gyro;
             const bool left_gyro = source == MotionSource::LeftStick;
             const float raw_left_x = state.left_x, raw_left_y = state.left_y;
             const float raw_right_x = state.right_x, raw_right_y = state.right_y;
-            const float gyro_x = mouse_gyro ? 0.0f : left_gyro ? raw_left_x : raw_right_x;
-            const float gyro_y = mouse_gyro ? 0.0f : left_gyro ? raw_left_y : raw_right_y;
+            const float gyro_x = !stick_gyro ? 0.0f : left_gyro ? raw_left_x : raw_right_x;
+            const float gyro_y = !stick_gyro ? 0.0f : left_gyro ? raw_left_y : raw_right_y;
             const u32 raw_buttons = state.buttons;
             motion.SetMode(game_motion_now.mode);
             const bool motion_on = game_motion_now.mode != MotionMode::Off;
-            const u32 shake_bit = ShakeButtonBit(current_options.motion_shake, source);
+            const u32 shake_bit = phone_gyro ? 0 : ShakeButtonBit(current_options.motion_shake, source);
             const bool shaking = motion_on && (state.buttons & shake_bit) != 0;
             if (motion_on) {
-                if (!mouse_gyro) {
+                if (stick_gyro) {
                     if (left_gyro) state.left_x = state.left_y = 0.0f;
                     else state.right_x = state.right_y = 0.0f;
                 }
@@ -1312,7 +1436,11 @@ void GamepadInput::Run(std::stop_token stop) {
             // The mouse turns it only while a game plays: not while the game's keyboard is up.
             const bool mouse_turns = mouse_gyro && !TextEntryActive();
             std::optional<MotionSample> sample;
-            if (motion_on && !in_menu) {
+            if (motion_on && !in_menu && phone_gyro) {
+                // The chosen DSU pad's latest sample; while none arrives the pad lies still, flat.
+                sample = DsuClient::GyroSample(std::chrono::milliseconds{300});
+                if (!sample) sample = MotionSample{{}, {0.0f, 0.0f, -1.0f}, {}, {}};
+            } else if (motion_on && !in_menu) {
                 sample = mouse_gyro ? motion.StepMouse(poll_ms / 1000.0f, mouse_turns ? static_cast<float>(dx) : 0.0f,
                                                        mouse_turns ? static_cast<float>(dy) : 0.0f,
                                                        right_stick.mouse_sensitivity, shaking)
@@ -1392,11 +1520,25 @@ void GamepadInput::Run(std::stop_token stop) {
         }
         for (std::size_t player = 1; player < MaxPlayers; ++player) {
             auto& extra = extras[player];
-            if (!extra.pad) continue;
+            if (!playing(player)) continue;
             PadState extra_state{};
-            try {
-                extra_state = ReadGamepad(*extra.pad, current_options);
-            } catch (...) {} // Gone: the next catalog check frees the player.
+            if (extra.dsu != 0) {
+                // Gone: the next slot check frees the player.
+                const auto frame = std::ranges::find(dsu_pads, extra.dsu, &DsuClient::PadFrame::key);
+                if (frame != dsu_pads.end()) {
+                    extra_state = PadStateFromDsu(frame->input, current_options);
+                    // Its own gyro moves its own controller, while the game's gyro is on.
+                    if (frame->motion && game_motion_now.mode != MotionMode::Off && !in_menu) {
+                        const auto& m = *frame->motion;
+                        gamepad->SetMotionState(player, static_cast<u64>(std::max(poll_ms, 1.0f) * 1000.0f), m.gyro.x,
+                                                m.gyro.y, m.gyro.z, m.accel.x, m.accel.y, m.accel.z);
+                    }
+                }
+            } else {
+                try {
+                    extra_state = ReadGamepad(*extra.pad, current_options);
+                } catch (...) {} // Gone: the next catalog check frees the player.
+            }
             // The same right stick settings as player 1, like the deadzone (the mouse is player 1's).
             ScaleStick(extra_state.right_x, extra_state.right_y, right_stick.stick_sensitivity);
             InvertStick(extra_state.right_x, extra_state.right_y, right_stick.invert_x, right_stick.invert_y);
@@ -1420,13 +1562,17 @@ void GamepadInput::Run(std::stop_token stop) {
                                       RumbleMotor(rumble_settings, extra_high));
         }
         for (std::size_t player = 1; player < MaxPlayers; ++player) {
-            if (!extras[player].pad) extra_rumble[player].Stop();
+            if (!extras[player].pad) extra_rumble[player].Stop(); // DSU pads have no motors here.
         }
         std::this_thread::sleep_for(POLL_INTERVAL);
     }
     // No pad keeps shaking once the game is gone.
     player1_rumble.Stop();
     for (auto& output : extra_rumble) output.Stop();
+    // Nor are DSU servers asked for their pads (the library asks again on its pages), which play
+    // nobody now.
+    for (const auto& frame : dsu_pads) DsuClient::SetResolved(frame.key, 0);
+    DsuClient::SetWanted(DsuClient::Wanter::Input, false);
 }
 
 } // namespace Jadyx

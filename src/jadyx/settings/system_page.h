@@ -22,7 +22,14 @@ namespace Jadyx {
 enum class EditorPurpose : std::uint8_t {
     UserName, OnlineNickname, OnlineAddress, OnlinePort, OnlinePassword, RoomPassword,
     HostName, HostSlots, HostPort, HostPassword, ChatMessage,
+    DsuAddress,   ///< Settings > Controller > DSU controllers: a server's IP.
 };
+
+/// Ports, counts and IP addresses take the numeric pad; names and server hosts the full keyboard.
+constexpr bool NumericEditor(EditorPurpose purpose) {
+    return purpose == EditorPurpose::OnlinePort || purpose == EditorPurpose::HostSlots ||
+           purpose == EditorPurpose::HostPort || purpose == EditorPurpose::DsuAddress;
+}
 
 struct SystemPage {
     enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, ClockFormat, GameDate, DateYear, DateMonth, DateDay, SurroundSound, AdultMods, PerformanceStats, PulseSessions, PlayTime, OfflineMode, MiiEditor, ClearCache, Updates, RowCount };

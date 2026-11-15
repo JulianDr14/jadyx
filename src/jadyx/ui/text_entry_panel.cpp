@@ -10,6 +10,31 @@
 
 namespace Jadyx {
 
+namespace {
+/// The numeric pad's keys: digits, '.' and ':' big, Delete and Done in words.
+void DrawNumericPad(UiPainter& painter, const TextEntry& entry, float x, float y) {
+    using K = TextEntryPanelLayout;
+    for (std::size_t row = 0; row < TextEntry::NumericRows; ++row) {
+        for (std::size_t column = 0; column < TextEntry::NumericColumns; ++column) {
+            const bool wide = row == TextEntry::NumericRows - 1;
+            if (wide && column % 2 != 0) continue; // The second half of a wide key.
+            const wchar_t key = TextEntry::NumericKey(row, column);
+            const bool active = entry.Row() == row && entry.Column() == column;
+            const float key_x = x + K::NumKeyX(column), key_y = y + K::NumKeyY(row);
+            const float width = wide ? K::NumKeyWidth * 2 + K::Gap : K::NumKeyWidth;
+            const bool action = key == L'\b' || key == L'\n';
+            const unsigned idle = key == L'\n' ? Palette::RowActive : Palette::Graphite;
+            painter.Round(key_x, key_y, width, K::NumKeyHeight, 12, active ? Palette::Accent : idle);
+            const std::wstring label = key == L'\b'   ? std::wstring{I18n::Tr(I18n::Text::DeleteKey)}
+                                       : key == L'\n' ? std::wstring{I18n::Tr(I18n::Text::DoneKey)}
+                                                      : std::wstring(1, key);
+            painter.Text(label, key_x, key_y, action ? 20 : 30, active ? Palette::OnAccent : action ? Palette::Text : Palette::TextHint,
+                         width, K::NumKeyHeight, true, false, true);
+        }
+    }
+}
+} // namespace
+
 void DrawTextEntryPanel(UiPainter& painter, const TextEntryPanelView& view, float x, float y) {
     using K = TextEntryPanelLayout;
     using I18n::Text;
@@ -34,6 +59,10 @@ void DrawTextEntryPanel(UiPainter& painter, const TextEntryPanelView& view, floa
     if (!view.notice.empty())
         painter.Text(view.notice, left, y + 192, 16, Palette::Warning, K::BoxWidth, 48, false, true);
 
+    if (entry.Numeric()) {
+        DrawNumericPad(painter, entry, x, y);
+        return;
+    }
     for (std::size_t row = 0; row < TextEntry::CharacterRows; ++row) {
         for (std::size_t column = 0; column < TextEntry::Columns; ++column) {
             const bool active = entry.Row() == row && entry.Column() == column;

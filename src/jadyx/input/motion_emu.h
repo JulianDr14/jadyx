@@ -34,9 +34,10 @@ inline constexpr std::uint8_t MotionModeCount = 2;
 /// What moves the emulated controller (Settings > Controller). A stick tilts it (where it points
 /// is how far it leans) and the game no longer sees that stick while the gyro is on; the mouse
 /// turns it as a real controller turns in the hands, and both sticks stay the game's. Stored as
-/// 0, 1, 2: the old Right/Left values read the same.
-enum class MotionSource : std::uint8_t { RightStick, LeftStick, Mouse };
-inline constexpr std::uint8_t MotionSourceCount = 3;
+/// 0, 1, 2: the old Right/Left values read the same. Phone is a DSU pad (dsu_client.h) sending its own
+/// motion over the network: no stick and no button of the pad is taken.
+enum class MotionSource : std::uint8_t { RightStick, LeftStick, Mouse, Phone };
+inline constexpr std::uint8_t MotionSourceCount = 4;
 
 /// The button that shakes it, by the Xbox pad's names; the game no longer sees it either.
 enum class MotionShakeButton : std::uint8_t {

@@ -11,6 +11,7 @@
 #include "jadyx/input/controller_basics.h"
 #include "jadyx/input/controller_style.h"
 #include "jadyx/input/motion_emu.h"
+#include "jadyx/input/dsu_text.h"
 #include "jadyx/input/right_stick_settings.h"
 #include "jadyx/input/rumble_settings.h"
 #include "jadyx/settings/graphics_page.h"
@@ -163,6 +164,10 @@ struct GameMenuSettings {
     GameControllerBasics controller{};
     /// A mouse is plugged in, for the Mouse page's rows.
     bool mouse_present{};
+    /// DSU controllers (dsu_client.h): servers, their pads and the gyro's pad; and whether the
+    /// last address typed was not one.
+    DsuStatus dsu{};
+    bool dsu_add_invalid{};
 };
 
 /// Library: back to home, keeping a Pulse session when they are on. LibraryWithoutSession: the
@@ -198,6 +203,23 @@ enum class GameMenuResult : std::uint8_t {
     /// What the mouse drives or what moves the gyro: Settings().right_stick (the game's own or
     /// Settings') and Settings().motion_source (Settings > Controller's) both hold new values.
     MouseUseChanged,
+    /// The DSU page: search the network, open the keypad for a server's address, remove the
+    /// server under the cursor (DsuSelection), or a pad's player changed (DsuSelection's key and
+    /// assignment).
+    DsuSearch,
+    DsuAdd,
+    DsuRemove,
+    DsuAssignChanged,
+    /// Settings().dsu.gyro_pad changed.
+    GyroDsuPadChanged,
+};
+
+/// The DSU row under the cursor: its server's index and, on a pad, its key and the assignment
+/// just chosen.
+struct DsuSelection {
+    std::size_t server{};
+    std::uint64_t pad_key{};
+    DsuAssign assign{};
 };
 
 /// The console's tag reader as the game left it, for the Amiibo row.
@@ -233,12 +255,15 @@ public:
         RightStickPage, MousePage, RumblePage, GyroPage, MouseUseRow,
         /// The Graphics page's entries into its sections (graphics_page.h).
         GfxImagePage, GfxPerformancePage, GfxFixesPage, GfxMemoryPage,
+        /// The DSU page's entry, its rows (a server and a pad repeat, one row each), and the gyro
+        /// page's pad row.
+        DsuPage, DsuSearch, DsuAdd, DsuServer, DsuPad, GyroDsuPad,
     };
-    /// RightStick, Mouse, Rumble and Gyro open from the Controller page and go back to it; the
-    /// graphics sections open from the Graphics page and go back to it.
+    /// RightStick, Mouse, Rumble, Gyro and Dsu open from the Controller page and go back to it;
+    /// the graphics sections open from the Graphics page and go back to it.
     enum class Page : std::uint8_t {
         Quick, Controller, Display, Graphics, Glitch, RightStick, Mouse, Rumble, Gyro,
-        GraphicsImage, GraphicsPerformance, GraphicsFixes, GraphicsMemory,
+        GraphicsImage, GraphicsPerformance, GraphicsFixes, GraphicsMemory, Dsu,
     };
 
     /// `cheats`: the game has a title id, so the menu offers its cheats, its own offline mode and
@@ -263,6 +288,8 @@ public:
         // whose own it is) the gyro.
         controller = {Style, FaceButtons, Deadzone, RightStickPage, MousePage, RumblePage};
         if (settings.right_stick_per_game) controller.push_back(GyroPage);
+        controller.push_back(DsuPage);
+        UpdateDsuItems();
         right_stick_page = {RStickInvertX, RStickInvertY, RStickSensitivity};
         mouse_page = {MouseUseRow, RStickMouseSensitivity};
         rumble_page = {Rumble, RumbleStrength};
@@ -284,6 +311,28 @@ public:
         const auto cheats = std::find(quick.begin(), quick.end(), Cheats);
         const auto after = cheats != quick.end() ? cheats : std::find(quick.begin(), quick.end(), ControllerPage) - 1;
         quick.insert(after + 1, Mods);
+    }
+
+    /// The DSU client's state changed (or the address typed was not one): the DSU page lists it
+    /// again, the cursor staying on the server or pad it was on.
+    void SetDsu(DsuStatus status, bool add_invalid = false) {
+        settings.dsu = std::move(status);
+        settings.dsu_add_invalid = add_invalid;
+        UpdateDsuItems();
+        UpdateGyroItems();
+    }
+    /// The DSU row under the cursor (a server or a pad), after DsuRemove or DsuAssignChanged.
+    [[nodiscard]] DsuSelection SelectedDsu() const {
+        DsuSelection selection{};
+        if (page != Page::Dsu || selected >= dsu_refs.size() || !dsu_refs[selected]) return selection;
+        const DsuRowRef& ref = *dsu_refs[selected];
+        selection.server = ref.server;
+        if (ref.pad) {
+            const DsuPadStatus& pad = settings.dsu.servers[ref.server].pads[*ref.pad];
+            selection.pad_key = pad.key;
+            selection.assign = pad.assign;
+        }
+        return selection;
     }
 
     /// Adds the Amiibo row, after the game's cheats and mods. `name`: the tag placed, if any.
@@ -362,6 +411,9 @@ public:
             if (OnGraphicsPage() && SyncGameGraphics(settings.graphics)) return GameMenuResult::GraphicsChanged;
             break;
         case MenuAction::Alternate:
+            // X on a DSU server's row removes it.
+            if (page == Page::Dsu && !items.empty() && items[selected] == DsuServer) return GameMenuResult::DsuRemove;
+            break;
         case MenuAction::PreviousTab:
         case MenuAction::NextTab:
         case MenuAction::Menu:
@@ -373,7 +425,8 @@ public:
     /// The rows of the page shown.
     [[nodiscard]] std::vector<GameMenuRow> Rows() const {
         std::vector<GameMenuRow> rows;
-        for (const Item item : Items()) rows.push_back(Row(item));
+        const auto& items = Items();
+        for (std::size_t index = 0; index < items.size(); ++index) rows.push_back(Row(items[index], index));
         return rows;
     }
 
@@ -386,7 +439,8 @@ public:
                   : page == Page::Mouse      ? Text::MousePage
                   : page == Page::Rumble     ? Text::RumbleRow
                   : page == Page::Gyro       ? Text::GyroPage
-                  : page == Page::GraphicsImage       ? GraphicsSectionTitle(GraphicsSection::Image)
+                  : page == Page::Dsu        ? Text::DsuPage
+                  : page == Page::GraphicsImage      ? GraphicsSectionTitle(GraphicsSection::Image)
                   : page == Page::GraphicsPerformance ? GraphicsSectionTitle(GraphicsSection::Performance)
                   : page == Page::GraphicsFixes       ? GraphicsSectionTitle(GraphicsSection::Fixes)
                   : page == Page::GraphicsMemory      ? GraphicsSectionTitle(GraphicsSection::Memory)
@@ -433,6 +487,7 @@ private:
         case Page::Mouse: return mouse_page;
         case Page::Rumble: return rumble_page;
         case Page::Gyro: return gyro_page;
+        case Page::Dsu: return dsu_page;
         case Page::Display: return display;
         case Page::Graphics: return graphics;
         case Page::GraphicsImage: return graphics_image;
@@ -452,6 +507,7 @@ private:
         case Page::Mouse: return MousePage;
         case Page::Rumble: return RumblePage;
         case Page::Gyro: return GyroPage;
+        case Page::Dsu: return DsuPage;
         default: return std::nullopt;
         }
     }
@@ -476,10 +532,51 @@ private:
 
     /// The gyro's page: the mouse's sensitivity shows there too while the mouse moves it.
     void UpdateGyroItems() {
-        gyro_page = {Motion, GyroSource, GyroShake};
+        // A DSU pad moves it by itself: no button shakes it; which pad does shows instead.
+        if (settings.motion_source == MotionSource::Phone) gyro_page = {Motion, GyroSource, GyroDsuPad};
+        else gyro_page = {Motion, GyroSource, GyroShake};
         if (settings.motion_source == MotionSource::Mouse) gyro_page.push_back(RStickMouseSensitivity);
         gyro_page.push_back(MotionView);
         if (page == Page::Gyro) selected = std::min(selected, gyro_page.size() - 1);
+    }
+
+    /// The DSU page: Search and Add, then each server with its pads under it. The cursor stays on
+    /// the server or pad it was on when the list changes.
+    void UpdateDsuItems() {
+        std::optional<std::uint64_t> was_pad;
+        std::optional<std::wstring> was_server;
+        if (page == Page::Dsu && selected < dsu_refs.size() && dsu_refs[selected]) {
+            const DsuSelection old = SelectedDsuIn(previous_dsu);
+            if (dsu_refs[selected]->pad) was_pad = old.pad_key;
+            else if (old.server < previous_dsu.servers.size()) was_server = previous_dsu.servers[old.server].address;
+        }
+        dsu_page = {DsuSearch, DsuAdd};
+        dsu_refs.assign(2, std::nullopt);
+        for (const DsuRowRef& ref : DsuRows(settings.dsu)) {
+            dsu_page.push_back(ref.pad ? DsuPad : DsuServer);
+            dsu_refs.emplace_back(ref);
+        }
+        previous_dsu = settings.dsu;
+        if (page != Page::Dsu) return;
+        for (std::size_t row = 2; row < dsu_refs.size(); ++row) {
+            const DsuRowRef& ref = *dsu_refs[row];
+            const DsuServerStatus& server = settings.dsu.servers[ref.server];
+            if ((was_pad && ref.pad && server.pads[*ref.pad].key == *was_pad) ||
+                (was_server && !ref.pad && server.address == *was_server)) {
+                selected = row;
+                return;
+            }
+        }
+        selected = std::min(selected, dsu_page.size() - 1);
+    }
+    /// SelectedDsu against the status the rows were built from (`status`).
+    [[nodiscard]] DsuSelection SelectedDsuIn(const DsuStatus& status) const {
+        DsuSelection selection{};
+        const DsuRowRef& ref = *dsu_refs[selected];
+        selection.server = ref.server;
+        if (ref.pad && ref.server < status.servers.size() && *ref.pad < status.servers[ref.server].pads.size())
+            selection.pad_key = status.servers[ref.server].pads[*ref.pad].key;
+        return selection;
     }
 
     [[nodiscard]] MouseUse CurrentMouseUse() const {
@@ -492,7 +589,8 @@ private:
     }
     [[nodiscard]] static std::wstring GyroSourceText(MotionSource source) {
         using I18n::Text;
-        return Tr(source == MotionSource::Mouse ? Text::MousePage
+        return Tr(source == MotionSource::Phone ? Text::GyroPhone
+                  : source == MotionSource::Mouse ? Text::MousePage
                   : source == MotionSource::LeftStick ? Text::GyroStickLeft : Text::GyroStickRight);
     }
     /// Sets what the mouse drives and the gyro's source together, the right stick's switch as
@@ -535,7 +633,8 @@ private:
         }
     }
 
-    GameMenuRow Row(Item item) const {
+    /// `index`: the row's place on its page, for the DSU page's server and pad rows.
+    GameMenuRow Row(Item item, std::size_t index = 0) const {
         using I18n::Text;
         constexpr auto Choice = GameMenuRow::Kind::Choice;
         constexpr auto Page = GameMenuRow::Kind::Page;
@@ -628,6 +727,9 @@ private:
         }
         case GyroPage: {
             if (settings.motion == MotionMode::Off) return {Tr(Text::GyroPage), {}, Page, Tr(Text::No)};
+            if (settings.motion_source == MotionSource::Phone)
+                return {Tr(Text::GyroPage), {}, Page,
+                        Tr(Text::Yes) + L" · " + Tr(Text::GyroPhone) + L" · " + GyroDsuPadText(settings.dsu)};
             return {Tr(Text::GyroPage), {}, Page,
                     Tr(Text::Yes) + L" · " + GyroSourceText(settings.motion_source) + L" · " +
                         GyroShakeText(settings.motion_shake, settings.motion_source)};
@@ -737,8 +839,9 @@ private:
                     Tr(on ? Text::MotionOnHint : Text::MotionOffHint)};
         }
         case GyroSource: {
-            std::wstring detail = Tr(settings.motion_source == MotionSource::Mouse ? Text::GyroSourceMouseHint
-                                                                                    : Text::GyroStickHint);
+            std::wstring detail = Tr(settings.motion_source == MotionSource::Mouse   ? Text::GyroSourceMouseHint
+                                     : settings.motion_source == MotionSource::Phone ? Text::GyroSourcePhoneHint
+                                                                                     : Text::GyroStickHint);
             if (settings.motion_source == MotionSource::Mouse && !settings.mouse_present)
                 detail = Tr(Text::MouseNotConnected);
             return {Tr(Text::GyroStickRow), GyroSourceText(settings.motion_source), Choice, detail};
@@ -746,6 +849,25 @@ private:
         case GyroShake:
             return {Tr(Text::GyroShakeRow), GyroShakeText(settings.motion_shake, settings.motion_source), Choice,
                     Tr(Text::GyroShakeHint)};
+        case GyroDsuPad:
+            return {Tr(Text::GyroDsuPadRow), GyroDsuPadText(settings.dsu), Choice, GyroDsuPadHint(settings.dsu)};
+        case DsuPage:
+            return {Tr(Text::DsuPage), {}, Page, DsuSummaryText(settings.dsu)};
+        case DsuSearch:
+            return {Tr(Text::DsuSearchRow), DsuSearchValue(settings.dsu), Action, DsuSearchHint(settings.dsu)};
+        case DsuAdd:
+            return {Tr(Text::DsuAddRow), {}, Action,
+                    Tr(settings.dsu_add_invalid ? Text::DsuAddInvalid : Text::DsuAddHint)};
+        case DsuServer:
+        case DsuPad: {
+            if (index >= dsu_refs.size() || !dsu_refs[index]) return {};
+            const DsuRowRef& ref = *dsu_refs[index];
+            const DsuServerStatus& server = settings.dsu.servers[ref.server];
+            if (!ref.pad) return {server.address, DsuServerStateText(server), Action, DsuServerHint(server)};
+            // A pad's row sits under its server's, indented.
+            const DsuPadStatus& pad = server.pads[*ref.pad];
+            return {L"    " + DsuPadName(pad), DsuAssignText(pad), Choice, DsuPadHint(pad)};
+        }
         case Rumble:
         case RumbleStrength: {
             const RumbleSettings resolved = ResolveRumble(settings.rumble_global, settings.rumble);
@@ -835,10 +957,12 @@ private:
         case MousePage:
         case RumblePage:
         case GyroPage:
+        case DsuPage:
             if (back) return GameMenuResult::None;
             page = SelectedItem() == RightStickPage ? Page::RightStick
                    : SelectedItem() == MousePage    ? Page::Mouse
                    : SelectedItem() == RumblePage   ? Page::Rumble
+                   : SelectedItem() == DsuPage      ? Page::Dsu
                                                     : Page::Gyro;
             selected = 0;
             return GameMenuResult::None;
@@ -911,7 +1035,28 @@ private:
                 settings.motion_source = next;
                 UpdateGyroItems();
             }
+            // Choosing the phone means wanting it now: this game's gyro turns on with it.
+            if (next == MotionSource::Phone && settings.right_stick_per_game) settings.motion = MotionMode::On;
             return GameMenuResult::MouseUseChanged;
+        }
+        case GyroDsuPad:
+            settings.dsu.gyro_pad = StepGyroDsuPad(settings.dsu, back);
+            return GameMenuResult::GyroDsuPadChanged;
+        case DsuSearch:
+            return confirm ? GameMenuResult::DsuSearch : GameMenuResult::None;
+        case DsuAdd:
+            return confirm ? GameMenuResult::DsuAdd : GameMenuResult::None;
+        case DsuServer:
+            return GameMenuResult::None;
+        case DsuPad: {
+            // Left and right (and A, forward) step who the pad plays; SelectedDsu reads it back.
+            if (selected >= dsu_refs.size() || !dsu_refs[selected]) return GameMenuResult::None;
+            const DsuRowRef& ref = *dsu_refs[selected];
+            DsuPadStatus& pad = settings.dsu.servers[ref.server].pads[*ref.pad];
+            pad.assign = StepDsuAssign(pad.assign, back);
+            if (pad.assign != DsuAssign::Auto) pad.player = DsuPinnedPlayer(pad.assign);
+            else pad.player = 0;
+            return GameMenuResult::DsuAssignChanged;
         }
         case GyroShake:
             settings.motion_shake = StepEnum(settings.motion_shake, MotionShakeButtonCount, back);
@@ -1034,7 +1179,11 @@ private:
     GameMenuSettings settings;
     std::vector<Item> quick, controller, display, graphics, glitch;
     std::vector<Item> graphics_image, graphics_performance, graphics_fixes, graphics_memory;
-    std::vector<Item> right_stick_page, mouse_page, rumble_page, gyro_page;
+    std::vector<Item> right_stick_page, mouse_page, rumble_page, gyro_page, dsu_page;
+    /// The DSU page's rows beside dsu_page: none for Search and Add, then a server or a pad.
+    std::vector<std::optional<DsuRowRef>> dsu_refs;
+    /// The status dsu_refs was built from, to find the cursor's row again.
+    DsuStatus previous_dsu;
     Page page{Page::Quick};
     std::size_t selected{};
     std::size_t cheats_on{};

@@ -37,6 +37,8 @@
 #include "jadyx/ui/tween.h"
 #include "jadyx/ui/ui_text.h"
 #include "jadyx/input/uwp_input.h"
+#include "jadyx/input/dsu_client.h"
+#include "jadyx/input/dsu_text.h"
 
 namespace Jadyx {
 using Microsoft::WRL::ComPtr;
@@ -66,7 +68,8 @@ std::wstring ShakeButtonName(MotionShakeButton button, MotionSource source) {
 }
 /// What moves the gyro, as Settings > Controller > Gyro names it.
 std::wstring GyroSourceName(MotionSource source) {
-    return std::wstring{Tr(source == MotionSource::Mouse ? T::MousePage :
+    return std::wstring{Tr(source == MotionSource::Phone ? T::GyroPhone :
+                           source == MotionSource::Mouse ? T::MousePage :
                            source == MotionSource::LeftStick ? T::GyroStickLeft : T::GyroStickRight)};
 }
 /// What the mouse does, as Settings > Controller > Mouse names it.
@@ -273,7 +276,8 @@ public:
         } else if (panel.pad_picker.open) {
             DrawPadPicker(panel.pad_picker, panel.notice);
         }
-        if (view.system.name_editor && ((configuration.open && view.system.open) || view.tab == LibraryTab::Online))
+        if (view.system.name_editor && ((configuration.open && view.system.open) || view.tab == LibraryTab::Online ||
+                                        view.system.editor_purpose == EditorPurpose::DsuAddress))
             DrawNameEditor(view.system);
         if (management) {
             DrawGameOptions(view.game_options);
@@ -1523,6 +1527,25 @@ private:
                                 options.rumble.on ? percent(options.rumble.strength) : std::wstring{Tr(T::No)}});
                 rows.push_back({Kind::Open, std::wstring{Tr(T::GyroPage)}, std::wstring{Tr(T::GyroTurnOnInGame)},
                                 GyroSourceName(options.motion_source)});
+                rows.push_back({Kind::Open, std::wstring{Tr(T::DsuPage)}, {}, DsuSummaryText(DsuClient::Status())});
+                break;
+            }
+            case SectionDsu: {
+                // Search and Add, then each server with its pads under it (controller_sections.h).
+                const DsuStatus dsu = DsuClient::Status();
+                rows.push_back({Kind::Open, std::wstring{Tr(T::DsuSearchRow)}, DsuSearchHint(dsu), DsuSearchValue(dsu)});
+                rows.push_back({Kind::Open, std::wstring{Tr(T::DsuAddRow)}, std::wstring{Tr(T::DsuAddHint)}});
+                for (const DsuRowRef& ref : DsuRows(dsu)) {
+                    const DsuServerStatus& server = dsu.servers[ref.server];
+                    if (!ref.pad) {
+                        SettingsRow row{Kind::Value, server.address, DsuServerHint(server), DsuServerStateText(server)};
+                        row.warning = server.state == DsuServerState::Lost;
+                        rows.push_back(std::move(row));
+                        continue;
+                    }
+                    const DsuPadStatus& pad = server.pads[*ref.pad];
+                    rows.push_back({Kind::Choice, L"    " + DsuPadName(pad), DsuPadHint(pad), DsuAssignText(pad)});
+                }
                 break;
             }
             case SectionRightStick:
@@ -1548,13 +1571,22 @@ private:
                 break;
             default: {
                 const bool mouse_gyro = options.motion_source == MotionSource::Mouse;
+                const bool phone_gyro = options.motion_source == MotionSource::Phone;
                 SettingsRow source{Kind::Segments, std::wstring{Tr(T::GyroStickRow)},
-                                   std::wstring{Tr(!mouse_gyro ? T::GyroStickHint :
+                                   std::wstring{Tr(phone_gyro  ? T::GyroSourcePhoneHint :
+                                                   !mouse_gyro ? T::GyroStickHint :
                                                    mouse ? T::GyroSourceMouseHint : T::MouseNotConnected)}};
                 source.segments = {std::wstring{Tr(T::GyroStickRight)}, std::wstring{Tr(T::GyroStickLeft)},
-                                   std::wstring{Tr(T::MousePage)}};
+                                   std::wstring{Tr(T::MousePage)}, std::wstring{Tr(T::GyroPhone)}};
                 source.on_segment = static_cast<std::size_t>(options.motion_source);
                 rows.push_back(std::move(source));
+                if (phone_gyro) {
+                    // Which DSU pad moves it, live.
+                    const DsuStatus dsu = DsuClient::Status();
+                    rows.push_back({Kind::Choice, std::wstring{Tr(T::GyroDsuPadRow)}, GyroDsuPadHint(dsu),
+                                    GyroDsuPadText(dsu)});
+                    break;
+                }
                 rows.push_back({Kind::Choice, std::wstring{Tr(T::GyroShakeRow)}, std::wstring{Tr(T::GyroShakeHint)},
                                 ShakeButtonName(options.motion_shake, options.motion_source)});
                 if (mouse_gyro) choice(T::MouseSensitivity, percent(stick.mouse_sensitivity));
@@ -2237,6 +2269,7 @@ private:
             case SectionMouse: page_title = T::MousePage; page_about = T::ControllerSectionSubtitle; break;
             case SectionRumble: page_title = T::RumbleRow; page_about = T::ControllerSectionSubtitle; break;
             case SectionGyro: page_title = T::GyroPage; page_about = T::GyroTurnOnInGame; break;
+            case SectionDsu: page_title = T::DsuPage; page_about = T::DsuPageSubtitle; break;
             default: break;
             }
         }
@@ -2249,10 +2282,12 @@ private:
         Type(Tr(page_about), TypeRole::Body, px, 176, pw, Palette::TextSecondary);
         const auto rows = SettingsRows(view, category);
         if (rows.empty()) return;
-        const std::size_t selected = !in_pane ? SIZE_MAX :
+        std::size_t selected = !in_pane ? SIZE_MAX :
             category == HomeSystem ? view.system.selected :
             category == HomeGraphics ? view.graphics.cursor.selected :
             category == HomeFiles ? configuration.selected : view.controller_row;
+        // A live list (the DSU page's) can shrink between the session's step and this draw.
+        if (selected != SIZE_MAX && selected >= rows.size()) selected = rows.size() - 1;
         const std::size_t visible = std::min(rows.size(), SettingsVisibleRows);
         const std::size_t first = selected != SIZE_MAX && selected >= visible ? selected - visible + 1 : 0;
         const float card_h = visible * SettingsRowStride - (SettingsRowStride - SettingsRowHeight) + 24;
@@ -2352,6 +2387,7 @@ private:
         case EditorPurpose::HostPort: title = T::OnlinePort; hint = T::OnlinePortEditorHint; break;
         case EditorPurpose::HostPassword: title = T::OnlinePassword; hint = T::OnlinePasswordEditorHint; break;
         case EditorPurpose::ChatMessage: title = T::ChatMessageTitle; hint = T::ChatEditorHint; break;
+        case EditorPurpose::DsuAddress: title = T::DsuAddTitle; hint = T::DsuPageSubtitle; break;
         case EditorPurpose::UserName: break;
         }
         DrawTextEntryPanel(*this, {*page.name_editor, Tr(title), Tr(hint), page.editor_notice},
