@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -46,6 +47,20 @@ int main() {
     // Everyone leaves.
     check(slots.Assign({}).size() == MaxPlayers - 1);
 
+    // A pad chosen by hand for player 3 takes it from whoever had it, who moves to a free one.
+    std::array<std::wstring, MaxPlayers> pinned{};
+    pinned[2] = L"net";
+    check(slots.Assign({L"a", L"b"}) == Changed{1, 2});
+    check(slots.Assign({L"a", L"b", L"net"}, pinned) == Changed{2, 3});
+    check(slots.Id(1) == L"a" && slots.Id(2) == L"net" && slots.Id(3) == L"b");
+    // Stable while nothing changes; a pinned pad that is not there frees nothing.
+    check(slots.Assign({L"a", L"b", L"net"}, pinned).empty());
+    check(slots.Assign({L"a", L"b"}, pinned) == Changed{2});
+    check(slots.Id(2).empty() && slots.Id(3) == L"b");
+    pinned[0] = L"a"; // Player 1 is never pinned here.
+    check(slots.Assign({L"a", L"b"}, pinned).empty());
+    slots.Assign({});
+
     // Player 1 keeps its pad while it can play, whatever the others do.
     using Jadyx::PreferredPlayerOne;
     std::vector<std::wstring> playable{L"one", L"two", L"three"};
@@ -64,5 +79,5 @@ int main() {
     check(PreferredPlayerOne(L"one", slots, can_play) == L"two");
     playable.clear();
     check(PreferredPlayerOne(L"one", slots, can_play).empty());
-    std::puts("player slots: assign/stable/leave/refill/overflow/player one PASS");
+    std::puts("player slots: assign/stable/leave/refill/overflow/pinned/player one PASS");
 }

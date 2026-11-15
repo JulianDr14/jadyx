@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// The DSU ("Cemuhook") protocol as a client speaks it, to use a phone's gyro: an app on the phone
-// is the server and listens on UDP (26760 by default); the console asks it for its pads and then
-// for their data, again at least every few seconds, and the server streams one packet per sample.
-// Acceleration comes in g, rotation in degrees per second (pitch, yaw, roll).
+// The DSU ("Cemuhook") protocol as a client speaks it: an app on a phone or a PC is the server and
+// listens on UDP (26760 by default); the console asks it for its pads (up to four) and then for
+// their data, again at least every few seconds, and the server streams one packet per sample with
+// the pad's buttons, sticks and motion. Acceleration comes in g, rotation in degrees per second
+// (pitch, yaw, roll).
 // PhoneMotionFilter turns those samples into what the emulated pad reports (motion_emu.h's frame
 // and units) and an orientation for the on-screen controller.
 // Header-only and free of the frontend's headers, so the test gate builds it on the PC.
@@ -124,9 +125,20 @@ struct SlotInfo {
     std::uint8_t battery{};
 };
 
+/// The DualShock-style digital buttons of a pad data packet.
+namespace Button {
+inline constexpr std::uint16_t Share = 0x0001, L3 = 0x0002, R3 = 0x0004, Options = 0x0008;
+inline constexpr std::uint16_t Up = 0x0010, Right = 0x0020, Down = 0x0040, Left = 0x0080;
+inline constexpr std::uint16_t L2 = 0x0100, R2 = 0x0200, L1 = 0x0400, R1 = 0x0800;
+inline constexpr std::uint16_t Triangle = 0x1000, Circle = 0x2000, Cross = 0x4000, Square = 0x8000;
+} // namespace Button
+
 /// One sample from the server, in its own units.
 struct PadSample {
     SlotInfo info;
+    std::uint16_t buttons{};  ///< Button bits.
+    bool home{}, touch{};
+    std::uint8_t lx{127}, ly{127}, rx{127}, ry{127}; ///< 0..255, 127 centered, Y up.
     std::uint32_t counter{};
     std::uint64_t timestamp_us{}; ///< The phone's clock; 0 if it sends none.
     float accel_x{}, accel_y{}, accel_z{}; ///< g.
@@ -177,6 +189,14 @@ struct Response {
         PadSample& pad = response.pad;
         pad.info = slot_of(p);
         pad.counter = Get32(p + 12);
+        // The first byte holds Share..Left from the low bit, the second L2..Square.
+        pad.buttons = static_cast<std::uint16_t>(p[16] | (p[17] << 8));
+        pad.home = p[18] != 0;
+        pad.touch = p[19] != 0;
+        pad.lx = p[20];
+        pad.ly = p[21];
+        pad.rx = p[22];
+        pad.ry = p[23];
         pad.timestamp_us = Get64(p + 48);
         pad.accel_x = GetFloat(p + 56);
         pad.accel_y = GetFloat(p + 60);
@@ -188,6 +208,49 @@ struct Response {
     }
     }
     return std::nullopt;
+}
+
+/// A pad's buttons as a Switch controller's, by position (Circle, the east one, is A), and its
+/// sticks in -1..1, up positive.
+struct PadInput {
+    bool a{}, b{}, x{}, y{}, l{}, r{}, zl{}, zr{}, plus{}, minus{}, lstick{}, rstick{};
+    bool up{}, down{}, left{}, right{}, home{};
+    float lx{}, ly{}, rx{}, ry{};
+
+    [[nodiscard]] bool AnyButton() const {
+        return a || b || x || y || l || r || zl || zr || plus || minus || lstick || rstick || up || down ||
+               left || right || home;
+    }
+    bool operator==(const PadInput&) const = default;
+};
+[[nodiscard]] inline float StickAxis(std::uint8_t value) {
+    return std::clamp((static_cast<float>(value) - 127.0f) / 127.0f, -1.0f, 1.0f);
+}
+[[nodiscard]] inline PadInput ToSwitch(const PadSample& pad) {
+    const auto has = [&](std::uint16_t bit) { return (pad.buttons & bit) != 0; };
+    PadInput in;
+    in.a = has(Button::Circle);
+    in.b = has(Button::Cross);
+    in.x = has(Button::Triangle);
+    in.y = has(Button::Square);
+    in.l = has(Button::L1);
+    in.r = has(Button::R1);
+    in.zl = has(Button::L2);
+    in.zr = has(Button::R2);
+    in.plus = has(Button::Options);
+    in.minus = has(Button::Share);
+    in.lstick = has(Button::L3);
+    in.rstick = has(Button::R3);
+    in.up = has(Button::Up);
+    in.down = has(Button::Down);
+    in.left = has(Button::Left);
+    in.right = has(Button::Right);
+    in.home = pad.home;
+    in.lx = StickAxis(pad.lx);
+    in.ly = StickAxis(pad.ly);
+    in.rx = StickAxis(pad.rx);
+    in.ry = StickAxis(pad.ry);
+    return in;
 }
 
 /// The sample in the emulated pad's frame and units (motion_emu.h: X right, Y forward, Z up;
