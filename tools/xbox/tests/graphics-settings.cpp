@@ -10,9 +10,9 @@ int main() {
     auto check = [](bool ok) { if (!ok) std::abort(); };
     I18n::SetUiLanguage(*I18n::FindUiLanguage(L"es"));
 
-    // Defaults: FSR up to the screen, frame generation off, draws skipped while shaders build.
+    // Defaults: FSR up to the screen, frame generation off, balanced shader builds.
     const GraphicsSettings defaults;
-    check(defaults.upscaling == Upscaling::FsrBalanced && !defaults.frame_gen && defaults.shaders == ShaderBuild::Skip);
+    check(defaults.upscaling == Upscaling::FsrBalanced && !defaults.frame_gen && defaults.shaders == ShaderBuild::Balanced);
     check(defaults.gpu_fence == GpuFence::Immediate);
 
     // FSR and frame generation exclude each other, either way round.
@@ -39,9 +39,10 @@ int main() {
     check(HandleGraphicsInput(page, GraphicsInput::Right));
     check(page.settings.upscaling == Upscaling::FsrSharp && !page.settings.frame_gen);
     page.selected = static_cast<std::size_t>(GraphicsRow::Shaders);
-    check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.shaders == ShaderBuild::Balanced);
     check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.shaders == ShaderBuild::Wait);
     check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.shaders == ShaderBuild::Skip);
+    check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.shaders == ShaderBuild::Balanced);
+    check(HandleGraphicsInput(page, GraphicsInput::Left) && page.settings.shaders == ShaderBuild::Skip);
     check(HandleGraphicsInput(page, GraphicsInput::Left) && page.settings.shaders == ShaderBuild::Wait);
     check(GraphicsRowValue(page.settings, GraphicsRow::Shaders) == L"Esperar");
     page.selected = static_cast<std::size_t>(GraphicsRow::GpuFence);
@@ -56,24 +57,16 @@ int main() {
     check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::AsyncRecord));
     check(HandleGraphicsInput(page, GraphicsInput::Confirm) && !page.settings.async_record);
     check(GraphicsRowValue(page.settings, GraphicsRow::AsyncRecord) == L"No");
-    // The CPU write queue: off by default.
-    check(!defaults.cpu_write_queue && GraphicsRowValue(page.settings, GraphicsRow::CpuWriteQueue) == L"No");
-    check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::CpuWriteQueue));
-    check(HandleGraphicsInput(page, GraphicsInput::Confirm) && page.settings.cpu_write_queue);
-    check(GraphicsRowValue(page.settings, GraphicsRow::CpuWriteQueue) == L"Sí");
     // The GPU thread's fast paths: on by default.
     check(defaults.gpu_fast_paths && GraphicsRowValue(page.settings, GraphicsRow::GpuFastPaths) == L"Sí");
     check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::GpuFastPaths));
     check(HandleGraphicsInput(page, GraphicsInput::Confirm) && !page.settings.gpu_fast_paths);
     check(GraphicsRowValue(page.settings, GraphicsRow::GpuFastPaths) == L"No");
-    check(defaults.cpu_write_all && GraphicsRowValue(page.settings, GraphicsRow::CpuWriteAll) == L"Sí");
-    check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::CpuWriteAll));
-    check(HandleGraphicsInput(page, GraphicsInput::Confirm) && !page.settings.cpu_write_all);
-    check(GraphicsRowValue(page.settings, GraphicsRow::CpuWriteAll) == L"No");
-    // The fixed core map: off by default (only the GPU thread pinned), and the page's last row.
+    // The fixed core map: off by default (only the GPU thread pinned), just before the ASTC cap.
+    // It also brings the CPU write queue (boot_config.cpp): there is no row of its own.
     check(!defaults.fixed_core_map && GraphicsRowValue(page.settings, GraphicsRow::FixedCoreMap) == L"No");
     check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::FixedCoreMap));
-    check(page.selected == GraphicsRowCount - 1);
+    check(page.selected + 1 == static_cast<std::size_t>(GraphicsRow::AstcArrayCap));
     check(HandleGraphicsInput(page, GraphicsInput::Confirm) && page.settings.fixed_core_map);
     check(GraphicsRowValue(page.settings, GraphicsRow::FixedCoreMap) == L"Sí");
     check(!HandleGraphicsInput(page, GraphicsInput::Back) && !page.open);
@@ -147,20 +140,6 @@ int main() {
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.async_record == false);
     check(!ResolveGraphics(global, shaders).async_record);
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.async_record);
-    // The CPU write queue: off for a game that follows the default, on only where the game or
-    // Settings > Graphics asks, and a game can keep it off when Settings > Graphics has it on.
-    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::CpuWriteQueue));
-    check(!ResolveGraphics(global, shaders).cpu_write_queue);
-    check(GameGraphicsRowValue(global, shaders, GraphicsRow::CpuWriteQueue) == L"Ajustes · No");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.cpu_write_queue == true);
-    check(ResolveGraphics(global, shaders).cpu_write_queue);
-    check(GameGraphicsRowValue(global, shaders, GraphicsRow::CpuWriteQueue) == L"Sí");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.cpu_write_queue == false);
-    GraphicsSettings queue_global;
-    queue_global.cpu_write_queue = true;
-    check(!ResolveGraphics(queue_global, shaders).cpu_write_queue);
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.cpu_write_queue);
-    check(ResolveGraphics(queue_global, shaders).cpu_write_queue);
     // The GPU thread's fast paths: on for a game that follows the default, off where the game asks.
     check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::GpuFastPaths));
     check(ResolveGraphics(global, shaders).gpu_fast_paths);
@@ -170,14 +149,6 @@ int main() {
     check(!ResolveGraphics(global, shaders).gpu_fast_paths);
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::GpuFastPaths) == L"No");
     check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.gpu_fast_paths);
-    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::CpuWriteAll));
-    check(ResolveGraphics(global, shaders).cpu_write_all);
-    check(GameGraphicsRowValue(global, shaders, GraphicsRow::CpuWriteAll) == L"Ajustes · Sí");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.cpu_write_all == true);
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.cpu_write_all == false);
-    check(!ResolveGraphics(global, shaders).cpu_write_all);
-    check(GameGraphicsRowValue(global, shaders, GraphicsRow::CpuWriteAll) == L"No");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.cpu_write_all);
     // The fixed core map: follows Settings > Graphics until the game has its own.
     check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::FixedCoreMap));
     check(!ResolveGraphics(global, shaders).fixed_core_map);
@@ -211,7 +182,7 @@ int main() {
     // The advanced rows: only the game's, default until changed, and reset only with A.
     GameGraphics tuned;
     const auto go = [&](GraphicsRow target) { row = static_cast<std::size_t>(target); };
-    check(IsAdvancedRow(GraphicsRow::Anisotropy) && !IsAdvancedRow(GraphicsRow::GuestClock) && GraphicsRowCount == 10);
+    check(IsAdvancedRow(GraphicsRow::Anisotropy) && !IsAdvancedRow(GraphicsRow::GuestClock) && GraphicsRowCount == 8);
     go(GraphicsRow::Anisotropy);
     check(GameGraphicsRowValue(global, tuned, GraphicsRow::Anisotropy) == L"Lo que pida el juego");
     check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && tuned.advanced.anisotropy == Settings::AnisotropyMode::X2);

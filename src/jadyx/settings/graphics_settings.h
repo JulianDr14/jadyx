@@ -87,14 +87,12 @@ struct GraphicsSettings {
     ShaderBuild shaders{ShaderBuild::Balanced}; ///< The only mode with the frame's wait budget.
     GpuFence gpu_fence{GpuFence::Immediate};
     bool async_record{true}; ///< D3D12 command list calls on a thread of their own.
-    bool cpu_write_queue{};  ///< VideoCommon::CpuWriteQueue: lowered one game from ~59 to ~27 fps.
     bool gpu_fast_paths{true}; ///< VideoCore::FastPaths: cheaper bookkeeping on the GPU thread.
-    /// VideoCommon::CpuWriteQueue::SetAllWrites: with the queue on, no guest write waits for the
-    /// GPU thread.
-    bool cpu_write_all{true};
     /// The earlier thread map (Common::Windows::CpuPinTopology): each emulator thread on a fixed
     /// core. Off, only the GPU thread is pinned and the rest float (CpuPinDefault), which built
-    /// shaders twice as fast in a new area.
+    /// shaders twice as fast in a new area. On also turns on the CPU write queue
+    /// (VideoCommon::CpuWriteQueue, every write queued), which lowered one game from ~59 to ~27 fps
+    /// on its own: the two go together, one switch for the player.
     bool fixed_core_map{};
     /// VideoCommon::SetAstcArrayRgbaCap: the most one ASTC array the Series misreads as BC may take
     /// as RGBA8 to fix it. Bigger misread arrays keep BC and the glitch.
@@ -166,9 +164,7 @@ struct GameGraphics {
     std::optional<ShaderBuild> shaders;
     std::optional<GpuFence> gpu_fence;
     std::optional<bool> async_record;
-    std::optional<bool> cpu_write_queue;
     std::optional<bool> gpu_fast_paths;
-    std::optional<bool> cpu_write_all;
     std::optional<bool> fixed_core_map;
     std::optional<std::uint32_t> astc_array_cap_mib;
     bool slow_guest_clock{}; ///< Only a game's own: there is no global setting to follow.
@@ -206,9 +202,7 @@ inline GraphicsSettings ResolveGraphics(const GraphicsSettings& global, const Ga
         .shaders = game.shaders.value_or(global.shaders),
         .gpu_fence = game.gpu_fence.value_or(global.gpu_fence),
         .async_record = game.async_record.value_or(global.async_record),
-        .cpu_write_queue = game.cpu_write_queue.value_or(global.cpu_write_queue),
         .gpu_fast_paths = game.gpu_fast_paths.value_or(global.gpu_fast_paths),
-        .cpu_write_all = game.cpu_write_all.value_or(global.cpu_write_all),
         .fixed_core_map = game.fixed_core_map.value_or(global.fixed_core_map),
         .astc_array_cap_mib = game.astc_array_cap_mib.value_or(global.astc_array_cap_mib),
     };
@@ -254,19 +248,9 @@ inline void StepGameAsyncRecord(GameGraphics& game, bool back) {
     game.async_record = StepChoice<bool>(game.async_record, values, back);
 }
 
-inline void StepGameCpuWriteQueue(GameGraphics& game, bool back) {
-    static constexpr std::array values{true, false};
-    game.cpu_write_queue = StepChoice<bool>(game.cpu_write_queue, values, back);
-}
-
 inline void StepGameGpuFastPaths(GameGraphics& game, bool back) {
     static constexpr std::array values{true, false};
     game.gpu_fast_paths = StepChoice<bool>(game.gpu_fast_paths, values, back);
-}
-
-inline void StepGameCpuWriteAll(GameGraphics& game, bool back) {
-    static constexpr std::array values{true, false};
-    game.cpu_write_all = StepChoice<bool>(game.cpu_write_all, values, back);
 }
 
 inline void StepGameFixedCoreMap(GameGraphics& game, bool back) {
