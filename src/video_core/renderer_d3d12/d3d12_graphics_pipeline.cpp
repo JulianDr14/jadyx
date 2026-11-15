@@ -166,7 +166,7 @@ constexpr size_t FRAGMENT_STAGE = 4;
     }
     using SnapshotCopy = Image::SnapshotCopy;
     const SnapshotCopy copy = source->PrepareColorSnapshot(
-        view.ReadsReinterpretedCopy(), view.range.base.level, view.range.extent.levels);
+        view.ReinterpretedCopy(), view.range.base.level, view.range.extent.levels);
     switch (copy) {
     case SnapshotCopy::Failed:
         return view.Handle(type);

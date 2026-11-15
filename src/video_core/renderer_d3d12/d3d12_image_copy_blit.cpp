@@ -254,7 +254,7 @@ bool TextureCacheRuntime::CopyDecodedBlocks(Image& dst, Image& src,
                         "shadow={} pending={} ahead={} version={}/{}, batch={}",
                         reason, src.info.format, src.gpu_addr, dst.info.format, dst.gpu_addr,
                         bool(src.guest_blocks), src.guest_blocks_upload_pending,
-                        src.reinterpreted_ahead, src.guest_blocks_version, src.write_version,
+                        src.ReinterpretedAhead(), src.guest_blocks_version, src.write_version,
                         copies.size());
             if (copy) {
                 LOG_WARNING(Render,
@@ -282,7 +282,7 @@ bool TextureCacheRuntime::CopyDecodedBlocks(Image& dst, Image& src,
         // Other incompatible copy paths also enter here. Diagnose only decoded BC sources.
         return src.IsBcDecoded() ? reject(!src.guest_blocks ? "missing shadow" :
             src.guest_blocks_upload_pending ? "pending upload" :
-            src.reinterpreted_ahead ? "reinterpretation ahead" :
+            src.ReinterpretedAhead() ? "reinterpretation ahead" :
             src.guest_blocks_version != src.write_version ? "stale shadow" :
             "image type, samples or converted destination") : false;
     }

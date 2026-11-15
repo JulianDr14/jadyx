@@ -14,12 +14,14 @@
 #include "video_core/perf_counters.h"
 #include "video_core/renderer_d3d12/d3d12_barrier_batch.h"
 #include "video_core/renderer_d3d12/d3d12_srv_compatibility.h"
+#include "video_core/renderer_d3d12/d3d12_view_cast.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/util.h"
 
 namespace D3D12 {
 
 using namespace TextureDetail;
+
 
 ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageViewInfo& info,
                      ImageId image_id_, Image& source)
@@ -131,48 +133,66 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
     // The guest views an image in any format of the same size, and Vulkan allows it (mutable
     // format). D3D12 needs the view in the resource's typeless family: a view outside it is an
     // invalid call, which the PC's driver tolerates and the Series answers by removing the
-    // device (an R16G16_FLOAT SRV in Game C, 0.2.56-0.2.57). Such views read the image in
-    // its own format instead: maybe wrong colors on one texture, but the device lives.
+    // device (an R16G16_FLOAT SRV in Game C, 0.2.56-0.2.57). ViewCast plans each view: the
+    // image itself, the image with R and B swapped, or a copy in another family; only views
+    // that fit none read the image in its own format (maybe wrong colors, but the device lives).
     const DXGI_FORMAT resource_family = TypelessFamily(resource_desc.Format);
     const FormatInfo& own_format = source.TransferFormat();
-    srv_resource = image;
-    if (const DXGI_FORMAT view_family = TypelessFamily(format_info.srv);
-        view_family != resource_family) {
-        // Same texel size and plain texels: read a copy in the view's family, refreshed before
-        // each read (PrepareRead). Otherwise read the image in its own format.
+    const bool copyable = [&] {
         using namespace VideoCore::Surface;
-        const bool plain = DefaultBlockWidth(info.format) == 1 &&
-                           DefaultBlockHeight(info.format) == 1 &&
-                           DefaultBlockWidth(source.info.format) == 1 &&
-                           DefaultBlockHeight(source.info.format) == 1 &&
-                           GetFormatType(source.info.format) != SurfaceType::DepthStencil;
+        return DefaultBlockWidth(info.format) == 1 && DefaultBlockHeight(info.format) == 1 &&
+               DefaultBlockWidth(source.info.format) == 1 &&
+               DefaultBlockHeight(source.info.format) == 1 &&
+               GetFormatType(source.info.format) != SurfaceType::DepthStencil &&
+               BytesPerBlock(info.format) == BytesPerBlock(source.info.format);
+    }();
+    const auto apply = [&](const ViewCast::Plan& plan, DXGI_FORMAT& view_format, DXGI_FORMAT own,
+                           ID3D12Resource*& on) {
+        on = image;
         ID3D12Resource* const copy =
-            plain && BytesPerBlock(info.format) == BytesPerBlock(source.info.format)
-                ? source.Reinterpreted(view_family)
-                : nullptr;
-        if (copy) {
-            srv_resource = copy;
-        } else {
-            WarnOnce(logged_view_family, "view of {} (DXGI {}) on an image of {} (DXGI {}) is "
-                     "not castable in D3D12; sampling it as DXGI {}",
-                     info.format, static_cast<u32>(format_info.srv), source.info.format,
-                     static_cast<u32>(resource_desc.Format), static_cast<u32>(own_format.srv));
-            format_info.srv = own_format.srv;
+            plan.source == ViewCast::Source::Copy ? source.Reinterpreted(plan.copy_family) : nullptr;
+        if (plan.source == ViewCast::Source::Image || copy) {
+            view_format = plan.format;
+            on = copy ? copy : image;
+            return true;
         }
-    }
-    // Render targets follow the SRVs: on the copy when there is one in the view's family.
-    const bool view_on_copy = srv_resource != image &&
-                              TypelessFamily(format_info.view) == TypelessFamily(format_info.srv);
-    if (!view_on_copy && TypelessFamily(format_info.view) != resource_family) {
-        format_info.view = own_format.view;
-    }
+        WarnOnce(logged_view_family, "view of {} (DXGI {}) on an image of {} (DXGI {}) is "
+                 "not castable in D3D12; using it as DXGI {}",
+                 info.format, static_cast<u32>(view_format), source.info.format,
+                 static_cast<u32>(resource_desc.Format), static_cast<u32>(own));
+        view_format = own;
+        return false;
+    };
+    const ViewCast::Plan srv_plan = ViewCast::PlanSrv({
+        .format = format_info.srv,
+        .family = TypelessFamily(format_info.srv),
+        .resource_family = resource_family,
+        .copyable = copyable,
+        .copies = source.ReinterpretedFamilies(),
+    });
+    const bool swap_red_blue = apply(srv_plan, format_info.srv, own_format.srv, srv_resource) &&
+                               srv_plan.swap_red_blue;
     view_timer.Lap(VideoCore::Perf::Counter::TextureCacheViewReinterpretNs);
 
+    if (swap_red_blue) {
+        // The SRV reads the twin family: R and B trade places in the mapping, after the swizzle.
+        if (info.IsRenderTarget() && astc_mask == VideoCommon::AstcMask::None) {
+            using Tegra::Texture::SwizzleSource;
+            swizzle = {SwizzleSource::R, SwizzleSource::G, SwizzleSource::B, SwizzleSource::A};
+        }
+        std::ranges::transform(swizzle, swizzle.begin(), [](Tegra::Texture::SwizzleSource s) {
+            using Tegra::Texture::SwizzleSource;
+            return s == SwizzleSource::R   ? SwizzleSource::B
+                   : s == SwizzleSource::B ? SwizzleSource::R
+                                           : s;
+        });
+    }
     srv_params = {
         .format = format_info.srv,
         // Render-target views (blits, the display) carry no swizzle: sample them as stored, as
         // the Vulkan backend does.
-        .mapping = info.IsRenderTarget() && astc_mask == VideoCommon::AstcMask::None
+        .mapping = info.IsRenderTarget() && astc_mask == VideoCommon::AstcMask::None &&
+                           !swap_red_blue
                        ? D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING
                        : D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(
                              Component(swizzle[0]), Component(swizzle[1]),
@@ -215,6 +235,15 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
     // same distinction used by Vulkan), so only those need CPU render descriptors.
     if (info.IsRenderTarget() && surface == SurfaceType::ColorTexture &&
         (resource_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)) {
+        ID3D12Resource* rtv_resource = image;
+        apply(ViewCast::PlanRtv({
+                  .format = format_info.view,
+                  .family = TypelessFamily(format_info.view),
+                  .resource_family = resource_family,
+                  .copyable = copyable,
+                  .copies = source.ReinterpretedFamilies(),
+              }),
+              format_info.view, own_format.view, rtv_resource);
         if (runtime->SupportsView(format_info.view, D3D12_FORMAT_SUPPORT1_RENDER_TARGET)) {
             rtv = runtime->rtv_descriptors.Allocate();
             D3D12_RENDER_TARGET_VIEW_DESC rtv_desc{.Format = format_info.view};
@@ -228,9 +257,8 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
                 rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
                 rtv_desc.Texture2DArray = {base_level, base_layer, layers, 0};
             }
-            rtv_on_copy = view_on_copy;
-            runtime->device.Get()->CreateRenderTargetView(view_on_copy ? srv_resource : image,
-                                                          &rtv_desc, rtv);
+            rtv_copy = rtv_resource != image ? rtv_resource : nullptr;
+            runtime->device.Get()->CreateRenderTargetView(rtv_resource, &rtv_desc, rtv);
             CheckRemovedAfterDescriptor(runtime->device.Get(), [&] {
                 return fmt::format("RTV of {} (format {} dim {} level {} layers {}+{})",
                                    info.format, static_cast<u32>(rtv_desc.Format),
@@ -271,8 +299,10 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
                                layers);
         });
     }
-    // The UAV stays on the image (the copy has no UAV flag), so it needs the image's family.
-    const DXGI_FORMAT uav_format = view_on_copy ? own_format.view : format_info.view;
+    // The UAV stays on the image (copies have no UAV flag), so it needs the image's family.
+    const DXGI_FORMAT uav_format = TypelessFamily(format_info.view) == resource_family
+                                       ? format_info.view
+                                       : own_format.view;
     if ((resource_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) &&
         runtime->SupportsView(uav_format, D3D12_FORMAT_SUPPORT1_NONE,
                               D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE)) {
@@ -414,7 +444,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::DepthFeedbackHandle(Shader::TextureType t
     Image* const source = SourceImage();
     ID3D12Resource* snapshot = nullptr;
     if (source && ReadsReinterpretedCopy()) {
-        snapshot = source->ReinterpretedSnapshot();
+        snapshot = source->ReinterpretedSnapshot(srv_resource);
     } else if (source && source->DepthFeedback()) {
         snapshot = source->DepthFeedback()->Handle();
     }
@@ -691,7 +721,7 @@ void ImageView::TransitionImage(D3D12_RESOURCE_STATES state, BarrierBatch* batch
             if (batch) {
                 batch->Flush();
             }
-            source.ReadReinterpreted();
+            source.ReadReinterpreted(srv_resource);
             return;
         }
         source.Transition(state, batch);
@@ -700,8 +730,8 @@ void ImageView::TransitionImage(D3D12_RESOURCE_STATES state, BarrierBatch* batch
 
 void ImageView::PrepareRender() const {
     if (Image* const source = SourceImage()) {
-        if (rtv_on_copy) {
-            source->RenderToReinterpreted();
+        if (rtv_copy) {
+            source->RenderToReinterpreted(rtv_copy);
         } else {
             source->Transition(D3D12_RESOURCE_STATE_RENDER_TARGET);
         }
@@ -742,7 +772,7 @@ void ImageView::PrepareRead(Shader::TextureType texture_type) const {
         return;
     }
     if (work & PREPARE_REINTERPRETED) {
-        source->ReadReinterpreted();
+        source->ReadReinterpreted(srv_resource);
     }
     if (work & PREPARE_SLICE_ARRAY) {
         source->RefreshSliceArray();
@@ -779,7 +809,7 @@ void ImageView::Release() {
 }
 ImageView::ImageView(ImageView&& other) noexcept : VideoCommon::ImageViewBase{std::move(other)}, runtime{std::exchange(other.runtime, nullptr)},
     slot_images{other.slot_images}, image{other.image}, srv_resource{other.srv_resource}, srv_params{other.srv_params}, natural_type{other.natural_type},
-    srvs{std::exchange(other.srvs, {})}, depth_feedback_srvs{std::move(other.depth_feedback_srvs)}, stencil_srv{std::exchange(other.stencil_srv, {})}, multisample_srv{std::exchange(other.multisample_srv, {})}, uav{other.uav}, rtv{other.rtv}, rtv_on_copy{other.rtv_on_copy}, dsv{other.dsv}, dsv_read_only{other.dsv_read_only}, buffer_size{other.buffer_size} {}
+    srvs{std::exchange(other.srvs, {})}, depth_feedback_srvs{std::move(other.depth_feedback_srvs)}, stencil_srv{std::exchange(other.stencil_srv, {})}, multisample_srv{std::exchange(other.multisample_srv, {})}, uav{other.uav}, rtv{other.rtv}, rtv_copy{other.rtv_copy}, dsv{other.dsv}, dsv_read_only{other.dsv_read_only}, buffer_size{other.buffer_size} {}
 ImageView& ImageView::operator=(ImageView&& other) noexcept {
     if (this != &other) { Release(); static_cast<VideoCommon::ImageViewBase&>(*this) = std::move(other);
         runtime = std::exchange(other.runtime, nullptr); slot_images = other.slot_images; image = other.image; srv_resource = other.srv_resource;
@@ -787,7 +817,7 @@ ImageView& ImageView::operator=(ImageView&& other) noexcept {
         depth_feedback_srvs = std::move(other.depth_feedback_srvs);
         stencil_srv = std::exchange(other.stencil_srv, {});
         multisample_srv = std::exchange(other.multisample_srv, {});
-        uav = other.uav; rtv = other.rtv; rtv_on_copy = other.rtv_on_copy; dsv = other.dsv; dsv_read_only = other.dsv_read_only; buffer_size = other.buffer_size; }
+        uav = other.uav; rtv = other.rtv; rtv_copy = other.rtv_copy; dsv = other.dsv; dsv_read_only = other.dsv_read_only; buffer_size = other.buffer_size; }
     return *this;
 }
 bool ImageView::IsRescaled() const noexcept { return slot_images && (*slot_images)[image_id].IsRescaled(); }

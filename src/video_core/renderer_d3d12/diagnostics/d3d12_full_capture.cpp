@@ -79,7 +79,7 @@ void RasterizerD3D12::RunFullCaptureSelfTest() {
             if (image.State() != state) FC::Omit("selftest_image_state_changed");
             if (test.format == Format::A8B8G8R8_UNORM && !test.volume) {
                 if (auto* alias = image.Reinterpreted(DXGI_FORMAT_R32_TYPELESS)) {
-                    image.ReadReinterpreted();
+                    image.ReadReinterpreted(alias);
                     CaptureFullImage(image, 0, "selftest_reinterpret", false, alias);
                 } else FC::Omit("selftest_reinterpret_unavailable");
             }
@@ -462,7 +462,7 @@ void RasterizerD3D12::CaptureFullImages(const FullCaptureViews& views,
         for (u32 rt = 0; rt < VideoCommon::NUM_RT; ++rt) {
             auto* image = const_cast<Image*>(framebuffer->ColorImage(rt));
             if (!image || !image->Handle()) continue;
-            auto* resource = framebuffer->ColorOnCopy(rt) ? image->DiagnosticReinterpreted() : image->Handle();
+            auto* resource = framebuffer->ColorOnCopy(rt) ? framebuffer->ColorCopy(rt) : image->Handle();
             if (!resource) { FC::Omit("render_target_copy_unavailable"); continue; }
             const auto base = framebuffer->ColorBase(rt);
             capture(*image, base.level, 1, base.layer, framebuffer->ColorLayers(rt),
