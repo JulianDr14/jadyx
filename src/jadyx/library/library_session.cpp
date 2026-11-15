@@ -143,6 +143,7 @@ std::optional<std::string> LibrarySession::Run() {
         if (!system_page.updates_open && actions &&
             (updater.CurrentPhase() == Updates::Phase::Downloading || updater.CurrentPhase() == Updates::Phase::Verifying)) updater.Pause();
         PollOnline();
+        PollPhoneGyro();
         const bool top_level = !settings && !system_page.open && !graphics_page.open && !configuration.files && !configuration.busy &&
                                !picker && !validation.valid() && !game_options.open && !missing_content;
         HandlePressedTab(top_level);

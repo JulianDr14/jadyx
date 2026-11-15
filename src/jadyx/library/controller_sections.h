@@ -23,26 +23,32 @@ enum class ControllerSettingRow {
     MouseUse, MouseSensitivity,          // Mouse.
     Rumble, RumbleStrength,              // Rumble.
     GyroSource, GyroShake,               // Gyro (and the mouse's sensitivity while it moves it).
+    GyroPhone, GyroPhoneAddress,         // Gyro while the phone moves it: its link and address.
 };
 
-/// The rows `section` shows now: the gyro's add the mouse's sensitivity while the mouse moves it.
+/// The rows `section` shows now: the gyro's add the mouse's sensitivity while the mouse moves it,
+/// and show the phone's link and address instead of the shake button while the phone does.
 [[nodiscard]] inline unsigned ControllerSectionRows(unsigned section, const ControllerOptions& options) {
     switch (section) {
     case SectionRightStick: return 3;
     case SectionMouse: return 2;
     case SectionRumble: return 2;
-    default: return options.motion_source == MotionSource::Mouse ? 3 : 2;
+    default: return options.motion_source == MotionSource::Mouse || options.motion_source == MotionSource::Phone ? 3 : 2;
     }
 }
 
 /// What `row` of `section` sets (the gyro's third row is the mouse's sensitivity).
-[[nodiscard]] inline ControllerSettingRow ControllerSectionRow(unsigned section, unsigned row) {
+[[nodiscard]] inline ControllerSettingRow ControllerSectionRow(unsigned section, unsigned row,
+                                                               const ControllerOptions& options) {
     using R = ControllerSettingRow;
     switch (section) {
     case SectionRightStick: return row == 0 ? R::InvertX : row == 1 ? R::InvertY : R::StickSensitivity;
     case SectionMouse: return row == 0 ? R::MouseUse : R::MouseSensitivity;
     case SectionRumble: return row == 0 ? R::Rumble : R::RumbleStrength;
-    default: return row == 0 ? R::GyroSource : row == 1 ? R::GyroShake : R::MouseSensitivity;
+    default:
+        if (options.motion_source == MotionSource::Phone)
+            return row == 0 ? R::GyroSource : row == 1 ? R::GyroPhone : R::GyroPhoneAddress;
+        return row == 0 ? R::GyroSource : row == 1 ? R::GyroShake : R::MouseSensitivity;
     }
 }
 

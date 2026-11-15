@@ -192,6 +192,8 @@ private:
     void HostOnline(TimePoint now);
     void PollOnline();
     void PollOnlineChat();
+    /// Settings > Controller > Gyro with the phone: keeps it looked for and redraws its link.
+    void PollPhoneGyro();
     void HandleOnlineChat();
     void SendOnlineChat(std::wstring_view text);
     bool HandleQuit();
@@ -300,6 +302,7 @@ private:
     unsigned setting_row = 0;
     /// Settings > Controller's page: 0 the main one, else ControllerSection's.
     unsigned controller_section = 0;
+    std::uint32_t phone_gyro_version = 0;
     ControllerPanel panel;
     ControllerOptions options = LoadControllerOptions();
     TimePoint capture_until{};

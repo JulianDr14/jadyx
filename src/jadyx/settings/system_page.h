@@ -22,6 +22,7 @@ namespace Jadyx {
 enum class EditorPurpose : std::uint8_t {
     UserName, OnlineNickname, OnlineAddress, OnlinePort, OnlinePassword, RoomPassword,
     HostName, HostSlots, HostPort, HostPassword, ChatMessage,
+    PhoneAddress, ///< Settings > Controller > Gyro: the phone's IP.
 };
 
 struct SystemPage {

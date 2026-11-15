@@ -37,6 +37,7 @@
 #include "jadyx/ui/tween.h"
 #include "jadyx/ui/ui_text.h"
 #include "jadyx/input/uwp_input.h"
+#include "jadyx/input/phone_gyro_text.h"
 
 namespace Jadyx {
 using Microsoft::WRL::ComPtr;
@@ -66,7 +67,8 @@ std::wstring ShakeButtonName(MotionShakeButton button, MotionSource source) {
 }
 /// What moves the gyro, as Settings > Controller > Gyro names it.
 std::wstring GyroSourceName(MotionSource source) {
-    return std::wstring{Tr(source == MotionSource::Mouse ? T::MousePage :
+    return std::wstring{Tr(source == MotionSource::Phone ? T::GyroPhone :
+                           source == MotionSource::Mouse ? T::MousePage :
                            source == MotionSource::LeftStick ? T::GyroStickLeft : T::GyroStickRight)};
 }
 /// What the mouse does, as Settings > Controller > Mouse names it.
@@ -273,7 +275,8 @@ public:
         } else if (panel.pad_picker.open) {
             DrawPadPicker(panel.pad_picker, panel.notice);
         }
-        if (view.system.name_editor && ((configuration.open && view.system.open) || view.tab == LibraryTab::Online))
+        if (view.system.name_editor && ((configuration.open && view.system.open) || view.tab == LibraryTab::Online ||
+                                        view.system.editor_purpose == EditorPurpose::PhoneAddress))
             DrawNameEditor(view.system);
         if (management) {
             DrawGameOptions(view.game_options);
@@ -1548,13 +1551,24 @@ private:
                 break;
             default: {
                 const bool mouse_gyro = options.motion_source == MotionSource::Mouse;
+                const bool phone_gyro = options.motion_source == MotionSource::Phone;
                 SettingsRow source{Kind::Segments, std::wstring{Tr(T::GyroStickRow)},
-                                   std::wstring{Tr(!mouse_gyro ? T::GyroStickHint :
+                                   std::wstring{Tr(phone_gyro  ? T::GyroSourcePhoneHint :
+                                                   !mouse_gyro ? T::GyroStickHint :
                                                    mouse ? T::GyroSourceMouseHint : T::MouseNotConnected)}};
                 source.segments = {std::wstring{Tr(T::GyroStickRight)}, std::wstring{Tr(T::GyroStickLeft)},
-                                   std::wstring{Tr(T::MousePage)}};
+                                   std::wstring{Tr(T::MousePage)}, std::wstring{Tr(T::GyroPhone)}};
                 source.on_segment = static_cast<std::size_t>(options.motion_source);
                 rows.push_back(std::move(source));
+                if (phone_gyro) {
+                    // The phone's link (A looks again) and its address (A types it), live.
+                    const PhoneGyroStatus phone = PhoneGyro::Status();
+                    rows.push_back({Kind::Open, std::wstring{Tr(T::PhoneRow)}, PhoneHintText(phone),
+                                    PhoneStateText(phone)});
+                    rows.push_back({Kind::Open, std::wstring{Tr(T::PhoneAddressRow)},
+                                    std::wstring{Tr(PhoneAddressHint(phone, false))}, PhoneAddressText(phone)});
+                    break;
+                }
                 rows.push_back({Kind::Choice, std::wstring{Tr(T::GyroShakeRow)}, std::wstring{Tr(T::GyroShakeHint)},
                                 ShakeButtonName(options.motion_shake, options.motion_source)});
                 if (mouse_gyro) choice(T::MouseSensitivity, percent(stick.mouse_sensitivity));
@@ -2352,6 +2366,7 @@ private:
         case EditorPurpose::HostPort: title = T::OnlinePort; hint = T::OnlinePortEditorHint; break;
         case EditorPurpose::HostPassword: title = T::OnlinePassword; hint = T::OnlinePasswordEditorHint; break;
         case EditorPurpose::ChatMessage: title = T::ChatMessageTitle; hint = T::ChatEditorHint; break;
+        case EditorPurpose::PhoneAddress: title = T::PhoneAddressTitle; hint = T::PhoneAddressHint; break;
         case EditorPurpose::UserName: break;
         }
         DrawTextEntryPanel(*this, {*page.name_editor, Tr(title), Tr(hint), page.editor_notice},

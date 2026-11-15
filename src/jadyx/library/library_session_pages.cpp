@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/library_session.h"
 #include "jadyx/library/controller_sections.h"
+#include "jadyx/input/phone_gyro.h"
 
 namespace Jadyx {
 using I18n::Tr;
@@ -406,9 +407,21 @@ void LibrarySession::HandleControllerPanel() {
         } else if (entry && actions & (Play | Right)) {
             controller_section = setting_row - ControllerSectionEntry + 1;
             setting_row = 0; dirty = true;
+        } else if (controller_section && actions & (Play | Left | Right) &&
+                   (ControllerSectionRow(controller_section, setting_row, options) == ControllerSettingRow::GyroPhone ||
+                    ControllerSectionRow(controller_section, setting_row, options) ==
+                        ControllerSettingRow::GyroPhoneAddress)) {
+            // The phone's rows act on A only: look again, or type its address.
+            if (actions & Play) {
+                if (ControllerSectionRow(controller_section, setting_row, options) == ControllerSettingRow::GyroPhone)
+                    PhoneGyro::Search();
+                else
+                    OpenOnlineEditor(EditorPurpose::PhoneAddress);
+                dirty = true;
+            }
         } else if (controller_section && actions & (Play | Left | Right)) {
             auto& stick = options.right_stick;
-            switch (ControllerSectionRow(controller_section, setting_row)) {
+            switch (ControllerSectionRow(controller_section, setting_row, options)) {
             case ControllerSettingRow::InvertX: stick.invert_x = !stick.invert_x; break;
             case ControllerSettingRow::InvertY: stick.invert_y = !stick.invert_y; break;
             case ControllerSettingRow::StickSensitivity:
@@ -430,6 +443,8 @@ void LibrarySession::HandleControllerPanel() {
             }
             case ControllerSettingRow::GyroShake:
                 options.motion_shake = StepEnum(options.motion_shake, MotionShakeButtonCount, back); break;
+            case ControllerSettingRow::GyroPhone:
+            case ControllerSettingRow::GyroPhoneAddress: break;
             }
             device_changed = true; dirty = true;
         } else if (actions & (Play | Left | Right)) {
@@ -582,6 +597,17 @@ void LibrarySession::Draw() {
                   .app_mode = app_mode,
                   .app_memory_mib = app_memory_limit >> 20});
     dirty = false;
+}
+
+void LibrarySession::PollPhoneGyro() {
+    // Only while its page shows: the player sees the link come up as the app opens.
+    const bool shown = tab == LibraryTab::Settings && settings && controller_section == SectionGyro &&
+                       options.motion_source == MotionSource::Phone;
+    PhoneGyro::SetWanted(shown);
+    if (const auto version = PhoneGyro::StatusVersion(); version != phone_gyro_version) {
+        phone_gyro_version = version;
+        if (shown) dirty = true;
+    }
 }
 
 // The Online tab. The room and the public list live in Jadyx::Online; the tab copies them while
@@ -780,6 +806,13 @@ void LibrarySession::OpenOnlineEditor(EditorPurpose purpose) {
         break;
     case EditorPurpose::HostPassword: initial = online_page.host_password; break;
     case EditorPurpose::ChatMessage: max_length = ChatMaxChars; break;
+    case EditorPurpose::PhoneAddress: {
+        // "a.b.c.d:port" at most; it starts with the typed one to fix it.
+        const PhoneGyroStatus phone = PhoneGyro::Status();
+        if (phone.typed) initial = phone.address;
+        max_length = 21;
+        break;
+    }
     default: break;
     }
     system_page.name_editor.emplace(std::move(initial), max_length);
@@ -857,6 +890,16 @@ void LibrarySession::FinishOnlineEditor(bool accept, TimePoint now) {
     case EditorPurpose::ChatMessage:
         save = false;
         SendOnlineChat(value);
+        break;
+    case EditorPurpose::PhoneAddress:
+        save = false;
+        // Empty goes back to looking for it; anything else must be an address.
+        if (value.find_first_not_of(L' ') == std::wstring::npos) {
+            PhoneGyro::Search();
+        } else if (!PhoneGyro::ConnectTo(value)) {
+            system_page.editor_notice = Tr(T::PhoneAddressInvalid);
+            return;
+        }
         break;
     case EditorPurpose::UserName: break;
     }
