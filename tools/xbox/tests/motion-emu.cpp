@@ -124,6 +124,44 @@ int main(int argc, char** argv) {
         CHECK(s.accel.x > 0.7f);
     }
 
+    // The mouse: right turns the pad right about its Z (as when aiming), up lifts its front edge;
+    // the gyro adds up to the turn, it stays where the mouse left it and the lift stops at 80°.
+    {
+        MotionEmu emu;
+        emu.SetMode(MotionMode::On);
+        const float per_pixel = MotionEmu::MouseRadiansPerPixel;
+        float turned_z = 0.0f;
+        MotionSample s;
+        for (int i = 0; i < 10; ++i) {
+            s = emu.StepMouse(Dt, 10.0f, 0.0f, 100.0f, false);
+            turned_z += s.gyro.z * 2.0f * Pi * Dt;
+        }
+        CHECK(Near(turned_z, -100.0f * per_pixel, 1e-3f));
+        CHECK(s.orientation.Rotate({0, 1, 0}).x > 0.1f);
+        CHECK(Near(s.accel.z, -1.0f, 1e-4f)); // A flat turn: gravity stays straight down.
+        s = emu.StepMouse(Dt, 0.0f, 0.0f, 100.0f, false);
+        CHECK(Length(s.gyro) < 1e-4f && s.orientation.Rotate({0, 1, 0}).x > 0.1f);
+        // Twice the sensitivity, twice the turn.
+        MotionEmu fast;
+        fast.SetMode(MotionMode::On);
+        s = fast.StepMouse(Dt, 10.0f, 0.0f, 200.0f, false);
+        CHECK(Near(s.gyro.z * 2.0f * Pi * Dt, -20.0f * per_pixel, 1e-3f));
+        // Up lifts the front edge, never past the limit.
+        MotionEmu lift;
+        lift.SetMode(MotionMode::On);
+        s = lift.StepMouse(Dt, 0.0f, -100.0f, 100.0f, false);
+        CHECK(s.orientation.Rotate({0, 1, 0}).z > 0.1f && s.gyro.x > 0.0f);
+        for (int i = 0; i < 100; ++i) s = lift.StepMouse(Dt, 0.0f, -100.0f, 100.0f, false);
+        CHECK(Near(std::asin(s.orientation.Rotate({0, 1, 0}).z), MotionEmu::MaxMousePitchRadians, 1e-3f));
+        CHECK(Near(Length(s.accel), 1.0f, 1e-4f));
+        // Off: flat and still, whatever the mouse does.
+        lift.SetMode(MotionMode::Off);
+        s = lift.StepMouse(Dt, 50.0f, 50.0f, 100.0f, false);
+        CHECK(Near(s.accel.z, -1.0f, 1e-5f));
+        s = lift.StepMouse(Dt, 50.0f, 50.0f, 100.0f, false);
+        CHECK(Length(s.gyro) < 1e-5f);
+    }
+
     // Shake: the shake button swings the accelerometer past 1 g; it dies out after the release.
     {
         MotionEmu emu;

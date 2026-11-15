@@ -277,7 +277,7 @@ private:
     OnlinePage online_page;
     // The selected game's own graphics, for its Graphics pane; loaded for `game_graphics_id`.
     GameGraphics game_graphics;
-    std::size_t game_graphics_row{};
+    GraphicsCursor game_graphics_cursor; ///< Where its Graphics pane's cursor is.
     std::uint64_t game_graphics_id{};
     // Titles are read in the game language, so the library shows what the games will.
     Settings::Language title_language{};
@@ -298,6 +298,8 @@ private:
     std::optional<std::uint64_t> keep_titles;
     std::chrono::steady_clock::time_point auto_pick_at{};
     unsigned setting_row = 0;
+    /// Settings > Controller's page: 0 the main one, else ControllerSection's.
+    unsigned controller_section = 0;
     ControllerPanel panel;
     ControllerOptions options = LoadControllerOptions();
     TimePoint capture_until{};

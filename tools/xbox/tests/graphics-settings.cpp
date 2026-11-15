@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Build with src/jadyx/i18n/localization.cpp and src/jadyx/i18n/locales/*.cpp.
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include "jadyx/settings/graphics_page.h"
@@ -10,9 +11,9 @@ int main() {
     auto check = [](bool ok) { if (!ok) std::abort(); };
     I18n::SetUiLanguage(*I18n::FindUiLanguage(L"es"));
 
-    // Defaults: FSR up to the screen, frame generation off, draws skipped while shaders build.
+    // Defaults: FSR up to the screen, frame generation off, balanced shader builds.
     const GraphicsSettings defaults;
-    check(defaults.upscaling == Upscaling::FsrBalanced && !defaults.frame_gen && defaults.shaders == ShaderBuild::Skip);
+    check(defaults.upscaling == Upscaling::FsrBalanced && !defaults.frame_gen && defaults.shaders == ShaderBuild::Balanced);
     check(defaults.gpu_fence == GpuFence::Immediate);
 
     // FSR and frame generation exclude each other, either way round.
@@ -26,55 +27,67 @@ int main() {
     SetUpscaling(settings, Upscaling::Bilinear);
     check(settings.frame_gen); // Bilinear keeps it.
 
-    // The page: rows wrap, Left/Right/A change the focused row, B closes.
+    // The page: sections, then their rows; lists wrap, B goes back and then closes.
     GraphicsPage page{true};
-    check(!HandleGraphicsInput(page, GraphicsInput::Up) && page.selected == GraphicsRowCount - 1);
-    check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == 0);
+    // Sections first: Settings > Graphics has no memory rows, so it lists three.
+    check(GraphicsSections(false).size() == 3 && GraphicsSections(true).size() == 4);
+    check(!HandleGraphicsInput(page, GraphicsInput::Up) && page.cursor.selected == 2 && !page.cursor.section);
+    check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.cursor.selected == 0);
+    // A opens Image, which only holds its global rows; B goes back onto its entry.
+    check(!HandleGraphicsInput(page, GraphicsInput::Confirm) && page.cursor.section == GraphicsSection::Image);
+    check(page.cursor.selected == 0 && GraphicsListSize(page.cursor, false) == 2);
+    check(GraphicsCursorRow(page.cursor, false) == GraphicsRow::Upscaling);
+    check(!HandleGraphicsInput(page, GraphicsInput::Back) && !page.cursor.section && page.cursor.selected == 0 && page.open);
+    check(!HandleGraphicsInput(page, GraphicsInput::Down) && !HandleGraphicsInput(page, GraphicsInput::Right));
+    check(page.cursor.section == GraphicsSection::Performance && page.cursor.selected == 0);
+    check(GraphicsCursorRow(page.cursor, false) == GraphicsRow::Shaders);
+    check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.shaders == ShaderBuild::Wait);
+    check(HandleGraphicsInput(page, GraphicsInput::Left) && page.settings.shaders == ShaderBuild::Balanced);
+    check(!HandleGraphicsInput(page, GraphicsInput::Back) && page.cursor.selected == 1);
+    // Every row lives in one section, and says what it gains and what it costs.
+    for (std::size_t i = 0; i < static_cast<std::size_t>(GraphicsRow::ResetAdvanced); ++i) {
+        const auto row = static_cast<GraphicsRow>(i);
+        const auto rows = GraphicsSectionAllRows(GraphicsSectionOf(row));
+        check(std::count(rows.begin(), rows.end(), row) == 1 && GraphicsRowGainCost(row).has_value());
+    }
+    check(!GraphicsRowGainCost(GraphicsRow::ResetAdvanced));
+    check(GraphicsRowHint(GraphicsRow::FrameGen) == L"Gana: se ve más fluido · Cuesta: más retraso, bordes raros y sin FSR");
+    // The rows themselves: Left/Right/A change them.
+    const auto set = [&](GraphicsRow row, GraphicsInput input) { return ChangeGraphicsRow(page.settings, row, input); };
+    check(!set(GraphicsRow::FrameGen, GraphicsInput::Down) && !set(GraphicsRow::FrameGen, GraphicsInput::Back));
     check(GraphicsRowValue(page.settings, GraphicsRow::Upscaling) == L"FSR 1 · equilibrado");
-    page.selected = static_cast<std::size_t>(GraphicsRow::FrameGen);
-    check(HandleGraphicsInput(page, GraphicsInput::Confirm));
+    check(set(GraphicsRow::FrameGen, GraphicsInput::Confirm));
     check(page.settings.frame_gen && page.settings.upscaling == Upscaling::Bilinear);
     check(GraphicsRowValue(page.settings, GraphicsRow::FrameGen) == L"Sí");
-    page.selected = static_cast<std::size_t>(GraphicsRow::Upscaling);
-    check(HandleGraphicsInput(page, GraphicsInput::Right));
+    check(set(GraphicsRow::Upscaling, GraphicsInput::Right));
     check(page.settings.upscaling == Upscaling::FsrSharp && !page.settings.frame_gen);
-    page.selected = static_cast<std::size_t>(GraphicsRow::Shaders);
-    check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.shaders == ShaderBuild::Balanced);
-    check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.shaders == ShaderBuild::Wait);
-    check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.shaders == ShaderBuild::Skip);
-    check(HandleGraphicsInput(page, GraphicsInput::Left) && page.settings.shaders == ShaderBuild::Wait);
+    check(set(GraphicsRow::Shaders, GraphicsInput::Right) && page.settings.shaders == ShaderBuild::Wait);
+    check(set(GraphicsRow::Shaders, GraphicsInput::Right) && page.settings.shaders == ShaderBuild::Skip);
+    check(set(GraphicsRow::Shaders, GraphicsInput::Right) && page.settings.shaders == ShaderBuild::Balanced);
+    check(set(GraphicsRow::Shaders, GraphicsInput::Left) && page.settings.shaders == ShaderBuild::Skip);
+    check(set(GraphicsRow::Shaders, GraphicsInput::Left) && page.settings.shaders == ShaderBuild::Wait);
     check(GraphicsRowValue(page.settings, GraphicsRow::Shaders) == L"Esperar");
-    page.selected = static_cast<std::size_t>(GraphicsRow::GpuFence);
     check(GraphicsRowValue(page.settings, GraphicsRow::GpuFence) == L"Inmediato");
     for (const GpuFence fence : {GpuFence::Safe, GpuFence::Wait, GpuFence::Balanced, GpuFence::Accurate, GpuFence::Immediate})
-        check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.gpu_fence == fence);
-    check(HandleGraphicsInput(page, GraphicsInput::Left) && page.settings.gpu_fence == GpuFence::Accurate);
+        check(set(GraphicsRow::GpuFence, GraphicsInput::Right) && page.settings.gpu_fence == fence);
+    check(set(GraphicsRow::GpuFence, GraphicsInput::Left) && page.settings.gpu_fence == GpuFence::Accurate);
     check(GraphicsRowValue(page.settings, GraphicsRow::GpuFence) == L"Preciso");
-    check(HandleGraphicsInput(page, GraphicsInput::Right) && page.settings.gpu_fence == GpuFence::Immediate);
+    check(set(GraphicsRow::GpuFence, GraphicsInput::Right) && page.settings.gpu_fence == GpuFence::Immediate);
     // The command thread: on by default.
     check(defaults.async_record && GraphicsRowValue(page.settings, GraphicsRow::AsyncRecord) == L"Sí");
-    check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::AsyncRecord));
-    check(HandleGraphicsInput(page, GraphicsInput::Confirm) && !page.settings.async_record);
+    check(set(GraphicsRow::AsyncRecord, GraphicsInput::Confirm) && !page.settings.async_record);
     check(GraphicsRowValue(page.settings, GraphicsRow::AsyncRecord) == L"No");
-    // The CPU write queue: off by default.
+    // The CPU write queue: off by default; on, every write is queued (no row of its own).
     check(!defaults.cpu_write_queue && GraphicsRowValue(page.settings, GraphicsRow::CpuWriteQueue) == L"No");
-    check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::CpuWriteQueue));
-    check(HandleGraphicsInput(page, GraphicsInput::Confirm) && page.settings.cpu_write_queue);
+    check(set(GraphicsRow::CpuWriteQueue, GraphicsInput::Confirm) && page.settings.cpu_write_queue);
     check(GraphicsRowValue(page.settings, GraphicsRow::CpuWriteQueue) == L"Sí");
     // The GPU thread's fast paths: on by default.
     check(defaults.gpu_fast_paths && GraphicsRowValue(page.settings, GraphicsRow::GpuFastPaths) == L"Sí");
-    check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::GpuFastPaths));
-    check(HandleGraphicsInput(page, GraphicsInput::Confirm) && !page.settings.gpu_fast_paths);
+    check(set(GraphicsRow::GpuFastPaths, GraphicsInput::Confirm) && !page.settings.gpu_fast_paths);
     check(GraphicsRowValue(page.settings, GraphicsRow::GpuFastPaths) == L"No");
-    check(defaults.cpu_write_all && GraphicsRowValue(page.settings, GraphicsRow::CpuWriteAll) == L"Sí");
-    check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::CpuWriteAll));
-    check(HandleGraphicsInput(page, GraphicsInput::Confirm) && !page.settings.cpu_write_all);
-    check(GraphicsRowValue(page.settings, GraphicsRow::CpuWriteAll) == L"No");
-    // The fixed core map: off by default (only the GPU thread pinned), and the page's last row.
+    // The fixed core map: off by default (only the GPU thread pinned).
     check(!defaults.fixed_core_map && GraphicsRowValue(page.settings, GraphicsRow::FixedCoreMap) == L"No");
-    check(!HandleGraphicsInput(page, GraphicsInput::Down) && page.selected == static_cast<std::size_t>(GraphicsRow::FixedCoreMap));
-    check(page.selected == GraphicsRowCount - 1);
-    check(HandleGraphicsInput(page, GraphicsInput::Confirm) && page.settings.fixed_core_map);
+    check(set(GraphicsRow::FixedCoreMap, GraphicsInput::Confirm) && page.settings.fixed_core_map);
     check(GraphicsRowValue(page.settings, GraphicsRow::FixedCoreMap) == L"Sí");
     check(!HandleGraphicsInput(page, GraphicsInput::Back) && !page.open);
     check(ShaderBuildFromValue(1) == ShaderBuild::Balanced && !ShaderBuildFromValue(7));
@@ -87,7 +100,7 @@ int main() {
     check(GameGraphicsRowValue(global, game, GraphicsRow::Upscaling) == L"Ajustes · FSR 1 · equilibrado");
     // All games at 4K, this one with frame generation: its FSR goes off, only for it.
     std::size_t row = static_cast<std::size_t>(GraphicsRow::FrameGen);
-    check(HandleGameGraphicsInput(game, row, GraphicsInput::Right));
+    check(ChangeGameGraphicsRow(game, static_cast<GraphicsRow>(row), GraphicsInput::Right));
     check(game.frame_gen == true && !game.upscaling);
     auto resolved = ResolveGraphics(global, game);
     check(resolved.frame_gen && resolved.upscaling == Upscaling::Bilinear);
@@ -96,19 +109,19 @@ int main() {
     check(GameGraphicsRowValue(global, game, GraphicsRow::Upscaling) == L"Ajustes · Bilineal");
     // Its own FSR turns its frame generation off.
     row = static_cast<std::size_t>(GraphicsRow::Upscaling);
-    check(HandleGameGraphicsInput(game, row, GraphicsInput::Right));
+    check(ChangeGameGraphicsRow(game, static_cast<GraphicsRow>(row), GraphicsInput::Right));
     check(game.upscaling == Upscaling::Bilinear && game.frame_gen == true);
-    check(HandleGameGraphicsInput(game, row, GraphicsInput::Right));
+    check(ChangeGameGraphicsRow(game, static_cast<GraphicsRow>(row), GraphicsInput::Right));
     check(game.upscaling == Upscaling::FsrSharp && game.frame_gen == false);
     resolved = ResolveGraphics(global, game);
     check(!resolved.frame_gen && resolved.upscaling == Upscaling::FsrSharp);
     check(UsesScreenResolution(resolved));
     // Frame generation on again for the game turns its own FSR off.
     row = static_cast<std::size_t>(GraphicsRow::FrameGen);
-    check(HandleGameGraphicsInput(game, row, GraphicsInput::Left)); // off -> on
+    check(ChangeGameGraphicsRow(game, static_cast<GraphicsRow>(row), GraphicsInput::Left)); // off -> on
     check(game.frame_gen == true && game.upscaling == Upscaling::Bilinear);
     // Steps go through "follow" both ways.
-    check(HandleGameGraphicsInput(game, row, GraphicsInput::Left) && !game.frame_gen);
+    check(ChangeGameGraphicsRow(game, static_cast<GraphicsRow>(row), GraphicsInput::Left) && !game.frame_gen);
     // Frame generation on everywhere, FSR for one game: the game's FSR wins.
     GraphicsSettings with_frame_gen;
     SetFrameGen(with_frame_gen, true);
@@ -120,130 +133,145 @@ int main() {
     // Shaders: the game's own over the global ones; B is the caller's.
     row = static_cast<std::size_t>(GraphicsRow::Shaders);
     GameGraphics shaders;
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.shaders == ShaderBuild::Skip);
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.shaders == ShaderBuild::Balanced);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && shaders.shaders == ShaderBuild::Skip);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && shaders.shaders == ShaderBuild::Balanced);
     check(ResolveGraphics(global, shaders).shaders == ShaderBuild::Balanced);
-    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Back));
+    check(!ChangeGameGraphicsRow(shaders, GraphicsRow::Shaders, GraphicsInput::Back));
     // The GPU fence: follows Settings > Graphics until the game has its own, only for that game.
-    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::GpuFence));
+    row = static_cast<std::size_t>(GraphicsRow::GpuFence);
     GraphicsSettings safe_global;
     safe_global.gpu_fence = GpuFence::Safe;
     check(ResolveGraphics(safe_global, shaders).gpu_fence == GpuFence::Safe);
     check(GameGraphicsRowValue(safe_global, shaders, GraphicsRow::GpuFence) == L"Ajustes · Seguro");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.gpu_fence == GpuFence::Immediate);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && shaders.gpu_fence == GpuFence::Immediate);
     check(ResolveGraphics(safe_global, shaders).gpu_fence == GpuFence::Immediate);
     check(GameGraphicsRowValue(safe_global, shaders, GraphicsRow::GpuFence) == L"Inmediato");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Left) && !shaders.gpu_fence);
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Left) && shaders.gpu_fence == GpuFence::Accurate);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Left) && !shaders.gpu_fence);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Left) && shaders.gpu_fence == GpuFence::Accurate);
     // The command thread: follows Settings > Graphics until the game has its own, only for that game.
-    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::AsyncRecord));
+    row = static_cast<std::size_t>(GraphicsRow::AsyncRecord);
     GraphicsSettings no_thread;
     no_thread.async_record = false;
     check(!ResolveGraphics(no_thread, shaders).async_record);
     check(GameGraphicsRowValue(no_thread, shaders, GraphicsRow::AsyncRecord) == L"Ajustes · No");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.async_record == true);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && shaders.async_record == true);
     check(ResolveGraphics(no_thread, shaders).async_record);
     check(GameGraphicsRowValue(no_thread, shaders, GraphicsRow::AsyncRecord) == L"Sí");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.async_record == false);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && shaders.async_record == false);
     check(!ResolveGraphics(global, shaders).async_record);
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.async_record);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && !shaders.async_record);
     // The CPU write queue: off for a game that follows the default, on only where the game or
     // Settings > Graphics asks, and a game can keep it off when Settings > Graphics has it on.
-    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::CpuWriteQueue));
+    row = static_cast<std::size_t>(GraphicsRow::CpuWriteQueue);
     check(!ResolveGraphics(global, shaders).cpu_write_queue);
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::CpuWriteQueue) == L"Ajustes · No");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.cpu_write_queue == true);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && shaders.cpu_write_queue == true);
     check(ResolveGraphics(global, shaders).cpu_write_queue);
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::CpuWriteQueue) == L"Sí");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.cpu_write_queue == false);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && shaders.cpu_write_queue == false);
     GraphicsSettings queue_global;
     queue_global.cpu_write_queue = true;
     check(!ResolveGraphics(queue_global, shaders).cpu_write_queue);
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.cpu_write_queue);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && !shaders.cpu_write_queue);
     check(ResolveGraphics(queue_global, shaders).cpu_write_queue);
     // The GPU thread's fast paths: on for a game that follows the default, off where the game asks.
-    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::GpuFastPaths));
+    row = static_cast<std::size_t>(GraphicsRow::GpuFastPaths);
     check(ResolveGraphics(global, shaders).gpu_fast_paths);
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::GpuFastPaths) == L"Ajustes · Sí");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.gpu_fast_paths == true);
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.gpu_fast_paths == false);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && shaders.gpu_fast_paths == true);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && shaders.gpu_fast_paths == false);
     check(!ResolveGraphics(global, shaders).gpu_fast_paths);
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::GpuFastPaths) == L"No");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.gpu_fast_paths);
-    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::CpuWriteAll));
-    check(ResolveGraphics(global, shaders).cpu_write_all);
-    check(GameGraphicsRowValue(global, shaders, GraphicsRow::CpuWriteAll) == L"Ajustes · Sí");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.cpu_write_all == true);
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.cpu_write_all == false);
-    check(!ResolveGraphics(global, shaders).cpu_write_all);
-    check(GameGraphicsRowValue(global, shaders, GraphicsRow::CpuWriteAll) == L"No");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.cpu_write_all);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && !shaders.gpu_fast_paths);
     // The fixed core map: follows Settings > Graphics until the game has its own.
-    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::FixedCoreMap));
+    row = static_cast<std::size_t>(GraphicsRow::FixedCoreMap);
     check(!ResolveGraphics(global, shaders).fixed_core_map);
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::FixedCoreMap) == L"Ajustes · No");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.fixed_core_map == true);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && shaders.fixed_core_map == true);
     check(ResolveGraphics(global, shaders).fixed_core_map);
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.fixed_core_map == false);
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.fixed_core_map);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && shaders.fixed_core_map == false);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && !shaders.fixed_core_map);
     // The ASTC array RGBA8 cap: follows Settings > Graphics (160 MiB) until the game has its own.
-    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::AstcArrayCap));
+    row = static_cast<std::size_t>(GraphicsRow::AstcArrayCap);
     check(ResolveGraphics(global, shaders).astc_array_cap_mib == 160);
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::AstcArrayCap) == L"Ajustes · 160 MiB");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && shaders.astc_array_cap_mib == 64u);
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Left) && !shaders.astc_array_cap_mib);
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Left) && shaders.astc_array_cap_mib == 1024u);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && shaders.astc_array_cap_mib == 64u);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Left) && !shaders.astc_array_cap_mib);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Left) && shaders.astc_array_cap_mib == 1024u);
     check(ResolveGraphics(global, shaders).astc_array_cap_mib == 1024);
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.astc_array_cap_mib);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && !shaders.astc_array_cap_mib);
     // The guest clock is the game's own: a row only in its pane, off until the player turns it on.
-    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::GuestClock));
+    row = static_cast<std::size_t>(GraphicsRow::GuestClock);
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::GuestClock) == L"No");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Confirm) && shaders.slow_guest_clock);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Confirm) && shaders.slow_guest_clock);
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::GuestClock) == L"Sí");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.slow_guest_clock);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && !shaders.slow_guest_clock);
     // Exact GPU reads are the game's own too, and off until the player turns them on.
-    check(!HandleGameGraphicsInput(shaders, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::ExactGpuReads));
+    row = static_cast<std::size_t>(GraphicsRow::ExactGpuReads);
     check(!IsAdvancedRow(GraphicsRow::ExactGpuReads) && GameGraphicsRowValue(global, shaders, GraphicsRow::ExactGpuReads) == L"No");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Confirm) && shaders.exact_gpu_reads);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Confirm) && shaders.exact_gpu_reads);
     check(GameGraphicsRowValue(global, shaders, GraphicsRow::ExactGpuReads) == L"Sí");
-    check(HandleGameGraphicsInput(shaders, row, GraphicsInput::Right) && !shaders.exact_gpu_reads);
+    check(ChangeGameGraphicsRow(shaders, static_cast<GraphicsRow>(row), GraphicsInput::Right) && !shaders.exact_gpu_reads);
 
     // The advanced rows: only the game's, default until changed, and reset only with A.
     GameGraphics tuned;
     const auto go = [&](GraphicsRow target) { row = static_cast<std::size_t>(target); };
-    check(IsAdvancedRow(GraphicsRow::Anisotropy) && !IsAdvancedRow(GraphicsRow::GuestClock) && GraphicsRowCount == 10);
+    check(IsAdvancedRow(GraphicsRow::Anisotropy) && !IsAdvancedRow(GraphicsRow::GuestClock) && GraphicsRowCount == 9);
     go(GraphicsRow::Anisotropy);
     check(GameGraphicsRowValue(global, tuned, GraphicsRow::Anisotropy) == L"Lo que pida el juego");
-    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && tuned.advanced.anisotropy == Settings::AnisotropyMode::X2);
-    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Left) && tuned.advanced.anisotropy == Settings::AnisotropyMode::Default);
-    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Left) && tuned.advanced.anisotropy == Settings::AnisotropyMode::X16);
+    check(ChangeGameGraphicsRow(tuned, static_cast<GraphicsRow>(row), GraphicsInput::Right) && tuned.advanced.anisotropy == Settings::AnisotropyMode::X2);
+    check(ChangeGameGraphicsRow(tuned, static_cast<GraphicsRow>(row), GraphicsInput::Left) && tuned.advanced.anisotropy == Settings::AnisotropyMode::Default);
+    check(ChangeGameGraphicsRow(tuned, static_cast<GraphicsRow>(row), GraphicsInput::Left) && tuned.advanced.anisotropy == Settings::AnisotropyMode::X16);
     check(GameGraphicsRowValue(global, tuned, GraphicsRow::Anisotropy) == L"16x");
     go(GraphicsRow::TextureQuality);
     check(GameGraphicsRowValue(global, tuned, GraphicsRow::TextureQuality) == L"Ahorro de memoria");
-    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Confirm) && tuned.advanced.full_textures);
+    check(ChangeGameGraphicsRow(tuned, static_cast<GraphicsRow>(row), GraphicsInput::Confirm) && tuned.advanced.full_textures);
     check(GameGraphicsRowValue(global, tuned, GraphicsRow::TextureQuality) == L"Completa");
     go(GraphicsRow::TextureMemory);
     check(GameGraphicsRowValue(global, tuned, GraphicsRow::TextureMemory) == L"Automático");
-    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && tuned.advanced.texture_cap_mib == 512);
+    check(ChangeGameGraphicsRow(tuned, static_cast<GraphicsRow>(row), GraphicsInput::Right) && tuned.advanced.texture_cap_mib == 512);
     check(GameGraphicsRowValue(global, tuned, GraphicsRow::TextureMemory) == L"512 MiB");
     go(GraphicsRow::GpuAccuracy);
-    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && tuned.advanced.gpu_accuracy == Settings::GpuAccuracy::Low);
+    check(ChangeGameGraphicsRow(tuned, static_cast<GraphicsRow>(row), GraphicsInput::Right) && tuned.advanced.gpu_accuracy == Settings::GpuAccuracy::Low);
     check(GameGraphicsRowValue(global, tuned, GraphicsRow::GpuAccuracy) == L"Baja");
     go(GraphicsRow::ShaderWorkers);
-    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Left) && tuned.advanced.shader_workers == 8);
+    check(ChangeGameGraphicsRow(tuned, static_cast<GraphicsRow>(row), GraphicsInput::Left) && tuned.advanced.shader_workers == 8);
     check(GameGraphicsRowValue(global, tuned, GraphicsRow::ShaderWorkers) == L"8");
     go(GraphicsRow::ConsoleMode);
-    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && tuned.advanced.console_mode == Settings::ConsoleMode::Handheld);
+    check(ChangeGameGraphicsRow(tuned, static_cast<GraphicsRow>(row), GraphicsInput::Right) && tuned.advanced.console_mode == Settings::ConsoleMode::Handheld);
     check(GameGraphicsRowValue(global, tuned, GraphicsRow::ConsoleMode) == L"Portátil");
-    check(!HandleGameGraphicsInput(tuned, row, GraphicsInput::Down) && row == static_cast<std::size_t>(GraphicsRow::ResetAdvanced));
-    check(!HandleGameGraphicsInput(tuned, row, GraphicsInput::Right) && !HandleGameGraphicsInput(tuned, row, GraphicsInput::Left));
+    row = static_cast<std::size_t>(GraphicsRow::ResetAdvanced);
+    check(!ChangeGameGraphicsRow(tuned, static_cast<GraphicsRow>(row), GraphicsInput::Right) && !ChangeGameGraphicsRow(tuned, static_cast<GraphicsRow>(row), GraphicsInput::Left));
     check(tuned.advanced.full_textures);
     tuned.slow_guest_clock = true;
     tuned.frame_gen = true;
-    check(HandleGameGraphicsInput(tuned, row, GraphicsInput::Confirm) && tuned.advanced == GameAdvancedGraphics{});
+    check(ChangeGameGraphicsRow(tuned, static_cast<GraphicsRow>(row), GraphicsInput::Confirm) && tuned.advanced == GameAdvancedGraphics{});
     check(tuned.slow_guest_clock && tuned.frame_gen == true); // the reset leaves the other rows alone
-    check(!HandleGameGraphicsInput(tuned, row, GraphicsInput::Confirm)); // nothing left to reset
-    check(!HandleGameGraphicsInput(tuned, row, GraphicsInput::Down) && row == 0);
+    check(!ChangeGameGraphicsRow(tuned, static_cast<GraphicsRow>(row), GraphicsInput::Confirm)); // nothing left to reset
 
-    std::puts("graphics settings: defaults, FSR or frame generation, page, per-game overrides PASS");
+    // The game's pane: four sections and the reset row; B in a section goes back to the list.
+    GraphicsCursor cursor;
+    GameGraphics navigated;
+    check(GraphicsListSize(cursor, true) == 5);
+    check(!HandleGameGraphicsInput(navigated, cursor, GraphicsInput::Up) && cursor.selected == 4);
+    check(GraphicsCursorRow(cursor, true) == GraphicsRow::ResetAdvanced);
+    check(!HandleGameGraphicsInput(navigated, cursor, GraphicsInput::Up) && cursor.selected == 3);
+    check(!HandleGameGraphicsInput(navigated, cursor, GraphicsInput::Confirm) && cursor.section == GraphicsSection::Memory);
+    check(GraphicsCursorRow(cursor, true) == GraphicsRow::TextureQuality);
+    check(HandleGameGraphicsInput(navigated, cursor, GraphicsInput::Confirm) && navigated.advanced.full_textures);
+    check(!HandleGameGraphicsInput(navigated, cursor, GraphicsInput::Back) && !cursor.section && cursor.selected == 3);
+    check(!HandleGameGraphicsInput(navigated, cursor, GraphicsInput::Back)); // the caller's
+
+    // Y: Settings > Graphics back to the emulator's defaults; a game back on Settings > Graphics.
+    GraphicsSettings changed_global;
+    check(!ResetGraphicsSettings(changed_global));
+    SetFrameGen(changed_global, true);
+    changed_global.fixed_core_map = true;
+    check(ResetGraphicsSettings(changed_global) && changed_global == GraphicsSettings{});
+    GameGraphics own{.gpu_fence = GpuFence::Safe, .slow_guest_clock = true};
+    own.advanced.full_textures = true;
+    check(SyncGameGraphics(own) && own == GameGraphics{} && !SyncGameGraphics(own));
+    check(ResolveGraphics(safe_global, own) == safe_global);
+
+    std::puts("graphics settings: defaults, FSR or frame generation, sections, gain/cost hints, per-game overrides PASS");
 }

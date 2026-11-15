@@ -3,12 +3,18 @@
 #pragma once
 
 // Settings > Graphics and a game's own Graphics pane: the same rows, plus the ones only the
-// game's pane has, what each shows and how input changes them. The library routes input here, saves and applies on a change; the
-// canvas draws from the same state.
+// game's pane has, what each shows and how input changes them. The rows are grouped in sections
+// by what they affect (image, performance, fixes, memory): each page lists the sections and opens
+// one at a time. The library routes input here, saves and applies on a change; the canvas draws
+// from the same state.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <string>
+#include <vector>
 
 #include "jadyx/i18n/localization.h"
 #include "jadyx/settings/graphics_settings.h"
@@ -16,7 +22,7 @@
 namespace Jadyx {
 
 enum class GraphicsRow : std::size_t {
-    Upscaling, FrameGen, Shaders, GpuFence, AsyncRecord, CpuWriteQueue, GpuFastPaths, CpuWriteAll, FixedCoreMap, AstcArrayCap, GuestClock, ExactGpuReads,
+    Upscaling, FrameGen, Shaders, GpuFence, AsyncRecord, CpuWriteQueue, GpuFastPaths, FixedCoreMap, AstcArrayCap, GuestClock, ExactGpuReads,
     Anisotropy, TextureQuality, TextureMemory, GpuAccuracy, ShaderWorkers, ConsoleMode, ResetAdvanced,
     Count,
 };
@@ -27,9 +33,87 @@ inline constexpr bool IsAdvancedRow(GraphicsRow row) {
     return row >= GraphicsRow::Anisotropy && row < GraphicsRow::Count;
 }
 
+/// Settings > Graphics has the rows below GraphicsRowCount; a game's pane has them all.
+inline constexpr bool IsGlobalRow(GraphicsRow row) {
+    return static_cast<std::size_t>(row) < GraphicsRowCount;
+}
+
+/// What the rows affect: each page lists these and opens one at a time.
+enum class GraphicsSection : std::uint8_t { Image, Performance, Fixes, Memory };
+inline constexpr std::size_t GraphicsSectionCount = 4;
+
+/// A section's rows in the order shown, the game-only ones included.
+inline std::span<const GraphicsRow> GraphicsSectionAllRows(GraphicsSection section) {
+    using R = GraphicsRow;
+    static constexpr R image[]{R::Upscaling, R::FrameGen, R::Anisotropy, R::ConsoleMode};
+    static constexpr R performance[]{R::Shaders,      R::ShaderWorkers, R::GuestClock,  R::AsyncRecord,
+                                     R::GpuFastPaths, R::CpuWriteQueue, R::FixedCoreMap};
+    static constexpr R fixes[]{R::GpuFence, R::GpuAccuracy, R::ExactGpuReads, R::AstcArrayCap};
+    static constexpr R memory[]{R::TextureQuality, R::TextureMemory};
+    switch (section) {
+    case GraphicsSection::Performance: return performance;
+    case GraphicsSection::Fixes: return fixes;
+    case GraphicsSection::Memory: return memory;
+    case GraphicsSection::Image: break;
+    }
+    return image;
+}
+
+/// The rows a page shows in a section: Settings > Graphics only the ones it has.
+inline std::vector<GraphicsRow> GraphicsSectionRows(GraphicsSection section, bool game) {
+    std::vector<GraphicsRow> rows;
+    for (const GraphicsRow row : GraphicsSectionAllRows(section))
+        if (game || IsGlobalRow(row)) rows.push_back(row);
+    return rows;
+}
+
+/// The sections a page lists: Settings > Graphics leaves out the ones with none of its rows.
+inline std::vector<GraphicsSection> GraphicsSections(bool game) {
+    std::vector<GraphicsSection> sections;
+    for (std::size_t i = 0; i < GraphicsSectionCount; ++i) {
+        const auto section = static_cast<GraphicsSection>(i);
+        if (!GraphicsSectionRows(section, game).empty()) sections.push_back(section);
+    }
+    return sections;
+}
+
+/// The section a row is in.
+inline GraphicsSection GraphicsSectionOf(GraphicsRow row) {
+    for (std::size_t i = 0; i < GraphicsSectionCount; ++i) {
+        const auto section = static_cast<GraphicsSection>(i);
+        const auto rows = GraphicsSectionAllRows(section);
+        if (std::find(rows.begin(), rows.end(), row) != rows.end()) return section;
+    }
+    return GraphicsSection::Image;
+}
+
+/// Where a page's cursor is: the list of sections (in a game's pane, with the reset row after
+/// them) or one section's rows.
+struct GraphicsCursor {
+    std::optional<GraphicsSection> section; ///< None: the list of sections.
+    std::size_t selected{};
+    bool operator==(const GraphicsCursor&) const = default;
+};
+
+/// How many rows the cursor's list has.
+inline std::size_t GraphicsListSize(const GraphicsCursor& cursor, bool game) {
+    if (cursor.section) return GraphicsSectionRows(*cursor.section, game).size();
+    return GraphicsSections(game).size() + (game ? 1 : 0);
+}
+
+/// The setting under the cursor; none on a section's entry.
+inline std::optional<GraphicsRow> GraphicsCursorRow(const GraphicsCursor& cursor, bool game) {
+    if (cursor.section) {
+        const auto rows = GraphicsSectionRows(*cursor.section, game);
+        return cursor.selected < rows.size() ? std::optional{rows[cursor.selected]} : std::nullopt;
+    }
+    if (game && cursor.selected == GraphicsSections(game).size()) return GraphicsRow::ResetAdvanced;
+    return std::nullopt;
+}
+
 struct GraphicsPage {
     bool open{};
-    std::size_t selected{};
+    GraphicsCursor cursor;
     GraphicsSettings settings; ///< As saved.
 };
 
@@ -38,23 +122,44 @@ enum class GraphicsInput : std::uint8_t { Up, Down, Left, Right, Confirm, Back }
 namespace GraphicsPageDetail {
 /// Up and Down move the cursor; true when the input was one of them.
 inline bool Move(std::size_t& selected, std::size_t count, GraphicsInput input) {
+    if (count == 0) return false;
     if (input == GraphicsInput::Up) selected = (selected + count - 1) % count;
     else if (input == GraphicsInput::Down) selected = (selected + 1) % count;
     else return false;
     return true;
 }
+
+enum class Step : std::uint8_t { None, Change, Leave };
+/// Moves the cursor, opens a section (A or Right on its entry) and closes it (B, back on its
+/// entry). Change: the input is for the setting under the cursor. Leave: B on the list of sections.
+inline Step Navigate(GraphicsCursor& cursor, bool game, GraphicsInput input) {
+    const std::size_t count = GraphicsListSize(cursor, game);
+    if (cursor.selected >= count) cursor.selected = 0;
+    if (Move(cursor.selected, count, input)) return Step::None;
+    const auto sections = GraphicsSections(game);
+    if (input == GraphicsInput::Back) {
+        if (!cursor.section) return Step::Leave;
+        cursor.selected = static_cast<std::size_t>(
+            std::find(sections.begin(), sections.end(), *cursor.section) - sections.begin());
+        cursor.section.reset();
+        return Step::None;
+    }
+    if (!cursor.section && cursor.selected < sections.size()) {
+        if (input == GraphicsInput::Confirm || input == GraphicsInput::Right) {
+            cursor.section = sections[cursor.selected];
+            cursor.selected = 0;
+        }
+        return Step::None;
+    }
+    return Step::Change;
+}
 } // namespace GraphicsPageDetail
 
-/// Applies one input to Settings > Graphics; true when the settings changed (save and apply).
-inline bool HandleGraphicsInput(GraphicsPage& page, GraphicsInput input) {
-    if (GraphicsPageDetail::Move(page.selected, GraphicsRowCount, input)) return false;
-    if (input == GraphicsInput::Back) {
-        page.open = false;
-        return false;
-    }
+/// Applies Left, Right or A to one of Settings > Graphics' rows; true when the settings changed.
+inline bool ChangeGraphicsRow(GraphicsSettings& settings, GraphicsRow row, GraphicsInput input) {
+    if (input != GraphicsInput::Left && input != GraphicsInput::Right && input != GraphicsInput::Confirm) return false;
     const bool back = input == GraphicsInput::Left;
-    auto& settings = page.settings;
-    switch (static_cast<GraphicsRow>(page.selected)) {
+    switch (row) {
     case GraphicsRow::Upscaling:
         SetUpscaling(settings, StepUpscaling(settings.upscaling, back));
         return true;
@@ -76,9 +181,6 @@ inline bool HandleGraphicsInput(GraphicsPage& page, GraphicsInput input) {
     case GraphicsRow::GpuFastPaths:
         settings.gpu_fast_paths = !settings.gpu_fast_paths;
         return true;
-    case GraphicsRow::CpuWriteAll:
-        settings.cpu_write_all = !settings.cpu_write_all;
-        return true;
     case GraphicsRow::FixedCoreMap:
         settings.fixed_core_map = !settings.fixed_core_map;
         return true;
@@ -91,13 +193,27 @@ inline bool HandleGraphicsInput(GraphicsPage& page, GraphicsInput input) {
     return false;
 }
 
-/// Applies one input to a game's pane (Back is the caller's); true when the game's overrides
-/// changed.
-inline bool HandleGameGraphicsInput(GameGraphics& game, std::size_t& selected, GraphicsInput input) {
-    if (GraphicsPageDetail::Move(selected, GameGraphicsRowCount, input) || input == GraphicsInput::Back) return false;
+/// Applies one input to Settings > Graphics; true when the settings changed (save and apply).
+inline bool HandleGraphicsInput(GraphicsPage& page, GraphicsInput input) {
+    switch (GraphicsPageDetail::Navigate(page.cursor, false, input)) {
+    case GraphicsPageDetail::Step::Leave:
+        page.open = false;
+        return false;
+    case GraphicsPageDetail::Step::Change: {
+        const auto row = GraphicsCursorRow(page.cursor, false);
+        return row && ChangeGraphicsRow(page.settings, *row, input);
+    }
+    case GraphicsPageDetail::Step::None: break;
+    }
+    return false;
+}
+
+/// Applies Left, Right or A to one of a game's rows; true when the game's overrides changed.
+inline bool ChangeGameGraphicsRow(GameGraphics& game, GraphicsRow row, GraphicsInput input) {
+    if (input != GraphicsInput::Left && input != GraphicsInput::Right && input != GraphicsInput::Confirm) return false;
     const bool back = input == GraphicsInput::Left;
     auto& advanced = game.advanced;
-    switch (static_cast<GraphicsRow>(selected)) {
+    switch (row) {
     case GraphicsRow::Upscaling: StepGameUpscaling(game, back); return true;
     case GraphicsRow::FrameGen: StepGameFrameGen(game, back); return true;
     case GraphicsRow::Shaders: StepGameShaders(game, back); return true;
@@ -105,7 +221,6 @@ inline bool HandleGameGraphicsInput(GameGraphics& game, std::size_t& selected, G
     case GraphicsRow::AsyncRecord: StepGameAsyncRecord(game, back); return true;
     case GraphicsRow::CpuWriteQueue: StepGameCpuWriteQueue(game, back); return true;
     case GraphicsRow::GpuFastPaths: StepGameGpuFastPaths(game, back); return true;
-    case GraphicsRow::CpuWriteAll: StepGameCpuWriteAll(game, back); return true;
     case GraphicsRow::FixedCoreMap: StepGameFixedCoreMap(game, back); return true;
     case GraphicsRow::AstcArrayCap: StepGameAstcArrayCap(game, back); return true;
     case GraphicsRow::GuestClock: game.slow_guest_clock = !game.slow_guest_clock; return true;
@@ -126,6 +241,53 @@ inline bool HandleGameGraphicsInput(GameGraphics& game, std::size_t& selected, G
     return false;
 }
 
+/// Applies one input to a game's pane; true when the game's overrides changed. B in a section goes
+/// back to the list of sections; B on the list is the caller's (it closes the pane).
+inline bool HandleGameGraphicsInput(GameGraphics& game, GraphicsCursor& cursor, GraphicsInput input) {
+    if (GraphicsPageDetail::Navigate(cursor, true, input) != GraphicsPageDetail::Step::Change) return false;
+    const auto row = GraphicsCursorRow(cursor, true);
+    return row && ChangeGameGraphicsRow(game, *row, input);
+}
+
+/// Settings > Graphics back to the emulator's defaults (Y on the page); false when they already are.
+inline bool ResetGraphicsSettings(GraphicsSettings& settings) {
+    if (settings == GraphicsSettings{}) return false;
+    settings = {};
+    return true;
+}
+
+/// A game back to following Settings > Graphics (Y in its pane and its in-game menu): its own
+/// values go, and the rows only a game has (guest clock, exact reads, advanced) go back to their
+/// defaults, as there is nothing global for them to follow. False when nothing was its own.
+inline bool SyncGameGraphics(GameGraphics& game) {
+    if (game == GameGraphics{}) return false;
+    game = {};
+    return true;
+}
+
+inline I18n::Text GraphicsSectionTitle(GraphicsSection section) {
+    using I18n::Text;
+    switch (section) {
+    case GraphicsSection::Performance: return Text::GraphicsSectionPerformance;
+    case GraphicsSection::Fixes: return Text::GraphicsSectionFixes;
+    case GraphicsSection::Memory: return Text::GraphicsSectionMemory;
+    case GraphicsSection::Image: break;
+    }
+    return Text::GraphicsSectionImage;
+}
+
+/// What a section's rows affect: under its entry and as its page's subtitle.
+inline I18n::Text GraphicsSectionHint(GraphicsSection section) {
+    using I18n::Text;
+    switch (section) {
+    case GraphicsSection::Performance: return Text::GraphicsSectionPerformanceHint;
+    case GraphicsSection::Fixes: return Text::GraphicsSectionFixesHint;
+    case GraphicsSection::Memory: return Text::GraphicsSectionMemoryHint;
+    case GraphicsSection::Image: break;
+    }
+    return Text::GraphicsSectionImageHint;
+}
+
 inline I18n::Text GraphicsRowTitle(GraphicsRow row) {
     using I18n::Text;
     switch (row) {
@@ -135,7 +297,6 @@ inline I18n::Text GraphicsRowTitle(GraphicsRow row) {
     case GraphicsRow::AsyncRecord: return Text::AsyncRecord;
     case GraphicsRow::CpuWriteQueue: return Text::CpuWriteQueue;
     case GraphicsRow::GpuFastPaths: return Text::GpuFastPaths;
-    case GraphicsRow::CpuWriteAll: return Text::CpuWriteAll;
     case GraphicsRow::FixedCoreMap: return Text::FixedCoreMap;
     case GraphicsRow::AstcArrayCap: return Text::AstcArrayCap;
     case GraphicsRow::GuestClock: return Text::SlowGuestClock;
@@ -151,29 +312,42 @@ inline I18n::Text GraphicsRowTitle(GraphicsRow row) {
     }
 }
 
-inline I18n::Text GraphicsRowHint(GraphicsRow row) {
+/// What a row gains and what it costs, in words a player follows. The reset row has none.
+struct GraphicsGainCost {
+    I18n::Text gain, cost;
+};
+inline std::optional<GraphicsGainCost> GraphicsRowGainCost(GraphicsRow row) {
     using I18n::Text;
+    using G = GraphicsGainCost;
     switch (row) {
-    case GraphicsRow::FrameGen: return Text::FrameGenHint;
-    case GraphicsRow::Shaders: return Text::ShaderBuildHint;
-    case GraphicsRow::GpuFence: return Text::GpuFenceHint;
-    case GraphicsRow::AsyncRecord: return Text::AsyncRecordHint;
-    case GraphicsRow::CpuWriteQueue: return Text::CpuWriteQueueHint;
-    case GraphicsRow::GpuFastPaths: return Text::GpuFastPathsHint;
-    case GraphicsRow::CpuWriteAll: return Text::CpuWriteAllHint;
-    case GraphicsRow::FixedCoreMap: return Text::FixedCoreMapHint;
-    case GraphicsRow::AstcArrayCap: return Text::AstcArrayCapHint;
-    case GraphicsRow::GuestClock: return Text::SlowGuestClockHint;
-    case GraphicsRow::ExactGpuReads: return Text::ExactGpuReadsHint;
-    case GraphicsRow::Anisotropy: return Text::AdvancedAnisotropyHint;
-    case GraphicsRow::TextureQuality: return Text::AdvancedTextureQualityHint;
-    case GraphicsRow::TextureMemory: return Text::AdvancedTextureMemoryHint;
-    case GraphicsRow::GpuAccuracy: return Text::AdvancedGpuAccuracyHint;
-    case GraphicsRow::ShaderWorkers: return Text::AdvancedShaderWorkersHint;
-    case GraphicsRow::ConsoleMode: return Text::AdvancedConsoleModeHint;
-    case GraphicsRow::ResetAdvanced: return Text::AdvancedResetHint;
-    default: return Text::UpscalingHint;
+    case GraphicsRow::Upscaling: return G{Text::UpscalingGain, Text::UpscalingCost};
+    case GraphicsRow::FrameGen: return G{Text::FrameGenGain, Text::FrameGenCost};
+    case GraphicsRow::Shaders: return G{Text::ShaderBuildGain, Text::ShaderBuildCost};
+    case GraphicsRow::GpuFence: return G{Text::GpuFenceGain, Text::GpuFenceCost};
+    case GraphicsRow::AsyncRecord: return G{Text::AsyncRecordGain, Text::AsyncRecordCost};
+    case GraphicsRow::CpuWriteQueue: return G{Text::CpuWriteQueueGain, Text::CpuWriteQueueCost};
+    case GraphicsRow::GpuFastPaths: return G{Text::GpuFastPathsGain, Text::GpuFastPathsCost};
+    case GraphicsRow::FixedCoreMap: return G{Text::FixedCoreMapGain, Text::FixedCoreMapCost};
+    case GraphicsRow::AstcArrayCap: return G{Text::AstcArrayCapGain, Text::AstcArrayCapCost};
+    case GraphicsRow::GuestClock: return G{Text::SlowGuestClockGain, Text::SlowGuestClockCost};
+    case GraphicsRow::ExactGpuReads: return G{Text::ExactGpuReadsGain, Text::ExactGpuReadsCost};
+    case GraphicsRow::Anisotropy: return G{Text::AdvancedAnisotropyGain, Text::AdvancedAnisotropyCost};
+    case GraphicsRow::TextureQuality: return G{Text::AdvancedTextureQualityGain, Text::AdvancedTextureQualityCost};
+    case GraphicsRow::TextureMemory: return G{Text::AdvancedTextureMemoryGain, Text::AdvancedTextureMemoryCost};
+    case GraphicsRow::GpuAccuracy: return G{Text::AdvancedGpuAccuracyGain, Text::AdvancedGpuAccuracyCost};
+    case GraphicsRow::ShaderWorkers: return G{Text::AdvancedShaderWorkersGain, Text::AdvancedShaderWorkersCost};
+    case GraphicsRow::ConsoleMode: return G{Text::AdvancedConsoleModeGain, Text::AdvancedConsoleModeCost};
+    case GraphicsRow::ResetAdvanced:
+    case GraphicsRow::Count: break;
     }
+    return std::nullopt;
+}
+
+/// A row's line under its title: "Gain: … · Cost: …", or the reset row's own hint.
+inline std::wstring GraphicsRowHint(GraphicsRow row) {
+    const auto gain_cost = GraphicsRowGainCost(row);
+    if (!gain_cost) return std::wstring{I18n::Tr(I18n::Text::AdvancedResetHint)};
+    return I18n::Format(I18n::Text::GraphicsGainCost, {I18n::Tr(gain_cost->gain), I18n::Tr(gain_cost->cost)});
 }
 
 /// A row's value for these settings.
@@ -185,7 +359,6 @@ inline std::wstring GraphicsRowValue(const GraphicsSettings& settings, GraphicsR
     case GraphicsRow::AsyncRecord: return OnOffText(settings.async_record);
     case GraphicsRow::CpuWriteQueue: return OnOffText(settings.cpu_write_queue);
     case GraphicsRow::GpuFastPaths: return OnOffText(settings.gpu_fast_paths);
-    case GraphicsRow::CpuWriteAll: return OnOffText(settings.cpu_write_all);
     case GraphicsRow::FixedCoreMap: return OnOffText(settings.fixed_core_map);
     case GraphicsRow::AstcArrayCap: return std::to_wstring(settings.astc_array_cap_mib) + L" MiB";
     default: return std::wstring{I18n::Tr(UpscalingText(settings.upscaling))};
@@ -229,7 +402,6 @@ inline bool HasGameOverride(const GameGraphics& game, GraphicsRow row) {
     case GraphicsRow::AsyncRecord: return game.async_record.has_value();
     case GraphicsRow::CpuWriteQueue: return game.cpu_write_queue.has_value();
     case GraphicsRow::GpuFastPaths: return game.gpu_fast_paths.has_value();
-    case GraphicsRow::CpuWriteAll: return game.cpu_write_all.has_value();
     case GraphicsRow::FixedCoreMap: return game.fixed_core_map.has_value();
     case GraphicsRow::AstcArrayCap: return game.astc_array_cap_mib.has_value();
     default: return game.upscaling.has_value();

@@ -26,6 +26,7 @@
 #include "jadyx/library/game_library.h"
 #include "jadyx/library/play_history.h"
 #include "jadyx/library/game_options_page.h"
+#include "jadyx/library/controller_sections.h"
 #include "jadyx/library/library_layout.h"
 #include "jadyx/content/content_view.h"
 #include "jadyx/storage/storage_path.h"
@@ -53,7 +54,7 @@ std::wstring FirmwareValue(const FileSetupStatus& status) {
         I18n::Format(T::FirmwareVersion, {std::wstring{winrt::to_hstring(status.versions.firmware)}});
 }
 /// The gyro's shake button by the Xbox pad's names, as the in-game menu shows it.
-std::wstring ShakeButtonName(MotionShakeButton button) {
+std::wstring ShakeButtonName(MotionShakeButton button, MotionSource source) {
     switch (button) {
     case MotionShakeButton::LB: return L"LB";
     case MotionShakeButton::RB: return L"RB";
@@ -61,7 +62,16 @@ std::wstring ShakeButtonName(MotionShakeButton button) {
     case MotionShakeButton::RT: return L"RT";
     case MotionShakeButton::StickClick: break;
     }
-    return std::wstring{Tr(T::GyroShakeStickClick)};
+    return std::wstring{Tr(source == MotionSource::Mouse ? T::GyroShakeRightStickClick : T::GyroShakeStickClick)};
+}
+/// What moves the gyro, as Settings > Controller > Gyro names it.
+std::wstring GyroSourceName(MotionSource source) {
+    return std::wstring{Tr(source == MotionSource::Mouse ? T::MousePage :
+                           source == MotionSource::LeftStick ? T::GyroStickLeft : T::GyroStickRight)};
+}
+/// What the mouse does, as Settings > Controller > Mouse names it.
+T MouseUseName(MouseUse use) {
+    return use == MouseUse::Gyro ? T::GyroPage : use == MouseUse::RightStick ? T::GyroStickRight : T::MouseUseOff;
 }
 } // namespace
 // The launcher owns a small D3D11/Direct2D surface only while selecting a game.
@@ -989,6 +999,7 @@ private:
             const auto& configuration = view.configuration;
             const bool change = view.system.open || view.graphics.open || view.controller_panel;
             x += ControlPrompt(Navigation::Play, Tr(change ? T::Change : T::Open), x, y);
+            if (view.graphics.open) x += ControlPrompt(Navigation::Refresh, Tr(T::GraphicsReset), x, y);
             ControlPrompt(Navigation::Back, Tr(configuration.busy ? T::Cancel : T::Back), x, y);
             // The version is on the page's kicker; its notices take the corner.
             std::wstring notice;
@@ -1431,75 +1442,125 @@ private:
                 rows.push_back(std::move(item));
             }
         } else if (category == HomeGraphics) {
-            for (std::size_t i = 0; i < GraphicsRowCount; ++i) {
-                const auto row = static_cast<GraphicsRow>(i);
+            // The sections, or the open one's rows (graphics_page.h).
+            const auto section = view.graphics.open ? view.graphics.cursor.section : std::nullopt;
+            if (!section) {
+                for (const GraphicsSection entry : GraphicsSections(false))
+                    rows.push_back({Kind::Open, std::wstring{Tr(GraphicsSectionTitle(entry))},
+                                    std::wstring{Tr(GraphicsSectionHint(entry))}, {}});
+                return rows;
+            }
+            for (const GraphicsRow row : GraphicsSectionRows(*section, false)) {
                 const auto& settings = view.graphics.settings;
-                SettingsRow item{Kind::Choice, std::wstring{Tr(GraphicsRowTitle(row))},
-                                 std::wstring{Tr(GraphicsRowHint(row))}, GraphicsRowValue(settings, row)};
+                SettingsRow item{Kind::Choice, std::wstring{Tr(GraphicsRowTitle(row))}, GraphicsRowHint(row),
+                                 GraphicsRowValue(settings, row)};
                 if (row == GraphicsRow::FrameGen) { item.kind = Kind::Toggle; item.on = settings.frame_gen; }
                 if (row == GraphicsRow::AsyncRecord) { item.kind = Kind::Toggle; item.on = settings.async_record; }
                 if (row == GraphicsRow::CpuWriteQueue) { item.kind = Kind::Toggle; item.on = settings.cpu_write_queue; }
                 if (row == GraphicsRow::GpuFastPaths) { item.kind = Kind::Toggle; item.on = settings.gpu_fast_paths; }
-                if (row == GraphicsRow::CpuWriteAll) { item.kind = Kind::Toggle; item.on = settings.cpu_write_all; }
                 if (row == GraphicsRow::FixedCoreMap) { item.kind = Kind::Toggle; item.on = settings.fixed_core_map; }
                 rows.push_back(std::move(item));
             }
         } else if (category == HomeControllers) {
-            // As the controller panel: device, type, A/B/X/Y, dead zone, keyboard, controller mapping.
-            const auto& options = view.options;
-            const auto& panel = view.panel;
-            const auto label = ControllerLabel(panel.devices, options.controller_id);
-            rows.push_back({Kind::Open, std::wstring{Tr(T::ControllerDevice)}, {},
-                            options.controller_id.empty() ? I18n::Format(T::AutomaticValue, {label}) : label});
-            rows.push_back({Kind::Choice, std::wstring{Tr(T::ControllerSeenAs)}, {},
-                            std::wstring{Tr(ControllerStyleText(options.style))}});
-            const auto active = SelectController(panel.devices, options.controller_id);
-            if (active && panel.devices[*active].bindings) {
-                rows.push_back({Kind::Value, std::wstring{Tr(T::FaceButtons)}, {},
-                                std::wstring{Tr(T::FaceButtonsMapped)}});
-            } else if (active && panel.devices[*active].nintendo) {
-                rows.push_back({Kind::Value, std::wstring{Tr(T::FaceButtons)}, {},
-                                std::wstring{Tr(T::NintendoFaceButtons)}});
-            } else {
-                SettingsRow face{Kind::Segments, std::wstring{Tr(T::FaceButtons)}};
-                face.segments = {std::wstring{Tr(T::ByLetter)}, std::wstring{Tr(T::ByPosition)}};
-                face.on_segment = options.swap_face_buttons ? 1 : 0;
-                rows.push_back(std::move(face));
+            if (view.controller_section == 0) {
+                // As the controller panel: device, type, A/B/X/Y, dead zone, keyboard, controller mapping,
+                // then the entries of the sections.
+                const auto& options = view.options;
+                const auto& panel = view.panel;
+                const auto label = ControllerLabel(panel.devices, options.controller_id);
+                rows.push_back({Kind::Open, std::wstring{Tr(T::ControllerDevice)}, {},
+                                options.controller_id.empty() ? I18n::Format(T::AutomaticValue, {label}) : label});
+                rows.push_back({Kind::Choice, std::wstring{Tr(T::ControllerSeenAs)}, {},
+                                std::wstring{Tr(ControllerStyleText(options.style))}});
+                const auto active = SelectController(panel.devices, options.controller_id);
+                if (active && panel.devices[*active].bindings) {
+                    rows.push_back({Kind::Value, std::wstring{Tr(T::FaceButtons)}, {},
+                                    std::wstring{Tr(T::FaceButtonsMapped)}});
+                } else if (active && panel.devices[*active].nintendo) {
+                    rows.push_back({Kind::Value, std::wstring{Tr(T::FaceButtons)}, {},
+                                    std::wstring{Tr(T::NintendoFaceButtons)}});
+                } else {
+                    SettingsRow face{Kind::Segments, std::wstring{Tr(T::FaceButtons)}};
+                    face.segments = {std::wstring{Tr(T::ByLetter)}, std::wstring{Tr(T::ByPosition)}};
+                    face.on_segment = options.swap_face_buttons ? 1 : 0;
+                    rows.push_back(std::move(face));
+                }
+                // The dead zone's three steps (library_session_pages.cpp, Zone).
+                SettingsRow zone{Kind::Segments, std::wstring{Tr(T::DeadZone)}};
+                zone.segments = {L"8%", L"12%", L"18%"};
+                zone.on_segment = options.deadzone < 0.10f ? 0 : options.deadzone < 0.15f ? 1 : 2;
+                rows.push_back(std::move(zone));
+                rows.push_back({Kind::Open, std::wstring{Tr(T::SetUpKeyboard)}});
+                rows.push_back({Kind::Open, std::wstring{Tr(T::SetUpPadMap)}});
             }
-            // The dead zone's three steps (library_session_pages.cpp, Zone).
-            SettingsRow zone{Kind::Segments, std::wstring{Tr(T::DeadZone)}};
-            zone.segments = {L"8%", L"12%", L"18%"};
-            zone.on_segment = options.deadzone < 0.10f ? 0 : options.deadzone < 0.15f ? 1 : 2;
-            rows.push_back(std::move(zone));
-            rows.push_back({Kind::Open, std::wstring{Tr(T::SetUpKeyboard)}});
-            rows.push_back({Kind::Open, std::wstring{Tr(T::SetUpPadMap)}});
-            // The right stick (a game can keep its own from the in-game menu).
+            // The sections' entries on the main page, or one section's rows (controller_sections.h);
+            // every section but the gyro's can also be a game's own from its in-game menu.
+            const auto& options = view.options;
             const auto& stick = options.right_stick;
+            const bool mouse = MousePresent();
+            const auto mouse_use = MouseUseOf(options.motion_source, stick.mouse);
+            const auto percent = [](int value) { return std::to_wstring(value) + L"%"; };
             const auto toggle = [&](T title, bool on) {
                 SettingsRow row{Kind::Toggle, std::wstring{Tr(title)}};
                 row.on = on;
                 row.value = std::wstring{Tr(on ? T::Yes : T::No)};
                 rows.push_back(std::move(row));
             };
-            toggle(T::RightStickInvertX, stick.invert_x);
-            toggle(T::RightStickInvertY, stick.invert_y);
-            rows.push_back({Kind::Choice, std::wstring{Tr(T::RightStickSensitivity)}, {},
-                            std::to_wstring(stick.stick_sensitivity) + L"%"});
-            toggle(T::RightStickMouse, stick.mouse);
-            rows.push_back({Kind::Choice, std::wstring{Tr(T::MouseSensitivity)}, {},
-                            std::to_wstring(stick.mouse_sensitivity) + L"%"});
-            // The game's rumble on the pad, and the emulated gyro's controls (a game turns the gyro
-            // on from its in-game menu).
-            toggle(T::RumbleRow, options.rumble.on);
-            rows.back().hint = std::wstring{Tr(T::RumbleHint)};
-            rows.push_back({Kind::Choice, std::wstring{Tr(T::RumbleStrengthRow)}, {},
-                            std::to_wstring(options.rumble.strength) + L"%"});
-            SettingsRow gyro_stick{Kind::Segments, std::wstring{Tr(T::GyroStickRow)}, std::wstring{Tr(T::GyroStickHint)}};
-            gyro_stick.segments = {std::wstring{Tr(T::GyroStickRight)}, std::wstring{Tr(T::GyroStickLeft)}};
-            gyro_stick.on_segment = options.motion_stick == MotionStick::Left ? 1 : 0;
-            rows.push_back(std::move(gyro_stick));
-            rows.push_back({Kind::Choice, std::wstring{Tr(T::GyroShakeRow)}, std::wstring{Tr(T::GyroShakeHint)},
-                            ShakeButtonName(options.motion_shake)});
+            const auto choice = [&](T title, std::wstring value) {
+                rows.push_back({Kind::Choice, std::wstring{Tr(title)}, {}, std::move(value)});
+            };
+            switch (view.controller_section) {
+            case 0: {
+                // The sections' entries, each with what it holds now.
+                std::wstring right = percent(stick.stick_sensitivity);
+                if (stick.invert_x) right += L" · " + std::wstring{Tr(T::InvertedXShort)};
+                if (stick.invert_y) right += L" · " + std::wstring{Tr(T::InvertedYShort)};
+                rows.push_back({Kind::Open, std::wstring{Tr(T::RightStickPage)}, {}, std::move(right)});
+                rows.push_back({Kind::Open, std::wstring{Tr(T::MousePage)},
+                                mouse ? std::wstring{} : std::wstring{Tr(T::MouseNotConnected)},
+                                std::wstring{Tr(MouseUseName(mouse_use))}});
+                rows.push_back({Kind::Open, std::wstring{Tr(T::RumbleRow)}, {},
+                                options.rumble.on ? percent(options.rumble.strength) : std::wstring{Tr(T::No)}});
+                rows.push_back({Kind::Open, std::wstring{Tr(T::GyroPage)}, std::wstring{Tr(T::GyroTurnOnInGame)},
+                                GyroSourceName(options.motion_source)});
+                break;
+            }
+            case SectionRightStick:
+                toggle(T::RightStickInvertX, stick.invert_x);
+                toggle(T::RightStickInvertY, stick.invert_y);
+                choice(T::RightStickSensitivity, percent(stick.stick_sensitivity));
+                break;
+            case SectionMouse: {
+                SettingsRow use{Kind::Segments, std::wstring{Tr(T::MouseUseTitle)},
+                                std::wstring{!mouse ? Tr(T::MouseNotConnected) :
+                                             mouse_use == MouseUse::Gyro ? Tr(T::MouseUseGyroHint) : std::wstring_view{}}};
+                use.segments = {std::wstring{Tr(T::MouseUseOff)}, std::wstring{Tr(T::GyroStickRight)},
+                                std::wstring{Tr(T::GyroPage)}};
+                use.on_segment = static_cast<std::size_t>(mouse_use);
+                rows.push_back(std::move(use));
+                choice(T::MouseSensitivity, percent(stick.mouse_sensitivity));
+                break;
+            }
+            case SectionRumble:
+                toggle(T::RumbleRow, options.rumble.on);
+                rows.back().hint = std::wstring{Tr(T::RumbleHint)};
+                choice(T::RumbleStrengthRow, percent(options.rumble.strength));
+                break;
+            default: {
+                const bool mouse_gyro = options.motion_source == MotionSource::Mouse;
+                SettingsRow source{Kind::Segments, std::wstring{Tr(T::GyroStickRow)},
+                                   std::wstring{Tr(!mouse_gyro ? T::GyroStickHint :
+                                                   mouse ? T::GyroSourceMouseHint : T::MouseNotConnected)}};
+                source.segments = {std::wstring{Tr(T::GyroStickRight)}, std::wstring{Tr(T::GyroStickLeft)},
+                                   std::wstring{Tr(T::MousePage)}};
+                source.on_segment = static_cast<std::size_t>(options.motion_source);
+                rows.push_back(std::move(source));
+                rows.push_back({Kind::Choice, std::wstring{Tr(T::GyroShakeRow)}, std::wstring{Tr(T::GyroShakeHint)},
+                                ShakeButtonName(options.motion_shake, options.motion_source)});
+                if (mouse_gyro) choice(T::MouseSensitivity, percent(stick.mouse_sensitivity));
+                break;
+            }
+            }
         } else {
             const auto& status = view.configuration.status;
             rows.push_back({Kind::Open, std::wstring{Tr(T::AddGamesFolder)}});
@@ -2168,13 +2229,29 @@ private:
         static constexpr std::array<T, HomeRowCount> about{T::SystemSubtitle, T::GraphicsSubtitle, T::ControllerSubtitle,
                                                            T::FilesSubtitle};
         const float px = SettingsPaneX, pw = SettingsPaneWidth;
-        Type(Tr(pages[category]), TypeRole::HeadlineLarge, px, 122, pw, Palette::Text);
-        Type(Tr(about[category]), TypeRole::Body, px, 176, pw, Palette::TextSecondary);
+        // A controller section's own title replaces the page's (controller_sections.h).
+        T page_title = pages[category], page_about = about[category];
+        if (category == HomeControllers && view.controller_panel) {
+            switch (view.controller_section) {
+            case SectionRightStick: page_title = T::RightStickPage; page_about = T::ControllerSectionSubtitle; break;
+            case SectionMouse: page_title = T::MousePage; page_about = T::ControllerSectionSubtitle; break;
+            case SectionRumble: page_title = T::RumbleRow; page_about = T::ControllerSectionSubtitle; break;
+            case SectionGyro: page_title = T::GyroPage; page_about = T::GyroTurnOnInGame; break;
+            default: break;
+            }
+        }
+        // As a graphics section's (graphics_page.h).
+        if (category == HomeGraphics && view.graphics.open && view.graphics.cursor.section) {
+            page_title = GraphicsSectionTitle(*view.graphics.cursor.section);
+            page_about = GraphicsSectionHint(*view.graphics.cursor.section);
+        }
+        Type(Tr(page_title), TypeRole::HeadlineLarge, px, 122, pw, Palette::Text);
+        Type(Tr(page_about), TypeRole::Body, px, 176, pw, Palette::TextSecondary);
         const auto rows = SettingsRows(view, category);
         if (rows.empty()) return;
         const std::size_t selected = !in_pane ? SIZE_MAX :
             category == HomeSystem ? view.system.selected :
-            category == HomeGraphics ? view.graphics.selected :
+            category == HomeGraphics ? view.graphics.cursor.selected :
             category == HomeFiles ? configuration.selected : view.controller_row;
         const std::size_t visible = std::min(rows.size(), SettingsVisibleRows);
         const std::size_t first = selected != SIZE_MAX && selected >= visible ? selected - visible + 1 : 0;
@@ -2510,24 +2587,43 @@ private:
                 const auto discard = I18n::Format(T::PulseDiscardConfirm, {PromptKey(Navigation::Play).letters});
                 in_place(option, pulse, game.pulse_saved.empty() ? std::wstring_view{} : std::wstring_view{discard});
             } else if (option == GameOption::Graphics && view.graphics && view.global_graphics) {
-                // The rows of Settings > Graphics, each one the game's own or what it follows, then
-                // the ones only a game has. They do not all fit: the window follows the focus.
-                const bool advanced = IsAdvancedRow(static_cast<GraphicsRow>(view.graphics_row));
-                Type(Tr(advanced ? T::GameGraphicsAdvancedHint : T::GameGraphicsHint), TypeRole::Body, 56, 222, 1168,
-                     Palette::TextSecondary);
+                // The graphics sections and the reset row, or the open section's rows: each one the
+                // game's own or what it follows. They may not all fit: the window follows the focus.
+                const auto& cursor = view.graphics_cursor;
+                const auto focused_row = GraphicsCursorRow(cursor, true);
+                const bool advanced = focused_row && IsAdvancedRow(*focused_row) && *focused_row != GraphicsRow::ResetAdvanced;
+                std::wstring header{Tr(advanced ? T::GameGraphicsAdvancedHint : T::GameGraphicsHint)};
+                if (cursor.section) header = std::wstring{Tr(GraphicsSectionTitle(*cursor.section))} + L" · " + header;
+                Type(header, TypeRole::Body, 56, 222, 1168, Palette::TextSecondary);
+                std::vector<SettingsRow> items;
+                if (!cursor.section) {
+                    for (const GraphicsSection section : GraphicsSections(true))
+                        items.push_back({SettingsRow::Kind::Open, std::wstring{Tr(GraphicsSectionTitle(section))},
+                                         std::wstring{Tr(GraphicsSectionHint(section))}, {}});
+                    items.push_back({SettingsRow::Kind::Open, std::wstring{Tr(GraphicsRowTitle(GraphicsRow::ResetAdvanced))},
+                                     GraphicsRowHint(GraphicsRow::ResetAdvanced), {}});
+                } else {
+                    for (const GraphicsRow row : GraphicsSectionRows(*cursor.section, true))
+                        items.push_back({SettingsRow::Kind::Choice, std::wstring{Tr(GraphicsRowTitle(row))},
+                                         GraphicsRowHint(row),
+                                         GameGraphicsRowValue(*view.global_graphics, *view.graphics, row)});
+                }
                 const bool focused = view.page.focus == GameOptionsFocus::Content;
                 static constexpr std::size_t Visible = 6;
-                const std::size_t first = view.graphics_row >= Visible ? view.graphics_row - Visible + 1 : 0;
-                for (std::size_t i = first; i < first + Visible; ++i) {
-                    const auto row = static_cast<GraphicsRow>(i);
-                    const SettingsRow item{row == GraphicsRow::ResetAdvanced ? SettingsRow::Kind::Open : SettingsRow::Kind::Choice,
-                                           std::wstring{Tr(GraphicsRowTitle(row))}, std::wstring{Tr(GraphicsRowHint(row))},
-                                           GameGraphicsRowValue(*view.global_graphics, *view.graphics, row)};
+                const std::size_t shown = std::min(items.size(), Visible);
+                const std::size_t first = cursor.selected >= Visible ? cursor.selected - Visible + 1 : 0;
+                for (std::size_t i = first; i < first + shown && i < items.size(); ++i) {
                     const float y = 262 + static_cast<float>(i - first) * SettingsRowStride;
-                    DrawSettingsRow(item, 56, y, 1168, SettingsRowHeight, focused && i == view.graphics_row, 1.0f);
+                    DrawSettingsRow(items[i], 56, y, 1168, SettingsRowHeight, focused && i == cursor.selected, 1.0f);
                 }
                 ScrollIndicator(1232, 262, Visible * SettingsRowStride - (SettingsRowStride - SettingsRowHeight), first,
-                                Visible, GameGraphicsRowCount);
+                                Visible, items.size());
+                if (focused) {
+                    float next = 56;
+                    next += ControlPrompt(Navigation::Play, Tr(cursor.section ? T::Change : T::Open), next, footer);
+                    ControlPrompt(Navigation::Refresh, Tr(T::GameGraphicsSync), next, footer);
+                    back_prompt(Tr(T::Back));
+                }
             } else if (option == GameOption::Remove) {
                 const bool external = IsStoragePath(game.launch_path);
                 in_place(option, Tr(external ? T::GameRemoveExternal :

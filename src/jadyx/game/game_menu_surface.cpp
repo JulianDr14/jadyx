@@ -517,11 +517,11 @@ struct GameMenuSurface::Impl : UiPainter {
             menu_first = 0;
         }
         const bool quick = page == GameMenu::Page::Quick;
-        const UiIcon icon = page == GameMenu::Page::Controller ? UiIcon::Controller
+        const UiIcon icon = menu.OnControllerPage()            ? UiIcon::Controller
                             : page == GameMenu::Page::Display  ? UiIcon::Display
-                            : page == GameMenu::Page::Graphics ? UiIcon::Settings
+                            : menu.OnGraphicsPage()            ? UiIcon::Settings
                                                                : UiIcon::Game;
-        const std::wstring back = quick ? std::wstring{} : I18n::Format(Text::MenuBackTo, {I18n::Tr(Text::MenuQuick)});
+        const std::wstring back = quick ? std::wstring{} : I18n::Format(Text::MenuBackTo, {menu.ParentTitle()});
         DrawPanel(icon, menu.PageTitle(), back, !quick);
 
         const auto rows = menu.Rows();
@@ -533,12 +533,29 @@ struct GameMenuSurface::Impl : UiPainter {
         ScrollIndicator(S::InnerX + S::InnerWidth - 4, S::ListTop,
                         S::VisibleRows * S::RowStride - (S::RowStride - S::RowHeight), menu_first, S::VisibleRows,
                         rows.size());
+        if (const auto gain_cost = menu.SelectedGainCost(); gain_cost && rows.size() < S::VisibleRows) {
+            // A graphics section has at most four rows: what the focused one gains and costs fits
+            // under them, where the row's own line has no room for it.
+            const float top = S::ListTop + static_cast<float>(rows.size()) * S::RowStride + 10;
+            const float height = std::min(132.f, S::PanelY + S::PanelHeight - S::Inset - top);
+            Round(S::InnerX, top, S::InnerWidth, height, 16, Palette::Row);
+            Type(gain_cost->first, TypeRole::Body, S::InnerX + 16, top + 14, S::InnerWidth - 32, Palette::Text, 1,
+                 TextAlign::Leading, 2);
+            Type(gain_cost->second, TypeRole::Body, S::InnerX + 16, top + 70, S::InnerWidth - 32,
+                 Palette::TextSecondary, 1, TextAlign::Leading, 2);
+        }
 
         if (quick) {
             Prompts({{L"A", ButtonColor::A, I18n::Tr(Text::Select)}, {L"B", ButtonColor::B, I18n::Tr(Text::MenuResume)}});
         } else {
-            // A and left/right both change a setting; the arrows on the row already say so.
-            Prompts({{L"A", ButtonColor::A, I18n::Tr(Text::Change)}, {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
+            // A and left/right both change a setting; the arrows on the row already say so. Y puts
+            // the game's graphics back on Settings > Graphics.
+            if (menu.OnGraphicsPage())
+                Prompts({{L"A", ButtonColor::A, I18n::Tr(Text::Change)},
+                         {L"Y", ButtonColor::Y, I18n::Tr(Text::GameGraphicsSync)},
+                         {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
+            else
+                Prompts({{L"A", ButtonColor::A, I18n::Tr(Text::Change)}, {L"B", ButtonColor::B, I18n::Tr(Text::Back)}});
         }
     }
 
@@ -974,7 +991,7 @@ D3D12::MenuImage GameMenuSurface::DrawMenu(const GameMenu& menu, const GameMenuS
                                           std::pair<u32, u32> screen) {
     // The display page shows the game sharp: its settings change the very image behind it.
     if (scene.live) return impl->RenderSide(screen, [&] { impl->DrawMenu(menu, scene); });
-    const bool sharp = menu.CurrentPage() == GameMenu::Page::Display || menu.CurrentPage() == GameMenu::Page::Graphics;
+    const bool sharp = menu.CurrentPage() == GameMenu::Page::Display || menu.OnGraphicsPage();
     return impl->RenderScreen(screen, sharp ? Impl::Shade::Sharp : Impl::Shade::Soft,
                               [&] { impl->DrawMenu(menu, scene); });
 }

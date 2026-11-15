@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // An emulated gyro and accelerometer for a pad that has neither. A stick tilts a virtual
-// controller and a button shakes it; this turns its orientation into the samples a Switch pad's
-// IMU reports:
+// controller (or the mouse turns it) and a button shakes it; this turns its orientation into the
+// samples a Switch pad's IMU reports:
 // - gyro: angular velocity in the pad's frame, in revolutions per second;
 // - accel: gravity in the pad's frame, in g (a pad lying flat reads (0, 0, -1)).
 // The pad's frame is X right, Y forward (away from the player), Z up out of its face, as Eden's
@@ -22,8 +22,8 @@ namespace Jadyx {
 /// The emulated gyro, per game.
 enum class MotionMode : std::uint8_t {
     Off, ///< The pad lies still on a table: gravity only, no turn.
-    On,  ///< The gyro stick tilts the controller (where it points is how far it leans) and the
-         ///< shake button shakes it while held.
+    On,  ///< The gyro's source (MotionSource) moves the controller and the shake button shakes
+         ///< it while held.
 };
 inline constexpr std::uint8_t MotionModeCount = 2;
 /// Saved modes before Off/On (Tilt, Aim, Shake) all read as On.
@@ -31,14 +31,16 @@ inline constexpr std::uint8_t MotionModeCount = 2;
     return value > 0 ? MotionMode::On : MotionMode::Off;
 }
 
-/// Which stick tilts the emulated controller (Settings > Controller); the game no longer sees it
-/// while the gyro is on.
-enum class MotionStick : std::uint8_t { Right, Left };
-inline constexpr std::uint8_t MotionStickCount = 2;
+/// What moves the emulated controller (Settings > Controller). A stick tilts it (where it points
+/// is how far it leans) and the game no longer sees that stick while the gyro is on; the mouse
+/// turns it as a real controller turns in the hands, and both sticks stay the game's. Stored as
+/// 0, 1, 2: the old Right/Left values read the same.
+enum class MotionSource : std::uint8_t { RightStick, LeftStick, Mouse };
+inline constexpr std::uint8_t MotionSourceCount = 3;
 
 /// The button that shakes it, by the Xbox pad's names; the game no longer sees it either.
 enum class MotionShakeButton : std::uint8_t {
-    StickClick, ///< Pressing the gyro stick itself.
+    StickClick, ///< Pressing the gyro stick itself (the right one when the mouse moves it).
     LB,
     RB,
     LT,
@@ -119,6 +121,10 @@ public:
     /// How hard and how fast the shake moves it.
     static constexpr float ShakeG = 2.5f;
     static constexpr float ShakeHz = 6.0f;
+    /// How far one pixel of mouse motion turns it at 100 % sensitivity.
+    static constexpr float MouseRadiansPerPixel = 0.1f * std::numbers::pi_v<float> / 180.0f;
+    /// The mouse never tips it past this nose up or down, so gravity stays readable.
+    static constexpr float MaxMousePitchRadians = 80.0f * std::numbers::pi_v<float> / 180.0f;
 
     void SetMode(MotionMode next) {
         if (next != mode) {
@@ -132,6 +138,7 @@ public:
     /// Back to lying flat and still.
     void Reset() {
         orientation = {};
+        mouse_yaw = mouse_pitch = 0.0f;
         shake_phase = 0.0f;
         shake_amount = 0.0f;
     }
@@ -140,6 +147,7 @@ public:
     MotionSample Step(float dt, float stick_x, float stick_y, bool shaking) {
         dt = std::clamp(dt, 0.0005f, 0.1f);
         const Quat before = orientation;
+        mouse_yaw = mouse_pitch = 0.0f;
         if (mode == MotionMode::On) {
             // Stick forward dips the front edge (a turn about X), right dips the right side (about
             // Y), with the stick's springy return eased so the gyro never spikes.
@@ -150,7 +158,32 @@ public:
         } else {
             orientation = {};
         }
+        return Sample(before, dt, shaking);
+    }
 
+    /// Advances `dt` seconds with the mouse's motion over them, in pixels (x right, y down), scaled
+    /// by `sensitivity_percent`. Right turns the controller right (about its Z, as when aiming)
+    /// and up lifts its front edge (about its X); it stays where the mouse left it.
+    MotionSample StepMouse(float dt, float dx, float dy, float sensitivity_percent, bool shaking) {
+        dt = std::clamp(dt, 0.0005f, 0.1f);
+        const Quat before = orientation;
+        if (mode == MotionMode::On) {
+            const float scale = MouseRadiansPerPixel * sensitivity_percent / 100.0f;
+            mouse_yaw = std::remainder(mouse_yaw - dx * scale, 2.0f * std::numbers::pi_v<float>);
+            mouse_pitch = std::clamp(mouse_pitch - dy * scale, -MaxMousePitchRadians, MaxMousePitchRadians);
+            // Yaw about the world's up, then pitch about the controller's own X: no roll creeps in.
+            orientation =
+                (Quat::AxisAngle({0, 0, 1}, mouse_yaw) * Quat::AxisAngle({1, 0, 0}, mouse_pitch)).Normalized();
+        } else {
+            orientation = {};
+            mouse_yaw = mouse_pitch = 0.0f;
+        }
+        return Sample(before, dt, shaking);
+    }
+
+private:
+    /// The sample for the turn from `before` to `orientation` over `dt`, with the shake.
+    MotionSample Sample(Quat before, float dt, bool shaking) {
         MotionSample sample;
         sample.orientation = orientation;
         // The turn since the last step, in the pad's own frame.
@@ -188,9 +221,10 @@ public:
         return sample;
     }
 
-private:
     MotionMode mode{MotionMode::Off};
     Quat orientation;
+    /// The mouse's turn so far (StepMouse); a stick step clears it.
+    float mouse_yaw{}, mouse_pitch{};
     float shake_phase{};
     float shake_amount{};
 };
@@ -223,5 +257,29 @@ inline constexpr std::uint32_t L = 1u << 6, R = 1u << 7, ZL = 1u << 8, ZR = 1u <
 inline constexpr std::uint32_t Plus = 1u << 10, Minus = 1u << 11;
 inline constexpr std::uint32_t Left = 1u << 12, Up = 1u << 13, Right = 1u << 14, Down = 1u << 15;
 } // namespace MotionViewButton
+
+/// What the mouse drives: one choice over the right stick's mouse switch and the gyro's source.
+enum class MouseUse : std::uint8_t { Off, RightStick, Gyro };
+inline constexpr std::uint8_t MouseUseCount = 3;
+
+/// The mouse's use as the two settings say: the gyro's source wins.
+[[nodiscard]] inline MouseUse MouseUseOf(MotionSource source, bool mouse_right_stick) {
+    if (source == MotionSource::Mouse) return MouseUse::Gyro;
+    return mouse_right_stick ? MouseUse::RightStick : MouseUse::Off;
+}
+
+/// Sets both settings to `use`. Leaving the gyro hands it back to the right stick.
+inline void ApplyMouseUse(MouseUse use, MotionSource& source, bool& mouse_right_stick) {
+    mouse_right_stick = use == MouseUse::RightStick;
+    if (use == MouseUse::Gyro) source = MotionSource::Mouse;
+    else if (source == MotionSource::Mouse) source = MotionSource::RightStick;
+}
+
+/// The next (or, with `back`, the previous) value of an enum of `count` values, wrapping.
+template <typename E>
+[[nodiscard]] E StepEnum(E value, std::uint8_t count, bool back) {
+    const auto index = static_cast<std::uint8_t>(value);
+    return static_cast<E>(back ? (index + count - 1) % count : (index + 1) % count);
+}
 
 } // namespace Jadyx

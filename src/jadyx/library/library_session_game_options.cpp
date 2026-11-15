@@ -121,7 +121,7 @@ void LibrarySession::ActivateGameOption(TimePoint now) {
         const auto& game = scan.entries[game_options.game];
         game_graphics_id = game.program_id;
         game_graphics = game.program_id ? LoadGameGraphics(game.program_id) : GameGraphics{};
-        game_graphics_row = 0;
+        game_graphics_cursor = {};
         if (!game.program_id) Notify(now, T::CheatsUnavailable);
     }
     if (game_options.page == GameOption::Updates || game_options.page == GameOption::Dlc) {
@@ -383,15 +383,16 @@ void LibrarySession::HandleCheatsPane(TimePoint now) {
 }
 
 void LibrarySession::HandleGameGraphicsPane(TimePoint now) {
-    // The game's rows: Up on the first goes back to the sections, B closes the options.
+    // The game's list of graphics sections: Up on the first goes back to the options' sections, B
+    // closes the options. In a graphics section B goes back to its list.
     const auto& game = scan.entries[game_options.game];
     const bool loaded = game.program_id != 0 && game_graphics_id == game.program_id;
-    if (actions & Up && game_graphics_row == 0) {
+    if (actions & Up && !game_graphics_cursor.section && game_graphics_cursor.selected == 0) {
         game_options.focus = GameOptionsFocus::Sections;
         actions &= ~Up;
     }
     const auto send = [&](unsigned bit, GraphicsInput input) {
-        if (!loaded || !(actions & bit) || !HandleGameGraphicsInput(game_graphics, game_graphics_row, input))
+        if (!loaded || !(actions & bit) || !HandleGameGraphicsInput(game_graphics, game_graphics_cursor, input))
             return;
         Notify(now, SaveGameGraphics(game.program_id, game_graphics) ? T::SettingsSaved : T::SystemSaveFailed);
     };
@@ -400,7 +401,15 @@ void LibrarySession::HandleGameGraphicsPane(TimePoint now) {
     send(Left, GraphicsInput::Left);
     send(Right, GraphicsInput::Right);
     send(Play, GraphicsInput::Confirm);
-    if (actions & Quit) HandleGameOptionsInput(game_options, GameOptionsInput::Back);
+    // Y: the game follows Settings > Graphics again, from any of its lists.
+    if (loaded && actions & Refresh) {
+        const bool saved = !SyncGameGraphics(game_graphics) || SaveGameGraphics(game.program_id, game_graphics);
+        Notify(now, saved ? T::GameGraphicsSynced : T::SystemSaveFailed);
+    }
+    if (actions & Quit) {
+        if (game_graphics_cursor.section) send(Quit, GraphicsInput::Back);
+        else HandleGameOptionsInput(game_options, GameOptionsInput::Back);
+    }
     dirty = true;
 }
 

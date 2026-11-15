@@ -229,7 +229,7 @@ struct ExtraPlayer {
 };
 
 /// The VirtualButton bit the emulated gyro's shake button takes from the game.
-u32 ShakeButtonBit(MotionShakeButton button, MotionStick stick) {
+u32 ShakeButtonBit(MotionShakeButton button, MotionSource source) {
     switch (button) {
     case MotionShakeButton::LB: return Bit(VirtualButton::TriggerL);
     case MotionShakeButton::RB: return Bit(VirtualButton::TriggerR);
@@ -237,7 +237,7 @@ u32 ShakeButtonBit(MotionShakeButton button, MotionStick stick) {
     case MotionShakeButton::RT: return Bit(VirtualButton::TriggerZR);
     case MotionShakeButton::StickClick: break;
     }
-    return Bit(stick == MotionStick::Left ? VirtualButton::StickL : VirtualButton::StickR);
+    return Bit(source == MotionSource::LeftStick ? VirtualButton::StickL : VirtualButton::StickR);
 }
 
 /// The game's rumble on one Windows gamepad, written only when it changes.
@@ -351,7 +351,7 @@ ControllerOptions LoadControllerOptions() {
         options.right_stick = LoadRightStick(values, L"controller_rstick_");
         if (values.HasKey(L"controller_motion_stick")) {
             const auto value = winrt::unbox_value<int32_t>(values.Lookup(L"controller_motion_stick"));
-            if (value >= 0 && value < MotionStickCount) options.motion_stick = static_cast<MotionStick>(value);
+            if (value >= 0 && value < MotionSourceCount) options.motion_source = static_cast<MotionSource>(value);
         }
         if (values.HasKey(L"controller_motion_shake")) {
             const auto value = winrt::unbox_value<int32_t>(values.Lookup(L"controller_motion_shake"));
@@ -387,7 +387,8 @@ bool SaveControllerOptions(const ControllerOptions& options) {
         values.Insert(L"controller_rstick_sensitivity", winrt::box_value(static_cast<int32_t>(stick.stick_sensitivity)));
         values.Insert(L"controller_rstick_mouse", winrt::box_value(stick.mouse));
         values.Insert(L"controller_rstick_mouse_sensitivity", winrt::box_value(static_cast<int32_t>(stick.mouse_sensitivity)));
-        values.Insert(L"controller_motion_stick", winrt::box_value(static_cast<int32_t>(options.motion_stick)));
+        // The key predates the mouse: 0 and 1 are the right and left sticks, as they were.
+        values.Insert(L"controller_motion_stick", winrt::box_value(static_cast<int32_t>(options.motion_source)));
         values.Insert(L"controller_motion_shake", winrt::box_value(static_cast<int32_t>(options.motion_shake)));
         values.Insert(L"controller_rumble", winrt::box_value(options.rumble.on));
         values.Insert(L"controller_rumble_strength", winrt::box_value(static_cast<int32_t>(options.rumble.strength)));
@@ -686,6 +687,22 @@ void PushTextEntryKey(TextEntryKey key) {
 std::vector<TextEntryKey> TakeTextEntryKeys() {
     std::scoped_lock lock{text_entry_mutex};
     return std::exchange(text_entry_keys, {});
+}
+
+bool MousePresent() {
+    // Asked at most once a second: the menus draw it every frame.
+    static std::mutex mutex;
+    static std::chrono::steady_clock::time_point checked{};
+    static bool present{};
+    std::scoped_lock lock{mutex};
+    const auto now = std::chrono::steady_clock::now();
+    if (checked == std::chrono::steady_clock::time_point{} || now - checked >= std::chrono::seconds{1}) {
+        checked = now;
+        try {
+            present = winrt::Windows::Devices::Input::MouseCapabilities{}.MousePresent() != 0;
+        } catch (...) { present = false; }
+    }
+    return present;
 }
 
 void AddMouseMotion(int dx, int dy) {
@@ -1182,14 +1199,18 @@ void GamepadInput::Run(std::stop_token stop) {
                            (pad->pro ? 2 : 0)) : 0);
         ApplyKeyboard(state);
         // The right stick: sensitivity on the pad's or the keyboard's, the mouse over both while
-        // it moves, then the inversion over whichever it was.
+        // it moves, then the inversion over whichever it was. While the mouse moves the gyro it
+        // never reaches the stick.
         const auto now = std::chrono::steady_clock::now();
         const float poll_ms = std::chrono::duration<float, std::milli>(now - last_poll).count();
         last_poll = now;
+        const GameMotion game_motion_now = Motion();
+        const bool mouse_gyro =
+            game_motion_now.mode != MotionMode::Off && current_options.motion_source == MotionSource::Mouse;
         ScaleStick(state.right_x, state.right_y, right_stick.stick_sensitivity);
         const int dx = mouse_dx.exchange(0, std::memory_order_relaxed);
         const int dy = mouse_dy.exchange(0, std::memory_order_relaxed);
-        if (right_stick.mouse && !menu_open.load(std::memory_order_relaxed) && !TextEntryActive()) {
+        if (right_stick.mouse && !mouse_gyro && !menu_open.load(std::memory_order_relaxed) && !TextEntryActive()) {
             if (dx != 0 || dy != 0)
                 mouse.Move(static_cast<float>(dx), static_cast<float>(dy), right_stick.mouse_sensitivity);
             if (!mouse.Idle()) {
@@ -1266,29 +1287,36 @@ void GamepadInput::Run(std::stop_token stop) {
                     if (pressed & (1U << i)) menu_actions.push_back(NAV[i]);
             }
         }
-        // The emulated gyro: the chosen stick tilts the virtual controller and the chosen button
-        // shakes it, instead of reaching the game, which reads its IMU. Frozen while the menu
-        // pauses the game.
+        // The emulated gyro: the chosen stick tilts the virtual controller (or the mouse turns
+        // it) and the chosen button shakes it, instead of reaching the game, which reads its IMU.
+        // Frozen while the menu pauses the game.
         {
-            const GameMotion game_motion_now = Motion();
-            const bool left_gyro = current_options.motion_stick == MotionStick::Left;
+            const MotionSource source = current_options.motion_source;
+            const bool left_gyro = source == MotionSource::LeftStick;
             const float raw_left_x = state.left_x, raw_left_y = state.left_y;
             const float raw_right_x = state.right_x, raw_right_y = state.right_y;
-            const float gyro_x = left_gyro ? raw_left_x : raw_right_x;
-            const float gyro_y = left_gyro ? raw_left_y : raw_right_y;
+            const float gyro_x = mouse_gyro ? 0.0f : left_gyro ? raw_left_x : raw_right_x;
+            const float gyro_y = mouse_gyro ? 0.0f : left_gyro ? raw_left_y : raw_right_y;
             const u32 raw_buttons = state.buttons;
             motion.SetMode(game_motion_now.mode);
             const bool motion_on = game_motion_now.mode != MotionMode::Off;
-            const u32 shake_bit = ShakeButtonBit(current_options.motion_shake, current_options.motion_stick);
+            const u32 shake_bit = ShakeButtonBit(current_options.motion_shake, source);
             const bool shaking = motion_on && (state.buttons & shake_bit) != 0;
             if (motion_on) {
-                if (left_gyro) state.left_x = state.left_y = 0.0f;
-                else state.right_x = state.right_y = 0.0f;
+                if (!mouse_gyro) {
+                    if (left_gyro) state.left_x = state.left_y = 0.0f;
+                    else state.right_x = state.right_y = 0.0f;
+                }
                 state.buttons &= ~shake_bit;
             }
+            // The mouse turns it only while a game plays: not while the game's keyboard is up.
+            const bool mouse_turns = mouse_gyro && !TextEntryActive();
             std::optional<MotionSample> sample;
             if (motion_on && !in_menu) {
-                sample = motion.Step(poll_ms / 1000.0f, gyro_x, gyro_y, shaking);
+                sample = mouse_gyro ? motion.StepMouse(poll_ms / 1000.0f, mouse_turns ? static_cast<float>(dx) : 0.0f,
+                                                       mouse_turns ? static_cast<float>(dy) : 0.0f,
+                                                       right_stick.mouse_sensitivity, shaking)
+                                    : motion.Step(poll_ms / 1000.0f, gyro_x, gyro_y, shaking);
             } else if (!motion_on) {
                 motion_rest_ms += poll_ms;
                 // A pad lying still on a table, now and then, so a game that reads it sees one.
@@ -1304,7 +1332,8 @@ void GamepadInput::Run(std::stop_token stop) {
                 }
                 const float turn = std::abs(sample->gyro.x) + std::abs(sample->gyro.y) + std::abs(sample->gyro.z);
                 const bool moving = turn > 0.02f || sample->shake.x != 0.0f || sample->shake.z != 0.0f ||
-                                    (motion_on && (std::abs(gyro_x) > 0.05f || std::abs(gyro_y) > 0.05f));
+                                    (motion_on && (std::abs(gyro_x) > 0.05f || std::abs(gyro_y) > 0.05f)) ||
+                                    (mouse_turns && (dx != 0 || dy != 0));
                 motion_still_ms = moving ? 0.0f : std::min(motion_still_ms + poll_ms, 1e6f);
             }
             // The game's rumble, player 1 or the handheld controller (only one is connected): on

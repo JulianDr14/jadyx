@@ -449,7 +449,7 @@ bool LibrarySession::PressConfiguration(float x, float y) {
             dirty = true;
         } else if (target.hit == LibraryHit::SettingRow) {
             if (system_page.open) system_page.selected = target.index;
-            else if (graphics_page.open) graphics_page.selected = target.index;
+            else if (graphics_page.open) graphics_page.cursor.selected = target.index;
             else if (configuration.files) configuration.selected = target.index;
             else setting_row = static_cast<unsigned>(target.index);
             actions |= Play;

@@ -161,7 +161,10 @@ private:
         if (VideoCore::ExactGpuReads()) {
             VideoCore::AdvanceDownloadAreaEpoch();
         }
-        bool delay_fence = Settings::IsGPUFenceBehaviorDefault() ? Settings::IsGPULevelHigh() : Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
+        // Only Immediate releases fences at once. Default (Jadyx's Safe and Wait) delays them
+        // whatever the GPU accuracy: with Low it used to act as Immediate behind the player's back.
+        bool delay_fence = Settings::IsGPUFenceBehaviorDefault() || Settings::IsGPUFenceBehaviorBalanced() ||
+                           Settings::IsGPUFenceBehaviorAccurate();
         const FlushSources flush_sources = PendingFlushSources();
         const bool should_flush = flush_sources.Any();
         if constexpr (!can_async_check) {
