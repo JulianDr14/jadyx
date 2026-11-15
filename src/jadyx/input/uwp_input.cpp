@@ -34,6 +34,7 @@
 #include "jadyx/input/menu_input_capture.h"
 #include "jadyx/input/mouse_stick.h"
 #include "jadyx/input/player_slots.h"
+#include "jadyx/input/phone_gyro.h"
 #include "jadyx/settings/uwp_system_settings.h"
 #include "jadyx/game/game_menu.h"
 #include "hid_core/frontend/emulated_controller.h"
@@ -1292,18 +1293,23 @@ void GamepadInput::Run(std::stop_token stop) {
         // Frozen while the menu pauses the game.
         {
             const MotionSource source = current_options.motion_source;
+            // The phone sends its own motion: it is looked for and kept while it is the source,
+            // even with the gyro off, so it is ready when the player turns it on.
+            const bool phone_gyro = source == MotionSource::Phone;
+            PhoneGyro::SetWanted(phone_gyro);
+            const bool stick_gyro = !mouse_gyro && !phone_gyro;
             const bool left_gyro = source == MotionSource::LeftStick;
             const float raw_left_x = state.left_x, raw_left_y = state.left_y;
             const float raw_right_x = state.right_x, raw_right_y = state.right_y;
-            const float gyro_x = mouse_gyro ? 0.0f : left_gyro ? raw_left_x : raw_right_x;
-            const float gyro_y = mouse_gyro ? 0.0f : left_gyro ? raw_left_y : raw_right_y;
+            const float gyro_x = !stick_gyro ? 0.0f : left_gyro ? raw_left_x : raw_right_x;
+            const float gyro_y = !stick_gyro ? 0.0f : left_gyro ? raw_left_y : raw_right_y;
             const u32 raw_buttons = state.buttons;
             motion.SetMode(game_motion_now.mode);
             const bool motion_on = game_motion_now.mode != MotionMode::Off;
-            const u32 shake_bit = ShakeButtonBit(current_options.motion_shake, source);
+            const u32 shake_bit = phone_gyro ? 0 : ShakeButtonBit(current_options.motion_shake, source);
             const bool shaking = motion_on && (state.buttons & shake_bit) != 0;
             if (motion_on) {
-                if (!mouse_gyro) {
+                if (stick_gyro) {
                     if (left_gyro) state.left_x = state.left_y = 0.0f;
                     else state.right_x = state.right_y = 0.0f;
                 }
@@ -1312,7 +1318,11 @@ void GamepadInput::Run(std::stop_token stop) {
             // The mouse turns it only while a game plays: not while the game's keyboard is up.
             const bool mouse_turns = mouse_gyro && !TextEntryActive();
             std::optional<MotionSample> sample;
-            if (motion_on && !in_menu) {
+            if (motion_on && !in_menu && phone_gyro) {
+                // The phone's latest sample; while none arrives the pad lies still, flat.
+                sample = PhoneGyro::Latest(std::chrono::milliseconds{300});
+                if (!sample) sample = MotionSample{{}, {0.0f, 0.0f, -1.0f}, {}, {}};
+            } else if (motion_on && !in_menu) {
                 sample = mouse_gyro ? motion.StepMouse(poll_ms / 1000.0f, mouse_turns ? static_cast<float>(dx) : 0.0f,
                                                        mouse_turns ? static_cast<float>(dy) : 0.0f,
                                                        right_stick.mouse_sensitivity, shaking)
@@ -1427,6 +1437,8 @@ void GamepadInput::Run(std::stop_token stop) {
     // No pad keeps shaking once the game is gone.
     player1_rumble.Stop();
     for (auto& output : extra_rumble) output.Stop();
+    // Nor is the phone asked for its motion (the library asks again on its gyro page).
+    PhoneGyro::SetWanted(false);
 }
 
 } // namespace Jadyx
