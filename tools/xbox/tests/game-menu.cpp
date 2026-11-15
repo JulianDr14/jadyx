@@ -346,37 +346,40 @@ int main() {
     // Without a title id there is nothing to keep it under.
     for (const auto& row : GameMenu{offline_settings}.Rows()) check(row.icon != UiIcon::Airplane);
 
-    // A game with a title id has a Graphics page, with what can change while it runs.
+    // A game with a title id has a Graphics page, with what can change while it runs, in the
+    // library's sections; each opens its own page and goes back to its row.
     {
         GameMenu graphics{{}, true};
         while (graphics.SelectedItem() != GameMenu::GraphicsMenu) graphics.Apply(MenuAction::Down);
         check(graphics.Apply(MenuAction::Confirm) == GameMenuResult::None);
-        check(graphics.CurrentPage() == GameMenu::Page::Graphics && graphics.PageTitle() == L"Gráficos");
-        check(graphics.Rows().size() == 11);
-        for (const auto& row : graphics.Rows()) {
-            check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedAnisotropy)});
-            check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedTextureQuality)});
-            check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedShaderWorkers)});
-            check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedReset)});
-        }
+        check(graphics.CurrentPage() == GameMenu::Page::Graphics && graphics.PageTitle() == L"Gráficos y rendimiento");
+        check(graphics.Rows().size() == 4 && graphics.OnGraphicsPage() && !graphics.SelectedGainCost());
+        check(graphics.Rows()[0].label == L"Imagen" && graphics.Rows()[0].detail == L"Nitidez, fluidez y resolución");
+        const auto open = [&](GameMenu::Item entry, GameMenu::Page page) {
+            while (graphics.SelectedItem() != entry) graphics.Apply(MenuAction::Down);
+            check(graphics.Apply(MenuAction::Confirm) == GameMenuResult::None && graphics.CurrentPage() == page);
+            check(graphics.ParentTitle() == L"Gráficos y rendimiento" && graphics.OnGraphicsPage() && graphics.Selected() == 0);
+        };
+        const auto back = [&](GameMenu::Item entry) {
+            check(graphics.Apply(MenuAction::Back) == GameMenuResult::None);
+            check(graphics.CurrentPage() == GameMenu::Page::Graphics && graphics.SelectedItem() == entry);
+        };
+        open(GameMenu::GfxImagePage, GameMenu::Page::GraphicsImage);
+        check(graphics.PageTitle() == L"Imagen" && graphics.Rows().size() == 3);
         check(graphics.SelectedItem() == GameMenu::GfxUpscaling);
         check(graphics.Rows()[0].detail == L"Como en Ajustes");
+        // Under the rows: what the focused setting gains and costs.
+        const auto gain_cost = graphics.SelectedGainCost();
+        check(gain_cost && gain_cost->first == L"Gana: imagen más nítida en la TV" &&
+              gain_cost->second == L"Cuesta: un poco de GPU");
         check(graphics.Apply(MenuAction::Right) == GameMenuResult::GraphicsChanged);
         check(graphics.Settings().graphics.upscaling.has_value() && graphics.Rows()[0].detail == L"Solo este juego");
-        // The row steps the game's own value, whichever line of the page it is on.
+        back(GameMenu::GfxImagePage);
+        // The row steps the game's own value, whichever page it is on.
+        open(GameMenu::GfxPerformancePage, GameMenu::Page::GraphicsPerformance);
         while (graphics.SelectedItem() != GameMenu::GfxGuestClock) graphics.Apply(MenuAction::Down);
         check(graphics.Apply(MenuAction::Confirm) == GameMenuResult::GraphicsChanged &&
               graphics.Settings().graphics.slow_guest_clock);
-        while (graphics.SelectedItem() != GameMenu::GfxExactGpuReads) graphics.Apply(MenuAction::Down);
-        check(!graphics.Settings().graphics.exact_gpu_reads);
-        check(graphics.Apply(MenuAction::Confirm) == GameMenuResult::GraphicsChanged &&
-              graphics.Settings().graphics.exact_gpu_reads);
-        while (graphics.SelectedItem() != GameMenu::GfxTextureMemory) graphics.Apply(MenuAction::Down);
-        check(graphics.Apply(MenuAction::Right) == GameMenuResult::GraphicsChanged &&
-              graphics.Settings().graphics.advanced.texture_cap_mib == 512);
-        // Up and Down stay in the menu's cursor: they change nothing.
-        check(graphics.Apply(MenuAction::Down) == GameMenuResult::None &&
-              graphics.Settings().graphics.advanced.texture_cap_mib == 512);
         // The fixed core map follows Settings until the game picks its own; it applies at once.
         while (graphics.SelectedItem() != GameMenu::GfxFixedCoreMap) graphics.Apply(MenuAction::Down);
         check(!graphics.Settings().graphics.fixed_core_map.has_value());
@@ -384,7 +387,28 @@ int main() {
         check(graphics.Apply(MenuAction::Right) == GameMenuResult::GraphicsChanged &&
               graphics.Settings().graphics.fixed_core_map == true);
         check(graphics.Rows()[graphics.Selected()].detail == L"Solo este juego");
+        back(GameMenu::GfxPerformancePage);
+        open(GameMenu::GfxFixesPage, GameMenu::Page::GraphicsFixes);
+        check(graphics.Rows().size() == 4);
+        while (graphics.SelectedItem() != GameMenu::GfxExactGpuReads) graphics.Apply(MenuAction::Down);
+        check(!graphics.Settings().graphics.exact_gpu_reads);
+        check(graphics.Apply(MenuAction::Confirm) == GameMenuResult::GraphicsChanged &&
+              graphics.Settings().graphics.exact_gpu_reads);
+        back(GameMenu::GfxFixesPage);
+        open(GameMenu::GfxMemoryPage, GameMenu::Page::GraphicsMemory);
+        check(graphics.Rows().size() == 1 && graphics.SelectedItem() == GameMenu::GfxTextureMemory);
+        check(graphics.Apply(MenuAction::Right) == GameMenuResult::GraphicsChanged &&
+              graphics.Settings().graphics.advanced.texture_cap_mib == 512);
+        // Up and Down stay in the menu's cursor: they change nothing.
+        check(graphics.Apply(MenuAction::Down) == GameMenuResult::None &&
+              graphics.Settings().graphics.advanced.texture_cap_mib == 512);
+        // Y on any graphics page: the game follows Settings again.
+        check(graphics.Apply(MenuAction::Refresh) == GameMenuResult::GraphicsChanged);
+        check(graphics.Settings().graphics == GameGraphics{});
+        check(graphics.Apply(MenuAction::Refresh) == GameMenuResult::None); // nothing left of its own
+        back(GameMenu::GfxMemoryPage);
         check(graphics.Apply(MenuAction::Back) == GameMenuResult::None);
+        check(graphics.Apply(MenuAction::Refresh) == GameMenuResult::None); // not on the Quick page
         check(graphics.CurrentPage() == GameMenu::Page::Quick && graphics.SelectedItem() == GameMenu::GraphicsMenu);
 
         // The Handheld style already forces the console's mode.
@@ -393,7 +417,8 @@ int main() {
         GameMenu handheld_menu{handheld, true};
         while (handheld_menu.SelectedItem() != GameMenu::GraphicsMenu) handheld_menu.Apply(MenuAction::Down);
         handheld_menu.Apply(MenuAction::Confirm);
-        check(handheld_menu.Rows().size() == 10);
+        handheld_menu.Apply(MenuAction::Confirm);
+        check(handheld_menu.CurrentPage() == GameMenu::Page::GraphicsImage && handheld_menu.Rows().size() == 2);
 
         // Without a title id there is nothing to keep it under.
         GameMenu no_title{{}};

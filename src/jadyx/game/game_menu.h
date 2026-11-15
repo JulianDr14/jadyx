@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 #include "jadyx/input/controller_basics.h"
 #include "jadyx/input/controller_style.h"
@@ -230,9 +231,15 @@ public:
         GyroSource, GyroShake, Rumble, RumbleStrength, GfxAstcArrayCap,
         /// The controller page's entries into its own pages, and the Mouse page's first row.
         RightStickPage, MousePage, RumblePage, GyroPage, MouseUseRow,
+        /// The Graphics page's entries into its sections (graphics_page.h).
+        GfxImagePage, GfxPerformancePage, GfxFixesPage, GfxMemoryPage,
     };
-    /// RightStick, Mouse, Rumble and Gyro open from the Controller page and go back to it.
-    enum class Page : std::uint8_t { Quick, Controller, Display, Graphics, Glitch, RightStick, Mouse, Rumble, Gyro };
+    /// RightStick, Mouse, Rumble and Gyro open from the Controller page and go back to it; the
+    /// graphics sections open from the Graphics page and go back to it.
+    enum class Page : std::uint8_t {
+        Quick, Controller, Display, Graphics, Glitch, RightStick, Mouse, Rumble, Gyro,
+        GraphicsImage, GraphicsPerformance, GraphicsFixes, GraphicsMemory,
+    };
 
     /// `cheats`: the game has a title id, so the menu offers its cheats, its own offline mode and
     /// its graphics that can change while it runs. The rest wait for a boot: the library has them.
@@ -323,6 +330,13 @@ public:
                                                     controller.begin());
                 return GameMenuResult::None;
             }
+            if (const auto entry = GraphicsEntryOf(page)) {
+                // A graphics section goes back to the Graphics page, on its own row.
+                page = Page::Graphics;
+                selected = static_cast<std::size_t>(std::find(graphics.begin(), graphics.end(), *entry) -
+                                                    graphics.begin());
+                return GameMenuResult::None;
+            }
             // Back on the page's own row.
             selected = static_cast<std::size_t>(
                 std::find(quick.begin(), quick.end(),
@@ -343,8 +357,11 @@ public:
         case MenuAction::Right:
         case MenuAction::Confirm:
             return Change(action);
-        case MenuAction::Alternate:
         case MenuAction::Refresh:
+            // Y on a graphics page: the game follows Settings > Graphics again.
+            if (OnGraphicsPage() && SyncGameGraphics(settings.graphics)) return GameMenuResult::GraphicsChanged;
+            break;
+        case MenuAction::Alternate:
         case MenuAction::PreviousTab:
         case MenuAction::NextTab:
         case MenuAction::Menu:
@@ -369,6 +386,10 @@ public:
                   : page == Page::Mouse      ? Text::MousePage
                   : page == Page::Rumble     ? Text::RumbleRow
                   : page == Page::Gyro       ? Text::GyroPage
+                  : page == Page::GraphicsImage       ? GraphicsSectionTitle(GraphicsSection::Image)
+                  : page == Page::GraphicsPerformance ? GraphicsSectionTitle(GraphicsSection::Performance)
+                  : page == Page::GraphicsFixes       ? GraphicsSectionTitle(GraphicsSection::Fixes)
+                  : page == Page::GraphicsMemory      ? GraphicsSectionTitle(GraphicsSection::Memory)
                   : page == Page::Display  ? Text::MenuDisplay
                   : page == Page::Graphics ? Text::Graphics
                   : page == Page::Glitch   ? Text::MenuGlitchPage
@@ -376,11 +397,26 @@ public:
     }
     /// The page B goes back to, by its title: the Controller page for its own pages.
     [[nodiscard]] std::wstring ParentTitle() const {
-        return Tr(ControllerEntryOf(page) ? I18n::Text::MenuController : I18n::Text::MenuQuick);
+        return Tr(ControllerEntryOf(page) ? I18n::Text::MenuController
+                  : GraphicsEntryOf(page) ? I18n::Text::Graphics
+                                          : I18n::Text::MenuQuick);
     }
     /// The Controller page or one of the pages it opens.
     [[nodiscard]] bool OnControllerPage() const {
         return page == Page::Controller || ControllerEntryOf(page).has_value();
+    }
+    /// The Graphics page or one of its sections.
+    [[nodiscard]] bool OnGraphicsPage() const {
+        return page == Page::Graphics || GraphicsEntryOf(page).has_value();
+    }
+    /// What the setting under the cursor gains and costs, for the box under a graphics section's
+    /// rows ("Gain: …", "Cost: …"); none on other rows.
+    [[nodiscard]] std::optional<std::pair<std::wstring, std::wstring>> SelectedGainCost() const {
+        if (!GraphicsEntryOf(page) || Items().empty()) return std::nullopt;
+        const auto gain_cost = GraphicsRowGainCost(RowOf(SelectedItem()));
+        if (!gain_cost) return std::nullopt;
+        return std::pair{I18n::Format(I18n::Text::GraphicsGain, {I18n::Tr(gain_cost->gain)}),
+                         I18n::Format(I18n::Text::GraphicsCost, {I18n::Tr(gain_cost->cost)})};
     }
     /// Row of the cursor, as drawn.
     [[nodiscard]] std::size_t Selected() const { return selected; }
@@ -399,6 +435,10 @@ private:
         case Page::Gyro: return gyro_page;
         case Page::Display: return display;
         case Page::Graphics: return graphics;
+        case Page::GraphicsImage: return graphics_image;
+        case Page::GraphicsPerformance: return graphics_performance;
+        case Page::GraphicsFixes: return graphics_fixes;
+        case Page::GraphicsMemory: return graphics_memory;
         case Page::Glitch: return glitch;
         case Page::Quick: break;
         }
@@ -413,6 +453,24 @@ private:
         case Page::Rumble: return RumblePage;
         case Page::Gyro: return GyroPage;
         default: return std::nullopt;
+        }
+    }
+    /// The Graphics page's entry that opens `of`, if it is one of its sections.
+    static std::optional<Item> GraphicsEntryOf(Page of) {
+        switch (of) {
+        case Page::GraphicsImage: return GfxImagePage;
+        case Page::GraphicsPerformance: return GfxPerformancePage;
+        case Page::GraphicsFixes: return GfxFixesPage;
+        case Page::GraphicsMemory: return GfxMemoryPage;
+        default: return std::nullopt;
+        }
+    }
+    static GraphicsSection SectionOf(Item entry) {
+        switch (entry) {
+        case GfxPerformancePage: return GraphicsSection::Performance;
+        case GfxFixesPage: return GraphicsSection::Fixes;
+        case GfxMemoryPage: return GraphicsSection::Memory;
+        default: return GraphicsSection::Image;
         }
     }
 
@@ -449,12 +507,16 @@ private:
     }
     [[nodiscard]] std::wstring Percent(int value) const { return std::to_wstring(value) + L"%"; }
 
+    /// The rows that can change while a game runs, in the library's sections (graphics_page.h).
     /// The Handheld style forces the console's mode (uwp_input.cpp): there is nothing to choose.
     void UpdateGraphicsItems() {
-        graphics = {GfxUpscaling,     GfxFrameGen,      GfxShaders,     GfxGpuFence,    GfxGuestClock,
-                    GfxExactGpuReads, GfxTextureMemory, GfxGpuAccuracy, GfxFixedCoreMap,
-                    GfxAstcArrayCap};
-        if (settings.style != ConsoleControllerStyle::Handheld) graphics.push_back(GfxConsoleMode);
+        graphics = {GfxImagePage, GfxPerformancePage, GfxFixesPage, GfxMemoryPage};
+        graphics_image = {GfxUpscaling, GfxFrameGen};
+        if (settings.style != ConsoleControllerStyle::Handheld) graphics_image.push_back(GfxConsoleMode);
+        graphics_performance = {GfxShaders, GfxGuestClock, GfxFixedCoreMap};
+        graphics_fixes = {GfxGpuFence, GfxGpuAccuracy, GfxExactGpuReads, GfxAstcArrayCap};
+        graphics_memory = {GfxTextureMemory};
+        if (page == Page::GraphicsImage) selected = std::min(selected, graphics_image.size() - 1);
     }
 
     static GraphicsRow RowOf(Item item) {
@@ -596,6 +658,13 @@ private:
             return {Tr(Text::Graphics), {}, Page,
                     resolved.frame_gen ? Tr(Text::FrameGen) : GraphicsRowValue(resolved, GraphicsRow::Upscaling),
                     UiIcon::Settings};
+        }
+        case GfxImagePage:
+        case GfxPerformancePage:
+        case GfxFixesPage:
+        case GfxMemoryPage: {
+            const GraphicsSection section = SectionOf(item);
+            return {Tr(GraphicsSectionTitle(section)), {}, Page, Tr(GraphicsSectionHint(section))};
         }
         case GfxUpscaling:
         case GfxFrameGen:
@@ -751,6 +820,17 @@ private:
             return GameMenuResult::None;
         case Amiibo:
             return confirm && amiibo_reader != AmiiboReader::Off ? GameMenuResult::Amiibo : GameMenuResult::None;
+        case GfxImagePage:
+        case GfxPerformancePage:
+        case GfxFixesPage:
+        case GfxMemoryPage:
+            if (back) return GameMenuResult::None;
+            page = SelectedItem() == GfxImagePage         ? Page::GraphicsImage
+                   : SelectedItem() == GfxPerformancePage ? Page::GraphicsPerformance
+                   : SelectedItem() == GfxFixesPage       ? Page::GraphicsFixes
+                                                          : Page::GraphicsMemory;
+            selected = 0;
+            return GameMenuResult::None;
         case RightStickPage:
         case MousePage:
         case RumblePage:
@@ -788,9 +868,8 @@ private:
         case GfxConsoleMode:
         case GfxFixedCoreMap:
         case GfxAstcArrayCap: {
-            auto row = static_cast<std::size_t>(RowOf(SelectedItem()));
-            const bool changed = HandleGameGraphicsInput(
-                settings.graphics, row,
+            const bool changed = ChangeGameGraphicsRow(
+                settings.graphics, RowOf(SelectedItem()),
                 back ? GraphicsInput::Left : confirm ? GraphicsInput::Confirm : GraphicsInput::Right);
             return changed ? GameMenuResult::GraphicsChanged : GameMenuResult::None;
         }
@@ -954,6 +1033,7 @@ private:
 
     GameMenuSettings settings;
     std::vector<Item> quick, controller, display, graphics, glitch;
+    std::vector<Item> graphics_image, graphics_performance, graphics_fixes, graphics_memory;
     std::vector<Item> right_stick_page, mouse_page, rumble_page, gyro_page;
     Page page{Page::Quick};
     std::size_t selected{};
