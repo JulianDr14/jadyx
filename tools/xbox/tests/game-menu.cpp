@@ -85,7 +85,7 @@ int main() {
     check(menu.Apply(MenuAction::Left) == GameMenuResult::None && menu.CurrentPage() == GameMenu::Page::Quick);
     check(menu.Apply(MenuAction::Confirm) == GameMenuResult::None);
     check(menu.CurrentPage() == GameMenu::Page::Controller && menu.PageTitle() == L"Mando");
-    check(menu.Rows().size() == 10 && menu.SelectedItem() == GameMenu::Style && !menu.Rows()[0].icon);
+    check(menu.Rows().size() == 6 && menu.SelectedItem() == GameMenu::Style && !menu.Rows()[0].icon);
     check(menu.Apply(MenuAction::Right) == GameMenuResult::SettingsChanged);
     check(menu.Settings().style == ConsoleControllerStyle::Pro);
     check(menu.Apply(MenuAction::Left) == GameMenuResult::SettingsChanged);
@@ -100,28 +100,53 @@ int main() {
     check(menu.Apply(MenuAction::Right) == GameMenuResult::SettingsChanged && menu.Settings().deadzone > 0.15f);
     check(menu.Apply(MenuAction::Right) == GameMenuResult::SettingsChanged && menu.Settings().deadzone < 0.10f);
     check(menu.Rows()[2].value == L"8%");
-    // Without a game the right stick's rows change Settings' values, with nothing under them.
-    check(menu.Apply(MenuAction::Down) == GameMenuResult::None && menu.SelectedItem() == GameMenu::RStickInvertX);
-    check(menu.Rows()[3].label == L"Invertir eje X del stick derecho" && menu.Rows()[3].value == L"No");
+    // The right stick's page: A opens it, B comes back to its entry. Without a game its rows
+    // change Settings' values, with nothing under them.
+    check(menu.Apply(MenuAction::Down) == GameMenuResult::None && menu.SelectedItem() == GameMenu::RightStickPage);
+    check(menu.Rows()[3].label == L"Stick derecho" && menu.Rows()[3].detail == L"100%");
+    check(menu.Apply(MenuAction::Left) == GameMenuResult::None && menu.CurrentPage() == GameMenu::Page::Controller);
+    check(menu.Apply(MenuAction::Confirm) == GameMenuResult::None && menu.CurrentPage() == GameMenu::Page::RightStick);
+    check(menu.PageTitle() == L"Stick derecho" && menu.ParentTitle() == L"Mando" && menu.OnControllerPage());
+    check(menu.Rows().size() == 3 && menu.SelectedItem() == GameMenu::RStickInvertX);
+    check(menu.Rows()[0].label == L"Invertir eje X del stick derecho" && menu.Rows()[0].value == L"No");
     check(menu.Apply(MenuAction::Confirm) == GameMenuResult::RightStickChanged);
     check(menu.Settings().right_stick_global.invert_x && !menu.Settings().right_stick.invert_x);
-    check(menu.Rows()[3].value == L"Sí" && menu.Rows()[3].detail.empty());
+    check(menu.Rows()[0].value == L"Sí" && menu.Rows()[0].detail.empty());
     menu.Apply(MenuAction::Down);
     menu.Apply(MenuAction::Down);
-    check(menu.SelectedItem() == GameMenu::RStickSensitivity && menu.Rows()[5].value == L"100%");
+    check(menu.SelectedItem() == GameMenu::RStickSensitivity && menu.Rows()[2].value == L"100%");
     check(menu.Apply(MenuAction::Left) == GameMenuResult::RightStickChanged);
-    check(menu.Settings().right_stick_global.stick_sensitivity == 90 && menu.Rows()[5].value == L"90%");
+    check(menu.Settings().right_stick_global.stick_sensitivity == 90 && menu.Rows()[2].value == L"90%");
+    check(menu.Apply(MenuAction::Down) == GameMenuResult::None && menu.SelectedItem() == GameMenu::RStickInvertX);
+    check(menu.Apply(MenuAction::Back) == GameMenuResult::None && menu.CurrentPage() == GameMenu::Page::Controller);
+    check(menu.SelectedItem() == GameMenu::RightStickPage && menu.Rows()[3].detail == L"90% · X invertido");
+    // The mouse's page: one row says what it moves, nothing, the right stick or the gyro.
+    check(menu.Apply(MenuAction::Down) == GameMenuResult::None && menu.SelectedItem() == GameMenu::MousePage);
+    check(menu.Rows()[4].detail == L"Nada · No hay mouse conectado");
+    menu.Apply(MenuAction::Confirm);
+    check(menu.CurrentPage() == GameMenu::Page::Mouse && menu.Rows().size() == 2);
+    check(menu.Rows()[0].label == L"Usar el mouse como" && menu.Rows()[0].value == L"Nada" &&
+          menu.Rows()[0].detail == L"No hay mouse conectado");
+    check(menu.Apply(MenuAction::Right) == GameMenuResult::MouseUseChanged && menu.Settings().right_stick_global.mouse &&
+          menu.Settings().motion_source == MotionSource::RightStick && menu.Rows()[0].value == L"Stick derecho");
+    check(menu.Apply(MenuAction::Right) == GameMenuResult::MouseUseChanged && !menu.Settings().right_stick_global.mouse &&
+          menu.Settings().motion_source == MotionSource::Mouse && menu.Rows()[0].value == L"Giroscopio");
+    check(menu.Apply(MenuAction::Right) == GameMenuResult::MouseUseChanged && !menu.Settings().right_stick_global.mouse &&
+          menu.Settings().motion_source == MotionSource::RightStick && menu.Rows()[0].value == L"Nada");
     menu.Apply(MenuAction::Down);
-    menu.Apply(MenuAction::Down);
-    check(menu.SelectedItem() == GameMenu::RStickMouseSensitivity);
-    check(menu.Rows()[7].label == L"Sensibilidad del mouse");
+    check(menu.SelectedItem() == GameMenu::RStickMouseSensitivity && menu.Rows()[1].label == L"Sensibilidad");
+    check(menu.Apply(MenuAction::Back) == GameMenuResult::None && menu.SelectedItem() == GameMenu::MousePage);
     // Without a game the rumble's rows change Settings' too.
-    check(menu.Apply(MenuAction::Down) == GameMenuResult::None && menu.SelectedItem() == GameMenu::Rumble);
-    check(menu.Rows()[8].label == L"Vibración" && menu.Rows()[8].value == L"Sí");
+    menu.Apply(MenuAction::Down);
+    check(menu.SelectedItem() == GameMenu::RumblePage && menu.Rows()[5].detail == L"Sí · 100%");
+    menu.Apply(MenuAction::Confirm);
+    check(menu.Rows()[0].label == L"Vibración" && menu.Rows()[0].value == L"Sí");
     check(menu.Apply(MenuAction::Confirm) == GameMenuResult::RumbleChanged && !menu.Settings().rumble_global.on &&
           !menu.Settings().rumble.on);
     menu.Apply(MenuAction::Down);
     check(menu.Apply(MenuAction::Left) == GameMenuResult::RumbleChanged && menu.Settings().rumble_global.strength == 75);
+    check(menu.Apply(MenuAction::Back) == GameMenuResult::None && menu.Rows()[5].detail == L"No");
+    // Without a game there is no gyro to keep: the page ends at the rumble.
     check(menu.Apply(MenuAction::Down) == GameMenuResult::None && menu.SelectedItem() == GameMenu::Style);
     check(menu.Apply(MenuAction::Back) == GameMenuResult::None);
     check(menu.CurrentPage() == GameMenu::Page::Quick && menu.SelectedItem() == GameMenu::ControllerPage);
@@ -181,6 +206,12 @@ int main() {
             while (game.SelectedItem() != item) game.Apply(MenuAction::Down);
             return game.Rows()[game.Selected()];
         };
+        const auto open = [&](GameMenu::Item entry) {
+            if (game.CurrentPage() != GameMenu::Page::Controller) game.Apply(MenuAction::Back);
+            row(entry);
+            game.Apply(MenuAction::Confirm);
+        };
+        open(GameMenu::RightStickPage);
         check(row(GameMenu::RStickInvertY).value == L"Sí" && row(GameMenu::RStickInvertY).detail == L"Solo este juego");
         check(game.Apply(MenuAction::Right) == GameMenuResult::RightStickChanged);
         check(!game.Settings().right_stick.invert_y && !game.Settings().right_stick_global.invert_y);
@@ -191,13 +222,17 @@ int main() {
         check(row(GameMenu::RStickSensitivity).value == L"150%" && row(GameMenu::RStickSensitivity).detail == L"Solo este juego");
         game.Apply(MenuAction::Left);
         check(!game.Settings().right_stick.stick_sensitivity);
-        check(row(GameMenu::RStickMouse).value == L"No");
-        game.Apply(MenuAction::Confirm);
+        // The mouse: what it moves is the game's own unless it lands on Settings'.
+        open(GameMenu::MousePage);
+        check(row(GameMenu::MouseUseRow).value == L"Nada" && row(GameMenu::MouseUseRow).detail == L"No hay mouse conectado");
+        check(game.Apply(MenuAction::Confirm) == GameMenuResult::MouseUseChanged);
         check(game.Settings().right_stick.mouse == true && !game.Settings().right_stick_global.mouse);
+        check(row(GameMenu::MouseUseRow).value == L"Stick derecho");
         check(row(GameMenu::RStickMouseSensitivity).value == L"100%");
         game.Apply(MenuAction::Right);
         check(game.Settings().right_stick.mouse_sensitivity == 125);
         // The rumble: Settings' unless the game keeps its own, as the right stick.
+        open(GameMenu::RumblePage);
         check(row(GameMenu::Rumble).value == L"Sí" && row(GameMenu::Rumble).detail == L"Como en Ajustes");
         check(game.Apply(MenuAction::Confirm) == GameMenuResult::RumbleChanged);
         check(game.Settings().rumble.on == false && game.Settings().rumble_global.on);
@@ -207,8 +242,10 @@ int main() {
         check(game.Settings().rumble.strength == 125 && game.Settings().rumble_global.strength == 100);
         game.Apply(MenuAction::Left);
         check(!game.Settings().rumble.strength);
-        // The emulated gyro is the game's own, yes or no; its stick and shake button are
+        // The emulated gyro is the game's own, yes or no; its source and shake button are
         // Settings'; the on-screen controller always, while moving or not at all.
+        open(GameMenu::GyroPage);
+        check(game.PageTitle() == L"Giroscopio" && game.Rows().size() == 4);
         check(row(GameMenu::Motion).value == L"No" && !row(GameMenu::Motion).detail.empty());
         check(game.Apply(MenuAction::Right) == GameMenuResult::MotionChanged &&
               game.Settings().motion == MotionMode::On);
@@ -216,15 +253,33 @@ int main() {
         check(game.Apply(MenuAction::Left) == GameMenuResult::MotionChanged &&
               game.Settings().motion == MotionMode::Off);
         game.Apply(MenuAction::Confirm);
-        check(row(GameMenu::GyroStick).value == L"Stick derecho");
-        check(game.Apply(MenuAction::Right) == GameMenuResult::GyroControlsChanged &&
-              game.Settings().motion_stick == MotionStick::Left && row(GameMenu::GyroStick).value == L"Stick izquierdo");
+        check(row(GameMenu::GyroSource).value == L"Stick derecho");
+        check(game.Apply(MenuAction::Right) == GameMenuResult::MouseUseChanged &&
+              game.Settings().motion_source == MotionSource::LeftStick &&
+              row(GameMenu::GyroSource).value == L"Stick izquierdo");
         check(row(GameMenu::GyroShake).value == L"Pulsar el stick del giroscopio");
         check(game.Apply(MenuAction::Right) == GameMenuResult::GyroControlsChanged &&
               game.Settings().motion_shake == MotionShakeButton::LB && row(GameMenu::GyroShake).value == L"LB");
-        check(game.Apply(MenuAction::Left) == GameMenuResult::GyroControlsChanged);
+        check(game.Apply(MenuAction::Left) == GameMenuResult::GyroControlsChanged &&
+              game.Settings().motion_shake == MotionShakeButton::StickClick);
         check(game.Apply(MenuAction::Left) == GameMenuResult::GyroControlsChanged &&
               game.Settings().motion_shake == MotionShakeButton::RT);
+        check(game.Apply(MenuAction::Right) == GameMenuResult::GyroControlsChanged);
+        // The mouse as the source: no stick lost, its sensitivity shows here and a stick click is
+        // the right stick's.
+        check(row(GameMenu::GyroSource).value == L"Stick izquierdo");
+        check(game.Apply(MenuAction::Right) == GameMenuResult::MouseUseChanged &&
+              game.Settings().motion_source == MotionSource::Mouse && !game.Settings().right_stick.mouse.value_or(false));
+        check(row(GameMenu::GyroSource).value == L"Mouse" && row(GameMenu::GyroSource).detail == L"No hay mouse conectado");
+        check(game.Rows().size() == 5 && row(GameMenu::GyroShake).value == L"Pulsar el stick derecho");
+        check(row(GameMenu::RStickMouseSensitivity).value == L"125%");
+        game.Apply(MenuAction::Back);
+        check(game.SelectedItem() == GameMenu::GyroPage);
+        check(row(GameMenu::MousePage).detail.starts_with(L"Giroscopio · 125%"));
+        open(GameMenu::GyroPage);
+        check(row(GameMenu::GyroSource).value == L"Mouse");
+        check(game.Apply(MenuAction::Right) == GameMenuResult::MouseUseChanged &&
+              game.Settings().motion_source == MotionSource::RightStick && game.Rows().size() == 4);
         check(row(GameMenu::MotionView).value == L"Siempre");
         check(game.Apply(MenuAction::Right) == GameMenuResult::MotionChanged &&
               game.Settings().motion_view == MotionViewMode::Moving);
@@ -297,7 +352,7 @@ int main() {
         while (graphics.SelectedItem() != GameMenu::GraphicsMenu) graphics.Apply(MenuAction::Down);
         check(graphics.Apply(MenuAction::Confirm) == GameMenuResult::None);
         check(graphics.CurrentPage() == GameMenu::Page::Graphics && graphics.PageTitle() == L"Gráficos");
-        check(graphics.Rows().size() == 10);
+        check(graphics.Rows().size() == 11);
         for (const auto& row : graphics.Rows()) {
             check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedAnisotropy)});
             check(row.label != std::wstring{I18n::Tr(I18n::Text::AdvancedTextureQuality)});
@@ -338,7 +393,7 @@ int main() {
         GameMenu handheld_menu{handheld, true};
         while (handheld_menu.SelectedItem() != GameMenu::GraphicsMenu) handheld_menu.Apply(MenuAction::Down);
         handheld_menu.Apply(MenuAction::Confirm);
-        check(handheld_menu.Rows().size() == 9);
+        check(handheld_menu.Rows().size() == 10);
 
         // Without a title id there is nothing to keep it under.
         GameMenu no_title{{}};

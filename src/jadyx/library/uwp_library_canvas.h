@@ -48,6 +48,7 @@ struct LibraryView {
     bool loading;
     bool controller_panel;
     unsigned controller_row;
+    unsigned controller_section; ///< ControllerSection; 0 is the main page.
     const ControllerOptions& options;
     const std::wstring& notice;
     const ControllerPanel& panel;

@@ -298,6 +298,8 @@ private:
     std::optional<std::uint64_t> keep_titles;
     std::chrono::steady_clock::time_point auto_pick_at{};
     unsigned setting_row = 0;
+    /// Settings > Controller's page: 0 the main one, else ControllerSection's.
+    unsigned controller_section = 0;
     ControllerPanel panel;
     ControllerOptions options = LoadControllerOptions();
     TimePoint capture_until{};

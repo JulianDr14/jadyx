@@ -212,9 +212,9 @@ void SessionMenu::Open() {
                                   config.glitch_hunt_menu, glitch_toggles,
                                   config.geo_hunt && VideoCommon::GeoHunt::Enabled(),
                                   config.pso_menu,
-                                  D3D12::GetPipelineBuildBoost(), options.motion_stick, options.motion_shake,
+                                  D3D12::GetPipelineBuildBoost(), options.motion_source, options.motion_shake,
                                   options.rumble, input.GameRumbleSettings(),
-                                  VideoCommon::GeoHunt::OobFix(), basics_global, basics_game},
+                                  VideoCommon::GeoHunt::OobFix(), basics_global, basics_game, MousePresent()},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
     const bool from_notice = notice_shown;
@@ -628,7 +628,7 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
             input.SetOptions(options);
         }
     }
-    if (result == GameMenuResult::RightStickChanged) {
+    if (result == GameMenuResult::RightStickChanged || result == GameMenuResult::MouseUseChanged) {
         const GameMenuSettings& settings = menu->Settings();
         if (settings.right_stick_per_game) {
             if (!SaveGameRightStick(program_id, settings.right_stick))
@@ -647,9 +647,9 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         WriteDiag("menu: motion mode " + std::to_string(static_cast<int>(motion.mode)) + ", view " +
                   std::to_string(static_cast<int>(motion.view)));
     }
-    if (result == GameMenuResult::GyroControlsChanged) {
+    if (result == GameMenuResult::GyroControlsChanged || result == GameMenuResult::MouseUseChanged) {
         ControllerOptions options = input.Options();
-        options.motion_stick = menu->Settings().motion_stick;
+        options.motion_source = menu->Settings().motion_source;
         options.motion_shake = menu->Settings().motion_shake;
         input.SetOptions(options);
     }

@@ -1051,6 +1051,21 @@ enum class Text : std::uint16_t {
     MotionViewAlways,
     MotionViewMoving,
     MotionViewHint,
+    RightStickPage,
+    MousePage,
+    GyroPage,
+    MouseUseTitle,
+    MouseUseOff,
+    MouseUseGyroHint,
+    MouseNotConnected,
+    MouseGyroNeedsMotion,
+    GyroSourceMouseHint,
+    GyroShakeRightStickClick,
+    InvertedXShort,
+    InvertedYShort,
+    MouseSensitivityShort,
+    GyroTurnOnInGame,
+    ControllerSectionSubtitle,
     Count
 };
 inline constexpr std::size_t TextCount = static_cast<std::size_t>(Text::Count);

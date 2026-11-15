@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/library_session.h"
+#include "jadyx/library/controller_sections.h"
 
 namespace Jadyx {
 using I18n::Tr;
@@ -225,6 +226,11 @@ bool LibrarySession::HandleQuit() {
     if (actions & Quit) {
         if (panel.BindingEditorOpen()) { CloseBindingEditor(); actions &= ~Quit; }
         else if (panel.expanded) { panel.expanded = false; dirty = true; actions &= ~Quit; }
+        else if (settings && controller_section) {
+            // A section goes back to the main page, on its entry.
+            setting_row = ControllerSectionEntry + controller_section - 1;
+            controller_section = 0; dirty = true; actions &= ~Quit;
+        }
         else if (settings) { settings = false; configuration.open = return_to_configuration; return_to_configuration = false; dirty = true; actions &= ~Quit; }
         else if (configuration.open) {
             if (configuration.files) { configuration.files = false; configuration.selected = HomeFiles; }
@@ -238,7 +244,7 @@ bool LibrarySession::HandleQuit() {
 }
 
 void LibrarySession::HandlePageShortcuts() {
-    if (actions & Panel && !configuration.open) { settings = !settings; panel.CloseBindingEditors(); panel.expanded = false; dirty = true; }
+    if (actions & Panel && !configuration.open) { settings = !settings; controller_section = 0; panel.CloseBindingEditors(); panel.expanded = false; dirty = true; }
     if (actions & AddFolder && !settings && !picker && !configuration.busy && !validation.valid() &&
         !configuration.open)
         SwitchTab(LibraryTab::Settings);
@@ -275,7 +281,7 @@ void LibrarySession::HandleConfigurationPage() {
 void LibrarySession::OpenHomeCategory() {
     switch (configuration.selected) {
     case HomeFiles: configuration.files = true; configuration.selected = 0; break;
-    case HomeControllers: settings = true; return_to_configuration = true; setting_row = 0; break;
+    case HomeControllers: settings = true; return_to_configuration = true; setting_row = 0; controller_section = 0; break;
     case HomeGraphics:
         graphics_page.open = true;
         graphics_page.selected = 0;
@@ -374,49 +380,53 @@ void LibrarySession::HandleControllerPanel() {
         }
         actions &= ~(Swap | Zone);
     } else {
-        // Rows: device, controller type, A/B/X/Y, deadzone, keyboard, controller mapping, then the
-        // right stick's (invert X, invert Y, sensitivity, mouse, mouse sensitivity), the rumble
-        // (on, strength) and the gyro's controls (stick, shake button). The floating panel
-        // outside the Settings tab draws only the first six.
-        const unsigned rows = tab == LibraryTab::Settings ? 15 : 6;
+        // The main page's rows: device, controller type, A/B/X/Y, deadzone, keyboard, controller
+        // mapping, then the entries of the right stick's, the mouse's, the rumble's and the gyro's
+        // sections (ControllerSection). The floating panel outside the Settings tab draws only
+        // the first six.
+        if (tab != LibraryTab::Settings) controller_section = 0;
+        const unsigned rows = controller_section ? ControllerSectionRows(controller_section, options) :
+                              tab == LibraryTab::Settings ? ControllerSectionEntry + ControllerSectionCount : 6;
         if (setting_row >= rows) setting_row = 0;
         if (actions & Up) setting_row = (setting_row + rows - 1) % rows;
         if (actions & Down) setting_row = (setting_row + 1) % rows;
         if (actions & (Up | Down)) dirty = true;
-        const bool opens = setting_row == 0 || setting_row == 4 || setting_row == 5;
-        if (opens && actions & Left && !(actions & (Play | Right))) {
+        const bool back = (actions & Left) && !(actions & (Play | Right));
+        const bool entry = !controller_section && setting_row >= ControllerSectionEntry;
+        const bool opens = !controller_section && (setting_row == 0 || setting_row == 4 || setting_row == 5 || entry);
+        if (opens && back) {
             if (configuration.open) { settings = return_to_configuration = false; dirty = true; }
+        } else if (entry && actions & (Play | Right)) {
+            controller_section = setting_row - ControllerSectionEntry + 1;
+            setting_row = 0; dirty = true;
+        } else if (controller_section && actions & (Play | Left | Right)) {
+            auto& stick = options.right_stick;
+            switch (ControllerSectionRow(controller_section, setting_row)) {
+            case ControllerSettingRow::InvertX: stick.invert_x = !stick.invert_x; break;
+            case ControllerSettingRow::InvertY: stick.invert_y = !stick.invert_y; break;
+            case ControllerSettingRow::StickSensitivity:
+                stick.stick_sensitivity = StepSensitivity(StickSensitivitySteps, stick.stick_sensitivity, back); break;
+            case ControllerSettingRow::MouseUse:
+                ApplyMouseUse(StepEnum(MouseUseOf(options.motion_source, stick.mouse), MouseUseCount, back),
+                              options.motion_source, stick.mouse);
+                break;
+            case ControllerSettingRow::MouseSensitivity:
+                stick.mouse_sensitivity = StepSensitivity(MouseSensitivitySteps, stick.mouse_sensitivity, back); break;
+            case ControllerSettingRow::Rumble: options.rumble.on = !options.rumble.on; break;
+            case ControllerSettingRow::RumbleStrength:
+                options.rumble.strength = StepSensitivity(RumbleStrengthSteps, options.rumble.strength, back); break;
+            case ControllerSettingRow::GyroSource: {
+                const auto source = StepEnum(options.motion_source, MotionSourceCount, back);
+                if (source == MotionSource::Mouse) ApplyMouseUse(MouseUse::Gyro, options.motion_source, stick.mouse);
+                else options.motion_source = source;
+                break;
+            }
+            case ControllerSettingRow::GyroShake:
+                options.motion_shake = StepEnum(options.motion_shake, MotionShakeButtonCount, back); break;
+            }
+            device_changed = true; dirty = true;
         } else if (actions & (Play | Left | Right)) {
-            if (setting_row >= 11) {
-                const bool back = (actions & Left) && !(actions & (Play | Right));
-                switch (setting_row) {
-                case 11: options.rumble.on = !options.rumble.on; break;
-                case 12: options.rumble.strength = StepSensitivity(RumbleStrengthSteps, options.rumble.strength, back); break;
-                case 13:
-                    options.motion_stick =
-                        options.motion_stick == MotionStick::Right ? MotionStick::Left : MotionStick::Right;
-                    break;
-                default: {
-                    const auto count = MotionShakeButtonCount;
-                    const auto index = static_cast<u8>(options.motion_shake);
-                    options.motion_shake =
-                        static_cast<MotionShakeButton>(back ? (index + count - 1) % count : (index + 1) % count);
-                    break;
-                }
-                }
-                device_changed = true; dirty = true;
-            } else if (setting_row >= 6) {
-                auto& stick = options.right_stick;
-                const bool back = (actions & Left) && !(actions & (Play | Right));
-                switch (setting_row) {
-                case 6: stick.invert_x = !stick.invert_x; break;
-                case 7: stick.invert_y = !stick.invert_y; break;
-                case 8: stick.stick_sensitivity = StepSensitivity(StickSensitivitySteps, stick.stick_sensitivity, back); break;
-                case 9: stick.mouse = !stick.mouse; break;
-                default: stick.mouse_sensitivity = StepSensitivity(MouseSensitivitySteps, stick.mouse_sensitivity, back); break;
-                }
-                device_changed = true; dirty = true;
-            } else if (setting_row == 4) {
+            if (setting_row == 4) {
                 panel.keyboard.open = true; panel.keyboard.capturing = false; dirty = true;
             } else if (setting_row == 5) {
                 OpenPadPicker();
@@ -545,6 +555,7 @@ void LibrarySession::Draw() {
                   .loading = loading,
                   .controller_panel = settings,
                   .controller_row = setting_row,
+                  .controller_section = controller_section,
                   .options = options,
                   .notice = notice,
                   .panel = panel,

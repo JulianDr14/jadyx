@@ -517,11 +517,11 @@ struct GameMenuSurface::Impl : UiPainter {
             menu_first = 0;
         }
         const bool quick = page == GameMenu::Page::Quick;
-        const UiIcon icon = page == GameMenu::Page::Controller ? UiIcon::Controller
+        const UiIcon icon = menu.OnControllerPage()            ? UiIcon::Controller
                             : page == GameMenu::Page::Display  ? UiIcon::Display
                             : page == GameMenu::Page::Graphics ? UiIcon::Settings
                                                                : UiIcon::Game;
-        const std::wstring back = quick ? std::wstring{} : I18n::Format(Text::MenuBackTo, {I18n::Tr(Text::MenuQuick)});
+        const std::wstring back = quick ? std::wstring{} : I18n::Format(Text::MenuBackTo, {menu.ParentTitle()});
         DrawPanel(icon, menu.PageTitle(), back, !quick);
 
         const auto rows = menu.Rows();
