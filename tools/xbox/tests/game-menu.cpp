@@ -91,7 +91,7 @@ int main() {
     check(menu.Apply(MenuAction::Left) == GameMenuResult::None && menu.CurrentPage() == GameMenu::Page::Quick);
     check(menu.Apply(MenuAction::Confirm) == GameMenuResult::None);
     check(menu.CurrentPage() == GameMenu::Page::Controller && menu.PageTitle() == L"Mando");
-    check(menu.Rows().size() == 6 && menu.SelectedItem() == GameMenu::Style && !menu.Rows()[0].icon);
+    check(menu.Rows().size() == 7 && menu.SelectedItem() == GameMenu::Style && !menu.Rows()[0].icon);
     check(menu.Apply(MenuAction::Right) == GameMenuResult::SettingsChanged);
     check(menu.Settings().style == ConsoleControllerStyle::Pro);
     check(menu.Apply(MenuAction::Left) == GameMenuResult::SettingsChanged);
@@ -152,7 +152,9 @@ int main() {
     menu.Apply(MenuAction::Down);
     check(menu.Apply(MenuAction::Left) == GameMenuResult::RumbleChanged && menu.Settings().rumble_global.strength == 75);
     check(menu.Apply(MenuAction::Back) == GameMenuResult::None && menu.Rows()[5].detail == L"No");
-    // Without a game there is no gyro to keep: the page ends at the rumble.
+    // Without a game there is no gyro to keep: the rumble is followed by the DSU controllers only.
+    check(menu.Apply(MenuAction::Down) == GameMenuResult::None && menu.SelectedItem() == GameMenu::DsuPage);
+    check(menu.Rows()[6].label == L"Mandos DSU" && menu.Rows()[6].detail == L"Ninguno");
     check(menu.Apply(MenuAction::Down) == GameMenuResult::None && menu.SelectedItem() == GameMenu::Style);
     check(menu.Apply(MenuAction::Back) == GameMenuResult::None);
     check(menu.CurrentPage() == GameMenu::Page::Quick && menu.SelectedItem() == GameMenu::ControllerPage);
@@ -284,28 +286,49 @@ int main() {
         check(row(GameMenu::MousePage).detail.starts_with(L"Giroscopio · 125%"));
         open(GameMenu::GyroPage);
         check(row(GameMenu::GyroSource).value == L"Mouse");
-        // The phone: choosing it turns the game's gyro on; its link and address replace the shake
-        // button, A looks again or opens the keyboard.
+        // A DSU server: choosing it turns the game's gyro on; which pad's motion replaces the shake
+        // button, automatic until a pad with a gyro is picked.
         check(game.Apply(MenuAction::Right) == GameMenuResult::MouseUseChanged &&
               game.Settings().motion_source == MotionSource::Phone && game.Settings().motion == MotionMode::On);
-        check(row(GameMenu::GyroSource).value == L"Teléfono / servidor DSU" && game.Rows().size() == 5);
-        check(game.Rows()[2].label == L"Teléfono" && game.Rows()[2].value == L"Buscando…" &&
-              game.Rows()[3].label == L"Dirección del teléfono" && game.Rows()[3].value == L"Automática");
-        game.SetPhone({PhoneGyroState::Connected, L"192.168.1.23", false, 62, L"192.168.1.50"});
-        check(game.Rows()[2].value == L"Conectado" && game.Rows()[2].detail.starts_with(L"192.168.1.23 · 62") &&
-              game.Rows()[3].value == L"Automática · 192.168.1.23");
-        game.SetPhone({PhoneGyroState::NotFound, {}, false, 0, L"192.168.1.50"}, true);
-        check(game.Rows()[2].detail.find(L"192.168.1.50") != std::wstring::npos &&
-              game.Rows()[3].detail.starts_with(L"Esa no es una dirección IP"));
-        game.Apply(MenuAction::Down);
-        check(game.SelectedItem() == GameMenu::GyroPhone && game.Apply(MenuAction::Right) == GameMenuResult::None &&
-              game.Apply(MenuAction::Confirm) == GameMenuResult::PhoneSearch);
-        game.Apply(MenuAction::Down);
-        check(game.SelectedItem() == GameMenu::GyroPhoneAddress &&
-              game.Apply(MenuAction::Confirm) == GameMenuResult::PhoneAddress);
-        game.Apply(MenuAction::Up);
-        game.Apply(MenuAction::Up);
-        check(game.SelectedItem() == GameMenu::GyroSource);
+        check(row(GameMenu::GyroSource).value == L"Servidor DSU" && game.Rows().size() == 4);
+        check(row(GameMenu::GyroDsuPad).label == L"Mando del giroscopio" &&
+              row(GameMenu::GyroDsuPad).value == L"Automático");
+        DsuStatus dsu{};
+        const std::uint64_t pad_key = DsuPadKey(0xC0A80117, 26760, 0);
+        dsu.servers.push_back({L"192.168.1.23", DsuServerState::Connected, 62,
+                               {DsuPadStatus{pad_key, 0, DsuAssign::Auto, 0, true}}});
+        game.SetDsu(dsu);
+        check(game.SelectedItem() == GameMenu::GyroDsuPad);
+        check(game.Apply(MenuAction::Right) == GameMenuResult::GyroDsuPadChanged &&
+              game.Settings().dsu.gyro_pad == pad_key && row(GameMenu::GyroDsuPad).value != L"Automático");
+        check(game.Apply(MenuAction::Right) == GameMenuResult::GyroDsuPadChanged && game.Settings().dsu.gyro_pad == 0);
+        // The DSU page: search, add, then each server with its pads under it.
+        open(GameMenu::DsuPage);
+        check(game.CurrentPage() == GameMenu::Page::Dsu && game.PageTitle() == L"Mandos DSU" && game.Rows().size() == 4);
+        check(game.Rows()[0].label == L"Buscar en la red" && game.Rows()[1].label == L"Añadir servidor" &&
+              game.Rows()[2].label == L"192.168.1.23" && game.Rows()[2].value == L"Conectado" &&
+              game.Rows()[3].label.find(L"Mando 1") != std::wstring::npos);
+        check(game.SelectedItem() == GameMenu::DsuSearch && game.Apply(MenuAction::Right) == GameMenuResult::None &&
+              game.Apply(MenuAction::Confirm) == GameMenuResult::DsuSearch);
+        check(row(GameMenu::DsuAdd).label == L"Añadir servidor" &&
+              game.Apply(MenuAction::Confirm) == GameMenuResult::DsuAdd);
+        row(GameMenu::DsuServer);
+        check(game.Apply(MenuAction::Alternate) == GameMenuResult::DsuRemove && game.SelectedDsu().server == 0 &&
+              game.SelectedDsu().pad_key == 0);
+        row(GameMenu::DsuPad);
+        check(game.Apply(MenuAction::Right) == GameMenuResult::DsuAssignChanged &&
+              game.SelectedDsu().pad_key == pad_key && game.SelectedDsu().assign == DsuAssign::Player1 &&
+              game.Rows()[3].value == L"Jugador 1");
+        // A new status keeps the cursor on the same pad; a refused address shows on Add.
+        dsu.servers[0].pads[0].assign = DsuAssign::Player1;
+        dsu.servers[0].pads[0].player = 1;
+        game.SetDsu(dsu, true);
+        check(game.SelectedItem() == GameMenu::DsuPad && game.SelectedDsu().pad_key == pad_key);
+        check(game.Rows()[1].detail.starts_with(L"Esa no es una dirección IP"));
+        game.Apply(MenuAction::Back);
+        check(game.SelectedItem() == GameMenu::DsuPage);
+        open(GameMenu::GyroPage);
+        check(row(GameMenu::GyroSource).value == L"Servidor DSU");
         check(game.Apply(MenuAction::Right) == GameMenuResult::MouseUseChanged &&
               game.Settings().motion_source == MotionSource::RightStick && game.Rows().size() == 4);
         check(row(GameMenu::MotionView).value == L"Siempre");

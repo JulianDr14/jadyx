@@ -162,10 +162,10 @@ private:
     std::optional<ChatScreen> chat_screen;
     /// Writing a message: the keyboard takes the menu's place until it sends or cancels.
     GameKeyboard chat_keyboard;
-    /// The same keyboard is up for the phone gyro's address, not a chat message.
-    bool phone_keyboard{};
-    /// The phone's link as last drawn (PhoneGyro::StatusVersion), to redraw when it changes.
-    std::uint32_t phone_version{};
+    /// The same keyboard (its numeric pad) is up for a DSU server's address, not a chat message.
+    bool dsu_keyboard{};
+    /// The DSU client's state as last drawn (DsuClient::StatusVersion), to redraw when it changes.
+    std::uint32_t dsu_version{};
     /// The chat as last seen: its version, and the newest line's id.
     std::uint64_t chat_version{};
     std::uint64_t chat_last_id{};

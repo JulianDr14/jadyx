@@ -40,7 +40,7 @@
 #include "jadyx/game/game_screenshot.h"
 #include "jadyx/game/uwp_software_keyboard.h"
 #include "jadyx/i18n/localization.h"
-#include "jadyx/input/phone_gyro.h"
+#include "jadyx/input/dsu_client.h"
 #include "jadyx/mods/mod_settings.h"
 #include "jadyx/settings/online_page.h"
 #include "jadyx/settings/uwp_system_settings.h"
@@ -218,8 +218,10 @@ void SessionMenu::Open() {
                                   VideoCommon::GeoHunt::OobFix(), basics_global, basics_game, MousePresent()},
                  program_id != 0 && !mii_editor);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
-    phone_version = PhoneGyro::StatusVersion();
-    menu->SetPhone(PhoneGyro::Status());
+    // The DSU page lists the servers live while the menu is open, even with none added yet.
+    DsuClient::SetWanted(DsuClient::Wanter::Menu, true);
+    dsu_version = DsuClient::StatusVersion();
+    menu->SetDsu(DsuClient::Status());
     const bool from_notice = notice_shown;
     HideChatNotice();
     if (live) {
@@ -434,20 +436,19 @@ void SessionMenu::HandleChatAction(MenuAction action) {
 
 void SessionMenu::ChatKeyboardPress(std::optional<KeyboardReply> reply) {
     if (reply && reply->kind == KeyboardReply::Kind::Submit) {
-        if (!phone_keyboard) {
+        if (!dsu_keyboard) {
             SendChat(reply->text);
         } else if (menu) {
-            // Empty goes back to looking for it; anything else must be an address.
+            // Empty adds nothing; anything else must be an address.
             bool invalid = false;
-            if (reply->text.find_first_not_of(L' ') == std::wstring::npos) PhoneGyro::Search();
-            else invalid = !PhoneGyro::ConnectTo(reply->text);
-            WriteDiag(std::string{"menu: phone gyro address "} + (invalid ? "refused" : "set"));
-            menu->SetPhone(PhoneGyro::Status(), invalid);
+            if (reply->text.find_first_not_of(L' ') != std::wstring::npos) invalid = !DsuClient::Add(reply->text);
+            WriteDiag(std::string{"menu: dsu server address "} + (invalid ? "refused" : "added"));
+            menu->SetDsu(DsuClient::Status(), invalid);
         }
     }
     if (!chat_keyboard.IsOpen()) {
         SetTextEntryActive(false);
-        phone_keyboard = false;
+        dsu_keyboard = false;
     }
     if (menu_surface) DrawMenu();
 }
@@ -582,7 +583,8 @@ void SessionMenu::Close(GameMenuResult result) {
         void(chat_keyboard.Apply(KeyboardClose{}));
         SetTextEntryActive(false);
     }
-    phone_keyboard = false;
+    dsu_keyboard = false;
+    DsuClient::SetWanted(DsuClient::Wanter::Menu, false);
     game_frame = {};
     if (game_keyboard.IsOpen() && menu_surface) {
         // The game's keyboard was under the menu: it comes back.
@@ -672,20 +674,30 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         options.motion_shake = menu->Settings().motion_shake;
         input.SetOptions(options);
     }
-    if (result == GameMenuResult::MouseUseChanged) menu->SetPhone(PhoneGyro::Status());
-    if (result == GameMenuResult::PhoneSearch) {
-        PhoneGyro::Search();
-        menu->SetPhone(PhoneGyro::Status());
-        WriteDiag("menu: phone gyro, looking again");
+    if (result == GameMenuResult::MouseUseChanged) menu->SetDsu(DsuClient::Status());
+    if (result == GameMenuResult::DsuSearch) {
+        DsuClient::Search();
+        menu->SetDsu(DsuClient::Status());
+        WriteDiag("menu: dsu, searching the network");
     }
-    if (result == GameMenuResult::PhoneAddress) {
-        const PhoneGyroStatus phone = PhoneGyro::Status();
-        phone_keyboard = true;
-        void(chat_keyboard.Apply(KeyboardOpen{std::wstring{I18n::Tr(I18n::Text::PhoneAddressTitle)}, {},
-                                              phone.typed ? phone.address : std::wstring{}, 21, 0, false, true,
-                                              false}));
+    if (result == GameMenuResult::DsuAdd) {
+        dsu_keyboard = true;
+        void(chat_keyboard.Apply(KeyboardOpen{std::wstring{I18n::Tr(I18n::Text::DsuAddTitle)}, {}, {}, 21, 0, false,
+                                              true, false, true}));
         SetTextEntryActive(true);
     }
+    if (result == GameMenuResult::DsuRemove) {
+        DsuClient::Remove(menu->SelectedDsu().server);
+        menu->SetDsu(DsuClient::Status());
+        WriteDiag("menu: dsu server removed");
+    }
+    if (result == GameMenuResult::DsuAssignChanged) {
+        const DsuSelection pad = menu->SelectedDsu();
+        DsuClient::SetAssign(pad.pad_key, pad.assign);
+        WriteDiag("menu: dsu pad " + std::to_string(DsuPadSlot(pad.pad_key)) + " assigned " +
+                  std::to_string(static_cast<int>(pad.assign)));
+    }
+    if (result == GameMenuResult::GyroDsuPadChanged) DsuClient::SetGyroPad(menu->Settings().dsu.gyro_pad);
     if (result == GameMenuResult::RumbleChanged) {
         const GameMenuSettings& settings = menu->Settings();
         if (settings.right_stick_per_game) {
@@ -848,9 +860,9 @@ SessionMenu::Outcome SessionMenu::Update() {
         if (menu_surface) DrawMenu();
     }
     if (memory_edit_open && memory_edit->Tick() && menu_surface) DrawMenu();
-    if (menu && PhoneGyro::StatusVersion() != phone_version) {
-        phone_version = PhoneGyro::StatusVersion();
-        menu->SetPhone(PhoneGyro::Status(), menu->Settings().phone_address_invalid);
+    if (menu && DsuClient::StatusVersion() != dsu_version) {
+        dsu_version = DsuClient::StatusVersion();
+        menu->SetDsu(DsuClient::Status(), menu->Settings().dsu_add_invalid);
         if (menu_surface && !chat_keyboard.IsOpen() && !cheats && !amiibo_screen && !chat_screen && !memory_edit_open)
             DrawMenu();
     }
