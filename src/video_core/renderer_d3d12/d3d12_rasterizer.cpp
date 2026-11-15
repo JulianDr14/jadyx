@@ -443,8 +443,14 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     lock_timer.Locked();
 
+    // A shader filter keeps the synchronous capture on the selected draws, so a whole frame
+    // fits in the capture window and its byte budget.
+    const bool full_draw = full && VideoCommon::FullCapture::SelectsShader(pipeline->Key().unique_hashes[5]);
+    if (full && !full_draw) VideoCommon::FullCapture::Event("draw_unselected", fmt::format(
+        "{{\"op\":{},\"vs\":\"{:016x}\",\"ps\":\"{:016x}\"}}", full_capture_operation,
+        pipeline->Key().unique_hashes[1], pipeline->Key().unique_hashes[5]));
     const bool trace_this_draw = trace_draws ||
-        material_trace.Select(pipeline->Key().unique_hashes[5]) || full;
+        (!full && material_trace.Select(pipeline->Key().unique_hashes[5])) || full_draw;
     PipelineBindings bindings;
     bindings.vertex_texture_handle = vertex_texture_handle.value_or(0);
     std::vector<VideoCommon::ImageViewId> traced_views;
@@ -452,7 +458,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
     std::vector<u32> traced_types;
     std::vector<TracedBuffer> traced_buffers;
     FullCaptureViews full_views;
-    if (full) bindings.trace_all_views = &full_views;
+    if (full_draw) bindings.trace_all_views = &full_views;
     if (trace_this_draw || glitch.active) {
         // Glitch hunt: the sampled views and their descriptors go on S lines (GlitchDraw).
         bindings.trace_views = &traced_views;
@@ -467,7 +473,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
     if (material_trace.Active()) {
         const auto& draw = maxwell3d->draw_manager.draw_state;
         const u32 count = is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count;
-        if (full || material_snapshots.Targeted(pipeline->Key().unique_hashes[5], count)) {
+        if (full_draw || material_snapshots.Targeted(pipeline->Key().unique_hashes[5], count)) {
             // The normal binder skips unchanged VBs. Rebind only the explicit diagnostic draw
             // so its geometry snapshot includes retained bindings, without retaining Buffer*.
             for (u32 index = 0; index < Tegra::Engines::Maxwell3D::Regs::NumVertexArrays; ++index) {
@@ -597,14 +603,14 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
         }
         return;
     }
-    if (material_trace.Active() && trace_this_draw && !full) {
+    if (material_trace.Active() && trace_this_draw && !full_draw) {
         try {
             CaptureMaterialSampledInputs(*pipeline, traced_views, params.num_vertices, *framebuffer);
         } catch (const std::exception& e) {
             LOG_WARNING(Render, "D3D12 material sampled inputs skipped: {}", e.what());
         }
     }
-    if (full) {
+    if (full_draw) {
         CaptureFullPipeline(*pipeline, bindings);
         VideoCommon::FullCapture::Event("draw_geometry", fmt::format(
             "{{\"op\":{},\"vertices\":{},\"instances\":{},\"first_index\":{},"
@@ -639,7 +645,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
             LOG_WARNING(Render, "D3D12 material stream output skipped: {}", e.what());
         }
     }
-    if (full) {
+    if (full_draw) {
         CaptureFullBuffers(traced_buffers, true);
         CaptureFullImages(full_views, framebuffer, true);
         CapturePickProbes(*pipeline, bindings, traced_buffers, *framebuffer, params, draw_state.topology);
@@ -664,7 +670,7 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
             LOG_WARNING(Render, "D3D12 material GPU probe skipped: {}", e.what());
         }
     }
-    if (material_trace.Active() && trace_this_draw && !full) {
+    if (material_trace.Active() && trace_this_draw && !full_draw) {
         try {
             CaptureMaterialInputs(*pipeline, traced_buffers, params);
         } catch (const std::exception& e) {
@@ -827,7 +833,7 @@ u32 RasterizerD3D12::TessIndexSlots() const {
 
 void RasterizerD3D12::DispatchCompute() {
     DrainCpuWrites();
-    const bool full = VideoCommon::FullCapture::Active();
+    const bool full = VideoCommon::FullCapture::Active() && !VideoCommon::FullCapture::Filtered();
     if (full) {
         ++full_capture_operation;
         VideoCommon::FullCapture::Event("dispatch_begin", fmt::format("{{\"op\":{}}}", full_capture_operation));

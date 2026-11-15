@@ -330,6 +330,30 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 }
                 continue;
             }
+            if (line.starts_with("gpu_capture_frames=")) {
+                config.material_capture_frames = static_cast<u32>(std::strtoul(line.c_str() + 19, nullptr, 10));
+                WriteDiag("boot.cfg: graphics capture spans " +
+                          std::to_string(config.material_capture_frames) + " new guest frames");
+                continue;
+            }
+            if (line.starts_with("gpu_capture_ps=")) {
+                // Hex pixel shader hashes, separated by ':' (deploy splits boot.cfg on commas).
+                config.full_gpu_capture_ps.clear();
+                std::string_view rest{line};
+                rest.remove_prefix(15);
+                while (!rest.empty() && config.full_gpu_capture_ps.size() < 8) {
+                    const std::size_t end = rest.find_first_of(":;+ ");
+                    const std::string_view token = rest.substr(0, end);
+                    u64 hash = 0;
+                    const auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), hash, 16);
+                    if (ec == std::errc{} && hash != 0) config.full_gpu_capture_ps.push_back(hash);
+                    if (end == std::string_view::npos) break;
+                    rest.remove_prefix(end + 1);
+                }
+                WriteDiag("boot.cfg: full capture limited to " +
+                          std::to_string(config.full_gpu_capture_ps.size()) + " pixel shaders");
+                continue;
+            }
             if (line == "glitch_hunt_menu=1") {
                 config.glitch_hunt_menu = true;
                 WriteDiag("boot.cfg: geometry glitch hunt menu enabled");

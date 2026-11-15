@@ -26,7 +26,7 @@ void RasterizerD3D12::DrawIndirect() {
     if (glitch_hunt.Capturing()) [[unlikely]] {
         GlitchPassCheck("switch");
     }
-    const bool full = VideoCommon::FullCapture::Active();
+    const bool full = VideoCommon::FullCapture::Active() && !VideoCommon::FullCapture::Filtered();
     if (full) {
         ++full_capture_operation;
         VideoCommon::FullCapture::Event("draw_indirect_begin", fmt::format("{{\"op\":{}}}", full_capture_operation));

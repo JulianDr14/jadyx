@@ -44,6 +44,7 @@ std::atomic<bool> frame_diagnostics{true};
 std::atomic<u32> trace_requested{};
 std::atomic<bool> material_trace_requested{};
 std::atomic<u32> material_capture_frame{};
+std::atomic<u32> material_capture_frames{2}; // new guest frames per capture (gpu_capture_frames=)
 std::atomic<u64> material_trace_shader{};
 std::atomic<s32> material_probe_x{-1}, material_probe_y{-1};
 
@@ -83,6 +84,10 @@ void SetMaterialProbe(s32 x, s32 y) {
 
 void SetMaterialCaptureFrame(u32 frame) {
     material_capture_frame.store(frame, std::memory_order_relaxed);
+}
+
+void SetMaterialCaptureFrames(u32 frames) {
+    material_capture_frames.store(std::clamp<u32>(frames, 1, 30), std::memory_order_relaxed);
 }
 
 namespace {
@@ -250,7 +255,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
                 if (dump) {
                     readback = RecordFrameReadback(*frame);
                 }
-                CaptureGuestPresent(frame);
+                CaptureGuestPresent(frame, framebuffer.new_frame);
                 // Frame generation runs on the game's own frames, never under the menu, and only
                 // while FSR is not upscaling them: FSR keeps the image, FG the rate, never both.
                 Present(std::move(frame),
@@ -309,7 +314,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
                                            .crop = {0.0f, 0.0f, 1.0f, 1.0f},
                                            .blending = Tegra::BlendMode::Opaque};
                 RecordComposite(*frame, std::span<const CompositeLayer>(&layer, 1));
-                CaptureGuestPresent(frame);
+                CaptureGuestPresent(frame, framebuffer.new_frame);
                 Present(std::move(frame));
             } else {
                 const StagingBufferRef upload =
@@ -317,7 +322,7 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
                 ScaleGuestImage(framebuffer, upload.mapped_span.data(),
                                 footprint.Footprint.RowPitch);
                 RecordCopy(upload, *frame);
-                CaptureGuestPresent(frame);
+                CaptureGuestPresent(frame, framebuffer.new_frame);
                 Present(std::move(frame));
             }
             const auto present_end = std::chrono::steady_clock::now();
@@ -345,12 +350,22 @@ void RendererD3D12::Composite(std::span<const Tegra::FramebufferConfig> framebuf
     render_window.OnFrameDisplayed();
 }
 
-void RendererD3D12::CaptureGuestPresent(FrameLease& frame) {
+void RendererD3D12::CaptureGuestPresent(FrameLease& frame, bool new_frame) {
     ++material_guest_presents;
     if (material_trace_presents_remaining) {
+        // A synchronous capture slows every draw, so the compositor repeats the last image at
+        // vsync while the game is still drawing its frame. Only the game's new frames end the
+        // window; repeats are skipped, with a cap in case the game stops queueing frames.
+        constexpr u32 MAX_REPEATS = 3000;
+        if (!new_frame && ++material_trace_repeats < MAX_REPEATS) return;
         frame->Transition(scheduler.CommandList(), D3D12_RESOURCE_STATE_COPY_SOURCE);
         rasterizer.CaptureMaterialPresent(frame->image.Get(), material_guest_presents);
-        if (--material_trace_presents_remaining == 0) rasterizer.EndMaterialTrace();
+        if (!new_frame || --material_trace_presents_remaining == 0) {
+            material_trace_presents_remaining = 0;
+            rasterizer.EndMaterialTrace();
+            LOG_INFO(Render, "D3D12 material capture end: {} repeated composites skipped",
+                     material_trace_repeats);
+        }
     }
     // A repeated menu request must not cancel the active capture's end countdown.
     if (material_trace_presents_remaining) return;
@@ -364,11 +379,13 @@ void RendererD3D12::CaptureGuestPresent(FrameLease& frame) {
          material_snapshot_second.load(std::memory_order_relaxed)},
         {material_snapshot_vertices_first.load(std::memory_order_relaxed),
          material_snapshot_vertices_second.load(std::memory_order_relaxed)});
-    material_trace_presents_remaining = started ? 2 : 0;
+    const u32 frames = material_capture_frames.load(std::memory_order_relaxed);
+    material_trace_presents_remaining = started ? frames : 0;
+    material_trace_repeats = 0;
     if (started && VideoCommon::FullCapture::Active()) {
         VideoCommon::FullCapture::Text("adapter", device.AdapterName());
         VideoCommon::FullCapture::Event("capture_frame", fmt::format(
-            "{{\"first_present\":{},\"present_intervals\":2}}", material_guest_presents + 1));
+            "{{\"first_present\":{},\"present_intervals\":{}}}", material_guest_presents + 1, frames));
         D3D12_FEATURE_DATA_D3D12_OPTIONS caps{};
         if (SUCCEEDED(device.Get()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &caps, sizeof(caps))))
             VideoCommon::FullCapture::Data("device_caps", "{}", {reinterpret_cast<const u8*>(&caps), sizeof(caps)});
@@ -377,7 +394,7 @@ void RendererD3D12::CaptureGuestPresent(FrameLease& frame) {
             VideoCommon::FullCapture::Data("device_caps1", "{}", {reinterpret_cast<const u8*>(&caps1), sizeof(caps1)});
     }
     LOG_INFO(Render, "D3D12 material frame {}: {}", material_guest_presents + 1,
-             started ? "begin (2 present intervals)" : "busy: capture not started");
+             started ? fmt::format("begin ({} new guest frames)", frames) : "busy: capture not started");
 }
 
 void RendererD3D12::Present(FrameLease&& frame, const PresentInfo& info) {

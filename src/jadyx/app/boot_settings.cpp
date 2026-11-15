@@ -298,6 +298,7 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetTracedFrame(config.traced_frame, config.traced_frames);
     D3D12::SetMaterialProbe(config.material_probe_x, config.material_probe_y);
     D3D12::SetMaterialCaptureFrame(config.material_capture_frame);
+    D3D12::SetMaterialCaptureFrames(config.material_capture_frames);
     D3D12::SetMaterialGpuProbeEnabled(config.material_gpu_probe);
     D3D12::SetMaterialSnapshotShaders(config.material_snapshot_ps[0], config.material_snapshot_ps[1]);
     D3D12::SetMaterialSnapshotVertexCounts(config.material_snapshot_vertices[0], config.material_snapshot_vertices[1]);
@@ -385,6 +386,7 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     VideoCommon::FullCapture::Enable(config.full_gpu_capture);
     VideoCommon::FullCapture::RequestSelfTest(config.full_gpu_capture_self_test);
     VideoCommon::FullCapture::SetTargetsAfterOnly(config.full_gpu_capture_targets_after);
+    VideoCommon::FullCapture::SetShaderFilter(config.full_gpu_capture_ps);
     VideoCommon::ReadbackTrace::SetWriteOrigins(config.buffer_write_origins);
     if (config.full_gpu_capture) {
         const auto version = winrt::Windows::ApplicationModel::Package::Current().Id().Version();

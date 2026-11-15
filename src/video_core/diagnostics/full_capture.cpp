@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <array>
 #include <mutex>
 #include "video_core/diagnostics/full_capture.h"
 #include "video_core/diagnostics/full_capture_archive.h"
@@ -10,6 +11,9 @@ namespace {
 std::atomic_bool enabled{}, active{};
 std::atomic_bool self_test{};
 std::atomic_bool targets_after_only{};
+constexpr std::size_t MAX_SHADER_FILTER = 8;
+std::array<std::atomic<std::uint64_t>, MAX_SHADER_FILTER> shader_filter{};
+std::atomic_bool filtered{};
 std::mutex mutex;
 Archive archive;
 std::string session{"{}"};
@@ -22,6 +26,23 @@ void RequestSelfTest(bool value) noexcept { self_test.store(value); }
 bool TakeSelfTest() noexcept { return self_test.exchange(false); }
 void SetTargetsAfterOnly(bool value) noexcept { targets_after_only.store(value); }
 bool TargetsAfterOnly() noexcept { return targets_after_only.load(std::memory_order_relaxed); }
+void SetShaderFilter(std::span<const std::uint64_t> pixel_shaders) noexcept {
+    bool any = false;
+    for (std::size_t i = 0; i < MAX_SHADER_FILTER; ++i) {
+        const std::uint64_t hash = i < pixel_shaders.size() ? pixel_shaders[i] : 0;
+        shader_filter[i].store(hash, std::memory_order_relaxed);
+        any |= hash != 0;
+    }
+    filtered.store(any, std::memory_order_relaxed);
+}
+bool Filtered() noexcept { return filtered.load(std::memory_order_relaxed); }
+bool SelectsShader(std::uint64_t pixel_shader) noexcept {
+    if (!Filtered()) return true;
+    if (!pixel_shader) return false;
+    for (const auto& hash : shader_filter)
+        if (hash.load(std::memory_order_relaxed) == pixel_shader) return true;
+    return false;
+}
 void SetSession(std::string_view detail) noexcept {
     try { std::scoped_lock lock{mutex}; session = detail; } catch (...) {}
 }
