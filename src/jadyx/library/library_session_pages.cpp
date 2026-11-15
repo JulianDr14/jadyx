@@ -216,6 +216,13 @@ void LibrarySession::HandleGraphicsPage(TimePoint now) {
         send(Right, GraphicsInput::Right);
         send(Play, GraphicsInput::Confirm);
         send(Quit, GraphicsInput::Back);
+        // Y: everything back to the emulator's defaults, from any of its lists.
+        if (graphics_page.open && actions & Refresh) {
+            const bool saved = !ResetGraphicsSettings(graphics_page.settings) ||
+                               SaveGraphicsSettings(graphics_page.settings);
+            system_page.notice = Tr(saved ? T::GraphicsResetDone : T::SystemSaveFailed);
+            system_notice_until = saved ? now + std::chrono::seconds{3} : std::chrono::steady_clock::time_point::max();
+        }
         if (!graphics_page.open) configuration.selected = HomeGraphics;
         if (actions) dirty = true;
         actions = 0;
@@ -284,7 +291,7 @@ void LibrarySession::OpenHomeCategory() {
     case HomeControllers: settings = true; return_to_configuration = true; setting_row = 0; controller_section = 0; break;
     case HomeGraphics:
         graphics_page.open = true;
-        graphics_page.selected = 0;
+        graphics_page.cursor = {};
         system_page.notice.clear();
         break;
     default:
@@ -538,7 +545,7 @@ void LibrarySession::Draw() {
             FindDumpFiles(scan.entries, scan.entries[game_options.game].launch_path).kept,
         game_options.open && game_options.game < scan.entries.size() && game_graphics_id != 0 &&
                 game_graphics_id == scan.entries[game_options.game].program_id ? &game_graphics : nullptr,
-        game_graphics_row, &graphics_page.settings};
+        game_graphics_cursor, &graphics_page.settings};
     // Titles, Pulse sessions and plays arrive after the shelf was made: keep it current,
     // the focus on the same game.
     if (tab == LibraryTab::Library && !loading) {

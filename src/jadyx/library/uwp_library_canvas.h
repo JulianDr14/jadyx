@@ -31,7 +31,7 @@ struct GameOptionsView {
     const Mods::ModsPage* mods_page{};
     bool other_copies{};                 ///< Another dump of the game stays if this one is deleted.
     const GameGraphics* graphics{};      ///< The game's own graphics, once read for it.
-    std::size_t graphics_row{};          ///< The focused row of its Graphics pane.
+    GraphicsCursor graphics_cursor;      ///< Where its Graphics pane's cursor is.
     const GraphicsSettings* global_graphics{}; ///< Settings > Graphics, which the game follows.
 };
 /// The active controller's battery, as Windows.Gaming.Input reports it; unknown when it does not.

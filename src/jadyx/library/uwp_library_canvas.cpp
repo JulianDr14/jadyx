@@ -999,6 +999,7 @@ private:
             const auto& configuration = view.configuration;
             const bool change = view.system.open || view.graphics.open || view.controller_panel;
             x += ControlPrompt(Navigation::Play, Tr(change ? T::Change : T::Open), x, y);
+            if (view.graphics.open) x += ControlPrompt(Navigation::Refresh, Tr(T::GraphicsReset), x, y);
             ControlPrompt(Navigation::Back, Tr(configuration.busy ? T::Cancel : T::Back), x, y);
             // The version is on the page's kicker; its notices take the corner.
             std::wstring notice;
@@ -1441,11 +1442,18 @@ private:
                 rows.push_back(std::move(item));
             }
         } else if (category == HomeGraphics) {
-            for (std::size_t i = 0; i < GraphicsRowCount; ++i) {
-                const auto row = static_cast<GraphicsRow>(i);
+            // The sections, or the open one's rows (graphics_page.h).
+            const auto section = view.graphics.open ? view.graphics.cursor.section : std::nullopt;
+            if (!section) {
+                for (const GraphicsSection entry : GraphicsSections(false))
+                    rows.push_back({Kind::Open, std::wstring{Tr(GraphicsSectionTitle(entry))},
+                                    std::wstring{Tr(GraphicsSectionHint(entry))}, {}});
+                return rows;
+            }
+            for (const GraphicsRow row : GraphicsSectionRows(*section, false)) {
                 const auto& settings = view.graphics.settings;
-                SettingsRow item{Kind::Choice, std::wstring{Tr(GraphicsRowTitle(row))},
-                                 std::wstring{Tr(GraphicsRowHint(row))}, GraphicsRowValue(settings, row)};
+                SettingsRow item{Kind::Choice, std::wstring{Tr(GraphicsRowTitle(row))}, GraphicsRowHint(row),
+                                 GraphicsRowValue(settings, row)};
                 if (row == GraphicsRow::FrameGen) { item.kind = Kind::Toggle; item.on = settings.frame_gen; }
                 if (row == GraphicsRow::AsyncRecord) { item.kind = Kind::Toggle; item.on = settings.async_record; }
                 if (row == GraphicsRow::CpuWriteQueue) { item.kind = Kind::Toggle; item.on = settings.cpu_write_queue; }
@@ -2232,13 +2240,18 @@ private:
             default: break;
             }
         }
+        // As a graphics section's (graphics_page.h).
+        if (category == HomeGraphics && view.graphics.open && view.graphics.cursor.section) {
+            page_title = GraphicsSectionTitle(*view.graphics.cursor.section);
+            page_about = GraphicsSectionHint(*view.graphics.cursor.section);
+        }
         Type(Tr(page_title), TypeRole::HeadlineLarge, px, 122, pw, Palette::Text);
         Type(Tr(page_about), TypeRole::Body, px, 176, pw, Palette::TextSecondary);
         const auto rows = SettingsRows(view, category);
         if (rows.empty()) return;
         const std::size_t selected = !in_pane ? SIZE_MAX :
             category == HomeSystem ? view.system.selected :
-            category == HomeGraphics ? view.graphics.selected :
+            category == HomeGraphics ? view.graphics.cursor.selected :
             category == HomeFiles ? configuration.selected : view.controller_row;
         const std::size_t visible = std::min(rows.size(), SettingsVisibleRows);
         const std::size_t first = selected != SIZE_MAX && selected >= visible ? selected - visible + 1 : 0;
@@ -2574,24 +2587,43 @@ private:
                 const auto discard = I18n::Format(T::PulseDiscardConfirm, {PromptKey(Navigation::Play).letters});
                 in_place(option, pulse, game.pulse_saved.empty() ? std::wstring_view{} : std::wstring_view{discard});
             } else if (option == GameOption::Graphics && view.graphics && view.global_graphics) {
-                // The rows of Settings > Graphics, each one the game's own or what it follows, then
-                // the ones only a game has. They do not all fit: the window follows the focus.
-                const bool advanced = IsAdvancedRow(static_cast<GraphicsRow>(view.graphics_row));
-                Type(Tr(advanced ? T::GameGraphicsAdvancedHint : T::GameGraphicsHint), TypeRole::Body, 56, 222, 1168,
-                     Palette::TextSecondary);
+                // The graphics sections and the reset row, or the open section's rows: each one the
+                // game's own or what it follows. They may not all fit: the window follows the focus.
+                const auto& cursor = view.graphics_cursor;
+                const auto focused_row = GraphicsCursorRow(cursor, true);
+                const bool advanced = focused_row && IsAdvancedRow(*focused_row) && *focused_row != GraphicsRow::ResetAdvanced;
+                std::wstring header{Tr(advanced ? T::GameGraphicsAdvancedHint : T::GameGraphicsHint)};
+                if (cursor.section) header = std::wstring{Tr(GraphicsSectionTitle(*cursor.section))} + L" · " + header;
+                Type(header, TypeRole::Body, 56, 222, 1168, Palette::TextSecondary);
+                std::vector<SettingsRow> items;
+                if (!cursor.section) {
+                    for (const GraphicsSection section : GraphicsSections(true))
+                        items.push_back({SettingsRow::Kind::Open, std::wstring{Tr(GraphicsSectionTitle(section))},
+                                         std::wstring{Tr(GraphicsSectionHint(section))}, {}});
+                    items.push_back({SettingsRow::Kind::Open, std::wstring{Tr(GraphicsRowTitle(GraphicsRow::ResetAdvanced))},
+                                     GraphicsRowHint(GraphicsRow::ResetAdvanced), {}});
+                } else {
+                    for (const GraphicsRow row : GraphicsSectionRows(*cursor.section, true))
+                        items.push_back({SettingsRow::Kind::Choice, std::wstring{Tr(GraphicsRowTitle(row))},
+                                         GraphicsRowHint(row),
+                                         GameGraphicsRowValue(*view.global_graphics, *view.graphics, row)});
+                }
                 const bool focused = view.page.focus == GameOptionsFocus::Content;
                 static constexpr std::size_t Visible = 6;
-                const std::size_t first = view.graphics_row >= Visible ? view.graphics_row - Visible + 1 : 0;
-                for (std::size_t i = first; i < first + Visible; ++i) {
-                    const auto row = static_cast<GraphicsRow>(i);
-                    const SettingsRow item{row == GraphicsRow::ResetAdvanced ? SettingsRow::Kind::Open : SettingsRow::Kind::Choice,
-                                           std::wstring{Tr(GraphicsRowTitle(row))}, std::wstring{Tr(GraphicsRowHint(row))},
-                                           GameGraphicsRowValue(*view.global_graphics, *view.graphics, row)};
+                const std::size_t shown = std::min(items.size(), Visible);
+                const std::size_t first = cursor.selected >= Visible ? cursor.selected - Visible + 1 : 0;
+                for (std::size_t i = first; i < first + shown && i < items.size(); ++i) {
                     const float y = 262 + static_cast<float>(i - first) * SettingsRowStride;
-                    DrawSettingsRow(item, 56, y, 1168, SettingsRowHeight, focused && i == view.graphics_row, 1.0f);
+                    DrawSettingsRow(items[i], 56, y, 1168, SettingsRowHeight, focused && i == cursor.selected, 1.0f);
                 }
                 ScrollIndicator(1232, 262, Visible * SettingsRowStride - (SettingsRowStride - SettingsRowHeight), first,
-                                Visible, GameGraphicsRowCount);
+                                Visible, items.size());
+                if (focused) {
+                    float next = 56;
+                    next += ControlPrompt(Navigation::Play, Tr(cursor.section ? T::Change : T::Open), next, footer);
+                    ControlPrompt(Navigation::Refresh, Tr(T::GameGraphicsSync), next, footer);
+                    back_prompt(Tr(T::Back));
+                }
             } else if (option == GameOption::Remove) {
                 const bool external = IsStoragePath(game.launch_path);
                 in_place(option, Tr(external ? T::GameRemoveExternal :
