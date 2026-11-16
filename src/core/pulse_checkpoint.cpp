@@ -358,6 +358,40 @@ void FlushGpuWrites(Core::System& system) {
     if (!failure.empty()) Reject(false, "GPU writes cannot reach guest memory: " + failure);
 }
 
+// The guest ranges the restore shares with the device again: the allocated nvmap handles of the
+// process's nvdrv session, which the nvdrv serializer stores and locks back. Sorted and merged.
+std::vector<std::pair<u64, u64>> DeviceSharedByNvmap(Core::System& system,
+                                                     const Kernel::KProcess& process) {
+    std::vector<std::pair<u64, u64>> ranges;
+    const auto nvdrv =
+        system.ServiceManager().GetService<Service::Nvidia::NVDRV>("nvdrv:s", true);
+    if (!nvdrv) return ranges;
+    auto& container = nvdrv->GetModule()->GetContainer();
+    for (const auto& handle : container.GetNvMapFile().PulseHandles()) {
+        if (!handle.allocated || !handle.address || !handle.size) continue;
+        const auto* session = container.GetSession({handle.session});
+        if (!session || !session->is_active || session->process != &process) continue;
+        ranges.emplace_back(handle.address, handle.address + handle.size);
+    }
+    std::sort(ranges.begin(), ranges.end());
+    std::vector<std::pair<u64, u64>> merged;
+    for (const auto& range : ranges) {
+        if (!merged.empty() && range.first <= merged.back().second) {
+            merged.back().second = std::max(merged.back().second, range.second);
+        } else {
+            merged.push_back(range);
+        }
+    }
+    return merged;
+}
+
+bool Covered(const std::vector<std::pair<u64, u64>>& ranges, u64 start, u64 end) {
+    auto it = std::upper_bound(ranges.begin(), ranges.end(), std::make_pair(start, ~u64{}));
+    if (it == ranges.begin()) return false;
+    --it;
+    return it->first <= start && end <= it->second;
+}
+
 // Shared memory is never stored: its owner fills it. A checkpoint names the owner and the restore
 // maps the fresh System's memory of that owner at the captured addresses.
 enum class SharedMemoryOwner : u32 {
@@ -777,6 +811,7 @@ ProcessCheckpoint ProcessCheckpoint::Capture(Core::System& system) {
     layout.main_stack_address = GetInteger(process->GetMainStackAddress());
     layout.main_stack_size = process->GetMainStackSize();
     layout.blocks = EnumerateBlocks(*process);
+    const auto device_shared = DeviceSharedByNvmap(system, *process);
     const u64 heap_end = layout.heap_start + layout.heap_size;
     const u64 main_stack_end = layout.main_stack_address + layout.main_stack_size;
     std::unordered_map<u64, u64> locked_sources; // physical page -> heap address
@@ -810,10 +845,21 @@ ProcessCheckpoint ProcessCheckpoint::Capture(Core::System& system) {
             Reject(false, fmt::format("memory attribute {:#x} has no serializer", block.attribute));
         }
         const bool normal = state == KMemoryState::Normal;
-        if (True(attribute & KMemoryAttribute::DeviceShared) && !normal) {
-            Reject(false, fmt::format("device-shared memory outside the heap (block {:#x}+{:#x} "
-                                      "state {:#x})",
-                                      block.address, block.size, block.state));
+        // Device sharing is rebuilt by nvdrv relocking its handles, after the restore has mapped
+        // the heap, the physical memory and the loader's data (a GPU buffer in .bss). So it needs
+        // one of those states, and a serialized handle over every byte: a range no handle covers
+        // would come back unshared and fail the layout check at resume.
+        if (True(attribute & KMemoryAttribute::DeviceShared)) {
+            if (!normal && state != KMemoryState::CodeData) {
+                Reject(false, fmt::format("device-shared memory outside the heap and static data "
+                                          "(block {:#x}+{:#x} state {:#x})",
+                                          block.address, block.size, block.state));
+            }
+            if (!Covered(device_shared, block.address, block.address + block.size)) {
+                Reject(false, fmt::format("device-shared memory without an nvmap handle (block "
+                                          "{:#x}+{:#x} state {:#x})",
+                                          block.address, block.size, block.state));
+            }
         }
         // svcMapMemory (a thread stack) and transfer memory lock their source, which may be static
         // data (.bss, CodeData) as well as the heap: the restore replays the same calls.
