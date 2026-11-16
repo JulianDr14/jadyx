@@ -15,11 +15,18 @@ Error AdoptEmbeddedContent(ContentStore& store, Catalog& catalog, FileSys::VfsFi
 
 /// Portal-facing actions return an error word ("" on success), as the browser shows them.
 
-/// Installs one received NSP/XCI into internal storage for `application`. Only content of
-/// `kind` is taken; the package must belong to that game. Returns a portal error word,
-/// empty on success.
+/// Installs one received NSP/XCI for `application`: in LocalState, or on D: with `developer`.
+/// Only content of `kind` is taken; the package must belong to that game. Returns a portal error
+/// word, empty on success.
 std::string ImportUploadedContent(const std::filesystem::path& package, Kind kind, std::uint64_t application,
-                                  const std::string& base_path, std::stop_token stop = {}, Progress progress = {});
+                                  const std::string& base_path, bool developer = false,
+                                  std::stop_token stop = {}, Progress progress = {});
+
+/// Moves the console's copy of one update/DLC of `application` to D: (`developer`) or back to
+/// LocalState. The new copy is hashed before the catalog points at it; the old one is deleted
+/// after. "" when it is already there.
+std::string MoveContent(std::uint64_t application, const std::string& id, bool developer,
+                        std::stop_token stop = {}, Progress progress = {});
 
 /// Deletes one update/DLC registered for `application`, internal copy included.
 std::string RemoveContent(std::uint64_t application, const std::string& id);

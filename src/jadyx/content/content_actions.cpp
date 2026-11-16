@@ -5,7 +5,9 @@
 #include <array>
 #include <cstring>
 #include "core/file_sys/common_funcs.h"
+#include "common/logging.h"
 #include "core/file_sys/vfs/vfs_real.h"
+#include "jadyx/storage/storage_location.h"
 #include "jadyx/storage/uwp_rom_storage.h"
 
 namespace Jadyx::Content {
@@ -63,8 +65,10 @@ Error AdoptEmbeddedContent(ContentStore& store, Catalog& catalog, FileSys::VfsFi
 }
 
 std::string ImportUploadedContent(const std::filesystem::path& package, Kind kind, std::uint64_t application,
-                                  const std::string& base_path, std::stop_token stop, Progress progress) {
+                                  const std::string& base_path, bool developer, std::stop_token stop,
+                                  Progress progress) {
     application = FileSys::GetBaseTitleID(application);
+    if (developer && !DeveloperStorageAvailable()) return "destination";
     auto store = DefaultStore();
     const auto vfs = MakeUwpFilesystem();
     Catalog catalog;
@@ -98,9 +102,45 @@ std::string ImportUploadedContent(const std::filesystem::path& package, Kind kin
         if (stop.stop_requested()) return "interrupted";
         if (content.revision.kind != kind) continue;
         // Same choices as the content manager: internal copy, base present, never a downgrade.
-        if (const auto error = ExecuteImport(store, catalog, *vfs, content, true, true, stop, progress, base_version);
-            error != Error::None) return Word(error);
+        if (const auto error = ExecuteImport(store, catalog, *vfs, content, true, true, stop, progress, base_version,
+                                             developer);
+            error != Error::None) return error == Error::Unavailable ? "destination" : Word(error);
     }
+    return {};
+}
+
+std::string MoveContent(std::uint64_t application, const std::string& id, bool developer,
+                        std::stop_token stop, Progress progress) {
+    const auto store = DefaultStore();
+    Catalog catalog;
+    if (const auto error = store.Load(catalog); error != Error::None) return Word(error);
+    const auto found = std::find_if(catalog.revisions.begin(), catalog.revisions.end(),
+        [&](const Revision& r) { return r.id == id && r.application == application; });
+    // Only a copy the console owns can move; content read from the game or a USB folder cannot.
+    if (found == catalog.revisions.end() || !found->internal) return "content";
+    if (found->developer == developer) return {};
+    if (developer && !DeveloperStorageAvailable()) return "destination";
+    // A copy left on the destination by an interrupted move is not registered: clear it first.
+    store.Cleanup(catalog);
+    const auto vfs = MakeUwpFilesystem();
+    const auto source = store.Object(id, found->developer);
+    const auto encoded = source.u8string();
+    auto inspected = InspectPackage(*vfs, std::string{encoded.begin(), encoded.end()}, false, stop);
+    if (stop.stop_requested()) return "interrupted";
+    const auto content = std::find_if(inspected.contents.begin(), inspected.contents.end(),
+        [&](const auto& c) { return c.revision.id == id && c.error == Error::None; });
+    // Its copy is gone (D: is erased when its size changes) or damaged: nothing to move.
+    if (inspected.error != Error::None || content == inspected.contents.end()) return "missing";
+    if (const auto error = InstallObject(store, *vfs, *content, developer, stop, progress); error != Error::None)
+        return error == Error::Unavailable ? "destination" : Word(error);
+    inspected.contents.clear(); // Close the old copy before it is deleted.
+    Catalog next = catalog;
+    for (auto& r : next.revisions) if (r.id == id) r.developer = developer;
+    // Twice, like a removal: the backup generation would otherwise keep the old copy alive.
+    if (auto error = store.Save(next); error != Error::None) { store.Cleanup(catalog); return Word(error); }
+    if (auto error = store.Save(next); error != Error::None) return Word(error);
+    store.Cleanup(next);
+    LOG_INFO(Frontend, "Content: moved title={:016X} to {}", found->title, developer ? "developer" : "internal");
     return {};
 }
 

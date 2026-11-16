@@ -3,6 +3,7 @@
 #include "jadyx/content/content_service.h"
 #include <mutex>
 #include <fstream>
+#include "jadyx/storage/storage_location.h"
 #include "jadyx/storage/uwp_rom_storage.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
@@ -46,10 +47,80 @@ std::uint32_t PackageBaseVersion(FileSys::VfsFilesystem& vfs, const std::string&
     return file && provider.AddEntriesFromContainer(file) ? BaseVersion(provider, application) : 0;
 }
 ContentStore DefaultStore() {
-    return ContentStore{Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir).parent_path() / "content"};
+    return ContentStore{Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir).parent_path() / "content", {},
+                        DeveloperContent()};
 }
 std::string SourcePath(const ContentStore& store, const Revision& revision) {
-    return revision.internal ? Utf8(store.Object(revision.id)) : revision.source;
+    return revision.internal ? Utf8(store.Object(revision.id, revision.developer)) : revision.source;
+}
+Error InstallObject(const ContentStore& store, FileSys::VfsFilesystem& vfs, InspectedContent& content,
+                    bool developer, std::stop_token stop, Progress progress) {
+    const auto& id = content.revision.id;
+    const auto total = content.revision.bytes;
+    if (developer && !DeveloperStorageAvailable()) return Error::Unavailable;
+    const auto temporary = store.Temporary(id, developer), final = store.Object(id, developer);
+    if (temporary.empty() || final.empty()) return Error::Invalid;
+    std::error_code ec;
+    const auto& base = store.ObjectRoot(developer);
+    std::filesystem::create_directories(base, ec);
+    const auto space = std::filesystem::space(base, ec);
+    // D: keeps room for app updates; LocalState only a margin.
+    const std::uint64_t reserve = developer ? StorageReserveFor(base) : 16 * 1024 * 1024;
+    if (ec || space.available < total + reserve) return Error::Space;
+    // Only generated, validated id paths are removable. Never the source path.
+    if (std::filesystem::exists(final)) return Error::Conflict;
+    std::filesystem::remove_all(temporary, ec);
+    std::filesystem::create_directories(temporary, ec);
+    if (ec) return Error::Io;
+    u64 done{};
+    Error copy_error = Error::Io;
+    const auto copy = [&](const FileSys::VirtualFile& source, const FileSys::VirtualFile& target, size_t) {
+        if (!source || !target || !target->Resize(source->GetSize())) return false;
+        std::vector<u8> buffer(1024 * 1024);
+        for (size_t offset = 0; offset < source->GetSize();) {
+            if (stop.stop_requested()) { copy_error = Error::Cancelled; return false; }
+            const auto bytes = std::min(buffer.size(), source->GetSize() - offset);
+            if (source->Read(buffer.data(), bytes, offset) != bytes || target->Write(buffer.data(), bytes, offset) != bytes)
+                return false;
+            offset += bytes; done += bytes;
+            if (progress) progress(done, total);
+        }
+        const auto real = std::static_pointer_cast<FileSys::RealVfsFile>(target);
+        return real && real->Commit();
+    };
+    const auto fail = [&](Error error) { std::error_code ignored; std::filesystem::remove_all(temporary, ignored); return error; };
+    {
+        FileSys::RealVfsFilesystem disk;
+        auto dir = disk.OpenDirectory(Utf8(temporary), FileSys::OpenMode::ReadWrite);
+        if (!dir) return fail(Error::Io);
+        FileSys::RegisteredCache cache{dir};
+        std::vector<FileSys::VirtualFile> files;
+        for (const auto& item : content.files) files.push_back(item.file);
+        if (cache.InstallContentSet(*content.cnmt, content.meta, files, copy) != FileSys::InstallResult::Success)
+            return fail(copy_error);
+        for (const auto& ticket : content.tickets) {
+            // Ticket names come from RightsId, never from a USB filename.
+            const auto value = Core::Crypto::Ticket::Read(ticket);
+            if (!value.IsValid()) return fail(Error::Invalid);
+            std::string name;
+            constexpr char digits[] = "0123456789abcdef";
+            for (auto b : value.GetData().rights_id) { name += digits[b >> 4]; name += digits[b & 15]; }
+            if (!copy(ticket, dir->CreateFile(name + ".tik"), 0)) return fail(copy_error);
+        }
+    }
+    // Reread the destination through the same readers and hash all its referenced payloads.
+    {
+        auto checked = InspectPackage(vfs, Utf8(temporary), true, stop, progress);
+        const auto found = std::find_if(checked.contents.begin(), checked.contents.end(),
+            [&](const auto& c) { return c.revision.id == id && c.error == Error::None; });
+        if (checked.error != Error::None || found == checked.contents.end())
+            return fail(stop.stop_requested() ? Error::Cancelled : Error::HashMismatch);
+    }
+    if (stop.stop_requested()) return fail(Error::Cancelled);
+    std::filesystem::create_directories(final.parent_path(), ec);
+    std::filesystem::rename(temporary, final, ec);
+    if (ec) return fail(Error::Io);
+    return Error::None;
 }
 void AllowMissingForNextLaunch(std::string path) {
     std::scoped_lock lock{launch_mutex}; allow_missing = std::move(path);
@@ -60,7 +131,7 @@ bool ConsumeAllowMissing(const std::string& path) {
 }
 Error ExecuteImport(ContentStore& store, Catalog& catalog, FileSys::VfsFilesystem& vfs,
                     InspectedContent& content, bool copy_internal, bool have_base,
-                    std::stop_token stop, Progress progress, std::uint32_t base_version) {
+                    std::stop_token stop, Progress progress, std::uint32_t base_version, bool developer) {
     if (content.error != Error::None) return content.error;
     const auto action = PlanImport(catalog.revisions, content.revision);
     if (action == ImportAction::Duplicate) return Error::None;
@@ -69,63 +140,9 @@ Error ExecuteImport(ContentStore& store, Catalog& catalog, FileSys::VfsFilesyste
     Revision added = content.revision;
     added.source_stamp = StorageFileStamp(added.source);
     if (copy_internal) {
-        const auto temporary = store.Temporary(added.id), final = store.Object(added.id);
-        if (temporary.empty() || final.empty()) return Error::Invalid;
-        std::error_code ec;
-        std::filesystem::create_directories(store.Root(), ec);
-        const auto space = std::filesystem::space(store.Root(), ec);
-        if (ec || space.available < added.bytes + 16 * 1024 * 1024) return Error::Space;
-        // Only generated, validated id paths are removable. Never the source path.
-        if (std::filesystem::exists(final)) return Error::Conflict;
-        std::filesystem::remove_all(temporary, ec);
-        std::filesystem::create_directories(temporary, ec);
-        if (ec) return Error::Io;
-        u64 done{};
-        Error copy_error = Error::Io;
-        const auto copy = [&](const FileSys::VirtualFile& source, const FileSys::VirtualFile& target, size_t) {
-            if (!source || !target || !target->Resize(source->GetSize())) return false;
-            std::vector<u8> buffer(1024 * 1024);
-            for (size_t offset = 0; offset < source->GetSize();) {
-                if (stop.stop_requested()) { copy_error = Error::Cancelled; return false; }
-                const auto bytes = std::min(buffer.size(), source->GetSize() - offset);
-                if (source->Read(buffer.data(), bytes, offset) != bytes || target->Write(buffer.data(), bytes, offset) != bytes)
-                    return false;
-                offset += bytes; done += bytes;
-                if (progress) progress(done, added.bytes);
-            }
-            const auto real = std::static_pointer_cast<FileSys::RealVfsFile>(target);
-            return real && real->Commit();
-        };
-        {
-            FileSys::RealVfsFilesystem disk;
-            auto dir = disk.OpenDirectory(Utf8(temporary), FileSys::OpenMode::ReadWrite);
-            if (!dir) return Error::Io;
-            FileSys::RegisteredCache cache{dir};
-            std::vector<FileSys::VirtualFile> files;
-            for (const auto& item : content.files) files.push_back(item.file);
-            if (cache.InstallContentSet(*content.cnmt, content.meta, files, copy) != FileSys::InstallResult::Success)
-                return copy_error;
-            for (const auto& ticket : content.tickets) {
-                // Ticket names come from RightsId, never from a USB filename.
-                const auto value = Core::Crypto::Ticket::Read(ticket);
-                if (!value.IsValid()) return Error::Invalid;
-                std::string name;
-                constexpr char digits[] = "0123456789abcdef";
-                for (auto b : value.GetData().rights_id) { name += digits[b >> 4]; name += digits[b & 15]; }
-                if (!copy(ticket, dir->CreateFile(name + ".tik"), 0)) return copy_error;
-            }
-        }
-        // Reread the destination through the same readers and hash all its referenced payloads.
-        auto checked = InspectPackage(vfs, Utf8(temporary), true, stop, progress);
-        const auto found = std::find_if(checked.contents.begin(), checked.contents.end(),
-            [&](const auto& c) { return c.revision.id == added.id && c.error == Error::None; });
-        if (checked.error != Error::None || found == checked.contents.end()) return Error::HashMismatch;
-        checked.contents.clear();
-        if (stop.stop_requested()) return Error::Cancelled;
-        std::filesystem::create_directories(final.parent_path(), ec);
-        std::filesystem::rename(temporary, final, ec);
-        if (ec) return Error::Io;
+        if (auto error = InstallObject(store, vfs, content, developer, stop, progress); error != Error::None) return error;
         added.internal = true;
+        added.developer = developer;
         added.source.clear(); // The generated object id is the only internal location.
     }
     if (stop.stop_requested()) return Error::Cancelled;
@@ -139,7 +156,8 @@ Error ExecuteImport(ContentStore& store, Catalog& catalog, FileSys::VfsFilesyste
     catalog = std::move(next);
     store.Cleanup(catalog);
     LOG_INFO(Frontend, "Content: imported title={:016X} version={} storage={} verified=true",
-             content.revision.title, content.revision.version, copy_internal ? "internal" : "reference");
+             content.revision.title, content.revision.version,
+             !copy_internal ? "reference" : developer ? "developer" : "internal");
     return Error::None;
 }
 

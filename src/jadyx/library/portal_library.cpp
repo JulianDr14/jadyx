@@ -135,7 +135,8 @@ PortalLibrary PortalLibrarySource::View() {
                 if (r.application != application) continue;
                 list.push_back({.id = r.id, .kind = r.kind == Content::Kind::Update ? "update" : "dlc",
                                 .name = r.name, .version = r.display_version, .title = r.title,
-                                .bytes = r.bytes, .enabled = r.enabled, .internal = r.internal});
+                                .bytes = r.bytes, .enabled = r.enabled, .internal = r.internal,
+                                .developer = r.internal && r.developer});
             }
             return list;
         },
@@ -156,7 +157,7 @@ std::optional<PortalLibrarySource::Game> PortalLibrarySource::Find(std::uint64_t
 }
 
 std::string PortalLibrarySource::Install(const std::filesystem::path& package, const std::string& tag,
-                                         std::stop_token stop, const Content::Progress& progress) {
+                                         bool developer, std::stop_token stop, const Content::Progress& progress) {
     // The portal validated the tag when the upload was created; parse it again, never trust it.
     const auto application = ContentTagApplication(tag);
     if (!application) return "file";
@@ -168,14 +169,20 @@ std::string PortalLibrarySource::Install(const std::filesystem::path& package, c
     };
     if (tag.starts_with("save:")) return ImportSave(package, application, stop, report);
     return Content::ImportUploadedContent(package, tag.starts_with("update:") ? Content::Kind::Update : Content::Kind::Dlc,
-        application, game->launch_path, stop, report);
+        application, game->launch_path, developer, stop, report);
 }
 
-std::string PortalLibrarySource::Remove(const PortalRemoval& removal) {
+std::string PortalLibrarySource::Remove(const PortalRemoval& removal, std::stop_token stop,
+                                        const Content::Progress& progress) {
     const auto game = Find(removal.application);
     if (!game) return "game";
-    return removal.content.empty() ? RemoveGame(root, game->files) :
-                                     Content::RemoveContent(removal.application, removal.content);
+    if (removal.content.empty()) return RemoveGame(root, game->files);
+    if (removal.destination.empty()) return Content::RemoveContent(removal.application, removal.content);
+    const auto report = [&](std::uint64_t done, std::uint64_t total) {
+        Progress(done, total);
+        if (progress) progress(done, total);
+    };
+    return Content::MoveContent(removal.application, removal.content, removal.destination == "developer", stop, report);
 }
 
 std::optional<std::string> PortalLibrarySource::Cover(std::uint64_t application) {

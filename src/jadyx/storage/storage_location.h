@@ -3,9 +3,9 @@
 #pragma once
 
 // Dev Mode's own storage on D: (the size players set in "Manage dev storage"). Everything stays
-// in LocalState except the games a Jadyx Portal upload sends there: the library lists and deletes
-// them next to the internal ones. That storage outlives the app but is erased whenever its size
-// changes.
+// in LocalState except the games, updates and DLC a Jadyx Portal upload (or move) sends there:
+// the library lists and deletes them next to the internal ones. That storage outlives the app but
+// is erased whenever its size changes.
 
 #include <cstdint>
 #include <filesystem>
@@ -19,6 +19,10 @@ inline const std::filesystem::path& DeveloperFiles() {
 }
 inline std::filesystem::path DeveloperGames() { return DeveloperFiles() / L"Jadyx" / L"games"; }
 inline std::filesystem::path DeveloperTransfers() { return DeveloperFiles() / L"Jadyx" / L"transfers" / L"nsp"; }
+/// Updates and DLC uploaded to D:, staged apart from the games' upload so both can be pending.
+inline std::filesystem::path DeveloperContentTransfers() { return DeveloperFiles() / L"Jadyx" / L"transfers" / L"content"; }
+/// Internal copies of updates/DLC kept on D: (their catalog stays in LocalState).
+inline std::filesystem::path DeveloperContent() { return DeveloperFiles() / L"Jadyx" / L"content"; }
 
 /// Dev Mode's storage is present.
 inline bool DeveloperStorageAvailable() {

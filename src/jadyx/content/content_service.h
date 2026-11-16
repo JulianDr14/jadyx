@@ -13,9 +13,15 @@ ContentStore DefaultStore();
 std::uint32_t SupportedSystemVersion();
 std::uint32_t PackageBaseVersion(FileSys::VfsFilesystem& vfs, const std::string& path, std::uint64_t application);
 std::string SourcePath(const ContentStore& store, const Revision& revision);
+/// Copies `content` into the store as its internal object (on D: with `developer`), then rereads
+/// and hashes the copy before publishing it. Leaves the catalog alone.
+Error InstallObject(const ContentStore& store, FileSys::VfsFilesystem& vfs, InspectedContent& content,
+                    bool developer, std::stop_token stop = {}, Progress progress = {});
+/// With `copy_internal`, `developer` keeps the copy in Dev Mode's storage on D:.
 Error ExecuteImport(ContentStore& store, Catalog& catalog, FileSys::VfsFilesystem& vfs,
                     InspectedContent& content, bool copy_internal, bool have_base,
-                    std::stop_token stop = {}, Progress progress = {}, std::uint32_t base_version = 0);
+                    std::stop_token stop = {}, Progress progress = {}, std::uint32_t base_version = 0,
+                    bool developer = false);
 struct LaunchResolution {
     Error error{};
     std::uint64_t application{};
