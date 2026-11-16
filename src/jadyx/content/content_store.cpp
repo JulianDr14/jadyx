@@ -55,7 +55,7 @@ Json Encode(const Catalog& catalog) {
         {"application", r.application}, {"title", r.title}, {"version", r.version},
         {"required_application", r.required_application}, {"required_system", r.required_system},
         {"bytes", r.bytes}, {"source_size", r.source_size}, {"source_stamp", r.source_stamp}, {"kind", r.kind == Kind::Update ? "update" : "dlc"},
-        {"internal", r.internal}, {"verified", r.verified}, {"enabled", r.enabled}});
+        {"internal", r.internal}, {"developer", r.developer}, {"verified", r.verified}, {"enabled", r.enabled}});
     return {{"schema", 1}, {"generation", catalog.generation}, {"entries", entries}, {"managed_applications", catalog.managed_applications}};
 }
 bool Read(const std::filesystem::path& path, Catalog& output) {
@@ -86,6 +86,8 @@ bool Read(const std::filesystem::path& path, Catalog& output) {
             if (kind != "update" && kind != "dlc") return false;
             r.kind = kind == "update" ? Kind::Update : Kind::Dlc;
             r.internal = item.at("internal"); r.verified = item.at("verified"); r.enabled = item.at("enabled");
+            r.developer = item.value("developer", false); // Absent before copies could live on D:.
+            if (r.developer && !r.internal) return false;
             if (!ValidId(r.id) || !ids.insert(r.id).second || r.source.size() > 4096 ||
                 r.source.find('\0') != std::string::npos || r.name.size() > 1024 || r.display_version.size() > 128 ||
                 !r.application || (r.title & 0xffffffffffffe000ULL) != r.application ||
@@ -114,11 +116,13 @@ std::uint64_t ApplicationStamp(const Catalog& catalog, std::uint64_t application
     return stamp | 1;
 }
 
-std::filesystem::path ContentStore::Object(const std::string& id) const {
-    return ValidId(id) ? root / "objects" / id : std::filesystem::path{};
+std::filesystem::path ContentStore::Object(const std::string& id, bool developer) const {
+    const auto& base = ObjectRoot(developer);
+    return ValidId(id) && !base.empty() ? base / "objects" / id : std::filesystem::path{};
 }
-std::filesystem::path ContentStore::Temporary(const std::string& id) const {
-    return ValidId(id) ? root / "pending" / id : std::filesystem::path{};
+std::filesystem::path ContentStore::Temporary(const std::string& id, bool developer) const {
+    const auto& base = ObjectRoot(developer);
+    return ValidId(id) && !base.empty() ? base / "pending" / id : std::filesystem::path{};
 }
 Error ContentStore::Load(Catalog& catalog) const {
     const auto path = root / "catalog.json";
@@ -164,19 +168,26 @@ Error ContentStore::Remove(Catalog& catalog, const std::function<bool(const Revi
     return Error::None;
 }
 void ContentStore::Cleanup(const Catalog& catalog) const {
-    std::set<std::string> keep;
-    for (const auto& r : catalog.revisions) if (r.internal) keep.insert(r.id);
+    // Each volume keeps only the copies registered on it, so a move frees the copy it left behind.
+    std::set<std::string> keep[2];
+    const auto protect = [&](const Catalog& c) {
+        for (const auto& r : c.revisions) if (r.internal) keep[r.developer].insert(r.id);
+    };
+    protect(catalog);
     Catalog previous;
-    if (Read(root / "catalog.previous.json", previous))
-        for (const auto& r : previous.revisions) if (r.internal) keep.insert(r.id);
-    for (const auto& folder : {root / "pending", root / "objects"}) {
-        std::error_code ec;
-        for (std::filesystem::directory_iterator it{folder, ec}, end; !ec && it != end; it.increment(ec)) {
-            const auto name = it->path().filename().string();
-            if (!ValidId(name) || it->is_symlink(ec)) continue;
-            if (folder.filename() == "pending" || !keep.contains(name)) {
-                // Paths are generated 64-hex children, never taken from source/JSON paths.
-                std::filesystem::remove_all(it->path(), ec);
+    if (Read(root / "catalog.previous.json", previous)) protect(previous);
+    for (const bool developer : {false, true}) {
+        const auto& base = ObjectRoot(developer);
+        if (base.empty()) continue;
+        for (const auto& folder : {base / "pending", base / "objects"}) {
+            std::error_code ec;
+            for (std::filesystem::directory_iterator it{folder, ec}, end; !ec && it != end; it.increment(ec)) {
+                const auto name = it->path().filename().string();
+                if (!ValidId(name) || it->is_symlink(ec)) continue;
+                if (folder.filename() == "pending" || !keep[developer].contains(name)) {
+                    // Paths are generated 64-hex children, never taken from source/JSON paths.
+                    std::filesystem::remove_all(it->path(), ec);
+                }
             }
         }
     }

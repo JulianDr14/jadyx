@@ -60,16 +60,35 @@ int main() {
     std::filesystem::create_directories(store.Temporary(newer.id));
     std::filesystem::create_directories(root / "pending" / "user-folder");
     Check(store.Remove(loaded, first.id) == Error::None);
-    Check(std::filesystem::exists(store.Object(first.id)) && !std::filesystem::exists(store.Temporary(newer.id)));
+    // Remove publishes twice before cleaning, so the deleted copy is freed at once.
+    Check(!std::filesystem::exists(store.Object(first.id)) && !std::filesystem::exists(store.Temporary(newer.id)));
     Check(std::filesystem::exists(root / "pending" / "user-folder"));
     Check(store.Save(loaded) == Error::None); store.Cleanup(loaded);
     Check(!std::filesystem::exists(store.Object(first.id)));
     for (const auto& r : std::vector<Revision>{loaded.revisions}) Check(store.Remove(loaded, r.id) == Error::None);
     Check(store.Load(loaded) == Error::None && loaded.revisions.empty() && loaded.managed_applications.size() == 1);
+    // A copy on D: survives only on D:: after a move, the copy left on the other volume is freed.
+    {
+        const auto local = root / "split-local", dev = root / "split-dev";
+        ContentStore split{local, {}, dev}; Catalog moved;
+        auto item = Item('f', 3); item.internal = true; item.developer = true; item.enabled = true;
+        moved.revisions.push_back(item);
+        Check(split.Object(item.id, true).parent_path().parent_path() == dev);
+        Check(ContentStore{local}.Object(item.id, true).empty());
+        std::filesystem::create_directories(split.Object(item.id, true));
+        std::filesystem::create_directories(split.Object(item.id, false));
+        Check(split.Save(moved) == Error::None); Check(split.Save(moved) == Error::None); split.Cleanup(moved);
+        Check(std::filesystem::exists(split.Object(item.id, true)) && !std::filesystem::exists(split.Object(item.id, false)));
+        Catalog reread; Check(split.Load(reread) == Error::None && reread.revisions.size() == 1 && reread.revisions[0].developer);
+        moved.revisions[0].developer = false;
+        std::filesystem::create_directories(split.Object(item.id, false));
+        Check(split.Save(moved) == Error::None); Check(split.Save(moved) == Error::None); split.Cleanup(moved);
+        Check(!std::filesystem::exists(split.Object(item.id, true)) && std::filesystem::exists(split.Object(item.id, false)));
+    }
     // Corruption of both generations must never reset the user's decisions silently.
     { std::ofstream{root / "catalog.json", std::ios::trunc} << "[]";
       std::ofstream{root / "catalog.previous.json", std::ios::trunc} << "{}"; }
     Check(store.Load(loaded) == Error::Registry);
     std::filesystem::remove_all(root);
-    std::puts("PASS content: versions/conflicts/downgrade/orphans, five publication faults, recovery, cleanup, tombstone");
+    std::puts("PASS content: versions/conflicts/downgrade/orphans, five publication faults, recovery, cleanup per volume, tombstone");
 }

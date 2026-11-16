@@ -17,6 +17,8 @@ struct Revision {
     std::uint32_t version{}, required_application{}, required_system{};
     Kind kind{};
     bool internal{}, verified{}, enabled{};
+    /// An internal copy kept in Dev Mode's storage on D: instead of LocalState.
+    bool developer{};
 };
 inline bool RequirementsSatisfied(const Revision& r, std::uint32_t application, std::uint32_t system) {
     // Only major.minor of the system version count: micro releases (and the relstep below them)

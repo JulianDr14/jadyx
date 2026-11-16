@@ -19,8 +19,9 @@ class ContentStore {
 public:
     enum class PublishStep { WriteNext, ValidateNext, WriteBackup, ReplaceBackup, ReplaceCatalog };
     using Failure = std::function<bool(PublishStep)>;
-    explicit ContentStore(std::filesystem::path root_, Failure failure_ = {})
-        : root(std::move(root_)), failure(std::move(failure_)) {}
+    explicit ContentStore(std::filesystem::path root_, Failure failure_ = {},
+                          std::filesystem::path developer_root_ = {})
+        : root(std::move(root_)), developer_root(std::move(developer_root_)), failure(std::move(failure_)) {}
     Error Load(Catalog& catalog) const;
     Error Save(Catalog& catalog) const;
     Error Remove(Catalog& catalog, const std::string& id) const;
@@ -28,11 +29,15 @@ public:
     /// none matched.
     Error Remove(Catalog& catalog, const std::function<bool(const Revision&)>& match) const;
     void Cleanup(const Catalog& catalog) const;
-    std::filesystem::path Object(const std::string& id) const;
-    std::filesystem::path Temporary(const std::string& id) const;
+    /// Where an internal copy lives: LocalState, or Dev Mode's storage on D: with `developer`.
+    /// Empty when the id is not valid or the store has no developer root.
+    std::filesystem::path Object(const std::string& id, bool developer = false) const;
+    std::filesystem::path Temporary(const std::string& id, bool developer = false) const;
+    /// The catalog's folder. Copies on D: live under ObjectRoot(true); the catalog never does.
     const std::filesystem::path& Root() const { return root; }
+    const std::filesystem::path& ObjectRoot(bool developer) const { return developer ? developer_root : root; }
 private:
-    std::filesystem::path root;
+    std::filesystem::path root, developer_root;
     Failure failure;
 };
 } // namespace Jadyx::Content
