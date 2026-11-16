@@ -479,7 +479,10 @@ public:
 
     /// One-slice 3D copy of this single-layer 2D image, for shaders that sample it as 3D (D3D12
     /// has no 3D view of a 2D resource). Null when it cannot be made. Created on first use.
+    /// Images wider or taller than 2048 start at their first level that fits (VolumeLevelBias).
     [[nodiscard]] ID3D12Resource* Volume();
+    /// Image level held by the volume's level 0.
+    [[nodiscard]] u32 VolumeLevelBias() const noexcept { return volume_level_bias; }
     /// Copies the texels again if the image was written since the last copy; call before a
     /// draw or dispatch that reads Volume().
     void RefreshVolume();
@@ -576,7 +579,9 @@ private:
     [[nodiscard]] std::size_t ReinterpretedIndex(const ID3D12Resource* copy) const noexcept;
     /// Aliasing barrier, transition to the writable state and discard (see needs_placed_init).
     void InitializePlacedResource();
-    void CopyThroughBuffer(ID3D12Resource* src, ID3D12Resource* dst);
+    /// Copies every subresource of dst from src, src_first_level levels down in src (only for
+    /// single-layer sources when non-zero).
+    void CopyThroughBuffer(ID3D12Resource* src, ID3D12Resource* dst, u32 src_first_level = 0);
     Image* EnsureGuestBlocks();
     bool HasGuestBlocks(const VideoCommon::ImageCopy& copy) const;
     void IncludeGuestBlocks(const VideoCommon::ImageCopy& copy);
@@ -646,6 +651,10 @@ private:
     ComPtr<ID3D12Resource> volume;
     D3D12_RESOURCE_STATES volume_state{D3D12_RESOURCE_STATE_COMMON};
     u64 volume_version{};
+    /// Image levels above the volume's top (3D textures stop at 2048 texels a side).
+    u32 volume_level_bias{};
+    /// The image has no valid 3D layout (format or size); Volume() stays null.
+    bool volume_unsupported{};
     ComPtr<ID3D12Resource> cube;
     D3D12_RESOURCE_STATES cube_state{D3D12_RESOURCE_STATE_COMMON};
     u64 cube_version{};

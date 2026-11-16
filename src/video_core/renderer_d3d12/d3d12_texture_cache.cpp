@@ -865,6 +865,8 @@ Image& Image::operator=(Image&& other) noexcept {
         volume = std::move(other.volume);
         volume_state = other.volume_state;
         volume_version = other.volume_version;
+        volume_level_bias = other.volume_level_bias;
+        volume_unsupported = other.volume_unsupported;
         cube = std::move(other.cube);
         cube_state = other.cube_state;
         cube_version = other.cube_version;
@@ -1334,17 +1336,33 @@ bool TextureCacheRuntime::ArrayExperiment(Image& image) {
     return moved;
 }
 
+namespace {
+/// Commits a texture for a copy of an image seen through another dimension or layer count.
+/// The desc comes from the image's GetDesc(), which keeps the image's placement alignment:
+/// 4 KiB for small placed textures, valid only for that exact layout. A 3D or six-layer copy of
+/// such an image no longer fits 64 KiB, and D3D12 rejects it with E_INVALIDARG, so the copy
+/// takes the default alignment.
+ComPtr<ID3D12Resource> CreateCopyTexture(ID3D12Device* device, D3D12_RESOURCE_DESC desc,
+                                         const char* what) {
+    desc.Alignment = 0;
+    desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+    ComPtr<ID3D12Resource> texture;
+    ThrowIfFailed(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                                  D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                                  IID_PPV_ARGS(&texture)),
+                  what);
+    return texture;
+}
+} // Anonymous namespace
+
 ID3D12Resource* Image::SliceArray() {
     if (slice_array || !resource || info.type != ImageType::e3D) {
         return slice_array.Get();
     }
     D3D12_RESOURCE_DESC desc = resource->GetDesc();
     desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
-    ThrowIfFailed(runtime->device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                  D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&slice_array)),
-                  "Create 3D image slice array");
+    slice_array = CreateCopyTexture(runtime->device.Get(), desc, "Create 3D image slice array");
     CheckRemovedAfter(runtime->device.Get(), [&] {
         return fmt::format("creating the slice array of 3D image {} (format {} {}x{}x{} levels {})",
                            info.format, static_cast<u32>(desc.Format), desc.Width, desc.Height,
@@ -1358,29 +1376,52 @@ ID3D12Resource* Image::SliceArray() {
 }
 
 ID3D12Resource* Image::Volume() {
-    if (volume || !resource || info.type != ImageType::e2D) {
+    if (volume || volume_unsupported || !resource || info.type != ImageType::e2D) {
         return volume.Get();
     }
-    D3D12_RESOURCE_DESC desc = resource->GetDesc();
-    if (desc.DepthOrArraySize != 1 || desc.SampleDesc.Count > 1 ||
-        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) {
+    const D3D12_RESOURCE_DESC image_desc = resource->GetDesc();
+    if (image_desc.DepthOrArraySize != 1 || image_desc.SampleDesc.Count > 1 ||
+        (image_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) {
         return nullptr;
     }
+    // 3D textures stop at 2048 texels a side: start at the first level that fits. The view
+    // shifts its levels by the same bias, so sampling reads the same texels from there down.
+    u32 bias = 0;
+    while (bias + 1 < image_desc.MipLevels &&
+           std::max<u64>(image_desc.Width >> bias, image_desc.Height >> bias) >
+               D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION) {
+        ++bias;
+    }
+    D3D12_RESOURCE_DESC desc = image_desc;
     desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+    desc.Alignment = 0;
     desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
-    ThrowIfFailed(runtime->device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                  D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&volume)),
-                  "Create 2D image volume");
+    desc.Width = std::max<u64>(1, image_desc.Width >> bias);
+    desc.Height = std::max(1U, image_desc.Height >> bias);
+    desc.MipLevels = static_cast<u16>(image_desc.MipLevels - bias);
+    // The runtime's own rules decide (size, format, block alignment): depth families such as
+    // R24G8 have no 3D layout, and an image too big even at its last level has none either.
+    if (runtime->device.Get()->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes == UINT64_MAX) {
+        volume_unsupported = true;
+        LOG_WARNING(Render,
+                    "D3D12: 2D image {} (format {} {}x{} levels {}) @{:x} has no 3D layout; "
+                    "shaders sampling it as 3D read zero",
+                    info.format, static_cast<u32>(image_desc.Format), image_desc.Width,
+                    image_desc.Height, image_desc.MipLevels, gpu_addr);
+        return nullptr;
+    }
+    volume = CreateCopyTexture(runtime->device.Get(), desc, "Create 2D image volume");
     CheckRemovedAfter(runtime->device.Get(), [&] {
         return fmt::format("creating the volume of 2D image {} (format {} {}x{} levels {})",
                            info.format, static_cast<u32>(desc.Format), desc.Width, desc.Height,
                            desc.MipLevels);
     });
+    volume_level_bias = bias;
     volume_state = D3D12_RESOURCE_STATE_COMMON;
     volume_version = 0;
-    LOG_INFO(Render, "D3D12: 2D image {} {}x{} @{:x} read as 3D through a one-slice copy",
-             info.format, desc.Width, desc.Height, gpu_addr);
+    LOG_INFO(Render, "D3D12: 2D image {} {}x{} @{:x} read as 3D through a one-slice copy{}",
+             info.format, image_desc.Width, image_desc.Height, gpu_addr,
+             bias ? fmt::format(" from level {}", bias) : std::string{});
     return volume.Get();
 }
 
@@ -1394,7 +1435,7 @@ void Image::RefreshVolume() {
     if (volume_state != D3D12_RESOURCE_STATE_COPY_DEST) {
         TransitionBuffer(commands, volume.Get(), volume_state, D3D12_RESOURCE_STATE_COPY_DEST);
     }
-    CopyThroughBuffer(resource.Get(), volume.Get());
+    CopyThroughBuffer(resource.Get(), volume.Get(), volume_level_bias);
     volume_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     TransitionBuffer(commands, volume.Get(), D3D12_RESOURCE_STATE_COPY_DEST, volume_state);
@@ -1411,11 +1452,7 @@ ID3D12Resource* Image::Cube() {
         return nullptr;
     }
     desc.DepthOrArraySize = 6;
-    desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-    const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
-    ThrowIfFailed(runtime->device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                  D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&cube)),
-                  "Create 2D image cube");
+    cube = CreateCopyTexture(runtime->device.Get(), desc, "Create 2D image cube");
     CheckRemovedAfter(runtime->device.Get(), [&] {
         return fmt::format("creating the cube of 2D image {} (format {} {}x{} levels {})",
                            info.format, static_cast<u32>(desc.Format), desc.Width, desc.Height,
@@ -1558,27 +1595,32 @@ void Image::TransitionReinterpreted(size_t index, D3D12_RESOURCE_STATES next) {
     }
 }
 
-void Image::CopyThroughBuffer(ID3D12Resource* src, ID3D12Resource* dst) {
+void Image::CopyThroughBuffer(ID3D12Resource* src, ID3D12Resource* dst, u32 src_first_level) {
     // Same texel size, so both resources share the buffer layout: each subresource goes to its
     // footprint in the source's format and comes back in the destination's. The caller has put
-    // src in COPY_SOURCE and dst in COPY_DEST.
+    // src in COPY_SOURCE and dst in COPY_DEST. dst subresource i is src subresource
+    // i + src_first_level, so dst sets the count (a volume holds only the levels that fit).
     const D3D12_RESOURCE_DESC src_desc = src->GetDesc();
-    const DXGI_FORMAT dst_format = dst->GetDesc().Format;
+    const D3D12_RESOURCE_DESC dst_desc = dst->GetDesc();
+    const DXGI_FORMAT dst_format = dst_desc.Format;
     const u32 count =
-        src_desc.MipLevels * (src_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
+        dst_desc.MipLevels * (dst_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
                                   ? 1U
-                                  : src_desc.DepthOrArraySize);
+                                  : dst_desc.DepthOrArraySize);
+    ASSERT(src_first_level == 0 || (src_desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D &&
+                                    src_desc.DepthOrArraySize == 1));
     std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(count);
     u64 total_bytes = 0;
-    runtime->device.Get()->GetCopyableFootprints(&src_desc, 0, count, 0, footprints.data(),
-                                                 nullptr, nullptr, &total_bytes);
+    runtime->device.Get()->GetCopyableFootprints(&src_desc, src_first_level, count, 0,
+                                                 footprints.data(), nullptr, nullptr,
+                                                 &total_bytes);
     ComPtr<ID3D12Resource> transfer =
         runtime->transfer_buffers.Acquire(total_bytes, false, "reinterpret");
     auto* const commands = runtime->scheduler.CommandList();
     for (u32 subresource = 0; subresource < count; ++subresource) {
         const D3D12_TEXTURE_COPY_LOCATION from{
             .pResource = src, .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-            .SubresourceIndex = subresource};
+            .SubresourceIndex = subresource + src_first_level};
         const D3D12_TEXTURE_COPY_LOCATION to{.pResource = transfer.Get(),
                                              .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
                                              .PlacedFootprint = footprints[subresource]};
