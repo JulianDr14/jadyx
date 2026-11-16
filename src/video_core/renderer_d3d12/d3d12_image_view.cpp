@@ -556,10 +556,21 @@ D3D12_CPU_DESCRIPTOR_HANDLE ImageView::CreateSrv(Shader::TextureType texture_typ
         // has no such view, so read a one-slice 3D copy of it.
         Image* const source = SourceImage();
         if (ID3D12Resource* const volume = source ? source->Volume() : nullptr) {
+            // The volume starts VolumeLevelBias() levels into the image (3D textures stop at
+            // 2048 texels): shift the view, and keep at least its top when the view asked only
+            // for levels above it.
+            const u32 bias = source->VolumeLevelBias();
+            const u32 volume_levels = volume->GetDesc().MipLevels;
+            const u32 first = std::min(p.base_level > bias ? p.base_level - bias : 0U,
+                                       volume_levels - 1);
+            const u32 end = std::clamp(p.base_level + p.levels > bias
+                                           ? p.base_level + p.levels - bias
+                                           : 0U,
+                                       first + 1, volume_levels);
             D3D12_SHADER_RESOURCE_VIEW_DESC desc{.Format = p.format,
                                                  .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D,
                                                  .Shader4ComponentMapping = p.mapping};
-            desc.Texture3D = {p.base_level, p.levels, 0.0f};
+            desc.Texture3D = {first, end - first, 0.0f};
             const D3D12_CPU_DESCRIPTOR_HANDLE handle = runtime->view_descriptors.Allocate();
             runtime->device.Get()->CreateShaderResourceView(volume, &desc, handle);
             CheckRemovedAfterDescriptor(runtime->device.Get(), [&] {
