@@ -583,4 +583,51 @@ DownloadError DownloadVerified(const std::string& url, const fs::path& part,
     }
 }
 
+ApiResponse Send(const ApiRequest& request, std::stop_token stop) {
+    using winrt::Windows::Foundation::Uri;
+    if (!request.url.starts_with("https://") ||
+        (request.method != "GET" && request.method != "POST"))
+        return {};
+    try {
+        Filters::HttpBaseProtocolFilter filter;
+        filter.AllowAutoRedirect(false);
+        filter.AllowUI(false);
+        filter.CookieUsageBehavior(Filters::HttpCookieUsageBehavior::NoCookies);
+        filter.CacheControl().ReadBehavior(Filters::HttpCacheReadBehavior::NoCache);
+        filter.CacheControl().WriteBehavior(Filters::HttpCacheWriteBehavior::NoCache);
+        HttpClient client{filter};
+        client.DefaultRequestHeaders().UserAgent().TryParseAdd(L"Jadyx/1.0");
+
+        HttpRequestMessage message{request.method == "POST" ? HttpMethod::Post() : HttpMethod::Get(),
+                                   Uri{winrt::to_hstring(request.url)}};
+        message.Headers().Accept().TryParseAdd(L"application/json");
+        if (!request.bearer.empty())
+            message.Headers().Authorization(Headers::HttpCredentialsHeaderValue{
+                L"Bearer", winrt::to_hstring(request.bearer)});
+        if (request.method == "POST") {
+            HttpStringContent content{winrt::to_hstring(request.body),
+                                      winrt::Windows::Storage::Streams::UnicodeEncoding::Utf8};
+            if (!request.content_type.empty())
+                content.Headers().ContentType(Headers::HttpMediaTypeHeaderValue{
+                    winrt::to_hstring(request.content_type)});
+            message.Content(content);
+        }
+        const auto send = client.SendRequestAsync(message, HttpCompletionOption::ResponseHeadersRead);
+        if (!Await(send, stop))
+            return {};
+        const auto response = send.GetResults();
+        ApiResponse result;
+        if (response.Headers().HasKey(L"Retry-After"))
+            result.retry_after = winrt::to_string(response.Headers().Lookup(L"Retry-After"));
+        auto body = Body(response, request.max_bytes, stop);
+        if (!body)
+            return {};
+        result.status = static_cast<unsigned>(response.StatusCode());
+        result.body = std::move(*body);
+        return result;
+    } catch (...) {
+        return {};
+    }
+}
+
 } // namespace Jadyx::Http
