@@ -648,14 +648,16 @@ public:
             .fill_pages = settings.fill_pages,
             .prefetch = settings.prefetch,
             .pause_fill = settings.pause_fill,
+            .pause_hosts = settings.pause_hosts,
         };
         if (Permafrost::Init(backing_base, backing_size, platform, config)) {
             LOG_INFO(HW_Memory,
                      "Permafrost on: {} MiB reserve, {} ms probation, {} ms idle, {} MiB batches, "
-                     "fill {} pages, prefetch {}, pause fill {}",
+                     "fill {} pages, prefetch {}, pause fill {}{}",
                      settings.reserve_bytes >> 20, settings.probation_ms, settings.min_idle_ms,
                      settings.batch_bytes >> 20, settings.fill_pages,
-                     settings.prefetch ? "on" : "off", settings.pause_fill ? "on" : "off");
+                     settings.prefetch ? "on" : "off", settings.pause_fill ? "on" : "off",
+                     settings.pause_fill && settings.pause_hosts ? " with the host threads" : "");
         } else {
             LOG_WARNING(HW_Memory, "Permafrost off: the swap file could not be opened (error {})",
                         GetLastError());

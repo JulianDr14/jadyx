@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/permafrost.h"
 #include "audio_core/audio_manager.h"
 #include "common/thread.h"
 #include "core/core.h"
@@ -14,6 +15,7 @@ namespace AudioCore {
 AudioManager::AudioManager() {
     thread = std::jthread([this](std::stop_token stop_token) {
         Common::SetCurrentThreadName("AudioManager");
+        const Common::Permafrost::ScopedMemoryThread memory_thread;
         std::unique_lock l{events.GetAudioEventLock()};
         events.ClearEvents();
         while (!stop_token.stop_requested()) {

@@ -6,6 +6,7 @@
 
 #include <bit>
 
+#include "common/permafrost.h"
 #include "common/thread.h"
 #include "core/core.h"
 #include "video_core/cdma_pusher.h"
@@ -24,6 +25,7 @@ CDmaPusher::CDmaPusher(Host1x::Host1x& host1x_, s32 id)
     , current_class{ChClassId(id)}
 {
     thread = std::jthread([this](std::stop_token stop_token) {
+        const Common::Permafrost::ScopedMemoryThread memory_thread;
         Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
         ChCommandHeaderList command_list{host1x.System().ApplicationMemory(), 0, 0};
         u32 count{};

@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/permafrost.h"
 #include "common/assert.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
@@ -54,6 +55,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer,
     rasterizer = renderer.ReadRasterizer();
     thread = std::jthread([&](std::stop_token stop_token) {
         Common::SetCurrentThreadName("GPU");
+        const Common::Permafrost::ScopedMemoryThread memory_thread;
         Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
         Common::SetCurrentThreadToPerformanceCores();
         system.RegisterHostThread();

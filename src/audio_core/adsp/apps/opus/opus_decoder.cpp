@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 
+#include "common/permafrost.h"
 #include "audio_core/adsp/apps/opus/opus_decode_object.h"
 #include "audio_core/adsp/apps/opus/opus_multistream_decode_object.h"
 #include "audio_core/adsp/apps/opus/shared_memory.h"
@@ -79,6 +80,7 @@ void OpusDecoder::Init(std::stop_token stop_token) {
 
 void OpusDecoder::Main(std::stop_token stop_token) {
     Common::SetCurrentThreadName("DSP_OpusDecoder_Main");
+    const Common::Permafrost::ScopedMemoryThread memory_thread;
 
     while (!stop_token.stop_requested()) {
         auto msg = Receive(Direction::DSP, stop_token);

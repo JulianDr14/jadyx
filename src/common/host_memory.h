@@ -39,6 +39,7 @@ struct GuestSwapSettings {
     u32 fill_pages{4};
     bool prefetch{true};
     bool pause_fill{true};
+    bool pause_hosts{true};
 };
 void ConfigureGuestSwap(const GuestSwapSettings& settings);
 /// Whether the backing in use writes cold memory out.
