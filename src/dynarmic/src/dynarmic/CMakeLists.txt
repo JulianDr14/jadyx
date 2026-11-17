@@ -197,6 +197,11 @@ if ("x86_64" IN_LIST ARCHITECTURE)
         backend/x64/a64_emit_x64.h
         backend/x64/a64_emit_x64_memory.cpp
         backend/x64/a64_interface.cpp
+        backend/x64/fast_dispatch_table.h
+        backend/x64/in_flight_compiles.h
+        backend/x64/invalidation_journal.h
+        backend/x64/link_site.h
+        backend/x64/quiescence_gate.h
         backend/x64/a64_jitstate.cpp
         backend/x64/a64_jitstate.h
     )
