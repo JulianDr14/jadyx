@@ -249,6 +249,15 @@ static std::string DescribeEmitFaultContext(const Dynarmic::CodeEmitFaults& faul
                 ",";
     }
     text += " quiet " + std::to_string(faults.quiet);
+    text += "; patching " + std::to_string(faults.patching) + ", new code " +
+            std::to_string(faults.new_code) + " (line of the emission's start " +
+            std::to_string(faults.begin_line) + ", its page " + std::to_string(faults.begin_page) +
+            "); CPUs";
+    for (std::size_t cpu = 0; cpu < faults.cpu.size(); ++cpu) {
+        if (faults.cpu[cpu] != 0) {
+            text += " " + std::to_string(cpu) + ":" + std::to_string(faults.cpu[cpu]);
+        }
+    }
     if (faults.recovered != 0) {
         text += "; cleared in avg " + std::to_string(faults.recover_us_total / faults.recovered) +
                 " us, max " + std::to_string(faults.recover_us_max) + " us";
@@ -280,7 +289,13 @@ static std::string DescribeCrossModifyWatch() {
         return text;
     };
     return ", watch faults " + target("running", watch.running_page) + ", " +
-           target("idle", watch.idle_page) + ", " + target("private", watch.private_page);
+           target("same line", watch.same_line) + ", " +
+           target("running bytes", watch.executed_bytes) + ", " +
+           target("idle", watch.idle_page) + ", " + target("private", watch.private_page) +
+           (watch.pinned ? ", pinned same line " : ", not pinned") +
+           (watch.pinned ? target("", watch.same_line_pinned).substr(1) + ", pinned running bytes " +
+                               target("", watch.executed_bytes_pinned).substr(1)
+                         : std::string{});
 }
 
 // Faults retried while emitting JIT code; empty while there were none.
