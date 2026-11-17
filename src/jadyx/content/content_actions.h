@@ -23,8 +23,9 @@ std::string ImportUploadedContent(const std::filesystem::path& package, Kind kin
                                   std::stop_token stop = {}, Progress progress = {});
 
 /// Moves the console's copy of one update/DLC of `application` to D: (`developer`) or back to
-/// LocalState. The new copy is hashed before the catalog points at it; the old one is deleted
-/// after. "" when it is already there.
+/// LocalState. Content read from an external folder is copied there instead and becomes the
+/// console's own; the folder is left untouched. The new copy is hashed before the catalog
+/// points at it; an old internal copy is deleted after. "" when it is already there.
 std::string MoveContent(std::uint64_t application, const std::string& id, bool developer,
                         std::stop_token stop = {}, Progress progress = {});
 

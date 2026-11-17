@@ -116,31 +116,38 @@ std::string MoveContent(std::uint64_t application, const std::string& id, bool d
     if (const auto error = store.Load(catalog); error != Error::None) return Word(error);
     const auto found = std::find_if(catalog.revisions.begin(), catalog.revisions.end(),
         [&](const Revision& r) { return r.id == id && r.application == application; });
-    // Only a copy the console owns can move; content read from the game or a USB folder cannot.
-    if (found == catalog.revisions.end() || !found->internal) return "content";
-    if (found->developer == developer) return {};
+    if (found == catalog.revisions.end()) return "content";
+    // Content read from an external folder is copied instead: the folder itself is never touched.
+    const bool external = !found->internal;
+    if (!external && found->developer == developer) return {};
     if (developer && !DeveloperStorageAvailable()) return "destination";
     // A copy left on the destination by an interrupted move is not registered: clear it first.
     store.Cleanup(catalog);
     const auto vfs = MakeUwpFilesystem();
-    const auto source = store.Object(id, found->developer);
-    const auto encoded = source.u8string();
-    auto inspected = InspectPackage(*vfs, std::string{encoded.begin(), encoded.end()}, false, stop);
+    auto inspected = InspectPackage(*vfs, SourcePath(store, *found), false, stop);
     if (stop.stop_requested()) return "interrupted";
+    // An external file must still be the one registered; the copy is hashed against the id below.
     const auto content = std::find_if(inspected.contents.begin(), inspected.contents.end(),
-        [&](const auto& c) { return c.revision.id == id && c.error == Error::None; });
-    // Its copy is gone (D: is erased when its size changes) or damaged: nothing to move.
+        [&](const auto& c) { return c.revision.id == id && c.error == Error::None &&
+                                    (!external || c.revision.source_size == found->source_size); });
+    // Its copy is gone (D: is erased when its size changes), the folder is unreachable, or the
+    // file is damaged: nothing to move.
     if (inspected.error != Error::None || content == inspected.contents.end()) return "missing";
     if (const auto error = InstallObject(store, *vfs, *content, developer, stop, progress); error != Error::None)
         return error == Error::Unavailable ? "destination" : Word(error);
     inspected.contents.clear(); // Close the old copy before it is deleted.
     Catalog next = catalog;
-    for (auto& r : next.revisions) if (r.id == id) r.developer = developer;
+    for (auto& r : next.revisions) {
+        if (r.id != id) continue;
+        r.developer = developer;
+        if (external) { r.internal = true; r.source.clear(); } // Like an import that copied it.
+    }
     // Twice, like a removal: the backup generation would otherwise keep the old copy alive.
     if (auto error = store.Save(next); error != Error::None) { store.Cleanup(catalog); return Word(error); }
     if (auto error = store.Save(next); error != Error::None) return Word(error);
     store.Cleanup(next);
-    LOG_INFO(Frontend, "Content: moved title={:016X} to {}", found->title, developer ? "developer" : "internal");
+    LOG_INFO(Frontend, "Content: {} title={:016X} to {}", external ? "copied" : "moved", found->title,
+             developer ? "developer" : "internal");
     return {};
 }
 
