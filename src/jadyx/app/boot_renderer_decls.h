@@ -42,6 +42,7 @@ void ShowLoadProgress(VideoCore::RendererBase& renderer, size_t done, size_t tot
 void ShowCpuLoadProgress(VideoCore::RendererBase& renderer, size_t done, size_t total);
 void RemoveDeviceForProbe(VideoCore::RendererBase& renderer);
 void SetBcArrayDecode(bool enabled); // d3d12_texture_cache.h
+void SetBc3dDecode(bool enabled); // d3d12_texture_cache.h
 void SetAstcGpuDecode(bool enabled); // d3d12_texture_cache.h
 void SetBcGpuDecode(bool enabled); // d3d12_texture_cache.h
 void SetNotZeroedHeaps(bool enabled); // d3d12_resource_utils.h

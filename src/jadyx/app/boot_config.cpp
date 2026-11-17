@@ -407,6 +407,12 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                           (config.shuffle_wave_uniform ? "on" : "off"));
                 continue;
             }
+            if (line == "bc_3d=decode" || line == "bc_3d=native") {
+                config.bc_3d_decode = line == "bc_3d=decode";
+                WriteDiag(std::string{"boot.cfg: D3D12 block-compressed 3D textures "} +
+                          (config.bc_3d_decode ? "decoded on the CPU" : "stay compressed"));
+                continue;
+            }
             if (line == "texture_remap=0" || line == "texture_remap=1") {
                 config.texture_remap = line.back() == '1';
                 WriteDiag(std::string{"boot.cfg: texture_remap "} +

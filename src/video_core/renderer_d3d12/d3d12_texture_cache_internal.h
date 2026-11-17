@@ -135,6 +135,7 @@ inline bool logged_view_family = false;
 /// Sampler keys for SamplerHeap; 0 is the presenter's linear sampler.
 inline std::atomic<u64> next_sampler_key{1};
 inline std::atomic<bool> decode_bc_arrays{true};
+inline std::atomic<bool> decode_bc_3d{false};
 inline std::atomic<bool> gpu_astc_decode{true};
 inline std::atomic<bool> gpu_bc_decode{true};
 inline std::atomic<bool> gpu_unswizzle{true};

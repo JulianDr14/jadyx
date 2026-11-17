@@ -124,6 +124,10 @@ void SetBcArrayDecode(bool enabled) {
     decode_bc_arrays.store(enabled, std::memory_order_relaxed);
 }
 
+void SetBc3dDecode(bool enabled) {
+    decode_bc_3d.store(enabled, std::memory_order_relaxed);
+}
+
 void SetAstcGpuDecode(bool enabled) {
     gpu_astc_decode.store(enabled, std::memory_order_relaxed);
 }
@@ -601,24 +605,30 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
     // Small BC1-3 textures read the guest's palette (SetSmallBcGuestPalette).
     const bool guest_palette =
         GetSmallBcGuestPalette() && IsSmallGuestPaletteBc(info_.format, guest_size_bytes);
-    if (!native_blocks && info_.type == ImageType::e2D && info_.num_samples == 1 &&
-        (unaligned_bc_extent || guest_palette ||
-         (decode_bc_arrays.load(std::memory_order_relaxed) && info_.resources.layers > 1))) {
+    // BC 3D textures (SetBc3dDecode): the volume's depth slices may be misread like the layers of
+    // a BC 2D array. The GPU decoder writes 2D arrays only, so these decode on the CPU.
+    const bool bc_3d = !native_blocks && info_.type == ImageType::e3D && info_.num_samples == 1 &&
+                       info_.size.depth > 1 && decode_bc_3d.load(std::memory_order_relaxed);
+    if (bc_3d || (!native_blocks && info_.type == ImageType::e2D && info_.num_samples == 1 &&
+                  (unaligned_bc_extent || guest_palette ||
+                   (decode_bc_arrays.load(std::memory_order_relaxed) &&
+                    info_.resources.layers > 1)))) {
         if (const std::optional<FormatInfo> decoded = DecodedBcFormat(info_.format)) {
             format = *decoded;
             // The compute shader writes the texels from the guest blocks on upload; the CPU
             // decode (ConvertImage on the GPU thread) took up to hundreds of ms on area loads.
             const BlitImageHelper* const helper = runtime->blit_helper;
-            gpu_bc_decoded = gpu_bc_decode.load(std::memory_order_relaxed) && helper &&
-                             helper->CanDecodeBcn() && CanDecodeBcnOnGpu(info_.format);
+            gpu_bc_decoded = !bc_3d && gpu_bc_decode.load(std::memory_order_relaxed) &&
+                             helper && helper->CanDecodeBcn() &&
+                             CanDecodeBcnOnGpu(info_.format);
             static std::atomic<u32> gpu_images{};
             static std::atomic<u32> cpu_images{};
             const u32 count = (gpu_bc_decoded ? gpu_images : cpu_images)
                                   .fetch_add(1, std::memory_order_relaxed) + 1;
             if (count <= 4 || count % 64 == 0) {
-                LOG_INFO(Render, "D3D12: decoded BC {} {}x{} ({} layers) on the {}: {} on the GPU, "
-                         "{} on the CPU", info_.format, info_.size.width, info_.size.height,
-                         info_.resources.layers, gpu_bc_decoded ? "GPU" : "CPU",
+                LOG_INFO(Render, "D3D12: decoded BC {} {}x{}x{} ({} layers) on the {}: {} on the "
+                         "GPU, {} on the CPU", info_.format, info_.size.width, info_.size.height,
+                         info_.size.depth, info_.resources.layers, gpu_bc_decoded ? "GPU" : "CPU",
                          gpu_images.load(std::memory_order_relaxed),
                          cpu_images.load(std::memory_order_relaxed));
             }
