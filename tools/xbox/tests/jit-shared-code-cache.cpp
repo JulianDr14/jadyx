@@ -792,6 +792,18 @@ void TestCrossModifyProbe() {
     REQUIRE(probe.same_page_idle.executor_calls == 0 && probe.same_page_idle.faults == 0);
 }
 
+void TestCrossModifyWatch() {
+    REQUIRE(!GetCrossModifyWatch().running);
+    REQUIRE(StartCrossModifyWatch() && StartCrossModifyWatch());
+    std::this_thread::sleep_for(std::chrono::milliseconds{400});
+    const CrossModifyWatch watch = GetCrossModifyWatch();
+    REQUIRE(watch.running);
+    for (const auto* t : {&watch.running_page, &watch.idle_page, &watch.private_page}) {
+        REQUIRE(t->writes > 0 && t->stuck == 0);
+        REQUIRE((t->faults == 0) == (t->first_fault_ms == 0));
+    }
+}
+
 void TestIncompatibleCoreKeepsItsOwn() {
     Machine machine;
     Callbacks cb0, cb1;
@@ -1045,6 +1057,7 @@ int main() {
     }
     Run("code chunks are locked in the working set", TestCodeChunksLocked);
     Run("the cross-modify probe runs its three cases", TestCrossModifyProbe);
+    Run("the cross-modify watch keeps writing its three targets", TestCrossModifyWatch);
     Run("a block compiles once and runs on every core", TestCompileOnce);
     Run("an invalidation by one core reaches the others", TestInvalidationReachesOtherCores);
     Run("a clear by one core serves every core", TestClearFromOneCore);
