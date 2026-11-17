@@ -64,6 +64,7 @@ Copy-Item (Join-Path $PSScriptRoot "mesa\eden_integer_sampling.h") $s2d -Force
 Copy-Item (Join-Path $PSScriptRoot "mesa\eden_reduction_sampling.h") $s2d -Force
 Copy-Item (Join-Path $PSScriptRoot "..\..\externals\spirv-to-dxil\include\eden_spirv_to_dxil.h") $s2d -Force
 Copy-Item (Join-Path $PSScriptRoot "mesa\eden_hoist_resource_handles.h") (Join-Path $src "src\microsoft\compiler") -Force
+Copy-Item (Join-Path $PSScriptRoot "mesa\eden_nonuniform_deref.h") (Join-Path $src "src\microsoft\compiler") -Force
 Patch-File "src\microsoft\spirv_to_dxil\spirv_to_dxil.def" `
     "    spirv_to_dxil_get_version`n" `
     "    spirv_to_dxil_get_version`n    eden_spirv_to_dxil_pipeline`n"
@@ -122,6 +123,14 @@ Patch-File "src\microsoft\compiler\nir_to_dxil.c" `
 Patch-File "src\microsoft\compiler\nir_to_dxil.c" `
     "   NIR_PASS(_, s, dxil_nir_guess_image_formats);`n" `
     "   NIR_PASS(_, s, dxil_nir_guess_image_formats);`n   if (opts->environment == DXIL_ENVIRONMENT_VULKAN)`n      NIR_PASS(_, s, eden_hoist_resource_handles);`n"
+# An indexed texture/sampler/image handle is non-uniform when SPIR-V said so: emit_deref always
+# passed false, and the Series' driver then reads one index per wave (one texture per 8x8 block).
+Patch-File "src\microsoft\compiler\nir_to_dxil.c" `
+    "#include `"eden_hoist_resource_handles.h`"`n" `
+    "#include `"eden_hoist_resource_handles.h`"`n#include `"eden_nonuniform_deref.h`"`n"
+Patch-File "src\microsoft\compiler\nir_to_dxil.c" `
+    "      descriptor_set, binding_val, binding, false);" `
+    "      descriptor_set, binding_val, binding, eden_deref_non_uniform(instr));"
 Patch-File "src\microsoft\spirv_to_dxil\meson.build" `
     "      'spirv_to_dxil.h',`n" `
     "      'spirv_to_dxil.h',`n      'eden_pipeline.c',`n      'eden_spirv_to_dxil.h',`n"
