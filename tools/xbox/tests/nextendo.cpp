@@ -10,6 +10,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <utility>
 #include <source_location>
 #include <sstream>
 #include <string>
@@ -33,6 +34,7 @@
 #include "jadyx/network/nextendo/pkce.h"
 #include "jadyx/network/nextendo/preferences.h"
 #include "jadyx/network/nextendo/session.h"
+#include "jadyx/settings/nextendo_page.h"
 
 using namespace Core::Online::Nextendo;
 namespace App = Jadyx::Network::Nextendo;
@@ -1071,6 +1073,55 @@ void TestCatalogRows() {
     Check(App::BuildCatalogRows(GameCatalog{}, installed).empty());
 }
 
+// The Online tab's Nextendo view: its pure helpers (the canvas and the session use them).
+void TestNextendoPage() {
+    using Jadyx::I18n::Text;
+    // A cycles the TLS check through its three modes and back.
+    Check(Jadyx::NextTlsMode(TlsVerifyMode::Off) == TlsVerifyMode::LogOnly);
+    Check(Jadyx::NextTlsMode(TlsVerifyMode::LogOnly) == TlsVerifyMode::Enforce);
+    Check(Jadyx::NextTlsMode(TlsVerifyMode::Enforce) == TlsVerifyMode::Off);
+    Check(Jadyx::TlsModeText(TlsVerifyMode::Off) == Text::NxTlsOff);
+    Check(Jadyx::TlsModeText(TlsVerifyMode::LogOnly) == Text::NxTlsLog);
+    Check(Jadyx::TlsModeText(TlsVerifyMode::Enforce) == Text::NxTlsEnforce);
+
+    // Signed in: only once the tokens are asked for or in hand.
+    Jadyx::NextendoPage page;
+    Check(page.version == ~std::uint64_t{0}); // the first poll always copies
+    for (const auto [phase, signed_in] : {std::pair{App::Phase::SignedOut, false}, std::pair{App::Phase::SigningIn, false},
+                                          std::pair{App::Phase::Connecting, true}, std::pair{App::Phase::Ready, true}}) {
+        page.view.phase = phase;
+        Check(Jadyx::NextendoSignedIn(page) == signed_in);
+    }
+
+    // Nothing to say when Nextendo is off or the game is served; a text for every other case.
+    Check(Jadyx::LaunchAdviceText(App::LaunchAdvice::NotUsingNextendo) == Text::Count);
+    Check(Jadyx::LaunchAdviceText(App::LaunchAdvice::Supported) == Text::Count);
+    std::vector<Text> advice;
+    for (const auto a : {App::LaunchAdvice::NotSignedIn, App::LaunchAdvice::NoServer, App::LaunchAdvice::Blocked,
+                         App::LaunchAdvice::WrongVersion, App::LaunchAdvice::Disabled,
+                         App::LaunchAdvice::UnsupportedClient, App::LaunchAdvice::NotListed}) {
+        const Text text = Jadyx::LaunchAdviceText(a);
+        Check(text != Text::Count);
+        for (const Text other : advice) Check(other != text);
+        advice.push_back(text);
+    }
+    Check(Jadyx::LaunchAdviceText(App::LaunchAdvice::WrongVersion) == Text::NxLaunchWrongVersion);
+
+    Check(Jadyx::NextendoProblemText(App::Problem::None) == Text::Count);
+    Check(Jadyx::NextendoProblemText(App::Problem::Revoked) == Text::NxProblemRevoked);
+    Check(Jadyx::NextendoProblemText(App::Problem::SignInCancelled) == Text::NxProblemCancelled);
+    Check(Jadyx::NextendoBlockText(App::OnlineBlock::DiscordUnlinked) == Text::NxBlockDiscord);
+    Check(Jadyx::NextendoBlockText(App::OnlineBlock::Unknown) == Text::NxBlockUnknown);
+
+    std::vector<Text> verdicts;
+    for (const auto v : {App::RowVerdict::Ready, App::RowVerdict::WrongVersion, App::RowVerdict::NeedsUpdate,
+                         App::RowVerdict::Disabled, App::RowVerdict::NotInstalled}) {
+        const Text text = Jadyx::NextendoVerdictText(v);
+        for (const Text other : verdicts) Check(other != text);
+        verdicts.push_back(text);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1087,6 +1138,7 @@ int main() {
     TestSession();
     TestPreferences();
     TestCatalogRows();
+    TestNextendoPage();
     std::printf("nextendo gate: %d checks passed\n", g_checks);
     return 0;
 }
