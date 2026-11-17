@@ -45,6 +45,8 @@ struct TextureDefinition {
     u32 count;
     bool is_multisample;
     bool is_integer;
+    /// Indexed by the slot the texture remap table holds (Shader::TextureDescriptor::remap_pool)
+    bool remap_pool;
 };
 
 struct TextureBufferDefinition {
@@ -391,6 +393,10 @@ public:
     /// invocation writes (control) or reads (evaluation); tess_input_vertex the first capture
     /// slot of the control shader's instance and tess_patch_position the draw position of its
     /// patch's first vertex. The vertex shader of a capture writes tess_output_buffer.
+    /// Texture remap table (Shader::TextureRemapArray): uvec4 rows of slot bytes
+    Id texture_remap{};
+    Id texture_remap_element{};
+
     Id tess_input_buffer{};
     Id tess_output_buffer{};
     Id tess_points_buffer{};

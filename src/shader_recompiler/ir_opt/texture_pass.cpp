@@ -89,14 +89,57 @@ constexpr u32 DESCRIPTOR_SIZE = 8;
 constexpr u32 DESCRIPTOR_SIZE_SHIFT = u32(std::countr_zero(DESCRIPTOR_SIZE));
 constexpr u32 DESCRIPTOR_MAX_COUNT = 1024;
 
+// Low bits of a value that are always zero (32 = unconstrained, as for an undefined value).
+// The handle offset is often a phi of undefined values and an index shifted by the record size.
+u32 KnownTrailingZeros(const IR::Value& value, int depth,
+                       boost::container::small_vector<const IR::Inst*, 16>& phis) {
+    const IR::Value resolved{value.Resolve()};
+    if (resolved.IsImmediate()) {
+        return resolved.Type() == IR::Type::U32 ? u32(std::countr_zero(resolved.U32())) : 0;
+    }
+    if (resolved.IsEmpty() || depth <= 0) {
+        return 0;
+    }
+    const IR::Inst* const inst{resolved.InstRecursive()};
+    const auto arg{[&](size_t i) { return KnownTrailingZeros(inst->Arg(i), depth - 1, phis); }};
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::UndefU32:
+        return 32;
+    case IR::Opcode::Phi: {
+        // A loop back to a phi being evaluated adds no new low bits
+        if (std::ranges::find(phis, inst) != phis.end()) {
+            return 32;
+        }
+        phis.push_back(inst);
+        u32 zeros{32};
+        for (size_t i = 0; i < inst->NumArgs() && zeros > 0; ++i) {
+            zeros = (std::min)(zeros, arg(i));
+        }
+        phis.pop_back();
+        return zeros;
+    }
+    case IR::Opcode::ShiftLeftLogical32: {
+        const IR::Value shift{inst->Arg(1).Resolve()};
+        if (!shift.IsImmediate()) {
+            return arg(0) == 32 ? 32 : 0;
+        }
+        return (std::min)(32U, arg(0) + (shift.U32() & 31));
+    }
+    case IR::Opcode::IMul32:
+        return (std::min)(32U, arg(0) + arg(1));
+    case IR::Opcode::IAdd32:
+    case IR::Opcode::BitwiseOr32:
+        return (std::min)(arg(0), arg(1));
+    case IR::Opcode::BitwiseAnd32:
+        return (std::max)(arg(0), arg(1));
+    default:
+        return 0;
+    }
+}
+
 u32 DynamicDescriptorSizeShift(const IR::U32& dynamic_offset) {
-    const IR::Inst* const inst = dynamic_offset.InstRecursive();
-    if (!inst || inst->GetOpcode() != IR::Opcode::ShiftLeftLogical32)
-        return DESCRIPTOR_SIZE_SHIFT;
-    const IR::Value shift = inst->Arg(1);
-    if (!shift.IsImmediate())
-        return DESCRIPTOR_SIZE_SHIFT;
-    const u32 size_shift = shift.U32();
+    boost::container::small_vector<const IR::Inst*, 16> phis;
+    const u32 size_shift{KnownTrailingZeros(dynamic_offset, 24, phis)};
     // Separate texture and sampler handles are 4 bytes apart
     return size_shift >= 2 && size_shift < 31 ? size_shift : DESCRIPTOR_SIZE_SHIFT;
 }
@@ -753,6 +796,7 @@ public:
     u32 Add(const TextureDescriptor& desc) {
         const u32 index{Add(texture_descriptors, desc, [&desc](const auto& existing) {
             return desc.type == existing.type && desc.is_depth == existing.is_depth &&
+                   desc.remap_pool == existing.remap_pool &&
                    desc.has_secondary == existing.has_secondary &&
                    desc.varying_handle == existing.varying_handle &&
                    desc.cbuf_index == existing.cbuf_index &&
@@ -772,6 +816,16 @@ public:
         texture_descriptors[index].is_multisample |= desc.is_multisample;
         texture_descriptors[index].is_integer |= desc.is_integer;
         return index;
+    }
+
+    /// The pool of remapped textures sampled like desc (TextureDescriptor::remap_pool)
+    u32 AddRemapPool(const TextureDescriptor& desc) {
+        return Add(texture_descriptors, desc, [&desc](const auto& existing) {
+            return existing.remap_pool && desc.type == existing.type &&
+                   desc.is_depth == existing.is_depth &&
+                   desc.is_multisample == existing.is_multisample &&
+                   desc.is_integer == existing.is_integer;
+        });
     }
 
     u32 Add(const ImageDescriptor& desc) {
@@ -866,6 +920,100 @@ void PatchTexelFetch(IR::Block& block, IR::Inst& inst, TexturePixelFormat pixel_
                               ir.FPMul(ir.ConvertSToF(32, 32, ir.BitCast<IR::U32>(w)), max_value));
     inst.ReplaceUsesWith(converted);
 }
+
+/// Elements of a handle array at base_offset with this stride that fit in a 64 KiB constant
+/// buffer (the draw reads only those of the bound size)
+u32 TextureRemapLength(u32 base_offset, u32 size_shift) {
+    constexpr u32 MAX_CBUF_BYTES = 0x10000;
+    if (size_shift >= 31 || base_offset + 4 > MAX_CBUF_BYTES) {
+        return 1;
+    }
+    return (std::min)(DESCRIPTOR_MAX_COUNT, ((MAX_CBUF_BYTES - 4 - base_offset) >> size_shift) + 1);
+}
+
+/// Samples a dynamically indexed handle array through its type's pool: returns the array's first
+/// byte in the remap table, with pool_index the pool and count the array length, or nullopt when
+/// the table has no room left (the array then gets its own descriptors).
+std::optional<u32> AddTextureRemap(Info& info, Descriptors& descriptors, TextureType type,
+                                   bool is_depth, bool is_multisample, bool is_integer,
+                                   const ConstBufferAddr& cbuf, u32 size_shift, u32& count,
+                                   u32& pool_index) {
+    const u32 length{TextureRemapLength(cbuf.offset, size_shift)};
+    if (length <= 1) {
+        return std::nullopt;
+    }
+    const auto existing_pool{std::ranges::find_if(info.texture_descriptors, [&](const auto& desc) {
+        return desc.remap_pool && desc.type == type && desc.is_depth == is_depth &&
+               desc.is_multisample == is_multisample && desc.is_integer == is_integer;
+    })};
+    const auto pool_of{[&] {
+        return static_cast<u32>(existing_pool - info.texture_descriptors.begin());
+    }};
+    if (existing_pool != info.texture_descriptors.end()) {
+        const auto array{std::ranges::find_if(info.texture_remap_arrays, [&](const auto& remap) {
+            return remap.pool == pool_of() && remap.cbuf_index == cbuf.index &&
+                   remap.cbuf_offset == cbuf.offset && remap.size_shift == size_shift &&
+                   remap.mask == cbuf.mask;
+        })};
+        if (array != info.texture_remap_arrays.end()) {
+            count = array->count;
+            pool_index = array->pool;
+            return array->remap_base;
+        }
+    }
+    if (info.texture_remap_bytes + length > TEXTURE_REMAP_MAX_BYTES) {
+        return std::nullopt;
+    }
+    pool_index = descriptors.AddRemapPool(TextureDescriptor{
+        .type = type,
+        .is_depth = is_depth,
+        .is_multisample = is_multisample,
+        .is_integer = is_integer,
+        .has_secondary = false,
+        .cbuf_index = cbuf.index,
+        .cbuf_offset = cbuf.offset,
+        .shift_left = 0,
+        .secondary_cbuf_index = 0,
+        .secondary_cbuf_offset = 0,
+        .secondary_shift_left = 0,
+        .count = 1,
+        .size_shift = size_shift,
+        .varying_handle = false,
+        .has_index_cbuf = false,
+        .index_cbuf_index = 0,
+        .index_cbuf_offset = 0,
+        .index_shift = 0,
+        .mask = cbuf.mask,
+        .secondary_mask = 0xffffffff,
+        .remap_pool = true,
+    });
+    const u32 remap_base{info.texture_remap_bytes};
+    info.texture_remap_arrays.push_back({
+        .pool = pool_index,
+        .cbuf_index = cbuf.index,
+        .cbuf_offset = cbuf.offset,
+        .size_shift = size_shift,
+        .count = length,
+        .remap_base = remap_base,
+        .mask = cbuf.mask,
+    });
+    info.texture_remap_bytes += length;
+    count = length;
+    return remap_base;
+}
+
+/// Room in each pool for 16 distinct textures per array that samples it
+void SizeTextureRemapPools(Info& info) {
+    for (u32 pool = 0; pool < info.texture_descriptors.size(); ++pool) {
+        TextureDescriptor& desc{info.texture_descriptors[pool]};
+        if (!desc.remap_pool) {
+            continue;
+        }
+        const auto arrays{static_cast<u32>(std::ranges::count_if(
+            info.texture_remap_arrays, [pool](const auto& remap) { return remap.pool == pool; }))};
+        desc.count = std::clamp(16 * arrays, 16U, TEXTURE_REMAP_MAX_POOL);
+    }
+}
 } // Anonymous namespace
 
 void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo& host_info) {
@@ -895,6 +1043,9 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         program.info.image_descriptors,
     };
     const u32 sampled_dynamic_cap = DynamicSampledTextureCap(program.info, host_info, DynamicSampledTextureArrayCount(to_replace));
+    // Per-pixel texture indices in fragment shaders sample a shared pool through the remap table
+    const bool remap_textures{host_info.support_texture_remap &&
+                              env.ShaderStage() == Stage::Fragment};
     bool has_last_is_integer{false};
     u32 last_cbuf_index{};
     u32 last_cbuf_offset{};
@@ -963,6 +1114,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         u32 index;
         u32 size_shift = cbuf.count > 1 ? DynamicDescriptorSizeShift(cbuf.dynamic_offset) : DESCRIPTOR_SIZE_SHIFT;
         u32 count = cbuf.count;
+        std::optional<u32> remap_base;
         switch (inst->GetOpcode()) {
         case IR::Opcode::ImageRead:
         case IR::Opcode::ImageAtomicIAdd32:
@@ -1031,6 +1183,13 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .mask = cbuf.mask,
                     .secondary_mask = cbuf.secondary_mask,
                 });
+            } else if (remap_textures && count > 1 && !cbuf.has_index_cbuf &&
+                       !cbuf.varying_handle && !cbuf.has_secondary && cbuf.shift_left == 0 &&
+                       (remap_base = AddTextureRemap(program.info, descriptors, flags.type,
+                                                     flags.is_depth != 0, is_multisample,
+                                                     is_texture_pixel_format_integer(cbuf), cbuf,
+                                                     size_shift, count, index))) {
+                flags.is_integer.Assign(program.info.texture_descriptors[index].is_integer ? 1 : 0);
             } else {
                 // A uniform index is resolved when drawing, so a single descriptor is enough
                 count = cbuf.has_index_cbuf ? 1 : std::min(count, sampled_dynamic_cap);
@@ -1068,7 +1227,11 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             const auto insert_point{IR::Block::InstructionList::s_iterator_to(*inst)};
             IR::IREmitter ir{*texture_inst.block, insert_point};
             const IR::U32 shift{ir.Imm32(size_shift)};
-            inst->SetArg(0, ir.UMin(ir.ShiftRightLogical(cbuf.dynamic_offset, shift), ir.Imm32(count - 1)));
+            const IR::U32 element{
+                ir.UMin(ir.ShiftRightLogical(cbuf.dynamic_offset, shift), ir.Imm32(count - 1))};
+            // Remapped: the byte of the remap table that holds the element's pool slot
+            inst->SetArg(0, remap_base ? IR::Value{ir.IAdd(element, ir.Imm32(*remap_base))}
+                                       : IR::Value{element});
         } else {
             inst->SetArg(0, IR::Value{});
         }
@@ -1081,6 +1244,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             }
         }
     }
+    SizeTextureRemapPools(program.info);
 }
 
 void JoinTextureInfo(Info& base, Info& source) {

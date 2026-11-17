@@ -38,6 +38,9 @@ struct HostTranslateInfo {
                                                 ///< passthrough shaders
     bool support_conditional_barrier{}; ///< True when the device supports barriers in conditional
                                         ///< control flow
+    /// Fragment textures indexed by a per-pixel value read their slot from a remap table
+    /// (TextureRemapArray) instead of a descriptor array sized by the handle array
+    bool support_texture_remap{};
 
     void ApplyDescriptorLimitPolicy() noexcept {
         if (min_ssbo_alignment == 0) {
