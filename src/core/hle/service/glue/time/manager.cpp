@@ -125,10 +125,14 @@ TimeManager::TimeManager(Core::System& system)
     // first boot to update it, but I haven't been able to find that point (likely via ntc's auto
     // correct as it's defaulted to be enabled). So to get a time that isn't stuck in the past for
     // first boot, grab the current real seconds.
+    // Jadyx: the games always see the host's date (plus the custom RTC offset). A context saved in
+    // the NAND is not reused: it drifts from the host, and one that stopped matching the steady
+    // clock restarted from standard_user_clock_initial_year (2023). Frontends apply the settings
+    // before Load, so System::RefreshTime cannot fix it up later, and calling it before Run hangs:
+    // the time services wait on the emulated clock, still paused.
     auto epoch_time{GetEpochTimeFromInitialYear(m_set_sys)};
-    if (user_clock_context == Service::PSC::Time::SystemClockContext{}) {
-        m_steady_clock_resource.GetRtcTimeInSeconds(epoch_time);
-    }
+    m_steady_clock_resource.GetRtcTimeInSeconds(epoch_time);
+    user_clock_context = {};
 
     res = m_time_m->SetupStandardLocalSystemClockCore(user_clock_context, epoch_time);
     ASSERT(res == ResultSuccess);
