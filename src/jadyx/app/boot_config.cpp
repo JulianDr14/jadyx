@@ -394,6 +394,11 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 WriteDiag(DescribeCrossModifyProbe(Dynarmic::RunCrossModifyProbe()));
                 continue;
             }
+            if (line == "jit_lock_exec=0") {
+                config.jit_lock_exec = false;
+                WriteDiag("boot.cfg: JIT code locked through its write view only");
+                continue;
+            }
             if (line == "jit_xmc_probe=2") {
                 WriteDiag(Dynarmic::StartCrossModifyWatch()
                               ? "boot.cfg: JIT cross-modify watch running for the session"

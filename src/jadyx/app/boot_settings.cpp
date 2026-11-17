@@ -312,6 +312,7 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     Dynarmic::SetCodeCacheCap(0);
     Dynarmic::SetDualMappedCode(config.jit_dual_map);
     Dynarmic::SetLockedCode(config.jit_lock_code);
+    Dynarmic::SetLockedExecView(config.jit_lock_exec);
     Core::SetPageTableExclusives(config.inline_exclusives);
     Core::SetPageTableThunks(config.jit_thunks);
     Core::SetJitSharedCodeCache(config.jit_shared_cache);

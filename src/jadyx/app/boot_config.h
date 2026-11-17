@@ -67,6 +67,10 @@ struct BootConfig {
     /// leaves them pageable): short of memory the console trimmed a page code was being written
     /// to, and the write faulted.
     bool jit_lock_code{true};
+    /// Locked chunks also locked through their executable view ("jit_lock_exec=0" leaves it to
+    /// be mapped on first run): a first run of code in a page made another core's store into the
+    /// same page fault on the console.
+    bool jit_lock_exec{true};
     /// Texture memory past which clean textures unused for a while are evicted even with headroom
     /// left ("texture_cap_mib=", 0 turns it off). They decode again from guest memory when used.
     /// At 1024 a heavy world entry kept 830 MiB of textures through its load and ran out of memory;

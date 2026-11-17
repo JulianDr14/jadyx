@@ -304,6 +304,17 @@ static std::string DescribeCodeEmitFaults() {
     const Dynarmic::CodeLockState lock = Dynarmic::GetCodeLockState();
     if (lock.locked_bytes != 0 || lock.failures != 0) {
         text += ", locked " + std::to_string(lock.locked_bytes >> 20) + " MiB";
+        text += lock.exec_locked_bytes == lock.locked_bytes
+                    ? std::string{" in both views"}
+                    : " (executable view " + std::to_string(lock.exec_locked_bytes >> 20) + " MiB)";
+        if (lock.chunks != 0) {
+            text += ", " + std::to_string(lock.chunks) + " chunks locked in avg " +
+                    std::to_string(lock.lock_us / lock.chunks) + " us, max " +
+                    std::to_string(lock.lock_us_max) + " us";
+        }
+        if (lock.exec_failures != 0) {
+            text += ", " + std::to_string(lock.exec_failures) + " executable views not locked";
+        }
         if (lock.failures != 0) {
             text += " (" + std::to_string(lock.failures) + " chunks not locked, error " +
                     std::to_string(lock.last_error) + (lock.available ? "" : ", no lock API") + ")";
@@ -317,7 +328,9 @@ static std::string DescribeCodeEmitFaults() {
     return text + ", emit faults retried " + std::to_string(faults.retries) + ", recovered " +
            std::to_string(faults.recovered) + ", fatal " + std::to_string(faults.fatal) +
            ", page out " + std::to_string(faults.page_out) + ", in " +
-           std::to_string(faults.page_in) + DescribeEmitFaultContext(faults);
+           std::to_string(faults.page_in) + "; executable view out " +
+           std::to_string(faults.exec_out) + ", in " + std::to_string(faults.exec_in) +
+           DescribeEmitFaultContext(faults);
 }
 
 // The app's commit split by owner: the emulated DRAM, the JIT's code, the renderer's accounts
