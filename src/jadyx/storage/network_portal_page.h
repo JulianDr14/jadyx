@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <cstdint>
+#include <string>
 #include <string_view>
 namespace Jadyx::PortalWeb {
 // The page is laid out like the console frontend: the wordmark and segmented tabs in the header,
@@ -378,14 +380,23 @@ function render(){
  renderLibrary();
  renderAmiibo();
 }
-async function refresh(){const response=await api('/api/v1/status');state=await response.json();render();followLibrary();return state;}
-$('pair').addEventListener('submit',async event=>{
- event.preventDefault();$('connect').disabled=true;$('message').textContent='';
- try{
- const response=await fetch('/api/v1/pair',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:$('code').value})});
- if(!response.ok){$('connection').textContent=response.status===429?words.attempts:words.bad;return;}
- session=(await response.json()).session;$('code').value='';$('pair').hidden=true;$('connection').textContent=words.ok;
- await refresh();clearInterval(timer);let polling=false;
+// This page's version, filled in by the console when it serves it. A tab left open across a
+// Jadyx update keeps running the old page; the console names the page it serves now in the
+// status, and the old one hands its session to a reload so nobody types the code again.
+const pageVersion='@@PAGE_VERSION@@';
+let reloading=false;
+function newerPage(){
+ if(reloading||!state.page||state.page===pageVersion)return false;
+ // Once per version: if the reload still brings an old page, keep working instead of looping.
+ try{if(sessionStorage.getItem('jadyx-reloaded')===state.page)return false;
+  sessionStorage.setItem('jadyx-reloaded',state.page);
+  if(!running&&!contentRunning&&!systemRunning)sessionStorage.setItem('jadyx-session',session);}catch{return false;}
+ reloading=true;clearInterval(timer);location.reload();return true;
+}
+async function refresh(){const response=await api('/api/v1/status');state=await response.json();if(newerPage())return state;render();followLibrary();return state;}
+async function connected(token){
+ session=token;$('code').value='';$('pair').hidden=true;$('connection').textContent=words.ok;
+ await refresh();if(reloading)return;clearInterval(timer);let polling=false;
  // An upload left unfinished is what the player came back for.
  if(state.uploads&&state.transfer?.id&&state.transfer.phase!=='complete'){pane='games';render();}
  timer=setInterval(async()=>{if(polling)return;polling=true;try{await refresh();failures=0;$('connection').textContent=words.ok;}catch(error){
@@ -394,8 +405,18 @@ $('pair').addEventListener('submit',async event=>{
  else if(error.message==='lost'){clearInterval(timer);stopped=true;if(currentXHR)currentXHR.abort();session='';$('pair').hidden=false;$('upload').hidden=true;$('connection').textContent=words.lost;}
  else $('connection').textContent=words.interrupted;
  }finally{polling=false;}},1000);
+}
+$('pair').addEventListener('submit',async event=>{
+ event.preventDefault();$('connect').disabled=true;$('message').textContent='';
+ try{
+ const response=await fetch('/api/v1/pair',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:$('code').value})});
+ if(!response.ok){$('connection').textContent=response.status===429?words.attempts:words.bad;return;}
+ await connected((await response.json()).session);
  }catch{$('connection').textContent=words.lost;}finally{$('connect').disabled=false;}
 });
+// The session an older copy of this page handed over before reloading; read once, then gone.
+(()=>{let token='';try{token=sessionStorage.getItem('jadyx-session')||'';sessionStorage.removeItem('jadyx-session');}catch{}
+ if(token)connected(token).catch(()=>{session='';$('pair').hidden=false;$('connection').textContent=words.lost;});})();
 // Only digits; the eighth one connects without reaching for the button.
 $('code').addEventListener('input',()=>{const code=$('code').value.replace(/\D/g,'').slice(0,4);$('code').value=code;
  if(code.length===4&&!$('connect').disabled)$('pair').requestSubmit?.();});
@@ -1209,4 +1230,30 @@ $('update-skip').addEventListener('click',()=>{updateDismissed=true;renderUpdate
 $('update-banner-open').addEventListener('click',()=>{updateDismissed=false;renderUpdate();scrollTo(0,0);});
 $('update-reconnect').addEventListener('click',()=>location.reload());
 </script></body></html>)HTML";
+
+/// Stands in the page for its own version until it is served.
+inline constexpr std::string_view PageVersionMark = "@@PAGE_VERSION@@";
+/// A hash of the page text: it changes only when the page does, not with every app version.
+inline const std::string& PageVersion() {
+    static const std::string version = [] {
+        std::uint64_t hash = 14695981039346656037ULL; // FNV-1a
+        for (const unsigned char c : Page) { hash ^= c; hash *= 1099511628211ULL; }
+        constexpr char hex[] = "0123456789abcdef";
+        std::string text(16, '0');
+        for (int i = 15; i >= 0; --i, hash >>= 4) text[static_cast<std::size_t>(i)] = hex[hash & 15];
+        return text;
+    }();
+    return version;
+}
+/// The page as served: it carries its version so a tab left open on an older one, still
+/// polling a newer console, can notice and reload itself.
+inline const std::string& ServedPage() {
+    static const std::string page = [] {
+        std::string text{Page};
+        if (const auto at = text.find(PageVersionMark); at != std::string::npos)
+            text.replace(at, PageVersionMark.size(), PageVersion());
+        return text;
+    }();
+    return page;
+}
 }

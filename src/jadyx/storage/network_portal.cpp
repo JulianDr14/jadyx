@@ -560,7 +560,8 @@ struct NetworkPortal::Impl {
             return httplib::Server::HandlerResponse::Unhandled;
         });
         server->Get("/", [](const auto&, auto& response) {
-            response.set_content(PortalWeb::Page.data(), PortalWeb::Page.size(), "text/html; charset=utf-8");
+            const auto& page = PortalWeb::ServedPage();
+            response.set_content(page.data(), page.size(), "text/html; charset=utf-8");
         });
         server->Get("/logo.png", [](const auto&, auto& response) {
             response.set_content(reinterpret_cast<const char*>(PortalWeb::Logo), PortalWeb::LogoSize, "image/png");
@@ -591,7 +592,7 @@ struct NetworkPortal::Impl {
             Reply(response, 200, {{"session", session}});
         });
         server->Get("/api/v1/status", [this](const auto&, auto& response) {
-            Reply(response, 200, {{"running", true}, {"stage", upload ? "nsp" : "connection-test"},
+            Reply(response, 200, {{"running", true}, {"page", PortalWeb::PageVersion()}, {"stage", upload ? "nsp" : "connection-test"},
                 {"uploads", bool(upload)}, {"transfer", upload ? UploadJson(upload->Snapshot()) : Json::object()},
                 {"library", bool(library.games)}, {"amiibo", bool(amiibo.list)},
                 {"content", content ? UploadJson(content->Snapshot()) : Json::object()},

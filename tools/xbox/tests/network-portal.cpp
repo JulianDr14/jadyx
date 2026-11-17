@@ -87,7 +87,13 @@ int main(int argc,char** argv) {
     const auto page = client.Get("/");
     if (Status(page) != 200) std::fprintf(stderr, "HTTP page status=%d transport=%d\n", Status(page), static_cast<int>(page.error()));
     // Four digits turn up in any page by chance; the page being the fixed one is what keeps the code out.
-    Check(Status(page) == 200 && page->body == Jadyx::PortalWeb::Page, "page never contains pairing secret");
+    Check(Status(page) == 200 && page->body == Jadyx::PortalWeb::ServedPage(), "page never contains pairing secret");
+    // Served = the fixed page with only its own version filled in.
+    auto expected = std::string{Jadyx::PortalWeb::Page};
+    const auto mark = expected.find(Jadyx::PortalWeb::PageVersionMark);
+    Check(mark != std::string::npos && expected.find(Jadyx::PortalWeb::PageVersionMark, mark + 1) == std::string::npos &&
+          expected.replace(mark, Jadyx::PortalWeb::PageVersionMark.size(), Jadyx::PortalWeb::PageVersion()) == page->body &&
+          Jadyx::PortalWeb::PageVersion().size() == 16, "page carries only its own version");
     Check(page->get_header_value("Cache-Control") == "no-store" &&
           !page->get_header_value("Content-Security-Policy").empty(), "page security headers");
     Check(Status(client.Get("/api/v1/status")) == 401, "anonymous status rejected");
