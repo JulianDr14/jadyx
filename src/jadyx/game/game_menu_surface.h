@@ -46,6 +46,10 @@ struct ChatMenuView {
 struct ChatNoticeView {
     std::span<const ChatMenuLine> lines;
     std::size_t more{}; ///< Unread besides those shown.
+    /// Another notice in the same card (a network's word as a game starts): its title and hint.
+    /// Empty title: the chat's, with the hint to answer.
+    std::wstring_view title;
+    std::wstring_view hint;
 };
 
 /// What the screen says about the paused game, beside the menu.

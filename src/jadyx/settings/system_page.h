@@ -23,12 +23,14 @@ enum class EditorPurpose : std::uint8_t {
     UserName, OnlineNickname, OnlineAddress, OnlinePort, OnlinePassword, RoomPassword,
     HostName, HostSlots, HostPort, HostPassword, ChatMessage,
     DsuAddress,   ///< Settings > Controller > DSU controllers: a server's IP.
+    NextendoServer, NextendoNat, ///< Online > Nextendo: the game and NAT servers' IPs.
 };
 
 /// Ports, counts and IP addresses take the numeric pad; names and server hosts the full keyboard.
 constexpr bool NumericEditor(EditorPurpose purpose) {
     return purpose == EditorPurpose::OnlinePort || purpose == EditorPurpose::HostSlots ||
-           purpose == EditorPurpose::HostPort || purpose == EditorPurpose::DsuAddress;
+           purpose == EditorPurpose::HostPort || purpose == EditorPurpose::DsuAddress ||
+           purpose == EditorPurpose::NextendoServer || purpose == EditorPurpose::NextendoNat;
 }
 
 struct SystemPage {

@@ -139,8 +139,10 @@ public:
                      float bottom);
     /// The card that tells of new messages: the newest at (x, y), `more` besides them, and a hint
     /// of where to answer. ChatNoticeWidth wide, ChatNoticeHeight(lines) tall.
-    void ChatNotice(std::span<const ChatMenuLine> lines, std::size_t more, std::wstring_view hint, float x,
-                    float y);
+    /// The notice card over the game: `title` in capitals, then the lines (a Status line is one
+    /// text of up to two lines, without a name), then `hint` (none when empty).
+    void ChatNotice(std::span<const ChatMenuLine> lines, std::size_t more, std::wstring_view title,
+                    std::wstring_view hint, float x, float y);
     static constexpr float ChatNoticeWidth = 380;
     static constexpr float ChatNoticeHeight(std::size_t lines) {
         return 46 + static_cast<float>(lines) * 44 + 26;

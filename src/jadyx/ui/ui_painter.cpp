@@ -570,15 +570,15 @@ void UiPainter::ChatHistory(std::span<const ChatMenuLine> lines, std::size_t scr
     if (scroll > 0) MoreBelow(x + width / 2, bottom + 12);
 }
 
-void UiPainter::ChatNotice(std::span<const ChatMenuLine> lines, std::size_t more, std::wstring_view hint, float x,
-                           float y) {
+void UiPainter::ChatNotice(std::span<const ChatMenuLine> lines, std::size_t more, std::wstring_view title_text,
+                           std::wstring_view hint, float x, float y) {
     using I18n::Text;
     const float width = ChatNoticeWidth, height = ChatNoticeHeight(lines.size());
     Round(x, y, width, height, 0, Palette::Surface, 0.94f);
     Outline(x + 0.5f, y + 0.5f, width - 1, height - 1, 0, 0xffffff, 0.12f);
     Round(x, y, 4, height, 0, Palette::Accent);
     Icon(UiIcon::Globe, x + 18, y + 14, Palette::Text, 20);
-    std::wstring title{I18n::Tr(Text::ChatTitle)};
+    std::wstring title{title_text};
     for (auto& c : title) c = static_cast<wchar_t>(std::towupper(c));
     Type(title, TypeRole::Caps, x + 46, y + 17, 200, Palette::Text);
     if (more != 0)
@@ -586,11 +586,16 @@ void UiPainter::ChatNotice(std::span<const ChatMenuLine> lines, std::size_t more
              width - 218, Palette::TextSecondary, 1, TextAlign::Trailing);
     float line_y = y + 46;
     for (const ChatMenuLine& line : lines) {
+        if (line.kind == ChatMenuLine::Kind::Status) {
+            Type(line.text, TypeRole::Body, x + 18, line_y, width - 36, Palette::Text, 1, TextAlign::Leading, 2);
+            line_y += 44;
+            continue;
+        }
         Type(line.who, TypeRole::Label, x + 18, line_y, width - 36, Palette::TextSecondary);
         Type(line.text, TypeRole::Body, x + 18, line_y + 16, width - 36, Palette::Text);
         line_y += 44;
     }
-    Type(hint, TypeRole::Label, x + 18, line_y + 4, width - 36, Palette::TextHint);
+    if (!hint.empty()) Type(hint, TypeRole::Label, x + 18, line_y + 4, width - 36, Palette::TextHint);
 }
 
 } // namespace Jadyx

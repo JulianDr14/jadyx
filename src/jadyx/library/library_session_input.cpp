@@ -425,6 +425,24 @@ bool LibrarySession::PressOnline(float x, float y) {
         dirty = true;
         return true;
     }
+    if (target.hit == LibraryHit::OnlineNetwork) {
+        if (online_page.nextendo != (target.index == 1)) actions |= NextManagerTab;
+        dirty = true;
+        return true;
+    }
+    if (target.hit == LibraryHit::NextendoRow && target.index < NextendoPage::Rows) {
+        online_page.nx.selected = target.index;
+        online_page.nx.in_games = false;
+        actions |= Play;
+        dirty = true;
+        return true;
+    }
+    if (target.hit == LibraryHit::NextendoGame && target.index < online_page.nx.games.size()) {
+        online_page.nx.in_games = true;
+        online_page.nx.game = target.index;
+        dirty = true;
+        return true;
+    }
     return false;
 }
 
@@ -828,6 +846,12 @@ void LibrarySession::ReadPad(TimePoint now) {
                 if (hit(GamepadButtons::DPadDown)) directions |= Down;
                 if (hit(GamepadButtons::DPadLeft)) directions |= Left;
                 if (hit(GamepadButtons::DPadRight)) directions |= Right;
+                // The Online tab's triggers swap its view between Eden rooms and Nextendo.
+                if (tab == LibraryTab::Online) {
+                    const auto triggers = trigger_tabs.Update(reading.LeftTrigger, reading.RightTrigger);
+                    if (triggers == 1) actions |= PreviousManagerTab;
+                    if (triggers == 2) actions |= NextManagerTab;
+                }
             }
             if (panel.pad_map.open && panel.pad_map.capturing) {
                 // ReadMapTarget listens to the controller being mapped.

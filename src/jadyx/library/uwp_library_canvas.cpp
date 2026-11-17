@@ -253,7 +253,7 @@ public:
         // On the Settings tab the controller's rows are its page; only the device list floats.
         // New room messages on the other tabs: a card under the header, top right.
         if (view.tab != LibraryTab::Online && !view.online.toast.empty() && !management)
-            ChatNotice(view.online.toast, view.online.toast_more, Tr(T::ChatAnswerOnline),
+            ChatNotice(view.online.toast, view.online.toast_more, Tr(T::ChatTitle), Tr(T::ChatAnswerOnline),
                        1280 - LibraryLayout::Margin - ChatNoticeWidth, 104);
         if (view.controller_panel && view.tab != LibraryTab::Settings) DrawControllerPanel(view);
         else if (view.controller_panel && panel.expanded) DrawControllerChoices(view, true);
@@ -1402,7 +1402,8 @@ private:
     /// Space is Y on a pad; it has no packaged glyph and is drawn natively like AddFolder (X).
     /// The first five have packaged glyphs; the others are drawn natively (UiPainter::ButtonGlyph).
     /// Pin and Rescan are the library's Y and X (Refresh and AddFolder elsewhere).
-    enum class Navigation : unsigned { Play, Explore, Settings, Options, Back, AddFolder, Space, Refresh, Tabs, Pin, Rescan };
+    enum class Navigation : unsigned { Play, Explore, Settings, Options, Back, AddFolder, Space, Refresh, Tabs, Pin, Rescan,
+                                       Triggers }; ///< Triggers: LT/RT (PgUp/PgDn), a page's own views.
     using ConfigurationIcon = UiIcon;
     /// One row of a settings category, as the right side of the Settings tab shows it.
     struct SettingsRow {
@@ -1815,42 +1816,23 @@ private:
     void DrawOnline(const LibraryView& view, Tween::Clock::time_point now) {
         (void)now;
         const auto& page = view.online;
+        if (page.nextendo) {
+            DrawNextendo(view);
+            return;
+        }
         const auto& status = page.status;
         const bool in_rooms = OnlineInRooms(page);
         const auto user = view.system.settings.user_name.empty() ? std::wstring_view{DefaultUserName}
                                                                   : std::wstring_view{view.system.settings.user_name};
-        // A row of the left column: its icon, a small label over the value, and the chevron that
-        // says A edits it.
+        // A row of the left column, and the card's main button (OnlineField, OnlineButton).
         const auto field = [&](std::size_t row, UiIcon icon, T label, const std::wstring& value, bool placeholder,
                                float x, float y, float w) {
-            constexpr float h = 52;
             const bool focused = page.host ? page.host_selected == row : !in_rooms && page.selected == row;
-            if (focused) {
-                FocusGlow(x, y, w, h, 12, 1);
-                Round(x, y, w, h, 12, 0x333537);
-            } else {
-                Round(x, y, w, h, 12, Palette::Canvas, 0.55f);
-            }
-            Icon(icon, x + 16, y + 15, focused ? Palette::Text : Palette::TextSecondary, 22);
-            Type(Tr(label), TypeRole::Label, x + 54, y + 8, w - 100, Palette::TextSecondary);
-            Type(value, TypeRole::LabelLarge, x + 54, y + 25, w - 100,
-                 placeholder ? Palette::TextSecondary : Palette::Text, placeholder ? 0.8f : 1.0f);
-            Chevron(x + w - 22, y + h / 2, focused ? Palette::Text : Palette::TextSecondary);
-            AddHit(x, y, w, h, page.host ? LibraryHit::OnlineHostRow : LibraryHit::OnlineRow, row);
+            OnlineField(focused, icon, Tr(label), value, placeholder, x, y, w,
+                        page.host ? LibraryHit::OnlineHostRow : LibraryHit::OnlineRow, row);
         };
-        // The card's main button: white when focused, as the primary action of the column.
         const auto button = [&](bool focused, T label, float bx, float by, float bw, LibraryHit hit, std::size_t row) {
-            constexpr float bh = 52;
-            if (focused) {
-                FocusGlow(bx, by, bw, bh, bh / 2, 1);
-                Round(bx, by, bw, bh, bh / 2, Palette::Accent);
-            } else {
-                Round(bx, by, bw, bh, bh / 2, 0xffffff, 0.10f);
-                Outline(bx + 0.5f, by + 0.5f, bw - 1, bh - 1, bh / 2 - 0.5f, 0xffffff, 0.08f);
-            }
-            Type(Tr(label), TypeRole::BodyLarge, bx, by + 13, bw, focused ? Palette::OnAccent : Palette::Text, 1,
-                 TextAlign::Center);
-            AddHit(bx, by, bw, bh, hit, row);
+            OnlineButton(focused, Tr(label), bx, by, bw, hit, row);
         };
         const bool hosting = OnlineHosting(status);
         const float lx = OnlineLeftX, lw = OnlineLeftWidth;
@@ -1859,7 +1841,7 @@ private:
             const float y = OnlineTop, h = 212;
             Round(lx, y, lw, h, 18, Palette::Surface, 0.86f);
             Outline(lx + 0.5f, y + 0.5f, lw - 1, h - 1, 18, 0xffffff, 0.06f);
-            Type(Upper(Tr(T::OnlineYou)), TypeRole::Caps, lx + 24, y + 22, 240, Palette::TextSecondary);
+            DrawNetworkSwitch(page, lx + 16, y + 14);
             // The state as a lit dot and a word, top right: white inside a room, amber when the
             // last attempt failed, grey otherwise.
             const bool joined = status.phase == Online::Phase::Joined;
@@ -1899,6 +1881,10 @@ private:
             } else if (failed) {
                 Type(Tr(OnlineFailureText(status.failure)), TypeRole::Body, lx + 24, y + 88, lw - 48, Palette::Warning,
                      1, TextAlign::Leading, 2);
+            } else if (page.nx.preferences.use_nextendo) {
+                // Nextendo is the network in use: say why joining and hosting are refused.
+                Type(Tr(T::NxRoomsPaused), TypeRole::Body, lx + 24, y + 88, lw - 48, Palette::Warning, 1,
+                     TextAlign::Leading, 2);
             } else {
                 Type(Tr(T::OnlineSubtitle), TypeRole::Body, lx + 24, y + 88, lw - 48, Palette::TextSecondary, 1,
                      TextAlign::Leading, 2);
@@ -2056,6 +2042,269 @@ private:
         }
         ScrollIndicator(rx + rw + 8, top + 12, card_h - 24, online_first, visible, rooms);
     }
+    /// The first card's switch between the two networks the tab shows. The view follows the
+    /// switch; a green dot marks the network play actually uses (the Nextendo view's first row).
+    void DrawNetworkSwitch(const OnlinePage& page, float x, float y) {
+        constexpr float sh = 30, dot = 7, dot_gap = 8;
+        const bool live_nextendo = page.nx.preferences.use_nextendo;
+        const std::array<std::wstring_view, 2> labels{Tr(T::NetRooms), Tr(T::NetNextendo)};
+        std::array<float, 2> widths{};
+        for (std::size_t i = 0; i < labels.size(); ++i)
+            widths[i] = MeasureType(labels[i], TypeRole::Label) + 28 + dot + dot_gap;
+        Round(x, y, widths[0] + widths[1] + 8, sh, sh / 2, Palette::Canvas, 0.7f);
+        float sx = x + 4;
+        for (std::size_t i = 0; i < labels.size(); ++i) {
+            const bool shown = page.nextendo == (i == 1);
+            const bool live = live_nextendo == (i == 1);
+            if (shown) Round(sx, y + 3, widths[i], sh - 6, (sh - 6) / 2, 0xffffff, 0.16f);
+            const float text_w = widths[i] - 28 - dot - dot_gap;
+            const float dot_x = sx + 14;
+            Round(dot_x, y + (sh - dot) / 2, dot, dot, dot / 2, live ? NextendoLive : Palette::TextSecondary,
+                  live ? 1.0f : 0.35f);
+            Type(std::wstring{labels[i]}, TypeRole::Label, dot_x + dot + dot_gap, y + 6, text_w + 2,
+                 shown ? Palette::Text : Palette::TextSecondary);
+            AddHit(sx, y, widths[i], sh, LibraryHit::OnlineNetwork, i);
+            sx += widths[i];
+        }
+    }
+    static constexpr unsigned NextendoLive = 0x5ad08a;
+    /// A row of the Online tab's left column: its icon, a small label over the value, and at the
+    /// right the chevron that says A edits it, or the switch it flips.
+    void OnlineField(bool focused, UiIcon icon, std::wstring_view label, const std::wstring& value, bool placeholder,
+                     float x, float y, float w, LibraryHit hit, std::size_t row, std::optional<bool> toggle = {}) {
+        constexpr float h = 52;
+        if (focused) {
+            FocusGlow(x, y, w, h, 12, 1);
+            Round(x, y, w, h, 12, 0x333537);
+        } else {
+            Round(x, y, w, h, 12, Palette::Canvas, 0.55f);
+        }
+        Icon(icon, x + 16, y + 15, focused ? Palette::Text : Palette::TextSecondary, 22);
+        const float text_w = w - (toggle ? 140.0f : 100.0f);
+        Type(label, TypeRole::Label, x + 54, y + 8, text_w, Palette::TextSecondary);
+        Type(value, TypeRole::LabelLarge, x + 54, y + 25, text_w, placeholder ? Palette::TextSecondary : Palette::Text,
+             placeholder ? 0.8f : 1.0f);
+        if (toggle) Switch(x + w - 52 - 14, y + (h - 28) / 2, *toggle, focused);
+        else Chevron(x + w - 22, y + h / 2, focused ? Palette::Text : Palette::TextSecondary);
+        AddHit(x, y, w, h, hit, row);
+    }
+    /// A card's main button: white when focused, as the primary action of the column.
+    void OnlineButton(bool focused, std::wstring_view label, float bx, float by, float bw, LibraryHit hit,
+                      std::size_t row) {
+        constexpr float bh = 52;
+        if (focused) {
+            FocusGlow(bx, by, bw, bh, bh / 2, 1);
+            Round(bx, by, bw, bh, bh / 2, Palette::Accent);
+        } else {
+            Round(bx, by, bw, bh, bh / 2, 0xffffff, 0.10f);
+            Outline(bx + 0.5f, by + 0.5f, bw - 1, bh - 1, bh / 2 - 0.5f, 0xffffff, 0.08f);
+        }
+        Type(label, TypeRole::BodyLarge, bx, by + 13, bw, focused ? Palette::OnAccent : Palette::Text, 1,
+             TextAlign::Center);
+        AddHit(bx, by, bw, bh, hit, row);
+    }
+    /// The Online tab's Nextendo view, laid out as the rooms view. At the left the account (the
+    /// welcome and the sign-in button, or the profile with its state) over the card that sets up
+    /// play; at the right the games Nextendo serves, crossed with this library.
+    void DrawNextendo(const LibraryView& view) {
+        using Network::Nextendo::Phase;
+        const auto& online = view.online;
+        const auto& page = online.nx;
+        const auto& session = page.view;
+        const auto& prefs = page.preferences;
+        const float lx = OnlineLeftX, lw = OnlineLeftWidth;
+        const bool signed_in = NextendoSignedIn(page);
+        const auto focused_row = [&](std::size_t row) { return !page.in_games && page.selected == row; };
+        // The account.
+        {
+            const float y = OnlineTop, h = 212;
+            Round(lx, y, lw, h, 18, Palette::Surface, 0.86f);
+            Outline(lx + 0.5f, y + 0.5f, lw - 1, h - 1, 18, 0xffffff, 0.06f);
+            DrawNetworkSwitch(online, lx + 16, y + 14);
+            // The state, top right: green once the game pass is in hand, amber on a problem.
+            const bool problem = session.problem != Network::Nextendo::Problem::None;
+            T state_text = T::NxSignedOut;
+            unsigned state_color = Palette::TextSecondary;
+            switch (session.phase) {
+            case Phase::SignedOut: break;
+            case Phase::SigningIn: state_text = T::NxSigningIn; state_color = Palette::Text; break;
+            case Phase::Connecting: state_text = T::NxConnecting; state_color = Palette::Text; break;
+            case Phase::Ready: state_text = T::NxReady; state_color = NextendoLive; break;
+            }
+            if (problem && session.phase != Phase::Ready) state_color = Palette::Warning;
+            const std::wstring state{Tr(state_text)};
+            const float state_w = MeasureType(state, TypeRole::Label) + 2;
+            const float state_x = lx + lw - 24 - state_w;
+            Type(state, TypeRole::Label, state_x, y + 22, state_w, state_color);
+            Round(state_x - 16, y + 26, 8, 8, 4, state_color, session.phase == Phase::SignedOut ? 0.6f : 1.0f);
+            const float body_x = lx + 24, body_w = lw - 48;
+            if (signed_in) {
+                // The profile: an avatar with the initial, the name, the handle and friend code.
+                const std::wstring display = OnlineWiden(!session.display_name.empty() ? session.display_name
+                                                                                      : session.username);
+                constexpr float avatar = 56;
+                const float ay = y + 58;
+                Round(body_x, ay, avatar, avatar, avatar / 2, 0xffffff, 0.12f);
+                Outline(body_x + 0.5f, ay + 0.5f, avatar - 1, avatar - 1, avatar / 2 - 0.5f,
+                        session.phase == Phase::Ready ? NextendoLive : 0xffffff,
+                        session.phase == Phase::Ready ? 0.9f : 0.2f, 2);
+                if (display.empty()) {
+                    Icon(UiIcon::User, body_x + 16, ay + 16, Palette::Text, 24);
+                } else {
+                    Type(display.substr(0, 1), TypeRole::HeadlineSmall, body_x, ay + 13, avatar, Palette::Text, 1,
+                         TextAlign::Center);
+                }
+                const float tx = body_x + avatar + 16, tw = body_w - avatar - 16;
+                Type(display.empty() ? std::wstring{Tr(T::NxConnecting)} : display, TypeRole::HeadlineSmall, tx,
+                     ay + 2, tw, Palette::Text);
+                std::wstring handle = session.username.empty() ? std::wstring{} : L"@" + OnlineWiden(session.username);
+                if (!session.friend_code.empty())
+                    handle += (handle.empty() ? L"" : L"  ·  ") +
+                              I18n::Format(T::NxFriendCode, {OnlineWiden(session.friend_code)});
+                Type(handle.empty() ? std::wstring{Tr(T::NxConnectingBody)} : handle, TypeRole::Label, tx, ay + 34, tw,
+                     Palette::TextSecondary);
+                // Under it the problem, or what the account may do.
+                const float cy = y + 126;
+                if (problem) {
+                    Type(I18n::Format(NextendoProblemText(session.problem), {std::to_wstring(session.retry_after)}),
+                         TypeRole::Body, body_x, cy, body_w, Palette::Warning, 1, TextAlign::Leading, 1);
+                } else if (!session.username.empty()) {
+                    float cx = body_x;
+                    cx += Chip(Tr(session.email_verified ? T::NxEmailVerified : T::NxEmailUnverified), cx, cy,
+                               session.email_verified ? Palette::TextHint : Palette::Warning) + 8;
+                    if (session.status_known) {
+                        const bool allowed = session.online_allowed;
+                        Chip(Tr(allowed ? T::NxOnlineAllowed : NextendoBlockText(session.block)), cx, cy,
+                             allowed ? NextendoLive : Palette::Warning);
+                    }
+                }
+            } else {
+                const bool waiting = session.phase == Phase::SigningIn;
+                Type(Tr(waiting ? T::NxWaitingTitle : T::NxWelcomeTitle), TypeRole::HeadlineMedium, body_x, y + 46,
+                     body_w, Palette::Text);
+                if (problem && !waiting) {
+                    Type(Tr(NextendoProblemText(session.problem)), TypeRole::Body, body_x, y + 88, body_w,
+                         Palette::Warning, 1, TextAlign::Leading, 2);
+                } else {
+                    Type(Tr(waiting ? T::NxWaitingBody : T::NxWelcomeBody), TypeRole::Body, body_x, y + 88, body_w,
+                         Palette::TextSecondary, 1, TextAlign::Leading, 2);
+                }
+            }
+            if (session.phase != Phase::SigningIn) {
+                OnlineButton(focused_row(NextendoPage::Account), Tr(signed_in ? T::NxSignOut : T::NxSignIn), lx + 12,
+                             y + h - 64, lw - 24, LibraryHit::NextendoRow, NextendoPage::Account);
+            }
+        }
+        // Play: the switch that chooses Nextendo, the servers' addresses, the certificate check.
+        {
+            const float y = OnlineTop + 212 + 16, h = OnlineBottom - y;
+            Round(lx, y, lw, h, 18, Palette::Surface, 0.86f);
+            Outline(lx + 0.5f, y + 0.5f, lw - 1, h - 1, 18, 0xffffff, 0.06f);
+            Type(Upper(Tr(T::NxPlayCaption)), TypeRole::Caps, lx + 24, y + 22, lw - 48, Palette::TextSecondary);
+            const float x = lx + 12, w = lw - 24;
+            OnlineField(focused_row(NextendoPage::UseNextendo), UiIcon::Globe, Tr(T::NxUse),
+                        std::wstring{Tr(prefs.use_nextendo ? T::NxUseOn : T::NxUseOff)}, false, x, y + 50, w,
+                        LibraryHit::NextendoRow, NextendoPage::UseNextendo, prefs.use_nextendo);
+            const bool no_server = prefs.server_ip.empty();
+            OnlineField(focused_row(NextendoPage::ServerIp), UiIcon::Settings, Tr(T::NxServer),
+                        no_server ? std::wstring{Tr(T::NxAddressPending)} : OnlineWiden(prefs.server_ip), no_server,
+                        x, y + 108, w, LibraryHit::NextendoRow, NextendoPage::ServerIp);
+            const bool no_nat = prefs.nat_ip.empty();
+            OnlineField(focused_row(NextendoPage::NatIp), UiIcon::Settings, Tr(T::NxNat),
+                        no_nat ? std::wstring{Tr(T::NxNatSame)} : OnlineWiden(prefs.nat_ip), no_nat, x, y + 166, w,
+                        LibraryHit::NextendoRow, NextendoPage::NatIp);
+            OnlineField(focused_row(NextendoPage::TlsMode), UiIcon::Key, Tr(T::NxTls),
+                        std::wstring{Tr(TlsModeText(prefs.tls_mode))}, false, x, y + 224, w, LibraryHit::NextendoRow,
+                        NextendoPage::TlsMode);
+        }
+        DrawNextendoGames(view);
+    }
+    /// The Nextendo view's right column: the catalog's games, installed and playable first.
+    void DrawNextendoGames(const LibraryView& view) {
+        using Network::Nextendo::CatalogState;
+        using Network::Nextendo::RowVerdict;
+        const auto& page = view.online.nx;
+        const auto& session = page.view;
+        const float rx = OnlineRightX, rw = OnlineRightWidth;
+        Type(Tr(T::NxGamesTitle), TypeRole::HeadlineMedium, rx, OnlineTop - 2, rw - 260, Palette::Text);
+        std::wstring count;
+        const bool failed = session.catalog_state == CatalogState::Failed;
+        if (session.catalog_state == CatalogState::Loading) count = Tr(T::NxCatalogLoading);
+        else if (failed) count = Tr(T::NxCatalogFailed);
+        if (!page.games.empty()) {
+            const std::wstring listed = I18n::Format(T::NxCatalogCount, {std::to_wstring(session.catalog_revision),
+                                                                         std::to_wstring(page.games.size())});
+            count = count.empty() ? listed : listed + L"  ·  " + count;
+        }
+        Type(count, TypeRole::Label, rx, OnlineTop + 36, rw - 260, failed ? Palette::Warning : Palette::TextSecondary);
+        {
+            const auto label = Tr(T::NxCatalogRefresh);
+            const auto key = PromptKey(Navigation::Rescan);
+            const float bw = PillWidth(label, key.letters), bh = 40;
+            const float bx = rx + rw - bw, by = OnlineTop + 2;
+            PillButton(label, key.letters, key.color, bx, by, false, bh);
+            AddHit(bx, by, bw, bh, LibraryHit::OnlineRefresh);
+        }
+        const float top = OnlineListTop, card_h = OnlineBottom - top;
+        Round(rx, top, rw, card_h, 18, Palette::Surface, 0.86f);
+        Outline(rx + 0.5f, top + 0.5f, rw - 1, card_h - 1, 18, 0xffffff, page.in_games ? 0.5f : 0.06f);
+        const auto& games = page.games;
+        if (games.empty()) {
+            const float middle = top + card_h / 2;
+            Icon(UiIcon::Game, rx + rw / 2 - 20, middle - 72, failed ? Palette::Warning : Palette::TextSecondary, 40);
+            const T message = session.catalog_state == CatalogState::Loading ? T::NxCatalogLoading
+                              : failed                                       ? T::NxCatalogFailed
+                                                                             : T::NxCatalogEmpty;
+            Type(Tr(message), TypeRole::BodyLarge, rx + 48, middle - 16, rw - 96,
+                 failed ? Palette::Warning : Palette::Text, 1, TextAlign::Center, 3);
+            return;
+        }
+        const std::size_t visible = std::min(games.size(), OnlineVisibleRooms);
+        const std::size_t focus = std::min(page.game, games.size() - 1);
+        if (focus < nextendo_first) nextendo_first = focus;
+        if (focus >= nextendo_first + visible) nextendo_first = focus - visible + 1;
+        nextendo_first = std::min(nextendo_first, games.size() - visible);
+        for (std::size_t i = nextendo_first; i < nextendo_first + visible; ++i) {
+            const auto& game = games[i];
+            const float x = rx + 12, y = top + 12 + static_cast<float>(i - nextendo_first) * OnlineRoomStride;
+            const float w = rw - 24, h = OnlineRoomHeight;
+            const bool focused = page.in_games && i == focus;
+            const bool ready = game.verdict == RowVerdict::Ready;
+            if (focused) {
+                FocusGlow(x, y, w, h, 12, 1);
+                Round(x, y, w, h, 12, 0x333537);
+            } else {
+                Round(x, y, w, h, 12, Palette::Canvas, game.installed ? 0.85f : 0.55f);
+            }
+            if (ready) Round(x, y + 14, 3, h - 28, 1.5f, NextendoLive);
+            const float alpha = game.installed || focused ? 1.0f : 0.75f;
+            // The verdict, at the right.
+            unsigned color = Palette::TextHint;
+            if (ready) color = NextendoLive;
+            else if (game.verdict == RowVerdict::WrongVersion || game.verdict == RowVerdict::NeedsUpdate)
+                color = Palette::Warning;
+            const std::wstring verdict{Tr(NextendoVerdictText(game.verdict))};
+            const float chip = MeasureType(verdict, TypeRole::Label) + 24;
+            const float right = x + w - 16 - chip;
+            Chip(verdict, right, y + (h - 26) / 2, color, alpha);
+            Icon(UiIcon::Game, x + 16, y + (h - 22) / 2, focused ? Palette::Text : Palette::TextSecondary, 22);
+            const float text_x = x + 54, text_w = right - text_x - 12;
+            Type(OnlineWiden(game.name), TypeRole::LabelLarge, text_x, y + 10, text_w, Palette::Text, alpha);
+            // Under the name: the version here and the one the catalog recommends.
+            std::wstring detail;
+            if (game.installed)
+                detail = I18n::Format(T::NxGameInstalled, {OnlineWiden(game.installed_version)});
+            if (!game.recommended_version.empty() &&
+                (!game.installed || game.recommended_version != game.installed_version))
+                detail += (detail.empty() ? L"" : L"  ·  ") +
+                          I18n::Format(T::NxGameRecommended, {OnlineWiden(game.recommended_version)});
+            if (detail.empty()) detail = OnlineWiden(Network::Nextendo::TitleIdText(game.title_id));
+            Type(detail, TypeRole::Label, text_x, y + 33, text_w, focused ? Palette::TextHint : Palette::TextSecondary,
+                 alpha);
+            AddHit(x, y, w, h, LibraryHit::NextendoGame, i);
+        }
+        ScrollIndicator(rx + rw + 8, top + 12, card_h - 24, nextendo_first, visible, games.size());
+    }
     /// Host mode's right column: before the room opens, what hosting means; once open, the
     /// addresses friends type (on the same network and over the internet) and who is in it.
     /// In a room, Join mode's right column: the room's chat, its history or the quick phrases.
@@ -2147,6 +2396,10 @@ private:
     void DrawOnlineFooter(const LibraryView& view, float x, float y) {
         const auto& page = view.online;
         const auto phase = page.status.phase;
+        if (page.nextendo) {
+            DrawNextendoFooter(view, x, y);
+            return;
+        }
         if (page.in_chat) {
             const bool picking = page.chat.picking;
             x += ControlPrompt(Navigation::Play, Tr(picking ? T::ChatSend : T::ChatWrite), x, y);
@@ -2166,10 +2419,33 @@ private:
         x += ControlPrompt(Navigation::Play, Tr(play), x, y);
         x += ControlPrompt(Navigation::Pin, Tr(page.host ? T::OnlineModeJoin : T::OnlineModeHost), x, y);
         if (!page.host) x += ControlPrompt(Navigation::Rescan, Tr(T::OnlineRefresh), x, y);
-        ControlPrompt(Navigation::Back, Tr(T::Back), x, y);
-        if (!view.system.notice.empty())
-            Type(view.system.notice, TypeRole::Label, 1280 - LibraryLayout::Margin - 600, y + 8, 600, Palette::TextHint, 1,
-                 TextAlign::Trailing);
+        x += ControlPrompt(Navigation::Triggers, Tr(T::NetNextendo), x, y);
+        x += ControlPrompt(Navigation::Back, Tr(T::Back), x, y);
+        OnlineFooterNotice(view, x, y);
+    }
+    /// The page's notice, at the right of the prompts.
+    void OnlineFooterNotice(const LibraryView& view, float x, float y) {
+        const float right = 1280 - LibraryLayout::Margin;
+        if (view.system.notice.empty() || x + 120 > right) return;
+        Type(view.system.notice, TypeRole::Label, x, y + 8, right - x, Palette::TextHint, 1, TextAlign::Trailing);
+    }
+    void DrawNextendoFooter(const LibraryView& view, float x, float y) {
+        using Network::Nextendo::Phase;
+        const auto& page = view.online.nx;
+        std::optional<T> play;
+        if (!page.in_games) {
+            switch (page.selected) {
+            case NextendoPage::Account:
+                if (page.view.phase != Phase::SigningIn) play = NextendoSignedIn(page) ? T::NxSignOut : T::NxSignIn;
+                break;
+            default: play = T::Change; break;
+            }
+        }
+        if (play) x += ControlPrompt(Navigation::Play, Tr(*play), x, y);
+        x += ControlPrompt(Navigation::Rescan, Tr(T::NxCatalogRefresh), x, y);
+        x += ControlPrompt(Navigation::Triggers, Tr(T::NetRooms), x, y);
+        x += ControlPrompt(Navigation::Back, Tr(T::Back), x, y);
+        OnlineFooterNotice(view, x, y);
     }
     /// The Settings tab: the categories at the left with the emulator's data under them, and the
     /// rows of the focused category at the right, live while the list has the focus.
@@ -2388,6 +2664,8 @@ private:
         case EditorPurpose::HostPassword: title = T::OnlinePassword; hint = T::OnlinePasswordEditorHint; break;
         case EditorPurpose::ChatMessage: title = T::ChatMessageTitle; hint = T::ChatEditorHint; break;
         case EditorPurpose::DsuAddress: title = T::DsuAddTitle; hint = T::DsuPageSubtitle; break;
+        case EditorPurpose::NextendoServer: title = T::NxServer; hint = T::NxServerEditorHint; break;
+        case EditorPurpose::NextendoNat: title = T::NxNat; hint = T::NxNatEditorHint; break;
         case EditorPurpose::UserName: break;
         }
         DrawTextEntryPanel(*this, {*page.name_editor, Tr(title), Tr(hint), page.editor_notice},
@@ -2469,11 +2747,14 @@ private:
             Round(x + 5, y + 14, 12, 4, 1, Palette::Text);
             return 30 + PromptLabel(label, x + 30, y) + 28;
         }
-        if (action == Navigation::Tabs) {
+        if (action == Navigation::Tabs || action == Navigation::Triggers) {
             const bool keyboard = prompt_family == PromptFamily::Keyboard;
             const bool nintendo = prompt_family == PromptFamily::Nintendo;
-            const std::wstring_view previous = keyboard ? L"Q" : nintendo ? L"L" : L"LB";
-            const std::wstring_view next = keyboard ? L"E" : nintendo ? L"R" : L"RB";
+            const bool triggers = action == Navigation::Triggers;
+            const std::wstring_view previous = triggers ? (keyboard ? L"PgUp" : nintendo ? L"ZL" : L"LT")
+                                                        : (keyboard ? L"Q" : nintendo ? L"L" : L"LB");
+            const std::wstring_view next = triggers ? (keyboard ? L"PgDn" : nintendo ? L"ZR" : L"RT")
+                                                    : (keyboard ? L"E" : nintendo ? L"R" : L"RB");
             const float first = BadgeWidth(previous), second = BadgeWidth(next);
             Badge(previous, x + first / 2, y + 16, Palette::Text);
             Badge(next, x + first + 6 + second / 2, y + 16, Palette::Text);
@@ -3055,6 +3336,7 @@ private:
     TileKey focused_tile, left_tile;
     bool rows_shown{};
     std::size_t online_first{}; ///< The first public room the Online tab shows.
+    std::size_t nextendo_first{}; ///< The first catalog game the Nextendo view shows.
     bool animating{};
     bool ambient{}; ///< The backdrop shows, so it drifts.
     Tween::Clock::time_point ambient_epoch{Tween::Clock::now()}, last_frame{};

@@ -81,6 +81,9 @@ enum class LibraryHit : unsigned {
     OnlineRefresh, ///< The Online tab's refresh button.
     OnlineHostRow, ///< A row of the Online tab in Host mode (OnlinePage::host_selected).
     OnlineMode,    ///< The Online tab's Join/Host switch: 0 joins, 1 hosts.
+    OnlineNetwork, ///< The Online tab's network switch: 0 Eden rooms, 1 Nextendo.
+    NextendoRow,   ///< A row of the Nextendo view's left column (NextendoPage::Row).
+    NextendoGame,  ///< A game of the Nextendo catalog list.
 };
 inline constexpr std::size_t UpdateBackHit = 99;
 /// A press: what, and which (the tab, the filter, the entry, the shelf position or the row).
