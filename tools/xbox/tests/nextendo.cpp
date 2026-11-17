@@ -346,7 +346,7 @@ void TestCatalog() {
 
     const std::string payload = R"({"document_type":"game_catalog","schema_version":1,"revision":7,
         "issued_at":"2026-11-16T00:00:00Z","expires_at":"2026-11-18T00:00:00Z","games":[
-        {"title_ids":["0100000000010000","0100000000010800"],"enabled":true,"protocol":"nex",
+        {"title_ids":["0100000000010000","0100000000010800"],"name":"Sample Game","enabled":true,"protocol":"nex",
          "required_capabilities":["versions.exact.v1"],
          "versions":{"policy":"exact","accepted":["1.2.0","1.3"],"recommended":"1.3"}},
         {"title_ids":["0100000000020000"],"enabled":false,"protocol":"npln",
@@ -378,6 +378,7 @@ void TestCatalog() {
     const auto catalog = ParseGameCatalog(verified.payload, now);
     Check(catalog.error == CatalogError::None);
     Check(catalog.revision == 7 && catalog.games.size() == 3);
+    Check(catalog.games[0].name == "Sample Game" && catalog.games[1].name.empty());
     Check(ParseGameCatalog(verified.payload, *ParseUtcTimestamp("2026-11-18T00:00:00Z")).error ==
           CatalogError::Expired);
     Check(ParseGameCatalog(R"({"document_type":"other","revision":1})", now).error ==

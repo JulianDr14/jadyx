@@ -47,6 +47,7 @@ std::optional<std::int64_t> ParseUtcTimestamp(std::string_view text);
 
 struct CatalogGame {
     std::vector<std::uint64_t> title_ids;
+    std::string name; // display name from the signed catalog; may be empty
     bool enabled = false;
     std::string protocol;
     std::vector<std::string> required_capabilities;

@@ -223,6 +223,9 @@ GameCatalog ParseGameCatalog(std::string_view payload, std::int64_t now) {
             continue;
         }
         game.enabled = node.value("enabled", false);
+        if (const auto name = node.find("name"); name != node.end() && name->is_string()) {
+            game.name = name->get<std::string>();
+        }
         if (const auto protocol = node.find("protocol");
             protocol != node.end() && protocol->is_string()) {
             game.protocol = protocol->get<std::string>();
