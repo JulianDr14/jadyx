@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 
 #include "common/common_types.h"
@@ -20,19 +21,29 @@ struct PrewarmPacer {
 
     void Queued(Clock::time_point now) noexcept {
         queued_at = now;
+        observed_built = false;
     }
 
-    /// Call once the last queued PSO is built. Seen built at a frame boundary, the build time is
-    /// rounded up by up to a frame.
-    [[nodiscard]] bool Rested(Clock::time_point now) noexcept {
-        if (built_at < queued_at) {
+    /// GPU thread: observe completion even when memory policy or the prewarm switch prevents
+    /// another queue. Otherwise time spent blocked is mistaken for time spent building.
+    /// This remains a frame-boundary observation, not the worker's exact completion timestamp.
+    void ObserveBuilt(Clock::time_point now) noexcept {
+        if (!observed_built) {
             built_at = now;
+            observed_built = true;
         }
-        return now - built_at >= (built_at - queued_at) * rest;
+    }
+
+    /// Call only once the last queued PSO is built. ObserveBuilt may already have recorded it
+    /// while queuing was blocked; repeated observations must not restart its rest period.
+    [[nodiscard]] bool Rested(Clock::time_point now, int minimum_rest = 0) noexcept {
+        ObserveBuilt(now);
+        return now - built_at >= (built_at - queued_at) * (std::max)(rest, minimum_rest);
     }
 
     Clock::time_point queued_at{};
     Clock::time_point built_at{};
+    bool observed_built{};
     int rest{REST};
 };
 
