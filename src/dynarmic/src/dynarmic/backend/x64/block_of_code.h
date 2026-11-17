@@ -173,6 +173,10 @@ public:
     /// serves several cores may hold the sum of what each of them would.
     void SetCapScale(size_t scale) noexcept;
 
+    /// This cache's emission state and the memory where its next byte goes, for a crash report.
+    /// Allocates nothing and takes no lock it could wait on: a faulting thread may hold any.
+    int DescribeState(char* out, size_t size) const noexcept;
+
     void SetCodePtr(CodePtr code_ptr);
     void EnsurePatchLocationSize(CodePtr begin, size_t size);
 
@@ -203,6 +207,8 @@ public:
 
 private:
     using RunCodeFuncType = HaltReason (*)(void*, CodePtr);
+    /// EnsureMemoryCommitted's commit, before the dual-mapped check.
+    void CommitCodeMemory(size_t codesize);
     static constexpr size_t MXCSR_ALREADY_EXITED = 1 << 0;
     static constexpr size_t FORCE_RETURN = 1 << 1;
 
@@ -228,6 +234,9 @@ private:
     const bool dual_mapped = AdoptWriteView();
     void ReleaseMemoryPastCap();
     bool release_failed = false;
+    /// Dual-mapped: the code below this offset was checked to be mapped in both views
+    /// (EnsureMemoryCommitted). Reset when chunks may be unmapped.
+    size_t mapped_verified_end = 0;
 #endif
     bool prelude_complete = false;
     // SetCodeCacheCap as this cache applies it: the cap it last saw, and where its code ends.

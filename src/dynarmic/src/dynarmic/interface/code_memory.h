@@ -28,4 +28,8 @@ void SetDualMappedCode(bool allowed) noexcept;
 /// Code caches alive that are dual-mapped; 0 when the probe failed or SetDualMappedCode(false).
 [[nodiscard]] std::size_t DualMappedCodeCaches() noexcept;
 
+/// One line per x64 code cache alive: where its next byte is emitted and that memory's state in
+/// both views. For a crash report: allocates nothing and waits on no lock. Returns bytes written.
+std::size_t DescribeCodeCaches(char* out, std::size_t size) noexcept;
+
 } // namespace Dynarmic
