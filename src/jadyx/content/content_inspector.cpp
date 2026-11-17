@@ -12,6 +12,7 @@
 #include <openssl/evp.h>
 #include "common/logging.h"
 #include "core/crypto/key_manager.h"
+#include "core/crypto/ncz_decompressor.h"
 #include "core/file_sys/card_image.h"
 #include "core/file_sys/common_funcs.h"
 #include "core/file_sys/content_archive.h"
@@ -136,6 +137,13 @@ Inspection InspectPackage(FileSys::VfsFilesystem& vfs, const std::string& source
         if (!file) return {Error::Unavailable, {}};
         auto extension = format.empty() ? file->GetExtension() : std::string{format};
         std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return std::tolower(c); });
+        // NSZ/XCZ are the same containers with compressed NCAs; an XCZ may also be a PFS0.
+        if (extension == "nsz") extension = "nsp";
+        if (extension == "xcz") {
+            std::array<u8, 4> magic{};
+            extension = file->ReadBytes(magic.data(), magic.size(), 0) == magic.size() &&
+                        !std::memcmp(magic.data(), "PFS0", 4) ? "nsp" : "xci";
+        }
         if (Truncated(file, extension)) {
             LOG_WARNING(Frontend, "Content: {} is empty or cut short ({} bytes)", source, file->GetSize());
             return {Error::Truncated, {}};
@@ -154,10 +162,17 @@ Inspection InspectPackage(FileSys::VfsFilesystem& vfs, const std::string& source
     }
     if (raw.size() > 4096) return {Error::Invalid, {}};
     std::map<std::string, VirtualFile> by_id;
-    for (const auto& f : raw) {
+    for (auto f : raw) {
         if (stop.stop_requested()) return {Error::Cancelled, {}};
         auto name = f->GetName();
         std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
+        // A block-compressed NCA reads as the NCA it was made from; its hash still binds it.
+        // Solid NCZ has no random access, so the game could not read it either.
+        if (name.ends_with(".ncz") && name.size() == 36) {
+            f = Core::Crypto::IsBlockCompressedNCZ(f) ? Core::Crypto::DecompressNCZ(f, name.substr(0, 32) + ".nca") : nullptr;
+            if (!f) return {Error::Unsupported, {}};
+            name = f->GetName();
+        }
         if (name.ends_with(".nca") && name.size() >= 36) {
             const auto id = name.substr(0, 32);
             if (!std::all_of(id.begin(), id.end(), [](unsigned char c) { return std::isxdigit(c); }) ||

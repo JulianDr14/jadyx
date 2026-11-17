@@ -197,8 +197,8 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <div class="view" id="view-content">
 <section id="upload" class="card" hidden><button class="back" id="upload-back">← Library</button><div class="head"><h2 id="uploadtitle">Import games</h2><p id="uploadintro">Base games only. Choose where your console keeps them.</p></div>
 <nav class="seg" id="where" role="tablist" hidden><button id="where-internal" role="tab" aria-selected="true">Internal storage</button><button id="where-developer" role="tab" aria-selected="false">Dev storage (D:)</button></nav>
-<label class="drop" id="files-zone"><input id="files" type="file" accept=".nsp,.xci,.nro" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
-<strong id="fileslabel">Choose NSP, XCI or NRO files</strong><span id="files-drop">or drop them here</span><span class="picked" id="files-picked"></span></label>
+<label class="drop" id="files-zone"><input id="files" type="file" accept=".nsp,.xci,.nro,.nsz,.xcz,.nca" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+<strong id="fileslabel">Choose NSP, NSZ, XCI, XCZ, NCA or NRO files</strong><span id="files-drop">or drop them here</span><span class="picked" id="files-picked"></span></label>
 <div class="field" id="name-field" hidden><label id="namelabel" for="name">Destination name (one file)</label><input id="name" maxlength="100" autocomplete="off"></div>
 <div class="actions"><button id="send" class="primary">Upload / resume</button><button id="pause">Pause</button><button id="rename">Rename pending file</button>
 <button class="danger" id="discard">Discard partial file</button></div>
@@ -214,8 +214,8 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <ul class="items" id="items"></ul>
 <nav class="seg" id="content-where" role="tablist" hidden><button id="content-where-internal" role="tab" aria-selected="true"><svg class="ico" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9z"/></svg><span id="content-where-internal-label">Internal storage</span></button><button id="content-where-developer" role="tab" aria-selected="false"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13 7.5 5h9L19 13M7 16.5h.01"/></svg><span id="content-where-developer-label">Dev storage (D:)</span></button></nav>
 <p id="content-where-hint" hidden></p>
-<label class="drop" id="content-zone"><input id="content-files" type="file" accept=".nsp,.xci" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
-<strong id="content-pick">Choose update NSP or XCI files</strong><span id="content-drop">or drop them here</span><span class="picked" id="content-picked"></span></label>
+<label class="drop" id="content-zone"><input id="content-files" type="file" accept=".nsp,.xci,.nsz,.xcz" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+<strong id="content-pick">Choose update NSP, NSZ, XCI or XCZ files</strong><span id="content-drop">or drop them here</span><span class="picked" id="content-picked"></span></label>
 <div id="save-pane" hidden><p id="save-intro"></p><div class="actions"><button id="save-download" class="primary">Download save</button></div>
 <label class="drop"><input id="save-file" type="file" accept=".zip,.7z,.rar"><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
 <strong id="save-pick">Choose the save (.zip, .7z or .rar)</strong><span id="save-drop">or drop it here</span><span class="picked" id="save-picked"></span></label>
@@ -268,40 +268,40 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 const $=id=>document.getElementById(id),lang=navigator.language.toLowerCase(),es=lang.startsWith('es'),pt=lang.startsWith('pt');
 const words=pt?{
  title:'Conecte-se ao seu console',intro:'Digite o código temporário que o Jadyx mostra. Mantenha o app aberto na biblioteca.',label:'Código de conexão',connect:'Conectar',
- uploadtitle:'Importar jogos',uploadintro:'Somente jogos base. Escolha onde o console os guarda.','where-internal':'Armazenamento interno','where-developer':'Armazenamento dev (D:)',fileslabel:'Selecionar arquivos NSP, XCI ou NRO',
+ uploadtitle:'Importar jogos',uploadintro:'Somente jogos base. Escolha onde o console os guarda.','where-internal':'Armazenamento interno','where-developer':'Armazenamento dev (D:)',fileslabel:'Selecionar arquivos NSP, NSZ, XCI, XCZ, NCA ou NRO',
  namelabel:'Nome de destino (um único arquivo)',send:'Enviar / retomar',rename:'Renomear arquivo pendente',pause:'Pausar',discard:'Apagar arquivo parcial',
  kicker:'Portal da rede local','status-off':'Desconectado','status-on':'Conectado','code-hint':'4 dígitos · muda cada vez que você abre o portal','files-drop':'ou arraste-os para cá',files:'arquivos',
  privacy:'Rede local · Conexão HTTP sem criptografia.',ok:'Conexão estabelecida.',bad:'Código incorreto ou expirado. Gere outro no Jadyx.',
  lost:'A conexão foi encerrada. Conecte-se de novo pelo Jadyx; o progresso confirmado é mantido.',free:'Espaço livre',confirmed:'Confirmado',
- speed:'Velocidade',eta:'Tempo restante',queue:'Na fila',choose:'Selecione um ou mais arquivos NSP, XCI ou NRO.',same:'Há outro arquivo pendente. Selecione o mesmo arquivo para retomá-lo ou apague a transferência parcial.',
+ speed:'Velocidade',eta:'Tempo restante',queue:'Na fila',choose:'Selecione um ou mais arquivos NSP, NSZ, XCI, XCZ, NCA ou NRO.',same:'Há outro arquivo pendente. Selecione o mesmo arquivo para retomá-lo ou apague a transferência parcial.',
  receiving:'Recebendo',paused:'Pausado. Selecione o mesmo arquivo para continuar.',ready:'Aguardando validação',validating:'Validando arquivo',publishing:'Adicionando à biblioteca',complete:'Instalado na biblioteca',
  busy:'Aguarde o fim da operação no Jadyx.',exists:'Esse nome já existe. Altere o nome de destino e tente de novo.',space:'Não há espaço suficiente.',
- file:'Nome ou arquivo inválido. Selecione um NSP, XCI ou NRO.',base:'Somente jogos base são aceitos; não atualizações, DLC nem pacotes mistos.',
- nsp:'A estrutura do arquivo é inválida.',incomplete:'O arquivo está incompleto.',keys:'Não foi possível ler os metadados. Verifique as chaves do seu console e o arquivo.',
+ file:'Nome ou arquivo inválido. Selecione um NSP, NSZ, XCI, XCZ, NCA ou NRO.',base:'Somente jogos base são aceitos; não atualizações, DLC nem pacotes mistos.',
+ nsp:'A estrutura do arquivo é inválida.',solid:'NSZ/XCZ com compressão sólida não é compatível. Use um com compressão em blocos.',incomplete:'O arquivo está incompleto.',keys:'Não foi possível ler os metadados. Verifique as chaves do seu console e o arquivo.',
  disk:'Não foi possível gravar ou publicar o arquivo.',interrupted:'Transferência interrompida. Você pode retomar a partir do progresso confirmado.',
  partial:'Há uma transferência pendente. Retome ou apague.',recovery:'Não foi possível recuperar o arquivo parcial. Apague-o antes de iniciar outro.',unavailable:'A importação não está disponível no momento.',destination:'O armazenamento dev (D:) não está disponível. Escolha o armazenamento interno.',
  attempts:'Tentativas demais. Aguarde um minuto.',version:'Versão de transferência incompatível. Recarregue a página.',idle:'Pronto para importar.'
 }:es?{
  title:'Conecta con tu consola',intro:'Introduce el código temporal que muestra Jadyx. Mantén la app abierta en la biblioteca.',label:'Código de conexión',connect:'Conectar',
- uploadtitle:'Importar juegos',uploadintro:'Solo juegos base. Elige dónde los guarda la consola.','where-internal':'Almacenamiento interno','where-developer':'Almacenamiento dev (D:)',fileslabel:'Seleccionar archivos NSP, XCI o NRO',
+ uploadtitle:'Importar juegos',uploadintro:'Solo juegos base. Elige dónde los guarda la consola.','where-internal':'Almacenamiento interno','where-developer':'Almacenamiento dev (D:)',fileslabel:'Seleccionar archivos NSP, NSZ, XCI, XCZ, NCA o NRO',
  namelabel:'Nombre de destino (un solo archivo)',send:'Subir / reanudar',rename:'Renombrar archivo pendiente',pause:'Pausar',discard:'Eliminar archivo parcial',
  kicker:'Portal de red local','status-off':'Sin conectar','status-on':'Conectado','code-hint':'4 dígitos · cambia cada vez que abres el portal','files-drop':'o arrástralos aquí',files:'archivos',
  privacy:'Red local · Conexión HTTP sin cifrado.',ok:'Conexión establecida.',bad:'Código incorrecto o caducado. Genera otro en Jadyx.',
  lost:'La conexión se ha cerrado. Vuelve a conectarte desde Jadyx; el progreso confirmado se conserva.',free:'Espacio libre',confirmed:'Confirmado',
- speed:'Velocidad',eta:'Tiempo restante',queue:'En cola',choose:'Selecciona uno o varios archivos NSP, XCI o NRO.',same:'Hay un archivo pendiente distinto. Selecciona el mismo archivo para reanudarlo o elimina la transferencia parcial.',
+ speed:'Velocidad',eta:'Tiempo restante',queue:'En cola',choose:'Selecciona uno o varios archivos NSP, NSZ, XCI, XCZ, NCA o NRO.',same:'Hay un archivo pendiente distinto. Selecciona el mismo archivo para reanudarlo o elimina la transferencia parcial.',
  receiving:'Recibiendo',paused:'En pausa. Selecciona el mismo archivo para continuar.',ready:'Esperando a validar',validating:'Validando archivo',publishing:'Añadiendo a la biblioteca',complete:'Instalado en la biblioteca',
  busy:'Espera a que termine la operación en Jadyx.',exists:'Ese nombre ya existe. Cambia el nombre de destino y vuelve a intentarlo.',space:'No hay espacio suficiente.',
- file:'Nombre o archivo no válido. Selecciona un NSP, XCI o NRO.',base:'Solo se admiten juegos base; no actualizaciones, DLC ni paquetes mezclados.',
- nsp:'La estructura del archivo no es válida.',incomplete:'El archivo está incompleto.',keys:'No se pueden leer sus metadatos. Revisa las claves de tu consola y el archivo.',
+ file:'Nombre o archivo no válido. Selecciona un NSP, NSZ, XCI, XCZ, NCA o NRO.',base:'Solo se admiten juegos base; no actualizaciones, DLC ni paquetes mezclados.',
+ nsp:'La estructura del archivo no es válida.',solid:'Los NSZ/XCZ con compresión sólida no son compatibles. Usa uno comprimido por bloques.',incomplete:'El archivo está incompleto.',keys:'No se pueden leer sus metadatos. Revisa las claves de tu consola y el archivo.',
  disk:'No se pudo escribir o publicar el archivo.',interrupted:'Transferencia interrumpida. Puedes reanudar desde el progreso confirmado.',
  partial:'Hay una transferencia pendiente. Reanúdala o elimínala.',recovery:'No se pudo recuperar el parcial. Elimínalo antes de iniciar otro.',unavailable:'La importación no está disponible en este momento.',destination:'El almacenamiento dev (D:) no está disponible. Elige el almacenamiento interno.',
  attempts:'Demasiados intentos. Espera un minuto.',version:'Versión de transferencia incompatible. Recarga la página.',idle:'Listo para importar.'
 }:{ok:'Connected.',bad:'Incorrect or expired code. Generate another in Jadyx.',lost:'Connection closed. Reconnect in Jadyx; confirmed progress is retained.',
- free:'Free space','where-internal':'Internal storage','where-developer':'Dev storage (D:)',confirmed:'Confirmed',speed:'Speed',eta:'Time left',queue:'Queued',choose:'Choose one or more NSP, XCI or NRO files.',files:'files',
+ free:'Free space','where-internal':'Internal storage','where-developer':'Dev storage (D:)',confirmed:'Confirmed',speed:'Speed',eta:'Time left',queue:'Queued',choose:'Choose one or more NSP, NSZ, XCI, XCZ, NCA or NRO files.',files:'files',
  same:'A different file is pending. Select the same file to resume, or discard the partial upload.',receiving:'Receiving',paused:'Paused. Select the same file to continue.',
  ready:'Waiting for validation',validating:'Validating file',publishing:'Adding to library',complete:'Installed in your library',busy:'Wait for the operation in Jadyx to finish.',
- exists:'This destination already exists. Change its name and try again.',space:'Not enough free space.',file:'Invalid filename or file. Choose an NSP, XCI or NRO file.',
- base:'Base games only; updates, DLC and mixed packages are not supported.',nsp:'Invalid file structure.',incomplete:'The file is incomplete.',
+ exists:'This destination already exists. Change its name and try again.',space:'Not enough free space.',file:'Invalid filename or file. Choose an NSP, NSZ, XCI, XCZ, NCA or NRO file.',
+ base:'Base games only; updates, DLC and mixed packages are not supported.',nsp:'Invalid file structure.',solid:'Solid-compressed NSZ/XCZ is not supported. Use a block-compressed one.',incomplete:'The file is incomplete.',
  keys:'Cannot read its metadata. Check your console keys and the file.',disk:'Could not write or publish this file.',
  interrupted:'Transfer interrupted. You can resume from confirmed progress.',partial:'An upload is pending. Resume or discard it.',
  recovery:'Cannot recover the partial file. Discard it before starting another.',unavailable:'Import is currently unavailable.',destination:'Dev storage (D:) is not available. Choose internal storage.',
@@ -516,7 +516,7 @@ $('rename').addEventListener('click',async()=>{try{await api('/api/v1/uploads/'+
 // same second press the console asks for.
 const libraryWords=pt?{
  title:'Sua biblioteca',intro:'Abra um jogo para gerenciar suas atualizações, DLC e save, ou para apagá-lo.',empty:'Ainda não há jogos.',back:'← Biblioteca',
- update:'Atualizações',dlc:'DLC',none_update:'Nenhuma atualização instalada.',none_dlc:'Nenhum DLC instalado.',pick_update:'Selecionar NSP ou XCI de atualização',pick_dlc:'Selecionar NSP ou XCI de DLC',
+ update:'Atualizações',dlc:'DLC',none_update:'Nenhuma atualização instalada.',none_dlc:'Nenhum DLC instalado.',pick_update:'Selecionar NSP, NSZ, XCI ou XCZ de atualização',pick_dlc:'Selecionar NSP, NSZ, XCI ou XCZ de DLC',
  send:'Enviar e instalar',remove_game:'Apagar jogo',remove:'Apagar',confirm:'Clique de novo para confirmar',external_item:'Pasta externa',
  warning:'Apagar o jogo remove também seus saves, atualizações e DLC deste console. Mods e cheats são mantidos. Não pode ser desfeito.',
  external:'Este jogo está em uma pasta externa; o Jadyx não apaga arquivos de lá.',removing:'Apagando…',removed_game:'Jogo apagado.',removed:'Conteúdo apagado.',
@@ -537,7 +537,7 @@ const libraryWords=pt?{
  where_internal_hint:'Fica no espaço do app · <b>{free}</b> livres.',where_developer_hint:'Fica no D: · <b>{free}</b> livres. É apagado se você mudar o tamanho do armazenamento dev.'
 }:es?{
  title:'Tu biblioteca',intro:'Abre un juego para gestionar sus actualizaciones, DLC y partida, o para eliminarlo.',empty:'Todavía no hay juegos.',back:'← Biblioteca',
- update:'Actualizaciones',dlc:'DLC',none_update:'No hay actualizaciones instaladas.',none_dlc:'No hay DLC instalados.',pick_update:'Seleccionar NSP o XCI de actualización',pick_dlc:'Seleccionar NSP o XCI de DLC',
+ update:'Actualizaciones',dlc:'DLC',none_update:'No hay actualizaciones instaladas.',none_dlc:'No hay DLC instalados.',pick_update:'Seleccionar NSP, NSZ, XCI o XCZ de actualización',pick_dlc:'Seleccionar NSP, NSZ, XCI o XCZ de DLC',
  send:'Subir e instalar',remove_game:'Eliminar juego',remove:'Eliminar',confirm:'Pulsa otra vez para confirmar',external_item:'Carpeta externa',
  warning:'Eliminar el juego borra también sus partidas, actualizaciones y DLC de esta consola. Los mods y trucos se conservan. No se puede deshacer.',
  external:'Este juego está en una carpeta externa; Jadyx no borra archivos de ahí.',removing:'Eliminando…',removed_game:'Juego eliminado.',removed:'Contenido eliminado.',
@@ -558,7 +558,7 @@ const libraryWords=pt?{
  where_internal_hint:'Se guarda en el espacio de la app · <b>{free}</b> libres.',where_developer_hint:'Se guarda en D: · <b>{free}</b> libres. Se borra si cambias el tamaño del almacenamiento dev.'
 }:{
  title:'Your library',intro:'Open a game to manage its updates, DLC and save, or to delete it.',empty:'No games yet.',back:'← Library',
- update:'Updates',dlc:'DLC',none_update:'No updates installed.',none_dlc:'No DLC installed.',pick_update:'Choose update NSP or XCI files',pick_dlc:'Choose DLC NSP or XCI files',
+ update:'Updates',dlc:'DLC',none_update:'No updates installed.',none_dlc:'No DLC installed.',pick_update:'Choose update NSP, NSZ, XCI or XCZ files',pick_dlc:'Choose DLC NSP, NSZ, XCI or XCZ files',
  send:'Upload and install',remove_game:'Delete game',remove:'Delete',confirm:'Click again to confirm',external_item:'External folder',
  warning:'Deleting the game also deletes its saves, updates and DLC from this console. Mods and cheats are kept. This cannot be undone.',
  external:'This game is in an external folder; Jadyx does not delete files there.',removing:'Deleting…',removed_game:'Game deleted.',removed:'Content deleted.',
@@ -591,7 +591,7 @@ const saveWords=pt?{
  help:'Como o arquivo deve ser?',
  direct:'✔ Os arquivos do save direto',inside:'✔ Ou dentro da pasta do jogo',archive_name:'save.zip',file1:'arquivo do save',more:'pasta/…',
  pc:'No PC (Eden ou yuzu): clique com o botão direito no jogo → Abrir pasta de save e comprima o que há dentro (ou a pasta inteira). Do Ryujinx serve a pasta …/bis/user/save/<número>/0.',
- rules:'✘ Sem senha · ✘ Sem jogos nem atualizações (.nsp/.xci) · ✘ Sem saves de outros jogos · Máximo de 1 GiB.',
+ rules:'✘ Sem senha · ✘ Sem jogos nem atualizações (.nsp/.xci/.nsz/.xcz) · ✘ Sem saves de outros jogos · Máximo de 1 GiB.',
  save_file:'Escolha um arquivo .zip, .7z ou .rar com o save.',save_limit:'O arquivo é grande demais para ser um save (máx. 1 GiB e 8192 arquivos).',
  not_archive:'O arquivo não é um compactado válido (foi renomeado para .zip?).',file_empty:'O arquivo está vazio.',
  archive:'O compactado está danificado ou incompleto. Crie-o de novo.',encrypted:'O compactado tem senha. Crie-o sem senha.',
@@ -610,7 +610,7 @@ const saveWords=pt?{
  help:'¿Cómo debe ser el archivo?',
  direct:'✔ Los archivos de la partida directamente',inside:'✔ O dentro de la carpeta del juego',archive_name:'partida.zip',file1:'archivo de la partida',more:'carpeta/…',
  pc:'En el PC (Eden o yuzu): clic derecho en el juego → Abrir carpeta de partida, y comprime lo que hay dentro (o la carpeta entera). De Ryujinx vale la carpeta …/bis/user/save/<número>/0.',
- rules:'✘ Sin contraseña · ✘ Sin juegos ni actualizaciones (.nsp/.xci) · ✘ Sin partidas de otros juegos · Máximo 1 GiB.',
+ rules:'✘ Sin contraseña · ✘ Sin juegos ni actualizaciones (.nsp/.xci/.nsz/.xcz) · ✘ Sin partidas de otros juegos · Máximo 1 GiB.',
  save_file:'Elige un archivo .zip, .7z o .rar con la partida.',save_limit:'El archivo es demasiado grande para ser una partida (máx. 1 GiB y 8192 archivos).',
  not_archive:'El archivo no es un comprimido válido (¿se renombró a .zip?).',file_empty:'El archivo está vacío.',
  archive:'El comprimido está dañado o incompleto. Vuelve a crearlo.',encrypted:'El comprimido tiene contraseña. Créalo sin contraseña.',
@@ -629,7 +629,7 @@ const saveWords=pt?{
  help:'What should the file look like?',
  direct:'✔ The save files directly',inside:'✔ Or inside the game\'s folder',archive_name:'save.zip',file1:'save file',more:'folder/…',
  pc:'On a PC (Eden or yuzu): right-click the game → Open Save Data Location, and compress what is inside (or the whole folder). From Ryujinx, the …/bis/user/save/<number>/0 folder works.',
- rules:'✘ No password · ✘ No games or updates (.nsp/.xci) · ✘ No saves of other games · 1 GiB at most.',
+ rules:'✘ No password · ✘ No games or updates (.nsp/.xci/.nsz/.xcz) · ✘ No saves of other games · 1 GiB at most.',
  save_file:'Choose a .zip, .7z or .rar file with the save.',save_limit:'The file is too large to be a save (1 GiB and 8192 files at most).',
  not_archive:'The file is not a valid archive (was it renamed to .zip?).',file_empty:'The file is empty.',
  archive:'The archive is damaged or incomplete. Create it again.',encrypted:'The archive has a password. Create it without one.',

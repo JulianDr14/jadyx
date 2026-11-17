@@ -17,6 +17,7 @@
 #include "core/file_sys/fssystem/fssystem_crypto_configuration.h"
 #include "core/file_sys/fssystem/fssystem_compression_configuration.h"
 #include "core/file_sys/fssystem/fssystem_nca_file_system_driver.h"
+#include "core/crypto/ncz_decompressor.h"
 #include "core/loader/loader.h"
 
 namespace Jadyx {
@@ -56,7 +57,7 @@ std::string ValidateBaseContents(const std::vector<VirtualFile>& files, std::sto
     struct Entry { VirtualFile file; u64 title; NCAContentType type; };
     std::map<std::string, Entry> entries;
     std::set<std::string> metadata_xml;
-    for (const auto& item : files) {
+    for (auto item : files) {
         if (stop.stop_requested()) return "interrupted";
         const auto name=item->GetName();
         if (name.size() == 41 && name.ends_with(".cnmt.xml")) {
@@ -69,10 +70,18 @@ std::string ValidateBaseContents(const std::vector<VirtualFile>& files, std::sto
             if (item->GetSize() > 16384) return "nsp";
             continue; // Loading the installed NSP handles its tickets; never mutate KeyManager here.
         }
-        if (!name.ends_with(".nca") || (name.size() != 36 && !name.ends_with(".cnmt.nca")) || name.size() > 41)
+        // NSZ/XCZ store NCAs block-compressed as .ncz; the loader opens them the same way.
+        const bool compressed=name.size() == 36 && name.ends_with(".ncz");
+        if (!compressed && (!name.ends_with(".nca") || (name.size() != 36 && !name.ends_with(".cnmt.nca")) || name.size() > 41))
             return "nsp";
         const auto id=name.substr(0,32);
         if (id.size() != 32 || id.find_first_not_of("0123456789abcdef") != std::string::npos) return "nsp";
+        if (compressed) {
+            // Solid NCZ has no random access: the game could not be read, so refuse it here.
+            if (!Core::Crypto::IsBlockCompressedNCZ(item)) return "solid";
+            item=Core::Crypto::DecompressNCZ(item, id + ".nca");
+            if (!item) return "solid";
+        }
         NcaReader reader;
         if (R_FAILED(reader.Initialize(item, GetCryptoConfiguration(), GetNcaCompressionConfiguration()))) return "keys";
         if (reader.GetContentSize() != item->GetSize()) {
@@ -146,6 +155,19 @@ std::string ValidateXci(const VirtualFile& file, std::stop_token stop) {
     if (secure == root.end()) return "nsp";
     return ValidateBaseContents(PartitionFiles(*secure, "HFS0"), stop);
 }
+/// A loose NCA boots only when it is a base game's program with its own executable.
+std::string ValidateLooseNca(const VirtualFile& file) {
+    NcaReader reader;
+    if (R_FAILED(reader.Initialize(file, GetCryptoConfiguration(), GetNcaCompressionConfiguration()))) return "keys";
+    if (reader.GetContentSize() != file->GetSize()) return "incomplete";
+    const auto program=reader.GetProgramId();
+    if (static_cast<NCAContentType>(reader.GetContentType()) != NCAContentType::Program ||
+        GetBaseTitleID(program) != program) return "base";
+    NCA nca{file};
+    if (nca.GetStatus() != Loader::ResultStatus::Success) return "keys";
+    if (!nca.GetExeFS()) return "base"; // An update's program needs its base to run.
+    return {};
+}
 } // namespace
 
 std::string ValidateUploadedNsp(const std::filesystem::path& path, std::stop_token stop) {
@@ -162,9 +184,15 @@ std::string ValidateUploadedGame(const std::filesystem::path& path, const std::s
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     // The loader tells the format from the contents and refuses a file whose extension names
     // another one, so the name has to agree with what the header says.
-    if (Magic(file, 0, "PFS0")) return lower.ends_with(".nsp") ? ValidateBaseContents(PartitionFiles(file, "PFS0"), stop) : "file";
-    if (Magic(file, 0x100, "HEAD")) return lower.ends_with(".xci") ? ValidateXci(file, stop) : "file";
+    // NSZ is an NSP with compressed NCAs; XCZ is the same for a cartridge image, or a PFS0 the
+    // loader also reads as one.
+    const bool xcz=lower.ends_with(".xcz");
+    if (Magic(file, 0, "PFS0"))
+        return lower.ends_with(".nsp") || lower.ends_with(".nsz") || xcz ? ValidateBaseContents(PartitionFiles(file, "PFS0"), stop) : "file";
+    if (Magic(file, 0x100, "HEAD")) return lower.ends_with(".xci") || xcz ? ValidateXci(file, stop) : "file";
     if (Magic(file, 0x10, "NRO0")) return lower.ends_with(".nro") ? std::string{} : "file";
+    // An NCA is encrypted from its first byte: only its name and the console's keys tell it.
+    if (lower.ends_with(".nca")) return ValidateLooseNca(file);
     return "nsp";
 }
 } // namespace Jadyx

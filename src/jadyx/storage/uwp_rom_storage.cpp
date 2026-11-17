@@ -334,7 +334,7 @@ void ScanFolder(StorageFolder folder, const std::string& token, const std::wstri
                 const auto p = std::filesystem::path{winrt::to_hstring(child).c_str()};
                 auto ext = p.extension().string();
                 std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                if (ext != ".nsp" && ext != ".xci" && ext != ".nro") continue;
+                if (!IsGameExtension(ext)) continue;
                 LibraryEntry entry{p, p.stem().wstring()};
                 entry.launch_path = MakeStoragePath(token, child);
                 entry.source_name = source;
@@ -452,10 +452,12 @@ LibraryScan ScanExternalGameFolders(std::stop_token stop) {
         const auto token = winrt::to_string(entry.Token);
         if (!IsGameToken(token)) continue;
         if (++sources > MaxSources) { result.limited = true; break; }
+        const auto first = result.entries.size();
         try {
             auto folder = list.GetFolderAsync(entry.Token).get();
             ScanFolder(folder, token, std::wstring{folder.Name()}, "", 0, visited, result, stop);
         } catch (const winrt::hresult_error& e) { AddError(result, ErrorText(e)); }
+        DropPackageParts(result.entries, first); // Per folder: relative paths repeat across them.
         if (result.limited) break;
     }
     return result;
