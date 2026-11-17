@@ -482,6 +482,17 @@ void TestApi() {
 
     Check(App::ParseNsaId(R"({"nsa":"0123456789abcdef"})") == "0123456789abcdef");
     Check(!App::ParseNsaId(R"({"nsa":"xyz"})"));
+    Check(App::ParseNsaId(R"({"account":{"nsa":"00000000000000aa"}})") == "00000000000000aa");
+    const auto me = App::ParseProfile(200, R"({"account":{"pid":1800003803,"username":"player",
+        "name":"Player One","friend_code":"SW-1111-2222-3333","nsa":"0123456789abcdef"},
+        "presence":{"status":1}})");
+    Check(me.outcome == App::CallOutcome::Ok && me.pid == 1800003803 && me.username == "player" &&
+          me.display_name == "Player One" && me.friend_code == "SW-1111-2222-3333" &&
+          me.nsa_id == "0123456789abcdef");
+    Check(App::ParseProfile(200, R"({"pid":"42","username":"x"})").pid == 42);
+    Check(App::ParseProfile(200, R"({"presence":{}})").outcome == App::CallOutcome::Malformed);
+    Check(App::ParseProfile(401, "{}").outcome == App::CallOutcome::RefreshFirst);
+    Check(App::AvatarUrl(7) == "https://nextendo.network/api/avatar?pid=7");
 }
 
 void TestNetworkMode() {

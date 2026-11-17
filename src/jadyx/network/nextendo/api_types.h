@@ -82,7 +82,23 @@ enum class PresenceState : std::uint8_t { Offline = 0, Online = 1, Playing = 2 }
 /// POST /api/presence body. detail is cut to 64 bytes on a UTF-8 boundary.
 std::string BuildPresenceBody(PresenceState state, std::uint64_t title_id, std::string_view detail);
 
-/// "/api/me" nsa field (16 hex) or std::nullopt.
+/// "/api/me" nsa field (16 hex), in "account" or at the top level, or std::nullopt.
 std::optional<std::string> ParseNsaId(std::string_view me_body);
+
+/// What the profile card shows, from GET /api/me ({account: {pid, username, name, friend_code}}).
+/// Display only: the identity the games see is the pid of the game token.
+struct Profile {
+    CallOutcome outcome = CallOutcome::Malformed;
+    std::uint64_t pid = 0;
+    std::string username;
+    std::string display_name; // "name"; empty when the player set none
+    std::string friend_code;
+    std::string nsa_id; // 16 hex or empty
+};
+
+Profile ParseProfile(int status, std::string_view body);
+
+/// The account picture: https://nextendo.network/api/avatar?pid=<pid>.
+std::string AvatarUrl(std::uint64_t pid);
 
 } // namespace Jadyx::Network::Nextendo

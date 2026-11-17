@@ -14,6 +14,8 @@
 namespace Jadyx::Network::Nextendo {
 namespace {
 
+constexpr std::string_view kAvatarBase = "https://nextendo.network/api/avatar?pid=";
+
 std::string StringField(const nlohmann::json& node, const char* name) {
     const auto it = node.find(name);
     return it != node.end() && it->is_string() ? it->get<std::string>() : std::string{};
@@ -213,11 +215,46 @@ std::optional<std::string> ParseNsaId(std::string_view me_body) {
     if (!node.is_object()) {
         return std::nullopt;
     }
-    const std::string nsa = StringField(node, "nsa");
+    std::string nsa = StringField(node, "nsa");
+    if (const auto account = node.find("account");
+        nsa.empty() && account != node.end() && account->is_object()) {
+        nsa = StringField(*account, "nsa");
+    }
     if (!IsHex16(nsa)) {
         return std::nullopt;
     }
     return nsa;
+}
+
+Profile ParseProfile(int status, std::string_view body) {
+    Profile profile;
+    profile.outcome = OutcomeForStatus(status);
+    if (profile.outcome != CallOutcome::Ok) {
+        return profile;
+    }
+    const auto node = ParseObject(body);
+    const auto account_it = node.is_object() ? node.find("account") : node.end();
+    const nlohmann::json& account =
+        account_it != node.end() && account_it->is_object() ? *account_it : node;
+    const auto pid = account.is_object() ? account.find("pid") : account.end();
+    if (pid != account.end() && pid->is_number_unsigned()) {
+        profile.pid = pid->get<std::uint64_t>();
+    } else if (pid != account.end() && pid->is_string()) {
+        const std::string text = pid->get<std::string>();
+        std::from_chars(text.data(), text.data() + text.size(), profile.pid);
+    }
+    profile.username = StringField(account, "username");
+    profile.display_name = StringField(account, "name");
+    profile.friend_code = StringField(account, "friend_code");
+    profile.nsa_id = ParseNsaId(body).value_or(std::string{});
+    if (profile.pid == 0 && profile.username.empty()) {
+        profile.outcome = CallOutcome::Malformed;
+    }
+    return profile;
+}
+
+std::string AvatarUrl(std::uint64_t pid) {
+    return std::string(kAvatarBase) + std::to_string(pid);
 }
 
 } // namespace Jadyx::Network::Nextendo
