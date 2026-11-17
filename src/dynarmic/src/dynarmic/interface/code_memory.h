@@ -32,4 +32,14 @@ void SetDualMappedCode(bool allowed) noexcept;
 /// both views. For a crash report: allocates nothing and waits on no lock. Returns bytes written.
 std::size_t DescribeCodeCaches(char* out, std::size_t size) noexcept;
 
+/// Faults taken while a thread was emitting into a code cache (Windows). Such a write can fault
+/// on memory that is mapped and writable a moment later, when the system is short of memory: the
+/// faulting instruction is retried after a wait instead of ending the process.
+struct CodeEmitFaults {
+    std::size_t retries = 0;    ///< Faults retried.
+    std::size_t recovered = 0;  ///< Emissions that faulted and then completed.
+    std::size_t fatal = 0;      ///< Emissions that kept faulting and were let crash.
+};
+[[nodiscard]] CodeEmitFaults GetCodeEmitFaults() noexcept;
+
 } // namespace Dynarmic

@@ -177,6 +177,19 @@ public:
     /// Allocates nothing and takes no lock it could wait on: a faulting thread may hold any.
     int DescribeState(char* out, size_t size) const noexcept;
 
+    /// Marks the calling thread as writing code into this cache for its lifetime: a fault it takes
+    /// meanwhile is retried after a wait (see GetCodeEmitFaults). Nests.
+    class EmitScope {
+    public:
+        explicit EmitScope(const BlockOfCode& code) noexcept;
+        ~EmitScope();
+        EmitScope(const EmitScope&) = delete;
+        EmitScope& operator=(const EmitScope&) = delete;
+
+    private:
+        const BlockOfCode* previous;
+    };
+
     void SetCodePtr(CodePtr code_ptr);
     void EnsurePatchLocationSize(CodePtr begin, size_t size);
 

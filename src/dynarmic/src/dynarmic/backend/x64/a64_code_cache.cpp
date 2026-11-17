@@ -359,6 +359,7 @@ A64CodeCache::EmitResult A64CodeCache::Emit(IR::Block& block, Ticket ticket) {
     if (code.SpaceRemaining() < minimum_free_space) {
         return {};  // Other cores used the room: BeginCompile clears.
     }
+    const BlockOfCode::EmitScope emitting{code};
     code.EnsureMemoryCommitted(minimum_free_space);
     const JitProfile::Timer emit_timer{JitProfile::Phase::Emit};
     const CodePtr entrypoint = emitter.Emit(block).entrypoint;
@@ -396,6 +397,7 @@ void A64CodeCache::OnBlockInvalidated(IR::LocationDescriptor descriptor) {
 void A64CodeCache::InvalidateRanges(Core& core, const boost::icl::interval_set<u64>& ranges) {
     {
         const ExclusiveLock lock = LockExclusive();
+        const BlockOfCode::EmitScope emitting{code};  // Unlinking writes code.
         ++epoch;
         invalidator = &core;
         emitter.InvalidateCacheRanges(ranges);

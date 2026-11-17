@@ -138,6 +138,66 @@ size_t DescribeCodeCaches(char* out, size_t size) noexcept {
     }
     return written;
 }
+
+namespace {
+std::atomic<size_t> s_emit_fault_retries{0};
+std::atomic<size_t> s_emit_faults_recovered{0};
+std::atomic<size_t> s_emit_faults_fatal{0};
+/// The cache this thread is emitting into (BlockOfCode::EmitScope), and the faults it retried in
+/// the current emission.
+thread_local const Backend::X64::BlockOfCode* t_emitting = nullptr;
+thread_local unsigned t_emit_fault_retries = 0;
+/// About 2.5 s of waits in all: past that the fault is not the transient kind.
+constexpr unsigned MAX_EMIT_FAULT_RETRIES = 64;
+
+#ifdef _WIN32
+// A write into code memory, while emitting, faulted on the console on a page that was mapped,
+// committed and writable when the crash report looked at it right after, with free memory at the
+// app limit. Retried after a short wait instead of ending the process; a fault that persists goes
+// on to the other handlers (and the crash report) as before.
+LONG NTAPI EmitFaultHandler(EXCEPTION_POINTERS* ep) {
+    const DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if ((code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_IN_PAGE_ERROR) || t_emitting == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (t_emit_fault_retries >= MAX_EMIT_FAULT_RETRIES) {
+        if (t_emit_fault_retries++ == MAX_EMIT_FAULT_RETRIES) {
+            s_emit_faults_fatal.fetch_add(1, std::memory_order_relaxed);
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    const unsigned attempt = t_emit_fault_retries++;
+    s_emit_fault_retries.fetch_add(1, std::memory_order_relaxed);
+    if (attempt < 4) {
+        SwitchToThread();
+    } else {
+        Sleep(std::min(attempt, 50u));
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+void InstallEmitFaultHandler() {
+    static const bool installed = [] {
+        // Resolved by name, never imported: importing the errorhandling api-set makes the app
+        // fail to activate on the console.
+        using AddVehFn = PVOID(WINAPI*)(ULONG, PVECTORED_EXCEPTION_HANDLER);
+        static ::Common::DynamicLibrary kernelbase("Kernelbase");
+        AddVehFn add_veh{};
+        // Last in the chain: a fault the app resolves itself (demand-committed backing, pages
+        // swapped out) must reach its handler first, not wait here.
+        return kernelbase.IsOpen() && kernelbase.GetSymbol("AddVectoredExceptionHandler", &add_veh) &&
+               add_veh(/*first=*/0, EmitFaultHandler) != nullptr;
+    }();
+    (void)installed;
+}
+#endif
+} // anonymous namespace
+
+CodeEmitFaults GetCodeEmitFaults() noexcept {
+    return {s_emit_fault_retries.load(std::memory_order_relaxed),
+            s_emit_faults_recovered.load(std::memory_order_relaxed),
+            s_emit_faults_fatal.load(std::memory_order_relaxed)};
+}
 } // namespace Dynarmic
 
 namespace Dynarmic::Backend::X64 {
@@ -752,6 +812,9 @@ BlockOfCode::BlockOfCode(RunCodeCallbacks cb, JitStateInfo jsi, size_t total_cod
     wx_exec_begin = getCurr<const u8*>();
 #endif
     GenRunCode(rcp);
+#ifdef _WIN32
+    InstallEmitFaultHandler();
+#endif
     for (auto& slot : s_live_code_caches) {
         const BlockOfCode* expected = nullptr;
         if (slot.compare_exchange_strong(expected, this, std::memory_order_release)) {
@@ -1081,6 +1144,21 @@ int BlockOfCode::DescribeState(char* out, size_t size) const noexcept {
     return std::snprintf(out, size, "[jadyx]   code cache %p: size 0x%zx max 0x%zx\n",
                          static_cast<const void*>(this), size_, maxSize_);
 #endif
+}
+
+BlockOfCode::EmitScope::EmitScope(const BlockOfCode& code) noexcept
+        : previous{t_emitting} {
+    t_emitting = &code;
+}
+
+BlockOfCode::EmitScope::~EmitScope() {
+    t_emitting = previous;
+    if (previous == nullptr) {
+        if (t_emit_fault_retries != 0 && t_emit_fault_retries <= MAX_EMIT_FAULT_RETRIES) {
+            s_emit_faults_recovered.fetch_add(1, std::memory_order_relaxed);
+        }
+        t_emit_fault_retries = 0;
+    }
 }
 
 HaltReason BlockOfCode::RunCode(void* jit_state, CodePtr code_ptr) const {
