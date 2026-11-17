@@ -10,6 +10,8 @@
 //    by one core reaches the others' links, fast-dispatch tables and return stacks;
 //  - the same under threads, with the cache too small for the program, so it clears while cores
 //    run, and with invalidations and clears requested from another thread meanwhile.
+//  - a fault taken writing code while emitting is retried until the memory takes the write, and
+//    one that persists goes on to the next handler.
 // Run with run-jit-shared-code-cache.ps1.
 
 #include <array>
@@ -40,6 +42,9 @@
 #include "dynarmic/interface/A64/shared_code_cache.h"
 #include "dynarmic/interface/code_memory.h"
 #include "dynarmic/interface/exclusive_monitor.h"
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
 // Standalone harness: fail assertions hard, saying where; no frontend logging service.
 [[noreturn]] static void Die(const char* what, const char* where) {
@@ -675,6 +680,60 @@ void TestPrewarmOnSharedCache() {
     REQUIRE(Compiled(cluster.handle) == warmed);
 }
 
+// The write an emitter makes, in a function of its own: __try cannot share a frame with objects
+// that unwind. True when it faulted through to this handler.
+bool EmitWriteFaultsThrough(volatile u8* where) {
+    __try {
+        *where = 0x90;
+        return false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return true;
+    }
+}
+
+void TestEmitFaultRetried() {
+    Machine machine;
+    Callbacks cb;
+    cb.machine = &machine;
+    const A64::Jit jit{MakeConfig(machine, cb, 0, nullptr, 8u << 20)};  // installs the handler
+    // Only marks the thread as emitting: the scope never dereferences the cache.
+    const auto& cache = *reinterpret_cast<const Backend::X64::BlockOfCode*>(&machine);
+    u8* const page = static_cast<u8*>(VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_NOACCESS));
+    REQUIRE(page != nullptr);
+
+    // Writable again a moment later: the write completes.
+    const CodeEmitFaults before = GetCodeEmitFaults();
+    std::thread opener{[page] {
+        std::this_thread::sleep_for(std::chrono::milliseconds{30});
+        DWORD old{};
+        VirtualProtect(page, 4096, PAGE_READWRITE, &old);
+    }};
+    {
+        const Backend::X64::BlockOfCode::EmitScope emitting{cache};
+        REQUIRE(!EmitWriteFaultsThrough(page));
+    }
+    opener.join();
+    const CodeEmitFaults recovered = GetCodeEmitFaults();
+    REQUIRE(page[0] == 0x90);
+    REQUIRE(recovered.retries > before.retries);
+    REQUIRE(recovered.recovered == before.recovered + 1 && recovered.fatal == before.fatal);
+
+    // Never writable: given up on after its retries, the fault reaches the next handler.
+    DWORD old{};
+    REQUIRE(VirtualProtect(page, 4096, PAGE_NOACCESS, &old));
+    {
+        const Backend::X64::BlockOfCode::EmitScope emitting{cache};
+        REQUIRE(EmitWriteFaultsThrough(page + 1));
+    }
+    const CodeEmitFaults fatal = GetCodeEmitFaults();
+    REQUIRE(fatal.fatal == recovered.fatal + 1 && fatal.recovered == recovered.recovered);
+
+    // Not emitting: not retried.
+    REQUIRE(EmitWriteFaultsThrough(page + 2));
+    REQUIRE(GetCodeEmitFaults().retries == fatal.retries);
+    VirtualFree(page, 0, MEM_RELEASE);
+}
+
 void TestIncompatibleCoreKeepsItsOwn() {
     Machine machine;
     Callbacks cb0, cb1;
@@ -913,6 +972,7 @@ int main() {
     Run("fast-dispatch table matches the handler's slots", TestFastDispatchTable);
     Run("configs that can share code", TestConfigCompatibility);
     Run("shared cache size", TestSharedSize);
+    Run("a fault writing code is retried while emitting", TestEmitFaultRetried);
 
     if (DualMappedCodeCaches() == 0) {
         // Probe runs on the first cache; the JIT tests below need it to share.
