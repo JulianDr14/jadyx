@@ -97,7 +97,6 @@ void DecompressBlocks(std::span<const u8> input, std::span<u8> output, BufferIma
     const u32 height = copy.image_extent.height * copy.image_subresource.num_layers;
     const u32 depth = copy.image_extent.depth;
     const u32 block_width = (std::min)(width, BLOCK_SIZE);
-    const u32 block_height = (std::min)(height, BLOCK_SIZE);
     const u32 pitch = width * out_bpp;
     // Cropping the decoded block to a 1/2/3-texel mip width does not change the
     // compressed block's 4-texel width. Otherwise the next block row is read at
@@ -126,25 +125,37 @@ void DecompressBlocks(std::span<const u8> input, std::span<u8> output, BufferIma
         }
     }
 
+    // Each array layer starts a new row of blocks, so a layer whose height is not a multiple of
+    // four (the 2x2 and 1x1 levels of a cube map, for example) owns the padding rows of its last
+    // block. Decoding all layers as one tall image read those padding rows as the next layer's
+    // texels and every later layer from the wrong block: in a 2x2 six-layer level, layer 1 got
+    // layer 0's padding and layer 2 got layer 1's texels. Decode and crop each layer on its own.
+    const u32 layers = static_cast<u32>((std::max)(copy.image_subresource.num_layers, 1));
+    const u32 layer_height = copy.image_extent.height;
+    const u32 layer_block_height = (std::min)(layer_height, BLOCK_SIZE);
     size_t input_offset = 0;
     size_t output_offset = 0;
     for (u32 slice = 0; slice < depth; ++slice) {
-        for (u32 y = 0; y < height; y += block_height) {
-            size_t src_offset = input_offset;
-            size_t dst_offset = output_offset;
-            for (u32 x = 0; x < width; x += block_width) {
-                const u8* src = input.data() + src_offset;
-                u8* const dst = output.data() + dst_offset;
-                if constexpr (IsSigned(pixel_format)) {
-                    decompress(src, dst, x, y, width, height, is_signed);
-                } else {
-                    decompress(src, dst, x, y, width, height);
+        for (u32 layer = 0; layer < layers; ++layer) {
+            for (u32 y = 0; y < layer_height; y += layer_block_height) {
+                size_t src_offset = input_offset;
+                size_t dst_offset = output_offset;
+                for (u32 x = 0; x < width; x += block_width) {
+                    const u8* src = input.data() + src_offset;
+                    u8* const dst = output.data() + dst_offset;
+                    if constexpr (IsSigned(pixel_format)) {
+                        decompress(src, dst, x, y, width, layer_height, is_signed);
+                    } else {
+                        decompress(src, dst, x, y, width, layer_height);
+                    }
+                    src_offset += block_size;
+                    dst_offset += block_width * out_bpp;
                 }
-                src_offset += block_size;
-                dst_offset += block_width * out_bpp;
+                input_offset += input_row_pitch;
+                output_offset += static_cast<size_t>(
+                                     (std::min)(layer_block_height, layer_height - y)) *
+                                 pitch;
             }
-            input_offset += input_row_pitch;
-            output_offset += block_height * pitch;
         }
     }
 }
