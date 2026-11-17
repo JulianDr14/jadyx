@@ -134,6 +134,7 @@ add_library(dynarmic STATIC
     frontend/A64/translate/a64_translate.h
     interface/A64/a64.h
     interface/A64/config.h
+    interface/A64/shared_code_cache.h
 )
 
 if ("x86_64" IN_LIST ARCHITECTURE)
@@ -193,6 +194,8 @@ if ("x86_64" IN_LIST ARCHITECTURE)
         backend/x64/a32_jitstate.cpp
         backend/x64/a32_jitstate.h
         # A64
+        backend/x64/a64_code_cache.cpp
+        backend/x64/a64_code_cache.h
         backend/x64/a64_emit_x64.cpp
         backend/x64/a64_emit_x64.h
         backend/x64/a64_emit_x64_memory.cpp

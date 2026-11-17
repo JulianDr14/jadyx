@@ -18,6 +18,7 @@
 
 #include "dynarmic/backend/block_range_information.h"
 #include "dynarmic/backend/x64/a32_jitstate.h"
+#include "dynarmic/backend/x64/devirtualize.h"
 #include "dynarmic/backend/x64/emit_x64.h"
 #include "dynarmic/backend/x64/reg_alloc.h"
 #include "dynarmic/frontend/A32/a32_location_descriptor.h"
@@ -97,6 +98,19 @@ public:
     };
     std::optional<DoNotFastmemMarker> ShouldFastmem(A32EmitContext& ctx, IR::Inst* inst) const;
     FakeCall FastmemCallback(u64 rip);
+
+    // Per-core values the shared memory emitters need. A32 code is never shared between cores,
+    // so they are embedded as immediates.
+    template<auto mfp>
+    ArgCallback CoreCallback() const {
+        return Devirtualize<mfp>(conf.callbacks);
+    }
+    void EmitLoadUserConfig(Xbyak::Reg64 reg);
+    void EmitLoadExclusiveAddressPointer(Xbyak::Reg64 reg);
+    void EmitLoadExclusiveValuePointer(Xbyak::Reg64 reg);
+    std::optional<size_t> ExclusiveClearSkipsProcessor() const {
+        return conf.processor_id;
+    }
 
     // Memory access helpers
     void EmitCheckMemoryAbort(A32EmitContext& ctx, IR::Inst* inst, Xbyak::Label* end = nullptr);

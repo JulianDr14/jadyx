@@ -821,7 +821,7 @@ void BlockOfCode::ReleaseMemoryPastCap() {
     if (!s_code_cache_release.load(std::memory_order_relaxed)) {
         return;
     }
-    const size_t cap = s_code_cache_cap.load(std::memory_order_relaxed);
+    const size_t cap = ScaledCap();
     const size_t prelude = static_cast<const u8*>(code_begin) - top_;
     const size_t keep = (std::max(cap, prelude) + CODE_CHUNK_SIZE - 1) & ~(CODE_CHUNK_SIZE - 1);
     if (cap == SIZE_MAX || committed_size <= keep) {
@@ -854,6 +854,31 @@ size_t BlockOfCode::CapEnd(size_t cap) const {
     return s_code_cache_release.load(std::memory_order_relaxed) ? cap : std::max(cap, committed + CAP_SLACK);
 }
 
+size_t BlockOfCode::ScaledCap() const noexcept {
+    const size_t cap = s_code_cache_cap.load(std::memory_order_relaxed);
+    if (cap == SIZE_MAX || cap > SIZE_MAX / cap_scale) {
+        return SIZE_MAX;
+    }
+    return cap * cap_scale;
+}
+
+void BlockOfCode::SetCapScale(size_t scale) noexcept {
+    cap_scale = std::max<size_t>(scale, 1);
+    cap_epoch = SIZE_MAX; // Forces SpaceRemaining to recompute cap_end.
+}
+
+bool BlockOfCode::WritesWithoutProtectionChanges() const noexcept {
+#if defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
+#    if defined(_WIN32)
+    return dual_mapped;
+#    else
+    return false;
+#    endif
+#else
+    return true;
+#endif
+}
+
 size_t BlockOfCode::SpaceRemaining() const {
     ASSERT(prelude_complete);
     const u8* current_ptr = getCurr<const u8*>();
@@ -861,7 +886,7 @@ size_t BlockOfCode::SpaceRemaining() const {
     // in 30 s. It is cleared only when it fills those, and commits no more.
     if (const size_t epoch = s_code_cache_cap_epoch.load(std::memory_order_acquire); epoch != cap_epoch) {
         cap_epoch = epoch;
-        cap_end = CapEnd(s_code_cache_cap.load(std::memory_order_relaxed));
+        cap_end = CapEnd(ScaledCap());
     }
 #if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
     // A releasing cap clears a cache holding more than it allows even where its code would fit.

@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 
 #include "common/common_types.h"
 
@@ -56,6 +57,20 @@ struct A64JitState {
     std::array<u64, RSB_SIZE> rsb_location_descriptors;
     std::array<u64, RSB_SIZE> rsb_codeptrs;
 
+    /// Per-core values that emitted code reads through ABI_JIT_PTR instead of embedding them,
+    /// so one block of host code runs on any core of the process. Reset() keeps them.
+    struct CoreBindings {
+        u64 callbacks_arg = 0;        ///< `this` passed to UserCallbacks member functions
+        u64 lookup_block_arg = 0;     ///< Argument of the dispatcher's block lookup
+        u64 user_config = 0;          ///< const A64::UserConfig* of this core
+        u64 exclusive_address = 0;    ///< VAddr* of this core's slot in the global monitor
+        u64 exclusive_value = 0;      ///< Vector* of this core's slot in the global monitor
+        u64 tpidr_el0 = 0;            ///< u64*
+        u64 tpidrro_el0 = 0;          ///< const u64*
+        u64 fast_dispatch_table = 0;  ///< FastDispatchTable::Entry* of this core
+    };
+    CoreBindings bindings;
+
     u32 GetPstate() const {
         return NZCV::FromX64(cpsr_nzcv);
     }
@@ -86,5 +101,20 @@ struct A64JitState {
 #endif
 
 using CodePtr = const void*;
+
+/// Offsets in A64JitState of the core bindings, as emitted code addresses them off ABI_JIT_PTR.
+namespace A64BindingOffset {
+#define DYNARMIC_A64_BINDING_OFFSET(name) \
+    inline constexpr u32 name = static_cast<u32>(offsetof(A64JitState, bindings) + offsetof(A64JitState::CoreBindings, name))
+DYNARMIC_A64_BINDING_OFFSET(callbacks_arg);
+DYNARMIC_A64_BINDING_OFFSET(lookup_block_arg);
+DYNARMIC_A64_BINDING_OFFSET(user_config);
+DYNARMIC_A64_BINDING_OFFSET(exclusive_address);
+DYNARMIC_A64_BINDING_OFFSET(exclusive_value);
+DYNARMIC_A64_BINDING_OFFSET(tpidr_el0);
+DYNARMIC_A64_BINDING_OFFSET(tpidrro_el0);
+DYNARMIC_A64_BINDING_OFFSET(fast_dispatch_table);
+#undef DYNARMIC_A64_BINDING_OFFSET
+}  // namespace A64BindingOffset
 
 }  // namespace Dynarmic::Backend::X64

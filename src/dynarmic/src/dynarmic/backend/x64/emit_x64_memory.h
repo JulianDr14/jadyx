@@ -9,6 +9,7 @@
 #pragma once
 
 #include <bit>
+#include <optional>
 #include <utility>
 #include "dynarmic/backend/x64/xbyak.h"
 
@@ -405,8 +406,12 @@ void EmitExclusiveUnlock(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64
     EmitSpinLockUnlock(code, pointer, tmp);
 }
 
+/// Clears every other processor's reservation on `vaddr`. With no `skip_processor` the caller's own
+/// slot is cleared as well, which code shared between cores needs and which matches
+/// ExclusiveMonitor::ClearProcessor semantics: the caller's reservation is spent either way.
 template<typename UserConfig>
-void EmitExclusiveTestAndClear(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 vaddr, Xbyak::Reg64 pointer, Xbyak::Reg64 tmp) {
+void EmitExclusiveTestAndClear(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 vaddr, Xbyak::Reg64 pointer, Xbyak::Reg64 tmp,
+                               std::optional<size_t> skip_processor) {
     if (conf.HasOptimization(OptimizationFlag::Unsafe_IgnoreGlobalMonitor)) {
         return;
     }
@@ -414,7 +419,7 @@ void EmitExclusiveTestAndClear(BlockOfCode& code, const UserConfig& conf, Xbyak:
     code.mov(tmp, 0xDEAD'DEAD'DEAD'DEAD);
     const size_t processor_count = GetExclusiveMonitorProcessorCount(conf.global_monitor);
     for (size_t processor_index = 0; processor_index < processor_count; processor_index++) {
-        if (processor_index == conf.processor_id) {
+        if (skip_processor && processor_index == *skip_processor) {
             continue;
         }
         Xbyak::Label ok;

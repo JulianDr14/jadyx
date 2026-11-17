@@ -12,6 +12,7 @@
 #include <utility>
 
 #include <bit>
+#include "common/assert.h"
 #include "common/common_types.h"
 #include "dynarmic/mcl/function_info.hpp"
 
@@ -84,6 +85,16 @@ ArgCallback Devirtualize(mcl::class_type<decltype(mfp)>* this_) {
 #else
     return DevirtualizeGeneric<mfp>(this_);
 #endif
+}
+
+/// Devirtualize<mfp>, but the object is read from the JIT state at `state_offset` when the call
+/// runs. The function is resolved from `this_`, so every object stored there must have the same
+/// dynamic type, and the member must not need a `this` adjustment.
+template<auto mfp>
+ArgCallback DevirtualizeFromJitState(mcl::class_type<decltype(mfp)>* this_, u32 state_offset) {
+    const ArgCallback resolved = Devirtualize<mfp>(this_);
+    ASSERT(resolved.Arg() == reinterpret_cast<u64>(this_));
+    return resolved.WithArgFromJitState(state_offset);
 }
 
 }  // namespace Backend::X64

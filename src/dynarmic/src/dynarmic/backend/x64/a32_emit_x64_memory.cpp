@@ -133,6 +133,18 @@ void A32EmitX64::GenFastmemFallbacks() {
     }
 }
 
+void A32EmitX64::EmitLoadUserConfig(Xbyak::Reg64 reg) {
+    code.mov(reg, reinterpret_cast<u64>(&conf));
+}
+
+void A32EmitX64::EmitLoadExclusiveAddressPointer(Xbyak::Reg64 reg) {
+    code.mov(reg, std::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id)));
+}
+
+void A32EmitX64::EmitLoadExclusiveValuePointer(Xbyak::Reg64 reg) {
+    code.mov(reg, std::bit_cast<u64>(GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id)));
+}
+
 #define Axx A32
 #include "dynarmic/backend/x64/emit_x64_memory.cpp.inc"
 #undef Axx

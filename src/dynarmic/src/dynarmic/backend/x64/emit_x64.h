@@ -117,26 +117,41 @@ public:
 
     // Patching
     enum class PatchKind : std::uint64_t { Jg, Jz, Jmp, MovRcx };
-    /// A site in emitted code that jumps to (or loads) a block's entrypoint, with its kind in the
-    /// top bits of the address (user-mode x64 addresses fit in 48 bits). One map entry per linked
-    /// block: four lists of four inline pointers cost ~230 bytes each, 3 x 109 MiB in a large game.
+    /// A site in emitted code that jumps to (or loads) a block's entrypoint, packed in one word:
+    /// the address in the low 48 bits (user-mode x64 addresses fit), the distance to the site's
+    /// unlinked stub in the next 14 (0 when it has none) and the kind in the top two. One map
+    /// entry per linked block: four lists of four inline pointers cost ~230 bytes each, 3 x 109 MiB
+    /// in a large game.
     class PatchSite {
     public:
-        PatchSite(PatchKind kind, CodePtr location) noexcept
-            : bits{reinterpret_cast<std::uint64_t>(location) | (static_cast<std::uint64_t>(kind) << KIND_SHIFT)} {}
+        static constexpr std::uint32_t MAX_STUB_OFFSET = (std::uint32_t{1} << 14) - 1;
+
+        PatchSite(PatchKind kind, CodePtr location, std::uint32_t stub_offset = 0) noexcept
+            : bits{reinterpret_cast<std::uint64_t>(location)
+                   | (static_cast<std::uint64_t>(stub_offset) << STUB_SHIFT)
+                   | (static_cast<std::uint64_t>(kind) << KIND_SHIFT)} {}
         [[nodiscard]] PatchKind Kind() const noexcept { return static_cast<PatchKind>(bits >> KIND_SHIFT); }
         [[nodiscard]] CodePtr Location() const noexcept {
-            return reinterpret_cast<CodePtr>(bits & ((std::uint64_t{1} << KIND_SHIFT) - 1));
+            return reinterpret_cast<CodePtr>(bits & ((std::uint64_t{1} << STUB_SHIFT) - 1));
+        }
+        [[nodiscard]] std::uint32_t StubOffset() const noexcept {
+            return static_cast<std::uint32_t>((bits >> STUB_SHIFT) & MAX_STUB_OFFSET);
         }
 
     private:
+        static constexpr unsigned STUB_SHIFT = 48;
         static constexpr unsigned KIND_SHIFT = 62;
         std::uint64_t bits;
     };
+    static_assert(sizeof(PatchSite) == sizeof(std::uint64_t));
     /// Most blocks are linked from one site, so one is inline.
     using PatchInformation = boost::container::small_vector<PatchSite, 1>;
     void AddPatchSite(const IR::LocationDescriptor& target_desc, PatchKind kind);
+    void AddPatchSite(const IR::LocationDescriptor& target_desc, PatchSite site);
+    /// Points every site linked to `target_desc` at `target_code_ptr`, or unlinks them (nullptr).
     void Patch(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr);
+    /// Retargets one site. The default re-emits it in place with EmitPatch*.
+    virtual void ApplyPatch(PatchSite site, const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr);
     virtual void Unpatch(const IR::LocationDescriptor& target_desc);
     virtual void EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) = 0;
     virtual void EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) = 0;

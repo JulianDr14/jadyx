@@ -21,19 +21,28 @@ void SimpleCallback::EmitCallWithReturnPointer(BlockOfCode& code, std::function<
     code.CallFunction(fn);
 }
 
+void ArgCallback::EmitLoadArg(BlockOfCode& code, Xbyak::Reg64 reg) const {
+    if (arg_in_state) {
+        // Emitted code keeps the JIT state in ABI_JIT_PTR at every call site.
+        code.mov(reg, code.qword[code.ABI_JIT_PTR + arg]);
+    } else {
+        code.mov(reg, arg);
+    }
+}
+
 void ArgCallback::EmitCall(BlockOfCode& code, std::function<void(RegList)> l) const {
     l({code.ABI_PARAM2, code.ABI_PARAM3, code.ABI_PARAM4});
-    code.mov(code.ABI_PARAM1, arg);
+    EmitLoadArg(code, code.ABI_PARAM1);
     code.CallFunction(fn);
 }
 
 void ArgCallback::EmitCallWithReturnPointer(BlockOfCode& code, std::function<void(Xbyak::Reg64, RegList)> l) const {
 #if defined(WIN32) && !defined(__MINGW64__)
     l(code.ABI_PARAM2, {code.ABI_PARAM3, code.ABI_PARAM4});
-    code.mov(code.ABI_PARAM1, arg);
+    EmitLoadArg(code, code.ABI_PARAM1);
 #else
     l(code.ABI_PARAM1, {code.ABI_PARAM3, code.ABI_PARAM4});
-    code.mov(code.ABI_PARAM2, arg);
+    EmitLoadArg(code, code.ABI_PARAM2);
 #endif
     code.CallFunction(fn);
 }

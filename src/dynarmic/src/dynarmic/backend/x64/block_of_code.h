@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -152,6 +153,26 @@ public:
         return reinterpret_cast<T*>(reinterpret_cast<u8*>(p) + writeOffset_);
     }
 
+    /// Stores `value` into the naturally aligned field at `where`, in emitted code, with one atomic
+    /// store: a core running that code sees the old or the new value, never a mix. Under paged
+    /// W^X it must run between EnableWriting and DisableWriting.
+    template<typename T>
+        requires(std::is_integral_v<T> && (sizeof(T) == 4 || sizeof(T) == 8))
+    void WriteCodeAtomic(CodePtr where, T value) {
+        ASSERT(reinterpret_cast<std::uintptr_t>(where) % sizeof(T) == 0);
+        MakeWritable(where, sizeof(T));
+        T* const field = WriteAlias(static_cast<T*>(const_cast<void*>(where)));
+        std::atomic_ref<T>{*field}.store(value, std::memory_order_release);
+    }
+
+    /// True when emitted code is written without changing page protection (dual-mapped memory,
+    /// or no W^X at all): code that other threads are running then never turns non-executable.
+    bool WritesWithoutProtectionChanges() const noexcept;
+
+    /// Multiplies the global code cache cap (SetCodeCacheCap) for this cache: one cache that
+    /// serves several cores may hold the sum of what each of them would.
+    void SetCapScale(size_t scale) noexcept;
+
     void SetCodePtr(CodePtr code_ptr);
     void EnsurePatchLocationSize(CodePtr begin, size_t size);
 
@@ -213,6 +234,9 @@ private:
     size_t CapEnd(size_t cap) const;
     mutable size_t cap_epoch = 0;
     mutable size_t cap_end = SIZE_MAX;
+    size_t cap_scale = 1;
+    /// s_code_cache_cap times cap_scale, saturating.
+    size_t ScaledCap() const noexcept;
 
     ConstantPool constant_pool;
     JitStateInfo jsi;

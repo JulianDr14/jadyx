@@ -23,6 +23,8 @@ class ExclusiveMonitor;
 namespace Dynarmic {
 namespace A64 {
 
+class SharedCodeCache;
+
 using VAddr = std::uint64_t;
 
 using Vector = std::array<std::uint64_t, 2>;
@@ -315,6 +317,10 @@ struct UserConfig {
 
     /// Internal use only
     bool very_verbose_debugging_output = false;
+
+    /// One code cache for all the cores of a process (see shared_code_cache.h); null keeps a
+    /// cache of this core's own.
+    std::shared_ptr<SharedCodeCache> shared_code_cache;
 
     inline bool HasOptimization(OptimizationFlag f) const {
         if (!unsafe_optimizations) {
