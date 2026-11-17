@@ -6,6 +6,8 @@
 
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/sockets/nsd.h"
+#include "core/online/nextendo/config.h"
+#include "core/online/nextendo/host_rules.h"
 
 #include "common/string_util.h"
 
@@ -64,6 +66,14 @@ NSD::NSD(Core::System& system_, const char* name) : ServiceFramework{system_, na
 }
 
 static std::string ResolveImpl(const std::string& fqdn_in) {
+    namespace Nx = Core::Online::Nextendo;
+    if (Nx::GlobalConfig().Snapshot()->enabled) {
+        // Nextendo: the real substitution ('%' is the environment) plus the account host rewrite.
+        std::string fqdn = Common::ReplaceAll(fqdn_in, "%", "lp1");
+        fqdn = Nx::RewriteAccountHost(fqdn);
+        LOG_INFO(Service, "[Nextendo] nsd {} -> {}", fqdn_in, fqdn);
+        return fqdn;
+    }
     // The real implementation makes various substitutions.
     // For now we just return the string as-is, which is good enough when not
     // connecting to real Nintendo servers.
