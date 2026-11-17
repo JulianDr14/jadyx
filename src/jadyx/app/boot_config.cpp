@@ -627,6 +627,9 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
             } else if (line == "close_probe=1") {
                 config.close_probe = true;
                 WriteDiag("boot.cfg: every command also closed alone on a scratch list");
+            } else if (line == "jit_lock_code=0") {
+                config.jit_lock_code = false;
+                WriteDiag("boot.cfg: JIT code memory stays pageable");
             } else if (line == "jit_dual_map=0") {
                 config.jit_dual_map = false;
                 WriteDiag("boot.cfg: JIT code memory keeps paged W^X");

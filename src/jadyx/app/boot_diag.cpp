@@ -27,6 +27,7 @@
 #include "common/host_memory.h"
 #include "common/log_rotation.h"
 #include "common/memory_ledger.h"
+#include "common/vm_activity.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_memory_manager.h"
 #include "core/hle/kernel/kernel.h"
@@ -238,14 +239,47 @@ std::string StorageReport() {
     return out;
 }
 
+// What ran beside the emit faults, how long they took to clear, and the first one's exception
+// record (diagnostic for the console's transient code write faults).
+static std::string DescribeEmitFaultContext(const Dynarmic::CodeEmitFaults& faults) {
+    std::string text = "; beside them:";
+    for (std::size_t kind = 0; kind < faults.busy.size(); ++kind) {
+        text += std::string{" "} + Common::VmActivity::Name(kind) + " busy " +
+                std::to_string(faults.busy[kind]) + " recent " + std::to_string(faults.recent[kind]) +
+                ",";
+    }
+    text += " quiet " + std::to_string(faults.quiet);
+    if (faults.recovered != 0) {
+        text += "; cleared in avg " + std::to_string(faults.recover_us_total / faults.recovered) +
+                " us, max " + std::to_string(faults.recover_us_max) + " us";
+    }
+    char first[160];
+    std::snprintf(first, sizeof(first), "; first 0x%08x, %u params [0x%llx 0x%llx]",
+                  faults.first_code, faults.first_params,
+                  static_cast<unsigned long long>(faults.first_info0),
+                  static_cast<unsigned long long>(faults.first_info1));
+    return text + first;
+}
+
 // Faults retried while emitting JIT code; empty while there were none.
 static std::string DescribeCodeEmitFaults() {
+    std::string text;
+    const Dynarmic::CodeLockState lock = Dynarmic::GetCodeLockState();
+    if (lock.locked_bytes != 0 || lock.failures != 0) {
+        text += ", locked " + std::to_string(lock.locked_bytes >> 20) + " MiB";
+        if (lock.failures != 0) {
+            text += " (" + std::to_string(lock.failures) + " chunks not locked, error " +
+                    std::to_string(lock.last_error) + (lock.available ? "" : ", no lock API") + ")";
+        }
+    }
     const Dynarmic::CodeEmitFaults faults = Dynarmic::GetCodeEmitFaults();
     if (faults.retries == 0) {
-        return {};
+        return text;
     }
-    return ", emit faults retried " + std::to_string(faults.retries) + ", recovered " +
-           std::to_string(faults.recovered) + ", fatal " + std::to_string(faults.fatal);
+    return text + ", emit faults retried " + std::to_string(faults.retries) + ", recovered " +
+           std::to_string(faults.recovered) + ", fatal " + std::to_string(faults.fatal) +
+           ", page out " + std::to_string(faults.page_out) + ", in " +
+           std::to_string(faults.page_in) + DescribeEmitFaultContext(faults);
 }
 
 // The app's commit split by owner: the emulated DRAM, the JIT's code, the renderer's accounts

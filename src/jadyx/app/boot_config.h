@@ -63,6 +63,10 @@ struct BootConfig {
     /// on one core runs on every core instead of each compiling its own copy. Needs jit_dual_map;
     /// without it the cores keep private caches.
     bool jit_shared_cache{false};
+    /// JIT code chunks locked in the working set through their write view ("jit_lock_code=0"
+    /// leaves them pageable): short of memory the console trimmed a page code was being written
+    /// to, and the write faulted.
+    bool jit_lock_code{true};
     /// Texture memory past which clean textures unused for a while are evicted even with headroom
     /// left ("texture_cap_mib=", 0 turns it off). They decode again from guest memory when used.
     /// At 1024 a heavy world entry kept 830 MiB of textures through its load and ran out of memory;
