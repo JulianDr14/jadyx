@@ -527,6 +527,10 @@ const libraryWords=pt?{
  loc_internal:'Interno',loc_developer:'Dev (D:)',to_developer:'Mover para D:',to_internal:'Mover para interno',
  move_dev_title:'Copia para o armazenamento dev (D:) e libera espaço interno. Ele é apagado se você mudar seu tamanho.',move_internal_title:'Copia de volta para o armazenamento interno do app.',
  moving:'Movendo…',moving_to_developer:'Movendo para D:',moving_to_internal:'Movendo para interno',moved_developer:'Movido para o armazenamento dev (D:).',moved_internal:'Movido para o armazenamento interno.',
+ unlink:'Remover da lista',unlink_title:'Tira da lista do Jadyx. O arquivo da pasta externa não é apagado.',unlinked:'Removido da lista; o arquivo continua na pasta externa.',
+ no_room:'não cabe',no_room_title:'Faltam {need} livres no destino.',
+ copy_internal:'Copiar para interno',copy_developer:'Copiar para D:',copy_internal_title:'Faz uma cópia no armazenamento interno do app. O arquivo da pasta externa não é tocado.',copy_dev_title:'Faz uma cópia no armazenamento dev (D:). O arquivo da pasta externa não é tocado. Ela é apagada se você mudar o tamanho do armazenamento.',
+ copying_to_internal:'Copiando para interno',copying_to_developer:'Copiando para D:',copied_internal:'Copiado para o armazenamento interno.',copied_developer:'Copiado para o armazenamento dev (D:).',
  move_failed:'Não foi possível mover; o conteúdo continua onde estava.',destination:'O armazenamento dev (D:) não está disponível. Configure-o no Dev Home → Manage dev storage.',
  missing:'A cópia não está mais no console (o armazenamento dev é apagado ao mudar de tamanho). Apague-a e envie de novo.',
  where_internal:'Armazenamento interno',where_developer:'Armazenamento dev (D:)',
@@ -544,6 +548,10 @@ const libraryWords=pt?{
  loc_internal:'Interno',loc_developer:'Dev (D:)',to_developer:'Mover a D:',to_internal:'Mover a interno',
  move_dev_title:'Lo copia al almacenamiento dev (D:) y libera espacio interno. Se borra si cambias su tamaño.',move_internal_title:'Lo copia de vuelta al almacenamiento interno de la app.',
  moving:'Moviendo…',moving_to_developer:'Moviendo a D:',moving_to_internal:'Moviendo a interno',moved_developer:'Movido al almacenamiento dev (D:).',moved_internal:'Movido al almacenamiento interno.',
+ unlink:'Quitar',unlink_title:'Lo quita de la lista de Jadyx. El archivo de la carpeta externa no se borra.',unlinked:'Quitado de la lista; el archivo sigue en la carpeta externa.',
+ no_room:'no cabe',no_room_title:'Faltan {need} libres en el destino.',
+ copy_internal:'Copiar a interno',copy_developer:'Copiar a D:',copy_internal_title:'Hace una copia en el almacenamiento interno de la app. El archivo de la carpeta externa no se toca.',copy_dev_title:'Hace una copia en el almacenamiento dev (D:). El archivo de la carpeta externa no se toca. Se borra si cambias el tamaño de ese almacenamiento.',
+ copying_to_internal:'Copiando a interno',copying_to_developer:'Copiando a D:',copied_internal:'Copiado al almacenamiento interno.',copied_developer:'Copiado al almacenamiento dev (D:).',
  move_failed:'No se pudo mover; el contenido sigue donde estaba.',destination:'El almacenamiento dev (D:) no está disponible. Configúralo en Dev Home → Manage dev storage.',
  missing:'La copia ya no está en la consola (el almacenamiento dev se borra al cambiar su tamaño). Elimínala y vuelve a subirla.',
  where_internal:'Almacenamiento interno',where_developer:'Almacenamiento dev (D:)',
@@ -561,6 +569,10 @@ const libraryWords=pt?{
  loc_internal:'Internal',loc_developer:'Dev (D:)',to_developer:'Move to D:',to_internal:'Move to internal',
  move_dev_title:'Copies it to Dev storage (D:) and frees internal space. That storage is erased if you change its size.',move_internal_title:'Copies it back to the app\'s internal storage.',
  moving:'Moving…',moving_to_developer:'Moving to D:',moving_to_internal:'Moving to internal',moved_developer:'Moved to Dev storage (D:).',moved_internal:'Moved to internal storage.',
+ unlink:'Remove from list',unlink_title:'Removes it from the Jadyx list. The file in the external folder is not deleted.',unlinked:'Removed from the list; the file stays in the external folder.',
+ no_room:'does not fit',no_room_title:'{need} more free space is needed there.',
+ copy_internal:'Copy to internal',copy_developer:'Copy to D:',copy_internal_title:'Makes a copy in the app\'s internal storage. The file in the external folder is not touched.',copy_dev_title:'Makes a copy in Dev storage (D:). The file in the external folder is not touched. It is erased if you change that storage\'s size.',
+ copying_to_internal:'Copying to internal',copying_to_developer:'Copying to D:',copied_internal:'Copied to internal storage.',copied_developer:'Copied to Dev storage (D:).',
  move_failed:'It could not be moved; the content stays where it was.',destination:'Dev storage (D:) is not available. Set it up in Dev Home → Manage dev storage.',
  missing:'The copy is no longer on the console (Dev storage is erased when its size changes). Delete it and upload it again.',
  where_internal:'Internal storage',where_developer:'Dev storage (D:)',
@@ -729,9 +741,9 @@ function arm(key){
  if(armed===key){armed='';clearTimeout(armedTimer);return true;}
  armed=key;clearTimeout(armedTimer);armedTimer=setTimeout(()=>{armed='';renderItems();renderAmiiboItems();render();},6000);renderItems();renderAmiiboItems();render();return false;
 }
-async function remove(path,key){
+async function remove(path,key,unlink){
  if(!arm(key))return;
- try{const data=await(await api('/api/v1/library/'+path,{method:'DELETE'})).json();removalSerial=data.removal.serial;$('message').textContent='';await refresh();}
+ try{const data=await(await api('/api/v1/library/'+path,{method:'DELETE'})).json();removalSerial=data.removal.serial;if(unlink)unlinks.add(removalSerial);$('message').textContent='';await refresh();}
  catch(error){$('message').textContent=libraryReason(error);}
  renderItems();
 }
@@ -740,7 +752,8 @@ const icons={
  internal:'<svg class="ico" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9z"/></svg>',
  developer:'<svg class="ico" viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13 7.5 5h9L19 13M7 16.5h.01"/></svg>',
  external:'<svg class="ico" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
- move:'<svg class="ico" viewBox="0 0 24 24"><path d="M7 7h11l-3-3M17 17H6l3 3"/></svg>'};
+ move:'<svg class="ico" viewBox="0 0 24 24"><path d="M7 7h11l-3-3M17 17H6l3 3"/></svg>',
+ copy:'<svg class="ico" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg>'};
 function iconNode(tag,className,icon,text){const n=node(tag,className);n.innerHTML=icons[icon];n.append(node('span','',text));return n;}
 function locationChip(item){
  if(!item.internal)return iconNode('i','loc ext','external',libraryWords.external_item);
@@ -748,10 +761,20 @@ function locationChip(item){
 }
 // The move the console is running for this row, asked from any browser.
 function movingItem(id){const r=state.removal||{};return r.content===id&&!!r.destination&&(r.phase==='pending'||r.phase==='running')?r:null;}
-async function move(item){
- if(libraryBusy())return;const to=item.developer?'internal':'developer';
+// Content in an external folder is copied, never moved: remember which jobs were copies.
+const copies=new Set(),unlinks=new Set();
+// What the console needs free before copying: the size plus the margin it keeps (the D: figure
+// already leaves out the reserve for app updates).
+function missingRoom(item,to){
+ const c=state.content||{},free=to==='developer'?c.developer_free_bytes:c.free_bytes;
+ if(typeof free!=='number')return 0; // Unknown yet: the console still checks before copying.
+ const need=(item.bytes||0)+(to==='developer'?0:16*1048576);
+ return need>free?need-free:0;
+}
+async function move(item,to){
+ if(libraryBusy())return;
  $('message').textContent='';$('library-note').textContent='';
- try{const data=await(await api('/api/v1/library/'+gameId+'/content/'+item.id+'/'+to,{method:'POST'})).json();removalSerial=data.removal.serial;await refresh();}
+ try{const data=await(await api('/api/v1/library/'+gameId+'/content/'+item.id+'/'+to,{method:'POST'})).json();removalSerial=data.removal.serial;if(!item.internal)copies.add(removalSerial);await refresh();}
  catch(error){$('message').textContent=libraryReason(error);}
  renderItems();
 }
@@ -765,17 +788,24 @@ function renderItems(){
   const moving=movingItem(item.id);
   if(moving){
    row.className='busy-row';
-   const box=node('div','moving'),label=node('em','',libraryWords['moving_to_'+moving.destination]),bar=node('progress');
-   label.id='move-label';bar.id='move-bar';bar.max=1;bar.value=0;box.append(label,bar);row.append(text,box);return row;
+   const box=node('div','moving'),label=node('em','',libraryWords[(item.internal?'moving_to_':'copying_to_')+moving.destination]),bar=node('progress');
+   label.id='move-label';label.dataset.verb=item.internal?'moving_to_':'copying_to_';bar.id='move-bar';bar.max=1;bar.value=0;box.append(label,bar);row.append(text,box);return row;
   }
-  const actions=node('div','row-actions'),remover=node('button','danger',armed===item.id?libraryWords.confirm:libraryWords.remove);
-  // Only a copy the console owns can move; one read from an external folder stays there.
-  if(item.internal&&(item.developer||dev)){
-   const to=item.developer?'internal':'developer',button=iconNode('button','move'+(to==='developer'?' dev':''),'move',libraryWords['to_'+to]);
-   button.title=libraryWords[to==='developer'?'move_dev_title':'move_internal_title'];
-   button.disabled=busy;button.addEventListener('click',()=>move(item));actions.append(button);
+  // An external item only leaves the list: its file stays in the folder.
+  const actions=node('div','row-actions'),remover=node('button','danger',armed===item.id?libraryWords.confirm:libraryWords[item.internal?'remove':'unlink']);
+  if(!item.internal)remover.title=libraryWords.unlink_title;
+  // The console's own copy moves between volumes; one read from an external folder is copied
+  // into either of them and the folder is left alone.
+  const targets=item.internal?(item.developer||dev?[item.developer?'internal':'developer']:[]):(dev?['internal','developer']:['internal']);
+  for(const to of targets){
+   const words=item.internal?['to_'+to,to==='developer'?'move_dev_title':'move_internal_title']:['copy_'+to,to==='developer'?'copy_dev_title':'copy_internal_title'];
+   // Checked before asking: a copy that cannot fit is never started.
+   const missing=missingRoom(item,to);
+   const button=iconNode('button','move'+(to==='developer'?' dev':''),item.internal?'move':'copy',libraryWords[words[0]]+(missing?' · '+libraryWords.no_room:''));
+   button.title=missing?libraryWords.no_room_title.replace('{need}',size(missing)):libraryWords[words[1]];
+   button.disabled=busy||missing>0;button.addEventListener('click',()=>move(item,to));actions.append(button);
   }
-  remover.disabled=busy;remover.addEventListener('click',()=>remove(gameId+'/content/'+item.id,item.id));
+  remover.disabled=busy;remover.addEventListener('click',()=>remove(gameId+'/content/'+item.id,item.id,!item.internal));
   actions.append(remover);row.append(text,actions);return row;
  }):[node('li','empty',contents?libraryWords['none_'+kind]:'…')]));
  renderMove();
@@ -785,9 +815,9 @@ function renderMove(){
  const bar=$('move-bar');if(!bar)return;
  const install=state.install||{},r=state.removal||{};
  bar.value=install.total?Math.min(1,install.done/install.total):0;
- $('move-label').textContent=libraryWords['moving_to_'+r.destination]+(install.total?' · '+percent(install.done||0,install.total):'');
+ const label=$('move-label');label.textContent=libraryWords[(label.dataset.verb||'moving_to_')+r.destination]+(install.total?' · '+percent(install.done||0,install.total):'');
 }
-let lastBusy=false,lastMove='';
+let lastBusy=false,lastMove='',lastRoom='';
 function renderLibrary(){
  const on=!!session&&!!state.library;
  $('library').hidden=!on||pane!=='library';if($('library').hidden)return;
@@ -799,7 +829,9 @@ function renderLibrary(){
  const busy=libraryBusy(),content=state.content||{},s=content.phase==='complete'&&!contentRunning?{}:content;
  const install=state.install||{},installing=s.phase==='validating';
  const moveKey=(r.phase==='pending'||r.phase==='running')&&r.destination?r.content:'';
- if(busy!==lastBusy||moveKey!==lastMove){lastBusy=busy;lastMove=moveKey;renderItems();}else renderMove();
+ // Free space changes as files arrive: redraw when a copy starts or stops fitting.
+ const room=(contents||[]).map(i=>(missingRoom(i,'internal')?1:0)+''+(missingRoom(i,'developer')?1:0)).join();
+ if(busy!==lastBusy||moveKey!==lastMove||room!==lastRoom){lastBusy=busy;lastMove=moveKey;lastRoom=room;renderItems();}else renderMove();
  // Updates and DLC choose their storage like games; a pending file keeps the one it started with.
  const pendingContent=!!content.id&&content.phase!=='complete'&&(content.tag||'')!=='save:'+gameId,dev=!!content.developer_available;
  if(pendingContent)contentWhere=content.destination==='developer'?'developer':'internal';else if(!dev)contentWhere='internal';
@@ -834,9 +866,9 @@ function followLibrary(){
    // A move keeps its own words: "content" there means it could not move, not that it could not be deleted.
    $('message').textContent=r.destination&&!['destination','missing','space','interrupted'].includes(r.error)?libraryWords.move_failed:libraryReason(Error(r.error));
   }
-  else if(r.destination)$('library-note').textContent=libraryWords['moved_'+r.destination];
+  else if(r.destination)$('library-note').textContent=libraryWords[(copies.has(r.serial)?'copied_':'moved_')+r.destination];
   else{
-   $('library-note').textContent=r.content?libraryWords.removed:libraryWords.removed_game;
+   $('library-note').textContent=r.content?libraryWords[unlinks.has(r.serial)?'unlinked':'removed']:libraryWords.removed_game;
    if(!r.content){gone.add(r.game);if(gameId===r.game)gameId='';renderGames();}
   }
   loadContents();render();
