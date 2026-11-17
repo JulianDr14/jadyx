@@ -59,6 +59,10 @@ struct BootConfig {
     /// JIT code memory mapped twice, executable and writable, so no page changes protection per
     /// compiled block ("jit_dual_map=0" keeps paged W^X). Used only where the runtime passes a probe.
     bool jit_dual_map{true};
+    /// One A64 code cache for all the cores of a process ("jit_shared_cache=1"): a block compiled
+    /// on one core runs on every core instead of each compiling its own copy. Needs jit_dual_map;
+    /// without it the cores keep private caches.
+    bool jit_shared_cache{false};
     /// Texture memory past which clean textures unused for a while are evicted even with headroom
     /// left ("texture_cap_mib=", 0 turns it off). They decode again from guest memory when used.
     /// At 1024 a heavy world entry kept 830 MiB of textures through its load and ran out of memory;
