@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
+#include <set>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -35,6 +36,29 @@ struct LibraryEntry {
     std::int64_t added{};         ///< Unix seconds the file arrived (its creation); 0 = unknown.
     bool pinned{};                ///< Pinned by the player (favorites.h).
 };
+/// The extensions the library lists, lower case with the dot: packages (also compressed),
+/// homebrew, and a loose program NCA.
+inline bool IsGameExtension(std::string_view ext) {
+    return ext == ".nsp" || ext == ".xci" || ext == ".nro" || ext == ".nsz" || ext == ".xcz" || ext == ".nca";
+}
+
+/// Drops the NCAs of an extracted package or firmware from entries[first..]: their folder carries
+/// a .cnmt.nca, and its parts are not games one by one. Scans only see names, never contents.
+template <typename Entry> void DropPackageParts(std::vector<Entry>& entries, std::size_t first = 0) {
+    const auto lower = [](std::string text) {
+        std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return text;
+    };
+    std::set<std::filesystem::path> packages;
+    for (auto i = first; i < entries.size(); ++i)
+        if (lower(entries[i].relative_path.filename().string()).ends_with(".cnmt.nca"))
+            packages.insert(entries[i].relative_path.parent_path());
+    if (packages.empty()) return;
+    entries.erase(std::remove_if(entries.begin() + static_cast<std::ptrdiff_t>(first), entries.end(), [&](const Entry& e) {
+        return lower(e.relative_path.extension().string()) == ".nca" && packages.contains(e.relative_path.parent_path());
+    }), entries.end());
+}
+
 struct LibraryScan {
     std::vector<LibraryEntry> entries;
     std::string error;
@@ -74,10 +98,11 @@ inline LibraryScan ScanGameLibrary(const std::filesystem::path& root,
         auto ext = it->path().extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (ext != ".nsp" && ext != ".xci" && ext != ".nro") continue;
+        if (!IsGameExtension(ext)) continue;
         result.entries.push_back({it->path().lexically_relative(root),
                                   it->path().stem().wstring()});
     }
+    DropPackageParts(result.entries);
     if (ec) result.error = ec.message();
     std::sort(result.entries.begin(), result.entries.end(), [](const auto& a, const auto& b) {
         return a.relative_path < b.relative_path;
