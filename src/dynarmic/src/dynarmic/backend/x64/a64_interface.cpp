@@ -415,6 +415,10 @@ std::size_t Jit::GetCodeCacheSpaceRemaining() const {
     return impl->cache->SpaceRemaining();
 }
 
+bool Jit::IsCodeCacheShared() const {
+    return impl->cache->IsShared();
+}
+
 HaltReason Jit::Run() {
     return impl->Run();
 }

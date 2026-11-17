@@ -67,10 +67,18 @@ void ConfigureApplicationPrewarm(System& system, bool warm,
     for (std::size_t core = 0; core < owners.size(); ++core) {
         if (owners[core]) sizes[core] = owners[core]->PrepareCandidates();
     }
+    // Owners on a shared cache all measure it whole: they get one budget for all of them.
+    std::array<bool, Hardware::NUM_CPU_CORES> shared{};
+    std::size_t sharing_owners{};
+    for (std::size_t core = 0; core < owners.size(); ++core) {
+        shared[core] = sizes[core] != 0 && owners[core]->SharesCodeCache();
+        sharing_owners += shared[core];
+    }
+    const auto shared_budget = JitPrewarm::SharedCodeBudget(code_budget, sharing_owners);
     const auto start = std::chrono::steady_clock::now();
     try {
         JitPrewarm::RunOwners(sizes, [&](std::size_t core, const JitPrewarm::Progress& callback) {
-            owners[core]->Warm(callback, code_budget);
+            owners[core]->Warm(callback, shared[core] ? shared_budget : code_budget);
         }, progress);
     } catch (const std::exception& e) {
         // RunOwners joins all workers before unwinding. Prepared blocks remain valid.
@@ -194,7 +202,11 @@ void Owner::Warm(const Progress& progress, std::size_t code_budget) {
         std::size_t accepted{}, rejected{}, budget_skipped{}, priority_accepted{}, shared_accepted{};
         const auto start = std::chrono::steady_clock::now();
         const auto space = target->CodeCacheSpaceRemaining();
-        const auto used = [&] { return space - target->CodeCacheSpaceRemaining(); };
+        // A clear meanwhile (requested before the warm) would make the cache roomier than at start.
+        const auto used = [&] {
+            const auto remaining = target->CodeCacheSpaceRemaining();
+            return remaining < space ? space - remaining : std::size_t{0};
+        };
         // A quarter of the cache stays for play: filled, it is cleared with every warmed block.
         code_budget = std::min(code_budget, space - space / 4);
         target->BeginWarm();
@@ -225,9 +237,10 @@ void Owner::Warm(const Progress& progress, std::size_t code_budget) {
         if (progress && !plan.empty()) {
             progress(plan.size(), plan.size());
         }
-        LOG_INFO(Core, "JIT prewarm {} core {}: RX ranges {}, loaded {}, accepted {}, rejected {}, budget skipped {}, code {:.2f} MiB, {:.1f} ms",
+        LOG_INFO(Core, "JIT prewarm {} core {}: RX ranges {}, loaded {}, accepted {}, rejected {}, budget skipped {}, code {:.2f} MiB{}, {:.1f} ms",
                  p.layout->name, p.core, p.executable_ranges.size(), p.loaded.size(), accepted, rejected,
                  budget_skipped, used() / (1024.0 * 1024.0),
+                 target->SharesCodeCache() ? " (shared cache, every core)" : "",
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
         LOG_INFO(Core, "JIT prewarm {} core {}: priority blocks {}, accepted {}; shared candidates {}, accepted {}",
                  p.layout->name, p.core,
