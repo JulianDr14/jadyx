@@ -75,7 +75,10 @@ int main() {
         assert(jit.GetCodeCacheSpaceRemaining() < space);
         assert(jit.GetPC() == 0x8888 && jit.GetRegister(0) == 99 && cb.svcs == 0 && cb.writes == 0);
         cb.code[0] ^= 0x20;
-        assert(!jit.PrecompileBlock(learned)); // Existing code cannot be replaced by prewarm.
+        // An already compiled block counts as warm (another core of a shared cache may have
+        // compiled it), but prewarm never replaces it: nothing is emitted.
+        const auto warmed = jit.GetCodeCacheSpaceRemaining();
+        assert(jit.PrecompileBlock(learned) && jit.GetCodeCacheSpaceRemaining() == warmed);
         cb.code[0] ^= 0x20;
         jit.SetPC(cb.base);
         cb.reads = 0;
@@ -265,5 +268,9 @@ int main() {
     { std::ifstream file{target, std::ios::binary};
       assert(Read(file, std::filesystem::file_size(target), A64Layout, 123, build, 2, loaded)); }
     std::filesystem::remove(target, ec);
-    std::cout << "PASS: production JIT precompile/state/hash/relocation; profile corruption, identity, v1 migration, priority, bounded T recording, miss classification, merge, ranges, shared candidates and parallel owner isolation/unwind\n";
+    // Owners on one shared cache share one budget: per core times the owners warming on it.
+    static_assert(SharedCodeBudget(128, 0) == 128 && SharedCodeBudget(128, 1) == 128);
+    static_assert(SharedCodeBudget(128, 3) == 384 && SharedCodeBudget(SIZE_MAX / 2, 3) == SIZE_MAX);
+    assert(SharedCodeBudget(config.code_cache_size, 4) == 4 * config.code_cache_size);
+    std::cout << "PASS: production JIT precompile/state/hash/relocation; profile corruption, identity, v1 migration, priority, bounded T recording, miss classification, merge, ranges, shared candidates, shared-cache warm budget and parallel owner isolation/unwind\n";
 }
