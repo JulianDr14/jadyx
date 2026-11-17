@@ -96,6 +96,7 @@ std::atomic_bool pipeline_prewarm{true};
 std::atomic<u32> compute_workgroup_split{16};
 
 std::atomic_bool shuffle_wave_uniform{true};
+std::atomic_bool texture_remap{true};
 
 /// Launches with more groups than this fill the GPU without splitting them further.
 constexpr u64 MAX_SPLIT_GROUPS = 256;
@@ -806,6 +807,10 @@ void SetShuffleWaveUniform(bool enabled) {
     shuffle_wave_uniform.store(enabled, std::memory_order_relaxed);
 }
 
+void SetTextureRemap(bool enabled) {
+    texture_remap.store(enabled, std::memory_order_relaxed);
+}
+
 PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                              const Device& device_, const ShaderCompiler& compiler_,
                              const TextureCacheRuntime& texture_runtime_,
@@ -921,6 +926,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
         .support_viewport_index_layer = caps.vp_and_rt_index_from_any_stage,
         .support_geometry_shader_passthrough = false,
         .support_conditional_barrier = false,
+        .support_texture_remap = texture_remap.load(std::memory_order_relaxed),
     };
     host_info.ApplyDescriptorLimitPolicy();
     profile.sanitize_cube_directions = GetCubeDirectionSanitize();
@@ -928,9 +934,11 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
 
     LOG_INFO(Render,
              "D3D12: pipeline cache ready ({} workers, waves up to {} lanes, int64 {}, "
-             "VP/RT index outside GS {}, wave-uniform shuffles {}, dependent draws preserved)",
+             "VP/RT index outside GS {}, wave-uniform shuffles {}, texture remap {}, dependent "
+             "draws preserved)",
              GetTotalPipelineWorkers(), caps.wave_lane_count_max, caps.int64,
-             caps.vp_and_rt_index_from_any_stage, profile.has_broken_divergent_shuffle_index);
+             caps.vp_and_rt_index_from_any_stage, profile.has_broken_divergent_shuffle_index,
+             host_info.support_texture_remap);
 }
 
 PipelineCache::~PipelineCache() {

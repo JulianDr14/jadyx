@@ -46,6 +46,8 @@ constexpr u32 INDIRECT_DISPATCH_WORDS = INDIRECT_DISPATCH_CONSTANT_WORDS + 3;
 ///  - root CBV, integer sampler states (eden_integer_sampler_state per texture binding): b0
 ///    space 29, only when a texture is integer. D3D12 cannot Sample() integer resources, so
 ///    spirv_to_dxil turns those samples into texel loads and emulates the sampler with this data
+///  - root CBV, texture remap table (Shader::TextureRemapArray): b0 space 24, pixel stage only,
+///    when the pixel shader samples a handle array through a pool
 ///  - root UAV, local memory pool (Shader::LocalMemoryScratch): u0 space 28, when a stage
 ///    keeps its local memory there; pixel stage only unless another stage does too
 ///  - root constants and root UAVs, transform feedback (Shader::TransformFeedbackStorage): b4 and
@@ -87,6 +89,10 @@ public:
     }
     u32 IntegerSamplerIndex() const noexcept {
         return integer_sampler_index;
+    }
+    /// Root parameter index of the texture remap table CBV, or NO_TABLE.
+    u32 TextureRemapIndex() const noexcept {
+        return texture_remap_index;
     }
     u32 LocalMemoryScratchIndex() const noexcept {
         return local_memory_scratch_index;
@@ -161,6 +167,7 @@ private:
     u32 resource_table_index{NO_TABLE};
     u32 sampler_table_index{NO_TABLE};
     u32 integer_sampler_index{NO_TABLE};
+    u32 texture_remap_index{NO_TABLE};
     u32 local_memory_scratch_index{NO_TABLE};
     u32 xfb_constants_index{NO_TABLE};
     u32 tess_emulation_index{NO_TABLE};

@@ -43,6 +43,7 @@ size_t Hash(const StageBindings& bindings) {
     HashDescriptors(seed, bindings.image_buffer_descriptors);
     HashDescriptors(seed, bindings.texture_descriptors);
     HashDescriptors(seed, bindings.image_descriptors);
+    HashDescriptors(seed, bindings.texture_remap_arrays);
     Combine(seed, std::hash<std::bitset<512>>{}(bindings.loads.mask));
     Combine(seed, std::hash<std::bitset<512>>{}(bindings.stores.mask));
     Combine(seed, std::hash<u64>{}(bindings.interpolation));
@@ -69,7 +70,9 @@ bool StageBindings::operator==(const StageBindings& other) const {
            texture_buffer_descriptors == other.texture_buffer_descriptors &&
            image_buffer_descriptors == other.image_buffer_descriptors &&
            texture_descriptors == other.texture_descriptors &&
-           image_descriptors == other.image_descriptors && loads.mask == other.loads.mask &&
+           image_descriptors == other.image_descriptors &&
+           texture_remap_arrays == other.texture_remap_arrays &&
+           texture_remap_bytes == other.texture_remap_bytes && loads.mask == other.loads.mask &&
            stores.mask == other.stores.mask && interpolation == other.interpolation &&
            uses_render_area == other.uses_render_area &&
            uses_destination_read == other.uses_destination_read;
@@ -83,6 +86,8 @@ std::shared_ptr<const StageBindings> InternStage(const Shader::Info& info) {
     CopyDescriptors(bindings->image_buffer_descriptors, info.image_buffer_descriptors);
     CopyDescriptors(bindings->texture_descriptors, info.texture_descriptors);
     CopyDescriptors(bindings->image_descriptors, info.image_descriptors);
+    CopyDescriptors(bindings->texture_remap_arrays, info.texture_remap_arrays);
+    bindings->texture_remap_bytes = info.texture_remap_bytes;
     bindings->loads = info.loads;
     bindings->stores = info.stores;
     static_assert(std::tuple_size_v<decltype(info.interpolation)> == 32);

@@ -200,6 +200,165 @@ struct GraphicsPipeline::TextureReplayState {
     D3D12_GPU_VIRTUAL_ADDRESS integer_address{};
 };
 
+/// The fragment stage's texture remap (Shader::TextureRemapArray): the distinct handle words each
+/// pool holds and the table of slot bytes, rebuilt only when the handle words the arrays read
+/// change, uploaded once per submission otherwise.
+struct GraphicsPipeline::TextureRemapState {
+    /// Per array, the number of elements the bound constant buffer holds, then their words.
+    std::vector<u32> words;
+    /// Per texture descriptor (pools only): the handle word of each slot.
+    std::vector<std::vector<u32>> pools;
+    std::vector<u8> table;
+    bool valid{};
+    u64 tick{~u64{0}};
+    D3D12_GPU_VIRTUAL_ADDRESS address{};
+};
+
+namespace {
+
+std::atomic_bool warned_remap_pool_full;
+
+/// Reads the handle words the remapped arrays of a stage index, each constant buffer's span once.
+void ReadTextureRemapWords(Tegra::MemoryManager& gpu_memory, const StageBindings& info,
+                           const std::array<Tegra::Engines::ConstBufferInfo,
+                                            Maxwell::MaxConstBuffers>& cbufs,
+                           std::vector<u32>& words) {
+    static thread_local std::vector<u8> bytes;
+    std::array<u32, Maxwell::MaxConstBuffers> begin;
+    std::array<u32, Maxwell::MaxConstBuffers> end{};
+    std::array<u32, Maxwell::MaxConstBuffers> base{};
+    begin.fill(~0u);
+    words.clear();
+    const auto elements = [&](const Shader::TextureRemapArray& remap) -> u32 {
+        const auto& cbuf = cbufs[remap.cbuf_index];
+        if (!cbuf.enabled || cbuf.address == 0 || cbuf.size < remap.cbuf_offset + 4) {
+            return 0;
+        }
+        return (std::min)(remap.count, ((cbuf.size - 4 - remap.cbuf_offset) >> remap.size_shift) + 1);
+    };
+    for (const auto& remap : info.texture_remap_arrays) {
+        if (const u32 count = elements(remap); count != 0) {
+            begin[remap.cbuf_index] = (std::min)(begin[remap.cbuf_index], remap.cbuf_offset);
+            end[remap.cbuf_index] = (std::max)(end[remap.cbuf_index],
+                                               remap.cbuf_offset + ((count - 1) << remap.size_shift) + 4);
+        }
+    }
+    size_t total = 0;
+    for (size_t cbuf = 0; cbuf < begin.size(); ++cbuf) {
+        if (end[cbuf] != 0) {
+            base[cbuf] = static_cast<u32>(total);
+            total += end[cbuf] - begin[cbuf];
+        }
+    }
+    bytes.resize(total);
+    for (size_t cbuf = 0; cbuf < begin.size(); ++cbuf) {
+        if (end[cbuf] != 0) {
+            gpu_memory.ReadBlockUnsafe(cbufs[cbuf].address + begin[cbuf], bytes.data() + base[cbuf],
+                                       end[cbuf] - begin[cbuf]);
+        }
+    }
+    for (const auto& remap : info.texture_remap_arrays) {
+        const u32 count = elements(remap);
+        words.push_back(count);
+        const u8* const first =
+            bytes.data() + base[remap.cbuf_index] + (remap.cbuf_offset - begin[remap.cbuf_index]);
+        for (u32 index = 0; index < count; ++index) {
+            u32 word;
+            std::memcpy(&word, first + (size_t{index} << remap.size_shift), sizeof(word));
+            words.push_back(word & remap.mask);
+        }
+    }
+}
+
+/// Assigns each distinct handle word of the arrays a slot of its pool and writes the slot bytes.
+/// Pools keep their first slot for the elements past the constant buffer (table bytes zero).
+void BuildTextureRemap(const StageBindings& info, Tegra::MemoryManager& gpu_memory,
+                       const std::array<Tegra::Engines::ConstBufferInfo,
+                                        Maxwell::MaxConstBuffers>& cbufs,
+                       std::span<const u32> words, std::vector<std::vector<u32>>& pools,
+                       std::vector<u8>& table) {
+    constexpr u32 HASH_SIZE = 512;
+    static_assert(HASH_SIZE >= 2 * Shader::TEXTURE_REMAP_MAX_POOL);
+    struct Bucket {
+        u32 generation;
+        u32 word;
+        u32 slot;
+    };
+    static thread_local std::array<Bucket, HASH_SIZE> buckets{};
+    static thread_local u32 generation = 0;
+
+    pools.resize(info.texture_descriptors.size());
+    for (auto& pool : pools) {
+        pool.clear();
+    }
+    table.assign(Common::AlignUp(info.texture_remap_bytes, 16), 0);
+    u32 last_pool = ~0u;
+    size_t next = 0;
+    for (const auto& remap : info.texture_remap_arrays) {
+        if (remap.pool != last_pool) {
+            // Arrays of a pool are not always consecutive: start the pool's lookup over from its slots.
+            last_pool = remap.pool;
+            if (++generation == 0) {
+                buckets.fill({});
+                generation = 1;
+            }
+            const auto& pool = pools[remap.pool];
+            for (u32 slot = 0; slot < pool.size(); ++slot) {
+                u32 hash = (pool[slot] * 0x9e3779b1u) >> 23;
+                while (buckets[hash].generation == generation) {
+                    hash = (hash + 1) & (HASH_SIZE - 1);
+                }
+                buckets[hash] = {generation, pool[slot], slot};
+            }
+        }
+        auto& pool = pools[remap.pool];
+        const u32 capacity = info.texture_descriptors[remap.pool].count;
+        const u32 count = words[next++];
+        for (u32 index = 0; index < count; ++index) {
+            const u32 word = words[next++];
+            u32 hash = (word * 0x9e3779b1u) >> 23;
+            u32 slot = 0;
+            for (;; hash = (hash + 1) & (HASH_SIZE - 1)) {
+                Bucket& bucket = buckets[hash];
+                if (bucket.generation != generation) {
+                    if (pool.size() < capacity) {
+                        slot = static_cast<u32>(pool.size());
+                        pool.push_back(word);
+                        bucket = {generation, word, slot};
+                    } else {
+                        WarnOnceLog(warned_remap_pool_full,
+                                    "texture remap pool of {} slots is full; extra textures read "
+                                    "its first one", capacity);
+                    }
+                    break;
+                }
+                if (bucket.word == word) {
+                    slot = bucket.slot;
+                    break;
+                }
+            }
+            table[remap.remap_base + index] = static_cast<u8>(slot);
+        }
+    }
+    // Unused slots repeat the first handle; an empty pool reads its first array's element 0.
+    for (size_t index = 0; index < pools.size(); ++index) {
+        const Shader::TextureDescriptor& desc = info.texture_descriptors[index];
+        if (!desc.remap_pool) {
+            continue;
+        }
+        auto& pool = pools[index];
+        if (pool.empty()) {
+            const auto& cbuf = cbufs[desc.cbuf_index];
+            pool.push_back(cbuf.enabled && cbuf.address != 0
+                               ? gpu_memory.Read<u32>(cbuf.address + desc.cbuf_offset) & desc.mask
+                               : 0);
+        }
+        pool.resize(desc.count, pool.front());
+    }
+}
+
+} // Anonymous namespace
+
 void SetDrawSamplerReuse(bool enabled) {
     draw_sampler_reuse.store(enabled, std::memory_order_relaxed);
 }
@@ -965,6 +1124,39 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
     bool any_reused = false;
 
     const bool via_header_index = regs.sampler_binding == Maxwell::SamplerBinding::ViaHeaderBinding;
+    // Texture remap: the pools' slots hold the distinct handles the arrays read in this draw.
+    out.texture_remap = 0;
+    const bool remap = layout.TextureRemapIndex() != PipelineLayout::NO_TABLE &&
+                       HasStage(FRAGMENT_STAGE) &&
+                       stage_infos[FRAGMENT_STAGE]->texture_remap_bytes != 0;
+    if (remap) {
+        const StageBindings& info = *stage_infos[FRAGMENT_STAGE];
+        const auto& cbufs = maxwell3d.state.shader_stages[FRAGMENT_STAGE].const_buffers;
+        if (!texture_remap) {
+            texture_remap = std::make_unique<TextureRemapState>();
+        }
+        TextureRemapState& state = *texture_remap;
+        static thread_local std::vector<u32> words;
+        ReadTextureRemapWords(gpu_memory, info, cbufs, words);
+        if (!state.valid || words != state.words) {
+            state.words.assign(words.begin(), words.end());
+            BuildTextureRemap(info, gpu_memory, cbufs, state.words, state.pools, state.table);
+            state.valid = true;
+            state.tick = ~u64{0};
+        }
+        const u64 tick = context.scheduler.CurrentTick();
+        if (state.tick != tick) {
+            // The staging alignment covers the root CBV's 256-byte placement.
+            const size_t size = Common::AlignUp(state.table.size(),
+                                                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+            const StagingBufferRef ref = buffer_cache.runtime.UploadStagingBuffer(size);
+            std::memset(ref.mapped_span.data(), 0, size);
+            std::memcpy(ref.mapped_span.data(), state.table.data(), state.table.size());
+            state.address = ref.buffer->GetGPUVirtualAddress() + ref.offset;
+            state.tick = tick;
+        }
+        out.texture_remap = state.address;
+    }
     for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
         if (!HasStage(stage)) {
             continue;
@@ -983,6 +1175,11 @@ void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& con
                                          Shader::TextureDescriptor>) {
                 if (desc.varying_handle) [[unlikely]] {
                     return Tegra::Texture::TexturePair(out.vertex_texture_handle, via_header_index);
+                }
+                if (desc.remap_pool) [[unlikely]] {
+                    const size_t pool = &desc - info.texture_descriptors.data();
+                    return Tegra::Texture::TexturePair(texture_remap->pools[pool][index],
+                                                       via_header_index);
                 }
             }
             return ReadTextureHandle(gpu_memory, desc, index, via_header_index,

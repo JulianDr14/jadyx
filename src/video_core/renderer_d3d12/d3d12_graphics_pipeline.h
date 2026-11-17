@@ -161,6 +161,8 @@ struct PipelineBindings {
     std::array<u32, PUSH_CONSTANT_WORDS> push_constants{};
     /// Integer sampler states (PipelineLayout::IntegerSamplerIndex), 0 when the layout has none.
     D3D12_GPU_VIRTUAL_ADDRESS integer_samplers{};
+    /// Texture remap table (PipelineLayout::TextureRemapIndex), 0 when the layout has none.
+    D3D12_GPU_VIRTUAL_ADDRESS texture_remap{};
     /// When set (draw trace), Configure appends the views of the sampled textures here.
     std::vector<VideoCommon::ImageViewId>* trace_views{};
     /// With trace_views: each texture's sampler (Sampler::Describe), in the same order.
@@ -677,6 +679,10 @@ private:
     /// uses it. GPU thread only.
     struct TextureReplayState;
     std::unique_ptr<TextureReplayState> texture_replay;
+    /// The fragment stage's texture remap table (Shader::TextureRemapArray), allocated by the
+    /// first draw that uses it. GPU thread only.
+    struct TextureRemapState;
+    std::unique_ptr<TextureRemapState> texture_remap;
     /// The object itself. Its DXIL and stage bindings are shared with other pipelines.
     Common::MemoryCharge charge{Common::MemoryAccount::Pipelines, sizeof(GraphicsPipeline)};
 };

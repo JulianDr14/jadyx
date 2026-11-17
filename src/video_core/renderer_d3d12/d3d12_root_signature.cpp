@@ -177,6 +177,7 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
     bool scratch_outside_pixel = false;
     bool stage_constants = false;
     bool polygon_stipple = false;
+    bool texture_remap = false;
     u32 xfb_buffers = 0;
     for (size_t index = 0; index < infos.size(); ++index) {
         const Shader::Info* const info = infos[index];
@@ -191,6 +192,7 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
                 integer_textures |= desc.is_integer;
             }
             textures |= !info->texture_descriptors.empty();
+            texture_remap |= info->texture_remap_bytes != 0;
         }
     }
     // The sampler table (eden_integer_sampler_state rows): integer samples always read it, float
@@ -219,7 +221,7 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             tess_emulation ? 8 + Shader::TessellationEmulation::CONSTANT_WORDS : 0;
         const u32 used = push_constant_words + runtime_data_words + 2 +
                          (sampler_table ? 2 : 0) + (local_memory_scratch ? 2 : 0) + xfb_words +
-                         tess_words;
+                         tess_words + (texture_remap ? 2 : 0);
         root.budget = std::min<size_t>(PipelineLayout::MAX_ROOT_CBVS,
                                        used < ROOT_DWORDS ? (ROOT_DWORDS - used) / 2 : 0);
     }
@@ -239,7 +241,8 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
                          (stream_output ? 1u << 7 : 0u) | (blend_constants ? 1u << 8 : 0u) |
                          (stage_constants ? 1u << 9 : 0u) | (polygon_stipple ? 1u << 10 : 0u) |
                          (tess_emulation ? 1u << 11 : 0u) |
-                         (scratch_outside_pixel ? 1u << 12 : 0u)};
+                         (scratch_outside_pixel ? 1u << 12 : 0u) |
+                         (texture_remap ? 1u << 13 : 0u)};
     AppendKey(key, ranges.resources);
     AppendKey(key, ranges.samplers);
     key.push_back(static_cast<u32>(root.registers.size()));
@@ -301,6 +304,16 @@ const PipelineLayout& RootSignatureCache::Get(std::span<const Shader::Info* cons
             .ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV,
             .Descriptor = {.ShaderRegister = 0, .RegisterSpace = EDEN_INTEGER_SAMPLER_SPACE},
             .ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
+        });
+    }
+    if (texture_remap) {
+        // Only pixel shaders sample through the remap table (Shader::TextureRemapArray)
+        layout->texture_remap_index = static_cast<u32>(params.size());
+        params.push_back({
+            .ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV,
+            .Descriptor = {.ShaderRegister = Shader::TEXTURE_REMAP_BINDING,
+                           .RegisterSpace = Shader::TEXTURE_REMAP_DESCRIPTOR_SET},
+            .ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL,
         });
     }
     if (local_memory_scratch) {
