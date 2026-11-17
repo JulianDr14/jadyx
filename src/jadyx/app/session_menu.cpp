@@ -28,6 +28,7 @@
 #include "video_core/renderer_base.h"
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 
+#include "jadyx/network/nextendo/service.h"
 #include "jadyx/network/online_rooms.h"
 #include "jadyx/app/boot_diag.h"
 #include "jadyx/app/boot_renderer_decls.h"
@@ -199,6 +200,9 @@ void SessionMenu::Open() {
     if (!live) CaptureFrame();
     const SystemSettings system_settings = LoadSystemSettings();
     const GameMotion game_motion = input.Motion();
+    // Nextendo is the chosen network (frozen while the game runs): no cheats, no Memory Edit.
+    const bool fair_play = Network::Nextendo::ServicePreferences().use_nextendo;
+    const bool tools = program_id != 0 && !mii_editor && !fair_play;
     menu.emplace(GameMenuSettings{basics.style, basics.swap_face_buttons,
                                   basics.deadzone, g_can_fullscreen.load(),
                                   g_fullscreen.load(), system_settings.show_performance_stats,
@@ -207,7 +211,7 @@ void SessionMenu::Open() {
                                   live || !game_frame.pixels.empty(), LoadGameOfflineMode(program_id),
                                   system_settings.offline_mode, LoadGraphicsSettings(),
                                   LoadGameGraphics(program_id),
-                                  program_id != 0 && !mii_editor && MemoryEdit::CanSearchGuest(system),
+                                  tools && MemoryEdit::CanSearchGuest(system),
                                   options.right_stick, input.GameRightStickSettings(),
                                   program_id != 0 && !mii_editor, game_motion.mode, game_motion.view,
                                   config.glitch_hunt_menu, glitch_toggles,
@@ -216,7 +220,7 @@ void SessionMenu::Open() {
                                   D3D12::GetPipelineBuildBoost(), options.motion_source, options.motion_shake,
                                   options.rumble, input.GameRumbleSettings(),
                                   VideoCommon::GeoHunt::OobFix(), basics_global, basics_game, MousePresent()},
-                 program_id != 0 && !mii_editor);
+                 tools);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
     // The DSU page lists the servers live while the menu is open, even with none added yet.
     DsuClient::SetWanted(DsuClient::Wanter::Menu, true);

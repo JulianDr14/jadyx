@@ -52,6 +52,7 @@
 #include "core/hle/kernel/guest_probe.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/memory.h"
+#include "core/memory/cheat_engine.h"
 #include "core/hle/kernel/svc/svc_debug_string.h" // Kernel::Svc::SetDebugStringObserver
 #include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/service/am/applet_manager.h"
@@ -637,6 +638,13 @@ std::wstring GameSession::StartNextendo() {
     if (name.empty()) void(system.GetAppLoader().ReadTitle(name));
     Nx::GameStarted(title_id, name);
     nextendo_playing = true;
+    // Nextendo is the chosen network: the cheats the game booted with stop (the menu offers none).
+    if (Nx::ServicePreferences().use_nextendo) {
+        if (auto* engine = system.GetCheatEngine()) {
+            engine->Reload({});
+            WriteDiag("nextendo: cheats off while Nextendo is chosen");
+        }
+    }
     const auto check = Nx::CheckGame(title_id, version);
     const auto text = LaunchAdviceText(check.advice);
     if (text == I18n::Text::Count) return {};
