@@ -54,7 +54,7 @@ std::wstring Detail(const Revision& r, Error error) {
     std::wostringstream text;
     text << (error != Error::None ? Tr(ErrorText(error)) :
         Tr(r.enabled ? T::ContentActive : T::ContentInactive));
-    text << L"  ·  " << Tr(r.internal ? T::ContentInternal : T::ContentUsb);
+    text << L"  ·  " << Tr(!r.internal ? T::ContentUsb : r.developer ? T::SourceDeveloper : T::ContentInternal);
     text << L"  ·  " << r.bytes / (1024 * 1024) << L" MiB";
     return text.str();
 }
@@ -164,7 +164,8 @@ void DrawContentPanel(UiPainter& paint, const ContentSession& session, std::wstr
             if (plan == ImportAction::Duplicate) {
                 const auto saved = std::find_if(view.catalog.revisions.begin(), view.catalog.revisions.end(),
                     [&](const auto& r) { return r.id == item.revision.id; });
-                if (saved != view.catalog.revisions.end()) detail += L"  ·  " + std::wstring{Tr(saved->internal ? T::ContentInternal : T::ContentUsb)};
+                if (saved != view.catalog.revisions.end()) detail += L"  ·  " + std::wstring{Tr(!saved->internal ? T::ContentUsb :
+                                                                                           saved->developer ? T::SourceDeveloper : T::ContentInternal)};
             } else detail += L"  ·  " + std::to_wstring(item.revision.bytes / (1024*1024)) + L" MiB";
             rows.push_back({Label(item.revision), std::move(detail), view.checked[i]});
         }

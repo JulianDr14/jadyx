@@ -129,7 +129,9 @@ struct NspUpload::Impl {
     }
     fs::path GamesFor(bool on_developer) const { return on_developer ? DeveloperGames() : games; }
     fs::path PayloadFor(bool on_developer) const {
-        return on_developer ? DeveloperTransfers() / "payload.part" : payload;
+        // Content and game uploads may both be pending on D:, so each keeps its own payload.
+        return on_developer ? (consume ? DeveloperContentTransfers() : DeveloperTransfers()) / "payload.part"
+                            : payload;
     }
     bool OnDeveloper() const { return info.destination == "developer"; }
     fs::path Games() const { return GamesFor(OnDeveloper()); }
@@ -196,7 +198,7 @@ struct NspUpload::Impl {
                 generation = next; file_id = identity; volume = serial;
             } catch (...) {} // Try the independent older checkpoint; never trust a partial JSON write.
         }
-        if (consume && info.phase == "complete") { std::error_code ignored; fs::remove(payload, ignored); }
+        if (consume && info.phase == "complete") { std::error_code ignored; fs::remove(Payload(), ignored); }
         std::error_code absent;
         // Its checkpoints are gone: a payload left on D: is offered for discarding like an internal one.
         if (info.id.empty() && developer && !fs::exists(payload, absent) && fs::exists(PayloadFor(true), absent))

@@ -37,11 +37,13 @@ std::string PortalAdapterReport();
 
 enum class PortalError { None, NoAddress, AddressLost, PortInUse, PortBlocked, Bind, Random, Listen, Storage };
 
-/// A deletion asked from the browser. The library runs it with its other storage jobs.
+/// A deletion or move asked from the browser. The library runs it with its other storage jobs.
 struct PortalRemoval {
     std::uint64_t serial{};      ///< One per request, so the page follows its own.
     std::uint64_t application{};
     std::string content;         ///< Update/DLC id; empty deletes the whole game.
+    /// Empty deletes. "internal" or "developer" moves the update/DLC there instead.
+    std::string destination;
     std::string phase;           ///< "", "pending", "running", "complete" or "failed".
     std::string error;
     bool operator==(const PortalRemoval&) const = default;
@@ -75,6 +77,7 @@ struct PortalContent {
     std::string id, kind, name, version;
     std::uint64_t title{}, bytes{};
     bool enabled{}, internal{};
+    bool developer{}; ///< The console's copy is on D: (only with `internal`).
 };
 
 /// Read-only library view supplied by the coordinator. Every callback runs on a portal
@@ -105,10 +108,12 @@ struct PortalAmiibo {
     std::function<std::string()> remove_key;
 };
 
-/// Installs an update/DLC upload; `tag` is the validated "<kind>:<application hex>".
-using ContentValidator = std::function<std::string(const std::filesystem::path&, const std::string& tag, std::stop_token)>;
+/// Installs an update/DLC upload; `tag` is the validated "<kind>:<application hex>" and
+/// `developer` asks for its copy on D:.
+using ContentValidator = std::function<std::string(const std::filesystem::path&, const std::string& tag,
+                                                   bool developer, std::stop_token)>;
 using GameValidator = std::function<std::string(const std::filesystem::path&, const std::string& name, std::stop_token)>;
-/// Carries out the pending removal; returns an error word, empty on success.
+/// Carries out the pending removal or move; returns an error word, empty on success.
 using RemovalRunner = std::function<std::string(const PortalRemoval&)>;
 
 /// Library-owned HTTP server. Destruction stops and joins all network workers before launch.

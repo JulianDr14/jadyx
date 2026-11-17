@@ -4,7 +4,7 @@
 
 // What Jadyx Portal shows of the library: the scanned games, their covers from the library
 // cache and the updates/DLC registered for each, plus the storage jobs the browser asks for
-// (installing an update/DLC, deleting content or a game). The coordinator publishes the scan
+// (installing an update/DLC, moving one between internal storage and D:, deleting content or a game). The coordinator publishes the scan
 // from the UI thread and runs the jobs on its storage worker; portal workers only read copies,
 // so no browser request touches the library state.
 
@@ -42,12 +42,14 @@ public:
     /// Bytes installed by the running portal import; reported to the browser in MiB.
     void Progress(std::uint64_t done, std::uint64_t total) { installed = done; install_total = total; }
     /// Installs a portal update/DLC upload, or loads a save archive ("save:" tag); `tag` is its
-    /// "<kind>:<application hex>".
+    /// "<kind>:<application hex>". `developer` keeps an update/DLC copy on D: (saves ignore it).
     /// `progress` also hears the bytes copied. Returns a portal error word.
-    std::string Install(const std::filesystem::path& package, const std::string& tag, std::stop_token stop,
-                        const Content::Progress& progress = {});
-    /// Carries out a deletion asked from the portal. Returns a portal error word.
-    std::string Remove(const PortalRemoval& removal);
+    std::string Install(const std::filesystem::path& package, const std::string& tag, bool developer,
+                        std::stop_token stop, const Content::Progress& progress = {});
+    /// Carries out a deletion or an update/DLC move asked from the portal; a move reports its
+    /// copy like an install. Returns a portal error word.
+    std::string Remove(const PortalRemoval& removal, std::stop_token stop = {},
+                       const Content::Progress& progress = {});
 
 private:
     struct Game {

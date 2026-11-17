@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <cstdint>
+#include <string>
 #include <string_view>
 namespace Jadyx::PortalWeb {
 // The page is laid out like the console frontend: the wordmark and segmented tabs in the header,
@@ -120,6 +122,17 @@ button.back{height:34px;padding:0 14px;margin-bottom:20px;font-size:13px;color:v
 .items li{display:flex;align-items:center;gap:14px;padding:12px 14px;border-radius:14px;background:var(--row);border:1px solid var(--line)}
 .items li span{flex:1;min-width:0}.items b{display:block;font-weight:600;overflow-wrap:anywhere}.items small{display:block;font-size:13px}
 .items li.empty{justify-content:center;color:var(--muted)}.items button{height:36px;padding:0 16px}
+.items .meta{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin-top:4px}.items .meta small{display:inline}
+.loc{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:.02em;white-space:nowrap;
+ color:var(--hint);background:rgba(255,255,255,.05);border:1px solid var(--line)}.loc .ico{width:13px;height:13px;stroke-width:2}
+.loc.dev{color:var(--cyan);background:rgba(46,181,229,.1);border-color:rgba(46,181,229,.3)}.loc.ext{color:var(--muted);background:none}
+.row-actions{display:flex;align-items:center;gap:8px;flex:none}
+button.move{display:inline-flex;align-items:center;gap:7px;color:var(--hint)}button.move .ico{width:15px;height:15px;stroke-width:2}
+button.move.dev:hover:not(:disabled){color:var(--cyan);border-color:rgba(46,181,229,.4)}
+.moving{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:180px;flex:none}.moving em{font-style:normal;font-size:12px;font-weight:600;color:var(--cyan);font-variant-numeric:tabular-nums;white-space:nowrap}
+.moving progress{height:6px}.items li.busy-row{border-color:rgba(46,181,229,.35)}
+#content-where{margin:0 0 8px}#content-where button{display:inline-flex;align-items:center;gap:7px}#content-where .ico{width:15px;height:15px;stroke-width:2}
+#content-where-hint{font-size:13px;margin:0 0 16px;font-variant-numeric:tabular-nums}#content-where-hint b{color:var(--text);font-weight:600}#content-where-hint.dev b{color:var(--cyan)}
 #save-intro,#save-warning{font-size:13px;margin:0 0 16px}#save-pane .drop{margin-top:20px}#save-warning{margin-top:12px}#logs-help{margin-top:6px;max-width:44em}
 #save-error{margin:0 0 16px;padding:12px 14px;border-radius:12px;color:var(--warn);background:rgba(240,194,122,.08);border:1px solid rgba(240,194,122,.24);overflow-wrap:anywhere}
 button.link{height:auto;padding:0;border:0;background:none;color:var(--cyan);text-decoration:underline;font-weight:500}button.link:hover:not(:disabled){background:none}
@@ -149,6 +162,7 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 @media(max-width:860px){.bar{grid-template-columns:minmax(0,1fr) auto;padding:12px 16px;row-gap:12px}.tabs{grid-column:1/-1}.tabs button{flex:1}
  .shell{padding:20px 16px 32px}
  #message,#amiibo-note{top:132px}.head-row{flex-direction:column}
+ .items li:has(.row-actions),.items li:has(.moving){flex-wrap:wrap}.row-actions{width:100%}.row-actions button{flex:1}.moving{width:100%;align-items:stretch}
  .grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}.hero{grid-template-columns:72px minmax(0,1fr)}.hero .art{width:72px}.hero .danger{grid-column:1/-1}
  .card{padding:22px}h1{font-size:28px;line-height:34px}.actions button{flex:1 1 calc(50% - 10px);height:auto;min-height:44px;padding:10px 16px;line-height:1.25}#code{font-size:28px;letter-spacing:.28em;text-indent:.28em}}
 @media(max-width:600px){.update-top{flex-direction:column}.steps li{gap:14px}.steps .actions>*{flex:1 1 100%;justify-content:center}}
@@ -198,6 +212,8 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <p id="game-warning"></p>
 <nav class="seg" role="tablist"><button id="kind-update" role="tab" aria-selected="true">Updates</button><button id="kind-dlc" role="tab" aria-selected="false">DLC</button><button id="kind-save" role="tab" aria-selected="false">Save</button></nav>
 <ul class="items" id="items"></ul>
+<nav class="seg" id="content-where" role="tablist" hidden><button id="content-where-internal" role="tab" aria-selected="true"><svg class="ico" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9z"/></svg><span id="content-where-internal-label">Internal storage</span></button><button id="content-where-developer" role="tab" aria-selected="false"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13 7.5 5h9L19 13M7 16.5h.01"/></svg><span id="content-where-developer-label">Dev storage (D:)</span></button></nav>
+<p id="content-where-hint" hidden></p>
 <label class="drop" id="content-zone"><input id="content-files" type="file" accept=".nsp,.xci" multiple><svg class="ico" viewBox="0 0 24 24"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
 <strong id="content-pick">Choose update NSP or XCI files</strong><span id="content-drop">or drop them here</span><span class="picked" id="content-picked"></span></label>
 <div id="save-pane" hidden><p id="save-intro"></p><div class="actions"><button id="save-download" class="primary">Download save</button></div>
@@ -364,14 +380,23 @@ function render(){
  renderLibrary();
  renderAmiibo();
 }
-async function refresh(){const response=await api('/api/v1/status');state=await response.json();render();followLibrary();return state;}
-$('pair').addEventListener('submit',async event=>{
- event.preventDefault();$('connect').disabled=true;$('message').textContent='';
- try{
- const response=await fetch('/api/v1/pair',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:$('code').value})});
- if(!response.ok){$('connection').textContent=response.status===429?words.attempts:words.bad;return;}
- session=(await response.json()).session;$('code').value='';$('pair').hidden=true;$('connection').textContent=words.ok;
- await refresh();clearInterval(timer);let polling=false;
+// This page's version, filled in by the console when it serves it. A tab left open across a
+// Jadyx update keeps running the old page; the console names the page it serves now in the
+// status, and the old one hands its session to a reload so nobody types the code again.
+const pageVersion='@@PAGE_VERSION@@';
+let reloading=false;
+function newerPage(){
+ if(reloading||!state.page||state.page===pageVersion)return false;
+ // Once per version: if the reload still brings an old page, keep working instead of looping.
+ try{if(sessionStorage.getItem('jadyx-reloaded')===state.page)return false;
+  sessionStorage.setItem('jadyx-reloaded',state.page);
+  if(!running&&!contentRunning&&!systemRunning)sessionStorage.setItem('jadyx-session',session);}catch{return false;}
+ reloading=true;clearInterval(timer);location.reload();return true;
+}
+async function refresh(){const response=await api('/api/v1/status');state=await response.json();if(newerPage())return state;render();followLibrary();return state;}
+async function connected(token){
+ session=token;$('code').value='';$('pair').hidden=true;$('connection').textContent=words.ok;
+ await refresh();if(reloading)return;clearInterval(timer);let polling=false;
  // An upload left unfinished is what the player came back for.
  if(state.uploads&&state.transfer?.id&&state.transfer.phase!=='complete'){pane='games';render();}
  timer=setInterval(async()=>{if(polling)return;polling=true;try{await refresh();failures=0;$('connection').textContent=words.ok;}catch(error){
@@ -380,8 +405,18 @@ $('pair').addEventListener('submit',async event=>{
  else if(error.message==='lost'){clearInterval(timer);stopped=true;if(currentXHR)currentXHR.abort();session='';$('pair').hidden=false;$('upload').hidden=true;$('connection').textContent=words.lost;}
  else $('connection').textContent=words.interrupted;
  }finally{polling=false;}},1000);
+}
+$('pair').addEventListener('submit',async event=>{
+ event.preventDefault();$('connect').disabled=true;$('message').textContent='';
+ try{
+ const response=await fetch('/api/v1/pair',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:$('code').value})});
+ if(!response.ok){$('connection').textContent=response.status===429?words.attempts:words.bad;return;}
+ await connected((await response.json()).session);
  }catch{$('connection').textContent=words.lost;}finally{$('connect').disabled=false;}
 });
+// The session an older copy of this page handed over before reloading; read once, then gone.
+(()=>{let token='';try{token=sessionStorage.getItem('jadyx-session')||'';sessionStorage.removeItem('jadyx-session');}catch{}
+ if(token)connected(token).catch(()=>{session='';$('pair').hidden=false;$('connection').textContent=words.lost;});})();
 // Only digits; the eighth one connects without reaching for the button.
 $('code').addEventListener('input',()=>{const code=$('code').value.replace(/\D/g,'').slice(0,4);$('code').value=code;
  if(code.length===4&&!$('connect').disabled)$('pair').requestSubmit?.();});
@@ -488,7 +523,18 @@ const libraryWords=pt?{
  ready:'Aguardando instalação',validating:'Instalando',complete:'Instalado',idle:'Escolha arquivos para instalar.',failed:'Não foi possível concluir a operação.',
  game:'O jogo não está mais na biblioteca ou não pôde ser apagado.',content:'Não foi possível apagar esse conteúdo.',saves:'O jogo foi apagado, mas alguns saves não puderam ser removidos.',
  wrong_game:'Esse pacote pertence a outro jogo.',kind:'O pacote não é do tipo escolhido (atualização ou DLC).',conflict:'Já existe uma versão conflitante desse conteúdo.',
- hash:'O pacote está danificado.',requirements:'O pacote exige uma versão mais nova do jogo ou do firmware.',unsupported:'Esse pacote não é compatível.',invalid:'O pacote não é válido.',metadata:'Recarregue a página e tente de novo.'
+ hash:'O pacote está danificado.',requirements:'O pacote exige uma versão mais nova do jogo ou do firmware.',unsupported:'Esse pacote não é compatível.',invalid:'O pacote não é válido.',metadata:'Recarregue a página e tente de novo.',
+ loc_internal:'Interno',loc_developer:'Dev (D:)',to_developer:'Mover para D:',to_internal:'Mover para interno',
+ move_dev_title:'Copia para o armazenamento dev (D:) e libera espaço interno. Ele é apagado se você mudar seu tamanho.',move_internal_title:'Copia de volta para o armazenamento interno do app.',
+ moving:'Movendo…',moving_to_developer:'Movendo para D:',moving_to_internal:'Movendo para interno',moved_developer:'Movido para o armazenamento dev (D:).',moved_internal:'Movido para o armazenamento interno.',
+ unlink:'Remover da lista',unlink_title:'Tira da lista do Jadyx. O arquivo da pasta externa não é apagado.',unlinked:'Removido da lista; o arquivo continua na pasta externa.',
+ no_room:'não cabe',no_room_title:'Faltam {need} livres no destino.',
+ copy_internal:'Copiar para interno',copy_developer:'Copiar para D:',copy_internal_title:'Faz uma cópia no armazenamento interno do app. O arquivo da pasta externa não é tocado.',copy_dev_title:'Faz uma cópia no armazenamento dev (D:). O arquivo da pasta externa não é tocado. Ela é apagada se você mudar o tamanho do armazenamento.',
+ copying_to_internal:'Copiando para interno',copying_to_developer:'Copiando para D:',copied_internal:'Copiado para o armazenamento interno.',copied_developer:'Copiado para o armazenamento dev (D:).',
+ move_failed:'Não foi possível mover; o conteúdo continua onde estava.',destination:'O armazenamento dev (D:) não está disponível. Configure-o no Dev Home → Manage dev storage.',
+ missing:'A cópia não está mais no console (o armazenamento dev é apagado ao mudar de tamanho). Apague-a e envie de novo.',
+ where_internal:'Armazenamento interno',where_developer:'Armazenamento dev (D:)',
+ where_internal_hint:'Fica no espaço do app · <b>{free}</b> livres.',where_developer_hint:'Fica no D: · <b>{free}</b> livres. É apagado se você mudar o tamanho do armazenamento dev.'
 }:es?{
  title:'Tu biblioteca',intro:'Abre un juego para gestionar sus actualizaciones, DLC y partida, o para eliminarlo.',empty:'Todavía no hay juegos.',back:'← Biblioteca',
  update:'Actualizaciones',dlc:'DLC',none_update:'No hay actualizaciones instaladas.',none_dlc:'No hay DLC instalados.',pick_update:'Seleccionar NSP o XCI de actualización',pick_dlc:'Seleccionar NSP o XCI de DLC',
@@ -498,7 +544,18 @@ const libraryWords=pt?{
  ready:'Esperando a instalar',validating:'Instalando',complete:'Instalado',idle:'Selecciona archivos para instalar.',failed:'No se pudo completar la operación.',
  game:'El juego ya no está en la biblioteca o no se pudo eliminar.',content:'No se pudo eliminar ese contenido.',saves:'El juego se eliminó, pero algunas partidas no se pudieron borrar.',
  wrong_game:'Ese paquete es de otro juego.',kind:'El paquete no es del tipo elegido (actualización o DLC).',conflict:'Ya hay una versión de ese contenido que choca con esta.',
- hash:'El paquete está dañado.',requirements:'El paquete necesita una versión más nueva del juego o del firmware.',unsupported:'Ese paquete no es compatible.',invalid:'El paquete no es válido.',metadata:'Recarga la página y vuelve a intentarlo.'
+ hash:'El paquete está dañado.',requirements:'El paquete necesita una versión más nueva del juego o del firmware.',unsupported:'Ese paquete no es compatible.',invalid:'El paquete no es válido.',metadata:'Recarga la página y vuelve a intentarlo.',
+ loc_internal:'Interno',loc_developer:'Dev (D:)',to_developer:'Mover a D:',to_internal:'Mover a interno',
+ move_dev_title:'Lo copia al almacenamiento dev (D:) y libera espacio interno. Se borra si cambias su tamaño.',move_internal_title:'Lo copia de vuelta al almacenamiento interno de la app.',
+ moving:'Moviendo…',moving_to_developer:'Moviendo a D:',moving_to_internal:'Moviendo a interno',moved_developer:'Movido al almacenamiento dev (D:).',moved_internal:'Movido al almacenamiento interno.',
+ unlink:'Quitar',unlink_title:'Lo quita de la lista de Jadyx. El archivo de la carpeta externa no se borra.',unlinked:'Quitado de la lista; el archivo sigue en la carpeta externa.',
+ no_room:'no cabe',no_room_title:'Faltan {need} libres en el destino.',
+ copy_internal:'Copiar a interno',copy_developer:'Copiar a D:',copy_internal_title:'Hace una copia en el almacenamiento interno de la app. El archivo de la carpeta externa no se toca.',copy_dev_title:'Hace una copia en el almacenamiento dev (D:). El archivo de la carpeta externa no se toca. Se borra si cambias el tamaño de ese almacenamiento.',
+ copying_to_internal:'Copiando a interno',copying_to_developer:'Copiando a D:',copied_internal:'Copiado al almacenamiento interno.',copied_developer:'Copiado al almacenamiento dev (D:).',
+ move_failed:'No se pudo mover; el contenido sigue donde estaba.',destination:'El almacenamiento dev (D:) no está disponible. Configúralo en Dev Home → Manage dev storage.',
+ missing:'La copia ya no está en la consola (el almacenamiento dev se borra al cambiar su tamaño). Elimínala y vuelve a subirla.',
+ where_internal:'Almacenamiento interno',where_developer:'Almacenamiento dev (D:)',
+ where_internal_hint:'Se guarda en el espacio de la app · <b>{free}</b> libres.',where_developer_hint:'Se guarda en D: · <b>{free}</b> libres. Se borra si cambias el tamaño del almacenamiento dev.'
 }:{
  title:'Your library',intro:'Open a game to manage its updates, DLC and save, or to delete it.',empty:'No games yet.',back:'← Library',
  update:'Updates',dlc:'DLC',none_update:'No updates installed.',none_dlc:'No DLC installed.',pick_update:'Choose update NSP or XCI files',pick_dlc:'Choose DLC NSP or XCI files',
@@ -508,9 +565,21 @@ const libraryWords=pt?{
  ready:'Waiting to install',validating:'Installing',complete:'Installed',idle:'Choose files to install.',failed:'The operation could not be completed.',
  game:'The game is no longer in the library or could not be deleted.',content:'That content could not be deleted.',saves:'The game was deleted, but some saves could not be removed.',
  wrong_game:'That package belongs to another game.',kind:'The package is not the chosen kind (update or DLC).',conflict:'A conflicting version of this content is already installed.',
- hash:'The package is damaged.',requirements:'The package needs a newer game or firmware version.',unsupported:'That package is not supported.',invalid:'The package is not valid.',metadata:'Reload this page and try again.'};
+ hash:'The package is damaged.',requirements:'The package needs a newer game or firmware version.',unsupported:'That package is not supported.',invalid:'The package is not valid.',metadata:'Reload this page and try again.',
+ loc_internal:'Internal',loc_developer:'Dev (D:)',to_developer:'Move to D:',to_internal:'Move to internal',
+ move_dev_title:'Copies it to Dev storage (D:) and frees internal space. That storage is erased if you change its size.',move_internal_title:'Copies it back to the app\'s internal storage.',
+ moving:'Moving…',moving_to_developer:'Moving to D:',moving_to_internal:'Moving to internal',moved_developer:'Moved to Dev storage (D:).',moved_internal:'Moved to internal storage.',
+ unlink:'Remove from list',unlink_title:'Removes it from the Jadyx list. The file in the external folder is not deleted.',unlinked:'Removed from the list; the file stays in the external folder.',
+ no_room:'does not fit',no_room_title:'{need} more free space is needed there.',
+ copy_internal:'Copy to internal',copy_developer:'Copy to D:',copy_internal_title:'Makes a copy in the app\'s internal storage. The file in the external folder is not touched.',copy_dev_title:'Makes a copy in Dev storage (D:). The file in the external folder is not touched. It is erased if you change that storage\'s size.',
+ copying_to_internal:'Copying to internal',copying_to_developer:'Copying to D:',copied_internal:'Copied to internal storage.',copied_developer:'Copied to Dev storage (D:).',
+ move_failed:'It could not be moved; the content stays where it was.',destination:'Dev storage (D:) is not available. Set it up in Dev Home → Manage dev storage.',
+ missing:'The copy is no longer on the console (Dev storage is erased when its size changes). Delete it and upload it again.',
+ where_internal:'Internal storage',where_developer:'Dev storage (D:)',
+ where_internal_hint:'Kept in the app\'s space · <b>{free}</b> free.',where_developer_hint:'Kept on D: · <b>{free}</b> free. It is erased if you change the Dev storage size.'};
 for(const [id,key]of [['library-title','title'],['library-intro','intro'],['library-empty','empty'],['game-back','back'],['upload-back','back'],['game-warning','warning'],
- ['kind-update','update'],['kind-dlc','dlc'],['content-send','send'],['content-pick','pick_update']])$(id).textContent=libraryWords[key];
+ ['kind-update','update'],['kind-dlc','dlc'],['content-send','send'],['content-pick','pick_update'],
+ ['content-where-internal-label','where_internal'],['content-where-developer-label','where_developer']])$(id).textContent=libraryWords[key];
 for(const [id,key]of [['content-drop','files-drop'],['content-pause','pause'],['content-discard','discard']])if(words[key])$(id).textContent=words[key];
 const libraryReason=error=>libraryWords[error.message]||words[error.message]||libraryWords.failed;
 // A game's save: downloaded as a .zip, loaded from an archive the player made anywhere. The file
@@ -607,9 +676,9 @@ async function checkSave(file){
  const seven=b[0]===0x37&&b[1]===0x7A&&b[2]===0xBC&&b[3]===0xAF&&b[4]===0x27&&b[5]===0x1C;
  return zip||rar||seven?'':'not_archive';
 }
-let games=[],revision=-1,libraryAt=0,gameId='',kind='update',contents=null,armed='',armedTimer=0,removalSerial=0,lastContent='';
+let games=[],revision=-1,libraryAt=0,gameId='',kind='update',contents=null,armed='',armedTimer=0,removalSerial=0,lastContent='',contentWhere='internal';
 const covers=new Map(),gone=new Set();
-const contentTarget=()=>({key:'content',base:'/api/v1/content/uploads',tag:kind+':'+gameId,metadata:{kind,application:gameId},rate:'content-rate',eta:'content-eta'});
+const contentTarget=()=>({key:'content',base:'/api/v1/content/uploads',tag:kind+':'+gameId,metadata:kind==='save'?{kind,application:gameId}:{kind,application:gameId,destination:contentWhere},rate:'content-rate',eta:'content-eta'});
 function node(tag,className,text){const n=document.createElement(tag);if(className)n.className=className;if(text)n.textContent=text;return n;}
 // Covers come with the session header, so they are fetched once into blob URLs.
 async function cover(id,art){
@@ -658,6 +727,7 @@ function chooseKind(next){
  kind=next;armed='';const save=kind==='save';
  for(const k of ['update','dlc','save'])$('kind-'+k).ariaSelected=String(k===kind);
  $('items').hidden=save;$('content-zone').hidden=save;$('content-send').hidden=save;$('save-pane').hidden=!save;
+ if(save)$('content-where').hidden=$('content-where-hint').hidden=true;
  if(!save)$('content-pick').textContent=libraryWords['pick_'+kind];else saveTree();
  renderItems();
 }
@@ -671,34 +741,106 @@ function arm(key){
  if(armed===key){armed='';clearTimeout(armedTimer);return true;}
  armed=key;clearTimeout(armedTimer);armedTimer=setTimeout(()=>{armed='';renderItems();renderAmiiboItems();render();},6000);renderItems();renderAmiiboItems();render();return false;
 }
-async function remove(path,key){
+async function remove(path,key,unlink){
  if(!arm(key))return;
- try{const data=await(await api('/api/v1/library/'+path,{method:'DELETE'})).json();removalSerial=data.removal.serial;$('message').textContent='';await refresh();}
+ try{const data=await(await api('/api/v1/library/'+path,{method:'DELETE'})).json();removalSerial=data.removal.serial;if(unlink)unlinks.add(removalSerial);$('message').textContent='';await refresh();}
+ catch(error){$('message').textContent=libraryReason(error);}
+ renderItems();
+}
+// Where the console keeps each copy: its own storage, Dev storage on D:, or the folder it was read from.
+const icons={
+ internal:'<svg class="ico" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9z"/></svg>',
+ developer:'<svg class="ico" viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13 7.5 5h9L19 13M7 16.5h.01"/></svg>',
+ external:'<svg class="ico" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+ move:'<svg class="ico" viewBox="0 0 24 24"><path d="M7 7h11l-3-3M17 17H6l3 3"/></svg>',
+ copy:'<svg class="ico" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg>'};
+function iconNode(tag,className,icon,text){const n=node(tag,className);n.innerHTML=icons[icon];n.append(node('span','',text));return n;}
+function locationChip(item){
+ if(!item.internal)return iconNode('i','loc ext','external',libraryWords.external_item);
+ return item.developer?iconNode('i','loc dev','developer',libraryWords.loc_developer):iconNode('i','loc','internal',libraryWords.loc_internal);
+}
+// The move the console is running for this row, asked from any browser.
+function movingItem(id){const r=state.removal||{};return r.content===id&&!!r.destination&&(r.phase==='pending'||r.phase==='running')?r:null;}
+// Content in an external folder is copied, never moved: remember which jobs were copies.
+const copies=new Set(),unlinks=new Set();
+// What the console needs free before copying: the size plus the margin it keeps (the D: figure
+// already leaves out the reserve for app updates).
+function missingRoom(item,to){
+ const c=state.content||{},free=to==='developer'?c.developer_free_bytes:c.free_bytes;
+ if(typeof free!=='number')return 0; // Unknown yet: the console still checks before copying.
+ const need=(item.bytes||0)+(to==='developer'?0:16*1048576);
+ return need>free?need-free:0;
+}
+async function move(item,to){
+ if(libraryBusy())return;
+ $('message').textContent='';$('library-note').textContent='';
+ try{const data=await(await api('/api/v1/library/'+gameId+'/content/'+item.id+'/'+to,{method:'POST'})).json();removalSerial=data.removal.serial;if(!item.internal)copies.add(removalSerial);await refresh();}
  catch(error){$('message').textContent=libraryReason(error);}
  renderItems();
 }
 function renderItems(){
  if(!gameId||kind==='save')return;
- const list=(contents||[]).filter(c=>c.kind===kind),busy=libraryBusy();
+ const list=(contents||[]).filter(c=>c.kind===kind),busy=libraryBusy(),dev=!!(state.content||{}).developer_available;
  $('items').replaceChildren(...(list.length?list.map(item=>{
-  const row=node('li'),text=node('span'),button=node('button','danger',armed===item.id?libraryWords.confirm:libraryWords.remove);
-  text.append(node('b','',item.name||libraryWords[kind]),node('small','',[item.version,size(item.bytes||0),item.internal?'':libraryWords.external_item].filter(Boolean).join(' · ')));
-  button.disabled=busy;button.addEventListener('click',()=>remove(gameId+'/content/'+item.id,item.id));
-  row.append(text,button);return row;
+  const row=node('li'),text=node('span'),meta=node('div','meta');
+  meta.append(locationChip(item),node('small','',[item.version,size(item.bytes||0)].filter(Boolean).join(' · ')));
+  text.append(node('b','',item.name||libraryWords[kind]),meta);
+  const moving=movingItem(item.id);
+  if(moving){
+   row.className='busy-row';
+   const box=node('div','moving'),label=node('em','',libraryWords[(item.internal?'moving_to_':'copying_to_')+moving.destination]),bar=node('progress');
+   label.id='move-label';label.dataset.verb=item.internal?'moving_to_':'copying_to_';bar.id='move-bar';bar.max=1;bar.value=0;box.append(label,bar);row.append(text,box);return row;
+  }
+  // An external item only leaves the list: its file stays in the folder.
+  const actions=node('div','row-actions'),remover=node('button','danger',armed===item.id?libraryWords.confirm:libraryWords[item.internal?'remove':'unlink']);
+  if(!item.internal)remover.title=libraryWords.unlink_title;
+  // The console's own copy moves between volumes; one read from an external folder is copied
+  // into either of them and the folder is left alone.
+  const targets=item.internal?(item.developer||dev?[item.developer?'internal':'developer']:[]):(dev?['internal','developer']:['internal']);
+  for(const to of targets){
+   const words=item.internal?['to_'+to,to==='developer'?'move_dev_title':'move_internal_title']:['copy_'+to,to==='developer'?'copy_dev_title':'copy_internal_title'];
+   // Checked before asking: a copy that cannot fit is never started.
+   const missing=missingRoom(item,to);
+   const button=iconNode('button','move'+(to==='developer'?' dev':''),item.internal?'move':'copy',libraryWords[words[0]]+(missing?' · '+libraryWords.no_room:''));
+   button.title=missing?libraryWords.no_room_title.replace('{need}',size(missing)):libraryWords[words[1]];
+   button.disabled=busy||missing>0;button.addEventListener('click',()=>move(item,to));actions.append(button);
+  }
+  remover.disabled=busy;remover.addEventListener('click',()=>remove(gameId+'/content/'+item.id,item.id,!item.internal));
+  actions.append(remover);row.append(text,actions);return row;
  }):[node('li','empty',contents?libraryWords['none_'+kind]:'…')]));
+ renderMove();
 }
-let lastBusy=false;
+// The bytes copied so far, reported by the console like an install.
+function renderMove(){
+ const bar=$('move-bar');if(!bar)return;
+ const install=state.install||{},r=state.removal||{};
+ bar.value=install.total?Math.min(1,install.done/install.total):0;
+ const label=$('move-label');label.textContent=libraryWords[(label.dataset.verb||'moving_to_')+r.destination]+(install.total?' · '+percent(install.done||0,install.total):'');
+}
+let lastBusy=false,lastMove='',lastRoom='';
 function renderLibrary(){
  const on=!!session&&!!state.library;
  $('library').hidden=!on||pane!=='library';if($('library').hidden)return;
  const game=gameId&&games.find(g=>g.id===gameId);
  $('library-list').hidden=!!game;$('game').hidden=!game;
  const r=state.removal||{};
- if(r.phase==='pending'||r.phase==='running')$('library-note').textContent=libraryWords.removing;
+ if(r.phase==='pending'||r.phase==='running')$('library-note').textContent=r.destination?libraryWords.moving:libraryWords.removing;
  if(!game)return;
  const busy=libraryBusy(),content=state.content||{},s=content.phase==='complete'&&!contentRunning?{}:content;
  const install=state.install||{},installing=s.phase==='validating';
- if(busy!==lastBusy){lastBusy=busy;renderItems();}
+ const moveKey=(r.phase==='pending'||r.phase==='running')&&r.destination?r.content:'';
+ // Free space changes as files arrive: redraw when a copy starts or stops fitting.
+ const room=(contents||[]).map(i=>(missingRoom(i,'internal')?1:0)+''+(missingRoom(i,'developer')?1:0)).join();
+ if(busy!==lastBusy||moveKey!==lastMove||room!==lastRoom){lastBusy=busy;lastMove=moveKey;lastRoom=room;renderItems();}else renderMove();
+ // Updates and DLC choose their storage like games; a pending file keeps the one it started with.
+ const pendingContent=!!content.id&&content.phase!=='complete'&&(content.tag||'')!=='save:'+gameId,dev=!!content.developer_available;
+ if(pendingContent)contentWhere=content.destination==='developer'?'developer':'internal';else if(!dev)contentWhere='internal';
+ const showWhere=kind!=='save'&&(dev||contentWhere==='developer');
+ $('content-where').hidden=$('content-where-hint').hidden=!showWhere;
+ for(const id of ['internal','developer']){const b=$('content-where-'+id);b.ariaSelected=String(contentWhere===id);b.disabled=contentRunning||pendingContent;}
+ const free=((contentWhere==='developer'?content.developer_free_bytes:content.free_bytes)||0)/1073741824;
+ $('content-where-hint').className=contentWhere==='developer'?'dev':'';
+ $('content-where-hint').innerHTML=libraryWords['where_'+contentWhere+'_hint'].replace('{free}',free.toFixed(1)+' GiB');
  $('game-remove').hidden=!game.removable;$('game-remove').disabled=busy;
  $('game-remove').textContent=armed==='game'?libraryWords.confirm:libraryWords.remove_game;
  $('game-warning').textContent=game.removable?libraryWords.warning:libraryWords.external;
@@ -719,9 +861,14 @@ function followLibrary(){
  const r=state.removal||{},s=state.content||{};
  if(removalSerial&&r.serial===removalSerial&&(r.phase==='complete'||r.phase==='failed')){
   removalSerial=0;
-  if(r.phase==='failed'){$('library-note').textContent='';$('message').textContent=libraryReason(Error(r.error));}
+  if(r.phase==='failed'){
+   $('library-note').textContent='';
+   // A move keeps its own words: "content" there means it could not move, not that it could not be deleted.
+   $('message').textContent=r.destination&&!['destination','missing','space','interrupted'].includes(r.error)?libraryWords.move_failed:libraryReason(Error(r.error));
+  }
+  else if(r.destination)$('library-note').textContent=libraryWords[(copies.has(r.serial)?'copied_':'moved_')+r.destination];
   else{
-   $('library-note').textContent=r.content?libraryWords.removed:libraryWords.removed_game;
+   $('library-note').textContent=r.content?libraryWords[unlinks.has(r.serial)?'unlinked':'removed']:libraryWords.removed_game;
    if(!r.content){gone.add(r.game);if(gameId===r.game)gameId='';renderGames();}
   }
   loadContents();render();
@@ -883,6 +1030,7 @@ $('save-send').addEventListener('click',async()=>{
 });
 $('game-remove').addEventListener('click',()=>remove(gameId,'game'));
 $('content-files').addEventListener('change',()=>picked('content-picked','content-files'));
+for(const id of ['internal','developer'])$('content-where-'+id).addEventListener('click',()=>{if(!contentRunning){contentWhere=id;render();}});
 $('content-send').addEventListener('click',async()=>{
  if(libraryBusy()||!gameId)return;const files=Array.from($('content-files').files);if(!files.length){$('message').textContent=words.choose;return;}
  contentRunning=true;stopped=false;rates=[];$('message').textContent='';$('library-note').textContent='';const target=contentTarget();render();
@@ -1114,4 +1262,30 @@ $('update-skip').addEventListener('click',()=>{updateDismissed=true;renderUpdate
 $('update-banner-open').addEventListener('click',()=>{updateDismissed=false;renderUpdate();scrollTo(0,0);});
 $('update-reconnect').addEventListener('click',()=>location.reload());
 </script></body></html>)HTML";
+
+/// Stands in the page for its own version until it is served.
+inline constexpr std::string_view PageVersionMark = "@@PAGE_VERSION@@";
+/// A hash of the page text: it changes only when the page does, not with every app version.
+inline const std::string& PageVersion() {
+    static const std::string version = [] {
+        std::uint64_t hash = 14695981039346656037ULL; // FNV-1a
+        for (const unsigned char c : Page) { hash ^= c; hash *= 1099511628211ULL; }
+        constexpr char hex[] = "0123456789abcdef";
+        std::string text(16, '0');
+        for (int i = 15; i >= 0; --i, hash >>= 4) text[static_cast<std::size_t>(i)] = hex[hash & 15];
+        return text;
+    }();
+    return version;
+}
+/// The page as served: it carries its version so a tab left open on an older one, still
+/// polling a newer console, can notice and reload itself.
+inline const std::string& ServedPage() {
+    static const std::string page = [] {
+        std::string text{Page};
+        if (const auto at = text.find(PageVersionMark); at != std::string::npos)
+            text.replace(at, PageVersionMark.size(), PageVersion());
+        return text;
+    }();
+    return page;
+}
 }

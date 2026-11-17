@@ -4,6 +4,7 @@
 #include "jadyx/storage/log_export.h"
 #include "jadyx/storage/network_portal_logo.h"
 #include "jadyx/storage/network_portal_page.h"
+#include "jadyx/storage/storage_location.h"
 
 // Match the httplib configuration used by the rest of common (including SSL feature macros).
 #include "common/httplib.h"
@@ -248,7 +249,7 @@ Json UploadJson(const UploadSnapshot& info) {
 }
 Json RemovalJson(const PortalRemoval& info) {
     return {{"serial", info.serial}, {"game", info.application ? Hex16(info.application) : ""},
-        {"content", info.content}, {"phase", info.phase}, {"error", info.error}};
+        {"content", info.content}, {"destination", info.destination}, {"phase", info.phase}, {"error", info.error}};
 }
 
 Json SystemJson(const SystemUploadStatus& info){
@@ -559,7 +560,8 @@ struct NetworkPortal::Impl {
             return httplib::Server::HandlerResponse::Unhandled;
         });
         server->Get("/", [](const auto&, auto& response) {
-            response.set_content(PortalWeb::Page.data(), PortalWeb::Page.size(), "text/html; charset=utf-8");
+            const auto& page = PortalWeb::ServedPage();
+            response.set_content(page.data(), page.size(), "text/html; charset=utf-8");
         });
         server->Get("/logo.png", [](const auto&, auto& response) {
             response.set_content(reinterpret_cast<const char*>(PortalWeb::Logo), PortalWeb::LogoSize, "image/png");
@@ -590,7 +592,7 @@ struct NetworkPortal::Impl {
             Reply(response, 200, {{"session", session}});
         });
         server->Get("/api/v1/status", [this](const auto&, auto& response) {
-            Reply(response, 200, {{"running", true}, {"stage", upload ? "nsp" : "connection-test"},
+            Reply(response, 200, {{"running", true}, {"page", PortalWeb::PageVersion()}, {"stage", upload ? "nsp" : "connection-test"},
                 {"uploads", bool(upload)}, {"transfer", upload ? UploadJson(upload->Snapshot()) : Json::object()},
                 {"library", bool(library.games)}, {"amiibo", bool(amiibo.list)},
                 {"content", content ? UploadJson(content->Snapshot()) : Json::object()},
@@ -807,7 +809,8 @@ struct NetworkPortal::Impl {
                 auto list = Json::array();
                 for (const auto& item : library.contents(id))
                     list.push_back({{"id", item.id}, {"kind", item.kind}, {"name", item.name}, {"version", item.version},
-                        {"title", Hex16(item.title)}, {"bytes", item.bytes}, {"enabled", item.enabled}, {"internal", item.internal}});
+                        {"title", Hex16(item.title)}, {"bytes", item.bytes}, {"enabled", item.enabled}, {"internal", item.internal},
+                        {"developer", item.developer}});
                 Reply(response, 200, {{"contents", std::move(list)}});
             } catch (...) { Reply(response, 500, {{"error", "library"}}); }
         });
@@ -842,6 +845,11 @@ struct NetworkPortal::Impl {
         });
         server->Delete("/api/v1/library/([0-9a-f]{16})/content/([0-9a-f]{64})", [this](const auto& request, auto& response) {
             RequestRemoval(request.matches[1].str(), request.matches[2].str(), response);
+        });
+        // Moves the console's copy of one update/DLC between internal storage and D:.
+        server->Post("/api/v1/library/([0-9a-f]{16})/content/([0-9a-f]{64})/(internal|developer)",
+                     [this](const auto& request, auto& response) {
+            RequestRemoval(request.matches[1].str(), request.matches[2].str(), response, request.matches[3].str());
         });
     }
 
@@ -887,10 +895,15 @@ struct NetworkPortal::Impl {
         });
     }
 
-    /// Queues one deletion. Like a local operation, it closes both uploads until it has run.
-    void RequestRemoval(const std::string& game, std::string id, httplib::Response& response) {
+    /// Queues one deletion, or a move with `destination`. Like a local operation, it closes both
+    /// uploads until it has run.
+    void RequestRemoval(const std::string& game, std::string id, httplib::Response& response,
+                        std::string destination = {}) {
         std::uint64_t application{};
         if (!ParseHex16(game, application) || !KnownGame(application)) { Reply(response, 404, {{"error", "game"}}); return; }
+        if (destination == "developer" && !DeveloperStorageAvailable()) {
+            Reply(response, 409, {{"error", "destination"}}); return;
+        }
         std::lock_guard admission_lock{admission};
         if (!imports_available || RemovalActive() || (system && system->Snapshot().busy) || !BlockUploads()) {
             Reply(response, 409, {{"error", "busy"}}); return;
@@ -898,7 +911,7 @@ struct NetworkPortal::Impl {
         if (system) system->SetAvailable(false);
         std::lock_guard lock{mutex};
         status.removal = {.serial = status.removal.serial + 1, .application = application,
-                          .content = std::move(id), .phase = "pending"};
+                          .content = std::move(id), .destination = std::move(destination), .phase = "pending"};
         Reply(response, 202, {{"removal", RemovalJson(status.removal)}});
     }
 
@@ -959,8 +972,8 @@ struct NetworkPortal::Impl {
                 else if (key == "fingerprint" && fingerprint.empty()) fingerprint=std::move(decoded);
                 else if (tagged && key == "kind" && kind.empty()) kind=std::move(decoded);
                 else if (tagged && key == "application" && application.empty()) application=std::move(decoded);
-                // A game may go to Dev Mode's storage on D: instead of the internal one.
-                else if (games && key == "destination" && destination.empty()) destination=std::move(decoded);
+                // A game, update or DLC may go to Dev Mode's storage on D: instead of the internal one.
+                else if ((games || tagged) && key == "destination" && destination.empty()) destination=std::move(decoded);
                 else { valid=false; break; }
                 if (end == std::string::npos) break;
                 begin=end+1;
@@ -979,6 +992,8 @@ struct NetworkPortal::Impl {
                     }
                     if (length > SaveUploadLimit) { Reply(response,413,{{"error","save_limit"}}); return; }
                 }
+                // A save is restored into the profile's storage, never kept on D:.
+                if (kind == "save" && destination == "developer") valid=false;
                 tag=kind+":"+application;
             }
             if (valid && !destination.empty() && destination != "internal" && destination != "developer") valid=false;
@@ -1097,7 +1112,7 @@ NetworkPortal::NetworkPortal(std::filesystem::path games,SystemImportBackend bac
             impl->system_supported=bool(backend.inspect);
             impl->system=std::make_unique<SystemUpload>(games.parent_path(),std::move(backend));
             const auto transfers=games.parent_path()/"jadyx/transfers/content";
-            impl->content=std::make_unique<NspUpload>(games,false,transfers,true);
+            impl->content=std::make_unique<NspUpload>(games,false,transfers,true,true);
             impl->upload=std::make_unique<NspUpload>(std::move(games),false,std::filesystem::path{},false,true);
         }
         catch (...) { impl->storage_failed=true; }
@@ -1249,9 +1264,10 @@ std::string NetworkPortal::FinalizeGame(const GameValidator& validate) {
 }
 std::string NetworkPortal::FinalizeContent(const ContentValidator& validate) {
     if (!impl->content) return "unavailable";
-    const auto tag=impl->content->Snapshot().tag;
+    const auto snapshot=impl->content->Snapshot();
+    const bool developer=snapshot.destination == "developer";
     const auto error=impl->content->Finalize([&](const std::filesystem::path& path, std::stop_token stop) {
-        return validate(path, tag, stop);
+        return validate(path, snapshot.tag, developer, stop);
     });
     if (error == "interrupted" && Status().running) impl->content->Resume();
     return error;

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <filesystem>
 #include <string>
+#include "jadyx/storage/storage_location.h"
 
 // Included by the native TCP harness. The library view and the jobs it runs are synthetic: this
 // covers the portal's routes, admission and job lifecycle, not the console's content store.
@@ -56,12 +57,13 @@ void LibraryTests(int port) {
 
     // A content upload names its kind and game; both are checked before anything is created.
     const auto create=[&](const std::string& kind,const std::string& target,const std::string& file="patch.nsp",
-                          const std::string& length="4") {
+                          const std::string& length="4",const std::string& where="") {
         auto request=headers;
         request.emplace("Upload-Length",length);
         request.emplace("Upload-Metadata","filename "+httplib::detail::base64_encode(file)+",fingerprint "+
             httplib::detail::base64_encode(std::string(64,'a'))+",kind "+httplib::detail::base64_encode(kind)+
-            ",application "+httplib::detail::base64_encode(target));
+            ",application "+httplib::detail::base64_encode(target)+
+            (where.empty() ? std::string{} : ",destination "+httplib::detail::base64_encode(where)));
         return client.Post("/api/v1/content/uploads",request);
     };
     Check(Status(create("firmware",game))==400,"content kind is update or dlc");
@@ -75,9 +77,10 @@ void LibraryTests(int port) {
     Check(Status(client.Patch(url,patch,"data","application/offset+octet-stream"))==204,"content bytes");
     Check(Status(client.Post(url+"/finish",headers))==204,"content ready");
     std::string seen;
-    Check(portal.FinalizeContent([&](const fs::path& path,const std::string& tag,std::stop_token) {
-        seen=tag; return fs::file_size(path)==4 ? std::string{} : std::string{"disk"};
-    }).empty() && seen=="update:"+game,"the installer receives the validated tag");
+    bool to_developer=true;
+    Check(portal.FinalizeContent([&](const fs::path& path,const std::string& tag,bool developer,std::stop_token) {
+        seen=tag; to_developer=developer; return fs::file_size(path)==4 ? std::string{} : std::string{"disk"};
+    }).empty() && seen=="update:"+game && !to_developer,"the installer receives the validated tag, internal by default");
     Check(portal.Status().content.phase=="complete","content consumed");
 
     // A save is a game's archive: only .zip/.7z/.rar, never a package, and not a huge file.
@@ -85,6 +88,8 @@ void LibraryTests(int port) {
         return Status(reply)==code && Json::parse(reply->body).at("error")==error;
     };
     Check(refused(create("save",game),400,"save_file"),"a save is not a package");
+    Check(Status(create("save",game,"save.zip","4","developer"))==400,"a save never goes to D:");
+    Check(Status(create("dlc",game,"patch.nsp","4","usb"))==400,"content goes to internal or developer only");
     Check(refused(create("save",game,"save.zip",std::to_string((1ull<<30)+1)),413,"save_limit"),"a save is small");
     Check(refused(create("save","0100000000020000","save.zip"),404,"game"),"a save targets a known game");
     Check(Status(create("update",game,"save.zip"))==400,"an update is not an archive");
@@ -93,7 +98,7 @@ void LibraryTests(int port) {
     const auto save_url=save_created->get_header_value("Location");
     Check(Status(client.Patch(save_url,patch,"PK","application/offset+octet-stream"))==204,"save bytes");
     Check(Status(client.Post(save_url+"/finish",headers))==204,"save ready");
-    Check(portal.FinalizeContent([&](const fs::path&,const std::string& tag,std::stop_token) {
+    Check(portal.FinalizeContent([&](const fs::path&,const std::string& tag,bool,std::stop_token) {
         seen=tag; return std::string{"wrong_game:0100FFFF00000000"};
     })=="wrong_game:0100FFFF00000000" && seen=="save:"+game,"the save loader receives the save tag");
     Check(portal.Status().content.error=="wrong_game:0100FFFF00000000","the save's refusal reaches the page");
@@ -130,8 +135,27 @@ void LibraryTests(int port) {
     status=Json::parse(client.Get("/api/v1/status",headers)->body);
     Check(status.at("removal").at("phase")=="failed" && status.at("removal").at("error")=="content" &&
           status.at("removal").at("serial")==removal.at("serial").get<std::uint64_t>()+1,"failure is visible to the page");
+
+    // A move is the same job with a destination: the runner and the page both see where it goes.
+    const auto content_url="/api/v1/library/"+game+"/content/"+item;
+    Check(Status(client.Post(content_url+"/internal"))==401,"moves require the session");
+    Check(Status(client.Post(content_url+"/usb",headers))==404,"a move goes to internal or developer only");
+    const auto move=client.Post(content_url+"/internal",headers);
+    Check(Status(move)==202 && Json::parse(move->body).at("removal").at("destination")=="internal","move queued");
+    Check(Status(create("update",game))==409,"uploads closed during a move");
+    Check(portal.RunRemoval([&](const Jadyx::PortalRemoval& job) { ran=job; return std::string{}; }).empty(),"move runs");
+    Check(ran.content==item && ran.destination=="internal","runner receives the move's destination");
+    status=Json::parse(client.Get("/api/v1/status",headers)->body);
+    Check(status.at("removal").at("phase")=="complete" && status.at("removal").at("destination")=="internal","move visible to the page");
+    const auto to_dev=client.Post(content_url+"/developer",headers);
+    if (Jadyx::DeveloperStorageAvailable()) {
+        Check(Status(to_dev)==202,"move to D: queued");
+        Check(portal.RunRemoval([](const auto&) { return std::string{"space"}; })=="space","a failed move reports its error");
+    } else {
+        Check(refused(to_dev,409,"destination"),"no move to D: without Dev storage");
+    }
     portal.Stop();
     }
     std::error_code ignored;fs::remove_all(fixture,ignored);
-    std::puts("PASS: library listing/cover/content views, update/save upload kind+game admission, save download, queued deletions and upload exclusion (synthetic view)");
+    std::puts("PASS: library listing/cover/content views, update/save upload kind+game admission, save download, queued deletions and moves with their destination, upload exclusion (synthetic view)");
 }

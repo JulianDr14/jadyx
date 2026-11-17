@@ -153,17 +153,20 @@ void LibrarySession::StartStorageJob(StorageJob next, const PortalStatus& state)
     storage_job=next;
     import_progress.completed=0; import_progress.total=0;
     portal_library.Progress(0, 0);
-    if (storage_job == StorageJob::Removal || storage_job == StorageJob::PortalRemoval) notice = Tr(T::GameRemoving);
+    if (storage_job == StorageJob::PortalRemoval && !state.removal.destination.empty()) notice = Tr(T::ContentMoving);
+    else if (storage_job == StorageJob::Removal || storage_job == StorageJob::PortalRemoval) notice = Tr(T::GameRemoving);
     metadata_worker.request_stop();
     // An update/DLC from the portal goes through the content manager's import.
-    const auto install=[&](const std::filesystem::path& path, const std::string& tag, std::stop_token stop) {
-        return portal_library.Install(path, tag, stop, [&](std::uint64_t done, std::uint64_t total) {
-            import_progress.completed=static_cast<unsigned>(done >> 20);
-            import_progress.total=static_cast<unsigned>(total >> 20);
-        });
+    const auto report=[&](std::uint64_t done, std::uint64_t total) {
+        import_progress.completed=static_cast<unsigned>(done >> 20);
+        import_progress.total=static_cast<unsigned>(total >> 20);
+    };
+    const auto install=[&, report](const std::filesystem::path& path, const std::string& tag, bool developer,
+                                   std::stop_token stop) {
+        return portal_library.Install(path, tag, developer, stop, report);
     };
     std::packaged_task<std::string(std::stop_token)> task{
-        [&, job=storage_job, install, removal=removal_request.value_or(GameFiles{}),
+        [&, job=storage_job, install, report, removal=removal_request.value_or(GameFiles{}),
          old_metadata=std::move(metadata_worker)](std::stop_token stop) mutable {
             std::stop_callback cancel{stop,[&] { network_portal.CancelTransfer(); }};
             if (old_metadata.joinable()) old_metadata.join();
@@ -173,7 +176,8 @@ void LibrarySession::StartStorageJob(StorageJob next, const PortalStatus& state)
             case StorageJob::Removal: return RemoveGame(root, removal);
             case StorageJob::PortalSystem: return network_portal.RunSystemImport(stop);
             case StorageJob::PortalRemoval:
-                return network_portal.RunRemoval([&](const PortalRemoval& r) { return portal_library.Remove(r); });
+                // A move copies the update/DLC like an install and shows the same progress.
+                return network_portal.RunRemoval([&](const PortalRemoval& r) { return portal_library.Remove(r, stop, report); });
             case StorageJob::PortalContent: return network_portal.FinalizeContent(install);
             default: return network_portal.FinalizeGame(ValidateUploadedGame);
             }
@@ -250,10 +254,12 @@ void LibrarySession::PollImport() {
             try {
                 const auto error = import_future.get();
                 if (removal) {
-                    const bool content = storage_job == StorageJob::PortalRemoval &&
-                        !network_portal.Status().removal.content.empty();
-                    after_scan = Tr(!error.empty() ? (error == "external" ? T::GameRemoveExternal : T::GameRemoveFailed) :
-                                    content ? T::ContentRemoved :
+                    const auto asked = network_portal.Status().removal;
+                    const bool content = storage_job == StorageJob::PortalRemoval && !asked.content.empty();
+                    const bool move = content && !asked.destination.empty();
+                    after_scan = Tr(!error.empty() ? (move ? T::ContentMoveFailed :
+                                                      error == "external" ? T::GameRemoveExternal : T::GameRemoveFailed) :
+                                    move ? T::ContentMoved : content ? T::ContentRemoved :
                                     storage_job == StorageJob::Removal && removed_copy ? T::GameCopyRemoved : T::GameRemoved);
                 } else {
                     configuration.notice = error.empty() ? std::wstring{Tr(storage_job==StorageJob::PortalSystem&&network_portal.Status().system.phase!="complete"?T::SystemReviewReady:T::ImportDone)} :
