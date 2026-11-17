@@ -19,6 +19,10 @@
 #include "core/hle/service/ssl/ssl_backend.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/sockets.h"
+#include "core/online/nextendo/address_book.h"
+#include "core/online/nextendo/config.h"
+#include "core/online/nextendo/host_rules.h"
+#include "core/online/nextendo/trust_store.h"
 
 namespace Service::SSL {
 
@@ -155,8 +159,61 @@ public:
     }
 
 private:
+    // Nextendo on: SNI from the last name resolved to the peer IP, ALPN filtered per host and the
+    // chain checked against the pinned roots. Nextendo off: nothing here runs.
+    void PrepareNextendoHandshake() {
+        namespace Nx = Core::Online::Nextendo;
+        const auto config = Nx::GlobalConfig().Snapshot();
+        if (!config->enabled || nextendo_prepared) {
+            return;
+        }
+        nextendo_prepared = true;
+        if (host_name.empty()) {
+            const auto [peer, err] = socket->GetPeerName();
+            if (err == Network::Errno::SUCCESS) {
+                const auto ip = Network::IPv4AddressToString(peer.ip);
+                if (auto host = Nx::GlobalAddressBook().Lookup(ip)) {
+                    LOG_INFO(Service_SSL, "[Nextendo] SNI {} for {}", *host, ip);
+                    host_name = *host;
+                    backend->SetHostName(host_name.c_str());
+                }
+            }
+        }
+        if (!next_alpn_proto.empty()) {
+            std::vector<std::string> requested;
+            for (std::size_t i = 0; i < next_alpn_proto.size();) {
+                const std::size_t length = next_alpn_proto[i++];
+                if (length == 0 || i + length > next_alpn_proto.size()) {
+                    break;
+                }
+                requested.emplace_back(reinterpret_cast<const char*>(&next_alpn_proto[i]),
+                                       length);
+                i += length;
+            }
+            std::vector<u8> wire;
+            for (const auto& name : Nx::FilterAlpn(host_name, requested)) {
+                wire.push_back(static_cast<u8>(name.size()));
+                wire.insert(wire.end(), name.begin(), name.end());
+            }
+            if (!wire.empty()) {
+                backend->SetAlpnProtocols(wire);
+            }
+        }
+        switch (config->tls_mode) {
+        case Nx::TlsVerifyMode::Off:
+            break;
+        case Nx::TlsVerifyMode::LogOnly:
+            backend->SetPinnedRootsMode(1);
+            break;
+        case Nx::TlsVerifyMode::Enforce:
+            backend->SetPinnedRootsMode(2);
+            break;
+        }
+    }
+
     Result DoHandshakeImpl() {
         ASSERT_OR_EXECUTE(!did_handshake && socket, { return ResultNoSocket; });
+        PrepareNextendoHandshake();
         Result res = backend->DoHandshake();
         did_handshake = res.IsSuccess();
         return res;
@@ -210,7 +267,7 @@ private:
                 return ResultInvalidSocket;
             }
             socket = std::move(*sock);
-            backend->SetSocket(std::move(socket));
+            backend->SetSocket(socket); // keep our copy: the handshake and IO mode need it
             return ResultSuccess;
         }
         LOG_ERROR(Service_SSL, "Failed to duplicate socket with fd {}", in_fd);
@@ -221,6 +278,7 @@ private:
         auto const hostname = Common::StringFromBuffer(buf);
         LOG_DEBUG(Service_SSL, "called. hostname={}", hostname);
         ASSERT(!did_handshake);
+        host_name = hostname;
         return backend->SetHostName(hostname.c_str());
     }
 
@@ -422,15 +480,16 @@ private:
     }
 
     Result SetNextAlpnProto(InBuffer<BufferAttr_HipcMapAlias> data) {
-        auto const to_write = u32((std::min)(next_alpn_proto.size(), data.size()));
-        next_alpn_proto.assign(data.begin(), data.begin() + to_write);
+        // Kept as given (wire format); only offered to the server while Nextendo is on.
+        next_alpn_proto.assign(data.begin(), data.end());
         LOG_DEBUG(Service_SSL, "SetNextAlpnProto called, size={}", next_alpn_proto.size());
         R_SUCCEED();
     }
 
     Result GetNextAlpnProto(OutBuffer<BufferAttr_HipcMapAlias> data, Out<u32> to_write) {
-        *to_write = u32((std::min)(next_alpn_proto.size(), data.size()));
-        next_alpn_proto.assign(data.begin(), data.begin() + *to_write);
+        const auto selected = backend->GetSelectedAlpn();
+        *to_write = u32((std::min)(selected.size(), data.size()));
+        std::copy_n(selected.begin(), *to_write, data.begin());
         LOG_DEBUG(Service_SSL, "GetNextAlpnProto called, size={}", *to_write);
         R_SUCCEED();
     }
@@ -446,7 +505,9 @@ private:
     std::optional<int> fd_to_close;
     std::shared_ptr<Network::SocketBase> socket;
     std::vector<u8> next_alpn_proto;
+    std::string host_name;
     u32 verify_option = 0;
+    bool nextendo_prepared = false;
 
     bool do_not_close_socket = false;
     bool get_server_cert_chain = false;
