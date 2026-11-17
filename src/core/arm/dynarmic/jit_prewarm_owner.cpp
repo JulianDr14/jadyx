@@ -49,6 +49,16 @@ void ConfigureApplicationPrewarm(System& system, bool warm,
             JitPrewarm::application_catalog->priority.clear();
             LOG_WARNING(Core, "JIT profile {}: cross-core index unavailable: {}", layout.name, e.what());
         }
+        const auto overlap = JitPrewarm::application_catalog->MeasureOverlap();
+        if (overlap.records != 0) {
+            LOG_INFO(Core,
+                     "JIT profile {} cross-core overlap: {} blocks in the saved profiles ({} / {} / {} / {} per core), "
+                     "{} distinct, {} learned by two cores or more; one code cache for every core would compile "
+                     "{:.1f}% fewer blocks",
+                     layout.name, overlap.records, overlap.per_core[0], overlap.per_core[1], overlap.per_core[2],
+                     overlap.per_core[3], overlap.unique, overlap.on_two_or_more,
+                     100.0 * double(overlap.records - overlap.unique) / double(overlap.records));
+        }
         // Owners keep their own reference; nothing else may register into it now.
         JitPrewarm::application_catalog.reset();
     }
@@ -232,6 +242,23 @@ void Owner::Warm(const Progress& progress, std::size_t code_budget) {
 
 void Owner::Save() {
     auto& p = profile;
+    if (p.core < miss_counters.size()) {
+        const auto& counters = miss_counters[p.core];
+        const auto count = [&](Miss reason) {
+            return counters[static_cast<std::size_t>(reason)].load(std::memory_order_relaxed);
+        };
+        std::uint64_t compiled{};
+        for (const auto& counter : counters) compiled += counter.load(std::memory_order_relaxed);
+        const auto other_core = count(Miss::OtherCore);
+        // Only blocks inside the static image are classified; OtherCore needs the other cores'
+        // saved profiles, so a game's first session reads 0 here.
+        LOG_INFO(Core,
+                 "JIT session {} core {}: {} blocks compiled, {} already in another core's profile ({:.1f}%), "
+                 "{} fpcr variants, {} unlearned, {} outside the static image",
+                 p.layout->name, p.core, compiled, other_core,
+                 compiled != 0 ? 100.0 * double(other_core) / double(compiled) : 0.0,
+                 count(Miss::FpcrVariant), count(Miss::Unlearned), count(Miss::OutsideExecutable));
+    }
     if (p.observed.empty() && p.gameplay_observed.empty()) {
         return;
     }
