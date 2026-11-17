@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 
 #include "common/common_types.h"
 #include "common/fs/file.h"
@@ -24,6 +25,7 @@
 #include "core/hle/service/acc/acc.h"
 #include "core/hle/service/acc/async_context.h"
 #include "core/hle/service/acc/errors.h"
+#include "core/hle/service/acc/nextendo_acc.h"
 #include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/glue/glue_manager.h"
@@ -128,7 +130,7 @@ private:
 
     Result GetAccountId(Out<u64> out_account_id) {
         LOG_WARNING(Service_ACC, "(STUBBED) called");
-        *out_account_id = account_id.Hash();
+        *out_account_id = NextendoAcc::AccountId().value_or(account_id.Hash());
         R_SUCCEED();
     }
 
@@ -145,8 +147,10 @@ private:
     Result GetNetworkServiceLicenseCacheEx(Out<u32> out_license, Out<s64> out_expiration) {
         LOG_DEBUG(Service_ACC, "(STUBBED) called.");
 
-        *out_license = 0;
-        *out_expiration = 0;
+        // Nextendo signed in: an active online membership (license 1) that never runs out.
+        const bool licensed = NextendoAcc::Licensed();
+        *out_license = licensed ? 1 : 0;
+        *out_expiration = licensed ? std::numeric_limits<s64>::max() : 0;
 
         R_SUCCEED();
     }
@@ -510,6 +514,13 @@ protected:
     }
 
     void LoadIdTokenCache(HLERequestContext& ctx) {
+        if (const auto token = NextendoAcc::IdToken(system)) {
+            const u32 size = NextendoAcc::WriteIdToken(ctx, *token);
+            IPC::ResponseBuilder rb{ctx, 3};
+            rb.Push(ResultSuccess);
+            rb.Push(size);
+            return;
+        }
         LOG_WARNING(Service_ACC, "(STUBBED) called");
 
         std::vector<u8> token_data(0x100);
@@ -693,6 +704,13 @@ public:
     }
 
     void LoadIdTokenCache(HLERequestContext& ctx) {
+        if (const auto token = NextendoAcc::IdToken(system)) {
+            const u32 size = NextendoAcc::WriteIdToken(ctx, *token);
+            IPC::ResponseBuilder rb{ctx, 3};
+            rb.Push(ResultSuccess);
+            rb.Push(size);
+            return;
+        }
         LOG_WARNING(Service_ACC, "(STUBBED) called");
 
         IPC::ResponseBuilder rb{ctx, 3};
@@ -754,7 +772,11 @@ private:
 
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(ResultSuccess);
-        rb.PushRaw<u64>(profile_manager->GetLastOpenedUser().Hash());
+        rb.PushRaw<u64>(AccountIdForApplication());
+    }
+
+    u64 AccountIdForApplication() const {
+        return NextendoAcc::AccountId().value_or(profile_manager->GetLastOpenedUser().Hash());
     }
 
     void EnsureIdTokenCacheAsync(HLERequestContext& ctx) {
@@ -772,6 +794,13 @@ private:
     }
 
     void LoadIdTokenCache(HLERequestContext& ctx) {
+        if (const auto token = NextendoAcc::IdToken(system)) {
+            const u32 size = NextendoAcc::WriteIdToken(ctx, *token);
+            IPC::ResponseBuilder rb{ctx, 3};
+            rb.Push(ResultSuccess);
+            rb.Push(size);
+            return;
+        }
         LOG_WARNING(Service_ACC, "(STUBBED) called");
 
         std::vector<u8> token_data(0x100);
@@ -797,7 +826,7 @@ private:
 
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(ResultSuccess);
-        rb.PushRaw<u64>(profile_manager->GetLastOpenedUser().Hash());
+        rb.PushRaw<u64>(AccountIdForApplication());
     }
 
     void StoreOpenContext(HLERequestContext& ctx) {

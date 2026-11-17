@@ -409,6 +409,8 @@ add_library(core STATIC
     hle/service/acc/async_context.cpp
     hle/service/acc/async_context.h
     hle/service/acc/errors.h
+    hle/service/acc/nextendo_acc.cpp
+    hle/service/acc/nextendo_acc.h
     hle/service/acc/profile_manager.cpp
     hle/service/acc/profile_manager.h
     hle/service/am/am.cpp
