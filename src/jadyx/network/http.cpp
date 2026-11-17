@@ -601,6 +601,9 @@ ApiResponse Send(const ApiRequest& request, std::stop_token stop) {
         HttpRequestMessage message{request.method == "POST" ? HttpMethod::Post() : HttpMethod::Get(),
                                    Uri{winrt::to_hstring(request.url)}};
         message.Headers().Accept().TryParseAdd(L"application/json");
+        for (const auto& [name, value] : request.headers)
+            message.Headers().TryAppendWithoutValidation(winrt::to_hstring(name),
+                                                         winrt::to_hstring(value));
         if (!request.bearer.empty())
             message.Headers().Authorization(Headers::HttpCredentialsHeaderValue{
                 L"Bearer", winrt::to_hstring(request.bearer)});

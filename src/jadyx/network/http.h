@@ -16,6 +16,8 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace Jadyx::Http {
 
@@ -72,6 +74,7 @@ struct ApiRequest {
     std::string bearer;       // empty: no Authorization header
     std::string content_type; // with a body: "application/json" or form encoding
     std::string body;
+    std::vector<std::pair<std::string, std::string>> headers; // extra, e.g. a client id
     std::size_t max_bytes = 1u << 20;
 };
 
