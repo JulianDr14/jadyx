@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/thread_worker.h"
 #include "video_core/renderer_d3d12/d3d12_command_stream.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
@@ -150,6 +151,8 @@ public:
     /// Releases object and then runs retire after the same GPU tick completes. Used by placed
     /// resources to return their heap range only after the resource itself is no longer in use.
     void DeferRelease(ComPtr<IUnknown> object, std::function<void()>&& retire);
+    /// Drops an object that is already idle on the background reaper thread.
+    void DeferReleaseImmediate(ComPtr<IUnknown> object);
 
     /// Called right before each submission (e.g. to end open queries or flush barriers).
     void RegisterOnSubmit(std::function<void()>&& func) {
@@ -166,8 +169,9 @@ public:
         on_reset.clear();
     }
 
-    /// Frees retired allocators and released objects; called on every flush and frame.
-    void CollectGarbage();
+    /// Frees retired allocators and released objects; pass wait_reaper=true when memory must be
+    /// reclaimed synchronously before retrying a failed allocation or shutting down.
+    void CollectGarbage(bool wait_reaper = false);
 
     [[nodiscard]] auto RecorderStatistics() const noexcept { return recorder->ReadStatistics(); }
 
@@ -283,6 +287,8 @@ private:
     std::atomic<u64> current_tick{1};
     std::atomic<u64> submitted_tick{0};
     mutable std::atomic<u64> known_gpu_tick{0};
+    /// Last so queued COM destruction finishes before device/scheduler members are torn down.
+    Common::ThreadWorker release_worker{1, "D3D12Reaper", {}, Common::ThreadPlacement::Background};
 };
 
 } // namespace D3D12

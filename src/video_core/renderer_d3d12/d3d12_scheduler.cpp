@@ -190,8 +190,11 @@ Scheduler::~Scheduler() {
     // Before the list and allocators it records into are destroyed.
     stream.reset();
     recorder.reset();
-    std::scoped_lock lock{release_mutex};
-    pending_releases.clear();
+    {
+        std::scoped_lock lock{release_mutex};
+        pending_releases.clear();
+    }
+    release_worker.WaitForRequests();
 }
 
 void Scheduler::RecordSyncSite(char kind) {
@@ -359,7 +362,7 @@ void Scheduler::DrainForShutdown() noexcept {
 
 void Scheduler::Finish() {
     Wait(Flush());
-    CollectGarbage();
+    CollectGarbage(true);
 }
 
 void Scheduler::Wait(u64 tick) {
@@ -434,7 +437,13 @@ void Scheduler::DeferRelease(ComPtr<IUnknown> object, std::function<void()>&& re
     }
 }
 
-void Scheduler::CollectGarbage() {
+void Scheduler::DeferReleaseImmediate(ComPtr<IUnknown> object) {
+    if (object) {
+        release_worker.QueueWork([obj = std::move(object)]() mutable { obj.Reset(); });
+    }
+}
+
+void Scheduler::CollectGarbage(bool wait_reaper) {
     const u64 gpu_tick = KnownGpuTick();
     ReadTimestamps(gpu_tick);
     // Released outside the lock: destroying a resource can take a while, and a retire callback
@@ -447,11 +456,23 @@ void Scheduler::CollectGarbage() {
             pending_releases.pop_front();
         }
     }
+    std::vector<ComPtr<IUnknown>> async_objects;
     for (PendingRelease& release : retired) {
-        release.object.Reset();
-        if (release.retire) {
-            release.retire();
+        if (release.retire || wait_reaper) {
+            release.object.Reset();
+            if (release.retire) {
+                release.retire();
+            }
+        } else if (release.object) {
+            async_objects.push_back(std::move(release.object));
         }
+    }
+    if (!async_objects.empty()) {
+        release_worker.QueueWork(
+            [objects = std::move(async_objects)]() mutable { objects.clear(); });
+    }
+    if (wait_reaper) {
+        release_worker.WaitForRequests();
     }
 }
 
