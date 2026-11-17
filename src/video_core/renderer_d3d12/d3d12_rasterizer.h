@@ -274,19 +274,24 @@ private:
                                u32 instance_count);
     void RecordDraw(GraphicsPipeline& pipeline, const PipelineBindings& bindings,
                     const Framebuffer& framebuffer, const DrawParams& params,
-                    Maxwell::PrimitiveTopology topology);
+                    Maxwell::PrimitiveTopology topology,
+                    ID3D12PipelineState* ready_pso = nullptr, bool defer_pso = false);
+    [[nodiscard]] bool SingleStencilFace() const noexcept {
+        const auto& regs = maxwell3d->regs;
+        return regs.stencil_enable == 0 || regs.stencil_two_side_enable == 0 ||
+               (regs.stencil_front_ref == regs.stencil_back_ref &&
+                static_cast<u8>(regs.stencil_front_func_mask) ==
+                    static_cast<u8>(regs.stencil_back_func_mask) &&
+                static_cast<u8>(regs.stencil_front_mask) ==
+                    static_cast<u8>(regs.stencil_back_mask));
+    }
     /// Records a bound draw. D3D12 has one stencil reference and one pair of masks, so when the
     /// guest gives each face its own, the faces are drawn apart, each with a pipeline that culls
     /// the other.
     template <typename Draw>
     void DrawStencilFaces(GraphicsPipeline& pipeline, Maxwell::PrimitiveTopology topology,
                           Draw&& draw) {
-        const auto& regs = maxwell3d->regs;
-        if (regs.stencil_enable == 0 || regs.stencil_two_side_enable == 0 ||
-            (regs.stencil_front_ref == regs.stencil_back_ref &&
-             static_cast<u8>(regs.stencil_front_func_mask) ==
-                 static_cast<u8>(regs.stencil_back_func_mask) &&
-             static_cast<u8>(regs.stencil_front_mask) == static_cast<u8>(regs.stencil_back_mask))) {
+        if (SingleStencilFace()) {
             draw();
             return;
         }
@@ -306,7 +311,8 @@ private:
     void BindDrawState(const GraphicsPipeline& pipeline, const PipelineBindings& bindings,
                        const Framebuffer& framebuffer, const DrawParams& params,
                        Maxwell::PrimitiveTopology topology,
-                       std::span<const D3D12_CPU_DESCRIPTOR_HANDLE> compatible_targets = {});
+                       std::span<const D3D12_CPU_DESCRIPTOR_HANDLE> compatible_targets = {},
+                       ID3D12PipelineState* ready_pso = nullptr, bool defer_pso = false);
     /// With dred=1, traces the guest constant buffers of a draw whose vertex shader dump_shader
     /// names.
     void TraceWatchedVertexShader(u64 vertex_shader);

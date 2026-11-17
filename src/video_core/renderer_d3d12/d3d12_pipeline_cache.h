@@ -24,6 +24,7 @@
 #include "shader_recompiler/profile.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/rasterizer_interface.h"
+#include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 #include "video_core/renderer_d3d12/d3d12_compute_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_graphics_pipeline.h"
 #include "video_core/renderer_d3d12/d3d12_linked_shader_cache.h"
@@ -157,6 +158,13 @@ public:
     /// Waits for a pipeline still being built; null if its PSO ran out of memory (its draws are
     /// skipped until it is tried again).
     [[nodiscard]] GraphicsPipeline* WaitPending(GraphicsPipeline* pipeline);
+    void SetRecorderThreaded(bool threaded) noexcept { recorder_threaded = threaded; }
+    [[nodiscard]] bool CanDeferGraphicsWait() const noexcept {
+        return recorder_threaded && GetParallelPsoWait() &&
+               GetAsyncPipelines() == AsyncPipelines::Off;
+    }
+    void NoteDeferredWait(GraphicsPipeline* pipeline);
+    void DrainDeferredWaits();
     /// Waits for a worker's build up to this long, counted as a pipeline stall. True when the build
     /// ended; WaitPending then returns at once.
     [[nodiscard]] bool WaitPendingFor(GraphicsPipeline* pipeline, u64 microseconds);
@@ -311,6 +319,9 @@ private:
     PrewarmPacer prewarm_pacer;
     /// pso_loading: prewarm_order from here on holds released pipelines to build again.
     size_t prewarm_rebuild_from{SIZE_MAX};
+    bool recorder_threaded{};
+    bool draining_deferred_waits{};
+    std::vector<GraphicsPipeline*> deferred_waits;
     bool loading_screen{};
     u64 loading_screens{};
 

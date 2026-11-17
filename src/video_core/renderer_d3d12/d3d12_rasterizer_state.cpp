@@ -69,7 +69,8 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
                                     const PipelineBindings& bindings,
                                     const Framebuffer& framebuffer, const DrawParams& params,
                                     Maxwell::PrimitiveTopology topology,
-                                    std::span<const D3D12_CPU_DESCRIPTOR_HANDLE> compatible_targets) {
+                                    std::span<const D3D12_CPU_DESCRIPTOR_HANDLE> compatible_targets,
+                                    ID3D12PipelineState* ready_pso, bool defer_pso) {
     const auto& regs = maxwell3d->regs;
     const PipelineLayout& layout = pipeline.Layout();
     CommandStream* const cmd = scheduler.CommandList();
@@ -89,7 +90,11 @@ void RasterizerD3D12::BindDrawState(const GraphicsPipeline& pipeline,
         command_state.graphics_root = layout.Handle();
         command_state.root_args = {};
     }
-    scheduler.SetPipelineState(pipeline.Handle());
+    if (defer_pso) {
+        scheduler.ForgetPipelineState();
+    } else {
+        scheduler.SetPipelineState(ready_pso ? ready_pso : pipeline.Handle());
+    }
     MarkGpuCommands(cmd, "draw VS/PS", pipeline.Key().unique_hashes[1],
                     pipeline.Key().unique_hashes[5]);
 

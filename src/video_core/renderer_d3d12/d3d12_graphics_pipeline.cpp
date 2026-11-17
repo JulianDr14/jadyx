@@ -945,7 +945,7 @@ bool GraphicsPipeline::Wake(Common::ThreadWorker& worker, bool for_draw) {
 bool GraphicsPipeline::Evict(Scheduler& scheduler) {
     // Only the GPU thread draws with, wakes and evicts pipelines, so a ready one stays ready here.
     if (build_state.load(std::memory_order::acquire) != State::Ready || !pipeline_state ||
-        !dxil) {
+        !dxil || pending_recorded_draws.load(std::memory_order::acquire) != 0) {
         return false;
     }
     ReleaseDxil();
@@ -1082,6 +1082,31 @@ bool GraphicsPipeline::WaitBuiltFor(u64 microseconds) {
     return build_condvar.wait_for(lock, std::chrono::microseconds{microseconds}, [this] {
         return build_state.load(std::memory_order::relaxed) != State::Building;
     });
+}
+
+bool GraphicsPipeline::HasUnclaimedBuild() noexcept {
+    std::scoped_lock lock{build_mutex};
+    return build_state.load(std::memory_order::relaxed) == State::Building && pending &&
+           !pending->claimed.load(std::memory_order::relaxed);
+}
+
+void GraphicsPipeline::RaiseBuilderToAtLeastNormal() noexcept {
+    const HANDLE thread = static_cast<HANDLE>(builder_thread.load(std::memory_order_acquire));
+    if (!thread || thread == BuildThreadHandle()) {
+        return;
+    }
+    const int current = GetThreadPriority(thread);
+    if (current != THREAD_PRIORITY_ERROR_RETURN && current < THREAD_PRIORITY_NORMAL) {
+        SetThreadPriority(thread, THREAD_PRIORITY_NORMAL);
+    }
+}
+
+ID3D12PipelineState* GraphicsPipeline::WaitHandle() {
+    if (!IsBuilt()) {
+        RaiseBuilderToAtLeastNormal();
+        WaitBuilt();
+    }
+    return Handle();
 }
 
 void GraphicsPipeline::Configure(bool is_indexed, const PipelineBindContext& context,

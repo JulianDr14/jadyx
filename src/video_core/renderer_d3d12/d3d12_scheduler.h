@@ -161,9 +161,16 @@ public:
         on_reset.emplace_back(std::move(func));
     }
 
+    /// Recording thread only: called right before Scheduler::Wait blocks on an incomplete
+    /// GPU fence so deferred PSO waits can drain while waiting.
+    void SetBeforeRecordingWait(std::function<void()> func) {
+        before_recording_wait = std::move(func);
+    }
+
     void ClearSubmissionCallbacks() {
         on_submit.clear();
         on_reset.clear();
+        before_recording_wait = nullptr;
     }
 
     /// Frees retired allocators and released objects; called on every flush and frame.
@@ -269,6 +276,7 @@ private:
     std::deque<PendingRelease> pending_releases;
     std::vector<std::function<void()>> on_submit;
     std::vector<std::function<void()>> on_reset;
+    std::function<void()> before_recording_wait;
 
     /// QueueWaitBeforeNextSubmit: consumed by the next SubmitRecorded.
     std::mutex queue_waits_mutex;

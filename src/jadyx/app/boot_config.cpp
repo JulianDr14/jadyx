@@ -172,6 +172,11 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
             } else if (line == "pso_blobs=1" || line == "pso_blobs=0") {
                 config.pso_blobs = line == "pso_blobs=1";
                 WriteDiag("boot.cfg: " + line);
+            } else if (line == "pso_parallel_wait=1" || line == "pso_parallel_wait=0") {
+                config.pso_parallel_wait = line == "pso_parallel_wait=1";
+                WriteDiag(config.pso_parallel_wait
+                              ? "boot.cfg: parallel graphics PSO wait on"
+                              : "boot.cfg: parallel graphics PSO wait off");
             } else if (line.starts_with("wait_small_draws=")) {
                 config.wait_small_draws = std::min(
                     static_cast<u32>(std::strtoul(line.c_str() + 17, nullptr, 10)),
@@ -554,7 +559,8 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 line.starts_with("pso_priority=") ||
                 line.starts_with("pso_boost=") ||
                 line.starts_with("pso_lend=") ||
-                line.starts_with("pso_blobs=")) {
+                line.starts_with("pso_blobs=") ||
+                line.starts_with("pso_parallel_wait=")) {
                 parse_pipeline_key(line);
                 continue;
             }

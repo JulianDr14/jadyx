@@ -18,9 +18,11 @@ std::atomic<u32> build_boost_priority{0};
 std::atomic_bool build_lend{true};
 std::atomic<VideoCore::FramePipeline::Mode> pso_budget{VideoCore::FramePipeline::Mode::Off};
 std::atomic<VideoCore::FramePipeline::Mode> pso_loading{VideoCore::FramePipeline::Mode::Off};
+std::atomic_bool parallel_pso_wait{false};
 u64 pending_wait_us{}; // GPU thread
 // Read by the stats line on the same GPU thread that counts.
 PendingDrawStats pending_draw_stats{};
+ParallelPsoWaitStats parallel_pso_wait_stats{};
 
 // A full-screen pass: a triangle or a quad strip, drawn once.
 constexpr u32 FULL_SCREEN_MAX_VERTICES = 4;
@@ -168,6 +170,41 @@ void CountPendingDraw(PendingDrawAction action) noexcept {
 
 PendingDrawStats GetPendingDrawStats() noexcept {
     return pending_draw_stats;
+}
+
+void SetParallelPsoWait(bool enabled) {
+    parallel_pso_wait.store(enabled, std::memory_order_relaxed);
+}
+
+bool GetParallelPsoWait() noexcept {
+    return parallel_pso_wait.load(std::memory_order_relaxed);
+}
+
+void NoteParallelDeferredDraw() noexcept {
+    ++parallel_pso_wait_stats.deferred_draws;
+}
+
+void NoteParallelDeferredBatch(u64 pipelines) noexcept {
+    parallel_pso_wait_stats.deferred_pipelines += pipelines;
+    if (pipelines > 1) {
+        ++parallel_pso_wait_stats.multi_pipeline_batches;
+    }
+}
+
+void NoteParallelHelperClaim() noexcept {
+    ++parallel_pso_wait_stats.helper_claims;
+}
+
+void NoteParallelWorkerCompleted() noexcept {
+    ++parallel_pso_wait_stats.worker_completed_before_drain;
+}
+
+ParallelPsoWaitStats GetParallelPsoWaitStats() noexcept {
+    return parallel_pso_wait_stats;
+}
+
+void ResetParallelPsoWaitStats() noexcept {
+    parallel_pso_wait_stats = {};
 }
 
 } // namespace D3D12
