@@ -14,6 +14,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include "common/permafrost.h"
 #include "common/container/unordered_map.h"
 #include "common/container/unordered_set.h"
 #include <utility>
@@ -1175,6 +1176,7 @@ static std::jthread RunHostThreadFunc(KernelCore& kernel, KProcess* process, std
     return std::jthread([&kernel, thread, thread_name_{std::move(thread_name)}, func_{std::move(func)}] {
         // Set the thread name.
         Common::SetCurrentThreadName(thread_name_.c_str());
+        const Common::Permafrost::ScopedMemoryThread memory_thread;
 
         // Set the thread as current.
         kernel.RegisterHostThread(thread);

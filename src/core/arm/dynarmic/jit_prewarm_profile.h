@@ -254,6 +254,46 @@ struct Catalog {
         std::sort(pcs.begin(), pcs.end());
         pcs.erase(std::unique(pcs.begin(), pcs.end()), pcs.end());
     }
+
+    /// How much the cores' profiles repeat each other: `records` blocks in all, `unique`
+    /// distinct descriptors, `on_two_or_more` of those learned by two cores or more. With one
+    /// code cache for every core, records - unique compilations (and their code) would go.
+    struct Overlap {
+        std::array<std::size_t, 4> per_core{};
+        std::size_t records{};
+        std::size_t unique{};
+        std::size_t on_two_or_more{};
+    };
+    /// Each core's descriptors are sorted and distinct (Read rejects anything else).
+    Overlap MeasureOverlap() const {
+        Overlap result;
+        std::array<std::size_t, 4> at{};
+        for (std::size_t n = 0; n < descriptors.size(); ++n) {
+            result.per_core[n] = descriptors[n].size();
+            result.records += descriptors[n].size();
+        }
+        for (;;) {
+            bool any{};
+            std::uint64_t lowest{};
+            for (std::size_t n = 0; n < descriptors.size(); ++n) {
+                if (at[n] < descriptors[n].size() && (!any || descriptors[n][at[n]] < lowest)) {
+                    lowest = descriptors[n][at[n]];
+                    any = true;
+                }
+            }
+            if (!any) break;
+            unsigned holders{};
+            for (std::size_t n = 0; n < descriptors.size(); ++n) {
+                if (at[n] < descriptors[n].size() && descriptors[n][at[n]] == lowest) {
+                    ++holders;
+                    ++at[n];
+                }
+            }
+            ++result.unique;
+            result.on_two_or_more += holders >= 2 ? 1 : 0;
+        }
+        return result;
+    }
 };
 inline std::shared_ptr<Catalog> application_catalog;
 

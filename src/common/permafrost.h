@@ -77,12 +77,29 @@ struct Config {
     /// Whether the guest threads are paused while a read back commits and fills its pages, so
     /// none of them sees one still zero. fill_pages does not apply then: each run goes at once.
     bool pause_fill{true};
+    /// With pause_fill, whether the host threads that reach guest memory (GPU, video decoder,
+    /// audio, HLE services) are paused too. Without it they may read a page still zero or have a
+    /// write of theirs overwritten by the fill.
+    bool pause_hosts{true};
 };
 
 /// The calling thread runs guest code: it is paused while a read back fills pages. Unregistered
 /// before it exits.
 void RegisterGuestThread();
 void UnregisterGuestThread();
+
+/// A host thread that reads or writes guest memory: paused like the guest threads while a read
+/// back fills pages, when pause_hosts is on. Held for the thread's lifetime.
+class ScopedMemoryThread {
+public:
+    ScopedMemoryThread();
+    ~ScopedMemoryThread();
+    ScopedMemoryThread(const ScopedMemoryThread&) = delete;
+    ScopedMemoryThread& operator=(const ScopedMemoryThread&) = delete;
+
+private:
+    bool registered{};
+};
 
 /// Takes over [base, base + size), which must be 2 MiB aligned in size. Fails without a swap file.
 bool Init(u8* base, size_t size, const Platform& platform, const Config& config);
@@ -175,6 +192,10 @@ struct Stats {
     u64 write_failures{};
     u64 reserve_releases{};
     u64 file_slots{};         // slots the file has grown to
+    u64 fill_pauses{};        // reads back that paused the threads
+    u64 fill_pause_us{};      // total time those threads were paused
+    u64 fill_pause_max_us{};
+    u32 memory_threads{};     // threads registered to be paused now, guest and host
     u64 fault_stall_us{};     // total time guest threads waited in faults: reads back, restores
                               // from probation and granules held by another thread
     u32 min_idle_ms{};        // the idle time asked of a victim now

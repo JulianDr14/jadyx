@@ -6,6 +6,7 @@
 
 #include <chrono>
 
+#include "common/permafrost.h"
 #include "audio_core/adsp/adsp.h"
 #include "audio_core/audio_core.h"
 #include "audio_core/renderer/system_manager.h"
@@ -28,6 +29,7 @@ void SystemManager::InitializeUnsafe() {
         audio_renderer.Start();
         thread = std::jthread([this](std::stop_token stop_token) {
             Common::SetCurrentThreadName("AudioRenderSystemManager");
+            const Common::Permafrost::ScopedMemoryThread memory_thread;
             Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
             while (active && !stop_token.stop_requested()) {
                 {

@@ -18,6 +18,7 @@
 #include "common/atomic_ops.h"
 #include "common/common_types.h"
 #include "common/heap_tracker.h"
+#include "common/log_throttle.h"
 #include "common/logging.h"
 #include "common/page_table.h"
 #include "common/permafrost.h"
@@ -41,6 +42,8 @@
 #include "video_core/rasterizer_download_area.h"
 
 namespace Core::Memory {
+
+thread_local u64 g_unmapped_access{};
 
 static inline bool AddressSpaceContains(const Common::PageTable& table, const Common::ProcessAddress addr, const std::size_t size) {
     const Common::ProcessAddress max_addr = 1ULL << table.GetAddressSpaceBits();
@@ -290,7 +293,10 @@ struct Memory::Impl {
     bool ReadBlockImpl(const Common::ProcessAddress addr, void* buffer, const std::size_t size, bool unsafe) {
         return WalkBlock(addr, size,
         [addr, size, &buffer](const std::size_t offset, const std::size_t copy_amount, const Common::ProcessAddress current_vaddr) {
-            LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
+            static Common::LogThrottle throttle;
+            if (const u64 n = throttle.Next()) {
+                LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {}){}", GetInteger(current_vaddr), GetInteger(addr), size, Common::LogThrottle::Note(n));
+            }
             std::memset(reinterpret_cast<u8*>(buffer) + offset, 0, copy_amount);
         },
         [&](const std::size_t offset, const std::size_t copy_amount, const u8* const ptr) {
@@ -314,7 +320,10 @@ struct Memory::Impl {
     bool WriteBlockImpl(const Common::ProcessAddress addr, const void* buffer, const std::size_t size, bool unsafe) {
         return WalkBlock(addr, size,
         [addr, size](const std::size_t offset, const std::size_t copy_amount, const Common::ProcessAddress current_vaddr) {
-            LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
+            static Common::LogThrottle throttle;
+            if (const u64 n = throttle.Next()) {
+                LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {}){}", GetInteger(current_vaddr), GetInteger(addr), size, Common::LogThrottle::Note(n));
+            }
         },
         [&](const std::size_t offset, const std::size_t copy_amount, u8* const ptr) {
             std::memcpy(ptr, reinterpret_cast<u8 const*>(buffer) + offset, copy_amount);
@@ -330,7 +339,10 @@ struct Memory::Impl {
     bool ZeroBlock(const Common::ProcessAddress addr, const std::size_t size) {
         return WalkBlock(addr, size,
         [addr, size](const std::size_t offset, const std::size_t copy_amount, const Common::ProcessAddress current_vaddr) {
-            LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
+            static Common::LogThrottle throttle;
+            if (const u64 n = throttle.Next()) {
+                LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {}){}", GetInteger(current_vaddr), GetInteger(addr), size, Common::LogThrottle::Note(n));
+            }
         },
         [=](const std::size_t offset, const std::size_t copy_amount, u8* const ptr) {
             std::memset(ptr, 0, copy_amount);
@@ -344,7 +356,10 @@ struct Memory::Impl {
     bool CopyBlock(Common::ProcessAddress dest_addr, Common::ProcessAddress src_addr, const std::size_t size) {
         return WalkBlock(dest_addr, size,
         [&](const std::size_t offset, const std::size_t copy_amount, const Common::ProcessAddress current_vaddr) {
-            LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(src_addr), size);
+            static Common::LogThrottle throttle;
+            if (const u64 n = throttle.Next()) {
+                LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {}){}", GetInteger(current_vaddr), GetInteger(src_addr), size, Common::LogThrottle::Note(n));
+            }
             ZeroBlock(dest_addr + offset, copy_amount);
         },
         [&](const std::size_t offset, const std::size_t copy_amount, const u8* const ptr) {
@@ -710,9 +725,15 @@ struct Memory::Impl {
     inline T Read(Common::ProcessAddress vaddr) noexcept requires(std::is_trivially_copyable_v<T>) {
         const u64 addr = GetInteger(vaddr);
         if (auto const ptr = GetPointerImpl(addr, [addr]() {
-            LOG_ERROR(HW_Memory, "Unmapped Read{} @ {:#016x}", sizeof(T) * 8, addr);
+            static Common::LogThrottle throttle;
+            if (const u64 n = throttle.Next()) {
+                LOG_ERROR(HW_Memory, "Unmapped Read{} @ {:#016x}{}", sizeof(T) * 8, addr,
+                          Common::LogThrottle::Note(n));
+            }
             if (addr < 0x10000) {
                 ReportNullRead(addr);
+            } else {
+                g_unmapped_access = addr;
             }
         }, [&](u8* host_ptr) {
             HandleRasterizerDownload(addr, sizeof(T), host_ptr);
@@ -734,7 +755,14 @@ struct Memory::Impl {
     inline void Write(Common::ProcessAddress vaddr, const T data) noexcept requires(std::is_trivially_copyable_v<T>) {
         const u64 addr = GetInteger(vaddr);
         if (auto const ptr = GetPointerImpl(addr, [addr, data]() {
-            LOG_ERROR(HW_Memory, "Unmapped Write{} @ {:#016x} = {:#016x}", sizeof(T) * 8, addr, u64(data));
+            static Common::LogThrottle throttle;
+            if (const u64 n = throttle.Next()) {
+                LOG_ERROR(HW_Memory, "Unmapped Write{} @ {:#016x} = {:#016x}{}", sizeof(T) * 8, addr,
+                          u64(data), Common::LogThrottle::Note(n));
+            }
+            if (addr >= 0x10000) {
+                g_unmapped_access = addr;
+            }
         }, [&](u8* host_ptr) { HandleRasterizerWrite(addr, sizeof(T), host_ptr); }); ptr) [[likely]]
             std::memcpy(ptr, &data, sizeof(T));
     }

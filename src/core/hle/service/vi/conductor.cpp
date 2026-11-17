@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "common/permafrost.h"
 #include "common/adpf.h"
 #include "common/settings.h"
 #include "common/thread.h"
@@ -107,6 +108,7 @@ void Conductor::ProcessVsync() {
 
 void Conductor::VsyncThread(std::stop_token token) {
     Common::SetCurrentThreadName("VSyncThread");
+    const Common::Permafrost::ScopedMemoryThread memory_thread;
     Common::SetCurrentThreadPriority(Common::ThreadPriority::VeryHigh);
     Common::SetCurrentThreadToPerformanceCores();
 

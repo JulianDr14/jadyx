@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 
+#include "common/permafrost.h"
 #include "audio_core/adsp/apps/audio_renderer/audio_renderer.h"
 #include "audio_core/audio_core.h"
 #include "audio_core/common/common.h"
@@ -133,6 +134,7 @@ void AudioRenderer::CreateSinkStreams() {
 
 void AudioRenderer::Main(std::stop_token stop_token) {
     Common::SetCurrentThreadName("DSP_AudioRenderer_Main");
+    const Common::Permafrost::ScopedMemoryThread memory_thread;
     Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
 
     // TODO: Create buffer map/unmap thread + mailbox

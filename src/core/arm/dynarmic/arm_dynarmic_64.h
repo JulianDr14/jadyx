@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <string_view>
+
 #include <atomic>
 #include <memory>
 #include "common/container/unordered_map.h"
@@ -53,6 +55,8 @@ public:
     void InstructionCacheOperationRaised(Dynarmic::A64::InstructionCacheOperation op, u64 value) override;
     void ExceptionRaised(u64 pc, Dynarmic::A64::Exception exception) override;
     void LogNullJump();
+    void NoteWildAccess();
+    void LogRegisters(std::string_view what);
     void CallSVC(u32 svc) override;
     void AddTicks(u64 ticks) override;
     u64 GetTicksRemaining() override;
@@ -69,6 +73,8 @@ public:
     Kernel::KProcess* m_process{};
     const bool m_debugger_enabled{};
     const bool m_check_memory_access{};
+    // The guest address of a wild access waiting for RunThread to report it, 0 when none.
+    u64 m_wild_access{};
     static constexpr u64 MinimumRunCycles = 10000U;
 };
 

@@ -145,6 +145,9 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
             } else if (line == "guest_swap_prefetch=1" || line == "guest_swap_prefetch=0") {
                 config.guest_swap_prefetch = line == "guest_swap_prefetch=1";
                 WriteDiag("boot.cfg: " + line);
+            } else if (line == "guest_swap_pause_hosts=1" ||
+                       line == "guest_swap_pause_hosts=0") {
+                config.guest_swap_pause_hosts = line == "guest_swap_pause_hosts=1";
             } else if (line == "guest_swap_pause_fill=1" ||
                        line == "guest_swap_pause_fill=0") {
                 config.guest_swap_pause_fill = line == "guest_swap_pause_fill=1";

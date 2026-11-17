@@ -442,6 +442,9 @@ struct BootConfig {
     u32 guest_swap_fill_pages{4};
     bool guest_swap_prefetch{true};
     bool guest_swap_pause_fill{true};
+    /// With the pause, the host threads that reach guest memory are paused too
+    /// (guest_swap_pause_hosts=0: the guest threads only).
+    bool guest_swap_pause_hosts{true};
     /// One owner for the free memory (jadyx/app/memory_coordinator.h, "memory_coordinator=0" turns
     /// it off): when Permafrost evicts what the guest reads straight back, the textures and the
     /// trims give way first and only then Permafrost's marks come down, never below

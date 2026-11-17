@@ -6,6 +6,8 @@
 
 #include <atomic>
 #include <cstring>
+#include <string_view>
+#include <utility>
 
 #include "common/host_memory.h"
 #include "common/permafrost.h"
@@ -34,19 +36,28 @@ u64 DynarmicCallbacks64::MemoryRead(u64 vaddr, size_t size) {
     const CpuProfile::CallbackTimer read_timer{m_parent.m_core_index, true};
     CpuProfile::Add(m_parent.m_core_index, CpuProfile::Counter::Reads);
     CheckMemoryAccess(vaddr, size, Kernel::DebugWatchpointType::Read);
+    u64 value{};
     switch (size) {
-    case sizeof(u64): return m_memory.Read64(vaddr);
-    case sizeof(u32): return m_memory.Read32(vaddr);
-    case sizeof(u16): return m_memory.Read16(vaddr);
-    case sizeof(u8): return m_memory.Read8(vaddr);
+    case sizeof(u64): value = m_memory.Read64(vaddr); break;
+    case sizeof(u32): value = m_memory.Read32(vaddr); break;
+    case sizeof(u16): value = m_memory.Read16(vaddr); break;
+    case sizeof(u8): value = m_memory.Read8(vaddr); break;
     default: UNREACHABLE();
     }
+    if (Core::Memory::g_unmapped_access != 0) [[unlikely]] {
+        NoteWildAccess();
+    }
+    return value;
 }
 Dynarmic::A64::Vector DynarmicCallbacks64::MemoryRead128(u64 vaddr) {
     CpuProfile::Add(m_parent.m_core_index, CpuProfile::Counter::Reads);
     CpuProfile::Add(m_parent.m_core_index, CpuProfile::Counter::Reads128);
     CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Read);
-    return {m_memory.Read64(vaddr), m_memory.Read64(vaddr + 8)};
+    const Dynarmic::A64::Vector value{m_memory.Read64(vaddr), m_memory.Read64(vaddr + 8)};
+    if (Core::Memory::g_unmapped_access != 0) [[unlikely]] {
+        NoteWildAccess();
+    }
+    return value;
 }
 
 std::optional<u32> DynarmicCallbacks64::MemoryReadCode(u64 vaddr) {
@@ -67,11 +78,14 @@ void DynarmicCallbacks64::MemoryWrite(Dynarmic::A64::VAddr vaddr, u64 value, std
     CpuProfile::Add(m_parent.m_core_index, CpuProfile::Counter::Writes);
     if (CheckMemoryAccess(vaddr, size, Kernel::DebugWatchpointType::Write)) {
         switch (size) {
-        case sizeof(u64): return m_memory.Write64(vaddr, u64(value));
-        case sizeof(u32): return m_memory.Write32(vaddr, u32(value));
-        case sizeof(u16): return m_memory.Write16(vaddr, u16(value));
-        case sizeof(u8): return m_memory.Write8(vaddr, u8(value));
+        case sizeof(u64): m_memory.Write64(vaddr, u64(value)); break;
+        case sizeof(u32): m_memory.Write32(vaddr, u32(value)); break;
+        case sizeof(u16): m_memory.Write16(vaddr, u16(value)); break;
+        case sizeof(u8): m_memory.Write8(vaddr, u8(value)); break;
         default: UNREACHABLE();
+        }
+        if (Core::Memory::g_unmapped_access != 0) [[unlikely]] {
+            NoteWildAccess();
         }
     }
 }
@@ -80,6 +94,9 @@ void DynarmicCallbacks64::MemoryWrite128(u64 vaddr, Dynarmic::A64::Vector value)
     if (CheckMemoryAccess(vaddr, 16, Kernel::DebugWatchpointType::Write)) {
         m_memory.Write64(vaddr, value[0]);
         m_memory.Write64(vaddr + 8, value[1]);
+        if (Core::Memory::g_unmapped_access != 0) [[unlikely]] {
+            NoteWildAccess();
+        }
     }
 }
 
@@ -158,12 +175,35 @@ void DynarmicCallbacks64::LogNullJump() {
     if (logged.exchange(true)) {
         return;
     }
+    LogRegisters("Null jump");
+}
+
+// Diagnostic, once per run: the first access through a pointer that leads nowhere (away from null,
+// which LogNullJump and the null read report cover). The guest loops on such a pointer once it has
+// one, so the registers are what tells where it came from. The access only halts the JIT: the
+// registers are read when the block ends, in RunThread.
+void DynarmicCallbacks64::NoteWildAccess() {
+    const u64 address = std::exchange(Core::Memory::g_unmapped_access, 0);
+    static std::atomic<bool> noted{};
+    if (noted.exchange(true)) {
+        return;
+    }
+    m_wild_access = address;
+    m_parent.m_jit->HaltExecution(BreakLoop);
+}
+
+void DynarmicCallbacks64::LogRegisters(std::string_view what) {
     const auto& jit = *m_parent.m_jit;
     const auto gpr = jit.GetRegisters();
     const u64 lr = gpr[30];
-    LOG_CRITICAL(Core_ARM, "Null jump: lr {:#x}, sp {:#x}, code before lr {:08x} {:08x} {:08x} {:08x}",
-                 lr, jit.GetSP(), m_memory.Read32(lr - 16), m_memory.Read32(lr - 12),
-                 m_memory.Read32(lr - 8), m_memory.Read32(lr - 4));
+    const u64 pc = jit.GetPC();
+    LOG_CRITICAL(Core_ARM,
+                 "{}: core {}, pc {:#x}, lr {:#x}, sp {:#x}, code before lr {:08x} {:08x} {:08x} "
+                 "{:08x}, code at pc {:08x} {:08x} {:08x} {:08x}",
+                 what, m_parent.m_core_index, pc, lr, jit.GetSP(), m_memory.Read32(lr - 16),
+                 m_memory.Read32(lr - 12), m_memory.Read32(lr - 8), m_memory.Read32(lr - 4),
+                 m_memory.Read32(pc - 8), m_memory.Read32(pc - 4), m_memory.Read32(pc),
+                 m_memory.Read32(pc + 4));
     const auto describe = [&](const char* name, size_t index, u64 value) {
         u8* const host = value >= 0x10000 ? m_memory.GetPointerSilent(value) : nullptr;
         if (host == nullptr) {
@@ -179,7 +219,10 @@ void DynarmicCallbacks64::LogNullJump() {
         describe("x", i, gpr[i]);
     }
     describe("sp", 0, jit.GetSP());
-    LOG_CRITICAL(Core_ARM, "Null jump: {}", Common::Permafrost::Describe());
+    LOG_CRITICAL(Core_ARM, "{}: {}; latest reads back: {}", what, Common::Permafrost::Describe(),
+                 Common::Permafrost::DescribeRecentReads(12));
+    // The dump itself may read unmapped words; they are not the guest's.
+    Core::Memory::g_unmapped_access = 0;
 }
 
 void DynarmicCallbacks64::CallSVC(u32 svc) {
@@ -410,7 +453,13 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
 HaltReason ArmDynarmic64::RunThread(Kernel::KThread* thread) {
     const CpuProfile::RunTimer timer{m_core_index};
     m_jit->ClearExclusiveState();
-    return TranslateHaltReason(m_jit->Run());
+    // A miss left by HLE code on this thread is not the guest's.
+    Core::Memory::g_unmapped_access = 0;
+    const Dynarmic::HaltReason halt = m_jit->Run();
+    if (m_cb->m_wild_access != 0) [[unlikely]] {
+        m_cb->LogRegisters(fmt::format("Wild access @ {:#x}", std::exchange(m_cb->m_wild_access, 0)));
+    }
+    return TranslateHaltReason(halt);
 }
 
 HaltReason ArmDynarmic64::StepThread(Kernel::KThread* thread) {

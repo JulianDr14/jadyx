@@ -55,6 +55,10 @@ enum : u64 {
     DEFAULT_STACK_SIZE = 0x100000,
 };
 
+/// The guest address of the last access on this thread that found no mapping, away from null.
+/// The JIT callbacks read and clear it to report a wild pointer once with the guest registers.
+extern thread_local u64 g_unmapped_access;
+
 /// Central class that handles all memory operations and state.
 class Memory {
 public:
