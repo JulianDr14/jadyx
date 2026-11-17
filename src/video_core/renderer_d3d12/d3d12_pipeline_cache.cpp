@@ -934,6 +934,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
 }
 
 PipelineCache::~PipelineCache() {
+    DrainDeferredWaits();
     if (hot_pipelines_dirty) {
         SaveHotPipelines();
         serialization_thread.WaitForRequests();
@@ -992,6 +993,7 @@ void PipelineCache::TickFoldCheck() {
 
 void PipelineCache::TickResidency(const CacheMemorySnapshot& snapshot, Scheduler& scheduler) {
     using Policy = PipelineResidencyPolicy;
+    DrainDeferredWaits();
     ++residency_frame;
     if (!fold_check_pending.empty()) {
         TickFoldCheck();
@@ -1203,6 +1205,13 @@ void PipelineCache::LogPipelineStats(std::string_view when) const {
              stats.prewarm_queued.load(std::memory_order_relaxed),
              stats.prewarm_hits.load(std::memory_order_relaxed), help.boosts,
              GetPipelineBuildBoost(), help.lends, line);
+    const auto parallel_stats = GetParallelPsoWaitStats();
+    LOG_INFO(Render,
+             "D3D12 parallel PSO wait ({}): {} deferred draws across {} pipelines "
+             "({} multi-pipeline batches, {} GPU helper claims, {} finished on workers before drain)",
+             when, parallel_stats.deferred_draws, parallel_stats.deferred_pipelines,
+             parallel_stats.multi_pipeline_batches, parallel_stats.helper_claims,
+             parallel_stats.worker_completed_before_drain);
     if (PipelineKeyFold::GetMode() != PipelineKeyFold::Mode::Off) {
         LOG_INFO(Render,
                  "D3D12 pipeline key folding ({}): {} keys found a pipeline through it; checks: {} "
@@ -1432,6 +1441,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     if (title_id == 0) {
         return;
     }
+    deferred_waits.clear();
+    ResetParallelPsoWaitStats();
     GetPipelineStats().Reset();
     if (!pipeline_cache_filename.empty()) {
         serialization_thread.WaitForRequests();
@@ -1680,10 +1691,64 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) {
     if (pipeline->Wake(workers)) {
         ++pipelines_woken;
     }
-    if (GetAsyncPipelines() != AsyncPipelines::Off) {
-        return pipeline; // the draw skips it or waits (WaitPending)
+    if (GetAsyncPipelines() != AsyncPipelines::Off || CanDeferGraphicsWait()) {
+        return pipeline; // caller skips, waits (WaitPending), or defers binding to D3D12Recorder
     }
     return WaitPending(pipeline);
+}
+
+void PipelineCache::NoteDeferredWait(GraphicsPipeline* pipeline) {
+    NoteParallelDeferredDraw();
+    if (pipeline && pipeline->MarkDeferredWaitQueued()) {
+        deferred_waits.push_back(pipeline);
+    }
+}
+
+void PipelineCache::DrainDeferredWaits() {
+    if (deferred_waits.empty() || draining_deferred_waits) {
+        return;
+    }
+    draining_deferred_waits = true;
+    SCOPE_EXIT { draining_deferred_waits = false; };
+    std::vector<GraphicsPipeline*> batch = std::move(deferred_waits);
+    deferred_waits.clear();
+    for (GraphicsPipeline* const pipeline : batch) {
+        pipeline->ClearDeferredWaitQueued();
+        if (!pipeline->IsBuilt()) {
+            pipeline->RaiseBuilderToAtLeastNormal();
+        }
+    }
+    NoteParallelDeferredBatch(batch.size());
+
+    std::vector<u8> drained(batch.size(), 0);
+    // Help build unclaimed pipelines from the tail backward while workers drain from the front.
+    for (;;) {
+        size_t candidate = batch.size();
+        for (size_t i = batch.size(); i > 0; --i) {
+            const size_t idx = i - 1;
+            if (!drained[idx] && batch[idx]->HasUnclaimedBuild()) {
+                candidate = idx;
+                break;
+            }
+        }
+        if (candidate == batch.size()) {
+            break;
+        }
+        drained[candidate] = 1;
+        NoteParallelHelperClaim();
+        (void)WaitPending(batch[candidate]);
+    }
+    for (size_t i = 0; i < batch.size(); ++i) {
+        if (drained[i]) {
+            continue;
+        }
+        if (batch[i]->IsBuilt()) {
+            NoteParallelWorkerCompleted();
+        } else {
+            batch[i]->RaiseBuilderToAtLeastNormal();
+        }
+        (void)WaitPending(batch[i]);
+    }
 }
 
 GraphicsPipeline* PipelineCache::WaitPending(GraphicsPipeline* pipeline) {

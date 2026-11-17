@@ -346,6 +346,10 @@ public:
         return build_state.load(std::memory_order::acquire) == State::Dormant;
     }
 
+    [[nodiscard]] bool IsBuilding() const noexcept {
+        return build_state.load(std::memory_order::acquire) == State::Building;
+    }
+
     /// GPU thread: the frame before which a pipeline whose PSO ran out of memory is not woken
     /// again; its draws are skipped until then.
     [[nodiscard]] u64 RetryFrame() const noexcept {
@@ -367,6 +371,62 @@ public:
     /// Waits for the worker up to this long and never takes the build over: a driver build cannot
     /// be cut short once it runs here. True when it is no longer building.
     [[nodiscard]] bool WaitBuiltFor(u64 microseconds);
+    /// Recording thread: waits for any active/queued build, raising the worker to Normal
+    /// priority if needed, and returns Handle().
+    [[nodiscard]] ID3D12PipelineState* WaitHandle();
+    [[nodiscard]] bool HasUnclaimedBuild() noexcept;
+    void RaiseBuilderToAtLeastNormal() noexcept;
+    [[nodiscard]] bool MarkDeferredWaitQueued() noexcept {
+        return !std::exchange(deferred_wait_queued, true);
+    }
+    void ClearDeferredWaitQueued() noexcept { deferred_wait_queued = false; }
+
+    /// Copyable RAII guard keeping a deferred-draw pipeline safe from residency eviction while a
+    /// recorded command chunk referencing it is pending on the recording thread.
+    class RecordedDrawRef {
+    public:
+        RecordedDrawRef() = default;
+        explicit RecordedDrawRef(GraphicsPipeline* p) noexcept : pipeline{p} { Acquire(); }
+        RecordedDrawRef(const RecordedDrawRef& other) noexcept : pipeline{other.pipeline} {
+            Acquire();
+        }
+        RecordedDrawRef& operator=(const RecordedDrawRef& other) noexcept {
+            if (this != &other) {
+                Release();
+                pipeline = other.pipeline;
+                Acquire();
+            }
+            return *this;
+        }
+        RecordedDrawRef(RecordedDrawRef&& other) noexcept
+            : pipeline{std::exchange(other.pipeline, nullptr)} {}
+        RecordedDrawRef& operator=(RecordedDrawRef&& other) noexcept {
+            if (this != &other) {
+                Release();
+                pipeline = std::exchange(other.pipeline, nullptr);
+            }
+            return *this;
+        }
+        ~RecordedDrawRef() { Release(); }
+
+        [[nodiscard]] GraphicsPipeline* operator->() const noexcept { return pipeline; }
+        [[nodiscard]] GraphicsPipeline* Get() const noexcept { return pipeline; }
+
+    private:
+        void Acquire() noexcept {
+            if (pipeline) {
+                pipeline->pending_recorded_draws.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        void Release() noexcept {
+            if (pipeline) {
+                pipeline->pending_recorded_draws.fetch_sub(1, std::memory_order_release);
+                pipeline = nullptr;
+            }
+        }
+
+        GraphicsPipeline* pipeline{};
+    };
 
     /// GPU thread: a dormant pipeline queues the build of its PSO from the kept DXIL. False if it
     /// was not dormant.
@@ -430,9 +490,9 @@ public:
         return key_hash;
     }
 
-    /// Null when D3D12 rejected the pipeline (logged once when it was built).
+    /// Null until built (acquire) or when D3D12 rejected the pipeline (logged once).
     [[nodiscard]] ID3D12PipelineState* Handle() const noexcept {
-        return pipeline_state.Get();
+        return IsBuilt() ? pipeline_state.Get() : nullptr;
     }
 
     [[nodiscard]] const PipelineLayout& Layout() const noexcept {
@@ -669,6 +729,8 @@ private:
     std::optional<DxilDiskCache::Key> released_dxil;
     u8 released_stage_mask{};
     bool prewarmed{};      ///< GPU thread only.
+    bool deferred_wait_queued{};               ///< GPU thread only.
+    std::atomic<u32> pending_recorded_draws{}; ///< In-flight deferred D3D12Recorder refs.
     /// What each stage resolved its views and samplers to in the last draw (stage_view_cache=1),
     /// allocated by the first draw that uses it. GPU thread only.
     struct StageViewState;

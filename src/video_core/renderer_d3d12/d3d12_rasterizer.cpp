@@ -127,10 +127,13 @@ RasterizerD3D12::RasterizerD3D12(Tegra::GPU& gpu_,
     buffer_runtime.SetDescriptorQueue(&descriptor_queue);
     buffer_runtime.SetVertexRealigner(&vertex_realigner);
     scheduler.RegisterOnReset([this] { InvalidateCommandListState(); });
+    pipeline_cache.SetRecorderThreaded(scheduler.CommandList()->IsThreaded());
+    scheduler.SetBeforeRecordingWait([this] { pipeline_cache.DrainDeferredWaits(); });
     LOG_INFO(Render, "D3D12: rasterizer active (draws, clears, caches, DMA and pipelines)");
 }
 
 RasterizerD3D12::~RasterizerD3D12() {
+    scheduler.SetBeforeRecordingWait(nullptr);
     VideoCommon::GeoHunt::Stop();
     // Renderer drains the scheduler before destroying caches/staging. Export completed work
     // on a normal shutdown too; a removed device must never make destruction throw.
@@ -516,7 +519,11 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
     }
     glitch.configured = true;
     glitch.pipeline = pipeline;
-    if (!pipeline->IsBuilt()) [[unlikely]] {
+    const bool allow_defer_pso =
+        pipeline_cache.CanDeferGraphicsWait() && !pipeline->TessPlan().Active() &&
+        SingleStencilFace() && !full && !trace_this_draw && !glitch.active &&
+        !GpuDiagnosticsEnabled() && !CloseProbeEnabled();
+    if (!pipeline->IsBuilt() && !allow_defer_pso) [[unlikely]] {
         const auto& draw = maxwell3d->draw_manager.draw_state;
         if (!WaitPendingPipeline(pipeline,
                                  is_indexed ? draw.index_buffer.count : draw.vertex_buffer.count,
@@ -531,7 +538,17 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
             return;
         }
     }
-    if (!pipeline->Handle()) {
+    ID3D12PipelineState* const ready_pso = pipeline->Handle();
+    const bool building = pipeline->IsBuilding();
+    const bool defer_pso = ready_pso == nullptr && allow_defer_pso && building;
+    if (!defer_pso && !ready_pso) {
+        if (!pipeline->IsBuilt()) {
+            (void)pipeline_cache.WaitPending(pipeline);
+            ++zpass_diag.pending;
+            hunt.Outcome(Hunt::Outcome::NoPipeline);
+            glitch.outcome = Hunt::Outcome::NoPipeline;
+            return;
+        }
         BUG_TRACK_KEY(DrawSkipped, reinterpret_cast<std::uintptr_t>(pipeline),
                       "draw skipped: the pipeline was rejected (VS {:016x} PS {:016x})",
                       pipeline->Key().unique_hashes[1], pipeline->Key().unique_hashes[5]);
@@ -625,7 +642,11 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
     }
     glitch.lost_slots = buffer_runtime.CheckVertexSlots(buffer_cache.DiagVertexMask());
     glitch_probe = glitch.active;
-    RecordDraw(*pipeline, bindings, *framebuffer, params, draw_state.topology);
+    if (defer_pso) {
+        pipeline_cache.NoteDeferredWait(pipeline);
+    }
+    RecordDraw(*pipeline, bindings, *framebuffer, params, draw_state.topology, ready_pso,
+               defer_pso);
     glitch_probe = false;
     glitch.outcome = Hunt::Outcome::Recorded;
     if (glitch.active) [[unlikely]] {
@@ -702,10 +723,12 @@ void RasterizerD3D12::DrawRun(bool is_indexed, u32 instance_count,
 void RasterizerD3D12::RecordDraw(GraphicsPipeline& pipeline,
                                  const PipelineBindings& bindings, const Framebuffer& framebuffer,
                                  const DrawParams& params,
-                                 Maxwell::PrimitiveTopology topology) {
+                                 Maxwell::PrimitiveTopology topology,
+                                 ID3D12PipelineState* ready_pso, bool defer_pso) {
     const auto compatible = texture_runtime.PrepareCompatibleDrawTargets(
         framebuffer, pipeline.BoundColorTargets());
-    BindDrawState(pipeline, bindings, framebuffer, params, topology, compatible);
+    BindDrawState(pipeline, bindings, framebuffer, params, topology, compatible, ready_pso,
+                  defer_pso);
     CommandStream* const cmd = scheduler.CommandList();
     VideoCore::Perf::Add(VideoCore::Perf::Counter::Draws, 1);
     if (pipeline.GeneratesGeometry()) {
@@ -714,6 +737,26 @@ void RasterizerD3D12::RecordDraw(GraphicsPipeline& pipeline,
     if (pipeline.TessPlan().Active()) {
         VideoCore::Perf::Add(VideoCore::Perf::Counter::TessDraws, 1);
         RecordTessellatedDraw(pipeline, bindings, params);
+    } else if (defer_pso) {
+        query_runtime.PrepareDraw(maxwell3d->regs.zpass_pixel_count_enable);
+        const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
+        scheduler.ForgetPipelineState();
+        GraphicsPipeline::RecordedDrawRef ref{&pipeline};
+        const DrawParams copy = params;
+        cmd->Record([ref = std::move(ref), copy](ID3D12GraphicsCommandList* list) {
+            ID3D12PipelineState* const pso = ref->WaitHandle();
+            if (!pso) {
+                return;
+            }
+            list->SetPipelineState(pso);
+            if (copy.is_indexed) {
+                list->DrawIndexedInstanced(copy.num_vertices, copy.num_instances, copy.first_index,
+                                           static_cast<INT>(copy.base_vertex), copy.base_instance);
+            } else {
+                list->DrawInstanced(copy.num_vertices, copy.num_instances, copy.base_vertex,
+                                    copy.base_instance);
+            }
+        });
     } else {
         query_runtime.PrepareDraw(maxwell3d->regs.zpass_pixel_count_enable);
         const ConditionalRendering::Scope predicate{conditional_rendering, cmd};
