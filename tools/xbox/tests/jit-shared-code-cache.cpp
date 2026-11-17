@@ -766,8 +766,25 @@ void TestCodeChunksLocked() {
         REQUIRE(locked.available);
         REQUIRE(locked.failures == before.failures);
         REQUIRE(locked.locked_bytes >= before.locked_bytes + (4u << 20));  // the prelude's chunk
+        // Both views of every chunk, by default.
+        REQUIRE(locked.exec_failures == before.exec_failures);
+        REQUIRE(locked.exec_locked_bytes - before.exec_locked_bytes == locked.locked_bytes - before.locked_bytes);
+        REQUIRE(locked.chunks > before.chunks);
     }
     REQUIRE(GetCodeLockState().locked_bytes == before.locked_bytes);
+    REQUIRE(GetCodeLockState().exec_locked_bytes == before.exec_locked_bytes);
+
+    SetLockedExecView(false);
+    {
+        Machine machine;
+        Callbacks cb;
+        cb.machine = &machine;
+        const A64::Jit jit{MakeConfig(machine, cb, 0, nullptr, 8u << 20)};
+        REQUIRE(GetCodeLockState().locked_bytes >= before.locked_bytes + (4u << 20));
+        REQUIRE(GetCodeLockState().exec_locked_bytes == before.exec_locked_bytes);
+    }
+    REQUIRE(GetCodeLockState().locked_bytes == before.locked_bytes);
+    SetLockedExecView(true);
 
     SetLockedCode(false);
     {
