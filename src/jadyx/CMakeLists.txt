@@ -223,6 +223,11 @@ add_executable(jadyx WIN32
     mods/mod_thumbnails.cpp
     mods/mod_thumbnails.h
     network/http.cpp
+    network/nextendo/api_types.cpp
+    network/nextendo/api_types.h
+    network/nextendo/network_mode.h
+    network/nextendo/pkce.cpp
+    network/nextendo/pkce.h
     network/online_rooms.cpp
     network/online_rooms.h
     updates/package_validation.cpp
