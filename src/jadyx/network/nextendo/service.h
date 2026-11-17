@@ -31,6 +31,8 @@ void StopWorker();
 
 /// The session as last published (a copy).
 SessionView ServiceView();
+/// The verified catalog as last published (a copy).
+Core::Online::Nextendo::GameCatalog ServiceCatalog();
 /// Changes whenever ServiceView() or ServicePreferences() would: a cheap redraw check.
 std::uint64_t ServiceVersion();
 
@@ -44,6 +46,10 @@ void SetEndpoints(const std::string& server_ip, const std::string& nat_ip,
 bool ChooseNextendo(bool on);
 /// Eden rooms may be joined or hosted: Nextendo is not the chosen network.
 bool RoomsAllowed();
+
+/// The Nextendo view of the Online tab shows. Until the player opens it, chooses Nextendo or
+/// signs in, the worker sends nothing to Nextendo (not even the public catalog download).
+void ShowingNextendo(bool shown);
 
 /// Opens the sign-in page. UI thread only. Ignored when already signed in or signing in.
 void SignIn();

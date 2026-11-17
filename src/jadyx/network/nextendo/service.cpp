@@ -235,6 +235,7 @@ struct State {
     bool game_running = false;
     bool signing_in = false;
     bool started = false;
+    bool page_shown = false;
 };
 
 State& Shared() {
@@ -299,16 +300,23 @@ void Run(std::stop_token stop) {
     while (!stop.stop_requested()) {
         std::vector<Command> commands;
         bool presence_wanted = false;
+        bool wanted = false;
         {
             std::scoped_lock lock{state.mutex};
             commands.swap(state.commands);
             presence_wanted = state.preferences.use_nextendo;
+            wanted = presence_wanted || state.page_shown;
         }
         for (auto& command : commands) {
             command(session);
         }
         session.SetPresenceWanted(presence_wanted);
-        const std::int64_t wait = session.Step();
+        // A player who never opened Nextendo nor signed in sends it nothing; a stored sign-in
+        // keeps its tokens alive.
+        std::int64_t wait = Timing::Idle;
+        if (wanted || session.View().phase != Phase::SignedOut) {
+            wait = session.Step();
+        }
         Publish(session, published);
         std::unique_lock lock{state.mutex};
         state.wake.wait_for(lock, stop, std::chrono::seconds(wait),
@@ -356,6 +364,26 @@ std::uint64_t ServiceVersion() {
     auto& state = Shared();
     std::scoped_lock lock{state.mutex};
     return state.version;
+}
+
+Nx::GameCatalog ServiceCatalog() {
+    auto& state = Shared();
+    std::scoped_lock lock{state.mutex};
+    return state.catalog;
+}
+
+void ShowingNextendo(bool shown) {
+    auto& state = Shared();
+    {
+        std::scoped_lock lock{state.mutex};
+        if (state.page_shown == shown) {
+            return;
+        }
+        state.page_shown = shown;
+    }
+    if (shown) {
+        Changed();
+    }
 }
 
 Preferences ServicePreferences() {
