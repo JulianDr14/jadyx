@@ -1176,6 +1176,21 @@ add_library(core STATIC
     memory/dmnt_cheat_types.h
     memory/dmnt_cheat_vm.cpp
     memory/dmnt_cheat_vm.h
+    online/nextendo/address_book.cpp
+    online/nextendo/address_book.h
+    online/nextendo/catalog.cpp
+    online/nextendo/catalog.h
+    online/nextendo/config.cpp
+    online/nextendo/config.h
+    online/nextendo/encoding.cpp
+    online/nextendo/encoding.h
+    online/nextendo/host_rules.cpp
+    online/nextendo/host_rules.h
+    online/nextendo/id_token.cpp
+    online/nextendo/id_token.h
+    online/nextendo/trust_roots.inc
+    online/nextendo/trust_store.cpp
+    online/nextendo/trust_store.h
     perf_stats.cpp
     perf_stats.h
     reporter.cpp
