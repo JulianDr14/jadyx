@@ -77,7 +77,8 @@ bool ValidName(const std::string& name, bool system_files = false, const std::st
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     const bool allowed = system_files ? lower.ends_with(".zip") || lower.ends_with(".nca") || lower=="prod.keys" || lower=="title.keys"
                          : SaveTag(tag) ? lower.ends_with(".zip") || lower.ends_with(".7z") || lower.ends_with(".rar")
-                                        : lower.ends_with(".nsp") || lower.ends_with(".xci") || lower.ends_with(".nro");
+                                        : lower.ends_with(".nsp") || lower.ends_with(".xci") || lower.ends_with(".nro") ||
+                                          lower.ends_with(".nsz") || lower.ends_with(".xcz") || lower.ends_with(".nca");
     if (!allowed) return false;
     const auto stem = lower.substr(0, lower.find('.'));
     if (stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" ||
