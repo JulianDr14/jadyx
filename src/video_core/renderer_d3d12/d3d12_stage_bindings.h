@@ -21,6 +21,8 @@ struct StageBindings {
     std::vector<Shader::ImageBufferDescriptor> image_buffer_descriptors;
     std::vector<Shader::TextureDescriptor> texture_descriptors;
     std::vector<Shader::ImageDescriptor> image_descriptors;
+    std::vector<Shader::TextureRemapArray> texture_remap_arrays;
+    u32 texture_remap_bytes{};
     Shader::VaryingState loads;
     Shader::VaryingState stores; ///< Read by the draw trace only.
     u64 interpolation{}; ///< Two bits per generic, Shader::Interpolation; diagnostic only.

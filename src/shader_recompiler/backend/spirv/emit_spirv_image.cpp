@@ -239,10 +239,30 @@ private:
     spv::ImageOperandsMask mask{};
 };
 
+/// Pool slot of a remapped texture: byte idx of the remap table (Shader::TextureRemapArray)
+Id TextureRemapSlot(EmitContext& ctx, Id idx) {
+    const Id row{ctx.OpShiftRightLogical(ctx.U32[1], idx, ctx.Const(4U))};
+    const Id word{ctx.OpBitwiseAnd(ctx.U32[1], ctx.OpShiftRightLogical(ctx.U32[1], idx,
+                                                                       ctx.Const(2U)),
+                                   ctx.Const(3U))};
+    const Id pointer{
+        ctx.OpAccessChain(ctx.texture_remap_element, ctx.texture_remap, ctx.u32_zero_value, row, word)};
+    const Id bits{ctx.OpShiftLeftLogical(ctx.U32[1], ctx.OpBitwiseAnd(ctx.U32[1], idx, ctx.Const(3U)),
+                                         ctx.Const(3U))};
+    return ctx.OpBitFieldUExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[1], pointer), bits,
+                                  ctx.Const(8U));
+}
+
+/// Index of a texture array element; for a pool, the slot its remap byte holds
+Id TextureIndex(EmitContext& ctx, const TextureDefinition& def, const IR::Value& index) {
+    const Id idx{index.IsImmediate() ? ctx.Const(index.U32()) : ctx.Def(index)};
+    return def.remap_pool ? TextureRemapSlot(ctx, idx) : idx;
+}
+
 Id Texture(EmitContext& ctx, IR::TextureInstInfo info, [[maybe_unused]] const IR::Value& index) {
     const TextureDefinition& def{ctx.textures.at(info.descriptor_index)};
     if (def.count > 1) {
-        auto const idx = index.IsImmediate() ? ctx.Const(index.U32()) : ctx.Def(index);
+        auto const idx = TextureIndex(ctx, def, index);
         const bool non_uniform{MarkNonUniform(ctx, idx, index, NonUniformKind::SampledImage)};
         const Id pointer{ctx.OpAccessChain(def.pointer_type, def.id, idx)};
         const Id object{ctx.OpLoad(def.sampled_type, pointer)};
@@ -275,7 +295,7 @@ Id TextureImage(EmitContext& ctx, IR::TextureInstInfo info, const IR::Value& ind
     } else {
         const TextureDefinition& def{ctx.textures.at(info.descriptor_index)};
         if (def.count > 1) {
-            auto const idx = index.IsImmediate() ? ctx.Const(index.U32()) : ctx.Def(index);
+            auto const idx = TextureIndex(ctx, def, index);
             const bool non_uniform{MarkNonUniform(ctx, idx, index, NonUniformKind::SampledImage)};
             const Id ptr = ctx.OpAccessChain(def.pointer_type, def.id, idx);
             const Id object = ctx.OpLoad(def.sampled_type, ptr);

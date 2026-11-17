@@ -367,6 +367,7 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     D3D12::SetGlitchFrames(config.glitch_frames);
     VideoCommon::ReadbackTrace::SetPreciseCpuWrites(config.precise_writes);
     D3D12::SetShuffleWaveUniform(config.shuffle_wave_uniform);
+    D3D12::SetTextureRemap(config.texture_remap);
     D3D12::SetWaveSelfTest(config.glitch_hunt_menu);
     VideoCommon::GeoHunt::Configure(config.geo_hunt, config.geo_hunt_check_kb, config.geo_hunt_upload_kb);
     if (config.geo_hunt) {

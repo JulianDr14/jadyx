@@ -186,6 +186,9 @@ struct BootConfig {
     /// Guest shuffles read their source lanes through indices the wave agrees on (on unless
     /// "shuffle_wave_uniform=0"): the Series driver reads the first lane's source on every lane.
     bool shuffle_wave_uniform{true};
+    /// Per-pixel texture picks from handle arrays sample a pool through a remap table (on unless
+    /// "texture_remap=0").
+    bool texture_remap{true};
     /// Fine per-draw D3D12 CPU timers ("gpu_profile=1"). Off because clock reads are measurable.
     bool gpu_profile{};
     /// Writes every translated guest shader to the dump folder ("dump_guest_shaders=1").

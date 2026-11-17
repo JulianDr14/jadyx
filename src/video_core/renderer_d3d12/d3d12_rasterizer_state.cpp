@@ -389,6 +389,11 @@ void RasterizerD3D12::SetGraphicsRootArguments(CommandStream* cmd,
                                                bindings.integer_samplers);
         cached.integer_samplers = bindings.integer_samplers;
     }
+    if (layout.TextureRemapIndex() != PipelineLayout::NO_TABLE && bindings.texture_remap &&
+        (!cached.valid || cached.texture_remap != bindings.texture_remap)) [[unlikely]] {
+        cmd->SetGraphicsRootConstantBufferView(layout.TextureRemapIndex(), bindings.texture_remap);
+        cached.texture_remap = bindings.texture_remap;
+    }
     if (layout.LocalMemoryScratchIndex() != PipelineLayout::NO_TABLE) [[unlikely]] {
         const D3D12_GPU_VIRTUAL_ADDRESS pool = local_memory_pool.Address(
             pipeline_cache.LocalMemoryScratchLanes(), pipeline.LocalMemoryScratchWords());

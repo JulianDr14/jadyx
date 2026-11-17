@@ -407,6 +407,12 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                           (config.shuffle_wave_uniform ? "on" : "off"));
                 continue;
             }
+            if (line == "texture_remap=0" || line == "texture_remap=1") {
+                config.texture_remap = line.back() == '1';
+                WriteDiag(std::string{"boot.cfg: texture_remap "} +
+                          (config.texture_remap ? "on" : "off"));
+                continue;
+            }
             if (line == "precise_writes=0" || line == "precise_writes=1") {
                 config.precise_writes = line.back() == '1';
                 WriteDiag(std::string{"boot.cfg: precise_writes "} + (config.precise_writes ? "on" : "off"));

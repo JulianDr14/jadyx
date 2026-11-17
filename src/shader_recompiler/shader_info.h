@@ -231,10 +231,36 @@ struct TextureDescriptor {
     u32 index_shift;
     u32 mask = 0xffffffff;
     u32 secondary_mask = 0xffffffff;
+    /// The elements are the distinct handles of the stage's texture_remap_arrays of this pool,
+    /// chosen when drawing; the cbuf fields are those of its first array.
+    bool remap_pool = false;
 
     auto operator<=>(const TextureDescriptor&) const = default;
 };
 using TextureDescriptors = boost::container::small_vector<TextureDescriptor, 12>;
+
+/// A dynamically indexed array of texture handles (HostTranslateInfo::support_texture_remap):
+/// element i is sampled from the pool texture_descriptors[pool] at the slot the remap table
+/// holds at byte remap_base + i. Elements past the bound constant buffer use slot 0.
+struct TextureRemapArray {
+    u32 pool;
+    u32 cbuf_index;
+    u32 cbuf_offset;
+    u32 size_shift;
+    u32 count;
+    u32 remap_base;
+    u32 mask = 0xffffffff;
+
+    auto operator<=>(const TextureRemapArray&) const = default;
+};
+using TextureRemapArrays = boost::container::small_vector<TextureRemapArray, 4>;
+
+/// The remap table: one byte per element of every remap array, read as uvec4s from the uniform
+/// buffer at this set (register space on D3D12) and binding.
+constexpr u32 TEXTURE_REMAP_DESCRIPTOR_SET = 24;
+constexpr u32 TEXTURE_REMAP_BINDING = 0;
+constexpr u32 TEXTURE_REMAP_MAX_BYTES = 16384;
+constexpr u32 TEXTURE_REMAP_MAX_POOL = 128;
 
 /// The layout behind a raw 32-bit image load, for hosts that cannot view the image as R32.
 enum class RawImageLoad : u8 {
@@ -380,6 +406,9 @@ struct Info {
     ImageBufferDescriptors image_buffer_descriptors;
     TextureDescriptors texture_descriptors;
     ImageDescriptors image_descriptors;
+    TextureRemapArrays texture_remap_arrays;
+    /// Bytes of the remap table the shader reads (0: none)
+    u32 texture_remap_bytes{};
 };
 
 template <typename Descriptors>

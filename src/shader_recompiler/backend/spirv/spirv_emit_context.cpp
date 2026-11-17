@@ -2124,12 +2124,31 @@ void EmitContext::DefineTextures(const Info& info, u32& binding, u32& scaling_in
             .count = desc.count,
             .is_multisample = desc.is_multisample,
             .is_integer = desc.is_integer,
+            .remap_pool = desc.remap_pool,
         });
         if (profile.supported_spirv >= 0x00010400) {
             interfaces.push_back(id);
         }
         binding += profile.descriptor_arrays_use_count ? desc.count : 1;
         ++scaling_index;
+    }
+    if (info.texture_remap_bytes != 0) {
+        // struct { uvec4 rows[N]; }: four slot bytes per word, sixteen per row
+        const u32 rows{(info.texture_remap_bytes + 15) / 16};
+        const Id rows_type{TypeArray(U32[4], Const(rows))};
+        Decorate(rows_type, spv::Decoration::ArrayStride, 16U);
+        const Id table_type{TypeStruct(rows_type)};
+        Decorate(table_type, spv::Decoration::Block);
+        MemberDecorate(table_type, 0, spv::Decoration::Offset, 0U);
+        texture_remap_element = TypePointer(spv::StorageClass::Uniform, U32[1]);
+        texture_remap = AddGlobalVariable(TypePointer(spv::StorageClass::Uniform, table_type),
+                                          spv::StorageClass::Uniform);
+        Decorate(texture_remap, spv::Decoration::Binding, TEXTURE_REMAP_BINDING);
+        Decorate(texture_remap, spv::Decoration::DescriptorSet, TEXTURE_REMAP_DESCRIPTOR_SET);
+        Name(texture_remap, "texture_remap");
+        if (profile.supported_spirv >= 0x00010400) {
+            interfaces.push_back(texture_remap);
+        }
     }
     if (info.uses_atomic_image_u32) {
         image_u32 = TypePointer(spv::StorageClass::Image, U32[1]);

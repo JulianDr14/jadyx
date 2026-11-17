@@ -85,6 +85,11 @@ void SetComputeWorkgroupSplit(u32 factor);
 /// were uniform, so a per-lane source reads the first lane's on every lane. Set before boot.
 void SetShuffleWaveUniform(bool enabled);
 
+/// Fragment shaders that pick a texture of a handle array per pixel sample a pool of the draw's
+/// distinct handles through a remap table (on by default, "texture_remap=0" turns it off and
+/// gives each array its own descriptors again). Set before boot.
+void SetTextureRemap(bool enabled);
+
 class ShaderCompiler;
 class TextureCacheRuntime;
 
