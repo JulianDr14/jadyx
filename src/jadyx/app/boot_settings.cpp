@@ -435,6 +435,9 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     VideoCore::FramePipeline::SetSwapIntervalHold(config.swap_interval_hold);
     D3D12::SetPsoBudget(config.pso_budget);
     D3D12::SetPsoLoading(config.pso_loading);
+    D3D12::SetRetainMultiSessionWaits(config.pso_retained_wait);
+    D3D12::SetWaitPriorityCap(config.pso_wait_cap);
+    D3D12::SetHotKeepSessions(config.pso_keep_sessions);
     VideoCommon::CpuWriteQueue::SetMode(config.cpu_write_defer);
     VideoCore::FastPaths::SetEnabled(config.gpu_fast_paths);
     VideoCommon::CpuWriteQueue::SetAllWrites(config.cpu_write_all);

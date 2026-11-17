@@ -597,11 +597,13 @@ private:
     /// that cannot go on without it (WaitBuilt).
     struct PendingBuild {
         std::atomic_bool claimed{};
+        bool urgent{};
         u64 queued_us{};
         Common::UniqueFunction<void> run;
     };
     /// Queues job on worker, claimable by WaitBuilt; without a worker, runs it here.
-    void QueueBuild(Common::ThreadWorker* worker, Common::UniqueFunction<void> job);
+    void QueueBuild(Common::ThreadWorker* worker, Common::UniqueFunction<void> job,
+                    bool urgent = false);
     /// Runs a claimed build, recording how long it sat in the queue. Its thread runs at least at
     /// the base build priority ("pso_priority=") and goes back to its own priority afterwards.
     void RunClaimed(PendingBuild& build);
