@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "common/thread.h"
+#include "common/vm_activity.h"
 
 namespace D3D12 {
 
@@ -74,6 +75,7 @@ D3D12_HEAP_PROPERTIES PropertiesOf(HeapClass heap_class) {
 /// is discarded on first use and every other texture is uploaded or copied before it is sampled.
 HRESULT CreatePoolHeap(ID3D12Device* device, D3D12_HEAP_DESC heap_desc, ComPtr<ID3D12Heap>& heap) {
     heap_desc.Flags |= NotZeroedFlag(device);
+    const Common::VmActivity::Scope vm{Common::VmActivity::Kind::GpuHeap};
     HRESULT hr = device->CreateHeap(&heap_desc, IID_PPV_ARGS(&heap));
     if (RefuseNotZeroed(heap_desc.Flags, hr)) {
         heap_desc.Flags &= ~D3D12_HEAP_FLAG_CREATE_NOT_ZEROED;
@@ -659,6 +661,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::CreateImpl(
     desc.Alignment = 0;
     const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
     const auto create_committed = [&] {
+        const Common::VmActivity::Scope vm{Common::VmActivity::Kind::GpuHeap};
         return device.Get()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
                                                       initial_state, clear_value,
                                                       IID_PPV_ARGS(&result.resource));
