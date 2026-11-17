@@ -1,11 +1,15 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Desktop gate for the Nextendo pieces that need no server: name rules, hosts file, address book,
-// id_token, signed catalog, trust roots, PKCE, API parsing and the rooms/Nextendo arbiter.
+// id_token, signed catalog, trust roots, PKCE, API parsing, the rooms/Nextendo arbiter and the
+// account session against a fake server.
 
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
+#include <map>
+#include <optional>
 #include <source_location>
 #include <sstream>
 #include <string>
@@ -26,6 +30,7 @@
 #include "jadyx/network/nextendo/api_types.h"
 #include "jadyx/network/nextendo/network_mode.h"
 #include "jadyx/network/nextendo/pkce.h"
+#include "jadyx/network/nextendo/session.h"
 
 using namespace Core::Online::Nextendo;
 namespace App = Jadyx::Network::Nextendo;
@@ -519,6 +524,436 @@ void TestNetworkMode() {
     Check(change.allowed && !change.stop_nextendo);
 }
 
+// A scripted Nextendo server: each path answers from a handler, every call is recorded.
+struct FakeServer {
+    using Handler = std::function<Jadyx::Http::ApiResponse(const Jadyx::Http::ApiRequest&)>;
+    std::map<std::string, Handler> routes;
+    std::vector<Jadyx::Http::ApiRequest> calls;
+    bool offline = false;
+
+    Jadyx::Http::ApiResponse operator()(const Jadyx::Http::ApiRequest& request) {
+        calls.push_back(request);
+        if (offline) {
+            return {};
+        }
+        const std::string prefix = "https://nextendo.network";
+        const std::string path = request.url.starts_with(prefix) ? request.url.substr(prefix.size())
+                                                                 : request.url;
+        const auto route = routes.find(path);
+        if (route == routes.end()) {
+            return {.status = 404};
+        }
+        return route->second(request);
+    }
+    int Count(std::string_view path) const {
+        int n = 0;
+        for (const auto& call : calls) {
+            n += call.url.ends_with(path) ? 1 : 0;
+        }
+        return n;
+    }
+    const Jadyx::Http::ApiRequest* Last(std::string_view path) const {
+        for (auto it = calls.rbegin(); it != calls.rend(); ++it) {
+            if (it->url.ends_with(path)) {
+                return &*it;
+            }
+        }
+        return nullptr;
+    }
+};
+
+struct MemoryStorage final : App::Storage {
+    std::optional<std::string> refresh;
+    std::optional<std::string> catalog;
+    bool fail_save = false;
+    std::optional<std::string> LoadRefreshToken() override {
+        return refresh;
+    }
+    bool SaveRefreshToken(std::string_view token) override {
+        if (fail_save) {
+            return false;
+        }
+        refresh = std::string(token);
+        return true;
+    }
+    void ClearRefreshToken() override {
+        refresh.reset();
+    }
+    std::optional<std::string> LoadCatalog() override {
+        return catalog;
+    }
+    void SaveCatalog(std::string_view envelope) override {
+        catalog = std::string(envelope);
+    }
+};
+
+Jadyx::Http::ApiResponse Json(unsigned status, std::string body, std::string retry_after = {}) {
+    return {.status = status, .body = std::move(body), .retry_after = std::move(retry_after)};
+}
+
+std::string FormValue(const std::string& body, const std::string& key) {
+    std::size_t at = 0;
+    while ((at = body.find(key + "=", at)) != std::string::npos) {
+        if (at == 0 || body[at - 1] == '&') {
+            const auto start = at + key.size() + 1;
+            const auto end = body.find('&', start);
+            return body.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        }
+        ++at;
+    }
+    return {};
+}
+
+// A server with rotating refresh tokens: "rtN" is valid only while it is the newest.
+void InstallHappyRoutes(FakeServer& server, int& rotation, const std::string& catalog_envelope) {
+    server.routes["/api/oauth/token"] = [&rotation](const Jadyx::Http::ApiRequest& request) {
+        const auto grant = FormValue(request.body, "grant_type");
+        if (grant == "authorization_code") {
+            if (FormValue(request.body, "code") != "good-code" ||
+                FormValue(request.body, "code_verifier").empty()) {
+                return Json(400, R"({"error":"invalid_grant"})");
+            }
+        } else if (FormValue(request.body, "refresh_token") != "rt" + std::to_string(rotation)) {
+            return Json(400, R"({"error":"invalid_grant"})");
+        }
+        ++rotation;
+        const auto n = std::to_string(rotation);
+        return Json(200, R"({"access_token":"at)" + n + R"(","refresh_token":"rt)" + n +
+                             R"(","token_type":"Bearer","expires_in":3600,"scope":"game.matchmaking"})");
+    };
+    server.routes["/api/nex-token"] = [](const Jadyx::Http::ApiRequest& request) {
+        if (!request.bearer.starts_with("at")) {
+            return Json(401, "{}");
+        }
+        return Json(200, R"({"nex_token":"nx2secret","pid":1800000001,"friend_code":"1111-2222-3333","username":"player","expires_in":86400})");
+    };
+    server.routes["/api/online-status"] = [](const Jadyx::Http::ApiRequest& request) {
+        return request.bearer == "nx2secret" ? Json(200, R"({"allow":true,"reason":null})")
+                                             : Json(401, "{}");
+    };
+    server.routes["/api/session-status"] = [](const Jadyx::Http::ApiRequest& request) {
+        return request.bearer == "nx2secret"
+                   ? Json(200, R"({"email_verified":true,"revoked":false})")
+                   : Json(401, "{}");
+    };
+    server.routes["/api/me"] = [](const Jadyx::Http::ApiRequest&) {
+        return Json(200, R"({"account":{"pid":1800000001,"username":"player","name":"Player One",
+            "friend_code":"SW-1111-2222-3333","nsa":"0123456789abcdef"},"presence":{"status":0}})");
+    };
+    server.routes["/api/presence"] = [](const Jadyx::Http::ApiRequest&) { return Json(200, "{}"); };
+    server.routes["/api/nex-session"] = [](const Jadyx::Http::ApiRequest&) {
+        return Json(200, R"({"ok":true,"session_id":"s1"})");
+    };
+    server.routes["/api/oauth/revoke"] = [](const Jadyx::Http::ApiRequest&) {
+        return Json(200, "{}");
+    };
+    server.routes["/service-catalog/v1/game-catalog"] =
+        [&catalog_envelope](const Jadyx::Http::ApiRequest&) { return Json(200, catalog_envelope); };
+}
+
+std::string SessionCatalog(int revision) {
+    return R"({"document_type":"game_catalog","schema_version":1,"revision":)" +
+           std::to_string(revision) +
+           R"(,"issued_at":"2026-11-16T00:00:00Z","expires_at":"2026-11-18T00:00:00Z","games":[
+        {"title_ids":["0100000000010000"],"name":"Sample Game","enabled":true,"protocol":"nex",
+         "required_capabilities":["versions.exact.v1"],
+         "versions":{"policy":"exact","accepted":["1.2.0"],"recommended":"1.2.0"}},
+        {"title_ids":["0100000000030000"],"enabled":true,
+         "required_capabilities":["future.thing.v9"],"versions":{"policy":"exact"}}]})";
+}
+
+int PresenceStatus(const FakeServer& server) {
+    return nlohmann::json::parse(server.Last("/api/presence")->body)["status"].get<int>();
+}
+
+void TestSession() {
+    using App::Phase;
+    using App::Problem;
+    const std::int64_t start = *ParseUtcTimestamp("2026-11-17T00:00:00Z");
+    std::int64_t now = start;
+    const auto clock = [&now] { return now; };
+    const auto key = MakeEd25519();
+    const SigningKey test_key{"test-key-1", key.public_b64};
+    std::string catalog_envelope = SignEnvelope(key, "test-key-1", SessionCatalog(5));
+
+    FakeServer server;
+    int rotation = 0;
+    InstallHappyRoutes(server, rotation, catalog_envelope);
+    MemoryStorage storage;
+    App::Session session{std::ref(server), storage, clock, test_key};
+    const auto& view = session.View();
+
+    // Signed out: only the public catalog is downloaded, with no client id and no bearer.
+    session.Resume();
+    Check(view.phase == Phase::SignedOut);
+    std::int64_t wait = session.Step();
+    Check(wait >= 1 && server.calls.size() == 1 && server.Count("/game-catalog") == 1);
+    Check(server.calls[0].bearer.empty() && server.calls[0].headers.empty());
+    Check(view.catalog_state == App::CatalogState::Ready);
+    Check(view.catalog_revision == 5 && view.catalog.size() == 2);
+    Check(view.catalog[0].name == "Sample Game" && view.catalog[0].client_supported);
+    Check(!view.catalog[1].client_supported);
+    Check(storage.catalog == catalog_envelope);
+    Check(!session.Identity());
+
+    // A cancelled page and a refused callback leave nothing behind.
+    session.BeginSignIn();
+    Check(view.phase == Phase::SigningIn);
+    session.CancelSignIn(true);
+    Check(view.phase == Phase::SignedOut && view.problem == Problem::SignInCancelled);
+    session.BeginSignIn();
+    session.FinishSignIn({.code = "", .error = "access_denied"}, "v", "r");
+    Check(view.problem == Problem::SignInCancelled);
+    session.BeginSignIn();
+    session.FinishSignIn({.code = "stale-code", .error = ""}, "verifier",
+                         std::string(App::kRedirectUri));
+    session.Step();
+    Check(view.phase == Phase::SignedOut && view.problem == Problem::SignInRejected);
+    Check(!storage.refresh);
+
+    // The real sign-in: code exchange, game token, status and profile in one Step.
+    server.calls.clear();
+    session.BeginSignIn();
+    session.FinishSignIn({.code = "good-code", .error = ""}, "verifier",
+                         std::string(App::kRedirectUri));
+    Check(view.phase == Phase::Connecting);
+    wait = session.Step();
+    Check(view.phase == Phase::Ready && view.problem == Problem::None);
+    Check(storage.refresh == "rt1");
+    Check(view.pid == 1800000001 && view.username == "player" && view.display_name == "Player One");
+    Check(view.friend_code == "SW-1111-2222-3333" && view.email_verified && view.online_allowed);
+    Check(view.status_known && view.game_token_expires == now + 86400);
+    for (const auto& call : server.calls) {
+        bool has_client = false;
+        for (const auto& [name, value] : call.headers) {
+            has_client |= name == "X-Nextendo-Client-Id" && value == App::kClientId;
+        }
+        Check(has_client);
+        Check(call.url.starts_with("https://nextendo.network/api/"));
+    }
+    Check(server.Last("/api/nex-token")->bearer == "at1");
+    Check(server.Last("/api/online-status")->bearer == "nx2secret");
+    Check(server.Last("/api/session-status")->bearer == "nx2secret");
+    Check(server.Last("/api/me")->bearer == "at1");
+    Check(server.Count("/api/presence") == 0); // not wanted yet
+    const auto identity = session.Identity();
+    Check(identity && identity->nex_token == "nx2secret" && identity->pid == 1800000001 &&
+          identity->nsa_id == "0123456789abcdef");
+    // Nothing is due for a while: the access token is the first thing to renew.
+    Check(wait > 60 && wait <= 3600 - App::Timing::AccessMargin);
+
+    // Presence every 60 s while wanted; the heartbeat only while a game runs.
+    server.calls.clear();
+    session.SetPresenceWanted(true);
+    wait = session.Step();
+    Check(server.Count("/api/presence") == 1 && view.presence_live && PresenceStatus(server) == 1);
+    Check(wait <= App::Timing::PresenceEvery);
+    session.SetPlaying(0x0100000000010000ULL, "Lobby");
+    session.Step();
+    Check(server.Count("/api/presence") == 2 && server.Count("/api/nex-session") == 1);
+    Check(PresenceStatus(server) == 2 && server.Last("/api/nex-session")->bearer == "nx2secret");
+    now += 30;
+    session.Step();
+    Check(server.Count("/api/presence") == 2 && server.Count("/api/nex-session") == 1);
+    now += 31;
+    session.Step();
+    Check(server.Count("/api/presence") == 3 && server.Count("/api/nex-session") == 2);
+    session.SetPlaying(0, "");
+    session.SetPresenceWanted(false);
+    session.Step();
+    Check(PresenceStatus(server) == 0 && !view.presence_live);
+    const int presence_calls = server.Count("/api/presence");
+    now += 120;
+    session.Step();
+    Check(server.Count("/api/presence") == presence_calls);
+
+    // The access token is refreshed before it runs out, and the refresh token rotates.
+    server.calls.clear();
+    now = start + 3600 - App::Timing::AccessMargin + 1;
+    session.Step();
+    Check(server.Count("/api/oauth/token") == 1 && storage.refresh == "rt2");
+    Check(FormValue(server.Last("/api/oauth/token")->body, "refresh_token") == "rt1");
+
+    // A restart signs in again with the stored token, without the browser.
+    {
+        FakeServer other;
+        int other_rotation = 2;
+        InstallHappyRoutes(other, other_rotation, catalog_envelope);
+        MemoryStorage copy = storage;
+        App::Session restarted{std::ref(other), copy, clock, test_key};
+        restarted.Resume();
+        Check(restarted.View().phase == Phase::Connecting);
+        Check(restarted.View().catalog_state == App::CatalogState::Ready); // from the cache
+        restarted.Step();
+        Check(restarted.View().phase == Phase::Ready && copy.refresh == "rt3");
+        // The token was used elsewhere (rotation moved on): the session ends cleanly.
+        other_rotation = 9;
+        now += 3600;
+        restarted.Step();
+        Check(restarted.View().phase == Phase::SignedOut);
+        Check(restarted.View().problem == Problem::SessionExpired && !copy.refresh);
+        Check(!restarted.Identity());
+        Check(restarted.View().catalog_state == App::CatalogState::Ready); // kept
+    }
+
+    // A 401 on the game token refreshes once and retries.
+    {
+        FakeServer other;
+        int other_rotation = 0;
+        InstallHappyRoutes(other, other_rotation, catalog_envelope);
+        MemoryStorage store;
+        store.refresh = "rt0";
+        int nex_calls = 0;
+        other.routes["/api/nex-token"] = [&nex_calls](const Jadyx::Http::ApiRequest& request) {
+            ++nex_calls;
+            if (request.bearer == "at1") {
+                return Json(401, "{}");
+            }
+            return Json(200, R"({"nex_token":"nx2secret","pid":5,"expires_in":86400})");
+        };
+        App::Session s{std::ref(other), store, clock, test_key};
+        s.Resume();
+        s.Step();
+        Check(nex_calls == 2 && other.Count("/api/oauth/token") == 2);
+        Check(s.View().phase == Phase::Ready && store.refresh == "rt2");
+    }
+
+    // 403 on the game token: the account did not grant game access; sign in again.
+    {
+        FakeServer other;
+        int other_rotation = 0;
+        InstallHappyRoutes(other, other_rotation, catalog_envelope);
+        other.routes["/api/nex-token"] = [](const Jadyx::Http::ApiRequest&) {
+            return Json(403, "{}");
+        };
+        MemoryStorage store;
+        store.refresh = "rt0";
+        App::Session s{std::ref(other), store, clock, test_key};
+        s.Resume();
+        s.Step();
+        Check(s.View().phase == Phase::SignedOut && s.View().problem == Problem::MissingScope);
+        Check(!store.refresh);
+    }
+
+    // 429 waits for Retry-After; no answer backs off 15 s, 30 s, ... up to 10 minutes.
+    {
+        FakeServer other;
+        int other_rotation = 0;
+        InstallHappyRoutes(other, other_rotation, catalog_envelope);
+        other.routes["/api/nex-token"] = [](const Jadyx::Http::ApiRequest&) {
+            return Json(429, "{}", "42");
+        };
+        MemoryStorage store;
+        store.refresh = "rt0";
+        App::Session s{std::ref(other), store, clock, test_key};
+        s.Resume();
+        const auto w = s.Step();
+        Check(s.View().problem == Problem::RateLimited && s.View().retry_after == 42 && w == 42);
+        const auto before = other.calls.size();
+        now += 10;
+        s.Step();
+        Check(other.calls.size() == before); // still waiting
+        now += 40;
+        other.offline = true;
+        Check(s.Step() == App::Timing::FirstBackoff && s.View().problem == Problem::Offline);
+        now += App::Timing::FirstBackoff;
+        Check(s.Step() == 2 * App::Timing::FirstBackoff);
+        for (int i = 0; i < 10; ++i) {
+            now += App::Timing::MaxBackoff;
+            s.Step();
+        }
+        Check(s.Step() <= App::Timing::MaxBackoff);
+        Check(s.View().phase == Phase::Connecting && store.refresh); // nothing lost offline
+        other.offline = false;
+        InstallHappyRoutes(other, other_rotation, catalog_envelope);
+        now += App::Timing::MaxBackoff;
+        s.Step();
+        Check(s.View().phase == Phase::Ready && s.View().problem == Problem::None);
+    }
+
+    // A blocked account says why; a session revoked from the website signs out.
+    {
+        FakeServer other;
+        int other_rotation = 0;
+        InstallHappyRoutes(other, other_rotation, catalog_envelope);
+        other.routes["/api/online-status"] = [](const Jadyx::Http::ApiRequest&) {
+            return Json(200, R"({"allow":false,"reason":"unverified"})");
+        };
+        MemoryStorage store;
+        store.refresh = "rt0";
+        App::Session s{std::ref(other), store, clock, test_key};
+        s.Resume();
+        s.Step();
+        Check(s.View().phase == Phase::Ready && !s.View().online_allowed);
+        Check(s.View().block == App::OnlineBlock::Unverified);
+        other.routes["/api/session-status"] = [](const Jadyx::Http::ApiRequest&) {
+            return Json(200, R"({"email_verified":true,"revoked":true})");
+        };
+        now += App::Timing::StatusEvery;
+        s.Step();
+        Check(s.View().phase == Phase::SignedOut && s.View().problem == Problem::Revoked);
+        Check(!store.refresh && !s.Identity());
+    }
+
+    // The vault refusing the token is shown; the session works until the app closes.
+    {
+        FakeServer other;
+        int other_rotation = 0;
+        InstallHappyRoutes(other, other_rotation, catalog_envelope);
+        MemoryStorage store;
+        store.refresh = "rt0";
+        store.fail_save = true;
+        App::Session s{std::ref(other), store, clock, test_key};
+        s.Resume();
+        s.Step();
+        Check(s.View().phase == Phase::Ready && s.View().problem == Problem::StorageFailed);
+    }
+
+    // Catalog: a bad signature or an older revision never replaces the one shown; a newer does.
+    {
+        const auto version_before = view.version;
+        auto tampered = nlohmann::json::parse(catalog_envelope);
+        tampered["payload"] = Base64Standard(SessionCatalog(9));
+        catalog_envelope = tampered.dump();
+        session.RequestCatalog();
+        session.Step();
+        Check(view.catalog_revision == 5 && view.catalog_state == App::CatalogState::Ready);
+        catalog_envelope = SignEnvelope(key, "test-key-1", SessionCatalog(4));
+        session.RequestCatalog();
+        session.Step();
+        Check(view.catalog_revision == 5);
+        catalog_envelope = SignEnvelope(key, "test-key-1", SessionCatalog(6));
+        session.RequestCatalog();
+        session.Step();
+        Check(view.catalog_revision == 6 && storage.catalog == catalog_envelope);
+        Check(view.version > version_before);
+        // The cached copy is verified again on load: a tampered file is ignored.
+        MemoryStorage bad;
+        bad.catalog = tampered.dump();
+        FakeServer quiet;
+        quiet.offline = true;
+        App::Session s{std::ref(quiet), bad, clock, test_key};
+        s.Resume();
+        Check(s.View().catalog_state == App::CatalogState::Empty);
+        s.Step();
+        Check(s.View().catalog_state == App::CatalogState::Failed);
+    }
+
+    // Sign-out revokes the refresh token on the server and forgets everything.
+    server.calls.clear();
+    const auto stored = storage.refresh;
+    Check(stored.has_value());
+    session.SignOut();
+    Check(server.Count("/api/oauth/revoke") == 1);
+    const auto* revoke = server.Last("/api/oauth/revoke");
+    Check(FormValue(revoke->body, "token") == *stored && revoke->bearer.empty());
+    Check(FormValue(revoke->body, "client_id") == App::kClientId);
+    Check(view.phase == Phase::SignedOut && view.problem == Problem::None && view.pid == 0);
+    Check(view.username.empty() && !storage.refresh && !session.Identity());
+    Check(view.catalog_state == App::CatalogState::Ready);
+    EVP_PKEY_free(key.key);
+}
+
 } // namespace
 
 int main() {
@@ -532,6 +967,7 @@ int main() {
     TestTrust();
     TestApi();
     TestNetworkMode();
+    TestSession();
     std::printf("nextendo gate: %d checks passed\n", g_checks);
     return 0;
 }

@@ -228,6 +228,8 @@ add_executable(jadyx WIN32
     network/nextendo/network_mode.h
     network/nextendo/pkce.cpp
     network/nextendo/pkce.h
+    network/nextendo/session.cpp
+    network/nextendo/session.h
     network/online_rooms.cpp
     network/online_rooms.h
     updates/package_validation.cpp
