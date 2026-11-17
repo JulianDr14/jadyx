@@ -37,7 +37,7 @@ int main(int argc, char** argv) try {
         .support_float64=true,.support_float16=false,.support_int64=true,
         .needs_demote_reorder=true,.support_snorm_render_buffer=true,
         .support_viewport_index_layer=true,.support_geometry_shader_passthrough=false,
-        .support_conditional_barrier=false};
+        .support_conditional_barrier=false,.support_texture_remap=true};
     host.ApplyDescriptorLimitPolicy();
     std::set<u64> done;
     VideoCommon::LoadPipelines({}, cache_copy, 1,
@@ -80,7 +80,11 @@ int main(int argc, char** argv) try {
                 for (const auto& tx : p.info.texture_descriptors)
                     graph["textures"].push_back({{"cbuf",tx.cbuf_index},{"offset",tx.cbuf_offset},
                         {"type",static_cast<u32>(tx.type)},{"depth",tx.is_depth},{"integer",tx.is_integer},
-                        {"count",tx.count},{"secondary",tx.has_secondary}});
+                        {"count",tx.count},{"secondary",tx.has_secondary},{"remap_pool",tx.remap_pool}});
+                graph["texture_remap_bytes"] = p.info.texture_remap_bytes;
+                graph["texture_remaps"] = nlohmann::json::array();
+                for (const auto& r : p.info.texture_remap_arrays)
+                    graph["texture_remaps"].push_back({{"pool",r.pool},{"cbuf",r.cbuf_index},{"offset",r.cbuf_offset},{"shift",r.size_shift},{"count",r.count},{"base",r.remap_base}});
                 std::map<const Shader::IR::Inst*, size_t> ids;
                 for (auto* block : p.blocks) for (const auto& inst : *block) ids.emplace(&inst, ids.size());
                 graph["blocks"] = nlohmann::json::array();
