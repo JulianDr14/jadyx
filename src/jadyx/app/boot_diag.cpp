@@ -261,6 +261,28 @@ static std::string DescribeEmitFaultContext(const Dynarmic::CodeEmitFaults& faul
     return text + first;
 }
 
+// The background cross-modify watch's counts; empty while it is off.
+static std::string DescribeCrossModifyWatch() {
+    const Dynarmic::CrossModifyWatch watch = Dynarmic::GetCrossModifyWatch();
+    if (!watch.running) {
+        return {};
+    }
+    const auto target = [](const char* name, const Dynarmic::CrossModifyWatch::Target& t) {
+        std::string text = std::string(name) + " " + std::to_string(t.faults) + "/" +
+                           std::to_string(t.writes);
+        if (t.stuck != 0) {
+            text += " (" + std::to_string(t.stuck) + " stuck)";
+        }
+        if (t.faults != 0) {
+            text += " at " + std::to_string((t.first_fault_ms - 1) / 1000) + "-" +
+                    std::to_string((t.last_fault_ms - 1) / 1000) + " s";
+        }
+        return text;
+    };
+    return ", watch faults " + target("running", watch.running_page) + ", " +
+           target("idle", watch.idle_page) + ", " + target("private", watch.private_page);
+}
+
 // Faults retried while emitting JIT code; empty while there were none.
 static std::string DescribeCodeEmitFaults() {
     std::string text;
@@ -272,6 +294,7 @@ static std::string DescribeCodeEmitFaults() {
                     std::to_string(lock.last_error) + (lock.available ? "" : ", no lock API") + ")";
         }
     }
+    text += DescribeCrossModifyWatch();
     const Dynarmic::CodeEmitFaults faults = Dynarmic::GetCodeEmitFaults();
     if (faults.retries == 0) {
         return text;

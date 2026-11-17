@@ -394,6 +394,12 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 WriteDiag(DescribeCrossModifyProbe(Dynarmic::RunCrossModifyProbe()));
                 continue;
             }
+            if (line == "jit_xmc_probe=2") {
+                WriteDiag(Dynarmic::StartCrossModifyWatch()
+                              ? "boot.cfg: JIT cross-modify watch running for the session"
+                              : "boot.cfg: JIT cross-modify watch unavailable");
+                continue;
+            }
             if (line == "pso_menu=1") {
                 config.pso_menu = true;
                 WriteDiag("boot.cfg: waited pipeline build priority row in the quick menu");
