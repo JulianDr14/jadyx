@@ -49,6 +49,13 @@ struct CodeEmitFaults {
     std::array<std::size_t, 4> busy{};
     std::array<std::size_t, 4> recent{};
     std::size_t quiet = 0;
+    /// Where each fault's first try wrote: into a link patch or new code; into the 64-byte line
+    /// (or else the page) where its emission began, next to the code before it; on which CPU.
+    std::size_t patching = 0;
+    std::size_t new_code = 0;
+    std::size_t begin_line = 0;
+    std::size_t begin_page = 0;
+    std::array<std::size_t, 16> cpu{};  ///< By processor number; 15 also counts the ones above.
     /// From a fault's first try to the end of its emission, which completed.
     std::uint64_t recover_us_max = 0;
     std::uint64_t recover_us_total = 0;
@@ -94,9 +101,10 @@ struct CrossModifyProbe {
 [[nodiscard]] CrossModifyProbe RunCrossModifyProbe(unsigned case_ms = 250) noexcept;
 
 /// The probe kept running for the process's life, a few milliseconds every 50: stores into a
-/// dual-mapped page while a thread runs it, into an idle dual-mapped page (both locked like the
-/// cache's chunks), and into a plain private page. Shows whether the faults the cache takes
-/// while a game loads reach code memory nobody runs, or any memory. False where unavailable.
+/// dual-mapped page while a thread runs it (another line, the same line, and the very bytes
+/// that run), into an idle dual-mapped page (all locked like the cache's chunks), and into a
+/// plain private page; the same-line and running-bytes cases again with the writer and the
+/// running thread pinned to two emulated cores' CPUs. False where unavailable.
 bool StartCrossModifyWatch() noexcept;
 struct CrossModifyWatch {
     struct Target {
@@ -107,9 +115,14 @@ struct CrossModifyWatch {
         std::uint64_t last_fault_ms = 0;
     };
     bool running = false;
-    Target running_page;
+    bool pinned = false;  ///< The pinned targets ran: writer and executor on two emulated cores' CPUs.
+    Target running_page;  ///< Another 64-byte line of a page a thread runs.
     Target idle_page;
     Target private_page;
+    Target same_line;       ///< The rest of the 64-byte line a thread runs.
+    Target executed_bytes;  ///< The bytes a thread runs, rewritten with their own value.
+    Target same_line_pinned;
+    Target executed_bytes_pinned;
 };
 [[nodiscard]] CrossModifyWatch GetCrossModifyWatch() noexcept;
 

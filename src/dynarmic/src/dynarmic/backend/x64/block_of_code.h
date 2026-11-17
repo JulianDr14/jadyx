@@ -198,6 +198,14 @@ public:
     void SetCodePtr(CodePtr code_ptr);
     void EnsurePatchLocationSize(CodePtr begin, size_t size);
 
+    /// Marks writes into blocks already emitted (link patches), for the emit fault context.
+    void SetPatching(bool on) noexcept {
+        patching_ = on;
+    }
+    bool Patching() const noexcept {
+        return patching_;
+    }
+
     static const Xbyak::Reg64 ABI_JIT_PTR;
     // ABI registers
 #ifdef _WIN32
@@ -225,6 +233,7 @@ public:
 
 private:
     using RunCodeFuncType = HaltReason (*)(void*, CodePtr);
+    bool patching_ = false;
     /// EnsureMemoryCommitted's commit, before the dual-mapped check.
     void CommitCodeMemory(size_t codesize);
     static constexpr size_t MXCSR_ALREADY_EXITED = 1 << 0;

@@ -184,6 +184,14 @@ constexpr std::int64_t RECENT_VM_US = 5000;
 /// the current emission.
 thread_local const Backend::X64::BlockOfCode* t_emitting = nullptr;
 thread_local unsigned t_emit_fault_retries = 0;
+/// Where the outermost EmitScope began writing: a fault in the same 64-byte line wrote next to
+/// the end of the block before it, which other cores may be running.
+thread_local const u8* t_emit_scope_begin = nullptr;
+std::atomic<size_t> s_emit_fault_patching{0};
+std::atomic<size_t> s_emit_fault_new_code{0};
+std::atomic<size_t> s_emit_fault_begin_line{0};
+std::atomic<size_t> s_emit_fault_begin_page{0};
+std::array<std::atomic<size_t>, 16> s_emit_fault_cpu{};
 thread_local std::int64_t t_emit_fault_start_us = 0;
 /// About 2.5 s of waits in all: past that the fault is not the transient kind.
 constexpr unsigned MAX_EMIT_FAULT_RETRIES = 64;
@@ -254,7 +262,19 @@ LONG NTAPI EmitFaultHandler(EXCEPTION_POINTERS* ep) {
         }
         // The console reports no faulting address; the write goes where the next byte is
         // emitted. Out of the working set there says the system trimmed a page being written.
-        const int resident = PageResident(t_emitting->EmitWritePointer());
+        const u8* const at = t_emitting->EmitWritePointer();
+        (t_emitting->Patching() ? s_emit_fault_patching : s_emit_fault_new_code).fetch_add(1, std::memory_order_relaxed);
+        if (t_emit_scope_begin != nullptr) {
+            const auto line = [](const u8* p) { return reinterpret_cast<std::uintptr_t>(p) >> 6; };
+            const auto page = [](const u8* p) { return reinterpret_cast<std::uintptr_t>(p) >> 12; };
+            if (line(at) == line(t_emit_scope_begin)) {
+                s_emit_fault_begin_line.fetch_add(1, std::memory_order_relaxed);
+            } else if (page(at) == page(t_emit_scope_begin)) {
+                s_emit_fault_begin_page.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        s_emit_fault_cpu[std::min<DWORD>(GetCurrentProcessorNumber(), 15)].fetch_add(1, std::memory_order_relaxed);
+        const int resident = PageResident(at);
         if (resident == 0) {
             s_emit_fault_page_out.fetch_add(1, std::memory_order_relaxed);
         } else if (resident == 1) {
@@ -301,6 +321,13 @@ CodeEmitFaults GetCodeEmitFaults() noexcept {
         faults.recent[kind] = s_emit_fault_recent[kind].load(std::memory_order_relaxed);
     }
     faults.quiet = s_emit_fault_quiet.load(std::memory_order_relaxed);
+    faults.patching = s_emit_fault_patching.load(std::memory_order_relaxed);
+    faults.new_code = s_emit_fault_new_code.load(std::memory_order_relaxed);
+    faults.begin_line = s_emit_fault_begin_line.load(std::memory_order_relaxed);
+    faults.begin_page = s_emit_fault_begin_page.load(std::memory_order_relaxed);
+    for (size_t cpu = 0; cpu < faults.cpu.size(); ++cpu) {
+        faults.cpu[cpu] = s_emit_fault_cpu[cpu].load(std::memory_order_relaxed);
+    }
     faults.recover_us_max = s_emit_recover_us_max.load(std::memory_order_relaxed);
     faults.recover_us_total = s_emit_recover_us_total.load(std::memory_order_relaxed);
     if (s_emit_first_ready.load(std::memory_order_acquire)) {
@@ -1356,6 +1383,9 @@ int BlockOfCode::DescribeState(char* out, size_t size) const noexcept {
 BlockOfCode::EmitScope::EmitScope(const BlockOfCode& code) noexcept
         : previous{t_emitting} {
     t_emitting = &code;
+    if (previous == nullptr) {
+        t_emit_scope_begin = code.EmitWritePointer();
+    }
 }
 
 BlockOfCode::EmitScope::~EmitScope() {
@@ -1780,19 +1810,52 @@ struct WatchTargetState {
     std::atomic<u64> first_fault_ms{0};  ///< Since the watch started, + 1; 0 without faults.
     std::atomic<u64> last_fault_ms{0};
 };
-std::array<WatchTargetState, 3> s_watch_targets;
+enum WatchTarget : size_t {
+    RunningPage, IdlePage, PrivatePage, SameLine, ExecutedBytes, SameLinePinned, ExecutedBytesPinned,
+    WatchTargetCount
+};
+std::array<WatchTargetState, WatchTargetCount> s_watch_targets;
 std::atomic<bool> s_watch_running{false};
+std::atomic<bool> s_watch_pinned{false};
 
-// Stores through `target` for `ms`, counting into `state`.
+// The id of the CPU set at `index` in the system's list, 0 when there is none.
+ULONG CpuSetIdAt(size_t index) {
+    ULONG length = 0;
+    GetSystemCpuSetInformation(nullptr, 0, &length, GetCurrentProcess(), 0);
+    if (length == 0) {
+        return 0;
+    }
+    std::vector<u8> buffer(length);
+    auto* const first = reinterpret_cast<SYSTEM_CPU_SET_INFORMATION*>(buffer.data());
+    if (!GetSystemCpuSetInformation(first, length, &length, GetCurrentProcess(), 0)) {
+        return 0;
+    }
+    size_t seen = 0;
+    for (ULONG offset = 0; offset < length;) {
+        const auto* const info = reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + offset);
+        if (info->Type == CpuSetInformation && seen++ == index) {
+            return info->CpuSet.Id;
+        }
+        offset += info->Size;
+    }
+    return 0;
+}
+
+bool PinCurrentThread(ULONG id) {
+    return id != 0 && SetThreadSelectedCpuSets(GetCurrentThread(), &id, 1) != 0;
+}
+
+// Stores through `target` for `ms`, counting into `state`: `fixed` when it is 0 or more (code
+// that runs, rewritten with the bytes it already holds), a changing byte otherwise.
 void WatchWrites(volatile u8* target, unsigned ms, WatchTargetState& state,
-                 std::chrono::steady_clock::time_point origin) {
+                 std::chrono::steady_clock::time_point origin, int fixed = -1) {
     const u64 faults_before = t_probe_faults;
     const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds{ms};
     u64 writes = 0;
     u64 stuck = 0;
     do {
         for (unsigned i = 0; i < 256; ++i) {
-            if (!ProbeStore(target, static_cast<u8>(writes + i))) {
+            if (!ProbeStore(target, fixed >= 0 ? static_cast<u8>(fixed) : static_cast<u8>(writes + i))) {
                 ++stuck;
             }
         }
@@ -1827,41 +1890,77 @@ bool StartCrossModifyWatch() noexcept {
         s_watch_running.store(false);
         return false;
     }
-    // Locked like the cache's chunks; the running page and the idle one share the section.
+    // Locked like the cache's chunks; every page but the private one shares the section.
     Backend::X64::LockWatchPages(write, SIZE);
-    write[0] = 0xC3;
-    FlushInstructionCache(GetCurrentProcess(), exec, PAGE);
+    // Page 0 runs on a floating thread, page 4 on a thread pinned to an emulated core's CPU:
+    // a two-byte jmp to the next instruction, then ret. Writers store into the bytes that run
+    // (their own values: what a link patch does) and into the rest of the same 64-byte line.
+    for (const size_t page : {size_t{0}, size_t{4}}) {
+        write[page * PAGE + 0] = 0xEB;
+        write[page * PAGE + 1] = 0x00;
+        write[page * PAGE + 2] = 0xC3;
+    }
+    FlushInstructionCache(GetCurrentProcess(), exec, SIZE);
+    // The emulated cores run on the CPU sets at 2 to 7 (c2, c4, c6): the writer takes the
+    // one at 4, the executor the one at 6, like two cores sharing the code cache.
+    const ULONG writer_set = CpuSetIdAt(4);
+    const ULONG executor_set = CpuSetIdAt(6);
     // Kept for the process's life, like the threads.
-    std::thread{[exec, write, plain] {
+    std::thread{[exec, write, plain, writer_set, executor_set] {
         using ReturnFn = void (*)();
-        const auto run = reinterpret_cast<ReturnFn>(exec);
-        std::atomic<bool> executing{false};
-        std::atomic<bool> in_loop{false};
-        std::thread executor{[&] {
-            for (;;) {
-                if (!executing.load(std::memory_order_relaxed)) {
-                    in_loop.store(false, std::memory_order_relaxed);
-                    Sleep(1);
-                    continue;
+        struct Executor {
+            std::atomic<bool> executing{false};
+            std::atomic<bool> in_loop{false};
+        };
+        static Executor floating;
+        static Executor pinned;
+        const auto start = [](Executor& e, ReturnFn run, ULONG set) {
+            std::thread{[&e, run, set] {
+                (void)PinCurrentThread(set);
+                for (;;) {
+                    if (!e.executing.load(std::memory_order_relaxed)) {
+                        e.in_loop.store(false, std::memory_order_relaxed);
+                        Sleep(1);
+                        continue;
+                    }
+                    e.in_loop.store(true, std::memory_order_relaxed);
+                    for (unsigned i = 0; i < 4096; ++i) {
+                        run();
+                    }
                 }
-                in_loop.store(true, std::memory_order_relaxed);
-                for (unsigned i = 0; i < 4096; ++i) {
-                    run();
-                }
-            }
-        }};
-        executor.detach();
-        const auto origin = std::chrono::steady_clock::now();
-        for (;;) {
-            executing.store(true, std::memory_order_relaxed);
-            while (!in_loop.load(std::memory_order_relaxed)) {
+            }}.detach();
+        };
+        start(floating, reinterpret_cast<ReturnFn>(exec), 0);
+        const bool can_pin = writer_set != 0 && executor_set != 0;
+        if (can_pin) {
+            start(pinned, reinterpret_cast<ReturnFn>(exec + 4 * PAGE), executor_set);
+        }
+        const auto run_while = [](Executor& e, auto&& body) {
+            e.executing.store(true, std::memory_order_relaxed);
+            while (!e.in_loop.load(std::memory_order_relaxed)) {
                 SwitchToThread();
             }
-            WatchWrites(write + PAGE / 2, 2, s_watch_targets[0], origin);
-            executing.store(false, std::memory_order_relaxed);
-            WatchWrites(write + 8 * PAGE + PAGE / 2, 2, s_watch_targets[1], origin);
-            WatchWrites(plain + PAGE / 2, 2, s_watch_targets[2], origin);
-            Sleep(40);
+            body();
+            e.executing.store(false, std::memory_order_relaxed);
+        };
+        const auto origin = std::chrono::steady_clock::now();
+        for (;;) {
+            run_while(floating, [&] {
+                WatchWrites(write + PAGE / 2, 2, s_watch_targets[RunningPage], origin);
+                WatchWrites(write + 32, 2, s_watch_targets[SameLine], origin);
+                WatchWrites(write + 1, 2, s_watch_targets[ExecutedBytes], origin, 0x00);
+            });
+            WatchWrites(write + 8 * PAGE + PAGE / 2, 2, s_watch_targets[IdlePage], origin);
+            WatchWrites(plain + PAGE / 2, 2, s_watch_targets[PrivatePage], origin);
+            if (can_pin && PinCurrentThread(writer_set)) {
+                s_watch_pinned.store(true, std::memory_order_relaxed);
+                run_while(pinned, [&] {
+                    WatchWrites(write + 4 * PAGE + 32, 2, s_watch_targets[SameLinePinned], origin);
+                    WatchWrites(write + 4 * PAGE + 1, 2, s_watch_targets[ExecutedBytesPinned], origin, 0x00);
+                });
+                SetThreadSelectedCpuSets(GetCurrentThread(), nullptr, 0);
+            }
+            Sleep(36);
         }
     }}.detach();
     return true;
@@ -1870,7 +1969,11 @@ bool StartCrossModifyWatch() noexcept {
 CrossModifyWatch GetCrossModifyWatch() noexcept {
     CrossModifyWatch watch;
     watch.running = s_watch_running.load(std::memory_order_relaxed);
-    CrossModifyWatch::Target* const outs[] = {&watch.running_page, &watch.idle_page, &watch.private_page};
+    watch.pinned = s_watch_pinned.load(std::memory_order_relaxed);
+    CrossModifyWatch::Target* const outs[] = {&watch.running_page, &watch.idle_page, &watch.private_page,
+                                              &watch.same_line, &watch.executed_bytes,
+                                              &watch.same_line_pinned, &watch.executed_bytes_pinned};
+    static_assert(std::size(outs) == WatchTargetCount);
     for (size_t i = 0; i < s_watch_targets.size(); ++i) {
         const auto& state = s_watch_targets[i];
         *outs[i] = {state.writes.load(std::memory_order_relaxed), state.faults.load(std::memory_order_relaxed),
