@@ -21,6 +21,7 @@ $sources = @(
     'src\core\online\nextendo\id_token.cpp',
     'src\core\online\nextendo\trust_store.cpp',
     'src\jadyx\network\nextendo\api_types.cpp',
+    'src\jadyx\network\nextendo\catalog_rows.cpp',
     'src\jadyx\network\nextendo\pkce.cpp',
     'src\jadyx\network\nextendo\preferences.cpp',
     'src\jadyx\network\nextendo\session.cpp'

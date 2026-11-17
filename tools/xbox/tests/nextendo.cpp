@@ -28,6 +28,7 @@
 #include "core/online/nextendo/trust_roots.inc"
 #include "core/online/nextendo/trust_store.h"
 #include "jadyx/network/nextendo/api_types.h"
+#include "jadyx/network/nextendo/catalog_rows.h"
 #include "jadyx/network/nextendo/network_mode.h"
 #include "jadyx/network/nextendo/pkce.h"
 #include "jadyx/network/nextendo/preferences.h"
@@ -1013,6 +1014,63 @@ void TestPreferences() {
           LaunchAdvice::NotListed);
 }
 
+
+void TestCatalogRows() {
+    const std::int64_t now = *ParseUtcTimestamp("2026-11-17T00:00:00Z");
+    const auto catalog = ParseGameCatalog(R"({"document_type":"game_catalog","revision":5,
+        "expires_at":"2026-11-18T00:00:00Z","games":[
+        {"title_ids":["0100000000030000"],"name":"Zeta","enabled":true,
+         "versions":{"policy":"exact","accepted":["2.0.0"],"recommended":"2.0.0"}},
+        {"title_ids":["0100000000010000","0100000000011000"],"name":"alpha","enabled":true,
+         "versions":{"policy":"exact","accepted":["1.2.0"],"recommended":"1.2.0"}},
+        {"title_ids":["0100000000020000"],"enabled":false,"versions":{"policy":"exact"}},
+        {"title_ids":["0100000000040000"],"name":"Beta","enabled":true,
+         "versions":{"policy":"exact","accepted":["1.0.0"],"recommended":"1.0.0"}},
+        {"title_ids":["0100000000050000"],"name":"Future","enabled":true,
+         "required_capabilities":["warp.drive.v9"],"versions":{"policy":"exact","accepted":["1.0.0"]}}]})",
+                                          now);
+    Check(catalog.error == CatalogError::None && catalog.games.size() == 5);
+    const std::vector<App::InstalledTitle> installed{
+        {0x0100000000011000ULL, "Alpha region B", "1.2.0"}, // the second id of a game counts
+        {0x0100000000030000ULL, "Zeta here", "1.0.0"},      // another version is needed
+        {0x0100000000020000ULL, "Paused game", "1.0.0"},    // switched off on the server
+        {0x0100000000050000ULL, "Future here", "1.0.0"},    // needs a newer Jadyx
+        {0x0100000000099000ULL, "Not served", "1.0.0"},     // not in the catalog: no row
+    };
+    const auto rows = App::BuildCatalogRows(catalog, installed);
+    Check(rows.size() == 5);
+    if (rows.size() != 5) {
+        return;
+    }
+    using App::RowVerdict;
+    // Installed first, by verdict: ready, wrong version, needs update, disabled.
+    Check(rows[0].name == "alpha" && rows[0].verdict == RowVerdict::Ready && rows[0].installed &&
+          rows[0].title_id == 0x0100000000011000ULL && rows[0].installed_version == "1.2.0");
+    Check(rows[1].name == "Zeta" && rows[1].verdict == RowVerdict::WrongVersion &&
+          rows[1].recommended_version == "2.0.0" && rows[1].installed_version == "1.0.0");
+    Check(rows[2].name == "Future" && rows[2].verdict == RowVerdict::NeedsUpdate);
+    // No name in the catalog: the library's.
+    Check(rows[3].name == "Paused game" && rows[3].verdict == RowVerdict::Disabled && rows[3].installed);
+    // Then what is served but not installed.
+    Check(rows[4].name == "Beta" && rows[4].verdict == RowVerdict::NotInstalled && !rows[4].installed &&
+          rows[4].installed_version.empty());
+
+    // Nothing installed: a nameless disabled game reads as its title id.
+    const auto bare = App::BuildCatalogRows(catalog, {});
+    Check(bare.size() == 5);
+    bool found = false;
+    for (const auto& row : bare) {
+        Check(!row.installed);
+        if (row.title_id == 0x0100000000020000ULL) {
+            found = true;
+            Check(row.name == "0100000000020000" && row.verdict == RowVerdict::Disabled);
+        }
+    }
+    Check(found);
+    Check(App::TitleIdText(0x01006A800016E000ULL) == "01006A800016E000");
+    Check(App::BuildCatalogRows(GameCatalog{}, installed).empty());
+}
+
 } // namespace
 
 int main() {
@@ -1028,6 +1086,7 @@ int main() {
     TestNetworkMode();
     TestSession();
     TestPreferences();
+    TestCatalogRows();
     std::printf("nextendo gate: %d checks passed\n", g_checks);
     return 0;
 }
