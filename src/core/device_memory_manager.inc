@@ -18,6 +18,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/div_ceil.h"
+#include "common/log_throttle.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/write_combined_copy.h"
@@ -441,10 +442,12 @@ void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, s
     WalkBlock(
         address, size,
         [&](size_t copy_amount, DAddr current_vaddr) {
-            LOG_ERROR(
-                HW_Memory,
-                "Unmapped Device ReadBlock @ {:#016x} (start address = {:#016x}, size = {})",
-                current_vaddr, address, size);
+            static Common::LogThrottle throttle;
+            if (const u64 n = throttle.Next()) {
+                LOG_ERROR(HW_Memory,
+                          "Unmapped Device ReadBlock @ {:#016x} (start address = {:#016x}, size = {}){}",
+                          current_vaddr, address, size, Common::LogThrottle::Note(n));
+            }
             std::memset(dest_pointer, 0, copy_amount);
         },
         [&](size_t copy_amount, const u8* const src_ptr) {
@@ -460,10 +463,12 @@ void DeviceMemoryManager<Traits>::WriteBlock(DAddr address, const void* src_poin
     WalkBlock(
         address, size,
         [&](size_t copy_amount, DAddr current_vaddr) {
-            LOG_ERROR(
-                HW_Memory,
-                "Unmapped Device WriteBlock @ {:#016x} (start address = {:#016x}, size = {})",
-                current_vaddr, address, size);
+            static Common::LogThrottle throttle;
+            if (const u64 n = throttle.Next()) {
+                LOG_ERROR(HW_Memory,
+                          "Unmapped Device WriteBlock @ {:#016x} (start address = {:#016x}, size = {}){}",
+                          current_vaddr, address, size, Common::LogThrottle::Note(n));
+            }
         },
         [&](size_t copy_amount, u8* const dst_ptr) {
             std::memcpy(dst_ptr, src_pointer, copy_amount);
@@ -499,10 +504,12 @@ void DeviceMemoryManager<Traits>::ReadBlockUnsafeCopy(DAddr address, void* dest_
     WalkBlock(
         address, size,
         [&](size_t copy_amount, DAddr current_vaddr) {
-            LOG_ERROR(
-                HW_Memory,
-                "Unmapped Device ReadBlock @ {:#016x} (start address = {:#016x}, size = {})",
-                current_vaddr, address, size);
+            static Common::LogThrottle throttle;
+            if (const u64 n = throttle.Next()) {
+                LOG_ERROR(HW_Memory,
+                          "Unmapped Device ReadBlock @ {:#016x} (start address = {:#016x}, size = {}){}",
+                          current_vaddr, address, size, Common::LogThrottle::Note(n));
+            }
             std::memset(dest_pointer, 0, copy_amount);
         },
         [&](size_t copy_amount, const u8* const src_ptr) {
@@ -519,10 +526,12 @@ void DeviceMemoryManager<Traits>::WriteBlockUnsafe(DAddr address, const void* sr
     WalkBlock(
         address, size,
         [&](size_t copy_amount, DAddr current_vaddr) {
-            LOG_ERROR(
-                HW_Memory,
-                "Unmapped Device WriteBlock @ {:#016x} (start address = {:#016x}, size = {})",
-                current_vaddr, address, size);
+            static Common::LogThrottle throttle;
+            if (const u64 n = throttle.Next()) {
+                LOG_ERROR(HW_Memory,
+                          "Unmapped Device WriteBlock @ {:#016x} (start address = {:#016x}, size = {}){}",
+                          current_vaddr, address, size, Common::LogThrottle::Note(n));
+            }
         },
         [&](size_t copy_amount, u8* const dst_ptr) {
             std::memcpy(dst_ptr, src_pointer, copy_amount);
