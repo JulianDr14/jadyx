@@ -42,6 +42,7 @@
 #include "core/arm/jit_prewarm.h"
 #include "core/core.h"
 #include "core/cpu_manager.h"
+#include "core/file_sys/common_funcs.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
@@ -109,19 +110,41 @@ namespace {
 // library applet so AM hands it the input it would get from a game.
 constexpr u64 mii_edit_program_id = static_cast<u64>(Service::AM::AppletProgramId::MiiEdit);
 
+/// GameSession::Run's status when the game asked to start one of its programs (ExecuteProgram,
+/// RestartProgram): RunHeadlessBoot boots it on a fresh System. Never leaves RunHeadlessBoot.
+constexpr int PROGRAM_CHANGE = 21;
+
+/// What a game hands the program it starts: which one, and from where.
+struct ProgramChange {
+    std::size_t program_index{};
+    /// The program that asked, as Qt passes it: the loader picks the next one by its title.
+    u64 previous_program_id{};
+    /// The launch's missing-content allowance; the library grants it once per launch.
+    bool allow_missing{};
+    /// The data the game left for the next program (PushToUserChannel / the launch parameter).
+    std::vector<std::vector<u8>> user_channel;
+};
+
 /// One game on a built System: finds its content, loads it, runs it and shuts it down. Declared in
 /// the order the session needs things torn down: last first.
 class GameSession {
 public:
     GameSession(Core::System& system_, HeadlessEmuWindow& emu_window_, GamepadInput& input_,
                 std::string& nro_path_, const BootSurface& surface_,
-                const BootConfig& config_, bool mii_editor_)
+                const BootConfig& config_, bool mii_editor_,
+                const ProgramChange* started_by_ = nullptr)
         : system{system_}, emu_window{emu_window_}, input{input_}, nro_path{nro_path_},
-          surface{surface_}, config{config_}, mii_editor{mii_editor_},
+          surface{surface_}, config{config_}, mii_editor{mii_editor_}, started_by{started_by_},
           boot_screen{config_.play && surface_.core_window != nullptr && !config_.null_renderer} {}
 
-    /// A process exit-style status.
+    /// A process exit-style status, or PROGRAM_CHANGE with NextProgram() set.
     int Run();
+    /// The program the game asked for, once Run returned PROGRAM_CHANGE.
+    ProgramChange NextProgram() const {
+        return {.program_index = static_cast<std::size_t>(requested_program.load()),
+                .previous_program_id = program_id,
+                .allow_missing = allow_missing};
+    }
 
 private:
     void Shutdown();
@@ -146,6 +169,8 @@ private:
     const BootSurface& surface;
     const BootConfig& config;
     const bool mii_editor;
+    // Set when the game started this program from another one (RunHeadlessBoot's loop).
+    const ProgramChange* const started_by;
     // Played by hand: the launch splash stays up from the library's exit to the game's first
     // frame. The renderer takes the window from the frontend's splash, then draws it itself until
     // the guest is about to run.
@@ -166,6 +191,10 @@ private:
     Content::LaunchResolution content;
     Service::AM::FrontendAppletParameters load_parameters;
     std::atomic<bool> guest_exited{false};
+    // The program index the game asked to start, -1 until it does. Set from a guest service
+    // thread; the play loop ends the session for it.
+    std::atomic<s64> requested_program{-1};
+    bool allow_missing = false;
     std::optional<Common::Pulse::Identity> pulse_identity;
     bool gpu_started = false, resumed = false;
     std::mutex live_mutex;
@@ -230,7 +259,9 @@ std::optional<int> GameSession::PrepareContent() {
                                    &manual_provider);
     system.SetFilesystem(MakeUwpFilesystem());
     system.GetFileSystemController().CreateFactories(*system.GetFilesystem());
-    system.GetUserChannel().clear();
+    // A program the game started gets what the game left for it; a launch from the library, nothing.
+    if (started_by) system.GetUserChannel() = started_by->user_channel;
+    else system.GetUserChannel().clear();
     // Before Load: games read the profile name when they start.
     if (ApplyUserName(system.GetProfileManager(), LoadSystemSettings().user_name)) {
         WriteDiag("step: profile name from Settings > System");
@@ -258,9 +289,10 @@ std::optional<int> GameSession::PrepareContent() {
         file != nullptr && manual_provider.AddEntriesFromContainer(file)) {
         WriteDiag("step: game contents registered");
     }
+    allow_missing = started_by ? started_by->allow_missing : Content::ConsumeAllowMissing(nro_path);
     content = mii_editor ? Content::LaunchResolution{} :
         Content::ResolveLaunchContent(*system.GetFilesystem(), nro_path, manual_provider,
-                                      Content::ConsumeAllowMissing(nro_path));
+                                      allow_missing);
     if (content.error != Content::Error::None) {
         WriteDiag("content: launch blocked error=" + std::to_string(static_cast<int>(content.error)));
         Shutdown(); return 16;
@@ -295,16 +327,40 @@ std::optional<int> GameSession::LoadGuest() {
         Service::AM::FrontendAppletParameters{
             .applet_id = Service::AM::AppletId::Application,
         };
+    // A program the game started, as Qt's OnExecuteProgram: launched by the application, so AM
+    // hands it the user channel, and found by the asking program's title.
+    if (started_by) {
+        load_parameters.launch_type = Service::AM::LaunchType::ApplicationInitiated;
+        load_parameters.program_index = static_cast<s32>(started_by->program_index);
+        const u64 previous = started_by->previous_program_id;
+        if (previous > static_cast<u64>(Service::AM::AppletProgramId::MaxProgramId)) {
+            load_parameters.program_id = previous;
+            load_parameters.previous_program_index =
+                static_cast<s32>(previous - FileSys::GetBaseTitleID(previous));
+        }
+        WriteDiag("step: program " + std::to_string(started_by->program_index) +
+                  " started by the game, " + std::to_string(started_by->user_channel.size()) +
+                  " user channel entries");
+    }
     // A guest that ends on its own (the Mii editor when the player is done) goes back to the
     // library; the play loop sees this between frames.
     system.RegisterExitCallback([this] { guest_exited.store(true); });
     // Run with no caller, the editor ends by asking to return to the main program
-    // (ILibraryAppletSelfAccessor::ExitProcessAndReturn); here that is the library.
+    // (ILibraryAppletSelfAccessor::ExitProcessAndReturn); here that is the library. A game asking
+    // for one of its programs (a chapter, a restart) gets it on a fresh System.
     if (mii_editor)
         system.RegisterExecuteProgramCallback([this](std::size_t) { guest_exited.store(true); });
+    else
+        system.RegisterExecuteProgramCallback([this](std::size_t index) {
+            requested_program.store(static_cast<s64>(index));
+        });
     // Pulse: the identity this boot would save under, and the session it resumes if one matches.
     // Not in a multiplayer room: a resumed snapshot would bring back a session the room never saw.
-    if (config.pulse_sessions && PulseSessions::Enabled() && !mii_editor && !Online::InRoom()) {
+    // Not for a program the game started: a resume would replace it with the kept one, and a
+    // session kept from a program other than the first would resume into the wrong program.
+    const bool started_other_program = started_by && started_by->program_index != 0;
+    if (config.pulse_sessions && PulseSessions::Enabled() && !mii_editor && !Online::InRoom() &&
+        !started_other_program) {
         try {
             const auto file = system.GetFilesystem()->OpenFile(nro_path, FileSys::OpenMode::Read);
             const auto user = system.GetProfileManager().GetUser(0);
@@ -324,7 +380,8 @@ std::optional<int> GameSession::LoadGuest() {
         D3D12::SetBootScreen(DrawLaunchSplash);
     }
     Core::SystemResultStatus load_result{Core::SystemResultStatus::ErrorNotInitialized};
-    if (pulse_identity && config.pulse_resume && PulseSessions::CanResume(*pulse_identity)) {
+    if (pulse_identity && config.pulse_resume && !started_by &&
+        PulseSessions::CanResume(*pulse_identity)) {
         WritePulseLog("resuming the kept session | " + MemoryReport());
         const auto resume_start = std::chrono::steady_clock::now();
         bool loaded = false;
@@ -646,6 +703,13 @@ int GameSession::PlayLoop() {
             LOG_INFO(Frontend, "Headless boot: session closed with Q.");
             return 0;
         }
+        if (const s64 next = requested_program.load(); next >= 0) {
+            WriteDiag("step: the game asked for its program " + std::to_string(next) + " after " +
+                      std::to_string(tick / 50) + " s; starting it | " + MemoryReport());
+            FinishPrewarmBudget(tick);
+            Shutdown();
+            return PROGRAM_CHANGE;
+        }
         if (guest_exited.load()) {
             WriteDiag("step: the guest exited after " + std::to_string(tick / 50) +
                       " s; back to the library | " + MemoryReport());
@@ -791,29 +855,42 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
                                        .diag = [](const std::string& line) { WriteDiag(line); }});
     }
 
-    Core::System system{};
-    g_gpu_command_failed.store(false, std::memory_order_release);
-    VideoCommon::GPUThread::SetExceptionObserver([](const char* message) {
-        // Logged here, on the GPU thread: tells a stuck recovery apart from a GPU thread that
-        // never got to report its failure.
-        if (!g_gpu_command_failed.exchange(true, std::memory_order_acq_rel)) {
-            WriteDiag(std::string("GPU thread reported a failure: ") + message);
-        }
-    });
-    WriteDiag("step: Core::System constructed");
-    system.Initialize();
-    WriteDiag("step: system.Initialize() done");
-    system.ApplySettings();
-    WriteDiag("step: system.ApplySettings() done");
+    // A game that starts another of its programs (or restarts itself) gets it on a fresh System,
+    // as each library launch does, with the data it left for it.
+    std::optional<ProgramChange> program_change;
+    for (;;) {
+        Core::System system{};
+        g_gpu_command_failed.store(false, std::memory_order_release);
+        VideoCommon::GPUThread::SetExceptionObserver([](const char* message) {
+            // Logged here, on the GPU thread: tells a stuck recovery apart from a GPU thread that
+            // never got to report its failure.
+            if (!g_gpu_command_failed.exchange(true, std::memory_order_acq_rel)) {
+                WriteDiag(std::string("GPU thread reported a failure: ") + message);
+            }
+        });
+        WriteDiag("step: Core::System constructed");
+        system.Initialize();
+        WriteDiag("step: system.Initialize() done");
+        system.ApplySettings();
+        WriteDiag("step: system.ApplySettings() done");
 
-    HeadlessEmuWindow emu_window{surface.core_window, surface.width, surface.height};
+        HeadlessEmuWindow emu_window{surface.core_window, surface.width, surface.height};
 
-    // Before Load, so HID starts with player 1 connected and bound to the gamepad engine.
-    GamepadInput input{config.input_script};
-    system.HIDCore().ReloadInputDevices();
+        // Before Load, so HID starts with player 1 connected and bound to the gamepad engine.
+        GamepadInput input{config.input_script};
+        system.HIDCore().ReloadInputDevices();
 
-    GameSession session{system, emu_window, input, nro_path, surface, config, mii_editor};
-    return session.Run();
+        // The library's splash is gone: the renderer's own one covers the next program's load.
+        if (program_change) SetLaunchStep(LaunchStep::Loading);
+        GameSession session{system,     emu_window, input,
+                            nro_path,   surface,    config,
+                            mii_editor, program_change ? &*program_change : nullptr};
+        const int status = session.Run();
+        if (status != PROGRAM_CHANGE) return status;
+        program_change = session.NextProgram();
+        // Shutdown keeps it: the AM hands it to the next program at Load.
+        program_change->user_channel = std::move(system.GetUserChannel());
+    }
 }
 
 } // namespace Jadyx
