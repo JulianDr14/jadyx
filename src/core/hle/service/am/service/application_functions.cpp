@@ -449,7 +449,11 @@ Result IApplicationFunctions::ExecuteProgram(ProgramSpecifyKind kind, u64 value)
 
     // Copy user channel ownership into the system so that it will be preserved
     system.GetUserChannel() = m_applet->user_channel_launch_parameter;
-    system.ExecuteProgram(value);
+    // RestartProgram ignores the value and starts the running program again.
+    const u64 program_index = kind == ProgramSpecifyKind::RestartProgram
+                                  ? m_applet->program_id - FileSys::GetBaseTitleID(m_applet->program_id)
+                                  : value;
+    system.ExecuteProgram(program_index);
     R_SUCCEED();
 }
 
