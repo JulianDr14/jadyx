@@ -72,4 +72,25 @@ struct CodeLockState {
 };
 [[nodiscard]] CodeLockState GetCodeLockState() noexcept;
 
+/// Diagnostic for the console's code write faults: bytes stored through the write view of a
+/// dual-mapped page while two threads run code in that page, the same into the next page while
+/// they run, and into the page with nobody running it. Each case runs `case_ms`.
+struct CrossModifyProbe {
+    struct Case {
+        std::uint64_t writes = 0;
+        std::uint64_t faults = 0;          ///< Faults taken (each retried).
+        std::uint64_t stuck = 0;           ///< Writes given up on after their retries.
+        std::uint64_t us = 0;
+        std::uint64_t executor_calls = 0;  ///< Calls into the page by the running threads.
+    };
+    bool ran = false;  ///< False where dual-mapped code memory is unavailable.
+    Case same_page_running;
+    Case other_page_running;
+    Case same_page_idle;
+    std::uint32_t first_code = 0;  ///< The first fault's exception record; 0 without faults.
+    std::uint64_t first_info0 = 0;
+    std::uint64_t first_info1 = 0;
+};
+[[nodiscard]] CrossModifyProbe RunCrossModifyProbe(unsigned case_ms = 250) noexcept;
+
 } // namespace Dynarmic

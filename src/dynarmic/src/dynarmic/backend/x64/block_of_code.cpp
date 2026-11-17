@@ -53,10 +53,12 @@ static void RaiseJitMemoryFailure(DWORD code, const void* base, size_t size, DWO
 #include <algorithm>
 #include <atomic>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include "common/assert.h"
@@ -1621,3 +1623,147 @@ void BlockOfCode::EnsurePatchLocationSize(CodePtr begin, size_t size) {
 }
 
 }  // namespace Dynarmic::Backend::X64
+
+namespace Dynarmic {
+
+#if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
+namespace {
+// The probe's faults, counted by its own exception filter. One probe runs at a time.
+std::atomic<u64> s_probe_faults{0};
+std::atomic<bool> s_probe_first_taken{false};
+std::uint32_t s_probe_first_code = 0;
+std::uint64_t s_probe_first_info0 = 0;
+std::uint64_t s_probe_first_info1 = 0;
+thread_local unsigned t_probe_retries = 0;
+
+int ProbeFilter(EXCEPTION_POINTERS* ep) {
+    const EXCEPTION_RECORD& record = *ep->ExceptionRecord;
+    if (record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION && record.ExceptionCode != EXCEPTION_IN_PAGE_ERROR) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    s_probe_faults.fetch_add(1, std::memory_order_relaxed);
+    if (!s_probe_first_taken.exchange(true, std::memory_order_relaxed)) {
+        s_probe_first_code = record.ExceptionCode;
+        s_probe_first_info0 = record.NumberParameters > 0 ? record.ExceptionInformation[0] : 0;
+        s_probe_first_info1 = record.NumberParameters > 1 ? record.ExceptionInformation[1] : 0;
+    }
+    if (++t_probe_retries > MAX_EMIT_FAULT_RETRIES) {
+        return EXCEPTION_EXECUTE_HANDLER;  // Given up on: counted as stuck.
+    }
+    if (t_probe_retries < 4) {
+        SwitchToThread();
+    } else {
+        Sleep(1);
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+// One byte stored through the write view; false when it kept faulting. No object with a
+// destructor may live here (__try).
+bool ProbeStore(volatile u8* p, u8 value) {
+    t_probe_retries = 0;
+    __try {
+        *p = value;
+    } __except (ProbeFilter(GetExceptionInformation())) {
+        return false;
+    }
+    return true;
+}
+} // anonymous namespace
+
+CrossModifyProbe RunCrossModifyProbe(unsigned case_ms) noexcept {
+    constexpr size_t PAGE = 4096;
+    constexpr size_t SIZE = 16 * PAGE;
+    CrossModifyProbe result;
+    const HANDLE section = DYNARMIC_CREATE_CODE_SECTION(SIZE, SEC_COMMIT);
+    if (section == nullptr) {
+        return result;
+    }
+    u8* const exec = static_cast<u8*>(DYNARMIC_MAP_CODE_VIEW(section, FILE_MAP_READ | FILE_MAP_EXECUTE, SIZE));
+    u8* const write = static_cast<u8*>(DYNARMIC_MAP_CODE_VIEW(section, FILE_MAP_WRITE, SIZE));
+    if (exec == nullptr || write == nullptr) {
+        if (exec != nullptr) {
+            UnmapViewOfFile(exec);
+        }
+        if (write != nullptr) {
+            UnmapViewOfFile(write);
+        }
+        CloseHandle(section);
+        return result;
+    }
+    // A function that only returns, at the start of page 0: the executors call it in a loop, the
+    // way cores run a block and come back to the dispatcher.
+    write[0] = 0xC3;
+    FlushInstructionCache(GetCurrentProcess(), exec, PAGE);
+    using ReturnFn = void (*)();
+    const auto run = reinterpret_cast<ReturnFn>(exec);
+
+    s_probe_faults.store(0, std::memory_order_relaxed);
+    s_probe_first_taken.store(false, std::memory_order_relaxed);
+
+    const auto run_case = [&](CrossModifyProbe::Case& out, size_t page, unsigned executors) {
+        std::atomic<bool> stop{false};
+        std::atomic<unsigned> started{0};
+        std::atomic<u64> calls{0};
+        std::vector<std::thread> threads;
+        for (unsigned i = 0; i < executors; ++i) {
+            threads.emplace_back([&] {
+                started.fetch_add(1);
+                u64 n = 0;
+                while (!stop.load(std::memory_order_relaxed)) {
+                    run();
+                    ++n;
+                }
+                calls.fetch_add(n);
+            });
+        }
+        while (started.load() != executors) {
+            std::this_thread::yield();
+        }
+        const u64 faults_before = s_probe_faults.load(std::memory_order_relaxed);
+        volatile u8* const target = write + page * PAGE + PAGE / 2;
+        const auto start = std::chrono::steady_clock::now();
+        const auto end = start + std::chrono::milliseconds{case_ms};
+        u64 writes = 0;
+        u64 stuck = 0;
+        do {
+            for (unsigned i = 0; i < 256; ++i) {
+                if (!ProbeStore(target, static_cast<u8>(writes + i))) {
+                    ++stuck;
+                }
+            }
+            writes += 256;
+        } while (std::chrono::steady_clock::now() < end);
+        const auto took = std::chrono::steady_clock::now() - start;
+        stop.store(true);
+        for (auto& thread : threads) {
+            thread.join();
+        }
+        out.writes = writes;
+        out.faults = s_probe_faults.load(std::memory_order_relaxed) - faults_before;
+        out.stuck = stuck;
+        out.us = static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(took).count());
+        out.executor_calls = calls.load();
+    };
+    run_case(result.same_page_running, 0, 2);
+    run_case(result.other_page_running, 1, 2);
+    run_case(result.same_page_idle, 0, 0);
+
+    result.ran = true;
+    if (s_probe_first_taken.load(std::memory_order_relaxed)) {
+        result.first_code = s_probe_first_code;
+        result.first_info0 = s_probe_first_info0;
+        result.first_info1 = s_probe_first_info1;
+    }
+    UnmapViewOfFile(exec);
+    UnmapViewOfFile(write);
+    CloseHandle(section);
+    return result;
+}
+#else
+CrossModifyProbe RunCrossModifyProbe(unsigned) noexcept {
+    return {};
+}
+#endif
+
+}  // namespace Dynarmic
