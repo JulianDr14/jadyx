@@ -238,6 +238,16 @@ std::string StorageReport() {
     return out;
 }
 
+// Faults retried while emitting JIT code; empty while there were none.
+static std::string DescribeCodeEmitFaults() {
+    const Dynarmic::CodeEmitFaults faults = Dynarmic::GetCodeEmitFaults();
+    if (faults.retries == 0) {
+        return {};
+    }
+    return ", emit faults retried " + std::to_string(faults.retries) + ", recovered " +
+           std::to_string(faults.recovered) + ", fatal " + std::to_string(faults.fatal);
+}
+
 // The app's commit split by owner: the emulated DRAM, the JIT's code, the renderer's accounts
 // (Common::MemoryLedger) and the rest, which no account covers: driver objects such as compiled
 // PSOs, the smaller GPU resources, the heaps and the executable.
@@ -253,7 +263,8 @@ std::string MemoryOwners() {
     const u64 known = dram.value_or(0) + jit + Common::MemoryLedgerCommittedBytes();
     return "emulated DRAM " + (dram ? std::to_string(*dram >> 20) + " MiB" : std::string("n/a")) +
            ", JIT code " + std::to_string(jit >> 20) + " MiB (" +
-           std::to_string(Dynarmic::DualMappedCodeCaches()) + " caches dual-mapped), " +
+           std::to_string(Dynarmic::DualMappedCodeCaches()) + " caches dual-mapped" +
+           DescribeCodeEmitFaults() + "), " +
            Common::DescribeMemoryLedger() +
            "; rest " + std::to_string((commit > known ? commit - known : 0) >> 20) +
            " MiB of " + std::to_string(commit >> 20) +
