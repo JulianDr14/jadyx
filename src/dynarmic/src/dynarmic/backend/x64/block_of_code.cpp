@@ -61,6 +61,7 @@ static void RaiseJitMemoryFailure(DWORD code, const void* base, size_t size, DWO
 
 #include "common/assert.h"
 #include "common/dynamic_library.h"
+#include "common/vm_activity.h"
 #include "dynarmic/mcl/bit.hpp"
 #include "dynarmic/backend/x64/xbyak.h"
 
@@ -89,6 +90,12 @@ constexpr size_t CAP_SLACK = 16 * 1024 * 1024;
 /// SetDualMappedCode, and how many code caches live dual-mapped (DualMappedCodeCaches).
 std::atomic_bool s_dual_map_allowed{true};
 std::atomic<size_t> s_dual_mapped_caches{0};
+/// SetLockedCode, and what locking the chunks' write views did (GetCodeLockState).
+std::atomic_bool s_lock_code{true};
+std::atomic<size_t> s_locked_code_bytes{0};
+std::atomic<size_t> s_code_lock_failures{0};
+std::atomic<unsigned long> s_code_lock_last_error{0};
+std::atomic_bool s_code_lock_available{false};
 /// Every BlockOfCode alive, for DescribeCodeCaches; a crash report reads it without a lock.
 constexpr size_t MAX_LIVE_CODE_CACHES = 16;
 std::array<std::atomic<const Backend::X64::BlockOfCode*>, MAX_LIVE_CODE_CACHES> s_live_code_caches{};
@@ -111,6 +118,17 @@ size_t CodeCacheCap() noexcept {
 
 bool CodeCacheCapReleases() noexcept {
     return s_code_cache_release.load(std::memory_order_relaxed);
+}
+
+void SetLockedCode(bool enabled) noexcept {
+    s_lock_code.store(enabled, std::memory_order_relaxed);
+}
+
+CodeLockState GetCodeLockState() noexcept {
+    return {s_locked_code_bytes.load(std::memory_order_relaxed),
+            s_code_lock_failures.load(std::memory_order_relaxed),
+            s_code_lock_last_error.load(std::memory_order_relaxed),
+            s_code_lock_available.load(std::memory_order_relaxed)};
 }
 
 void SetDualMappedCode(bool allowed) noexcept {
@@ -143,14 +161,52 @@ namespace {
 std::atomic<size_t> s_emit_fault_retries{0};
 std::atomic<size_t> s_emit_faults_recovered{0};
 std::atomic<size_t> s_emit_faults_fatal{0};
+std::atomic<size_t> s_emit_fault_page_out{0};
+std::atomic<size_t> s_emit_fault_page_in{0};
+static_assert(::Common::VmActivity::KindCount == 4, "CodeEmitFaults::busy has one slot per kind");
+std::array<std::atomic<size_t>, ::Common::VmActivity::KindCount> s_emit_fault_busy{};
+std::array<std::atomic<size_t>, ::Common::VmActivity::KindCount> s_emit_fault_recent{};
+std::atomic<size_t> s_emit_fault_quiet{0};
+std::atomic<std::uint64_t> s_emit_recover_us_max{0};
+std::atomic<std::uint64_t> s_emit_recover_us_total{0};
+/// The first fault's exception record: taken once, published by s_emit_first_ready.
+std::atomic<bool> s_emit_first_taken{false};
+std::atomic<bool> s_emit_first_ready{false};
+std::uint32_t s_emit_first_code = 0;
+std::uint32_t s_emit_first_params = 0;
+std::uint64_t s_emit_first_info0 = 0;
+std::uint64_t s_emit_first_info1 = 0;
+/// What finished this close before a fault counts as having run beside it.
+constexpr std::int64_t RECENT_VM_US = 5000;
 /// The cache this thread is emitting into (BlockOfCode::EmitScope), and the faults it retried in
 /// the current emission.
 thread_local const Backend::X64::BlockOfCode* t_emitting = nullptr;
 thread_local unsigned t_emit_fault_retries = 0;
+thread_local std::int64_t t_emit_fault_start_us = 0;
 /// About 2.5 s of waits in all: past that the fault is not the transient kind.
 constexpr unsigned MAX_EMIT_FAULT_RETRIES = 64;
 
 #ifdef _WIN32
+// PSAPI_WORKING_SET_EX_INFORMATION, declared here: psapi.h hides it from app partitions.
+struct WorkingSetExInfo {
+    PVOID address;
+    ULONG_PTR attributes; ///< Bit 0: Valid (resident in the working set); bit 22: Locked.
+};
+using QueryWorkingSetExFn = BOOL(WINAPI*)(HANDLE, PVOID, DWORD);
+QueryWorkingSetExFn s_query_working_set_ex = nullptr;
+
+// Whether the page `p` is in the working set: 1 yes, 0 no, -1 unknown.
+int PageResident(const void* p) {
+    if (s_query_working_set_ex == nullptr) {
+        return -1;
+    }
+    WorkingSetExInfo info{const_cast<void*>(p), 0};
+    if (!s_query_working_set_ex(GetCurrentProcess(), &info, sizeof(info))) {
+        return -1;
+    }
+    return (info.attributes & 1) != 0 ? 1 : 0;
+}
+
 // A write into code memory, while emitting, faulted on the console on a page that was mapped,
 // committed and writable when the crash report looked at it right after, with free memory at the
 // app limit. Retried after a short wait instead of ending the process; a fault that persists goes
@@ -168,6 +224,41 @@ LONG NTAPI EmitFaultHandler(EXCEPTION_POINTERS* ep) {
     }
     const unsigned attempt = t_emit_fault_retries++;
     s_emit_fault_retries.fetch_add(1, std::memory_order_relaxed);
+    if (attempt == 0) {
+        t_emit_fault_start_us = ::Common::VmActivity::NowUs();
+        if (!s_emit_first_taken.exchange(true, std::memory_order_relaxed)) {
+            const EXCEPTION_RECORD& record = *ep->ExceptionRecord;
+            s_emit_first_code = record.ExceptionCode;
+            s_emit_first_params = record.NumberParameters;
+            s_emit_first_info0 = record.NumberParameters > 0 ? record.ExceptionInformation[0] : 0;
+            s_emit_first_info1 = record.NumberParameters > 1 ? record.ExceptionInformation[1] : 0;
+            s_emit_first_ready.store(true, std::memory_order_release);
+        }
+        // Which address-space operations ran beside the fault (diagnostic).
+        bool any = false;
+        for (size_t kind = 0; kind < ::Common::VmActivity::KindCount; ++kind) {
+            const auto& state = ::Common::VmActivity::g_kinds[kind];
+            if (state.in_flight.load(std::memory_order_relaxed) != 0) {
+                s_emit_fault_busy[kind].fetch_add(1, std::memory_order_relaxed);
+                any = true;
+            } else if (const std::int64_t end = state.last_end_us.load(std::memory_order_relaxed);
+                       end != 0 && t_emit_fault_start_us - end <= RECENT_VM_US) {
+                s_emit_fault_recent[kind].fetch_add(1, std::memory_order_relaxed);
+                any = true;
+            }
+        }
+        if (!any) {
+            s_emit_fault_quiet.fetch_add(1, std::memory_order_relaxed);
+        }
+        // The console reports no faulting address; the write goes where the next byte is
+        // emitted. Out of the working set there says the system trimmed a page being written.
+        const int resident = PageResident(t_emitting->EmitWritePointer());
+        if (resident == 0) {
+            s_emit_fault_page_out.fetch_add(1, std::memory_order_relaxed);
+        } else if (resident == 1) {
+            s_emit_fault_page_in.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
     if (attempt < 4) {
         SwitchToThread();
     } else {
@@ -183,6 +274,9 @@ void InstallEmitFaultHandler() {
         using AddVehFn = PVOID(WINAPI*)(ULONG, PVECTORED_EXCEPTION_HANDLER);
         static ::Common::DynamicLibrary kernelbase("Kernelbase");
         AddVehFn add_veh{};
+        if (kernelbase.IsOpen() && !kernelbase.GetSymbol("QueryWorkingSetEx", &s_query_working_set_ex)) {
+            (void)kernelbase.GetSymbol("K32QueryWorkingSetEx", &s_query_working_set_ex);
+        }
         // Last in the chain: a fault the app resolves itself (demand-committed backing, pages
         // swapped out) must reach its handler first, not wait here.
         return kernelbase.IsOpen() && kernelbase.GetSymbol("AddVectoredExceptionHandler", &add_veh) &&
@@ -194,9 +288,27 @@ void InstallEmitFaultHandler() {
 } // anonymous namespace
 
 CodeEmitFaults GetCodeEmitFaults() noexcept {
-    return {s_emit_fault_retries.load(std::memory_order_relaxed),
-            s_emit_faults_recovered.load(std::memory_order_relaxed),
-            s_emit_faults_fatal.load(std::memory_order_relaxed)};
+    CodeEmitFaults faults{s_emit_fault_retries.load(std::memory_order_relaxed),
+                          s_emit_faults_recovered.load(std::memory_order_relaxed),
+                          s_emit_faults_fatal.load(std::memory_order_relaxed),
+                          s_emit_fault_page_out.load(std::memory_order_relaxed),
+                          s_emit_fault_page_in.load(std::memory_order_relaxed)};
+#ifdef _WIN32
+    for (size_t kind = 0; kind < faults.busy.size(); ++kind) {
+        faults.busy[kind] = s_emit_fault_busy[kind].load(std::memory_order_relaxed);
+        faults.recent[kind] = s_emit_fault_recent[kind].load(std::memory_order_relaxed);
+    }
+    faults.quiet = s_emit_fault_quiet.load(std::memory_order_relaxed);
+    faults.recover_us_max = s_emit_recover_us_max.load(std::memory_order_relaxed);
+    faults.recover_us_total = s_emit_recover_us_total.load(std::memory_order_relaxed);
+    if (s_emit_first_ready.load(std::memory_order_acquire)) {
+        faults.first_code = s_emit_first_code;
+        faults.first_params = s_emit_first_params;
+        faults.first_info0 = s_emit_first_info0;
+        faults.first_info1 = s_emit_first_info1;
+    }
+#endif
+    return faults;
 }
 } // namespace Dynarmic
 
@@ -300,6 +412,88 @@ const PlaceholderApi& Placeholders() {
         return result;
     }();
     return api;
+}
+
+// Locking a chunk's write view keeps its pages in the working set, so writing code there never
+// faults: on the console, short of memory, the system trimmed a page a block was being written
+// to and the write faulted though the page was mapped and writable. A process locks no more than
+// its minimum working set allows, so that is raised by each chunk first. Resolved by name like
+// the placeholder APIs.
+struct CodeLockApi {
+    using VirtualLockFn = BOOL(WINAPI*)(LPVOID, SIZE_T);
+    using GetWorkingSetFn = BOOL(WINAPI*)(HANDLE, PSIZE_T, PSIZE_T, PDWORD);
+    using SetWorkingSetFn = BOOL(WINAPI*)(HANDLE, SIZE_T, SIZE_T, DWORD);
+
+    VirtualLockFn lock{};
+    VirtualLockFn unlock{};
+    GetWorkingSetFn get_working_set{};
+    SetWorkingSetFn set_working_set{};
+
+    explicit operator bool() const {
+        return lock != nullptr && unlock != nullptr && get_working_set != nullptr && set_working_set != nullptr;
+    }
+};
+
+const CodeLockApi& CodeLocks() {
+    static const CodeLockApi api = [] {
+        static ::Common::DynamicLibrary kernelbase("Kernelbase");
+        CodeLockApi result;
+        if (kernelbase.IsOpen()) {
+            (void)kernelbase.GetSymbol("VirtualLock", &result.lock);
+            (void)kernelbase.GetSymbol("VirtualUnlock", &result.unlock);
+            (void)kernelbase.GetSymbol("GetProcessWorkingSetSizeEx", &result.get_working_set);
+            (void)kernelbase.GetSymbol("SetProcessWorkingSetSizeEx", &result.set_working_set);
+        }
+        s_code_lock_available.store(static_cast<bool>(result), std::memory_order_relaxed);
+        return result;
+    }();
+    return api;
+}
+
+// Moves the minimum working set (and the maximum, when it would fall below) by `delta` bytes.
+bool AdjustMinimumWorkingSet(const CodeLockApi& api, std::ptrdiff_t delta) {
+    SIZE_T minimum = 0, maximum = 0;
+    DWORD flags = 0;
+    if (!api.get_working_set(GetCurrentProcess(), &minimum, &maximum, &flags)) {
+        return false;
+    }
+    const SIZE_T new_minimum = delta >= 0 ? minimum + static_cast<SIZE_T>(delta)
+                                          : minimum - std::min<SIZE_T>(minimum, static_cast<SIZE_T>(-delta));
+    const SIZE_T new_maximum = std::max<SIZE_T>(maximum, new_minimum + CODE_CHUNK_SIZE);
+    return api.set_working_set(GetCurrentProcess(), new_minimum, new_maximum, flags) != FALSE;
+}
+
+void LockCodeChunk(u8* write) {
+    if (!s_lock_code.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const CodeLockApi& api = CodeLocks();
+    if (!api) {
+        s_code_lock_failures.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (AdjustMinimumWorkingSet(api, static_cast<std::ptrdiff_t>(CODE_CHUNK_SIZE))) {
+        if (api.lock(write, CODE_CHUNK_SIZE)) {
+            s_locked_code_bytes.fetch_add(CODE_CHUNK_SIZE, std::memory_order_relaxed);
+            return;
+        }
+        const DWORD error = GetLastError();
+        (void)AdjustMinimumWorkingSet(api, -static_cast<std::ptrdiff_t>(CODE_CHUNK_SIZE));
+        s_code_lock_last_error.store(error, std::memory_order_relaxed);
+    } else {
+        s_code_lock_last_error.store(GetLastError(), std::memory_order_relaxed);
+    }
+    s_code_lock_failures.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Before the chunk is unmapped; a chunk that was not locked is left alone.
+void UnlockCodeChunk(u8* write) {
+    const CodeLockApi& api = CodeLocks();
+    if (!api || !api.unlock(write, CODE_CHUNK_SIZE)) {
+        return;
+    }
+    s_locked_code_bytes.fetch_sub(CODE_CHUNK_SIZE, std::memory_order_relaxed);
+    (void)AdjustMinimumWorkingSet(api, -static_cast<std::ptrdiff_t>(CODE_CHUNK_SIZE));
 }
 
 // Commits [exec, exec + size) of a single section through its write view. The pages are the
@@ -412,12 +606,14 @@ bool MapCodeChunk(DualCodeView& view, size_t index) {
         return false;
     }
     view.chunks[index] = true;
+    LockCodeChunk(static_cast<u8*>(write));
     return true;
 }
 
 void UnmapCodeChunk(DualCodeView& view, size_t index) {
     const PlaceholderApi& api = Placeholders();
     const size_t offset = index * CODE_CHUNK_SIZE;
+    UnlockCodeChunk(view.write + offset);
     api.unmap_view_of_file2(GetCurrentProcess(), view.exec + offset, MEM_PRESERVE_PLACEHOLDER);
     api.unmap_view_of_file2(GetCurrentProcess(), view.write + offset, MEM_PRESERVE_PLACEHOLDER);
     view.chunks[index] = false;
@@ -1156,6 +1352,15 @@ BlockOfCode::EmitScope::~EmitScope() {
     if (previous == nullptr) {
         if (t_emit_fault_retries != 0 && t_emit_fault_retries <= MAX_EMIT_FAULT_RETRIES) {
             s_emit_faults_recovered.fetch_add(1, std::memory_order_relaxed);
+#ifdef _WIN32
+            const auto took = static_cast<std::uint64_t>(
+                std::max<std::int64_t>(0, ::Common::VmActivity::NowUs() - t_emit_fault_start_us));
+            s_emit_recover_us_total.fetch_add(took, std::memory_order_relaxed);
+            std::uint64_t max = s_emit_recover_us_max.load(std::memory_order_relaxed);
+            while (took > max &&
+                   !s_emit_recover_us_max.compare_exchange_weak(max, took, std::memory_order_relaxed)) {
+            }
+#endif
         }
         t_emit_fault_retries = 0;
     }

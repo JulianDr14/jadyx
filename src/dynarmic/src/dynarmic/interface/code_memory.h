@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 
 namespace Dynarmic {
 
@@ -39,7 +41,35 @@ struct CodeEmitFaults {
     std::size_t retries = 0;    ///< Faults retried.
     std::size_t recovered = 0;  ///< Emissions that faulted and then completed.
     std::size_t fatal = 0;      ///< Emissions that kept faulting and were let crash.
+    std::size_t page_out = 0;   ///< Faults whose page was out of the working set when checked.
+    std::size_t page_in = 0;    ///< Faults whose page was back in the working set when checked.
+    /// What ran beside each fault's first try, per Common::VmActivity::Kind (guest commit, guest
+    /// decommit, guest protect, GPU heap): busy, running then; recent, finished within 5 ms
+    /// before. quiet: none of them busy or recent.
+    std::array<std::size_t, 4> busy{};
+    std::array<std::size_t, 4> recent{};
+    std::size_t quiet = 0;
+    /// From a fault's first try to the end of its emission, which completed.
+    std::uint64_t recover_us_max = 0;
+    std::uint64_t recover_us_total = 0;
+    /// The first fault's exception record, as the system raised it.
+    std::uint32_t first_code = 0;
+    std::uint32_t first_params = 0;
+    std::uint64_t first_info0 = 0;
+    std::uint64_t first_info1 = 0;
 };
 [[nodiscard]] CodeEmitFaults GetCodeEmitFaults() noexcept;
+
+/// Whether chunks of code memory mapped from now on are locked in the working set through their
+/// write view (Windows, dual-mapped chunks). The system then cannot trim a page code is being
+/// written to, which it did on the console short of memory: the write faulted. Default on.
+void SetLockedCode(bool enabled) noexcept;
+struct CodeLockState {
+    std::size_t locked_bytes = 0;     ///< Code memory locked now.
+    std::size_t failures = 0;         ///< Chunks that could not be locked.
+    unsigned long last_error = 0;     ///< GetLastError of the last failure.
+    bool available = false;           ///< VirtualLock and the working set calls were found.
+};
+[[nodiscard]] CodeLockState GetCodeLockState() noexcept;
 
 } // namespace Dynarmic

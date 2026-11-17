@@ -177,6 +177,11 @@ public:
     /// Allocates nothing and takes no lock it could wait on: a faulting thread may hold any.
     int DescribeState(char* out, size_t size) const noexcept;
 
+    /// Where the next byte emitted is written (the write view of a dual-mapped cache).
+    const u8* EmitWritePointer() const noexcept {
+        return top_ + size_ + writeOffset_;
+    }
+
     /// Marks the calling thread as writing code into this cache for its lifetime: a fault it takes
     /// meanwhile is retried after a wait (see GetCodeEmitFaults). Nests.
     class EmitScope {
