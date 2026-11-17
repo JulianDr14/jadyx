@@ -798,7 +798,8 @@ void TestCrossModifyWatch() {
     std::this_thread::sleep_for(std::chrono::milliseconds{400});
     const CrossModifyWatch watch = GetCrossModifyWatch();
     REQUIRE(watch.running);
-    for (const auto* t : {&watch.running_page, &watch.idle_page, &watch.private_page}) {
+    for (const auto* t : {&watch.running_page, &watch.idle_page, &watch.private_page, &watch.same_line,
+                          &watch.executed_bytes}) {
         REQUIRE(t->writes > 0 && t->stuck == 0);
         REQUIRE((t->faults == 0) == (t->first_fault_ms == 0));
     }
