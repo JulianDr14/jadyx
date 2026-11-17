@@ -57,4 +57,11 @@ inline void SetPageTableThunks(bool enabled) {
     g_page_table_thunks.store(enabled, std::memory_order_relaxed);
 }
 
+/// Whether processes created afterwards give their 64-bit cores one shared JIT code cache.
+/// Defaults off.
+inline std::atomic<bool> g_jit_shared_code_cache{false};
+inline void SetJitSharedCodeCache(bool enabled) {
+    g_jit_shared_code_cache.store(enabled, std::memory_order_relaxed);
+}
+
 } // namespace Core
