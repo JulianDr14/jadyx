@@ -93,4 +93,24 @@ struct CrossModifyProbe {
 };
 [[nodiscard]] CrossModifyProbe RunCrossModifyProbe(unsigned case_ms = 250) noexcept;
 
+/// The probe kept running for the process's life, a few milliseconds every 50: stores into a
+/// dual-mapped page while a thread runs it, into an idle dual-mapped page (both locked like the
+/// cache's chunks), and into a plain private page. Shows whether the faults the cache takes
+/// while a game loads reach code memory nobody runs, or any memory. False where unavailable.
+bool StartCrossModifyWatch() noexcept;
+struct CrossModifyWatch {
+    struct Target {
+        std::uint64_t writes = 0;
+        std::uint64_t faults = 0;
+        std::uint64_t stuck = 0;
+        std::uint64_t first_fault_ms = 0;  ///< Since the watch started, + 1; 0 without faults.
+        std::uint64_t last_fault_ms = 0;
+    };
+    bool running = false;
+    Target running_page;
+    Target idle_page;
+    Target private_page;
+};
+[[nodiscard]] CrossModifyWatch GetCrossModifyWatch() noexcept;
+
 } // namespace Dynarmic

@@ -982,6 +982,15 @@ bool IsUnderRosetta() {
 
 }  // anonymous namespace
 
+#if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
+// Locks `size` bytes of the watch's write view the way the cache's chunks are locked.
+void LockWatchPages(void* write, std::size_t size) {
+    if (const CodeLockApi& api = CodeLocks(); api && AdjustMinimumWorkingSet(api, static_cast<std::ptrdiff_t>(size))) {
+        (void)api.lock(write, size);
+    }
+}
+#endif
+
 HostFeature GetHostFeatures() {
     return features;
 }
@@ -1635,6 +1644,7 @@ std::uint32_t s_probe_first_code = 0;
 std::uint64_t s_probe_first_info0 = 0;
 std::uint64_t s_probe_first_info1 = 0;
 thread_local unsigned t_probe_retries = 0;
+thread_local u64 t_probe_faults = 0;  ///< This thread's probe faults, for the watch's targets.
 
 int ProbeFilter(EXCEPTION_POINTERS* ep) {
     const EXCEPTION_RECORD& record = *ep->ExceptionRecord;
@@ -1642,6 +1652,7 @@ int ProbeFilter(EXCEPTION_POINTERS* ep) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
     s_probe_faults.fetch_add(1, std::memory_order_relaxed);
+    ++t_probe_faults;
     if (!s_probe_first_taken.exchange(true, std::memory_order_relaxed)) {
         s_probe_first_code = record.ExceptionCode;
         s_probe_first_info0 = record.NumberParameters > 0 ? record.ExceptionInformation[0] : 0;
@@ -1760,8 +1771,122 @@ CrossModifyProbe RunCrossModifyProbe(unsigned case_ms) noexcept {
     CloseHandle(section);
     return result;
 }
+
+namespace {
+struct WatchTargetState {
+    std::atomic<u64> writes{0};
+    std::atomic<u64> faults{0};
+    std::atomic<u64> stuck{0};
+    std::atomic<u64> first_fault_ms{0};  ///< Since the watch started, + 1; 0 without faults.
+    std::atomic<u64> last_fault_ms{0};
+};
+std::array<WatchTargetState, 3> s_watch_targets;
+std::atomic<bool> s_watch_running{false};
+
+// Stores through `target` for `ms`, counting into `state`.
+void WatchWrites(volatile u8* target, unsigned ms, WatchTargetState& state,
+                 std::chrono::steady_clock::time_point origin) {
+    const u64 faults_before = t_probe_faults;
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds{ms};
+    u64 writes = 0;
+    u64 stuck = 0;
+    do {
+        for (unsigned i = 0; i < 256; ++i) {
+            if (!ProbeStore(target, static_cast<u8>(writes + i))) {
+                ++stuck;
+            }
+        }
+        writes += 256;
+    } while (std::chrono::steady_clock::now() < end);
+    state.writes.fetch_add(writes, std::memory_order_relaxed);
+    state.stuck.fetch_add(stuck, std::memory_order_relaxed);
+    if (const u64 faults = t_probe_faults - faults_before; faults != 0) {
+        const u64 now_ms = static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                std::chrono::steady_clock::now() - origin)
+                                                .count()) + 1;
+        state.faults.fetch_add(faults, std::memory_order_relaxed);
+        u64 expected = 0;
+        state.first_fault_ms.compare_exchange_strong(expected, now_ms, std::memory_order_relaxed);
+        state.last_fault_ms.store(now_ms, std::memory_order_relaxed);
+    }
+}
+} // anonymous namespace
+
+bool StartCrossModifyWatch() noexcept {
+    constexpr size_t PAGE = 4096;
+    constexpr size_t SIZE = 16 * PAGE;
+    if (s_watch_running.exchange(true)) {
+        return true;
+    }
+    const HANDLE section = DYNARMIC_CREATE_CODE_SECTION(SIZE, SEC_COMMIT);
+    u8* const exec = section == nullptr ? nullptr
+                                        : static_cast<u8*>(DYNARMIC_MAP_CODE_VIEW(section, FILE_MAP_READ | FILE_MAP_EXECUTE, SIZE));
+    u8* const write = exec == nullptr ? nullptr : static_cast<u8*>(DYNARMIC_MAP_CODE_VIEW(section, FILE_MAP_WRITE, SIZE));
+    u8* const plain = static_cast<u8*>(DYNARMIC_VIRTUAL_ALLOC(nullptr, PAGE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    if (write == nullptr || plain == nullptr) {
+        s_watch_running.store(false);
+        return false;
+    }
+    // Locked like the cache's chunks; the running page and the idle one share the section.
+    Backend::X64::LockWatchPages(write, SIZE);
+    write[0] = 0xC3;
+    FlushInstructionCache(GetCurrentProcess(), exec, PAGE);
+    // Kept for the process's life, like the threads.
+    std::thread{[exec, write, plain] {
+        using ReturnFn = void (*)();
+        const auto run = reinterpret_cast<ReturnFn>(exec);
+        std::atomic<bool> executing{false};
+        std::atomic<bool> in_loop{false};
+        std::thread executor{[&] {
+            for (;;) {
+                if (!executing.load(std::memory_order_relaxed)) {
+                    in_loop.store(false, std::memory_order_relaxed);
+                    Sleep(1);
+                    continue;
+                }
+                in_loop.store(true, std::memory_order_relaxed);
+                for (unsigned i = 0; i < 4096; ++i) {
+                    run();
+                }
+            }
+        }};
+        executor.detach();
+        const auto origin = std::chrono::steady_clock::now();
+        for (;;) {
+            executing.store(true, std::memory_order_relaxed);
+            while (!in_loop.load(std::memory_order_relaxed)) {
+                SwitchToThread();
+            }
+            WatchWrites(write + PAGE / 2, 2, s_watch_targets[0], origin);
+            executing.store(false, std::memory_order_relaxed);
+            WatchWrites(write + 8 * PAGE + PAGE / 2, 2, s_watch_targets[1], origin);
+            WatchWrites(plain + PAGE / 2, 2, s_watch_targets[2], origin);
+            Sleep(40);
+        }
+    }}.detach();
+    return true;
+}
+
+CrossModifyWatch GetCrossModifyWatch() noexcept {
+    CrossModifyWatch watch;
+    watch.running = s_watch_running.load(std::memory_order_relaxed);
+    CrossModifyWatch::Target* const outs[] = {&watch.running_page, &watch.idle_page, &watch.private_page};
+    for (size_t i = 0; i < s_watch_targets.size(); ++i) {
+        const auto& state = s_watch_targets[i];
+        *outs[i] = {state.writes.load(std::memory_order_relaxed), state.faults.load(std::memory_order_relaxed),
+                    state.stuck.load(std::memory_order_relaxed), state.first_fault_ms.load(std::memory_order_relaxed),
+                    state.last_fault_ms.load(std::memory_order_relaxed)};
+    }
+    return watch;
+}
 #else
 CrossModifyProbe RunCrossModifyProbe(unsigned) noexcept {
+    return {};
+}
+bool StartCrossModifyWatch() noexcept {
+    return false;
+}
+CrossModifyWatch GetCrossModifyWatch() noexcept {
     return {};
 }
 #endif
