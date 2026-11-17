@@ -27,6 +27,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 #include <winrt/base.h>
 #include <winrt/Windows.ApplicationModel.h>
@@ -44,6 +45,8 @@
 #include "core/cpu_manager.h"
 #include "core/file_sys/common_funcs.h"
 #include "core/file_sys/content_archive.h"
+#include "core/file_sys/control_metadata.h"
+#include "core/file_sys/patch_manager.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/hle/kernel/guest_probe.h"
@@ -90,7 +93,9 @@
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/pulse/pulse_store_gate.h"
 #include "jadyx/settings/uwp_system_settings.h"
+#include "jadyx/network/nextendo/service.h"
 #include "jadyx/network/online_rooms.h"
+#include "jadyx/settings/nextendo_page.h"
 #include "jadyx/storage/network_import_gate.h"
 #include "jadyx/storage/utf8.h"
 #include "jadyx/storage/uwp_file_manager.h"
@@ -158,6 +163,8 @@ private:
     void StartGuest();
     int RunGpuFailureProbe();
     void FinishPrewarmBudget(u32 tick);
+    /// Tells Nextendo a game starts; the advice to show the player, or empty.
+    std::wstring StartNextendo();
     int PlayLoop();
     int TimedRun();
     int WaitForSentinels();
@@ -202,6 +209,7 @@ private:
     std::atomic<bool> jit_alive{false};
     std::atomic<bool> gfx_done{false};
     u64 program_id{};
+    bool nextendo_playing{}; ///< GameStarted was sent; Shutdown sends GameEnded.
     PrewarmBudget prewarm_budget;
 };
 
@@ -220,6 +228,7 @@ int GameSession::Run() {
 
 // Stops what runs over the System, then the guest. Every way out of a session that got this far.
 void GameSession::Shutdown() {
+    if (std::exchange(nextendo_playing, false)) Network::Nextendo::GameEnded();
     memory.reset();
     pulse_screen.reset();
     launch_screen.reset();
@@ -614,6 +623,27 @@ void GameSession::FinishPrewarmBudget(u32 tick) {
     }
 }
 
+std::wstring GameSession::StartNextendo() {
+    namespace Nx = Network::Nextendo;
+    const u64 title_id = FileSys::GetBaseTitleID(program_id);
+    // The name and version with the update applied, as the catalog lists them.
+    std::string name;
+    std::string version;
+    const FileSys::PatchManager patches{title_id, system.GetFileSystemController(), system.GetContentProvider()};
+    if (const auto control = patches.GetControlMetadata(); control.first) {
+        name = control.first->GetApplicationName();
+        version = control.first->GetVersionString();
+    }
+    if (name.empty()) void(system.GetAppLoader().ReadTitle(name));
+    Nx::GameStarted(title_id, name);
+    nextendo_playing = true;
+    const auto check = Nx::CheckGame(title_id, version);
+    const auto text = LaunchAdviceText(check.advice);
+    if (text == I18n::Text::Count) return {};
+    WriteDiag("nextendo: launch advice " + std::to_string(static_cast<int>(check.advice)));
+    return I18n::Format(text, {Utf8ToUtf16(check.recommended_version), Utf8ToUtf16(version)});
+}
+
 int GameSession::PlayLoop() {
     // Played by hand: the guest runs until the app is closed from the console, which ends the
     // process. The diag keeps a heartbeat of how long it ran and how much memory it used.
@@ -626,6 +656,11 @@ int GameSession::PlayLoop() {
     if (!mii_editor) play_session.emplace(nro_path, program_id);
     SessionMenu menu{{system, input, emu_window, config, surface, pulse_screen, launch_screen,
                       pulse_identity, keyboard_applet, program_id, mii_editor}};
+    // Nextendo: presence says what is played, and the catalog's word on this game (a version it
+    // does not accept, a game it does not serve) shows once the game draws, past the splash.
+    std::wstring nextendo_notice;
+    if (!mii_editor && program_id != 0) nextendo_notice = StartNextendo();
+    constexpr u32 NextendoNoticeTick = 400; // 8 s
     constexpr auto TICK = std::chrono::milliseconds(20);
     memory.emplace(system, config, program_id, prewarm_budget);
     // Pulse: after a resume the presented frames are logged each second for 30 s, so a guest
@@ -641,6 +676,8 @@ int GameSession::PlayLoop() {
     const auto play_start = std::chrono::steady_clock::now();
     for (u32 tick = 1;; ++tick) {
         std::this_thread::sleep_for(TICK);
+        if (tick == NextendoNoticeTick && !nextendo_notice.empty())
+            menu.ShowNotice(L"NEXTENDO", std::move(nextendo_notice), std::chrono::seconds{8});
         if (tick % 2 == 0) {
             const MotionViewState view = input.MotionView();
             constexpr u32 MovingLingerMs = 2500;

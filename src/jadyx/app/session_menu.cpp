@@ -222,7 +222,7 @@ void SessionMenu::Open() {
     DsuClient::SetWanted(DsuClient::Wanter::Menu, true);
     dsu_version = DsuClient::StatusVersion();
     menu->SetDsu(DsuClient::Status());
-    const bool from_notice = notice_shown;
+    const bool from_notice = notice_shown && notice_is_chat;
     HideChatNotice();
     if (live) {
         const auto chat = Online::Chat();
@@ -517,7 +517,28 @@ void SessionMenu::ShowChatNotice(const Online::ChatSnapshot& chat) {
     if (image.width == 0) return;
     system.GPU().RunOnGpuThread([&] { D3D12::ShowGameNotice(system.Renderer(), std::move(image)); });
     notice_shown = true;
+    notice_is_chat = true;
     notice_until = std::chrono::steady_clock::now() + ChatNoticeTime;
+}
+
+void SessionMenu::ShowNotice(std::wstring_view title, std::wstring text, std::chrono::seconds seconds) {
+    if (menu || notice_shown) return; // never over the menu, nor over a chat message
+    const ChatMenuLine line{ChatMenuLine::Kind::Status, {}, std::move(text)};
+    D3D12::MenuImage image;
+    try {
+        if (!notice_surface) notice_surface.emplace();
+        ChatNoticeView view{{&line, 1}, 0};
+        view.title = title;
+        image = notice_surface->DrawChatNotice(view, D3D12::GameMenuScreenSize(system.Renderer()));
+    } catch (const winrt::hresult_error& e) {
+        WriteDiag("menu: notice not drawn: " + winrt::to_string(e.message()));
+        return;
+    }
+    if (image.width == 0) return;
+    system.GPU().RunOnGpuThread([&] { D3D12::ShowGameNotice(system.Renderer(), std::move(image)); });
+    notice_shown = true;
+    notice_is_chat = false;
+    notice_until = std::chrono::steady_clock::now() + seconds;
 }
 
 void SessionMenu::HideChatNotice() {
