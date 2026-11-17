@@ -30,6 +30,7 @@
 #include "jadyx/network/nextendo/api_types.h"
 #include "jadyx/network/nextendo/network_mode.h"
 #include "jadyx/network/nextendo/pkce.h"
+#include "jadyx/network/nextendo/preferences.h"
 #include "jadyx/network/nextendo/session.h"
 
 using namespace Core::Online::Nextendo;
@@ -954,6 +955,64 @@ void TestSession() {
     EVP_PKEY_free(key.key);
 }
 
+
+void TestPreferences() {
+    Check(App::CleanAddress("") == std::string{});
+    Check(App::CleanAddress("  10.0.0.5 ") == std::string("10.0.0.5"));
+    Check(!App::CleanAddress("nextendo.network"));
+    Check(!App::CleanAddress("10.0.0"));
+    Check(!App::CleanAddress("10.0.0.5:80"));
+
+    App::Preferences prefs;
+    const App::GameIdentity identity{"nx2secret", 77, "0123456789abcdef"};
+    // Off by default: Eden rooms and offline play see plain Eden.
+    Check(!BuildCoreConfig(prefs, identity).enabled);
+    prefs.use_nextendo = true;
+    Check(!BuildCoreConfig(prefs, identity).enabled); // no server yet
+    prefs.server_ip = "10.0.0.5";
+    Check(!BuildCoreConfig(prefs, std::nullopt).enabled); // not signed in
+    auto config = BuildCoreConfig(prefs, identity);
+    Check(config.enabled && config.endpoints.server_ip == "10.0.0.5" && config.endpoints.nat_ip.empty());
+    Check(config.nex_token == "nx2secret" && config.pid == 77 && config.nsa_id_hex == "0123456789abcdef");
+    Check(App::SameCoreConfig(config, BuildCoreConfig(prefs, identity)));
+    prefs.nat_ip = "10.0.0.6";
+    Check(!App::SameCoreConfig(config, BuildCoreConfig(prefs, identity)));
+
+    const std::int64_t now = *ParseUtcTimestamp("2026-11-17T00:00:00Z");
+    const auto catalog = ParseGameCatalog(R"({"document_type":"game_catalog","revision":3,
+        "expires_at":"2026-11-18T00:00:00Z","games":[
+        {"title_ids":["0100000000010000"],"enabled":true,"required_capabilities":["versions.exact.v1"],
+         "versions":{"policy":"exact","accepted":["1.2.0"],"recommended":"1.2.0"}},
+        {"title_ids":["0100000000020000"],"enabled":false,"versions":{"policy":"exact"}}]})", now);
+    Check(catalog.error == CatalogError::None);
+    App::SessionView view;
+    using App::LaunchAdvice;
+    App::Preferences off;
+    Check(App::CheckLaunch(off, view, catalog, 0x0100000000010000ULL, "1.2.0").advice ==
+          LaunchAdvice::NotUsingNextendo);
+    App::Preferences no_server;
+    no_server.use_nextendo = true;
+    Check(App::CheckLaunch(no_server, view, catalog, 0x0100000000010000ULL, "1.2.0").advice ==
+          LaunchAdvice::NoServer);
+    Check(App::CheckLaunch(prefs, view, catalog, 0x0100000000010000ULL, "1.2.0").advice ==
+          LaunchAdvice::NotSignedIn);
+    view.phase = App::Phase::Ready;
+    view.status_known = true;
+    view.online_allowed = false;
+    view.block = App::OnlineBlock::Suspended;
+    Check(App::CheckLaunch(prefs, view, catalog, 0x0100000000010000ULL, "1.2.0").advice ==
+          LaunchAdvice::Blocked);
+    view.online_allowed = true;
+    Check(App::CheckLaunch(prefs, view, catalog, 0x0100000000010000ULL, "1.2.0").advice ==
+          LaunchAdvice::Supported);
+    const auto wrong = App::CheckLaunch(prefs, view, catalog, 0x0100000000010000ULL, "1.1.0");
+    Check(wrong.advice == LaunchAdvice::WrongVersion && wrong.recommended_version == "1.2.0");
+    Check(App::CheckLaunch(prefs, view, catalog, 0x0100000000020000ULL, "1.0").advice ==
+          LaunchAdvice::Disabled);
+    Check(App::CheckLaunch(prefs, view, catalog, 0x0100000000099000ULL, "1.0").advice ==
+          LaunchAdvice::NotListed);
+}
+
 } // namespace
 
 int main() {
@@ -968,6 +1027,7 @@ int main() {
     TestApi();
     TestNetworkMode();
     TestSession();
+    TestPreferences();
     std::printf("nextendo gate: %d checks passed\n", g_checks);
     return 0;
 }
