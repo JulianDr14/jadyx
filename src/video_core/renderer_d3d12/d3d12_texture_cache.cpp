@@ -124,8 +124,8 @@ void SetBcArrayDecode(bool enabled) {
     decode_bc_arrays.store(enabled, std::memory_order_relaxed);
 }
 
-void SetBc3dDecode(bool enabled) {
-    decode_bc_3d.store(enabled, std::memory_order_relaxed);
+void SetBc3dDecode(u8 mode) {
+    decode_bc_3d.store(mode, std::memory_order_relaxed);
 }
 
 void SetAstcGpuDecode(bool enabled) {
@@ -607,13 +607,17 @@ Image::Image(TextureCacheRuntime& runtime_, const VideoCommon::ImageInfo& info_,
         GetSmallBcGuestPalette() && IsSmallGuestPaletteBc(info_.format, guest_size_bytes);
     // BC 3D textures (SetBc3dDecode): the volume's depth slices may be misread like the layers of
     // a BC 2D array. The GPU decoder writes 2D arrays only, so these decode on the CPU.
+    const u8 bc_3d_mode = decode_bc_3d.load(std::memory_order_relaxed);
     const bool bc_3d = !native_blocks && info_.type == ImageType::e3D && info_.num_samples == 1 &&
-                       info_.size.depth > 1 && decode_bc_3d.load(std::memory_order_relaxed);
+                       info_.size.depth > 1 &&
+                       (bc_3d_mode == 2 ||
+                        (bc_3d_mode == 1 && (info_.format == PixelFormat::BC6H_UFLOAT ||
+                                             info_.format == PixelFormat::BC6H_SFLOAT)));
     if (bc_3d || (!native_blocks && info_.type == ImageType::e2D && info_.num_samples == 1 &&
                   (unaligned_bc_extent || guest_palette ||
                    (decode_bc_arrays.load(std::memory_order_relaxed) &&
                     info_.resources.layers > 1)))) {
-        if (const std::optional<FormatInfo> decoded = DecodedBcFormat(info_.format)) {
+        if (const std::optional<FormatInfo> decoded = DecodedBcFormat(info_.format, info_.type)) {
             format = *decoded;
             // The compute shader writes the texels from the guest blocks on upload; the CPU
             // decode (ConvertImage on the GPU thread) took up to hundreds of ms on area loads.

@@ -863,7 +863,7 @@ u32 CalculateConvertedSizeBytes(const ImageInfo& info) noexcept {
         return output_size;
     }
     return NumBlocksPerLayer(info, TILE_SIZE) * info.resources.layers *
-           ConvertedBytesPerBlock(info.format);
+           ConvertedBytesPerBlock(info.format, info.type);
 }
 
 u32 CalculateLayerStride(const ImageInfo& info) noexcept {
@@ -1277,10 +1277,11 @@ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8
             output_offset += copy.image_extent.width * copy.image_extent.height * slices *
                              ConvertedBytesPerBlock(info.format);
         } else {
-            DecompressBCn(input_offset, output.subspan(output_offset), copy, info.format);
+            DecompressBCn(input_offset, output.subspan(output_offset), copy, info.format,
+                          info.type);
             output_offset += copy.image_extent.width * copy.image_extent.height *
                              copy.image_extent.depth * copy.image_subresource.num_layers *
-                             ConvertedBytesPerBlock(info.format);
+                             ConvertedBytesPerBlock(info.format, info.type);
         }
 
         copy.buffer_row_length = mip_size.width;

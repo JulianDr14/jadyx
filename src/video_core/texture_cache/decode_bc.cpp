@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstring>
 #include <span>
+#include <vector>
 #include <bc_decoder.h>
 
 #include "common/common_types.h"
@@ -260,6 +261,56 @@ void DecompressBCn(std::span<const u8> input, std::span<u8> output, BufferImageC
         break;
     default:
         LOG_WARNING(HW_GPU, "Unimplemented BCn decompression {}", pixel_format);
+    }
+}
+
+namespace {
+/// A non-negative half float as the 11-bit (6 mantissa bits) or 10-bit (5) float of
+/// R11G11B10_FLOAT, rounded to nearest. The 5-bit exponent is the same, so dropping low mantissa
+/// bits with a rounding carry is the whole conversion; overflow clamps to the largest finite
+/// value, negatives and NaN become 0 (unsigned BC6H decodes neither).
+u32 PackSmallFloat(u16 half, u32 mantissa_bits) noexcept {
+    const u32 exponent = (half >> 10) & 0x1F;
+    if ((half & 0x8000) != 0 || (exponent == 0x1F && (half & 0x3FF) != 0)) {
+        return 0;
+    }
+    const u32 drop = 10 - mantissa_bits;
+    const u32 max_finite = (0x1Eu << mantissa_bits) | ((1u << mantissa_bits) - 1);
+    if (exponent == 0x1F) {
+        return max_finite;
+    }
+    const u32 packed = (static_cast<u32>(half) + (1u << (drop - 1))) >> drop;
+    return (std::min)(packed, max_finite);
+}
+} // Anonymous namespace
+
+bool PacksBc6hAsR11G11B10(PixelFormat pixel_format, ImageType type) noexcept {
+    return type == ImageType::e3D && pixel_format == PixelFormat::BC6H_UFLOAT;
+}
+
+u32 ConvertedBytesPerBlock(PixelFormat pixel_format, ImageType type) {
+    return PacksBc6hAsR11G11B10(pixel_format, type) ? 4 : ConvertedBytesPerBlock(pixel_format);
+}
+
+void DecompressBCn(std::span<const u8> input, std::span<u8> output, BufferImageCopy& copy,
+                   PixelFormat pixel_format, ImageType type) {
+    if (!PacksBc6hAsR11G11B10(pixel_format, type)) {
+        DecompressBCn(input, output, copy, pixel_format);
+        return;
+    }
+    // Decode one level to RGBA16F, then keep the three channels as R11G11B10.
+    const size_t texels = static_cast<size_t>(copy.image_extent.width) *
+                          copy.image_extent.height * copy.image_extent.depth *
+                          static_cast<size_t>((std::max)(copy.image_subresource.num_layers, 1));
+    static thread_local std::vector<u8> scratch;
+    scratch.resize(texels * 8);
+    DecompressBCn(input, scratch, copy, pixel_format);
+    for (size_t i = 0; i < texels; ++i) {
+        u16 rgb[3];
+        std::memcpy(rgb, scratch.data() + i * 8, sizeof(rgb));
+        const u32 packed = PackSmallFloat(rgb[0], 6) | (PackSmallFloat(rgb[1], 6) << 11) |
+                           (PackSmallFloat(rgb[2], 5) << 22);
+        std::memcpy(output.data() + i * 4, &packed, sizeof(packed));
     }
 }
 

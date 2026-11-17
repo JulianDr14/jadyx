@@ -35,7 +35,8 @@ ImageView::ImageView(TextureCacheRuntime& runtime_, const VideoCommon::ImageView
     // reinterprets the same resource format).
     FormatInfo format_info = runtime->Format(info.format);
     if (source.IsBcDecoded()) {
-        format_info = DecodedBcFormat(info.format).value_or(source.TransferFormat());
+        format_info = DecodedBcFormat(info.format, source.info.type)
+                          .value_or(source.TransferFormat());
     } else if (VideoCore::Surface::IsPixelFormatASTC(info.format)) {
         // ASTC arrays may be RGBA8 where the rest is recompressed: as the image decided.
         format_info = AstcFormatFor(source.info);

@@ -189,9 +189,10 @@ struct BootConfig {
     /// Per-pixel texture picks from handle arrays sample a pool through a remap table (on unless
     /// "texture_remap=0").
     bool texture_remap{true};
-    /// Decode block-compressed 3D textures to plain texels on the CPU ("bc_3d=decode"), as
-    /// SetBcArrayDecode does for 2D arrays. Off by default while it is measured.
-    bool bc_3d_decode{};
+    /// Decode block-compressed 3D textures to plain texels on the CPU, as SetBcArrayDecode does
+    /// for 2D arrays: 2 all of them ("bc_3d=decode"), 1 only BC6H ("bc_3d=hdr"), 0 none
+    /// ("bc_3d=native", the default while it is measured).
+    u8 bc_3d_mode{};
     /// Fine per-draw D3D12 CPU timers ("gpu_profile=1"). Off because clock reads are measurable.
     bool gpu_profile{};
     /// Writes every translated guest shader to the dump folder ("dump_guest_shaders=1").
