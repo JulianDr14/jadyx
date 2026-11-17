@@ -43,6 +43,10 @@ struct CodeEmitFaults {
     std::size_t fatal = 0;      ///< Emissions that kept faulting and were let crash.
     std::size_t page_out = 0;   ///< Faults whose page was out of the working set when checked.
     std::size_t page_in = 0;    ///< Faults whose page was back in the working set when checked.
+    /// The same page seen through the executable view at the fault's first try: out of the working
+    /// set there says the fault raced code running in that page for the first time.
+    std::size_t exec_out = 0;
+    std::size_t exec_in = 0;
     /// What ran beside each fault's first try, per Common::VmActivity::Kind (guest commit, guest
     /// decommit, guest protect, GPU heap): busy, running then; recent, finished within 5 ms
     /// before. quiet: none of them busy or recent.
@@ -71,11 +75,22 @@ struct CodeEmitFaults {
 /// write view (Windows, dual-mapped chunks). The system then cannot trim a page code is being
 /// written to, which it did on the console short of memory: the write faulted. Default on.
 void SetLockedCode(bool enabled) noexcept;
+/// Whether locked chunks mapped from now on are also locked through their executable view. The
+/// working set holds virtual pages, so the write view's lock leaves the executable view's pages
+/// free to be mapped on first use; on the console such a first run of code in a page made another
+/// core's store into that page fault while the system mapped it. Same physical pages: costs
+/// working set minimum, no memory. Default on; only with SetLockedCode.
+void SetLockedExecView(bool enabled) noexcept;
 struct CodeLockState {
-    std::size_t locked_bytes = 0;     ///< Code memory locked now.
-    std::size_t failures = 0;         ///< Chunks that could not be locked.
-    unsigned long last_error = 0;     ///< GetLastError of the last failure.
-    bool available = false;           ///< VirtualLock and the working set calls were found.
+    std::size_t locked_bytes = 0;       ///< Code memory locked now (write views).
+    std::size_t exec_locked_bytes = 0;  ///< Of it, also locked through the executable view.
+    std::size_t failures = 0;           ///< Chunks that could not be locked.
+    std::size_t exec_failures = 0;      ///< Locked chunks whose executable view could not be.
+    unsigned long last_error = 0;       ///< GetLastError of the last failure.
+    bool available = false;             ///< VirtualLock and the working set calls were found.
+    std::size_t chunks = 0;             ///< Chunks locked so far, and the time it took them.
+    std::uint64_t lock_us = 0;
+    std::uint64_t lock_us_max = 0;
 };
 [[nodiscard]] CodeLockState GetCodeLockState() noexcept;
 

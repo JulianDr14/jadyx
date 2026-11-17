@@ -95,6 +95,12 @@ std::atomic<size_t> s_dual_mapped_caches{0};
 /// SetLockedCode, and what locking the chunks' write views did (GetCodeLockState).
 std::atomic_bool s_lock_code{true};
 std::atomic<size_t> s_locked_code_bytes{0};
+std::atomic_bool s_lock_exec_view{true};
+std::atomic<size_t> s_locked_exec_bytes{0};
+std::atomic<size_t> s_exec_lock_failures{0};
+std::atomic<size_t> s_locked_chunks{0};
+std::atomic<std::uint64_t> s_chunk_lock_us{0};
+std::atomic<std::uint64_t> s_chunk_lock_us_max{0};
 std::atomic<size_t> s_code_lock_failures{0};
 std::atomic<unsigned long> s_code_lock_last_error{0};
 std::atomic_bool s_code_lock_available{false};
@@ -126,11 +132,22 @@ void SetLockedCode(bool enabled) noexcept {
     s_lock_code.store(enabled, std::memory_order_relaxed);
 }
 
+void SetLockedExecView(bool enabled) noexcept {
+    s_lock_exec_view.store(enabled, std::memory_order_relaxed);
+}
+
 CodeLockState GetCodeLockState() noexcept {
-    return {s_locked_code_bytes.load(std::memory_order_relaxed),
-            s_code_lock_failures.load(std::memory_order_relaxed),
-            s_code_lock_last_error.load(std::memory_order_relaxed),
-            s_code_lock_available.load(std::memory_order_relaxed)};
+    CodeLockState state;
+    state.locked_bytes = s_locked_code_bytes.load(std::memory_order_relaxed);
+    state.exec_locked_bytes = s_locked_exec_bytes.load(std::memory_order_relaxed);
+    state.failures = s_code_lock_failures.load(std::memory_order_relaxed);
+    state.exec_failures = s_exec_lock_failures.load(std::memory_order_relaxed);
+    state.last_error = s_code_lock_last_error.load(std::memory_order_relaxed);
+    state.available = s_code_lock_available.load(std::memory_order_relaxed);
+    state.chunks = s_locked_chunks.load(std::memory_order_relaxed);
+    state.lock_us = s_chunk_lock_us.load(std::memory_order_relaxed);
+    state.lock_us_max = s_chunk_lock_us_max.load(std::memory_order_relaxed);
+    return state;
 }
 
 void SetDualMappedCode(bool allowed) noexcept {
@@ -188,6 +205,8 @@ thread_local unsigned t_emit_fault_retries = 0;
 /// the end of the block before it, which other cores may be running.
 thread_local const u8* t_emit_scope_begin = nullptr;
 std::atomic<size_t> s_emit_fault_patching{0};
+std::atomic<size_t> s_emit_fault_exec_out{0};
+std::atomic<size_t> s_emit_fault_exec_in{0};
 std::atomic<size_t> s_emit_fault_new_code{0};
 std::atomic<size_t> s_emit_fault_begin_line{0};
 std::atomic<size_t> s_emit_fault_begin_page{0};
@@ -274,7 +293,14 @@ LONG NTAPI EmitFaultHandler(EXCEPTION_POINTERS* ep) {
             }
         }
         s_emit_fault_cpu[std::min<DWORD>(GetCurrentProcessorNumber(), 15)].fetch_add(1, std::memory_order_relaxed);
+        // getCurr is where the byte lands in the executable view.
+        const int exec_resident = PageResident(t_emitting->getCurr());
         const int resident = PageResident(at);
+        if (exec_resident == 0) {
+            s_emit_fault_exec_out.fetch_add(1, std::memory_order_relaxed);
+        } else if (exec_resident == 1) {
+            s_emit_fault_exec_in.fetch_add(1, std::memory_order_relaxed);
+        }
         if (resident == 0) {
             s_emit_fault_page_out.fetch_add(1, std::memory_order_relaxed);
         } else if (resident == 1) {
@@ -322,6 +348,8 @@ CodeEmitFaults GetCodeEmitFaults() noexcept {
     }
     faults.quiet = s_emit_fault_quiet.load(std::memory_order_relaxed);
     faults.patching = s_emit_fault_patching.load(std::memory_order_relaxed);
+    faults.exec_out = s_emit_fault_exec_out.load(std::memory_order_relaxed);
+    faults.exec_in = s_emit_fault_exec_in.load(std::memory_order_relaxed);
     faults.new_code = s_emit_fault_new_code.load(std::memory_order_relaxed);
     faults.begin_line = s_emit_fault_begin_line.load(std::memory_order_relaxed);
     faults.begin_page = s_emit_fault_begin_page.load(std::memory_order_relaxed);
@@ -492,7 +520,11 @@ bool AdjustMinimumWorkingSet(const CodeLockApi& api, std::ptrdiff_t delta) {
     return api.set_working_set(GetCurrentProcess(), new_minimum, new_maximum, flags) != FALSE;
 }
 
-void LockCodeChunk(u8* write) {
+// Locks a newly mapped chunk through its write view and (SetLockedExecView) its executable view,
+// with one working set move for both. Called with s_dual_views_mutex held (or by the one-time
+// boot probe, before any cache exists), so the moves of the minimum never race. Once per 4 MiB chunk: the executable view's lock maps pages the write
+// view's lock already brought in, so it costs page table entries, not memory.
+void LockCodeChunk(u8* write, u8* exec) {
     if (!s_lock_code.load(std::memory_order_relaxed)) {
         return;
     }
@@ -501,28 +533,59 @@ void LockCodeChunk(u8* write) {
         s_code_lock_failures.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    if (AdjustMinimumWorkingSet(api, static_cast<std::ptrdiff_t>(CODE_CHUNK_SIZE))) {
-        if (api.lock(write, CODE_CHUNK_SIZE)) {
-            s_locked_code_bytes.fetch_add(CODE_CHUNK_SIZE, std::memory_order_relaxed);
-            return;
-        }
-        const DWORD error = GetLastError();
-        (void)AdjustMinimumWorkingSet(api, -static_cast<std::ptrdiff_t>(CODE_CHUNK_SIZE));
-        s_code_lock_last_error.store(error, std::memory_order_relaxed);
-    } else {
+    const auto start = std::chrono::steady_clock::now();
+    const bool both = s_lock_exec_view.load(std::memory_order_relaxed);
+    const auto bytes = static_cast<std::ptrdiff_t>((both ? 2 : 1) * CODE_CHUNK_SIZE);
+    if (!AdjustMinimumWorkingSet(api, bytes)) {
         s_code_lock_last_error.store(GetLastError(), std::memory_order_relaxed);
-    }
-    s_code_lock_failures.fetch_add(1, std::memory_order_relaxed);
-}
-
-// Before the chunk is unmapped; a chunk that was not locked is left alone.
-void UnlockCodeChunk(u8* write) {
-    const CodeLockApi& api = CodeLocks();
-    if (!api || !api.unlock(write, CODE_CHUNK_SIZE)) {
+        s_code_lock_failures.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    s_locked_code_bytes.fetch_sub(CODE_CHUNK_SIZE, std::memory_order_relaxed);
-    (void)AdjustMinimumWorkingSet(api, -static_cast<std::ptrdiff_t>(CODE_CHUNK_SIZE));
+    if (!api.lock(write, CODE_CHUNK_SIZE)) {
+        const DWORD error = GetLastError();
+        (void)AdjustMinimumWorkingSet(api, -bytes);
+        s_code_lock_last_error.store(error, std::memory_order_relaxed);
+        s_code_lock_failures.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    s_locked_code_bytes.fetch_add(CODE_CHUNK_SIZE, std::memory_order_relaxed);
+    if (both) {
+        if (api.lock(exec, CODE_CHUNK_SIZE)) {
+            s_locked_exec_bytes.fetch_add(CODE_CHUNK_SIZE, std::memory_order_relaxed);
+        } else {
+            s_code_lock_last_error.store(GetLastError(), std::memory_order_relaxed);
+            s_exec_lock_failures.fetch_add(1, std::memory_order_relaxed);
+            (void)AdjustMinimumWorkingSet(api, -static_cast<std::ptrdiff_t>(CODE_CHUNK_SIZE));
+        }
+    }
+    const auto us = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+    s_locked_chunks.fetch_add(1, std::memory_order_relaxed);
+    s_chunk_lock_us.fetch_add(us, std::memory_order_relaxed);
+    if (us > s_chunk_lock_us_max.load(std::memory_order_relaxed)) {
+        s_chunk_lock_us_max.store(us, std::memory_order_relaxed);  // Serialized like the lock.
+    }
+}
+
+// Before the chunk is unmapped: unlocks whichever of its views were locked, then gives the working
+// set minimum back in one move. A chunk that was not locked is left alone.
+void UnlockCodeChunk(u8* write, u8* exec) {
+    const CodeLockApi& api = CodeLocks();
+    if (!api) {
+        return;
+    }
+    std::ptrdiff_t bytes = 0;
+    if (api.unlock(exec, CODE_CHUNK_SIZE)) {
+        s_locked_exec_bytes.fetch_sub(CODE_CHUNK_SIZE, std::memory_order_relaxed);
+        bytes += CODE_CHUNK_SIZE;
+    }
+    if (api.unlock(write, CODE_CHUNK_SIZE)) {
+        s_locked_code_bytes.fetch_sub(CODE_CHUNK_SIZE, std::memory_order_relaxed);
+        bytes += CODE_CHUNK_SIZE;
+    }
+    if (bytes != 0) {
+        (void)AdjustMinimumWorkingSet(api, -bytes);
+    }
 }
 
 // Commits [exec, exec + size) of a single section through its write view. The pages are the
@@ -635,14 +698,14 @@ bool MapCodeChunk(DualCodeView& view, size_t index) {
         return false;
     }
     view.chunks[index] = true;
-    LockCodeChunk(static_cast<u8*>(write));
+    LockCodeChunk(static_cast<u8*>(write), static_cast<u8*>(exec));
     return true;
 }
 
 void UnmapCodeChunk(DualCodeView& view, size_t index) {
     const PlaceholderApi& api = Placeholders();
     const size_t offset = index * CODE_CHUNK_SIZE;
-    UnlockCodeChunk(view.write + offset);
+    UnlockCodeChunk(view.write + offset, view.exec + offset);
     api.unmap_view_of_file2(GetCurrentProcess(), view.exec + offset, MEM_PRESERVE_PLACEHOLDER);
     api.unmap_view_of_file2(GetCurrentProcess(), view.write + offset, MEM_PRESERVE_PLACEHOLDER);
     view.chunks[index] = false;
