@@ -27,7 +27,7 @@ public:
         static const FunctionInfo functions[] = {
             {0, &IFriendService::GetCompletionEvent, "GetCompletionEvent"},
             {1, &IFriendService::Cancel, "Cancel"},
-            {10100, nullptr, "GetFriendListIds"},
+            {10100, &IFriendService::GetFriendListIds, "GetFriendListIds"},
             {10101, &IFriendService::GetFriendList, "GetFriendList"},
             {10102, nullptr, "UpdateFriendInfo"},
             {10110, nullptr, "GetFriendProfileImage"},
@@ -206,6 +206,22 @@ private:
 
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
+    }
+
+    // Same input as GetFriendList; the output buffer holds NetworkServiceAccountIds. No friend
+    // list is emulated, so the count is zero and the buffer is left untouched.
+    void GetFriendListIds(HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const auto friend_offset = rp.Pop<u32>();
+        const auto uuid = rp.PopRaw<Common::UUID>();
+        [[maybe_unused]] const auto filter = rp.PopRaw<SizedFriendFilter>();
+        const auto pid = rp.Pop<u64>();
+        LOG_WARNING(Service_Friend, "(STUBBED) called, offset={}, uuid=0x{}, pid={}", friend_offset,
+                    uuid.RawString(), pid);
+
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        rb.Push<u32>(0); // Friend count
     }
 
     void GetFriendList(HLERequestContext& ctx) {
