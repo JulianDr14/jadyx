@@ -34,6 +34,7 @@
 #include "jadyx/mods/mods_view.h"
 #include "jadyx/i18n/localization.h"
 #include "jadyx/storage/network_portal.h"
+#include "jadyx/network/room_ping.h"
 #include "jadyx/ui/qr_code.h"
 #include "jadyx/ui/ui_painter.h"
 #include "jadyx/ui/text_entry_panel.h"
@@ -2045,6 +2046,17 @@ private:
             Chip(badge, right, y + (h - 26) / 2, here ? Palette::Text : full ? Palette::Warning : Palette::TextHint, alpha);
             Icon(UiIcon::User, right - 26, y + (h - 18) / 2, Palette::TextSecondary, 18);
             right -= 40;
+            // The ping to the room's host, coloured by how well it plays; a dash when it ignores pings.
+            if (const auto ping = Online::PingLabel(room); !ping.empty()) {
+                const unsigned tone = !room.ping_ms ? Palette::TextSecondary
+                                    : Online::PingToneFor(*room.ping_ms) == Online::PingTone::Good ? PingGood
+                                    : Online::PingToneFor(*room.ping_ms) == Online::PingTone::Fair ? Palette::Warning
+                                                                                                    : PingPoor;
+                const float pw = MeasureType(ping, TypeRole::Label) + 4;
+                right -= pw;
+                Type(ping, TypeRole::Label, right, y + (h - 16) / 2, pw, tone, alpha);
+                right -= 14;
+            }
             Icon(room.password ? UiIcon::Key : UiIcon::Game, x + 16, y + (h - 22) / 2,
                  focused ? Palette::Text : Palette::TextSecondary, 22);
             const float text_x = x + 54, text_w = right - text_x - 8;
@@ -2085,6 +2097,7 @@ private:
         }
     }
     static constexpr unsigned NextendoLive = 0x5ad08a;
+    static constexpr unsigned PingGood = 0x5ad08a, PingPoor = 0xe8746b;
     /// The Nextendo account card: the profile, its chips, then the button (52) under them.
     static constexpr float NextendoAccountHeight = 220;
     /// A row of the Online tab's left column: its icon, a small label over the value, and at the
