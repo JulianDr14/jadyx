@@ -46,6 +46,10 @@ int main(int argc,char** argv) {
     Check(!portal.Start("8.8.8.8", static_cast<unsigned short>(port)), "reject public binding");
     Check(portal.Start("127.0.0.1", static_cast<unsigned short>(port)), "start loopback harness");
     const auto initial = portal.Status();
+    Check(Jadyx::PortalPairingLink(initial) == initial.url + "/#pair=" + initial.code, "pairing link carries the code in the fragment");
+    Check(Jadyx::PortalPairingLink(initial, "nextendo") == initial.url + "/#pair=" + initial.code + "&open=nextendo", "pairing link opens a tab");
+    { auto expired = initial; expired.code_expired = true; Check(Jadyx::PortalPairingLink(expired).empty(), "no pairing link once the code expired"); }
+    Check(Jadyx::PortalPairingLink(Jadyx::PortalStatus{}).empty(), "no pairing link while stopped");
     Check(initial.port == port && initial.error == Jadyx::PortalError::None, "status carries the bound port");
     Jadyx::NetworkPortal occupied;
     Check(!occupied.Start("127.0.0.1", static_cast<unsigned short>(port)) &&
