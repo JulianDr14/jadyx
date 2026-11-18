@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -370,6 +372,18 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(Core::System& sys
         }
         const std::vector<u8> data =
             SerializeAddrInfo(std::get<std::vector<Network::AddrInfo>>(*nx), host);
+        // What the game asked for and what it gets back, to check the layout against the SDK.
+        const auto hex = [](std::span<const u8> bytes) {
+            std::string out;
+            for (const u8 b : bytes) out += fmt::format("{:02x}", b);
+            return out;
+        };
+        LOG_INFO(Service,
+                 "[Nextendo] getaddrinfo cmd {} service '{}' hints {} | out buffer {:#x}, "
+                 "answer {} bytes: {}",
+                 ctx.GetCommand(), service.value_or(""),
+                 ctx.CanReadBuffer(2) ? hex(ctx.ReadBuffer(2)) : std::string("none"),
+                 ctx.GetWriteBufferSize(0), data.size(), hex(data));
         ctx.WriteBuffer(data, 0);
         return {u32(data.size()), GetAddrInfoError::SUCCESS};
     }
