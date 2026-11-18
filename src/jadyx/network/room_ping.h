@@ -7,6 +7,7 @@
 // console blocks ICMP for apps); a room that is off or does not answer shows a dash.
 
 #include <cstddef>
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -57,6 +58,25 @@ inline void ApplyPings(std::vector<LobbyRoom>& rooms, const std::map<std::string
         room.pinged = true;
         room.ping_ms = found->second;
     }
+}
+
+/// Once measured, the closest rooms go first: lowest ping up, then rooms that did not answer,
+/// then rooms not measured. Ties keep the lobby's order (rooms with people first).
+inline void SortByPing(std::vector<LobbyRoom>& rooms) {
+    const auto rank = [](const LobbyRoom& room) {
+        return !room.pinged ? 2 : room.ping_ms ? 0 : 1;
+    };
+    std::ranges::stable_sort(rooms, [&](const LobbyRoom& a, const LobbyRoom& b) {
+        if (rank(a) != rank(b)) return rank(a) < rank(b);
+        return rank(a) == 0 && *a.ping_ms < *b.ping_ms;
+    });
+}
+
+/// The same room in a list that changed (refreshed or sorted): matched by address, port and name.
+inline std::optional<std::size_t> FindRoom(const std::vector<LobbyRoom>& rooms, const LobbyRoom& room) {
+    for (std::size_t i = 0; i < rooms.size(); ++i)
+        if (rooms[i].address == room.address && rooms[i].port == room.port && rooms[i].name == room.name) return i;
+    return std::nullopt;
 }
 
 /// What the row shows: "45 ms", a dash when the room did not answer, nothing while measuring.

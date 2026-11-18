@@ -50,6 +50,20 @@ int main() {
         Check(PingToneFor(PingGoodMs + 1) == PingTone::Fair && PingToneFor(PingFairMs) == PingTone::Fair);
         Check(PingToneFor(PingFairMs + 1) == PingTone::Poor);
         Check(PingTargets({}).empty());
+        // Sorting: lowest ping first, then no answer, then not measured; ties keep their order.
+        rooms[3].pinged = true;
+        rooms[3].ping_ms = 15;
+        rooms[0].name = "a";
+        rooms[2].name = "b";
+        const LobbyRoom unmeasured = rooms[4];
+        SortByPing(rooms);
+        Check(rooms[0].ping_ms == 15 && rooms[1].name == "a" && rooms[2].name == "b");
+        Check(rooms[3].pinged && !rooms[3].ping_ms && !rooms[4].pinged);
+        Check(FindRoom(rooms, unmeasured) == 4u);
+        Check(FindRoom(rooms, rooms[2]) == 2u);
+        LobbyRoom gone;
+        gone.address = "8.8.8.8";
+        Check(!FindRoom(rooms, gone));
     }
     // Cleaning: control characters, ends, empty input.
     Check(CleanChatText("  hola\tque\ntal  ") == "hola que tal");

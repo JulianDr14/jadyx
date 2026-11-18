@@ -654,6 +654,7 @@ void RefreshLobby() {
             std::scoped_lock lock{g_lobby_mutex};
             if (!stop.stop_requested() && g_lobby.version == listed) {
                 ApplyPings(g_lobby.rooms, results);
+                SortByPing(g_lobby.rooms);
                 ++g_lobby.version;
             }
         }

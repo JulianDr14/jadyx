@@ -7,6 +7,7 @@
 #include "jadyx/input/dsu_text.h"
 #include "core/file_sys/common_funcs.h"
 #include "jadyx/network/nextendo/service.h"
+#include "jadyx/network/room_ping.h"
 
 namespace Jadyx {
 using I18n::Tr;
@@ -656,8 +657,15 @@ void LibrarySession::PollOnline() {
     if (tab != LibraryTab::Online) return;
     auto lobby = Online::Lobby();
     if (lobby.version != online_page.lobby.version) {
-        online_page.lobby = std::move(lobby);
         auto& page = online_page;
+        // The focus stays on its room when the list reorders (pings arrive) or refreshes.
+        const auto* focused = OnlineRoomAt(page, OnlineInRooms(page) ? page.selected : OnlinePage::FixedRows + page.last_room);
+        const auto moved = focused ? Online::FindRoom(lobby.rooms, *focused) : std::nullopt;
+        page.lobby = std::move(lobby);
+        if (moved) {
+            if (OnlineInRooms(page)) page.selected = OnlinePage::FixedRows + *moved;
+            page.last_room = *moved;
+        }
         const std::size_t rooms = page.lobby.rooms.size();
         page.last_room = rooms ? std::min(page.last_room, rooms - 1) : 0;
         // A list that shrank under the focus hands it to its last room, or back to the form.
