@@ -490,7 +490,7 @@ public:
         }
         DrawUpdatesFooter(!actions.empty());
     }
-    void InvalidateCovers() { covers.clear(); pictures.clear(); backdrops.clear(); backdrop_now.clear(); backdrop_before.clear(); }
+    void InvalidateCovers() { avatar_source.reset(); avatar_bitmap.Reset(); covers.clear(); pictures.clear(); backdrops.clear(); backdrop_now.clear(); backdrop_before.clear(); }
     bool Animating() const {
         const auto since = Tween::Clock::now() - last_frame;
         return animating || (ambient && since >= AmbientFrame) || (online_pulse && since >= PulseFrame);
@@ -572,7 +572,8 @@ private:
                         Tween::Clock::time_point now) {
         constexpr unsigned Live = 0x5ad08a;
         const auto& status = view.online.status;
-        const bool joined = status.phase == Online::Phase::Joined;
+        // In an Eden room, or on Nextendo with the account ready: the same live dot.
+        const bool joined = status.phase == Online::Phase::Joined || NextendoLiveNow(view.online.nx);
         const bool joining = status.phase == Online::Phase::Joining;
         const bool dropped = status.phase == Online::Phase::Idle && (status.failure == Online::Failure::LostConnection ||
                                                                      status.failure == Online::Failure::Kicked);
@@ -625,17 +626,30 @@ private:
             Badge(next, left + width + 10 + BadgeWidth(next) / 2, middle, Palette::TextSecondary);
         }
         // Right to left: the user, a hairline, the time and the controller (pressing it opens its panel).
-        const std::wstring_view name = view.system.settings.user_name.empty()
-                                           ? DefaultUserName
-                                           : std::wstring_view{view.system.settings.user_name};
+        // On Nextendo with an account the user is that account: its name and picture.
+        const auto& nx = view.online.nx;
+        const bool nextendo_user = nx.preferences.use_nextendo && NextendoSignedIn(nx) &&
+                                   !(nx.view.display_name.empty() && nx.view.username.empty());
+        const std::wstring nextendo_name =
+            nextendo_user ? OnlineWiden(!nx.view.display_name.empty() ? nx.view.display_name : nx.view.username)
+                          : std::wstring{};
+        const std::wstring_view name = nextendo_user                              ? std::wstring_view{nextendo_name}
+                                       : view.system.settings.user_name.empty() ? DefaultUserName
+                                                                                : std::wstring_view{view.system.settings.user_name};
         const float name_width = std::min(MeasureType(name, TypeRole::LabelLarge) + 2, 150.0f);
         float right = 1280 - Margin - name_width;
         Type(name, TypeRole::LabelLarge, right, middle - 10, name_width, Palette::Text);
         right -= 10 + 30;
-        Round(right, middle - 15, 30, 30, 15, Palette::Graphite);
-        Outline(right + 0.5f, middle - 14.5f, 29, 29, 14.5f, 0xffffff, 0.2f);
-        Type(Upper(name.substr(0, 1)), TypeRole::LabelLarge, right, middle - 10, 30, Palette::Text, 1,
-             TextAlign::Center);
+        if (auto* picture = nextendo_user ? AvatarBitmap(nx.avatar) : nullptr) {
+            const bool live = nx.view.phase == Network::Nextendo::Phase::Ready;
+            RoundPicture(picture, right, middle - 15, 30);
+            Outline(right + 0.5f, middle - 14.5f, 29, 29, 14.5f, live ? NextendoLive : 0xffffff, live ? 0.9f : 0.2f);
+        } else {
+            Round(right, middle - 15, 30, 30, 15, Palette::Graphite);
+            Outline(right + 0.5f, middle - 14.5f, 29, 29, 14.5f, 0xffffff, 0.2f);
+            Type(Upper(name.substr(0, 1)), TypeRole::LabelLarge, right, middle - 10, 30, Palette::Text, 1,
+                 TextAlign::Center);
+        }
         right -= 16;
         Round(right, middle - 11, 1, 22, 0, 0xffffff, 0.18f);
         SYSTEMTIME time_of_day{};
@@ -2071,6 +2085,8 @@ private:
         }
     }
     static constexpr unsigned NextendoLive = 0x5ad08a;
+    /// The Nextendo account card: the profile, its chips, then the button (52) under them.
+    static constexpr float NextendoAccountHeight = 220;
     /// A row of the Online tab's left column: its icon, a small label over the value, and at the
     /// right the chevron that says A edits it, or the switch it flips.
     void OnlineField(bool focused, UiIcon icon, std::wstring_view label, const std::wstring& value, bool placeholder,
@@ -2120,7 +2136,7 @@ private:
         const auto focused_row = [&](std::size_t row) { return !page.in_games && page.selected == row; };
         // The account.
         {
-            const float y = OnlineTop, h = 212;
+            const float y = OnlineTop, h = NextendoAccountHeight;
             Round(lx, y, lw, h, 18, Palette::Surface, 0.86f);
             Outline(lx + 0.5f, y + 0.5f, lw - 1, h - 1, 18, 0xffffff, 0.06f);
             DrawNetworkSwitch(online, lx + 16, y + 14);
@@ -2146,12 +2162,16 @@ private:
                 const std::wstring display = OnlineWiden(!session.display_name.empty() ? session.display_name
                                                                                       : session.username);
                 constexpr float avatar = 56;
-                const float ay = y + 58;
-                Round(body_x, ay, avatar, avatar, avatar / 2, 0xffffff, 0.12f);
+                const float ay = y + 52;
+                auto* picture = AvatarBitmap(page.avatar);
+                if (picture) RoundPicture(picture, body_x, ay, avatar);
+                else Round(body_x, ay, avatar, avatar, avatar / 2, 0xffffff, 0.12f);
                 Outline(body_x + 0.5f, ay + 0.5f, avatar - 1, avatar - 1, avatar / 2 - 0.5f,
                         session.phase == Phase::Ready ? NextendoLive : 0xffffff,
                         session.phase == Phase::Ready ? 0.9f : 0.2f, 2);
-                if (display.empty()) {
+                if (picture) {
+                    // The picture says who it is.
+                } else if (display.empty()) {
                     Icon(UiIcon::User, body_x + 16, ay + 16, Palette::Text, 24);
                 } else {
                     Type(display.substr(0, 1), TypeRole::HeadlineSmall, body_x, ay + 13, avatar, Palette::Text, 1,
@@ -2166,8 +2186,8 @@ private:
                               I18n::Format(T::NxFriendCode, {OnlineWiden(session.friend_code)});
                 Type(handle.empty() ? std::wstring{Tr(T::NxConnectingBody)} : handle, TypeRole::Label, tx, ay + 34, tw,
                      Palette::TextSecondary);
-                // Under it the problem, or what the account may do.
-                const float cy = y + 126;
+                // Under it the problem, or what the account may do, clear of the button.
+                const float cy = y + 118;
                 if (problem) {
                     Type(I18n::Format(NextendoProblemText(session.problem), {std::to_wstring(session.retry_after)}),
                          TypeRole::Body, body_x, cy, body_w, Palette::Warning, 1, TextAlign::Leading, 1);
@@ -2204,7 +2224,7 @@ private:
         }
         // Play: the switch that chooses Nextendo, the servers' addresses, the certificate check.
         {
-            const float y = OnlineTop + 212 + 16, h = OnlineBottom - y;
+            const float y = OnlineTop + NextendoAccountHeight + 16, h = OnlineBottom - y;
             Round(lx, y, lw, h, 18, Palette::Surface, 0.86f);
             Outline(lx + 0.5f, y + 0.5f, lw - 1, h - 1, 18, 0xffffff, 0.06f);
             Type(Upper(Tr(T::NxPlayCaption)), TypeRole::Caps, lx + 24, y + 22, lw - 48, Palette::TextSecondary);
@@ -2374,8 +2394,17 @@ private:
             const float chip = MeasureType(verdict, TypeRole::Label) + 24;
             const float right = x + w - 16 - chip;
             Chip(verdict, right, y + (h - 26) / 2, color, alpha);
-            Icon(UiIcon::Game, x + 16, y + (h - 22) / 2, focused ? Palette::Text : Palette::TextSecondary, 22);
-            const float text_x = x + 54, text_w = right - text_x - 12;
+            // The library's cover when the game is here; the game glyph otherwise.
+            const auto entry = NextendoRowEntry(page, i, view.scan.entries);
+            float text_x = x + 54;
+            if (entry != NextendoPage::NoEntry) {
+                constexpr float cover = 44;
+                Cover(view.scan.entries[entry], x + 12, y + (h - cover) / 2, cover);
+                text_x = x + 12 + cover + 14;
+            } else {
+                Icon(UiIcon::Game, x + 16, y + (h - 22) / 2, focused ? Palette::Text : Palette::TextSecondary, 22);
+            }
+            const float text_w = right - text_x - 12;
             Type(OnlineWiden(game.name), TypeRole::LabelLarge, text_x, y + 10, text_w, Palette::Text, alpha);
             // Under the name: the version here and the one the catalog recommends.
             std::wstring detail;
@@ -2520,7 +2549,9 @@ private:
         using Network::Nextendo::Phase;
         const auto& page = view.online.nx;
         std::optional<T> play;
-        if (!page.in_games) {
+        if (page.in_games) {
+            if (NextendoRowEntry(page, page.game, view.scan.entries) != NextendoPage::NoEntry) play = T::Play;
+        } else {
             switch (page.selected) {
             case NextendoPage::Account:
                 if (page.view.phase != Phase::SigningIn) play = NextendoSignedIn(page) ? T::NxSignOut : T::NxSignIn;
@@ -3109,41 +3140,75 @@ private:
         }
 
     }
+    /// A picture file in memory (PNG, JPEG...) decoded to side x side; null when it is not one.
+    ComPtr<ID2D1Bitmap1> DecodeSquare(const void* data, std::size_t size, UINT side) {
+        ComPtr<ID2D1Bitmap1> bitmap;
+        if (size == 0 || size > 0xffffffffu) return bitmap;
+        try {
+            ComPtr<IWICStream> stream;
+            winrt::check_hresult(wic->CreateStream(&stream));
+            winrt::check_hresult(stream->InitializeFromMemory(static_cast<BYTE*>(const_cast<void*>(data)),
+                                                             static_cast<DWORD>(size)));
+            ComPtr<IWICBitmapDecoder> decoder;
+            winrt::check_hresult(wic->CreateDecoderFromStream(stream.Get(), nullptr,
+                WICDecodeMetadataCacheOnDemand, &decoder));
+            ComPtr<IWICBitmapFrameDecode> frame;
+            winrt::check_hresult(decoder->GetFrame(0, &frame));
+            UINT w, h;
+            winrt::check_hresult(frame->GetSize(&w, &h));
+            if (w == 0 || h == 0 || w > 4096 || h > 4096)
+                winrt::throw_hresult(E_INVALIDARG);
+            ComPtr<IWICBitmapScaler> scaler;
+            winrt::check_hresult(wic->CreateBitmapScaler(&scaler));
+            winrt::check_hresult(scaler->Initialize(frame.Get(), side, side, WICBitmapInterpolationModeFant));
+            ComPtr<IWICFormatConverter> converter;
+            winrt::check_hresult(wic->CreateFormatConverter(&converter));
+            winrt::check_hresult(converter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA,
+                WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom));
+            winrt::check_hresult(target->CreateBitmapFromWicBitmap(converter.Get(), nullptr, &bitmap));
+        } catch (const winrt::hresult_error&) {
+            bitmap.Reset();
+        }
+        return bitmap;
+    }
     /// The entry's icon decoded to 256x256, or nullptr while it is not read (or not a picture).
     ID2D1Bitmap1* CoverBitmap(const LibraryEntry& entry) {
         // The launch path is unique; relative paths repeat across internal and USB sources.
         auto found = covers.find(entry.launch_path);
         if (found == covers.end()) {
             if (entry.icon.empty()) return nullptr;
-            ComPtr<ID2D1Bitmap1> bitmap;
-            try {
-                ComPtr<IWICStream> stream;
-                winrt::check_hresult(wic->CreateStream(&stream));
-                winrt::check_hresult(stream->InitializeFromMemory(const_cast<BYTE*>(entry.icon.data()),
-                                                                 static_cast<DWORD>(entry.icon.size())));
-                ComPtr<IWICBitmapDecoder> decoder;
-                winrt::check_hresult(wic->CreateDecoderFromStream(stream.Get(), nullptr,
-                    WICDecodeMetadataCacheOnDemand, &decoder));
-                ComPtr<IWICBitmapFrameDecode> frame;
-                winrt::check_hresult(decoder->GetFrame(0, &frame));
-                UINT w, h;
-                winrt::check_hresult(frame->GetSize(&w, &h));
-                if (w == 0 || h == 0 || w > 4096 || h > 4096)
-                    winrt::throw_hresult(E_INVALIDARG);
-                ComPtr<IWICBitmapScaler> scaler;
-                winrt::check_hresult(wic->CreateBitmapScaler(&scaler));
-                winrt::check_hresult(scaler->Initialize(frame.Get(), 256, 256, WICBitmapInterpolationModeFant));
-                ComPtr<IWICFormatConverter> converter;
-                winrt::check_hresult(wic->CreateFormatConverter(&converter));
-                winrt::check_hresult(converter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA,
-                    WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom));
-                winrt::check_hresult(target->CreateBitmapFromWicBitmap(converter.Get(), nullptr, &bitmap));
-            } catch (const winrt::hresult_error&) {}
+            auto bitmap = DecodeSquare(entry.icon.data(), entry.icon.size(), 256);
             // The rail and four rows of the collection: 256x256 BGRA, 256 KiB each.
             if (covers.size() >= MaxCovers) covers.clear();
             found = covers.emplace(entry.launch_path, std::move(bitmap)).first;
         }
         return found->second.Get();
+    }
+    /// The Nextendo account picture (128x128), decoded once per download; null: draw the initial.
+    ID2D1Bitmap1* AvatarBitmap(const std::shared_ptr<const std::string>& bytes) {
+        if (bytes != avatar_source) {
+            avatar_source = bytes;
+            avatar_bitmap = bytes ? DecodeSquare(bytes->data(), bytes->size(), 128) : ComPtr<ID2D1Bitmap1>{};
+        }
+        return avatar_bitmap.Get();
+    }
+    /// A round picture at (x, y), size across, under a hairline ring.
+    void RoundPicture(ID2D1Bitmap1* bitmap, float x, float y, float size) {
+        if (!circle_mask) {
+            ComPtr<ID2D1Factory> factory;
+            target->GetFactory(&factory);
+            winrt::check_hresult(factory->CreateEllipseGeometry(D2D1::Ellipse(D2D1::Point2F(0.5f, 0.5f), 0.5f, 0.5f),
+                                                                &circle_mask));
+        }
+        D2D1_LAYER_PARAMETERS1 layer{};
+        layer.contentBounds = D2D1::RectF(x, y, x + size, y + size);
+        layer.geometricMask = circle_mask.Get();
+        layer.maskAntialiasMode = D2D1_ANTIALIAS_MODE_PER_PRIMITIVE;
+        layer.maskTransform = D2D1::Matrix3x2F::Scale(size, size) * D2D1::Matrix3x2F::Translation(x, y);
+        layer.opacity = 1;
+        target->PushLayer(&layer, nullptr);
+        target->DrawBitmap(bitmap, D2D1::RectF(x, y, x + size, y + size), 1, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC);
+        target->PopLayer();
     }
     void Cover(const LibraryEntry& entry, float x, float y, float size, float alpha = 1) {
         Round(x, y, size, size, 12, Palette::Graphite, alpha);
@@ -3448,6 +3513,9 @@ private:
     Tween tab_slide{0, std::chrono::milliseconds{260}, EaseFocus};
     Tween filter_slide{0, std::chrono::milliseconds{260}, EaseFocus};
     ComPtr<ID2D1RoundedRectangleGeometry> cover_mask;
+    ComPtr<ID2D1EllipseGeometry> circle_mask;   ///< Unit circle: the round account pictures.
+    std::shared_ptr<const std::string> avatar_source; ///< The bytes avatar_bitmap was decoded from.
+    ComPtr<ID2D1Bitmap1> avatar_bitmap;         ///< The Nextendo account picture.
     /// Blurred covers, least recently used first.
     std::vector<std::pair<std::string, ComPtr<ID2D1Bitmap1>>> backdrops;
     std::string backdrop_now, backdrop_before;
