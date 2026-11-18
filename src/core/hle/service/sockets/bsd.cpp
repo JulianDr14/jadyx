@@ -586,6 +586,16 @@ std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol pro
         }
     }
 
+    // Only IPv4 sockets exist on the host side. Refuse other families up front: a socket that
+    // looks created but has no host socket behind it makes dual-stack clients (gRPC probes
+    // AF_INET6 first) take the IPv6 path and fail every later call. With EAFNOSUPPORT they fall
+    // back to AF_INET.
+    if (domain != Domain::INET && domain != Domain::Unspecified) {
+        LOG_INFO(Service, "socket family {} is not supported, answering EAFNOSUPPORT",
+                 static_cast<u32>(domain));
+        return {-1, Errno::AFNOSUPPORT};
+    }
+
     [[maybe_unused]] const bool unk_flag = (static_cast<u32>(type) & 0x20000000) != 0;
     UNIMPLEMENTED_IF_MSG(unk_flag, "Unknown flag in type");
     type = static_cast<Type>(static_cast<u32>(type) & ~0x20000000);
