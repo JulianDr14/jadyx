@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <map>
 #include <mutex>
 #include <thread>
 
@@ -21,6 +22,8 @@
 #include "common/logging.h"
 #include "common/settings.h"
 #include "jadyx/network/http.h"
+#include "jadyx/network/icmp_echo.h"
+#include "jadyx/network/room_ping.h"
 #include "network/network.h"
 #include "video_core/performance_overlay.h"
 
@@ -375,6 +378,32 @@ void ParseLobby(const std::string& body, LobbySnapshot& out) {
     });
 }
 
+/// How long one room's host gets to answer, and how many hosts are measured at once.
+constexpr unsigned PingTimeoutMs = 1000;
+constexpr std::size_t PingBatch = 16;
+
+/// One echo to each address, a batch at a time; stops between batches when asked.
+std::map<std::string, std::optional<int>> MeasurePings(const std::vector<std::string>& targets,
+                                                       std::stop_token stop) {
+    std::map<std::string, std::optional<int>> results;
+    WSADATA wsa{};
+    const bool wsa_ok = WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
+    for (std::size_t first = 0; first < targets.size() && !stop.stop_requested(); first += PingBatch) {
+        const std::size_t end = std::min(targets.size(), first + PingBatch);
+        std::vector<std::optional<int>> batch(end - first);
+        {
+            std::vector<std::jthread> workers;
+            for (std::size_t i = first; i < end; ++i)
+                workers.emplace_back([&target = targets[i], &out = batch[i - first]] {
+                    if (const auto address = Icmp::ResolveIpv4(target)) out = Icmp::Echo(*address, PingTimeoutMs);
+                });
+        }
+        for (std::size_t i = first; i < end; ++i) results[targets[i]] = batch[i - first];
+    }
+    if (wsa_ok) WSACleanup();
+    return results;
+}
+
 } // namespace
 
 Status Snapshot() {
@@ -614,6 +643,25 @@ void RefreshLobby() {
             // A failed refresh keeps the rooms already shown.
             if (fresh.state == LobbyState::Failed) fresh.rooms = std::move(g_lobby.rooms);
             g_lobby = std::move(fresh);
+        }
+        // The list shows at once; each room's ping fills in when its host answers or times out.
+        std::vector<std::string> targets;
+        std::uint64_t listed{};
+        {
+            std::scoped_lock lock{g_lobby_mutex};
+            if (g_lobby.state == LobbyState::Ready) targets = PingTargets(g_lobby.rooms);
+            listed = g_lobby.version;
+        }
+        if (!targets.empty()) {
+            auto results = MeasurePings(targets, stop);
+            std::size_t answered = 0;
+            for (const auto& [address, ms] : results) answered += ms.has_value();
+            LOG_INFO(Network, "Online: {} of {} room hosts answered a ping", answered, results.size());
+            std::scoped_lock lock{g_lobby_mutex};
+            if (!stop.stop_requested() && g_lobby.version == listed) {
+                ApplyPings(g_lobby.rooms, results);
+                ++g_lobby.version;
+            }
         }
         g_lobby_busy = false;
     });

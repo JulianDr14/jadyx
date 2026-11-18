@@ -7,6 +7,7 @@
 
 #include "jadyx/network/chat_page.h"
 #include "jadyx/network/online_chat.h"
+#include "jadyx/network/room_ping.h"
 
 using namespace Jadyx::Online;
 using Jadyx::MenuAction;
@@ -20,6 +21,28 @@ void Check(bool ok, std::source_location where = std::source_location::current()
 } // namespace
 
 int main() {
+    // Room pings: one target per host, results handed to every room of that host.
+    {
+        std::vector<LobbyRoom> rooms(4);
+        rooms[0].address = "1.2.3.4";
+        rooms[1].address = "5.6.7.8";
+        rooms[2].address = "1.2.3.4";
+        rooms[3].address = "9.9.9.9";
+        const auto targets = PingTargets(rooms);
+        Check(targets.size() == 3 && targets[0] == "1.2.3.4" && targets[1] == "5.6.7.8" && targets[2] == "9.9.9.9");
+        Check(PingLabel(rooms[0]).empty());
+        ApplyPings(rooms, {{"1.2.3.4", 42}, {"5.6.7.8", std::nullopt}});
+        Check(rooms[0].pinged && rooms[2].pinged && rooms[0].ping_ms == 42 && rooms[2].ping_ms == 42);
+        Check(rooms[1].pinged && !rooms[1].ping_ms);
+        Check(!rooms[3].pinged);
+        Check(PingLabel(rooms[0]) == L"42 ms");
+        Check(PingLabel(rooms[1]) == L"— ms");
+        Check(PingLabel(rooms[3]).empty());
+        Check(PingToneFor(0) == PingTone::Good && PingToneFor(PingGoodMs) == PingTone::Good);
+        Check(PingToneFor(PingGoodMs + 1) == PingTone::Fair && PingToneFor(PingFairMs) == PingTone::Fair);
+        Check(PingToneFor(PingFairMs + 1) == PingTone::Poor);
+        Check(PingTargets({}).empty());
+    }
     // Cleaning: control characters, ends, empty input.
     Check(CleanChatText("  hola\tque\ntal  ") == "hola que tal");
     Check(CleanChatText("   ").empty());

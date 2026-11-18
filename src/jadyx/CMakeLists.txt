@@ -250,6 +250,7 @@ add_executable(jadyx WIN32
     network/nextendo/session.h
     network/online_rooms.cpp
     network/online_rooms.h
+    network/room_ping.h
     updates/package_validation.cpp
     updates/package_deployment.cpp
     updates/update_storage.cpp
