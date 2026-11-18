@@ -29,6 +29,7 @@
 #include "core/online/nextendo/trust_roots.inc"
 #include "core/online/nextendo/trust_store.h"
 #include "jadyx/network/nextendo/api_types.h"
+#include "jadyx/network/nextendo/bcat_package.h"
 #include "jadyx/network/nextendo/catalog_rows.h"
 #include "jadyx/network/nextendo/network_mode.h"
 #include "jadyx/network/nextendo/pkce.h"
@@ -1082,6 +1083,60 @@ void TestCatalogRows() {
     Check(App::BuildCatalogRows(GameCatalog{}, installed).empty());
 }
 
+// BCAT packages: the server's answers, the ZIP layout rules, when to reinstall.
+void TestBcatPackage() {
+    using App::BcatAnswer;
+    using App::BcatPackageError;
+    Check(App::BcatUrl(0x0100F8F0000A2000ULL) == "https://nextendo.network/api/bcat/0100f8f0000a2000");
+    // A 204 keeps the cache; only a title with a sibling asks again, on 204 or 404.
+    Check(App::ClassifyBcatAnswer(200, false) == BcatAnswer::Package);
+    Check(App::ClassifyBcatAnswer(204, false) == BcatAnswer::KeepLocal);
+    Check(App::ClassifyBcatAnswer(404, false) == BcatAnswer::KeepLocal);
+    Check(App::ClassifyBcatAnswer(0, true) == BcatAnswer::KeepLocal);
+    Check(App::ClassifyBcatAnswer(500, true) == BcatAnswer::KeepLocal);
+    Check(App::ClassifyBcatAnswer(204, true) == BcatAnswer::TrySibling);
+    Check(App::ClassifyBcatAnswer(404, true) == BcatAnswer::TrySibling);
+    Check(App::BcatSiblingTitle(0x0100A3D008C5C000ULL) == 0x01008F6008C5E000ULL);
+    Check(!App::BcatSiblingTitle(0x01008F6008C5E000ULL));
+
+    Check(App::ValidBcatName("eu-default") && App::ValidBcatName("a.pack.zs.enc"));
+    Check(App::ValidBcatName(std::string(31, 'a')) && !App::ValidBcatName(std::string(32, 'a')));
+    Check(!App::ValidBcatName("") && !App::ValidBcatName(".") && !App::ValidBcatName(".."));
+    Check(!App::ValidBcatName("a b") && !App::ValidBcatName("a\\b") && !App::ValidBcatName("a:b"));
+
+    const auto plan = App::PlanBcatPackage({{"vsdata", 0}, {"vsdata/a.byml", 10}, {"news/b", 5}, {"vsdata/c", 1}});
+    // A bare directory name has no '/': refused like a root file.
+    Check(plan.error == BcatPackageError::BadPath);
+    const auto good = App::PlanBcatPackage({{"vsdata/a.byml", 10}, {"news/b", 5}, {"vsdata/c", 1}});
+    Check(good.error == BcatPackageError::None && good.files.size() == 3 && good.total_bytes == 16);
+    Check(good.directories == std::vector<std::string>{"vsdata", "news"});
+    Check(good.files[1].directory == "news" && good.files[1].name == "b" && good.files[1].path == "news/b");
+    Check(App::PlanBcatPackage({}).error == BcatPackageError::Empty);
+    Check(App::PlanBcatPackage({{"root.bin", 1}}).error == BcatPackageError::BadPath);
+    Check(App::PlanBcatPackage({{"a/b/c", 1}}).error == BcatPackageError::BadPath);
+    Check(App::PlanBcatPackage({{"/a/b", 1}}).error == BcatPackageError::BadPath);
+    Check(App::PlanBcatPackage({{"../b", 1}}).error == BcatPackageError::BadPath);
+    Check(App::PlanBcatPackage({{"a/..", 1}}).error == BcatPackageError::BadPath);
+    Check(App::PlanBcatPackage({{"a/", 1}}).error == BcatPackageError::BadPath);
+    Check(App::PlanBcatPackage({{"C:/b", 1}}).error == BcatPackageError::BadName);
+    Check(App::PlanBcatPackage({{std::string(32, 'd') + "/f", 1}}).error == BcatPackageError::BadName);
+    Check(App::PlanBcatPackage({{"a/B", 1}, {"A/b", 1}}).error == BcatPackageError::Duplicate);
+    Check(App::PlanBcatPackage({{"a/b", App::kBcatMaxBytes}}).error == BcatPackageError::None);
+    Check(App::PlanBcatPackage({{"a/b", App::kBcatMaxBytes}, {"a/c", 1}}).error == BcatPackageError::TooLarge);
+    Check(App::PlanBcatPackage({{"a/b", ~std::uint64_t{0}}}).error == BcatPackageError::TooLarge);
+    std::vector<App::BcatEntry> many;
+    for (std::size_t i = 0; i <= App::kBcatMaxEntries; ++i) many.push_back({"d/f" + std::to_string(i), 1});
+    Check(App::PlanBcatPackage(many).error == BcatPackageError::TooManyEntries);
+    many.pop_back();
+    Check(App::PlanBcatPackage(many).error == BcatPackageError::None);
+
+    const std::string hash(64, 'a');
+    Check(App::BcatNeedsInstall("", hash, true));
+    Check(App::BcatNeedsInstall(hash, hash, false)); // the files are gone
+    Check(!App::BcatNeedsInstall(hash, std::string(64, 'A'), true));
+    Check(App::BcatNeedsInstall(std::string(64, 'b'), hash, true));
+}
+
 // The Online tab's Nextendo view: its pure helpers (the canvas and the session use them).
 void TestNextendoPage() {
     using Jadyx::I18n::Text;
@@ -1153,6 +1208,7 @@ int main() {
     TestNetworkMode();
     TestSession();
     TestPreferences();
+    TestBcatPackage();
     TestCatalogRows();
     TestNextendoPage();
     std::printf("nextendo gate: %d checks passed\n", g_checks);
