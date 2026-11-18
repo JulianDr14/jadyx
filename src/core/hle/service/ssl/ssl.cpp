@@ -732,10 +732,13 @@ private:
 
 class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem> {
     public:
-        explicit ISslServiceForSystem(Core::System& system_) : ServiceFramework{system_, "ssl:s"} {
+        explicit ISslServiceForSystem(Core::System& system_)
+            : ServiceFramework{system_, "ssl:s"}, cert_store{system} {
+            // Games reach ssl:s too. Context creation and the certificate list must be real: a
+            // stub leaves the game's certificate buffer unwritten and it parses garbage.
             // clang-format off
             static const FunctionInfo functions[] = {
-                {0, D<&ISslServiceForSystem::CreateContext>, "CreateContext"},
+                {0, &ISslServiceForSystem::CreateContext, "CreateContext"},
                 {1, D<&ISslServiceForSystem::GetContextCount>, "GetContextCount"},
                 {2, D<&ISslServiceForSystem::GetCertificates>, "GetCertificates"},
                 {3, D<&ISslServiceForSystem::GetCertificateBufSize>, "GetCertificateBufSize"},
@@ -745,7 +748,7 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
                 {7, D<&ISslServiceForSystem::SetDebugOption>, "SetDebugOption"},
                 {8, D<&ISslServiceForSystem::GetDebugOption>, "GetDebugOption"},
                 {9, D<&ISslServiceForSystem::ClearTls12FallbackFlag>, "ClearTls12FallbackFlag"},
-                {100, D<&ISslServiceForSystem::CreateContextForSystem>, "CreateContextForSystem"},
+                {100, &ISslServiceForSystem::CreateContext, "CreateContextForSystem"},
                 {101, D<&ISslServiceForSystem::SetThreadCoreMask>, "SetThreadCoreMask"},
                 {102, D<&ISslServiceForSystem::GetThreadCoreMask>, "GetThreadCoreMask"},
                 {103, D<&ISslServiceForSystem::VerifySignature>, "VerifySignature"}
@@ -755,7 +758,7 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             RegisterHandlers(functions);
         };
 
-        // Pulse: every command is a stub, so the service holds nothing.
+        // Pulse: the certificate store is the system's; contexts restore through "ssl".
         std::string_view PulseKind() const override {
             return "ssl:s";
         }
@@ -766,13 +769,24 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             return shared_from_this();
         }
 
-        Result CreateContext() {
-            LOG_DEBUG(Service_SSL, "(STUBBED) called.");
+        // CreateContextForSystem takes the same leading SslVersion word as CreateContext.
+        void CreateContext(HLERequestContext& ctx) {
+            struct Parameters {
+                SslVersion ssl_version;
+                INSERT_PADDING_BYTES(0x4);
+                u64 pid_placeholder;
+            };
+            static_assert(sizeof(Parameters) == 0x10, "Parameters is an invalid size");
 
-            // TODO (jarrodnorwell)
+            IPC::RequestParser rp{ctx};
+            const auto parameters = rp.PopRaw<Parameters>();
+            LOG_INFO(Service_SSL, "ssl:s cmd {} creates a context, api_version={}",
+                     ctx.GetCommand(), parameters.ssl_version.api_version);
 
-            return ResultSuccess;
-        };
+            IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+            rb.Push(ResultSuccess);
+            rb.PushIpcInterface<ISslContext>(ctx, system, parameters.ssl_version);
+        }
 
         Result GetContextCount() {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
@@ -782,21 +796,25 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             return ResultSuccess;
         };
 
-        Result GetCertificates() {
-            LOG_DEBUG(Service_SSL, "(STUBBED) called.");
+        Result GetCertificates(Out<u32> out_num_entries,
+                               OutBuffer<BufferAttr_HipcMapAlias> out_buffer,
+                               InArray<CaCertificateId, BufferAttr_HipcMapAlias> certificate_ids) {
+            const Result result =
+                cert_store.GetCertificates(out_num_entries, out_buffer, certificate_ids);
+            LOG_INFO(Service_SSL, "ssl:s GetCertificates: {} ids, buffer {:#x}, {} entries, {:#x}",
+                     certificate_ids.size(), out_buffer.size(), *out_num_entries, result.raw);
+            R_RETURN(result);
+        }
 
-            // TODO (jarrodnorwell)
-
-            return ResultSuccess;
-        };
-
-        Result GetCertificateBufSize() {
-            LOG_DEBUG(Service_SSL, "(STUBBED) called.");
-
-            // TODO (jarrodnorwell)
-
-            return ResultSuccess;
-        };
+        Result GetCertificateBufSize(
+            Out<u32> out_size, InArray<CaCertificateId, BufferAttr_HipcMapAlias> certificate_ids) {
+            u32 num_entries{};
+            const Result result =
+                cert_store.GetCertificateBufSize(out_size, &num_entries, certificate_ids);
+            LOG_INFO(Service_SSL, "ssl:s GetCertificateBufSize: {} ids, {} entries, {:#x} bytes",
+                     certificate_ids.size(), num_entries, *out_size);
+            R_RETURN(result);
+        }
 
         Result DebugIoctl() {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
@@ -846,14 +864,6 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             return ResultSuccess;
         };
 
-        Result CreateContextForSystem() {
-            LOG_DEBUG(Service_SSL, "(STUBBED) called.");
-
-            // TODO (jarrodnorwell)
-
-            return ResultSuccess;
-        };
-
         Result SetThreadCoreMask() {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
 
@@ -877,6 +887,9 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
 
             return ResultSuccess;
         };
+
+    private:
+        CertStore cert_store;
     };
 
 void LoopProcess(Core::System& system) {
