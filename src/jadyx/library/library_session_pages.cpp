@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/library_session.h"
 #include "jadyx/library/controller_sections.h"
+#include "jadyx/app/boot_diag.h"
 #include "jadyx/input/dsu_client.h"
 #include "jadyx/input/dsu_text.h"
 #include "core/file_sys/common_funcs.h"
@@ -1080,6 +1081,35 @@ void LibrarySession::PollNextendo() {
         nextendo_shown = shown;
         Nx::ShowingNextendo(shown);
     }
+    // The portal a sign-in started closes once it is over, a few seconds later so the browser
+    // still reads that it worked; never under an upload.
+    // While a sign-in waits, the QR code always holds a code that pairs: a new one when the last
+    // expired or paired a browser, unless that browser is in the middle of an upload.
+    if (shown && !Nx::SignInUrl().empty()) {
+        const auto status = network_portal.Status();
+        if (status.running && status.code_expired && status.transfer.id.empty() && status.content.id.empty() &&
+            network_portal.RenewCode()) {
+            configuration.network = network_portal.Status();
+            dirty = true;
+        }
+    }
+    if (nextendo_portal) {
+        const auto now = std::chrono::steady_clock::now();
+        if (!Nx::SignInUrl().empty()) {
+            nextendo_portal_close = {};
+        } else if (nextendo_portal_close == std::chrono::steady_clock::time_point{}) {
+            nextendo_portal_close = now + std::chrono::seconds{5};
+        } else if (now >= nextendo_portal_close) {
+            nextendo_portal = false;
+            nextendo_portal_close = {};
+            const auto status = network_portal.Status();
+            if (status.running && status.transfer.id.empty() && status.content.id.empty() && !configuration.busy) {
+                network_portal.Stop();
+                configuration.network = network_portal.Status();
+                dirty = true;
+            }
+        }
+    }
     if (tab != LibraryTab::Online) return;
     auto& page = online_page.nx;
     std::size_t titles = 0;
@@ -1120,6 +1150,12 @@ void LibrarySession::HandleNextendoPage(TimePoint now) {
         system_notice_until = now + std::chrono::seconds{3};
     };
     if (actions & Quit) {
+        // While the console waits for the phone, B stops waiting; otherwise it leaves the tab.
+        if (page.view.phase == Nx::Phase::SigningIn) {
+            Nx::CancelSignIn();
+            PollNextendo();
+            return;
+        }
         SwitchTab(LibraryTab::Home);
         return;
     }
@@ -1154,8 +1190,23 @@ void LibrarySession::HandleNextendoPage(TimePoint now) {
     if (!(actions & Play)) return;
     switch (page.selected) {
     case NextendoPage::Account:
-        if (NextendoSignedIn(page)) Nx::SignOut();
-        else if (page.view.phase == Nx::Phase::SignedOut) Nx::SignIn();
+        if (NextendoSignedIn(page)) {
+            Nx::SignOut();
+        } else if (page.view.phase == Nx::Phase::SignedOut) {
+            // The console can't show the sign-in page: it is finished in a browser on the
+            // network, through the portal, which opens for it.
+            if (!network_portal.Status().running) {
+                if (StartPortal()) nextendo_portal = true;
+            }
+            configuration.network = network_portal.Status();
+            if (!configuration.network.running) {
+                say(T::NxPhoneNoPortal);
+                break;
+            }
+            Nx::SignIn();
+        } else {
+            WriteDiag("nextendo: sign-in pressed in phase " + std::to_string(static_cast<int>(page.view.phase)));
+        }
         break;
     case NextendoPage::UseNextendo: {
         const bool on = !page.preferences.use_nextendo;

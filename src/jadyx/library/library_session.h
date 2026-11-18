@@ -288,6 +288,9 @@ private:
     GraphicsPage graphics_page;
     OnlinePage online_page;
     bool nextendo_shown{}; ///< Last told to the Nextendo service (ShowingNextendo).
+    /// The portal was started for a Nextendo sign-in; it closes a little after the sign-in ends.
+    bool nextendo_portal{};
+    std::chrono::steady_clock::time_point nextendo_portal_close{};
     // The selected game's own graphics, for its Graphics pane; loaded for `game_graphics_id`.
     GameGraphics game_graphics;
     GraphicsCursor game_graphics_cursor; ///< Where its Graphics pane's cursor is.

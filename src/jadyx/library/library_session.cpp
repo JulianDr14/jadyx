@@ -5,6 +5,7 @@
 #include <memory>
 
 #include "jadyx/amiibo/amiibo_store.h"
+#include "jadyx/network/nextendo/service.h"
 
 namespace Jadyx {
 using namespace winrt::Windows::UI::Core;
@@ -55,6 +56,10 @@ LibrarySession::LibrarySession(void* window_abi, unsigned swap_width, unsigned s
     network_portal.SetLogDirectory(Common::FS::GetEdenPath(Common::FS::EdenPath::LogDir));
     network_portal.SetLibrary(portal_library.View());
     network_portal.SetAmiibo(AmiiboForPortal());
+    network_portal.SetNextendo({.sign_in_url = [] { return Network::Nextendo::SignInUrl(); },
+                                .finish = [](const std::string& pasted) {
+                                    return Network::Nextendo::CompleteSignIn(pasted);
+                                }});
     network_portal.SetUpdatePackage([&] { return updater.PrepareAssistedDownload(); });
     network_suspending = winrt::Windows::ApplicationModel::Core::CoreApplication::Suspending(
         winrt::auto_revoke, [&](const auto&, const winrt::Windows::ApplicationModel::SuspendingEventArgs&) {

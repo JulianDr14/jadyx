@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -32,6 +33,8 @@
 #include "jadyx/storage/storage_path.h"
 #include "jadyx/mods/mods_view.h"
 #include "jadyx/i18n/localization.h"
+#include "jadyx/storage/network_portal.h"
+#include "jadyx/ui/qr_code.h"
 #include "jadyx/ui/ui_painter.h"
 #include "jadyx/ui/text_entry_panel.h"
 #include "jadyx/ui/tween.h"
@@ -2182,9 +2185,13 @@ private:
                 const bool waiting = session.phase == Phase::SigningIn;
                 Type(Tr(waiting ? T::NxWaitingTitle : T::NxWelcomeTitle), TypeRole::HeadlineMedium, body_x, y + 46,
                      body_w, Palette::Text);
+                const auto& portal = view.configuration.network;
                 if (problem && !waiting) {
                     Type(Tr(NextendoProblemText(session.problem)), TypeRole::Body, body_x, y + 88, body_w,
                          Palette::Warning, 1, TextAlign::Leading, 2);
+                } else if (waiting && !portal.running) {
+                    Type(Tr(T::NxPhoneNoPortal), TypeRole::Body, body_x, y + 88, body_w, Palette::Warning, 1,
+                         TextAlign::Leading, 2);
                 } else {
                     Type(Tr(waiting ? T::NxWaitingBody : T::NxWelcomeBody), TypeRole::Body, body_x, y + 88, body_w,
                          Palette::TextSecondary, 1, TextAlign::Leading, 2);
@@ -2225,12 +2232,86 @@ private:
         }
         DrawNextendoGames(view);
     }
+    /// The Nextendo view's right column while a sign-in waits: the phone's way in. A QR code that
+    /// opens the portal already paired on its Nextendo tab, the steps, and the address and code
+    /// for a device without a camera.
+    void DrawNextendoPhone(const LibraryView& view) {
+        const auto& portal = view.configuration.network;
+        const float rx = OnlineRightX, rw = OnlineRightWidth;
+        Type(Tr(T::NxPhoneTitle), TypeRole::HeadlineMedium, rx, OnlineTop - 2, rw, Palette::Text);
+        Type(Tr(T::NxPhoneSubtitle), TypeRole::Label, rx, OnlineTop + 36, rw, Palette::TextSecondary);
+        const float top = OnlineListTop, card_h = OnlineBottom - top;
+        Round(rx, top, rw, card_h, 18, Palette::Surface, 0.86f);
+        Outline(rx + 0.5f, top + 0.5f, rw - 1, card_h - 1, 18, 0xffffff, 0.06f);
+        if (!portal.running) {
+            const float middle = top + card_h / 2;
+            Icon(UiIcon::Globe, rx + rw / 2 - 20, middle - 72, Palette::Warning, 40);
+            Type(Tr(T::NxPhoneNoPortal), TypeRole::BodyLarge, rx + 48, middle - 16, rw - 96, Palette::Warning, 1,
+                 TextAlign::Center, 3);
+            return;
+        }
+        // The code is made again only when the link changes (a new pairing code).
+        const std::string link = PortalPairingLink(portal, "nextendo");
+        if (link != nextendo_qr_link) {
+            nextendo_qr_link = link;
+            // Level H: the Jadyx logo over the centre still leaves it readable.
+            nextendo_qr = link.empty() ? std::nullopt : Ui::EncodeQr(link, Ui::QrLevel::H);
+        }
+        constexpr float side = 264;
+        const float qx = rx + 28, qy = top + 28;
+        if (nextendo_qr) {
+            const auto hole = Qr(*nextendo_qr, qx, qy, side, true);
+            if (!jadyx_logo_tried) {
+                jadyx_logo_tried = true;
+                jadyx_logo = LoadAssetBitmap(L"JadyxLogo.png");
+            }
+            if (jadyx_logo && hole.right > hole.left) {
+                const float inset = (hole.right - hole.left) * 0.04f;
+                target->DrawBitmap(jadyx_logo.Get(),
+                                   D2D1::RectF(hole.left + inset, hole.top + inset, hole.right - inset,
+                                               hole.bottom - inset),
+                                   1, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC);
+            }
+        } else {
+            // A browser holds the portal while an upload runs: no new code until it ends.
+            Round(qx, qy, side, side, 14, Palette::Canvas, 0.6f);
+            Icon(UiIcon::Globe, qx + side / 2 - 20, qy + side / 2 - 40, Palette::TextSecondary, 40);
+        }
+        // The steps beside the code.
+        const float sx = qx + side + 28, sw = rx + rw - 28 - sx;
+        float sy = qy + 2;
+        const std::array steps{T::NxPhoneStep1, T::NxPhoneStep2, T::NxPhoneStep3};
+        for (std::size_t i = 0; i < steps.size(); ++i) {
+            constexpr float dot = 28;
+            Round(sx, sy, dot, dot, dot / 2, 0xffffff, 0.12f);
+            Type(std::to_wstring(i + 1), TypeRole::Label, sx, sy + 5, dot, Palette::Text, 1, TextAlign::Center);
+            const float used = Type(Tr(steps[i]), TypeRole::Body, sx + dot + 12, sy + 3, sw - dot - 12,
+                                    Palette::TextSecondary, 1, TextAlign::Leading, 4);
+            sy += std::max(dot, used + 3) + 20;
+        }
+        // Without a camera: the address and the code, or who holds the portal.
+        const float my = qy + side + 24, mw = rw - 56;
+        Type(Tr(T::NxPhoneManual), TypeRole::Label, qx, my, mw, Palette::TextSecondary);
+        Type(winrt::to_hstring(portal.url).c_str(), TypeRole::HeadlineSmall, qx, my + 24, mw, Palette::Text);
+        const bool has_code = !portal.code_expired && !portal.code.empty();
+        const std::wstring code =
+            has_code ? I18n::Format(T::NxPhoneCode, {std::wstring{winrt::to_hstring(portal.code)}})
+                     : std::wstring{Tr(portal.paired ? T::NxPhonePaired : T::NetworkCodeExpired)};
+        Type(code, TypeRole::BodyLarge, qx, my + 62, mw, has_code ? Palette::Text : Palette::TextSecondary);
+        if (has_code && portal.paired) {
+            Type(Tr(T::NxPhonePaired), TypeRole::Label, qx, my + 92, mw, Palette::TextSecondary);
+        }
+    }
     /// The Nextendo view's right column: the catalog's games, installed and playable first.
     void DrawNextendoGames(const LibraryView& view) {
         using Network::Nextendo::CatalogState;
         using Network::Nextendo::RowVerdict;
         const auto& page = view.online.nx;
         const auto& session = page.view;
+        if (session.phase == Network::Nextendo::Phase::SigningIn) {
+            DrawNextendoPhone(view);
+            return;
+        }
         const float rx = OnlineRightX, rw = OnlineRightWidth;
         Type(Tr(T::NxGamesTitle), TypeRole::HeadlineMedium, rx, OnlineTop - 2, rw - 260, Palette::Text);
         std::wstring count;
@@ -2454,7 +2535,7 @@ private:
         }
         x += ControlPrompt(Navigation::Rescan, Tr(T::NxCatalogRefresh), x, y);
         x += ControlPrompt(Navigation::Triggers, Tr(T::NetRooms), x, y);
-        x += ControlPrompt(Navigation::Back, Tr(T::Back), x, y);
+        x += ControlPrompt(Navigation::Back, Tr(page.view.phase == Phase::SigningIn ? T::NxCancelSignIn : T::Back), x, y);
         OnlineFooterNotice(view, x, y);
     }
     /// The Settings tab: the categories at the left with the emulator's data under them, and the
@@ -3347,6 +3428,10 @@ private:
     bool rows_shown{};
     std::size_t online_first{}; ///< The first public room the Online tab shows.
     std::size_t nextendo_first{}; ///< The first catalog game the Nextendo view shows.
+    std::string nextendo_qr_link;          ///< What nextendo_qr encodes.
+    std::optional<Ui::QrCode> nextendo_qr; ///< The sign-in's pairing link as a QR code.
+    ComPtr<ID2D1Bitmap1> jadyx_logo;       ///< Assets/JadyxLogo.png, over the QR code's centre.
+    bool jadyx_logo_tried{};               ///< Loaded once; a missing file leaves a white centre.
     bool animating{};
     bool ambient{}; ///< The backdrop shows, so it drifts.
     Tween::Clock::time_point ambient_epoch{Tween::Clock::now()}, last_frame{};
