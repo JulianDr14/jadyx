@@ -103,7 +103,19 @@ LibrarySession::Covers LibrarySession::CoversForTab() {
             result.order.push_back(index);
         }
     };
-    if (tab == LibraryTab::Library) {
+    if (tab == LibraryTab::Online && online_page.nextendo) {
+        // The Nextendo list's covers come from the same cache: its installed rows around the
+        // focus (seven show), the focused one first, then the ones below, then above.
+        const auto& page = online_page.nx;
+        constexpr size_t Window = 8;
+        const size_t focus = std::min(page.game, page.games.empty() ? 0 : page.games.size() - 1);
+        const size_t first = focus > Window ? focus - Window : 0;
+        const size_t end = std::min(page.games.size(), focus + Window);
+        for (size_t row = focus; row < end; ++row) add(NextendoRowEntry(page, row, scan.entries));
+        for (size_t row = first; row < focus; ++row) add(NextendoRowEntry(page, row, scan.entries));
+        // Tagged apart from the other tabs' windows; new rows (another catalog) count as a move.
+        result.key = ((first + end * 65536) * 16 + 4) ^ (static_cast<size_t>(page.games_version) << 40);
+    } else if (tab == LibraryTab::Library) {
         using LibraryLayout::Columns;
         const size_t row = std::min(shelf_focus, shelf.empty() ? 0 : shelf.size() - 1) / Columns;
         const size_t first = (row > 0 ? row - 1 : 0) * Columns;
