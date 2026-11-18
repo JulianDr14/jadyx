@@ -249,15 +249,6 @@ static std::string DescribeEmitFaultContext(const Dynarmic::CodeEmitFaults& faul
                 ",";
     }
     text += " quiet " + std::to_string(faults.quiet);
-    text += "; patching " + std::to_string(faults.patching) + ", new code " +
-            std::to_string(faults.new_code) + " (line of the emission's start " +
-            std::to_string(faults.begin_line) + ", its page " + std::to_string(faults.begin_page) +
-            "); CPUs";
-    for (std::size_t cpu = 0; cpu < faults.cpu.size(); ++cpu) {
-        if (faults.cpu[cpu] != 0) {
-            text += " " + std::to_string(cpu) + ":" + std::to_string(faults.cpu[cpu]);
-        }
-    }
     if (faults.recovered != 0) {
         text += "; cleared in avg " + std::to_string(faults.recover_us_total / faults.recovered) +
                 " us, max " + std::to_string(faults.recover_us_max) + " us";
@@ -299,9 +290,7 @@ static std::string DescribeCodeEmitFaults() {
     return text + ", emit faults retried " + std::to_string(faults.retries) + ", recovered " +
            std::to_string(faults.recovered) + ", fatal " + std::to_string(faults.fatal) +
            ", page out " + std::to_string(faults.page_out) + ", in " +
-           std::to_string(faults.page_in) + "; executable view out " +
-           std::to_string(faults.exec_out) + ", in " + std::to_string(faults.exec_in) +
-           DescribeEmitFaultContext(faults);
+           std::to_string(faults.page_in) + DescribeEmitFaultContext(faults);
 }
 
 // The app's commit split by owner: the emulated DRAM, the JIT's code, the renderer's accounts

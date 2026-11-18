@@ -200,16 +200,6 @@ constexpr std::int64_t RECENT_VM_US = 5000;
 /// the current emission.
 thread_local const Backend::X64::BlockOfCode* t_emitting = nullptr;
 thread_local unsigned t_emit_fault_retries = 0;
-/// Where the outermost EmitScope began writing: a fault in the same 64-byte line wrote next to
-/// the end of the block before it, which other cores may be running.
-thread_local const u8* t_emit_scope_begin = nullptr;
-std::atomic<size_t> s_emit_fault_patching{0};
-std::atomic<size_t> s_emit_fault_exec_out{0};
-std::atomic<size_t> s_emit_fault_exec_in{0};
-std::atomic<size_t> s_emit_fault_new_code{0};
-std::atomic<size_t> s_emit_fault_begin_line{0};
-std::atomic<size_t> s_emit_fault_begin_page{0};
-std::array<std::atomic<size_t>, 16> s_emit_fault_cpu{};
 thread_local std::int64_t t_emit_fault_start_us = 0;
 /// About 2.5 s of waits in all: past that the fault is not the transient kind.
 constexpr unsigned MAX_EMIT_FAULT_RETRIES = 64;
@@ -280,26 +270,7 @@ LONG NTAPI EmitFaultHandler(EXCEPTION_POINTERS* ep) {
         }
         // The console reports no faulting address; the write goes where the next byte is
         // emitted. Out of the working set there says the system trimmed a page being written.
-        const u8* const at = t_emitting->EmitWritePointer();
-        (t_emitting->Patching() ? s_emit_fault_patching : s_emit_fault_new_code).fetch_add(1, std::memory_order_relaxed);
-        if (t_emit_scope_begin != nullptr) {
-            const auto line = [](const u8* p) { return reinterpret_cast<std::uintptr_t>(p) >> 6; };
-            const auto page = [](const u8* p) { return reinterpret_cast<std::uintptr_t>(p) >> 12; };
-            if (line(at) == line(t_emit_scope_begin)) {
-                s_emit_fault_begin_line.fetch_add(1, std::memory_order_relaxed);
-            } else if (page(at) == page(t_emit_scope_begin)) {
-                s_emit_fault_begin_page.fetch_add(1, std::memory_order_relaxed);
-            }
-        }
-        s_emit_fault_cpu[std::min<DWORD>(GetCurrentProcessorNumber(), 15)].fetch_add(1, std::memory_order_relaxed);
-        // getCurr is where the byte lands in the executable view.
-        const int exec_resident = PageResident(t_emitting->getCurr());
-        const int resident = PageResident(at);
-        if (exec_resident == 0) {
-            s_emit_fault_exec_out.fetch_add(1, std::memory_order_relaxed);
-        } else if (exec_resident == 1) {
-            s_emit_fault_exec_in.fetch_add(1, std::memory_order_relaxed);
-        }
+        const int resident = PageResident(t_emitting->EmitWritePointer());
         if (resident == 0) {
             s_emit_fault_page_out.fetch_add(1, std::memory_order_relaxed);
         } else if (resident == 1) {
@@ -346,15 +317,6 @@ CodeEmitFaults GetCodeEmitFaults() noexcept {
         faults.recent[kind] = s_emit_fault_recent[kind].load(std::memory_order_relaxed);
     }
     faults.quiet = s_emit_fault_quiet.load(std::memory_order_relaxed);
-    faults.patching = s_emit_fault_patching.load(std::memory_order_relaxed);
-    faults.exec_out = s_emit_fault_exec_out.load(std::memory_order_relaxed);
-    faults.exec_in = s_emit_fault_exec_in.load(std::memory_order_relaxed);
-    faults.new_code = s_emit_fault_new_code.load(std::memory_order_relaxed);
-    faults.begin_line = s_emit_fault_begin_line.load(std::memory_order_relaxed);
-    faults.begin_page = s_emit_fault_begin_page.load(std::memory_order_relaxed);
-    for (size_t cpu = 0; cpu < faults.cpu.size(); ++cpu) {
-        faults.cpu[cpu] = s_emit_fault_cpu[cpu].load(std::memory_order_relaxed);
-    }
     faults.recover_us_max = s_emit_recover_us_max.load(std::memory_order_relaxed);
     faults.recover_us_total = s_emit_recover_us_total.load(std::memory_order_relaxed);
     if (s_emit_first_ready.load(std::memory_order_acquire)) {
@@ -1436,9 +1398,6 @@ int BlockOfCode::DescribeState(char* out, size_t size) const noexcept {
 BlockOfCode::EmitScope::EmitScope(const BlockOfCode& code) noexcept
         : previous{t_emitting} {
     t_emitting = &code;
-    if (previous == nullptr) {
-        t_emit_scope_begin = code.EmitWritePointer();
-    }
 }
 
 BlockOfCode::EmitScope::~EmitScope() {

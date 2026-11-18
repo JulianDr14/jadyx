@@ -372,11 +372,9 @@ void EmitX64::Patch(const IR::LocationDescriptor& target_desc, CodePtr target_co
         return; // No incoming links: do not allocate four empty patch lists for this block.
     }
     const CodePtr save_code_ptr = code.getCurr();
-    code.SetPatching(true);
     for (const PatchSite site : it->second) {
         ApplyPatch(site, target_desc, target_code_ptr);
     }
-    code.SetPatching(false);
     code.SetCodePtr(save_code_ptr);
 }
 
