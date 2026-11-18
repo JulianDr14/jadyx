@@ -1443,7 +1443,17 @@ private:
     std::vector<SettingsRow> SettingsRows(const LibraryView& view, std::size_t category) {
         using Kind = SettingsRow::Kind;
         std::vector<SettingsRow> rows;
-        if (category == HomeSystem) {
+        if (category == HomeSystem && view.system.stats_open) {
+            // Performance statistics' own rows (system_page.h).
+            const auto& settings = view.system.settings;
+            for (const StatsRow row : StatsRows(settings.stats)) {
+                SettingsRow item{Kind::Toggle, std::wstring{Tr(StatsRowTitle(row))}, StatsRowHint(settings, row),
+                                 StatsRowValue(settings, row)};
+                if (row == StatsRow::Profile || row == StatsRow::TextSize) item.kind = Kind::Choice;
+                else item.on = StatsRowOn(settings, row);
+                rows.push_back(std::move(item));
+            }
+        } else if (category == HomeSystem) {
             for (std::size_t i = 0; i < SystemPage::RowCount; ++i) {
                 const auto row = static_cast<SystemPage::Row>(i);
                 const auto& settings = view.system.settings;
@@ -1456,7 +1466,7 @@ private:
                 case SystemPage::MiiEditor: item.kind = Kind::Open; break;
                 case SystemPage::SurroundSound: item.kind = Kind::Toggle; item.on = settings.surround_sound; break;
                 case SystemPage::AdultMods: item.kind = Kind::Toggle; item.on = settings.show_adult_mods; break;
-                case SystemPage::PerformanceStats: item.kind = Kind::Toggle; item.on = settings.show_performance_stats; break;
+                case SystemPage::PerformanceStats: item.kind = Kind::Open; break;
                 case SystemPage::PulseSessions: item.kind = Kind::Toggle; item.on = settings.pulse_sessions; break;
                 case SystemPage::PlayTime: item.kind = Kind::Toggle; item.on = settings.track_play_time; break;
                 case SystemPage::OfflineMode: item.kind = Kind::Toggle; item.on = settings.offline_mode; break;
@@ -2689,12 +2699,16 @@ private:
             page_title = GraphicsSectionTitle(*view.graphics.cursor.section);
             page_about = GraphicsSectionHint(*view.graphics.cursor.section);
         }
+        if (category == HomeSystem && view.system.stats_open) {
+            page_title = T::PerformanceStats;
+            page_about = T::StatsPageHint;
+        }
         Type(Tr(page_title), TypeRole::HeadlineLarge, px, 122, pw, Palette::Text);
         Type(Tr(page_about), TypeRole::Body, px, 176, pw, Palette::TextSecondary);
         const auto rows = SettingsRows(view, category);
         if (rows.empty()) return;
         std::size_t selected = !in_pane ? SIZE_MAX :
-            category == HomeSystem ? view.system.selected :
+            category == HomeSystem ? (view.system.stats_open ? view.system.stats_selected : view.system.selected) :
             category == HomeGraphics ? view.graphics.cursor.selected :
             category == HomeFiles ? configuration.selected : view.controller_row;
         // A live list (the DSU page's) can shrink between the session's step and this draw.

@@ -190,9 +190,10 @@ bool LibrarySession::HandleSystemPage(TimePoint now) {
             };
             send(Up, SystemInput::Up);
             send(Down, SystemInput::Down);
-            const bool opens = system_page.selected == SystemPage::UserName ||
+            const bool opens = !system_page.stats_open &&
+                               (system_page.selected == SystemPage::UserName || system_page.selected == SystemPage::PerformanceStats ||
                                system_page.selected == SystemPage::ClearCache || system_page.selected == SystemPage::Updates ||
-                               system_page.selected == SystemPage::MiiEditor;
+                               system_page.selected == SystemPage::MiiEditor);
             send(Left, opens ? SystemInput::Back : SystemInput::Left);
             send(Right, SystemInput::Right);
             send(Play, SystemInput::Confirm);
@@ -306,6 +307,7 @@ void LibrarySession::OpenHomeCategory() {
     default:
         system_page.open = true;
         system_page.selected = SystemPage::UserName;
+        system_page.stats_open = false;
         system_page.notice.clear();
         // Windows' language or region may have changed since the library opened.
         system_page.locale = DetectSystemLocale();

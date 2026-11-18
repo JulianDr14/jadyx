@@ -502,10 +502,77 @@ int main() {
     SystemPage system_page;
     check(!system_page.settings.show_performance_stats);
     system_page.selected = SystemPage::PerformanceStats;
+    // The row opens the statistics' own page; its first row is the switch.
+    check(HandleSystemInput(system_page, SystemInput::Right) == SystemPageEffect::None && !system_page.stats_open);
+    check(HandleSystemInput(system_page, SystemInput::Confirm) == SystemPageEffect::None && system_page.stats_open);
+    check(system_page.stats_selected == 0);
     check(HandleSystemInput(system_page, SystemInput::Confirm) == SystemPageEffect::Changed);
     check(system_page.settings.show_performance_stats);
     check(HandleSystemInput(system_page, SystemInput::Left) == SystemPageEffect::Changed);
     check(!system_page.settings.show_performance_stats);
+    {
+        // Defaults: Full, online lines on, normal text, every Custom line on.
+        const StatsOptions defaults;
+        check(OverlayMask(defaults) == VideoCore::OverlayItem::All);
+        check(TextSizeStep(defaults.text_size) == 0);
+        // Profiles: Standard is FPS + GPU + RAM, Minimal is FPS alone.
+        using namespace VideoCore::OverlayItem;
+        check(ProfileItems(StatsProfile::Standard, 0) == (Fps | Gpu | Memory));
+        check(ProfileItems(StatsProfile::Minimal, OwnLines) == Fps);
+        check(ProfileItems(StatsProfile::Full, 0) == OwnLines);
+        check(ProfileItems(StatsProfile::Custom, Cpu | Hitch | Network) == (Cpu | Hitch));
+        // The online lines follow their own switch in every profile.
+        StatsOptions minimal{StatsProfile::Minimal};
+        check(OverlayMask(minimal) == (Fps | Network));
+        minimal.network = false;
+        check(OverlayMask(minimal) == Fps);
+        // Four rows, plus a switch per line only in Custom.
+        check(StatsRows(defaults).size() == 4);
+        check(StatsRows(StatsOptions{StatsProfile::Custom}).size() == 10);
+        check(RowItem(StatsRow::Fps) == StatsItem::Fps && RowItem(StatsRow::Hitch) == StatsItem::Hitch);
+        // Out-of-range saved values fall back.
+        StatsOptions broken{static_cast<StatsProfile>(9), 0xffffffffu, true, static_cast<StatsTextSize>(7)};
+        broken = SanitizeStatsOptions(broken);
+        check(broken.profile == StatsProfile::Full && broken.text_size == StatsTextSize::Normal &&
+              broken.custom_items == OwnLines);
+
+        // The page: Down to the profile, Right steps Full -> Standard -> Minimal -> Custom -> Full.
+        auto& stats = system_page.settings.stats;
+        check(HandleSystemInput(system_page, SystemInput::Down) == SystemPageEffect::None);
+        check(system_page.stats_selected == 1);
+        check(HandleSystemInput(system_page, SystemInput::Right) == SystemPageEffect::Changed &&
+              stats.profile == StatsProfile::Standard);
+        check(HandleSystemInput(system_page, SystemInput::Left) == SystemPageEffect::Changed &&
+              stats.profile == StatsProfile::Full);
+        check(HandleSystemInput(system_page, SystemInput::Left) == SystemPageEffect::Changed &&
+              stats.profile == StatsProfile::Custom);
+        // Custom: the last row is the stutter line; Up wraps to it and A switches it off.
+        system_page.stats_selected = 0;
+        check(HandleSystemInput(system_page, SystemInput::Up) == SystemPageEffect::None &&
+              system_page.stats_selected == 9);
+        check(HandleSystemInput(system_page, SystemInput::Confirm) == SystemPageEffect::Changed);
+        check(stats.custom_items == (OwnLines & ~Hitch) && OverlayMask(stats) == ((All & ~Hitch)));
+        // Leaving Custom while on one of its lines keeps the focus inside the page.
+        stats.profile = StatsProfile::Minimal;
+        check(HandleSystemInput(system_page, SystemInput::Down) == SystemPageEffect::None &&
+              system_page.stats_selected < 4);
+        // Online switch and text size.
+        system_page.stats_selected = 2;
+        check(HandleSystemInput(system_page, SystemInput::Confirm) == SystemPageEffect::Changed && !stats.network);
+        system_page.stats_selected = 3;
+        check(HandleSystemInput(system_page, SystemInput::Right) == SystemPageEffect::Changed &&
+              stats.text_size == StatsTextSize::Large && TextSizeStep(stats.text_size) == 1);
+        check(HandleSystemInput(system_page, SystemInput::Left) == SystemPageEffect::Changed);
+        check(HandleSystemInput(system_page, SystemInput::Left) == SystemPageEffect::Changed &&
+              TextSizeStep(stats.text_size) == -1);
+        // The row on the System page names the profile once on; B leaves the page.
+        system_page.settings.show_performance_stats = true;
+        check(SystemRowValue(system_page, SystemPage::PerformanceStats) == L"Minimal");
+        check(StatsRowValue(system_page.settings, StatsRow::Profile) == L"Minimal");
+        check(HandleSystemInput(system_page, SystemInput::Back) == SystemPageEffect::None && !system_page.stats_open &&
+              system_page.selected == SystemPage::PerformanceStats);
+        system_page.settings = {};
+    }
     const auto open_display = [&](GameMenu& m) {
         while (m.SelectedItem() != GameMenu::DisplayPage) m.Apply(MenuAction::Down);
         m.Apply(MenuAction::Confirm);

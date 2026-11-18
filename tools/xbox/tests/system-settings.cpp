@@ -133,6 +133,13 @@ int main() {
     check(SystemRowValue(page, SystemPage::AdultMods) == L"Se muestran");
     check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
           page.selected == SystemPage::PerformanceStats);
+    // Off it reads No; on, the profile's name.
+    check(SystemRowValue(page, SystemPage::PerformanceStats) == L"No");
+    page.settings.show_performance_stats = true;
+    page.settings.stats.profile = StatsProfile::Standard;
+    check(SystemRowValue(page, SystemPage::PerformanceStats) == L"Estándar");
+    page.settings.show_performance_stats = false;
+    page.settings.stats = {};
     // Pulse sessions are on unless the player turns them off.
     check(HandleSystemInput(page, SystemInput::Down) == SystemPageEffect::None &&
           page.selected == SystemPage::PulseSessions && page.settings.pulse_sessions);
