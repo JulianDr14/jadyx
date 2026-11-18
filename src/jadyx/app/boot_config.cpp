@@ -5,7 +5,6 @@
 #include <bit>
 #include <charconv>
 #include <cstddef>
-#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -16,7 +15,6 @@
 #include "common/page_table.h"
 #include "common/pulse_diagnostics.h"
 #include "core/hle/kernel/k_scheduler.h"
-#include "dynarmic/interface/code_memory.h"
 #include "jadyx/app/alloc_watch.h"
 #include "jadyx/app/boot_config.h"
 #include "jadyx/app/boot_diag.h"
@@ -41,29 +39,6 @@ void UseGameAdvancedGraphics(BootConfig& config, u64 program_id) {
     config.gpu_accuracy = advanced.gpu_accuracy;
     config.pso_workers = advanced.shader_workers;
     config.console_mode = advanced.console_mode;
-}
-
-// The cross-modify probe's result for the log: does writing a code page fault while other threads
-// run code in it, where writing the next page or an idle one does not?
-static std::string DescribeCrossModifyProbe(const Dynarmic::CrossModifyProbe& probe) {
-    if (!probe.ran) {
-        return "JIT cross-modify probe: no dual-mapped code memory";
-    }
-    const auto describe = [](const char* name, const Dynarmic::CrossModifyProbe::Case& c) {
-        char text[256];
-        std::snprintf(text, sizeof(text), "; %s: %llu faults (%llu stuck) in %llu writes, %llu us, %llu calls",
-                      name, static_cast<unsigned long long>(c.faults), static_cast<unsigned long long>(c.stuck),
-                      static_cast<unsigned long long>(c.writes), static_cast<unsigned long long>(c.us),
-                      static_cast<unsigned long long>(c.executor_calls));
-        return std::string{text};
-    };
-    char first[96];
-    std::snprintf(first, sizeof(first), "; first 0x%08x [0x%llx 0x%llx]", probe.first_code,
-                  static_cast<unsigned long long>(probe.first_info0),
-                  static_cast<unsigned long long>(probe.first_info1));
-    return "JIT cross-modify probe" + describe("same page, 2 threads running it", probe.same_page_running) +
-           describe("next page, 2 threads running page 0", probe.other_page_running) +
-           describe("same page, nobody running it", probe.same_page_idle) + first;
 }
 
 void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
@@ -390,19 +365,9 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 WriteDiag("boot.cfg: geometry glitch hunt menu enabled");
                 continue;
             }
-            if (line == "jit_xmc_probe=1") {
-                WriteDiag(DescribeCrossModifyProbe(Dynarmic::RunCrossModifyProbe()));
-                continue;
-            }
             if (line == "jit_lock_exec=0") {
                 config.jit_lock_exec = false;
                 WriteDiag("boot.cfg: JIT code locked through its write view only");
-                continue;
-            }
-            if (line == "jit_xmc_probe=2") {
-                WriteDiag(Dynarmic::StartCrossModifyWatch()
-                              ? "boot.cfg: JIT cross-modify watch running for the session"
-                              : "boot.cfg: JIT cross-modify watch unavailable");
                 continue;
             }
             if (line == "pso_menu=1") {

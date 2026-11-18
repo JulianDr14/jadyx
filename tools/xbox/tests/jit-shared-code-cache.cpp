@@ -797,31 +797,6 @@ void TestCodeChunksLocked() {
     SetLockedCode(true);
 }
 
-// The cross-modify probe writes in each case and its threads run the page; a desktop takes no
-// fault writing an idle page.
-void TestCrossModifyProbe() {
-    const CrossModifyProbe probe = RunCrossModifyProbe(20);
-    REQUIRE(probe.ran);
-    for (const auto* c : {&probe.same_page_running, &probe.other_page_running, &probe.same_page_idle}) {
-        REQUIRE(c->writes > 0 && c->stuck == 0 && c->us >= 20'000);
-    }
-    REQUIRE(probe.same_page_running.executor_calls > 0 && probe.other_page_running.executor_calls > 0);
-    REQUIRE(probe.same_page_idle.executor_calls == 0 && probe.same_page_idle.faults == 0);
-}
-
-void TestCrossModifyWatch() {
-    REQUIRE(!GetCrossModifyWatch().running);
-    REQUIRE(StartCrossModifyWatch() && StartCrossModifyWatch());
-    std::this_thread::sleep_for(std::chrono::milliseconds{400});
-    const CrossModifyWatch watch = GetCrossModifyWatch();
-    REQUIRE(watch.running);
-    for (const auto* t : {&watch.running_page, &watch.idle_page, &watch.private_page, &watch.same_line,
-                          &watch.executed_bytes}) {
-        REQUIRE(t->writes > 0 && t->stuck == 0);
-        REQUIRE((t->faults == 0) == (t->first_fault_ms == 0));
-    }
-}
-
 void TestIncompatibleCoreKeepsItsOwn() {
     Machine machine;
     Callbacks cb0, cb1;
@@ -1074,8 +1049,6 @@ int main() {
         }
     }
     Run("code chunks are locked in the working set", TestCodeChunksLocked);
-    Run("the cross-modify probe runs its three cases", TestCrossModifyProbe);
-    Run("the cross-modify watch keeps writing its three targets", TestCrossModifyWatch);
     Run("a block compiles once and runs on every core", TestCompileOnce);
     Run("an invalidation by one core reaches the others", TestInvalidationReachesOtherCores);
     Run("a clear by one core serves every core", TestClearFromOneCore);
