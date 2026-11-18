@@ -8,8 +8,7 @@
 // (core/online/nextendo/config.h), so a game sees Nextendo only while it is chosen, the server
 // address is set and the account holds a game token.
 //
-// Everything here is safe to call from the UI thread and returns at once; SignIn must be called
-// from it (the system's sign-in page belongs to the window).
+// Everything here is safe to call from any thread and returns at once.
 //
 // Eden rooms and Nextendo exclude each other (network_mode.h): choosing Nextendo leaves a joined
 // room, and RoomsAllowed() tells the Online tab to refuse joining or hosting while it is chosen.
@@ -51,8 +50,21 @@ bool RoomsAllowed();
 /// signs in, the worker sends nothing to Nextendo (not even the public catalog download).
 void ShowingNextendo(bool shown);
 
-/// Opens the sign-in page. UI thread only. Ignored when already signed in or signing in.
+/// Starts a sign-in finished on another device. The system's sign-in window cannot run on the
+/// console, so the player opens SignInUrl() on a phone or a PC through the Jadyx Portal, accepts,
+/// and pastes back the address that device then fails to load (http://127.0.0.1/callback?...):
+/// CompleteSignIn. The sign-in waits 15 minutes, then gives up. Ignored when already signed in or
+/// signing in.
 void SignIn();
+/// The Nextendo sign-in page while a sign-in waits for its answer; "" otherwise.
+std::string SignInUrl();
+/// Hands over what the player pasted. Returns "" when the account goes on to sign in; "denied" or
+/// "refused" when the answer ended the sign-in (the player said no, or the page sent another
+/// error); otherwise why it was not taken, the sign-in still waiting: "none" (no sign-in waits),
+/// "address" (no answer in it), "state" (an earlier attempt's answer).
+std::string CompleteSignIn(std::string_view pasted);
+/// The player stopped waiting on the console.
+void CancelSignIn();
 void SignOut();
 /// Downloads the catalog again now.
 void RefreshCatalog();

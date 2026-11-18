@@ -49,4 +49,9 @@ struct CallbackResult {
 /// Reads the redirect URL the browser landed on. The state must match the one we sent.
 CallbackResult ParseCallback(std::string_view url, std::string_view expected_state);
 
+/// What a player pasted from a phone's address bar, ready for ParseCallback: blanks, quotes and
+/// angle brackets around it dropped; a bare query ("code=..&state=..") gets its '?'. "" when it
+/// holds nothing usable or is longer than any sign-in answer.
+std::string PastedCallback(std::string_view text);
+
 } // namespace Jadyx::Network::Nextendo

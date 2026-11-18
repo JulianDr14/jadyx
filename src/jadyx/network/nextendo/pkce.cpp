@@ -152,4 +152,27 @@ CallbackResult ParseCallback(std::string_view url, std::string_view expected_sta
     return {*code, {}};
 }
 
+std::string PastedCallback(std::string_view text) {
+    constexpr std::size_t MaxPasted = 2048;
+    constexpr std::string_view Around = " \t\r\n\"'<>";
+    const std::size_t first = text.find_first_not_of(Around);
+    if (first == std::string_view::npos || text.size() > MaxPasted) {
+        return {};
+    }
+    text = text.substr(first, text.find_last_not_of(Around) - first + 1);
+    // One line of printable ASCII: a phone that wrapped or decorated it is refused, not guessed.
+    for (const char c : text) {
+        if (static_cast<unsigned char>(c) <= ' ' || static_cast<unsigned char>(c) >= 0x7f) {
+            return {};
+        }
+    }
+    if (text.find('?') != std::string_view::npos) {
+        return std::string(text);
+    }
+    if (text.find('=') != std::string_view::npos) {
+        return "?" + std::string(text);
+    }
+    return {};
+}
+
 } // namespace Jadyx::Network::Nextendo

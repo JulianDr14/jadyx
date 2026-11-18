@@ -3,6 +3,7 @@
 
 #include "jadyx/network/nextendo/service.h"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
@@ -10,6 +11,7 @@
 #include <functional>
 #include <iterator>
 #include <mutex>
+#include <optional>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -17,11 +19,11 @@
 
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
-#include <winrt/Windows.Security.Authentication.Web.h>
 #include <winrt/Windows.Security.Credentials.h>
 #include <winrt/Windows.Storage.h>
 
 #include "common/logging.h"
+#include "jadyx/app/boot_diag.h"
 #include "jadyx/network/http.h"
 #include "jadyx/network/nextendo/network_mode.h"
 #include "jadyx/network/nextendo/pkce.h"
@@ -41,6 +43,8 @@ constexpr wchar_t ServerKey[] = L"nextendo_server";
 constexpr wchar_t NatKey[] = L"nextendo_nat";
 constexpr wchar_t TlsKey[] = L"nextendo_tls_mode";
 constexpr std::uintmax_t MaxCatalogFile = 1u << 20;
+/// How long a sign-in waits for the phone's answer: as long as the server keeps a code.
+constexpr auto SignInWait = std::chrono::minutes{15};
 
 /// The refresh token in the system's credential vault (encrypted per user by the system); the
 /// public catalog as a file in LocalCache.
@@ -235,9 +239,16 @@ struct State {
     Nx::GameCatalog catalog;
     std::uint64_t version = 1;
     bool game_running = false;
-    bool signing_in = false;
     bool started = false;
     bool page_shown = false;
+    /// A sign-in waiting for the phone (SignIn): what its answer must carry, and until when.
+    struct WaitingSignIn {
+        std::string verifier;
+        std::string state;
+        std::string url;
+        std::chrono::steady_clock::time_point deadline;
+    };
+    std::optional<WaitingSignIn> sign_in;
 };
 
 State& Shared() {
@@ -303,11 +314,20 @@ void Run(std::stop_token stop) {
         std::vector<Command> commands;
         bool presence_wanted = false;
         bool wanted = false;
+        bool gave_up = false;
         {
             std::scoped_lock lock{state.mutex};
+            if (state.sign_in && std::chrono::steady_clock::now() >= state.sign_in->deadline) {
+                state.sign_in.reset();
+                gave_up = true;
+            }
             commands.swap(state.commands);
             presence_wanted = state.preferences.use_nextendo;
             wanted = presence_wanted || state.page_shown;
+        }
+        if (gave_up) {
+            WriteDiag("nextendo: the sign-in waited too long for the phone");
+            session.CancelSignIn(true);
         }
         for (auto& command : commands) {
             command(session);
@@ -321,8 +341,13 @@ void Run(std::stop_token stop) {
         }
         Publish(session, published);
         std::unique_lock lock{state.mutex};
-        state.wake.wait_for(lock, stop, std::chrono::seconds(wait),
-                            [&state] { return !state.commands.empty(); });
+        auto timeout = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds(wait));
+        if (state.sign_in) {
+            // Awake when a waiting sign-in runs out, so the console stops waiting with it.
+            timeout = std::min(timeout, state.sign_in->deadline - std::chrono::steady_clock::now() +
+                                            std::chrono::seconds{1});
+        }
+        state.wake.wait_for(lock, stop, timeout, [&state] { return !state.commands.empty(); });
     }
     // Nothing is left for the games once the worker ends.
     Nx::GlobalConfig().Publish(Nx::Config{});
@@ -446,71 +471,84 @@ bool RoomsAllowed() {
 
 void SignIn() {
     auto& state = Shared();
-    {
-        std::scoped_lock lock{state.mutex};
-        if (!state.started || state.signing_in || state.view.phase != Phase::SignedOut) {
-            return;
-        }
-        state.signing_in = true;
-    }
     const auto pkce = MakePkcePair();
     const std::string expected_state = MakeState();
-    const auto finish = [](Command command) {
-        {
-            auto& shared = Shared();
-            std::scoped_lock lock{shared.mutex};
-            shared.signing_in = false;
+    {
+        std::scoped_lock lock{state.mutex};
+        if (!state.started || state.sign_in || state.view.phase != Phase::SignedOut) {
+            WriteDiag(std::string("nextendo: sign-in ignored (") +
+                      (!state.started ? "worker not started" : state.sign_in ? "already waiting" : "not signed out") +
+                      ")");
+            return;
         }
-        Post(std::move(command));
-    };
-    if (!pkce || expected_state.empty()) {
-        finish([](Session& session) { session.CancelSignIn(false); });
-        return;
+        if (pkce && !expected_state.empty()) {
+            state.sign_in = State::WaitingSignIn{
+                pkce->verifier, expected_state, BuildAuthorizeUrl(kRedirectUri, expected_state, pkce->challenge),
+                std::chrono::steady_clock::now() + SignInWait};
+        }
     }
     Post([](Session& session) { session.BeginSignIn(); });
-    using namespace winrt::Windows::Security::Authentication::Web;
-    using winrt::Windows::Foundation::AsyncStatus;
-    using winrt::Windows::Foundation::Uri;
-    try {
-        const std::string url = BuildAuthorizeUrl(kRedirectUri, expected_state, pkce->challenge);
-        auto operation = WebAuthenticationBroker::AuthenticateAsync(
-            WebAuthenticationOptions::None, Uri{winrt::to_hstring(url)},
-            Uri{winrt::to_hstring(kRedirectUri)});
-        operation.Completed([verifier = pkce->verifier, expected_state, finish](
-                                const auto& async, AsyncStatus status) {
-            CallbackResult callback;
-            bool by_player = false;
-            bool answered = false;
-            try {
-                if (status == AsyncStatus::Completed) {
-                    const auto result = async.GetResults();
-                    switch (result.ResponseStatus()) {
-                    case WebAuthenticationStatus::Success:
-                        callback = ParseCallback(winrt::to_string(result.ResponseData()),
-                                                 expected_state);
-                        answered = true;
-                        break;
-                    case WebAuthenticationStatus::UserCancel:
-                        by_player = true;
-                        break;
-                    default:
-                        break;
-                    }
-                }
-            } catch (...) {
-            }
-            if (answered) {
-                finish([callback, verifier](Session& session) {
-                    session.FinishSignIn(callback, verifier, std::string(kRedirectUri));
-                });
-            } else {
-                finish([by_player](Session& session) { session.CancelSignIn(by_player); });
-            }
-        });
-    } catch (...) {
-        LOG_WARNING(Network, "[Nextendo] the sign-in page did not open");
-        finish([](Session& session) { session.CancelSignIn(false); });
+    if (!pkce || expected_state.empty()) {
+        WriteDiag("nextendo: sign-in could not make its PKCE pair");
+        Post([](Session& session) { session.CancelSignIn(false); });
+        return;
     }
+    WriteDiag("nextendo: sign-in waits for the phone");
+}
+
+std::string SignInUrl() {
+    auto& state = Shared();
+    std::scoped_lock lock{state.mutex};
+    if (!state.sign_in || std::chrono::steady_clock::now() >= state.sign_in->deadline) {
+        return {};
+    }
+    return state.sign_in->url;
+}
+
+std::string CompleteSignIn(std::string_view pasted) {
+    auto& state = Shared();
+    const std::string address = PastedCallback(pasted);
+    CallbackResult callback;
+    std::string verifier;
+    {
+        std::scoped_lock lock{state.mutex};
+        if (!state.sign_in || std::chrono::steady_clock::now() >= state.sign_in->deadline) {
+            return "none";
+        }
+        if (address.empty()) {
+            return "address";
+        }
+        // A wrong paste keeps the sign-in waiting: the player may try again.
+        callback = ParseCallback(address, state.sign_in->state);
+        if (callback.error == "state_mismatch") {
+            return "state";
+        }
+        if (callback.error == "missing_code") {
+            return "address";
+        }
+        verifier = std::move(state.sign_in->verifier);
+        state.sign_in.reset();
+    }
+    // Never the code: only that an answer came, and whether the player accepted.
+    const bool accepted = !callback.code.empty();
+    WriteDiag(accepted ? "nextendo: the phone's sign-in answer arrived" : "nextendo: sign-in refused on the phone");
+    Post([callback, verifier = std::move(verifier)](Session& session) mutable {
+        session.FinishSignIn(callback, std::move(verifier), std::string(kRedirectUri));
+    });
+    return accepted ? "" : callback.error == "access_denied" ? "denied" : "refused";
+}
+
+void CancelSignIn() {
+    auto& state = Shared();
+    {
+        std::scoped_lock lock{state.mutex};
+        if (!state.sign_in) {
+            return;
+        }
+        state.sign_in.reset();
+    }
+    WriteDiag("nextendo: sign-in cancelled on the console");
+    Post([](Session& session) { session.CancelSignIn(true); });
 }
 
 void SignOut() {

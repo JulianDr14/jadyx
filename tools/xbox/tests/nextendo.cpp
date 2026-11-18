@@ -236,6 +236,17 @@ void TestPkce() {
     Check(cb.error == "missing_code");
     cb = App::ParseCallback("http://127.0.0.1/callback?code=abc", "xyz");
     Check(cb.error == "state_mismatch");
+    // Pasted from a phone: the address bar's text, a bare query, or nothing usable.
+    Check(App::PastedCallback("  http://127.0.0.1/callback?code=a&state=s\r\n") ==
+          "http://127.0.0.1/callback?code=a&state=s");
+    Check(App::PastedCallback("\"<127.0.0.1/callback?code=a&state=s>\"") == "127.0.0.1/callback?code=a&state=s");
+    Check(App::PastedCallback("code=a&state=s") == "?code=a&state=s");
+    Check(App::ParseCallback(App::PastedCallback("code=abc&state=xyz"), "xyz").code == "abc");
+    Check(App::PastedCallback("").empty() && App::PastedCallback(" \n ").empty());
+    Check(App::PastedCallback("hello").empty());
+    Check(App::PastedCallback("http://127.0.0.1/callback?code=a b&state=s").empty());
+    Check(App::PastedCallback("?code=\xC3\xA9&state=s").empty());
+    Check(App::PastedCallback("?" + std::string(2048, 'a')).empty());
     cb = App::ParseCallback("http://127.0.0.1/callback?code=abc&state=", "");
     Check(cb.error == "state_mismatch");
 }
