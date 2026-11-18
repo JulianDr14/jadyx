@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <cwctype>
 #include <utility>
@@ -71,6 +72,42 @@ void UiPainter::Round(float x, float y, float w, float h, float radius, unsigned
     const auto rect = D2D1::RectF(x, y, x + w, y + h);
     if (radius <= 0) surface->FillRectangle(rect, brush.Get());
     else surface->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), brush.Get());
+}
+
+D2D1_RECT_F UiPainter::Qr(const Ui::QrCode& code, float x, float y, float side, bool logo) {
+    const int span = code.size + 8;
+    const float module = std::max(1.0f, std::floor(side / static_cast<float>(span)));
+    const float drawn = module * static_cast<float>(span);
+    x = std::round(x + (side - drawn) / 2);
+    y = std::round(y + (side - drawn) / 2);
+    Round(x - module, y - module, drawn + 2 * module, drawn + 2 * module, module * 1.5f, 0xffffff);
+    // Aliased, so neighbouring modules leave no seams; dark runs along each row in one fill.
+    const auto mode = surface->GetAntialiasMode();
+    surface->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+    brush->SetColor(D2D1::ColorF(0x000000, 1));
+    const float ox = x + 4 * module, oy = y + 4 * module;
+    const int hole = logo ? Ui::QrLogoModules(code) : 0;
+    const int lo = (code.size - hole) / 2, hi = lo + hole;
+    const auto dark = [&](int column, int row) {
+        return code.Dark(column, row) && !(column >= lo && column < hi && row >= lo && row < hi);
+    };
+    for (int row = 0; row < code.size; ++row) {
+        for (int column = 0; column < code.size;) {
+            if (!dark(column, row)) {
+                ++column;
+                continue;
+            }
+            int end = column;
+            while (end < code.size && dark(end, row)) ++end;
+            surface->FillRectangle(D2D1::RectF(ox + column * module, oy + row * module, ox + end * module,
+                                               oy + (row + 1) * module),
+                                   brush.Get());
+            column = end;
+        }
+    }
+    surface->SetAntialiasMode(mode);
+    if (hole == 0) return D2D1::RectF();
+    return D2D1::RectF(ox + lo * module, oy + lo * module, ox + hi * module, oy + hi * module);
 }
 
 void UiPainter::Outline(float x, float y, float w, float h, float radius, unsigned color, float alpha,
