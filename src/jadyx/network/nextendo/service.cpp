@@ -36,8 +36,9 @@ namespace fs = std::filesystem;
 constexpr wchar_t VaultResource[] = L"Jadyx.Nextendo";
 constexpr wchar_t VaultUser[] = L"refresh_token";
 constexpr wchar_t UseKey[] = L"nextendo_use";
-constexpr wchar_t ServerKey[] = L"nextendo_server_ip";
-constexpr wchar_t NatKey[] = L"nextendo_nat_ip";
+// Renamed when the defaults arrived: the earlier keys held empty values, not a player's choice.
+constexpr wchar_t ServerKey[] = L"nextendo_server";
+constexpr wchar_t NatKey[] = L"nextendo_nat";
 constexpr wchar_t TlsKey[] = L"nextendo_tls_mode";
 constexpr std::uintmax_t MaxCatalogFile = 1u << 20;
 
@@ -142,15 +143,16 @@ Preferences LoadPreferences() {
         if (values.HasKey(UseKey)) {
             preferences.use_nextendo = winrt::unbox_value<bool>(values.Lookup(UseKey));
         }
-        const auto address = [&](const wchar_t* key) {
+        // Never saved: the default stays.
+        const auto address = [&](const wchar_t* key, std::string fallback) {
             if (!values.HasKey(key)) {
-                return std::string{};
+                return fallback;
             }
             const auto text = winrt::to_string(winrt::unbox_value<winrt::hstring>(values.Lookup(key)));
-            return CleanAddress(text).value_or(std::string{});
+            return CleanAddress(text).value_or(std::move(fallback));
         };
-        preferences.server_ip = address(ServerKey);
-        preferences.nat_ip = address(NatKey);
+        preferences.server_ip = address(ServerKey, preferences.server_ip);
+        preferences.nat_ip = address(NatKey, preferences.nat_ip);
         if (values.HasKey(TlsKey)) {
             const auto mode = winrt::unbox_value<int32_t>(values.Lookup(TlsKey));
             if (mode >= 0 && mode <= static_cast<int32_t>(Nx::TlsVerifyMode::Enforce)) {

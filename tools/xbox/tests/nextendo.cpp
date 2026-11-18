@@ -967,11 +967,19 @@ void TestPreferences() {
     Check(!App::CleanAddress("10.0.0.5:80"));
 
     App::Preferences prefs;
+    // The project's servers until the player types others; both pass the address rules.
+    Check(prefs.server_ip == App::kDefaultServerIp && prefs.nat_ip == App::kDefaultNatIp);
+    Check(App::CleanAddress(App::kDefaultServerIp) == std::string(App::kDefaultServerIp));
+    Check(App::CleanAddress(App::kDefaultNatIp) == std::string(App::kDefaultNatIp));
+    Check(App::EndpointsReady(prefs));
     const App::GameIdentity identity{"nx2secret", 77, "0123456789abcdef"};
     // Off by default: Eden rooms and offline play see plain Eden.
     Check(!BuildCoreConfig(prefs, identity).enabled);
     prefs.use_nextendo = true;
-    Check(!BuildCoreConfig(prefs, identity).enabled); // no server yet
+    Check(BuildCoreConfig(prefs, identity).enabled); // the defaults are enough
+    prefs.server_ip.clear();
+    prefs.nat_ip.clear();
+    Check(!BuildCoreConfig(prefs, identity).enabled); // the player cleared the server
     prefs.server_ip = "10.0.0.5";
     Check(!BuildCoreConfig(prefs, std::nullopt).enabled); // not signed in
     auto config = BuildCoreConfig(prefs, identity);
@@ -995,6 +1003,7 @@ void TestPreferences() {
           LaunchAdvice::NotUsingNextendo);
     App::Preferences no_server;
     no_server.use_nextendo = true;
+    no_server.server_ip.clear();
     Check(App::CheckLaunch(no_server, view, catalog, 0x0100000000010000ULL, "1.2.0").advice ==
           LaunchAdvice::NoServer);
     Check(App::CheckLaunch(prefs, view, catalog, 0x0100000000010000ULL, "1.2.0").advice ==
@@ -1076,6 +1085,13 @@ void TestCatalogRows() {
 // The Online tab's Nextendo view: its pure helpers (the canvas and the session use them).
 void TestNextendoPage() {
     using Jadyx::I18n::Text;
+    // The address rows know their defaults; the others have none.
+    Check(Jadyx::DefaultAddress(Jadyx::NextendoPage::ServerIp) == App::kDefaultServerIp);
+    Check(Jadyx::DefaultAddress(Jadyx::NextendoPage::NatIp) == App::kDefaultNatIp);
+    Check(Jadyx::DefaultAddress(Jadyx::NextendoPage::TlsMode).empty());
+    // Hidden: one dot per character, nothing of the address.
+    Check(Jadyx::ShownAddress("10.0.0.5", false) == std::wstring(8, L'\u2022'));
+    Check(Jadyx::ShownAddress("10.0.0.5", true) == L"10.0.0.5");
     // A cycles the TLS check through its three modes and back.
     Check(Jadyx::NextTlsMode(TlsVerifyMode::Off) == TlsVerifyMode::LogOnly);
     Check(Jadyx::NextTlsMode(TlsVerifyMode::LogOnly) == TlsVerifyMode::Enforce);

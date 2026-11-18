@@ -2205,14 +2205,20 @@ private:
             OnlineField(focused_row(NextendoPage::UseNextendo), UiIcon::Globe, Tr(T::NxUse),
                         std::wstring{Tr(prefs.use_nextendo ? T::NxUseOn : T::NxUseOff)}, false, x, y + 50, w,
                         LibraryHit::NextendoRow, NextendoPage::UseNextendo, prefs.use_nextendo);
+            // The addresses as dots until Y shows them (a stream or a screenshot must not leak a
+            // private server), with whether they are the project's own.
+            const auto address = [&](const std::string& value, std::size_t row) {
+                const T kind = value == DefaultAddress(row) ? T::NxAddressDefault : T::NxAddressCustom;
+                return ShownAddress(value, page.show_addresses) + L"  \u00b7  " + std::wstring{Tr(kind)};
+            };
             const bool no_server = prefs.server_ip.empty();
             OnlineField(focused_row(NextendoPage::ServerIp), UiIcon::Settings, Tr(T::NxServer),
-                        no_server ? std::wstring{Tr(T::NxAddressPending)} : OnlineWiden(prefs.server_ip), no_server,
-                        x, y + 108, w, LibraryHit::NextendoRow, NextendoPage::ServerIp);
+                        no_server ? std::wstring{Tr(T::NxAddressPending)} : address(prefs.server_ip, NextendoPage::ServerIp),
+                        no_server, x, y + 108, w, LibraryHit::NextendoRow, NextendoPage::ServerIp);
             const bool no_nat = prefs.nat_ip.empty();
             OnlineField(focused_row(NextendoPage::NatIp), UiIcon::Settings, Tr(T::NxNat),
-                        no_nat ? std::wstring{Tr(T::NxNatSame)} : OnlineWiden(prefs.nat_ip), no_nat, x, y + 166, w,
-                        LibraryHit::NextendoRow, NextendoPage::NatIp);
+                        no_nat ? std::wstring{Tr(T::NxNatSame)} : address(prefs.nat_ip, NextendoPage::NatIp), no_nat,
+                        x, y + 166, w, LibraryHit::NextendoRow, NextendoPage::NatIp);
             OnlineField(focused_row(NextendoPage::TlsMode), UiIcon::Key, Tr(T::NxTls),
                         std::wstring{Tr(TlsModeText(prefs.tls_mode))}, false, x, y + 224, w, LibraryHit::NextendoRow,
                         NextendoPage::TlsMode);
@@ -2442,6 +2448,10 @@ private:
             }
         }
         if (play) x += ControlPrompt(Navigation::Play, Tr(*play), x, y);
+        if (!page.in_games && !DefaultAddress(page.selected).empty()) {
+            x += ControlPrompt(Navigation::Pin, Tr(page.show_addresses ? T::NxAddressHide : T::NxAddressShow), x, y);
+            x += ControlPrompt(Navigation::Options, Tr(T::NxAddressRestore), x, y);
+        }
         x += ControlPrompt(Navigation::Rescan, Tr(T::NxCatalogRefresh), x, y);
         x += ControlPrompt(Navigation::Triggers, Tr(T::NetRooms), x, y);
         x += ControlPrompt(Navigation::Back, Tr(T::Back), x, y);

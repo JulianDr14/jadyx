@@ -1136,6 +1136,21 @@ void LibrarySession::HandleNextendoPage(TimePoint now) {
         page.in_games = true;
         return;
     }
+    // On an address row: Y shows or hides both addresses, Menu puts the project's one back.
+    if (const auto fallback = DefaultAddress(page.selected); !fallback.empty()) {
+        if (actions & Pin) {
+            page.show_addresses = !page.show_addresses;
+            return;
+        }
+        if (actions & Options) {
+            auto prefs = Nx::ServicePreferences();
+            (page.selected == NextendoPage::ServerIp ? prefs.server_ip : prefs.nat_ip) = std::string(fallback);
+            Nx::SetEndpoints(prefs.server_ip, prefs.nat_ip, prefs.tls_mode);
+            say(T::NxAddressRestored);
+            PollNextendo();
+            return;
+        }
+    }
     if (!(actions & Play)) return;
     switch (page.selected) {
     case NextendoPage::Account:

@@ -11,6 +11,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "jadyx/i18n/localization.h"
@@ -28,6 +30,7 @@ struct NextendoPage {
     bool in_games{};      ///< The focus is in the games list (the right column).
     std::size_t game{};   ///< The focused game, in `games`.
     std::size_t first{};  ///< The first game drawn (the list scrolls).
+    bool show_addresses{}; ///< The addresses read in full; dots until Y shows them.
 
     std::uint64_t version = ~std::uint64_t{0}; ///< The service's, for the copy below (none yet).
     std::size_t library_titles{};     ///< Library games with a known title id, when `games` was made.
@@ -40,6 +43,19 @@ struct NextendoPage {
 inline bool NextendoSignedIn(const NextendoPage& page) {
     using Network::Nextendo::Phase;
     return page.view.phase == Phase::Connecting || page.view.phase == Phase::Ready;
+}
+
+/// The default of an address row (ServerIp or NatIp); empty for any other row.
+inline std::string_view DefaultAddress(std::size_t row) {
+    if (row == NextendoPage::ServerIp) return Network::Nextendo::kDefaultServerIp;
+    if (row == NextendoPage::NatIp) return Network::Nextendo::kDefaultNatIp;
+    return {};
+}
+
+/// What an address row shows: the address, or one dot per character while hidden.
+inline std::wstring ShownAddress(std::string_view address, bool shown) {
+    if (!shown) return std::wstring(address.size(), L'\u2022');
+    return std::wstring(address.begin(), address.end());
 }
 
 /// The next TLS check, as A cycles it: off, log only, enforce.

@@ -17,11 +17,16 @@
 
 namespace Jadyx::Network::Nextendo {
 
+/// The project's own servers. A player may type others (a development server, a proxy) and
+/// restore these later.
+inline constexpr std::string_view kDefaultServerIp = "51.178.29.194";
+inline constexpr std::string_view kDefaultNatIp = "164.132.111.120";
+
 struct Preferences {
     /// Online goes through Nextendo instead of Eden rooms. Off by default: rooms work as before.
     bool use_nextendo = false;
-    std::string server_ip; // the game servers; empty until the project publishes it
-    std::string nat_ip;    // the NAT test servers; empty falls back to server_ip
+    std::string server_ip{kDefaultServerIp}; // the game servers; empty: Nextendo cannot be played
+    std::string nat_ip{kDefaultNatIp};       // the NAT test servers; empty falls back to server_ip
     Core::Online::Nextendo::TlsVerifyMode tls_mode = Core::Online::Nextendo::TlsVerifyMode::LogOnly;
 
     bool operator==(const Preferences&) const = default;
