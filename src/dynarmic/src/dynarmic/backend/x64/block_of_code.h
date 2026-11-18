@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -152,6 +153,48 @@ public:
         return reinterpret_cast<T*>(reinterpret_cast<u8*>(p) + writeOffset_);
     }
 
+    /// Stores `value` into the naturally aligned field at `where`, in emitted code, with one atomic
+    /// store: a core running that code sees the old or the new value, never a mix. Under paged
+    /// W^X it must run between EnableWriting and DisableWriting.
+    template<typename T>
+        requires(std::is_integral_v<T> && (sizeof(T) == 4 || sizeof(T) == 8))
+    void WriteCodeAtomic(CodePtr where, T value) {
+        ASSERT(reinterpret_cast<std::uintptr_t>(where) % sizeof(T) == 0);
+        MakeWritable(where, sizeof(T));
+        T* const field = WriteAlias(static_cast<T*>(const_cast<void*>(where)));
+        std::atomic_ref<T>{*field}.store(value, std::memory_order_release);
+    }
+
+    /// True when emitted code is written without changing page protection (dual-mapped memory,
+    /// or no W^X at all): code that other threads are running then never turns non-executable.
+    bool WritesWithoutProtectionChanges() const noexcept;
+
+    /// Multiplies the global code cache cap (SetCodeCacheCap) for this cache: one cache that
+    /// serves several cores may hold the sum of what each of them would.
+    void SetCapScale(size_t scale) noexcept;
+
+    /// This cache's emission state and the memory where its next byte goes, for a crash report.
+    /// Allocates nothing and takes no lock it could wait on: a faulting thread may hold any.
+    int DescribeState(char* out, size_t size) const noexcept;
+
+    /// Where the next byte emitted is written (the write view of a dual-mapped cache).
+    const u8* EmitWritePointer() const noexcept {
+        return top_ + size_ + writeOffset_;
+    }
+
+    /// Marks the calling thread as writing code into this cache for its lifetime: a fault it takes
+    /// meanwhile is retried after a wait (see GetCodeEmitFaults). Nests.
+    class EmitScope {
+    public:
+        explicit EmitScope(const BlockOfCode& code) noexcept;
+        ~EmitScope();
+        EmitScope(const EmitScope&) = delete;
+        EmitScope& operator=(const EmitScope&) = delete;
+
+    private:
+        const BlockOfCode* previous;
+    };
+
     void SetCodePtr(CodePtr code_ptr);
     void EnsurePatchLocationSize(CodePtr begin, size_t size);
 
@@ -182,6 +225,8 @@ public:
 
 private:
     using RunCodeFuncType = HaltReason (*)(void*, CodePtr);
+    /// EnsureMemoryCommitted's commit, before the dual-mapped check.
+    void CommitCodeMemory(size_t codesize);
     static constexpr size_t MXCSR_ALREADY_EXITED = 1 << 0;
     static constexpr size_t FORCE_RETURN = 1 << 1;
 
@@ -207,12 +252,18 @@ private:
     const bool dual_mapped = AdoptWriteView();
     void ReleaseMemoryPastCap();
     bool release_failed = false;
+    /// Dual-mapped: the code below this offset was checked to be mapped in both views
+    /// (EnsureMemoryCommitted). Reset when chunks may be unmapped.
+    size_t mapped_verified_end = 0;
 #endif
     bool prelude_complete = false;
     // SetCodeCacheCap as this cache applies it: the cap it last saw, and where its code ends.
     size_t CapEnd(size_t cap) const;
     mutable size_t cap_epoch = 0;
     mutable size_t cap_end = SIZE_MAX;
+    size_t cap_scale = 1;
+    /// s_code_cache_cap times cap_scale, saturating.
+    size_t ScaledCap() const noexcept;
 
     ConstantPool constant_pool;
     JitStateInfo jsi;

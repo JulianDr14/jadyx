@@ -6,6 +6,8 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <thread>
@@ -13,6 +15,16 @@
 namespace Core::JitPrewarm {
 
 using Progress = std::function<void(std::size_t, std::size_t)>;
+
+/// The budget a warm pass gets: `per_core` bytes for a code cache of its own. Owners warming on one
+/// shared cache all measure that whole cache, so each gets `per_core` for every one of the
+/// `sharing_owners`: together they stop where separate caches would have. Saturates.
+[[nodiscard]] constexpr std::size_t SharedCodeBudget(std::size_t per_core, std::size_t sharing_owners) {
+    if (sharing_owners <= 1) {
+        return per_core;
+    }
+    return per_core > SIZE_MAX / sharing_owners ? SIZE_MAX : per_core * sharing_owners;
+}
 
 // One stopped JIT per owner, never concurrent access to one instance. UI callbacks
 // run only on the coordinator. RAII joins also protect callback/state lifetimes

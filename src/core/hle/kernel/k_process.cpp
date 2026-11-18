@@ -1476,10 +1476,15 @@ void KProcess::InitializeInterfaces(KernelCore& kernel) {
     } else
 #endif
         if (this->Is64Bit()) {
+        // One code cache for the process's cores: a block compiled on one runs on all of them.
+        std::shared_ptr<Dynarmic::A64::SharedCodeCache> shared_code_cache;
+        if (Core::g_jit_shared_code_cache.load(std::memory_order_relaxed)) {
+            shared_code_cache = std::make_shared<Dynarmic::A64::SharedCodeCache>(Core::Hardware::NUM_CPU_CORES);
+        }
         for (size_t i = 0; i < Core::Hardware::NUM_CPU_CORES; i++) {
             m_arm_interfaces[i] = std::make_unique<Core::ArmDynarmic64>(
                 kernel.System(), kernel.IsMulticore(), this,
-                static_cast<Core::DynarmicExclusiveMonitor&>(*m_exclusive_monitor), i);
+                static_cast<Core::DynarmicExclusiveMonitor&>(*m_exclusive_monitor), i, shared_code_cache);
         }
     } else {
         for (size_t i = 0; i < Core::Hardware::NUM_CPU_CORES; i++) {

@@ -372,34 +372,39 @@ void EmitX64::Patch(const IR::LocationDescriptor& target_desc, CodePtr target_co
         return; // No incoming links: do not allocate four empty patch lists for this block.
     }
     const CodePtr save_code_ptr = code.getCurr();
-    const PatchInformation& patch_info = it->second;
-    // Patch sites are in blocks already emitted, so behind the write window (paged W^X).
-    constexpr size_t MAX_PATCH_SIZE = 32;
-
-    for (const PatchSite site : patch_info) {
-        code.MakeWritable(site.Location(), MAX_PATCH_SIZE);
-        code.SetCodePtr(site.Location());
-        switch (site.Kind()) {
-        case PatchKind::Jg:
-            EmitPatchJg(target_desc, target_code_ptr);
-            break;
-        case PatchKind::Jz:
-            EmitPatchJz(target_desc, target_code_ptr);
-            break;
-        case PatchKind::Jmp:
-            EmitPatchJmp(target_desc, target_code_ptr);
-            break;
-        case PatchKind::MovRcx:
-            EmitPatchMovRcx(target_code_ptr);
-            break;
-        }
+    for (const PatchSite site : it->second) {
+        ApplyPatch(site, target_desc, target_code_ptr);
     }
-
     code.SetCodePtr(save_code_ptr);
 }
 
+void EmitX64::ApplyPatch(PatchSite site, const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
+    // Patch sites are in blocks already emitted, so behind the write window (paged W^X).
+    constexpr size_t MAX_PATCH_SIZE = 32;
+    code.MakeWritable(site.Location(), MAX_PATCH_SIZE);
+    code.SetCodePtr(site.Location());
+    switch (site.Kind()) {
+    case PatchKind::Jg:
+        EmitPatchJg(target_desc, target_code_ptr);
+        break;
+    case PatchKind::Jz:
+        EmitPatchJz(target_desc, target_code_ptr);
+        break;
+    case PatchKind::Jmp:
+        EmitPatchJmp(target_desc, target_code_ptr);
+        break;
+    case PatchKind::MovRcx:
+        EmitPatchMovRcx(target_code_ptr);
+        break;
+    }
+}
+
 void EmitX64::AddPatchSite(const IR::LocationDescriptor& target_desc, PatchKind kind) {
-    patch_information[target_desc].emplace_back(kind, code.getCurr());
+    AddPatchSite(target_desc, PatchSite{kind, code.getCurr()});
+}
+
+void EmitX64::AddPatchSite(const IR::LocationDescriptor& target_desc, PatchSite site) {
+    patch_information[target_desc].push_back(site);
 }
 
 void EmitX64::Unpatch(const IR::LocationDescriptor& target_desc) {

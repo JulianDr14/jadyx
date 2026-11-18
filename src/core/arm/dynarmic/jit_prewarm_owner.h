@@ -32,6 +32,10 @@ public:
     /// Compiles the block only if the guest code is exactly the recorded one.
     virtual bool PrecompileBlock(const Dynarmic::BlockProfile& block) = 0;
     virtual std::size_t CodeCacheSpaceRemaining() const = 0;
+    /// Whether the code cache is shared by the cores of the process (see SharedCodeBudget).
+    virtual bool SharesCodeCache() const {
+        return false;
+    }
     /// Before a warm pass: drop state that caches guest code between compiles.
     virtual void BeginWarm() {}
 };
@@ -51,6 +55,13 @@ public:
     }
     std::size_t CodeCacheSpaceRemaining() const override {
         return jit.GetCodeCacheSpaceRemaining();
+    }
+    bool SharesCodeCache() const override {
+        if constexpr (requires { jit.IsCodeCacheShared(); }) {
+            return jit.IsCodeCacheShared();
+        } else {
+            return false;
+        }
     }
     void BeginWarm() override {
         callbacks.last_code_addr = u64(-1);
@@ -80,7 +91,12 @@ public:
 
     /// Candidate count for the warm pass, after application_catalog is final.
     std::size_t PrepareCandidates();
-    /// The warm pass: compiles candidates, best first, until `code_budget` bytes of host code.
+    /// Whether this owner's core shares its code cache with other cores.
+    bool SharesCodeCache() const {
+        return target->SharesCodeCache();
+    }
+    /// The warm pass: compiles candidates, best first, until `code_budget` bytes of host code are
+    /// in the code cache (with a shared cache, what every core sharing it compiled).
     /// Runs on its own thread, one per owner; `progress` reports (done, total).
     void Warm(const Progress& progress, std::size_t code_budget);
     /// Merges what this session learned and replaces the file atomically. The guest must be

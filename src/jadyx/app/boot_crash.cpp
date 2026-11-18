@@ -19,6 +19,7 @@
 #include "common/dynamic_library.h"
 #include "common/host_memory.h"
 #include "common/logging.h"
+#include "dynarmic/interface/code_memory.h"
 #include "jadyx/app/boot_crash.h"
 #include "jadyx/app/boot_diag.h"
 
@@ -216,6 +217,9 @@ namespace {
 // VirtualBuffer) resolve their own expected faults first and never reach it.
 std::atomic<int> g_first_chance_lines{0};
 constexpr int MAX_FIRST_CHANCE_LINES = 32;
+// Registers and stack for access violations in jadyx.exe itself; few, since each walks a stack.
+std::atomic<int> g_fault_detail_lines{0};
+constexpr int MAX_FAULT_DETAILS = 4;
 
 const char* ProtectName(DWORD protect) {
     switch (protect & 0xFF) {
@@ -355,6 +359,14 @@ LONG NTAPI FirstChanceLogger(EXCEPTION_POINTERS* ep) {
                       static_cast<unsigned long long>(rec->ExceptionInformation[2]),
                       ProtectName(static_cast<DWORD>(rec->ExceptionInformation[3])),
                       GetCurrentThreadId());
+    } else if (rec->ExceptionCode == 0xE0DA0003 && rec->NumberParameters >= 4) {
+        std::snprintf(line, sizeof(line),
+                      "[jadyx] [+%llums] JIT MEMORY: write view of a mapped code chunk is gone, "
+                      "base 0x%llx, region 0x%llx, state|type 0x%llx | thread %lu\n",
+                      ElapsedMs(), static_cast<unsigned long long>(rec->ExceptionInformation[1]),
+                      static_cast<unsigned long long>(rec->ExceptionInformation[2]),
+                      static_cast<unsigned long long>(rec->ExceptionInformation[3]),
+                      GetCurrentThreadId());
     } else {
         std::snprintf(line, sizeof(line),
                       "[jadyx] [+%llums] FIRST-CHANCE exception 0x%08lx | at %s | params %lu "
@@ -370,6 +382,26 @@ LONG NTAPI FirstChanceLogger(EXCEPTION_POINTERS* ep) {
     std::memcpy(t_last_exception, line, sizeof(t_last_exception));
     if (g_first_chance_lines.fetch_add(1, std::memory_order_relaxed) < MAX_FIRST_CHANCE_LINES) {
         WriteDiagRaw(line, /*debugger_channel=*/false);
+    }
+    // An access violation in our own code (not a fastmem fault in JIT code) can kill the process
+    // before the unhandled filter runs: keep its registers and stack here.
+    if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        std::strncmp(at, "jadyx.exe+", 10) == 0 &&
+        g_fault_detail_lines.fetch_add(1, std::memory_order_relaxed) < MAX_FAULT_DETAILS) {
+        const CONTEXT& c = *ep->ContextRecord;
+        std::snprintf(line, sizeof(line),
+                      "[jadyx]   regs rax %llx rbx %llx rcx %llx rdx %llx rsi %llx rdi %llx "
+                      "rsp %llx rbp %llx r8 %llx r9 %llx r12 %llx r13 %llx r14 %llx r15 %llx\n",
+                      c.Rax, c.Rbx, c.Rcx, c.Rdx, c.Rsi, c.Rdi, c.Rsp, c.Rbp, c.R8, c.R9, c.R12,
+                      c.R13, c.R14, c.R15);
+        WriteDiagRaw(line, /*debugger_channel=*/false);
+        WriteDiagRaw(FormatFaultStack(c, "[jadyx]   fault stack:").c_str(),
+                     /*debugger_channel=*/false);
+        // A fault emitting JIT code: where each code cache writes next, and that memory's state.
+        char caches[2048];
+        if (Dynarmic::DescribeCodeCaches(caches, sizeof(caches)) != 0) {
+            WriteDiagRaw(caches, /*debugger_channel=*/false);
+        }
     }
     return EXCEPTION_CONTINUE_SEARCH; // observe only
 }

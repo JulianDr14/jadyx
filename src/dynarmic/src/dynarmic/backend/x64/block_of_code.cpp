@@ -30,6 +30,8 @@
 //   Information[0] = GetLastError(), [1] = address, [2] = size, [3] = requested protection
 #        define DYNARMIC_UWP_PROTECT_FAILED 0xE0DA0001u
 #        define DYNARMIC_UWP_COMMIT_FAILED  0xE0DA0002u
+// A dual-mapped chunk held mapped whose write view is gone; [3] is the view's State | Type.
+#        define DYNARMIC_UWP_WRITE_VIEW_LOST 0xE0DA0003u
 static void RaiseJitMemoryFailure(DWORD code, const void* base, size_t size, DWORD protection) {
     const ULONG_PTR info[4] = {GetLastError(), reinterpret_cast<ULONG_PTR>(base), size, protection};
     RaiseException(code, EXCEPTION_NONCONTINUABLE, 4, info);
@@ -51,7 +53,9 @@ static void RaiseJitMemoryFailure(DWORD code, const void* base, size_t size, DWO
 #include <algorithm>
 #include <atomic>
 #include <array>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -86,6 +90,21 @@ constexpr size_t CAP_SLACK = 16 * 1024 * 1024;
 /// SetDualMappedCode, and how many code caches live dual-mapped (DualMappedCodeCaches).
 std::atomic_bool s_dual_map_allowed{true};
 std::atomic<size_t> s_dual_mapped_caches{0};
+/// SetLockedCode, and what locking the chunks' write views did (GetCodeLockState).
+std::atomic_bool s_lock_code{true};
+std::atomic<size_t> s_locked_code_bytes{0};
+std::atomic_bool s_lock_exec_view{true};
+std::atomic<size_t> s_locked_exec_bytes{0};
+std::atomic<size_t> s_exec_lock_failures{0};
+std::atomic<size_t> s_locked_chunks{0};
+std::atomic<std::uint64_t> s_chunk_lock_us{0};
+std::atomic<std::uint64_t> s_chunk_lock_us_max{0};
+std::atomic<size_t> s_code_lock_failures{0};
+std::atomic<unsigned long> s_code_lock_last_error{0};
+std::atomic_bool s_code_lock_available{false};
+/// Every BlockOfCode alive, for DescribeCodeCaches; a crash report reads it without a lock.
+constexpr size_t MAX_LIVE_CODE_CACHES = 16;
+std::array<std::atomic<const Backend::X64::BlockOfCode*>, MAX_LIVE_CODE_CACHES> s_live_code_caches{};
 } // anonymous namespace
 
 size_t CommittedCodeBytes() noexcept {
@@ -107,12 +126,184 @@ bool CodeCacheCapReleases() noexcept {
     return s_code_cache_release.load(std::memory_order_relaxed);
 }
 
+void SetLockedCode(bool enabled) noexcept {
+    s_lock_code.store(enabled, std::memory_order_relaxed);
+}
+
+void SetLockedExecView(bool enabled) noexcept {
+    s_lock_exec_view.store(enabled, std::memory_order_relaxed);
+}
+
+CodeLockState GetCodeLockState() noexcept {
+    CodeLockState state;
+    state.locked_bytes = s_locked_code_bytes.load(std::memory_order_relaxed);
+    state.exec_locked_bytes = s_locked_exec_bytes.load(std::memory_order_relaxed);
+    state.failures = s_code_lock_failures.load(std::memory_order_relaxed);
+    state.exec_failures = s_exec_lock_failures.load(std::memory_order_relaxed);
+    state.last_error = s_code_lock_last_error.load(std::memory_order_relaxed);
+    state.available = s_code_lock_available.load(std::memory_order_relaxed);
+    state.chunks = s_locked_chunks.load(std::memory_order_relaxed);
+    state.lock_us = s_chunk_lock_us.load(std::memory_order_relaxed);
+    state.lock_us_max = s_chunk_lock_us_max.load(std::memory_order_relaxed);
+    return state;
+}
+
 void SetDualMappedCode(bool allowed) noexcept {
     s_dual_map_allowed.store(allowed, std::memory_order_relaxed);
 }
 
 size_t DualMappedCodeCaches() noexcept {
     return s_dual_mapped_caches.load(std::memory_order_relaxed);
+}
+
+size_t DescribeCodeCaches(char* out, size_t size) noexcept {
+    size_t written = 0;
+    for (const auto& slot : s_live_code_caches) {
+        const auto* const code = slot.load(std::memory_order_acquire);
+        if (code == nullptr || written + 1 >= size) {
+            continue;
+        }
+        const int n = code->DescribeState(out + written, size - written);
+        if (n > 0) {
+            written = std::min(size - 1, written + static_cast<size_t>(n));
+        }
+    }
+    if (size != 0) {
+        out[written] = '\0';
+    }
+    return written;
+}
+
+namespace {
+std::atomic<size_t> s_emit_fault_retries{0};
+std::atomic<size_t> s_emit_faults_recovered{0};
+std::atomic<size_t> s_emit_faults_fatal{0};
+std::atomic<size_t> s_emit_fault_page_out{0};
+std::atomic<size_t> s_emit_fault_page_in{0};
+std::atomic<std::uint64_t> s_emit_recover_us_max{0};
+std::atomic<std::uint64_t> s_emit_recover_us_total{0};
+/// The first fault's exception record: taken once, published by s_emit_first_ready.
+std::atomic<bool> s_emit_first_taken{false};
+std::atomic<bool> s_emit_first_ready{false};
+std::uint32_t s_emit_first_code = 0;
+std::uint32_t s_emit_first_params = 0;
+std::uint64_t s_emit_first_info0 = 0;
+std::uint64_t s_emit_first_info1 = 0;
+/// The cache this thread is emitting into (BlockOfCode::EmitScope), and the faults it retried in
+/// the current emission.
+thread_local const Backend::X64::BlockOfCode* t_emitting = nullptr;
+thread_local unsigned t_emit_fault_retries = 0;
+thread_local std::int64_t t_emit_fault_start_us = 0;
+std::int64_t NowUs() noexcept {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+/// About 2.5 s of waits in all: past that the fault is not the transient kind.
+constexpr unsigned MAX_EMIT_FAULT_RETRIES = 64;
+
+#ifdef _WIN32
+// PSAPI_WORKING_SET_EX_INFORMATION, declared here: psapi.h hides it from app partitions.
+struct WorkingSetExInfo {
+    PVOID address;
+    ULONG_PTR attributes; ///< Bit 0: Valid (resident in the working set); bit 22: Locked.
+};
+using QueryWorkingSetExFn = BOOL(WINAPI*)(HANDLE, PVOID, DWORD);
+QueryWorkingSetExFn s_query_working_set_ex = nullptr;
+
+// Whether the page `p` is in the working set: 1 yes, 0 no, -1 unknown.
+int PageResident(const void* p) {
+    if (s_query_working_set_ex == nullptr) {
+        return -1;
+    }
+    WorkingSetExInfo info{const_cast<void*>(p), 0};
+    if (!s_query_working_set_ex(GetCurrentProcess(), &info, sizeof(info))) {
+        return -1;
+    }
+    return (info.attributes & 1) != 0 ? 1 : 0;
+}
+
+// A write into code memory, while emitting, faulted on the console on a page that was mapped,
+// committed and writable when the crash report looked at it right after, with free memory at the
+// app limit. Retried after a short wait instead of ending the process; a fault that persists goes
+// on to the other handlers (and the crash report) as before.
+LONG NTAPI EmitFaultHandler(EXCEPTION_POINTERS* ep) {
+    const DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if ((code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_IN_PAGE_ERROR) || t_emitting == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (t_emit_fault_retries >= MAX_EMIT_FAULT_RETRIES) {
+        if (t_emit_fault_retries++ == MAX_EMIT_FAULT_RETRIES) {
+            s_emit_faults_fatal.fetch_add(1, std::memory_order_relaxed);
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    const unsigned attempt = t_emit_fault_retries++;
+    s_emit_fault_retries.fetch_add(1, std::memory_order_relaxed);
+    if (attempt == 0) {
+        t_emit_fault_start_us = NowUs();
+        if (!s_emit_first_taken.exchange(true, std::memory_order_relaxed)) {
+            const EXCEPTION_RECORD& record = *ep->ExceptionRecord;
+            s_emit_first_code = record.ExceptionCode;
+            s_emit_first_params = record.NumberParameters;
+            s_emit_first_info0 = record.NumberParameters > 0 ? record.ExceptionInformation[0] : 0;
+            s_emit_first_info1 = record.NumberParameters > 1 ? record.ExceptionInformation[1] : 0;
+            s_emit_first_ready.store(true, std::memory_order_release);
+        }
+        // The console reports no faulting address; the write goes where the next byte is
+        // emitted. Out of the working set there says the system trimmed a page being written.
+        const int resident = PageResident(t_emitting->EmitWritePointer());
+        if (resident == 0) {
+            s_emit_fault_page_out.fetch_add(1, std::memory_order_relaxed);
+        } else if (resident == 1) {
+            s_emit_fault_page_in.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    if (attempt < 4) {
+        SwitchToThread();
+    } else {
+        Sleep(std::min(attempt, 50u));
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+void InstallEmitFaultHandler() {
+    static const bool installed = [] {
+        // Resolved by name, never imported: importing the errorhandling api-set makes the app
+        // fail to activate on the console.
+        using AddVehFn = PVOID(WINAPI*)(ULONG, PVECTORED_EXCEPTION_HANDLER);
+        static ::Common::DynamicLibrary kernelbase("Kernelbase");
+        AddVehFn add_veh{};
+        if (kernelbase.IsOpen() && !kernelbase.GetSymbol("QueryWorkingSetEx", &s_query_working_set_ex)) {
+            (void)kernelbase.GetSymbol("K32QueryWorkingSetEx", &s_query_working_set_ex);
+        }
+        // Last in the chain: a fault the app resolves itself (demand-committed backing, pages
+        // swapped out) must reach its handler first, not wait here.
+        return kernelbase.IsOpen() && kernelbase.GetSymbol("AddVectoredExceptionHandler", &add_veh) &&
+               add_veh(/*first=*/0, EmitFaultHandler) != nullptr;
+    }();
+    (void)installed;
+}
+#endif
+} // anonymous namespace
+
+CodeEmitFaults GetCodeEmitFaults() noexcept {
+    CodeEmitFaults faults{s_emit_fault_retries.load(std::memory_order_relaxed),
+                          s_emit_faults_recovered.load(std::memory_order_relaxed),
+                          s_emit_faults_fatal.load(std::memory_order_relaxed),
+                          s_emit_fault_page_out.load(std::memory_order_relaxed),
+                          s_emit_fault_page_in.load(std::memory_order_relaxed)};
+#ifdef _WIN32
+    faults.recover_us_max = s_emit_recover_us_max.load(std::memory_order_relaxed);
+    faults.recover_us_total = s_emit_recover_us_total.load(std::memory_order_relaxed);
+    if (s_emit_first_ready.load(std::memory_order_acquire)) {
+        faults.first_code = s_emit_first_code;
+        faults.first_params = s_emit_first_params;
+        faults.first_info0 = s_emit_first_info0;
+        faults.first_info1 = s_emit_first_info1;
+    }
+#endif
+    return faults;
 }
 } // namespace Dynarmic
 
@@ -216,6 +407,123 @@ const PlaceholderApi& Placeholders() {
         return result;
     }();
     return api;
+}
+
+// Locking a chunk's write view keeps its pages in the working set, so writing code there never
+// faults: on the console, short of memory, the system trimmed a page a block was being written
+// to and the write faulted though the page was mapped and writable. A process locks no more than
+// its minimum working set allows, so that is raised by each chunk first. Resolved by name like
+// the placeholder APIs.
+struct CodeLockApi {
+    using VirtualLockFn = BOOL(WINAPI*)(LPVOID, SIZE_T);
+    using GetWorkingSetFn = BOOL(WINAPI*)(HANDLE, PSIZE_T, PSIZE_T, PDWORD);
+    using SetWorkingSetFn = BOOL(WINAPI*)(HANDLE, SIZE_T, SIZE_T, DWORD);
+
+    VirtualLockFn lock{};
+    VirtualLockFn unlock{};
+    GetWorkingSetFn get_working_set{};
+    SetWorkingSetFn set_working_set{};
+
+    explicit operator bool() const {
+        return lock != nullptr && unlock != nullptr && get_working_set != nullptr && set_working_set != nullptr;
+    }
+};
+
+const CodeLockApi& CodeLocks() {
+    static const CodeLockApi api = [] {
+        static ::Common::DynamicLibrary kernelbase("Kernelbase");
+        CodeLockApi result;
+        if (kernelbase.IsOpen()) {
+            (void)kernelbase.GetSymbol("VirtualLock", &result.lock);
+            (void)kernelbase.GetSymbol("VirtualUnlock", &result.unlock);
+            (void)kernelbase.GetSymbol("GetProcessWorkingSetSizeEx", &result.get_working_set);
+            (void)kernelbase.GetSymbol("SetProcessWorkingSetSizeEx", &result.set_working_set);
+        }
+        s_code_lock_available.store(static_cast<bool>(result), std::memory_order_relaxed);
+        return result;
+    }();
+    return api;
+}
+
+// Moves the minimum working set (and the maximum, when it would fall below) by `delta` bytes.
+bool AdjustMinimumWorkingSet(const CodeLockApi& api, std::ptrdiff_t delta) {
+    SIZE_T minimum = 0, maximum = 0;
+    DWORD flags = 0;
+    if (!api.get_working_set(GetCurrentProcess(), &minimum, &maximum, &flags)) {
+        return false;
+    }
+    const SIZE_T new_minimum = delta >= 0 ? minimum + static_cast<SIZE_T>(delta)
+                                          : minimum - std::min<SIZE_T>(minimum, static_cast<SIZE_T>(-delta));
+    const SIZE_T new_maximum = std::max<SIZE_T>(maximum, new_minimum + CODE_CHUNK_SIZE);
+    return api.set_working_set(GetCurrentProcess(), new_minimum, new_maximum, flags) != FALSE;
+}
+
+// Locks a newly mapped chunk through its write view and (SetLockedExecView) its executable view,
+// with one working set move for both. Called with s_dual_views_mutex held (or by the one-time
+// boot probe, before any cache exists), so the moves of the minimum never race. Once per 4 MiB chunk: the executable view's lock maps pages the write
+// view's lock already brought in, so it costs page table entries, not memory.
+void LockCodeChunk(u8* write, u8* exec) {
+    if (!s_lock_code.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const CodeLockApi& api = CodeLocks();
+    if (!api) {
+        s_code_lock_failures.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const bool both = s_lock_exec_view.load(std::memory_order_relaxed);
+    const auto bytes = static_cast<std::ptrdiff_t>((both ? 2 : 1) * CODE_CHUNK_SIZE);
+    if (!AdjustMinimumWorkingSet(api, bytes)) {
+        s_code_lock_last_error.store(GetLastError(), std::memory_order_relaxed);
+        s_code_lock_failures.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (!api.lock(write, CODE_CHUNK_SIZE)) {
+        const DWORD error = GetLastError();
+        (void)AdjustMinimumWorkingSet(api, -bytes);
+        s_code_lock_last_error.store(error, std::memory_order_relaxed);
+        s_code_lock_failures.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    s_locked_code_bytes.fetch_add(CODE_CHUNK_SIZE, std::memory_order_relaxed);
+    if (both) {
+        if (api.lock(exec, CODE_CHUNK_SIZE)) {
+            s_locked_exec_bytes.fetch_add(CODE_CHUNK_SIZE, std::memory_order_relaxed);
+        } else {
+            s_code_lock_last_error.store(GetLastError(), std::memory_order_relaxed);
+            s_exec_lock_failures.fetch_add(1, std::memory_order_relaxed);
+            (void)AdjustMinimumWorkingSet(api, -static_cast<std::ptrdiff_t>(CODE_CHUNK_SIZE));
+        }
+    }
+    const auto us = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+    s_locked_chunks.fetch_add(1, std::memory_order_relaxed);
+    s_chunk_lock_us.fetch_add(us, std::memory_order_relaxed);
+    if (us > s_chunk_lock_us_max.load(std::memory_order_relaxed)) {
+        s_chunk_lock_us_max.store(us, std::memory_order_relaxed);  // Serialized like the lock.
+    }
+}
+
+// Before the chunk is unmapped: unlocks whichever of its views were locked, then gives the working
+// set minimum back in one move. A chunk that was not locked is left alone.
+void UnlockCodeChunk(u8* write, u8* exec) {
+    const CodeLockApi& api = CodeLocks();
+    if (!api) {
+        return;
+    }
+    std::ptrdiff_t bytes = 0;
+    if (api.unlock(exec, CODE_CHUNK_SIZE)) {
+        s_locked_exec_bytes.fetch_sub(CODE_CHUNK_SIZE, std::memory_order_relaxed);
+        bytes += CODE_CHUNK_SIZE;
+    }
+    if (api.unlock(write, CODE_CHUNK_SIZE)) {
+        s_locked_code_bytes.fetch_sub(CODE_CHUNK_SIZE, std::memory_order_relaxed);
+        bytes += CODE_CHUNK_SIZE;
+    }
+    if (bytes != 0) {
+        (void)AdjustMinimumWorkingSet(api, -bytes);
+    }
 }
 
 // Commits [exec, exec + size) of a single section through its write view. The pages are the
@@ -328,12 +636,14 @@ bool MapCodeChunk(DualCodeView& view, size_t index) {
         return false;
     }
     view.chunks[index] = true;
+    LockCodeChunk(static_cast<u8*>(write), static_cast<u8*>(exec));
     return true;
 }
 
 void UnmapCodeChunk(DualCodeView& view, size_t index) {
     const PlaceholderApi& api = Placeholders();
     const size_t offset = index * CODE_CHUNK_SIZE;
+    UnlockCodeChunk(view.write + offset, view.exec + offset);
     api.unmap_view_of_file2(GetCurrentProcess(), view.exec + offset, MEM_PRESERVE_PLACEHOLDER);
     api.unmap_view_of_file2(GetCurrentProcess(), view.write + offset, MEM_PRESERVE_PLACEHOLDER);
     view.chunks[index] = false;
@@ -478,6 +788,48 @@ bool ReleaseDualMapped(const u8* exec, size_t offset) {
         if (view->chunks[index]) {
             UnmapCodeChunk(*view, index);
         }
+    }
+    return true;
+}
+
+// Checks that [offset, offset + size) of the cache at exec is mapped in both views, mapping the
+// chunks the bookkeeping has not. A chunk held mapped whose write view is not there raises
+// DYNARMIC_UWP_WRITE_VIEW_LOST: emitting into it faulted with nothing saying why. False when a
+// chunk could not be mapped.
+bool VerifyDualMapped(const u8* exec, size_t offset, size_t size) {
+    const u8* lost = nullptr;
+    MEMORY_BASIC_INFORMATION lost_info{};
+    {
+        std::scoped_lock lock{s_dual_views_mutex};
+        DualCodeView* const view = FindDualView(exec);
+        if (view == nullptr || view->section != nullptr) {
+            return true;
+        }
+        for (size_t index = offset / CODE_CHUNK_SIZE;
+             index * CODE_CHUNK_SIZE < offset + size && index < view->chunks.size(); ++index) {
+            if (!view->chunks[index]) {
+                if (!MapCodeChunk(*view, index)) {
+                    return false;
+                }
+                continue;
+            }
+            const u8* const write = view->write + index * CODE_CHUNK_SIZE;
+            MEMORY_BASIC_INFORMATION info{};
+            if (VirtualQuery(write, &info, sizeof(info)) != sizeof(info) ||
+                info.State != MEM_COMMIT || info.Type != MEM_MAPPED) {
+                lost = write;
+                lost_info = info;
+                break;
+            }
+        }
+    }
+    if (lost != nullptr) {
+#    if defined(DYNARMIC_UWP_APPCONTAINER)
+        const ULONG_PTR info[4] = {GetLastError(), reinterpret_cast<ULONG_PTR>(lost),
+                                   lost_info.RegionSize, lost_info.State | lost_info.Type};
+        RaiseException(DYNARMIC_UWP_WRITE_VIEW_LOST, EXCEPTION_NONCONTINUABLE, 4, info);
+#    endif
+        return false;
     }
     return true;
 }
@@ -686,9 +1038,24 @@ BlockOfCode::BlockOfCode(RunCodeCallbacks cb, JitStateInfo jsi, size_t total_cod
     wx_exec_begin = getCurr<const u8*>();
 #endif
     GenRunCode(rcp);
+#ifdef _WIN32
+    InstallEmitFaultHandler();
+#endif
+    for (auto& slot : s_live_code_caches) {
+        const BlockOfCode* expected = nullptr;
+        if (slot.compare_exchange_strong(expected, this, std::memory_order_release)) {
+            break;
+        }
+    }
 }
 
 BlockOfCode::~BlockOfCode() {
+    for (auto& slot : s_live_code_caches) {
+        const BlockOfCode* expected = this;
+        if (slot.compare_exchange_strong(expected, nullptr, std::memory_order_release)) {
+            break;
+        }
+    }
 #ifdef _WIN32
     // The code region is released with the Xbyak::CodeGenerator base, right after this.
     s_committed_code_bytes.fetch_sub(committed_size, std::memory_order_relaxed);
@@ -821,7 +1188,7 @@ void BlockOfCode::ReleaseMemoryPastCap() {
     if (!s_code_cache_release.load(std::memory_order_relaxed)) {
         return;
     }
-    const size_t cap = s_code_cache_cap.load(std::memory_order_relaxed);
+    const size_t cap = ScaledCap();
     const size_t prelude = static_cast<const u8*>(code_begin) - top_;
     const size_t keep = (std::max(cap, prelude) + CODE_CHUNK_SIZE - 1) & ~(CODE_CHUNK_SIZE - 1);
     if (cap == SIZE_MAX || committed_size <= keep) {
@@ -838,6 +1205,7 @@ void BlockOfCode::ReleaseMemoryPastCap() {
     }
     s_committed_code_bytes.fetch_sub(committed_size - keep, std::memory_order_relaxed);
     committed_size = keep;
+    mapped_verified_end = 0;
     cap_end = CapEnd(cap);
 }
 #endif
@@ -854,6 +1222,31 @@ size_t BlockOfCode::CapEnd(size_t cap) const {
     return s_code_cache_release.load(std::memory_order_relaxed) ? cap : std::max(cap, committed + CAP_SLACK);
 }
 
+size_t BlockOfCode::ScaledCap() const noexcept {
+    const size_t cap = s_code_cache_cap.load(std::memory_order_relaxed);
+    if (cap == SIZE_MAX || cap > SIZE_MAX / cap_scale) {
+        return SIZE_MAX;
+    }
+    return cap * cap_scale;
+}
+
+void BlockOfCode::SetCapScale(size_t scale) noexcept {
+    cap_scale = std::max<size_t>(scale, 1);
+    cap_epoch = SIZE_MAX; // Forces SpaceRemaining to recompute cap_end.
+}
+
+bool BlockOfCode::WritesWithoutProtectionChanges() const noexcept {
+#if defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
+#    if defined(_WIN32)
+    return dual_mapped;
+#    else
+    return false;
+#    endif
+#else
+    return true;
+#endif
+}
+
 size_t BlockOfCode::SpaceRemaining() const {
     ASSERT(prelude_complete);
     const u8* current_ptr = getCurr<const u8*>();
@@ -861,7 +1254,7 @@ size_t BlockOfCode::SpaceRemaining() const {
     // in 30 s. It is cleared only when it fills those, and commits no more.
     if (const size_t epoch = s_code_cache_cap_epoch.load(std::memory_order_acquire); epoch != cap_epoch) {
         cap_epoch = epoch;
-        cap_end = CapEnd(s_code_cache_cap.load(std::memory_order_relaxed));
+        cap_end = CapEnd(ScaledCap());
     }
 #if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
     // A releasing cap clears a cache holding more than it allows even where its code would fit.
@@ -877,10 +1270,30 @@ size_t BlockOfCode::SpaceRemaining() const {
 }
 
 void BlockOfCode::EnsureMemoryCommitted([[maybe_unused]] size_t codesize) {
+    CommitCodeMemory(codesize);
+#if defined(_WIN32) && defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
+    // The chunks the next codesize bytes go to are checked once each against the memory itself,
+    // not the bookkeeping: a write into one not mapped faulted with no trace of why.
+    if (dual_mapped && size_ + codesize > mapped_verified_end) {
+        const size_t end = std::min<size_t>(maxSize_, size_ + codesize);
+        if (!VerifyDualMapped(top_, size_, end - size_)) {
+#    if defined(DYNARMIC_UWP_APPCONTAINER)
+            RaiseJitMemoryFailure(DYNARMIC_UWP_COMMIT_FAILED, top_ + size_, end - size_, PAGE_READWRITE);
+#    endif
+            return;
+        }
+        mapped_verified_end = (end + CODE_CHUNK_SIZE - 1) & ~(CODE_CHUNK_SIZE - 1);
+    }
+#endif
+}
+
+void BlockOfCode::CommitCodeMemory([[maybe_unused]] size_t codesize) {
 #ifdef _WIN32
     if (committed_size < size_ + codesize) {
         [[maybe_unused]] const size_t old_committed_size = committed_size;
-        committed_size = std::min<size_t>(maxSize_, committed_size + codesize);
+        // From the code pointer on: grown by codesize alone, a commit that trailed the code
+        // pointer would stay behind it.
+        committed_size = std::min<size_t>(maxSize_, std::max(committed_size, size_) + codesize);
         s_committed_code_bytes.fetch_add(committed_size - old_committed_size,
                                          std::memory_order_relaxed);
 #    ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
@@ -918,6 +1331,69 @@ void BlockOfCode::EnsureMemoryCommitted([[maybe_unused]] size_t codesize) {
 #    endif
     }
 #endif
+}
+
+int BlockOfCode::DescribeState(char* out, size_t size) const noexcept {
+#ifdef _WIN32
+    const u8* const next = top_ + size_;
+    const u8* const write = next + writeOffset_;
+    // State and type of the page a byte emitted now goes to, in both views.
+    const auto query = [](const u8* p, MEMORY_BASIC_INFORMATION& info) {
+        return VirtualQuery(p, &info, sizeof(info)) == sizeof(info);
+    };
+    MEMORY_BASIC_INFORMATION w{}, x{};
+    const bool w_ok = query(write, w);
+    const bool x_ok = query(next, x);
+    size_t mapped_end = 0;
+    int chunk_mapped = -1;
+#    if defined(DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT)
+    mapped_end = mapped_verified_end;
+    // try_lock: the faulting thread may hold the views' lock.
+    if (dual_mapped && s_dual_views_mutex.try_lock()) {
+        if (const DualCodeView* const view = FindDualView(top_);
+            view != nullptr && view->section == nullptr && size_ / CODE_CHUNK_SIZE < view->chunks.size()) {
+            chunk_mapped = view->chunks[size_ / CODE_CHUNK_SIZE] ? 1 : 0;
+        }
+        s_dual_views_mutex.unlock();
+    }
+#    endif
+    return std::snprintf(out, size,
+                         "[jadyx]   code cache %p: top %p write %p size 0x%zx max 0x%zx committed 0x%zx "
+                         "verified 0x%zx chunk %zu held %d | write page %s state 0x%lx type 0x%lx prot 0x%lx "
+                         "base %p region 0x%zx | exec page %s state 0x%lx type 0x%lx prot 0x%lx\n",
+                         static_cast<const void*>(this), static_cast<const void*>(top_),
+                         static_cast<const void*>(write), size_, maxSize_, committed_size, mapped_end,
+                         size_ / (4 * 1024 * 1024), chunk_mapped, w_ok ? "ok" : "query failed",
+                         w.State, w.Type, w.Protect, w.AllocationBase, w.RegionSize,
+                         x_ok ? "ok" : "query failed", x.State, x.Type, x.Protect);
+#else
+    return std::snprintf(out, size, "[jadyx]   code cache %p: size 0x%zx max 0x%zx\n",
+                         static_cast<const void*>(this), size_, maxSize_);
+#endif
+}
+
+BlockOfCode::EmitScope::EmitScope(const BlockOfCode& code) noexcept
+        : previous{t_emitting} {
+    t_emitting = &code;
+}
+
+BlockOfCode::EmitScope::~EmitScope() {
+    t_emitting = previous;
+    if (previous == nullptr) {
+        if (t_emit_fault_retries != 0 && t_emit_fault_retries <= MAX_EMIT_FAULT_RETRIES) {
+            s_emit_faults_recovered.fetch_add(1, std::memory_order_relaxed);
+#ifdef _WIN32
+            const auto took = static_cast<std::uint64_t>(
+                std::max<std::int64_t>(0, NowUs() - t_emit_fault_start_us));
+            s_emit_recover_us_total.fetch_add(took, std::memory_order_relaxed);
+            std::uint64_t max = s_emit_recover_us_max.load(std::memory_order_relaxed);
+            while (took > max &&
+                   !s_emit_recover_us_max.compare_exchange_weak(max, took, std::memory_order_relaxed)) {
+            }
+#endif
+        }
+        t_emit_fault_retries = 0;
+    }
 }
 
 HaltReason BlockOfCode::RunCode(void* jit_state, CodePtr code_ptr) const {

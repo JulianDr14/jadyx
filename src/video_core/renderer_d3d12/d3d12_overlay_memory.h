@@ -23,6 +23,15 @@ inline std::optional<u64> QueryOverlayResidentMemory(HANDLE process = GetCurrent
     return static_cast<u64>(counters.WorkingSetSize);
 }
 
+// The app's commit against its limit: what the system compares to end the app, which counts the
+// GPU's memory too (textures, buffers, pipelines). The working set leaves that out and stayed
+// near 3 GiB on the console while the commit reached 5.
+inline std::string FormatOverlayAppMemory(u64 used, u64 limit) {
+    constexpr double GiB = 1024.0 * 1024 * 1024;
+    return fmt::format("RAM {:.2f}/{:.2f} GIB", static_cast<double>(used) / GiB,
+                       static_cast<double>(limit) / GiB);
+}
+
 inline std::string FormatOverlayResidentMemory(std::optional<u64> bytes) {
     if (!bytes) {
         return "RAM WS --";

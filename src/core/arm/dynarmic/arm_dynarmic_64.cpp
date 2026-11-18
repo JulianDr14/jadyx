@@ -447,7 +447,16 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
         config.fastmem_pointer = std::nullopt;
         config.fastmem_exclusive_access = false;
     }
+    if (page_table) {
+        config.shared_code_cache = m_shared_code_cache;
+    }
     m_jit.emplace(config);
+    if (m_shared_code_cache && m_core_index + 1 == m_shared_code_cache->ExpectedCores()) {
+        const auto& stats = m_shared_code_cache->GetStats();
+        LOG_INFO(Core_ARM, "JIT shared code cache: {} cores in, {} on a cache of their own",
+                 stats.cores.load(std::memory_order_relaxed),
+                 stats.private_fallbacks.load(std::memory_order_relaxed));
+    }
 }
 
 HaltReason ArmDynarmic64::RunThread(Kernel::KThread* thread) {
@@ -491,10 +500,12 @@ void ArmDynarmic64::RewindBreakpointInstruction() {
     this->SetContext(m_breakpoint_context);
 }
 
-ArmDynarmic64::ArmDynarmic64(System& system, bool uses_wall_clock, Kernel::KProcess* process, DynarmicExclusiveMonitor& exclusive_monitor, std::size_t core_index)
+ArmDynarmic64::ArmDynarmic64(System& system, bool uses_wall_clock, Kernel::KProcess* process, DynarmicExclusiveMonitor& exclusive_monitor, std::size_t core_index,
+                             std::shared_ptr<Dynarmic::A64::SharedCodeCache> shared_code_cache)
     : ArmInterface{uses_wall_clock}, m_system{system}, m_exclusive_monitor{exclusive_monitor}
     , m_cb(std::make_optional<DynarmicCallbacks64>(*this, process))
     , m_core_index{core_index}
+    , m_shared_code_cache{std::move(shared_code_cache)}
 {
     auto& page_table = process->GetPageTable().GetBasePageTable();
     auto& page_table_impl = page_table.GetImpl();
@@ -504,6 +515,16 @@ ArmDynarmic64::ArmDynarmic64(System& system, bool uses_wall_clock, Kernel::KProc
 ArmDynarmic64::~ArmDynarmic64() {
     // Kernel finalization has already stopped the CPU owners.
     if (m_prewarm) m_prewarm->Save();
+    if (m_shared_code_cache && m_core_index == 0) {
+        const auto& stats = m_shared_code_cache->GetStats();
+        LOG_INFO(Core_ARM,
+                 "JIT shared code cache: {} blocks compiled, {} awaited from another core, {} translated twice, "
+                 "{} full clears",
+                 stats.blocks_compiled.load(std::memory_order_relaxed),
+                 stats.compiles_awaited.load(std::memory_order_relaxed),
+                 stats.duplicate_translations.load(std::memory_order_relaxed),
+                 stats.full_clears.load(std::memory_order_relaxed));
+    }
 }
 
 JitPrewarm::Owner* ArmDynarmic64::LoadPrewarmProfile() {

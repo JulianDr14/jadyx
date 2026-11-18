@@ -197,6 +197,11 @@ void SetAppMemoryQuery(AppMemoryQuery query) {
     app_memory_query.store(query, std::memory_order_release);
 }
 
+bool QueryAppMemory(u64& used, u64& limit) {
+    const AppMemoryQuery query = app_memory_query.load(std::memory_order_acquire);
+    return query != nullptr && query(used, limit);
+}
+
 bool LastGpuMemory(u64& used, u64& budget) {
     budget = last_gpu_budget.load(std::memory_order_relaxed);
     used = last_gpu_used.load(std::memory_order_relaxed);

@@ -14,13 +14,12 @@
 #include "common/assert.h"
 #include "dynarmic/common/fp/fpcr.h"
 #include "dynarmic/common/llvm_disassemble.h"
-#include <bit>
 
-#include "dynarmic/backend/x64/a64_emit_x64.h"
+#include "dynarmic/backend/x64/a64_code_cache.h"
 #include "dynarmic/backend/x64/a64_jitstate.h"
 #include "dynarmic/backend/x64/block_of_code.h"
-#include "dynarmic/backend/x64/devirtualize.h"
-#include "dynarmic/backend/x64/jitstate_info.h"
+#include "dynarmic/backend/x64/exclusive_monitor_friend.h"
+#include "dynarmic/backend/x64/fast_dispatch_table.h"
 #include "dynarmic/common/atomic.h"
 #include "dynarmic/frontend/A64/translate/a64_translate.h"
 #include "dynarmic/interface/A64/a64.h"
@@ -32,43 +31,16 @@ namespace Dynarmic::A64 {
 
 using namespace Backend::X64;
 
-static RunCodeCallbacks GenRunCodeCallbacks(A64::UserCallbacks* cb, CodePtr (*LookupBlock)(void* lookup_block_arg), void* arg, const A64::UserConfig& conf) {
-    return RunCodeCallbacks{
-        ArgCallback(LookupBlock, reinterpret_cast<u64>(arg)),
-        ArgCallback(Devirtualize<&A64::UserCallbacks::AddTicks>(cb)),
-        ArgCallback(Devirtualize<&A64::UserCallbacks::GetTicksRemaining>(cb)),
-        conf.enable_cycle_counting,
-    };
-}
-
-static std::function<void(BlockOfCode&)> GenRCP(const A64::UserConfig& conf) {
-    return [conf](BlockOfCode& code) {
-        if (conf.page_table) {
-            code.mov(code.r14, std::bit_cast<u64>(conf.page_table));
-        }
-        if (conf.fastmem_pointer) {
-            code.mov(code.r13, *conf.fastmem_pointer);
-        }
-    };
-}
-
-static Optimization::PolyfillOptions GenPolyfillOptions(const BlockOfCode& code) {
-    return Optimization::PolyfillOptions{
-        .sha256 = !code.HasHostFeature(HostFeature::SHA),
-        .vector_multiply_widen = true,
-    };
-}
-
 struct Jit::Impl final {
     friend class Jit;
 public:
-    Impl(Jit* jit, UserConfig conf)
+    explicit Impl(UserConfig conf)
         : conf(conf)
-        , block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state}, conf.code_cache_size, GenRCP(conf))
-        , emitter(block_of_code, conf, jit)
-        , polyfill_options(GenPolyfillOptions(block_of_code))
+        , cache(A64CodeCache::Acquire(conf, &GetCurrentBlockThunk))
+        , fast_dispatch(MakeFastDispatchTable(conf, cache->Code()))
     {
-        ASSERT(conf.page_table_address_space_bits >= 12 && conf.page_table_address_space_bits <= 64);
+        BindCore();
+        core = cache->Attach(jit_state, fast_dispatch.get());
     }
 
     ~Impl() = default;
@@ -77,17 +49,21 @@ public:
         ASSERT(!is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
         is_executing = true;
-        // TODO: Check code alignment
-        const CodePtr current_code_ptr = [this] {
-            // RSB optimization
-            const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & A64JitState::RSB_PTR_MASK;
-            if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr]) {
-                jit_state.rsb_ptr = new_rsb_ptr;
-                return CodePtr(jit_state.rsb_codeptrs[new_rsb_ptr]);
-            }
-            return CodePtr((uintptr_t(GetCurrentBlock()) + 15) & ~uintptr_t(15));
-        }();
-        const HaltReason hr = block_of_code.RunCode(&jit_state, current_code_ptr);
+        HaltReason hr;
+        {
+            const auto execution = cache->Execute(*core);
+            // TODO: Check code alignment
+            const CodePtr current_code_ptr = [this] {
+                // RSB optimization
+                const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & A64JitState::RSB_PTR_MASK;
+                if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr]) {
+                    jit_state.rsb_ptr = new_rsb_ptr;
+                    return CodePtr(jit_state.rsb_codeptrs[new_rsb_ptr]);
+                }
+                return CodePtr((uintptr_t(GetCurrentBlock()) + 15) & ~uintptr_t(15));
+            }();
+            hr = cache->Code().RunCode(&jit_state, current_code_ptr);
+        }
         PerformRequestedCacheInvalidation(hr);
         is_executing = false;
         return hr;
@@ -97,7 +73,11 @@ public:
         ASSERT(!is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
         is_executing = true;
-        const HaltReason hr = block_of_code.StepCode(&jit_state, GetCurrentSingleStep());
+        HaltReason hr;
+        {
+            const auto execution = cache->Execute(*core);
+            hr = cache->Code().StepCode(&jit_state, GetCurrentSingleStep());
+        }
         PerformRequestedCacheInvalidation(hr);
         is_executing = false;
         return hr;
@@ -105,6 +85,8 @@ public:
 
     void ClearCache() {
         std::unique_lock lock{invalidation_mutex};
+        // The latest request counts: a clear after it satisfies every earlier one too.
+        clear_generation = cache->Generation();
         invalidate_entire_cache = true;
         HaltExecution(HaltReason::CacheInvalidation);
     }
@@ -119,7 +101,10 @@ public:
 
     void Reset() {
         ASSERT(!is_executing);
+        // The bindings describe this core, not its guest state.
+        const auto bindings = jit_state.bindings;
         jit_state = {};
+        jit_state.bindings = bindings;
     }
 
     void HaltExecution(HaltReason hr) {
@@ -220,12 +205,36 @@ public:
     }
 
     std::string Disassemble() const {
-        const size_t size = reinterpret_cast<const char*>(block_of_code.getCurr()) - reinterpret_cast<const char*>(block_of_code.GetCodeBegin());
-        auto const* p = reinterpret_cast<const char*>(block_of_code.GetCodeBegin());
+        const BlockOfCode& code = cache->Code();
+        const size_t size = reinterpret_cast<const char*>(code.getCurr()) - reinterpret_cast<const char*>(code.GetCodeBegin());
+        auto const* p = reinterpret_cast<const char*>(code.GetCodeBegin());
         return Common::DisassembleX64(p, p + size);
     }
 
 private:
+    static std::unique_ptr<FastDispatchTable> MakeFastDispatchTable(const UserConfig& conf, const BlockOfCode& code) {
+        if (!conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+            return nullptr;
+        }
+        // Hashed as the emitted dispatcher hashes it.
+        return std::make_unique<FastDispatchTable>(code.HasHostFeature(HostFeature::SSE42));
+    }
+
+    /// What the (possibly shared) code reads to act as this core.
+    void BindCore() {
+        auto& bindings = jit_state.bindings;
+        bindings.callbacks_arg = reinterpret_cast<u64>(conf.callbacks);
+        bindings.lookup_block_arg = reinterpret_cast<u64>(this);
+        bindings.user_config = reinterpret_cast<u64>(&conf);
+        if (conf.global_monitor) {
+            bindings.exclusive_address = reinterpret_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id));
+            bindings.exclusive_value = reinterpret_cast<u64>(GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id));
+        }
+        bindings.tpidr_el0 = reinterpret_cast<u64>(conf.tpidr_el0);
+        bindings.tpidrro_el0 = reinterpret_cast<u64>(conf.tpidrro_el0);
+        bindings.fast_dispatch_table = fast_dispatch ? reinterpret_cast<u64>(fast_dispatch->Data()) : 0;
+    }
+
     static CodePtr GetCurrentBlockThunk(void* thisptr) {
         Jit::Impl* this_ = static_cast<Jit::Impl*>(thisptr);
         return this_->GetCurrentBlock();
@@ -243,29 +252,60 @@ private:
         return GetBlock(A64::LocationDescriptor{GetCurrentLocation()}.SetSingleStepping(true));
     }
 
+    /// Code for `descriptor`, compiled if needed. With `expected` (a prewarm) the block is compiled
+    /// only from guest code matching the profile and never at the cost of clearing the cache; an
+    /// already compiled block counts as warm.
     CodePtr GetBlock(IR::LocationDescriptor descriptor, const BlockProfile* expected = nullptr) {
-        const auto existing = emitter.GetBasicBlock(descriptor);
-        // Prewarm is for a stopped, cold cache. Never reuse an existing entry
-        // against a new profile: its compiled guest bytes may differ.
-        if (existing && expected)
-            return nullptr;
-        if (auto block = existing; block && !expected)
-            return block->entrypoint;
+        cache->Sync(*core);
+        if (const CodePtr existing = cache->Find(descriptor)) {
+            return existing;
+        }
 
         const JitProfile::Timer compile_timer{JitProfile::Phase::Compile};
-        constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
-        if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
-            // Immediately evacuate cache
-            JitProfile::full_cache_clears.fetch_add(1, std::memory_order_relaxed);
-            invalidate_entire_cache = true;
-            PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
+        for (;;) {
+            const auto ticket = cache->BeginCompile(*core, expected == nullptr);
+            if (!ticket) {
+                return nullptr;
+            }
+            BlockProfile profile{descriptor.Value()};
+            bool valid_profile = true;
+            A64CodeCache::EmitResult result;
+            {
+                // Held only to translate and emit; BeginCompile above is what may wait for a clear.
+                const auto claim = cache->ClaimCompile(descriptor);
+                if (cache->IsShared()) {
+                    // Another core may have emitted it since the lookup above, or while we waited.
+                    if (const CodePtr compiled = cache->Find(descriptor)) {
+                        return compiled;
+                    }
+                }
+                if (!claim.Owned()) {
+                    continue;  // The core we waited for did not emit it: compile it ourselves.
+                }
+                if (!Translate(descriptor, expected, profile, valid_profile)) {
+                    return nullptr;
+                }
+                {
+                    const JitProfile::Timer timer{JitProfile::Phase::Optimize};
+                    Optimization::Optimize(ir_block, conf, cache->GetPolyfillOptions());
+                }
+                result = cache->Emit(ir_block, *ticket);
+            }
+            if (!result.entrypoint) {
+                continue;  // Guest code invalidated while translating, or the cache filled up.
+            }
+            if (result.compiled && block_profile_callback && valid_profile && profile.code_bytes != 0 &&
+                !A64::LocationDescriptor{descriptor}.SingleStepping()) {
+                block_profile_callback(profile);
+            }
+            return result.entrypoint;
         }
-        block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
+    }
 
-        // JIT Compile
-        BlockProfile profile{descriptor.Value()};
+    /// Translates `descriptor` into ir_block, recording the guest words in `profile` when they are
+    /// wanted. False when a prewarm profile does not match the guest code now in memory.
+    bool Translate(IR::LocationDescriptor descriptor, const BlockProfile* expected, BlockProfile& profile, bool& valid_profile) {
         const bool capture = expected || bool(block_profile_callback);
-        bool valid_profile = true;
         const auto get_code = [&](u64 vaddr) -> std::optional<u32> {
             if (expected && profile.code_bytes >= expected->code_bytes) {
                 valid_profile = false;
@@ -291,12 +331,12 @@ private:
             for (u64 vaddr = arch_descriptor.PC(); current.code_bytes < expected->code_bytes; vaddr += 4) {
                 const auto word = conf.callbacks->MemoryReadCode(vaddr);
                 if (!word) {
-                    return nullptr;
+                    return false;
                 }
                 current.AddWord(*word);
             }
             if (current.code_hash != expected->code_hash) {
-                return nullptr;
+                return false;
             }
         }
         ir_block.Reset(arch_descriptor);
@@ -304,21 +344,8 @@ private:
             const JitProfile::Timer timer{JitProfile::Phase::Translate};
             A64::Translate(ir_block, arch_descriptor, get_code, {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct});
         }
-        if (expected && (!valid_profile || profile.code_bytes != expected->code_bytes ||
-                         profile.code_hash != expected->code_hash)) {
-            return nullptr;
-        }
-        {
-            const JitProfile::Timer timer{JitProfile::Phase::Optimize};
-            Optimization::Optimize(ir_block, conf, polyfill_options);
-        }
-        const JitProfile::Timer emit_timer{JitProfile::Phase::Emit};
-        const auto entrypoint = emitter.Emit(ir_block).entrypoint;
-        if (block_profile_callback && valid_profile && profile.code_bytes != 0 &&
-            !arch_descriptor.SingleStepping()) {
-            block_profile_callback(profile);
-        }
-        return entrypoint;
+        return !expected || (valid_profile && profile.code_bytes == expected->code_bytes &&
+                             profile.code_hash == expected->code_hash);
     }
 
     void PerformRequestedCacheInvalidation(HaltReason hr) {
@@ -333,11 +360,10 @@ private:
 
             const JitProfile::Timer invalidate_timer{JitProfile::Phase::Invalidate};
             jit_state.ResetRSB();
-            if (invalidate_entire_cache) {
-                block_of_code.ClearCache();
-                emitter.ClearCache();
-            } else {
-                emitter.InvalidateCacheRanges(invalid_cache_ranges);
+            // A clear skipped because one ran since the request does not cover ranges asked after it.
+            const bool cleared = invalidate_entire_cache && cache->Clear(*core, clear_generation);
+            if (!cleared && !invalid_cache_ranges.empty()) {
+                cache->InvalidateRanges(*core, invalid_cache_ranges);
             }
             invalid_cache_ranges.clear();
             invalidate_entire_cache = false;
@@ -347,18 +373,19 @@ private:
     IR::Block ir_block = {LocationDescriptor(0, FP::FPCR(0), false)};
     const UserConfig conf;
     A64JitState jit_state;
-    BlockOfCode block_of_code;
-    A64EmitX64 emitter;
-    Optimization::PolyfillOptions polyfill_options;
+    std::shared_ptr<A64CodeCache> cache;
+    std::unique_ptr<FastDispatchTable> fast_dispatch;
+    std::unique_ptr<A64CodeCache::Core> core;  ///< Declared last: detaches before the rest goes.
     bool is_executing = false;
     std::function<void(const BlockProfile&)> block_profile_callback;
     bool invalidate_entire_cache = false;
+    std::uint64_t clear_generation = 0;
     boost::icl::interval_set<u64> invalid_cache_ranges;
     std::mutex invalidation_mutex;
 };
 
 Jit::Jit(UserConfig conf)
-        : impl(std::make_unique<Jit::Impl>(this, conf)) {}
+        : impl(std::make_unique<Jit::Impl>(conf)) {}
 
 Jit::~Jit() = default;
 
@@ -374,7 +401,7 @@ bool Jit::PrecompileBlock(const BlockProfile& block) {
     if (descriptor.SingleStepping() || (descriptor.PC() & 3) ||
         descriptor.UniqueHash() != block.descriptor || block.code_bytes == 0 ||
         block.code_bytes > BlockProfile::MaxCodeBytes || (block.code_bytes & 3) ||
-        impl->block_of_code.SpaceRemaining() < 1024 * 1024) {
+        impl->cache->SpaceRemaining() < A64CodeCache::minimum_free_space) {
         return false;
     }
     // Apply what was requested before the warm (code loaded or reprotected at boot) now, as Run
@@ -385,7 +412,11 @@ bool Jit::PrecompileBlock(const BlockProfile& block) {
 
 std::size_t Jit::GetCodeCacheSpaceRemaining() const {
     ASSERT(!impl->is_executing);
-    return impl->block_of_code.SpaceRemaining();
+    return impl->cache->SpaceRemaining();
+}
+
+bool Jit::IsCodeCacheShared() const {
+    return impl->cache->IsShared();
 }
 
 HaltReason Jit::Run() {

@@ -15,6 +15,8 @@ int main() {
     assert(FormatOverlayResidentMemory(1023 * MiB) == "RAM WS 1023 MIB");
     assert(FormatOverlayResidentMemory(1024 * MiB) == "RAM WS 1.00 GIB");
     assert(FormatOverlayResidentMemory(4608 * MiB) == "RAM WS 4.50 GIB");
+    assert(FormatOverlayAppMemory(0, 5120 * MiB) == "RAM 0.00/5.00 GIB");
+    assert(FormatOverlayAppMemory(4927 * MiB, 5120 * MiB) == "RAM 4.81/5.00 GIB");
     assert(!QueryOverlayResidentMemory(nullptr));
     const auto resident = QueryOverlayResidentMemory();
     assert(resident && *resident > 0);

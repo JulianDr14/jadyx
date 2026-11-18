@@ -151,7 +151,12 @@ void RendererD3D12::DrawPerformanceOverlay(CommandStream* cmd,
         // Reuse the HUD refresh and cached text. At most one lightweight OS query per second,
         // including failures; hiding the HUD resets this state and performs no queries.
         if (first || now - hud.memory_sample_time >= std::chrono::seconds{1}) {
-            hud.memory_line = FormatOverlayResidentMemory(QueryOverlayResidentMemory());
+            // The app's commit against its limit; the working set where that is unknown.
+            u64 used{};
+            u64 limit{};
+            hud.memory_line = QueryAppMemory(used, limit) && limit != 0
+                                  ? FormatOverlayAppMemory(used, limit)
+                                  : FormatOverlayResidentMemory(QueryOverlayResidentMemory());
             hud.memory_sample_time = now;
         }
         // The latest hitch for ten seconds, by the short name of its likely cause (the log has

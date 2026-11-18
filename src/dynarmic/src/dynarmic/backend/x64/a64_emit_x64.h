@@ -9,6 +9,8 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
+#include <functional>
 #include <map>
 #include <optional>
 #include <tuple>
@@ -18,6 +20,7 @@
 
 #include "dynarmic/backend/block_range_information.h"
 #include "dynarmic/backend/x64/a64_jitstate.h"
+#include "dynarmic/backend/x64/devirtualize.h"
 #include "dynarmic/backend/x64/emit_x64.h"
 #include "dynarmic/backend/x64/reg_alloc.h"
 #include "dynarmic/frontend/A64/a64_location_descriptor.h"
@@ -41,9 +44,20 @@ struct A64EmitContext final : public EmitContext {
     const A64::UserConfig& conf;
 };
 
+/// What an A64 emitter reports to the code cache that owns it.
+struct A64EmitX64Hooks {
+    /// A block was unlinked (invalidated): indirect-branch caches must drop it.
+    std::function<void(IR::LocationDescriptor)> block_invalidated;
+    /// Handles a fastmem fault; empty runs the emitter's own FastmemCallback.
+    std::function<FakeCall(u64 rip)> fastmem_fault;
+};
+
+/// Emits A64 blocks that any core of a process can run: per-core values (callback objects, the
+/// user config, exclusive monitor slots, TPIDR pointers, the fast-dispatch table) are read from
+/// A64JitState::bindings at run time, and block links are retargeted with single atomic stores.
 class A64EmitX64 final : public EmitX64 {
 public:
-    A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64::Jit* jit_interface);
+    A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64EmitX64Hooks hooks = {});
     ~A64EmitX64() override;
 
     /// Emit host machine code for a basic block with intermediate representation `block`.
@@ -55,17 +69,6 @@ public:
     void InvalidateCacheRanges(const boost::icl::interval_set<u64>& ranges);
 
 //protected:
-    struct FastDispatchEntry {
-        u64 location_descriptor = 0xFFFF'FFFF'FFFF'FFFFull;
-        const void* code_ptr = nullptr;
-    };
-    static_assert(sizeof(FastDispatchEntry) == 0x10);
-    // 256K entries, 4 MiB a core. A million (16 MiB, all of it committed by the fill on every
-    // clear) cost the four cores 64 MiB of a commit-limited console for an indirect-branch cache.
-    static constexpr u64 fast_dispatch_table_mask = 0x3FFFF0;
-    static constexpr size_t fast_dispatch_table_size = 0x40000;
-
-    void ClearFastDispatchTable();
     void GenMemory128Accessors();
     void GenFastmemFallbacks();
     void GenPageTableThunks();
@@ -97,6 +100,20 @@ public:
     std::optional<DoNotFastmemMarker> ShouldFastmem(A64EmitContext& ctx, IR::Inst* inst) const;
     FakeCall FastmemCallback(u64 rip);
 
+    // Per-core values the shared memory emitters need, read from the core's JIT state.
+    template<auto mfp>
+    ArgCallback CoreCallback() const {
+        return DevirtualizeFromJitState<mfp>(conf.callbacks, A64BindingOffset::callbacks_arg);
+    }
+    void EmitLoadUserConfig(Xbyak::Reg64 reg);
+    void EmitLoadExclusiveAddressPointer(Xbyak::Reg64 reg);
+    void EmitLoadExclusiveValuePointer(Xbyak::Reg64 reg);
+    /// A64 code may run on any core: an exclusive store clears every slot holding the address,
+    /// its own included (as ExclusiveMonitor::CheckAndClear does).
+    std::optional<size_t> ExclusiveClearSkipsProcessor() const {
+        return std::nullopt;
+    }
+
     // Memory access helpers
     void EmitCheckMemoryAbort(A64EmitContext& ctx, IR::Inst* inst, Xbyak::Label* end = nullptr);
     template<std::size_t bitsize, auto callback>
@@ -116,18 +133,25 @@ public:
     bool EmitLeafTerminal(IR::Term::LeafTerminal const& terminal, IR::LocationDescriptor initial_location, bool is_single_step) noexcept override;
     bool EmitTerminal(IR::Term::Terminal const& terminal, IR::LocationDescriptor initial_location, bool is_single_step) noexcept override;
 
-    // Patching
+    // Patching. Every site keeps its target in one aligned field (see link_site.h), so linking and
+    // unlinking is an atomic store and never re-emits code another core may be running.
+    // EmitPatchJg/Jz/Jmp emit the whole site, registered, with its unlinked path; EmitPatchMovRcx
+    // emits only the load (PushRSBHelper registers it).
     void Unpatch(const IR::LocationDescriptor& target_desc) override;
+    void ApplyPatch(PatchSite site, const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) override;
     void EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) override;
     void EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) override;
     void EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) override;
     void EmitPatchMovRcx(CodePtr target_code_ptr = nullptr) override;
+    void EmitConditionalLink(PatchKind kind, const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr);
+    /// Code that stores the guest PC of `target_desc` and leaves through `exit`.
+    void EmitStorePcAndExit(const IR::LocationDescriptor& target_desc, bool force_return);
 
 //data
     const A64::UserConfig conf;
+    A64EmitX64Hooks hooks;
     RegAlloc reg_alloc; //reusable reg alloc
     BlockRangeInformation<u64> block_ranges;
-    std::array<FastDispatchEntry, fast_dispatch_table_size> fast_dispatch_table;
     ::Common::unordered_map<u64, FastmemPatchInfo> fastmem_patch_info;
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> read_fallbacks;
     ::Common::unordered_map<std::tuple<bool, size_t, int, int>, void (*)()> write_fallbacks;
@@ -138,8 +162,6 @@ public:
     boost::container::stable_vector<Xbyak::Label> shared_labels;
     const void* terminal_handler_pop_rsb_hint = nullptr;
     const void* terminal_handler_fast_dispatch_hint = nullptr;
-    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64) = nullptr;
-    A64::Jit* jit_interface = nullptr;
     void (*memory_read_128)() = nullptr;
     void (*memory_write_128)() = nullptr;
     void (*memory_exclusive_write_128)() = nullptr;

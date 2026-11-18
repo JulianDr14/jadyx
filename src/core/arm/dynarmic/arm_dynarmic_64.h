@@ -19,6 +19,7 @@
 #include "core/arm/arm_interface.h"
 #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
 #include "dynarmic/interface/A64/config.h"
+#include "dynarmic/interface/A64/shared_code_cache.h"
 
 namespace Core::Memory {
 class Memory;
@@ -80,8 +81,11 @@ public:
 
 class ArmDynarmic64 final : public ArmInterface {
 public:
+    /// Cores given the same `shared_code_cache` share their compiled code (see
+    /// Dynarmic::A64::SharedCodeCache); null keeps a cache of the core's own.
     ArmDynarmic64(System& system, bool uses_wall_clock, Kernel::KProcess* process,
-                  DynarmicExclusiveMonitor& exclusive_monitor, std::size_t core_index);
+                  DynarmicExclusiveMonitor& exclusive_monitor, std::size_t core_index,
+                  std::shared_ptr<Dynarmic::A64::SharedCodeCache> shared_code_cache = nullptr);
     ~ArmDynarmic64() override;
 
     JitPrewarm::Owner* LoadPrewarmProfile() override;
@@ -119,6 +123,7 @@ private:
     void MakeJit(Common::PageTable* page_table, std::size_t address_space_bits);
     std::optional<DynarmicCallbacks64> m_cb{};
     std::size_t m_core_index{};
+    std::shared_ptr<Dynarmic::A64::SharedCodeCache> m_shared_code_cache;
 
     std::optional<Dynarmic::A64::Jit> m_jit{};
     // After m_jit: destroyed first, while it can still detach its observer from the JIT.

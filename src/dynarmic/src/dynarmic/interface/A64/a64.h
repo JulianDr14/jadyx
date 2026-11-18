@@ -129,6 +129,9 @@ public:
     void SetBlockProfileCallback(std::function<void(const BlockProfile&)> callback);
     bool PrecompileBlock(const BlockProfile& block);
     std::size_t GetCodeCacheSpaceRemaining() const;
+    /// Whether the code cache is shared with the other cores of the process: its space remaining
+    /// then counts what every one of them compiles.
+    bool IsCodeCacheShared() const;
 
     /// @brief Disassemble the instructions following the current pc and return
     /// the resulting instructions as a vector of their string representations.
