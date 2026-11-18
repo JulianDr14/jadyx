@@ -47,6 +47,9 @@ bool IsConnectionBased(Type type) {
 // Reporting 0x100 lets a game that trusts the length copy 240 bytes past its 16-byte sockaddr.
 constexpr size_t GuestSockAddrInSize = 16;
 
+// IPPROTO_TCP option number of TCP_NODELAY.
+constexpr u32 TcpNoDelay = 1;
+
 template <typename T>
 T GetValue(std::span<const u8> buffer) {
     T t{};
@@ -869,6 +872,15 @@ Errno BSD_USA::GetSockOptImpl(s32 fd, u32 level, OptName optname, std::vector<u8
         return Errno::BADF;
     }
 
+    // gRPC sets TCP_NODELAY and reads it back; a zero answer makes it drop the socket before
+    // connecting.
+    if (level == static_cast<u32>(SocketLevel::TCP) && static_cast<u32>(optname) == TcpNoDelay) {
+        const u32 value = file_descriptors[fd]->tcp_nodelay ? 1 : 0;
+        optval.resize(sizeof(u32));
+        PutValue(optval, value);
+        return Errno::SUCCESS;
+    }
+
     if (level != static_cast<u32>(SocketLevel::SOCKET)) {
         UNIMPLEMENTED_MSG("Unknown getsockopt level");
         return Errno::SUCCESS;
@@ -902,6 +914,12 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
     if (!file_descriptors[fd]->socket) {
         LOG_WARNING(Service, "Uninitialized socket");
         return Errno::BADF;
+    }
+
+    if (level == static_cast<u32>(SocketLevel::TCP) && static_cast<u32>(optname) == TcpNoDelay &&
+        optval.size() >= sizeof(u32)) {
+        file_descriptors[fd]->tcp_nodelay = GetValue<u32>(optval) != 0;
+        return Errno::SUCCESS;
     }
 
     if (level != static_cast<u32>(SocketLevel::SOCKET)) {
