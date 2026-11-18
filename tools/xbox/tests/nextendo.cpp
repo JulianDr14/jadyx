@@ -31,6 +31,7 @@
 #include "jadyx/network/nextendo/api_types.h"
 #include "jadyx/network/nextendo/bcat_package.h"
 #include "jadyx/network/nextendo/catalog_rows.h"
+#include "jadyx/network/nextendo/link_stats.h"
 #include "jadyx/network/nextendo/network_mode.h"
 #include "jadyx/network/nextendo/pkce.h"
 #include "jadyx/network/nextendo/preferences.h"
@@ -1204,6 +1205,62 @@ void TestNextendoPage() {
     }
 }
 
+void TestLinkStats() {
+    using App::LinkVia;
+    App::LinkStats stats;
+    auto empty = stats.Snapshot(LinkVia::GameServer);
+    Check(empty.samples == 0 && empty.answered == 0 && empty.loss_percent == 0);
+    auto lines = App::LinkHudLines(empty);
+    Check(lines.size() == 2 && lines[0].text == "ONLINE NEXTENDO" && lines[1].text == "PING MIDIENDO" &&
+          !lines[1].warning);
+    Check(App::LinkPillText(empty).text == L"Nextendo" && !App::LinkPillText(empty).slow);
+
+    // Nothing answered: one amber line, no figures.
+    stats.Add(std::nullopt);
+    stats.Add(std::nullopt);
+    auto silent = stats.Snapshot(LinkVia::Api);
+    Check(silent.samples == 2 && silent.answered == 0 && silent.loss_percent == 100.0);
+    lines = App::LinkHudLines(silent);
+    Check(lines.size() == 2 && lines[1].text == "PING API SIN RESPUESTA" && lines[1].warning);
+    Check(App::LinkIsSlow(silent) && App::LinkPillText(silent).slow);
+
+    // 30, 40, 50 and one lost of four: mean 40, mean distance 6.67 -> 7, loss 25%.
+    stats.Clear();
+    stats.Add(30);
+    stats.Add(40);
+    stats.Add(std::nullopt);
+    stats.Add(50);
+    auto mixed = stats.Snapshot(LinkVia::GameServer);
+    Check(mixed.samples == 4 && mixed.answered == 3 && mixed.round_trip_ms == 40 && mixed.variance_ms == 7);
+    Check(mixed.loss_percent == 25.0);
+    lines = App::LinkHudLines(mixed);
+    Check(lines.size() == 3 && lines[1].text == "PING 40 MS VAR 7 MS" && !lines[1].warning);
+    Check(lines[2].text == "PERDIDA 25.0%" && lines[2].warning);
+    Check(App::LinkPillText(mixed).text == L"Nextendo · 40 ms" && App::LinkPillText(mixed).slow);
+    Check(App::LinkPillText(stats.Snapshot(LinkVia::Api)).text == L"Nextendo · API 40 ms");
+
+    // The window keeps the last 20: old losses age out.
+    for (int i = 0; i < 20; ++i) stats.Add(160);
+    auto steady = stats.Snapshot(LinkVia::GameServer);
+    Check(steady.samples == App::LinkStats::Window && steady.answered == 20 && steady.loss_percent == 0);
+    Check(steady.round_trip_ms == 160 && steady.variance_ms == 0);
+    lines = App::LinkHudLines(steady);
+    Check(lines[1].text == "PING 160 MS VAR 0 MS" && lines[1].warning); // over 150 ms
+    Check(lines[2].text == "PERDIDA 0.0%" && !lines[2].warning);
+
+    // Jitter alone turns the line amber.
+    stats.Clear();
+    for (int i = 0; i < 10; ++i) stats.Add(i % 2 ? 10 : 130);
+    auto jitter = stats.Snapshot(LinkVia::GameServer);
+    Check(jitter.round_trip_ms == 70 && jitter.variance_ms == 60 && App::LinkIsSlow(jitter));
+    Check(App::LinkHudLines(jitter)[1].warning);
+
+    // A good link is not slow.
+    stats.Clear();
+    for (int i = 0; i < 5; ++i) stats.Add(20 + i);
+    Check(!App::LinkIsSlow(stats.Snapshot(LinkVia::GameServer)));
+}
+
 } // namespace
 
 int main() {
@@ -1222,6 +1279,7 @@ int main() {
     TestBcatPackage();
     TestCatalogRows();
     TestNextendoPage();
+    TestLinkStats();
     std::printf("nextendo gate: %d checks passed\n", g_checks);
     return 0;
 }

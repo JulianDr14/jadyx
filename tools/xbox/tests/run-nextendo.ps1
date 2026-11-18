@@ -23,6 +23,7 @@ $sources = @(
     'src\jadyx\network\nextendo\api_types.cpp',
     'src\jadyx\network\nextendo\bcat_package.cpp',
     'src\jadyx\network\nextendo\catalog_rows.cpp',
+    'src\jadyx\network\nextendo\link_stats.cpp',
     'src\jadyx\network\nextendo\pkce.cpp',
     'src\jadyx\network\nextendo\preferences.cpp',
     'src\jadyx\network\nextendo\session.cpp'
