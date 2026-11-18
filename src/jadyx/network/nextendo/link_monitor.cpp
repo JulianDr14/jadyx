@@ -3,7 +3,6 @@
 
 #include "jadyx/network/nextendo/link_monitor.h"
 
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -21,6 +20,7 @@
 // clang-format on
 
 #include "jadyx/app/boot_diag.h"
+#include "jadyx/network/icmp_echo.h"
 #include "video_core/performance_overlay.h"
 
 namespace Jadyx::Network::Nextendo {
@@ -55,19 +55,6 @@ std::vector<VideoCore::OverlayLine> HudLines() {
     std::vector<VideoCore::OverlayLine> lines;
     for (auto& line : LinkHudLines(*snapshot)) lines.push_back({std::move(line.text), line.warning});
     return lines;
-}
-
-/// One ICMP echo; nullopt when it got no answer in time.
-std::optional<int> PingIcmp(HANDLE icmp, IPAddr address) {
-    std::array<char, 32> payload{'j', 'a', 'd', 'y', 'x'};
-    std::array<unsigned char, sizeof(ICMP_ECHO_REPLY) + 32 + 8 + 64> reply{};
-    const DWORD count = IcmpSendEcho2(icmp, nullptr, nullptr, nullptr, address, payload.data(),
-                                      static_cast<WORD>(payload.size()), nullptr, reply.data(),
-                                      static_cast<DWORD>(reply.size()), TimeoutMs);
-    if (count == 0) return std::nullopt;
-    const auto* echo = reinterpret_cast<const ICMP_ECHO_REPLY*>(reply.data());
-    if (echo->Status != IP_SUCCESS) return std::nullopt;
-    return static_cast<int>(echo->RoundTripTime);
 }
 
 /// The time a TCP connect to the API's host takes: one round trip (SYN, SYN-ACK).
@@ -136,7 +123,7 @@ void Run(Monitor& monitor, std::string server_ip) {
         std::optional<int> sample;
         LinkVia via = LinkVia::GameServer;
         if (use_icmp) {
-            sample = PingIcmp(icmp, server);
+            sample = Icmp::Echo(icmp, server, TimeoutMs);
             if (sample) icmp_answered = true;
             // A server that never answers ICMP (a firewall) is measured through the API instead.
             if (!icmp_answered && !sample && ++icmp_misses >= IcmpTries) {

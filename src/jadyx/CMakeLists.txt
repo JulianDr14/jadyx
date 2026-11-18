@@ -225,6 +225,8 @@ add_executable(jadyx WIN32
     mods/mod_thumbnails.cpp
     mods/mod_thumbnails.h
     network/http.cpp
+    network/icmp_echo.cpp
+    network/icmp_echo.h
     network/nextendo/api_types.cpp
     network/nextendo/api_types.h
     network/nextendo/bcat_package.cpp
