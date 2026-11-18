@@ -523,9 +523,14 @@ void BSD_USA::DuplicateSocket(HLERequestContext& ctx) {
 }
 
 void BSD_USA::EventFd(HLERequestContext& ctx) {
+    // The guest sends the flags in the first word and the initial value after them: the online
+    // library's eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC) arrives as {6, 0}. Read the other way
+    // round it became a blocking eventfd that already held 6.
     IPC::RequestParser rp{ctx};
-    const u64 initval = rp.Pop<u64>();
-    const u32 flags = rp.Pop<u32>();
+    const u64 word0 = rp.Pop<u64>();
+    const u32 word1 = rp.Pop<u32>();
+    const u32 flags = static_cast<u32>(word0);
+    const u64 initval = word1;
 
     // Horizon's eventfd flags follow FreeBSD: EFD_SEMAPHORE 1, EFD_NONBLOCK is O_NONBLOCK.
     constexpr u32 Semaphore = 0x1;
@@ -551,7 +556,8 @@ void BSD_USA::EventFd(HLERequestContext& ctx) {
         rb.PushEnum(Translate(host_err));
         return;
     }
-    LOG_INFO(Service, "New eventfd fd={} initval={} flags={:#x}", fd, initval, flags);
+    LOG_INFO(Service, "New eventfd fd={} initval={} flags={:#x} (raw {:#x} {:#x})", fd, initval,
+             flags, word0, word1);
     {
         std::scoped_lock lk{file_descriptors_mutex};
         file_descriptors[fd] = FileDescriptor{
