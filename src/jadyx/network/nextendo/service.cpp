@@ -10,6 +10,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <system_error>
@@ -25,6 +26,7 @@
 #include "common/logging.h"
 #include "jadyx/app/boot_diag.h"
 #include "jadyx/network/http.h"
+#include "jadyx/network/nextendo/api_types.h"
 #include "jadyx/network/nextendo/link_monitor.h"
 #include "jadyx/network/nextendo/network_mode.h"
 #include "jadyx/network/nextendo/pkce.h"
@@ -238,6 +240,8 @@ struct State {
     Preferences preferences;
     SessionView view;
     Nx::GameCatalog catalog;
+    /// The signed-in account's picture as downloaded (PNG or JPEG); null without one.
+    std::shared_ptr<const std::string> avatar;
     std::uint64_t version = 1;
     bool game_running = false;
     bool started = false;
@@ -303,6 +307,120 @@ void Publish(const Session& session, Nx::Config& published) {
     }
 }
 
+/// The account picture, worker thread only. It is kept in LocalCache (nextendo/avatar_<pid>) and
+/// asked of the server again once a day, so a new picture shows by the next day; a failed try
+/// keeps the kept one and tries again a minute later.
+constexpr std::uintmax_t MaxAvatarFile = 2u << 20;
+constexpr auto AvatarFresh = std::chrono::hours{24};
+
+fs::path AvatarFolder() {
+    try {
+        return fs::path{winrt::Windows::Storage::ApplicationData::Current().LocalCacheFolder().Path().c_str()} /
+               L"nextendo";
+    } catch (...) {
+        return {};
+    }
+}
+
+fs::path AvatarPath(std::uint64_t pid) {
+    const auto folder = AvatarFolder();
+    return folder.empty() ? fs::path{} : folder / (L"avatar_" + std::to_wstring(pid));
+}
+
+/// Removes the kept pictures, all but keep's (0: all of them).
+void RemoveAvatars(std::uint64_t keep) {
+    std::error_code error;
+    const auto folder = AvatarFolder();
+    if (folder.empty()) {
+        return;
+    }
+    const auto kept = keep ? AvatarPath(keep).filename() : fs::path{};
+    for (const auto& item : fs::directory_iterator(folder, error)) {
+        const auto name = item.path().filename();
+        if (name.wstring().starts_with(L"avatar_") && name != kept) {
+            fs::remove(item.path(), error);
+        }
+    }
+}
+
+struct AvatarFetch {
+    std::uint64_t pid = 0;
+    bool done = false;
+    std::chrono::steady_clock::time_point retry{};
+};
+
+void PublishAvatar(std::shared_ptr<const std::string> bytes) {
+    auto& state = Shared();
+    std::scoped_lock lock{state.mutex};
+    if (state.avatar != bytes) {
+        state.avatar = std::move(bytes);
+        ++state.version;
+    }
+}
+
+void FetchAvatar(std::uint64_t pid, AvatarFetch& fetch, std::stop_token stop) {
+    std::error_code error;
+    if (pid != fetch.pid) {
+        // Another account, or none: the old picture goes at once, the kept one shows at once.
+        fetch = AvatarFetch{pid};
+        std::shared_ptr<const std::string> kept;
+        if (const auto path = pid ? AvatarPath(pid) : fs::path{}; !path.empty()) {
+            const auto size = fs::file_size(path, error);
+            if (!error && size > 0 && size <= MaxAvatarFile) {
+                std::ifstream file(path, std::ios::binary);
+                std::string bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+                if (bytes.size() == size) {
+                    kept = std::make_shared<const std::string>(std::move(bytes));
+                    const auto written = fs::last_write_time(path, error);
+                    fetch.done = !error && fs::file_time_type::clock::now() - written < AvatarFresh;
+                }
+            }
+        }
+        PublishAvatar(std::move(kept));
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (pid == 0 || fetch.done || now < fetch.retry) {
+        return;
+    }
+    Http::ApiRequest request;
+    request.url = AvatarUrl(pid);
+    request.accept = "image/*";
+    request.max_bytes = MaxAvatarFile;
+    auto response = Http::Send(request, stop);
+    if (response.status == 200 && !response.body.empty()) {
+        fetch.done = true;
+        LOG_INFO(Network, "[Nextendo] account picture, {} bytes", response.body.size());
+        if (const auto path = AvatarPath(pid); !path.empty()) {
+            fs::create_directories(path.parent_path(), error);
+            const auto part = fs::path(path).concat(L".part");
+            bool written = false;
+            {
+                std::ofstream file(part, std::ios::binary | std::ios::trunc);
+                file.write(response.body.data(), static_cast<std::streamsize>(response.body.size()));
+                written = static_cast<bool>(file);
+            }
+            if (written) {
+                fs::rename(part, path, error);
+            }
+            if (!written || error) {
+                fs::remove(part, error);
+            }
+            RemoveAvatars(pid);
+        }
+        PublishAvatar(std::make_shared<const std::string>(std::move(response.body)));
+        return;
+    }
+    if (response.status == 404) {
+        // No picture on the account (any more): the initial.
+        fetch.done = true;
+        RemoveAvatars(0);
+        PublishAvatar(nullptr);
+        return;
+    }
+    LOG_INFO(Network, "[Nextendo] account picture not downloaded (HTTP {})", response.status);
+    fetch.retry = now + std::chrono::minutes{1};
+}
+
 void Run(std::stop_token stop) {
     auto& state = Shared();
     VaultStorage storage;
@@ -311,6 +429,7 @@ void Run(std::stop_token stop) {
     session.Resume();
     Nx::Config published;
     Publish(session, published);
+    AvatarFetch avatar;
     while (!stop.stop_requested()) {
         std::vector<Command> commands;
         bool presence_wanted = false;
@@ -341,6 +460,10 @@ void Run(std::stop_token stop) {
             wait = session.Step();
         }
         Publish(session, published);
+        // The picture once the account is known (signed in, the profile read).
+        const auto& view = session.View();
+        const bool signed_in = view.phase == Phase::Connecting || view.phase == Phase::Ready;
+        FetchAvatar(signed_in ? view.pid : 0, avatar, stop);
         std::unique_lock lock{state.mutex};
         auto timeout = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds(wait));
         if (state.sign_in) {
@@ -386,6 +509,12 @@ SessionView ServiceView() {
     auto& state = Shared();
     std::scoped_lock lock{state.mutex};
     return state.view;
+}
+
+std::shared_ptr<const std::string> ServiceAvatar() {
+    auto& state = Shared();
+    std::scoped_lock lock{state.mutex};
+    return state.avatar;
 }
 
 std::uint64_t ServiceVersion() {
@@ -553,7 +682,11 @@ void CancelSignIn() {
 }
 
 void SignOut() {
-    Post([](Session& session) { session.SignOut(); });
+    Post([](Session& session) {
+        session.SignOut();
+        // The account's picture leaves the console with it.
+        RemoveAvatars(0);
+    });
 }
 
 void RefreshCatalog() {

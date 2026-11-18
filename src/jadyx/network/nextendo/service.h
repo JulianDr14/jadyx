@@ -14,6 +14,7 @@
 // room, and RoomsAllowed() tells the Online tab to refuse joining or hosting while it is chosen.
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -32,7 +33,11 @@ void StopWorker();
 SessionView ServiceView();
 /// The verified catalog as last published (a copy).
 Core::Online::Nextendo::GameCatalog ServiceCatalog();
-/// Changes whenever ServiceView() or ServicePreferences() would: a cheap redraw check.
+/// The signed-in account's picture as the server sent it (PNG or JPEG bytes); null while there is
+/// none, it is not downloaded yet, or nobody is signed in.
+std::shared_ptr<const std::string> ServiceAvatar();
+/// Changes whenever ServiceView(), ServiceAvatar() or ServicePreferences() would: a cheap redraw
+/// check.
 std::uint64_t ServiceVersion();
 
 Preferences ServicePreferences();
