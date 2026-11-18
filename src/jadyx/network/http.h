@@ -75,6 +75,7 @@ struct ApiRequest {
     std::string content_type; // with a body: "application/json" or form encoding
     std::string body;
     std::vector<std::pair<std::string, std::string>> headers; // extra, e.g. a client id
+    std::string accept = "application/json"; // the Accept header; a picture asks for image/*
     std::size_t max_bytes = 1u << 20;
 };
 
