@@ -21,20 +21,28 @@ void Check(bool ok, std::source_location where = std::source_location::current()
 } // namespace
 
 int main() {
-    // Room pings: one target per host, results handed to every room of that host.
+    // Room pings: one target per address and port, results handed to every room listed there.
     {
-        std::vector<LobbyRoom> rooms(4);
+        std::vector<LobbyRoom> rooms(5);
         rooms[0].address = "1.2.3.4";
+        rooms[0].port = 24872;
         rooms[1].address = "5.6.7.8";
+        rooms[1].port = 24872;
         rooms[2].address = "1.2.3.4";
-        rooms[3].address = "9.9.9.9";
+        rooms[2].port = 24872;
+        rooms[3].address = "1.2.3.4";
+        rooms[3].port = 24873;
+        rooms[4].address = "9.9.9.9";
         const auto targets = PingTargets(rooms);
-        Check(targets.size() == 3 && targets[0] == "1.2.3.4" && targets[1] == "5.6.7.8" && targets[2] == "9.9.9.9");
+        Check(targets.size() == 3);
+        Check(targets[0].address == "1.2.3.4" && targets[0].port == 24872);
+        Check(targets[1].address == "5.6.7.8" && targets[2].port == 24873);
+        Check(PingKey("1.2.3.4", 24872) == "1.2.3.4:24872");
         Check(PingLabel(rooms[0]).empty());
-        ApplyPings(rooms, {{"1.2.3.4", 42}, {"5.6.7.8", std::nullopt}});
+        ApplyPings(rooms, {{"1.2.3.4:24872", 42}, {"5.6.7.8:24872", std::nullopt}});
         Check(rooms[0].pinged && rooms[2].pinged && rooms[0].ping_ms == 42 && rooms[2].ping_ms == 42);
         Check(rooms[1].pinged && !rooms[1].ping_ms);
-        Check(!rooms[3].pinged);
+        Check(!rooms[3].pinged && !rooms[4].pinged);
         Check(PingLabel(rooms[0]) == L"42 ms");
         Check(PingLabel(rooms[1]) == L"— ms");
         Check(PingLabel(rooms[3]).empty());
