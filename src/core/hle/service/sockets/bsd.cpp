@@ -18,6 +18,7 @@
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/sockets/bsd.h"
+#include "core/internal_network/event_fd.h"
 #include "core/hle/service/sockets/sockets_translate.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/socket_proxy.h"
@@ -460,12 +461,14 @@ void BSD_USA::Read(HLERequestContext& ctx) {
     IPC::RequestParser rp{ctx};
     const s32 fd = rp.Pop<s32>();
 
-    LOG_WARNING(Service, "(STUBBED) called. fd={} len={}", fd, ctx.GetWriteBufferSize());
+    LOG_DEBUG(Service, "called. fd={} len={}", fd, ctx.GetWriteBufferSize());
 
-    IPC::ResponseBuilder rb{ctx, 4};
-    rb.Push(ResultSuccess);
-    rb.Push<u32>(0); // ret
-    rb.Push<u32>(0); // bsd errno
+    // read() on a socket is recv() without flags (an eventfd takes its counter this way).
+    ExecuteWork(ctx, RecvWork{
+                         .fd = fd,
+                         .flags = 0,
+                         .message = std::vector<u8>(ctx.GetWriteBufferSize()),
+                     });
 }
 
 void BSD_USA::Close(HLERequestContext& ctx) {
@@ -524,9 +527,41 @@ void BSD_USA::EventFd(HLERequestContext& ctx) {
     const u64 initval = rp.Pop<u64>();
     const u32 flags = rp.Pop<u32>();
 
-    LOG_WARNING(Service, "(STUBBED) called. initval={}, flags={}", initval, flags);
+    // Horizon's eventfd flags follow FreeBSD: EFD_SEMAPHORE 1, EFD_NONBLOCK is O_NONBLOCK.
+    constexpr u32 Semaphore = 0x1;
+    constexpr u32 NonBlock = 0x4;
+    const bool non_blocking = (flags & (NonBlock | Network::FLAG_O_NONBLOCK)) != 0;
 
-    BuildErrnoResponse(ctx, Errno::SUCCESS);
+    IPC::ResponseBuilder rb{ctx, 4};
+    rb.Push(ResultSuccess);
+
+    const s32 fd = FindFreeFileDescriptorHandle();
+    if (fd < 0) {
+        LOG_ERROR(Service, "No more file descriptors available for an eventfd");
+        rb.Push<s32>(-1);
+        rb.PushEnum(Errno::MFILE);
+        return;
+    }
+    auto socket = std::make_shared<Network::EventFdSocket>();
+    Network::Errno host_err = socket->Open(initval, (flags & Semaphore) != 0);
+    if (host_err == Network::Errno::SUCCESS && non_blocking) host_err = socket->SetNonBlock(true);
+    if (host_err != Network::Errno::SUCCESS) {
+        LOG_ERROR(Service, "eventfd could not open its loopback socket");
+        rb.Push<s32>(-1);
+        rb.PushEnum(Translate(host_err));
+        return;
+    }
+    LOG_INFO(Service, "New eventfd fd={} initval={} flags={:#x}", fd, initval, flags);
+    {
+        std::scoped_lock lk{file_descriptors_mutex};
+        file_descriptors[fd] = FileDescriptor{
+            .socket = std::move(socket),
+            .flags = non_blocking ? static_cast<s32>(Network::FLAG_O_NONBLOCK) : 0,
+            .is_connection_based = false,
+        };
+    }
+    rb.Push<s32>(fd);
+    rb.PushEnum(Errno::SUCCESS);
 }
 
 template <typename Work>
