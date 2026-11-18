@@ -17,6 +17,7 @@
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/hle/service/hle_ipc.h"
+#include "core/hle/service/service.h"
 #include "core/online/nextendo/config.h"
 #include "core/online/nextendo/id_token.h"
 
@@ -100,6 +101,8 @@ std::optional<std::vector<u8>> IdToken(Core::System& system) {
     if (!config->enabled) {
         return std::nullopt;
     }
+    // The game goes online right after asking for the token: trace what it requests next.
+    Service::StartIpcTrace(3000);
     const u64 program_id = system.GetApplicationProcessProgramID();
     const std::string version = InstalledVersion(system, program_id);
     const auto now = std::chrono::steady_clock::now();

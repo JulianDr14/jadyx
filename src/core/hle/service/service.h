@@ -26,6 +26,10 @@ class ServiceThread;
 
 namespace Service {
 
+/// Logs every guest service request (service, command, thread, buffers, result) for `window`
+/// from now. Used to see what an online game asks for in the moments before it breaks.
+void StartIpcTrace(u32 window_ms);
+
 namespace FileSystem {
 class FileSystemController;
 }

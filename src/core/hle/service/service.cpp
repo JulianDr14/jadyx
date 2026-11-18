@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <fmt/ranges.h>
 #include "common/assert.h"
 #include "common/logging.h"
@@ -100,6 +102,39 @@ void ServiceFrameworkBase::InvokeRequestTipc(HLERequestContext& ctx) {
     handler_invoker(this, info->handler_callback, ctx);
 }
 
+namespace {
+std::atomic<s64> ipc_trace_until{0};
+std::atomic<u32> ipc_trace_lines{0};
+constexpr u32 MaxIpcTraceLines = 3000;
+
+s64 SteadyMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+bool IpcTraceActive() {
+    const s64 until = ipc_trace_until.load(std::memory_order_relaxed);
+    return until != 0 && SteadyMs() < until;
+}
+
+template <typename List>
+std::string BufferSizes(const List& list) {
+    std::string out;
+    for (const auto& desc : list) {
+        out += out.empty() ? fmt::format("{:#x}", desc.Size()) : fmt::format(",{:#x}", desc.Size());
+    }
+    return out.empty() ? "-" : out;
+}
+} // Anonymous namespace
+
+void StartIpcTrace(u32 window_ms) {
+    const s64 until = SteadyMs() + window_ms;
+    if (ipc_trace_until.exchange(until, std::memory_order_relaxed) == 0) {
+        LOG_INFO(Service, "IPC trace on for {} ms", window_ms);
+    }
+}
+
 Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
                                                HLERequestContext& ctx) {
     const u64 guest = ctx.GetThread().GetThreadId();
@@ -120,6 +155,16 @@ Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
                 bytes |= static_cast<u64>(static_cast<unsigned char>(name[part * 8 + byte])) << (byte * 8);
             }
             VideoCore::FrameTrace::Mark(name_events[part], bytes, guest);
+        }
+    }
+    const bool ipc_trace = IpcTraceActive() &&
+                           ipc_trace_lines.load(std::memory_order_relaxed) < MaxIpcTraceLines;
+    std::array<u32, 6> request_words{};
+    if (ipc_trace) {
+        const u32* cmd = ctx.CommandBuffer();
+        const u32 off = ctx.GetDataPayloadOffset();
+        for (size_t i = 0; i < request_words.size() && off + i < IPC::COMMAND_BUFFER_LENGTH; ++i) {
+            request_words[i] = cmd[off + i];
         }
     }
     VideoCore::FrameTrace::ScopedSpan trace_lock{VideoCore::FrameTrace::Event::GuestIpcLock, guest};
@@ -162,6 +207,24 @@ Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
     // memory that may be shutting down as well.
     if (system.IsPoweredOn()) {
         ctx.WriteToOutgoingCommandBuffer();
+    }
+
+    if (ipc_trace) {
+        ipc_trace_lines.fetch_add(1, std::memory_order_relaxed);
+        const u32* cmd = ctx.CommandBuffer();
+        const u32 off = ctx.GetDataPayloadOffset();
+        const auto word = [&](u32 i) {
+            return off + i < IPC::COMMAND_BUFFER_LENGTH ? cmd[off + i] : 0u;
+        };
+        LOG_INFO(Service,
+                 "IPC {} type {} cmd {} thread {:#x} | in {:08x} {:08x} {:08x} {:08x} {:08x} "
+                 "{:08x} | A {} B {} X {} C {} | result {:#x} out {:08x} {:08x} {:08x} {:08x}",
+                 GetServiceName(), static_cast<u32>(ctx.GetCommandType()), ctx.GetCommand(), guest,
+                 request_words[0], request_words[1], request_words[2], request_words[3],
+                 request_words[4], request_words[5], BufferSizes(ctx.BufferDescriptorA()),
+                 BufferSizes(ctx.BufferDescriptorB()), BufferSizes(ctx.BufferDescriptorX()),
+                 BufferSizes(ctx.BufferDescriptorC()), word(0), word(1), word(2), word(3),
+                 word(4));
     }
 
     return result;
